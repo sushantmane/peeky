@@ -36,3 +36,17 @@ def test_pinned_rust_raw_debugger_gate(tmp_path):
     assert report["rust_version_pin"] == "1.96.0"
     assert report["raw_children"]["request"]
     assert set(report["raw_children"]) == {"request", "mode", "some", "none"}
+    print(
+        json.dumps(
+            {
+                "rust_gate_seconds": report["seconds"],
+                "line_metadata": report["line_metadata"],
+                "scalar_types": {
+                    v["name"]: v["type"] for v in report["locals"] if v["name"] == "start"
+                },
+                "module_verified": report["module_verified"],
+                "temporary_build_removed": report["temporary_build_removed"],
+            },
+            sort_keys=True,
+        )
+    )

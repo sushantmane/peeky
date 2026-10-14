@@ -193,7 +193,7 @@ jobs:
       - name: Qualify raw Rust debugging (no worker support claimed)
         run: |
           started=$SECONDS
-          pytest tests/rust --durations=10
+          pytest tests/rust --durations=10 -rP
           echo "Rust engineering gate: $((SECONDS - started)) seconds" >> "$GITHUB_STEP_SUMMARY"
 
   wheel:
