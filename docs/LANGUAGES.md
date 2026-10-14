@@ -2,7 +2,7 @@
 
 Python, Java, C, C++, and Rust are the minimum product scope. The existing Python release is the foundation/alpha; it does not complete the multi-language MVP. Ship each language incrementally and report support honestly.
 
-Current evidence: Python has runtime experiments and candidate verification. Java has fresh compilation, generated source maps, guarded HTTP runtime operations and real failure-cleanup tests; Java also has a deterministic full investigation loop, fresh candidate compilation and independent verification. Separate-host path binding and a live-model Java evaluation remain open. C has an experimental LLDB worker and a deterministic full investigation loop with fresh candidate builds, frozen headers and independent executable checks. C++ and Rust remain unimplemented.
+Current evidence: Python has runtime experiments and candidate verification. Java has fresh compilation, generated source maps, guarded HTTP runtime operations and real failure-cleanup tests; Java also has a deterministic full investigation loop, fresh candidate compilation and independent verification. Separate-host path binding and a live-model Java evaluation remain open. C has an experimental LLDB worker and a deterministic full investigation loop with fresh candidate builds, frozen headers and independent executable checks. C++ adds explicit C++17 builds, bounded class/reference/array expansion and deterministic candidate repair. Rust remains unimplemented.
 
 ## Priority and rationale
 

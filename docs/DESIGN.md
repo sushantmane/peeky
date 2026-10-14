@@ -1,6 +1,6 @@
 # Peeky design — Python alpha and five-language direction
 
-Status: implemented Python, Java and C investigation loops and explicit limitations. Product MVP requires Python, Java, C, C++, and Rust; see LANGUAGES.md for the implementation order and remaining language and remote acceptance work. This document specifies the intended MVP contract; the roadmap distinguishes delivered foundations from remaining acceptance work.
+Status: implemented Python, Java, C and C++ investigation loops and explicit limitations. Product MVP requires Python, Java, C, C++, and Rust; see LANGUAGES.md for the implementation order and remaining language and remote acceptance work. This document specifies the intended MVP contract; the roadmap distinguishes delivered foundations from remaining acceptance work.
 
 ## Problem and outcome
 
@@ -75,6 +75,7 @@ Requests are JSON objects with `Authorization: Bearer <token>`. The worker binds
 | launch | worker-relative program, breakpoint list | session ID, source hash, capabilities, verified locations |
 | wait | session ID, bounded timeout | stopped, terminated, or still running |
 | inspect | session ID, stop ID, optional frame ID | stack and bounded locals |
+| expand | session ID, stop ID, opaque child handle, start/count | bounded read-only children |
 | set_variable | session ID, stop ID, scope reference, name, expression value | before/after |
 | breakpoints | session ID, program, complete replacement breakpoint list | verified locations |
 | continue | session ID, stop ID | running |
@@ -93,7 +94,7 @@ The model receives numbered source, a plain-language issue, baseline execution/c
 
 The controller rejects a finish before runtime intervention. It writes a separate candidate, never silently overwrites the original, and verifies in a fresh process. A failed check returns to the model for another decision. The total number of decisions and per-call/runtime deadlines are bounded. Transport failures are fatal to the active session. Model failures produce a failed report, not a fabricated diagnosis.
 
-This vocabulary is intentionally small. Repeated observation, stepping, selected object expansion, condition/logpoint UI, attach, and multiple hypotheses are later additions with their own contract tests.
+This vocabulary is intentionally small. The worker also supports bounded read-only object expansion; the current model decision vocabulary does not yet select expansion actions. Stepping, condition/logpoint UI, attach, and multiple hypotheses remain later additions with their own contract tests.
 
 ## Verification and evidence
 
@@ -119,7 +120,7 @@ Each roadmap slice includes a runnable example and tests. Required CI is determi
 
 ## Language expansion
 
-Java and C runtime debugging and fresh candidate verification are connected to the worker/controller. The native adapter still needs separate C++ and Rust qualification. See LANGUAGES.md for full per-language acceptance criteria.
+Java and C runtime debugging and fresh candidate verification are connected to the worker/controller. C++ adds qualified class/reference/array inspection and candidate verification; Rust qualification remains outstanding. See LANGUAGES.md for full per-language acceptance criteria.
 
 Launch/scope configuration lives behind trusted startup adapter objects. HTTP clients cannot provide adapter commands. JavaTarget prepares fresh copied inputs, compiles debug classes and generates source mappings directly from class metadata. JavaSession checks build, bundle and mapping identities before guarded operations, validates selected stopped frames and cleans its workspace after debugger teardown. The worker retains session/stop ownership and exposes eventual breakpoint verification events. Java and C candidate acceptance use the shared CompiledVerification lifecycle, with thin language wrappers, fresh prepared builds and the unchanged trusted checker. See JAVA_WORKER.md for restrictions and trusted-development provenance limits.
 
@@ -130,3 +131,9 @@ Launch/scope configuration lives behind trusted startup adapter objects. HTTP cl
 - What needs to remain inside customer infrastructure before remote production use?
 - Which regression corpus provides evidence beyond synthetic examples?
 - Is latency improved more by batching observations or by keeping one model session?
+
+## Bounded child inspection
+
+Inspection returns opaque child handles in variablesReference, distinct from writable scope references. Expansion revalidates the stopped frame/source/module and resolves a unique scope and exact name/type ancestry afresh. Reinspection, mutation attempts, stop transitions, continuation and close revoke child handles. Expansion revokes earlier writable scope handles because resolving children can change backend scope context; inspect again before mutation.
+
+Pages contain at most 64 values, with depth at most four and a 512-node budget per inspection including initial locals. Individual collections beyond 512 entries are rejected; backend paging cannot silently bypass these limits. Values and identity strings are bounded. Child handles never authorize mutation. These reads do not invoke arbitrary evaluate commands, but trusted debugger formatting may have runtime side effects. General C++ project/formatter support is not implied by the qualified fixture.
