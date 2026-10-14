@@ -11,3 +11,7 @@ The manifest validator accepts only one explicit binary and one immutable integr
 Run the optional probe using absolute real versioned cargo/rustc executables and explicit LLDB, dwarfdump and linker paths through PEEKY_RUST_* environment variables, then `pytest tests/rust`. The script accepts the same paths as named arguments. CI resolves tools using `rustup which --toolchain 1.96.0` and tests with LLVM18. The existing Python/Java/C/C++ lanes remain independent. No model calls run in required CI.
 
 Next: implement the reviewed Rust runtime and compiled-test verification boundary in RUST_PLAN.md, including metadata/provenance failure tests and exact artifact test execution. The intentionally failing pagination Cargo test is an input for that future verification stage; it is not executed or claimed passing by this probe.
+
+## Hosted gate result, 2026-10-14
+
+PR #22 merged as4bb493d after all nine lanes passed (run38556716292, source770c60a). Linux Rust1.96.0/LLVM18 raw probe passed in2.03 seconds (pytest2.19s), full Rust job41s; longest job72s. Actual line dump4,808,912 bytes, all reported DWARF4, declared source present, start displayed as int; loaded-module validation and build cleanup passed. Production line parsing remains limited to2MiB and cannot yet accept this dump. Choose a separately reviewed bounded declared-source extraction or explicit Rust-specific parser budget before adding RustTarget; do not silently change the C/C++ default. Raw Option semantic/depth gaps remain as documented.

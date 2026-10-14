@@ -20,13 +20,13 @@ An hourly thread heartbeat (`continue-peeky-mvp`) checks for available usage and
 
 ## Active slice
 
-Branch: `feat/rust-conformance`, PR #22. Based on merged C++ PR #21 (`8890113`). Rust first engineering gate implemented; production Rust worker/repair remains unimplemented. Inspect PR checks/head and pending review edits before resuming.
+Branch: `feat/rust-worker`, based on merged PR #22 (`4bb493d`). Rust engineering gate delivered; production Rust worker/repair remains unimplemented. Inspect Git/open PRs before resuming.
 
 - Cargo preflight accepts only explicit dependency-free edition2021 binary/test, disables scripts/autodiscovery, freezes manifest/lock/test roles, rejects ancestor config/workspaces.45 tests (10 independent review) pass; full unit suite289 passed4.62s. This preflight is not a sandbox or full preparation implementation.
 - Dependency-free Rust/Cargo1.96 fixture and bounded rawDAP probe pass locally with AppleLLVM21 (final UUID fix0.89s). Real source breakpoint, struct/fieldlessenum/SomeNone raw shapes, exact scalar intervention/output, module/symbol identity, source/tool hashes and cleanup checked. Explicit binary/dSYM UUID equality added after final review.
 - macOS must use Cargo packed symbols and corresponding hashed deps binary; splitoff removed application object symbols. Source i32 is displayed as int. Raw Option contains inactive variants and its payload exceeds the current worker's depth4 contract; meaningful worker Option inspection still requires separately reviewed normalization/formatters. No RustTarget, HTTP Rust worker, Cargo test execution or source-repair verification is claimed.
-- Nine parallel lanes configured, including pinned Rust1.96/LLVM18 engineering gate. Hosted qualification and durations pending. Final review recorded in reviews/RUST_FOUNDATION_REVIEW.md; RUST_GATE.md documents scope.
-- Next: finish PR22 checks/merge, then production RustTarget, bounded declared-source symbol mapping and active Option inspection, exact compiled-test execution plus independent checker, lifecycle and failure regressions. Read RUST_PLAN.md. Broader lifecycle/corpus acceptance, separate-host SSH and evidence correlation remain unfinished; CUDA is design-only.
+- All nine hosted lanes passed on head770c60a (run38556716292): Rust41s, C40s, C++31s, Java72s longest, Python16/18s, unit19s, quality10s, wheel23s. Linux rawprobe2.03s (pytest2.19s) records4,808,912 bytes DWARF4 and start typeint, moduleverified and buildremoved. Production parser remains2MiB; larger16MiB engineeringcapture is explicit and separately bounded. Final review recorded in reviews/RUST_FOUNDATION_REVIEW.md; RUST_GATE.md documents scope.
+- Next: production RustTarget, bounded declared-source symbol mapping and active Option inspection, exact compiled-test execution plus independent checker, lifecycle and failure regressions. Read RUST_PLAN.md. Broader lifecycle/corpus acceptance, separate-host SSH and evidence correlation remain unfinished; CUDA is design-only.
 
 ## Next slices
 

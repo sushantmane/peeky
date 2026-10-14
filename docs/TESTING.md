@@ -80,3 +80,7 @@ PR #20, run 38542794719: all seven independent hosted jobs passed. C LLVM 18 con
 ## C++ investigation slice (2026-10-14)
 
 PR #21, run38549552255: all eight independent jobs passed. C++ LLVM18 took37s, C50s, Java70s (critical lane), quality12s, unit21s, Python21/20s, wheel21s. Job execution excludes queue time. Source head18e00a5 merged as8890113.
+
+## Rust engineering gate (2026-10-14)
+
+PR #22, run38556716292, final source770c60a: nine independent checks passed. Rust41s, C40s, C++31s, Java72s, Python16/18s, unit19s, quality10s, wheel23s. Job durations exclude queue time. Rust rawprobe2.03s, not an HTTP worker or repair benchmark. Initial Linux symbol capture failed with the2MiB ceiling; engineering capture explicitly permits16MiB and measured4,808,912 bytes. Five regressions keep production parsing capped at2MiB.
