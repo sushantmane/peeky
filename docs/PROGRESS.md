@@ -20,15 +20,15 @@ An hourly thread heartbeat (`continue-peeky-mvp`) checks for available usage and
 
 ## Active slice
 
-Branch: `feat/cpp-conformance`, based on merged PR #20 (`07d1835`). C++ implementation complete locally; awaiting final checks, hosted LLVM18 qualification and merge. Inspect Git/open PRs before resuming.
+Branch: `feat/rust-conformance`, based on merged PR #21 (`8890113`). C++ slice delivered; Rust implementation not started. Read docs/RUST_PLAN.md and inspect Git/open PRs before resuming.
 
 - PR #20 delivered C repair: seven hosted jobs passed, C50 seconds, longest68 seconds (run38542794719). One separate live Codex trial failed on its first decision; no live-model repair success claimed.
 - C++ uses explicit cpp language, fixed C++17/clang++ settings and shared verified native build/candidate lifecycle. Five real Apple LLVM21 tests pass (12.49s): class/reference/array observation, full CLI repair with compile-failure and overfit retries, intervention evidence gate and distinct-root source/header mismatch rejection.
 - Bounded read-only expansion now uses opaque child handles, fresh frame/scope/name/type resolution, depth4, pages64, collections512 and512 total observed nodes per inspection. Expansion revokes mutable root handles; reinspect before mutation. Mutation/inspection/stop/continue/close revoke children. No aggregate/pointer writes or model expansion action added.
 - Independent adversarial reviews fixed mutable-scope aliasing after expansion and preserved Java variable metadata. Review: reviews/CPP_REVIEW.md;34 independent expansion regressions pass.
 - Initial full local run:287 passed,13 Java failures due to the runner PATH choosing a different java executable than the existing bundle manifest. All25 Java tests then passed in17.54s using the bundle-matching /usr/bin/java; no identity checks were weakened. Python integration separately6 passed2.10s. Ruff and diff checks pass.
-- Eight independent hosted lanes are configured, adding C++ LLVM18 with a four-minute timeout. Hosted durations still pending.
-- Next: merge after all eight lanes pass, then Rust with Cargo/formatter qualification. Broader lifecycle/corpus acceptance, separate-host SSH and bounded code/log/metric correlation remain unfinished. Python/C++/CUDA inference support remains design-only in MIXED_RUNTIME.md.
+- All eight hosted lanes passed on head18e00a5 (run38549552255): C++37s, C50s, Java70s (longest), unit21s, Python21/20s, quality12s, wheel21s. Final local unit suite244 passed4.41s.
+- Next: Rust with Cargo/formatter qualification; reviewed plan in RUST_PLAN.md. Broader lifecycle/corpus acceptance, separate-host SSH and bounded code/log/metric correlation remain unfinished. Python/C++/CUDA inference support remains design-only in MIXED_RUNTIME.md.
 
 ## Next slices
 
@@ -40,3 +40,5 @@ Branch: `feat/cpp-conformance`, based on merged PR #20 (`07d1835`). C++ implemen
 Read AGENTS.md, DESIGN.md, LANGUAGES.md, and ROADMAP.md for acceptance criteria. Runtime intervention is evidence only; never claim a fix without fresh verification and matching source/build identity. Preserve a checkpoint when usage runs low; report shipped work and actual limitations.
 
 Mixed-runtime inference engines (Python/C++/CUDA) are now an explicit design direction in MIXED_RUNTIME.md, not shipped support. Preserve backend session ownership, correlated evidence and clock domains; qualify extension-module coexistence and GPU hardware separately after host-language foundations.
+
+C++ microbaseline:10 local Apple LLVM21 samples, inspect median62.63ms/p9574.91ms, class expansion123.11/124.07ms. Full inspect+class+two array expansion sequence437.95/450.80ms. HTTP/DAP/provenance included; build/model excluded. See PERFORMANCE.md and performance/cpp-2026-10-14.json. These are measurements, not SLOs.

@@ -76,3 +76,7 @@ The attempt to require all five checks on `main` returned GitHub HTTP 403: priva
 ## C investigation slice (2026-10-14)
 
 PR #20, run 38542794719: all seven independent hosted jobs passed. C LLVM 18 conformance took 50 seconds; the longest job was Java at 68 seconds. Quality 10 seconds, unit 21 seconds, Python integrations 20/19 seconds, wheel smoke 19 seconds. These are job execution durations, excluding queue time. The final source head was 4cca330; merged as 07d1835.
+
+## C++ investigation slice (2026-10-14)
+
+PR #21, run38549552255: all eight independent jobs passed. C++ LLVM18 took37s, C50s, Java70s (critical lane), quality12s, unit21s, Python21/20s, wheel21s. Job execution excludes queue time. Source head18e00a5 merged as8890113.
