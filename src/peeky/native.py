@@ -1,4 +1,4 @@
-"""Fixed C/LLDB targets with fresh builds and bounded native symbol evidence.
+"""Fixed C and C++/LLDB targets with fresh builds and bounded native symbol evidence.
 
 Supported formats are single-architecture Mach-O (UUID) and ELF64 little-endian
 (GNU build ID). File/module identity is trusted-code integrity, not protection
@@ -31,6 +31,7 @@ from peeky.build import (
 
 MAX_METADATA = 2 * 1024 * 1024
 FLAGS = ("-std=c11", "-g", "-gdwarf-4", "-O0", "-fno-omit-frame-pointer")
+CPP_FLAGS = ("-std=c++17", *FLAGS[1:])
 
 
 def _tool(name):
@@ -256,14 +257,19 @@ def _elf_frame_matches(binary, module, frame):
 class NativeTarget:
     sources: tuple[str, ...]
     headers: tuple[str, ...] = ()
-    compiler: str = "clang"
+    compiler: str | None = None
     adapter: str = "lldb-dap"
     dwarfdump: str = "llvm-dwarfdump"
     dsymutil: str | None = None
     sysroot: str | None = None
     arguments: tuple[str, ...] = ()
+    language: str = "c"
 
     def __post_init__(self):
+        if self.language not in ("c", "cpp"):
+            raise ValueError("Native language must be c or cpp")
+        if self.compiler is None:
+            object.__setattr__(self, "compiler", "clang++" if self.language == "cpp" else "clang")
         if (
             not isinstance(self.sources, tuple)
             or not self.sources
@@ -271,9 +277,9 @@ class NativeTarget:
         ):
             raise ValueError("Native inputs must be immutable source/header tuples")
         for name in self.sources:
-            _path_name(name, ".c")
+            _path_name(name, (".cpp", ".cc", ".cxx") if self.language == "cpp" else ".c")
         for name in self.headers:
-            _path_name(name, ".h")
+            _path_name(name, (".h", ".hpp", ".hh", ".hxx") if self.language == "cpp" else ".h")
         if (
             not isinstance(self.arguments, tuple)
             or len(self.arguments) > 100
@@ -283,6 +289,10 @@ class NativeTarget:
             )
         ):
             raise ValueError("Invalid native application arguments")
+
+    @property
+    def compiler_options(self):
+        return CPP_FLAGS if self.language == "cpp" else FLAGS
 
     @property
     def verification_inputs(self):
@@ -295,11 +305,11 @@ class NativeTarget:
     @property
     def target_identity(self):
         return {
-            "language": "c",
+            "language": self.language,
             "sources": sorted(self.sources),
             "headers": sorted(self.headers),
             "arguments": list(self.arguments),
-            "compiler_options": list(FLAGS),
+            "compiler_options": list(self.compiler_options),
         }
 
     def validate_breakpoints(self, points):
@@ -311,11 +321,15 @@ class NativeTarget:
         root = Path(root).resolve(strict=True)
         relative = Path(program).resolve(strict=True).relative_to(root).as_posix()
         if relative not in self.sources:
-            raise ValueError("Program is not a declared C source")
+            raise ValueError(f"Program is not a declared {self.language} source")
         if edit is not None and edit.path not in self.sources:
-            raise ValueError("Native candidate edits require a declared C source")
+            raise ValueError(
+                "Native candidate edits require a declared C source"
+                if self.language == "c"
+                else "Native candidate edits require a declared C++ source"
+            )
         compiler, adapter, dwarfdump = map(_tool, (self.compiler, self.adapter, self.dwarfdump))
-        flags = list(FLAGS)
+        flags = list(self.compiler_options)
         if self.sysroot is not None:
             sdk = Path(self.sysroot).resolve(strict=True)
             if not sdk.is_dir():
@@ -352,7 +366,7 @@ class NativeTarget:
         try:
             prepared = prepare(
                 BuildRecipe(
-                    "c",
+                    self.language,
                     self.sources + self.headers,
                     tuple(commands),
                     tuple(artifacts),

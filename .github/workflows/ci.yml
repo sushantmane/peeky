@@ -125,6 +125,39 @@ jobs:
           pytest tests/native --durations=10
           echo "Native conformance: $((SECONDS - started)) seconds" >> "$GITHUB_STEP_SUMMARY"
 
+  native-cpp:
+    name: C++ LLVM 18 conformance
+    runs-on: ubuntu-24.04
+    timeout-minutes: 4
+    env:
+      PEEKY_NATIVE_CXX: /usr/bin/clang++-18
+      PEEKY_NATIVE_DAP: /usr/bin/lldb-dap-18
+      PEEKY_NATIVE_DWARFDUMP: /usr/bin/llvm-dwarfdump-18
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            pyproject.toml
+            requirements-dev.txt
+      - name: Acquire LLVM 18 from signed Ubuntu repositories
+        run: |
+          started=$SECONDS
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends clang-18 lldb-18 llvm-18
+          dpkg-query -W clang-18 lldb-18 llvm-18
+          echo "Native toolchain acquisition: $((SECONDS - started)) seconds" >> "$GITHUB_STEP_SUMMARY"
+          test -x "$PEEKY_NATIVE_DAP"
+          /usr/bin/lldb-18 --version
+      - run: python -m pip install -e '.[dev]'
+      - name: Exercise real C++ debugging and agent verification
+        run: |
+          started=$SECONDS
+          pytest tests/cpp --durations=10
+          echo "Native conformance: $((SECONDS - started)) seconds" >> "$GITHUB_STEP_SUMMARY"
+
   wheel:
     name: wheel smoke
     runs-on: ubuntu-latest

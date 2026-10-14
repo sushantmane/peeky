@@ -284,3 +284,77 @@ def test_native_prepare_rejects_header_edits_before_running_tools(tmp_path, monk
         NativeTarget(sources=("main.c",), headers=("config.h",)).prepare(
             source, tmp_path, edit=SourceEdit("config.h", "3", "4")
         )
+
+
+@pytest.mark.parametrize("suffix", [".cpp", ".cc", ".cxx"])
+def test_cpp_target_has_explicit_language_and_fixed_driver_flags(suffix):
+    target = NativeTarget(sources=("main" + suffix,), headers=("types.hpp",), language="cpp")
+    assert target.compiler == "clang++"
+    assert target.compiler_options == (
+        "-std=c++17",
+        "-g",
+        "-gdwarf-4",
+        "-O0",
+        "-fno-omit-frame-pointer",
+    )
+    assert target.target_identity["language"] == "cpp"
+    assert target.verification_inputs == ("main" + suffix, "types.hpp")
+    assert target.verification_sources == ("main" + suffix,)
+    assert NativeTarget(sources=("main.c",)).compiler == "clang"
+
+
+@pytest.mark.parametrize(
+    "language,source",
+    [
+        ("rust", "main.c"),
+        ("C++", "main.cpp"),
+        (None, "main.c"),
+        ("cpp", "main.c"),
+        ("cpp", "-main.cpp"),
+        ("cpp", "@main.cpp"),
+    ],
+)
+def test_native_language_selection_is_explicit_and_validated(language, source):
+    with pytest.raises(ValueError):
+        NativeTarget(sources=(source,), language=language)
+
+
+def test_cpp_build_recipe_uses_selected_compiler_for_compile_and_link(tmp_path, monkeypatch):
+    source = tmp_path / "main.cpp"
+    source.write_text("int main() { return 0; }\n")
+    (tmp_path / "types.hpp").write_text("#pragma once\n")
+    monkeypatch.setattr("peeky.native.sys.platform", "linux")
+    monkeypatch.setattr("peeky.native._tool", lambda tool: tool)
+
+    class Captured(Exception):
+        pass
+
+    def capture(recipe, root, **kwargs):
+        assert recipe.language == "cpp"
+        assert recipe.inputs == ("main.cpp", "types.hpp")
+        assert all(command.argv[0] == "/trusted/clang++-18" for command in recipe.build_commands)
+        assert "-std=c++17" in recipe.build_commands[0].argv
+        assert "-std=c11" not in recipe.build_commands[0].argv
+        assert recipe.build_commands[1].argv[-2:] == ("-o", "program")
+        raise Captured
+
+    monkeypatch.setattr("peeky.native.prepare", capture)
+    target = NativeTarget(
+        sources=("main.cpp",),
+        headers=("types.hpp",),
+        language="cpp",
+        compiler="/trusted/clang++-18",
+    )
+    with pytest.raises(Captured):
+        target.prepare(source, tmp_path)
+
+
+@pytest.mark.parametrize("language,suffix", [("c", ".c"), ("cpp", ".cpp")])
+def test_native_verification_keeps_explicit_target_language(tmp_path, language, suffix):
+    from peeky.native_verification import NativeVerification
+
+    name = "main" + suffix
+    (tmp_path / name).write_text("int main(void) { return 0; }\n")
+    target = NativeTarget(sources=(name,), language=language)
+    verification = NativeVerification(target, tmp_path)
+    assert verification.language == language

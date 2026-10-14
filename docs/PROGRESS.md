@@ -20,15 +20,15 @@ An hourly thread heartbeat (`continue-peeky-mvp`) checks for available usage and
 
 ## Active slice
 
-Branch: `feat/cpp-conformance`, based on merged PR #20 (`07d1835`). C source-repair is delivered. All seven hosted lanes passed: C 50 seconds, longest lane Java 68 seconds (run 38542794719). C++ implementation has not started.
+Branch: `feat/cpp-conformance`, based on merged PR #20 (`07d1835`). C++ implementation complete locally; awaiting final checks, hosted LLVM18 qualification and merge. Inspect Git/open PRs before resuming.
 
-- Shared CompiledVerification preserves Java behavior and adds NativeVerification with frozen sources/headers, fresh candidate builds, unchanged trusted checkers, and artifact/descriptor integrity gates. Only genuine compile/link diagnostics are retryable; symbol/provenance failures remain fatal.
-- C pagination runs the actual CLI/HTTP controller across distinct local source roots. Deterministic decisions exercise observation, runtime intervention, compiler failure, overfit rejection and general repair; verification covers 12 valid and 10 invalid argument cases. Eight real-runtime tampering cases reject acceptance. Distinct roots do not establish separate-host support.
-- Independent adversarial review: reviews/NATIVE_AGENT_REVIEW.md. A compiler-failure source-drift gap was fixed and independently reviewed; four subprocess regressions cover changed/deleted original/staged inputs.
-- Full local suite: 249 passed in 57.40 seconds. Final bounded argument-parser adjustment: all 10 C agent tests passed in 14.10 seconds. Ruff check and format check passed.
-- One bounded live Codex C evaluation failed at its first decision; no live-model repair success is claimed. Its private diagnostic files remain ignored under work/live-c-*. Deterministic tests establish controller behavior separately.
-- Next: implement C++ qualification using the reviewed plan in docs/CPP_PLAN.md. C++/Rust, broader lifecycle/corpus acceptance, separate-host SSH and bounded evidence correlation remain unfinished.
-- Python/C++/CUDA inference debugging remains a design direction in MIXED_RUNTIME.md; no GPU support is claimed. A full Rust rewrite remains deferred pending measured evidence.
+- PR #20 delivered C repair: seven hosted jobs passed, C50 seconds, longest68 seconds (run38542794719). One separate live Codex trial failed on its first decision; no live-model repair success claimed.
+- C++ uses explicit cpp language, fixed C++17/clang++ settings and shared verified native build/candidate lifecycle. Five real Apple LLVM21 tests pass (12.49s): class/reference/array observation, full CLI repair with compile-failure and overfit retries, intervention evidence gate and distinct-root source/header mismatch rejection.
+- Bounded read-only expansion now uses opaque child handles, fresh frame/scope/name/type resolution, depth4, pages64, collections512 and512 total observed nodes per inspection. Expansion revokes mutable root handles; reinspect before mutation. Mutation/inspection/stop/continue/close revoke children. No aggregate/pointer writes or model expansion action added.
+- Independent adversarial reviews fixed mutable-scope aliasing after expansion and preserved Java variable metadata. Review: reviews/CPP_REVIEW.md;34 independent expansion regressions pass.
+- Initial full local run:287 passed,13 Java failures due to the runner PATH choosing a different java executable than the existing bundle manifest. All25 Java tests then passed in17.54s using the bundle-matching /usr/bin/java; no identity checks were weakened. Python integration separately6 passed2.10s. Ruff and diff checks pass.
+- Eight independent hosted lanes are configured, adding C++ LLVM18 with a four-minute timeout. Hosted durations still pending.
+- Next: merge after all eight lanes pass, then Rust with Cargo/formatter qualification. Broader lifecycle/corpus acceptance, separate-host SSH and bounded code/log/metric correlation remain unfinished. Python/C++/CUDA inference support remains design-only in MIXED_RUNTIME.md.
 
 ## Next slices
 

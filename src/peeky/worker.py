@@ -33,6 +33,8 @@ class DebugWorker:
         self.reference_frames = {}
         self.reference_adapter = {}
         self.reference_counter = 0
+        self.children = {}
+        self.inspection_nodes = 0
         self.audit = []
         self.breakpoint_events = []
         self.lock = threading.Lock()
@@ -80,6 +82,7 @@ class DebugWorker:
             "launch",
             "wait",
             "inspect",
+            "expand",
             "set_variable",
             "breakpoints",
             "continue",
@@ -110,6 +113,15 @@ class DebugWorker:
                 raise ValueError("timeout must be a positive finite number")
         if operation == "inspect" and "frame_id" in args and type(args["frame_id"]) is not int:
             raise ValueError("frame_id must be an integer")
+        if operation == "expand":
+            for key, default, low, high in (
+                ("handle", None, 1, None),
+                ("start", 0, 0, 511),
+                ("count", 64, 1, 64),
+            ):
+                value = args.get(key, default)
+                if type(value) is not int or value < low or (high is not None and value > high):
+                    raise ValueError(f"Invalid expansion {key}")
         if operation == "set_variable":
             if type(args.get("reference")) is not int:
                 raise ValueError("reference must be an integer")
@@ -118,7 +130,7 @@ class DebugWorker:
 
     def _dispatch(self, operation, args):
         runtime = self.runtime or self.adapter
-        if operation in {"inspect", "set_variable", "breakpoints", "continue"}:
+        if operation in {"inspect", "expand", "set_variable", "breakpoints", "continue"}:
             runtime.assert_current()
         if operation == "launch":
             if self.dap:
@@ -160,6 +172,7 @@ class DebugWorker:
                     "breakpoints": points.get("breakpoints", []),
                     "source_sha256": hashlib.sha256(program.read_bytes()).hexdigest(),
                     "supports_set_variable": self.capabilities.get("supports_set_variable", False),
+                    "supports_expand": True,
                     "artifact_manifest_id": runtime.manifest_id,
                     "source_manifest": getattr(runtime, "source_manifest", None),
                     "target_identity": getattr(runtime, "target_identity", None),
@@ -197,13 +210,16 @@ class DebugWorker:
             self.references.clear()
             self.reference_frames.clear()
             self.reference_adapter.clear()
+            self.children.clear()
             self.stop_id = uuid.uuid4().hex if self.state == "stopped" else None
             self.thread_id = event.get("body", {}).get("threadId")
             return {"state": self.state, "stop_id": self.stop_id, "event": event, **updates}
         if operation == "inspect":
             self.stopped(args)
+            self.children.clear()
+            self.inspection_nodes = 0
             stack = self.dap.request("stackTrace", {"threadId": self.thread_id, "levels": 10})
-            frames = stack.get("stackFrames", [])
+            frames = stack.get("stackFrames", [])[:10]
             self.frames = {f["id"] for f in frames}
             selected = args.get("frame_id", frames[0]["id"] if frames else None)
             if selected not in self.frames:
@@ -219,7 +235,7 @@ class DebugWorker:
             self.reference_adapter.clear()
             scopes = self.dap.request("scopes", {"frameId": selected}).get("scopes", [])
             result = []
-            for scope in runtime.local_scopes(scopes):
+            for scope in runtime.local_scopes(scopes)[:16]:
                 ref = scope["variablesReference"]
                 self.reference_counter += 1
                 handle = self.reference_counter
@@ -233,14 +249,20 @@ class DebugWorker:
                     {
                         "name": scope["name"],
                         "reference": handle,
-                        "variables": [
-                            dict(v, value=v.get("value", "")[:2000]) for v in variables[:50]
-                        ],
+                        "variables": self.expose_variables(
+                            variables[: min(50, 512 - self.inspection_nodes)],
+                            selected_frame,
+                            self.scope_identity(scope),
+                            (),
+                        ),
                     }
                 )
             return {"stop_id": self.stop_id, "frames": frames, "scopes": result}
+        if operation == "expand":
+            return self.expand(args, runtime)
         if operation == "set_variable":
             self.stopped(args)
+            self.children.clear()
             if not self.capabilities.get("supports_set_variable", False):
                 raise ValueError("Adapter does not support variable mutation")
             ref = args["reference"]
@@ -289,6 +311,7 @@ class DebugWorker:
             self.stopped(args)
             self.dap.request("continue", {"threadId": self.thread_id})
             self.state = "running"
+            self.children.clear()
             self.stop_id = None
             self.frames.clear()
             self.references.clear()
@@ -311,6 +334,128 @@ class DebugWorker:
             return {"state": self.state}
         raise ValueError("Unknown operation")
 
+    @staticmethod
+    def scope_identity(scope):
+        return (scope.get("name"), scope.get("presentationHint"))
+
+    @staticmethod
+    def frame_identity(frame):
+        return (
+            frame.get("id"),
+            frame.get("name"),
+            frame.get("source", {}).get("path"),
+            frame.get("line"),
+            frame.get("moduleId"),
+            frame.get("instructionPointerReference"),
+        )
+
+    def expose_variables(self, variables, frame, scope, ancestry):
+        """Only worker-issued handles leave the process; child handles never permit writes."""
+        result = []
+        for variable in variables:
+            name, kind = variable.get("name"), variable.get("type")
+            if not isinstance(name, str) or (kind is not None and not isinstance(kind, str)):
+                raise RuntimeError("Malformed debugger variable identity")
+            if len(name) > 2000 or (kind is not None and len(kind) > 2000):
+                raise RuntimeError("Debugger variable identity exceeds limit")
+            path = (*ancestry, (name, kind))
+            handle = 0
+            raw = variable.get("variablesReference", 0)
+            if type(raw) is int and raw > 0 and len(path) < 4:
+                self.reference_counter += 1
+                handle = self.reference_counter
+                self.children[handle] = (dict(frame), scope, path)
+            output = {
+                "name": name,
+                "value": str(variable.get("value", ""))[:2000],
+                "variablesReference": handle,
+            }
+            if kind is not None:
+                output["type"] = kind
+            for key in ("indexedVariables", "namedVariables"):
+                value = variable.get(key)
+                if type(value) is int and 0 <= value <= 2**31 - 1:
+                    output[key] = value
+            hint = variable.get("presentationHint")
+            if isinstance(hint, dict):
+                safe_hint = {}
+                for key in ("kind", "visibility"):
+                    if isinstance(hint.get(key), str):
+                        safe_hint[key] = hint[key][:100]
+                attributes = hint.get("attributes")
+                if isinstance(attributes, list):
+                    safe_hint["attributes"] = [
+                        v[:100] for v in attributes[:16] if isinstance(v, str)
+                    ]
+                output["presentationHint"] = safe_hint
+            if type(raw) is int and raw > 0 and len(path) >= 4:
+                output["depth_limited"] = True
+            result.append(output)
+            self.inspection_nodes += 1
+        return result
+
+    def bounded_variables(self, reference):
+        if type(reference) is not int or reference <= 0:
+            raise ValueError("Variable is not expandable")
+        values = self.dap.request(
+            "variables", {"variablesReference": reference, "start": 0, "count": 513}
+        ).get("variables", [])
+        if not isinstance(values, list) or len(values) > 512:
+            raise ValueError("Variable collection exceeds bounded expansion limit")
+        return values
+
+    def expand(self, args, runtime):
+        self.stopped(args)
+        # Resolving an expansion can change an adapter's implicit scope context.
+        # Require fresh inspection before authorizing another mutation.
+        self.references.clear()
+        self.reference_frames.clear()
+        self.reference_adapter.clear()
+        record = self.children.get(args["handle"])
+        if record is None:
+            raise ValueError("Unknown or stale expansion handle; inspect again")
+        if self.inspection_nodes >= 512:
+            raise ValueError("Inspection node budget exhausted; inspect again")
+        original_frame, scope_identity, ancestry = record
+        frames = self.dap.request("stackTrace", {"threadId": self.thread_id, "levels": 10}).get(
+            "stackFrames", []
+        )[:10]
+        matches = [f for f in frames if f.get("id") == original_frame.get("id")]
+        if len(matches) != 1 or self.frame_identity(matches[0]) != self.frame_identity(
+            original_frame
+        ):
+            raise ValueError("Expansion frame identity changed; inspect again")
+        frame = matches[0]
+        runtime.validate_stop(frame)
+        if validate_debugger := getattr(runtime, "validate_debugger", None):
+            validate_debugger(self.dap, frame)
+        scopes = runtime.local_scopes(
+            self.dap.request("scopes", {"frameId": frame["id"]}).get("scopes", [])
+        )
+        matches = [scope for scope in scopes if self.scope_identity(scope) == scope_identity]
+        if len(matches) != 1:
+            raise ValueError("Expansion scope is missing or ambiguous")
+        reference = matches[0].get("variablesReference")
+        for name, kind in ancestry:
+            variables = self.bounded_variables(reference)
+            matches = [v for v in variables if v.get("name") == name]
+            if len(matches) != 1 or matches[0].get("type") != kind:
+                raise ValueError("Expansion ancestry changed or is ambiguous")
+            reference = matches[0].get("variablesReference")
+        variables = self.bounded_variables(reference)
+        start = args.get("start", 0)
+        count = min(args.get("count", 64), 512 - self.inspection_nodes)
+        result = self.expose_variables(
+            variables[start : start + count], frame, scope_identity, ancestry
+        )
+        runtime.assert_current()
+        return {
+            "variables": result,
+            "start": start,
+            "truncated": start + len(result) < len(variables),
+            "remaining_nodes": 512 - self.inspection_nodes,
+        }
+
     def close(self):
         adapter, self.dap = self.dap, None
         runtime, self.runtime = self.runtime, None
@@ -323,6 +468,7 @@ class DebugWorker:
         self.references.clear()
         self.reference_frames.clear()
         self.reference_adapter.clear()
+        self.children.clear()
         try:
             if adapter:
                 adapter.close()
@@ -395,7 +541,7 @@ def load_java_target(path):
 
 
 def load_native_target(path):
-    """Load trusted C tools and inputs; HTTP clients cannot choose executables."""
+    """Load trusted native tools and inputs; HTTP clients cannot choose executables."""
     from peeky.native import NativeTarget
 
     config = json.loads(Path(path).read_text())
@@ -403,6 +549,7 @@ def load_native_target(path):
         raise ValueError("Native configuration must be an object")
     if set(config) - {
         "sources",
+        "language",
         "headers",
         "compiler",
         "adapter",
@@ -431,7 +578,7 @@ def main():
         "--java-config", type=Path, help="Trusted fixed Java target JSON configuration"
     )
     targets.add_argument(
-        "--native-config", type=Path, help="Trusted fixed C target JSON configuration"
+        "--native-config", type=Path, help="Trusted fixed C/C++ target JSON configuration"
     )
     args = parser.parse_args()
     token = os.environ.get("DEBUG_TOKEN")
