@@ -194,6 +194,57 @@ def elf_build_id(binary):
         return identities.pop()
 
 
+def elf_executable_ranges(binary):
+    """Bound ELF64 load metadata used to bind an LLDB instruction pointer."""
+    limit = 1 << 64
+    with Path(binary).open("rb") as stream:
+        header = stream.read(64)
+        if len(header) != 64 or header[:6] != b"\x7fELF\x02\x01":
+            raise ValueError("Expected ELF64 little-endian load metadata")
+        offset = struct.unpack_from("<Q", header, 32)[0]
+        entry_size, count = struct.unpack_from("<HH", header, 54)
+        size = os.fstat(stream.fileno()).st_size
+        if entry_size != 56 or not 0 < count <= 1024 or offset + count * entry_size > size:
+            raise ValueError("Invalid ELF load header table")
+        headers, ranges = [], []
+        for index in range(count):
+            stream.seek(offset + index * entry_size)
+            kind, flags, start, address, _, files, memory, _ = struct.unpack(
+                "<IIQQQQQQ", stream.read(entry_size)
+            )
+            if kind != 1:
+                continue
+            if files > memory or start + files > size or address + memory >= limit:
+                raise ValueError("Invalid ELF load segment bounds")
+            if start == 0 and files >= 64:
+                headers.append(address)
+            if flags & 1 and files:
+                ranges.append((address, address + files))
+        if len(headers) != 1 or not ranges:
+            raise ValueError("Missing or ambiguous ELF executable load segments")
+        return headers[0], tuple(ranges)
+
+
+def _elf_frame_matches(binary, module, frame):
+    pc_text, base_text = frame.get("instructionPointerReference"), module.get("addressRange")
+    if (
+        not isinstance(pc_text, str)
+        or not re.fullmatch(r"0x[0-9a-fA-F]{1,16}", pc_text)
+        or not isinstance(base_text, str)
+        or not re.fullmatch(r"[0-9]{1,20}", base_text)
+    ):
+        raise ValueError("Missing or invalid native instruction/load address")
+    pc, loaded_header = int(pc_text, 16), int(base_text)
+    header, ranges = elf_executable_ranges(binary)
+    bias = loaded_header - header
+    if bias < 0 or loaded_header >= 1 << 64:
+        raise ValueError("Invalid ELF load bias")
+    relocated = [(start + bias, end + bias) for start, end in ranges]
+    if any(end >= 1 << 64 for _, end in relocated):
+        raise ValueError("Overflowing ELF relocated segment")
+    return any(start <= pc < end for start, end in relocated)
+
+
 @dataclass(frozen=True)
 class NativeTarget:
     sources: tuple[str, ...]
@@ -444,7 +495,19 @@ class NativeSession:
 
     def validate_debugger(self, dap, frame):
         modules = dap.request("modules", {"startModule": 0, "moduleCount": 256}).get("modules", [])
-        matches = [module for module in modules if module.get("id") == frame.get("moduleId")]
+        if "moduleId" in frame:
+            matches = [module for module in modules if module.get("id") == frame["moduleId"]]
+        elif sys.platform == "linux":
+            # LLVM18 omits frame.moduleId. Bind its PC to the hashed executable's
+            # loaded PF_X segments, never infer module identity from source alone.
+            matches = [
+                module
+                for module in modules
+                if isinstance(module.get("id"), str)
+                and module["id"].replace("-", "").upper() == self.module_identity
+            ]
+        else:
+            matches = []
         if len(matches) != 1:
             raise RuntimeError("Native stopped module is absent or ambiguous")
         module = matches[0]
@@ -456,6 +519,8 @@ class NativeSession:
                 and module.get("symbolStatus") == "Symbols loaded."
             )
             valid = valid and Path(module["symbolFilePath"]).resolve(strict=True) == self.symbols
+            if "moduleId" not in frame:
+                valid = valid and _elf_frame_matches(self.binary, module, frame)
         except (OSError, KeyError, TypeError, ValueError) as exc:
             raise RuntimeError("Native module identity is not verified") from exc
         if not valid:

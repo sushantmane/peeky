@@ -166,3 +166,70 @@ def test_line_metadata_returns_defensive_copy():
     runtime._lines_data = '{"main.c": [2]}'
     runtime.lines["main.c"].append(3)
     assert runtime.lines == {"main.c": [2]}
+
+
+def elf_load_fixture(tmp_path, *, address=0x400000, memory=256, files=256):
+    header = bytearray(64)
+    header[:6] = b"\x7fELF\x02\x01"
+    struct.pack_into("<Q", header, 32, 64)
+    struct.pack_into("<HH", header, 54, 56, 2)
+    table = struct.pack("<IIQQQQQQ", 1, 4, 0, address, 0, 256, 256, 4096)
+    table += struct.pack("<IIQQQQQQ", 1, 5, 256, address + 4096, 0, files, memory, 4096)
+    binary = tmp_path / "program"
+    binary.write_bytes((header + table).ljust(512, b"\0"))
+    return binary
+
+
+@pytest.mark.parametrize("address", [0, 0x400000])
+def test_llvm18_frame_pc_binds_to_loaded_executable(tmp_path, monkeypatch, address):
+    monkeypatch.setattr("peeky.native.sys.platform", "linux")
+    runtime = session()
+    runtime.binary = runtime.symbols = elf_load_fixture(tmp_path, address=address)
+    runtime.module_identity = "AABB"
+    module = {
+        "id": "AA-BB",
+        "path": str(runtime.binary),
+        "symbolStatus": "Symbols loaded.",
+        "symbolFilePath": str(runtime.binary),
+        "addressRange": str(0x700000),
+    }
+    adapter = SimpleNamespace(request=lambda *_: {"modules": [module]})
+    frame = {"instructionPointerReference": "0x701010"}
+    runtime.validate_debugger(adapter, frame)
+    for invalid in [
+        {},
+        {"instructionPointerReference": "0x700010"},
+        {"instructionPointerReference": "0x701100"},
+        {"instructionPointerReference": "0x10000000000000000"},
+        {"instructionPointerReference": "-1"},
+        dict(frame, moduleId=None),
+        dict(frame, moduleId="wrong"),
+    ]:
+        with pytest.raises(RuntimeError):
+            runtime.validate_debugger(adapter, invalid)
+    for loaded in [None, "0x700000", "-1", str(1 << 64), str((1 << 64) - 1)]:
+        module["addressRange"] = loaded
+        with pytest.raises(RuntimeError):
+            runtime.validate_debugger(adapter, frame)
+    module["addressRange"] = str(0x700000)
+    adapter.request = lambda *_: {"modules": [module, dict(module)]}
+    with pytest.raises(RuntimeError, match="ambiguous"):
+        runtime.validate_debugger(adapter, frame)
+
+
+@pytest.mark.parametrize("memory,files", [(10, 256), (300, 300), ((1 << 64) - 1, 256)])
+def test_elf_load_ranges_reject_invalid_bounds(tmp_path, memory, files):
+    from peeky.native import elf_executable_ranges
+
+    binary = elf_load_fixture(tmp_path, memory=memory, files=files)
+    with pytest.raises(ValueError):
+        elf_executable_ranges(binary)
+
+
+def test_elf_pc_cannot_bind_to_unbacked_executable_memory(tmp_path):
+    from peeky.native import _elf_frame_matches
+
+    binary = elf_load_fixture(tmp_path, memory=512, files=256)
+    assert not _elf_frame_matches(
+        binary, {"addressRange": str(0x700000)}, {"instructionPointerReference": "0x701100"}
+    )
