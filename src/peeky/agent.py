@@ -22,7 +22,7 @@ from pathlib import Path
 
 from peeky.client import Client
 from peeky.verification import __file__ as verification_script
-from peeky.worker import load_java_target, make_server
+from peeky.worker import load_java_target, load_native_target, make_server
 
 ROOT = Path.cwd()
 SCHEMA = {
@@ -47,7 +47,7 @@ Available actions:
 - observe: set line to an executable 1-based line. A NEW process runs until BEFORE
   that line executes. Return its stack and locals. Any previous session is closed.
   Pick a line after a suspected value was assigned and before it is consumed.
-- intervene: variable and value (Python expression, or Java numeric/boolean literal). Changes an EXISTING local in
+- intervene: variable and value (Python expression, Java numeric/boolean literal, or C decimal integer literal). Changes an EXISTING local in
   the CURRENT stopped frame, clears breakpoints, continues to termination, and
   returns output + before/after evidence. Make a causal experiment, then assess it.
 - finish: explain root cause in reason; old/new are exact source substrings for ONE
@@ -465,10 +465,16 @@ def main():
     parser.add_argument("--model", help="Model override; otherwise uses saved Codex model")
     parser.add_argument("--program", default="examples/pagination_bug.py")
     parser.add_argument("--check", default="examples/verify_pagination.py")
-    parser.add_argument(
+    targets = parser.add_mutually_exclusive_group()
+    targets.add_argument(
         "--java-config",
         type=Path,
         help="Trusted Java target configuration; checker consumes a build descriptor",
+    )
+    targets.add_argument(
+        "--native-config",
+        type=Path,
+        help="Trusted C target configuration; checker consumes a build descriptor",
     )
     parser.add_argument(
         "--issue",
@@ -496,12 +502,17 @@ def main():
             model = match.group(1)
     source_root = Path(args.root).resolve()
     target = execution = None
-    if args.java_config:
+    if args.java_config or args.native_config:
         from peeky.java_verification import JavaVerification
+        from peeky.native_verification import NativeVerification
 
         try:
-            target = load_java_target(args.java_config)
-            execution = JavaVerification(target, source_root)
+            if args.java_config:
+                target = load_java_target(args.java_config)
+                execution = JavaVerification(target, source_root)
+            else:
+                target = load_native_target(args.native_config)
+                execution = NativeVerification(target, source_root)
         except (OSError, ValueError, TypeError) as exc:
             parser.error(str(exc))
     source, check = (source_root / args.program).resolve(), (source_root / args.check).resolve()

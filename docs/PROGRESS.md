@@ -15,19 +15,20 @@ An hourly thread heartbeat (`continue-peeky-mvp`) checks for available usage and
 - PR #16 merged (`59b6508`): adapter/build foundations and experimental headless Java. 84 tests; six independent hosted lanes completed in 26 seconds.
 - PR #17 merged (`8584bd1`): Java HTTP worker, source/class provenance and mutation coverage. All 121 tests passed locally; six CI lanes completed in 44 seconds.
 - PR #18 merged (`a40c323`): Java full investigation and fresh candidate verification, 143 tests. All six parallel hosted checks passed; critical job elapsed52 seconds (run38533697141). Independent review in reviews/JAVA_AGENT_REVIEW.md.
+- PR #19 merged (`b26c216`): guarded C LLDB worker and scope ownership, 221 collected tests. All seven hosted lanes passed; C34 seconds, longest lane71 seconds (run38538891500). Mixed-runtime inference direction captured in MIXED_RUNTIME.md.
 - Private branch protection is unavailable on the current GitHub plan; manually verify all required checks before merging.
 
 ## Active slice
 
-Branch: `feat/native-c`, based on merged PR #18. Inspect Git/open PR state before resuming.
+Branch: `feat/native-agent`, based on PR #19. C source-repair implementation is complete locally and awaiting hosted CI/merge.
 
-- Implemented fixed C NativeTarget/NativeSession using fresh Clang builds, persistent object files, generated DWARF4 source/line metadata, Mach-O UUID or ELF GNU build ID, binary/symbol/tool hashes and stopped module checks. Mac dSYM generation needs persistent objects; a real test caught empty symbols when temporary clang objects had already been removed.
-- Worker exposes `--native-config`, issues opaque scope handles and revokes them on every inspection/stop/continue/close. Exact fresh variable records restrict native writes to qualified int/unsigned int locals; pointers/aggregates rejected. Module and loaded-symbol paths rechecked before mutation.
-- Both LLVM18 and newer init keys disabled; isolated HOME avoids ambient setup. Real sentinel test confirms enabled positive control executes and worker launch does not. LLVM18 adapter lacks --version; use --help plus binary hash.
-- Author real macOS LLVM21 suite:10 tests passed18.97s, including argv fidelity, adapter-death/stopped cleanup and provenance failures. Independent review complete in reviews/NATIVE_REVIEW.md; root full suite207 passed42.53s, Ruff check/format clean. Seven parallel CI lanes now include Ubuntu24.04 LLVM18 C with4min cutoff, explicit apt acquisition and timings. Hosted Linux qualification remains a merge gate.
-- Claude Sonnet bounded no-tool native source review attempt timed out150s with no output; do not count it as review approval. In-process independent source review completed separately.
-- PR #19 open. First Linux runs rejected LLVM18 frames lacking moduleId; diagnostics confirmed PC and module load address. Added checked ELF file-backed executable range binding for absent IDs only; explicit wrong IDs still fail. Follow-up native unit38 passed; shared build failure-path tests passed. Follow-up Linux run passed module checks; fixed LLVM18 result/value response compatibility and replaced running-artifact tampering atomically to respect Linux ETXTBSY. Local native10 passed19.30s; native unit43 pass. Await final all-seven hosted gates before merging PR #19. Then implement C candidate rebuild/independent verification and deterministic full agent loop. C++/Rust, separate-host proof, broader corpus/lifecycle work and bounded code/log/metric correlation remain unfinished.
-- Performance baseline from PR #17: ten-run Python cycle993ms, inspect2.58ms/mutate1.25ms; Java fresh-build cycle606ms, inspect21.74ms/mutate31.11ms. Full Rust rewrite deferred pending profiling. Native scratch warm runs do not establish a product performance baseline.
+- Shared CompiledVerification preserves Java behavior and adds NativeVerification with frozen sources/headers, fresh candidate builds, unchanged trusted checkers, and artifact/descriptor integrity gates. Only genuine compile/link diagnostics are retryable; symbol/provenance failures remain fatal.
+- C pagination runs the actual CLI/HTTP controller across distinct local source roots. Deterministic decisions exercise observation, runtime intervention, compiler failure, overfit rejection and general repair; verification covers 12 valid and 10 invalid argument cases. Eight real-runtime tampering cases reject acceptance. Distinct roots do not establish separate-host support.
+- Independent adversarial review: reviews/NATIVE_AGENT_REVIEW.md. A compiler-failure source-drift gap was fixed and independently reviewed; four subprocess regressions cover changed/deleted original/staged inputs.
+- Full local suite: 249 passed in 57.40 seconds. Final bounded argument-parser adjustment: all 10 C agent tests passed in 14.10 seconds. Ruff check and format check passed.
+- One bounded live Codex C evaluation failed at its first decision; no live-model repair success is claimed. Its private diagnostic files remain ignored under work/live-c-*. Deterministic tests establish controller behavior separately.
+- Next: gate all seven hosted lanes, merge this slice, then implement C++ qualification using the read-only plan in work/cpp-slice-plan.md. C++/Rust, broader lifecycle/corpus acceptance, separate-host SSH and bounded evidence correlation remain unfinished.
+- Python/C++/CUDA inference debugging remains a design direction in MIXED_RUNTIME.md; no GPU support is claimed. A full Rust rewrite remains deferred pending measured evidence.
 
 ## Next slices
 

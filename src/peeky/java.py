@@ -132,6 +132,14 @@ class JavaTarget:
             raise ValueError("Invalid Java application arguments")
 
     @property
+    def verification_inputs(self):
+        return self.sources
+
+    @property
+    def verification_sources(self):
+        return self.sources
+
+    @property
     def target_identity(self):
         return {
             "language": "java",
@@ -223,6 +231,10 @@ class JavaSession:
     @property
     def environment(self):
         return dict(self.prepared.manifest.effective_environment)
+
+    @property
+    def verification_command(self):
+        return (self.java, "-cp", str(self.prepared.workspace / "classes"), self.target.main_class)
 
     @property
     def command(self):

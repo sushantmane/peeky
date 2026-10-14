@@ -20,7 +20,14 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from peeky.adapters import PythonAdapter
-from peeky.build import ArtifactSpec, BuildRecipe, Command, assert_current, prepare
+from peeky.build import (
+    ArtifactSpec,
+    BuildCommandError,
+    BuildRecipe,
+    Command,
+    assert_current,
+    prepare,
+)
 
 MAX_METADATA = 2 * 1024 * 1024
 FLAGS = ("-std=c11", "-g", "-gdwarf-4", "-O0", "-fno-omit-frame-pointer")
@@ -278,6 +285,14 @@ class NativeTarget:
             raise ValueError("Invalid native application arguments")
 
     @property
+    def verification_inputs(self):
+        return self.sources + self.headers
+
+    @property
+    def verification_sources(self):
+        return self.sources
+
+    @property
     def target_identity(self):
         return {
             "language": "c",
@@ -292,11 +307,13 @@ class NativeTarget:
         if any(set(point) != {"line"} for point in points):
             raise ValueError("Native targets support unconditional line breakpoints only")
 
-    def prepare(self, program, root):
+    def prepare(self, program, root, *, edit=None):
         root = Path(root).resolve(strict=True)
         relative = Path(program).resolve(strict=True).relative_to(root).as_posix()
         if relative not in self.sources:
             raise ValueError("Program is not a declared C source")
+        if edit is not None and edit.path not in self.sources:
+            raise ValueError("Native candidate edits require a declared C source")
         compiler, adapter, dwarfdump = map(_tool, (self.compiler, self.adapter, self.dwarfdump))
         flags = list(FLAGS)
         if self.sysroot is not None:
@@ -315,6 +332,7 @@ class NativeTarget:
         if sys.platform == "linux":
             link_flags = (*link_flags, "-Wl,--build-id=sha1")
         commands.append(Command((compiler, *link_flags, *objects, "-o", "program")))
+        compile_commands = {command.argv for command in commands}
         artifacts = [
             ArtifactSpec("program"),
             *(ArtifactSpec(obj, role="object") for obj in objects),
@@ -331,12 +349,22 @@ class NativeTarget:
             probes.append(Command((dsymutil, "--version")))
         elif sys.platform != "linux":
             raise ValueError("Native target supports Linux and macOS hosts only")
-        prepared = prepare(
-            BuildRecipe(
-                "c", self.sources + self.headers, tuple(commands), tuple(artifacts), tuple(probes)
-            ),
-            root,
-        )
+        try:
+            prepared = prepare(
+                BuildRecipe(
+                    "c",
+                    self.sources + self.headers,
+                    tuple(commands),
+                    tuple(artifacts),
+                    tuple(probes),
+                ),
+                root,
+                edit=edit,
+            )
+        except BuildCommandError as exc:
+            if exc.command not in compile_commands:
+                raise RuntimeError("Native symbol preparation command failed") from exc
+            raise
         try:
             binary = prepared.workspace / "program"
             symbols = (
@@ -393,6 +421,10 @@ class NativeSession:
     @property
     def lines(self):
         return json.loads(self._lines_data)
+
+    @property
+    def verification_command(self):
+        return (str(self.binary),)
 
     @property
     def command(self):

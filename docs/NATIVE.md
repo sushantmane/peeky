@@ -2,7 +2,7 @@
 
 The native slice runs a fixed C target through LLDB-DAP and the existing authenticated HTTP worker. It builds declared sources in a fresh workspace with debug information, checks source/binary/symbol provenance, verifies the loaded executable and stopped location, and permits qualified integer-local intervention. C++ and Rust are planned separate qualification steps using the same debugger family.
 
-This slice does not yet provide native agent-directed candidate rebuilding and independent verification. A successful runtime intervention is not a permanent source fix. Attach, arbitrary expression evaluation, pointer mutation, memory writes, remote debug-server deployment and optimized builds are outside the current support boundary.
+The [C investigation loop](NATIVE_AGENT.md) now provides candidate rebuilding and independent verification through the shared compiled-verification boundary. A successful runtime intervention is not a permanent source fix. Attach, arbitrary expression evaluation, pointer mutation, memory writes, remote debug-server deployment and optimized builds are outside the current support boundary.
 
 ## Local macOS setup
 
