@@ -245,3 +245,42 @@ def test_native_mutation_value_normalizes_llvm_versions(key):
 def test_native_mutation_missing_value_is_uncertain_failure():
     with pytest.raises(RuntimeError, match="observed value"):
         session().mutation_value({})
+
+
+@pytest.mark.parametrize("command_index,retryable", [(0, True), (1, True), (2, False)])
+def test_native_prepare_retries_only_fixed_compile_and_link_commands(
+    tmp_path, monkeypatch, command_index, retryable
+):
+    from peeky.build import BuildCommandError
+
+    source = tmp_path / "main.c"
+    source.write_text("int main(void) { return 0; }\n")
+    monkeypatch.setattr("peeky.native.sys.platform", "darwin")
+    monkeypatch.setattr("peeky.native._tool", lambda tool: f"/trusted/{tool}")
+
+    def failing_prepare(recipe, root, **kwargs):
+        raise BuildCommandError(
+            recipe.build_commands[command_index].argv,
+            {"exit_code": 7, "stdout": "", "stderr": "failed"},
+        )
+
+    monkeypatch.setattr("peeky.native.prepare", failing_prepare)
+    with pytest.raises(RuntimeError) as caught:
+        NativeTarget(sources=("main.c",)).prepare(source, tmp_path)
+    assert isinstance(caught.value, BuildCommandError) is retryable
+    if not retryable:
+        assert "symbol preparation" in str(caught.value)
+        assert isinstance(caught.value.__cause__, BuildCommandError)
+
+
+def test_native_prepare_rejects_header_edits_before_running_tools(tmp_path, monkeypatch):
+    from peeky.build import SourceEdit
+
+    source = tmp_path / "main.c"
+    source.write_text("int main(void) { return 0; }\n")
+    (tmp_path / "config.h").write_text("#define SIZE 3\n")
+    monkeypatch.setattr("peeky.native._tool", lambda _: pytest.fail("Tool must not run"))
+    with pytest.raises(ValueError, match="declared C source"):
+        NativeTarget(sources=("main.c",), headers=("config.h",)).prepare(
+            source, tmp_path, edit=SourceEdit("config.h", "3", "4")
+        )

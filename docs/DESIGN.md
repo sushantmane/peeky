@@ -1,6 +1,6 @@
 # Peeky design — Python alpha and five-language direction
 
-Status: implemented Python and Java investigation loops, with C worker integration in progress and explicit limitations. Product MVP requires Python, Java, C, C++, and Rust; see LANGUAGES.md for the implementation order and remaining language and remote acceptance work. This document specifies the intended MVP contract; the roadmap distinguishes delivered foundations from remaining acceptance work.
+Status: implemented Python, Java and C investigation loops and explicit limitations. Product MVP requires Python, Java, C, C++, and Rust; see LANGUAGES.md for the implementation order and remaining language and remote acceptance work. This document specifies the intended MVP contract; the roadmap distinguishes delivered foundations from remaining acceptance work.
 
 ## Problem and outcome
 
@@ -119,9 +119,9 @@ Each roadmap slice includes a runnable example and tests. Required CI is determi
 
 ## Language expansion
 
-Java runtime debugging is now connected to the worker, with candidate source-fix verification still next. A shared native adapter will then be qualified separately for C, C++, and Rust. See LANGUAGES.md for full per-language acceptance criteria.
+Java and C runtime debugging and fresh candidate verification are connected to the worker/controller. The native adapter still needs separate C++ and Rust qualification. See LANGUAGES.md for full per-language acceptance criteria.
 
-Launch/scope configuration lives behind trusted startup adapter objects. HTTP clients cannot provide adapter commands. JavaTarget prepares fresh copied inputs, compiles debug classes and generates source mappings directly from class metadata. JavaSession checks build, bundle and mapping identities before guarded operations, validates selected stopped frames and cleans its workspace after debugger teardown. The worker retains session/stop ownership and exposes eventual breakpoint verification events. Java candidate acceptance now uses fresh prepared builds and the unchanged trusted checker through JavaVerification. See JAVA_WORKER.md for restrictions and trusted-development provenance limits.
+Launch/scope configuration lives behind trusted startup adapter objects. HTTP clients cannot provide adapter commands. JavaTarget prepares fresh copied inputs, compiles debug classes and generates source mappings directly from class metadata. JavaSession checks build, bundle and mapping identities before guarded operations, validates selected stopped frames and cleans its workspace after debugger teardown. The worker retains session/stop ownership and exposes eventual breakpoint verification events. Java and C candidate acceptance use the shared CompiledVerification lifecycle, with thin language wrappers, fresh prepared builds and the unchanged trusted checker. See JAVA_WORKER.md for restrictions and trusted-development provenance limits.
 
 ## Open questions
 

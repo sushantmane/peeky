@@ -1,0 +1,7 @@
+#ifndef PEEKY_PAGINATION_H
+#define PEEKY_PAGINATION_H
+
+#define PAGE_ITEM_MULTIPLIER 10
+#define MAX_PAGE_ITEMS 128
+
+#endif

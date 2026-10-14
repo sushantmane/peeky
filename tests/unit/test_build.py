@@ -244,3 +244,19 @@ def test_failed_probe_is_not_candidate_compile_feedback(source, tmp_path):
     assert isinstance(caught.value.__cause__, BuildCommandError)
     assert caught.value.__cause__.result["exit_code"] == 7
     assert list(parent.iterdir()) == []
+
+
+@pytest.mark.parametrize("location", ["staged", "original"])
+@pytest.mark.parametrize("action", ["modify", "delete"])
+def test_failed_compile_input_drift_is_fatal(source, tmp_path, location, action):
+    from peeky.build import BuildCommandError
+
+    path = "Main.java" if location == "staged" else str(source / "Main.java")
+    operation = "write_text('changed')" if action == "modify" else "unlink()"
+    script = f"from pathlib import Path; Path({path!r}).{operation}; raise SystemExit(7)"
+    parent = tmp_path / "builds"
+    parent.mkdir()
+    with pytest.raises(RuntimeError, match="Source provenance changed") as caught:
+        prepare(recipe(build_commands=(command(script),)), source, parent=parent)
+    assert not isinstance(caught.value, BuildCommandError)
+    assert list(parent.iterdir()) == []

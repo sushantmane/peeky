@@ -344,6 +344,22 @@ def prepare(recipe, source_root, *, parent=None, edit=None):
         prepared = PreparedRun(workspace, source_root, recipe, manifest)
         assert_current(prepared)
         return prepared
+    except BuildCommandError:
+        # A failed compiler is retryable only while both its staged inputs and
+        # the original sources still match the identities captured before it ran.
+        try:
+            try:
+                unchanged = (
+                    _files(source_root, recipe.inputs) == original
+                    and _files(workspace, recipe.inputs) == inputs
+                )
+            except (OSError, ValueError) as exc:
+                raise RuntimeError("Source provenance changed during failed build") from exc
+            if not unchanged:
+                raise RuntimeError("Source provenance changed during failed build")
+            raise
+        finally:
+            shutil.rmtree(workspace)
     except BaseException:
         shutil.rmtree(workspace)
         raise

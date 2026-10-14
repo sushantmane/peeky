@@ -20,15 +20,15 @@ An hourly thread heartbeat (`continue-peeky-mvp`) checks for available usage and
 
 ## Active slice
 
-Branch: `feat/native-agent`, starting from merged PR #19. Inspect Git/open PR state before resuming.
+Branch: `feat/native-agent`, based on PR #19. C source-repair implementation is complete locally and awaiting hosted CI/merge.
 
-- C worker is now qualified by real macOS LLVM21 and Linux LLVM18 tests. Compiler inputs/objects/binary/symbols are hashed; source/line and loaded module checks guard inspection and mutation. Linux LLVM18 omits frame moduleId, so its fallback binds the PC to file-backed executable ELF ranges relocated using the loaded header address; explicit wrong module IDs never fall back. LLVM18 result/value mutation compatibility is normalized. Native mutations accept only qualified int/unsigned int locals and unambiguous decimal literals.
-- Worker-owned scope handles revoke on every inspection/stop/continue/close. Both LLDB initialization keys disabled and HOME isolated. Source/artifact drift, same-stop aliasing, adapter death, stopped cleanup, literal argv and init sentinel tests pass. Linux executable drift tests use atomic file replacement because direct writes are blocked by ETXTBSY.
-- Original full local suite207 passed42.53s; subsequent focused regressions and all final CI lanes pass, with221 tests collected. All seven hosted jobs green before merge; longest71 seconds. Review record: reviews/NATIVE_REVIEW.md. Parent reviewed the LLVM18 follow-up after subagents hit usage limits; do not count errored or timed-out reviews as approvals.
-- Next: C fresh candidate rebuild and independent checker through a shared narrow compiled-verification boundary. Read ignored work/native-verification-plan.md for detailed handoff. Preserve JavaVerification imports as a thin wrapper; add NativeVerification, target.verification_inputs/sources and session.verification_command. Freeze headers/checker; only source files editable. Only compile/link failures retry; probe/tool identity/symbol/metadata failures stay fatal.
-- Build C pagination fixture and safe bounded independent cases: actual observation/intervention, invalid compilation, overfit rejection, general fix accepted on12 fresh-process cases. Prove source/header/checker/descriptor/binary identity and cleanup. Native candidate repair is NOT delivered by PR #19.
-- C++/Rust, separate-host proof, broader corpus/lifecycle work and bounded code/log/metric correlation remain unfinished. Mixed Python/C++/CUDA inference debugging is planned capability; no GPU support or hardware runner is claimed.
-- Performance baseline from PR #17 remains Python cycle993ms, inspect2.58ms/mutate1.25ms; Java fresh-build cycle606ms, inspect21.74ms/mutate31.11ms (ten local runs). Full Rust rewrite deferred pending profiling; native spike timings are not a product baseline.
+- Shared CompiledVerification preserves Java behavior and adds NativeVerification with frozen sources/headers, fresh candidate builds, unchanged trusted checkers, and artifact/descriptor integrity gates. Only genuine compile/link diagnostics are retryable; symbol/provenance failures remain fatal.
+- C pagination runs the actual CLI/HTTP controller across distinct local source roots. Deterministic decisions exercise observation, runtime intervention, compiler failure, overfit rejection and general repair; verification covers 12 valid and 10 invalid argument cases. Eight real-runtime tampering cases reject acceptance. Distinct roots do not establish separate-host support.
+- Independent adversarial review: reviews/NATIVE_AGENT_REVIEW.md. A compiler-failure source-drift gap was fixed and independently reviewed; four subprocess regressions cover changed/deleted original/staged inputs.
+- Full local suite: 249 passed in 57.40 seconds. Final bounded argument-parser adjustment: all 10 C agent tests passed in 14.10 seconds. Ruff check and format check passed.
+- One bounded live Codex C evaluation failed at its first decision; no live-model repair success is claimed. Its private diagnostic files remain ignored under work/live-c-*. Deterministic tests establish controller behavior separately.
+- Next: gate all seven hosted lanes, merge this slice, then implement C++ qualification using the read-only plan in work/cpp-slice-plan.md. C++/Rust, broader lifecycle/corpus acceptance, separate-host SSH and bounded evidence correlation remain unfinished.
+- Python/C++/CUDA inference debugging remains a design direction in MIXED_RUNTIME.md; no GPU support is claimed. A full Rust rewrite remains deferred pending measured evidence.
 
 ## Next slices
 
