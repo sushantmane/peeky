@@ -20,12 +20,13 @@ An hourly thread heartbeat (`continue-peeky-mvp`) checks for available usage and
 
 ## Active slice
 
-Branch: `feat/java-foundation` (inspect Git to confirm before resuming).
+Branch: `feat/java-foundation`, PR #16 (inspect Git and PR status before resuming; after merge, start the next slice from main).
 
-- Adapter boundary: Python configuration and capability extraction (architecture_review agent).
-- Build boundary: clean copied workspace, trusted recipes, artifact manifests and integrity checks (testing_review agent).
-- Java: promote experimental pinned headless launcher/setup and conformance fixture (ci_scaffold agent).
-- Root: worker integration, parallel Java CI, independent reviews, checks, PR and merge after green CI.
+- Implemented Python adapter extraction and capability guard; standalone build recipes/manifests; pinned experimental Java launcher/setup and packaged/nested-class fixtures.
+- Independent reviews completed; dispositions are in reviews/JAVA_FOUNDATION_REVIEW.md. All agents finished their assigned edits.
+- Local checks: 84 tests passed in 7.17 seconds including Java, Ruff lint/format, wheel/sdist build, and installed-wheel debugger smoke. Fresh local Java adapter setup took 3.213 seconds.
+- Sixth independent Java CI lane added. Inspect PR #16 checks, fix any failures, then merge after all six pass.
+- Next: integrate Java as a configured HTTP target using build manifests, generated source mappings and guards before launch/mutation; then compiled candidate verification in the agent. Do not expose arbitrary compiler/debugger argv through HTTP.
 
 ## Next slices
 
