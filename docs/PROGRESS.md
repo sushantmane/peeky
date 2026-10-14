@@ -14,18 +14,21 @@ An hourly thread heartbeat (`continue-peeky-mvp`) checks for available usage and
 - PR #15 merged (`27a5c14`): bounded DAP writes, stale-stop regressions, latency baseline and evidence correlation ADR. Five CI lanes completed in 21 seconds.
 - PR #16 merged (`59b6508`): adapter/build foundations and experimental headless Java. 84 tests; six independent hosted lanes completed in 26 seconds.
 - PR #17 merged (`8584bd1`): Java HTTP worker, source/class provenance and mutation coverage. All 121 tests passed locally; six CI lanes completed in 44 seconds.
+- PR #18 merged (`a40c323`): Java full investigation and fresh candidate verification, 143 tests. All six parallel hosted checks passed; critical job elapsed52 seconds (run38533697141). Independent review in reviews/JAVA_AGENT_REVIEW.md.
 - Private branch protection is unavailable on the current GitHub plan; manually verify all required checks before merging.
 
 ## Active slice
 
-Branch: `feat/java-agent` (inspect Git/open PR state before resuming; after merge start from main).
+Branch: `feat/native-c`, starting from merged PR #18. Inspect Git/open PR state before resuming.
 
 - Implemented Java investigation strategy: frozen source/checker identities, matching remote target semantics, fresh baseline/candidate compilation, independent checker descriptors, typed compile-failure feedback, and retained build evidence with temporary artifact cleanup.
 - Deterministic real-debugger test observes and mutates pagination state, rejects invalid compilation and an overfit, then verifies the general fix against 12 fresh JVM cases. Tamper regressions prove their mutation executed before testing rejection.
-- Full local suite: 140 tests passed in 24.75 seconds; three additional companion-source regressions passed in the subsequent 47-test targeted review run (143 tests total). Ruff check and format clean. Independent adversarial review complete, findings fixed and recorded in reviews/JAVA_AGENT_REVIEW.md; hosted CI remains a merge gate.
+- Full local suite: 140 tests passed in 24.75 seconds; three additional companion-source regressions passed in the subsequent 47-test targeted review run (143 tests total). Ruff check and format clean. Independent adversarial review complete, findings fixed and recorded in reviews/JAVA_AGENT_REVIEW.md; all six hosted CI jobs passed before merge.
 - Claude Sonnet reviewed proposed verification risks; use findings as hypotheses and record dispositions. Copilot previously implemented the benchmark extension in an isolated workspace; include task_complete in future restricted autopilot tool sets.
 - Ten-run local medians from PR #17: Python cycle993ms, inspect2.58ms/mutate1.25ms; Java fresh-build cycle606ms, inspect21.74ms/mutate31.11ms. Full Rust rewrite deferred pending profiling; Rust target support remains required. See PERFORMANCE.md and ADR0003.
-- Next: finish review, open this slice's PR, inspect all six CI checks, fix failures, merge after green. Native adapter/C preparation runs independently; C++, Rust, remote-host proof and evidence correlation remain unfinished.
+- Native C scratch spike succeeded on macOS ARM64 using `/Library/Developer/CommandLineTools/usr/bin/lldb-dap` and Apple Clang21: break/inspect integer, pointer child and array, mutate integer0→5000, continue to changed output; source/binary hashes unchanged. First cold run8.466s, warmed0.226s; two observations are not a benchmark. Scratch evidence in ignored `work/native-spike/`.
+- Native initialization must disable `$__lldb_sourceInitFile`; no ambient debugger init commands. Configure shellExpandArguments:false, disableASLR:false, internal console, automatic summaries off. Probe actual capabilities (local adapter supportsSetVariable true despite stale docs table). Mac compile needs explicit `-isysroot` from xcrun SDK path; bind dSYM and executable identity. Linux remains untested.
+- Next: implement trusted NativeTarget/NativeSession with fresh C build/provenance, real HTTP conformance and independent Linux CI; then candidate verification. C++, Rust, remote-host proof and evidence correlation remain unfinished.
 
 ## Next slices
 
