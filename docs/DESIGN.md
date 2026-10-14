@@ -1,6 +1,6 @@
 # Peeky design — Python alpha and five-language direction
 
-Status: implemented Python agent foundation and Java worker with explicit limitations. Product MVP requires Python, Java, C, C++, and Rust; see LANGUAGES.md for the implementation order and remaining compiled candidate-verification work. This document specifies the intended MVP contract; the roadmap distinguishes delivered foundations from remaining acceptance work.
+Status: implemented Python and Java investigation loops, with C worker integration in progress and explicit limitations. Product MVP requires Python, Java, C, C++, and Rust; see LANGUAGES.md for the implementation order and remaining language and remote acceptance work. This document specifies the intended MVP contract; the roadmap distinguishes delivered foundations from remaining acceptance work.
 
 ## Problem and outcome
 
@@ -56,7 +56,7 @@ stateDiagram-v2
 ```
 
 - A new launch creates a random session ID and a source fingerprint.
-- Each consumed stop creates a new stop ID. Frame and scope references are valid only at that stop.
+- Each consumed stop creates a new stop ID. Frame IDs are valid only at that stop. The worker issues opaque scope handles and translates them to adapter references; every new inspection revokes all earlier scope handles, including within the same stop. This prevents raw adapter scope ID reuse from selecting the wrong frame.
 - Inspection and mutation require the current session and stop. Reports require session identity.
 - Continue invalidates all frame/scope references.
 - A request timeout can mean an operation already executed. Close/invalidate the session; never transparently retry a mutation.
@@ -121,12 +121,12 @@ Each roadmap slice includes a runnable example and tests. Required CI is determi
 
 Java runtime debugging is now connected to the worker, with candidate source-fix verification still next. A shared native adapter will then be qualified separately for C, C++, and Rust. See LANGUAGES.md for full per-language acceptance criteria.
 
-Launch/scope configuration lives behind trusted startup adapter objects. HTTP clients cannot provide adapter commands. JavaTarget prepares fresh copied inputs, compiles debug classes and generates source mappings directly from class metadata. JavaSession checks build, bundle and mapping identities before guarded operations, validates selected stopped frames and cleans its workspace after debugger teardown. The worker retains session/stop ownership and exposes eventual breakpoint verification events. The build boundary is not yet connected to controller candidate acceptance. See JAVA_WORKER.md for restrictions and trusted-development provenance limits.
+Launch/scope configuration lives behind trusted startup adapter objects. HTTP clients cannot provide adapter commands. JavaTarget prepares fresh copied inputs, compiles debug classes and generates source mappings directly from class metadata. JavaSession checks build, bundle and mapping identities before guarded operations, validates selected stopped frames and cleans its workspace after debugger teardown. The worker retains session/stop ownership and exposes eventual breakpoint verification events. Java candidate acceptance now uses fresh prepared builds and the unchanged trusted checker through JavaVerification. See JAVA_WORKER.md for restrictions and trusted-development provenance limits.
 
 ## Open questions
 
 - How should compiled candidate verification extend the current source-patch controller?
-- Should a future agent receive stable evidence IDs instead of raw DAP scopes?
+- Should a future agent receive stable evidence IDs alongside opaque worker scope handles?
 - What needs to remain inside customer infrastructure before remote production use?
 - Which regression corpus provides evidence beyond synthetic examples?
 - Is latency improved more by batching observations or by keeping one model session?

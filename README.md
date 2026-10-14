@@ -6,7 +6,7 @@ Peeky gives a coding agent a controlled debugging loop: choose a breakpoint, ins
 
 This private repository is an MVP foundation, migrated from a working prototype and revised after two adversarial reviews. It is not a production debugger service or a sandbox for hostile code.
 
-## Current Python and Java investigations
+## Current Python and Java investigations, experimental C worker
 
 - Python programs through debugpy and the Debug Adapter Protocol (DAP).
 - One controller and one session per worker.
@@ -19,6 +19,8 @@ This private repository is an MVP foundation, migrated from a working prototype 
 The minimum product scope is **Python, Java, C, C++, and Rust**, delivered in that order through incremental releases. Python and Java have experimental investigation loops with independent candidate verification. See the [five-language plan](docs/LANGUAGES.md). Kubernetes deployment, multi-tenant workers, attach, and production mutation policy remain later milestones. CI covers Linux with Python 3.11/3.13 and a separate Java 17 lane; macOS is used for local development but is not yet in the CI matrix.
 
 The experimental [Java worker](docs/JAVA_WORKER.md) supports fixed standalone targets: clean compilation, generated source mappings, HTTP inspection/scalar mutation, provenance checks and failure cleanup. The [Java investigation loop](docs/JAVA_AGENT.md) adds fresh candidate rebuilds, independent fresh-JVM checks, and retryable compiler diagnostics. A runnable example is in `examples/java`.
+
+The experimental [C worker](docs/NATIVE.md) adds fresh Clang builds and LLDB runtime inspection with symbol/module provenance and restricted integer mutation. C candidate repair and independent verification are the next slice; C++ and Rust are not implemented yet.
 
 ## Start
 

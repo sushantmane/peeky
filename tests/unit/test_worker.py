@@ -33,6 +33,7 @@ def stopped_worker(tmp_path):
     worker.thread_id = 1
     worker.capabilities = {"supports_set_variable": True}
     worker.references = {7}
+    worker.reference_adapter = {7: 7}
     return worker
 
 

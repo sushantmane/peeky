@@ -19,16 +19,15 @@ An hourly thread heartbeat (`continue-peeky-mvp`) checks for available usage and
 
 ## Active slice
 
-Branch: `feat/native-c`, starting from merged PR #18. Inspect Git/open PR state before resuming.
+Branch: `feat/native-c`, based on merged PR #18. Inspect Git/open PR state before resuming.
 
-- Implemented Java investigation strategy: frozen source/checker identities, matching remote target semantics, fresh baseline/candidate compilation, independent checker descriptors, typed compile-failure feedback, and retained build evidence with temporary artifact cleanup.
-- Deterministic real-debugger test observes and mutates pagination state, rejects invalid compilation and an overfit, then verifies the general fix against 12 fresh JVM cases. Tamper regressions prove their mutation executed before testing rejection.
-- Full local suite: 140 tests passed in 24.75 seconds; three additional companion-source regressions passed in the subsequent 47-test targeted review run (143 tests total). Ruff check and format clean. Independent adversarial review complete, findings fixed and recorded in reviews/JAVA_AGENT_REVIEW.md; all six hosted CI jobs passed before merge.
-- Claude Sonnet reviewed proposed verification risks; use findings as hypotheses and record dispositions. Copilot previously implemented the benchmark extension in an isolated workspace; include task_complete in future restricted autopilot tool sets.
-- Ten-run local medians from PR #17: Python cycle993ms, inspect2.58ms/mutate1.25ms; Java fresh-build cycle606ms, inspect21.74ms/mutate31.11ms. Full Rust rewrite deferred pending profiling; Rust target support remains required. See PERFORMANCE.md and ADR0003.
-- Native C scratch spike succeeded on macOS ARM64 using `/Library/Developer/CommandLineTools/usr/bin/lldb-dap` and Apple Clang21: break/inspect integer, pointer child and array, mutate integer0→5000, continue to changed output; source/binary hashes unchanged. First cold run8.466s, warmed0.226s; two observations are not a benchmark. Scratch evidence in ignored `work/native-spike/`.
-- Native initialization must disable `$__lldb_sourceInitFile`; no ambient debugger init commands. Configure shellExpandArguments:false, disableASLR:false, internal console, automatic summaries off. Probe actual capabilities (local adapter supportsSetVariable true despite stale docs table). Mac compile needs explicit `-isysroot` from xcrun SDK path; bind dSYM and executable identity. Linux remains untested.
-- Next: implement trusted NativeTarget/NativeSession with fresh C build/provenance, real HTTP conformance and independent Linux CI; then candidate verification. C++, Rust, remote-host proof and evidence correlation remain unfinished.
+- Implemented fixed C NativeTarget/NativeSession using fresh Clang builds, persistent object files, generated DWARF4 source/line metadata, Mach-O UUID or ELF GNU build ID, binary/symbol/tool hashes and stopped module checks. Mac dSYM generation needs persistent objects; a real test caught empty symbols when temporary clang objects had already been removed.
+- Worker exposes `--native-config`, issues opaque scope handles and revokes them on every inspection/stop/continue/close. Exact fresh variable records restrict native writes to qualified int/unsigned int locals; pointers/aggregates rejected. Module and loaded-symbol paths rechecked before mutation.
+- Both LLVM18 and newer init keys disabled; isolated HOME avoids ambient setup. Real sentinel test confirms enabled positive control executes and worker launch does not. LLVM18 adapter lacks --version; use --help plus binary hash.
+- Author real macOS LLVM21 suite:10 tests passed18.97s, including argv fidelity, adapter-death/stopped cleanup and provenance failures. Independent review complete in reviews/NATIVE_REVIEW.md; root full suite207 passed42.53s, Ruff check/format clean. Seven parallel CI lanes now include Ubuntu24.04 LLVM18 C with4min cutoff, explicit apt acquisition and timings. Hosted Linux qualification remains a merge gate.
+- Claude Sonnet bounded no-tool native source review attempt timed out150s with no output; do not count it as review approval. In-process independent source review completed separately.
+- Next: finish full regression run, create/finish PR, fix Linux differences and inspect all seven checks before merge. Then implement C candidate rebuild/independent verification and deterministic full agent loop. C++/Rust, separate-host proof, broader corpus/lifecycle work and bounded code/log/metric correlation remain unfinished.
+- Performance baseline from PR #17: ten-run Python cycle993ms, inspect2.58ms/mutate1.25ms; Java fresh-build cycle606ms, inspect21.74ms/mutate31.11ms. Full Rust rewrite deferred pending profiling. Native scratch warm runs do not establish a product performance baseline.
 
 ## Next slices
 
