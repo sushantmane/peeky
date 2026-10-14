@@ -1,0 +1,18 @@
+[package]
+name = "peeky-pagination"
+version = "0.1.0"
+edition = "2021"
+build = false
+autolib = false
+autobins = false
+autotests = false
+autoexamples = false
+autobenches = false
+
+[[bin]]
+name = "peeky-pagination"
+path = "src/main.rs"
+
+[[test]]
+name = "pagination"
+path = "tests/pagination.rs"
