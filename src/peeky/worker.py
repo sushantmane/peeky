@@ -158,6 +158,8 @@ class DebugWorker:
                     "source_sha256": hashlib.sha256(program.read_bytes()).hexdigest(),
                     "supports_set_variable": self.capabilities.get("supports_set_variable", False),
                     "artifact_manifest_id": runtime.manifest_id,
+                    "source_manifest": getattr(runtime, "source_manifest", None),
+                    "target_identity": getattr(runtime, "target_identity", None),
                 }
             except Exception:
                 self.close()
@@ -334,6 +336,28 @@ def make_server(root, token, port=8765, *, adapter=None):
     return server
 
 
+def load_java_target(path):
+    """Load a fixed trusted target; request bodies never supply this configuration."""
+    from peeky.java import JavaTarget
+
+    path = Path(path)
+    config = json.loads(path.read_text())
+    if not isinstance(config, dict):
+        raise ValueError("Java configuration must be an object")
+    if set(config) - {"bundle", "sources", "main_class", "java", "javac", "arguments"}:
+        raise ValueError("Unknown Java configuration field")
+    if not {"bundle", "sources", "main_class"} <= set(config):
+        raise ValueError("Java configuration requires bundle, sources and main_class")
+    if not isinstance(config["bundle"], str) or not config["bundle"]:
+        raise ValueError("Java bundle must be a nonempty path string")
+    if not isinstance(config["sources"], list) or not isinstance(config.get("arguments", []), list):
+        raise ValueError("Java sources and arguments must be JSON arrays")
+    config["bundle"] = (path.resolve().parent / config["bundle"]).resolve()
+    config["sources"] = tuple(config["sources"])
+    config["arguments"] = tuple(config.get("arguments", []))
+    return JavaTarget(**config)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", default=".")
@@ -347,26 +371,8 @@ def main():
         parser.error("Set DEBUG_TOKEN to a random secret of at least 16 characters")
     adapter = None
     if args.java_config:
-        from peeky.java import JavaTarget
-
         try:
-            config = json.loads(args.java_config.read_text())
-            if not isinstance(config, dict):
-                raise ValueError("Java configuration must be an object")
-            if set(config) - {"bundle", "sources", "main_class", "java", "javac", "arguments"}:
-                raise ValueError("Unknown Java configuration field")
-            if not {"bundle", "sources", "main_class"} <= set(config):
-                raise ValueError("Java configuration requires bundle, sources and main_class")
-            if not isinstance(config["bundle"], str) or not config["bundle"]:
-                raise ValueError("Java bundle must be a nonempty path string")
-            if not isinstance(config["sources"], list) or not isinstance(
-                config.get("arguments", []), list
-            ):
-                raise ValueError("Java sources and arguments must be JSON arrays")
-            config["bundle"] = (args.java_config.resolve().parent / config["bundle"]).resolve()
-            config["sources"] = tuple(config["sources"])
-            config["arguments"] = tuple(config.get("arguments", []))
-            adapter = JavaTarget(**config)
+            adapter = load_java_target(args.java_config)
         except (OSError, ValueError, TypeError) as exc:
             parser.error(str(exc))
     server = make_server(args.root, token, args.port, adapter=adapter)
