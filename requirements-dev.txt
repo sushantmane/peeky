@@ -1,0 +1,5 @@
+# Keep these direct tool pins aligned with pyproject.toml's dev extra.
+pytest==8.4.2
+pytest-timeout==2.4.0
+ruff==0.14.0
+build==1.3.0
