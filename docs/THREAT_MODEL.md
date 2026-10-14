@@ -1,6 +1,6 @@
 # MVP trust and failure model
 
-Peeky is a developer tool for trusted code. It is not a container boundary, hostile-code sandbox, credential vault, or production authorization system.
+Peeky is a developer tool for trusted code. This document describes the current Python implementation; additional language adapters need equivalent conformance before claiming support. It is not a container boundary, hostile-code sandbox, credential vault, or production authorization system.
 
 ## Assets and boundaries
 
