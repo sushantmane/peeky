@@ -92,7 +92,8 @@ def _metadata(tool, arguments, workspace, env, *, max_bytes=MAX_METADATA):
                 process.wait(timeout=3)
         if exceeded or process.returncode or not output.is_file():
             size = output.stat().st_size if output.is_file() else 0
-            detail = errors.read_bytes()[:2000].decode("utf-8", errors="replace")
+            with errors.open("rb") as diagnostics:
+                detail = diagnostics.read(2000).decode("utf-8", errors="replace")
             raise RuntimeError(
                 f"Native symbol command failed or exceeded its budget: exit={process.returncode}, "
                 f"metadata_bytes={size}, capture_limit={max_bytes}, diagnostics={detail}"
