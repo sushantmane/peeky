@@ -11,19 +11,21 @@ An hourly thread heartbeat (`continue-peeky-mvp`) checks for available usage and
 ## Delivered
 
 - Private repository and reviewed Python alpha: breakpoints, inspection, runtime mutation, HTTP client/worker, source-fix verification in a fresh process.
-- 36 deterministic tests, including real debugpy integration; no model calls in required CI.
+- 42 deterministic tests, including real debugpy integration; no model calls in required CI.
 - Five independent CI lanes; observed bootstrap execution span 19 seconds, recent PR checks at most 23 seconds. Private artifact workflow validated.
 - Five-language plan and acceptance criteria reviewed and merged in PR #14 (`d7c38de`). Python is the only implemented language.
+- PR #15 merged (`27a5c14`): bounded DAP writes, wedged-adapter and stale-stop regressions, runtime latency baseline, evidence correlation ADR. All five CI jobs passed; critical execution span 21 seconds.
+- Java headless feasibility passed locally with Microsoft's real debugger core: breakpoint, integer/String inspection, scalar mutation, changed branch, unchanged source/class hashes. See JAVA_SPIKE.md; not integrated product support.
 - Private branch protection is unavailable on the current GitHub plan; merge only after required checks pass manually.
 
 ## Active slice
 
-Branch: `feat/adapter-foundation` (inspect Git to confirm before resuming).
+Branch: `feat/java-foundation` (inspect Git to confirm before resuming).
 
-- Transport: bound adapter pipe writes and teardown, with wedged-adapter regressions (architecture_review agent).
-- Java: establish headless debugger feasibility and reproducible setup (ci_scaffold agent).
-- Evidence: design code/logs/metrics correlation and independently review transport (testing_review agent).
-- Root: add repeatable HTTP latency measurements, integrate review, run checks, open PR, merge only after green CI.
+- Adapter boundary: Python configuration and capability extraction (architecture_review agent).
+- Build boundary: clean copied workspace, trusted recipes, artifact manifests and integrity checks (testing_review agent).
+- Java: promote experimental pinned headless launcher/setup and conformance fixture (ci_scaffold agent).
+- Root: worker integration, parallel Java CI, independent reviews, checks, PR and merge after green CI.
 
 ## Next slices
 

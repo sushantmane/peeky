@@ -1,4 +1,4 @@
-"""Bounded asynchronous DAP transport for an owned Python debugger process."""
+"""Bounded asynchronous DAP transport for an owned debugger process."""
 
 import collections
 import json
@@ -6,9 +6,10 @@ import os
 import selectors
 import signal
 import subprocess
-import sys
 import threading
 import time
+
+from peeky.adapters import PythonAdapter
 
 MAX_FRAME_BYTES = 4 * 1024 * 1024
 MAX_HEADER_BYTES = 8192
@@ -46,14 +47,23 @@ def read_message(stream):
 
 
 class DAP:
-    def __init__(self):
+    def __init__(self, command=None):
+        # Trusted worker configuration only. Never forward agent-provided argv.
+        command = PythonAdapter().command if command is None else command
+        if (
+            not isinstance(command, (tuple, list))
+            or not command
+            or any(not isinstance(arg, str) or not arg or "\x00" in arg for arg in command)
+        ):
+            raise ValueError("Adapter command must be a nonempty argument vector")
+        command = tuple(command)
         if os.name != "posix":
             raise RuntimeError("Peeky DAP pipe deadlines currently require a POSIX host")
         self.write_lock = threading.Lock()
         self.close_lock = threading.Lock()
         self.closed = False
         self.process = subprocess.Popen(
-            [sys.executable, "-m", "debugpy.adapter"],
+            command,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,

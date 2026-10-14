@@ -32,6 +32,8 @@ flowchart LR
 | `client` | HTTP request/response transport | Automatic mutation retries |
 | `worker` | Session identity, state transitions, input validation, target access, operations | Model reasoning |
 | `dap` | Framing, response matching, asynchronous events, child lifecycle | Hypothesis selection |
+| `adapters` | Trusted debugger command, initialize/launch configuration, scope and capability normalization | Session identity or model decisions |
+| `build` | Fresh copied workspaces, explicit trusted build recipes, source/artifact integrity manifests | Automatic language selection or proof of loaded-image identity |
 | verification support | Trusted verifier completion and isolated fresh execution | Editing the verifier |
 
 The current model provider is Codex CLI. The controller takes an injected decision callable, which deterministic tests replace. Extract a provider protocol when a second provider is added; do not build a registry before it has users.
@@ -118,6 +120,8 @@ Each roadmap slice includes a runnable example and tests. Required CI is determi
 ## Language expansion
 
 Java is the next adapter, followed by a shared native adapter qualified separately for C, C++, and Rust. This requires extracting Python-specific launch and verification behavior, capability negotiation, artifact/source identity, and explicit build recipes. None of those additional language implementations are shipped yet. See LANGUAGES.md.
+
+The Python launch/scope configuration is now isolated behind a trusted startup adapter object. HTTP clients cannot provide adapter commands. The standalone build boundary prepares fresh copied inputs and checks manifest integrity; it is not yet connected to controller candidate acceptance. The experimental Java launcher is tested directly over DAP and is not registered as an HTTP target. Integrating Java requires the worker to enforce prepared-artifact checks and resolve pending breakpoints before mutation.
 
 ## Open questions
 

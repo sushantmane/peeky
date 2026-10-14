@@ -18,6 +18,8 @@ This private repository is an MVP foundation, migrated from a working prototype 
 
 The minimum product scope is **Python, Java, C, C++, and Rust**, delivered in that order through incremental releases. Only Python is implemented today. See the [five-language plan](docs/LANGUAGES.md). Kubernetes deployment, multi-tenant workers, attach, and production mutation policy remain later milestones. The initial CI support contract is Linux with Python 3.11 and 3.13; macOS is used for local development but is not yet in the CI matrix.
 
+An experimental [headless Java adapter](adapters/java/README.md) now has a separate real-JVM conformance harness. It is a foundation for Java support, not yet integrated into the HTTP worker or source-fix agent. [The feasibility record](docs/JAVA_SPIKE.md) distinguishes observed debugger behavior from remaining product work.
+
 ## Start
 
 ```sh

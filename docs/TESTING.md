@@ -67,6 +67,8 @@ These are GitHub API job start/completion timestamps, including per-job setup an
 
 Private delivery was also exercised successfully: [artifact run](https://github.com/sushantmane/peeky/actions/runs/38526401333) built and uploaded the private distributions, with a 29-second job.
 
+The [bounded-transport PR run](https://github.com/sushantmane/peeky/actions/runs/38528024457), commit `7e3a9d3`, passed all five concurrent jobs with a 21-second execution span: quality 11s, unit 18s, integration 19s each, wheel 21s. Local validation was 42 tests in 5.14s.
+
 ### Merge enforcement limitation
 
 The attempt to require all five checks on `main` returned GitHub HTTP 403: private-repository branch protection requires a plan upgrade. The repository remains private. CI runs on main pushes and PRs, but checks are not enforced merge gates under the current plan. Until protection is available, use PRs and verify all five green checks manually. No plan or visibility change was made.

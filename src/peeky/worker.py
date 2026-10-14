@@ -12,12 +12,16 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from peeky.adapters import PythonAdapter
 from peeky.dap import DAP
 
 
 class DebugWorker:
-    def __init__(self, root):
+    def __init__(self, root, adapter=None):
         self.root = Path(root).resolve()
+        # Adapter configuration is trusted startup input, never HTTP request data.
+        self.adapter = adapter if adapter is not None else PythonAdapter()
+        self.capabilities = {}
         self.dap = None
         self.state = "idle"
         self.session = None
@@ -112,30 +116,19 @@ class DebugWorker:
             if self.dap:
                 raise ValueError("Close the current session before launching another")
             program = self.path(args["program"])
+            self.adapter.validate_breakpoints(args.get("breakpoints", []))
             self.session = uuid.uuid4().hex
             self.audit = []
-            self.dap = DAP()
+            self.dap = DAP(command=self.adapter.command)
             try:
                 capabilities = self.dap.request(
                     "initialize",
-                    {
-                        "adapterID": "python",
-                        "clientID": "peeky",
-                        "pathFormat": "path",
-                        "linesStartAt1": True,
-                        "columnsStartAt1": True,
-                    },
+                    self.adapter.initialize_args(),
                 )
+                self.capabilities = self.adapter.normalize_capabilities(capabilities)
                 launch = self.dap.send(
                     "launch",
-                    {
-                        "program": str(program),
-                        "cwd": str(self.root),
-                        "console": "internalConsole",
-                        "redirectOutput": True,
-                        "justMyCode": True,
-                        "subProcess": False,
-                    },
+                    self.adapter.launch_args(program, self.root),
                 )
                 self.dap.wait_event({"initialized"})
                 points = self.dap.request(
@@ -154,7 +147,7 @@ class DebugWorker:
                     "state": self.state,
                     "breakpoints": points.get("breakpoints", []),
                     "source_sha256": hashlib.sha256(program.read_bytes()).hexdigest(),
-                    "supports_set_variable": capabilities.get("supportsSetVariable", False),
+                    "supports_set_variable": self.capabilities.get("supports_set_variable", False),
                 }
             except Exception:
                 self.close()
@@ -184,9 +177,7 @@ class DebugWorker:
                 raise ValueError("Unknown frame")
             scopes = self.dap.request("scopes", {"frameId": selected}).get("scopes", [])
             result = []
-            for scope in scopes:
-                if scope.get("expensive") or scope.get("presentationHint") != "locals":
-                    continue
+            for scope in self.adapter.local_scopes(scopes):
                 ref = scope["variablesReference"]
                 self.references.add(ref)
                 variables = self.dap.request("variables", {"variablesReference": ref}).get(
@@ -204,6 +195,8 @@ class DebugWorker:
             return {"stop_id": self.stop_id, "frames": frames, "scopes": result}
         if operation == "set_variable":
             self.stopped(args)
+            if not self.capabilities.get("supports_set_variable", False):
+                raise ValueError("Adapter does not support variable mutation")
             ref = args["reference"]
             if ref not in self.references:
                 raise ValueError("Inspect the scope before changing variables")
@@ -221,6 +214,7 @@ class DebugWorker:
             )
             return {"name": args["name"], "before": before, "after": changed.get("value")}
         if operation == "breakpoints":
+            self.adapter.validate_breakpoints(args["breakpoints"])
             return self.dap.request(
                 "setBreakpoints",
                 {
@@ -256,6 +250,7 @@ class DebugWorker:
         self.session = None
         self.stop_id = None
         self.thread_id = None
+        self.capabilities = {}
         self.frames.clear()
         self.references.clear()
         if adapter:
