@@ -93,3 +93,5 @@ Required CI is designed as parallel quality, unit, integration, and packaging la
 The current GitHub plan does not allow enforced branch protection for this private repository: CI runs, but merge gating must be observed manually. See the testing document for the API result and measurements.
 
 Delivery builds wheels and source archives as private GitHub Actions artifacts. No PyPI publishing, public release, or deployment is configured.
+
+The [mixed-runtime direction](docs/MIXED_RUNTIME.md) covers future inference-engine debugging across Python, C++ and CUDA; this is planned capability, not current GPU support.

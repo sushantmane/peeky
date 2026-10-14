@@ -26,7 +26,7 @@ Branch: `feat/native-c`, based on merged PR #18. Inspect Git/open PR state befor
 - Both LLVM18 and newer init keys disabled; isolated HOME avoids ambient setup. Real sentinel test confirms enabled positive control executes and worker launch does not. LLVM18 adapter lacks --version; use --help plus binary hash.
 - Author real macOS LLVM21 suite:10 tests passed18.97s, including argv fidelity, adapter-death/stopped cleanup and provenance failures. Independent review complete in reviews/NATIVE_REVIEW.md; root full suite207 passed42.53s, Ruff check/format clean. Seven parallel CI lanes now include Ubuntu24.04 LLVM18 C with4min cutoff, explicit apt acquisition and timings. Hosted Linux qualification remains a merge gate.
 - Claude Sonnet bounded no-tool native source review attempt timed out150s with no output; do not count it as review approval. In-process independent source review completed separately.
-- Next: finish full regression run, create/finish PR, fix Linux differences and inspect all seven checks before merge. Then implement C candidate rebuild/independent verification and deterministic full agent loop. C++/Rust, separate-host proof, broader corpus/lifecycle work and bounded code/log/metric correlation remain unfinished.
+- PR #19 open. First Linux runs rejected LLVM18 frames lacking moduleId; diagnostics confirmed PC and module load address. Added checked ELF file-backed executable range binding for absent IDs only; explicit wrong IDs still fail. Follow-up native unit38 passed; shared build failure-path tests passed. Latest head f122069 awaits all seven hosted gates. Then implement C candidate rebuild/independent verification and deterministic full agent loop. C++/Rust, separate-host proof, broader corpus/lifecycle work and bounded code/log/metric correlation remain unfinished.
 - Performance baseline from PR #17: ten-run Python cycle993ms, inspect2.58ms/mutate1.25ms; Java fresh-build cycle606ms, inspect21.74ms/mutate31.11ms. Full Rust rewrite deferred pending profiling. Native scratch warm runs do not establish a product performance baseline.
 
 ## Next slices
@@ -37,3 +37,5 @@ Branch: `feat/native-c`, based on merged PR #18. Inspect Git/open PR state befor
 4. Expand bug corpus (#7), prove separate-host SSH (#8), and implement the bounded evidence correlation design.
 
 Read AGENTS.md, DESIGN.md, LANGUAGES.md, and ROADMAP.md for acceptance criteria. Runtime intervention is evidence only; never claim a fix without fresh verification and matching source/build identity. Preserve a checkpoint when usage runs low; report shipped work and actual limitations.
+
+Mixed-runtime inference engines (Python/C++/CUDA) are now an explicit design direction in MIXED_RUNTIME.md, not shipped support. Preserve backend session ownership, correlated evidence and clock domains; qualify extension-module coexistence and GPU hardware separately after host-language foundations.
