@@ -92,6 +92,8 @@ def session():
         ({"name": "x", "type": "unsigned int"}, "-1"),
         ({"name": "x", "type": "int"}, "system(1)"),
         ({"name": "x", "type": "int"}, "0x100"),
+        ({"name": "x", "type": "int"}, "010"),
+        ({"name": "x", "type": "int"}, "-010"),
     ],
 )
 def test_native_mutation_rejects_pointer_aggregate_readonly_or_expression(variable, value):
@@ -233,3 +235,13 @@ def test_elf_pc_cannot_bind_to_unbacked_executable_memory(tmp_path):
     assert not _elf_frame_matches(
         binary, {"addressRange": str(0x700000)}, {"instructionPointerReference": "0x701100"}
     )
+
+
+@pytest.mark.parametrize("key", ["value", "result"])
+def test_native_mutation_value_normalizes_llvm_versions(key):
+    assert session().mutation_value({key: "5000"}) == "5000"
+
+
+def test_native_mutation_missing_value_is_uncertain_failure():
+    with pytest.raises(RuntimeError, match="observed value"):
+        session().mutation_value({})

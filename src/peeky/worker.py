@@ -273,7 +273,9 @@ class DebugWorker:
                 },
             )
             runtime.assert_current()
-            return {"name": args["name"], "before": before, "after": changed.get("value")}
+            normalize_value = getattr(runtime, "mutation_value", None)
+            after = normalize_value(changed) if normalize_value else changed.get("value")
+            return {"name": args["name"], "before": before, "after": after}
         if operation == "breakpoints":
             runtime.validate_breakpoints(args["breakpoints"])
             return self.dap.request(

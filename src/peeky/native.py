@@ -458,7 +458,7 @@ class NativeSession:
         self.target.validate_breakpoints(points)
 
     def validate_value(self, value):
-        if not isinstance(value, str) or not re.fullmatch(r"[+-]?[0-9]{1,10}", value):
+        if not isinstance(value, str) or not re.fullmatch(r"[+-]?(?:0|[1-9][0-9]{0,9})", value):
             raise ValueError("Native mutations require bounded decimal integer literals")
 
     def validate_variable(self, variable, value):
@@ -478,6 +478,13 @@ class NativeSession:
             -2147483648 <= number <= 2147483647 if kind == "int" else 0 <= number <= 4294967295
         ):
             raise ValueError("Native integer mutation is outside the supported 32-bit range")
+
+    def mutation_value(self, response):
+        # LLVM18 used result; current DAP adapters use value.
+        value = response.get("value", response.get("result"))
+        if not isinstance(value, str):
+            raise RuntimeError("Native mutation response has no observed value")
+        return value
 
     def assert_current(self):
         assert_current(self.prepared)

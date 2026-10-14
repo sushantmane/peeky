@@ -220,7 +220,14 @@ def test_native_integrity_drift_invalidates_before_mutation(native_worker, tampe
         path = runtime.symbols
     else:
         path = runtime.binary
-    path.write_bytes(path.read_bytes() + b"changed")
+    changed_bytes = path.read_bytes() + b"changed"
+    replacement = path.with_name(path.name + ".replacement")
+    replacement.write_bytes(changed_bytes)
+    replacement.chmod(path.stat().st_mode)
+    # Linux prohibits writing a running executable; replacement exercises drift
+    # of the named artifact while the old inode may remain loaded.
+    replacement.replace(path)
+    assert path.read_bytes() == changed_bytes
     ref = snapshot["scopes"][0]["reference"]
     fail_http(500, client, "set_variable", **context, reference=ref, name="value", value="5000")
     assert worker.session is None
