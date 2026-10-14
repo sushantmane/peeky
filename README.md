@@ -84,4 +84,6 @@ Keep matching source on the client and worker. The runner checks source identity
 
 Required CI is designed as parallel quality, unit, integration, and packaging lanes, each with a four-minute cutoff. The target is below five minutes from jobs starting to required checks completing; hosted-runner queue time is measured separately. A cutoff is not evidence of speed: actual run measurements belong in the testing document.
 
+The current GitHub plan does not allow enforced branch protection for this private repository: CI runs, but merge gating must be observed manually. See the testing document for the API result and measurements.
+
 Delivery builds wheels and source archives as private GitHub Actions artifacts. No PyPI publishing, public release, or deployment is configured.

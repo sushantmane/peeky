@@ -39,3 +39,12 @@ Exit criterion: automated two-process network tests plus one recorded separate-h
 5. Multi-tenant authorization and data egress policy, followed by production modes.
 
 Do not implement these while the MVP acceptance gaps remain. Each must have its own design review and measurements.
+
+
+## Tracked MVP work
+
+- [Worker lifecycle and failure conformance #6](https://github.com/sushantmane/peeky/issues/6)
+- [Investigation corpus and outcome reporting #7](https://github.com/sushantmane/peeky/issues/7)
+- [Separate-host SSH developer workflow #8](https://github.com/sushantmane/peeky/issues/8)
+
+All three belong to the MVP milestone; later-language and Kubernetes work stays deferred.

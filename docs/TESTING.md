@@ -63,3 +63,10 @@ Local bootstrap: Python 3.11 on macOS, **36 tests passed in 2.94 seconds**; isol
 | wheel smoke, including real debugger | 19s |
 
 These are GitHub API job start/completion timestamps, including per-job setup and teardown. This run meets the <5-minute target with substantial room; measure again as coverage grows.
+
+
+Private delivery was also exercised successfully: [artifact run](https://github.com/sushantmane/peeky/actions/runs/38526401333) built and uploaded the private distributions, with a 29-second job.
+
+### Merge enforcement limitation
+
+The attempt to require all five checks on `main` returned GitHub HTTP 403: private-repository branch protection requires a plan upgrade. The repository remains private. CI runs on main pushes and PRs, but checks are not enforced merge gates under the current plan. Until protection is available, use PRs and verify all five green checks manually. No plan or visibility change was made.
