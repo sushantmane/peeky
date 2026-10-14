@@ -1,6 +1,6 @@
 # Incremental MVP plan
 
-The first release is a useful Python debugging tool, not a general autonomous SRE platform.
+The first alpha is Python. The minimum product MVP includes Python, Java, C, C++, and Rust, delivered incrementally. See [language priorities and acceptance criteria](LANGUAGES.md).
 
 ## Slice 0 — repository foundation (this bootstrap)
 
@@ -24,21 +24,25 @@ Bootstrap supplies the loop and regressions. Remaining acceptance: ten varied bu
 
 Exit criterion: each successful example includes a passing checker and exact source diff; wrong/overfit candidates and premature exits are rejected. A manual live-model evaluation records model, success rate, actions, runtime and cost/usage where available.
 
-## Slice 3 — remote developer workflow (MVP completion)
+## Slice 3 — remote developer workflow
 
 Document/run SSH-tunneled client and worker on separate machines, validate matching source, explicit disconnect behavior, target interpreter configuration, CLI ergonomics, artifact portability.
 
 Exit criterion: automated two-process network tests plus one recorded separate-host run. No required cluster permissions. Verification execution location and dependency requirements are explicit.
 
-## After MVP — independent extensions
+## Language slices — part of the minimum MVP
 
-1. Java adapter + the same adapter/session conformance suite.
-2. GDB/MI or native DAP adapter; report capabilities rather than emulate unsupported jumps.
-3. Multi-file patch workspace and test command orchestration.
-4. Kubernetes worker installation and authenticated outbound relay.
-5. Multi-tenant authorization and data egress policy, followed by production modes.
+1. Extract adapter and build/verification boundaries while preserving Python conformance.
+2. Java headless adapter integration, launch/inspect/primitive mutation and compiled-fix verification.
+3. Shared native adapter with C as the first fixture.
+4. C++ language-specific fixtures and rebuilt-candidate verification.
+5. Rust language-specific fixtures, formatters, Cargo verification and capability reporting.
 
-Do not implement these while the MVP acceptance gaps remain. Each must have its own design review and measurements.
+Close common lifecycle blockers before adding Java; the entire Python corpus is not a prerequisite. Each slice gets adversarial review, real-adapter conformance tests, and a parallel CI lane before claiming support.
+
+## After the five-language MVP
+
+Broader multi-file autonomous patching, Kubernetes workers/outbound relay, multi-tenant authorization and production data policies. Minimal explicit build/workspace recipes needed for compiled-language verification belong in the language slices, not this deferred list.
 
 
 ## Tracked MVP work
@@ -47,4 +51,12 @@ Do not implement these while the MVP acceptance gaps remain. Each must have its 
 - [Investigation corpus and outcome reporting #7](https://github.com/sushantmane/peeky/issues/7)
 - [Separate-host SSH developer workflow #8](https://github.com/sushantmane/peeky/issues/8)
 
-All three belong to the MVP milestone; later-language and Kubernetes work stays deferred.
+These foundation issues belong to the MVP milestone. Language issues extend that milestone; Kubernetes remains deferred.
+
+### Tracked language slices
+
+- [MVP P1: extract debugger and build/verification boundaries](https://github.com/sushantmane/peeky/issues/9)
+- [MVP P2: Java debugger integration and verified compiled fixes](https://github.com/sushantmane/peeky/issues/10)
+- [MVP P3: native adapter and C conformance](https://github.com/sushantmane/peeky/issues/11)
+- [MVP P4: C++ language conformance on native adapter](https://github.com/sushantmane/peeky/issues/12)
+- [MVP P5: Rust language conformance and Cargo verification](https://github.com/sushantmane/peeky/issues/13)

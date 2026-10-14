@@ -1,6 +1,6 @@
-# Peeky design — MVP v0.1
+# Peeky design — Python alpha and five-language direction
 
-Status: implemented foundation with explicit limitations. This document specifies the intended MVP contract; the roadmap distinguishes delivered foundations from remaining acceptance work.
+Status: implemented Python foundation with explicit limitations. Product MVP requires Python, Java, C, C++, and Rust; see LANGUAGES.md for the implementation order and unimplemented adapter/build boundaries. This document specifies the intended MVP contract; the roadmap distinguishes delivered foundations from remaining acceptance work.
 
 ## Problem and outcome
 
@@ -10,11 +10,11 @@ An intervention that improves behavior is evidence, not a permanent repair. A pa
 
 ## Boundaries
 
-MVP: trusted, standalone Python scripts; one worker session; one controller; local launch; loopback HTTP or SSH forwarding. Debugpy handles Python runtime semantics. DAP is the adapter boundary. The model selects experiments; ordinary code enforces IDs, time limits, operation ordering, and verification requirements.
+Current alpha: trusted, standalone Python scripts; one worker session; one controller; local launch; loopback HTTP or SSH forwarding. Debugpy handles Python runtime semantics. DAP is the adapter boundary. The model selects experiments; ordinary code enforces IDs, time limits, operation ordering, and verification requirements.
 
-Out of scope: hostile-code isolation, arbitrary production mutation, multi-user tenancy, multi-file automatic edits, JVM/native adapters, Kubernetes installation, outbound gateway, reverse debugging, replay, and attaching to unprepared processes.
+Out of scope: hostile-code isolation, arbitrary production mutation, multi-user tenancy, general multi-file automatic edits, Kubernetes installation, outbound gateway, reverse debugging, replay, and attaching to unprepared processes.
 
-## Components
+## Current Python alpha components
 
 ```mermaid
 flowchart LR
@@ -81,7 +81,7 @@ Requests are JSON objects with `Authorization: Bearer <token>`. The worker binds
 
 Client-visible IDs have no meaning across sessions/stops. DAP capabilities must be checked before adding optional operations. Breakpoint line relocation must be returned to the agent, not silently treated as the requested line.
 
-## Agent loop
+## Current Python alpha agent loop
 
 The model receives numbered source, a plain-language issue, baseline execution/check failures, and prior observations. It returns a structured action:
 
@@ -115,9 +115,13 @@ For Kubernetes later: add a per-workload worker with explicit deployment permiss
 
 Each roadmap slice includes a runnable example and tests. Required CI is deterministic and parallel: style, unit, real-debugpy integration across two Python versions, and installed-wheel smoke. Real-model evaluations are manual and report separate cost/latency; they never block every PR. Build private artifacts on manual delivery. Public distribution and cluster deployment require separate product decisions.
 
+## Language expansion
+
+Java is the next adapter, followed by a shared native adapter qualified separately for C, C++, and Rust. This requires extracting Python-specific launch and verification behavior, capability negotiation, artifact/source identity, and explicit build recipes. None of those additional language implementations are shipped yet. See LANGUAGES.md.
+
 ## Open questions
 
-- Which second debugger unlocks the first real user: Java JDI/DAP or GDB/MI?
+- Can the Java DAP server be packaged headlessly with acceptable setup cost, or is a JDI bridge warranted?
 - Should a future agent receive stable evidence IDs instead of raw DAP scopes?
 - What needs to remain inside customer infrastructure before remote production use?
 - Which regression corpus provides evidence beyond synthetic examples?
