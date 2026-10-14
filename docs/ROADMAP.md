@@ -12,7 +12,7 @@ Acceptance: installed package imports; worker/agent help works; unit and real-de
 
 Launch/break/inspect/mutate/continue/close, session and stop identity, bounded framing/output, separate control events, uncertain-failure cleanup, child credential stripping, source fingerprint.
 
-Bootstrap addresses the identified blockers. Remaining acceptance expansion: bounded DAP pipe-write deadlines, second-stop stale-handle tests, exception-stop coverage, disconnect under load, consistent machine-readable error codes, concurrent close/wait behavior, and monotonic event sequencing tests.
+Bootstrap and subsequent slices address bounded DAP pipe-write deadlines, second-stop stale-handle rejection, stalled-pipe cleanup and failed-launch responses. Remaining acceptance expansion: exception-stop coverage, consistent machine-readable error codes, concurrent close/wait behavior, and broader monotonic event sequencing tests.
 
 Exit criterion: a state-transition/failure matrix is covered with deterministic transports plus real debugpy. No successful mutation retry after a lost reply. No owned debuggee remains after close in the supported Linux configuration.
 

@@ -1,0 +1,6 @@
+{
+  "bundle": "../../work/java-adapter",
+  "sources": ["demo/BranchBug.java"],
+  "main_class": "demo.BranchBug",
+  "arguments": []
+}
