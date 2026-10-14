@@ -47,3 +47,34 @@ def test_real_target_secret_stripping_and_cleanup(tmp_path, monkeypatch):
             pytest.fail(f"debuggee {pid} survived close")
     finally:
         worker.close()
+
+
+def test_second_stop_rejects_old_identity_and_requires_fresh_inspection(tmp_path):
+    (tmp_path / "target.py").write_text("value = 1\nvalue += 1\nprint(value)\n")
+    worker = DebugWorker(tmp_path)
+    try:
+        launched = worker.dispatch(
+            "launch", {"program": "target.py", "breakpoints": [{"line": 2}, {"line": 3}]}
+        )
+        session = {"session_id": launched["session_id"]}
+        first = wait_stopped(worker, launched["session_id"])
+        old = dict(session, stop_id=first["stop_id"])
+        observed = worker.dispatch("inspect", old)
+        scope = next(
+            s for s in observed["scopes"] if any(v["name"] == "value" for v in s["variables"])
+        )
+        mutation = {"reference": scope["reference"], "name": "value", "value": "99"}
+        worker.dispatch("continue", old)
+        second = wait_stopped(worker, launched["session_id"])
+        assert second["state"] == "stopped"
+        assert second["stop_id"] != first["stop_id"]
+        with pytest.raises(ValueError, match="Stale stop"):
+            worker.dispatch("set_variable", dict(old, **mutation))
+        current = dict(session, stop_id=second["stop_id"])
+        with pytest.raises(ValueError, match="Inspect the scope"):
+            worker.dispatch("set_variable", dict(current, **mutation))
+        observed = worker.dispatch("inspect", current)
+        values = {v["name"]: v["value"] for s in observed["scopes"] for v in s["variables"]}
+        assert values["value"] == "2"
+    finally:
+        worker.close()

@@ -3,6 +3,7 @@
 import collections
 import json
 import os
+import selectors
 import signal
 import subprocess
 import sys
@@ -46,6 +47,11 @@ def read_message(stream):
 
 class DAP:
     def __init__(self):
+        if os.name != "posix":
+            raise RuntimeError("Peeky DAP pipe deadlines currently require a POSIX host")
+        self.write_lock = threading.Lock()
+        self.close_lock = threading.Lock()
+        self.closed = False
         self.process = subprocess.Popen(
             [sys.executable, "-m", "debugpy.adapter"],
             stdin=subprocess.PIPE,
@@ -54,6 +60,7 @@ class DAP:
             env={k: v for k, v in os.environ.items() if k != "DEBUG_TOKEN"},
             start_new_session=os.name == "posix",
         )
+        os.set_blocking(self.process.stdin.fileno(), False)
         self.condition = threading.Condition()
         self.responses = {}
         self.events = collections.deque(maxlen=MAX_CONTROL_EVENTS)
@@ -91,22 +98,59 @@ class DAP:
             while True:
                 self._accept(read_message(self.process.stdout))
         except Exception as exc:
-            with self.condition:
-                self.error = str(exc)
-                self.condition.notify_all()
+            self._fail(exc)
 
-    def send(self, command, arguments=None):
+    def _fail(self, exc):
         with self.condition:
-            if self.error:
-                raise RuntimeError(self.error)
-            self.sequence += 1
-            seq = self.sequence
+            # Preserve the first cause when cleanup subsequently produces EOF.
+            self.error = self.error or str(exc)
+            self.condition.notify_all()
+
+    def send(self, command, arguments=None, timeout=5):
+        """Write one complete frame within a deadline, or poison the transport.
+
+        Never hold the response/event condition while waiting for pipe capacity.
+        A partial write is an uncertain request: callers must close the session.
+        """
+        deadline = time.monotonic() + timeout
+        if not self.write_lock.acquire(timeout=max(0, timeout)):
+            exc = TimeoutError("Debugger write lock timed out; outcome may be uncertain")
+            self._fail(exc)
+            raise exc
+        try:
+            with self.condition:
+                if self.error:
+                    raise RuntimeError(self.error)
+                self.sequence += 1
+                seq = self.sequence
             data = json.dumps(
                 dict(seq=seq, type="request", command=command, arguments=arguments or {})
             ).encode()
-            self.process.stdin.write(f"Content-Length: {len(data)}\r\n\r\n".encode() + data)
-            self.process.stdin.flush()
+            if len(data) > MAX_FRAME_BYTES:
+                raise ValueError("Outgoing DAP frame exceeds limit")
+            frame = memoryview(f"Content-Length: {len(data)}\r\n\r\n".encode() + data)
+            fd = self.process.stdin.fileno()
+            with selectors.DefaultSelector() as selector:
+                selector.register(fd, selectors.EVENT_WRITE)
+                while frame:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0 or not selector.select(remaining):
+                        raise TimeoutError(
+                            "Debugger pipe write timed out; outcome may be uncertain"
+                        )
+                    try:
+                        count = os.write(fd, frame[:65536])
+                    except BlockingIOError:
+                        continue
+                    if count == 0:
+                        raise BrokenPipeError("Debugger pipe closed during write")
+                    frame = frame[count:]
             return seq
+        except (TimeoutError, OSError) as exc:
+            self._fail(exc)
+            raise
+        finally:
+            self.write_lock.release()
 
     def response(self, seq, timeout=15):
         deadline = time.monotonic() + timeout
@@ -147,20 +191,22 @@ class DAP:
             return "".join(self.output), self.output_truncated
 
     def close(self):
-        if self.process.poll() is None:
-            try:
-                self.response(self.send("disconnect", {"terminateDebuggee": True}), timeout=1)
-            except Exception:
-                pass
-        # Always reap the owned group, including children surviving adapter exit.
-        if os.name == "posix":
+        with self.close_lock:
+            if self.closed:
+                return
+            self.closed = True
+            if self.process.poll() is None:
+                try:
+                    seq = self.send("disconnect", {"terminateDebuggee": True}, timeout=0.25)
+                    self.response(seq, timeout=1)
+                except Exception:
+                    pass
+            # Always reap the owned group, including children surviving adapter exit.
             try:
                 os.killpg(self.process.pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
-        elif self.process.poll() is None:
-            self.process.kill()
-        self.process.wait(timeout=3)
-        self.reader.join(timeout=3)
-        self.process.stdin.close()
-        self.process.stdout.close()
+            self.process.wait(timeout=3)
+            self.reader.join(timeout=3)
+            self.process.stdin.close()
+            self.process.stdout.close()
