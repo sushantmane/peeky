@@ -77,6 +77,8 @@ Keep matching source on the client and worker. The runner checks source identity
 - [Design](docs/DESIGN.md): boundaries, lifecycle, protocol, failures and extension points.
 - [MVP plan](docs/ROADMAP.md): incremental slices with acceptance criteria.
 - [Testing and CI budget](docs/TESTING.md): parallel lanes and measured timings.
+- [Runtime performance](docs/PERFORMANCE.md): repeatable HTTP/debugger benchmark and raw latency samples.
+- [Code, logs, and metrics](docs/adr/0002-correlated-evidence.md): incremental evidence correlation design.
 - [Threat model](docs/THREAT_MODEL.md): trusted-code assumptions and remote constraints.
 - [Adversarial review](docs/reviews/INITIAL_REVIEW.md): findings and dispositions.
 - [Decision record](docs/adr/0001-mvp-boundaries.md): why Python/DAP/SSH comes first.
