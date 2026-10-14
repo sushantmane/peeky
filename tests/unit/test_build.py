@@ -211,3 +211,36 @@ def test_command_failure_is_typed_and_does_not_swallow_integrity_failure(source)
     with pytest.raises(RuntimeError, match="provenance") as caught:
         prepare(recipe(build_commands=(overwrite,)), source)
     assert not isinstance(caught.value, BuildCommandError)
+
+
+@pytest.mark.parametrize("action", ["mutate", "delete"])
+def test_failed_tool_integrity_change_is_not_retryable(source, tmp_path, action):
+    from peeky.build import BuildCommandError
+
+    tool = tmp_path / "self-changing-tool"
+    mutation = 'printf "\\n# changed\\n" >> "$0"' if action == "mutate" else 'rm "$0"'
+    tool.write_text(f"#!/bin/sh\n{mutation}\nexit 7\n")
+    tool.chmod(0o755)
+    parent = tmp_path / "builds"
+    parent.mkdir()
+    with pytest.raises(RuntimeError, match="Toolchain executable changed") as caught:
+        prepare(recipe(build_commands=(Command((str(tool),)),)), source, parent=parent)
+    assert not isinstance(caught.value, BuildCommandError)
+    assert list(parent.iterdir()) == []
+
+
+def test_failed_probe_is_not_candidate_compile_feedback(source, tmp_path):
+    from peeky.build import BuildCommandError
+
+    parent = tmp_path / "builds"
+    parent.mkdir()
+    with pytest.raises(RuntimeError, match="Toolchain probe failed") as caught:
+        prepare(
+            recipe(toolchain_probes=(command("raise SystemExit(7)"),)),
+            source,
+            parent=parent,
+        )
+    assert not isinstance(caught.value, BuildCommandError)
+    assert isinstance(caught.value.__cause__, BuildCommandError)
+    assert caught.value.__cause__.result["exit_code"] == 7
+    assert list(parent.iterdir()) == []

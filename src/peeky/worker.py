@@ -30,6 +30,9 @@ class DebugWorker:
         self.thread_id = None
         self.frames = set()
         self.references = set()
+        self.reference_frames = {}
+        self.reference_adapter = {}
+        self.reference_counter = 0
         self.audit = []
         self.breakpoint_events = []
         self.lock = threading.Lock()
@@ -192,6 +195,8 @@ class DebugWorker:
             self.state = event["event"]
             self.frames.clear()
             self.references.clear()
+            self.reference_frames.clear()
+            self.reference_adapter.clear()
             self.stop_id = uuid.uuid4().hex if self.state == "stopped" else None
             self.thread_id = event.get("body", {}).get("threadId")
             return {"state": self.state, "stop_id": self.stop_id, "event": event, **updates}
@@ -203,19 +208,31 @@ class DebugWorker:
             selected = args.get("frame_id", frames[0]["id"] if frames else None)
             if selected not in self.frames:
                 raise ValueError("Unknown frame")
-            runtime.validate_stop(next(frame for frame in frames if frame["id"] == selected))
+            selected_frame = next(frame for frame in frames if frame["id"] == selected)
+            runtime.validate_stop(selected_frame)
+            if validate_debugger := getattr(runtime, "validate_debugger", None):
+                validate_debugger(self.dap, selected_frame)
+            # Adapters may reuse raw scope IDs for different selected frames.
+            # A new inspection revokes all earlier client scope handles.
+            self.references.clear()
+            self.reference_frames.clear()
+            self.reference_adapter.clear()
             scopes = self.dap.request("scopes", {"frameId": selected}).get("scopes", [])
             result = []
             for scope in runtime.local_scopes(scopes):
                 ref = scope["variablesReference"]
-                self.references.add(ref)
+                self.reference_counter += 1
+                handle = self.reference_counter
+                self.references.add(handle)
+                self.reference_frames[handle] = selected_frame
+                self.reference_adapter[handle] = ref
                 variables = self.dap.request("variables", {"variablesReference": ref}).get(
                     "variables", []
                 )
                 result.append(
                     {
                         "name": scope["name"],
-                        "reference": ref,
+                        "reference": handle,
                         "variables": [
                             dict(v, value=v.get("value", "")[:2000]) for v in variables[:50]
                         ],
@@ -229,21 +246,36 @@ class DebugWorker:
             ref = args["reference"]
             if ref not in self.references:
                 raise ValueError("Inspect the scope before changing variables")
+            adapter_ref = self.reference_adapter[ref]
             runtime.validate_value(args["value"])
-            current = self.dap.request("variables", {"variablesReference": ref}).get(
+            current = self.dap.request("variables", {"variablesReference": adapter_ref}).get(
                 "variables", []
             )
-            before = next((v["value"] for v in current if v["name"] == args["name"]), None)
+            matches = [v for v in current if v.get("name") == args["name"]]
+            if len(matches) != 1:
+                raise ValueError("Expected exactly one existing local variable")
+            variable = matches[0]
+            if validate_variable := getattr(runtime, "validate_variable", None):
+                validate_variable(variable, args["value"])
+            if validate_debugger := getattr(runtime, "validate_debugger", None):
+                frame = self.reference_frames.get(ref)
+                if frame is None:
+                    raise ValueError("Inspect the scope before changing variables")
+                runtime.validate_stop(frame)
+                validate_debugger(self.dap, frame)
+            before = variable.get("value")
             changed = self.dap.request(
                 "setVariable",
                 {
-                    "variablesReference": ref,
+                    "variablesReference": adapter_ref,
                     "name": args["name"],
                     "value": args["value"],
                 },
             )
             runtime.assert_current()
-            return {"name": args["name"], "before": before, "after": changed.get("value")}
+            normalize_value = getattr(runtime, "mutation_value", None)
+            after = normalize_value(changed) if normalize_value else changed.get("value")
+            return {"name": args["name"], "before": before, "after": after}
         if operation == "breakpoints":
             runtime.validate_breakpoints(args["breakpoints"])
             return self.dap.request(
@@ -260,6 +292,8 @@ class DebugWorker:
             self.stop_id = None
             self.frames.clear()
             self.references.clear()
+            self.reference_frames.clear()
+            self.reference_adapter.clear()
             return {"state": self.state}
         if operation == "report":
             output, truncated = self.dap.snapshot_output()
@@ -287,6 +321,8 @@ class DebugWorker:
         self.capabilities = {}
         self.frames.clear()
         self.references.clear()
+        self.reference_frames.clear()
+        self.reference_adapter.clear()
         try:
             if adapter:
                 adapter.close()
@@ -358,21 +394,57 @@ def load_java_target(path):
     return JavaTarget(**config)
 
 
+def load_native_target(path):
+    """Load trusted C tools and inputs; HTTP clients cannot choose executables."""
+    from peeky.native import NativeTarget
+
+    config = json.loads(Path(path).read_text())
+    if not isinstance(config, dict):
+        raise ValueError("Native configuration must be an object")
+    if set(config) - {
+        "sources",
+        "headers",
+        "compiler",
+        "adapter",
+        "dwarfdump",
+        "dsymutil",
+        "sysroot",
+        "arguments",
+    }:
+        raise ValueError("Unknown native configuration field")
+    if "sources" not in config:
+        raise ValueError("Native configuration requires sources")
+    for key in ("sources", "headers", "arguments"):
+        value = config.get(key, [])
+        if not isinstance(value, list):
+            raise ValueError(f"Native {key} must be a JSON array")
+        config[key] = tuple(value)
+    return NativeTarget(**config)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", default=".")
     parser.add_argument("--port", type=int, default=8765)
-    parser.add_argument(
+    targets = parser.add_mutually_exclusive_group()
+    targets.add_argument(
         "--java-config", type=Path, help="Trusted fixed Java target JSON configuration"
+    )
+    targets.add_argument(
+        "--native-config", type=Path, help="Trusted fixed C target JSON configuration"
     )
     args = parser.parse_args()
     token = os.environ.get("DEBUG_TOKEN")
     if not token or len(token) < 16:
         parser.error("Set DEBUG_TOKEN to a random secret of at least 16 characters")
     adapter = None
-    if args.java_config:
+    if args.java_config or args.native_config:
         try:
-            adapter = load_java_target(args.java_config)
+            adapter = (
+                load_java_target(args.java_config)
+                if args.java_config
+                else load_native_target(args.native_config)
+            )
         except (OSError, ValueError, TypeError) as exc:
             parser.error(str(exc))
     server = make_server(args.root, token, args.port, adapter=adapter)
