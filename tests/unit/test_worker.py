@@ -28,6 +28,7 @@ def stopped_worker(tmp_path):
     worker.state = "stopped"
     worker.stop_id = "stop"
     worker.thread_id = 1
+    worker.capabilities = {"supports_set_variable": True}
     worker.references = {7}
     return worker
 
@@ -62,6 +63,18 @@ def test_report_requires_current_session(tmp_path):
     worker = stopped_worker(tmp_path)
     with pytest.raises(ValueError, match="session"):
         worker.dispatch("report", {})
+
+
+def test_unsupported_mutation_rejected_before_adapter(tmp_path):
+    worker = stopped_worker(tmp_path)
+    worker.capabilities = {"supports_set_variable": False}
+    worker.dap.calls = []
+    with pytest.raises(ValueError, match="does not support"):
+        worker.dispatch(
+            "set_variable",
+            {"session_id": "session", "stop_id": "stop", "reference": 7, "name": "x", "value": "2"},
+        )
+    assert worker.dap.calls == []
 
 
 @pytest.mark.parametrize(

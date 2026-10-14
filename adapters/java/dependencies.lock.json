@@ -1,0 +1,30 @@
+{
+  "schema": 1,
+  "source": {
+    "url": "https://codeload.github.com/microsoft/java-debug/tar.gz/6a597f2bcccdd0aac7e91631588361826fde11f3",
+    "commit": "6a597f2bcccdd0aac7e91631588361826fde11f3",
+    "sha256": "cd986a773194767e65a48d49e8c0aecbdf823850981be5670983b867e00dfa65"
+  },
+  "dependencies": [
+    {
+      "url": "https://repo.maven.apache.org/maven2/org/apache/commons/commons-lang3/3.18.0/commons-lang3-3.18.0.jar",
+      "sha256": "4eeeae8d20c078abb64b015ec158add383ac581571cddc45c68f0c9ae0230720"
+    },
+    {
+      "url": "https://repo.maven.apache.org/maven2/com/google/code/gson/gson/2.8.9/gson-2.8.9.jar",
+      "sha256": "d3999291855de495c94c743761b8ab5176cfeabe281a5ab0d8e8d45326fd703e"
+    },
+    {
+      "url": "https://repo.maven.apache.org/maven2/io/reactivex/rxjava2/rxjava/2.2.21/rxjava-2.2.21.jar",
+      "sha256": "59df6541a840018f0f4c899aae4f4c1f4383f4c16feb5268615fbe384d28501c"
+    },
+    {
+      "url": "https://repo.maven.apache.org/maven2/org/reactivestreams/reactive-streams/1.0.4/reactive-streams-1.0.4.jar",
+      "sha256": "f75ca597789b3dac58f61857b9ac2e1034a68fa672db35055a8fb4509e325f28"
+    },
+    {
+      "url": "https://repo.maven.apache.org/maven2/commons-io/commons-io/2.14.0/commons-io-2.14.0.jar",
+      "sha256": "e35d1df7232568ed4b81d9a9ed94a0159b3ff6cf1915cc21eef5cb55d7b157a2"
+    }
+  ]
+}
