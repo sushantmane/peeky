@@ -1,8 +1,7 @@
 """Runtime-specific DAP configuration selected by trusted worker code.
 
 Adapter commands and launch configuration are not accepted from HTTP clients.
-Python is the only registered runtime; a Java adapter will require prepared build
-provenance before it can be exposed by the worker.
+Python runs directly; compiled runtimes require prepared build provenance.
 """
 
 import sys
@@ -12,6 +11,27 @@ from dataclasses import dataclass
 @dataclass(frozen=True)
 class PythonAdapter:
     interpreter: str = sys.executable
+
+    environment = None
+    manifest_id = None
+
+    def prepare(self, program, root):
+        return self
+
+    def source_path(self, original):
+        return original
+
+    def assert_current(self):
+        pass
+
+    def validate_stop(self, frame):
+        pass
+
+    def validate_value(self, value):
+        pass
+
+    def close(self):
+        pass
 
     @property
     def command(self):

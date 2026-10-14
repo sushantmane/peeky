@@ -2,6 +2,8 @@
 
 Python, Java, C, C++, and Rust are the minimum product scope. The existing Python release is the foundation/alpha; it does not complete the multi-language MVP. Ship each language incrementally and report support honestly.
 
+Current evidence: Python has runtime experiments and candidate verification. Java has fresh compilation, generated source maps, guarded HTTP runtime operations and real failure-cleanup tests; Java agent candidate verification remains open. C/C++/Rust support is not implemented yet.
+
 ## Priority and rationale
 
 | Order | Language | Backend direction | First acceptance target |
@@ -18,7 +20,7 @@ Do not wait for all ten Python corpus bugs or a Kubernetes gateway before starti
 
 ## Contract changes required before Java
 
-The existing implementation embeds Python-specific assumptions: debugpy process creation, Python launch configuration, local-scope filtering, candidate `.py` files, and a Python checker. Move those responsibilities behind two narrow boundaries:
+Debugger configuration and build preparation have now been extracted. Candidate `.py` files and the controller's verification flow still assume Python; complete their integration behind the two narrow boundaries:
 
 - **Debugger adapter:** adapter process/transport, launch configuration, capability discovery, stop/stack/variable normalization, and teardown. Keep session IDs, stop IDs, operation budgets and audit ownership in the worker.
 - **Build and verification recipe:** explicit argument-vector commands, working directory, selected toolchain, source/workspace identity, artifact identity, independent verification command and completion. Keep original/check integrity and report acceptance in the controller.

@@ -1,6 +1,6 @@
 # Peeky design — Python alpha and five-language direction
 
-Status: implemented Python foundation with explicit limitations. Product MVP requires Python, Java, C, C++, and Rust; see LANGUAGES.md for the implementation order and unimplemented adapter/build boundaries. This document specifies the intended MVP contract; the roadmap distinguishes delivered foundations from remaining acceptance work.
+Status: implemented Python agent foundation and Java worker with explicit limitations. Product MVP requires Python, Java, C, C++, and Rust; see LANGUAGES.md for the implementation order and remaining compiled candidate-verification work. This document specifies the intended MVP contract; the roadmap distinguishes delivered foundations from remaining acceptance work.
 
 ## Problem and outcome
 
@@ -119,13 +119,13 @@ Each roadmap slice includes a runnable example and tests. Required CI is determi
 
 ## Language expansion
 
-Java is the next adapter, followed by a shared native adapter qualified separately for C, C++, and Rust. This requires extracting Python-specific launch and verification behavior, capability negotiation, artifact/source identity, and explicit build recipes. None of those additional language implementations are shipped yet. See LANGUAGES.md.
+Java runtime debugging is now connected to the worker, with candidate source-fix verification still next. A shared native adapter will then be qualified separately for C, C++, and Rust. See LANGUAGES.md for full per-language acceptance criteria.
 
-The Python launch/scope configuration is now isolated behind a trusted startup adapter object. HTTP clients cannot provide adapter commands. The standalone build boundary prepares fresh copied inputs and checks manifest integrity; it is not yet connected to controller candidate acceptance. The experimental Java launcher is tested directly over DAP and is not registered as an HTTP target. Integrating Java requires the worker to enforce prepared-artifact checks and resolve pending breakpoints before mutation.
+Launch/scope configuration lives behind trusted startup adapter objects. HTTP clients cannot provide adapter commands. JavaTarget prepares fresh copied inputs, compiles debug classes and generates source mappings directly from class metadata. JavaSession checks build, bundle and mapping identities before guarded operations, validates selected stopped frames and cleans its workspace after debugger teardown. The worker retains session/stop ownership and exposes eventual breakpoint verification events. The build boundary is not yet connected to controller candidate acceptance. See JAVA_WORKER.md for restrictions and trusted-development provenance limits.
 
 ## Open questions
 
-- Can the Java DAP server be packaged headlessly with acceptable setup cost, or is a JDI bridge warranted?
+- How should compiled candidate verification extend the current source-patch controller?
 - Should a future agent receive stable evidence IDs instead of raw DAP scopes?
 - What needs to remain inside customer infrastructure before remote production use?
 - Which regression corpus provides evidence beyond synthetic examples?

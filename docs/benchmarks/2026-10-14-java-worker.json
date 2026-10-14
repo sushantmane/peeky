@@ -1,0 +1,142 @@
+{
+  "schema_version": 1,
+  "language": "java",
+  "environment": {
+    "platform": "macOS-27.0.1-arm64-arm-64bit",
+    "python": "3.11.14",
+    "java": "openjdk version \"17.0.19\" 2026-04-21 LTS\nOpenJDK Runtime Environment Microsoft-13877125 (build 17.0.19+10-LTS)\nOpenJDK 64-Bit Server VM Microsoft-13877125 (build 17.0.19+10-LTS, mixed mode, sharing)",
+    "adapter_source_commit": "6a597f2bcccdd0aac7e91631588361826fde11f3"
+  },
+  "iterations": 10,
+  "notes": "Local HTTP, fresh adapter each iteration with compilation, no warmup discarded. No model latency. Java launch includes compilation.",
+  "milliseconds": {
+    "launch": {
+      "median": 528.074,
+      "p95": 546.072,
+      "samples": [
+        527.763,
+        533.942,
+        527.757,
+        518.38,
+        527.788,
+        525.935,
+        546.072,
+        533.676,
+        528.361,
+        537.403
+      ]
+    },
+    "wait_stop": {
+      "median": 0.509,
+      "p95": 0.549,
+      "samples": [
+        0.549,
+        0.527,
+        0.499,
+        0.477,
+        0.504,
+        0.548,
+        0.501,
+        0.479,
+        0.513,
+        0.541
+      ]
+    },
+    "inspect": {
+      "median": 21.743,
+      "p95": 22.357,
+      "samples": [
+        21.935,
+        22.267,
+        22.357,
+        21.498,
+        20.725,
+        21.695,
+        22.118,
+        21.791,
+        20.902,
+        21.321
+      ]
+    },
+    "mutate": {
+      "median": 31.109,
+      "p95": 31.786,
+      "samples": [
+        31.384,
+        31.566,
+        31.64,
+        30.629,
+        29.876,
+        31.023,
+        31.786,
+        31.195,
+        30.387,
+        29.62
+      ]
+    },
+    "continue": {
+      "median": 15.387,
+      "p95": 15.97,
+      "samples": [
+        15.534,
+        15.97,
+        15.731,
+        15.196,
+        14.944,
+        15.182,
+        15.927,
+        15.462,
+        15.312,
+        15.241
+      ]
+    },
+    "wait_termination": {
+      "median": 2.832,
+      "p95": 3.076,
+      "samples": [
+        2.709,
+        2.832,
+        3.076,
+        2.775,
+        2.836,
+        2.625,
+        2.832,
+        2.91,
+        2.831,
+        2.933
+      ]
+    },
+    "close": {
+      "median": 5.002,
+      "p95": 5.235,
+      "samples": [
+        5.235,
+        4.977,
+        5.056,
+        5.041,
+        4.847,
+        4.991,
+        5.014,
+        5.142,
+        4.86,
+        4.967
+      ]
+    },
+    "total": {
+      "median": 606.11,
+      "p95": 624.746,
+      "samples": [
+        605.619,
+        612.559,
+        606.601,
+        594.441,
+        602.038,
+        602.48,
+        624.746,
+        611.135,
+        603.604,
+        612.506
+      ]
+    }
+  }
+}

@@ -47,7 +47,7 @@ def read_message(stream):
 
 
 class DAP:
-    def __init__(self, command=None):
+    def __init__(self, command=None, *, env=None):
         # Trusted worker configuration only. Never forward agent-provided argv.
         command = PythonAdapter().command if command is None else command
         if (
@@ -67,7 +67,9 @@ class DAP:
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
-            env={k: v for k, v in os.environ.items() if k != "DEBUG_TOKEN"},
+            env={
+                k: v for k, v in (os.environ if env is None else env).items() if k != "DEBUG_TOKEN"
+            },
             start_new_session=os.name == "posix",
         )
         os.set_blocking(self.process.stdin.fileno(), False)
@@ -180,10 +182,13 @@ class DAP:
     def request(self, command, arguments=None):
         return self.response(self.send(command, arguments))
 
-    def wait_event(self, names, after=0, timeout=15):
+    def wait_event(self, names, after=0, timeout=15, *, failed_request=None):
         deadline = time.monotonic() + timeout
         with self.condition:
             while True:
+                response = self.responses.get(failed_request)
+                if response is not None and not response.get("success"):
+                    raise RuntimeError(response.get("message", "Debugger launch failed"))
                 if self.events and after < self.events[0]["cursor"] - 1:
                     raise RuntimeError("DAP control event history overflow; session must restart")
                 for event in self.events:

@@ -21,6 +21,7 @@ class DebugWorker:
         self.root = Path(root).resolve()
         # Adapter configuration is trusted startup input, never HTTP request data.
         self.adapter = adapter if adapter is not None else PythonAdapter()
+        self.runtime = None
         self.capabilities = {}
         self.dap = None
         self.state = "idle"
@@ -30,6 +31,7 @@ class DebugWorker:
         self.frames = set()
         self.references = set()
         self.audit = []
+        self.breakpoint_events = []
         self.lock = threading.Lock()
         self.last_used = time.monotonic()
 
@@ -112,6 +114,9 @@ class DebugWorker:
                 raise ValueError("name and value must be strings")
 
     def _dispatch(self, operation, args):
+        runtime = self.runtime or self.adapter
+        if operation in {"inspect", "set_variable", "breakpoints", "continue"}:
+            runtime.assert_current()
         if operation == "launch":
             if self.dap:
                 raise ValueError("Close the current session before launching another")
@@ -119,27 +124,31 @@ class DebugWorker:
             self.adapter.validate_breakpoints(args.get("breakpoints", []))
             self.session = uuid.uuid4().hex
             self.audit = []
-            self.dap = DAP(command=self.adapter.command)
+            self.breakpoint_events = []
             try:
+                self.runtime = runtime = self.adapter.prepare(program, self.root)
+                runtime.assert_current()
+                self.dap = DAP(command=runtime.command, env=getattr(runtime, "environment", None))
                 capabilities = self.dap.request(
                     "initialize",
-                    self.adapter.initialize_args(),
+                    runtime.initialize_args(),
                 )
-                self.capabilities = self.adapter.normalize_capabilities(capabilities)
+                self.capabilities = runtime.normalize_capabilities(capabilities)
                 launch = self.dap.send(
                     "launch",
-                    self.adapter.launch_args(program, self.root),
+                    runtime.launch_args(program, self.root),
                 )
-                self.dap.wait_event({"initialized"})
+                self.dap.wait_event({"initialized"}, failed_request=launch)
                 points = self.dap.request(
                     "setBreakpoints",
                     {
-                        "source": {"path": str(program)},
+                        "source": {"path": str(runtime.source_path(program))},
                         "breakpoints": args.get("breakpoints", []),
                     },
                 )
                 self.dap.request("configurationDone")
                 self.dap.response(launch)
+                runtime.assert_current()
                 self.state = "running"
                 self.cursor = 0
                 return {
@@ -148,25 +157,42 @@ class DebugWorker:
                     "breakpoints": points.get("breakpoints", []),
                     "source_sha256": hashlib.sha256(program.read_bytes()).hexdigest(),
                     "supports_set_variable": self.capabilities.get("supports_set_variable", False),
+                    "artifact_manifest_id": runtime.manifest_id,
                 }
             except Exception:
                 self.close()
                 raise
         if operation == "wait":
             timeout = max(0.1, min(float(args.get("timeout", 2)), 2))
+            updates = {}
+            if self.breakpoint_events:
+                updates["breakpoint_events"] = list(self.breakpoint_events)
             if self.state in ("stopped", "terminated"):
-                return {"state": self.state, "stop_id": self.stop_id}
-            try:
-                event = self.dap.wait_event({"stopped", "terminated"}, self.cursor, timeout)
-            except TimeoutError:
-                return {"state": self.state, "timed_out": True}
-            self.cursor = event["cursor"]
+                return {"state": self.state, "stop_id": self.stop_id, **updates}
+            deadline = time.monotonic() + timeout
+            while True:
+                try:
+                    event = self.dap.wait_event(
+                        {"stopped", "terminated", "breakpoint"},
+                        self.cursor,
+                        max(0, deadline - time.monotonic()),
+                    )
+                except TimeoutError:
+                    return {"state": self.state, "timed_out": True, **updates}
+                self.cursor = event["cursor"]
+                if event["event"] != "breakpoint":
+                    break
+                self.breakpoint_events.append(event.get("body", {}))
+                self.breakpoint_events = self.breakpoint_events[-100:]
+                updates["breakpoint_events"] = list(self.breakpoint_events)
+                if time.monotonic() >= deadline:
+                    return {"state": self.state, "timed_out": True, **updates}
             self.state = event["event"]
             self.frames.clear()
             self.references.clear()
             self.stop_id = uuid.uuid4().hex if self.state == "stopped" else None
             self.thread_id = event.get("body", {}).get("threadId")
-            return {"state": self.state, "stop_id": self.stop_id, "event": event}
+            return {"state": self.state, "stop_id": self.stop_id, "event": event, **updates}
         if operation == "inspect":
             self.stopped(args)
             stack = self.dap.request("stackTrace", {"threadId": self.thread_id, "levels": 10})
@@ -175,9 +201,10 @@ class DebugWorker:
             selected = args.get("frame_id", frames[0]["id"] if frames else None)
             if selected not in self.frames:
                 raise ValueError("Unknown frame")
+            runtime.validate_stop(next(frame for frame in frames if frame["id"] == selected))
             scopes = self.dap.request("scopes", {"frameId": selected}).get("scopes", [])
             result = []
-            for scope in self.adapter.local_scopes(scopes):
+            for scope in runtime.local_scopes(scopes):
                 ref = scope["variablesReference"]
                 self.references.add(ref)
                 variables = self.dap.request("variables", {"variablesReference": ref}).get(
@@ -200,6 +227,7 @@ class DebugWorker:
             ref = args["reference"]
             if ref not in self.references:
                 raise ValueError("Inspect the scope before changing variables")
+            runtime.validate_value(args["value"])
             current = self.dap.request("variables", {"variablesReference": ref}).get(
                 "variables", []
             )
@@ -212,13 +240,14 @@ class DebugWorker:
                     "value": args["value"],
                 },
             )
+            runtime.assert_current()
             return {"name": args["name"], "before": before, "after": changed.get("value")}
         if operation == "breakpoints":
-            self.adapter.validate_breakpoints(args["breakpoints"])
+            runtime.validate_breakpoints(args["breakpoints"])
             return self.dap.request(
                 "setBreakpoints",
                 {
-                    "source": {"path": str(self.path(args["program"]))},
+                    "source": {"path": str(runtime.source_path(self.path(args["program"])))},
                     "breakpoints": args["breakpoints"],
                 },
             )
@@ -238,6 +267,8 @@ class DebugWorker:
                 "output": output,
                 "output_truncated": truncated,
                 "history": [e for e in self.audit if e["operation"] != "report"],
+                "artifact_manifest_id": runtime.manifest_id,
+                "breakpoint_events": list(self.breakpoint_events),
             }
         if operation == "close":
             self.close()
@@ -246,6 +277,7 @@ class DebugWorker:
 
     def close(self):
         adapter, self.dap = self.dap, None
+        runtime, self.runtime = self.runtime, None
         self.state = "idle"
         self.session = None
         self.stop_id = None
@@ -253,14 +285,18 @@ class DebugWorker:
         self.capabilities = {}
         self.frames.clear()
         self.references.clear()
-        if adapter:
-            adapter.close()
+        try:
+            if adapter:
+                adapter.close()
+        finally:
+            if runtime:
+                runtime.close()
 
 
-def make_server(root, token, port=8765):
+def make_server(root, token, port=8765, *, adapter=None):
     if not isinstance(token, str) or len(token) < 16:
         raise ValueError("Token must contain at least 16 characters")
-    worker = DebugWorker(root)
+    worker = DebugWorker(root, adapter=adapter)
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args):
@@ -302,11 +338,38 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", default=".")
     parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument(
+        "--java-config", type=Path, help="Trusted fixed Java target JSON configuration"
+    )
     args = parser.parse_args()
     token = os.environ.get("DEBUG_TOKEN")
     if not token or len(token) < 16:
         parser.error("Set DEBUG_TOKEN to a random secret of at least 16 characters")
-    server = make_server(args.root, token, args.port)
+    adapter = None
+    if args.java_config:
+        from peeky.java import JavaTarget
+
+        try:
+            config = json.loads(args.java_config.read_text())
+            if not isinstance(config, dict):
+                raise ValueError("Java configuration must be an object")
+            if set(config) - {"bundle", "sources", "main_class", "java", "javac", "arguments"}:
+                raise ValueError("Unknown Java configuration field")
+            if not {"bundle", "sources", "main_class"} <= set(config):
+                raise ValueError("Java configuration requires bundle, sources and main_class")
+            if not isinstance(config["bundle"], str) or not config["bundle"]:
+                raise ValueError("Java bundle must be a nonempty path string")
+            if not isinstance(config["sources"], list) or not isinstance(
+                config.get("arguments", []), list
+            ):
+                raise ValueError("Java sources and arguments must be JSON arrays")
+            config["bundle"] = (args.java_config.resolve().parent / config["bundle"]).resolve()
+            config["sources"] = tuple(config["sources"])
+            config["arguments"] = tuple(config.get("arguments", []))
+            adapter = JavaTarget(**config)
+        except (OSError, ValueError, TypeError) as exc:
+            parser.error(str(exc))
+    server = make_server(args.root, token, args.port, adapter=adapter)
 
     def expire():
         while True:

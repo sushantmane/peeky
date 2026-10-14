@@ -45,6 +45,15 @@ def test_reads_frame():
     )
 
 
+def test_failed_launch_response_interrupts_initialized_wait():
+    dap = transport()
+    dap._accept(
+        {"type": "response", "request_seq": 7, "success": False, "message": "invalid launch"}
+    )
+    with pytest.raises(RuntimeError, match="invalid launch"):
+        dap.wait_event({"initialized"}, timeout=0, failed_request=7)
+
+
 def test_output_flood_does_not_evict_lifecycle_events():
     dap = transport()
     dap._accept({"type": "event", "event": "stopped"})

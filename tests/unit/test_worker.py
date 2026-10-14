@@ -1,5 +1,8 @@
+import json
+
 import pytest
 
+from peeky.adapters import PythonAdapter
 from peeky.worker import DebugWorker, make_server
 
 
@@ -108,3 +111,71 @@ def test_symlink_cannot_escape_root(tmp_path):
             DebugWorker(tmp_path).path("escape.py")
     finally:
         outside.unlink()
+
+
+def test_failed_adapter_spawn_cleans_prepared_runtime(tmp_path, monkeypatch):
+    closed = []
+
+    class Runtime(PythonAdapter):
+        def close(self):
+            closed.append(True)
+
+    def fail_spawn(*args, **kwargs):
+        raise OSError("adapter missing")
+
+    monkeypatch.setattr("peeky.worker.DAP", fail_spawn)
+    (tmp_path / "target.py").write_text("pass\n")
+    worker = DebugWorker(tmp_path, adapter=Runtime())
+    with pytest.raises(OSError, match="adapter missing"):
+        worker.dispatch("launch", {"program": "target.py"})
+    assert closed == [True]
+    assert worker.runtime is None and worker.session is None
+
+
+def test_provenance_failure_prevents_mutation_and_cleans_session(tmp_path):
+    closed = []
+
+    class Runtime(PythonAdapter):
+        def assert_current(self):
+            raise RuntimeError("Prepared build provenance mismatch")
+
+        def close(self):
+            closed.append(True)
+
+    worker = stopped_worker(tmp_path)
+    worker.runtime = Runtime()
+    backend = worker.dap
+    backend.calls = []
+    with pytest.raises(RuntimeError, match="provenance"):
+        worker.dispatch(
+            "set_variable",
+            {
+                "session_id": "session",
+                "stop_id": "stop",
+                "reference": 7,
+                "name": "value",
+                "value": "2",
+            },
+        )
+    assert backend.calls == [] and backend.closed
+    assert closed == [True]
+    assert worker.runtime is None and worker.session is None
+
+
+@pytest.mark.parametrize("field,value", [("arguments", "hello"), ("sources", {"Main.java": True})])
+def test_java_cli_rejects_non_array_inputs_before_starting_server(
+    tmp_path, monkeypatch, capsys, field, value
+):
+    from peeky.worker import main
+
+    config = {"bundle": "adapter", "sources": ["Main.java"], "main_class": "Main"}
+    config[field] = value
+    path = tmp_path / "target.json"
+    path.write_text(json.dumps(config))
+    monkeypatch.setenv("DEBUG_TOKEN", "test-token-at-least-sixteen")
+    monkeypatch.setattr("sys.argv", ["peeky-worker", "--java-config", str(path)])
+    monkeypatch.setattr("peeky.worker.make_server", lambda *a, **k: pytest.fail("must not start"))
+    with pytest.raises(SystemExit) as error:
+        main()
+    assert error.value.code == 2
+    assert "JSON arrays" in capsys.readouterr().err

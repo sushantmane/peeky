@@ -1,6 +1,6 @@
 # Experimental Java DAP launcher
 
-This launcher wraps Microsoft java-debug's unmodified core with narrow service providers. It is qualified by tiny packaged and nested-class fixtures; it is not registered as a Peeky product adapter yet. JDK 17+, Python 3.11+, and HTTPS access to GitHub/Maven Central are needed for setup.
+This launcher wraps Microsoft java-debug's unmodified core with narrow service providers. It is qualified by packaged and nested-class fixtures and now connects to the experimental [Java worker](../../docs/JAVA_WORKER.md). Use JDK 17 (the CI version), Python 3.11+, and HTTPS access to GitHub/Maven Central for setup.
 
 From the repository root:
 
@@ -28,4 +28,4 @@ Initialize with `adapterID=java`, `pathFormat=path`, and `linesStartAt1/columnsS
 
 The launcher exposes only configurationDone and setVariable optional capabilities. Its request allowlist includes initialize, launch, setBreakpoints, configurationDone, threads, stackTrace, scopes, variables, setVariable, continue, and disconnect. Unsupported commands, external consoles, noDebug, conditional/hit breakpoints and logpoints are rejected. Assignments accept numeric/boolean literal syntax only; arbitrary expressions, strings, character literals, NaN/Infinity, object rewrites and evaluation are out of scope. Object inspection disables automatic toString and logical-structure providers. The underlying debugger still executes trusted application code; this is not a sandbox.
 
-Remaining product requirements include authenticated worker integration, session/stop guards, build/artifact identity validation, robust source resolution, candidate rebuild plus independent verification, remote path binding, uncertainty handling, and crash cleanup conformance. `adapter.json` describes the debugger bundle, not the target application's provenance. See `docs/JAVA_SPIKE.md` and `docs/LANGUAGES.md` for remaining language acceptance requirements.
+The worker now supplies generated class-metadata maps, fresh-build guards, session/stop identity and failure cleanup. Remaining product requirements include agent candidate rebuild plus independent verification and remote path binding. `adapter.json` describes the debugger bundle, not the target application's provenance; JavaSession binds it to a separate prepared-build manifest. See the language acceptance requirements before claiming the Java agent MVP.
