@@ -48,6 +48,18 @@ Manual only. Record selected model, input bug, decisions, observations, interven
 
 ## Measurements
 
-Initial local and hosted run results are recorded below after validation. The first hosted run is the initial cold-cache baseline; it does not establish a long-term latency guarantee.
+The first hosted run is a cold-cache baseline; it does not establish a long-term latency guarantee.
 
-Local bootstrap: Python 3.11 on macOS, 34 tests passed in 2.93 seconds; isolated wheel and sdist build succeeded. Hosted Linux measurements pending the first push.
+Local bootstrap: Python 3.11 on macOS, **36 tests passed in 2.94 seconds**; isolated wheel and sdist build succeeded.
+
+[First hosted CI run](https://github.com/sushantmane/peeky/actions/runs/38526357448), commit `75dd4cd`, completed successfully in **22 seconds** from workflow creation to last job completion (2026-10-14). Jobs began within 3–4 seconds and ran concurrently; execution span was 19 seconds.
+
+| Job | Observed duration |
+| --- | ---: |
+| quality | 12s |
+| unit | 16s |
+| integration Python 3.11 | 17s |
+| integration Python 3.13 | 18s |
+| wheel smoke, including real debugger | 19s |
+
+These are GitHub API job start/completion timestamps, including per-job setup and teardown. This run meets the <5-minute target with substantial room; measure again as coverage grows.
