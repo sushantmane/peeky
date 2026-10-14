@@ -277,10 +277,14 @@ def _run(command, workspace, env):
     executable = Path(executable).resolve(strict=True)
     digest, _ = _digest(executable)
     result = execute([str(executable), *command.argv[1:]], cwd, command.timeout_s, env=env)
+    try:
+        unchanged = _digest(executable)[0] == digest
+    except (OSError, ValueError) as exc:
+        raise RuntimeError("Toolchain executable changed during build") from exc
+    if not unchanged:
+        raise RuntimeError("Toolchain executable changed during build")
     if result["exit_code"] != 0:
         raise BuildCommandError(command.argv, result)
-    if _digest(executable)[0] != digest:
-        raise RuntimeError("Toolchain executable changed during build")
     return ToolIdentity(str(executable), digest), result
 
 
@@ -318,7 +322,10 @@ def prepare(recipe, source_root, *, parent=None, edit=None):
         env.update(dict(recipe.environment))
         env.pop("DEBUG_TOKEN", None)
         for command in recipe.toolchain_probes:
-            tool, result = _run(command, workspace, env)
+            try:
+                tool, result = _run(command, workspace, env)
+            except BuildCommandError as exc:
+                raise RuntimeError(f"Toolchain probe failed: {command.argv[0]}") from exc
             tools.append(tool)
             probes.append(ProbeResult(command.argv, result["stdout"], result["stderr"]))
         for command in recipe.build_commands:

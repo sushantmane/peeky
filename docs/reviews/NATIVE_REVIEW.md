@@ -23,6 +23,16 @@ Independent targeted run: `tests/unit/test_native_worker.py` and `tests/unit/tes
 
 Targets, compilers, symbol tools, debugger adapters and applications are trusted developer code running with local OS permissions. The controlled environment and disabled initialization reduce accidental ambient configuration, but this is not a hostile-code sandbox. Hash comparisons at operation boundaries do not atomically bind filesystem reads to executable pages and do not prevent concurrent malicious replacement or in-memory patching. SDK/system headers, runtime libraries and external services are not hermetically captured.
 
-The build manifest records the build environment. The adapter additionally overrides HOME with a fresh isolated directory; it must not be described as executing with the exact unchanged build environment. DWARF4, declared source/header paths, supported executable formats and tested scalar types define the current boundary. Unsupported source locations or module evidence fail closed. Runtime mutation is evidence about a running execution, not verification of a rebuilt source fix.
+The build manifest records the build environment. The adapter overrides HOME with a fresh isolated directory and includes that effective runtime environment in the native session manifest hash; it must not be described as executing with the exact unchanged build environment. DWARF4, declared source/header paths, supported executable formats and tested scalar types define the current boundary. Unsupported source locations or module evidence fail closed. Runtime mutation is evidence about a running execution, not verification of a rebuilt source fix.
 
 A separate bounded Claude Sonnet no-tool source review attempt timed out after 150 seconds without output. It contributes no findings or approval to this review.
+
+## Review provenance
+
+A separate bounded Claude source-review attempt timed out after 150 seconds without returning output or findings. It supplies no additional review approval or evidence. The independent source review and executed regressions above are the evidence for this record.
+
+## Follow-up: failed build provenance
+
+Independent review found that the existing build runner classified a nonzero command result before rechecking the executable hash. A self-modifying or self-deleting compiler could therefore be reported as ordinary candidate compile feedback. The runner now checks executable integrity before classifying every returned result; missing or changed tools remain fatal integrity errors. Toolchain-probe failures are also fatal setup errors, retaining their diagnostic cause instead of becoming retryable candidate failures. Ordinary unchanged compiler failures retain the existing typed feedback behavior.
+
+Reviewed the minimal runner diff and executed `tests/unit/test_build.py` plus `tests/unit/test_agent_java.py`: **40 passed in 0.87 seconds**. New real subprocess regressions cover self-modification followed by exit 7, self-deletion followed by exit 7, failed probes, and cleanup of each failed workspace. This resolves the classification bypass without changing the documented check-to-use trust boundary.

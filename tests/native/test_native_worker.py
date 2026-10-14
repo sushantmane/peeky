@@ -33,8 +33,34 @@ def native_config():
 
 
 @pytest.fixture
-def native_worker(tmp_path, native_config):
-    from peeky.native import NativeTarget
+def native_worker(tmp_path, native_config, monkeypatch):
+    from peeky.native import NativeSession, NativeTarget
+
+    validate_debugger = NativeSession.validate_debugger
+
+    def diagnose_module(self, dap, frame):
+        try:
+            return validate_debugger(self, dap, frame)
+        except RuntimeError:
+            diagnostic = {
+                "expected_identity": self.module_identity,
+                "expected_binary": str(self.binary),
+                "expected_symbols": str(self.symbols),
+                "frame": frame,
+            }
+            try:
+                diagnostic["actual_modules"] = dap.response(
+                    dap.send("modules", {"startModule": 0, "moduleCount": 16}), timeout=2
+                )
+            except Exception as error:
+                diagnostic["modules_error"] = str(error)
+            print(
+                "NATIVE MODULE DIAGNOSTIC: " + json.dumps(diagnostic, default=str)[:16000],
+                flush=True,
+            )
+            raise
+
+    monkeypatch.setattr(NativeSession, "validate_debugger", diagnose_module)
 
     source = tmp_path / "branch_bug.c"
     shutil.copyfile(ROOT / "examples/c/branch_bug.c", source)
@@ -85,7 +111,12 @@ def launch(client, first, second=None):
     session = {"session_id": started["session_id"]}
     stop = wait(client, session, "stopped")
     context = dict(session, stop_id=stop["stop_id"])
-    snapshot = client.call("inspect", **context)
+    try:
+        snapshot = client.call("inspect", **context)
+    except HTTPError as error:
+        pytest.fail(
+            f"native inspect failed ({error.code}): {error.read(16000).decode(errors='replace')}"
+        )
     assert snapshot["frames"][0]["line"] == first
     events = client.call("report", **session)["breakpoint_events"]
     verified = any(p.get("verified") and p.get("line") == first for p in started["breakpoints"])
