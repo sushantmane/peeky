@@ -20,14 +20,14 @@ An hourly thread heartbeat (`continue-peeky-mvp`) checks for available usage and
 
 ## Active slice
 
-Branch: `feat/native-agent`, based on PR #19. C source-repair implementation is complete locally and awaiting hosted CI/merge.
+Branch: `feat/cpp-conformance`, based on merged PR #20 (`07d1835`). C source-repair is delivered. All seven hosted lanes passed: C 50 seconds, longest lane Java 68 seconds (run 38542794719). C++ implementation has not started.
 
 - Shared CompiledVerification preserves Java behavior and adds NativeVerification with frozen sources/headers, fresh candidate builds, unchanged trusted checkers, and artifact/descriptor integrity gates. Only genuine compile/link diagnostics are retryable; symbol/provenance failures remain fatal.
 - C pagination runs the actual CLI/HTTP controller across distinct local source roots. Deterministic decisions exercise observation, runtime intervention, compiler failure, overfit rejection and general repair; verification covers 12 valid and 10 invalid argument cases. Eight real-runtime tampering cases reject acceptance. Distinct roots do not establish separate-host support.
 - Independent adversarial review: reviews/NATIVE_AGENT_REVIEW.md. A compiler-failure source-drift gap was fixed and independently reviewed; four subprocess regressions cover changed/deleted original/staged inputs.
 - Full local suite: 249 passed in 57.40 seconds. Final bounded argument-parser adjustment: all 10 C agent tests passed in 14.10 seconds. Ruff check and format check passed.
 - One bounded live Codex C evaluation failed at its first decision; no live-model repair success is claimed. Its private diagnostic files remain ignored under work/live-c-*. Deterministic tests establish controller behavior separately.
-- Next: gate all seven hosted lanes, merge this slice, then implement C++ qualification using the read-only plan in work/cpp-slice-plan.md. C++/Rust, broader lifecycle/corpus acceptance, separate-host SSH and bounded evidence correlation remain unfinished.
+- Next: implement C++ qualification using the reviewed plan in docs/CPP_PLAN.md. C++/Rust, broader lifecycle/corpus acceptance, separate-host SSH and bounded evidence correlation remain unfinished.
 - Python/C++/CUDA inference debugging remains a design direction in MIXED_RUNTIME.md; no GPU support is claimed. A full Rust rewrite remains deferred pending measured evidence.
 
 ## Next slices
