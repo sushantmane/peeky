@@ -20,15 +20,13 @@ An hourly thread heartbeat (`continue-peeky-mvp`) checks for available usage and
 
 ## Active slice
 
-Branch: `feat/rust-conformance`, based on merged PR #21 (`8890113`). C++ slice delivered; Rust implementation not started. Read docs/RUST_PLAN.md and inspect Git/open PRs before resuming.
+Branch: `feat/rust-conformance`, PR #22. Based on merged C++ PR #21 (`8890113`). Rust first engineering gate implemented; production Rust worker/repair remains unimplemented. Inspect PR checks/head and pending review edits before resuming.
 
-- PR #20 delivered C repair: seven hosted jobs passed, C50 seconds, longest68 seconds (run38542794719). One separate live Codex trial failed on its first decision; no live-model repair success claimed.
-- C++ uses explicit cpp language, fixed C++17/clang++ settings and shared verified native build/candidate lifecycle. Five real Apple LLVM21 tests pass (12.49s): class/reference/array observation, full CLI repair with compile-failure and overfit retries, intervention evidence gate and distinct-root source/header mismatch rejection.
-- Bounded read-only expansion now uses opaque child handles, fresh frame/scope/name/type resolution, depth4, pages64, collections512 and512 total observed nodes per inspection. Expansion revokes mutable root handles; reinspect before mutation. Mutation/inspection/stop/continue/close revoke children. No aggregate/pointer writes or model expansion action added.
-- Independent adversarial reviews fixed mutable-scope aliasing after expansion and preserved Java variable metadata. Review: reviews/CPP_REVIEW.md;34 independent expansion regressions pass.
-- Initial full local run:287 passed,13 Java failures due to the runner PATH choosing a different java executable than the existing bundle manifest. All25 Java tests then passed in17.54s using the bundle-matching /usr/bin/java; no identity checks were weakened. Python integration separately6 passed2.10s. Ruff and diff checks pass.
-- All eight hosted lanes passed on head18e00a5 (run38549552255): C++37s, C50s, Java70s (longest), unit21s, Python21/20s, quality12s, wheel21s. Final local unit suite244 passed4.41s.
-- Next: Rust with Cargo/formatter qualification; reviewed plan in RUST_PLAN.md. Broader lifecycle/corpus acceptance, separate-host SSH and bounded code/log/metric correlation remain unfinished. Python/C++/CUDA inference support remains design-only in MIXED_RUNTIME.md.
+- Cargo preflight accepts only explicit dependency-free edition2021 binary/test, disables scripts/autodiscovery, freezes manifest/lock/test roles, rejects ancestor config/workspaces.45 tests (10 independent review) pass; full unit suite289 passed4.62s. This preflight is not a sandbox or full preparation implementation.
+- Dependency-free Rust/Cargo1.96 fixture and bounded rawDAP probe pass locally with AppleLLVM21 (final UUID fix0.89s). Real source breakpoint, struct/fieldlessenum/SomeNone raw shapes, exact scalar intervention/output, module/symbol identity, source/tool hashes and cleanup checked. Explicit binary/dSYM UUID equality added after final review.
+- macOS must use Cargo packed symbols and corresponding hashed deps binary; splitoff removed application object symbols. Source i32 is displayed as int. Raw Option contains inactive variants and its payload exceeds the current worker's depth4 contract; meaningful worker Option inspection still requires separately reviewed normalization/formatters. No RustTarget, HTTP Rust worker, Cargo test execution or source-repair verification is claimed.
+- Nine parallel lanes configured, including pinned Rust1.96/LLVM18 engineering gate. Hosted qualification and durations pending. Final review recorded in reviews/RUST_FOUNDATION_REVIEW.md; RUST_GATE.md documents scope.
+- Next: finish PR22 checks/merge, then production RustTarget, bounded declared-source symbol mapping and active Option inspection, exact compiled-test execution plus independent checker, lifecycle and failure regressions. Read RUST_PLAN.md. Broader lifecycle/corpus acceptance, separate-host SSH and evidence correlation remain unfinished; CUDA is design-only.
 
 ## Next slices
 

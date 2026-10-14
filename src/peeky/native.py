@@ -55,8 +55,10 @@ def _path_name(name, suffix):
         raise ValueError("Expected a plain relative native input path")
 
 
-def _metadata(tool, arguments, workspace, env):
-    """Bound command time, diagnostic output and parsed metadata file size."""
+def _metadata(tool, arguments, workspace, env, *, max_bytes=MAX_METADATA):
+    """Bound metadata capture; larger engineering probes do not change parser limits."""
+    if type(max_bytes) is not int or not 0 < max_bytes <= 16 * 1024 * 1024:
+        raise ValueError("Invalid native metadata capture limit")
     with tempfile.TemporaryDirectory(prefix="peeky-symbols-", dir=workspace) as scratch:
         output = Path(scratch) / "dump.txt"
         errors = Path(scratch) / "errors.txt"
@@ -77,7 +79,7 @@ def _metadata(tool, arguments, workspace, env):
                     if (
                         time.monotonic() >= deadline
                         or errors.stat().st_size > 16000
-                        or (output.exists() and output.stat().st_size > MAX_METADATA)
+                        or (output.exists() and output.stat().st_size > max_bytes)
                     ):
                         exceeded = True
                         break
@@ -89,8 +91,13 @@ def _metadata(tool, arguments, workspace, env):
                     pass
                 process.wait(timeout=3)
         if exceeded or process.returncode or not output.is_file():
-            raise RuntimeError("Native symbol command failed or exceeded its budget")
-        if output.stat().st_size > MAX_METADATA or errors.stat().st_size > 16000:
+            size = output.stat().st_size if output.is_file() else 0
+            detail = errors.read_bytes()[:2000].decode("utf-8", errors="replace")
+            raise RuntimeError(
+                f"Native symbol command failed or exceeded its budget: exit={process.returncode}, "
+                f"metadata_bytes={size}, capture_limit={max_bytes}, diagnostics={detail}"
+            )
+        if output.stat().st_size > max_bytes or errors.stat().st_size > 16000:
             raise ValueError("Native symbol metadata exceeds limit")
         return output.read_text(encoding="utf-8")
 

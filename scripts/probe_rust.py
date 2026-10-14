@@ -14,7 +14,7 @@ from types import SimpleNamespace
 
 from peeky.agent import execute
 from peeky.dap import DAP
-from peeky.native import NativeSession, _metadata, elf_build_id
+from peeky.native import MAX_METADATA, NativeSession, _metadata, elf_build_id
 from peeky.rust_manifest import assert_cargo_ancestry_clear, validate_cargo_inputs
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -115,10 +115,16 @@ def probe(args):
                 symbols = binary
             assert {name: sha(root / name) for name in INPUTS} == original
             line_dump = _metadata(
-                str(paths["dwarfdump"]), ["--debug-line", str(symbols)], root, env
+                str(paths["dwarfdump"]),
+                ["--debug-line", str(symbols)],
+                root,
+                env,
+                max_bytes=16 * 1024 * 1024,
             )
             result["line_metadata"] = {
                 "bytes": len(line_dump.encode()),
+                "production_parser_limit_exceeded": len(line_dump.encode()) > MAX_METADATA,
+                "capture_limit_bytes": 16 * 1024 * 1024,
                 "sha256": hashlib.sha256(line_dump.encode()).hexdigest(),
                 "versions": sorted(set(re.findall(r"version: (\d+)", line_dump))),
                 "declared_source_present": 'name: "src/main.rs"' in line_dump
@@ -135,6 +141,15 @@ def probe(args):
                 if platform.system() == "Darwin"
                 else elf_build_id(binary)
             )
+            if platform.system() == "Darwin":
+                symbol_uuid = run([str(paths["dwarfdump"]), "--uuid", str(symbols)], root, env)[
+                    "stdout"
+                ]
+                binary_ids = re.findall(r"UUID: ([A-Fa-f0-9-]+)", result["module_identity"])
+                symbol_ids = re.findall(r"UUID: ([A-Fa-f0-9-]+)", symbol_uuid)
+                if len(binary_ids) != 1 or symbol_ids != binary_ids:
+                    raise ValueError("Rust executable and separate symbols UUID mismatch")
+                result["symbol_uuid_matched"] = True
             result["baseline"] = run([str(binary)], root, env)["stdout"]
             source = root / "src/main.rs"
             line = next(
