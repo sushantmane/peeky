@@ -195,3 +195,19 @@ def test_ambient_build_flags_not_inherited(source, monkeypatch):
         assert "JAVA_TOOL_OPTIONS" not in env
         assert env["BUILD_MODE"] == "debug"
         assert "DEBUG_TOKEN" not in env
+
+
+def test_command_failure_is_typed_and_does_not_swallow_integrity_failure(source):
+    from peeky.build import BuildCommandError
+
+    failing = command("raise SystemExit(7)")
+    with pytest.raises(BuildCommandError) as caught:
+        prepare(recipe(build_commands=(failing,)), source)
+    assert caught.value.command == failing.argv
+    assert caught.value.result["exit_code"] == 7
+    overwrite = command(
+        "from pathlib import Path; Path('Main.java').write_text('changed'); Path('out.bin').write_text('output')"
+    )
+    with pytest.raises(RuntimeError, match="provenance") as caught:
+        prepare(recipe(build_commands=(overwrite,)), source)
+    assert not isinstance(caught.value, BuildCommandError)

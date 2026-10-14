@@ -14,6 +14,8 @@ class PythonAdapter:
 
     environment = None
     manifest_id = None
+    source_manifest = None
+    target_identity = None
 
     def prepare(self, program, root):
         return self

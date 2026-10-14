@@ -22,6 +22,15 @@ MAX_FILES = 4096
 MAX_FILE_BYTES = 256 * 1024 * 1024
 
 
+class BuildCommandError(RuntimeError):
+    """A completed command failure/budget limit, distinct from provenance errors."""
+
+    def __init__(self, command, result):
+        self.command = tuple(command)
+        self.result = dict(result)
+        super().__init__(f"Build command failed: {self.command[0]}: {self.result}")
+
+
 @dataclass(frozen=True)
 class Command:
     argv: tuple[str, ...]
@@ -269,7 +278,7 @@ def _run(command, workspace, env):
     digest, _ = _digest(executable)
     result = execute([str(executable), *command.argv[1:]], cwd, command.timeout_s, env=env)
     if result["exit_code"] != 0:
-        raise RuntimeError(f"Build command failed: {command.argv[0]}: {result}")
+        raise BuildCommandError(command.argv, result)
     if _digest(executable)[0] != digest:
         raise RuntimeError("Toolchain executable changed during build")
     return ToolIdentity(str(executable), digest), result

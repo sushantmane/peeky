@@ -131,12 +131,22 @@ class JavaTarget:
         ):
             raise ValueError("Invalid Java application arguments")
 
+    @property
+    def target_identity(self):
+        return {
+            "language": "java",
+            "main_class": self.main_class,
+            "arguments": list(self.arguments),
+            "sources": sorted(self.sources),
+            "compiler_options": ["-g", "-proc:none"],
+        }
+
     def validate_breakpoints(self, points):
         PythonAdapter().validate_breakpoints(points)
         if any(set(point) != {"line"} for point in points):
             raise ValueError("Java supports unconditional line breakpoints only")
 
-    def prepare(self, program, root):
+    def prepare(self, program, root, *, edit=None):
         from peeky.java_metadata import generate_source_map
 
         root = Path(root).resolve(strict=True)
@@ -154,7 +164,7 @@ class JavaTarget:
             artifacts=(ArtifactSpec("classes", "directory", "jvm-classes"),),
             toolchain_probes=(Command((java, "-version")), Command((javac, "-version"))),
         )
-        prepared = prepare(recipe, root)
+        prepared = prepare(recipe, root, edit=edit)
         try:
             source_paths = tuple(prepared.workspace / name for name in self.sources)
             mapping = generate_source_map(
@@ -197,6 +207,14 @@ class JavaSession:
                 sort_keys=True,
             ).encode()
         ).hexdigest()
+
+    @property
+    def target_identity(self):
+        return self.target.target_identity
+
+    @property
+    def source_manifest(self):
+        return {item.path: item.sha256 for item in self.prepared.manifest.original_inputs}
 
     @property
     def mapping(self):

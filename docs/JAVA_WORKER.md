@@ -25,7 +25,7 @@ Create a trusted startup JSON file, for example `work/java-target.json`:
 }
 ```
 
-`bundle` resolves relative to the configuration file. Source paths resolve relative to the worker root. All required `.java` files must be declared; arbitrary Maven/Gradle projects and external classpaths are not part of this slice. The startup configuration is trusted local input, not a request from an agent.
+`bundle` resolves relative to the configuration file. Source paths resolve relative to the worker root. Application arguments support spaces, backslashes, single quotes, and empty strings. Embedded double quotes and CR/LF are rejected because the JDI launcher does not provide shell-style escaping for those values. All required `.java` files must be declared; arbitrary Maven/Gradle projects and external classpaths are not part of this slice. The startup configuration is trusted local input, not a request from an agent.
 
 The current metadata reader accepts non-preview class files through Java 21; Java 17 is tested in CI. Use standard package-relative source layouts (source-root prefixes are supported). Arguments containing whitespace, single quotes and backslashes are supported; embedded double quotes, CR/LF and NUL are rejected because this launcher uses the JDI connector's quoted string contract.
 
