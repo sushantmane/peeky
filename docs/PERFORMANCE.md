@@ -41,3 +41,17 @@ Ten fresh runs each, on the same local host as above, with full integrity checks
 | Total, including report | 993.433 | 606.110 | 624.746 |
 
 Raw [Python samples](benchmarks/2026-10-14-python-worker.json) and [Java samples](benchmarks/2026-10-14-java-worker.json) record environment and adapter version. These are different debugger/runtime paths and are not a Python-versus-Java implementation-language benchmark. Small samples, warm OS caches, and local transport limit generalization. The Java path also hashes its prepared build and adapter inventory before guarded operations; profile this cost before optimizing it. [ADR 0003](adr/0003-measure-before-rewriting.md) records why a full Rust rewrite is deferred pending evidence.
+
+## C++ inspection microbaseline, 2026-10-14
+
+Ten sequential repetitions on one stopped C++ process using Apple LLVM21, each starting with a fresh inspection. Authenticated loopback HTTP, DAP and source/artifact/module guards are included; launch/build, cleanup and model calls are excluded. No warmup was discarded. Nearest-rank p95 is the maximum of ten samples. This small local sample is a baseline, not a service-level promise.
+
+| Operation | Median ms | p95 ms |
+| --- | ---: | ---: |
+| Inspect | 62.63 | 74.91 |
+| Class expansion | 123.11 | 124.07 |
+| Array storage expansion | 122.95 | 125.62 |
+| Array elements expansion | 128.70 | 131.99 |
+| Complete sequence | 437.95 | 450.80 |
+
+[Raw samples and tool versions](performance/cpp-2026-10-14.json). The sequence inspects pagination_bug.cpp at OBSERVE, expands pagination, then items and its raw storage member (three values). Each expansion revalidates provenance and resolves its ancestry. Profile those costs before caching or batching; optimizations must retain identity and invalidation guarantees.

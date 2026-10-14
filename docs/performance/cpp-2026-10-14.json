@@ -1,0 +1,120 @@
+{
+  "platform": "macOS-27.0.1-arm64-arm-64bit",
+  "tools": {
+    "clang++": "/Library/Developer/CommandLineTools/usr/bin/clang++",
+    "lldb-dap": "/Library/Developer/CommandLineTools/usr/bin/lldb-dap",
+    "lldb": "/Library/Developer/CommandLineTools/usr/bin/lldb",
+    "llvm-dwarfdump": "/Library/Developer/CommandLineTools/usr/bin/llvm-dwarfdump",
+    "dsymutil": "/Library/Developer/CommandLineTools/usr/bin/dsymutil"
+  },
+  "versions": {
+    "clang++": "Apple clang version 21.0.0 (clang-2100.3.34.2)\nTarget: arm64-apple-darwin27.0.0\nThread model: posix\nInstalledDir: /Library/Developer/CommandLineTools/usr/bin",
+    "lldb": "lldb-2103.0.34.103\nApple Swift version 6.4 (swiftlang-6.4.0.34.1 clang-2100.3.34.1)"
+  },
+  "scope": "10 sequential repetitions on one stopped process; fresh inspect plus class expansion and two-level raw std::array expansion each repetition; timings include authenticated loopback HTTP, DAP calls and provenance revalidation. No warmup discarded. Launch/compile/cleanup and model calls excluded. p95 nearest rank (10 samples -> maximum). Microbaseline, not SLO.",
+  "samples": [
+    {
+      "iteration": 1,
+      "inspect_ms": 74.910209,
+      "class_expand_ms": 123.715333,
+      "array_storage_expand_ms": 122.580833,
+      "array_elements_expand_ms": 129.595875,
+      "total_ms": 450.80225
+    },
+    {
+      "iteration": 2,
+      "inspect_ms": 62.374125,
+      "class_expand_ms": 124.070833,
+      "array_storage_expand_ms": 123.385458,
+      "array_elements_expand_ms": 128.683209,
+      "total_ms": 438.513625
+    },
+    {
+      "iteration": 3,
+      "inspect_ms": 61.8755,
+      "class_expand_ms": 122.828958,
+      "array_storage_expand_ms": 123.417292,
+      "array_elements_expand_ms": 128.959708,
+      "total_ms": 437.081458
+    },
+    {
+      "iteration": 4,
+      "inspect_ms": 62.758042,
+      "class_expand_ms": 122.069792,
+      "array_storage_expand_ms": 122.969125,
+      "array_elements_expand_ms": 128.617416,
+      "total_ms": 436.414375
+    },
+    {
+      "iteration": 5,
+      "inspect_ms": 62.336375,
+      "class_expand_ms": 121.490958,
+      "array_storage_expand_ms": 123.052125,
+      "array_elements_expand_ms": 128.718584,
+      "total_ms": 435.598042
+    },
+    {
+      "iteration": 6,
+      "inspect_ms": 62.505916,
+      "class_expand_ms": 122.723125,
+      "array_storage_expand_ms": 122.923,
+      "array_elements_expand_ms": 129.946625,
+      "total_ms": 438.098666
+    },
+    {
+      "iteration": 7,
+      "inspect_ms": 63.2765,
+      "class_expand_ms": 122.238792,
+      "array_storage_expand_ms": 121.853667,
+      "array_elements_expand_ms": 128.570916,
+      "total_ms": 435.939875
+    },
+    {
+      "iteration": 8,
+      "inspect_ms": 63.530083,
+      "class_expand_ms": 123.437,
+      "array_storage_expand_ms": 122.464959,
+      "array_elements_expand_ms": 128.369333,
+      "total_ms": 437.801375
+    },
+    {
+      "iteration": 9,
+      "inspect_ms": 63.241667,
+      "class_expand_ms": 123.978875,
+      "array_storage_expand_ms": 122.875291,
+      "array_elements_expand_ms": 128.621834,
+      "total_ms": 438.717667
+    },
+    {
+      "iteration": 10,
+      "inspect_ms": 62.444708,
+      "class_expand_ms": 123.382583,
+      "array_storage_expand_ms": 125.624167,
+      "array_elements_expand_ms": 131.994667,
+      "total_ms": 443.446125
+    }
+  ],
+  "summary": {
+    "inspect_ms": {
+      "median_ms": 62.631979,
+      "p95_ms": 74.910209
+    },
+    "class_expand_ms": {
+      "median_ms": 123.1057705,
+      "p95_ms": 124.070833
+    },
+    "array_storage_expand_ms": {
+      "median_ms": 122.94606250000001,
+      "p95_ms": 125.624167
+    },
+    "array_elements_expand_ms": {
+      "median_ms": 128.7008965,
+      "p95_ms": 131.994667
+    },
+    "total_ms": {
+      "median_ms": 437.9500205,
+      "p95_ms": 450.80225
+    }
+  },
+  "cleanup_completed": true
+}
