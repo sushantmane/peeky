@@ -48,8 +48,8 @@ Stacked on `feat/java-attach` (2026-10-15):
   - `describe` reports the timing contract.
   - Verified on Venice's timed test: the background probe took 19.2 s, and the slow-agent and absent-agent sessions both auto-resumed. All runs PASSED.
   - Open issue: one Venice session never received a `stopped` event (see JAVA_ATTACH.md). Diagnostics were added.
+- **Agent-speed review:** no blocking issues. Three should-fix issues are fixed: background errors are replayed on stderr, a relative state dir now works, and crash stops are never auto-resumed (checked with real LLDB). Four nits are fixed too. See the same review file.
 - **Next:**
-  - an independent review of the agent-speed slice;
   - one PR from `feat/corpus` covering the whole stack;
   - SSH separate host (#8; needs a second host);
   - a user-selected non-synthetic program.

@@ -213,7 +213,8 @@ def run_probe(root, probe, *, adapter=None, progress=None):
                 status = "completed" if hits else "no-stop"
                 say("program finished")
                 break
-            paused = time.monotonic()
+            # From the moment the stop arrived, so debugger reads before capture count too.
+            paused = state.get("event", {}).get("received", time.monotonic())
             stop = {**session, "stop_id": state["stop_id"]}
             # Only the requested breakpoint counts; a crash, signal or other stop fails
             # closed before any capture or intervention.
@@ -283,7 +284,13 @@ def run_probe(root, probe, *, adapter=None, progress=None):
         report = worker.dispatch("report", session)
         result.update(
             status=status,
-            ended="hits" if probe.until == "hits" and report["state"] != "terminated" else "exit",
+            ended=(
+                "hits"
+                if probe.until == "hits" and status == "completed" and hits >= probe.hits
+                else "exit"
+                if report.get("state") == "terminated"
+                else None
+            ),
             output=report["output"],
             output_truncated=report["output_truncated"],
         )

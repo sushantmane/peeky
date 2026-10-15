@@ -54,9 +54,9 @@ If `verify` fails at `stage: build`, read the compiler diagnostics and try again
 
 ## Time: your tool timeout and the program's clocks
 
-- **Use `--background` for long calls.** If a call may outlast your tool timeout (JVM startup, compiled builds, slow programs), add `--background` to `probe` or `verify`. It returns `{"job": "<id>"}` at once. Then repeat `peeky job wait <id> [--timeout 20]` until the exit code is not **3**. The final output and exit code are exactly what the foreground command would have printed.
+- **Use `--background` for long calls.** If a call may outlast your tool timeout (JVM startup, compiled builds, slow programs), add `--background` to `probe` or `verify`. It returns `{"job": "<id>"}` at once. Then repeat `peeky job wait <id> [--timeout 20]` until the exit code is not **3**. The final stdout, stderr and exit code are exactly what the foreground command would have produced.
 - **Prefer probes for programs with clocks.** Test timeouts, heartbeats and RPC deadlines keep running while the program is paused. A probe pauses for milliseconds per hit (`pauses_ms`), with no model turn in between.
-- **Sessions can't wait for you on timed programs.** Pass `session start --max-pause S`; attached JVMs default to 10 s. A stop older than S is auto-resumed, and your next call on it fails with `STALE_STOP` and says so. `inspect` shows `paused_s` and `resume_in_s`, so you can see how much time is left.
+- **Sessions can't wait for you on timed programs.** Pass `session start --max-pause S`; attached JVMs default to 10 s. A breakpoint stop older than S is auto-resumed, and your next call on it fails with `STALE_STOP` and says so. Crash and exception stops (`reason` other than `breakpoint`) are never auto-resumed, so you can inspect them. `inspect` shows `paused_s` and `resume_in_s`, so you can see how much time is left.
 - **`peeky describe` reports this target's timing contract** in its `timing` field.
 
 ## When something fails

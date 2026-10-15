@@ -326,3 +326,41 @@ def test_native_arguments_are_literal_and_keep_empty_values(native_worker):
     for expected in ("ARG:9:two words", "ARG:0:", "ARG:1:*", "ARG:5:$HOME", "ARG:4:it's"):
         assert expected in output
     client.call("close", **session)
+
+
+CRASH = """#include <stdio.h>
+
+int main(void) {
+    int *pointer = NULL;
+    int value = 7;
+    printf("before %d\\n", value); /* BREAK */
+    fflush(stdout);
+    *pointer = value;
+    return 0;
+}
+"""
+
+
+def test_pause_guard_resumes_breakpoints_but_never_crash_stops(native_worker, tmp_path):
+    start, _, _, _ = native_worker
+    (tmp_path / "crash.c").write_text(CRASH)
+    line = next(i for i, text in enumerate(CRASH.splitlines(), 1) if "BREAK" in text)
+    client, worker = start(sources=("crash.c",))
+    started = client.call("launch", program="crash.c", breakpoints=[{"line": line}], max_pause=0.5)
+    session = {"session_id": started["session_id"]}
+    first = wait(client, session, "stopped")
+    assert first["reason"] == "breakpoint" and "resume_in_s" in first
+    deadline = time.monotonic() + 15
+    while not worker.auto_resumed and time.monotonic() < deadline:
+        time.sleep(0.1)
+        worker.guard_pause()
+    crash = wait(client, session, "stopped")
+    assert crash["reason"] != "breakpoint" and "resume_in_s" not in crash
+    assert crash["last_auto_resumed"]["reason"] == "breakpoint"
+    for _ in range(15):
+        time.sleep(0.1)
+        worker.guard_pause()
+    assert worker.state == "stopped" and worker.stop_id == crash["stop_id"]
+    assert len(worker.auto_resumed) == 1
+    snapshot = client.call("inspect", **session, stop_id=crash["stop_id"])
+    assert snapshot["frames"][0]["line"] == line + 2

@@ -254,11 +254,13 @@ class DAP:
             return {"recent": recent, "ignored": dict(self.ignored_events)}
 
     def pending_stop(self, after):
-        """Receive time of the first unconsumed stop or exit after ``after``, else None."""
+        """(receive time, reason) of the first unconsumed stop after ``after``, else None."""
         with self.condition:
             for event in self.events:
                 if event["cursor"] > after and event["event"] in ("stopped", "terminated"):
-                    return event["received"] if event["event"] == "stopped" else None
+                    if event["event"] != "stopped":
+                        return None
+                    return event["received"], event.get("body", {}).get("reason")
             return None
 
     def snapshot_output(self):

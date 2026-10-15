@@ -35,7 +35,9 @@ MAX_SESSION_SECONDS = 300
 
 
 def _private_dir(name):
-    path = Path(os.environ.get("PEEKY_STATE_DIR", Path.home() / ".peeky")) / name
+    # Absolute (not symlink-resolved) so detached children with another cwd agree.
+    base = os.environ.get("PEEKY_STATE_DIR") or str(Path.home() / ".peeky")
+    path = Path(os.path.abspath(base)) / name
     path.mkdir(parents=True, exist_ok=True, mode=0o700)
     info = path.lstat()
     if path.is_symlink() or info.st_uid != os.getuid():
@@ -454,9 +456,16 @@ def _state_text(state):
         hint = " (still running; run `peeky session wait`)"
     elif state["state"] == "terminated":
         hint = " (program exited; `peeky session report` shows output)"
+    reason = state.get("reason")
+    if reason and reason != "breakpoint":
+        where += f" [reason: {reason}; not auto-resumed, inspect it or `session report`]"
     text = f"state: {state['state']}{where}{_pause_text(state)}{hint}"
     if state.get("auto_resumed"):
-        text += f"\nnote: {state['auto_resumed']} stop(s) were auto-resumed after the pause budget"
+        last = state.get("last_auto_resumed") or {}
+        text += (
+            f"\nnote: {state['auto_resumed']} breakpoint stop(s) were auto-resumed after the "
+            f"pause budget (latest at {last.get('location')} after {last.get('paused_s')} s)"
+        )
     return text
 
 
@@ -792,13 +801,18 @@ def run_job(path):
     import fcntl
     import traceback
 
+    def private(name):
+        return os.fdopen(os.open(path / name, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w")
+
     path = Path(path)
     spec = json.loads((path / "job.json").read_text())
-    lock = open(path / "lock", "w")
+    lock = private("lock")
     fcntl.flock(lock, fcntl.LOCK_EX)
+    # Written only while the lock is held: a free lock plus this marker means the job died.
+    private("started").close()
     os.chdir(spec["cwd"])
     code = 2
-    with open(path / "out", "w") as out, open(path / "log", "w") as log:
+    with private("out") as out, private("log") as log:
         sys.stdout, sys.stderr = out, log
         try:
             code = main(spec["argv"], _job=True)
@@ -834,11 +848,13 @@ def _job_state(path):
     except BlockingIOError:
         return state
     except FileNotFoundError:
-        if time.time() - spec["started"] < 30:
-            return state
+        pass
     if (path / "status.json").is_file():
         # Finished between the two checks.
         return _job_state(path)
+    if not (path / "started").is_file() and time.time() - spec["started"] < 30:
+        # Not yet holding its lock (slow interpreter start); not lost.
+        return state
     # Neither running (lock free or never taken) nor finished: the job process died.
     boot = (path / "boot.log").read_text()[-2000:] if (path / "boot.log").is_file() else ""
     return {**state, "status": "lost", "exit_code": 2, "error": boot or "Job process exited"}
@@ -890,8 +906,10 @@ def job(args):
         return 3
     if state["status"] == "lost":
         raise RuntimeError(f"Job {state['job']} was lost: {state['error']}")
-    # The stored output is exactly what the foreground command would have printed.
+    # Replay exactly what the foreground command would have printed on each stream.
     sys.stdout.write((path / "out").read_text())
+    if (path / "log").is_file():
+        sys.stderr.write((path / "log").read_text())
     return state["exit_code"]
 
 

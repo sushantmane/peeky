@@ -72,6 +72,7 @@ class DebugWorker:
         self.auto_resumed = []
         self.cursor = 0
         self.stop_location = None
+        self.stop_reason = None
         # Below Client.call's 45 s HTTP timeout: a launch either returns within this
         # bound or is discarded, so an abandoned slow launch cannot leave a session.
         self.launch_deadline_s = 40
@@ -108,21 +109,24 @@ class DebugWorker:
             return None
 
     def location(self):
-        return {"location": self.stop_location} if self.stop_location else {}
+        where = {"location": self.stop_location} if self.stop_location else {}
+        return {**where, "reason": self.stop_reason} if self.stop_id else where
 
     def pause_status(self):
         if self.state != "stopped" or self.stopped_at is None:
             return {}
         paused = round(time.monotonic() - self.stopped_at, 2)
         status = {"paused_s": paused}
-        if self.max_pause:
+        if self.max_pause and self.stop_reason == "breakpoint":
             status["resume_in_s"] = round(max(0.0, self.max_pause - paused), 2)
         return status
 
     def guard_pause(self):
         """Auto-resume a stop that outlived the session's pause budget.
 
-        Called periodically by the worker server. Any failure releases the program by
+        Called periodically by the worker server. Only stops at Peeky's own breakpoints
+        are resumed; crashes, exceptions and signals stay stopped for inspection (and
+        resuming a fault would usually re-fault). Any failure releases the program by
         closing the session (detaching an attached JVM) rather than leaving it paused.
         """
         with self.lock:
@@ -130,25 +134,34 @@ class DebugWorker:
                 return
             try:
                 if self.state == "running":
-                    received = self.dap.pending_stop(self.cursor)
-                    if received is None or time.monotonic() - received < self.max_pause:
+                    pending = self.dap.pending_stop(self.cursor)
+                    if pending is None or pending[1] != "breakpoint":
+                        return
+                    if time.monotonic() - pending[0] < self.max_pause:
                         return
                     self._dispatch("wait", {"timeout": 0.1})
                 if self.state != "stopped" or self.stopped_at is None:
                     return
+                if self.stop_reason != "breakpoint":
+                    return
                 paused = time.monotonic() - self.stopped_at
                 if paused < self.max_pause:
                     return
-                stop_id = self.stop_id
-                self._dispatch("continue", {"stop_id": stop_id})
-                self.auto_resumed.append({"stop_id": stop_id, "paused_s": round(paused, 2)})
+                entry = {
+                    "stop_id": self.stop_id,
+                    "reason": self.stop_reason,
+                    "location": self.stop_location,
+                    "paused_s": round(paused, 2),
+                }
+                self._dispatch("continue", {"stop_id": self.stop_id})
+                self.auto_resumed.append(entry)
                 self.auto_resumed = self.auto_resumed[-100:]
                 self.audit.append(
                     {
                         "time": time.time(),
                         "operation": "auto_resume",
-                        "arguments": {"stop_id": stop_id},
-                        "result": {"paused_s": round(paused, 2), "max_pause": self.max_pause},
+                        "arguments": {"stop_id": entry["stop_id"]},
+                        "result": {**entry, "max_pause": self.max_pause},
                     }
                 )
                 self.audit = self.audit[-500:]
@@ -328,6 +341,7 @@ class DebugWorker:
                 updates["breakpoint_events"] = list(self.breakpoint_events)
             if self.auto_resumed:
                 updates["auto_resumed"] = len(self.auto_resumed)
+                updates["last_auto_resumed"] = self.auto_resumed[-1]
             if self.state in ("stopped", "terminated"):
                 return {
                     "state": self.state,
@@ -365,6 +379,7 @@ class DebugWorker:
             self.stop_id = uuid.uuid4().hex if self.state == "stopped" else None
             self.stopped_at = event.get("received", time.monotonic()) if self.stop_id else None
             self.thread_id = event.get("body", {}).get("threadId")
+            self.stop_reason = event.get("body", {}).get("reason") if self.stop_id else None
             self.stop_location = self.read_location() if self.stop_id else None
             return {
                 "state": self.state,
@@ -495,6 +510,7 @@ class DebugWorker:
             self.state = "running"
             self.stopped_at = None
             self.stop_location = None
+            self.stop_reason = None
             self.children.clear()
             self.stop_id = None
             self.frames.clear()
@@ -722,6 +738,8 @@ class DebugWorker:
         runtime, self.runtime = self.runtime, None
         self.state = "idle"
         self.stopped_at = None
+        self.stop_location = None
+        self.stop_reason = None
         self.session = None
         self.stop_id = None
         self.thread_id = None

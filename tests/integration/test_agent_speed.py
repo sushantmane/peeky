@@ -221,3 +221,46 @@ def test_unknown_and_lost_jobs_fail_with_codes(target, capsys):
     (lost / "lock").write_text("")
     code, out = run(capsys, "job", "wait", "a" * 16, "--json")
     assert code == 2 and json.loads(out.out)["error"]["code"] == "JOB_LOST"
+
+
+def test_failed_background_jobs_replay_their_error_on_stderr(target, capsys):
+    root = Path(__file__).resolve().parents[2] / "examples"
+    for name in ("pagination_bug.py", "verify_pagination.py"):
+        shutil.copyfile(root / name, target / name)
+    args = ["verify", target / "pagination_bug.py", "--check", target / "verify_pagination.py"]
+    code, out = run(capsys, *args, "--old", "no such text", "--new", "x", "--background")
+    job = out.out.split()[1]
+    code, out = run(capsys, "job", "wait", job, "--timeout", "60")
+    assert code == 2 and "[INVALID_REQUEST]" in out.err and "matched 0 times" in out.err
+    files = target / "state" / "jobs" / job
+    for name in ("lock", "started", "out", "log", "status.json", "job.json"):
+        assert (files / name).stat().st_mode & 0o077 == 0, name
+
+
+def test_background_jobs_work_with_a_relative_state_dir(target, capsys, monkeypatch):
+    monkeypatch.chdir(target)
+    monkeypatch.setenv("PEEKY_STATE_DIR", "relative-state")
+    code, out = run(capsys, "probe", "loop.py", "--at", "7", "--capture", "i", "--background")
+    job = out.out.split()[1]
+    code, out = run(capsys, "job", "wait", job, "--timeout", "60")
+    assert code == 0 and "status: completed" in out.out and "TOTAL 3" in out.out
+    assert (target / "relative-state" / "jobs" / job / "status.json").is_file()
+
+
+def test_a_job_not_yet_holding_its_lock_is_running_not_lost(target, capsys):
+    jobs = target / "state" / "jobs"
+    pending = jobs / ("b" * 16)
+    pending.mkdir(parents=True)
+    spec = {"id": "b" * 16, "command": "probe", "argv": [], "cwd": "/", "started": time.time()}
+    (pending / "job.json").write_text(json.dumps(spec))
+    (pending / "lock").write_text("")
+    code, out = run(capsys, "job", "wait", "b" * 16, "--timeout", "0", "--json")
+    assert code == 3 and json.loads(out.out)["status"] == "running"
+    (pending / "started").write_text("")
+    code, out = run(capsys, "job", "wait", "b" * 16, "--timeout", "0", "--json")
+    assert code == 2 and json.loads(out.out)["error"]["code"] == "JOB_LOST"
+
+
+def test_timed_out_probes_do_not_claim_to_have_ended_at_their_hits(target):
+    result = run_probe(target, Probe("slow.py", 7, ("i",), hits=5, until="hits", timeout=3))
+    assert result["ended"] in ("exit", None) and result["hits"] == 3
