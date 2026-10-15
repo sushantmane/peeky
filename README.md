@@ -2,6 +2,19 @@
 
 **Let agents peek inside running programs.**
 
+Peeky is a standalone debugger tool. Your agent (Copilot, Claude, Codex) or you call it; it never calls a model.
+
+```sh
+pip install -e .
+peeky describe examples/rust                       # what can I ask? (lines, views, rules)
+peeky probe examples/rust --at 36 --capture start,some,request.page --set start=0
+peeky session start examples/pagination_bug.py --at 8 && peeky session inspect
+peeky verify examples/pagination_bug.py --check examples/verify_pagination.py \
+  --old 'page * page_size' --new '(page - 1) * page_size'
+```
+
+Agents: read [docs/AGENT_GUIDE.md](docs/AGENT_GUIDE.md) or install [skills/peeky-debug](skills/peeky-debug/SKILL.md). Design: [ADR 0005](docs/adr/0005-tool-not-agent.md).
+
 Peeky gives a coding agent a controlled debugging loop: choose a breakpoint, inspect live state, test a hypothesis by changing a variable, and validate a candidate fix in a fresh process. Runtime experiments produce evidence; a separate verifier decides whether the source change passes the supplied checks.
 
 This private repository is an MVP foundation, migrated from a working prototype and revised after two adversarial reviews. It is not a production debugger service or a sandbox for hostile code.
@@ -12,7 +25,7 @@ This private repository is an MVP foundation, migrated from a working prototype 
 - One controller and one session per worker.
 - JSON HTTP client/worker interface with session and stop identities.
 - Local launch, breakpoints, bounded inspection, variable changes, continuation, and evidence reports.
-- A bounded model-driven investigation using Codex CLI structured decisions.
+- `peeky-agent`, an optional reference harness that drives the same operations with Codex CLI decisions; it is not the primary interface.
 - A candidate source patch checked by a trusted verifier in a fresh process.
 - Loopback transport; SSH forwarding for remote access.
 

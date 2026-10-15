@@ -62,3 +62,41 @@ def test_rust_stateless_probe_views_intervention_and_cleanup(tmp_path):
     assert "PAGE:[10, 20, 30]" in result["output"]
     assert result["target_identity"]["language"] == "rust" and result["artifact_manifest_id"]
     assert set(Path(tempfile.gettempdir()).glob("peeky-rust-*")) == before
+
+
+@pytest.mark.timeout(180)
+def test_peeky_cli_detects_rust_and_runs_probe_session_and_verify(tmp_path, monkeypatch, capsys):
+    import json
+
+    from peeky.cli import main
+
+    names = ("CARGO", "RUSTC", "DAP", "DWARFDUMP", "LINKER")
+    if not all(os.environ.get("PEEKY_RUST_" + name) for name in names):
+        pytest.skip("set PEEKY_RUST_* tool paths to enable Rust CLI conformance")
+    monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
+    crate = tmp_path / "crate"
+    for name in (*INPUTS, "verify_pagination.py"):
+        (crate / name).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(ROOT / "examples/rust" / name, crate / name)
+    line = next(
+        i
+        for i, text in enumerate((crate / "src/main.rs").read_text().splitlines(), 1)
+        if "// OBSERVE" in text
+    )
+    assert main(["describe", str(crate), "--json"]) == 0
+    manifest = json.loads(capsys.readouterr().out)
+    assert manifest["language"] == "rust" and line in manifest["breakpoint_lines"]["src/main.rs"]
+    assert manifest["value_views"]["core::option::Option<i32>"] == "option"
+    assert main(["session", "start", str(crate), "--at", str(line)]) == 0
+    capsys.readouterr()
+    assert main(["session", "get", "some", "request.page", "--json"]) == 0
+    rows = {row["selector"]: row["value"] for row in json.loads(capsys.readouterr().out)}
+    assert rows == {"some": "Some(3)", "request.page": "1"}
+    assert main(["session", "set", "start=0"]) == 0
+    assert main(["session", "continue"]) == 0 and main(["session", "report"]) == 0
+    assert "PAGE:[10, 20, 30]" in capsys.readouterr().out
+    assert main(["session", "close"]) == 0
+    check = ["--check", str(crate / "verify_pagination.py")]
+    fix = ["--old", "request.page * request.page_size", "--new"]
+    assert main(["verify", str(crate), *check, *fix, "(request.page - 1) * request.page_size"]) == 0
+    assert main(["verify", str(crate), *check, *fix, "0"]) == 1
