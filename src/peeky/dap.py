@@ -81,6 +81,7 @@ class DAP:
         os.set_blocking(self.process.stdin.fileno(), False)
         self.condition = threading.Condition()
         self.responses = {}
+        self.abandoned = set()
         self.events = collections.deque(maxlen=MAX_CONTROL_EVENTS)
         self.output = collections.deque(maxlen=500)
         self.output_truncated = False
@@ -93,6 +94,11 @@ class DAP:
     def _accept(self, body):
         with self.condition:
             if body["type"] == "response":
+                if body["request_seq"] in self.abandoned:
+                    # A reply to a request whose caller already timed out: discard it.
+                    self.abandoned.discard(body["request_seq"])
+                    self.condition.notify_all()
+                    return
                 if len(self.responses) >= 256:
                     raise RuntimeError("Too many pending DAP responses")
                 self.responses[body["request_seq"]] = body
@@ -179,12 +185,24 @@ class DAP:
                     raise RuntimeError(self.error)
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
+                    self.abandoned.add(seq)
                     raise ResponseTimeout("Debugger response timed out; outcome may be uncertain")
                 self.condition.wait(remaining)
             value = self.responses.pop(seq)
         if not value.get("success"):
             raise RuntimeError(value.get("message", "Debugger request failed"))
         return value.get("body", {})
+
+    def drained(self, timeout=1):
+        """True once every timed-out request has received (and discarded) its reply."""
+        deadline = time.monotonic() + timeout
+        with self.condition:
+            while self.abandoned and not self.error:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                self.condition.wait(remaining)
+            return not self.abandoned and not self.error
 
     def request(self, command, arguments=None, *, timeout=15):
         """One absolute deadline covers both the write and the response."""

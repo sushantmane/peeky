@@ -12,6 +12,7 @@ def transport():
     dap = DAP.__new__(DAP)
     dap.condition = threading.Condition()
     dap.responses = {}
+    dap.abandoned = set()
     dap.events = collections.deque(maxlen=MAX_CONTROL_EVENTS)
     dap.output = collections.deque(maxlen=500)
     dap.output_truncated = False
@@ -204,3 +205,14 @@ while True:
         assert dap.request("setVariable", {"value": "x" * 1048576}) == {"length": 1048576}
     finally:
         dap.close()
+
+
+def test_timed_out_responses_are_discarded_and_drain_is_observable():
+    from peeky.dap import ResponseTimeout
+
+    dap = transport()
+    with pytest.raises(ResponseTimeout):
+        dap.response(9, timeout=0)
+    assert dap.abandoned == {9} and dap.drained(0) is False
+    dap._accept({"type": "response", "request_seq": 9, "success": True, "body": {}})
+    assert 9 not in dap.responses and dap.drained(0) is True

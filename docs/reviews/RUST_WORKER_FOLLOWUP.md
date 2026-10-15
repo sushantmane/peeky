@@ -83,3 +83,12 @@ Also fixed while validating: an intermittent macOS `EPERM` from `killpg` on an e
 | Docs overstated truncation/deadline/budget behavior | RUST_AGENT/RUST_GATE now describe the enforced behavior. |
 
 Known local-only limitation, not introduced here: `tests/native/test_native_worker.py::test_native_adapter_death_reaps_stopped_target` fails on macOS with Apple LLDB on `origin/main` as well. The hosted Linux LLVM 18 lane passes it.
+
+## Fifth review (verification of `55b29ad`) and dispositions
+
+The reviewer confirmed the fourth-review fixes and reported two should-fix gaps, both fixed:
+
+| Finding | Disposition |
+| --- | --- |
+| JSON classifier accepted overflow, a killed Cargo, a missing `build-finished` record or extra infrastructure stderr | Retryable now requires exit code 101, no timeout or overflow, untruncated output, a single final `{"reason":"build-finished","success":false}` record, stderr limited to Cargo progress, warning-summary and `could not compile` footer lines, and every error primary-spanned in a declared source (`test_incomplete_or_abnormal_cargo_failures_are_not_retryable`). |
+| A timed-out view read stayed in flight and could repoint scope context after rebinding; late replies accumulated | `DAP` records abandoned sequence numbers and discards their replies. An inspection that hit a view response timeout, or starts while abandoned replies are still pending (1 s drain), issues no mutation handles and reports `mutation_blocked` (`test_pending_view_reply_blocks_mutation_until_drained`, `test_timed_out_responses_are_discarded_and_drain_is_observable`). |

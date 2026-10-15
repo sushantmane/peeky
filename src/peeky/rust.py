@@ -37,6 +37,12 @@ from peeky.rust_symbols import active_variant, application_symbols
 
 DEPS = "target/debug/deps"
 TEST_TIMEOUT_S = 30
+_CARGO_STDERR = re.compile(
+    r" *Compiling [a-z0-9_-]{1,64} v[0-9.]{1,64} \(.{1,4096}\)"
+    r"|error: could not compile `[a-z0-9_-]{1,64}` \(bin \"[a-z0-9_-]{1,64}\"\) "
+    r"due to [0-9]{1,6} previous errors?(?:; [0-9]{1,6} warnings? emitted)?"
+    r"|warning: `[a-z0-9_-]{1,64}` \(bin \"[a-z0-9_-]{1,64}\"\) generated [0-9]{1,6} warnings?"
+)
 SYMBOL_BUDGET_S = 10
 _SUMMARY = re.compile(
     r"test result: (ok|FAILED)\. ([0-9]{1,6}) passed; ([0-9]{1,6}) failed; ([0-9]{1,6}) ignored; "
@@ -116,16 +122,37 @@ def compiler_diagnostic(result, sources):
     Uses Cargo's JSON messages from stdout. Span-less errors (linking, driver),
     errors elsewhere, malformed or possibly truncated output are not retryable.
     """
-    stdout = result.get("stdout", "")
-    if result.get("timed_out") or len(stdout.encode()) >= 16000 or not stdout.endswith("\n"):
+    stdout, stderr = result.get("stdout", ""), result.get("stderr", "")
+    if (
+        result.get("exit_code") != 101
+        or result.get("timed_out")
+        or result.get("output_limit_exceeded")
+        or len(stdout.encode()) >= 16000
+        or len(stderr.encode()) >= 16000
+        or not stdout.endswith("\n")
+    ):
+        return False
+    # Cargo's stderr for an ordinary compile failure is only progress and its footer.
+    if not all(
+        _CARGO_STDERR.fullmatch(line) for line in stderr.splitlines() if line.strip()
+    ) or not any(line.startswith("error: could not compile") for line in stderr.splitlines()):
+        return False
+    lines = stdout.splitlines()
+    try:
+        final = json.loads(lines[-1])
+    except (IndexError, json.JSONDecodeError):
+        return False
+    if final != {"reason": "build-finished", "success": False}:
         return False
     errors = 0
-    for line in stdout.splitlines():
+    for line in lines[:-1]:
         try:
             message = json.loads(line)
         except json.JSONDecodeError:
             return False
-        if not isinstance(message, dict) or message.get("reason") != "compiler-message":
+        if not isinstance(message, dict) or message.get("reason") == "build-finished":
+            return False
+        if message.get("reason") != "compiler-message":
             continue
         diagnostic = message.get("message")
         if not isinstance(diagnostic, dict) or diagnostic.get("level") not in (

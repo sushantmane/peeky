@@ -476,15 +476,47 @@ FINISHED = json.dumps({"reason": "build-finished", "success": False})
     ],
 )
 def test_only_rustc_errors_with_primary_spans_in_declared_sources_are_retryable(lines, retryable):
-    result = {"stdout": "\n".join(lines) + "\n", "stderr": "error: could not compile"}
-    assert compiler_diagnostic(result, ("src/main.rs",)) is retryable
+    if lines and lines[-1] != FINISHED:
+        lines = [*lines, FINISHED]
+    assert compiler_diagnostic(cargo_failure(lines), ("src/main.rs",)) is retryable
 
 
-def test_possibly_truncated_or_timed_out_diagnostics_are_not_retryable():
-    line = cargo_message("error", "src/main.rs") + "\n"
-    assert compiler_diagnostic({"stdout": line * 300}, ("src/main.rs",)) is False
-    assert compiler_diagnostic({"stdout": line[:-1]}, ("src/main.rs",)) is False
-    assert compiler_diagnostic({"stdout": line, "timed_out": True}, ("src/main.rs",)) is False
+STDERR = (
+    "   Compiling peeky-pagination v0.1.0 (/tmp/w)\n"
+    'error: could not compile `peeky-pagination` (bin "peeky-pagination") due to 1 previous error\n'
+)
+
+
+def cargo_failure(lines, **changes):
+    return {"exit_code": 101, "stdout": "\n".join(lines) + "\n", "stderr": STDERR, **changes}
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"exit_code": None, "output_limit_exceeded": True},
+        {"exit_code": -9},
+        {"exit_code": 1},
+        {"timed_out": True},
+        {"stderr": STDERR + "error: failed to run custom build command\n"},
+        {"stderr": "   Compiling peeky-pagination v0.1.0 (/tmp/w)\n"},
+        {"stdout": cargo_message("error", "src/main.rs") + "\n"},
+        {"stdout": (cargo_message("error", "src/main.rs") + "\n") * 300 + FINISHED + "\n"},
+        {"stdout": cargo_message("error", "src/main.rs") + "\n" + FINISHED},
+        {
+            "stdout": FINISHED
+            + "\n"
+            + cargo_message("error", "src/main.rs")
+            + "\n"
+            + FINISHED
+            + "\n"
+        },
+    ],
+)
+def test_incomplete_or_abnormal_cargo_failures_are_not_retryable(changes):
+    good = cargo_failure([cargo_message("error", "src/main.rs"), FINISHED])
+    assert compiler_diagnostic(good, ("src/main.rs",)) is True
+    assert compiler_diagnostic({**good, **changes}, ("src/main.rs",)) is False
 
 
 def test_macos_dsymutil_must_be_exactly_the_path_selected_tool(tmp_path, monkeypatch):
@@ -756,3 +788,26 @@ def test_value_views_reject_duplicate_scope_identities(worker):
     with pytest.raises(ValueError, match="Duplicate scope"):
         call(worker, "inspect")
     assert not worker.references
+
+
+def test_pending_view_reply_blocks_mutation_until_drained(worker):
+    from peeky.dap import ResponseTimeout
+
+    backend = worker.dap
+    original = backend.request
+    state = {"timeout": True, "drained": False}
+
+    def request(operation, args, timeout=15):
+        if operation == "variables" and args["variablesReference"] == 11 and state["timeout"]:
+            raise ResponseTimeout("late")
+        return original(operation, args)
+
+    backend.request = request
+    backend.drained = lambda timeout=1: state["drained"]
+    snapshot = call(worker, "inspect")
+    assert snapshot["mutation_blocked"] and not worker.references
+    state.update(timeout=False)
+    assert call(worker, "inspect").get("mutation_blocked") and not worker.references
+    state.update(drained=True)
+    snapshot = call(worker, "inspect")
+    assert "mutation_blocked" not in snapshot and worker.references

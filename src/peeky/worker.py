@@ -41,6 +41,7 @@ class DebugWorker:
         self.view_items = 0
         self.view_bytes = 0
         self.view_deadline = 0.0
+        self.view_timed_out = False
         self.audit = []
         self.breakpoint_events = []
         self.lock = threading.Lock()
@@ -242,7 +243,12 @@ class DebugWorker:
             self.inspection_nodes = 0
             self.view_fetches = self.view_items = self.view_bytes = 0
             self.view_deadline = time.monotonic() + VIEW_SECONDS
+            self.view_timed_out = False
             validate_children = getattr(runtime, "validate_children", None)
+            # A timed-out view read may still be processed by the adapter; until its
+            # reply drains, this inspection is read-only.
+            drained = getattr(self.dap, "drained", None)
+            quiescent = drained(1) if drained else True
             stack = self.dap.request("stackTrace", {"threadId": self.thread_id, "levels": 10})
             frames = stack.get("stackFrames", [])[:10]
             self.frames = {f["id"] for f in frames}
@@ -276,17 +282,22 @@ class DebugWorker:
                 )
                 pending.append((handle, scope, exposed))
             references = [scope["variablesReference"] for _, scope, _ in pending]
-            if self.view_fetches:
+            writable = quiescent and not self.view_timed_out
+            if self.view_fetches and writable:
                 # Value views issued nested reads that may change adapter scope context.
                 # Bind mutation authority only to freshly re-acquired, identical scopes.
                 references = self.reacquire_scopes(runtime, selected_frame, pending)
             result = []
             for (handle, scope, exposed), reference in zip(pending, references):
-                self.references.add(handle)
-                self.reference_frames[handle] = selected_frame
-                self.reference_adapter[handle] = reference
+                if writable:
+                    self.references.add(handle)
+                    self.reference_frames[handle] = selected_frame
+                    self.reference_adapter[handle] = reference
                 result.append({"name": scope["name"], "reference": handle, "variables": exposed})
-            return {"stop_id": self.stop_id, "frames": frames, "scopes": result}
+            snapshot = {"stop_id": self.stop_id, "frames": frames, "scopes": result}
+            if not writable:
+                snapshot["mutation_blocked"] = "A value-view read is still pending; inspect again"
+            return snapshot
         if operation == "expand":
             return self.expand(args, runtime)
         if operation == "set_variable":
@@ -421,6 +432,7 @@ class DebugWorker:
             ).get("variables", [])
         except ResponseTimeout as exc:
             # The read was written completely; only its reply missed the view budget.
+            self.view_timed_out = True
             raise ViewBudgetExhausted("Value view budget exhausted") from exc
         if not isinstance(values, list) or len(values) > 64:
             raise ValueError("Value view child collection exceeds limit")
