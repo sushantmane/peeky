@@ -45,6 +45,10 @@ def attached_source_map(class_roots, sources, deadline=None):
     """
     packages, counts, source_bytes = {}, {}, 0
     for source in sources:
+        if deadline is not None and time.monotonic() >= deadline:
+            raise TimeoutError("Java attach preparation exceeded its deadline")
+        if source.is_symlink() or not source.is_file():
+            raise ValueError("Attached Java sources must be regular files")
         size = source.stat().st_size
         source_bytes += size
         if size > MAX_CLASS_BYTES or source_bytes > MAX_ATTACH_BYTES:
@@ -63,11 +67,14 @@ def attached_source_map(class_roots, sources, deadline=None):
             directory = class_root.joinpath(*package.split(".")) if package else class_root
             if not directory.is_dir():
                 continue
-            entries = []
+            entries, scanned = [], 0
             with os.scandir(directory) as listing:
                 for entry in listing:
-                    if len(entries) >= MAX_PACKAGE_ENTRIES:
+                    scanned += 1
+                    if scanned > MAX_PACKAGE_ENTRIES:
                         raise ValueError("Package directory has too many entries to attach")
+                    if deadline is not None and scanned % 256 == 0 and time.monotonic() >= deadline:
+                        raise TimeoutError("Java attach preparation exceeded its deadline")
                     if entry.name.endswith(".class"):
                         entries.append(Path(entry.path))
             for path in sorted(entries):

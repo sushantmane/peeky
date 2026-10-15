@@ -631,7 +631,7 @@ def make_server(root, token, port=8765, *, adapter=None):
             tuple(args.get("capture", [])),
             tuple(changes.items()),
             args.get("hits", 1),
-            min(args.get("timeout", HTTP_PROBE_SECONDS), HTTP_PROBE_SECONDS - 5),
+            min(args.get("timeout", HTTP_PROBE_SECONDS), HTTP_PROBE_SECONDS - 10),
         )
         if not probes.acquire(blocking=False):
             raise ValueError("Another probe is running; retry later")
@@ -693,7 +693,16 @@ def _run_probe_process(root, request, adapter, cap):
     import sys
     import tempfile
 
-    command = [sys.executable, "-m", "peeky.cli", "probe", str(root), "--json"]
+    import peeky
+
+    # Isolated interpreter importing this exact Peeky by absolute path, run outside the
+    # target so a target-local `peeky` package or relative PYTHONPATH cannot interfere.
+    package_parent = str(Path(peeky.__file__).resolve().parents[1])
+    bootstrap = (
+        "import sys; sys.path.insert(0, sys.argv.pop(1)); "
+        "from peeky.cli import main; sys.exit(main(sys.argv[1:]))"
+    )
+    command = [sys.executable, "-I", "-c", bootstrap, package_parent, "probe", str(root), "--json"]
     command += ["--at", f"{request.program}:{request.line}", "--hits", str(request.hits)]
     command += ["--timeout", str(request.timeout)]
     if request.capture:
@@ -709,7 +718,7 @@ def _run_probe_process(root, request, adapter, cap):
         env = {k: v for k, v in os.environ.items() if k != "DEBUG_TOKEN"}
         process = subprocess.Popen(
             command,
-            cwd=root,
+            cwd=scratch,
             env=env,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
@@ -717,9 +726,9 @@ def _run_probe_process(root, request, adapter, cap):
             start_new_session=True,
         )
         try:
-            stdout, stderr = process.communicate(timeout=cap)
+            stdout, stderr = process.communicate(timeout=cap - 5)
         except subprocess.TimeoutExpired:
-            # SIGTERM lets the probe close its debugger and debuggee; then force.
+            # SIGTERM lets the probe close its debugger and debuggee; force at the cap.
             os.killpg(process.pid, signal.SIGTERM)
             try:
                 process.communicate(timeout=5)
@@ -727,8 +736,10 @@ def _run_probe_process(root, request, adapter, cap):
                 os.killpg(process.pid, signal.SIGKILL)
                 process.communicate()
             return {"status": "timeout", "error": f"Probe exceeded the {cap} s HTTP cap"}
+    if len(stdout) > 16 * 1024 * 1024:
+        return {"status": "failed", "error": "Probe result exceeded 16 MiB"}
     try:
-        return json.loads(stdout[: 4 * 1024 * 1024])
+        return json.loads(stdout)
     except json.JSONDecodeError:
         return {"status": "failed", "error": stderr[-2000:].decode(errors="replace")}
 

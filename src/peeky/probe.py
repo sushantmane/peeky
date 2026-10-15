@@ -144,6 +144,16 @@ def _capture(worker, stop, selectors, hit, phase):
     return rows
 
 
+def _expected_line(breakpoint, state, requested):
+    """The adapter-resolved breakpoint line, including later breakpoint updates."""
+    line = breakpoint.get("line", requested)
+    for update in state.get("breakpoint_events", []):
+        point = update.get("breakpoint", {})
+        if point.get("id") == breakpoint.get("id") and type(point.get("line")) is int:
+            line = point["line"]
+    return line
+
+
 def run_probe(root, probe, *, adapter=None):
     """Run one self-contained probe; the worker is always closed before returning."""
     worker = DebugWorker(root, adapter=adapter)
@@ -170,8 +180,24 @@ def run_probe(root, probe, *, adapter=None):
             if state["state"] == "terminated":
                 status = "completed" if hits else "no-stop"
                 break
-            hits += 1
             stop = {**session, "stop_id": state["stop_id"]}
+            # Only the requested breakpoint counts; a crash, signal or other stop fails
+            # closed before any capture or intervention.
+            expected = _expected_line(result["breakpoint"], state, probe.line)
+            snapshot = worker.dispatch("inspect", stop)
+            frame = snapshot["frames"][0] if snapshot["frames"] else {}
+            reason = state.get("event", {}).get("body", {}).get("reason")
+            path = str(frame.get("source", {}).get("path", "")).replace("\\", "/")
+            if (
+                reason not in (None, "breakpoint")
+                or frame.get("line") != expected
+                or not (path == probe.program or path.endswith("/" + probe.program))
+            ):
+                raise ValueError(
+                    f"Stopped at {path}:{frame.get('line')} ({reason}), not the requested "
+                    f"{probe.program}:{expected}"
+                )
+            hits += 1
             rows.extend(_capture(worker, stop, probe.capture, hits, "observed"))
             if hits == 1 and probe.set:
                 for name, value in probe.set:

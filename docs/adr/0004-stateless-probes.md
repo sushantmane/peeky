@@ -1,6 +1,6 @@
 # ADR 0004: Stateless probes alongside debugger sessions
 
-Status: accepted direction (owner, 2026-10-14); interface unified by [ADR 0005](0005-tool-not-agent.md) (`peeky probe`, `peeky session`, `peeky describe`). Steps 1–3 are delivered experimentally: in-process `run_probe`, the `peeky-probe` CLI, a single-flight HTTP `probe` operation that runs in a separate process hard-killed at 40 s (below the 45 s client timeout; SIGTERM first so the probe closes its debugger and debuggee) and `Client.probe`. Step 3 is `peeky describe`. Steps 4–5 (query grammar with captured-evidence store, measured build caching) remain. Both modes are product requirements; session mode is unchanged.
+Status: accepted direction (owner, 2026-10-14); interface unified by [ADR 0005](0005-tool-not-agent.md) (`peeky probe`, `peeky session`, `peeky describe`). Steps 1–3 are delivered experimentally: in-process `run_probe`, the `peeky-probe` CLI, a single-flight HTTP `probe` operation that runs in an isolated separate process: SIGTERM at 35 s so the probe closes its debugger and debuggee, SIGKILL at 40 s, below the 45 s client timeout and `Client.probe`. Step 3 is `peeky describe`. Steps 4–5 (query grammar with captured-evidence store, measured build caching) remain. Both modes are product requirements; session mode is unchanged.
 
 ## Context
 
@@ -44,7 +44,7 @@ Canned probes cover common questions without syntax, for example locals at a lin
 
 - Selectors are dotted paths (`request.page`, `args[0]`) resolved through the existing bounded read-only expansion with frame/scope/ancestry checks. Enums use qualified views, and unqualified values stay opaque. No expressions are evaluated in the debuggee.
 - The query language is a small parser producing the typed probe request. It is never passed to a database engine connected to the debuggee or to the debugger. SQL runs only over captured, already-bounded evidence.
-- Bounds on hits, rows, nodes, wall time and output are explicit request fields with conservative defaults. Selectors beyond the bounded expansion window are reported as truncated, not as missing. A probe that never reaches its line returns `no-stop` and fails. Program output keeps its existing bounded capture and truncation flag.
+- Bounds on hits, rows, nodes, wall time and output are explicit request fields with conservative defaults. Selectors beyond the bounded expansion window are reported as truncated, not as missing. A probe that never reaches its line returns `no-stop` and fails; a stop anywhere else (crash, signal, other location) fails closed before capture or intervention. Program output keeps its existing bounded capture and truncation flag.
 - Statelessness costs a fresh prepare per probe. Measure before optimizing (ADR 0003). Any content-addressed prepared-build cache must key on the full build manifest (inputs, recipe, tool hashes, environment) and re-run `assert_current` before reuse. It must not weaken fresh-candidate verification.
 - Evidence rows carry `artifact_manifest_id` and the ADR 0002 identities so captured data stays attributable.
 
