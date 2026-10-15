@@ -20,25 +20,31 @@ An hourly thread heartbeat (`continue-peeky-mvp`) checks for available usage and
 
 ## Current state (2026-10-15, latest)
 
-**Merged to `main`:**
-- #25 (`10ac271`): the standalone `peeky` CLI, Java attach including Venice, protocol v1 error codes (closes #6), the ten-bug corpus, and agent-speed debugging.
-- #26 (`99efe66`):
+**Merged to `main`** (each after an independent adversarial review, with every finding fixed, all nine CI lanes green, and the full real-toolchain suite passing locally; dispositions in `docs/reviews/ERRORS_CORPUS_REVIEW.md` and `RUST_REPAIR_REVIEW.md`):
+- **#25 (`10ac271`):** the standalone `peeky` CLI, Java attach (Venice), protocol v1 error codes, the ten-bug corpus, and agent-speed debugging (pause budgets, background jobs). Closed #6.
+- **#26 (`99efe66`):**
   - `--set-hit`, `by_hit`, Python scopes in `describe`, and safe negative indexes;
-  - three pre-existing Java fixes: array indexing, object fields, and a String size cap.
+  - Java fixes for array indexing, object fields and a String size cap.
+- **#28 (`8ceeefe`):** the real program for #7 (CPython 3.9.6 `ipaddress`, CVE-2024-4032), `--run`/`--arg`, and the live agent's feedback. Closed #7.
+- **#30 (`77fcaa9`):** Codex's Rust preparation hardening ported onto `main`; this superseded #24.
+- **#29 (`5ad98c5`):**
+  - launched JVMs: exits that java-debug drops are inferred safely (pid-authoritative, launch only);
+  - a bounded DAP trace;
+  - clear errors for a corrupted DAP stream.
 
-**Open:** PR #28 (`feat/real-program`) holds the non-synthetic program for #7 (CPython 3.9.6 `ipaddress`, CVE-2024-4032), `--run`/`--arg`, and the live agent's feedback. After review and CI it closes #7.
-
-**Process:**
-- Every slice gets an independent adversarial review, recorded in `docs/reviews/ERRORS_CORPUS_REVIEW.md`, with every finding fixed and given a regression test before merge.
-- CI runs nine lanes.
-- Create PRs and issues with `gh api` (REST): GraphQL calls from `gh pr create`/`gh issue create` hit 504s, and the app's PR tool needs the project's GitHub link.
-
-**Local Java adapter bundle:** `outputs/peeky/work/java-adapter-strcap` (built from `main` with the String cap). `~/.peeky/venice/attach-*.json` point to it.
+**Closed issues:** #6, #7, #9, #10, #11.
 
 **Open issues:**
-- #27: intermittent dropped Java lifecycle events. Peeky fails closed; diagnostics added.
-- #8: SSH separate host; needs a second machine.
-- #24: Rust preparation hardening.
+- **#27:** an attached JVM whose `stopped` event is lost (seen once on Venice). The launch case is fixed.
+- **#12 and #13:** C++ and Rust are delivered except reporting of optimized-out or unavailable locals. Builds are fixed at `-O0` by design; supporting optimized programs is a scope decision for the owner.
+- **#8:** SSH separate-host workflow; needs a second machine.
+
+**Process notes:**
+- Create PRs and issues with `gh api` (REST): `gh pr create`/`gh issue create` GraphQL calls returned 504s, and the app's PR tool needs the project's GitHub link.
+- Squash-merge with `gh api -X PUT .../pulls/N/merge -f merge_method=squash -f sha=<head>`.
+- Never pipe pytest output through `tail` before checking its exit code.
+
+**Local Java adapter bundle:** `outputs/peeky/work/java-adapter-strcap` (with the String cap). `~/.peeky/venice/attach-*.json` point to it. Rebuild with `scripts/setup_java_adapter.py --output <absolute path>`.
 
 ## Previous slices
 
