@@ -216,8 +216,9 @@ def test_application_units_reject_missing_duplicate_or_excess_units(tmp_path):
         lambda text: text + "0x00003000:     NULL\n",
         lambda text: text.replace("DW_AT_stmt_list", "DW_AT_language"),
         lambda text: text.replace('"/rustc/abc"', '"/rustc/\\303abc"'),
-        lambda text: text.replace(".debug_info contents:", "")
-        + "program:\tfile format Mach-O arm64\n",
+        lambda text: (
+            text.replace(".debug_info contents:", "") + "program:\tfile format Mach-O arm64\n"
+        ),
         lambda text: text.replace("0x0000100b: DW_TAG_compile_unit", ""),
     ],
 )

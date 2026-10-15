@@ -196,10 +196,13 @@ def test_session_test_hook_cannot_replace_or_bypass_the_checker(
 
     def prepare(*args, **kwargs):
         runtime = original(*args, **kwargs)
-        runtime.run_tests = lambda: calls.append("tests") or {
-            "passed": tests,
-            "stage": "cargo-test",
-        }
+        runtime.run_tests = lambda: (
+            calls.append("tests")
+            or {
+                "passed": tests,
+                "stage": "cargo-test",
+            }
+        )
         return runtime
 
     target.prepare = prepare
