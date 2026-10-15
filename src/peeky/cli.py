@@ -68,7 +68,7 @@ def _confined(root, program):
     try:
         return path.relative_to(root.resolve()).as_posix()
     except ValueError:
-        raise ValueError("--at must name a file inside the target") from None
+        raise ValueError("--at and --run must name a file inside the target") from None
 
 
 def _which(*names):
@@ -231,6 +231,11 @@ def _resolve(path, program, line, config):
             **native_tools(language),
         }
         return root, program or path.name, line, language, data
+    if path.is_dir() and (scripts := sorted(p.name for p in path.glob("*.py"))[:20]):
+        raise ValueError(
+            "Python directory target: pass --at <module.py>[:<line>] (and --run <script.py> "
+            f"when the module is imported). Python files here: {', '.join(scripts)}"
+        )
     raise ValueError(
         "Cannot detect the target; pass a .py/.c/.cpp file, a Cargo crate, or --config"
     )
@@ -321,6 +326,14 @@ def _python_scopes(path):
     return scopes
 
 
+def _entry(root, run, language):
+    if run is None:
+        return None
+    if language != "python":
+        raise ValueError("--run is supported only for Python targets")
+    return _confined(root, run)
+
+
 def _default_program(program, data, command):
     if program is not None:
         return program
@@ -335,17 +348,20 @@ def _default_program(program, data, command):
 def describe(args):
     root, program, _, language, data = resolve(args.target, args.at, args.config)
     program = _confined(root, _default_program(program, data, "describe"))
+    run = " [--run <script.py>] [--arg A ...]" if language == "python" else ""
     manifest = {
         "peeky": "describe",
         "language": language,
         "root": str(root),
         "program": program,
         "commands": {
-            "probe": f"peeky probe {args.target} --at {program}:<line> --capture <a,b.c> "
-            "[--set name=value] [--hits N] [--json]",
-            "session": f"peeky session start {args.target} --at {program}:<line>; then "
-            "peeky session inspect | get <a.b> | set <name>=<value> | continue | report | close",
-            "verify": f"peeky verify {args.target} --check <checker.py> --old <text> --new <text>",
+            "probe": f"peeky probe {args.target} --at {program}:<line>{run} --capture <a,b.c> "
+            "[--set name=value] [--set-hit N] [--hits N] [--json]",
+            "session": f"peeky session start {args.target} --at {program}:<line>{run}; then "
+            "peeky session inspect | get <a.b> | set <name>=<value> | continue [--to-exit] | "
+            "report | close",
+            "verify": f"peeky verify {args.target} --at {program} --check <checker.py> "
+            "--old <text> --new <text> (or --old-file/--new-file)",
             "background": "add --background to probe or verify, then `peeky job wait <id>` "
             "(exit 3 while running)",
         },
@@ -454,6 +470,8 @@ def probe(args):
         # delays the answer; launched programs run to exit for their output.
         args.until if args.until != "auto" else ("hits" if language == "java-attach" else "exit"),
         args.set_hit,
+        entry=_entry(root, args.run, language),
+        args=tuple(args.arg),
     )
     progress = (
         None
@@ -609,7 +627,16 @@ def session(args):
         )
         _emit(changed, args.json, lambda c: f"set {c['name']}: {c['before']} -> {c['after']}")
     elif args.action == "continue":
-        client.call("continue", **_stop(record))
+        stop = _stop(record)
+        if args.to_exit:
+            # Clear this session's breakpoints so the program runs to completion.
+            client.call(
+                "breakpoints",
+                session_id=record["session_id"],
+                program=record["program"],
+                breakpoints=[],
+            )
+        client.call("continue", **stop)
         state = _wait(record, client, args.timeout)
         _emit(state, args.json, _state_text)
     elif args.action == "report":
@@ -699,6 +726,8 @@ def _start(args):
             program=program,
             breakpoints=[{"line": line}],
             max_pause=_max_pause(args.max_pause, language),
+            **({"entry": entry} if (entry := _entry(root, args.run, language)) else {}),
+            **({"args": list(args.arg)} if args.arg else {}),
         )
     except Exception:
         os.killpg(process.pid, signal.SIGTERM)
@@ -712,6 +741,18 @@ def _start(args):
         lambda s: f"session {s['session']} ({s['language']}): " + _state_text(s),
     )
     return 0
+
+
+def _edit_text(text, path, name):
+    """Exact edit text from --<name> or --<name>-file (read verbatim, newlines kept)."""
+    if (text is None) == (path is None):
+        raise ValueError(f"Pass exactly one of --{name} or --{name}-file")
+    if path is None:
+        return text
+    data = Path(path).read_bytes()
+    if len(data) > 1024 * 1024:
+        raise ValueError(f"--{name}-file exceeds 1 MiB")
+    return data.decode()
 
 
 def _check_edit(text, old, new):
@@ -783,6 +824,10 @@ def verify(args):
     program = _default_program(program, data, "verify")
     source, check = (root / program).resolve(strict=True), Path(args.check).resolve(strict=True)
     original = source.read_text()
+    args.old, args.new = (
+        _edit_text(args.old, args.old_file, "old"),
+        _edit_text(args.new, args.new_file, "new"),
+    )
     _check_edit(original, args.old, args.new)
     destination = Path(tempfile.mkdtemp(prefix="peeky-verify-"))
     try:
@@ -1018,6 +1063,12 @@ def main(argv=None, _job=False):
     sub.add_argument(
         "--set-hit", type=int, default=1, help="Which hit gets the --set interventions (default 1)"
     )
+    sub.add_argument(
+        "--run", help="Python: script to run when --at is in a module it imports (e.g. main.py)"
+    )
+    sub.add_argument(
+        "--arg", action="append", default=[], help="Python: program argument (repeatable)"
+    )
     sub.add_argument("--timeout", type=float, default=60)
     sub.add_argument(
         "--until",
@@ -1033,6 +1084,8 @@ def main(argv=None, _job=False):
     start = actions.add_parser("start", help="Build, launch and run to --at")
     common(start)
     start.add_argument("--at", required=True)
+    start.add_argument("--run", help="Python: script to run when --at is in an imported module")
+    start.add_argument("--arg", action="append", default=[], help="Python: program argument")
     start.add_argument(
         "--max-pause",
         type=float,
@@ -1048,12 +1101,17 @@ def main(argv=None, _job=False):
         action.add_argument("--timeout", type=float, default=30)
     actions.choices["get"].add_argument("selectors", nargs="+")
     actions.choices["set"].add_argument("assignment", help="name=value")
+    actions.choices["continue"].add_argument(
+        "--to-exit", action="store_true", help="Clear breakpoints and run the program to exit"
+    )
     sub = commands.add_parser("verify", help="Fresh build + independent checker for one edit")
     common(sub)
     sub.add_argument("--at", help="Program path (for multi-file targets)")
     sub.add_argument("--check", required=True, help="Trusted checker script")
-    sub.add_argument("--old", required=True, help="Exact source text to replace (once)")
-    sub.add_argument("--new", required=True, help="Replacement text")
+    sub.add_argument("--old", help="Exact source text to replace (once)")
+    sub.add_argument("--new", help="Replacement text")
+    sub.add_argument("--old-file", help="Read --old verbatim from a file (keeps newlines)")
+    sub.add_argument("--new-file", help="Read --new verbatim from a file (keeps newlines)")
     sub.add_argument(
         "--keep", action="store_true", help="Keep the scratch candidate (default: removed)"
     )

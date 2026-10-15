@@ -213,6 +213,15 @@ class DebugWorker:
             "close",
         }:
             raise ValueError("Unknown operation")
+        if operation == "launch" and args.get("entry") is not None:
+            if not isinstance(args["entry"], str):
+                raise ValueError("entry must be a string")
+        if operation == "launch" and args.get("args") is not None:
+            from peeky.probe import _check_args
+
+            if not isinstance(args["args"], list):
+                raise ValueError("args must be a list of strings")
+            _check_args(tuple(args["args"]))
         if operation == "launch" and args.get("max_pause") is not None:
             value = args["max_pause"]
             if type(value) not in (int, float) or not math.isfinite(value) or not 0 < value <= 300:
@@ -271,6 +280,16 @@ class DebugWorker:
             if self.dap:
                 raise ValueError("Close the current session before launching another")
             program = self.path(args["program"])
+            entry = None
+            if args.get("args") and not isinstance(self.adapter, PythonAdapter):
+                raise ValueError("Program arguments (--arg) are supported only for Python targets")
+            if args.get("entry") is not None:
+                # Python only: run one script while breaking in another module it imports.
+                if not isinstance(self.adapter, PythonAdapter):
+                    raise ValueError("entry (--run) is supported only for Python targets")
+                entry = self.path(args["entry"])
+                if entry.suffix != ".py":
+                    raise ValueError("entry must be a .py file inside the root")
             self.adapter.validate_breakpoints(args.get("breakpoints", []))
             self.session = uuid.uuid4().hex
             self.audit = []
@@ -301,7 +320,11 @@ class DebugWorker:
                 self.capabilities = runtime.normalize_capabilities(capabilities)
                 launch = self.dap.send(
                     getattr(runtime, "dap_request", "launch"),
-                    runtime.launch_args(program, self.root),
+                    (
+                        runtime.launch_args(entry or program, self.root, args["args"])
+                        if args.get("args")
+                        else runtime.launch_args(entry or program, self.root)
+                    ),
                     timeout=left(5),
                 )
                 self.dap.wait_event({"initialized"}, failed_request=launch, timeout=left())
@@ -324,6 +347,11 @@ class DebugWorker:
                     "state": self.state,
                     "breakpoints": points.get("breakpoints", []),
                     "source_sha256": hashlib.sha256(program.read_bytes()).hexdigest(),
+                    **(
+                        {"entry_sha256": hashlib.sha256(entry.read_bytes()).hexdigest()}
+                        if entry
+                        else {}
+                    ),
                     "supports_set_variable": self.capabilities.get("supports_set_variable", False),
                     "supports_expand": True,
                     "protocol": PROTOCOL_VERSION,
@@ -783,7 +811,17 @@ def make_server(root, token, port=8765, *, adapter=None):
         # the cap so an HTTP client timeout can never leave work holding the slot.
         from peeky.probe import HTTP_PROBE_SECONDS, Probe, parse_location
 
-        if set(args) - {"at", "capture", "set", "hits", "timeout", "until", "set_hit"}:
+        if set(args) - {
+            "at",
+            "capture",
+            "set",
+            "hits",
+            "timeout",
+            "until",
+            "set_hit",
+            "entry",
+            "args",
+        }:
             raise ValueError("Unknown probe field")
         program, line = parse_location(args.get("at"))
         changes = args.get("set", {})
@@ -798,6 +836,8 @@ def make_server(root, token, port=8765, *, adapter=None):
             min(args.get("timeout", HTTP_PROBE_SECONDS), HTTP_PROBE_SECONDS - 10),
             args.get("until", "exit"),
             args.get("set_hit", 1),
+            entry=args.get("entry"),
+            args=tuple(args.get("args", [])) if isinstance(args.get("args", []), list) else None,
         )
         if not probes.acquire(blocking=False):
             raise ValueError("Another probe is running; retry later")
@@ -903,6 +943,10 @@ def _run_probe_process(root, request, adapter, cap):
     command += ["--at", f"{request.program}:{request.line}", "--hits", str(request.hits)]
     command += ["--timeout", str(request.timeout), "--until", request.until]
     command += ["--set-hit", str(request.set_hit)]
+    if request.entry:
+        command += ["--run", request.entry]
+    for argument in request.args:
+        command += [f"--arg={argument}"]
     if request.capture:
         command += ["--capture", ",".join(request.capture)]
     for name, value in request.set:

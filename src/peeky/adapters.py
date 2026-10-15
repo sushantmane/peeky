@@ -87,9 +87,10 @@ class PythonAdapter:
             "columnsStartAt1": True,
         }
 
-    def launch_args(self, program, root):
+    def launch_args(self, program, root, args=()):
         return {
             "program": str(program),
+            "args": list(args),
             "cwd": str(root),
             "console": "internalConsole",
             "redirectOutput": True,

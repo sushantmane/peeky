@@ -27,7 +27,7 @@ Exit criterion: each successful example includes a passing checker and exact sou
 Status (2026-10-15, `feat/corpus`):
 - **Done:** ten bugs in `examples/corpus/`, each with an independent checker, a general fix and an overfit (`tests/integration/test_corpus.py`); distinct `no_reproduction` / `insufficient_evidence` / `no_fix` / `budget_exhausted` / `verified` outcomes.
 - **Done:** a live evaluation with three agents, all of which reached verified general fixes ([evaluation](evaluations/2026-10-15-agent-cli.md)). Its ten usability findings are fixed.
-- **Remaining:** the user-selected non-synthetic program.
+- **Done:** a non-synthetic program, CPython 3.9.6 `ipaddress` with the real CVE-2024-4032 bug, run through an entry script with `--run`. A live agent verified the upstream-equivalent fix, and the checker rejected its partial fix ([evaluation](evaluations/2026-10-15-real-program.md)).
 - **Done (`feat/agent-usability`):** the usability follow-ups `--set-hit`, Python scopes in `describe`, safe negative indexes, and `by_hit`.
 
 ## Slice 3 — remote developer workflow

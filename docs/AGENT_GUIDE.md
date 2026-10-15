@@ -17,7 +17,7 @@ You debug programs with **peeky**, a standalone tool. You decide what to do; pee
 | `peeky describe <target> [--json]` | one build | Learn the language, valid breakpoint lines, qualified views and mutation rules. Always first. |
 | `peeky probe <target> --at <path>:<line> --capture a,b.c [--set x=0] [--hits N] [--json]` | one run | Answer one question in one call: values at a line, optionally after one intervention, plus program output. |
 | `peeky session start <target> --at <path>:<line>` | one run | Start step-by-step debugging when you need several looks at the same stop. |
-| `peeky session inspect` / `get a.b c[0]` / `set x=0` / `continue` / `report` / `close` | instant | Work with the stopped program. Always `close`. |
+| `peeky session inspect` / `get a.b c[0]` / `set x=0` / `continue [--to-exit]` / `report` / `close` | instant | Work with the stopped program. `continue --to-exit` clears the breakpoints and runs to the end. Always `close`. |
 | `peeky verify <target> --check <checker.py> --old '<exact text>' --new '<replacement>'` | one build | Verify one candidate edit on a fresh build. |
 
 Every command takes `--json`: stdout is then one JSON object (progress goes to stderr; `--quiet` silences it). Session records live in `$PEEKY_STATE_DIR` (default `~/.peeky`), so set it per task to keep sessions apart.
@@ -29,6 +29,8 @@ Every command takes `--json`: stdout is then one JSON object (progress goes to s
 
 ### Reading probe results
 
+- Each row has a `function`, which tells a function body apart from a generator or lambda frame on the same line.
+- `output_complete: false` means the probe ended (`--until hits`) before the program did, so `output` holds only what was printed so far.
 - `by_hit` groups values per hit: `{hit, line, observed: {selector: value}, after-set: {...}}`. A selector that failed shows `{"error": ...}`. `rows` holds the same data with one entry per hit, phase and selector. `phase` is `observed`, or `after-set` (the value after your intervention). `line` is where the program actually stopped.
 - Read `warnings` every time. They flag a breakpoint the debugger moved to another line (the values then come from that line) and runs that ended before all requested hits.
 - If a selector is missing, the row's error lists the visible names. For Python, `peeky describe` also lists the names each function can see (`scopes`).
@@ -37,9 +39,11 @@ Every command takes `--json`: stdout is then one JSON object (progress goes to s
 
 ### Verifying an edit
 
-- `--old` must match the source exactly once. Pass real newlines for multi-line text (bash: `--old $'a\n    b'`). If it fails, the error gives the match count and the lines where it matched.
+- `--old` must match the source exactly once. For multi-line edits, prefer `--old-file`/`--new-file`: they are read byte for byte, whereas shell `$(cat file)` silently strips trailing newlines. Pass real newlines for multi-line text (bash: `--old $'a\n    b'`). If it fails, the error gives the match count and the lines where it matched.
 - The result includes `stage` (`build` or `verification`), the unified `diff` that was applied, and on failure a `reason` (the checker's exception or the build diagnostic).
 - The scratch copy is deleted afterwards. Pass `--keep` to keep it for inspection.
+
+**Python programs with several files:** pass the project directory as the target and `--at <module.py>:<line>` for the breakpoint. If the module is imported rather than run directly, add `--run <script.py>` to say which script to run, for example `peeky probe app/ --at lib/parse.py:42 --run main.py`. Pass program arguments with repeatable `--arg` (for example `--arg ::ffff:8.8.8.8`); use them to narrow the run to the failing input. `session start` accepts `--run` and `--arg` too, and `verify` edits the `--at` file. `peeky describe <dir> --at <module.py>` lists each function's line span and names (`IPv6Address.is_private (lines 2000-2008)`), so you can jump straight to the line.
 
 Targets: a `.py` file, a `.c`/`.cpp` file, a Cargo crate directory, or any target with `--config <trusted.json>` (required for Java). A Java attach config (`port`, `sources`, `class_roots`) attaches to a running `--debug-jvm` JVM; attached targets cannot be verified, and closing detaches without killing the JVM. Selectors are dotted paths and indexes (`request.page`, `args[0]`); expressions are rejected.
 
