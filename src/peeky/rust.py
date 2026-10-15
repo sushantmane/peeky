@@ -110,22 +110,52 @@ def cargo_artifacts(names, crate, test_crate):
     return binary, binary, test
 
 
-def compiler_diagnostic(stderr, sources):
-    """Retry only rustc diagnostics located in declared application sources."""
-    return any(
-        re.fullmatch(r" *--> " + re.escape(name) + r":[0-9]{1,6}:[0-9]{1,6}", line)
-        for line in stderr.splitlines()
-        for name in sources
-    ) and bool(re.search(r"^error(?:\[E[0-9]{4}\])?: ", stderr, re.MULTILINE))
+def compiler_diagnostic(result, sources):
+    """Retry only when every rustc error has its primary span in a declared source.
+
+    Uses Cargo's JSON messages from stdout. Span-less errors (linking, driver),
+    errors elsewhere, malformed or possibly truncated output are not retryable.
+    """
+    stdout = result.get("stdout", "")
+    if result.get("timed_out") or len(stdout.encode()) >= 16000 or not stdout.endswith("\n"):
+        return False
+    errors = 0
+    for line in stdout.splitlines():
+        try:
+            message = json.loads(line)
+        except json.JSONDecodeError:
+            return False
+        if not isinstance(message, dict) or message.get("reason") != "compiler-message":
+            continue
+        diagnostic = message.get("message")
+        if not isinstance(diagnostic, dict) or diagnostic.get("level") not in (
+            "error",
+            "warning",
+            "note",
+            "help",
+            "failure-note",
+        ):
+            return False
+        if diagnostic["level"] != "error":
+            continue
+        primary = [
+            span
+            for span in diagnostic.get("spans") or []
+            if isinstance(span, dict) and span.get("is_primary") is True
+        ]
+        if not primary or any(span.get("file_name") not in sources for span in primary):
+            return False
+        errors += 1
+    return errors > 0
 
 
 def libtest_summary(result):
     """Interpret one bounded libtest run; anything but an explicit clean pass fails."""
-    summaries = [
-        match
-        for line in result.get("stdout", "").splitlines()
-        if (match := _SUMMARY.fullmatch(line.strip()))
-    ]
+    lines = [line.strip() for line in result.get("stdout", "").splitlines() if line.strip()]
+    summaries = [match for line in lines if (match := _SUMMARY.fullmatch(line))]
+    # The harness prints its summary last; an earlier or extra summary is forged.
+    if summaries and not _SUMMARY.fullmatch(lines[-1]):
+        summaries = []
     summary = None
     if len(summaries) == 1:
         status, passed, failed, ignored, measured, filtered = summaries[0].groups()
@@ -145,6 +175,8 @@ def libtest_summary(result):
         and summary["status"] == "ok"
         and summary["passed"] > 0
         and summary["failed"] == 0
+        and summary["ignored"] == 0
+        and summary["measured"] == 0
         and summary["filtered_out"] == 0
     )
     return {"summary": summary, "passed": clean}
@@ -285,7 +317,16 @@ class RustTarget:
             _absolute_tool(self.linker, "linker"),
         )
         build = Command(
-            (cargo, "build", "--offline", "--locked", "--bin", cargo_inputs.binary), timeout_s=120
+            (
+                cargo,
+                "build",
+                "--offline",
+                "--locked",
+                "--message-format=json-diagnostic-short",
+                "--bin",
+                cargo_inputs.binary,
+            ),
+            timeout_s=120,
         )
         # Compiles only the frozen test target; the application is already fresh.
         tests = Command(
@@ -342,9 +383,7 @@ class RustTarget:
                     before_command=before_command,
                 )
             except BuildCommandError as exc:
-                if exc.command != build.argv or not compiler_diagnostic(
-                    exc.result.get("stderr", ""), self.sources
-                ):
+                if exc.command != build.argv or not compiler_diagnostic(exc.result, self.sources):
                     raise RuntimeError("Rust toolchain or Cargo infrastructure failed") from exc
                 raise
         except BaseException as exc:
@@ -374,7 +413,9 @@ class RustTarget:
                 if deadline is None
                 else min(SYMBOL_BUDGET_S, deadline - time.monotonic()),
             )
-            identity = module_identity(dwarfdump, binary, symbols, prepared.workspace, env)
+            identity = module_identity(
+                dwarfdump, binary, symbols, prepared.workspace, env, deadline=deadline
+            )
             session = RustSession(
                 self, prepared, adapter, lines, identity, binary, symbols, layouts, parent
             )
@@ -442,7 +483,14 @@ class RustSession(NativeSession):
         if _digest(self.test_target)[0] != binary:
             raise RuntimeError("Cargo test target differs from the debugged executable")
         command = [str(self.test_binary), "--test-threads=1", "--color", "never"]
-        result = execute(command, self.prepared.workspace, TEST_TIMEOUT_S, env=self.environment)
+        # Any output beyond the retained capture is an explicit failure, never truncation.
+        result = execute(
+            command,
+            self.prepared.workspace,
+            TEST_TIMEOUT_S,
+            env=self.environment,
+            output_limit=16000,
+        )
         self.assert_current()
         if _digest(self.test_target)[0] != binary:
             raise RuntimeError("Cargo test target changed during test execution")

@@ -13,7 +13,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from peeky.adapters import PythonAdapter, ViewBudgetExhausted
-from peeky.dap import DAP
+from peeky.dap import DAP, ResponseTimeout
 
 VIEW_SECONDS = 10
 
@@ -150,6 +150,13 @@ class DebugWorker:
             self.audit = []
             self.breakpoint_events = []
             deadline = time.monotonic() + self.launch_deadline_s
+
+            def left(limit=15):
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError("Launch exceeded its deadline; session discarded")
+                return min(limit, remaining)
+
             try:
                 if getattr(self.adapter, "supports_deadline", False):
                     prepared = self.adapter.prepare(program, self.root, deadline=deadline)
@@ -157,29 +164,28 @@ class DebugWorker:
                     prepared = self.adapter.prepare(program, self.root)
                 self.runtime = runtime = prepared
                 runtime.assert_current()
+                left()
                 self.dap = DAP(command=runtime.command, env=getattr(runtime, "environment", None))
                 capabilities = self.dap.request(
-                    "initialize",
-                    runtime.initialize_args(),
+                    "initialize", runtime.initialize_args(), timeout=left()
                 )
                 self.capabilities = runtime.normalize_capabilities(capabilities)
                 launch = self.dap.send(
-                    "launch",
-                    runtime.launch_args(program, self.root),
+                    "launch", runtime.launch_args(program, self.root), timeout=left(5)
                 )
-                self.dap.wait_event({"initialized"}, failed_request=launch)
+                self.dap.wait_event({"initialized"}, failed_request=launch, timeout=left())
                 points = self.dap.request(
                     "setBreakpoints",
                     {
                         "source": {"path": str(runtime.source_path(program))},
                         "breakpoints": args.get("breakpoints", []),
                     },
+                    timeout=left(),
                 )
-                self.dap.request("configurationDone")
-                self.dap.response(launch)
+                self.dap.request("configurationDone", timeout=left())
+                self.dap.response(launch, timeout=left())
                 runtime.assert_current()
-                if time.monotonic() > deadline:
-                    raise TimeoutError("Launch exceeded its deadline; session discarded")
+                left()
                 self.state = "running"
                 self.cursor = 0
                 return {
@@ -385,11 +391,15 @@ class DebugWorker:
         fresh = runtime.local_scopes(
             self.dap.request("scopes", {"frameId": frame["id"]}).get("scopes", [])
         )[:16]
-        if [self.scope_identity(s) for s in fresh] != [
-            self.scope_identity(scope) for _, scope, _ in pending
-        ]:
+        original = [self.scope_identity(scope) for _, scope, _ in pending]
+        if len(set(original)) != len(original):
+            raise ValueError("Duplicate scope identities after value views; inspect again")
+        if sorted(map(repr, (self.scope_identity(s) for s in fresh))) != sorted(
+            map(repr, original)
+        ) or len(fresh) != len(original):
             raise ValueError("Scopes changed during value views; inspect again")
-        return [scope["variablesReference"] for scope in fresh]
+        references = {self.scope_identity(s): s["variablesReference"] for s in fresh}
+        return [references[identity] for identity in original]
 
     def view_fetch(self, reference):
         """Bounded raw reads used only by a runtime's trusted value-view hook.
@@ -403,11 +413,15 @@ class DebugWorker:
         self.view_fetches += 1
         if type(reference) is not int or reference <= 0:
             raise ValueError("Variable is not expandable")
-        values = self.dap.request(
-            "variables",
-            {"variablesReference": reference, "start": 0, "count": 65},
-            timeout=remaining,
-        ).get("variables", [])
+        try:
+            values = self.dap.request(
+                "variables",
+                {"variablesReference": reference, "start": 0, "count": 65},
+                timeout=remaining,
+            ).get("variables", [])
+        except ResponseTimeout as exc:
+            # The read was written completely; only its reply missed the view budget.
+            raise ViewBudgetExhausted("Value view budget exhausted") from exc
         if not isinstance(values, list) or len(values) > 64:
             raise ValueError("Value view child collection exceeds limit")
         self.view_items += len(values)

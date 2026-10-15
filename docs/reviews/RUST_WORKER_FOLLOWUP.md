@@ -69,3 +69,17 @@ Three independent reviews covered this branch: the follow-up review above, a sec
 | Contradictory RUST_GATE reachability text | Historical scope marked; current worker and verification described. |
 
 Also fixed while validating: an intermittent macOS `EPERM` from `killpg` on an exited (zombie-only) process group in `_metadata`/`execute` is now benign only when the child has exited (`test_exited_process_group_permission_error_is_benign`).
+
+## Fourth review (verification `9985257` and fixes `9d1e338`) and dispositions
+
+| Finding | Disposition |
+| --- | --- |
+| libtest accepted ignored/measured tests and silent capture truncation could hide a forged summary (blocking) | Tests run with `output_limit=16000`, so overflow fails. The summary must be the final non-empty line, unique, with zero ignored/measured/failed/filtered. |
+| 40 s launch deadline was only checked afterwards (blocking) | One deadline covers Rust/native/Java preparation (`supports_deadline`) and every DAP launch phase; `DAP.request` applies one absolute deadline to write and response. The regression asserts prompt failure across several slow phases. |
+| A warning span plus a linker error was classified as retryable | Classification uses Cargo JSON: every `error` must have primary spans in declared sources. Span-less errors, malformed output or possible truncation are fatal. |
+| View deadline expiry inside a DAP read closed the session | `ResponseTimeout` (complete write, missing reply) becomes `ViewBudgetExhausted`; write timeouts stay fatal. |
+| Duplicate scope identities could rebind mutation positionally | Duplicate identities are rejected after value views; fresh references are mapped by unique identity. |
+| EPERM tolerance could mask live descendants | Shared `kill_process_group`: on EPERM, reap the leader (1 s), retry; only ESRCH or a successful kill is accepted, and persistent EPERM is raised. |
+| Docs overstated truncation/deadline/budget behavior | RUST_AGENT/RUST_GATE now describe the enforced behavior. |
+
+Known local-only limitation, not introduced here: `tests/native/test_native_worker.py::test_native_adapter_death_reaps_stopped_target` fails on macOS with Apple LLDB on `origin/main` as well. The hosted Linux LLVM 18 lane passes it.

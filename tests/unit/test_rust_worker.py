@@ -182,6 +182,21 @@ SUMMARY = "test result: {}. {} passed; {} failed; 0 ignored; 0 measured; {} filt
         ({"exit_code": 0, "stdout": SUMMARY.format("FAILED", 0, 1, 0)}, False),
         ({"exit_code": 0, "stdout": SUMMARY.format("ok", 0, 0, 0)}, False),
         ({"exit_code": 0, "stdout": SUMMARY.format("ok", 1, 0, 1)}, False),
+        ({"exit_code": 0, "stdout": SUMMARY.format("ok", 1, 0, 0) + "\nlater output"}, False),
+        (
+            {
+                "exit_code": 0,
+                "stdout": SUMMARY.format("ok", 1, 0, 0).replace("0 ignored", "2 ignored"),
+            },
+            False,
+        ),
+        (
+            {
+                "exit_code": 0,
+                "stdout": SUMMARY.format("ok", 1, 0, 0).replace("0 measured", "1 measured"),
+            },
+            False,
+        ),
         ({"exit_code": 0, "stdout": "running 1 test"}, False),
         ({"exit_code": 0, "stdout": SUMMARY.format("ok", 1, 0, 0) * 2}, False),
         ({"exit_code": 0, "stdout": (SUMMARY.format("ok", 1, 0, 0) + "\n") * 2}, False),
@@ -436,19 +451,40 @@ def test_rust_rechecks_cargo_ancestry_before_each_cargo_command(tmp_path):
     assert set(Path(tempfile.gettempdir()).glob("peeky-rust-*")) == before
 
 
+def cargo_message(level, file_name=None, primary=True):
+    spans = [] if file_name is None else [{"file_name": file_name, "is_primary": primary}]
+    return json.dumps({"reason": "compiler-message", "message": {"level": level, "spans": spans}})
+
+
+FINISHED = json.dumps({"reason": "build-finished", "success": False})
+
+
 @pytest.mark.parametrize(
-    "stderr, retryable",
+    "lines, retryable",
     [
-        ("error: expected expression, found `;`\n  --> src/main.rs:35:26\n", True),
-        ("error[E0308]: mismatched types\n --> src/main.rs:1:2\n", True),
-        ("error: the lock file needs to be updated but --locked was passed\n", False),
-        ("error[E0425]: cannot find value\n --> tests/pagination.rs:3:4\n", False),
-        ("warning: unused variable\n --> src/main.rs:1:1\n", False),
-        ("error: linking failed\n --> /rustc/abc/library/std/src/lib.rs:1:1\n", False),
+        ([cargo_message("error", "src/main.rs"), FINISHED], True),
+        ([cargo_message("warning", "src/main.rs"), cargo_message("error", "src/main.rs")], True),
+        ([cargo_message("warning", "src/main.rs"), cargo_message("error")], False),
+        ([cargo_message("error", "src/main.rs"), cargo_message("error")], False),
+        ([cargo_message("error", "tests/pagination.rs")], False),
+        ([cargo_message("error", "/rustc/abc/library/std/src/lib.rs")], False),
+        ([cargo_message("error", "src/main.rs", primary=False)], False),
+        ([cargo_message("warning", "src/main.rs"), FINISHED], False),
+        ([FINISHED], False),
+        (["not json", cargo_message("error", "src/main.rs")], False),
+        ([cargo_message("bogus", "src/main.rs")], False),
     ],
 )
-def test_only_rustc_diagnostics_in_declared_sources_are_retryable(stderr, retryable):
-    assert compiler_diagnostic(stderr, ("src/main.rs",)) is retryable
+def test_only_rustc_errors_with_primary_spans_in_declared_sources_are_retryable(lines, retryable):
+    result = {"stdout": "\n".join(lines) + "\n", "stderr": "error: could not compile"}
+    assert compiler_diagnostic(result, ("src/main.rs",)) is retryable
+
+
+def test_possibly_truncated_or_timed_out_diagnostics_are_not_retryable():
+    line = cargo_message("error", "src/main.rs") + "\n"
+    assert compiler_diagnostic({"stdout": line * 300}, ("src/main.rs",)) is False
+    assert compiler_diagnostic({"stdout": line[:-1]}, ("src/main.rs",)) is False
+    assert compiler_diagnostic({"stdout": line, "timed_out": True}, ("src/main.rs",)) is False
 
 
 def test_macos_dsymutil_must_be_exactly_the_path_selected_tool(tmp_path, monkeypatch):
@@ -516,7 +552,7 @@ def test_launch_finishing_after_deadline_is_discarded(tmp_path, monkeypatch):
                 time.sleep(0.3)
             return {"breakpoints": []}
 
-        def send(self, command, arguments=None):
+        def send(self, command, arguments=None, **kwargs):
             return 1
 
         def wait_event(self, *args, **kwargs):
@@ -626,3 +662,97 @@ def test_each_expansion_gets_a_fresh_value_view_budget(worker):
     assert variables[-1]["view"] == "budget-exhausted"
     expanded = call(worker, "expand", handle=variables[0]["variablesReference"])
     assert expanded["variables"][0]["value"] == "Some(3)" and worker.view_fetches == 5
+
+
+def test_launch_deadline_bounds_every_dap_phase(tmp_path, monkeypatch):
+    closed, timeouts = [], []
+
+    class Target(PythonAdapter):
+        def close(self):
+            closed.append("runtime")
+
+    class SlowDAP:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def _slow(self, timeout):
+            timeouts.append(timeout)
+            time.sleep(min(0.05, timeout))
+
+        def request(self, command, arguments=None, *, timeout=15):
+            self._slow(timeout)
+            return {"breakpoints": []}
+
+        def send(self, command, arguments=None, *, timeout=5):
+            self._slow(timeout)
+            return 1
+
+        def wait_event(self, names, after=0, timeout=15, **kwargs):
+            self._slow(timeout)
+            return {}
+
+        def response(self, seq, timeout=15):
+            self._slow(timeout)
+            return {}
+
+        def close(self):
+            closed.append("dap")
+
+    monkeypatch.setattr("peeky.worker.DAP", SlowDAP)
+    (tmp_path / "target.py").write_text("pass\n")
+    worker = DebugWorker(tmp_path, adapter=Target())
+    worker.launch_deadline_s = 0.12
+    started = time.monotonic()
+    with pytest.raises(TimeoutError, match="deadline"):
+        worker.dispatch("launch", {"program": "target.py"})
+    assert time.monotonic() - started < 0.3
+    assert all(timeout <= 0.12 for timeout in timeouts) and len(timeouts) < 6
+    assert closed == ["dap", "runtime"] and worker.session is None
+
+
+def test_native_and_java_targets_receive_the_launch_deadline():
+    from peeky.java import JavaTarget
+    from peeky.native import NativeTarget
+
+    assert NativeTarget.supports_deadline and JavaTarget.supports_deadline
+    assert RustTarget.supports_deadline
+
+
+def test_view_response_timeout_is_budget_not_session_failure(worker):
+    from peeky.dap import ResponseTimeout
+
+    original = worker.dap.request
+
+    def request(operation, args, timeout=15):
+        if operation == "variables" and args["variablesReference"] == 11:
+            raise ResponseTimeout("late")
+        return original(operation, args)
+
+    worker.dap.request = request
+    variables = {v["name"]: v for v in call(worker, "inspect")["scopes"][0]["variables"]}
+    assert variables["some"]["view"] == "budget-exhausted"
+    assert worker.dap is not None and worker.session == "session"
+
+
+def test_value_views_reject_duplicate_scope_identities(worker):
+    backend = worker.dap
+    orders = iter([[7, 8], [8, 7]])
+    original = backend.request
+    backend.children[8] = [raw("start", "int", 0, "9")]
+
+    def request(operation, args, timeout=15):
+        if operation == "scopes":
+            return {
+                "scopes": [
+                    {"name": "Locals", "presentationHint": "locals", "variablesReference": ref}
+                    for ref in next(orders)
+                ]
+            }
+        if operation == "variables" and args["variablesReference"] == 8:
+            return {"variables": deepcopy(backend.children[8])}
+        return original(operation, args)
+
+    backend.request = request
+    with pytest.raises(ValueError, match="Duplicate scope"):
+        call(worker, "inspect")
+    assert not worker.references

@@ -64,6 +64,28 @@ def digest(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
+def kill_process_group(process):
+    """SIGKILL an owned POSIX process group; tolerate only its confirmed absence.
+
+    macOS can report EPERM while the leader is exiting or a zombie. Reap the leader,
+    then retry: ESRCH proves the group is gone, success kills surviving descendants,
+    and persistent EPERM is surfaced rather than masking a live descendant.
+    """
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        return
+    except PermissionError:
+        try:
+            process.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            raise
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+
 def execute(command, cwd, timeout=20, *, input_text=None, env=None, output_limit=1048576):
     """Bound output and kill the owned POSIX process group, including descendants.
 
@@ -122,14 +144,7 @@ def execute(command, cwd, timeout=20, *, input_text=None, env=None, output_limit
             time.sleep(0.01)
     finally:
         if os.name == "posix":
-            try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            except PermissionError:
-                # macOS reports EPERM for a group whose only member is the exited leader.
-                if process.poll() is None:
-                    raise
+            kill_process_group(process)
         elif process.poll() is None:
             process.kill()
         process.wait(timeout=5)

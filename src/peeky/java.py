@@ -154,7 +154,11 @@ class JavaTarget:
         if any(set(point) != {"line"} for point in points):
             raise ValueError("Java supports unconditional line breakpoints only")
 
-    def prepare(self, program, root, *, edit=None):
+    supports_deadline = True
+
+    def prepare(self, program, root, *, edit=None, deadline=None):
+        import time
+
         from peeky.java_metadata import generate_source_map
 
         root = Path(root).resolve(strict=True)
@@ -172,7 +176,7 @@ class JavaTarget:
             artifacts=(ArtifactSpec("classes", "directory", "jvm-classes"),),
             toolchain_probes=(Command((java, "-version")), Command((javac, "-version"))),
         )
-        prepared = prepare(recipe, root, edit=edit)
+        prepared = prepare(recipe, root, edit=edit, deadline=deadline)
         try:
             source_paths = tuple(prepared.workspace / name for name in self.sources)
             mapping = generate_source_map(
@@ -180,6 +184,8 @@ class JavaTarget:
             )
             if self.main_class not in mapping["classes"]:
                 raise ValueError("Main class is absent from compiled source metadata")
+            if deadline is not None and time.monotonic() >= deadline:
+                raise TimeoutError("Java preparation exceeded its overall deadline")
             mapping_path = prepared.workspace / "peeky-source-map.json"
             mapping_path.write_text(json.dumps(mapping, sort_keys=True))
             session = JavaSession(

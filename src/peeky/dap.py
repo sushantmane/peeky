@@ -12,6 +12,12 @@ import time
 from peeky.adapters import PythonAdapter
 
 MAX_FRAME_BYTES = 4 * 1024 * 1024
+
+
+class ResponseTimeout(TimeoutError):
+    """A complete request received no response in time; reads may treat this as budget."""
+
+
 MAX_HEADER_BYTES = 8192
 MAX_CONTROL_EVENTS = 2000
 
@@ -165,6 +171,7 @@ class DAP:
             self.write_lock.release()
 
     def response(self, seq, timeout=15):
+        """Wait for one response; ResponseTimeout means the write completed but no reply came."""
         deadline = time.monotonic() + timeout
         with self.condition:
             while seq not in self.responses:
@@ -172,7 +179,7 @@ class DAP:
                     raise RuntimeError(self.error)
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
-                    raise TimeoutError("Debugger response timed out; outcome may be uncertain")
+                    raise ResponseTimeout("Debugger response timed out; outcome may be uncertain")
                 self.condition.wait(remaining)
             value = self.responses.pop(seq)
         if not value.get("success"):
@@ -180,7 +187,10 @@ class DAP:
         return value.get("body", {})
 
     def request(self, command, arguments=None, *, timeout=15):
-        return self.response(self.send(command, arguments), timeout=timeout)
+        """One absolute deadline covers both the write and the response."""
+        deadline = time.monotonic() + timeout
+        seq = self.send(command, arguments, timeout=max(0.001, min(5, timeout)))
+        return self.response(seq, timeout=max(0, deadline - time.monotonic()))
 
     def wait_event(self, names, after=0, timeout=15, *, failed_request=None):
         deadline = time.monotonic() + timeout
