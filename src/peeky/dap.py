@@ -38,11 +38,18 @@ def read_message(stream):
             raise ValueError("DAP headers exceed limit")
         if line == b"\r\n":
             break
+        if b":" not in line:
+            # e.g. the adapter's own JVM printing a warning to its protocol stream.
+            raise ValueError(
+                f"Debugger adapter wrote a non-DAP line to its protocol stream: {line[:120]!r}"
+            )
         key, value = line.decode("ascii").split(":", 1)
         key = key.lower()
         if key in headers:
             raise ValueError("Duplicate DAP header")
         headers[key] = value.strip()
+    if "content-length" not in headers:
+        raise ValueError(f"DAP frame has no Content-Length header: {sorted(headers)[:5]}")
     length = int(headers["content-length"])
     if not 0 < length <= MAX_FRAME_BYTES:
         raise ValueError("DAP frame exceeds limit")

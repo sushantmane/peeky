@@ -46,7 +46,12 @@ def test_a_live_churning_jvm_is_never_reported_as_exited(tmp_path):
     line = next(i for i, text in enumerate(CHURN.splitlines(), 1) if "OBSERVE" in text)
     target = JavaTarget(bundle=Path(bundle), sources=("demo/Churn.java",), main_class="demo.Churn")
     result = run_probe(tmp_path, Probe("demo/Churn.java", line, ("n",), timeout=15), adapter=target)
-    assert result["status"] in ("completed", "timeout"), result.get("error")
+    # Under this load java-debug may also break its protocol stream (seen on Linux CI);
+    # failing closed with DEBUGGER_ERROR is acceptable. A no-stop or exit is not.
+    if result["status"] == "failed":
+        assert result["error"]["code"] in ("DEBUGGER_ERROR", "TIMEOUT"), result["error"]
+    else:
+        assert result["status"] in ("completed", "timeout"), result.get("error")
     assert not any("inferred" in warning for warning in result["warnings"])
     if result["status"] == "completed":
         assert result["hits"] == 1 and "CHURNED" in result["output"]
