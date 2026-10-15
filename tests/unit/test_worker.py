@@ -239,6 +239,9 @@ class JavaLike:
     def assert_current(self):
         pass
 
+    def close(self):
+        pass
+
 
 def quiet_worker(tmp_path, dap, runtime=None):
     import time
@@ -274,7 +277,8 @@ def test_live_threads_reset_the_count(tmp_path):
     assert poll(worker)["state"] == "running"
 
 
-def test_a_gone_launched_jvm_process_confirms_exit_on_the_first_empty_reply(tmp_path):
+def test_with_a_known_pid_only_the_jvm_process_being_gone_proves_exit(tmp_path):
+    import os
     import subprocess
     import sys
 
@@ -282,8 +286,21 @@ def test_a_gone_launched_jvm_process_confirms_exit_on_the_first_empty_reply(tmp_
     child.wait()
     worker = quiet_worker(tmp_path, QuietDap([], pid=child.pid))
     assert poll(worker)["exit_inferred"] is True
-    alive = quiet_worker(tmp_path, QuietDap([], pid=__import__("os").getpid()))
-    assert poll(alive)["state"] == "running"
+    alive = quiet_worker(tmp_path, QuietDap([], pid=os.getpid()))
+    for _ in range(4):
+        assert poll(alive)["state"] == "running"
+
+
+def test_empty_replies_never_carry_over_into_the_next_session(tmp_path):
+    worker = quiet_worker(tmp_path, QuietDap([]))
+    assert poll(worker)["state"] == "running"
+    assert worker.empty_thread_replies == 1
+    worker.close()
+    assert worker.empty_thread_replies == 0
+    # A new session on the same worker needs two fresh empty replies again.
+    worker.dap, worker.runtime = QuietDap([]), JavaLike()
+    worker.session, worker.state, worker.resumed_at = "session", "running", 0.0
+    assert poll(worker)["state"] == "running"
 
 
 @pytest.mark.parametrize("failure", [TimeoutError("slow"), RuntimeError("error reply")])

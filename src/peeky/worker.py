@@ -115,10 +115,10 @@ class DebugWorker:
         """Liveness check for launched JVMs whose adapter drops exit events (#27).
 
         java-debug can answer `threads` with an empty list for a live, churning JVM
-        (a thread collected mid-lookup), so one empty reply is only a hint. Exit is
-        inferred when the launched JVM process is gone, or when a second empty reply
-        follows at least two seconds later (thread names are cached by then). A slow
-        or failed check means "still running": it never closes the session.
+        (a thread collected mid-lookup), so an empty reply is only a hint. When the
+        adapter announced the JVM pid, exit is inferred only if that process is gone;
+        without a pid, only after a second empty reply at least two seconds later.
+        A slow or failed check means "still running": it never closes the session.
         """
         if not getattr(runtime, "liveness_by_threads", False) or self.state != "running":
             return False
@@ -136,8 +136,10 @@ class DebugWorker:
             return False
         self.empty_thread_replies += 1
         pid = getattr(self.dap, "debuggee_pid", None)
-        if pid and not _process_alive(pid):
-            return True
+        if pid:
+            # The announced pid is the JVM itself: only its absence proves an exit.
+            # A zombie or reused pid can only look alive, which fails closed (timeout).
+            return not _process_alive(pid)
         return self.empty_thread_replies >= 2
 
     def read_location(self):
@@ -395,6 +397,8 @@ class DebugWorker:
                 self.cursor = 0
                 self.resumed_at = time.monotonic()
                 self.exit_inferred = False
+                self.empty_thread_replies = 0
+                self.liveness_checked = 0.0
                 return {
                     "session_id": self.session,
                     "state": self.state,
@@ -864,6 +868,7 @@ class DebugWorker:
         runtime, self.runtime = self.runtime, None
         self.state = "idle"
         self.stopped_at = None
+        self.empty_thread_replies = 0
         self.stop_location = None
         self.stop_reason = None
         self.session = None

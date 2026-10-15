@@ -89,7 +89,7 @@ Open issue: in one earlier run, the worker received no `stopped` event for about
 The Java adapter (java-debug) occasionally never sends `exited`/`terminated` after a **launched** JVM finishes. In stress runs this happened in about 1 of 50–100 runs; the program's output had arrived and the adapter was alive but silent. Peeky now checks liveness for launched Java targets.
 - **When it checks:** after 2 quiet seconds, it asks the adapter for `threads`.
 - **Why one empty reply isn't enough:** java-debug can answer with an empty list for a live JVM whose threads churn, because a thread is collected mid-lookup.
-- **When Peeky infers an exit:** only when the JVM process (pid from java-debug's `processid` event) is gone, or when a second empty reply follows at least 2 s later. The run then ends as `terminated` with `exit_inferred: true`, an audit entry and a warning.
+- **When Peeky infers an exit:** when java-debug announced the JVM's pid (its `processid` event, which is the JVM itself), only once that process is gone. Without a pid, only when a second empty reply follows at least 2 s later. The count of empty replies resets for every session. The run then ends as `terminated` with `exit_inferred: true`, an audit entry and a warning.
 - **Slow or failed checks:** these count as "still running" and never close the session.
 - **Real events:** a stop or exit that arrives during the check is used instead of the inference.
 - **Attached JVMs are excluded:** their death closes the JDWP connection, and a false inference would detach a live JVM.
