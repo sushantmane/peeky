@@ -13,6 +13,7 @@ import math
 import os
 import shutil
 import tempfile
+import time
 from dataclasses import asdict, dataclass
 from pathlib import Path, PurePosixPath
 
@@ -254,7 +255,7 @@ def _validate(recipe):
         raise ValueError("Duplicate declared environment key")
 
 
-def _run(command, workspace, env):
+def _run(command, workspace, env, timeout=None):
     # Temporary dependency reuse. Move execute to a shared process module when
     # the build boundary is integrated; never import agent at module scope.
     from peeky.agent import execute
@@ -276,7 +277,8 @@ def _run(command, workspace, env):
             raise ValueError(f"Missing toolchain executable: {command.argv[0]}")
     executable = Path(executable).resolve(strict=True)
     digest, _ = _digest(executable)
-    result = execute([str(executable), *command.argv[1:]], cwd, command.timeout_s, env=env)
+    timeout = command.timeout_s if timeout is None else timeout
+    result = execute([str(executable), *command.argv[1:]], cwd, timeout, env=env)
     try:
         unchanged = _digest(executable)[0] == digest
     except (OSError, ValueError) as exc:
@@ -288,12 +290,26 @@ def _run(command, workspace, env):
     return ToolIdentity(str(executable), digest), result
 
 
-def prepare(recipe, source_root, *, parent=None, edit=None):
+def _budget(command, deadline):
+    """Per-command timeout bounded by an optional overall monotonic deadline."""
+    if deadline is None:
+        return command.timeout_s, False
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError("Build preparation exceeded its overall deadline")
+    return min(command.timeout_s, remaining), remaining < command.timeout_s
+
+
+def prepare(recipe, source_root, *, parent=None, edit=None, deadline=None, before_command=None):
     """Copy declared inputs to a fresh workspace, build, and retain a manifest.
 
     An optional single SourceEdit preserves the original relative filename.
     Callers own cleanup (or use the returned PreparedRun as a context manager).
-    Build failures clean their temporary workspace automatically.
+    Build failures clean their temporary workspace automatically. ``deadline`` is
+    an overall time.monotonic() bound; exhausting it is a fatal TimeoutError, never
+    retryable compiler feedback. ``before_command(workspace, probes, command)``
+    validates the exact staged inputs and probe results immediately before each
+    build command; a failure there is fatal, never compiler feedback.
     """
     _validate(recipe)
     source_root = Path(source_root).resolve(strict=True)
@@ -322,14 +338,25 @@ def prepare(recipe, source_root, *, parent=None, edit=None):
         env.update(dict(recipe.environment))
         env.pop("DEBUG_TOKEN", None)
         for command in recipe.toolchain_probes:
+            timeout, _ = _budget(command, deadline)
             try:
-                tool, result = _run(command, workspace, env)
+                tool, result = _run(command, workspace, env, timeout)
             except BuildCommandError as exc:
                 raise RuntimeError(f"Toolchain probe failed: {command.argv[0]}") from exc
             tools.append(tool)
             probes.append(ProbeResult(command.argv, result["stdout"], result["stderr"]))
         for command in recipe.build_commands:
-            tool, _ = _run(command, workspace, env)
+            if before_command is not None:
+                before_command(workspace, tuple(probes), command)
+                if _files(workspace, recipe.inputs) != inputs:
+                    raise RuntimeError("Staged inputs changed during build validation")
+            timeout, limited = _budget(command, deadline)
+            try:
+                tool, _ = _run(command, workspace, env, timeout)
+            except BuildCommandError as exc:
+                if limited and exc.result.get("timed_out"):
+                    raise TimeoutError("Build preparation exceeded its overall deadline") from exc
+                raise
             tools.append(tool)
         manifest = BuildManifest(
             1,
@@ -357,6 +384,13 @@ def prepare(recipe, source_root, *, parent=None, edit=None):
                 raise RuntimeError("Source provenance changed during failed build") from exc
             if not unchanged:
                 raise RuntimeError("Source provenance changed during failed build")
+            # Drivers delegate to earlier probed tools; their drift is never compiler feedback.
+            try:
+                tools_unchanged = all(_digest(Path(t.path))[0] == t.sha256 for t in tools)
+            except (OSError, ValueError) as exc:
+                raise RuntimeError("Toolchain changed during failed build") from exc
+            if not tools_unchanged:
+                raise RuntimeError("Toolchain changed during failed build")
             raise
         finally:
             shutil.rmtree(workspace)

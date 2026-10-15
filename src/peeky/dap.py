@@ -179,8 +179,8 @@ class DAP:
             raise RuntimeError(value.get("message", "Debugger request failed"))
         return value.get("body", {})
 
-    def request(self, command, arguments=None):
-        return self.response(self.send(command, arguments))
+    def request(self, command, arguments=None, *, timeout=15):
+        return self.response(self.send(command, arguments), timeout=timeout)
 
     def wait_event(self, names, after=0, timeout=15, *, failed_request=None):
         deadline = time.monotonic() + timeout

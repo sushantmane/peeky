@@ -1,6 +1,9 @@
 """Rust target/session contracts and worker value-view hooks without a real toolchain."""
 
 import json
+import sys
+import tempfile
+import time
 from copy import deepcopy
 from pathlib import Path
 
@@ -9,7 +12,13 @@ import pytest
 from peeky.adapters import PythonAdapter
 from peeky.build import SourceEdit
 from peeky.native import NativeSession
-from peeky.rust import RustSession, RustTarget, cargo_artifacts, libtest_summary
+from peeky.rust import (
+    RustSession,
+    RustTarget,
+    cargo_artifacts,
+    compiler_diagnostic,
+    libtest_summary,
+)
 from peeky.rust_symbols import UNVERIFIED, active_variant
 from peeky.worker import DebugWorker, load_rust_target
 
@@ -262,7 +271,7 @@ class Backend:
             31: [raw("$variants$", "app::Unknown$Inner", 32), raw("$discr$", "u8", 0, "0")],
         }
 
-    def request(self, operation, args):
+    def request(self, operation, args, timeout=15):
         self.calls.append((operation, deepcopy(args)))
         if operation == "stackTrace":
             return {
@@ -354,8 +363,266 @@ def test_worker_value_view_budget_degrades_to_opaque(worker):
     worker.dap.roots = [raw(f"some{index}", OPTION, 10) for index in range(30)]
     views = call(worker, "inspect")["scopes"][0]["variables"]
     assert [view["value"] for view in views[:25]] == ["Some(3)"] * 25
-    assert {view["value"] for view in views[26:]} == {UNVERIFIED}
+    assert {view["view"] for view in views[25:]} == {"budget-exhausted"}
+    assert UNVERIFIED not in {view["value"] for view in views}
     assert all(view["variablesReference"] == 0 for view in views)
     assert worker.view_fetches == 128
     call(worker, "inspect")
     assert worker.view_fetches == 128
+
+
+def scripted_toolchain(tmp_path, *, version="1.96.0", cargo_build=""):
+    config = toolchain(tmp_path)
+    marker = tmp_path / "cargo-calls"
+    scripts = {
+        "rustc": f"print('rustc {version} (fixture)')",
+        "cargo": (
+            "import pathlib, sys\n"
+            f"if sys.argv[1] == '--version': print('cargo {version} (fixture)'); sys.exit(0)\n"
+            f"with open({str(marker)!r}, 'a') as f: f.write(sys.argv[1] + '\\n')\n" + cargo_build
+        ),
+    }
+    for name, body in scripts.items():
+        Path(config[name]).write_text(f"#!{sys.executable}\n{body}\n")
+    return config, marker
+
+
+def test_rust_rejects_manifest_changed_between_preflight_and_snapshot(tmp_path, monkeypatch):
+    import peeky.rust as rust
+
+    root = example(tmp_path)
+    config, marker = scripted_toolchain(tmp_path)
+    real = rust.validate_cargo_inputs
+    calls = []
+
+    def racing(path, **kwargs):
+        result = real(path, **kwargs)
+        calls.append(Path(path))
+        if len(calls) == 1:
+            manifest = Path(path) / "Cargo.toml"
+            manifest.write_text(
+                manifest.read_text().replace(
+                    'name = "peeky-pagination"\npath', 'name = "peeky-other"\npath'
+                )
+            )
+        return result
+
+    monkeypatch.setattr(rust, "validate_cargo_inputs", racing)
+    with pytest.raises(RuntimeError, match="Staged Cargo inputs differ"):
+        RustTarget(**config).prepare(root / "src/main.rs", root)
+    assert len(calls) == 2 and calls[1] != root and not marker.exists()
+
+
+def test_rust_checks_pinned_versions_before_compiling(tmp_path):
+    root = example(tmp_path)
+    config, marker = scripted_toolchain(tmp_path, version="1.95.0")
+    with pytest.raises(ValueError, match="pinned version"):
+        RustTarget(**config).prepare(root / "src/main.rs", root)
+    assert not marker.exists()
+
+
+def test_rust_rechecks_cargo_ancestry_before_each_cargo_command(tmp_path):
+    root = example(tmp_path)
+    plant = (
+        "parent = pathlib.Path.cwd().parent / '.cargo'\n"
+        "parent.mkdir(exist_ok=True)\n"
+        "(parent / 'config.toml').write_text('[build]\\nrustc-wrapper = \"/x\"\\n')\n"
+    )
+    config, marker = scripted_toolchain(tmp_path, cargo_build=plant)
+    before = set(Path(tempfile.gettempdir()).glob("peeky-rust-*"))
+    with pytest.raises(ValueError, match="Ambient Cargo configuration"):
+        RustTarget(**config).prepare(root / "src/main.rs", root)
+    assert marker.read_text() == "build\n"
+    assert set(Path(tempfile.gettempdir()).glob("peeky-rust-*")) == before
+
+
+@pytest.mark.parametrize(
+    "stderr, retryable",
+    [
+        ("error: expected expression, found `;`\n  --> src/main.rs:35:26\n", True),
+        ("error[E0308]: mismatched types\n --> src/main.rs:1:2\n", True),
+        ("error: the lock file needs to be updated but --locked was passed\n", False),
+        ("error[E0425]: cannot find value\n --> tests/pagination.rs:3:4\n", False),
+        ("warning: unused variable\n --> src/main.rs:1:1\n", False),
+        ("error: linking failed\n --> /rustc/abc/library/std/src/lib.rs:1:1\n", False),
+    ],
+)
+def test_only_rustc_diagnostics_in_declared_sources_are_retryable(stderr, retryable):
+    assert compiler_diagnostic(stderr, ("src/main.rs",)) is retryable
+
+
+def test_macos_dsymutil_must_be_exactly_the_path_selected_tool(tmp_path, monkeypatch):
+    monkeypatch.setattr("peeky.rust.sys.platform", "darwin")
+    config = toolchain(tmp_path)
+    renamed = tmp_path / "other/symtool"
+    renamed.parent.mkdir(exist_ok=True)
+    renamed.write_text("#!/bin/sh\n")
+    renamed.chmod(0o755)
+    with pytest.raises(ValueError, match="named dsymutil"):
+        RustTarget(**{**config, "dsymutil": str(renamed)})
+    declared = tmp_path / "declared/dsymutil"
+    declared.parent.mkdir()
+    declared.write_text("#!/bin/sh\n")
+    declared.chmod(0o755)
+    target = RustTarget(**{**config, "dsymutil": str(declared)})
+    env = target._environment(str(Path(config["rustc"]).resolve()))
+    assert env["PATH"].split(":")[0] == str(declared.parent)
+    declared.chmod(0o644)  # PATH lookup would now select the rustc directory's dsymutil
+    with pytest.raises(ValueError, match="PATH does not select"):
+        target._environment(str(Path(config["rustc"]).resolve()))
+
+
+def test_owned_directory_cleanup_failure_is_never_silent(tmp_path, monkeypatch):
+    from peeky.rust import _remove_owned
+
+    monkeypatch.setattr("peeky.rust.shutil.rmtree", lambda *a, **kw: None)
+    with pytest.raises(RuntimeError, match="not removed"):
+        _remove_owned(tmp_path)
+    error = ValueError("original")
+    _remove_owned(tmp_path, error)
+    assert "not removed" in error.__notes__[0]
+
+
+def test_launch_deadline_is_passed_to_preparation_and_failure_cleans(tmp_path):
+    class SlowTarget(PythonAdapter):
+        supports_deadline = True
+        remaining = []
+
+        def prepare(self, program, root, *, deadline):
+            self.remaining.append(deadline - time.monotonic())
+            raise TimeoutError("Rust preparation exceeded its overall deadline")
+
+    (tmp_path / "main.rs").write_text("fn main() {}\n")
+    worker = DebugWorker(tmp_path, adapter=SlowTarget())
+    with pytest.raises(TimeoutError):
+        worker.dispatch("launch", {"program": "main.rs"})
+    assert 0 < SlowTarget.remaining[0] <= worker.launch_deadline_s < 45
+    assert worker.session is None and worker.runtime is None and worker.dap is None
+
+
+def test_launch_finishing_after_deadline_is_discarded(tmp_path, monkeypatch):
+    closed = []
+
+    class Target(PythonAdapter):
+        def close(self):
+            closed.append("runtime")
+
+    class SlowDAP:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def request(self, command, arguments=None, **kwargs):
+            if command == "configurationDone":
+                time.sleep(0.3)
+            return {"breakpoints": []}
+
+        def send(self, command, arguments=None):
+            return 1
+
+        def wait_event(self, *args, **kwargs):
+            return {}
+
+        def response(self, *args, **kwargs):
+            return {}
+
+        def close(self):
+            closed.append("dap")
+
+    monkeypatch.setattr("peeky.worker.DAP", SlowDAP)
+    (tmp_path / "target.py").write_text("pass\n")
+    worker = DebugWorker(tmp_path, adapter=Target())
+    worker.launch_deadline_s = 0.1
+    with pytest.raises(TimeoutError, match="discarded"):
+        worker.dispatch("launch", {"program": "target.py"})
+    assert closed == ["dap", "runtime"] and worker.session is None
+
+
+class MutableRuntime(Runtime):
+    def validate_value(self, value):
+        pass
+
+    def validate_variable(self, variable, value):
+        assert variable["type"] == "int"
+
+
+def test_value_views_rebind_mutation_to_freshly_reacquired_scope(worker):
+    worker.runtime = MutableRuntime()
+    backend = worker.dap
+    scopes = iter([7, 70])
+    original = backend.request
+
+    def request(operation, args, timeout=15):
+        if operation == "scopes":
+            return {
+                "scopes": [
+                    {
+                        "name": "Locals",
+                        "presentationHint": "locals",
+                        "variablesReference": next(scopes),
+                    }
+                ]
+            }
+        if operation == "setVariable":
+            backend.calls.append((operation, args))
+            return {"value": args["value"]}
+        if operation == "variables" and args["variablesReference"] == 70:
+            return {"variables": deepcopy(backend.roots)}
+        return original(operation, args)
+
+    backend.request = request
+    scope = call(worker, "inspect")["scopes"][0]
+    assert worker.view_fetches and worker.reference_adapter[scope["reference"]] == 70
+    call(worker, "set_variable", reference=scope["reference"], name="start", value="0")
+    assert backend.calls[-1] == (
+        "setVariable",
+        {"variablesReference": 70, "name": "start", "value": "0"},
+    )
+
+
+def test_value_views_reject_changed_scope_identity(worker):
+    backend = worker.dap
+    names = iter(["Locals", "Other"])
+    original = backend.request
+
+    def request(operation, args, timeout=15):
+        if operation == "scopes":
+            return {
+                "scopes": [
+                    {"name": next(names), "presentationHint": "locals", "variablesReference": 7}
+                ]
+            }
+        return original(operation, args)
+
+    backend.request = request
+    with pytest.raises(ValueError, match="Scopes changed"):
+        call(worker, "inspect")
+    assert not worker.references
+
+
+def test_synthetic_rust_fields_are_refused_at_every_level(worker):
+    worker.dap.roots.append(raw("$discr$", "unsigned int", 0, "1"))
+    with pytest.raises(ValueError, match="Raw Rust enum storage"):
+        call(worker, "inspect")
+    worker.dap.roots.pop()
+    worker.dap.children[31] = [raw("$variant$0", "app::Unknown$Inner::A$Variant", 33)]
+    variables = {v["name"]: v for v in call(worker, "inspect")["scopes"][0]["variables"]}
+    holder = call(worker, "expand", handle=variables["holder"]["variablesReference"])
+    with pytest.raises(ValueError, match="Raw Rust enum storage"):
+        call(worker, "expand", handle=holder["variables"][0]["variablesReference"])
+
+
+def test_value_view_time_budget_degrades_to_opaque(worker, monkeypatch):
+    monkeypatch.setattr("peeky.worker.VIEW_SECONDS", 0)
+    variables = {v["name"]: v for v in call(worker, "inspect")["scopes"][0]["variables"]}
+    assert variables["some"]["view"] == "budget-exhausted" and worker.view_fetches == 0
+
+
+def test_each_expansion_gets_a_fresh_value_view_budget(worker):
+    worker.dap.roots = [raw("holder", "app::Holder", 30)] + [
+        raw(f"some{index}", OPTION, 10) for index in range(30)
+    ]
+    worker.dap.children[30] = [raw("inner", OPTION, 10)]
+    variables = call(worker, "inspect")["scopes"][0]["variables"]
+    assert variables[-1]["view"] == "budget-exhausted"
+    expanded = call(worker, "expand", handle=variables[0]["variablesReference"])
+    assert expanded["variables"][0]["value"] == "Some(3)" and worker.view_fetches == 5

@@ -126,6 +126,10 @@ def execute(command, cwd, timeout=20, *, input_text=None, env=None, output_limit
                 os.killpg(process.pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
+            except PermissionError:
+                # macOS reports EPERM for a group whose only member is the exited leader.
+                if process.poll() is None:
+                    raise
         elif process.poll() is None:
             process.kill()
         process.wait(timeout=5)

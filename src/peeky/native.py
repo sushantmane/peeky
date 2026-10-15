@@ -91,6 +91,10 @@ def _metadata(tool, arguments, workspace, env, *, max_bytes=MAX_METADATA, timeou
                     os.killpg(process.pid, signal.SIGKILL)
                 except ProcessLookupError:
                     pass
+                except PermissionError:
+                    # macOS reports EPERM for a group whose only member is the exited leader.
+                    if process.poll() is None:
+                        raise
                 process.wait(timeout=3)
         if exceeded or process.returncode or not output.is_file():
             size = output.stat().st_size if output.is_file() else 0

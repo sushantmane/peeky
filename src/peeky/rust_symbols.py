@@ -20,6 +20,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from peeky.adapters import ViewBudgetExhausted
 from peeky.native import MAX_METADATA, _metadata, parse_lines
 
 MAX_UNITS = 4096
@@ -36,6 +37,7 @@ QUALIFIED_OPTIONS = {"core::option::Option<i32>": ("i32", "int")}
 DISCRIMINANT_TYPES = {"u32": "unsigned int"}
 UNQUALIFIED = "<unqualified Rust enum layout>"
 UNVERIFIED = "<unverified Rust enum value>"
+BUDGET = "<Rust enum view budget exhausted; expand or inspect a narrower scope>"
 
 _UNIT = re.compile(
     r"0x([0-9a-f]{8,16}): ([A-Za-z ]{1,32}) Unit: (.{1,512}) \(next unit at 0x([0-9a-f]{8,16})\)"
@@ -362,10 +364,14 @@ def enum_layouts(text, unit):
     return layouts
 
 
-def application_symbols(dwarfdump, symbols, workspace, env, *, entrypoint, crate, declared):
+def application_symbols(
+    dwarfdump, symbols, workspace, env, *, entrypoint, crate, declared, budget=SYMBOL_DEADLINE_S
+):
     """Return declared-source lines and enum layouts from application units only."""
     workspace = Path(workspace).resolve(strict=True)
-    deadline = _clock() + SYMBOL_DEADLINE_S
+    if type(budget) not in (int, float) or not 0 < budget <= SYMBOL_DEADLINE_S:
+        raise ValueError("Rust symbol extraction has no remaining time budget")
+    deadline = _clock() + budget
 
     def dump(arguments):
         remaining = deadline - _clock()
@@ -468,6 +474,8 @@ def active_variant(variable, fetch, layouts):
         return {**view, "value": UNQUALIFIED, "rust_view": "opaque"}
     try:
         value = _option_value(variable, fetch, layout, kind)
+    except ViewBudgetExhausted:
+        return {**view, "value": BUDGET, "rust_view": "budget-exhausted"}
     except ValueError:
         return {**view, "value": UNVERIFIED, "rust_view": "opaque"}
     return {**view, "value": value, "rust_view": "active-variant"}

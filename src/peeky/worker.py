@@ -12,8 +12,10 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from peeky.adapters import PythonAdapter
+from peeky.adapters import PythonAdapter, ViewBudgetExhausted
 from peeky.dap import DAP
+
+VIEW_SECONDS = 10
 
 
 class DebugWorker:
@@ -36,10 +38,16 @@ class DebugWorker:
         self.children = {}
         self.inspection_nodes = 0
         self.view_fetches = 0
+        self.view_items = 0
+        self.view_bytes = 0
+        self.view_deadline = 0.0
         self.audit = []
         self.breakpoint_events = []
         self.lock = threading.Lock()
         self.last_used = time.monotonic()
+        # Below Client.call's 45 s HTTP timeout: a launch either returns within this
+        # bound or is discarded, so an abandoned slow launch cannot leave a session.
+        self.launch_deadline_s = 40
 
     def path(self, name):
         path = (self.root / name).resolve()
@@ -141,8 +149,13 @@ class DebugWorker:
             self.session = uuid.uuid4().hex
             self.audit = []
             self.breakpoint_events = []
+            deadline = time.monotonic() + self.launch_deadline_s
             try:
-                self.runtime = runtime = self.adapter.prepare(program, self.root)
+                if getattr(self.adapter, "supports_deadline", False):
+                    prepared = self.adapter.prepare(program, self.root, deadline=deadline)
+                else:
+                    prepared = self.adapter.prepare(program, self.root)
+                self.runtime = runtime = prepared
                 runtime.assert_current()
                 self.dap = DAP(command=runtime.command, env=getattr(runtime, "environment", None))
                 capabilities = self.dap.request(
@@ -165,6 +178,8 @@ class DebugWorker:
                 self.dap.request("configurationDone")
                 self.dap.response(launch)
                 runtime.assert_current()
+                if time.monotonic() > deadline:
+                    raise TimeoutError("Launch exceeded its deadline; session discarded")
                 self.state = "running"
                 self.cursor = 0
                 return {
@@ -219,7 +234,9 @@ class DebugWorker:
             self.stopped(args)
             self.children.clear()
             self.inspection_nodes = 0
-            self.view_fetches = 0
+            self.view_fetches = self.view_items = self.view_bytes = 0
+            self.view_deadline = time.monotonic() + VIEW_SECONDS
+            validate_children = getattr(runtime, "validate_children", None)
             stack = self.dap.request("stackTrace", {"threadId": self.thread_id, "levels": 10})
             frames = stack.get("stackFrames", [])[:10]
             self.frames = {f["id"] for f in frames}
@@ -236,29 +253,33 @@ class DebugWorker:
             self.reference_frames.clear()
             self.reference_adapter.clear()
             scopes = self.dap.request("scopes", {"frameId": selected}).get("scopes", [])
-            result = []
+            pending = []
             for scope in runtime.local_scopes(scopes)[:16]:
-                ref = scope["variablesReference"]
+                variables = self.dap.request(
+                    "variables", {"variablesReference": scope["variablesReference"]}
+                ).get("variables", [])
+                if validate_children:
+                    validate_children(variables)
                 self.reference_counter += 1
                 handle = self.reference_counter
+                exposed = self.expose_variables(
+                    variables[: min(50, 512 - self.inspection_nodes)],
+                    selected_frame,
+                    self.scope_identity(scope),
+                    (),
+                )
+                pending.append((handle, scope, exposed))
+            references = [scope["variablesReference"] for _, scope, _ in pending]
+            if self.view_fetches:
+                # Value views issued nested reads that may change adapter scope context.
+                # Bind mutation authority only to freshly re-acquired, identical scopes.
+                references = self.reacquire_scopes(runtime, selected_frame, pending)
+            result = []
+            for (handle, scope, exposed), reference in zip(pending, references):
                 self.references.add(handle)
                 self.reference_frames[handle] = selected_frame
-                self.reference_adapter[handle] = ref
-                variables = self.dap.request("variables", {"variablesReference": ref}).get(
-                    "variables", []
-                )
-                result.append(
-                    {
-                        "name": scope["name"],
-                        "reference": handle,
-                        "variables": self.expose_variables(
-                            variables[: min(50, 512 - self.inspection_nodes)],
-                            selected_frame,
-                            self.scope_identity(scope),
-                            (),
-                        ),
-                    }
-                )
+                self.reference_adapter[handle] = reference
+                result.append({"name": scope["name"], "reference": handle, "variables": exposed})
             return {"stop_id": self.stop_id, "frames": frames, "scopes": result}
         if operation == "expand":
             return self.expand(args, runtime)
@@ -351,12 +372,49 @@ class DebugWorker:
             frame.get("instructionPointerReference"),
         )
 
+    def reacquire_scopes(self, runtime, frame, pending):
+        frames = self.dap.request("stackTrace", {"threadId": self.thread_id, "levels": 10}).get(
+            "stackFrames", []
+        )[:10]
+        matches = [f for f in frames if f.get("id") == frame.get("id")]
+        if len(matches) != 1 or self.frame_identity(matches[0]) != self.frame_identity(frame):
+            raise ValueError("Frame changed during value views; inspect again")
+        runtime.validate_stop(matches[0])
+        if validate_debugger := getattr(runtime, "validate_debugger", None):
+            validate_debugger(self.dap, matches[0])
+        fresh = runtime.local_scopes(
+            self.dap.request("scopes", {"frameId": frame["id"]}).get("scopes", [])
+        )[:16]
+        if [self.scope_identity(s) for s in fresh] != [
+            self.scope_identity(scope) for _, scope, _ in pending
+        ]:
+            raise ValueError("Scopes changed during value views; inspect again")
+        return [scope["variablesReference"] for scope in fresh]
+
     def view_fetch(self, reference):
-        """Bounded raw reads used only by a runtime's trusted value-view hook."""
-        if self.view_fetches >= 128:
-            raise ValueError("Value view budget exhausted; inspect again")
+        """Bounded raw reads used only by a runtime's trusted value-view hook.
+
+        Count, time, item and byte budgets are shared by one inspection or expansion;
+        exhaustion makes remaining views opaque instead of extending the request.
+        """
+        remaining = self.view_deadline - time.monotonic()
+        if self.view_fetches >= 128 or remaining <= 0:
+            raise ViewBudgetExhausted("Value view budget exhausted")
         self.view_fetches += 1
-        return self.bounded_variables(reference)
+        if type(reference) is not int or reference <= 0:
+            raise ValueError("Variable is not expandable")
+        values = self.dap.request(
+            "variables",
+            {"variablesReference": reference, "start": 0, "count": 65},
+            timeout=remaining,
+        ).get("variables", [])
+        if not isinstance(values, list) or len(values) > 64:
+            raise ValueError("Value view child collection exceeds limit")
+        self.view_items += len(values)
+        self.view_bytes += len(json.dumps(values, default=str))
+        if self.view_items > 1024 or self.view_bytes > 1024 * 1024:
+            raise ViewBudgetExhausted("Value view budget exhausted")
+        return values
 
     def expose_variables(self, variables, frame, scope, ancestry):
         """Only worker-issued handles leave the process; child handles never permit writes."""
@@ -460,15 +518,21 @@ class DebugWorker:
         if len(matches) != 1:
             raise ValueError("Expansion scope is missing or ambiguous")
         reference = matches[0].get("variablesReference")
+        validate_children = getattr(runtime, "validate_children", None)
         for name, kind in ancestry:
             variables = self.bounded_variables(reference)
+            if validate_children:
+                validate_children(variables)
             matches = [v for v in variables if v.get("name") == name]
             if len(matches) != 1 or matches[0].get("type") != kind:
                 raise ValueError("Expansion ancestry changed or is ambiguous")
             reference = matches[0].get("variablesReference")
         variables = self.bounded_variables(reference)
-        if validate_children := getattr(runtime, "validate_children", None):
+        if validate_children:
             validate_children(variables)
+        # Each expansion is its own bounded request with a fresh value-view budget.
+        self.view_fetches = self.view_items = self.view_bytes = 0
+        self.view_deadline = time.monotonic() + VIEW_SECONDS
         start = args.get("start", 0)
         count = min(args.get("count", 64), 512 - self.inspection_nodes)
         result = self.expose_variables(

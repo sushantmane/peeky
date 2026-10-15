@@ -26,3 +26,18 @@ def test_engineering_capture_does_not_relax_production_parser(tmp_path):
 def test_capture_limit_cannot_be_unbounded(tmp_path, limit):
     with pytest.raises(ValueError, match="capture limit"):
         _metadata("unused", [], tmp_path, {}, max_bytes=limit)
+
+
+def test_exited_process_group_permission_error_is_benign(tmp_path, monkeypatch):
+    from peeky.agent import execute
+
+    writer = tmp_path / "writer.py"
+    writer.write_text('import pathlib, sys\npathlib.Path(sys.argv[-1]).write_text("ok")\n')
+
+    def zombie_group(pid, sig):
+        raise PermissionError("Operation not permitted")
+
+    monkeypatch.setattr("peeky.native.os.killpg", zombie_group)
+    assert _metadata(sys.executable, [str(writer)], tmp_path, dict(os.environ)) == "ok"
+    monkeypatch.setattr("peeky.agent.os.killpg", zombie_group)
+    assert execute([sys.executable, "-c", "print('done')"], tmp_path)["stdout"] == "done\n"

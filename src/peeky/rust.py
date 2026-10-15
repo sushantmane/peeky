@@ -17,6 +17,7 @@ import re
 import shutil
 import sys
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -35,12 +36,22 @@ from peeky.rust_manifest import assert_cargo_ancestry_clear, validate_cargo_inpu
 from peeky.rust_symbols import active_variant, application_symbols
 
 DEPS = "target/debug/deps"
-RAW_ENUM_FIELDS = ("$variants$", "$discr$")
 TEST_TIMEOUT_S = 30
+SYMBOL_BUDGET_S = 10
 _SUMMARY = re.compile(
     r"test result: (ok|FAILED)\. ([0-9]{1,6}) passed; ([0-9]{1,6}) failed; ([0-9]{1,6}) ignored; "
     r"([0-9]{1,6}) measured; ([0-9]{1,6}) filtered out; finished in [0-9]{1,6}\.[0-9]{1,3}s"
 )
+
+
+def _remove_owned(parent, error=None):
+    """Remove the owned build parent; record failure on an active error, else raise."""
+    shutil.rmtree(parent, ignore_errors=True)
+    if Path(parent).exists():
+        message = f"Rust build directory was not removed: {parent}"
+        if error is None:
+            raise RuntimeError(message)
+        error.add_note(message)
 
 
 def _absolute_tool(path, label):
@@ -97,6 +108,15 @@ def cargo_artifacts(names, crate, test_crate):
             raise ValueError("Missing Cargo packed debug symbols")
         return binary, symbols, test
     return binary, binary, test
+
+
+def compiler_diagnostic(stderr, sources):
+    """Retry only rustc diagnostics located in declared application sources."""
+    return any(
+        re.fullmatch(r" *--> " + re.escape(name) + r":[0-9]{1,6}:[0-9]{1,6}", line)
+        for line in stderr.splitlines()
+        for name in sources
+    ) and bool(re.search(r"^error(?:\[E[0-9]{4}\])?: ", stderr, re.MULTILINE))
 
 
 def libtest_summary(result):
@@ -168,6 +188,7 @@ class RustTarget:
             _absolute_tool(getattr(self, label), label)
         if self.dsymutil is not None:
             _absolute_tool(self.dsymutil, "dsymutil")
+        self._dsymutil()
 
     language = "rust"
 
@@ -213,11 +234,19 @@ class RustTarget:
         if any(set(point) != {"line"} for point in points):
             raise ValueError("Rust targets support unconditional line breakpoints only")
 
+    def _dsymutil(self):
+        if sys.platform != "darwin":
+            return None
+        if self.dsymutil is None or Path(self.dsymutil).name != "dsymutil":
+            raise ValueError("macOS Rust targets require an explicit tool named dsymutil")
+        return _absolute_tool(self.dsymutil, "dsymutil")
+
     def _environment(self, rustc):
-        # rustc runs dsymutil from PATH for packed macOS symbols; prefer the declared one.
+        # rustc runs `dsymutil` from PATH for packed macOS symbols. Put the declared
+        # tool's directory first and require PATH resolution to select exactly it.
         tools = [str(Path(rustc).parent)]
-        if sys.platform == "darwin" and self.dsymutil is not None:
-            tools.append(str(Path(_absolute_tool(self.dsymutil, "dsymutil")).parent))
+        if dsymutil := self._dsymutil():
+            tools.insert(0, str(Path(self.dsymutil).parent))
         env = {
             "PATH": ":".join((*dict.fromkeys(tools), "/usr/bin", "/bin")),
             "CARGO_HOME": ".peeky-cargo-home",
@@ -233,9 +262,15 @@ class RustTarget:
             if not sdk.is_dir():
                 raise ValueError("Rust sysroot must be a directory")
             env["SDKROOT"] = str(sdk)
+        if dsymutil:
+            selected = shutil.which("dsymutil", path=env["PATH"])
+            if not selected or str(Path(selected).resolve()) != dsymutil:
+                raise ValueError("PATH does not select the declared dsymutil")
         return env
 
-    def prepare(self, program, root, *, edit=None):
+    supports_deadline = True
+
+    def prepare(self, program, root, *, edit=None, deadline=None):
         root = Path(root).resolve(strict=True)
         relative = Path(program).resolve(strict=True).relative_to(root).as_posix()
         if relative not in self.sources:
@@ -265,7 +300,7 @@ class RustTarget:
             Command((linker, "--version")),
         ]
         if sys.platform == "darwin":
-            probes.append(Command((_absolute_tool(self.dsymutil or "", "dsymutil"), "--version")))
+            probes.append(Command((self._dsymutil(), "--version")))
         elif sys.platform != "linux":
             raise ValueError("Rust target supports Linux and macOS hosts only")
         uplift = f"target/debug/{cargo_inputs.binary}"
@@ -280,25 +315,44 @@ class RustTarget:
             tuple(probes),
             tuple(sorted(self._environment(rustc).items())),
         )
+
+        def before_command(workspace, results, command):
+            # Revalidate the exact staged bytes Cargo will read, not the earlier preflight.
+            staged = validate_cargo_inputs(workspace, sources=self.sources, tests=self.tests)
+            if staged != cargo_inputs:
+                raise RuntimeError("Staged Cargo inputs differ from validated preflight")
+            assert_cargo_ancestry_clear(workspace)
+            versions = {probe.argv[0]: probe.stdout for probe in results}
+            if not versions[rustc].startswith(f"rustc {self.rust_version} ") or not versions[
+                cargo
+            ].startswith(f"cargo {self.rust_version} "):
+                raise ValueError("Rust toolchain does not match the pinned version")
+
         # Cargo also reads ancestor configuration; own a checked parent directory.
         parent = Path(tempfile.mkdtemp(prefix="peeky-rust-")).resolve()
         try:
             assert_cargo_ancestry_clear(parent)
             try:
-                prepared = prepare(recipe, root, parent=parent, edit=edit)
+                prepared = prepare(
+                    recipe,
+                    root,
+                    parent=parent,
+                    edit=edit,
+                    deadline=deadline,
+                    before_command=before_command,
+                )
             except BuildCommandError as exc:
-                if exc.command != build.argv:
-                    raise RuntimeError("Rust toolchain command failed") from exc
+                if exc.command != build.argv or not compiler_diagnostic(
+                    exc.result.get("stderr", ""), self.sources
+                ):
+                    raise RuntimeError("Rust toolchain or Cargo infrastructure failed") from exc
                 raise
-        except BaseException:
-            shutil.rmtree(parent, ignore_errors=True)
+        except BaseException as exc:
+            _remove_owned(parent, exc)
             raise
         try:
-            versions = {probe.argv[0]: probe.stdout for probe in prepared.manifest.probes}
-            if not versions[rustc].startswith(f"rustc {self.rust_version} ") or not versions[
-                cargo
-            ].startswith(f"cargo {self.rust_version} "):
-                raise ValueError("Rust toolchain does not match the pinned version")
+            if deadline is not None and deadline - time.monotonic() <= 0:
+                raise TimeoutError("Rust preparation exceeded its overall deadline")
             crate = cargo_inputs.binary.replace("-", "_")
             names = [item.path for item in prepared.manifest.artifacts if item.path != uplift]
             binary, symbols, test_binary = (
@@ -316,6 +370,9 @@ class RustTarget:
                 entrypoint=cargo_inputs.entrypoint,
                 crate=crate,
                 declared=self.sources,
+                budget=SYMBOL_BUDGET_S
+                if deadline is None
+                else min(SYMBOL_BUDGET_S, deadline - time.monotonic()),
             )
             identity = module_identity(dwarfdump, binary, symbols, prepared.workspace, env)
             session = RustSession(
@@ -325,9 +382,13 @@ class RustTarget:
             session.test_target = prepared.workspace / uplift
             session.assert_current()
             return session
-        except BaseException:
-            prepared.cleanup()
-            shutil.rmtree(parent, ignore_errors=True)
+        except BaseException as exc:
+            try:
+                prepared.cleanup()
+            except Exception as cleanup:
+                exc.add_note(f"Rust workspace cleanup failed: {cleanup}")
+            finally:
+                _remove_owned(parent, exc)
             raise
 
 
@@ -365,7 +426,11 @@ class RustSession(NativeSession):
         return active_variant(variable, fetch, self.layouts)
 
     def validate_children(self, variables):
-        if any(variable.get("name") in RAW_ENUM_FIELDS for variable in variables):
+        # `$` cannot start a Rust identifier; such fields are debugger-synthesized storage.
+        if any(
+            not isinstance(variable.get("name"), str) or variable["name"].startswith("$")
+            for variable in variables
+        ):
             raise ValueError("Raw Rust enum storage is not exposed; its layout is not qualified")
 
     def run_tests(self):
@@ -393,7 +458,7 @@ class RustSession(NativeSession):
         try:
             super().close()
         finally:
-            shutil.rmtree(self.parent, ignore_errors=True)
+            _remove_owned(self.parent)
 
 
 class RustVerification(CompiledVerification):

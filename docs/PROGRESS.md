@@ -20,21 +20,20 @@ An hourly thread heartbeat (`continue-peeky-mvp`) checks for available usage and
 
 ## Active slice
 
-Branch `feat/rust-worker` (pushed to origin; **no PR yet**: the Copilot app's PR tool reported the project's GitHub account must be re-linked, and it was not bypassed). CI was run with `workflow_dispatch` on the branch head. Commits on top of merged #22 (`4bb493d`):
+Branch `feat/rust-worker`, draft PR [#23](https://github.com/sushantmane/peeky/pull/23). Codex's heartbeat opened the PR and recorded a follow-up review. Copilot claimed ownership of the next edits in a PR comment. RUST_PLAN steps 1–5 are delivered on narrow fixtures:
 
-- `5ef785f` application-unit Rust symbols and active `Option<i32>` views (RUST_PLAN steps 1–2).
-- `09820c6` LLDB `$variant$<discr_value>` binding (from LLDB 18 `ParseRustVariantPart`).
-- `48e7429` experimental `RustTarget`/`RustSession` and `--rust-config` HTTP worker (step 3).
-- `2e587fa` adversarial-review hardening (see review below).
-- `bd2ade2` ADR 0004: stateless probes alongside sessions (owner direction).
+- Application-unit Rust symbols (exact `comp_dir`, crate-root CU names, offset-scoped tables, unchanged 2 MiB parser) and DWARF-validated `Option<i32>` active-variant views. Other data-carrying enums are opaque, and `$` storage is refused everywhere.
+- Experimental `RustTarget`/`RustSession` HTTP worker (`--rust-config`): offline/locked Cargo with real sysroot tools, staged-input/ancestry/version checks before each Cargo command, hashed `target/debug/deps` plus uplifted test target, i32-only root mutation, symbol-file scripts disabled, 40 s launch deadline.
+- Verification (`RustVerification`, `peeky-agent --rust-config`): the hashed compiled integration-test binary runs directly (no Cargo at verification time) **and** the unchanged independent checker must complete. A deterministic investigation rejects a compile failure and a test-passing overfit before verifying the general fix (docs/RUST_AGENT.md).
+- ADR 0004 records the owner's stateless probe direction (not started).
 
-Delivered behavior: symbols come only from compile units whose recorded `comp_dir` equals the fresh workspace and whose name binds the declared crate root. Each table is dumped by exact offset into the unchanged 2 MiB parser (Linux 4,808,912-byte full dump avoided; C/C++ limits untouched). Enum layouts are read from the same unit with base types resolved through referenced DIEs. Only `Option<i32>` is shown as `Some(n)`/`None`, reading only the active payload; other data-carrying enums are opaque, and raw `$variants$` storage is never expandable. The worker builds offline/locked with real sysroot cargo/rustc, a checked owned parent, controlled env and hashed `target/debug/deps`. Mutation is limited to root `int` (i32) locals, and symbol-file scripts are disabled. **Not delivered:** Cargo compiled-test execution, independent candidate repair verification (step 4), an end-to-end Rust investigation (step 5), and non-i32 Option payloads.
+Reviews: three independent reviews across the slice. Every finding is fixed with regressions; see docs/reviews/RUST_WORKER_FOLLOWUP.md (dispositions table). Earlier symbol-review dispositions are recorded below.
 
-Checks on `bd2ade2` (run 38666345665): all nine lanes passed; Rust 43 s, C 51 s, Java 53 s (longest), C++ 39 s, unit 21 s, Python 17/19 s, quality 9 s, wheel 21 s. Linux Rust tests 8.73 s total: raw probe 3.44 s (symbols 0.242 s), HTTP worker flow 1.88 s, drift 1.31 s, compile failure 0.54 s. Local macOS (Apple LLVM 21): 399 unit tests in 5.17 s; `tests/rust` 4 passed in 4.40 s; symbols 0.063 s versus 0.433 s for the former full-dump parse. Earlier heads `5ef785f` (run 38664786468) and `48e7429` (run 38665951115) also passed all nine lanes.
+Local evidence (macOS, Apple LLVM 21, Rust 1.96.0): 436 unit tests in about 9.3 s. `tests/rust` + `tests/integration`: 12 passed in 15.31 s; full Rust investigation 5.04 s, frozen-test drift 2.32 s, HTTP worker flow 1.33 s, raw probe 0.92 s. Hosted evidence for the final head is recorded on PR #23 and in TESTING.md.
 
-Review: an independent adversarial review of `5ef785f` found 2 blocking and 5 should-fix issues. Dispositions: inactive payload swap → each `value` child must carry its own variant type; label-trusted base types → resolved via referenced DIEs (name/encoding/size); truncated/unterminated DIE trees → explicit NULL closure and EOF check; positional `$variant$N` → bound to discriminant values; offset-width indentation → depth-based; `comp_dir` resolve aliases → exact string; per-call timeouts → one shared 30 s deadline. All have regressions. A follow-up review of `48e7429` and the fixes was started but stalled without reporting. Rerun it and record its findings before merging.
+Next: confirm all nine lanes on the final head, re-review if new boundary changes land, then merge. After merge, candidates are a live-model Rust evaluation, lifecycle issue #6, corpus #7, separate-host SSH #8, and ADR 0004 probe mode, which starts with an in-process `run_probe` over existing worker operations.
 
-Next: open the PR once the account is re-linked (or manually), record the follow-up review, merge only after verifying every lane on the final head. Then RUST_PLAN step 4: `cargo test --no-run` with bounded JSON artifact parsing, exact prepared test execution with pre/post identity checks, unchanged Python checker, and the invalid/overfit/general candidate sequence (step 5).
+Earlier symbol review (of `5ef785f`): inactive payload swap, label-trusted base types, unterminated DIE trees, positional `$variant$N`, offset-width indentation, `comp_dir` resolution and per-call timeouts were all fixed in `09820c6`/`2e587fa` with regressions.
 
 ## Next slices
 
