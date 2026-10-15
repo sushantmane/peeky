@@ -210,6 +210,22 @@ def elf_build_id(binary):
         return identities.pop()
 
 
+def module_identity(dwarfdump, binary, symbols, workspace, env):
+    """Mach-O binary/dSYM UUID equality or the ELF GNU build ID."""
+    if sys.platform != "darwin":
+        return elf_build_id(binary)
+    identities = []
+    for artifact in (binary, symbols):
+        output = _metadata(dwarfdump, ["--uuid", str(artifact)], workspace, env)
+        found = re.findall(r"UUID:\s+([0-9A-Fa-f-]+)\s+\(", output)
+        if len(found) != 1 or len(found[0].replace("-", "")) != 32:
+            raise ValueError("Expected one native UUID")
+        identities.append(found[0].replace("-", "").upper())
+    if identities[0] != identities[1]:
+        raise ValueError("Native binary and symbols UUID mismatch")
+    return identities[0]
+
+
 def elf_executable_ranges(binary):
     """Bound ELF64 load metadata used to bind an LLDB instruction pointer."""
     limit = 1 << 64
@@ -397,21 +413,7 @@ class NativeTarget:
             env = dict(prepared.manifest.effective_environment)
             text = _metadata(dwarfdump, ["--debug-line", str(symbols)], prepared.workspace, env)
             lines = parse_lines(text, prepared.workspace, self.sources + self.headers)
-            if sys.platform == "darwin":
-                identities = []
-                for artifact in (binary, symbols):
-                    output = _metadata(
-                        dwarfdump, ["--uuid", str(artifact)], prepared.workspace, env
-                    )
-                    found = re.findall(r"UUID:\s+([0-9A-Fa-f-]+)\s+\(", output)
-                    if len(found) != 1 or len(found[0].replace("-", "")) != 32:
-                        raise ValueError("Expected one native UUID")
-                    identities.append(found[0].replace("-", "").upper())
-                if identities[0] != identities[1]:
-                    raise ValueError("Native binary and symbols UUID mismatch")
-                identity = identities[0]
-            else:
-                identity = elf_build_id(binary)
+            identity = module_identity(dwarfdump, binary, symbols, prepared.workspace, env)
             session = NativeSession(self, prepared, adapter, lines, identity, binary, symbols)
             session.assert_current()
             return session

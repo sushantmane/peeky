@@ -35,6 +35,7 @@ class DebugWorker:
         self.reference_counter = 0
         self.children = {}
         self.inspection_nodes = 0
+        self.view_fetches = 0
         self.audit = []
         self.breakpoint_events = []
         self.lock = threading.Lock()
@@ -218,6 +219,7 @@ class DebugWorker:
             self.stopped(args)
             self.children.clear()
             self.inspection_nodes = 0
+            self.view_fetches = 0
             stack = self.dap.request("stackTrace", {"threadId": self.thread_id, "levels": 10})
             frames = stack.get("stackFrames", [])[:10]
             self.frames = {f["id"] for f in frames}
@@ -349,15 +351,37 @@ class DebugWorker:
             frame.get("instructionPointerReference"),
         )
 
+    def view_fetch(self, reference):
+        """Bounded raw reads used only by a runtime's trusted value-view hook."""
+        if self.view_fetches >= 128:
+            raise ValueError("Value view budget exhausted; inspect again")
+        self.view_fetches += 1
+        return self.bounded_variables(reference)
+
     def expose_variables(self, variables, frame, scope, ancestry):
         """Only worker-issued handles leave the process; child handles never permit writes."""
         result = []
+        view_variable = getattr(self.runtime, "view_variable", None)
         for variable in variables:
             name, kind = variable.get("name"), variable.get("type")
             if not isinstance(name, str) or (kind is not None and not isinstance(kind, str)):
                 raise RuntimeError("Malformed debugger variable identity")
             if len(name) > 2000 or (kind is not None and len(kind) > 2000):
                 raise RuntimeError("Debugger variable identity exceeds limit")
+            view = view_variable(variable, self.view_fetch) if view_variable else None
+            if view is not None:
+                # Interpreted values never carry expansion handles to raw storage.
+                output = {
+                    "name": name,
+                    "value": str(view["value"])[:2000],
+                    "variablesReference": 0,
+                    "view": str(view["rust_view"])[:100],
+                }
+                if kind is not None:
+                    output["type"] = kind
+                result.append(output)
+                self.inspection_nodes += 1
+                continue
             path = (*ancestry, (name, kind))
             handle = 0
             raw = variable.get("variablesReference", 0)
@@ -443,6 +467,8 @@ class DebugWorker:
                 raise ValueError("Expansion ancestry changed or is ambiguous")
             reference = matches[0].get("variablesReference")
         variables = self.bounded_variables(reference)
+        if validate_children := getattr(runtime, "validate_children", None):
+            validate_children(variables)
         start = args.get("start", 0)
         count = min(args.get("count", 64), 512 - self.inspection_nodes)
         result = self.expose_variables(
@@ -569,6 +595,38 @@ def load_native_target(path):
     return NativeTarget(**config)
 
 
+def load_rust_target(path):
+    """Load trusted Rust tools and inputs; HTTP clients cannot choose executables."""
+    from peeky.rust import RustTarget
+
+    config = json.loads(Path(path).read_text())
+    if not isinstance(config, dict):
+        raise ValueError("Rust configuration must be an object")
+    fields = {
+        "sources",
+        "tests",
+        "cargo",
+        "rustc",
+        "adapter",
+        "dwarfdump",
+        "linker",
+        "dsymutil",
+        "sysroot",
+        "arguments",
+        "rust_version",
+    }
+    if set(config) - fields:
+        raise ValueError("Unknown Rust configuration field")
+    if not {"sources", "tests", "cargo", "rustc", "adapter", "dwarfdump", "linker"} <= set(config):
+        raise ValueError("Rust configuration requires sources, tests and explicit tool paths")
+    for key in ("sources", "tests", "arguments"):
+        value = config.get(key, [])
+        if not isinstance(value, list):
+            raise ValueError(f"Rust {key} must be a JSON array")
+        config[key] = tuple(value)
+    return RustTarget(**config)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", default=".")
@@ -580,18 +638,22 @@ def main():
     targets.add_argument(
         "--native-config", type=Path, help="Trusted fixed C/C++ target JSON configuration"
     )
+    targets.add_argument(
+        "--rust-config", type=Path, help="Trusted fixed Cargo binary JSON configuration"
+    )
     args = parser.parse_args()
     token = os.environ.get("DEBUG_TOKEN")
     if not token or len(token) < 16:
         parser.error("Set DEBUG_TOKEN to a random secret of at least 16 characters")
     adapter = None
-    if args.java_config or args.native_config:
+    if args.java_config or args.native_config or args.rust_config:
         try:
-            adapter = (
-                load_java_target(args.java_config)
-                if args.java_config
-                else load_native_target(args.native_config)
-            )
+            if args.java_config:
+                adapter = load_java_target(args.java_config)
+            elif args.native_config:
+                adapter = load_native_target(args.native_config)
+            else:
+                adapter = load_rust_target(args.rust_config)
         except (OSError, ValueError, TypeError) as exc:
             parser.error(str(exc))
     server = make_server(args.root, token, args.port, adapter=adapter)

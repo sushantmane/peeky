@@ -159,7 +159,7 @@ jobs:
           echo "Native conformance: $((SECONDS - started)) seconds" >> "$GITHUB_STEP_SUMMARY"
 
   rust-probe:
-    name: Rust 1.96 LLVM 18 engineering gate
+    name: Rust 1.96 LLVM 18 conformance
     runs-on: ubuntu-24.04
     timeout-minutes: 4
     env:
@@ -190,11 +190,11 @@ jobs:
           rustup toolchain install 1.96.0 --profile minimal
           echo "PEEKY_RUST_CARGO=$(rustup which --toolchain 1.96.0 cargo)" >> "$GITHUB_ENV"
           echo "PEEKY_RUST_RUSTC=$(rustup which --toolchain 1.96.0 rustc)" >> "$GITHUB_ENV"
-      - name: Qualify raw Rust debugging (no worker support claimed)
+      - name: Qualify raw Rust debugging and the experimental Rust worker
         run: |
           started=$SECONDS
           pytest tests/rust --durations=10 -rP
-          echo "Rust engineering gate: $((SECONDS - started)) seconds" >> "$GITHUB_STEP_SUMMARY"
+          echo "Rust conformance: $((SECONDS - started)) seconds" >> "$GITHUB_STEP_SUMMARY"
 
   wheel:
     name: wheel smoke

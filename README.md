@@ -20,7 +20,7 @@ The minimum product scope is **Python, Java, C, C++, and Rust**, delivered in th
 
 The experimental [Java worker](docs/JAVA_WORKER.md) supports fixed standalone targets: clean compilation, generated source mappings, HTTP inspection/scalar mutation, provenance checks and failure cleanup. The [Java investigation loop](docs/JAVA_AGENT.md) adds fresh candidate rebuilds, independent fresh-JVM checks, and retryable compiler diagnostics. A runnable example is in `examples/java`.
 
-The experimental [C worker](docs/NATIVE.md) adds fresh Clang builds and LLDB runtime inspection with symbol/module provenance and restricted integer mutation. The [C investigation loop](docs/NATIVE_AGENT.md) adds fresh candidate builds, frozen companion headers and independent executable checks. The experimental [C++ slice](docs/CPP.md) qualifies C++17 classes, references and basic array contents with bounded read-only expansion and fresh candidate verification. Rust is not implemented yet.
+The experimental [C worker](docs/NATIVE.md) adds fresh Clang builds and LLDB runtime inspection with symbol/module provenance and restricted integer mutation. The [C investigation loop](docs/NATIVE_AGENT.md) adds fresh candidate builds, frozen companion headers and independent executable checks. The experimental [C++ slice](docs/CPP.md) qualifies C++17 classes, references and basic array contents with bounded read-only expansion and fresh candidate verification. An experimental [Rust worker](docs/RUST_GATE.md) inspects one dependency-free Cargo binary (structs, fieldless enums, compiler-validated `Option<i32>` active variants) and mutates root i32 locals; Rust candidate verification is not implemented yet.
 
 ## Start
 
