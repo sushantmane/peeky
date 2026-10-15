@@ -26,3 +26,36 @@ def test_engineering_capture_does_not_relax_production_parser(tmp_path):
 def test_capture_limit_cannot_be_unbounded(tmp_path, limit):
     with pytest.raises(ValueError, match="capture limit"):
         _metadata("unused", [], tmp_path, {}, max_bytes=limit)
+
+
+@pytest.mark.parametrize(
+    "second, survives",
+    [(ProcessLookupError, False), (None, False), (PermissionError, True)],
+)
+def test_process_group_eperm_is_tolerated_only_after_confirmed_absence(
+    tmp_path, monkeypatch, second, survives
+):
+    from peeky.agent import execute
+
+    writer = tmp_path / "writer.py"
+    writer.write_text('import pathlib, sys\npathlib.Path(sys.argv[-1]).write_text("ok")\n')
+    for module in ("peeky.agent",):
+        calls = []
+
+        def killpg(pid, sig):
+            calls.append(pid)
+            if len(calls) % 2 == 1:
+                raise PermissionError("Operation not permitted")
+            if second is not None:
+                raise second("second attempt")
+
+        monkeypatch.setattr(f"{module}.os.killpg", killpg)
+        if survives:
+            with pytest.raises(PermissionError):
+                _metadata(sys.executable, [str(writer)], tmp_path, dict(os.environ))
+            with pytest.raises(PermissionError):
+                execute([sys.executable, "-c", "print('done')"], tmp_path)
+        else:
+            assert _metadata(sys.executable, [str(writer)], tmp_path, dict(os.environ)) == "ok"
+            assert execute([sys.executable, "-c", "print('done')"], tmp_path)["stdout"] == "done\n"
+        assert len(calls) == 4

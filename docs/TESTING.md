@@ -80,3 +80,15 @@ PR #20, run 38542794719: all seven independent hosted jobs passed. C LLVM 18 con
 ## C++ investigation slice (2026-10-14)
 
 PR #21, run38549552255: all eight independent jobs passed. C++ LLVM18 took37s, C50s, Java70s (critical lane), quality12s, unit21s, Python21/20s, wheel21s. Job execution excludes queue time. Source head18e00a5 merged as8890113.
+
+## Rust engineering gate (2026-10-14)
+
+PR #22, run38556716292, final source770c60a: nine independent checks passed. Rust41s, C40s, C++31s, Java72s, Python16/18s, unit19s, quality10s, wheel23s. Job durations exclude queue time. Rust rawprobe2.03s, not an HTTP worker or repair benchmark. Initial Linux symbol capture failed with the2MiB ceiling; engineering capture explicitly permits16MiB and measured4,808,912 bytes. Five regressions keep production parsing capped at2MiB.
+
+## Rust worker conformance (2026-10-14)
+
+Branch `feat/rust-worker`, head `bd2ade2`, run 38666345665 (`workflow_dispatch`): nine independent checks passed. Rust 43 s, C 51 s, Java 53 s, C++ 39 s, unit 21 s, Python 17/19 s, quality 9 s, wheel 21 s; job durations exclude queue time. The Rust lane now runs the raw probe (3.44 s, application symbols 0.242 s) plus real HTTP worker conformance: inspection/intervention 1.88 s, source drift 1.31 s, compile failure 0.54 s. No Rust test is skipped in CI. Local macOS runs set `PEEKY_RUST_DSYMUTIL` as well.
+
+## Rust verification and review fixes (2026-10-14)
+
+PR #23 head `9d1e338`, run 38684077815 (`pull_request`): nine independent checks passed. Rust 50 s, Java 58 s (longest), C 51 s, C++ 33 s, unit 29 s, Python 20/25 s, quality 13 s, wheel 20 s. Linux Rust tests: 6 passed in 20.08 s, none skipped. Full deterministic investigation 8.78 s, frozen-test drift 3.44 s, HTTP worker flow 2.31 s, source drift 1.62 s, raw probe 0.94 s, compile failure 0.57 s. The previous head `9985257` (run 38683005986) also passed all nine lanes. Locally on macOS, 436 unit tests run in about 9.3 s; the suite now includes deadline and timeout regressions that sleep deliberately.

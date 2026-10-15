@@ -6,7 +6,7 @@ Peeky gives a coding agent a controlled debugging loop: choose a breakpoint, ins
 
 This private repository is an MVP foundation, migrated from a working prototype and revised after two adversarial reviews. It is not a production debugger service or a sandbox for hostile code.
 
-## Current Python, Java, C and C++ investigations
+## Current Python, Java, C, C++ and Rust investigations
 
 - Python programs through debugpy and the Debug Adapter Protocol (DAP).
 - One controller and one session per worker.
@@ -16,11 +16,11 @@ This private repository is an MVP foundation, migrated from a working prototype 
 - A candidate source patch checked by a trusted verifier in a fresh process.
 - Loopback transport; SSH forwarding for remote access.
 
-The minimum product scope is **Python, Java, C, C++, and Rust**, delivered in that order through incremental releases. Python, Java, C and C++ have experimental investigation loops with independent candidate verification. See the [five-language plan](docs/LANGUAGES.md). Kubernetes deployment, multi-tenant workers, attach, and production mutation policy remain later milestones. CI covers Linux with Python 3.11/3.13 and a separate Java 17 lane; macOS is used for local development but is not yet in the CI matrix.
+The minimum product scope is **Python, Java, C, C++, and Rust**, delivered in that order through incremental releases. All five (Python, Java, C, C++ and Rust) now have experimental investigation loops with independent candidate verification on narrow fixtures; none is general language support. See the [five-language plan](docs/LANGUAGES.md). Kubernetes deployment, multi-tenant workers, attach, and production mutation policy remain later milestones. CI covers Linux with Python 3.11/3.13 and a separate Java 17 lane; macOS is used for local development but is not yet in the CI matrix.
 
 The experimental [Java worker](docs/JAVA_WORKER.md) supports fixed standalone targets: clean compilation, generated source mappings, HTTP inspection/scalar mutation, provenance checks and failure cleanup. The [Java investigation loop](docs/JAVA_AGENT.md) adds fresh candidate rebuilds, independent fresh-JVM checks, and retryable compiler diagnostics. A runnable example is in `examples/java`.
 
-The experimental [C worker](docs/NATIVE.md) adds fresh Clang builds and LLDB runtime inspection with symbol/module provenance and restricted integer mutation. The [C investigation loop](docs/NATIVE_AGENT.md) adds fresh candidate builds, frozen companion headers and independent executable checks. The experimental [C++ slice](docs/CPP.md) qualifies C++17 classes, references and basic array contents with bounded read-only expansion and fresh candidate verification. Rust is not implemented yet.
+The experimental [C worker](docs/NATIVE.md) adds fresh Clang builds and LLDB runtime inspection with symbol/module provenance and restricted integer mutation. The [C investigation loop](docs/NATIVE_AGENT.md) adds fresh candidate builds, frozen companion headers and independent executable checks. The experimental [C++ slice](docs/CPP.md) qualifies C++17 classes, references and basic array contents with bounded read-only expansion and fresh candidate verification. An experimental [Rust worker](docs/RUST_GATE.md) inspects one dependency-free Cargo binary (structs, fieldless enums, compiler-validated `Option<i32>` active variants) and mutates root i32 locals. The [Rust investigation loop](docs/RUST_AGENT.md) verifies candidates with both the compiled Cargo integration test and an independent checker.
 
 ## Start
 
@@ -83,6 +83,7 @@ Keep matching source on the client and worker. The runner checks source identity
 - [Testing and CI budget](docs/TESTING.md): parallel lanes and measured timings.
 - [Runtime performance](docs/PERFORMANCE.md): repeatable HTTP/debugger benchmark and raw latency samples.
 - [Code, logs, and metrics](docs/adr/0002-correlated-evidence.md): incremental evidence correlation design.
+- [Stateless probes](docs/adr/0004-stateless-probes.md): planned one-request probe mode and query interface alongside sessions.
 - [Threat model](docs/THREAT_MODEL.md): trusted-code assumptions and remote constraints.
 - [Adversarial review](docs/reviews/INITIAL_REVIEW.md): findings and dispositions.
 - [Decision record](docs/adr/0001-mvp-boundaries.md): why Python/DAP/SSH comes first.

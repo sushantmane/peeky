@@ -16,6 +16,7 @@ from peeky.agent import execute
 from peeky.dap import DAP
 from peeky.native import MAX_METADATA, NativeSession, _metadata, elf_build_id
 from peeky.rust_manifest import assert_cargo_ancestry_clear, validate_cargo_inputs
+from peeky.rust_symbols import active_variant, application_symbols
 
 ROOT = Path(__file__).resolve().parents[1]
 INPUTS = ("Cargo.toml", "Cargo.lock", "src/main.rs", "tests/pagination.rs")
@@ -132,6 +133,35 @@ def probe(args):
             }
             assert result["line_metadata"]["versions"] == ["4"]
             assert result["line_metadata"]["declared_source_present"]
+            source = root / "src/main.rs"
+            line = next(
+                i
+                for i, text in enumerate(source.read_text().splitlines(), 1)
+                if "// OBSERVE" in text
+            )
+            # Production path: application units only, unchanged 2 MiB line parser.
+            symbols_started = time.monotonic()
+            lines, layouts, units = application_symbols(
+                str(paths["dwarfdump"]),
+                symbols,
+                root,
+                env,
+                entrypoint="src/main.rs",
+                crate="peeky_pagination",
+                declared=("src/main.rs",),
+            )
+            result["application_symbols"] = {
+                "seconds": time.monotonic() - symbols_started,
+                "units": [unit.name for unit in units],
+                "lines": lines,
+                "observe_line": line,
+                "layouts": layouts,
+            }
+            assert line in lines["src/main.rs"], lines
+            assert layouts["core::option::Option<i32>"]["kind"] == "option", layouts
+            assert all(
+                layout["kind"] in ("option", "unqualified") for layout in layouts.values()
+            ), layouts
             protected = [root / name for name in INPUTS] + [binary]
             protected += [p for p in root.rglob("*.dSYM/**/*") if p.is_file()]
             before = {str(p.relative_to(root)): sha(p) for p in protected}
@@ -151,12 +181,6 @@ def probe(args):
                     raise ValueError("Rust executable and separate symbols UUID mismatch")
                 result["symbol_uuid_matched"] = True
             result["baseline"] = run([str(binary)], root, env)["stdout"]
-            source = root / "src/main.rs"
-            line = next(
-                i
-                for i, text in enumerate(source.read_text().splitlines(), 1)
-                if "// OBSERVE" in text
-            )
             dap = DAP((str(paths["adapter"]),), env=env)
             try:
                 result["capabilities"] = dap.request(
@@ -270,6 +294,36 @@ def probe(args):
                 result["inactive_variant_warning"] = (
                     "Raw Option exposes inactive variant storage; only selected discriminant/payload is meaningful. None payload is not interpreted."
                 )
+                fetches = [0]
+
+                def fetch(reference):
+                    fetches[0] += 1
+                    if fetches[0] > 64:
+                        raise ValueError("Active-variant inspection budget exceeded")
+                    values = dap.request("variables", {"variablesReference": reference})[
+                        "variables"
+                    ]
+                    if len(values) > 64:
+                        raise ValueError("Active-variant child budget exceeded")
+                    return values
+
+                views = {
+                    name: active_variant(variables[name], fetch, layouts)
+                    for name in ("request", "mode", "some", "none", "start")
+                }
+                result["active_variants"] = {"views": views, "fetches": fetches[0]}
+                assert views["request"] is None and views["mode"] is None, views
+                assert views["start"] is None, views
+                assert views["some"] == {
+                    "name": "some",
+                    "type": "core::option::Option<i32>",
+                    "variablesReference": 0,
+                    "value": "Some(3)",
+                    "rust_view": "active-variant",
+                }, views["some"]
+                assert views["none"]["value"] == "None", views["none"]
+                assert views["none"]["rust_view"] == "active-variant", views["none"]
+                result["active_variant_qualified"] = True
                 scopes = dap.request("scopes", {"frameId": frame["id"]})["scopes"]
                 local = next(
                     s

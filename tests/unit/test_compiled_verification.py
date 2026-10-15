@@ -182,3 +182,31 @@ def test_launch_requires_full_companion_manifest(investigation):
     del launch["source_manifest"]["config.h"]
     with pytest.raises(ValueError, match="manifest"):
         verifier.validate_launch(launch)
+
+
+@pytest.mark.parametrize(
+    "checker, tests, passed", [(True, True, True), (True, False, False), (False, True, False)]
+)
+def test_session_test_hook_cannot_replace_or_bypass_the_checker(
+    investigation, monkeypatch, checker, tests, passed
+):
+    _, target, _, _, _ = investigation
+    calls = []
+    original = target.prepare
+
+    def prepare(*args, **kwargs):
+        runtime = original(*args, **kwargs)
+        runtime.run_tests = lambda: calls.append("tests") or {
+            "passed": tests,
+            "stage": "cargo-test",
+        }
+        return runtime
+
+    target.prepare = prepare
+    monkeypatch.setattr(
+        "peeky.agent.verify",
+        lambda *args, **kwargs: calls.append("checker") or {"passed": checker, "exit_code": 0},
+    )
+    result = candidate(investigation)
+    assert calls == ["tests", "checker"]
+    assert result["passed"] is passed and result["tests"]["passed"] is tests

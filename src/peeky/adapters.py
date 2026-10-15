@@ -8,6 +8,10 @@ import sys
 from dataclasses import dataclass
 
 
+class ViewBudgetExhausted(ValueError):
+    """A bounded value view stopped early; distinct from an invalid debugger shape."""
+
+
 @dataclass(frozen=True)
 class PythonAdapter:
     interpreter: str = sys.executable

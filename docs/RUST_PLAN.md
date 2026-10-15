@@ -1,6 +1,6 @@
 # Rust MVP qualification plan
 
-Status: proposed next slice; no Rust runtime support is claimed. Keep the first target a dependency-free, single-package Cargo binary with a committed lockfile and explicitly declared source and test files. C/C++ conformance does not establish Rust support.
+Status: engineering gate passed (PR #22). Application-unit symbol scoping, DWARF-validated `Option<i32>` active-variant views, an experimental RustTarget/HTTP worker, compiled-test plus independent-checker verification and a deterministic investigation loop are delivered (see RUST_GATE.md and RUST_AGENT.md). Deliberate deviation from step 2 below: verification executes the hashed test binary directly instead of running `cargo test`, which removes any rebuild/substitution path. Live-model evaluation, separate-host use and broader Rust values remain. Keep the first target a dependency-free, single-package Cargo binary with a committed lockfile and explicitly declared source and test files. C/C++ conformance does not establish Rust support.
 
 ## Evidence and first gate
 
@@ -77,3 +77,7 @@ macOS requires packed debug information for this build: Cargo puts the dSYM besi
 Raw `Option<i32>` is not yet a usable worker-level semantic view. LLDB exposes both variant branches and a raw `$discr$` field; inactive payload fields can also appear. The Some payload path is `Option → $variants$ → $variant$1 → value → __0`, beyond the worker's current depth-four expansion limit. The engineering probe's deeper raw traversal does not qualify the public worker API. A pinned formatter or narrowly validated active-variant normalization remains a required next gate. Do not label inactive fields as a meaningful Some payload, increase generic depth without reviewing bounds, or interpret the observed layout as a stable Rust ABI.
 
 An independent persistent scratch probe retained valid packed symbols and a verified source breakpoint but repeatedly timed out without a source stop. The timeout persisted with automatic symbol-file script loading disabled and after substituting the successful probe's fixture source; its cause remains unresolved. Adapter cleanup completed and recorded debuggee PIDs were gone. The separate clean-temporary-directory probe succeeded, so preserve this as a narrow setup qualification limitation rather than claiming the compiler/debugger pair always succeeds or that source-path resolution caused the timeout.
+
+## Hosted gate result, 2026-10-14
+
+PR #22 merged as4bb493d after all nine lanes passed (run38556716292, source770c60a). Linux Rust1.96.0/LLVM18 raw probe passed in2.03 seconds (pytest2.19s), full Rust job41s; longest job72s. Actual line dump4,808,912 bytes, all reported DWARF4, declared source present, start displayed as int; loaded-module validation and build cleanup passed. Production line parsing remains limited to2MiB and cannot yet accept this dump. Choose a separately reviewed bounded declared-source extraction or explicit Rust-specific parser budget before adding RustTarget; do not silently change the C/C++ default. Raw Option semantic/depth gaps remain as documented.

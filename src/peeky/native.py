@@ -10,7 +10,6 @@ import json
 import os
 import re
 import shutil
-import signal
 import struct
 import subprocess
 import sys
@@ -55,10 +54,12 @@ def _path_name(name, suffix):
         raise ValueError("Expected a plain relative native input path")
 
 
-def _metadata(tool, arguments, workspace, env, *, max_bytes=MAX_METADATA):
+def _metadata(tool, arguments, workspace, env, *, max_bytes=MAX_METADATA, timeout=15):
     """Bound metadata capture; larger engineering probes do not change parser limits."""
     if type(max_bytes) is not int or not 0 < max_bytes <= 16 * 1024 * 1024:
         raise ValueError("Invalid native metadata capture limit")
+    if type(timeout) not in (int, float) or not 0 < timeout <= 15:
+        raise ValueError("Invalid native metadata time limit")
     with tempfile.TemporaryDirectory(prefix="peeky-symbols-", dir=workspace) as scratch:
         output = Path(scratch) / "dump.txt"
         errors = Path(scratch) / "errors.txt"
@@ -72,7 +73,7 @@ def _metadata(tool, arguments, workspace, env, *, max_bytes=MAX_METADATA):
                 stderr=stderr,
                 start_new_session=True,
             )
-            deadline = time.monotonic() + 15
+            deadline = time.monotonic() + timeout
             exceeded = False
             try:
                 while process.poll() is None:
@@ -85,10 +86,9 @@ def _metadata(tool, arguments, workspace, env, *, max_bytes=MAX_METADATA):
                         break
                     time.sleep(0.01)
             finally:
-                try:
-                    os.killpg(process.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
+                from peeky.agent import kill_process_group
+
+                kill_process_group(process)
                 process.wait(timeout=3)
         if exceeded or process.returncode or not output.is_file():
             size = output.stat().st_size if output.is_file() else 0
@@ -210,6 +210,33 @@ def elf_build_id(binary):
         return identities.pop()
 
 
+def _remaining(deadline, limit=15):
+    if deadline is None:
+        return limit
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError("Native preparation exceeded its overall deadline")
+    return min(limit, remaining)
+
+
+def module_identity(dwarfdump, binary, symbols, workspace, env, *, deadline=None):
+    """Mach-O binary/dSYM UUID equality or the ELF GNU build ID."""
+    if sys.platform != "darwin":
+        return elf_build_id(binary)
+    identities = []
+    for artifact in (binary, symbols):
+        output = _metadata(
+            dwarfdump, ["--uuid", str(artifact)], workspace, env, timeout=_remaining(deadline)
+        )
+        found = re.findall(r"UUID:\s+([0-9A-Fa-f-]+)\s+\(", output)
+        if len(found) != 1 or len(found[0].replace("-", "")) != 32:
+            raise ValueError("Expected one native UUID")
+        identities.append(found[0].replace("-", "").upper())
+    if identities[0] != identities[1]:
+        raise ValueError("Native binary and symbols UUID mismatch")
+    return identities[0]
+
+
 def elf_executable_ranges(binary):
     """Bound ELF64 load metadata used to bind an LLDB instruction pointer."""
     limit = 1 << 64
@@ -325,7 +352,9 @@ class NativeTarget:
         if any(set(point) != {"line"} for point in points):
             raise ValueError("Native targets support unconditional line breakpoints only")
 
-    def prepare(self, program, root, *, edit=None):
+    supports_deadline = True
+
+    def prepare(self, program, root, *, edit=None, deadline=None):
         root = Path(root).resolve(strict=True)
         relative = Path(program).resolve(strict=True).relative_to(root).as_posix()
         if relative not in self.sources:
@@ -382,6 +411,7 @@ class NativeTarget:
                 ),
                 root,
                 edit=edit,
+                deadline=deadline,
             )
         except BuildCommandError as exc:
             if exc.command not in compile_commands:
@@ -395,23 +425,17 @@ class NativeTarget:
                 else binary
             )
             env = dict(prepared.manifest.effective_environment)
-            text = _metadata(dwarfdump, ["--debug-line", str(symbols)], prepared.workspace, env)
+            text = _metadata(
+                dwarfdump,
+                ["--debug-line", str(symbols)],
+                prepared.workspace,
+                env,
+                timeout=_remaining(deadline),
+            )
             lines = parse_lines(text, prepared.workspace, self.sources + self.headers)
-            if sys.platform == "darwin":
-                identities = []
-                for artifact in (binary, symbols):
-                    output = _metadata(
-                        dwarfdump, ["--uuid", str(artifact)], prepared.workspace, env
-                    )
-                    found = re.findall(r"UUID:\s+([0-9A-Fa-f-]+)\s+\(", output)
-                    if len(found) != 1 or len(found[0].replace("-", "")) != 32:
-                        raise ValueError("Expected one native UUID")
-                    identities.append(found[0].replace("-", "").upper())
-                if identities[0] != identities[1]:
-                    raise ValueError("Native binary and symbols UUID mismatch")
-                identity = identities[0]
-            else:
-                identity = elf_build_id(binary)
+            identity = module_identity(
+                dwarfdump, binary, symbols, prepared.workspace, env, deadline=deadline
+            )
             session = NativeSession(self, prepared, adapter, lines, identity, binary, symbols)
             session.assert_current()
             return session

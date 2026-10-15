@@ -260,3 +260,74 @@ def test_failed_compile_input_drift_is_fatal(source, tmp_path, location, action)
         prepare(recipe(build_commands=(command(script),)), source, parent=parent)
     assert not isinstance(caught.value, BuildCommandError)
     assert list(parent.iterdir()) == []
+
+
+def test_failed_build_rechecks_previously_probed_tools(source, tmp_path):
+    from peeky.build import BuildCommandError
+
+    helper = tmp_path / "helper"
+    helper.write_text(f"#!{sys.executable}\nprint('helper 1')\n")
+    helper.chmod(0o755)
+    drift = f"import pathlib, sys; pathlib.Path({str(helper)!r}).write_text('changed'); sys.exit(7)"
+    with pytest.raises(RuntimeError, match="Toolchain changed during failed build"):
+        prepare(
+            recipe(toolchain_probes=(Command((str(helper),)),), build_commands=(command(drift),)),
+            source,
+        )
+    with pytest.raises(BuildCommandError):
+        prepare(recipe(build_commands=(command("import sys; sys.exit(7)"),)), source)
+
+
+def test_overall_deadline_is_fatal_and_never_compiler_feedback(source, tmp_path):
+    import time
+
+    from peeky.build import BuildCommandError
+
+    parent = tmp_path / "builds"
+    parent.mkdir()
+    with pytest.raises(TimeoutError):
+        prepare(recipe(), source, parent=parent, deadline=time.monotonic() - 1)
+    slow = command("import time; time.sleep(5)", timeout_s=30)
+    started = time.monotonic()
+    with pytest.raises(TimeoutError):
+        prepare(recipe(build_commands=(slow,)), source, parent=parent, deadline=started + 1)
+    assert time.monotonic() - started < 4
+    own_timeout = command("import time; time.sleep(5)", timeout_s=0.5)
+    with pytest.raises(BuildCommandError):
+        prepare(
+            recipe(build_commands=(own_timeout,)),
+            source,
+            parent=parent,
+            deadline=time.monotonic() + 20,
+        )
+    assert not list(parent.iterdir())
+
+
+def test_before_command_validates_each_build_step_and_failures_are_fatal(source, tmp_path):
+    marker = tmp_path / "ran"
+    write = command(
+        "from pathlib import Path; Path('out.bin').write_bytes(Path('Main.java').read_bytes())"
+    )
+    touch = command(f"import pathlib; pathlib.Path({str(marker)!r}).write_text('ran')")
+    seen = []
+    with prepare(
+        recipe(build_commands=(write, touch)),
+        source,
+        before_command=lambda ws, probes, cmd: seen.append((cmd, probes[0].stdout[:6])),
+    ):
+        pass
+    assert seen == [(write, "Python"), (touch, "Python")]
+    marker.unlink()
+
+    def tamper(workspace, probes, cmd):
+        (workspace / "Main.java").write_text("changed")
+
+    def reject(workspace, probes, cmd):
+        if cmd == touch:
+            raise ValueError("staged manifest changed")
+
+    with pytest.raises(RuntimeError, match="Staged inputs changed"):
+        prepare(recipe(build_commands=(touch, write)), source, before_command=tamper)
+    with pytest.raises(ValueError, match="staged manifest"):
+        prepare(recipe(build_commands=(write, touch)), source, before_command=reject)
+    assert not marker.exists()

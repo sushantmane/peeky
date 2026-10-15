@@ -100,6 +100,11 @@ class CompiledVerification:
             self._assert_originals()
             if _hash(descriptor_path) != descriptor_hash:
                 raise RuntimeError("Verification descriptor changed during baseline execution")
+        tests = None
+        if run_tests := getattr(runtime, "run_tests", None):
+            # Trusted session hook (Rust): the compiled test result never replaces the checker.
+            tests = run_tests()
+            self._assert_originals()
         result = verify(check, descriptor_path, runtime.prepared.workspace, env=runtime.environment)
         runtime.assert_current()
         self._assert_originals()
@@ -119,6 +124,9 @@ class CompiledVerification:
             artifacts_retained=False,
             checker_identity={"path": str(check), "sha256": self._checks[check]},
         )
+        if tests is not None:
+            result["tests"] = tests
+            result["passed"] = result["passed"] is True and tests["passed"] is True
         return execution, result
 
     def baseline(self, source: Path, check: Path):
