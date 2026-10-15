@@ -49,6 +49,10 @@ Stacked on `feat/java-attach` (2026-10-15):
   - Verified on Venice's timed test: the background probe took 19.2 s, and the slow-agent and absent-agent sessions both auto-resumed. All runs PASSED.
   - Open issue: one Venice session never received a `stopped` event (see JAVA_ATTACH.md). Diagnostics were added.
 - **Agent-speed review:** no blocking issues. Three should-fix issues are fixed: background errors are replayed on stderr, a relative state dir now works, and crash stops are never auto-resumed (checked with real LLDB). Four nits are fixed too. See the same review file.
+- **Venice production-code breakpoints:** verified. A probe in the client library (`ControllerClient.createNewStore`) and one in the controller's HTTP handler (`CreateStore`, on a Jetty thread) each captured both invocations, and the tests PASSED. The recipe is in JAVA_ATTACH.md.
+  - Fixed while doing this: `describe` without `--at` on a multi-source target now describes every source instead of raising a traceback.
+  - Every unexpected CLI exception is now a structured error.
+  - Missing paths now return `INVALID_REQUEST` with a path hint.
 - **Next:**
   - one PR from `feat/corpus` covering the whole stack;
   - SSH separate host (#8; needs a second host);

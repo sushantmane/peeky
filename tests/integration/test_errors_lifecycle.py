@@ -147,6 +147,7 @@ def test_concurrent_wait_and_close_do_not_deadlock(worker):
         (ValueError("Value view budget exhausted"), "BUDGET_EXHAUSTED", False),
         (RuntimeError("adapter exploded"), "DEBUGGER_ERROR", True),
         (ValueError("something else"), "INVALID_REQUEST", False),
+        (FileNotFoundError(2, "No such file or directory", "x.json"), "INVALID_REQUEST", True),
     ],
 )
 def test_classification_is_stable(exception, code, closed):

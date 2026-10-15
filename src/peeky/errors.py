@@ -117,6 +117,17 @@ def classify(exc, *, session_closed=None):
         if session_closed is None
         else session_closed
     )
+    if isinstance(exc, FileNotFoundError):
+        # A missing target, config, checker or tool: the request, not the debugger.
+        return {
+            "code": "INVALID_REQUEST",
+            "message": message[:2000],
+            "hint": "A path does not exist; check the target, --at, --config, --check and "
+            "PEEKY_* tool paths.",
+            "retryable": False,
+            # Fail safe: the worker closes sessions on any OSError.
+            "session_closed": bool(closed),
+        }
     for pattern, code, hint, retryable in _RULES:
         if re.search(pattern, message):
             break

@@ -267,8 +267,20 @@ def _python_lines(path):
     return sorted(lines)
 
 
+def _default_program(program, data, command):
+    if program is not None:
+        return program
+    sources = (data or {}).get("sources") or ()
+    if command == "describe" and sources:
+        # Breakpoint lines cover every declared source; any one prepares the target.
+        return sources[0]
+    listed = f" (one of: {', '.join(sources[:10])})" if sources else ""
+    raise ValueError(f"{command} needs --at <source>{listed} for this target")
+
+
 def describe(args):
     root, program, _, language, data = resolve(args.target, args.at, args.config)
+    program = _confined(root, _default_program(program, data, "describe"))
     manifest = {
         "peeky": "describe",
         "language": language,
@@ -706,6 +718,7 @@ def verify(args):
     root, program, _, language, data = resolve(args.target, args.at, args.config)
     if language == "java-attach":
         raise ValueError("Attached JVMs cannot verify edits; verify with a fresh build target")
+    program = _default_program(program, data, "verify")
     source, check = (root / program).resolve(strict=True), Path(args.check).resolve(strict=True)
     original = source.read_text()
     _check_edit(original, args.old, args.new)
@@ -1011,7 +1024,8 @@ def main(argv=None, _job=False):
             )
             return 0
         return handlers[args.command](args)
-    except (OSError, ValueError, RuntimeError, KeyError) as exc:
+    except Exception as exc:
+        # Every failure, including unexpected ones, is a structured error, never a traceback.
         from peeky.errors import classify
 
         payload = classify(exc, session_closed=False if isinstance(exc, ValueError) else None)

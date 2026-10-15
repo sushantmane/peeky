@@ -319,3 +319,29 @@ def test_unexpected_worker_error_bodies_render_cleanly(workspace, capsys, monkey
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_multi_source_targets_describe_all_sources_and_never_traceback(
+    workspace, capsys, monkeypatch
+):
+    config = workspace / "attach.json"
+    sources = ["a/One.java", "b/Two.java"]
+    config.write_text(json.dumps({"bundle": "x", "port": 5005, "sources": sources}))
+    args = ["--config", config, "--check", workspace / "verify_pagination.py"]
+    code, out = run(capsys, "verify", workspace, *args, "--old", "a", "--new", "b")
+    assert code == 2 and "Attached JVMs cannot verify" in out.err
+    config.write_text(json.dumps({"main_class": "demo.Main", "sources": sources}))
+    code, out = run(capsys, "verify", workspace, *args, "--old", "a", "--new", "b", "--json")
+    error = json.loads(out.out)["error"]
+    assert code == 2 and "needs --at <source> (one of: a/One.java, b/Two.java)" in error["message"]
+    code, out = run(capsys, "describe", workspace, "--config", workspace / "missing.json")
+    assert code == 2 and "[INVALID_REQUEST]" in out.err and "A path does not exist" in out.err
+
+    import peeky.cli as cli
+
+    def broken(args):
+        raise TypeError("internal bug")
+
+    monkeypatch.setattr(cli, "probe", broken)
+    code, out = run(capsys, "probe", workspace / "pagination_bug.py", "--at", "7", "--json")
+    assert code == 2 and json.loads(out.out)["error"]["message"] == "internal bug"

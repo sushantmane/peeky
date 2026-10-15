@@ -56,4 +56,30 @@ Verified on Venice `ba78edda8` (2026-10-15):
 - **Slow-agent session** (stop observed, 15 s of "thinking"): each stop was auto-resumed after 10 s, and both tests PASSED in about 13 s each.
 - **Absent agent** (no `wait` after start): both stops were auto-resumed at about 10.1 s, as recorded in the audit, and both tests PASSED.
 
+### Breakpoints in production code
+
+To break inside Venice code, declare production sources together with their `build/classes/java/main` roots. Client code and server code that runs in the test JVM both work. `peeky describe` without `--at` lists breakpoint lines for every declared source.
+
+```json
+{
+  "bundle": "/absolute/path/to/peeky/work/java-adapter-attach",
+  "port": 5005,
+  "sources": [
+    "internal/venice-common/src/main/java/com/linkedin/venice/controllerapi/ControllerClient.java",
+    "services/venice-controller/src/main/java/com/linkedin/venice/controller/server/CreateStore.java"
+  ],
+  "class_roots": [
+    "internal/venice-common/build/classes/java/main",
+    "services/venice-controller/build/classes/java/main"
+  ]
+}
+```
+
+Verified on 2026-10-15. Each run captured both data-provider invocations, returned at the last hit, and both tests PASSED.
+
+| Breakpoint | Values captured | Pause per hit | Probe time |
+| --- | --- | --- | --- |
+| `ControllerClient.java:594` (client library, inside `createNewStore`) | `storeName`, `owner` | 145–153 ms | 18.3 s |
+| `CreateStore.java:64` (controller HTTP handler, on a Jetty thread) | `clusterName`, `storeName`, `owner`, `isSystemStore=false` | 178–186 ms | 21.4 s |
+
 Open issue: in one earlier run, the worker received no `stopped` event for about 200 s while the test thread sat at the breakpoint, so both tests timed out. This did not reproduce in two identical attempts. `session report` now includes `debugger_events` (recent lifecycle events and counts of ignored events), and `session close` keeps the worker log as `<name>.last.log` for diagnosis.
