@@ -25,13 +25,14 @@ Every command takes `--json`: stdout is then one JSON object (progress goes to s
 ### Interventions (`--set name=value`)
 
 - Only existing locals in the stopped frame can be set. Python accepts literal values, including containers (`0`, `'x'`, `None`, `[]`, `{'k': 1}`). Compiled languages accept scalars only. Expressions, names and calls (`min(xs)`, `float('inf')`) are rejected with `MUTATION_REJECTED` and are never evaluated. Use `-1e309` for negative infinity.
-- A probe applies its interventions once, at hit 1. Later `--hits` observe without re-applying. For per-iteration changes, use a session: `continue`, then `set` again.
+- A probe applies its interventions once, at hit 1 by default. Use `--set-hit N` to apply them at a later hit, for example the iteration where things go wrong. Other hits only observe. For changes on several iterations, use a session: `continue`, then `set` again.
 
 ### Reading probe results
 
-- `rows` has one entry per hit, phase and selector. `phase` is `observed`, or `after-set` (the value after your intervention). `line` is where the program actually stopped.
+- `by_hit` groups values per hit: `{hit, line, observed: {selector: value}, after-set: {...}}`. A selector that failed shows `{"error": ...}`. `rows` holds the same data with one entry per hit, phase and selector. `phase` is `observed`, or `after-set` (the value after your intervention). `line` is where the program actually stopped.
 - Read `warnings` every time. They flag a breakpoint the debugger moved to another line (the values then come from that line) and runs that ended before all requested hits.
-- If a selector is missing, the row's error lists the visible names.
+- If a selector is missing, the row's error lists the visible names. For Python, `peeky describe` also lists the names each function can see (`scopes`).
+- Selectors take indexes from the end (`items[-1]`), but only when the debugger states the sequence's length and shows every element. Otherwise you get an error, never a guess. Long debugpy lists show 100 elements individually, so for them use a non-negative index.
 - Failures carry `error: {code, message, hint, retryable, session_closed}` (see [ERRORS.md](ERRORS.md)). `status` is `completed`, `no-stop`, `failed` or `timeout`.
 
 ### Verifying an edit

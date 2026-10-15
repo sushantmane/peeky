@@ -663,12 +663,22 @@ class DebugWorker:
             self.inspection_nodes += 1
         return result
 
-    def bounded_variables(self, reference):
+    def bounded_variables(self, reference, indexed=None):
         if type(reference) is not int or reference <= 0:
             raise ValueError("Variable is not expandable")
-        values = self.dap.request(
-            "variables", {"variablesReference": reference, "start": 0, "count": 513}
-        ).get("variables", [])
+        request = {"variablesReference": reference, "start": 0, "count": 513}
+        # java-debug rejects ranges past the end of an array, and any range at all for
+        # non-array objects (failing the session). Ask for exactly the stated number of
+        # indexed children (refusing oversize collections first), or for Java objects
+        # no range. The check below bounds how many children are kept; reply bytes are
+        # bounded by the DAP frame limit and the Java adapter's String length cap.
+        if type(indexed) is int and indexed > 0:
+            if indexed > 512:
+                raise ValueError("Variable collection exceeds bounded expansion limit")
+            request["count"] = indexed
+        elif getattr(self.runtime, "ranges_only_for_indexed", False):
+            request = {"variablesReference": reference}
+        values = self.dap.request("variables", request).get("variables", [])
         if not isinstance(values, list) or len(values) > 512:
             raise ValueError("Variable collection exceeds bounded expansion limit")
         return values
@@ -705,16 +715,18 @@ class DebugWorker:
         if len(matches) != 1:
             raise ValueError("Expansion scope is missing or ambiguous")
         reference = matches[0].get("variablesReference")
+        indexed = matches[0].get("indexedVariables")
         validate_children = getattr(runtime, "validate_children", None)
         for name, kind in ancestry:
-            variables = self.bounded_variables(reference)
+            variables = self.bounded_variables(reference, indexed)
             if validate_children:
                 validate_children(variables)
             matches = [v for v in variables if v.get("name") == name]
             if len(matches) != 1 or matches[0].get("type") != kind:
                 raise ValueError("Expansion ancestry changed or is ambiguous")
             reference = matches[0].get("variablesReference")
-        variables = self.bounded_variables(reference)
+            indexed = matches[0].get("indexedVariables")
+        variables = self.bounded_variables(reference, indexed)
         if validate_children:
             validate_children(variables)
         # Each expansion is its own bounded request with a fresh value-view budget.
@@ -771,7 +783,7 @@ def make_server(root, token, port=8765, *, adapter=None):
         # the cap so an HTTP client timeout can never leave work holding the slot.
         from peeky.probe import HTTP_PROBE_SECONDS, Probe, parse_location
 
-        if set(args) - {"at", "capture", "set", "hits", "timeout", "until"}:
+        if set(args) - {"at", "capture", "set", "hits", "timeout", "until", "set_hit"}:
             raise ValueError("Unknown probe field")
         program, line = parse_location(args.get("at"))
         changes = args.get("set", {})
@@ -785,6 +797,7 @@ def make_server(root, token, port=8765, *, adapter=None):
             args.get("hits", 1),
             min(args.get("timeout", HTTP_PROBE_SECONDS), HTTP_PROBE_SECONDS - 10),
             args.get("until", "exit"),
+            args.get("set_hit", 1),
         )
         if not probes.acquire(blocking=False):
             raise ValueError("Another probe is running; retry later")
@@ -889,6 +902,7 @@ def _run_probe_process(root, request, adapter, cap):
     command += ["--json", "--quiet"]
     command += ["--at", f"{request.program}:{request.line}", "--hits", str(request.hits)]
     command += ["--timeout", str(request.timeout), "--until", request.until]
+    command += ["--set-hit", str(request.set_hit)]
     if request.capture:
         command += ["--capture", ",".join(request.capture)]
     for name, value in request.set:

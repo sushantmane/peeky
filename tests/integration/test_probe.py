@@ -141,3 +141,74 @@ def test_http_probe_process_is_hard_capped_and_cleaned(tmp_path):
         ["pgrep", "-f", str(tmp_path / "slow.py")], capture_output=True, text=True
     ).stdout
     assert leftover == ""
+
+
+SEQUENCES = """def check(items, table, big, memo):
+    total = len(items)
+    return total
+
+
+print(check([10, 20, 30], {"a": 1}, list(range(600)), {0: "a", 1: "b"}))
+"""
+
+
+def test_negative_indexes_count_from_the_end_of_fully_visible_sequences(tmp_path):
+    (tmp_path / "seq.py").write_text(SEQUENCES)
+    capture = ("items[-1]", "items[-3]", "items[-4]", "table[-1]", "big[-1]", "big[0]", "big[42]")
+    capture += ("memo[-1]",)
+    result = run_probe(tmp_path, Probe("seq.py", 3, capture))
+    rows = {row["selector"]: row for row in result["rows"]}
+    assert rows["items[-1]"]["value"] == "30" and rows["items[-3]"]["value"] == "10"
+    assert "out of range for 3 elements" in rows["items[-4]"]["error"]
+    assert "not an indexed sequence" in rows["table[-1]"]["error"]
+    assert "only 100 of 600 elements" in rows["big[-1]"]["error"]
+    # Dicts with int keys 0..n-1 look like sequences but are mappings: refused.
+    assert "independent length" in rows["memo[-1]"]["error"]
+    assert rows["big[0]"]["value"] == "0" and rows["big[42]"]["value"] == "42"
+
+
+LOOP = """def running(values):
+    best = 0
+    for value in values:
+        best = max(best, value)
+    return best
+
+
+print("BEST", running([5, 1, 7]))
+"""
+
+
+def test_interventions_can_target_a_later_hit_and_results_group_by_hit(tmp_path):
+    (tmp_path / "loop.py").write_text(LOOP)
+    result = run_probe(
+        tmp_path, Probe("loop.py", 4, ("value", "best"), (("best", "100"),), hits=3, set_hit=2)
+    )
+    assert result["status"] == "completed" and "BEST 100" in result["output"]
+    assert [h["hit"] for h in result["by_hit"]] == [1, 2, 3]
+    assert result["by_hit"][0]["observed"] == {"value": "5", "best": "0"}
+    assert "after-set" not in result["by_hit"][0]
+    assert result["by_hit"][1]["after-set"]["best"] == "100"
+    assert any("at hit 2" in warning for warning in result["warnings"])
+    result = run_probe(
+        tmp_path, Probe("loop.py", 4, ("best",), (("best", "100"),), hits=5, set_hit=5)
+    )
+    assert result["interventions"] == [] and "BEST 7" in result["output"]
+    assert any("No intervention was applied" in warning for warning in result["warnings"])
+    with pytest.raises(ValueError, match="set_hit"):
+        Probe("loop.py", 4, hits=2, set_hit=3)
+
+
+def test_http_probe_accepts_until_and_set_hit(tmp_path):
+    (tmp_path / "loop.py").write_text(LOOP)
+    server = make_server(tmp_path, "probe-test-token-123456", 0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    client = Client(f"http://127.0.0.1:{server.server_port}", "probe-test-token-123456")
+    try:
+        result = client.probe("loop.py:4", ["best"], {"best": "50"}, hits=2, set_hit=2)
+        assert result["status"] == "completed" and "BEST 50" in result["output"]
+        assert result["probe"]["set_hit"] == 2
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)

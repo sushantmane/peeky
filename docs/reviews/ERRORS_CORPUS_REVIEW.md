@@ -55,3 +55,22 @@ The reviewer confirmed these areas:
 - SIGTERM still unwinds through cleanup.
 - Job exit codes.
 - Worker-side `FileNotFoundError` keeps `session_closed: true`.
+
+## Review: agent-usability slice (#26, 37d2462)
+
+| # | Severity | Finding | Disposition |
+| --- | --- | --- | --- |
+| 1 | blocking | `[-k]` trusted LLDB's `size=N` and `indexedVariables`. Both equal the number of children LLDB listed, and LLDB stops listing `std::forward_list`/`std::list` at `target.max-children-count` (default 24). So `fl[-1]` on a 30-element list would return element 23 as "the last element". | Fixed. A length counts only if it is independent of the listing: debugpy's `len()` on a real `list`/`tuple`/`deque`, or a fixed array type (`int[4]`) or JVM array value (`int[4]@12`). Everything else is refused. Regression: `test_declared_lengths_must_be_independent_of_the_listing`. |
+| 2 | should-fix | A Python dict with int keys `0..n-1` passed as a sequence (`d[-1]` returned the last key's value). | Fixed by the same rule (`dict` is not a sequence type). Regression: `memo[-1]` in `test_negative_indexes_count_from_the_end_of_fully_visible_sequences`. |
+| 3 | nit | `describe` scopes kept the newest 200 and dropped the earliest without saying so. Generator expressions printed `lines N-None`. | Fixed. Scopes are listed in source order, the first 300 are kept, and an `omitted` count is added. Scopes without a source span are skipped, and methods are class-qualified (`IPv6Address.is_private`). |
+
+Found while checking the fix on a real JDK: **any indexed selector on a Java array** (`values[0]`) failed the whole session with `Invalid array range: 0 to 512`. This bug also exists on main. The worker always requested 513 children to detect oversize collections, and java-debug rejects ranges past the end of an array. The worker now requests exactly `indexedVariables` children when the adapter states that count, and refuses more than 512 before making the request. Java array elements now resolve from either end, and a 600-element array fails per selector without ending the session. Regression (real JDK): `tests/java/test_java_arrays.py`.
+
+**Verification review of a7e79ab:** no blocking issues. The reviewer confirmed:
+- `count = indexedVariables` returns the same children as before for lldb-dap and debugpy.
+- The array-type parsing never yields a wrong length.
+- `_python_scopes` handles decorators, async code, PEP 695 and nested classes.
+
+One medium issue, which also existed on main, is fixed. Expanding a Java object (`p.x`) still sent a variables range, which java-debug rejects for anything that isn't an array, ending the session. Java runtimes now send no range for non-indexed containers; the size check after the reply still bounds the result. Regression (real JDK): `test_java_object_fields_expand_without_failing_the_session`. Two cosmetic nits are also fixed: PEP 695 scope names were double-qualified, and the scope-cap message was misleading.
+
+**Review of ccd49cf:** no blocking issues. One medium issue, which also existed on main, is fixed. java-debug sent String values uncut (`maxStringLength` 0 means unlimited), so a String over 4 MB (a local, or now an object field) exceeded the 4 MiB DAP frame limit and ended the session. The Java adapter now caps Strings at 4096 characters; the worker shows 2000. The misleading comment about reply bounds is also corrected. Regression (real JDK, 5 MB String field): `test_multi_megabyte_java_strings_are_bounded_not_fatal`. It fails on the previous bundle and passes on the rebuilt one.

@@ -129,3 +129,72 @@ def test_only_the_requested_breakpoint_counts_as_a_hit(monkeypatch, fake, ok):
         assert "not the requested" in result["error"]["message"]
         assert "set_variable" not in worker.calls and result["rows"] == []
     assert worker.calls[-1] == "close"
+
+
+@pytest.mark.parametrize("selector", ["items[-1]", "a.b[-12]", "x[0][-1]"])
+def test_negative_index_selectors_parse(selector):
+    from peeky.probe import parse_selector
+
+    assert parse_selector(selector)[-1].startswith("[")
+
+
+@pytest.mark.parametrize("selector", ["items[--1]", "items[-]", "items[1-]", "[-1]"])
+def test_malformed_negative_selectors_are_rejected(selector):
+    from peeky.probe import parse_selector
+
+    with pytest.raises(ValueError):
+        parse_selector(selector)
+
+
+@pytest.mark.parametrize(
+    "variable, children, length",
+    [
+        ({"type": "list", "value": "[1, 2]"}, [{"name": "len()", "value": "2"}], 2),
+        ({"type": "tuple", "value": "(1,)"}, [{"name": "len()", "value": "1"}], 1),
+        ({"type": "dict", "value": "{0: 1}"}, [{"name": "len()", "value": "1"}], None),
+        ({"type": "MyList", "value": "[1]"}, [{"name": "len()", "value": "1"}], None),
+        ({"type": "list", "value": "[1]"}, [], None),
+        ({"value": "", "type": "int[4]"}, [], 4),
+        ({"value": "", "type": "unsigned char[16]"}, [], 16),
+        ({"value": "", "type": "int[4][3]"}, [], None),
+        ({"value": "int[5]@123", "type": "int[]"}, [], 5),
+        # LLDB summaries and DAP counts can equal a capped child count: never trusted.
+        ({"value": "size=24", "type": "std::forward_list<int>"}, [], None),
+        ({"value": "size=3", "type": "std::vector<int>", "indexedVariables": 3}, [], None),
+        ({"value": "{...}", "indexedVariables": 6}, [], None),
+        ({"value": "[1, 2]", "type": "str"}, [], None),
+    ],
+)
+def test_declared_lengths_must_be_independent_of_the_listing(variable, children, length):
+    from peeky.probe import _declared_length
+
+    assert _declared_length(variable, children) == length
+
+
+class Pages:
+    def __init__(self, names, value):
+        self.names, self.value = names, value
+
+    def dispatch(self, operation, args):
+        children = [{"name": name, "value": name} for name in self.names]
+        return {"variables": children, "truncated": False}
+
+
+@pytest.mark.parametrize(
+    "names, value, outcome",
+    [
+        (["[0]", "[1]", "[2]"], "int[3]", "[2]"),
+        (["[0]", "[1]"], "int[3]", "only 2 of 3"),
+        (["[0]", "[1]"], "size=2", "independent length"),
+        (["[0]", "[2]"], "int[2]", "not an indexed sequence"),
+    ],
+)
+def test_negative_indexes_never_guess_the_end(names, value, outcome):
+    from peeky.probe import _from_end
+
+    variable = {"variablesReference": 1, "type": value}
+    if outcome.startswith("["):
+        assert _from_end(Pages(names, value), {}, variable, 1, "[-1]")["name"] == outcome
+    else:
+        with pytest.raises(ValueError, match=outcome):
+            _from_end(Pages(names, value), {}, variable, 1, "[-1]")
