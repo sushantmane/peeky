@@ -18,7 +18,30 @@ An hourly thread heartbeat (`continue-peeky-mvp`) checks for available usage and
 - PR #19 merged (`b26c216`): guarded C LLDB worker and scope ownership, 221 collected tests. All seven hosted lanes passed; C34 seconds, longest lane71 seconds (run38538891500). Mixed-runtime inference direction captured in MIXED_RUNTIME.md.
 - Private branch protection is unavailable on the current GitHub plan; manually verify all required checks before merging.
 
-## Active slice
+## Current state (2026-10-15, latest)
+
+**Merged to `main`:**
+- #25 (`10ac271`): the standalone `peeky` CLI, Java attach including Venice, protocol v1 error codes (closes #6), the ten-bug corpus, and agent-speed debugging.
+- #26 (`99efe66`):
+  - `--set-hit`, `by_hit`, Python scopes in `describe`, and safe negative indexes;
+  - three pre-existing Java fixes: array indexing, object fields, and a String size cap.
+
+**Open:** PR #28 (`feat/real-program`) holds the non-synthetic program for #7 (CPython 3.9.6 `ipaddress`, CVE-2024-4032), `--run`/`--arg`, and the live agent's feedback. After review and CI it closes #7.
+
+**Process:**
+- Every slice gets an independent adversarial review, recorded in `docs/reviews/ERRORS_CORPUS_REVIEW.md`, with every finding fixed and given a regression test before merge.
+- CI runs nine lanes.
+- Create PRs and issues with `gh api` (REST): GraphQL calls from `gh pr create`/`gh issue create` hit 504s, and the app's PR tool needs the project's GitHub link.
+
+**Local Java adapter bundle:** `outputs/peeky/work/java-adapter-strcap` (built from `main` with the String cap). `~/.peeky/venice/attach-*.json` point to it.
+
+**Open issues:**
+- #27: intermittent dropped Java lifecycle events. Peeky fails closed; diagnostics added.
+- #8: SSH separate host; needs a second machine.
+- #24: Rust preparation hardening.
+
+## Previous slices
+
 
 PR #23 merged as `2995958` (Rust worker, active Option views, compiled-test plus checker verification, five review rounds, no blocking issues on the final head `825c075`, all nine lanes green).
 

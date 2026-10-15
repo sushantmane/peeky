@@ -628,15 +628,9 @@ def session(args):
         _emit(changed, args.json, lambda c: f"set {c['name']}: {c['before']} -> {c['after']}")
     elif args.action == "continue":
         stop = _stop(record)
-        if args.to_exit:
-            # Clear this session's breakpoints so the program runs to completion.
-            client.call(
-                "breakpoints",
-                session_id=record["session_id"],
-                program=record["program"],
-                breakpoints=[],
-            )
-        client.call("continue", **stop)
+        # --to-exit clears the breakpoints in the same worker operation, after it
+        # confirms this stop is still current (it may have been auto-resumed).
+        client.call("continue", **stop, **({"to_exit": True} if args.to_exit else {}))
         state = _wait(record, client, args.timeout)
         _emit(state, args.json, _state_text)
     elif args.action == "report":
@@ -743,6 +737,15 @@ def _start(args):
     return 0
 
 
+def _submitted_edits(args):
+    if args.command != "verify" or (args.old_file is None and args.new_file is None):
+        return None
+    return {
+        "old": _edit_text(args.old, args.old_file, "old"),
+        "new": _edit_text(args.new, args.new_file, "new"),
+    }
+
+
 def _edit_text(text, path, name):
     """Exact edit text from --<name> or --<name>-file (read verbatim, newlines kept)."""
     if (text is None) == (path is None):
@@ -824,10 +827,13 @@ def verify(args):
     program = _default_program(program, data, "verify")
     source, check = (root / program).resolve(strict=True), Path(args.check).resolve(strict=True)
     original = source.read_text()
-    args.old, args.new = (
-        _edit_text(args.old, args.old_file, "old"),
-        _edit_text(args.new, args.new_file, "new"),
-    )
+    if edits := getattr(args, "_edits", None):
+        args.old, args.new = edits["old"], edits["new"]
+    else:
+        args.old, args.new = (
+            _edit_text(args.old, args.old_file, "old"),
+            _edit_text(args.new, args.new_file, "new"),
+        )
     _check_edit(original, args.old, args.new)
     destination = Path(tempfile.mkdtemp(prefix="peeky-verify-"))
     try:
@@ -886,7 +892,7 @@ def _job_dir(job_id):
     return path
 
 
-def _background(argv, command):
+def _background(argv, command, edits=None):
     """Run one probe or verify detached, so a caller's tool timeout cannot kill it."""
     import peeky
 
@@ -895,6 +901,10 @@ def _background(argv, command):
     path = _private_dir("jobs") / job_id
     path.mkdir(mode=0o700)
     spec = {"id": job_id, "command": command, "argv": argv, "cwd": os.getcwd()}
+    if edits:
+        # Edit texts are fixed at submission; later changes to --old-file/--new-file
+        # cannot change what this job verifies.
+        spec["edits"] = edits
     _private_write(path / "job.json", json.dumps({**spec, "started": time.time()}))
     bootstrap = (
         "import sys; sys.path.insert(0, sys.argv.pop(1)); "
@@ -935,7 +945,7 @@ def run_job(path):
     with private("out") as out, private("log") as log:
         sys.stdout, sys.stderr = out, log
         try:
-            code = main(spec["argv"], _job=True)
+            code = main(spec["argv"], _job=True, _edits=spec.get("edits"))
         except SystemExit as exc:
             code = exc.code if isinstance(exc.code, int) else 1
         except BaseException:
@@ -1033,7 +1043,7 @@ def job(args):
     return state["exit_code"]
 
 
-def main(argv=None, _job=False):
+def main(argv=None, _job=False, _edits=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     parser = argparse.ArgumentParser(prog="peeky", description=__doc__.split("\n\n")[0])
     commands = parser.add_subparsers(dest="command", required=True)
@@ -1125,6 +1135,7 @@ def main(argv=None, _job=False):
     for action in (wait, listing):
         common(action, target=False)
     args = parser.parse_args(argv)
+    args._edits = _edits
     handlers = {
         "describe": describe,
         "probe": probe,
@@ -1141,7 +1152,7 @@ def main(argv=None, _job=False):
     try:
         if getattr(args, "background", False) and not _job:
             _emit(
-                _background(argv, args.command),
+                _background(argv, args.command, _submitted_edits(args)),
                 args.json,
                 lambda j: f"job {j['job']} started; collect it with `{j['next']}`",
             )

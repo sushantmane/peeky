@@ -71,6 +71,7 @@ class DebugWorker:
         self.stopped_at = None
         self.auto_resumed = []
         self.cursor = 0
+        self.program = None
         self.stop_location = None
         self.stop_reason = None
         # Below Client.call's 45 s HTTP timeout: a launch either returns within this
@@ -226,6 +227,8 @@ class DebugWorker:
             value = args["max_pause"]
             if type(value) not in (int, float) or not math.isfinite(value) or not 0 < value <= 300:
                 raise ValueError("max_pause must be a number of seconds within (0, 300]")
+        if operation == "continue" and type(args.get("to_exit", False)) is not bool:
+            raise ValueError("to_exit must be a boolean")
         if operation in {"launch", "breakpoints"}:
             if not isinstance(args.get("program"), str):
                 raise ValueError("program must be a string")
@@ -280,6 +283,7 @@ class DebugWorker:
             if self.dap:
                 raise ValueError("Close the current session before launching another")
             program = self.path(args["program"])
+            self.program = program
             entry = None
             if args.get("args") and not isinstance(self.adapter, PythonAdapter):
                 raise ValueError("Program arguments (--arg) are supported only for Python targets")
@@ -534,6 +538,13 @@ class DebugWorker:
             )
         if operation == "continue":
             self.stopped(args)
+            if args.get("to_exit"):
+                # Checked and applied under one lock: clear the launch breakpoints only
+                # while this exact stop is still current.
+                self.dap.request(
+                    "setBreakpoints",
+                    {"source": {"path": str(runtime.source_path(self.program))}, "breakpoints": []},
+                )
             self.dap.request("continue", {"threadId": self.thread_id})
             self.state = "running"
             self.stopped_at = None

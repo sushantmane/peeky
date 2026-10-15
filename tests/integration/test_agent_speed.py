@@ -264,3 +264,47 @@ def test_a_job_not_yet_holding_its_lock_is_running_not_lost(target, capsys):
 def test_timed_out_probes_do_not_claim_to_have_ended_at_their_hits(target):
     result = run_probe(target, Probe("slow.py", 7, ("i",), hits=5, until="hits", timeout=3))
     assert result["ended"] in ("exit", None) and result["hits"] == 3
+
+
+def test_continue_to_exit_never_clears_breakpoints_for_a_stale_stop(target):
+    worker = DebugWorker(target)
+    try:
+        session = launch(worker, 0.3)
+        state = wait_stopped(worker, session)
+        time.sleep(0.5)
+        worker.guard_pause()
+        with pytest.raises(ValueError, match="auto-resumed"):
+            worker.dispatch("continue", {**session, "stop_id": state["stop_id"], "to_exit": True})
+        # Breakpoints survived: the loop stops again at the same line.
+        again = wait_stopped(worker, session)
+        assert again["state"] == "stopped" and again["stop_id"] != state["stop_id"]
+        with pytest.raises(ValueError, match="to_exit"):
+            worker.dispatch("continue", {**session, "stop_id": again["stop_id"], "to_exit": 1})
+        worker.dispatch("continue", {**session, "stop_id": again["stop_id"], "to_exit": True})
+        assert wait_stopped(worker, session)["state"] == "terminated"
+    finally:
+        worker.close()
+
+
+def test_background_verify_fixes_edit_files_at_submission(target, capsys):
+    root = Path(__file__).resolve().parents[2] / "examples"
+    for name in ("pagination_bug.py", "verify_pagination.py"):
+        shutil.copyfile(root / name, target / name)
+    (target / "old.txt").write_text("page * page_size")
+    (target / "new.txt").write_text("(page - 1) * page_size")
+    args = ["verify", target / "pagination_bug.py", "--check", target / "verify_pagination.py"]
+    code, out = run(
+        capsys,
+        *args,
+        "--old-file",
+        target / "old.txt",
+        "--new-file",
+        target / "new.txt",
+        "--background",
+        "--json",
+    )
+    job = json.loads(out.out)["job"]
+    (target / "new.txt").write_text("0")
+    code, out = run(capsys, "job", "wait", job, "--timeout", "60")
+    result = json.loads(out.out)
+    assert code == 0 and result["passed"] and "(page - 1) * page_size" in result["diff"]
