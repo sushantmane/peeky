@@ -89,6 +89,7 @@ class DAP:
         self.ignored_events = {}
         # Bounded message summaries (no arguments or values) for diagnosing lost events.
         self.trace = collections.deque(maxlen=200)
+        self.debuggee_pid = None
         self.started = time.monotonic()
         self.output = collections.deque(maxlen=500)
         self.output_truncated = False
@@ -146,6 +147,11 @@ class DAP:
                     body["received"] = time.monotonic()
                     self.events.append(body)
                 else:
+                    if body["event"] == "processid":
+                        # java-debug announces the launched JVM's pid (liveness, #27).
+                        pid = (body.get("body") or {}).get("processId")
+                        if type(pid) is int and pid > 1:
+                            self.debuggee_pid = pid
                     # Thread/module churn (thousands per second in large JVMs) must not
                     # evict lifecycle events; keep only bounded counts.
                     name = body["event"] if len(self.ignored_events) < 64 else "<other>"

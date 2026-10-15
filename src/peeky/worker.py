@@ -37,6 +37,16 @@ OPERATIONS = frozenset(
 )
 
 
+def _process_alive(pid):
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
 class DebugWorker:
     def __init__(self, root, adapter=None):
         self.root = Path(root).resolve()
@@ -73,6 +83,7 @@ class DebugWorker:
         self.cursor = 0
         self.resumed_at = 0.0
         self.liveness_checked = 0.0
+        self.empty_thread_replies = 0
         self.exit_inferred = False
         self.program = None
         self.stop_location = None
@@ -101,10 +112,13 @@ class DebugWorker:
             raise ValueError("Stale stop_id or program is not stopped; inspect the latest stop")
 
     def debuggee_gone(self, runtime):
-        """Liveness check for adapters known to drop exit events (java-debug, #27).
+        """Liveness check for launched JVMs whose adapter drops exit events (#27).
 
-        A running JVM always has threads; an empty `threads` reply after two quiet
-        seconds means the VM is gone even though no `exited`/`terminated` arrived.
+        java-debug can answer `threads` with an empty list for a live, churning JVM
+        (a thread collected mid-lookup), so one empty reply is only a hint. Exit is
+        inferred when the launched JVM process is gone, or when a second empty reply
+        follows at least two seconds later (thread names are cached by then). A slow
+        or failed check means "still running": it never closes the session.
         """
         if not getattr(runtime, "liveness_by_threads", False) or self.state != "running":
             return False
@@ -112,7 +126,19 @@ class DebugWorker:
         if now - self.resumed_at < 2 or now - self.liveness_checked < 2:
             return False
         self.liveness_checked = now
-        return not self.dap.request("threads", {}, timeout=2).get("threads")
+        try:
+            threads = self.dap.request("threads", {}, timeout=2).get("threads")
+        except (TimeoutError, RuntimeError):
+            self.empty_thread_replies = 0
+            return False
+        if threads:
+            self.empty_thread_replies = 0
+            return False
+        self.empty_thread_replies += 1
+        pid = getattr(self.dap, "debuggee_pid", None)
+        if pid and not _process_alive(pid):
+            return True
+        return self.empty_thread_replies >= 2
 
     def read_location(self):
         """Best-effort top-frame location for display; never evidence, never fatal.
@@ -415,12 +441,19 @@ class DebugWorker:
                     )
                 except TimeoutError:
                     if self.debuggee_gone(runtime):
-                        event = {
-                            "event": "terminated",
-                            "cursor": self.cursor,
-                            "body": {"peeky": "exit inferred: no live threads, no exit event"},
-                        }
-                        self.exit_inferred = True
+                        try:
+                            # A real stop or exit that arrived during the check wins.
+                            event = self.dap.wait_event({"stopped", "terminated"}, self.cursor, 0)
+                        except TimeoutError:
+                            event = {
+                                "event": "terminated",
+                                "cursor": self.cursor,
+                                "body": {"peeky": "exit inferred: no live threads, no exit event"},
+                            }
+                            self.exit_inferred = True
+                        else:
+                            self.cursor = event["cursor"]
+                            break
                         self.audit.append(
                             {
                                 "time": time.time(),
@@ -587,6 +620,7 @@ class DebugWorker:
                 )
             self.dap.request("continue", {"threadId": self.thread_id})
             self.resumed_at = time.monotonic()
+            self.empty_thread_replies = 0
             self.state = "running"
             self.stopped_at = None
             self.stop_location = None
