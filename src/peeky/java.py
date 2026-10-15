@@ -199,6 +199,9 @@ class JavaTarget:
 
 
 class JavaSession:
+    # java-debug accepts variables start/count only for arrays.
+    ranges_only_for_indexed = True
+
     def __init__(self, target, prepared, java, bundle, command, bundle_hash, mapping, mapping_path):
         self.target = target
         self.prepared = prepared

@@ -65,3 +65,10 @@ The reviewer confirmed these areas:
 | 3 | nit | `describe` scopes kept the newest 200 and dropped the earliest without saying so. Generator expressions printed `lines N-None`. | Fixed. Scopes are listed in source order, the first 300 are kept, and an `omitted` count is added. Scopes without a source span are skipped, and methods are class-qualified (`IPv6Address.is_private`). |
 
 Found while checking the fix on a real JDK: **any indexed selector on a Java array** (`values[0]`) failed the whole session with `Invalid array range: 0 to 512`. This bug also exists on main. The worker always requested 513 children to detect oversize collections, and java-debug rejects ranges past the end of an array. The worker now requests exactly `indexedVariables` children when the adapter states that count, and refuses more than 512 before making the request. Java array elements now resolve from either end, and a 600-element array fails per selector without ending the session. Regression (real JDK): `tests/java/test_java_arrays.py`.
+
+**Verification review of a7e79ab:** no blocking issues. The reviewer confirmed:
+- `count = indexedVariables` returns the same children as before for lldb-dap and debugpy.
+- The array-type parsing never yields a wrong length.
+- `_python_scopes` handles decorators, async code, PEP 695 and nested classes.
+
+One medium issue, which also existed on main, is fixed. Expanding a Java object (`p.x`) still sent a variables range, which java-debug rejects for anything that isn't an array, ending the session. Java runtimes now send no range for non-indexed containers; the size check after the reply still bounds the result. Regression (real JDK): `test_java_object_fields_expand_without_failing_the_session`. Two cosmetic nits are also fixed: PEP 695 scope names were double-qualified, and the scope-cap message was misleading.

@@ -292,8 +292,11 @@ def _python_scopes(path):
         item, prefix = stack.pop()
         kind = item.get_type()
         name = item.get_name()
-        qualified = f"{prefix}{name}" if kind != "module" else ""
-        stack.extend((child, f"{qualified}." if qualified else "") for child in item.get_children())
+        qualified = f"{prefix}{name}"
+        # Only functions and classes name a level; PEP 695 type-parameter scopes and the
+        # module pass their prefix through unchanged.
+        child_prefix = f"{qualified}." if kind in ("function", "class") else prefix
+        stack.extend((child, child_prefix) for child in item.get_children())
         end = spans.get((item.get_lineno(), name))
         if kind == "module":
             found.append((0, "<module>", None, item))
@@ -401,7 +404,7 @@ def _describe_text(manifest):
         lines.append(f"opaque enum types: {len(views) - len(qualified)}")
     for scope in manifest.get("scopes", ()):
         if scope.get("omitted"):
-            lines.append(f"... {scope['omitted']} more scopes omitted (see --json)")
+            lines.append(f"... {scope['omitted']} more scopes not listed (first 300 shown)")
             continue
         where = f" (lines {scope['lines'][0]}-{scope['lines'][1]})" if scope["lines"] else ""
         lines.append(f"names in {scope['scope']}{where}: {', '.join(scope['names']) or '-'}")

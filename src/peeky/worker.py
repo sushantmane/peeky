@@ -666,17 +666,18 @@ class DebugWorker:
     def bounded_variables(self, reference, indexed=None):
         if type(reference) is not int or reference <= 0:
             raise ValueError("Variable is not expandable")
-        count = 513
-        # java-debug rejects ranges past the end of an array (failing the session), so
-        # ask for exactly the stated number of indexed children and refuse oversize
-        # collections before requesting them.
+        request = {"variablesReference": reference, "start": 0, "count": 513}
+        # java-debug rejects ranges past the end of an array, and any range at all for
+        # non-array objects (failing the session). Ask for exactly the stated number of
+        # indexed children (refusing oversize collections first), or for Java objects
+        # no range; the size check below still bounds the reply.
         if type(indexed) is int and indexed > 0:
             if indexed > 512:
                 raise ValueError("Variable collection exceeds bounded expansion limit")
-            count = indexed
-        values = self.dap.request(
-            "variables", {"variablesReference": reference, "start": 0, "count": count}
-        ).get("variables", [])
+            request["count"] = indexed
+        elif getattr(self.runtime, "ranges_only_for_indexed", False):
+            request = {"variablesReference": reference}
+        values = self.dap.request("variables", request).get("variables", [])
         if not isinstance(values, list) or len(values) > 512:
             raise ValueError("Variable collection exceeds bounded expansion limit")
         return values

@@ -37,3 +37,34 @@ def test_java_array_elements_from_either_end_and_oversize_arrays_fail_per_select
     assert "out of range for 3 elements" in rows["values[-4]"]["error"]
     assert "exceeds bounded expansion limit" in rows["big[0]"]["error"]
     assert "603" in result["output"]
+
+
+OBJECT = """package demo;
+public class Obj {
+  static class Point { int x = 3; int[] ys = {7, 8}; Point next; }
+  public static void main(String[] args) {
+    Point p = new Point();
+    p.next = new Point();
+    System.out.println(p.x); // OBSERVE
+  }
+}
+"""
+
+
+@pytest.mark.timeout(120)
+def test_java_object_fields_expand_without_failing_the_session(tmp_path):
+    bundle = os.environ.get("PEEKY_JAVA_ADAPTER")
+    if not bundle:
+        pytest.skip("set PEEKY_JAVA_ADAPTER to a prepared Java adapter bundle")
+    from peeky.java import JavaTarget
+
+    (tmp_path / "demo").mkdir()
+    (tmp_path / "demo/Obj.java").write_text(OBJECT)
+    line = next(i for i, text in enumerate(OBJECT.splitlines(), 1) if "OBSERVE" in text)
+    target = JavaTarget(bundle=Path(bundle), sources=("demo/Obj.java",), main_class="demo.Obj")
+    capture = ("p.x", "p.ys[1]", "p.ys[-1]", "p.next.x", "p.nope")
+    result = run_probe(tmp_path, Probe("demo/Obj.java", line, capture), adapter=target)
+    assert result["status"] == "completed", result.get("error")
+    rows = {row["selector"]: row for row in result["rows"]}
+    assert [rows[s]["value"] for s in capture[:4]] == ["3", "8", "8", "3"]
+    assert "not found" in rows["p.nope"]["error"]
