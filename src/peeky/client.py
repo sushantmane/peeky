@@ -45,10 +45,17 @@ class Client:
                 raw,
             ) from None
 
-    def probe(self, at, capture=(), set=None, hits=1, timeout=40):
+    def probe(self, at, capture=(), set=None, hits=1, timeout=40, until="exit", set_hit=1):
         """One stateless request: stop at `path:line`, capture, optionally set, report."""
         return self.call(
-            "probe", at=at, capture=list(capture), set=dict(set or {}), hits=hits, timeout=timeout
+            "probe",
+            at=at,
+            capture=list(capture),
+            set=dict(set or {}),
+            hits=hits,
+            timeout=timeout,
+            until=until,
+            set_hit=set_hit,
         )
 
 

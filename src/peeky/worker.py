@@ -771,7 +771,7 @@ def make_server(root, token, port=8765, *, adapter=None):
         # the cap so an HTTP client timeout can never leave work holding the slot.
         from peeky.probe import HTTP_PROBE_SECONDS, Probe, parse_location
 
-        if set(args) - {"at", "capture", "set", "hits", "timeout", "until"}:
+        if set(args) - {"at", "capture", "set", "hits", "timeout", "until", "set_hit"}:
             raise ValueError("Unknown probe field")
         program, line = parse_location(args.get("at"))
         changes = args.get("set", {})
@@ -785,6 +785,7 @@ def make_server(root, token, port=8765, *, adapter=None):
             args.get("hits", 1),
             min(args.get("timeout", HTTP_PROBE_SECONDS), HTTP_PROBE_SECONDS - 10),
             args.get("until", "exit"),
+            args.get("set_hit", 1),
         )
         if not probes.acquire(blocking=False):
             raise ValueError("Another probe is running; retry later")
@@ -889,6 +890,7 @@ def _run_probe_process(root, request, adapter, cap):
     command += ["--json", "--quiet"]
     command += ["--at", f"{request.program}:{request.line}", "--hits", str(request.hits)]
     command += ["--timeout", str(request.timeout), "--until", request.until]
+    command += ["--set-hit", str(request.set_hit)]
     if request.capture:
         command += ["--capture", ",".join(request.capture)]
     for name, value in request.set:

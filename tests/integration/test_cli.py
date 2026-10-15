@@ -28,6 +28,9 @@ def test_describe_lists_breakpoint_lines_and_commands(workspace, capsys):
     code, out = run(capsys, "describe", workspace / "pagination_bug.py", "--json")
     manifest = json.loads(out.out)
     assert code == 0 and manifest["language"] == "python"
+    get_page = next(scope for scope in manifest["scopes"] if scope["scope"] == "get_page")
+    assert get_page["names"] == ["end", "items", "page", "page_size", "start"]
+    assert get_page["lines"][0] == 4
     assert 7 in manifest["breakpoint_lines"]["pagination_bug.py"]
     assert {"probe", "session", "verify"} <= set(manifest["commands"])
 

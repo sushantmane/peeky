@@ -129,3 +129,64 @@ def test_only_the_requested_breakpoint_counts_as_a_hit(monkeypatch, fake, ok):
         assert "not the requested" in result["error"]["message"]
         assert "set_variable" not in worker.calls and result["rows"] == []
     assert worker.calls[-1] == "close"
+
+
+@pytest.mark.parametrize("selector", ["items[-1]", "a.b[-12]", "x[0][-1]"])
+def test_negative_index_selectors_parse(selector):
+    from peeky.probe import parse_selector
+
+    assert parse_selector(selector)[-1].startswith("[")
+
+
+@pytest.mark.parametrize("selector", ["items[--1]", "items[-]", "items[1-]", "[-1]"])
+def test_malformed_negative_selectors_are_rejected(selector):
+    from peeky.probe import parse_selector
+
+    with pytest.raises(ValueError):
+        parse_selector(selector)
+
+
+@pytest.mark.parametrize(
+    "variable, children, length",
+    [
+        ({"value": "[1, 2]"}, [{"name": "len()", "value": "2"}], 2),
+        ({"value": "size=3", "type": "std::vector<int>"}, [], 3),
+        ({"value": "", "type": "int[4]"}, [], 4),
+        ({"value": "int[5]@123", "type": "int[]"}, [], 5),
+        ({"value": "{...}", "indexedVariables": 6}, [], 6),
+        ({"value": "{...}", "type": "Foo"}, [], None),
+    ],
+)
+def test_declared_lengths_come_only_from_the_debugger(variable, children, length):
+    from peeky.probe import _declared_length
+
+    assert _declared_length(variable, children) == length
+
+
+class Pages:
+    def __init__(self, names, value):
+        self.names, self.value = names, value
+
+    def dispatch(self, operation, args):
+        children = [{"name": name, "value": name} for name in self.names]
+        return {"variables": children, "truncated": False}
+
+
+@pytest.mark.parametrize(
+    "names, value, outcome",
+    [
+        (["[0]", "[1]", "[2]"], "size=3", "[2]"),
+        (["[0]", "[1]"], "size=3", "only 2 of 3"),
+        (["[0]", "[1]"], "{...}", "does not state the length"),
+        (["[0]", "[2]"], "size=2", "not an indexed sequence"),
+    ],
+)
+def test_negative_indexes_never_guess_the_end(names, value, outcome):
+    from peeky.probe import _from_end
+
+    variable = {"variablesReference": 1, "value": value}
+    if outcome.startswith("["):
+        assert _from_end(Pages(names, value), {}, variable, 1, "[-1]")["name"] == outcome
+    else:
+        with pytest.raises(ValueError, match=outcome):
+            _from_end(Pages(names, value), {}, variable, 1, "[-1]")

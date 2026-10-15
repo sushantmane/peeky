@@ -26,11 +26,16 @@ MAX_ROWS = 2000
 MAX_SECONDS = 300
 # HTTP probes must finish inside Client.call's 45 s timeout.
 HTTP_PROBE_SECONDS = 40
-_SEGMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,127}|\[[0-9]{1,6}\]")
+_SEGMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,127}|\[-?[0-9]{1,6}\]")
+_INDEX = re.compile(r"\[?([0-9]{1,6})\]?")
 
 
 def parse_selector(text):
-    """`request.page` -> ['request', 'page']; `args[0]` -> ['args', '[0]']."""
+    """`request.page` -> ['request', 'page']; `args[0]` -> ['args', '[0]'].
+
+    Negative indexes (`items[-1]`) count from the end of a sequence whose elements
+    all fit in the bounded inspection window.
+    """
     if not isinstance(text, str) or not text or len(text) > 512:
         raise ValueError("Selectors must be nonempty dotted paths")
     segments = []
@@ -67,6 +72,8 @@ class Probe:
     # "exit": run to completion for the program's output; "hits": end (detach or
     # terminate) right after the last requested hit.
     until: str = "exit"
+    # The hit at which interventions are applied (once).
+    set_hit: int = 1
 
     def __post_init__(self):
         if not isinstance(self.program, str) or not self.program:
@@ -93,6 +100,8 @@ class Probe:
             raise ValueError(f"Probe timeout must be within (0, {MAX_SECONDS}] seconds")
         if self.until not in ("exit", "hits"):
             raise ValueError("Probe until must be 'exit' or 'hits'")
+        if type(self.set_hit) is not int or not 1 <= self.set_hit <= self.hits:
+            raise ValueError("Probe set_hit must be within 1..hits")
 
 
 def _visible(snapshot):
@@ -112,15 +121,16 @@ def _resolve(worker, stop, snapshot, segments):
         raise ValueError(f"not found; visible: {_visible(snapshot)}")
     variable = matches[0]
     for segment in segments[1:]:
-        # LLDB names elements `[1]`; debugpy names them `1`.
-        names = {segment, segment[1:-1]} if segment.startswith("[") else {segment}
         handle = variable.get("variablesReference", 0)
         if not handle:
             raise ValueError(f"cannot expand {variable['name']!r} ({variable.get('view', 'leaf')})")
+        if segment.startswith("[-"):
+            variable = _from_end(worker, stop, variable, int(segment[2:-1]), segment)
+            continue
         found, start, incomplete = None, 0, False
         while found is None:
             page = worker.dispatch("expand", {**stop, "handle": handle, "start": start})
-            found = next((v for v in page["variables"] if v["name"] in names), None)
+            found = next((v for v in page["variables"] if _names(v, segment)), None)
             if found is not None or not page["truncated"]:
                 break
             if start + 64 > 511 or page.get("remaining_nodes", 1) <= 0:
@@ -133,6 +143,68 @@ def _resolve(worker, stop, snapshot, segments):
             raise ValueError(f"{segment!r} not found")
         variable = found
     return variable
+
+
+def _names(child, segment):
+    """LLDB names elements `[1]`; debugpy `1`, or `001` in long sequences."""
+    name = child["name"]
+    if not segment.startswith("["):
+        return name == segment
+    match = _INDEX.fullmatch(name)
+    return name in (segment, segment[1:-1]) or bool(match and int(match[1]) == int(segment[1:-1]))
+
+
+_LENGTH = re.compile(r"(?:\bsize|\blength)=([0-9]{1,9})\b|\w\[([0-9]{1,9})\]")
+
+
+def _declared_length(variable, children):
+    for child in children:
+        if child["name"] == "len()" and re.fullmatch(r"[0-9]{1,9}", str(child.get("value"))):
+            return int(child["value"])
+    if type(variable.get("indexedVariables")) is int:
+        return variable["indexedVariables"]
+    for text in (variable.get("value"), variable.get("type")):
+        if match := _LENGTH.search(str(text or "")[:200]):
+            return int(match[1] or match[2])
+    return None
+
+
+def _from_end(worker, stop, variable, offset, segment):
+    """Element ``len - offset``, only when the debugger states the length and every
+    element is individually visible; a partial view (e.g. debugpy's `more` group for
+    long lists) never stands in for the end of the sequence."""
+    handle = variable["variablesReference"]
+    elements, children, start = {}, [], 0
+    while True:
+        page = worker.dispatch("expand", {**stop, "handle": handle, "start": start})
+        children.extend(page["variables"])
+        for child in page["variables"]:
+            if match := _INDEX.fullmatch(child["name"]):
+                elements[int(match[1])] = child
+        if not page["truncated"]:
+            break
+        if start + 64 > 511 or page.get("remaining_nodes", 1) <= 0:
+            raise ValueError(
+                f"{segment!r} needs the sequence length, but it has more elements than the "
+                "bounded inspection window (512); use a non-negative index"
+            )
+        start += 64
+    count = len(elements)
+    if not count or sorted(elements) != list(range(count)):
+        raise ValueError(f"{segment!r}: not an indexed sequence; use a non-negative index")
+    length = _declared_length(variable, children)
+    if length is None:
+        raise ValueError(
+            f"{segment!r}: the debugger does not state the length; use a non-negative index"
+        )
+    if length != count:
+        raise ValueError(
+            f"{segment!r}: only {count} of {length} elements are individually visible; use a "
+            "non-negative index"
+        )
+    if offset < 1 or offset > count:
+        raise ValueError(f"{segment!r} is out of range for {count} elements")
+    return elements[count - offset]
 
 
 def _capture(worker, stop, selectors, hit, phase):
@@ -243,7 +315,7 @@ def run_probe(root, probe, *, adapter=None, progress=None):
                 say(warnings[-1])
             say(f"hit {hits}/{probe.hits} at {probe.program}:{expected}; capturing")
             rows.extend(_capture(worker, stop, probe.capture, hits, "observed"))
-            if hits == 1 and probe.set:
+            if hits == probe.set_hit and probe.set:
                 for name, value in probe.set:
                     snapshot = worker.dispatch("inspect", stop)
                     scope = next(
@@ -321,18 +393,35 @@ def run_probe(root, probe, *, adapter=None, progress=None):
         worker.close()
     if changes and probe.hits > 1:
         warnings.append(
-            "Interventions are applied once, at hit 1; later hits observe without re-applying."
+            f"Interventions are applied once, at hit {probe.set_hit}; other hits observe "
+            "without re-applying."
+        )
+    elif probe.set and not changes and hits < probe.set_hit and result.get("status") != "failed":
+        warnings.append(
+            f"No intervention was applied: the program stopped {hits} time(s), before hit "
+            f"{probe.set_hit}."
         )
     result.update(
         warnings=warnings,
         hits=hits,
         pauses_ms=pauses,
+        by_hit=_by_hit(rows),
         rows=rows,
         interventions=changes,
         seconds=round(time.monotonic() - started, 3),
         note="Interventions are runtime evidence for this run only, not a verified fix.",
     )
     return result
+
+
+def _by_hit(rows):
+    """The same rows regrouped per hit: {hit, line, observed: {...}, after-set: {...}}."""
+    grouped = {}
+    for row in rows:
+        entry = grouped.setdefault(row["hit"], {"hit": row["hit"], "line": row.get("line")})
+        value = row["value"] if "value" in row else {"error": row.get("error")}
+        entry.setdefault(row["phase"], {})[row["selector"]] = value
+    return list(grouped.values())
 
 
 def _table(result):
@@ -388,6 +477,7 @@ def main(argv=None):
     parser.add_argument("--hits", type=int, default=1, help="Stops to capture (default 1)")
     parser.add_argument("--timeout", type=float, default=60, help="Overall seconds (default 60)")
     parser.add_argument("--until", choices=("exit", "hits"), default="exit")
+    parser.add_argument("--set-hit", type=int, default=1, help="Hit that gets --set (default 1)")
     parser.add_argument("--json", action="store_true", help="Print the full JSON result")
     targets = parser.add_mutually_exclusive_group()
     targets.add_argument("--java-config", type=Path)
@@ -410,6 +500,7 @@ def main(argv=None):
             args.hits,
             args.timeout,
             args.until,
+            args.set_hit,
         )
         adapter = None
         if args.java_config:

@@ -267,6 +267,49 @@ def _python_lines(path):
     return sorted(lines)
 
 
+def _python_scopes(path):
+    """Names each Python function (and the module) can see, for choosing selectors.
+
+    Static: lists parameters and assigned locals, not values or attributes.
+    """
+    import ast
+    import symtable
+
+    text = path.read_text()
+    tree = ast.parse(text, str(path))
+    table = symtable.symtable(text, str(path), "exec")
+    spans = {}
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            spans.setdefault((node.lineno, getattr(node, "name", "lambda")), node.end_lineno)
+    scopes, stack = [], [table]
+    while stack and len(scopes) < 200:
+        item = stack.pop()
+        stack.extend(item.get_children())
+        if item.get_type() == "class":
+            continue
+        names = sorted(
+            s.get_name()
+            for s in item.get_symbols()
+            if s.is_parameter()
+            or s.is_assigned()
+            or (item.get_type() == "module" and s.is_imported())
+        )
+        if item.get_type() == "module":
+            scopes.append({"scope": "<module>", "lines": None, "names": names[:100]})
+            continue
+        end = spans.get((item.get_lineno(), item.get_name()))
+        scopes.append(
+            {
+                "scope": item.get_name(),
+                "lines": [item.get_lineno(), end],
+                "names": names[:100],
+            }
+        )
+    scopes.sort(key=lambda s: (s["lines"] or [0])[0])
+    return scopes
+
+
 def _default_program(program, data, command):
     if program is not None:
         return program
@@ -300,6 +343,7 @@ def describe(args):
     }
     if language == "python":
         manifest["breakpoint_lines"] = {program: _python_lines(root / program)}
+        manifest["scopes"] = _python_scopes(root / program)
         manifest["mutable_types"] = (
             "Python literals: numbers, strings, bytes, True/False/None and lists/tuples/dicts/sets of them"
         )
@@ -347,6 +391,9 @@ def _describe_text(manifest):
         qualified = [name for name, kind in views.items() if kind != "unqualified"]
         lines.append(f"qualified enum views: {', '.join(qualified) or 'none'}")
         lines.append(f"opaque enum types: {len(views) - len(qualified)}")
+    for scope in manifest.get("scopes", ()):
+        where = f" (lines {scope['lines'][0]}-{scope['lines'][1]})" if scope["lines"] else ""
+        lines.append(f"names in {scope['scope']}{where}: {', '.join(scope['names']) or '-'}")
     lines.append(f"mutable: {manifest['mutable_types']}")
     lines.extend(f"{name}: {usage}" for name, usage in manifest["commands"].items())
     lines.append(f"timing: {manifest['timing']['advice']}")
@@ -392,6 +439,7 @@ def probe(args):
         # An attached JVM keeps running after the probe, so waiting for its exit only
         # delays the answer; launched programs run to exit for their output.
         args.until if args.until != "auto" else ("hits" if language == "java-attach" else "exit"),
+        args.set_hit,
     )
     progress = (
         None
@@ -953,6 +1001,9 @@ def main(argv=None, _job=False):
     sub.add_argument("--capture", default="", help="Comma-separated selectors, e.g. a,b.c,d[0]")
     sub.add_argument("--set", action="append", default=[], help="name=value (repeatable)")
     sub.add_argument("--hits", type=int, default=1)
+    sub.add_argument(
+        "--set-hit", type=int, default=1, help="Which hit gets the --set interventions (default 1)"
+    )
     sub.add_argument("--timeout", type=float, default=60)
     sub.add_argument(
         "--until",
