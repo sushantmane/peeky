@@ -12,7 +12,7 @@ import java.util.concurrent.CompletableFuture;
 
 /** Experimental Microsoft-core launcher. Only explicit, prepared source maps are accepted. */
 public final class PeekyJavaAdapter extends ProtocolServer {
-    private static final Set<String> COMMANDS = Set.of("initialize", "launch", "setBreakpoints",
+    private static final Set<String> COMMANDS = Set.of("initialize", "launch", "attach", "setBreakpoints",
         "configurationDone", "threads", "stackTrace", "scopes", "variables", "setVariable",
         "continue", "disconnect");
     private final SourceMap sources;
@@ -34,6 +34,19 @@ public final class PeekyJavaAdapter extends ProtocolServer {
                 if (args.has("console") && !args.get("console").getAsString().equals("internalConsole"))
                     throw new IllegalArgumentException("only internalConsole supported");
                 args.addProperty("console", "internalConsole");
+            }
+            if (request.command.equals("attach")) {
+                // Loopback JDWP only; remote JVMs must be reached through an SSH tunnel.
+                if (args==null || !args.has("hostName") || !args.has("port")
+                    || !args.get("hostName").isJsonPrimitive() || !args.get("port").isJsonPrimitive())
+                    throw new IllegalArgumentException("attach requires loopback hostName and port");
+                String host=args.get("hostName").getAsString();
+                int port=args.get("port").getAsInt();
+                if (!host.equals("127.0.0.1") && !host.equals("localhost"))
+                    throw new IllegalArgumentException("attach is loopback-only");
+                if (port<1 || port>65535) throw new IllegalArgumentException("invalid attach port");
+                for (String key : new ArrayList<>(args.keySet()))
+                    if (!Set.of("hostName", "port", "timeout").contains(key)) args.remove(key);
             }
             if (request.command.equals("setBreakpoints")) {
                 if (args.has("breakpoints")) for (JsonElement e : args.getAsJsonArray("breakpoints")) {

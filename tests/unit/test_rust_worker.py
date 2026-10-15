@@ -811,3 +811,21 @@ def test_pending_view_reply_blocks_mutation_until_drained(worker):
     state.update(drained=True)
     snapshot = call(worker, "inspect")
     assert "mutation_blocked" not in snapshot and worker.references
+
+
+def test_provenance_is_rechecked_on_wait_and_report(worker):
+    worker.state = "running"
+    worker.cursor = 0
+    worker.dap.wait_event = lambda names, cursor, timeout: {
+        "event": "terminated",
+        "cursor": 1,
+        "body": {},
+    }
+
+    def changed():
+        raise RuntimeError("Attached sources, classes or adapter changed; re-attach")
+
+    worker.runtime.assert_current = changed
+    with pytest.raises(RuntimeError, match="changed"):
+        call(worker, "wait")
+    assert worker.dap is None and worker.session is None

@@ -183,7 +183,7 @@ def test_native_agent_requires_runtime_intervention(native_investigation):
         steps=1,
     )
     report = runner.run("Fix pagination")
-    assert report["status"] == "budget_exhausted"
+    assert report["status"] == "insufficient_evidence"
     assert "runtime intervention" in report["steps"][0]["error"]
     assert not (native_investigation[-1] / "candidate").exists()
 

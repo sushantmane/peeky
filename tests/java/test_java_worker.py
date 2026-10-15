@@ -98,7 +98,7 @@ def assert_http_error(code, client, operation, **args):
     with pytest.raises(HTTPError) as caught:
         client.call(operation, **args)
     assert caught.value.code == code
-    return json.load(caught.value)["error"]
+    return json.load(caught.value)["error"]["message"]
 
 
 def assert_process_gone(pid):
@@ -242,3 +242,23 @@ def test_java_rejects_unrepresentable_arguments(java_worker, argument):
     start, _, _, _ = java_worker
     with pytest.raises(ValueError, match="arguments"):
         start(arguments=(argument,))
+
+
+def test_cli_describe_lists_fresh_build_java_lines(java_worker, java_bundle, tmp_path, capsys):
+    from peeky.cli import main
+
+    _, source, first, second = java_worker
+    config = tmp_path / "java.json"
+    config.write_text(
+        json.dumps(
+            {
+                "bundle": str(java_bundle),
+                "sources": ["demo/BranchBug.java"],
+                "main_class": "demo.BranchBug",
+            }
+        )
+    )
+    assert main(["describe", str(tmp_path), "--config", str(config), "--json"]) == 0
+    manifest = json.loads(capsys.readouterr().out)
+    lines = manifest["breakpoint_lines"]["demo/BranchBug.java"]
+    assert manifest["language"] == "java" and {first, second} <= set(lines)

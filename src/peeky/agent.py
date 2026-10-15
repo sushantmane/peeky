@@ -416,6 +416,15 @@ class Investigation:
             self.report["verification"] = result
         return result
 
+    def _exhausted_outcome(self):
+        """Distinguish why the budget ended without an accepted candidate."""
+        results = [step.get("result") or {} for step in self.report["steps"]]
+        if any("candidate" in result and result.get("passed") is False for result in results):
+            return "no_fix"
+        if not any("snapshot" in result or "change" in result for result in results):
+            return "insufficient_evidence"
+        return "budget_exhausted"
+
     def run(self, issue):
         self.destination.mkdir(parents=True, exist_ok=True)
         try:
@@ -429,7 +438,11 @@ class Investigation:
             self.require_unchanged()
             self.report.update(issue=issue, baseline=baseline, baseline_check=baseline_check)
             self.save()
-            if baseline_check["exit_code"] in (0, None):
+            if baseline_check["exit_code"] == 0:
+                # The independent checker passes on the original: nothing to fix here.
+                self.report["status"] = "no_reproduction"
+                return self.report
+            if baseline_check["exit_code"] is None:
                 raise ValueError("Verifier must fail on the original (without timing out)")
             for step in range(self.max_steps):
                 context = {
@@ -466,7 +479,7 @@ class Investigation:
                 if self.report["status"] == "verified":
                     self.report["diagnosis"] = decision["reason"]
                     return self.report
-            self.report["status"] = "budget_exhausted"
+            self.report["status"] = self._exhausted_outcome()
             return self.report
         except Exception as exc:
             self.report["status"] = "failed"

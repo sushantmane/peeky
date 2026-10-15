@@ -1,6 +1,6 @@
 # Autonomous execution checkpoint
 
-Updated: 2026-10-14. Repository: https://github.com/sushantmane/peeky (private).
+Updated: 2026-10-15. Repository: https://github.com/sushantmane/peeky (private).
 
 ## Direction and authorization
 
@@ -20,20 +20,45 @@ An hourly thread heartbeat (`continue-peeky-mvp`) checks for available usage and
 
 ## Active slice
 
-Branch `feat/rust-worker`, draft PR [#23](https://github.com/sushantmane/peeky/pull/23). Codex's heartbeat opened the PR and recorded a follow-up review. Copilot claimed ownership of the next edits in a PR comment. RUST_PLAN steps 1–5 are delivered on narrow fixtures:
+PR #23 merged as `2995958` (Rust worker, active Option views, compiled-test plus checker verification, five review rounds, no blocking issues on the final head `825c075`, all nine lanes green).
 
-- Application-unit Rust symbols (exact `comp_dir`, crate-root CU names, offset-scoped tables, unchanged 2 MiB parser) and DWARF-validated `Option<i32>` active-variant views. Other data-carrying enums are opaque, and `$` storage is refused everywhere.
-- Experimental `RustTarget`/`RustSession` HTTP worker (`--rust-config`): offline/locked Cargo with real sysroot tools, staged-input/ancestry/version checks before each Cargo command, hashed `target/debug/deps` plus uplifted test target, i32-only root mutation, symbol-file scripts disabled, 40 s launch deadline.
-- Verification (`RustVerification`, `peeky-agent --rust-config`): the hashed compiled integration-test binary runs directly (no Cargo at verification time) **and** the unchanged independent checker must complete. A deterministic investigation rejects a compile failure and a test-passing overfit before verifying the general fix (docs/RUST_AGENT.md).
-- ADR 0004 records the owner's stateless probe direction (not started).
+Branch `feat/stateless-probe` (pushed; the Copilot PR tool is blocked until the project's GitHub account is re-linked, so open the PR manually). It implements the owner's direction (ADR 0004 and ADR 0005): **Peeky is a standalone tool that models, harnesses and humans call; it never calls a model, and there is no mode switch.** One `peeky` CLI provides `describe` (manifest), `probe` (one stateless question), `session start|wait|inspect|get|set|continue|report|close|list` (step by step across shell commands via a local worker) and `verify` (fresh build plus independent checker). Targets are auto-detected with toolchain discovery. There is a stateless HTTP `probe` plus `Client.probe`, docs/AGENT_GUIDE.md and skills/peeky-debug. 506 unit and integration tests pass locally, along with the real Rust CLI and probe tests.
 
-Reviews: three independent reviews across the slice. Every finding is fixed with regressions; see docs/reviews/RUST_WORKER_FOLLOWUP.md (dispositions table). Earlier symbol-review dispositions are recorded below.
+Java on Venice end-to-end tests (owner request) is **delivered experimentally** on branch `feat/java-attach`, stacked on `feat/stateless-probe`; both are pushed with CI green, and PRs must be opened manually until the account is re-linked. `JavaAttachTarget` attaches over loopback to a JVM started with `gradlew … --debug-jvm`, maps only the declared sources' compiled classes, rechecks hashed sources, classes and adapter on every operation including `wait` and `report`, labels provenance `attached`, refuses edit verification and detaches without killing the JVM. Verified on Venice `ba78edda8`: `peeky probe` at `TestEmptyPush.java:85` captured `storeName`, `sendControlMessageDirectly` and `controllerClient` for both data-provider runs in 28.5 s; Gradle reported both tests PASSED. Root cause of the first failed attempts: thousands of DAP `thread` events evicted lifecycle events. Only lifecycle events are now kept in bounded history.
 
-Local evidence (macOS, Apple LLVM 21, Rust 1.96.0): 436 unit tests in about 9.3 s. `tests/rust` + `tests/integration`: 12 passed in 15.31 s; full Rust investigation 5.04 s, frozen-test drift 2.32 s, HTTP worker flow 1.33 s, raw probe 0.92 s. Hosted evidence for the final head is recorded on PR #23 and in TESTING.md.
+Venice on Apple Silicon without Rosetta: grpc-java ships only x86_64 macOS code generators. `scripts/venice/native-grpc.sh` builds v1.59.1 natively from a pinned commit with SHA-256 checks and exact patch counts, and writes a Gradle init script. Venice `assemble` plus integration-test classes then succeed (2m23s) with no change to the Venice repo. Recipe in docs/JAVA_ATTACH.md.
 
-Next: confirm all nine lanes on the final head, re-review if new boundary changes land, then merge. After merge, candidates are a live-model Rust evaluation, lifecycle issue #6, corpus #7, separate-host SSH #8, and ADR 0004 probe mode, which starts with an in-process `run_probe` over existing worker operations.
+Reviews: the CLI and attach review found 3 blocking and 7 should-fix issues, all fixed in `3bd1e38`/`d41bdf7` with regressions (path confinement in verify, `no-stop` probes, provenance on wait/report, hard-capped HTTP probe subprocess, token-authenticated worker shutdown, private validated session records, selector truncation, bounded attach discovery, detection precedence, pinned Venice helper, narrowed docs). A verification pass found five more (HTTP probe child isolation, stop validation, cleanup inside the cap, complete JSON results, full attach entry bounds); these are fixed in `27937b7`, and the final review reported **no blocking issues**. Evidence on `27937b7`: all nine CI lanes passed (run 38691568364, longest 71 s); 562 local tests passed (unit, integration, Java including attach, Rust); and the Venice probe again captured both hits, with both tests PASSED.
 
-Earlier symbol review (of `5ef785f`): inactive payload swap, label-trusted base types, unterminated DIE trees, positional `$variant$N`, offset-width indentation, `comp_dir` resolution and per-call timeouts were all fixed in `09820c6`/`2e587fa` with regressions.
+Next: open one PR from `feat/java-attach` (it contains `feat/stateless-probe`) and merge after reconfirming lanes on its head. Then: a live-model session where an agent drives `peeky` against a Venice bug using docs/AGENT_GUIDE.md; production-class breakpoints in Venice (add `services/*/build/classes/java/main` roots); ADR 0004 steps 4–5 (query grammar, evidence store); lifecycle #6, corpus #7, SSH #8.
+
+Stacked on `feat/java-attach` (2026-10-15):
+- **`feat/error-codes` (#6):** protocol version 1, machine-readable error codes with hints, retryable and session_closed flags ([ERRORS.md](ERRORS.md)), and lifecycle regressions. CI green, run 38694056033.
+- **`feat/corpus` (#7):** the ten-bug corpus and distinct outcomes. A live agent evaluation ([evaluations/2026-10-15-agent-cli.md](evaluations/2026-10-15-agent-cli.md)) had three independent agents each reach verified general fixes. Its findings are fixed:
+  - Python `--set` is now limited to literals; it previously evaluated expressions inside the debuggee.
+  - `verify` cleans up its scratch copy, shows the failure reason and diff, and explains `--old` mismatches.
+  - Probes warn about relocated breakpoints and short runs.
+  - All failures now use one error object.
+  - With every real toolchain lane enabled, 644 tests pass locally.
+- **Review:** the independent review of error codes plus corpus found no blocking issues. Its two should-fix issues and one nit are fixed ([reviews/ERRORS_CORPUS_REVIEW.md](reviews/ERRORS_CORPUS_REVIEW.md)).
+- **Agent speed ([ADR 0006](adr/0006-agent-speed.md), owner priority):**
+  - Probes report `pauses_ms`, and on attached JVMs they end at the last hit.
+  - Sessions take `--max-pause` (10 s by default for attached JVMs). The worker auto-resumes overdue stops, even unobserved ones.
+  - `probe` and `verify` take `--background`, collected with `peeky job wait` (exit 3 while running).
+  - `describe` reports the timing contract.
+  - Verified on Venice's timed test: the background probe took 19.2 s, and the slow-agent and absent-agent sessions both auto-resumed. All runs PASSED.
+  - Open issue: one Venice session never received a `stopped` event (see JAVA_ATTACH.md). Diagnostics were added.
+- **Agent-speed review:** no blocking issues. Three should-fix issues are fixed: background errors are replayed on stderr, a relative state dir now works, and crash stops are never auto-resumed (checked with real LLDB). Four nits are fixed too. See the same review file.
+- **Venice production-code breakpoints:** verified. A probe in the client library (`ControllerClient.createNewStore`) and one in the controller's HTTP handler (`CreateStore`, on a Jetty thread) each captured both invocations, and the tests PASSED. The recipe is in JAVA_ATTACH.md.
+  - Fixed while doing this: `describe` without `--at` on a multi-source target now describes every source instead of raising a traceback.
+  - Every unexpected CLI exception is now a structured error.
+  - Missing paths now return `INVALID_REQUEST` with a path hint.
+- **Next:**
+  - one PR from `feat/corpus` covering the whole stack;
+  - SSH separate host (#8; needs a second host);
+  - a user-selected non-synthetic program.
+
+Known local-only limitation (pre-existing on main): test_native_adapter_death_reaps_stopped_target fails with Apple LLDB on macOS and passes on hosted Linux.
 
 ## Next slices
 

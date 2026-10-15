@@ -14,6 +14,7 @@ def transport():
     dap.responses = {}
     dap.abandoned = set()
     dap.events = collections.deque(maxlen=MAX_CONTROL_EVENTS)
+    dap.ignored_events = {}
     dap.output = collections.deque(maxlen=500)
     dap.output_truncated = False
     dap.event_sequence = 0
@@ -71,7 +72,7 @@ def test_output_flood_does_not_evict_lifecycle_events():
 def test_control_overflow_is_explicit():
     dap = transport()
     for _ in range(MAX_CONTROL_EVENTS + 1):
-        dap._accept({"type": "event", "event": "thread"})
+        dap._accept({"type": "event", "event": "breakpoint"})
     with pytest.raises(RuntimeError, match="overflow"):
         dap.wait_event({"stopped"})
 
@@ -216,3 +217,19 @@ def test_timed_out_responses_are_discarded_and_drain_is_observable():
     assert dap.abandoned == {9} and dap.drained(0) is False
     dap._accept({"type": "response", "request_seq": 9, "success": True, "body": {}})
     assert 9 not in dap.responses and dap.drained(0) is True
+
+
+def test_thread_churn_cannot_evict_lifecycle_events():
+    dap = transport()
+    dap._accept({"type": "event", "event": "stopped", "body": {"threadId": 1}})
+    for _ in range(MAX_CONTROL_EVENTS * 3):
+        dap._accept({"type": "event", "event": "thread", "body": {"reason": "started"}})
+    assert dap.wait_event({"stopped"}, timeout=0)["cursor"] == 1
+    assert dap.ignored_events == {"thread": MAX_CONTROL_EVENTS * 3}
+
+
+def test_ignored_event_names_are_bounded():
+    dap = transport()
+    for index in range(200):
+        dap._accept({"type": "event", "event": f"custom{index}"})
+    assert len(dap.ignored_events) == 65 and dap.ignored_events["<other>"] == 136

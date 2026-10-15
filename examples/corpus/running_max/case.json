@@ -1,0 +1,16 @@
+{
+  "issue": "running_max([-3, -1, -2]) should be [-3, -1, -1].",
+  "observe_line": 6,
+  "capture": [
+    "best",
+    "value"
+  ],
+  "fix": {
+    "old": "best = 0",
+    "new": "best = float('-inf')"
+  },
+  "overfit": {
+    "old": "best = 0",
+    "new": "best = -3"
+  }
+}

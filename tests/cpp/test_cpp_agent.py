@@ -141,7 +141,7 @@ def test_cpp_agent_requires_runtime_intervention(cpp_investigation):
         steps=1,
     )
     report = runner.run("Fix pagination")
-    assert report["status"] == "budget_exhausted"
+    assert report["status"] == "insufficient_evidence"
     assert "runtime intervention" in report["steps"][0]["error"]
     assert not (cpp_investigation[-1] / "candidate").exists()
 

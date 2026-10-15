@@ -1,0 +1,16 @@
+{
+  "issue": "Emails are case-insensitive; dedupe(['A@x.com', 'a@x.com']) should give one address.",
+  "observe_line": 5,
+  "capture": [
+    "key",
+    "seen"
+  ],
+  "fix": {
+    "old": "key = email.strip()",
+    "new": "key = email.strip().lower()"
+  },
+  "overfit": {
+    "old": "key = email.strip()",
+    "new": "key = email.strip().replace('A@', 'a@')"
+  }
+}

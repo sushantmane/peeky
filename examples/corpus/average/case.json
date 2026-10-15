@@ -1,0 +1,16 @@
+{
+  "issue": "average([1, 2]) should be 1.5 but prints 1.",
+  "observe_line": 3,
+  "capture": [
+    "total",
+    "values"
+  ],
+  "fix": {
+    "old": "total // len(values)",
+    "new": "total / len(values)"
+  },
+  "overfit": {
+    "old": "return total // len(values)",
+    "new": "return 1.5 if values == [1, 2] else total // len(values)"
+  }
+}

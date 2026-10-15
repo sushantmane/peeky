@@ -14,8 +14,27 @@ from pathlib import Path
 
 from peeky.adapters import PythonAdapter, ViewBudgetExhausted
 from peeky.dap import DAP, ResponseTimeout
+from peeky.errors import _RULES, PROTOCOL_VERSION, classify
 
 VIEW_SECONDS = 10
+
+
+OPERATIONS = frozenset(
+    {
+        "launch",
+        "wait",
+        "inspect",
+        "expand",
+        "set_variable",
+        "breakpoints",
+        "continue",
+        "report",
+        "close",
+        "probe",
+        "shutdown",
+        "version",
+    }
+)
 
 
 class DebugWorker:
@@ -46,6 +65,14 @@ class DebugWorker:
         self.breakpoint_events = []
         self.lock = threading.Lock()
         self.last_used = time.monotonic()
+        # Optional per-session pause budget: a stop older than this is auto-resumed so
+        # a slow client cannot stall a program with real-time deadlines.
+        self.max_pause = None
+        self.stopped_at = None
+        self.auto_resumed = []
+        self.cursor = 0
+        self.stop_location = None
+        self.stop_reason = None
         # Below Client.call's 45 s HTTP timeout: a launch either returns within this
         # bound or is discarded, so an abandoned slow launch cannot leave a session.
         self.launch_deadline_s = 40
@@ -58,7 +85,93 @@ class DebugWorker:
 
     def stopped(self, args):
         if self.state != "stopped" or args.get("stop_id") != self.stop_id:
+            if any(entry["stop_id"] == args.get("stop_id") for entry in self.auto_resumed):
+                raise ValueError(
+                    f"Stale stop_id: the program was auto-resumed after its {self.max_pause} s "
+                    "pause budget (--max-pause); wait for the next stop or use a probe"
+                )
             raise ValueError("Stale stop_id or program is not stopped; inspect the latest stop")
+
+    def read_location(self):
+        """Best-effort top-frame location for display; never evidence, never fatal.
+
+        Crash or signal stops may fail runtime validation; that belongs to `inspect`,
+        so a failed read here only omits the location.
+        """
+        try:
+            stack = self.dap.request(
+                "stackTrace", {"threadId": self.thread_id, "levels": 1}, timeout=2
+            )
+            frame = (stack.get("stackFrames") or [{}])[0]
+            path = frame.get("source", {}).get("path")
+            return f"{path}:{frame.get('line')}" if path else None
+        except Exception:
+            return None
+
+    def location(self):
+        where = {"location": self.stop_location} if self.stop_location else {}
+        return {**where, "reason": self.stop_reason} if self.stop_id else where
+
+    def pause_status(self):
+        if self.state != "stopped" or self.stopped_at is None:
+            return {}
+        paused = round(time.monotonic() - self.stopped_at, 2)
+        status = {"paused_s": paused}
+        if self.max_pause and self.stop_reason == "breakpoint":
+            status["resume_in_s"] = round(max(0.0, self.max_pause - paused), 2)
+        return status
+
+    def guard_pause(self):
+        """Auto-resume a stop that outlived the session's pause budget.
+
+        Called periodically by the worker server. Only stops at Peeky's own breakpoints
+        are resumed; crashes, exceptions and signals stay stopped for inspection (and
+        resuming a fault would usually re-fault). Any failure releases the program by
+        closing the session (detaching an attached JVM) rather than leaving it paused.
+        """
+        with self.lock:
+            if not self.dap or not self.max_pause:
+                return
+            try:
+                if self.state == "running":
+                    pending = self.dap.pending_stop(self.cursor)
+                    if pending is None or pending[1] != "breakpoint":
+                        return
+                    if time.monotonic() - pending[0] < self.max_pause:
+                        return
+                    self._dispatch("wait", {"timeout": 0.1})
+                if self.state != "stopped" or self.stopped_at is None:
+                    return
+                if self.stop_reason != "breakpoint":
+                    return
+                paused = time.monotonic() - self.stopped_at
+                if paused < self.max_pause:
+                    return
+                entry = {
+                    "stop_id": self.stop_id,
+                    "reason": self.stop_reason,
+                    "location": self.stop_location,
+                    "paused_s": round(paused, 2),
+                }
+                self._dispatch("continue", {"stop_id": self.stop_id})
+                self.auto_resumed.append(entry)
+                self.auto_resumed = self.auto_resumed[-100:]
+                self.audit.append(
+                    {
+                        "time": time.time(),
+                        "operation": "auto_resume",
+                        "arguments": {"stop_id": entry["stop_id"]},
+                        "result": {**entry, "max_pause": self.max_pause},
+                    }
+                )
+                self.audit = self.audit[-500:]
+            except Exception:
+                import sys
+                import traceback
+
+                print("peeky: pause guard failed; closing the session", file=sys.stderr)
+                traceback.print_exc()
+                self.close()
 
     def dispatch(self, operation, args):
         self.validate(operation, args)
@@ -100,6 +213,10 @@ class DebugWorker:
             "close",
         }:
             raise ValueError("Unknown operation")
+        if operation == "launch" and args.get("max_pause") is not None:
+            value = args["max_pause"]
+            if type(value) not in (int, float) or not math.isfinite(value) or not 0 < value <= 300:
+                raise ValueError("max_pause must be a number of seconds within (0, 300]")
         if operation in {"launch", "breakpoints"}:
             if not isinstance(args.get("program"), str):
                 raise ValueError("program must be a string")
@@ -140,7 +257,15 @@ class DebugWorker:
 
     def _dispatch(self, operation, args):
         runtime = self.runtime or self.adapter
-        if operation in {"inspect", "expand", "set_variable", "breakpoints", "continue"}:
+        if operation in {
+            "wait",
+            "inspect",
+            "expand",
+            "set_variable",
+            "breakpoints",
+            "continue",
+            "report",
+        }:
             runtime.assert_current()
         if operation == "launch":
             if self.dap:
@@ -150,6 +275,9 @@ class DebugWorker:
             self.session = uuid.uuid4().hex
             self.audit = []
             self.breakpoint_events = []
+            self.max_pause = args.get("max_pause")
+            self.stopped_at = None
+            self.auto_resumed = []
             deadline = time.monotonic() + self.launch_deadline_s
 
             def left(limit=15):
@@ -172,7 +300,9 @@ class DebugWorker:
                 )
                 self.capabilities = runtime.normalize_capabilities(capabilities)
                 launch = self.dap.send(
-                    "launch", runtime.launch_args(program, self.root), timeout=left(5)
+                    getattr(runtime, "dap_request", "launch"),
+                    runtime.launch_args(program, self.root),
+                    timeout=left(5),
                 )
                 self.dap.wait_event({"initialized"}, failed_request=launch, timeout=left())
                 points = self.dap.request(
@@ -196,6 +326,7 @@ class DebugWorker:
                     "source_sha256": hashlib.sha256(program.read_bytes()).hexdigest(),
                     "supports_set_variable": self.capabilities.get("supports_set_variable", False),
                     "supports_expand": True,
+                    "protocol": PROTOCOL_VERSION,
                     "artifact_manifest_id": runtime.manifest_id,
                     "source_manifest": getattr(runtime, "source_manifest", None),
                     "target_identity": getattr(runtime, "target_identity", None),
@@ -208,8 +339,17 @@ class DebugWorker:
             updates = {}
             if self.breakpoint_events:
                 updates["breakpoint_events"] = list(self.breakpoint_events)
+            if self.auto_resumed:
+                updates["auto_resumed"] = len(self.auto_resumed)
+                updates["last_auto_resumed"] = self.auto_resumed[-1]
             if self.state in ("stopped", "terminated"):
-                return {"state": self.state, "stop_id": self.stop_id, **updates}
+                return {
+                    "state": self.state,
+                    "stop_id": self.stop_id,
+                    **self.location(),
+                    **self.pause_status(),
+                    **updates,
+                }
             deadline = time.monotonic() + timeout
             while True:
                 try:
@@ -228,6 +368,8 @@ class DebugWorker:
                 updates["breakpoint_events"] = list(self.breakpoint_events)
                 if time.monotonic() >= deadline:
                     return {"state": self.state, "timed_out": True, **updates}
+            # Rebuilt classes or edited sources while running invalidate the evidence.
+            runtime.assert_current()
             self.state = event["event"]
             self.frames.clear()
             self.references.clear()
@@ -235,8 +377,18 @@ class DebugWorker:
             self.reference_adapter.clear()
             self.children.clear()
             self.stop_id = uuid.uuid4().hex if self.state == "stopped" else None
+            self.stopped_at = event.get("received", time.monotonic()) if self.stop_id else None
             self.thread_id = event.get("body", {}).get("threadId")
-            return {"state": self.state, "stop_id": self.stop_id, "event": event, **updates}
+            self.stop_reason = event.get("body", {}).get("reason") if self.stop_id else None
+            self.stop_location = self.read_location() if self.stop_id else None
+            return {
+                "state": self.state,
+                "stop_id": self.stop_id,
+                "event": event,
+                **self.location(),
+                **self.pause_status(),
+                **updates,
+            }
         if operation == "inspect":
             self.stopped(args)
             self.children.clear()
@@ -294,7 +446,12 @@ class DebugWorker:
                     self.reference_frames[handle] = selected_frame
                     self.reference_adapter[handle] = reference
                 result.append({"name": scope["name"], "reference": handle, "variables": exposed})
-            snapshot = {"stop_id": self.stop_id, "frames": frames, "scopes": result}
+            snapshot = {
+                "stop_id": self.stop_id,
+                "frames": frames,
+                "scopes": result,
+                **self.pause_status(),
+            }
             if not writable:
                 snapshot["mutation_blocked"] = "A value-view read is still pending; inspect again"
             return snapshot
@@ -351,6 +508,9 @@ class DebugWorker:
             self.stopped(args)
             self.dap.request("continue", {"threadId": self.thread_id})
             self.state = "running"
+            self.stopped_at = None
+            self.stop_location = None
+            self.stop_reason = None
             self.children.clear()
             self.stop_id = None
             self.frames.clear()
@@ -368,6 +528,7 @@ class DebugWorker:
                 "history": [e for e in self.audit if e["operation"] != "report"],
                 "artifact_manifest_id": runtime.manifest_id,
                 "breakpoint_events": list(self.breakpoint_events),
+                "debugger_events": self.dap.recent_events(),
             }
         if operation == "close":
             self.close()
@@ -576,6 +737,9 @@ class DebugWorker:
         adapter, self.dap = self.dap, None
         runtime, self.runtime = self.runtime, None
         self.state = "idle"
+        self.stopped_at = None
+        self.stop_location = None
+        self.stop_reason = None
         self.session = None
         self.stop_id = None
         self.thread_id = None
@@ -587,7 +751,10 @@ class DebugWorker:
         self.children.clear()
         try:
             if adapter:
-                adapter.close()
+                if runtime is not None and getattr(runtime, "terminate_debuggee", True) is False:
+                    adapter.close(terminate=False)
+                else:
+                    adapter.close()
         finally:
             if runtime:
                 runtime.close()
@@ -597,6 +764,34 @@ def make_server(root, token, port=8765, *, adapter=None):
     if not isinstance(token, str) or len(token) < 16:
         raise ValueError("Token must contain at least 16 characters")
     worker = DebugWorker(root, adapter=adapter)
+    probes = threading.Semaphore(1)
+
+    def probe(args):
+        # Stateless and hard-bounded: a separate process with its own worker, killed at
+        # the cap so an HTTP client timeout can never leave work holding the slot.
+        from peeky.probe import HTTP_PROBE_SECONDS, Probe, parse_location
+
+        if set(args) - {"at", "capture", "set", "hits", "timeout", "until"}:
+            raise ValueError("Unknown probe field")
+        program, line = parse_location(args.get("at"))
+        changes = args.get("set", {})
+        if not isinstance(changes, dict) or not isinstance(args.get("capture", []), list):
+            raise ValueError("Probe capture must be a list and set an object")
+        request = Probe(
+            program,
+            line,
+            tuple(args.get("capture", [])),
+            tuple(changes.items()),
+            args.get("hits", 1),
+            min(args.get("timeout", HTTP_PROBE_SECONDS), HTTP_PROBE_SECONDS - 10),
+            args.get("until", "exit"),
+        )
+        if not probes.acquire(blocking=False):
+            raise ValueError("Another probe is running; retry later")
+        try:
+            return _run_probe_process(Path(root).resolve(), request, adapter, HTTP_PROBE_SECONDS)
+        finally:
+            probes.release()
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args):
@@ -604,7 +799,19 @@ def make_server(root, token, port=8765, *, adapter=None):
 
         def do_POST(self):
             if not hmac.compare_digest(self.headers.get("Authorization", ""), "Bearer " + token):
-                self.reply(401, {"error": "Unauthorized"})
+                self.reply(
+                    401,
+                    {
+                        "error": {
+                            "code": "UNAUTHORIZED",
+                            "message": "Missing or wrong bearer token",
+                            "hint": "Use the DEBUG_TOKEN the worker was started with.",
+                            "retryable": False,
+                            "session_closed": False,
+                        },
+                        "protocol": PROTOCOL_VERSION,
+                    },
+                )
                 return
             try:
                 size = int(self.headers.get("Content-Length", 0))
@@ -614,17 +821,45 @@ def make_server(root, token, port=8765, *, adapter=None):
                 args = json.loads(self.rfile.read(size))
                 if not isinstance(args, dict):
                     raise ValueError("Expected a JSON object")
-                result = worker.dispatch(self.path.removeprefix("/"), args)
+                operation = self.path.removeprefix("/")
+                if operation == "version":
+                    result = {
+                        "protocol": PROTOCOL_VERSION,
+                        "operations": sorted(OPERATIONS),
+                        "error_codes": sorted(
+                            {rule[1] for rule in _RULES}
+                            | {
+                                "DEBUGGER_ERROR",
+                                "INVALID_REQUEST",
+                                "UNAUTHORIZED",
+                                "INTERNAL_ERROR",
+                            }
+                        ),
+                    }
+                elif operation == "shutdown":
+                    # Token-authenticated: only the owner of this worker can stop it.
+                    with worker.lock:
+                        worker.close()
+                    threading.Thread(target=server.shutdown, daemon=True).start()
+                    result = {"state": "shutdown"}
+                else:
+                    result = (
+                        probe(args) if operation == "probe" else worker.dispatch(operation, args)
+                    )
                 self.reply(200, result)
             except (KeyError, TypeError, ValueError) as exc:
-                self.reply(400, {"error": str(exc)})
+                self.reply(
+                    400,
+                    {"error": classify(exc, session_closed=False), "protocol": PROTOCOL_VERSION},
+                )
             except Exception as exc:
-                self.reply(500, {"error": str(exc)})
+                self.reply(500, {"error": classify(exc), "protocol": PROTOCOL_VERSION})
 
         def reply(self, status, body):
             encoded = json.dumps(body).encode()
             self.send_response(status)
             self.send_header("Content-Type", "application/json")
+            self.send_header("X-Peeky-Protocol", str(PROTOCOL_VERSION))
             self.send_header("Content-Length", str(len(encoded)))
             self.end_headers()
             self.wfile.write(encoded)
@@ -632,6 +867,72 @@ def make_server(root, token, port=8765, *, adapter=None):
     server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     server.worker = worker
     return server
+
+
+def _run_probe_process(root, request, adapter, cap):
+    import dataclasses
+    import signal
+    import subprocess
+    import sys
+    import tempfile
+
+    import peeky
+
+    # Isolated interpreter importing this exact Peeky by absolute path, run outside the
+    # target so a target-local `peeky` package or relative PYTHONPATH cannot interfere.
+    package_parent = str(Path(peeky.__file__).resolve().parents[1])
+    bootstrap = (
+        "import sys; sys.path.insert(0, sys.argv.pop(1)); "
+        "from peeky.cli import main; sys.exit(main(sys.argv[1:]))"
+    )
+    command = [sys.executable, "-I", "-c", bootstrap, package_parent, "probe", str(root)]
+    command += ["--json", "--quiet"]
+    command += ["--at", f"{request.program}:{request.line}", "--hits", str(request.hits)]
+    command += ["--timeout", str(request.timeout), "--until", request.until]
+    if request.capture:
+        command += ["--capture", ",".join(request.capture)]
+    for name, value in request.set:
+        command += ["--set", f"{name}={value}"]
+    with tempfile.TemporaryDirectory(prefix="peeky-probe-") as scratch:
+        if adapter is not None:
+            config = Path(scratch) / "target.json"
+            config.write_text(json.dumps(dataclasses.asdict(adapter), default=str))
+            config.chmod(0o600)
+            command += ["--config", str(config)]
+        env = {k: v for k, v in os.environ.items() if k != "DEBUG_TOKEN"}
+        process = subprocess.Popen(
+            command,
+            cwd=scratch,
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+        try:
+            stdout, stderr = process.communicate(timeout=cap - 5)
+        except subprocess.TimeoutExpired:
+            # SIGTERM lets the probe close its debugger and debuggee; force at the cap.
+            os.killpg(process.pid, signal.SIGTERM)
+            try:
+                process.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                os.killpg(process.pid, signal.SIGKILL)
+                process.communicate()
+            return _probe_failure("timeout", TimeoutError(f"Probe exceeded the {cap} s HTTP cap"))
+    if len(stdout) > 16 * 1024 * 1024:
+        return _probe_failure("failed", ValueError("Probe result exceeds limit of 16 MiB"))
+    try:
+        return json.loads(stdout)
+    except json.JSONDecodeError:
+        message = stderr[-2000:].decode(errors="replace") or "Probe process failed"
+        return _probe_failure("failed", RuntimeError(message))
+
+
+def _probe_failure(status, exc):
+    from peeky.errors import classify
+
+    return {"status": status, "error": classify(exc, session_closed=True)}
 
 
 def load_java_target(path):
@@ -717,6 +1018,26 @@ def load_rust_target(path):
     return RustTarget(**config)
 
 
+def load_java_attach_target(path):
+    """Trusted attach configuration: loopback port, declared sources and class roots."""
+    from peeky.java_attach import JavaAttachTarget
+
+    path = Path(path)
+    config = json.loads(path.read_text())
+    if not isinstance(config, dict):
+        raise ValueError("Java attach configuration must be an object")
+    config.pop("language", None)
+    allowed = {"bundle", "port", "sources", "class_roots", "java", "host", "timeout_ms"}
+    if set(config) - allowed or not {"bundle", "port", "sources", "class_roots"} <= set(config):
+        raise ValueError("Java attach configuration needs bundle, port, sources and class_roots")
+    for key in ("sources", "class_roots"):
+        if not isinstance(config[key], list):
+            raise ValueError(f"Java attach {key} must be a JSON array")
+        config[key] = tuple(config[key])
+    config["bundle"] = (path.resolve().parent / config["bundle"]).resolve()
+    return JavaAttachTarget(**config)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", default=".")
@@ -731,14 +1052,19 @@ def main():
     targets.add_argument(
         "--rust-config", type=Path, help="Trusted fixed Cargo binary JSON configuration"
     )
+    targets.add_argument(
+        "--java-attach-config", type=Path, help="Trusted loopback JVM attach configuration"
+    )
     args = parser.parse_args()
     token = os.environ.get("DEBUG_TOKEN")
     if not token or len(token) < 16:
         parser.error("Set DEBUG_TOKEN to a random secret of at least 16 characters")
     adapter = None
-    if args.java_config or args.native_config or args.rust_config:
+    if args.java_config or args.native_config or args.rust_config or args.java_attach_config:
         try:
-            if args.java_config:
+            if args.java_attach_config:
+                adapter = load_java_attach_target(args.java_attach_config)
+            elif args.java_config:
                 adapter = load_java_target(args.java_config)
             elif args.native_config:
                 adapter = load_native_target(args.native_config)
@@ -755,7 +1081,13 @@ def main():
                 if server.worker.dap and time.monotonic() - server.worker.last_used > 300:
                     server.worker.close()
 
+    def guard():
+        while True:
+            time.sleep(0.25)
+            server.worker.guard_pause()
+
     threading.Thread(target=expire, daemon=True).start()
+    threading.Thread(target=guard, daemon=True).start()
     print(
         f"Debugger worker: http://127.0.0.1:{server.server_port}; root={Path(args.root).resolve()}",
         flush=True,

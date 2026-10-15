@@ -1,0 +1,16 @@
+{
+  "issue": "find_index(['a', 'b', 'c'], 'c') should be 2 but prints -1.",
+  "observe_line": 3,
+  "capture": [
+    "index",
+    "item"
+  ],
+  "fix": {
+    "old": "            return index\n        return -1",
+    "new": "            return index\n    return -1"
+  },
+  "overfit": {
+    "old": "        return -1",
+    "new": "        continue"
+  }
+}

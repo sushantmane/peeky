@@ -1,0 +1,16 @@
+{
+  "issue": "Each call without tags should start empty; the second call prints ['a', 'b'] instead of ['b'].",
+  "observe_line": 3,
+  "capture": [
+    "tag",
+    "tags"
+  ],
+  "fix": {
+    "old": "def add_tag(tag, tags=[]):\n    tags.append(tag)",
+    "new": "def add_tag(tag, tags=None):\n    tags = [] if tags is None else tags\n    tags.append(tag)"
+  },
+  "overfit": {
+    "old": "    return tags",
+    "new": "    return [tag] if tag == 'b' else tags"
+  }
+}

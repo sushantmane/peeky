@@ -2,6 +2,21 @@
 
 **Let agents peek inside running programs.**
 
+Peeky is a standalone debugger tool. Your agent (Copilot, Claude, Codex) or you call it; it never calls a model.
+
+```sh
+pip install -e .
+peeky describe examples/rust                       # what can I ask? (lines, views, rules)
+peeky probe examples/rust --at 36 --capture start,some,request.page --set start=0
+peeky session start examples/pagination_bug.py --at 8 && peeky session inspect
+peeky verify examples/pagination_bug.py --check examples/verify_pagination.py \
+  --old 'page * page_size' --new '(page - 1) * page_size'
+```
+
+Java services and Gradle tests (for example Venice end-to-end tests): attach to a `--debug-jvm` JVM; see [docs/JAVA_ATTACH.md](docs/JAVA_ATTACH.md).
+
+Agents: read [docs/AGENT_GUIDE.md](docs/AGENT_GUIDE.md) or install [skills/peeky-debug](skills/peeky-debug/SKILL.md). Design: [ADR 0005](docs/adr/0005-tool-not-agent.md).
+
 Peeky gives a coding agent a controlled debugging loop: choose a breakpoint, inspect live state, test a hypothesis by changing a variable, and validate a candidate fix in a fresh process. Runtime experiments produce evidence; a separate verifier decides whether the source change passes the supplied checks.
 
 This private repository is an MVP foundation, migrated from a working prototype and revised after two adversarial reviews. It is not a production debugger service or a sandbox for hostile code.
@@ -12,11 +27,11 @@ This private repository is an MVP foundation, migrated from a working prototype 
 - One controller and one session per worker.
 - JSON HTTP client/worker interface with session and stop identities.
 - Local launch, breakpoints, bounded inspection, variable changes, continuation, and evidence reports.
-- A bounded model-driven investigation using Codex CLI structured decisions.
+- `peeky-agent`, an optional reference harness that drives the same operations with Codex CLI decisions; it is not the primary interface.
 - A candidate source patch checked by a trusted verifier in a fresh process.
 - Loopback transport; SSH forwarding for remote access.
 
-The minimum product scope is **Python, Java, C, C++, and Rust**, delivered in that order through incremental releases. All five (Python, Java, C, C++ and Rust) now have experimental investigation loops with independent candidate verification on narrow fixtures; none is general language support. See the [five-language plan](docs/LANGUAGES.md). Kubernetes deployment, multi-tenant workers, attach, and production mutation policy remain later milestones. CI covers Linux with Python 3.11/3.13 and a separate Java 17 lane; macOS is used for local development but is not yet in the CI matrix.
+The minimum product scope is **Python, Java, C, C++, and Rust**, delivered in that order through incremental releases. All five (Python, Java, C, C++ and Rust) now have experimental investigation loops with independent candidate verification on narrow fixtures; none is general language support. See the [five-language plan](docs/LANGUAGES.md). Kubernetes deployment, multi-tenant workers, attach for languages other than Java, and production mutation policy remain later milestones. CI covers Linux with Python 3.11/3.13 and a separate Java 17 lane; macOS is used for local development but is not yet in the CI matrix.
 
 The experimental [Java worker](docs/JAVA_WORKER.md) supports fixed standalone targets: clean compilation, generated source mappings, HTTP inspection/scalar mutation, provenance checks and failure cleanup. The [Java investigation loop](docs/JAVA_AGENT.md) adds fresh candidate rebuilds, independent fresh-JVM checks, and retryable compiler diagnostics. A runnable example is in `examples/java`.
 
@@ -32,6 +47,29 @@ pytest tests/unit tests/integration
 ```
 
 Python 3.11+ is required. Run commands from the repository root.
+
+## One-shot probes (stateless)
+
+Ask one question with one command. Peeky builds fresh, stops at the line, captures values, optionally changes locals, runs to completion, prints a table and cleans up. No session to manage:
+
+```sh
+peeky-probe --root examples --at pagination_bug.py:8 --capture start,page,items[1] --set start=0
+```
+
+```text
+hit  phase      line  selector  type  value
+1    observed   8     start     int   3
+1    observed   8     page      int   1
+1    observed   8     items[1]  int   20
+1    after-set  8     start     int   0
+...
+set start: 3 -> 0
+status: completed  hits: 1  seconds: 1.0
+output:
+  PAGE: [10, 20, 30]
+```
+
+The same works for compiled targets with their trusted configuration (`--rust-config`, `--native-config`, `--java-config`). Rust `Option<i32>` values print as `Some(3)`/`None`. Add `--json` for the full result, `--hits N` to capture repeated stops. Remote agents send the same request as one HTTP call: `Client(url, token).probe("pagination_bug.py:8", ["start"], {"start": "0"})`. Selectors are dotted paths (`request.page`, `args[0]`), never evaluated expressions. Interventions are evidence about that run, not a verified fix. Interactive sessions below remain available for step-by-step exploration. See [ADR 0004](docs/adr/0004-stateless-probes.md).
 
 For a live investigation, install and sign in to Codex CLI, then choose a model available to your CLI account:
 

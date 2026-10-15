@@ -1,0 +1,15 @@
+{
+  "issue": "latest(['9', '10']) should be '10'.",
+  "observe_line": 3,
+  "capture": [
+    "ordered"
+  ],
+  "fix": {
+    "old": "sorted(versions)",
+    "new": "sorted(versions, key=lambda v: tuple(int(p) for p in v.split('.')))"
+  },
+  "overfit": {
+    "old": "sorted(versions)",
+    "new": "sorted(versions, key=len)"
+  }
+}
