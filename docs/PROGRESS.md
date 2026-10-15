@@ -20,13 +20,21 @@ An hourly thread heartbeat (`continue-peeky-mvp`) checks for available usage and
 
 ## Active slice
 
-Branch: `feat/rust-worker`, based on merged PR #22 (`4bb493d`). Rust engineering gate delivered; production Rust worker/repair remains unimplemented. Inspect Git/open PRs before resuming.
+Branch `feat/rust-worker` (pushed to origin; **no PR yet**: the Copilot app's PR tool reported the project's GitHub account must be re-linked, and it was not bypassed). CI was run with `workflow_dispatch` on the branch head. Commits on top of merged #22 (`4bb493d`):
 
-- Cargo preflight accepts only explicit dependency-free edition2021 binary/test, disables scripts/autodiscovery, freezes manifest/lock/test roles, rejects ancestor config/workspaces.45 tests (10 independent review) pass; full unit suite289 passed4.62s. This preflight is not a sandbox or full preparation implementation.
-- Dependency-free Rust/Cargo1.96 fixture and bounded rawDAP probe pass locally with AppleLLVM21 (final UUID fix0.89s). Real source breakpoint, struct/fieldlessenum/SomeNone raw shapes, exact scalar intervention/output, module/symbol identity, source/tool hashes and cleanup checked. Explicit binary/dSYM UUID equality added after final review.
-- macOS must use Cargo packed symbols and corresponding hashed deps binary; splitoff removed application object symbols. Source i32 is displayed as int. Raw Option contains inactive variants and its payload exceeds the current worker's depth4 contract; meaningful worker Option inspection still requires separately reviewed normalization/formatters. No RustTarget, HTTP Rust worker, Cargo test execution or source-repair verification is claimed.
-- All nine hosted lanes passed on head770c60a (run38556716292): Rust41s, C40s, C++31s, Java72s longest, Python16/18s, unit19s, quality10s, wheel23s. Linux rawprobe2.03s (pytest2.19s) records4,808,912 bytes DWARF4 and start typeint, moduleverified and buildremoved. Production parser remains2MiB; larger16MiB engineeringcapture is explicit and separately bounded. Final review recorded in reviews/RUST_FOUNDATION_REVIEW.md; RUST_GATE.md documents scope.
-- Next: production RustTarget, bounded declared-source symbol mapping and active Option inspection, exact compiled-test execution plus independent checker, lifecycle and failure regressions. Read RUST_PLAN.md. Broader lifecycle/corpus acceptance, separate-host SSH and evidence correlation remain unfinished; CUDA is design-only.
+- `5ef785f` application-unit Rust symbols and active `Option<i32>` views (RUST_PLAN steps 1–2).
+- `09820c6` LLDB `$variant$<discr_value>` binding (from LLDB 18 `ParseRustVariantPart`).
+- `48e7429` experimental `RustTarget`/`RustSession` and `--rust-config` HTTP worker (step 3).
+- `2e587fa` adversarial-review hardening (see review below).
+- `bd2ade2` ADR 0004: stateless probes alongside sessions (owner direction).
+
+Delivered behavior: symbols come only from compile units whose recorded `comp_dir` equals the fresh workspace and whose name binds the declared crate root. Each table is dumped by exact offset into the unchanged 2 MiB parser (Linux 4,808,912-byte full dump avoided; C/C++ limits untouched). Enum layouts are read from the same unit with base types resolved through referenced DIEs. Only `Option<i32>` is shown as `Some(n)`/`None`, reading only the active payload; other data-carrying enums are opaque, and raw `$variants$` storage is never expandable. The worker builds offline/locked with real sysroot cargo/rustc, a checked owned parent, controlled env and hashed `target/debug/deps`. Mutation is limited to root `int` (i32) locals, and symbol-file scripts are disabled. **Not delivered:** Cargo compiled-test execution, independent candidate repair verification (step 4), an end-to-end Rust investigation (step 5), and non-i32 Option payloads.
+
+Checks on `bd2ade2` (run 38666345665): all nine lanes passed; Rust 43 s, C 51 s, Java 53 s (longest), C++ 39 s, unit 21 s, Python 17/19 s, quality 9 s, wheel 21 s. Linux Rust tests 8.73 s total: raw probe 3.44 s (symbols 0.242 s), HTTP worker flow 1.88 s, drift 1.31 s, compile failure 0.54 s. Local macOS (Apple LLVM 21): 399 unit tests in 5.17 s; `tests/rust` 4 passed in 4.40 s; symbols 0.063 s versus 0.433 s for the former full-dump parse. Earlier heads `5ef785f` (run 38664786468) and `48e7429` (run 38665951115) also passed all nine lanes.
+
+Review: an independent adversarial review of `5ef785f` found 2 blocking and 5 should-fix issues. Dispositions: inactive payload swap → each `value` child must carry its own variant type; label-trusted base types → resolved via referenced DIEs (name/encoding/size); truncated/unterminated DIE trees → explicit NULL closure and EOF check; positional `$variant$N` → bound to discriminant values; offset-width indentation → depth-based; `comp_dir` resolve aliases → exact string; per-call timeouts → one shared 30 s deadline. All have regressions. A follow-up review of `48e7429` and the fixes was started but stalled without reporting. Rerun it and record its findings before merging.
+
+Next: open the PR once the account is re-linked (or manually), record the follow-up review, merge only after verifying every lane on the final head. Then RUST_PLAN step 4: `cargo test --no-run` with bounded JSON artifact parsing, exact prepared test execution with pre/post identity checks, unchanged Python checker, and the invalid/overfit/general candidate sequence (step 5).
 
 ## Next slices
 
@@ -44,3 +52,7 @@ C++ microbaseline:10 local Apple LLVM21 samples, inspect median62.63ms/p9574.91m
 ## 12:20 UTC continuation checkpoint
 
 Repository clean on entry; only unrelated Dependabot PRs open. Ordinary usage allowed but weekly window99% used; no reset or purchased credits consumed. Completed a bounded parser compatibility check before starting any larger implementation: the retained local Rust scratch DWARF4 dump (1,754,438 bytes) parses under the unchanged2MiB limit in0.433s and yields declared src/main.rs lines. This is parsing evidence only, not a fresh source/build provenance validation or a worker qualification. Raw result remains ignored at work/rust-line-parser-check.json. Linux4,808,912-byte dump still requires a reviewed Rust-specific bound or declared-source extraction. No implementation edits or background provider jobs started. Resume from RustTarget/Option/test-verification plan when sufficient ordinary usage is available.
+
+## Owner direction: stateless probes (2026-10-14)
+
+The owner prefers stateless operation where possible and wants heappy-level ease of use. Both modes must be supported: the existing stateful sessions and one-request stateless probes over the same guarded engine, with a `describe` manifest, canned probes and SQL over captured evidence. Recorded as [ADR 0004](adr/0004-stateless-probes.md). This is direction only, not started. Until it lands, new worker features should be expressible as declared probe steps.

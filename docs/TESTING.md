@@ -84,3 +84,7 @@ PR #21, run38549552255: all eight independent jobs passed. C++ LLVM18 took37s, C
 ## Rust engineering gate (2026-10-14)
 
 PR #22, run38556716292, final source770c60a: nine independent checks passed. Rust41s, C40s, C++31s, Java72s, Python16/18s, unit19s, quality10s, wheel23s. Job durations exclude queue time. Rust rawprobe2.03s, not an HTTP worker or repair benchmark. Initial Linux symbol capture failed with the2MiB ceiling; engineering capture explicitly permits16MiB and measured4,808,912 bytes. Five regressions keep production parsing capped at2MiB.
+
+## Rust worker conformance (2026-10-14)
+
+Branch `feat/rust-worker`, head `bd2ade2`, run 38666345665 (`workflow_dispatch`): nine independent checks passed. Rust 43 s, C 51 s, Java 53 s, C++ 39 s, unit 21 s, Python 17/19 s, quality 9 s, wheel 21 s; job durations exclude queue time. The Rust lane now runs the raw probe (3.44 s, application symbols 0.242 s) plus real HTTP worker conformance: inspection/intervention 1.88 s, source drift 1.31 s, compile failure 0.54 s. No Rust test is skipped in CI. Local macOS runs set `PEEKY_RUST_DSYMUTIL` as well.
