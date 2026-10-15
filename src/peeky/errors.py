@@ -15,6 +15,13 @@ PROTOCOL_VERSION = 1
 # (pattern on the message, code, hint, retryable). First match wins.
 _RULES = (
     (
+        r"^Job [0-9a-f]{16} was lost",
+        "JOB_LOST",
+        "The background job process died; rerun the command. The message has its log.",
+        False,
+    ),
+    (r"^No job named", "NOT_FOUND", "Use an id from `peeky job list`.", False),
+    (
         r"Stale stop_id|program is not stopped|not stopped; run",
         "STALE_STOP",
         "Call wait until state is stopped, then inspect the latest stop.",

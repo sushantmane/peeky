@@ -11,7 +11,7 @@ Every Peeky failure, from the HTTP worker, the SDK (`peeky.errors.PeekyError`) o
 
 | Code | Typical cause | Agent action |
 | --- | --- | --- |
-| `STALE_STOP` | The program moved on; `stop_id` is old | `wait` until stopped, then `inspect` |
+| `STALE_STOP` | The program moved on; `stop_id` is old, or the stop was auto-resumed by `--max-pause` | `wait` until stopped, then `inspect`; on timed programs prefer a probe |
 | `INSPECT_REQUIRED` | Mutation without a fresh scope, or a value-view read still pending | `inspect` again, use the new reference |
 | `STALE_HANDLE` | Expansion handle revoked or frame/scope changed | `inspect` again |
 | `NOT_FOUND` | Name/selector not visible | Use a name from the message's `visible:` list (or `inspect`) |
@@ -27,5 +27,6 @@ Every Peeky failure, from the HTTP worker, the SDK (`peeky.errors.PeekyError`) o
 | `UNSUPPORTED` | Operation or capability not offered | Call `version` |
 | `UNAUTHORIZED` | Missing or wrong bearer token | Use the worker's `DEBUG_TOKEN` |
 | `INVALID_REQUEST` | Malformed arguments | Fix the request |
+| `JOB_LOST` | A `--background` job's process died before finishing | Rerun the command |
 
 `POST /version` returns the protocol version, supported operations and the error codes. Every HTTP response carries `X-Peeky-Protocol: 1`.

@@ -13,4 +13,6 @@ Follow docs/AGENT_GUIDE.md in the peeky repository. Short form:
 4. Edit the source generally, then `peeky verify <target> --check <checker> --old '<text>' --new '<text>'`.
 5. Report the commands, the observed values, the intervention's effect and the verify result. Never claim a fix without `passed: True` from `verify`.
 
+If a call may outlast your tool timeout, add `--background` and poll with `peeky job wait <id>` (exit 3 means still running). Programs with timeouts or heartbeats: prefer probes, and give sessions `--max-pause`.
+
 For several looks at one stop, use `peeky session start ... --at ...`, then `session get`, `session set`, `session continue`, `session report` and `session close`. Use `--json` when you need to parse output.

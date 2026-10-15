@@ -33,15 +33,19 @@ RUST_VERSION = "1.96.0"
 MAX_SESSION_SECONDS = 300
 
 
-def _state_dir():
-    path = Path(os.environ.get("PEEKY_STATE_DIR", Path.home() / ".peeky")) / "sessions"
+def _private_dir(name):
+    path = Path(os.environ.get("PEEKY_STATE_DIR", Path.home() / ".peeky")) / name
     path.mkdir(parents=True, exist_ok=True, mode=0o700)
     info = path.lstat()
     if path.is_symlink() or info.st_uid != os.getuid():
-        raise ValueError(f"Session directory must be a real directory owned by you: {path}")
+        raise ValueError(f"State directory must be a real directory owned by you: {path}")
     if info.st_mode & 0o077:
         path.chmod(0o700)
     return path
+
+
+def _state_dir():
+    return _private_dir("sessions")
 
 
 def _private_write(path, text):
@@ -273,6 +277,8 @@ def describe(args):
             "session": f"peeky session start {args.target} --at {program}:<line>; then "
             "peeky session inspect | get <a.b> | set <name>=<value> | continue | report | close",
             "verify": f"peeky verify {args.target} --check <checker.py> --old <text> --new <text>",
+            "background": "add --background to probe or verify, then `peeky job wait <id>` "
+            "(exit 3 while running)",
         },
         "selectors": "dotted paths and indexes, e.g. request.page, args[0]; never expressions",
         "interventions": "root locals only; evidence about one run, never a verified fix",
@@ -302,6 +308,18 @@ def describe(args):
             "java": "numeric/boolean root locals",
             "java-attach": "numeric/boolean root locals (attached JVM; no edit verification)",
         }[language]
+    budget = _max_pause(None, language)
+    manifest["timing"] = {
+        "probe_pause": "milliseconds per hit; safe for programs with timeouts",
+        "session_max_pause_s": budget,
+        "advice": (
+            "This target keeps real clocks running (test timeouts, heartbeats): prefer "
+            f"probes; session stops auto-resume after {budget} s (--max-pause)."
+            if budget
+            else "Session stops wait for you; pass --max-pause S if the program has "
+            "timeouts. Use --background for anything slower than your tool timeout."
+        ),
+    }
     _emit(manifest, args.json, _describe_text)
     return 0
 
@@ -316,6 +334,7 @@ def _describe_text(manifest):
         lines.append(f"opaque enum types: {len(views) - len(qualified)}")
     lines.append(f"mutable: {manifest['mutable_types']}")
     lines.extend(f"{name}: {usage}" for name, usage in manifest["commands"].items())
+    lines.append(f"timing: {manifest['timing']['advice']}")
     return "\n".join(lines)
 
 
@@ -355,6 +374,9 @@ def probe(args):
         _sets(args.set),
         args.hits,
         args.timeout,
+        # An attached JVM keeps running after the probe, so waiting for its exit only
+        # delays the answer; launched programs run to exit for their output.
+        args.until if args.until != "auto" else ("hits" if language == "java-attach" else "exit"),
     )
     progress = (
         None
@@ -434,7 +456,10 @@ def _state_text(state):
         hint = " (still running; run `peeky session wait`)"
     elif state["state"] == "terminated":
         hint = " (program exited; `peeky session report` shows output)"
-    return f"state: {state['state']}{where}{hint}"
+    text = f"state: {state['state']}{where}{_pause_text(state)}{hint}"
+    if state.get("auto_resumed"):
+        text += f"\nnote: {state['auto_resumed']} stop(s) were auto-resumed after the pause budget"
+    return text
 
 
 def _stop(record):
@@ -445,7 +470,10 @@ def _stop(record):
 
 def _variables_text(snapshot):
     frame = snapshot["frames"][0] if snapshot["frames"] else {}
-    lines = [f"stopped at {frame.get('source', {}).get('path')}:{frame.get('line')}"]
+    lines = [
+        f"stopped at {frame.get('source', {}).get('path')}:{frame.get('line')}"
+        + _pause_text(snapshot)
+    ]
     for scope in snapshot["scopes"]:
         lines.append(f"[{scope['name']}]")
         for variable in scope["variables"]:
@@ -525,6 +553,30 @@ def session(args):
     return 0
 
 
+ATTACH_MAX_PAUSE = 10
+
+
+def _max_pause(value, language):
+    # Attached JVMs (e.g. Gradle tests with TestNG/JUnit timeouts) keep real clocks
+    # running while paused, so they get a pause budget unless explicitly disabled.
+    if value is None:
+        return ATTACH_MAX_PAUSE if language == "java-attach" else None
+    if value == 0:
+        return None
+    if not 0 < value <= 300:
+        raise ValueError("--max-pause must be within (0, 300] seconds, or 0 for none")
+    return value
+
+
+def _pause_text(state):
+    if "paused_s" not in state:
+        return ""
+    text = f"paused {state['paused_s']} s"
+    if "resume_in_s" in state:
+        text += f", auto-resume in {state['resume_in_s']} s"
+    return f" ({text})"
+
+
 def _start(args):
     root, program, line, language, data = resolve(args.target, args.at, args.config)
     if line is None:
@@ -557,7 +609,12 @@ def _start(args):
     record = {"name": args.name, "url": match[1], "token": token, "pid": process.pid}
     record.update(root=str(root), program=program, language=language)
     try:
-        launch = client.call("launch", program=program, breakpoints=[{"line": line}])
+        launch = client.call(
+            "launch",
+            program=program,
+            breakpoints=[{"line": line}],
+            max_pause=_max_pause(args.max_pause, language),
+        )
     except Exception:
         os.killpg(process.pid, signal.SIGTERM)
         raise
@@ -676,9 +733,168 @@ def verify(args):
     return 0 if result["passed"] else 1
 
 
-def main(argv=None):
+JOB_RETENTION_S = 24 * 3600
+MAX_JOB_WAIT_S = 300
+
+
+def _job_dir(job_id):
+    if not isinstance(job_id, str) or not re.fullmatch(r"[0-9a-f]{16}", job_id):
+        raise ValueError(f"No job named {job_id!r}; job ids are 16 hex digits")
+    path = _private_dir("jobs") / job_id
+    if not path.is_dir() or path.is_symlink():
+        raise ValueError(f"No job named {job_id!r}")
+    return path
+
+
+def _background(argv, command):
+    """Run one probe or verify detached, so a caller's tool timeout cannot kill it."""
+    import peeky
+
+    _prune_jobs()
+    job_id = secrets.token_hex(8)
+    path = _private_dir("jobs") / job_id
+    path.mkdir(mode=0o700)
+    spec = {"id": job_id, "command": command, "argv": argv, "cwd": os.getcwd()}
+    _private_write(path / "job.json", json.dumps({**spec, "started": time.time()}))
+    bootstrap = (
+        "import sys; sys.path.insert(0, sys.argv.pop(1)); "
+        "from peeky.cli import run_job; sys.exit(run_job(sys.argv[1]))"
+    )
+    boot = os.open(path / "boot.log", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        subprocess.Popen(
+            [sys.executable, "-I", "-c", bootstrap]
+            + [str(Path(peeky.__file__).resolve().parents[1]), str(path)],
+            cwd=path,
+            stdin=subprocess.DEVNULL,
+            stdout=boot,
+            stderr=boot,
+            start_new_session=True,
+        )
+    finally:
+        os.close(boot)
+    return {"job": job_id, "status": "running", "next": f"peeky job wait {job_id}"}
+
+
+def run_job(path):
+    """Job child: run the stored command, capture its output, then record completion."""
+    import fcntl
+    import traceback
+
+    path = Path(path)
+    spec = json.loads((path / "job.json").read_text())
+    lock = open(path / "lock", "w")
+    fcntl.flock(lock, fcntl.LOCK_EX)
+    os.chdir(spec["cwd"])
+    code = 2
+    with open(path / "out", "w") as out, open(path / "log", "w") as log:
+        sys.stdout, sys.stderr = out, log
+        try:
+            code = main(spec["argv"], _job=True)
+        except SystemExit as exc:
+            code = exc.code if isinstance(exc.code, int) else 1
+        except BaseException:
+            traceback.print_exc()
+        finally:
+            sys.stdout.flush()
+            sys.stderr.flush()
+            sys.stdout, sys.stderr = sys.__stdout__, sys.__stderr__
+    _private_write(path / "status.json", json.dumps({"exit_code": code, "finished": time.time()}))
+    return 0
+
+
+def _job_state(path):
+    import fcntl
+
+    spec = json.loads((path / "job.json").read_text())
+    state = {"job": spec["id"], "command": spec["command"]}
+    if (path / "status.json").is_file():
+        status = json.loads((path / "status.json").read_text())
+        return {
+            **state,
+            "status": "finished",
+            **status,
+            "seconds": round(status["finished"] - spec["started"], 1),
+        }
+    state.update(status="running", elapsed_s=round(time.time() - spec["started"], 1))
+    try:
+        with open(path / "lock") as lock:
+            fcntl.flock(lock, fcntl.LOCK_SH | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return state
+    except FileNotFoundError:
+        if time.time() - spec["started"] < 30:
+            return state
+    if (path / "status.json").is_file():
+        # Finished between the two checks.
+        return _job_state(path)
+    # Neither running (lock free or never taken) nor finished: the job process died.
+    boot = (path / "boot.log").read_text()[-2000:] if (path / "boot.log").is_file() else ""
+    return {**state, "status": "lost", "exit_code": 2, "error": boot or "Job process exited"}
+
+
+def _prune_jobs():
+    """Job states from the last day; older finished or lost jobs are deleted."""
+    jobs = []
+    for path in sorted(_private_dir("jobs").iterdir(), key=lambda p: p.stat().st_mtime):
+        if not re.fullmatch(r"[0-9a-f]{16}", path.name) or path.is_symlink():
+            continue
+        try:
+            state = _job_state(path)
+        except (OSError, ValueError, KeyError):
+            continue
+        if state["status"] != "running" and time.time() - path.stat().st_mtime > JOB_RETENTION_S:
+            shutil.rmtree(path, ignore_errors=True)
+            continue
+        jobs.append(state)
+    return jobs
+
+
+def job(args):
+    if args.action == "list":
+        jobs = _prune_jobs()
+        _emit(
+            jobs,
+            args.json,
+            lambda jobs: "\n".join(f"{j['job']}  {j['command']}  {j['status']}" for j in jobs)
+            or "no jobs",
+        )
+        return 0
+    path = _job_dir(args.id)
+    if not 0 <= args.timeout <= MAX_JOB_WAIT_S:
+        raise ValueError(f"--timeout must be within [0, {MAX_JOB_WAIT_S}] seconds")
+    deadline = time.monotonic() + args.timeout
+    while (state := _job_state(path))["status"] == "running" and time.monotonic() < deadline:
+        time.sleep(0.2)
+    if state["status"] == "running":
+        log = (path / "log").read_text().splitlines()[-5:] if (path / "log").is_file() else []
+        state.update(progress=log, next=f"peeky job wait {state['job']}")
+        _emit(
+            state,
+            args.json,
+            lambda s: f"job {s['job']}: still running ({s['elapsed_s']} s)\n"
+            + "".join(f"  {line}\n" for line in s["progress"])
+            + f"run `{s['next']}` again",
+        )
+        return 3
+    if state["status"] == "lost":
+        raise RuntimeError(f"Job {state['job']} was lost: {state['error']}")
+    # The stored output is exactly what the foreground command would have printed.
+    sys.stdout.write((path / "out").read_text())
+    return state["exit_code"]
+
+
+def main(argv=None, _job=False):
+    argv = list(sys.argv[1:] if argv is None else argv)
     parser = argparse.ArgumentParser(prog="peeky", description=__doc__.split("\n\n")[0])
     commands = parser.add_subparsers(dest="command", required=True)
+
+    def background(sub):
+        sub.add_argument(
+            "--background",
+            action="store_true",
+            help="Return a job id at once; collect the result with `peeky job wait <id>`",
+        )
 
     def common(sub, target=True):
         if target:
@@ -696,12 +912,26 @@ def main(argv=None):
     sub.add_argument("--set", action="append", default=[], help="name=value (repeatable)")
     sub.add_argument("--hits", type=int, default=1)
     sub.add_argument("--timeout", type=float, default=60)
+    sub.add_argument(
+        "--until",
+        choices=("auto", "exit", "hits"),
+        default="auto",
+        help="exit: run to completion for output; hits: end right after the last hit "
+        "(auto: hits for attached JVMs, else exit)",
+    )
     sub.add_argument("--quiet", action="store_true", help="No progress messages on stderr")
+    background(sub)
     sub = commands.add_parser("session", help="Step-by-step debugging across commands")
     actions = sub.add_subparsers(dest="action", required=True)
     start = actions.add_parser("start", help="Build, launch and run to --at")
     common(start)
     start.add_argument("--at", required=True)
+    start.add_argument(
+        "--max-pause",
+        type=float,
+        help=f"Auto-resume a stop after this many seconds (0: never; default "
+        f"{ATTACH_MAX_PAUSE} for attached JVMs, never otherwise)",
+    )
     for name in ("list", "wait", "inspect", "get", "set", "continue", "report", "close"):
         action = start if name == "start" else actions.add_parser(name)
         if name != "list":
@@ -720,8 +950,23 @@ def main(argv=None):
     sub.add_argument(
         "--keep", action="store_true", help="Keep the scratch candidate (default: removed)"
     )
+    background(sub)
+    sub = commands.add_parser("job", help="Results of --background probes and verifies")
+    actions = sub.add_subparsers(dest="action", required=True)
+    wait = actions.add_parser("wait", help="Wait up to --timeout; exit 3 while still running")
+    wait.add_argument("id")
+    wait.add_argument("--timeout", type=float, default=20)
+    listing = actions.add_parser("list", help="Jobs from the last 24 hours")
+    for action in (wait, listing):
+        common(action, target=False)
     args = parser.parse_args(argv)
-    handlers = {"describe": describe, "probe": probe, "session": session, "verify": verify}
+    handlers = {
+        "describe": describe,
+        "probe": probe,
+        "session": session,
+        "verify": verify,
+        "job": job,
+    }
 
     def terminate(signum, frame):
         # Unwind so `finally` blocks close debuggers and owned debuggees.
@@ -729,6 +974,13 @@ def main(argv=None):
 
     signal.signal(signal.SIGTERM, terminate)
     try:
+        if getattr(args, "background", False) and not _job:
+            _emit(
+                _background(argv, args.command),
+                args.json,
+                lambda j: f"job {j['job']} started; collect it with `{j['next']}`",
+            )
+            return 0
         return handlers[args.command](args)
     except (OSError, ValueError, RuntimeError, KeyError) as exc:
         from peeky.errors import classify

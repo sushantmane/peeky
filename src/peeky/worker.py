@@ -65,6 +65,12 @@ class DebugWorker:
         self.breakpoint_events = []
         self.lock = threading.Lock()
         self.last_used = time.monotonic()
+        # Optional per-session pause budget: a stop older than this is auto-resumed so
+        # a slow client cannot stall a program with real-time deadlines.
+        self.max_pause = None
+        self.stopped_at = None
+        self.auto_resumed = []
+        self.cursor = 0
         # Below Client.call's 45 s HTTP timeout: a launch either returns within this
         # bound or is discarded, so an abandoned slow launch cannot leave a session.
         self.launch_deadline_s = 40
@@ -77,7 +83,57 @@ class DebugWorker:
 
     def stopped(self, args):
         if self.state != "stopped" or args.get("stop_id") != self.stop_id:
+            if any(entry["stop_id"] == args.get("stop_id") for entry in self.auto_resumed):
+                raise ValueError(
+                    f"Stale stop_id: the program was auto-resumed after its {self.max_pause} s "
+                    "pause budget (--max-pause); wait for the next stop or use a probe"
+                )
             raise ValueError("Stale stop_id or program is not stopped; inspect the latest stop")
+
+    def pause_status(self):
+        if self.state != "stopped" or self.stopped_at is None:
+            return {}
+        paused = round(time.monotonic() - self.stopped_at, 2)
+        status = {"paused_s": paused}
+        if self.max_pause:
+            status["resume_in_s"] = round(max(0.0, self.max_pause - paused), 2)
+        return status
+
+    def guard_pause(self):
+        """Auto-resume a stop that outlived the session's pause budget.
+
+        Called periodically by the worker server. Any failure releases the program by
+        closing the session (detaching an attached JVM) rather than leaving it paused.
+        """
+        with self.lock:
+            if not self.dap or not self.max_pause:
+                return
+            try:
+                if self.state == "running":
+                    received = self.dap.pending_stop(self.cursor)
+                    if received is None or time.monotonic() - received < self.max_pause:
+                        return
+                    self._dispatch("wait", {"timeout": 0.1})
+                if self.state != "stopped" or self.stopped_at is None:
+                    return
+                paused = time.monotonic() - self.stopped_at
+                if paused < self.max_pause:
+                    return
+                stop_id = self.stop_id
+                self._dispatch("continue", {"stop_id": stop_id})
+                self.auto_resumed.append({"stop_id": stop_id, "paused_s": round(paused, 2)})
+                self.auto_resumed = self.auto_resumed[-100:]
+                self.audit.append(
+                    {
+                        "time": time.time(),
+                        "operation": "auto_resume",
+                        "arguments": {"stop_id": stop_id},
+                        "result": {"paused_s": round(paused, 2), "max_pause": self.max_pause},
+                    }
+                )
+                self.audit = self.audit[-500:]
+            except Exception:
+                self.close()
 
     def dispatch(self, operation, args):
         self.validate(operation, args)
@@ -119,6 +175,10 @@ class DebugWorker:
             "close",
         }:
             raise ValueError("Unknown operation")
+        if operation == "launch" and args.get("max_pause") is not None:
+            value = args["max_pause"]
+            if type(value) not in (int, float) or not math.isfinite(value) or not 0 < value <= 300:
+                raise ValueError("max_pause must be a number of seconds within (0, 300]")
         if operation in {"launch", "breakpoints"}:
             if not isinstance(args.get("program"), str):
                 raise ValueError("program must be a string")
@@ -177,6 +237,9 @@ class DebugWorker:
             self.session = uuid.uuid4().hex
             self.audit = []
             self.breakpoint_events = []
+            self.max_pause = args.get("max_pause")
+            self.stopped_at = None
+            self.auto_resumed = []
             deadline = time.monotonic() + self.launch_deadline_s
 
             def left(limit=15):
@@ -238,8 +301,15 @@ class DebugWorker:
             updates = {}
             if self.breakpoint_events:
                 updates["breakpoint_events"] = list(self.breakpoint_events)
+            if self.auto_resumed:
+                updates["auto_resumed"] = len(self.auto_resumed)
             if self.state in ("stopped", "terminated"):
-                return {"state": self.state, "stop_id": self.stop_id, **updates}
+                return {
+                    "state": self.state,
+                    "stop_id": self.stop_id,
+                    **self.pause_status(),
+                    **updates,
+                }
             deadline = time.monotonic() + timeout
             while True:
                 try:
@@ -267,8 +337,15 @@ class DebugWorker:
             self.reference_adapter.clear()
             self.children.clear()
             self.stop_id = uuid.uuid4().hex if self.state == "stopped" else None
+            self.stopped_at = event.get("received", time.monotonic()) if self.stop_id else None
             self.thread_id = event.get("body", {}).get("threadId")
-            return {"state": self.state, "stop_id": self.stop_id, "event": event, **updates}
+            return {
+                "state": self.state,
+                "stop_id": self.stop_id,
+                "event": event,
+                **self.pause_status(),
+                **updates,
+            }
         if operation == "inspect":
             self.stopped(args)
             self.children.clear()
@@ -326,7 +403,12 @@ class DebugWorker:
                     self.reference_frames[handle] = selected_frame
                     self.reference_adapter[handle] = reference
                 result.append({"name": scope["name"], "reference": handle, "variables": exposed})
-            snapshot = {"stop_id": self.stop_id, "frames": frames, "scopes": result}
+            snapshot = {
+                "stop_id": self.stop_id,
+                "frames": frames,
+                "scopes": result,
+                **self.pause_status(),
+            }
             if not writable:
                 snapshot["mutation_blocked"] = "A value-view read is still pending; inspect again"
             return snapshot
@@ -383,6 +465,7 @@ class DebugWorker:
             self.stopped(args)
             self.dap.request("continue", {"threadId": self.thread_id})
             self.state = "running"
+            self.stopped_at = None
             self.children.clear()
             self.stop_id = None
             self.frames.clear()
@@ -608,6 +691,7 @@ class DebugWorker:
         adapter, self.dap = self.dap, None
         runtime, self.runtime = self.runtime, None
         self.state = "idle"
+        self.stopped_at = None
         self.session = None
         self.stop_id = None
         self.thread_id = None
@@ -639,7 +723,7 @@ def make_server(root, token, port=8765, *, adapter=None):
         # the cap so an HTTP client timeout can never leave work holding the slot.
         from peeky.probe import HTTP_PROBE_SECONDS, Probe, parse_location
 
-        if set(args) - {"at", "capture", "set", "hits", "timeout"}:
+        if set(args) - {"at", "capture", "set", "hits", "timeout", "until"}:
             raise ValueError("Unknown probe field")
         program, line = parse_location(args.get("at"))
         changes = args.get("set", {})
@@ -652,6 +736,7 @@ def make_server(root, token, port=8765, *, adapter=None):
             tuple(changes.items()),
             args.get("hits", 1),
             min(args.get("timeout", HTTP_PROBE_SECONDS), HTTP_PROBE_SECONDS - 10),
+            args.get("until", "exit"),
         )
         if not probes.acquire(blocking=False):
             raise ValueError("Another probe is running; retry later")
@@ -750,7 +835,7 @@ def _run_probe_process(root, request, adapter, cap):
     command = [sys.executable, "-I", "-c", bootstrap, package_parent, "probe", str(root)]
     command += ["--json", "--quiet"]
     command += ["--at", f"{request.program}:{request.line}", "--hits", str(request.hits)]
-    command += ["--timeout", str(request.timeout)]
+    command += ["--timeout", str(request.timeout), "--until", request.until]
     if request.capture:
         command += ["--capture", ",".join(request.capture)]
     for name, value in request.set:
@@ -943,7 +1028,13 @@ def main():
                 if server.worker.dap and time.monotonic() - server.worker.last_used > 300:
                     server.worker.close()
 
+    def guard():
+        while True:
+            time.sleep(0.25)
+            server.worker.guard_pause()
+
     threading.Thread(target=expire, daemon=True).start()
+    threading.Thread(target=guard, daemon=True).start()
     print(
         f"Debugger worker: http://127.0.0.1:{server.server_port}; root={Path(args.root).resolve()}",
         flush=True,

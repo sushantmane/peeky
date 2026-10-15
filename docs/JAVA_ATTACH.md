@@ -44,4 +44,9 @@ Breakpoints may start pending until the class loads; the adapter verifies them w
      --at $T:85 --capture storeName,sendControlMessageDirectly,controllerClient --hits 2 --timeout 240
    ```
 
-Observed result: one probe captured both data-provider runs (`sendControlMessageDirectly=false` and `true`, each with its own `storeName`) in 28.5 s, then detached. Gradle reported both tests **PASSED**. Keep pauses short: these tests use a TestNG `timeOut` (30 s for this method), and a long stop fails the test.
+Observed result: one probe captured both data-provider runs (`sendControlMessageDirectly=false` and `true`, each with its own `storeName`) in 28.5 s, then detached. Gradle reported both tests **PASSED**.
+
+Timed tests ([ADR 0006](adr/0006-agent-speed.md)). These tests use a TestNG `timeOut` (30 s for this method), and a long stop fails them.
+- **Use probes.** Each hit pauses the JVM for milliseconds (`pauses_ms`), and on attached JVMs a probe returns as soon as its last hit is captured (`--until hits`, the default here).
+- **Sessions on attached JVMs auto-resume** any stop after 10 s (`--max-pause`; `0` disables this). An operation on a resumed stop fails with `STALE_STOP` and says why. `inspect` shows `paused_s` and `resume_in_s`.
+- **Long waits:** if the Gradle startup outlasts your tool timeout, add `--background` and poll with `peeky job wait <id>`.

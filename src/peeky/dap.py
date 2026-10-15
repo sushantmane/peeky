@@ -118,6 +118,7 @@ class DAP:
                 elif body["event"] in LIFECYCLE_EVENTS:
                     self.event_sequence += 1
                     body["cursor"] = self.event_sequence
+                    body["received"] = time.monotonic()
                     self.events.append(body)
                 else:
                     # Thread/module churn (thousands per second in large JVMs) must not
@@ -237,6 +238,14 @@ class DAP:
                 if remaining <= 0:
                     raise TimeoutError("No matching debugger event before deadline")
                 self.condition.wait(remaining)
+
+    def pending_stop(self, after):
+        """Receive time of the first unconsumed stop or exit after ``after``, else None."""
+        with self.condition:
+            for event in self.events:
+                if event["cursor"] > after and event["event"] in ("stopped", "terminated"):
+                    return event["received"] if event["event"] == "stopped" else None
+            return None
 
     def snapshot_output(self):
         with self.condition:

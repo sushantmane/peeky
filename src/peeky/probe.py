@@ -64,6 +64,9 @@ class Probe:
     set: tuple[tuple[str, str], ...] = ()
     hits: int = 1
     timeout: float = 60
+    # "exit": run to completion for the program's output; "hits": end (detach or
+    # terminate) right after the last requested hit.
+    until: str = "exit"
 
     def __post_init__(self):
         if not isinstance(self.program, str) or not self.program:
@@ -88,6 +91,8 @@ class Probe:
             raise ValueError(f"Probe hits must be 1..{MAX_HITS}")
         if type(self.timeout) not in (int, float) or not 0 < self.timeout <= MAX_SECONDS:
             raise ValueError(f"Probe timeout must be within (0, {MAX_SECONDS}] seconds")
+        if self.until not in ("exit", "hits"):
+            raise ValueError("Probe until must be 'exit' or 'hits'")
 
 
 def _visible(snapshot):
@@ -170,7 +175,7 @@ def run_probe(root, probe, *, adapter=None, progress=None):
     started = time.monotonic()
     deadline = started + probe.timeout
     result = {"probe": {**asdict(probe), "set": [list(change) for change in probe.set]}}
-    rows, changes, hits, warnings, relocated = [], [], 0, [], False
+    rows, changes, hits, warnings, relocated, pauses = [], [], 0, [], False, []
     try:
         launch = worker.dispatch(
             "launch", {"program": probe.program, "breakpoints": [{"line": probe.line}]}
@@ -208,6 +213,7 @@ def run_probe(root, probe, *, adapter=None, progress=None):
                 status = "completed" if hits else "no-stop"
                 say("program finished")
                 break
+            paused = time.monotonic()
             stop = {**session, "stop_id": state["stop_id"]}
             # Only the requested breakpoint counts; a crash, signal or other stop fails
             # closed before any capture or intervention.
@@ -266,11 +272,18 @@ def run_probe(root, probe, *, adapter=None, progress=None):
                 worker.dispatch(
                     "breakpoints", {**session, "program": probe.program, "breakpoints": []}
                 )
-                say("all requested hits captured; letting the program finish")
             worker.dispatch("continue", stop)
+            pauses.append(round((time.monotonic() - paused) * 1000, 1))
+            if hits >= probe.hits:
+                if probe.until == "hits":
+                    status = "completed"
+                    say("all requested hits captured; ending the probe now")
+                    break
+                say("all requested hits captured; letting the program finish")
         report = worker.dispatch("report", session)
         result.update(
             status=status,
+            ended="hits" if probe.until == "hits" and report["state"] != "terminated" else "exit",
             output=report["output"],
             output_truncated=report["output_truncated"],
         )
@@ -306,6 +319,7 @@ def run_probe(root, probe, *, adapter=None, progress=None):
     result.update(
         warnings=warnings,
         hits=hits,
+        pauses_ms=pauses,
         rows=rows,
         interventions=changes,
         seconds=round(time.monotonic() - started, 3),
@@ -338,6 +352,7 @@ def _table(result):
         lines.append(f"set {change['name']}: {change['before']} -> {change['after']}")
     lines.append(
         f"status: {result['status']}  hits: {result['hits']}  seconds: {result['seconds']}"
+        + (f"  max pause: {max(result['pauses_ms'])} ms" if result.get("pauses_ms") else "")
     )
     for warning in result.get("warnings", ()):
         lines.append(f"warning: {warning}")
@@ -365,6 +380,7 @@ def main(argv=None):
     )
     parser.add_argument("--hits", type=int, default=1, help="Stops to capture (default 1)")
     parser.add_argument("--timeout", type=float, default=60, help="Overall seconds (default 60)")
+    parser.add_argument("--until", choices=("exit", "hits"), default="exit")
     parser.add_argument("--json", action="store_true", help="Print the full JSON result")
     targets = parser.add_mutually_exclusive_group()
     targets.add_argument("--java-config", type=Path)
@@ -386,6 +402,7 @@ def main(argv=None):
             tuple(changes),
             args.hits,
             args.timeout,
+            args.until,
         )
         adapter = None
         if args.java_config:
