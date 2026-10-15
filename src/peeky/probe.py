@@ -154,18 +154,28 @@ def _names(child, segment):
     return name in (segment, segment[1:-1]) or bool(match and int(match[1]) == int(segment[1:-1]))
 
 
-_LENGTH = re.compile(r"(?:\bsize|\blength)=([0-9]{1,9})\b|\w\[([0-9]{1,9})\]")
+# A one-dimensional fixed array type such as `int[4]` or `unsigned char[16]`.
+_ARRAY = re.compile(r"[^\[\]]*\w\[([0-9]{1,9})\]")
+_PY_SEQUENCES = {"list", "tuple", "deque"}
 
 
 def _declared_length(variable, children):
-    for child in children:
-        if child["name"] == "len()" and re.fullmatch(r"[0-9]{1,9}", str(child.get("value"))):
-            return int(child["value"])
-    if type(variable.get("indexedVariables")) is int:
-        return variable["indexedVariables"]
-    for text in (variable.get("value"), variable.get("type")):
-        if match := _LENGTH.search(str(text or "")[:200]):
-            return int(match[1] or match[2])
+    """A length known independently of how many children the debugger chose to list.
+
+    Only two sources qualify: debugpy's `len()` for real Python sequences, and a
+    fixed array length in a C/C++ type (`int[4]`) or JVM array value (`int[4]@12`).
+    Container summaries such as LLDB's `size=N` and DAP `indexedVariables` can equal a
+    capped child count (e.g. `target.max-children-count`), so they never count.
+    """
+    if variable.get("type") in _PY_SEQUENCES:
+        for child in children:
+            if child["name"] == "len()" and re.fullmatch(r"[0-9]{1,9}", str(child.get("value"))):
+                return int(child["value"])
+        return None
+    if match := _ARRAY.fullmatch(str(variable.get("type") or "").strip()):
+        return int(match[1])
+    if match := re.fullmatch(r"\w+\[([0-9]{1,9})\]@[0-9a-fx]+", str(variable.get("value") or "")):
+        return int(match[1])
     return None
 
 
@@ -195,7 +205,8 @@ def _from_end(worker, stop, variable, offset, segment):
     length = _declared_length(variable, children)
     if length is None:
         raise ValueError(
-            f"{segment!r}: the debugger does not state the length; use a non-negative index"
+            f"{segment!r}: the debugger does not state an independent length for this type; "
+            "use a non-negative index"
         )
     if length != count:
         raise ValueError(

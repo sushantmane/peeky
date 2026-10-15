@@ -663,11 +663,19 @@ class DebugWorker:
             self.inspection_nodes += 1
         return result
 
-    def bounded_variables(self, reference):
+    def bounded_variables(self, reference, indexed=None):
         if type(reference) is not int or reference <= 0:
             raise ValueError("Variable is not expandable")
+        count = 513
+        # java-debug rejects ranges past the end of an array (failing the session), so
+        # ask for exactly the stated number of indexed children and refuse oversize
+        # collections before requesting them.
+        if type(indexed) is int and indexed > 0:
+            if indexed > 512:
+                raise ValueError("Variable collection exceeds bounded expansion limit")
+            count = indexed
         values = self.dap.request(
-            "variables", {"variablesReference": reference, "start": 0, "count": 513}
+            "variables", {"variablesReference": reference, "start": 0, "count": count}
         ).get("variables", [])
         if not isinstance(values, list) or len(values) > 512:
             raise ValueError("Variable collection exceeds bounded expansion limit")
@@ -705,16 +713,18 @@ class DebugWorker:
         if len(matches) != 1:
             raise ValueError("Expansion scope is missing or ambiguous")
         reference = matches[0].get("variablesReference")
+        indexed = matches[0].get("indexedVariables")
         validate_children = getattr(runtime, "validate_children", None)
         for name, kind in ancestry:
-            variables = self.bounded_variables(reference)
+            variables = self.bounded_variables(reference, indexed)
             if validate_children:
                 validate_children(variables)
             matches = [v for v in variables if v.get("name") == name]
             if len(matches) != 1 or matches[0].get("type") != kind:
                 raise ValueError("Expansion ancestry changed or is ambiguous")
             reference = matches[0].get("variablesReference")
-        variables = self.bounded_variables(reference)
+            indexed = matches[0].get("indexedVariables")
+        variables = self.bounded_variables(reference, indexed)
         if validate_children:
             validate_children(variables)
         # Each expansion is its own bounded request with a fresh value-view budget.

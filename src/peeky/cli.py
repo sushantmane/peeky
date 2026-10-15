@@ -267,10 +267,15 @@ def _python_lines(path):
     return sorted(lines)
 
 
+MAX_SCOPES = 300
+
+
 def _python_scopes(path):
     """Names each Python function (and the module) can see, for choosing selectors.
 
-    Static: lists parameters and assigned locals, not values or attributes.
+    Static: lists parameters and assigned locals, not values or attributes. Methods are
+    qualified by class (`IPv6Address.is_private`); listed in source order, first
+    MAX_SCOPES only.
     """
     import ast
     import symtable
@@ -282,12 +287,22 @@ def _python_scopes(path):
     for node in ast.walk(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
             spans.setdefault((node.lineno, getattr(node, "name", "lambda")), node.end_lineno)
-    scopes, stack = [], [table]
-    while stack and len(scopes) < 200:
-        item = stack.pop()
-        stack.extend(item.get_children())
-        if item.get_type() == "class":
-            continue
+    found, stack = [], [(table, "")]
+    while stack and len(found) < 20000:
+        item, prefix = stack.pop()
+        kind = item.get_type()
+        name = item.get_name()
+        qualified = f"{prefix}{name}" if kind != "module" else ""
+        stack.extend((child, f"{qualified}." if qualified else "") for child in item.get_children())
+        end = spans.get((item.get_lineno(), name))
+        if kind == "module":
+            found.append((0, "<module>", None, item))
+        elif kind == "function" and end is not None:
+            # Generator expressions and annotation scopes have no source span: skipped.
+            found.append((item.get_lineno(), qualified, [item.get_lineno(), end], item))
+    found.sort(key=lambda entry: entry[0])
+    scopes = []
+    for _, qualified, lines, item in found[:MAX_SCOPES]:
         names = sorted(
             s.get_name()
             for s in item.get_symbols()
@@ -295,18 +310,11 @@ def _python_scopes(path):
             or s.is_assigned()
             or (item.get_type() == "module" and s.is_imported())
         )
-        if item.get_type() == "module":
-            scopes.append({"scope": "<module>", "lines": None, "names": names[:100]})
-            continue
-        end = spans.get((item.get_lineno(), item.get_name()))
+        scopes.append({"scope": qualified, "lines": lines, "names": names[:100]})
+    if len(found) > MAX_SCOPES:
         scopes.append(
-            {
-                "scope": item.get_name(),
-                "lines": [item.get_lineno(), end],
-                "names": names[:100],
-            }
+            {"scope": "...", "lines": None, "names": [], "omitted": len(found) - MAX_SCOPES}
         )
-    scopes.sort(key=lambda s: (s["lines"] or [0])[0])
     return scopes
 
 
@@ -392,6 +400,9 @@ def _describe_text(manifest):
         lines.append(f"qualified enum views: {', '.join(qualified) or 'none'}")
         lines.append(f"opaque enum types: {len(views) - len(qualified)}")
     for scope in manifest.get("scopes", ()):
+        if scope.get("omitted"):
+            lines.append(f"... {scope['omitted']} more scopes omitted (see --json)")
+            continue
         where = f" (lines {scope['lines'][0]}-{scope['lines'][1]})" if scope["lines"] else ""
         lines.append(f"names in {scope['scope']}{where}: {', '.join(scope['names']) or '-'}")
     lines.append(f"mutable: {manifest['mutable_types']}")

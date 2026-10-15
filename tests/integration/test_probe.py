@@ -143,24 +143,27 @@ def test_http_probe_process_is_hard_capped_and_cleaned(tmp_path):
     assert leftover == ""
 
 
-SEQUENCES = """def check(items, table, big):
+SEQUENCES = """def check(items, table, big, memo):
     total = len(items)
     return total
 
 
-print(check([10, 20, 30], {"a": 1}, list(range(600))))
+print(check([10, 20, 30], {"a": 1}, list(range(600)), {0: "a", 1: "b"}))
 """
 
 
 def test_negative_indexes_count_from_the_end_of_fully_visible_sequences(tmp_path):
     (tmp_path / "seq.py").write_text(SEQUENCES)
     capture = ("items[-1]", "items[-3]", "items[-4]", "table[-1]", "big[-1]", "big[0]", "big[42]")
+    capture += ("memo[-1]",)
     result = run_probe(tmp_path, Probe("seq.py", 3, capture))
     rows = {row["selector"]: row for row in result["rows"]}
     assert rows["items[-1]"]["value"] == "30" and rows["items[-3]"]["value"] == "10"
     assert "out of range for 3 elements" in rows["items[-4]"]["error"]
     assert "not an indexed sequence" in rows["table[-1]"]["error"]
     assert "only 100 of 600 elements" in rows["big[-1]"]["error"]
+    # Dicts with int keys 0..n-1 look like sequences but are mappings: refused.
+    assert "independent length" in rows["memo[-1]"]["error"]
     assert rows["big[0]"]["value"] == "0" and rows["big[42]"]["value"] == "42"
 
 
