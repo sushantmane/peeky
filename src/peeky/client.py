@@ -45,8 +45,22 @@ class Client:
                 raw,
             ) from None
 
-    def probe(self, at, capture=(), set=None, hits=1, timeout=40, until="exit", set_hit=1):
+    def probe(
+        self,
+        at,
+        capture=(),
+        set=None,
+        hits=1,
+        timeout=40,
+        until="exit",
+        set_hit=1,
+        entry=None,
+        args=(),
+    ):
         """One stateless request: stop at `path:line`, capture, optionally set, report."""
+        options = {"entry": entry} if entry else {}
+        if args:
+            options["args"] = list(args)
         return self.call(
             "probe",
             at=at,
@@ -56,6 +70,7 @@ class Client:
             timeout=timeout,
             until=until,
             set_hit=set_hit,
+            **options,
         )
 
 

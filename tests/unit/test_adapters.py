@@ -13,6 +13,7 @@ def test_python_launch_configuration_preserves_existing_behavior(tmp_path):
     assert adapter.initialize_args()["adapterID"] == "python"
     assert adapter.launch_args(tmp_path / "main.py", tmp_path) == {
         "program": str(tmp_path / "main.py"),
+        "args": [],
         "cwd": str(tmp_path),
         "console": "internalConsole",
         "redirectOutput": True,

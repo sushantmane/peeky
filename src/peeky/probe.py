@@ -53,6 +53,15 @@ def parse_selector(text):
     return segments
 
 
+def _check_args(args):
+    if (
+        not isinstance(args, tuple)
+        or len(args) > 64
+        or not all(isinstance(a, str) and len(a) <= 4096 and "\0" not in a for a in args)
+    ):
+        raise ValueError("Program arguments are at most 64 strings of up to 4096 characters")
+
+
 def parse_location(text):
     """`src/main.rs:36` -> ('src/main.rs', 36)."""
     program, separator, line = (text or "").rpartition(":")
@@ -74,6 +83,10 @@ class Probe:
     until: str = "exit"
     # The hit at which interventions are applied (once).
     set_hit: int = 1
+    # Python: the script to run when the breakpoint is in a module it imports.
+    entry: str | None = None
+    # Python: command-line arguments for the launched script.
+    args: tuple[str, ...] = ()
 
     def __post_init__(self):
         if not isinstance(self.program, str) or not self.program:
@@ -102,6 +115,9 @@ class Probe:
             raise ValueError("Probe until must be 'exit' or 'hits'")
         if type(self.set_hit) is not int or not 1 <= self.set_hit <= self.hits:
             raise ValueError("Probe set_hit must be within 1..hits")
+        if self.entry is not None and (not isinstance(self.entry, str) or not self.entry):
+            raise ValueError("Probe entry must be a relative script path")
+        _check_args(self.args)
 
 
 def _visible(snapshot):
@@ -226,6 +242,9 @@ def _capture(worker, stop, selectors, hit, phase):
         snapshot = worker.dispatch("inspect", stop)
         frame = snapshot["frames"][0] if snapshot["frames"] else {}
         row["line"] = frame.get("line")
+        if frame.get("name"):
+            # Tells a function body from a nested generator/lambda frame on the same line.
+            row["function"] = frame["name"]
         try:
             variable = _resolve(worker, stop, snapshot, parse_selector(selector))
         except ValueError as exc:
@@ -261,7 +280,13 @@ def run_probe(root, probe, *, adapter=None, progress=None):
     rows, changes, hits, warnings, relocated, pauses = [], [], 0, [], False, []
     try:
         launch = worker.dispatch(
-            "launch", {"program": probe.program, "breakpoints": [{"line": probe.line}]}
+            "launch",
+            {
+                "program": probe.program,
+                "breakpoints": [{"line": probe.line}],
+                **({"entry": probe.entry} if probe.entry else {}),
+                **({"args": list(probe.args)} if probe.args else {}),
+            },
         )
         session = {"session_id": launch["session_id"]}
         result.update(
@@ -376,6 +401,8 @@ def run_probe(root, probe, *, adapter=None, progress=None):
             ),
             output=report["output"],
             output_truncated=report["output_truncated"],
+            # False when the probe ended before the program did (--until hits).
+            output_complete=report.get("state") == "terminated",
         )
         if status == "timeout":
             from peeky.errors import classify
@@ -429,7 +456,10 @@ def _by_hit(rows):
     """The same rows regrouped per hit: {hit, line, observed: {...}, after-set: {...}}."""
     grouped = {}
     for row in rows:
-        entry = grouped.setdefault(row["hit"], {"hit": row["hit"], "line": row.get("line")})
+        entry = grouped.setdefault(
+            row["hit"],
+            {"hit": row["hit"], "line": row.get("line"), "function": row.get("function")},
+        )
         value = row["value"] if "value" in row else {"error": row.get("error")}
         entry.setdefault(row["phase"], {})[row["selector"]] = value
     return list(grouped.values())
@@ -437,12 +467,13 @@ def _by_hit(rows):
 
 def _table(result):
     lines = []
-    header = ("hit", "phase", "line", "selector", "type", "value")
+    header = ("hit", "phase", "line", "function", "selector", "type", "value")
     rows = [
         (
             str(row["hit"]),
             row["phase"],
             str(row.get("line", "")),
+            row.get("function") or "",
             row["selector"],
             row.get("type") or "",
             row.get("value", "<" + row.get("error", "") + ">")
@@ -467,7 +498,8 @@ def _table(result):
         lines.append(f"error [{error['code']}]: {error['message']}")
         lines.append(f"hint: {error['hint']}")
     if result.get("output"):
-        lines.append("output:")
+        complete = result.get("output_complete", True)
+        lines.append("output:" if complete else "output so far (the program was still running):")
         lines.extend("  " + line for line in result["output"].splitlines()[-20:])
     return "\n".join(lines)
 
@@ -489,6 +521,8 @@ def main(argv=None):
     parser.add_argument("--timeout", type=float, default=60, help="Overall seconds (default 60)")
     parser.add_argument("--until", choices=("exit", "hits"), default="exit")
     parser.add_argument("--set-hit", type=int, default=1, help="Hit that gets --set (default 1)")
+    parser.add_argument("--run", help="Python script to run when --at is in an imported module")
+    parser.add_argument("--arg", action="append", default=[], help="Python program argument")
     parser.add_argument("--json", action="store_true", help="Print the full JSON result")
     targets = parser.add_mutually_exclusive_group()
     targets.add_argument("--java-config", type=Path)
@@ -512,6 +546,8 @@ def main(argv=None):
             args.timeout,
             args.until,
             args.set_hit,
+            entry=args.run,
+            args=tuple(args.arg),
         )
         adapter = None
         if args.java_config:

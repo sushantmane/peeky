@@ -74,3 +74,22 @@ Found while checking the fix on a real JDK: **any indexed selector on a Java arr
 One medium issue, which also existed on main, is fixed. Expanding a Java object (`p.x`) still sent a variables range, which java-debug rejects for anything that isn't an array, ending the session. Java runtimes now send no range for non-indexed containers; the size check after the reply still bounds the result. Regression (real JDK): `test_java_object_fields_expand_without_failing_the_session`. Two cosmetic nits are also fixed: PEP 695 scope names were double-qualified, and the scope-cap message was misleading.
 
 **Review of ccd49cf:** no blocking issues. One medium issue, which also existed on main, is fixed. java-debug sent String values uncut (`maxStringLength` 0 means unlimited), so a String over 4 MB (a local, or now an object field) exceeded the 4 MiB DAP frame limit and ended the session. The Java adapter now caps Strings at 4096 characters; the worker shows 2000. The misleading comment about reply bounds is also corrected. Regression (real JDK, 5 MB String field): `test_multi_megabyte_java_strings_are_bounded_not_fatal`. It fails on the previous bundle and passes on the rebuilt one.
+
+## Review: real program and `--run`/`--arg` (#28, 7c083c2)
+
+**Result:** no blocking issues. Two low-severity issues are fixed.
+
+| # | Severity | Finding | Disposition |
+| --- | --- | --- | --- |
+| 1 | medium-low | `session continue --to-exit` cleared breakpoints before the worker checked the stop. If the pause guard had already auto-resumed the program, it ran free, the command failed with "stale stop", and the agent was told to wait for a stop that could never come. | Fixed. The worker's `continue` takes `to_exit` and, under one lock, checks the stop before clearing the launch breakpoints. Regression: `test_continue_to_exit_never_clears_breakpoints_for_a_stale_stop`. |
+| 2 | low | Background `verify --old-file/--new-file` read the files when the job ran, so rewriting them could make one job verify another candidate. | Fixed. The edit texts are read at submission and stored in the private job spec. Regression: `test_background_verify_fixes_edit_files_at_submission`. |
+
+The reviewer confirmed these areas:
+- No argument injection into the probe subprocess.
+- debugpy never shell-expands list arguments.
+- `entry` cannot escape the root, and only Python targets accept it.
+- Stop validation still pins the requested module and line.
+- The checker rejects the original, partial, overfit and deleted-entry variants.
+- `ipaddress39.py` matches upstream v3.9.6 byte for byte.
+
+The guide now notes `--arg=-v` for values that start with a dash.

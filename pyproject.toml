@@ -31,6 +31,8 @@ markers = ["integration: launches a real debugger and target process"]
 [tool.ruff]
 target-version = "py311"
 line-length = 100
+# Third-party programs kept byte-for-byte as real debugging targets.
+extend-exclude = ["examples/real/*/ipaddress39.py"]
 
 [tool.ruff.lint]
 select = ["E4", "E7", "E9", "F", "I"]
