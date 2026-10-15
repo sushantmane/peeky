@@ -140,10 +140,19 @@ def classify(exc, *, session_closed=None):
                 "The debugger failed and the session was closed; start a new one.",
                 False,
             )
-        else:
+        elif isinstance(exc, (ValueError, KeyError, TypeError)):
+            # Validation errors, and malformed request shapes surfacing as Key/TypeError.
             code, hint, retryable = (
                 "INVALID_REQUEST",
                 "Fix the request arguments; see `peeky <command> --help`.",
+                False,
+            )
+        else:
+            message = f"{type(exc).__name__}: {message}"
+            code, hint, retryable = (
+                "INTERNAL_ERROR",
+                "This is a Peeky bug, not a problem with your request; report it with the "
+                "message. Retrying will not help.",
                 False,
             )
     return {

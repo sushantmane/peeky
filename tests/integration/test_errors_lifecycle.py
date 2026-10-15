@@ -148,6 +148,8 @@ def test_concurrent_wait_and_close_do_not_deadlock(worker):
         (RuntimeError("adapter exploded"), "DEBUGGER_ERROR", True),
         (ValueError("something else"), "INVALID_REQUEST", False),
         (FileNotFoundError(2, "No such file or directory", "x.json"), "INVALID_REQUEST", True),
+        (AttributeError("'X' object has no attribute 'lines'"), "INTERNAL_ERROR", False),
+        (TypeError("unsupported operand"), "INVALID_REQUEST", False),
     ],
 )
 def test_classification_is_stable(exception, code, closed):

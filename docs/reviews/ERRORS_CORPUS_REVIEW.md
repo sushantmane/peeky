@@ -37,3 +37,21 @@ The reviewer confirmed these areas:
 - Guard failure closes or detaches.
 - `until=hits` leaves no orphan debuggee.
 - `candidate_sha256` encoding is consistent.
+
+## Final review: f4a9d12 (multi-source describe, catch-all errors)
+
+**Result:** no blocking issues. One should-fix issue, fixed.
+
+The issue: `describe` on a fresh-build Java target (`main_class`) raised `AttributeError`, because `JavaSession` had no `lines`. This bug predated f4a9d12, but the commit's new catch-all reported it as `INVALID_REQUEST` ("fix your arguments"). An agent would then retry a correct request, paying for a javac build each time.
+
+The fix:
+- `JavaSession.lines` is now built from the prepared class line tables.
+- Unexpected exception types (not `ValueError`, `KeyError`, `TypeError`, `OSError`, `RuntimeError` or `TimeoutError`) now return `INTERNAL_ERROR`, which tells the agent not to retry or change its request.
+- Regressions: `test_cli_describe_lists_fresh_build_java_lines` (real JDK) and classification cases.
+
+The reviewer confirmed these areas:
+- Path confinement of the default source.
+- Unchanged behavior for auto-detected targets.
+- SIGTERM still unwinds through cleanup.
+- Job exit codes.
+- Worker-side `FileNotFoundError` keeps `session_closed: true`.

@@ -235,6 +235,16 @@ class JavaSession:
         return json.loads(self._mapping_data)
 
     @property
+    def lines(self):
+        """Breakpoint lines per declared source, from the prepared class line tables."""
+        workspace = Path(self.prepared.workspace).resolve()
+        result = {}
+        for entry in self.mapping["classes"].values():
+            name = Path(entry["path"]).resolve().relative_to(workspace).as_posix()
+            result.setdefault(name, set()).update(entry["lines"])
+        return {name: sorted(lines) for name, lines in result.items()}
+
+    @property
     def environment(self):
         return dict(self.prepared.manifest.effective_environment)
 

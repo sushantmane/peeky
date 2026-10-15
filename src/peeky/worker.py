@@ -828,7 +828,12 @@ def make_server(root, token, port=8765, *, adapter=None):
                         "operations": sorted(OPERATIONS),
                         "error_codes": sorted(
                             {rule[1] for rule in _RULES}
-                            | {"DEBUGGER_ERROR", "INVALID_REQUEST", "UNAUTHORIZED"}
+                            | {
+                                "DEBUGGER_ERROR",
+                                "INVALID_REQUEST",
+                                "UNAUTHORIZED",
+                                "INTERNAL_ERROR",
+                            }
                         ),
                     }
                 elif operation == "shutdown":
