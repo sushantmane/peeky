@@ -209,3 +209,125 @@ def test_location_read_failure_never_closes_the_session(tmp_path):
     assert worker.dap is not None and not worker.dap.closed and worker.session == "session"
     again = worker.dispatch("wait", {"session_id": "session", "timeout": 1})
     assert again["stop_id"] == state["stop_id"]
+
+
+class QuietDap:
+    """An adapter that resumed the program but never reports its exit (java-debug #27)."""
+
+    def __init__(self, threads, pid=None, late_event=None, fail=None):
+        self.threads, self.calls, self.closed = threads, [], False
+        self.debuggee_pid, self.late_event, self.fail = pid, late_event, fail
+
+    def wait_event(self, names, cursor, timeout):
+        if timeout == 0 and self.late_event:
+            return self.late_event
+        raise TimeoutError("poll expired")
+
+    def request(self, command, args, timeout=None):
+        self.calls.append(command)
+        if self.fail:
+            raise self.fail
+        return {"threads": self.threads} if self.threads is not None else {}
+
+    def close(self, *args, **kwargs):
+        self.closed = True
+
+
+class JavaLike:
+    liveness_by_threads = True
+
+    def assert_current(self):
+        pass
+
+    def close(self):
+        pass
+
+
+def quiet_worker(tmp_path, dap, runtime=None):
+    import time
+
+    worker = DebugWorker(tmp_path)
+    worker.dap, worker.runtime = dap, runtime or JavaLike()
+    worker.session, worker.state, worker.cursor = "session", "running", 0
+    worker.resumed_at = time.monotonic() - 5
+    return worker
+
+
+def poll(worker):
+    worker.liveness_checked = 0.0  # as if two seconds passed since the last check
+    return worker.dispatch("wait", {"session_id": "session", "timeout": 0.1})
+
+
+@pytest.mark.parametrize("threads", [None, []])
+def test_one_empty_threads_reply_is_a_hint_two_are_an_inferred_exit(tmp_path, threads):
+    worker = quiet_worker(tmp_path, QuietDap(threads))
+    assert poll(worker) == {"state": "running", "timed_out": True}
+    state = poll(worker)
+    assert state["state"] == "terminated" and state["exit_inferred"] is True
+    assert worker.dap.calls == ["threads", "threads"]
+    assert any(entry["operation"] == "exit_inferred" for entry in worker.audit)
+
+
+def test_live_threads_reset_the_count(tmp_path):
+    worker = quiet_worker(tmp_path, QuietDap([]))
+    poll(worker)
+    worker.dap.threads = [{"id": 1}]
+    poll(worker)
+    worker.dap.threads = []
+    assert poll(worker)["state"] == "running"
+
+
+def test_with_a_known_pid_only_the_jvm_process_being_gone_proves_exit(tmp_path):
+    import os
+    import subprocess
+    import sys
+
+    child = subprocess.Popen([sys.executable, "-c", "pass"])
+    child.wait()
+    worker = quiet_worker(tmp_path, QuietDap([], pid=child.pid))
+    assert poll(worker)["exit_inferred"] is True
+    alive = quiet_worker(tmp_path, QuietDap([], pid=os.getpid()))
+    for _ in range(4):
+        assert poll(alive)["state"] == "running"
+
+
+def test_empty_replies_never_carry_over_into_the_next_session(tmp_path):
+    worker = quiet_worker(tmp_path, QuietDap([]))
+    assert poll(worker)["state"] == "running"
+    assert worker.empty_thread_replies == 1
+    worker.close()
+    assert worker.empty_thread_replies == 0
+    # A new session on the same worker needs two fresh empty replies again.
+    worker.dap, worker.runtime = QuietDap([]), JavaLike()
+    worker.session, worker.state, worker.resumed_at = "session", "running", 0.0
+    assert poll(worker)["state"] == "running"
+
+
+@pytest.mark.parametrize("failure", [TimeoutError("slow"), RuntimeError("error reply")])
+def test_a_slow_or_failed_check_means_still_running_and_never_closes(tmp_path, failure):
+    worker = quiet_worker(tmp_path, QuietDap([], fail=failure))
+    for _ in range(3):
+        assert poll(worker) == {"state": "running", "timed_out": True}
+    assert worker.dap is not None and not worker.dap.closed and worker.session == "session"
+
+
+def test_a_real_event_arriving_during_the_check_wins(tmp_path):
+    late = {"event": "stopped", "cursor": 7, "body": {"reason": "breakpoint", "threadId": 1}}
+    worker = quiet_worker(tmp_path, QuietDap([], late_event=late))
+    poll(worker)
+    state = poll(worker)
+    assert state["state"] == "stopped" and "exit_inferred" not in state
+    assert worker.cursor == 7
+
+
+def test_exit_is_never_inferred_for_attach_other_adapters_or_right_after_resuming(tmp_path):
+    import time
+
+    from peeky.java_attach import JavaAttachSession
+
+    assert JavaAttachSession.liveness_by_threads is False
+    for runtime, resumed in ((PythonAdapter(), 5), (JavaLike(), 0)):
+        worker = quiet_worker(tmp_path, QuietDap(None), runtime)
+        worker.resumed_at = time.monotonic() - resumed
+        state = poll(worker)
+        assert state["state"] == "running" and worker.dap.calls == []

@@ -83,3 +83,19 @@ Verified on 2026-10-15. Each run captured both data-provider invocations, return
 | `CreateStore.java:64` (controller HTTP handler, on a Jetty thread) | `clusterName`, `storeName`, `owner`, `isSystemStore=false` | 178–186 ms | 21.4 s |
 
 Open issue: in one earlier run, the worker received no `stopped` event for about 200 s while the test thread sat at the breakpoint, so both tests timed out. This did not reproduce in two identical attempts. `session report` now includes `debugger_events` (recent lifecycle events and counts of ignored events), and `session close` keeps the worker log as `<name>.last.log` for diagnosis.
+
+## Dropped exit events (#27)
+
+The Java adapter (java-debug) occasionally never sends `exited`/`terminated` after a **launched** JVM finishes. In stress runs this happened in about 1 of 50–100 runs; the program's output had arrived and the adapter was alive but silent. Peeky now checks liveness for launched Java targets.
+- **When it checks:** after 2 quiet seconds, it asks the adapter for `threads`.
+- **Why one empty reply isn't enough:** java-debug can answer with an empty list for a live JVM whose threads churn, because a thread is collected mid-lookup.
+- **When Peeky infers an exit:** when java-debug announced the JVM's pid (its `processid` event, which is the JVM itself), only once that process is gone. Without a pid, only when a second empty reply follows at least 2 s later. The count of empty replies resets for every session. The run then ends as `terminated` with `exit_inferred: true`, an audit entry and a warning.
+- **Slow or failed checks:** these count as "still running" and never close the session.
+- **Real events:** a stop or exit that arrives during the check is used instead of the inference.
+- **Attached JVMs are excluded:** their death closes the JDWP connection, and a false inference would detach a live JVM.
+
+Evidence:
+- 200 of 200 stress runs completed, and one dropped exit resolved in 2.8 s.
+- A real-JDK regression test runs an extreme-churn JVM. The single-reply rule declared it exited after about 6 s; it is now never reported as exited.
+
+The separate case of an attached JVM whose `stopped` event is lost is not detected yet; see #27.

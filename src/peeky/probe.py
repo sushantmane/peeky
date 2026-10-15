@@ -318,6 +318,11 @@ def run_probe(root, probe, *, adapter=None, progress=None):
                     say(f"still waiting {phase} ({int(noted - started)} s elapsed)")
                 continue
             if state["state"] == "terminated":
+                if state.get("exit_inferred"):
+                    warnings.append(
+                        "The debugger never reported the program's exit; Peeky inferred it "
+                        "because no threads were left (java-debug, issue #27)."
+                    )
                 status = "completed" if hits else "no-stop"
                 say("program finished")
                 break

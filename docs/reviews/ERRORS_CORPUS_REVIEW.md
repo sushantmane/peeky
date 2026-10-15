@@ -93,3 +93,21 @@ The reviewer confirmed these areas:
 - `ipaddress39.py` matches upstream v3.9.6 byte for byte.
 
 The guide now notes `--arg=-v` for values that start with a dash.
+
+## Review: Java exit inference (#29)
+
+| # | Severity | Finding | Disposition |
+| --- | --- | --- | --- |
+| 1 | blocking | java-debug answers `threads` with an empty list for a **live** JVM when a thread is collected mid-lookup. The reviewer saw this on 25 of 25 attaches to a churning 2000-thread JVM. One empty reply would have reported an exit and detached or killed a live JVM. | Fixed. The check runs for launched JVMs only (`JavaAttachSession.liveness_by_threads = False`). One empty reply is only a hint: exit is inferred when the launched JVM process (from java-debug's `processid` event) is gone, or after a second empty reply at least 2 s later. A real stop or exit that arrives during the check wins. Regressions: unit tests, plus a real-JDK extreme-churn test that fails on the previous commit (false exit at about 6 s) and passes now. |
+| 2 | blocking | A slow `threads` reply (many threads, or attach over SSH) raised `ResponseTimeout`, which closed the session. | Fixed. A slow or failed check counts as "still running" and never closes the session. Regression: `test_a_slow_or_failed_check_means_still_running_and_never_closes`. |
+
+The reviewer confirmed:
+- The pause guard never reaches the check.
+- The synthesized event doesn't replay real events.
+- The trace records no arguments, values, output or tokens.
+
+While testing, java-debug itself was found to stall (no breakpoint within 40 s) on a launched JVM creating about 37,000 threads per second, even with the check disabled. This is an adapter limit, and Peeky fails closed with `TIMEOUT`.
+
+**Verification review of d54041d / 95560f9:** two findings, both fixed.
+- **Blocking:** the empty-reply count carried over between sessions on a long-lived worker. One empty reply in the next session could then end a live JVM. The count and check time now reset at launch and in `close()`. Regression: `test_empty_replies_never_carry_over_into_the_next_session`.
+- **Medium:** a live pid did not block the two-reply rule. With a known pid, which the reviewer confirmed is the JVM itself, an exit is now inferred only if that process is gone. The two-reply rule applies only when no pid was announced. Regression: `test_with_a_known_pid_only_the_jvm_process_being_gone_proves_exit`.

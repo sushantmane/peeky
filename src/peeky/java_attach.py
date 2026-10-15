@@ -183,6 +183,11 @@ class JavaAttachTarget:
 class JavaAttachSession(JavaSession):
     """Java runtime contract over an attached JVM; reuses JavaSession inspection rules."""
 
+    # Attached JVMs report their own death through the closed JDWP connection; the
+    # dropped exit event (#27) was seen only on launch, and a false "terminated"
+    # would detach a live JVM.
+    liveness_by_threads = False
+
     dap_request = "attach"
     terminate_debuggee = False
     provenance = "attached"

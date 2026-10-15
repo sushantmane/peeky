@@ -233,3 +233,16 @@ def test_ignored_event_names_are_bounded():
     for index in range(200):
         dap._accept({"type": "event", "event": f"custom{index}"})
     assert len(dap.ignored_events) == 65 and dap.ignored_events["<other>"] == 136
+
+
+def test_non_dap_lines_on_the_protocol_stream_fail_with_a_clear_message():
+    import io
+
+    from peeky.dap import read_message
+
+    stream = io.BytesIO(b"Picked up JAVA_TOOL_OPTIONS -Xmx1g\r\n\r\n")
+    with pytest.raises(ValueError, match="non-DAP line .*Picked up"):
+        read_message(stream)
+    stream = io.BytesIO(b"Warning: something odd\r\n\r\n")
+    with pytest.raises(ValueError, match="no Content-Length header"):
+        read_message(stream)

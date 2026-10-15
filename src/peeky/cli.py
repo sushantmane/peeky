@@ -552,6 +552,8 @@ def _state_text(state):
     if reason and reason != "breakpoint":
         where += f" [reason: {reason}; not auto-resumed, inspect it or `session report`]"
     text = f"state: {state['state']}{where}{_pause_text(state)}{hint}"
+    if state.get("exit_inferred"):
+        text += "\nnote: the debugger never reported the exit; Peeky inferred it (no threads left)"
     if state.get("auto_resumed"):
         last = state.get("last_auto_resumed") or {}
         text += (

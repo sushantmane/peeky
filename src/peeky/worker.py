@@ -37,6 +37,16 @@ OPERATIONS = frozenset(
 )
 
 
+def _process_alive(pid):
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
 class DebugWorker:
     def __init__(self, root, adapter=None):
         self.root = Path(root).resolve()
@@ -71,6 +81,10 @@ class DebugWorker:
         self.stopped_at = None
         self.auto_resumed = []
         self.cursor = 0
+        self.resumed_at = 0.0
+        self.liveness_checked = 0.0
+        self.empty_thread_replies = 0
+        self.exit_inferred = False
         self.program = None
         self.stop_location = None
         self.stop_reason = None
@@ -96,6 +110,37 @@ class DebugWorker:
                     "pause budget (--max-pause); wait for the next stop or use a probe"
                 )
             raise ValueError("Stale stop_id or program is not stopped; inspect the latest stop")
+
+    def debuggee_gone(self, runtime):
+        """Liveness check for launched JVMs whose adapter drops exit events (#27).
+
+        java-debug can answer `threads` with an empty list for a live, churning JVM
+        (a thread collected mid-lookup), so an empty reply is only a hint. When the
+        adapter announced the JVM pid, exit is inferred only if that process is gone;
+        without a pid, only after a second empty reply at least two seconds later.
+        A slow or failed check means "still running": it never closes the session.
+        """
+        if not getattr(runtime, "liveness_by_threads", False) or self.state != "running":
+            return False
+        now = time.monotonic()
+        if now - self.resumed_at < 2 or now - self.liveness_checked < 2:
+            return False
+        self.liveness_checked = now
+        try:
+            threads = self.dap.request("threads", {}, timeout=2).get("threads")
+        except (TimeoutError, RuntimeError):
+            self.empty_thread_replies = 0
+            return False
+        if threads:
+            self.empty_thread_replies = 0
+            return False
+        self.empty_thread_replies += 1
+        pid = getattr(self.dap, "debuggee_pid", None)
+        if pid:
+            # The announced pid is the JVM itself: only its absence proves an exit.
+            # A zombie or reused pid can only look alive, which fails closed (timeout).
+            return not _process_alive(pid)
+        return self.empty_thread_replies >= 2
 
     def read_location(self):
         """Best-effort top-frame location for display; never evidence, never fatal.
@@ -350,6 +395,10 @@ class DebugWorker:
                 left()
                 self.state = "running"
                 self.cursor = 0
+                self.resumed_at = time.monotonic()
+                self.exit_inferred = False
+                self.empty_thread_replies = 0
+                self.liveness_checked = 0.0
                 return {
                     "session_id": self.session,
                     "state": self.state,
@@ -395,6 +444,29 @@ class DebugWorker:
                         max(0, deadline - time.monotonic()),
                     )
                 except TimeoutError:
+                    if self.debuggee_gone(runtime):
+                        try:
+                            # A real stop or exit that arrived during the check wins.
+                            event = self.dap.wait_event({"stopped", "terminated"}, self.cursor, 0)
+                        except TimeoutError:
+                            event = {
+                                "event": "terminated",
+                                "cursor": self.cursor,
+                                "body": {"peeky": "exit inferred: no live threads, no exit event"},
+                            }
+                            self.exit_inferred = True
+                        else:
+                            self.cursor = event["cursor"]
+                            break
+                        self.audit.append(
+                            {
+                                "time": time.time(),
+                                "operation": "exit_inferred",
+                                "arguments": {},
+                                "result": {"reason": "debugger reported no live threads"},
+                            }
+                        )
+                        break
                     return {"state": self.state, "timed_out": True, **updates}
                 self.cursor = event["cursor"]
                 if event["event"] != "breakpoint":
@@ -421,6 +493,7 @@ class DebugWorker:
                 "state": self.state,
                 "stop_id": self.stop_id,
                 "event": event,
+                **({"exit_inferred": True} if self.exit_inferred else {}),
                 **self.location(),
                 **self.pause_status(),
                 **updates,
@@ -550,6 +623,8 @@ class DebugWorker:
                     {"source": {"path": str(runtime.source_path(self.program))}, "breakpoints": []},
                 )
             self.dap.request("continue", {"threadId": self.thread_id})
+            self.resumed_at = time.monotonic()
+            self.empty_thread_replies = 0
             self.state = "running"
             self.stopped_at = None
             self.stop_location = None
@@ -793,6 +868,7 @@ class DebugWorker:
         runtime, self.runtime = self.runtime, None
         self.state = "idle"
         self.stopped_at = None
+        self.empty_thread_replies = 0
         self.stop_location = None
         self.stop_reason = None
         self.session = None
