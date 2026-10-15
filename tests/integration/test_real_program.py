@@ -61,13 +61,15 @@ def test_probe_breaks_in_the_library_while_running_the_entry_script(case, capsys
         "--capture",
         "self",
         "--hits",
-        "4",
+        "100",
         "--json",
     )
     result = json.loads(out.out)
     assert code == 0 and result["status"] == "completed", result.get("error")
+    # Line events per call differ across Python versions (3.11 also stops in the
+    # generator expression on this line), so look at every hit, not the first few.
     seen = {row["value"] for row in result["rows"]}
-    assert "IPv6Address('::ffff:808:808')" in seen
+    assert {"IPv6Address('::ffff:a00:1')", "IPv6Address('::ffff:808:808')"} <= seen
     assert "::ffff:8.8.8.8: private" in result["output"]
 
 
