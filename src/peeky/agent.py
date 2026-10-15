@@ -22,7 +22,7 @@ from pathlib import Path
 
 from peeky.client import Client
 from peeky.verification import __file__ as verification_script
-from peeky.worker import load_java_target, load_native_target, make_server
+from peeky.worker import load_java_target, load_native_target, load_rust_target, make_server
 
 ROOT = Path.cwd()
 SCHEMA = {
@@ -476,6 +476,11 @@ def main():
         type=Path,
         help="Trusted C/C++ target configuration; checker consumes a build descriptor",
     )
+    targets.add_argument(
+        "--rust-config",
+        type=Path,
+        help="Trusted Cargo target configuration; checker and compiled tests must both pass",
+    )
     parser.add_argument(
         "--issue",
         default="Page numbering starts at 1. Page 1 with size 3 should return [10, 20, 30], but the program returns [40, 50, 60]. Diagnose and fix the general bug.",
@@ -502,7 +507,7 @@ def main():
             model = match.group(1)
     source_root = Path(args.root).resolve()
     target = execution = None
-    if args.java_config or args.native_config:
+    if args.java_config or args.native_config or args.rust_config:
         from peeky.java_verification import JavaVerification
         from peeky.native_verification import NativeVerification
 
@@ -510,9 +515,14 @@ def main():
             if args.java_config:
                 target = load_java_target(args.java_config)
                 execution = JavaVerification(target, source_root)
-            else:
+            elif args.native_config:
                 target = load_native_target(args.native_config)
                 execution = NativeVerification(target, source_root)
+            else:
+                from peeky.rust import RustVerification
+
+                target = load_rust_target(args.rust_config)
+                execution = RustVerification(target, source_root)
         except (OSError, ValueError, TypeError) as exc:
             parser.error(str(exc))
     source, check = (source_root / args.program).resolve(), (source_root / args.check).resolve()

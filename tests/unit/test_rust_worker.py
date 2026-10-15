@@ -9,7 +9,7 @@ import pytest
 from peeky.adapters import PythonAdapter
 from peeky.build import SourceEdit
 from peeky.native import NativeSession
-from peeky.rust import RustSession, RustTarget, cargo_artifacts
+from peeky.rust import RustSession, RustTarget, cargo_artifacts, libtest_summary
 from peeky.rust_symbols import UNVERIFIED, active_variant
 from peeky.worker import DebugWorker, load_rust_target
 
@@ -118,25 +118,38 @@ def test_rust_prepare_rejects_undeclared_programs_and_frozen_edits(tmp_path, pro
         target.prepare(root / program, root, edit=edit)
 
 
-def test_cargo_artifacts_select_one_hashed_binary_and_symbols(monkeypatch):
+TEST = f"target/debug/deps/pagination-{'f' * 16}"
+
+
+def test_cargo_artifacts_select_one_hashed_binary_test_and_symbols(monkeypatch):
     monkeypatch.setattr("peeky.rust.sys.platform", "linux")
-    assert cargo_artifacts([BINARY, BINARY + ".d"], "peeky_pagination") == (BINARY, BINARY)
+    names = [BINARY, BINARY + ".d", TEST, TEST + ".d"]
+    assert cargo_artifacts(names, "peeky_pagination", "pagination") == (BINARY, BINARY, TEST)
     monkeypatch.setattr("peeky.rust.sys.platform", "darwin")
     symbols = f"{BINARY}.dSYM/Contents/Resources/DWARF/peeky_pagination-{HASH}"
-    names = [BINARY, BINARY + ".d", f"{BINARY}.dSYM/Contents/Info.plist", symbols]
-    assert cargo_artifacts(names, "peeky_pagination") == (BINARY, symbols)
+    names = [
+        BINARY,
+        BINARY + ".d",
+        f"{BINARY}.dSYM/Contents/Info.plist",
+        symbols,
+        TEST,
+        f"{TEST}.dSYM/Contents/Resources/DWARF/pagination-{'f' * 16}",
+    ]
+    assert cargo_artifacts(names, "peeky_pagination", "pagination") == (BINARY, symbols, TEST)
 
 
 @pytest.mark.parametrize(
     "platform, names",
     [
-        ("linux", [BINARY, BINARY.replace(HASH, "f" * 16)]),
-        ("linux", [BINARY, "target/debug/deps/libother.rlib"]),
-        ("linux", [BINARY[:-1]]),
-        ("linux", [BINARY, f"{BINARY}.dSYM/Contents/Info.plist"]),
-        ("linux", [BINARY.replace("peeky_pagination", "other")]),
-        ("darwin", [BINARY, BINARY + ".d"]),
-        ("darwin", [BINARY, f"{BINARY}.dSYM/Contents/Resources/DWARF/other"]),
+        ("linux", [BINARY, BINARY.replace(HASH, "f" * 16), TEST]),
+        ("linux", [BINARY, TEST, TEST.replace("f" * 16, "e" * 16)]),
+        ("linux", [BINARY]),
+        ("linux", [BINARY, TEST, "target/debug/deps/libother.rlib"]),
+        ("linux", [BINARY[:-1], TEST]),
+        ("linux", [BINARY, TEST, f"{BINARY}.dSYM/Contents/Info.plist"]),
+        ("linux", [BINARY.replace("peeky_pagination", "other"), TEST]),
+        ("darwin", [BINARY, BINARY + ".d", TEST]),
+        ("darwin", [BINARY, TEST, f"{BINARY}.dSYM/Contents/Resources/DWARF/other"]),
     ],
 )
 def test_cargo_artifacts_reject_missing_duplicate_or_unexpected_outputs(
@@ -144,7 +157,38 @@ def test_cargo_artifacts_reject_missing_duplicate_or_unexpected_outputs(
 ):
     monkeypatch.setattr("peeky.rust.sys.platform", platform)
     with pytest.raises(ValueError):
-        cargo_artifacts(names, "peeky_pagination")
+        cargo_artifacts(names, "peeky_pagination", "pagination")
+    with pytest.raises(ValueError, match="distinct"):
+        cargo_artifacts(names, "pagination", "pagination")
+
+
+SUMMARY = "test result: {}. {} passed; {} failed; 0 ignored; 0 measured; {} filtered out; finished in 0.14s"
+
+
+@pytest.mark.parametrize(
+    "result, passed",
+    [
+        ({"exit_code": 0, "stdout": SUMMARY.format("ok", 1, 0, 0)}, True),
+        ({"exit_code": 101, "stdout": SUMMARY.format("FAILED", 0, 1, 0)}, False),
+        ({"exit_code": 0, "stdout": SUMMARY.format("FAILED", 0, 1, 0)}, False),
+        ({"exit_code": 0, "stdout": SUMMARY.format("ok", 0, 0, 0)}, False),
+        ({"exit_code": 0, "stdout": SUMMARY.format("ok", 1, 0, 1)}, False),
+        ({"exit_code": 0, "stdout": "running 1 test"}, False),
+        ({"exit_code": 0, "stdout": SUMMARY.format("ok", 1, 0, 0) * 2}, False),
+        ({"exit_code": 0, "stdout": (SUMMARY.format("ok", 1, 0, 0) + "\n") * 2}, False),
+        ({"exit_code": None, "timed_out": True, "stdout": SUMMARY.format("ok", 1, 0, 0)}, False),
+        (
+            {
+                "exit_code": 0,
+                "output_limit_exceeded": True,
+                "stdout": SUMMARY.format("ok", 1, 0, 0),
+            },
+            False,
+        ),
+    ],
+)
+def test_libtest_summary_requires_one_explicit_clean_pass(result, passed):
+    assert libtest_summary(result)["passed"] is passed
 
 
 def bare_session():

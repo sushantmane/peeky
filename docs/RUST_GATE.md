@@ -34,4 +34,4 @@ Local Apple LLVM 21 measurements (2026-10-14, Rust 1.96.0): one application unit
 
 Real conformance (`tests/rust/test_rust_worker.py`) covers HTTP launch, `Some(3)`/`None`, struct expansion, fieldless enum, rejected Option/out-of-range/expression mutations, `start=0` producing the corrected first page, report, cleanup, source drift failing closed, and compile failure/frozen-test edits leaving no workspace.
 
-Not yet delivered: Cargo compiled-test execution and independent candidate-repair verification (RUST_PLAN step 4), an end-to-end investigation loop, separate-host use, and any Option payload other than i32. Raw probe traversal remains engineering evidence only.
+Compiled Cargo tests and independent candidate verification are described in [RUST_AGENT.md](RUST_AGENT.md). Not yet delivered: separate-host use, live-model Rust evaluation, and any Option payload other than i32. Raw probe traversal remains engineering evidence only.

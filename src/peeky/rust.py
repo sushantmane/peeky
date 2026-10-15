@@ -5,8 +5,10 @@ files, built offline/locked into a fresh workspace with a controlled environment
 and explicit real (non-rustup-proxy) cargo/rustc executables. Symbols come only
 from application compile units (see rust_symbols). Root i32 locals are the only
 mutable values; qualified Option<i32> values are shown by active variant and other
-data-carrying enums are opaque. Cargo test execution and candidate-repair
-verification are not implemented here. Trusted code; not a sandbox.
+data-carrying enums are opaque. Prepared builds also compile the declared Cargo
+integration test; verification runs that hashed test executable directly (never
+Cargo, so nothing can be rebuilt or substituted) and still requires the
+independent checker. Trusted code; not a sandbox.
 """
 
 import hashlib
@@ -24,15 +26,21 @@ from peeky.build import (
     BuildCommandError,
     BuildRecipe,
     Command,
+    _digest,
     prepare,
 )
+from peeky.compiled_verification import CompiledVerification
 from peeky.native import NativeSession, _path_name, module_identity
 from peeky.rust_manifest import assert_cargo_ancestry_clear, validate_cargo_inputs
 from peeky.rust_symbols import active_variant, application_symbols
 
 DEPS = "target/debug/deps"
 RAW_ENUM_FIELDS = ("$variants$", "$discr$")
-MAX_VIEW_FETCHES = 128
+TEST_TIMEOUT_S = 30
+_SUMMARY = re.compile(
+    r"test result: (ok|FAILED)\. ([0-9]{1,6}) passed; ([0-9]{1,6}) failed; ([0-9]{1,6}) ignored; "
+    r"([0-9]{1,6}) measured; ([0-9]{1,6}) filtered out; finished in [0-9]{1,6}\.[0-9]{1,3}s"
+)
 
 
 def _absolute_tool(path, label):
@@ -58,30 +66,68 @@ def _toolchain(cargo, rustc):
     return cargo, rustc
 
 
-def cargo_artifacts(names, crate):
-    """Select the hashed application binary and its symbols from fresh deps files."""
-    binaries = {
+def _executable(names, crate, label):
+    found = {
         name
         for name in names
         if re.fullmatch(re.escape(f"{DEPS}/{crate}-") + r"[0-9a-f]{16}", name)
     }
-    if len(binaries) != 1:
-        raise ValueError("Expected exactly one Cargo application executable")
-    (binary,) = binaries
-    bundle = binary + ".dSYM/"
-    allowed = {binary, binary + ".d"}
+    if len(found) != 1:
+        raise ValueError(f"Expected exactly one Cargo {label} executable")
+    return found.pop()
+
+
+def cargo_artifacts(names, crate, test_crate):
+    """Select the hashed application/test executables and symbols from fresh deps files."""
+    if crate == test_crate:
+        raise ValueError("Cargo application and test crates must have distinct names")
+    binary = _executable(names, crate, "application")
+    test = _executable(names, test_crate, "integration-test")
+    allowed = {binary, binary + ".d", test, test + ".d"}
+    bundles = (binary + ".dSYM/", test + ".dSYM/")
     for name in names:
         if name in allowed:
             continue
-        if sys.platform == "darwin" and name.startswith(bundle):
+        if sys.platform == "darwin" and name.startswith(bundles):
             continue
         raise ValueError("Unexpected Cargo build artifact")
     if sys.platform == "darwin":
-        symbols = f"{bundle}Contents/Resources/DWARF/{Path(binary).name}"
+        symbols = f"{bundles[0]}Contents/Resources/DWARF/{Path(binary).name}"
         if symbols not in names:
             raise ValueError("Missing Cargo packed debug symbols")
-        return binary, symbols
-    return binary, binary
+        return binary, symbols, test
+    return binary, binary, test
+
+
+def libtest_summary(result):
+    """Interpret one bounded libtest run; anything but an explicit clean pass fails."""
+    summaries = [
+        match
+        for line in result.get("stdout", "").splitlines()
+        if (match := _SUMMARY.fullmatch(line.strip()))
+    ]
+    summary = None
+    if len(summaries) == 1:
+        status, passed, failed, ignored, measured, filtered = summaries[0].groups()
+        summary = {
+            "status": status,
+            "passed": int(passed),
+            "failed": int(failed),
+            "ignored": int(ignored),
+            "measured": int(measured),
+            "filtered_out": int(filtered),
+        }
+    clean = (
+        summary is not None
+        and result.get("exit_code") == 0
+        and not result.get("timed_out")
+        and not result.get("output_limit_exceeded")
+        and summary["status"] == "ok"
+        and summary["passed"] > 0
+        and summary["failed"] == 0
+        and summary["filtered_out"] == 0
+    )
+    return {"summary": summary, "passed": clean}
 
 
 @dataclass(frozen=True)
@@ -206,6 +252,11 @@ class RustTarget:
         build = Command(
             (cargo, "build", "--offline", "--locked", "--bin", cargo_inputs.binary), timeout_s=120
         )
+        # Compiles only the frozen test target; the application is already fresh.
+        tests = Command(
+            (cargo, "test", "--no-run", "--offline", "--locked", "--test", cargo_inputs.test),
+            timeout_s=120,
+        )
         probes = [
             Command((rustc, "-vV")),
             Command((cargo, "--version")),
@@ -217,11 +268,15 @@ class RustTarget:
             probes.append(Command((_absolute_tool(self.dsymutil or "", "dsymutil"), "--version")))
         elif sys.platform != "linux":
             raise ValueError("Rust target supports Linux and macOS hosts only")
+        uplift = f"target/debug/{cargo_inputs.binary}"
         recipe = BuildRecipe(
             "rust",
             cargo_inputs.inputs,
-            (build,),
-            (ArtifactSpec(DEPS, "directory", "cargo-deps"),),
+            (build, tests),
+            (
+                ArtifactSpec(DEPS, "directory", "cargo-deps"),
+                ArtifactSpec(uplift, role="cargo-test-target"),
+            ),
             tuple(probes),
             tuple(sorted(self._environment(rustc).items())),
         )
@@ -245,8 +300,13 @@ class RustTarget:
             ].startswith(f"cargo {self.rust_version} "):
                 raise ValueError("Rust toolchain does not match the pinned version")
             crate = cargo_inputs.binary.replace("-", "_")
-            names = [item.path for item in prepared.manifest.artifacts]
-            binary, symbols = (prepared.workspace / name for name in cargo_artifacts(names, crate))
+            names = [item.path for item in prepared.manifest.artifacts if item.path != uplift]
+            binary, symbols, test_binary = (
+                prepared.workspace / name
+                for name in cargo_artifacts(names, crate, cargo_inputs.test.replace("-", "_"))
+            )
+            if _digest(binary)[0] != _digest(prepared.workspace / uplift)[0]:
+                raise ValueError("Cargo test target differs from the debugged executable")
             env = dict(prepared.manifest.effective_environment)
             lines, layouts, units = application_symbols(
                 dwarfdump,
@@ -261,6 +321,8 @@ class RustTarget:
             session = RustSession(
                 self, prepared, adapter, lines, identity, binary, symbols, layouts, parent
             )
+            session.test_binary = test_binary
+            session.test_target = prepared.workspace / uplift
             session.assert_current()
             return session
         except BaseException:
@@ -306,8 +368,35 @@ class RustSession(NativeSession):
         if any(variable.get("name") in RAW_ENUM_FIELDS for variable in variables):
             raise ValueError("Raw Rust enum storage is not exposed; its layout is not qualified")
 
+    def run_tests(self):
+        """Execute the prepared, hashed integration-test binary; Cargo is not invoked."""
+        from peeky.agent import execute
+
+        self.assert_current()
+        binary = _digest(self.binary)[0]
+        if _digest(self.test_target)[0] != binary:
+            raise RuntimeError("Cargo test target differs from the debugged executable")
+        command = [str(self.test_binary), "--test-threads=1", "--color", "never"]
+        result = execute(command, self.prepared.workspace, TEST_TIMEOUT_S, env=self.environment)
+        self.assert_current()
+        if _digest(self.test_target)[0] != binary:
+            raise RuntimeError("Cargo test target changed during test execution")
+        return {
+            **result,
+            **libtest_summary(result),
+            "stage": "cargo-test",
+            "command": command,
+            "executable_sha256": _digest(self.test_binary)[0],
+        }
+
     def close(self):
         try:
             super().close()
         finally:
             shutil.rmtree(self.parent, ignore_errors=True)
+
+
+class RustVerification(CompiledVerification):
+    """Independent checker plus the prepared Cargo integration test; both must pass."""
+
+    language = "rust"

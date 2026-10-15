@@ -1,6 +1,6 @@
 # Rust MVP qualification plan
 
-Status: engineering gate passed (PR #22). Application-unit symbol scoping, DWARF-validated `Option<i32>` active-variant views and an experimental RustTarget/HTTP worker are delivered (see RUST_GATE.md); Cargo test execution and repair verification remain. Rust repair is not claimed. Keep the first target a dependency-free, single-package Cargo binary with a committed lockfile and explicitly declared source and test files. C/C++ conformance does not establish Rust support.
+Status: engineering gate passed (PR #22). Application-unit symbol scoping, DWARF-validated `Option<i32>` active-variant views, an experimental RustTarget/HTTP worker, compiled-test plus independent-checker verification and a deterministic investigation loop are delivered (see RUST_GATE.md and RUST_AGENT.md). Deliberate deviation from step 2 below: verification executes the hashed test binary directly instead of running `cargo test`, which removes any rebuild/substitution path. Live-model evaluation, separate-host use and broader Rust values remain. Keep the first target a dependency-free, single-package Cargo binary with a committed lockfile and explicitly declared source and test files. C/C++ conformance does not establish Rust support.
 
 ## Evidence and first gate
 
