@@ -376,7 +376,7 @@ def prepare(
             if not original_unchanged:
                 raise RuntimeError("Source provenance changed during preparation")
             if not staged_unchanged:
-                raise RuntimeError("Staged inputs changed during preparation")
+                raise RuntimeError("Staged inputs changed during preparation (provenance mismatch)")
 
         for command in recipe.toolchain_probes:
             check()
@@ -397,6 +397,9 @@ def prepare(
                     raise TimeoutError("Build preparation exceeded its overall deadline") from exc
                 raise
             tools.append(tool)
+        # The last command may have delegated to helpers (e.g. dsymutil via PATH);
+        # recheck before its outputs are recorded against the declared tools.
+        check()
         manifest = BuildManifest(
             1,
             _json_digest(asdict(recipe)),

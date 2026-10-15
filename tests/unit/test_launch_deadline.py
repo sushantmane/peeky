@@ -106,7 +106,7 @@ while True:
     if command == "disconnect":
         disconnected.write_text("disconnect received after budget expiry")
     if command == "initialize":
-        time.sleep(0.08)  # An earlier stage consumes part of the shared budget.
+        time.sleep(0.7)  # An earlier stage consumes most of the shared 1.0 s budget.
     response = {"type": "response", "request_seq": request["seq"], "success": True,
                 "command": command, "body": {}}
     if command == "setBreakpoints" and stage == "response":
@@ -148,8 +148,9 @@ def test_real_dap_process_shares_absolute_deadline_and_disconnects_after_expiry(
     started = time.monotonic()
     with pytest.raises(TimeoutError):
         worker.dispatch("launch", {"program": "target.py"})
-    # Each stage alone would allow 15 s and the late reply arrives after 3 s.
-    assert time.monotonic() - started < 2.5
+    # Shared budget: the later stage gets only the ~0.3 s left, so the launch fails
+    # near the 1.0 s deadline. A per-stage budget would take at least 0.7 + 1.0 s.
+    assert time.monotonic() - started < 1.5
     # A new stage cannot restart the budget once the absolute deadline expired.
     expired = ["initialize", "launch"] + (["setBreakpoints"] if second_stage == "response" else [])
     assert log.read_text().split() == [*expired, "disconnect"]
