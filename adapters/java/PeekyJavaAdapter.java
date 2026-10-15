@@ -149,6 +149,9 @@ public final class PeekyJavaAdapter extends ProtocolServer {
         SourceMap sources=new SourceMap(Path.of(args[0]));
         DebugSettings.getCurrent().showToString=false;
         DebugSettings.getCurrent().showLogicalStructure=false;
+        // Bound String values (default 0 = unlimited) so one huge field cannot exceed the
+        // client's DAP frame limit; the worker shows at most 2000 characters anyway.
+        DebugSettings.getCurrent().maxStringLength=4096;
         ProviderContext context=new ProviderContext();
         for(Class<? extends IProvider> type:List.of(ISourceLookUpProvider.class,IEvaluationProvider.class,
             IHotCodeReplaceProvider.class,ICompletionsProvider.class,IVirtualMachineManagerProvider.class))

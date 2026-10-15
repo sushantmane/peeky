@@ -670,7 +670,8 @@ class DebugWorker:
         # java-debug rejects ranges past the end of an array, and any range at all for
         # non-array objects (failing the session). Ask for exactly the stated number of
         # indexed children (refusing oversize collections first), or for Java objects
-        # no range; the size check below still bounds the reply.
+        # no range. The check below bounds how many children are kept; reply bytes are
+        # bounded by the DAP frame limit and the Java adapter's String length cap.
         if type(indexed) is int and indexed > 0:
             if indexed > 512:
                 raise ValueError("Variable collection exceeds bounded expansion limit")

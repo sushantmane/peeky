@@ -68,3 +68,36 @@ def test_java_object_fields_expand_without_failing_the_session(tmp_path):
     rows = {row["selector"]: row for row in result["rows"]}
     assert [rows[s]["value"] for s in capture[:4]] == ["3", "8", "8", "3"]
     assert "not found" in rows["p.nope"]["error"]
+
+
+HUGE = """package demo;
+public class Huge {
+  static class Request { String body = "x".repeat(5_000_000); int status = 200; }
+  public static void main(String[] args) {
+    Request req = new Request();
+    String text = req.body;
+    System.out.println(req.status + text.length()); // OBSERVE
+  }
+}
+"""
+
+
+@pytest.mark.timeout(120)
+def test_multi_megabyte_java_strings_are_bounded_not_fatal(tmp_path):
+    bundle = os.environ.get("PEEKY_JAVA_ADAPTER")
+    if not bundle:
+        pytest.skip("set PEEKY_JAVA_ADAPTER to a prepared Java adapter bundle")
+    from peeky.java import JavaTarget
+
+    (tmp_path / "demo").mkdir()
+    (tmp_path / "demo/Huge.java").write_text(HUGE)
+    line = next(i for i, text in enumerate(HUGE.splitlines(), 1) if "OBSERVE" in text)
+    target = JavaTarget(bundle=Path(bundle), sources=("demo/Huge.java",), main_class="demo.Huge")
+    result = run_probe(
+        tmp_path, Probe("demo/Huge.java", line, ("req.status", "text")), adapter=target
+    )
+    assert result["status"] == "completed", result.get("error")
+    rows = {row["selector"]: row for row in result["rows"]}
+    assert rows["req.status"]["value"] == "200"
+    assert len(rows["text"]["value"]) <= 2000
+    assert "5000200" in result["output"]
