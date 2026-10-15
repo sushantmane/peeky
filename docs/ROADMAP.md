@@ -40,6 +40,10 @@ Exit criterion: automated two-process network tests plus one recorded separate-h
 
 Close common lifecycle blockers before adding Java; the entire Python corpus is not a prerequisite. Each slice gets adversarial review, real-adapter conformance tests, and a parallel CI lane before claiming support.
 
+## Usability direction — stateless probes (ADR 0004)
+
+Support both stateful sessions and stateless one-request probes over the same guarded engine, with a heappy-style experience: one command per question, a `describe` manifest, canned probes and SQL over captured evidence. Session mode stays unchanged. Probe mode is planned, not started. Until it lands, new worker features should be expressible as declared probe steps rather than long-lived client-held state. See [ADR 0004](adr/0004-stateless-probes.md).
+
 ## After the five-language MVP
 
 Broader multi-file autonomous patching, Kubernetes workers/outbound relay, multi-tenant authorization and production data policies. Minimal explicit build/workspace recipes needed for compiled-language verification belong in the language slices, not this deferred list.
