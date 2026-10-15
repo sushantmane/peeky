@@ -173,3 +173,20 @@ def test_session_timeouts_are_finite(workspace, capsys):
     stale_record(workspace)
     code, out = run(capsys, "session", "wait", "--name", "stale", "--timeout", "inf")
     assert code == 2 and "--timeout" in out.err
+
+
+def test_probe_reports_progress_on_stderr_only(workspace, capsys):
+    code, out = run(
+        capsys,
+        "probe",
+        workspace / "pagination_bug.py",
+        "--at",
+        "8",
+        "--capture",
+        "start",
+        "--json",
+    )
+    assert code == 0 and json.loads(out.out)["status"] == "completed"
+    assert "peeky: hit 1/1" in out.err and "program finished" in out.err
+    code, out = run(capsys, "probe", workspace / "pagination_bug.py", "--at", "8", "--quiet")
+    assert code == 0 and out.err == ""

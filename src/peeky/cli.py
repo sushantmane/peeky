@@ -354,7 +354,12 @@ def probe(args):
         args.hits,
         args.timeout,
     )
-    result = run_probe(root, request, adapter=adapter_for(language, data))
+    progress = (
+        None
+        if args.quiet
+        else lambda message: print(f"peeky: {message}", file=sys.stderr, flush=True)
+    )
+    result = run_probe(root, request, adapter=adapter_for(language, data), progress=progress)
     _emit(result, args.json, _table)
     return 0 if result["status"] == "completed" else 1
 
@@ -617,6 +622,7 @@ def main(argv=None):
     sub.add_argument("--set", action="append", default=[], help="name=value (repeatable)")
     sub.add_argument("--hits", type=int, default=1)
     sub.add_argument("--timeout", type=float, default=60)
+    sub.add_argument("--quiet", action="store_true", help="No progress messages on stderr")
     sub = commands.add_parser("session", help="Step-by-step debugging across commands")
     actions = sub.add_subparsers(dest="action", required=True)
     start = actions.add_parser("start", help="Build, launch and run to --at")

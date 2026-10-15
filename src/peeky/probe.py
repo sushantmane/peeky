@@ -154,8 +154,12 @@ def _expected_line(breakpoint, state, requested):
     return line
 
 
-def run_probe(root, probe, *, adapter=None):
-    """Run one self-contained probe; the worker is always closed before returning."""
+def run_probe(root, probe, *, adapter=None, progress=None):
+    """Run one self-contained probe; the worker is always closed before returning.
+
+    ``progress(message)`` receives human-readable milestones (never parsed).
+    """
+    say = progress or (lambda message: None)
     worker = DebugWorker(root, adapter=adapter)
     started = time.monotonic()
     deadline = started + probe.timeout
@@ -172,13 +176,31 @@ def run_probe(root, probe, *, adapter=None):
             target_identity=launch["target_identity"],
             source_sha256=launch["source_sha256"],
         )
-        status = "timeout"
+        point = result["breakpoint"]
+        verified = point.get("verified") is True
+        say(
+            f"started; breakpoint {probe.program}:{point.get('line', probe.line)} "
+            + ("verified" if verified else "pending until its class or module loads")
+        )
+        say("waiting for the program to reach it...")
+        status, noted = "timeout", time.monotonic()
         while (remaining := deadline - time.monotonic()) > 0:
             state = worker.dispatch("wait", {**session, "timeout": min(2, remaining)})
+            if not verified and any(
+                update.get("breakpoint", {}).get("verified") is True
+                for update in state.get("breakpoint_events", [])
+            ):
+                verified = True
+                say("breakpoint verified")
             if state["state"] == "running":
+                if time.monotonic() - noted >= 10:
+                    noted = time.monotonic()
+                    phase = "for the next stop" if hits < probe.hits else "for the program to exit"
+                    say(f"still waiting {phase} ({int(noted - started)} s elapsed)")
                 continue
             if state["state"] == "terminated":
                 status = "completed" if hits else "no-stop"
+                say("program finished")
                 break
             stop = {**session, "stop_id": state["stop_id"]}
             # Only the requested breakpoint counts; a crash, signal or other stop fails
@@ -198,6 +220,7 @@ def run_probe(root, probe, *, adapter=None):
                     f"{probe.program}:{expected}"
                 )
             hits += 1
+            say(f"hit {hits}/{probe.hits} at {probe.program}:{expected}; capturing")
             rows.extend(_capture(worker, stop, probe.capture, hits, "observed"))
             if hits == 1 and probe.set:
                 for name, value in probe.set:
@@ -218,6 +241,7 @@ def run_probe(root, probe, *, adapter=None):
                             {**stop, "reference": scope["reference"], "name": name, "value": value},
                         )
                     )
+                    say(f"set {name}: {changes[-1].get('before')} -> {changes[-1].get('after')}")
                 rows.extend(_capture(worker, stop, probe.capture, hits, "after-set"))
             if len(rows) > MAX_ROWS:
                 raise ValueError("Probe row budget exceeded")
@@ -225,6 +249,7 @@ def run_probe(root, probe, *, adapter=None):
                 worker.dispatch(
                     "breakpoints", {**session, "program": probe.program, "breakpoints": []}
                 )
+                say("all requested hits captured; letting the program finish")
             worker.dispatch("continue", stop)
         report = worker.dispatch("report", session)
         result.update(

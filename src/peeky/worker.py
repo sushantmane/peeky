@@ -702,7 +702,8 @@ def _run_probe_process(root, request, adapter, cap):
         "import sys; sys.path.insert(0, sys.argv.pop(1)); "
         "from peeky.cli import main; sys.exit(main(sys.argv[1:]))"
     )
-    command = [sys.executable, "-I", "-c", bootstrap, package_parent, "probe", str(root), "--json"]
+    command = [sys.executable, "-I", "-c", bootstrap, package_parent, "probe", str(root)]
+    command += ["--json", "--quiet"]
     command += ["--at", f"{request.program}:{request.line}", "--hits", str(request.hits)]
     command += ["--timeout", str(request.timeout)]
     if request.capture:
