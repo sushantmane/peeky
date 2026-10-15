@@ -597,6 +597,34 @@ def make_server(root, token, port=8765, *, adapter=None):
     if not isinstance(token, str) or len(token) < 16:
         raise ValueError("Token must contain at least 16 characters")
     worker = DebugWorker(root, adapter=adapter)
+    probes = threading.Semaphore(1)
+
+    def probe(args):
+        # Stateless: a separate single-use worker; nothing survives the request.
+        from peeky.probe import HTTP_PROBE_SECONDS, Probe, run_probe
+
+        if set(args) - {"at", "capture", "set", "hits", "timeout"}:
+            raise ValueError("Unknown probe field")
+        from peeky.probe import parse_location
+
+        program, line = parse_location(args.get("at"))
+        changes = args.get("set", {})
+        if not isinstance(changes, dict) or not isinstance(args.get("capture", []), list):
+            raise ValueError("Probe capture must be a list and set an object")
+        request = Probe(
+            program,
+            line,
+            tuple(args.get("capture", [])),
+            tuple(changes.items()),
+            args.get("hits", 1),
+            min(args.get("timeout", HTTP_PROBE_SECONDS), HTTP_PROBE_SECONDS),
+        )
+        if not probes.acquire(blocking=False):
+            raise ValueError("Another probe is running; retry later")
+        try:
+            return run_probe(root, request, adapter=adapter)
+        finally:
+            probes.release()
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args):
@@ -614,7 +642,8 @@ def make_server(root, token, port=8765, *, adapter=None):
                 args = json.loads(self.rfile.read(size))
                 if not isinstance(args, dict):
                     raise ValueError("Expected a JSON object")
-                result = worker.dispatch(self.path.removeprefix("/"), args)
+                operation = self.path.removeprefix("/")
+                result = probe(args) if operation == "probe" else worker.dispatch(operation, args)
                 self.reply(200, result)
             except (KeyError, TypeError, ValueError) as exc:
                 self.reply(400, {"error": str(exc)})

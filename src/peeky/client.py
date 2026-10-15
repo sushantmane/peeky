@@ -20,6 +20,12 @@ class Client:
         with urlopen(request, timeout=45) as response:
             return json.load(response)
 
+    def probe(self, at, capture=(), set=None, hits=1, timeout=40):
+        """One stateless request: stop at `path:line`, capture, optionally set, report."""
+        return self.call(
+            "probe", at=at, capture=list(capture), set=dict(set or {}), hits=hits, timeout=timeout
+        )
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

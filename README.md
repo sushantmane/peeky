@@ -33,6 +33,29 @@ pytest tests/unit tests/integration
 
 Python 3.11+ is required. Run commands from the repository root.
 
+## One-shot probes (stateless)
+
+Ask one question with one command. Peeky builds fresh, stops at the line, captures values, optionally changes locals, runs to completion, prints a table and cleans up. No session to manage:
+
+```sh
+peeky-probe --root examples --at pagination_bug.py:8 --capture start,page,items[1] --set start=0
+```
+
+```text
+hit  phase      line  selector  type  value
+1    observed   8     start     int   3
+1    observed   8     page      int   1
+1    observed   8     items[1]  int   20
+1    after-set  8     start     int   0
+...
+set start: 3 -> 0
+status: completed  hits: 1  seconds: 1.0
+output:
+  PAGE: [10, 20, 30]
+```
+
+The same works for compiled targets with their trusted configuration (`--rust-config`, `--native-config`, `--java-config`). Rust `Option<i32>` values print as `Some(3)`/`None`. Add `--json` for the full result, `--hits N` to capture repeated stops. Remote agents send the same request as one HTTP call: `Client(url, token).probe("pagination_bug.py:8", ["start"], {"start": "0"})`. Selectors are dotted paths (`request.page`, `args[0]`), never evaluated expressions. Interventions are evidence about that run, not a verified fix. Interactive sessions below remain available for step-by-step exploration. See [ADR 0004](docs/adr/0004-stateless-probes.md).
+
 For a live investigation, install and sign in to Codex CLI, then choose a model available to your CLI account:
 
 ```sh
