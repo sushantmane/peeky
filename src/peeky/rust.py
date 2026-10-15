@@ -17,6 +17,7 @@ import re
 import shutil
 import sys
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -41,6 +42,44 @@ _SUMMARY = re.compile(
     r"test result: (ok|FAILED)\. ([0-9]{1,6}) passed; ([0-9]{1,6}) failed; ([0-9]{1,6}) ignored; "
     r"([0-9]{1,6}) measured; ([0-9]{1,6}) filtered out; finished in [0-9]{1,6}\.[0-9]{1,3}s"
 )
+
+
+def _candidate_diagnostic(result, sources):
+    """Retry only complete structured rustc errors attached to declared source."""
+    if result.get("timed_out") or result.get("output_limit_exceeded"):
+        return False
+    try:
+        messages = [json.loads(line) for line in result.get("stdout", "").splitlines() if line]
+    except (ValueError, TypeError, AttributeError):
+        return False
+    if not messages or not all(isinstance(item, dict) for item in messages):
+        return False
+    endings = [item for item in messages if item.get("reason") == "build-finished"]
+    if len(endings) != 1 or messages[-1] != endings[0] or endings[0].get("success") is not False:
+        return False
+    qualified = False
+    for item in messages:
+        if not isinstance(item, dict) or item.get("reason") != "compiler-message":
+            continue
+        message = item.get("message")
+        if not isinstance(message, dict):
+            return False
+        if message.get("level") != "error":
+            continue
+        if "internal compiler error" in str(message.get("message", "")).lower():
+            return False
+        spans = message.get("spans", [])
+        if not isinstance(spans, list):
+            return False
+        if not any(
+            isinstance(span, dict)
+            and span.get("is_primary") is True
+            and span.get("file_name") in sources
+            for span in spans
+        ):
+            return False
+        qualified = True
+    return qualified
 
 
 def _absolute_tool(path, label):
@@ -125,6 +164,8 @@ def libtest_summary(result):
         and summary["status"] == "ok"
         and summary["passed"] > 0
         and summary["failed"] == 0
+        and summary["ignored"] == 0
+        and summary["measured"] == 0
         and summary["filtered_out"] == 0
     )
     return {"summary": summary, "passed": clean}
@@ -170,6 +211,7 @@ class RustTarget:
             _absolute_tool(self.dsymutil, "dsymutil")
 
     language = "rust"
+    launch_budget_s = 30
 
     @property
     def verification_inputs(self):
@@ -217,7 +259,7 @@ class RustTarget:
         # rustc runs dsymutil from PATH for packed macOS symbols; prefer the declared one.
         tools = [str(Path(rustc).parent)]
         if sys.platform == "darwin" and self.dsymutil is not None:
-            tools.append(str(Path(_absolute_tool(self.dsymutil, "dsymutil")).parent))
+            tools.insert(0, str(Path(_absolute_tool(self.dsymutil, "dsymutil")).parent))
         env = {
             "PATH": ":".join((*dict.fromkeys(tools), "/usr/bin", "/bin")),
             "CARGO_HOME": ".peeky-cargo-home",
@@ -235,7 +277,7 @@ class RustTarget:
             env["SDKROOT"] = str(sdk)
         return env
 
-    def prepare(self, program, root, *, edit=None):
+    def prepare(self, program, root, *, edit=None, deadline=None):
         root = Path(root).resolve(strict=True)
         relative = Path(program).resolve(strict=True).relative_to(root).as_posix()
         if relative not in self.sources:
@@ -250,7 +292,16 @@ class RustTarget:
             _absolute_tool(self.linker, "linker"),
         )
         build = Command(
-            (cargo, "build", "--offline", "--locked", "--bin", cargo_inputs.binary), timeout_s=120
+            (
+                cargo,
+                "build",
+                "--offline",
+                "--locked",
+                "--message-format=json",
+                "--bin",
+                cargo_inputs.binary,
+            ),
+            timeout_s=120,
         )
         # Compiles only the frozen test target; the application is already fresh.
         tests = Command(
@@ -280,25 +331,49 @@ class RustTarget:
             tuple(probes),
             tuple(sorted(self._environment(rustc).items())),
         )
+
+        def validate_workspace(workspace, env):
+            assert_cargo_ancestry_clear(workspace)
+            staged = validate_cargo_inputs(workspace, sources=self.sources, tests=self.tests)
+            if staged != cargo_inputs:
+                raise RuntimeError("Staged Cargo target differs from validated configuration")
+            if sys.platform == "darwin":
+                actual = shutil.which("dsymutil", path=env["PATH"])
+                declared = _absolute_tool(self.dsymutil or "", "dsymutil")
+                if actual is None or str(Path(actual).resolve(strict=True)) != declared:
+                    raise RuntimeError("Cargo dsymutil PATH resolution differs from declared tool")
+
+        def validate_probes(probes):
+            versions = {probe.argv[0]: probe.stdout for probe in probes}
+            if not versions[rustc].startswith(f"rustc {self.rust_version} ") or not versions[
+                cargo
+            ].startswith(f"cargo {self.rust_version} "):
+                raise ValueError("Rust toolchain does not match the pinned version")
+
         # Cargo also reads ancestor configuration; own a checked parent directory.
         parent = Path(tempfile.mkdtemp(prefix="peeky-rust-")).resolve()
         try:
             assert_cargo_ancestry_clear(parent)
             try:
-                prepared = prepare(recipe, root, parent=parent, edit=edit)
+                prepared = prepare(
+                    recipe,
+                    root,
+                    parent=parent,
+                    edit=edit,
+                    validate_workspace=validate_workspace,
+                    validate_probes=validate_probes,
+                    deadline=deadline,
+                )
             except BuildCommandError as exc:
-                if exc.command != build.argv:
-                    raise RuntimeError("Rust toolchain command failed") from exc
+                if exc.command != build.argv or not _candidate_diagnostic(exc.result, self.sources):
+                    raise RuntimeError(
+                        "Rust preparation failed without a qualified source diagnostic"
+                    ) from exc
                 raise
         except BaseException:
             shutil.rmtree(parent, ignore_errors=True)
             raise
         try:
-            versions = {probe.argv[0]: probe.stdout for probe in prepared.manifest.probes}
-            if not versions[rustc].startswith(f"rustc {self.rust_version} ") or not versions[
-                cargo
-            ].startswith(f"cargo {self.rust_version} "):
-                raise ValueError("Rust toolchain does not match the pinned version")
             crate = cargo_inputs.binary.replace("-", "_")
             names = [item.path for item in prepared.manifest.artifacts if item.path != uplift]
             binary, symbols, test_binary = (
@@ -316,14 +391,19 @@ class RustTarget:
                 entrypoint=cargo_inputs.entrypoint,
                 crate=crate,
                 declared=self.sources,
+                deadline=deadline,
             )
-            identity = module_identity(dwarfdump, binary, symbols, prepared.workspace, env)
+            identity = module_identity(
+                dwarfdump, binary, symbols, prepared.workspace, env, deadline=deadline
+            )
             session = RustSession(
                 self, prepared, adapter, lines, identity, binary, symbols, layouts, parent
             )
             session.test_binary = test_binary
             session.test_target = prepared.workspace / uplift
             session.assert_current()
+            if deadline is not None and time.monotonic() >= deadline:
+                raise TimeoutError("Rust preparation deadline exceeded")
             return session
         except BaseException:
             prepared.cleanup()
@@ -400,3 +480,4 @@ class RustVerification(CompiledVerification):
     """Independent checker plus the prepared Cargo integration test; both must pass."""
 
     language = "rust"
+    launch_budget_s = 30

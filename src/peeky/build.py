@@ -13,7 +13,8 @@ import math
 import os
 import shutil
 import tempfile
-from dataclasses import asdict, dataclass
+import time
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path, PurePosixPath
 
 # Inherited flags (JAVA_TOOL_OPTIONS, CFLAGS, etc.) require explicit declaration.
@@ -288,12 +289,32 @@ def _run(command, workspace, env):
     return ToolIdentity(str(executable), digest), result
 
 
-def prepare(recipe, source_root, *, parent=None, edit=None):
+def _assert_tools(tools):
+    try:
+        unchanged = all(_digest(Path(tool.path))[0] == tool.sha256 for tool in tools)
+    except (OSError, ValueError) as exc:
+        raise RuntimeError("Previously probed toolchain executable changed") from exc
+    if not unchanged:
+        raise RuntimeError("Previously probed toolchain executable changed")
+
+
+def prepare(
+    recipe,
+    source_root,
+    *,
+    parent=None,
+    edit=None,
+    validate_workspace=None,
+    validate_probes=None,
+    deadline=None,
+):
     """Copy declared inputs to a fresh workspace, build, and retain a manifest.
 
     An optional single SourceEdit preserves the original relative filename.
     Callers own cleanup (or use the returned PreparedRun as a context manager).
-    Build failures clean their temporary workspace automatically.
+    Build failures clean their temporary workspace automatically. Trusted optional
+    callbacks validate staged inputs/environment before each command and probe
+    outputs before compilation. deadline is an absolute monotonic command budget.
     """
     _validate(recipe)
     source_root = Path(source_root).resolve(strict=True)
@@ -321,16 +342,37 @@ def prepare(recipe, source_root, *, parent=None, edit=None):
         env = {key: os.environ[key] for key in INHERITED_ENV if key in os.environ}
         env.update(dict(recipe.environment))
         env.pop("DEBUG_TOKEN", None)
+
+        def run(command):
+            if validate_workspace is not None:
+                validate_workspace(workspace, env)
+            _assert_tools(tools)
+            if (
+                _files(source_root, recipe.inputs) != original
+                or _files(workspace, recipe.inputs) != inputs
+            ):
+                raise RuntimeError("Source provenance changed before build command")
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError("Build preparation deadline exceeded")
+                command = replace(command, timeout_s=min(command.timeout_s, remaining))
+            return _run(command, workspace, env)
+
         for command in recipe.toolchain_probes:
             try:
-                tool, result = _run(command, workspace, env)
+                tool, result = run(command)
             except BuildCommandError as exc:
                 raise RuntimeError(f"Toolchain probe failed: {command.argv[0]}") from exc
             tools.append(tool)
             probes.append(ProbeResult(command.argv, result["stdout"], result["stderr"]))
+        if validate_probes is not None:
+            validate_probes(tuple(probes))
         for command in recipe.build_commands:
-            tool, _ = _run(command, workspace, env)
+            tool, _ = run(command)
             tools.append(tool)
+        if deadline is not None and time.monotonic() >= deadline:
+            raise TimeoutError("Build preparation deadline exceeded")
         manifest = BuildManifest(
             1,
             _json_digest(asdict(recipe)),
@@ -348,6 +390,7 @@ def prepare(recipe, source_root, *, parent=None, edit=None):
         # A failed compiler is retryable only while both its staged inputs and
         # the original sources still match the identities captured before it ran.
         try:
+            _assert_tools(tools)
             try:
                 unchanged = (
                     _files(source_root, recipe.inputs) == original

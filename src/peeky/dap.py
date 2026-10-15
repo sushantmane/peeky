@@ -62,6 +62,7 @@ class DAP:
         self.write_lock = threading.Lock()
         self.close_lock = threading.Lock()
         self.closed = False
+        self.deadline = None
         self.process = subprocess.Popen(
             command,
             stdin=subprocess.PIPE,
@@ -118,14 +119,22 @@ class DAP:
             self.error = self.error or str(exc)
             self.condition.notify_all()
 
+    def _bounded_deadline(self, timeout):
+        deadline = time.monotonic() + timeout
+        if self.deadline is not None:
+            deadline = min(deadline, self.deadline)
+            if self.deadline <= time.monotonic():
+                raise TimeoutError("Debugger launch deadline exceeded")
+        return deadline
+
     def send(self, command, arguments=None, timeout=5):
         """Write one complete frame within a deadline, or poison the transport.
 
         Never hold the response/event condition while waiting for pipe capacity.
         A partial write is an uncertain request: callers must close the session.
         """
-        deadline = time.monotonic() + timeout
-        if not self.write_lock.acquire(timeout=max(0, timeout)):
+        deadline = self._bounded_deadline(timeout)
+        if not self.write_lock.acquire(timeout=max(0, deadline - time.monotonic())):
             exc = TimeoutError("Debugger write lock timed out; outcome may be uncertain")
             self._fail(exc)
             raise exc
@@ -165,7 +174,7 @@ class DAP:
             self.write_lock.release()
 
     def response(self, seq, timeout=15):
-        deadline = time.monotonic() + timeout
+        deadline = self._bounded_deadline(timeout)
         with self.condition:
             while seq not in self.responses:
                 if self.error:
@@ -183,7 +192,7 @@ class DAP:
         return self.response(self.send(command, arguments))
 
     def wait_event(self, names, after=0, timeout=15, *, failed_request=None):
-        deadline = time.monotonic() + timeout
+        deadline = self._bounded_deadline(timeout)
         with self.condition:
             while True:
                 response = self.responses.get(failed_request)
@@ -210,6 +219,7 @@ class DAP:
             if self.closed:
                 return
             self.closed = True
+            self.deadline = None  # Cleanup has its own bounded grace period.
             if self.process.poll() is None:
                 try:
                     seq = self.send("disconnect", {"terminateDebuggee": True}, timeout=0.25)

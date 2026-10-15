@@ -212,13 +212,16 @@ def elf_build_id(binary):
         return identities.pop()
 
 
-def module_identity(dwarfdump, binary, symbols, workspace, env):
+def module_identity(dwarfdump, binary, symbols, workspace, env, *, deadline=None):
     """Mach-O binary/dSYM UUID equality or the ELF GNU build ID."""
     if sys.platform != "darwin":
         return elf_build_id(binary)
     identities = []
     for artifact in (binary, symbols):
-        output = _metadata(dwarfdump, ["--uuid", str(artifact)], workspace, env)
+        remaining = 15 if deadline is None else min(15, deadline - time.monotonic())
+        if remaining <= 0:
+            raise TimeoutError("Native identity launch deadline exceeded")
+        output = _metadata(dwarfdump, ["--uuid", str(artifact)], workspace, env, timeout=remaining)
         found = re.findall(r"UUID:\s+([0-9A-Fa-f-]+)\s+\(", output)
         if len(found) != 1 or len(found[0].replace("-", "")) != 32:
             raise ValueError("Expected one native UUID")

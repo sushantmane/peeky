@@ -1,6 +1,6 @@
 # Autonomous execution checkpoint
 
-Updated: 2026-10-14. Repository: https://github.com/sushantmane/peeky (private).
+Updated: 2026-10-15. Repository: https://github.com/sushantmane/peeky (private).
 
 ## Direction and authorization
 
@@ -20,21 +20,15 @@ An hourly thread heartbeat (`continue-peeky-mvp`) checks for available usage and
 
 ## Active slice
 
-Branch `feat/rust-worker` (pushed to origin; **no PR yet**: the Copilot app's PR tool reported the project's GitHub account must be re-linked, and it was not bypassed). CI was run with `workflow_dispatch` on the branch head. Commits on top of merged #22 (`4bb493d`):
+Rust worker and full repair loop are in draft PR #23 (`feat/rust-worker`, baseline `9985257`). Copilot owns the original checkout. Codex review fixes are isolated on `fix/rust-review`, based on that commit, to avoid overlapping edits. Do not reset or switch the original checkout.
 
-- `5ef785f` application-unit Rust symbols and active `Option<i32>` views (RUST_PLAN steps 1–2).
-- `09820c6` LLDB `$variant$<discr_value>` binding (from LLDB 18 `ParseRustVariantPart`).
-- `48e7429` experimental `RustTarget`/`RustSession` and `--rust-config` HTTP worker (step 3).
-- `2e587fa` adversarial-review hardening (see review below).
-- `bd2ade2` ADR 0004: stateless probes alongside sessions (owner direction).
+Delivered on the pending branch: application-unit DWARF extraction, active `Option<i32>` views, guarded HTTP worker, fixed offline/locked Cargo compilation, direct prepared integration-test execution, and independent checker conjunction. The real repair sequence rejects invalid syntax and a compiled-test-passing overfit before accepting the general fix. This remains unmerged pending exact-head CI and review.
 
-Delivered behavior: symbols come only from compile units whose recorded `comp_dir` equals the fresh workspace and whose name binds the declared crate root. Each table is dumped by exact offset into the unchanged 2 MiB parser (Linux 4,808,912-byte full dump avoided; C/C++ limits untouched). Enum layouts are read from the same unit with base types resolved through referenced DIEs. Only `Option<i32>` is shown as `Some(n)`/`None`, reading only the active payload; other data-carrying enums are opaque, and raw `$variants$` storage is never expandable. The worker builds offline/locked with real sysroot cargo/rustc, a checked owned parent, controlled env and hashed `target/debug/deps`. Mutation is limited to root `int` (i32) locals, and symbol-file scripts are disabled. **Not delivered:** Cargo compiled-test execution, independent candidate repair verification (step 4), an end-to-end Rust investigation (step 5), and non-i32 Option payloads.
+The isolated follow-up fixes bind Cargo policy to staged inputs, validate pinned versions before compilation, enforce declared dsymutil resolution, recheck helper identities on failed builds, and distinguish qualified source diagnostics from infrastructure failure. Ignored/measured tests cannot pass. A shared 30-second Rust launch budget covers preparation, symbols and DAP handshake, with separately bounded cleanup; this is not arbitrary client-disconnect cancellation.
 
-Checks on `bd2ade2` (run 38666345665): all nine lanes passed; Rust 43 s, C 51 s, Java 53 s (longest), C++ 39 s, unit 21 s, Python 17/19 s, quality 9 s, wheel 21 s. Linux Rust tests 8.73 s total: raw probe 3.44 s (symbols 0.242 s), HTTP worker flow 1.88 s, drift 1.31 s, compile failure 0.54 s. Local macOS (Apple LLVM 21): 399 unit tests in 5.17 s; `tests/rust` 4 passed in 4.40 s; symbols 0.063 s versus 0.433 s for the former full-dump parse. Earlier heads `5ef785f` (run 38664786468) and `48e7429` (run 38665951115) also passed all nine lanes.
+Independent adversarial review and dispositions: `reviews/RUST_REPAIR_REVIEW.md`; earlier findings: `reviews/RUST_WORKER_FOLLOWUP.md`. Local isolated validation explicitly uses `PYTHONPATH=$PWD/src` because the shared venv editable install points at the original checkout: 441 unit tests passed in 9.03 seconds; all six real Rust tests passed in 20.72 seconds (general repair sequence 8.37 seconds); Ruff check and format passed. These are local timings, not hosted CI evidence.
 
-Review: an independent adversarial review of `5ef785f` found 2 blocking and 5 should-fix issues. Dispositions: inactive payload swap → each `value` child must carry its own variant type; label-trusted base types → resolved via referenced DIEs (name/encoding/size); truncated/unterminated DIE trees → explicit NULL closure and EOF check; positional `$variant$N` → bound to discriminant values; offset-width indentation → depth-based; `comp_dir` resolve aliases → exact string; per-call timeouts → one shared 30 s deadline. All have regressions. A follow-up review of `48e7429` and the fixes was started but stalled without reporting. Rerun it and record its findings before merging.
-
-Next: open the PR once the account is re-linked (or manually), record the follow-up review, merge only after verifying every lane on the final head. Then RUST_PLAN step 4: `cargo test --no-run` with bounded JSON artifact parsing, exact prepared test execution with pre/post identity checks, unchanged Python checker, and the invalid/overfit/general candidate sequence (step 5).
+Next: validate all nine parallel CI lanes on the fix commit, integrate the isolated follow-up into PR #23 without overwriting active Copilot work, then verify all checks on PR #23's final head before merging. Language support alone does not complete the MVP: lifecycle, corpus, separate-host and evidence-correlation acceptance remain.
 
 ## Next slices
 

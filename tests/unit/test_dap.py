@@ -17,6 +17,7 @@ def transport():
     dap.output_truncated = False
     dap.event_sequence = 0
     dap.error = None
+    dap.deadline = None
     return dap
 
 

@@ -362,10 +362,16 @@ def enum_layouts(text, unit):
     return layouts
 
 
-def application_symbols(dwarfdump, symbols, workspace, env, *, entrypoint, crate, declared):
+def application_symbols(
+    dwarfdump, symbols, workspace, env, *, entrypoint, crate, declared, deadline=None
+):
     """Return declared-source lines and enum layouts from application units only."""
     workspace = Path(workspace).resolve(strict=True)
-    deadline = _clock() + SYMBOL_DEADLINE_S
+    deadline = (
+        min(deadline, _clock() + SYMBOL_DEADLINE_S)
+        if deadline is not None
+        else _clock() + SYMBOL_DEADLINE_S
+    )
 
     def dump(arguments):
         remaining = deadline - _clock()

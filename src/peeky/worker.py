@@ -141,10 +141,16 @@ class DebugWorker:
             self.session = uuid.uuid4().hex
             self.audit = []
             self.breakpoint_events = []
+            budget = getattr(self.adapter, "launch_budget_s", None)
+            deadline = time.monotonic() + budget if budget is not None else None
             try:
-                self.runtime = runtime = self.adapter.prepare(program, self.root)
+                preparation = {} if deadline is None else {"deadline": deadline}
+                self.runtime = runtime = self.adapter.prepare(program, self.root, **preparation)
                 runtime.assert_current()
+                if deadline is not None and time.monotonic() >= deadline:
+                    raise TimeoutError("Launch preparation deadline exceeded")
                 self.dap = DAP(command=runtime.command, env=getattr(runtime, "environment", None))
+                self.dap.deadline = deadline
                 capabilities = self.dap.request(
                     "initialize",
                     runtime.initialize_args(),
@@ -165,6 +171,9 @@ class DebugWorker:
                 self.dap.request("configurationDone")
                 self.dap.response(launch)
                 runtime.assert_current()
+                if deadline is not None and time.monotonic() >= deadline:
+                    raise TimeoutError("Launch deadline exceeded")
+                self.dap.deadline = None
                 self.state = "running"
                 self.cursor = 0
                 return {
