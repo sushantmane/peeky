@@ -190,3 +190,10 @@ def test_probe_reports_progress_on_stderr_only(workspace, capsys):
     assert "peeky: hit 1/1" in out.err and "program finished" in out.err
     code, out = run(capsys, "probe", workspace / "pagination_bug.py", "--at", "8", "--quiet")
     assert code == 0 and out.err == ""
+
+
+def test_cli_errors_are_machine_readable_with_json(workspace, capsys):
+    code, out = run(capsys, "session", "inspect", "--name", "missing", "--json")
+    payload = json.loads(out.out)["error"]
+    assert code == 2 and payload["code"] == "NO_SESSION" and payload["hint"]
+    assert "[NO_SESSION]" in out.err and "hint:" in out.err

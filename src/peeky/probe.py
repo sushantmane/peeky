@@ -258,12 +258,22 @@ def run_probe(root, probe, *, adapter=None, progress=None):
             output_truncated=report["output_truncated"],
         )
         if status == "no-stop":
+            result["error_code"] = "NO_STOP"
+            result["hint"] = "Pick a line the program executes; see `peeky describe`."
             result["error"] = (
                 f"The program finished without stopping at {probe.program}:{probe.line}; "
                 "check `peeky describe` for executable lines"
             )
     except Exception as exc:
-        result.update(status="failed", error=f"{type(exc).__name__}: {exc}")
+        from peeky.errors import classify
+
+        payload = classify(exc)
+        result.update(
+            status="failed",
+            error=f"{type(exc).__name__}: {exc}",
+            error_code=payload["code"],
+            hint=payload["hint"],
+        )
     finally:
         worker.close()
     result.update(

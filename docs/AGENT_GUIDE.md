@@ -31,3 +31,7 @@ Targets: a `.py` file, a `.c`/`.cpp` file, a Cargo crate directory, or any targe
 5. Report the observation, the intervention and its effect, the edit, and the verify result. Quote the commands.
 
 If `verify` fails at `stage: build`, read the compiler diagnostics and try again. Provenance or toolchain errors are fatal: stop and report them.
+
+## When something fails
+
+Errors have a stable `code`, a `hint`, `retryable` and `session_closed` (see [ERRORS.md](ERRORS.md)). Use `--json` to read them. Follow the hint. Never repeat a `set`/mutation after `TIMEOUT` or `DEBUGGER_ERROR`; the outcome is uncertain, so start a new session instead. `NO_STOP` from a probe means your line never ran: choose another from `describe`.

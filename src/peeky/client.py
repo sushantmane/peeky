@@ -3,7 +3,10 @@
 import argparse
 import json
 import os
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
+
+from peeky.errors import PeekyError
 
 
 class Client:
@@ -17,8 +20,17 @@ class Client:
             data=json.dumps(arguments).encode(),
             headers={"Authorization": "Bearer " + self.token, "Content-Type": "application/json"},
         )
-        with urlopen(request, timeout=45) as response:
-            return json.load(response)
+        try:
+            with urlopen(request, timeout=45) as response:
+                return json.load(response)
+        except HTTPError as exc:
+            try:
+                body = json.loads(exc.read() or b"{}")
+            except ValueError:
+                raise exc from None
+            if isinstance(body, dict) and isinstance(body.get("error"), dict):
+                raise PeekyError(exc.url, exc.code, exc.headers, body["error"]) from None
+            raise
 
     def probe(self, at, capture=(), set=None, hits=1, timeout=40):
         """One stateless request: stop at `path:line`, capture, optionally set, report."""

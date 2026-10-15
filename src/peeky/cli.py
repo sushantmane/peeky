@@ -654,7 +654,13 @@ def main(argv=None):
     try:
         return handlers[args.command](args)
     except (OSError, ValueError, RuntimeError, KeyError) as exc:
-        print(f"peeky: {exc}", file=sys.stderr)
+        from peeky.errors import classify
+
+        payload = classify(exc, session_closed=False if isinstance(exc, ValueError) else None)
+        if getattr(args, "json", False):
+            print(json.dumps({"error": payload}, indent=2))
+        print(f"peeky: [{payload['code']}] {payload['message']}", file=sys.stderr)
+        print(f"  hint: {payload['hint']}", file=sys.stderr)
         return 2
 
 

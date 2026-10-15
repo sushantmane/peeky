@@ -14,8 +14,27 @@ from pathlib import Path
 
 from peeky.adapters import PythonAdapter, ViewBudgetExhausted
 from peeky.dap import DAP, ResponseTimeout
+from peeky.errors import _RULES, PROTOCOL_VERSION, classify
 
 VIEW_SECONDS = 10
+
+
+OPERATIONS = frozenset(
+    {
+        "launch",
+        "wait",
+        "inspect",
+        "expand",
+        "set_variable",
+        "breakpoints",
+        "continue",
+        "report",
+        "close",
+        "probe",
+        "shutdown",
+        "version",
+    }
+)
 
 
 class DebugWorker:
@@ -206,6 +225,7 @@ class DebugWorker:
                     "source_sha256": hashlib.sha256(program.read_bytes()).hexdigest(),
                     "supports_set_variable": self.capabilities.get("supports_set_variable", False),
                     "supports_expand": True,
+                    "protocol": PROTOCOL_VERSION,
                     "artifact_manifest_id": runtime.manifest_id,
                     "source_manifest": getattr(runtime, "source_manifest", None),
                     "target_identity": getattr(runtime, "target_identity", None),
@@ -646,7 +666,19 @@ def make_server(root, token, port=8765, *, adapter=None):
 
         def do_POST(self):
             if not hmac.compare_digest(self.headers.get("Authorization", ""), "Bearer " + token):
-                self.reply(401, {"error": "Unauthorized"})
+                self.reply(
+                    401,
+                    {
+                        "error": {
+                            "code": "UNAUTHORIZED",
+                            "message": "Missing or wrong bearer token",
+                            "hint": "Use the DEBUG_TOKEN the worker was started with.",
+                            "retryable": False,
+                            "session_closed": False,
+                        },
+                        "protocol": PROTOCOL_VERSION,
+                    },
+                )
                 return
             try:
                 size = int(self.headers.get("Content-Length", 0))
@@ -657,7 +689,16 @@ def make_server(root, token, port=8765, *, adapter=None):
                 if not isinstance(args, dict):
                     raise ValueError("Expected a JSON object")
                 operation = self.path.removeprefix("/")
-                if operation == "shutdown":
+                if operation == "version":
+                    result = {
+                        "protocol": PROTOCOL_VERSION,
+                        "operations": sorted(OPERATIONS),
+                        "error_codes": sorted(
+                            {rule[1] for rule in _RULES}
+                            | {"DEBUGGER_ERROR", "INVALID_REQUEST", "UNAUTHORIZED"}
+                        ),
+                    }
+                elif operation == "shutdown":
                     # Token-authenticated: only the owner of this worker can stop it.
                     with worker.lock:
                         worker.close()
@@ -669,14 +710,18 @@ def make_server(root, token, port=8765, *, adapter=None):
                     )
                 self.reply(200, result)
             except (KeyError, TypeError, ValueError) as exc:
-                self.reply(400, {"error": str(exc)})
+                self.reply(
+                    400,
+                    {"error": classify(exc, session_closed=False), "protocol": PROTOCOL_VERSION},
+                )
             except Exception as exc:
-                self.reply(500, {"error": str(exc)})
+                self.reply(500, {"error": classify(exc), "protocol": PROTOCOL_VERSION})
 
         def reply(self, status, body):
             encoded = json.dumps(body).encode()
             self.send_response(status)
             self.send_header("Content-Type", "application/json")
+            self.send_header("X-Peeky-Protocol", str(PROTOCOL_VERSION))
             self.send_header("Content-Length", str(len(encoded)))
             self.end_headers()
             self.wfile.write(encoded)
