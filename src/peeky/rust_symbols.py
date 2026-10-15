@@ -379,7 +379,8 @@ def _option_value(variable, fetch, layout, kind):
         raise ValueError("Rust enum storage type mismatch")
     variants = _named(
         fetch(_reference_of(inner)),
-        [f"$variant${index}" for index in range(len(layout["variants"]))],
+        # LLDB names each variant field after its DW_AT_discr_value, in DWARF order.
+        [f"$variant${value}" for value, _ in layout["variants"]],
     )
     discriminants, values = set(), {}
     for (_, name), child in zip(layout["variants"], variants):

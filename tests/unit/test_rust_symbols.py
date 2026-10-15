@@ -386,13 +386,13 @@ LAYOUTS = {
 }
 
 
-def raw_option(discriminants=("1", "1"), payload=None):
+def raw_option(discriminants=("1", "1"), payload=None, names=("$variant$0", "$variant$1")):
     inner = f"{OPTION}::{OPTION}$Inner"
     children = {
         7: [{"name": "$variants$", "type": inner, "variablesReference": 13}],
         13: [
-            {"name": "$variant$0", "type": inner + "::None$Variant", "variablesReference": 14},
-            {"name": "$variant$1", "type": inner + "::Some$Variant", "variablesReference": 15},
+            {"name": names[0], "type": inner + "::None$Variant", "variablesReference": 14},
+            {"name": names[1], "type": inner + "::Some$Variant", "variablesReference": 15},
         ],
         14: [
             {"name": "$discr$", "type": "unsigned int", "value": discriminants[0]},
@@ -435,12 +435,16 @@ def test_active_variant_reads_only_the_compiled_active_payload():
     assert not {17, 19} & set(seen)
 
 
-def test_active_variant_uses_dwarf_mapping_not_debugger_child_order():
+def test_active_variant_binds_debugger_variant_names_to_dwarf_discriminants():
     layouts = {OPTION: {**LAYOUTS[OPTION], "variants": [[5, "None"], [9, "Some"]]}}
-    variable, children = raw_option(("9", "9"))
+    named = ("$variant$5", "$variant$9")
+    variable, children = raw_option(("9", "9"), names=named)
     assert active_variant(variable, fetcher(children)[0], layouts)["value"] == "Some(3)"
-    variable, children = raw_option(("1", "1"))
-    assert active_variant(variable, fetcher(children)[0], layouts)["value"] == UNVERIFIED
+    variable, children = raw_option(("5", "5"), names=named)
+    assert active_variant(variable, fetcher(children)[0], layouts)["value"] == "None"
+    for discriminants, names in ((("1", "1"), named), (("9", "9"), ("$variant$0", "$variant$1"))):
+        variable, children = raw_option(discriminants, names=names)
+        assert active_variant(variable, fetcher(children)[0], layouts)["value"] == UNVERIFIED
 
 
 def test_non_enum_and_unqualified_enum_values_do_not_fetch_raw_storage():
@@ -470,6 +474,7 @@ def corrupt(children, reference, index_, **changes):
     "mutate",
     [
         lambda c: corrupt(c, 7, 0, name="$variant$"),
+        lambda c: corrupt(c, 13, 1, name="$variant$"),
         lambda c: corrupt(c, 7, 0, type="other"),
         lambda c: {**c, 7: c[7] * 2},
         lambda c: corrupt(c, 13, 0, type="wrong$Variant"),
