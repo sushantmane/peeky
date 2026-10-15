@@ -75,16 +75,16 @@ def test_http_probe_is_stateless_and_single_flight(program, monkeypatch):
             assert rejected.value.code == 400
         gate = threading.Event()
         release = threading.Event()
-        import peeky.probe as probe_module
+        import peeky.worker as worker_module
 
-        real = probe_module.run_probe
+        real = worker_module._run_probe_process
 
         def slow(*args, **kwargs):
             gate.set()
             release.wait(10)
             return real(*args, **kwargs)
 
-        monkeypatch.setattr(probe_module, "run_probe", slow)
+        monkeypatch.setattr(worker_module, "_run_probe_process", slow)
         first = threading.Thread(target=client.probe, args=("pagination_bug.py:8",))
         first.start()
         assert gate.wait(10)
@@ -97,3 +97,20 @@ def test_http_probe_is_stateless_and_single_flight(program, monkeypatch):
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
+
+
+def test_http_probe_process_is_hard_capped_and_cleaned(tmp_path):
+    import subprocess
+    import time
+
+    from peeky.worker import _run_probe_process
+
+    (tmp_path / "slow.py").write_text("import time\ntime.sleep(60)\nprint('done')\n")
+    started = time.monotonic()
+    result = _run_probe_process(tmp_path, Probe("slow.py", 3, ("time",), timeout=30), None, 3)
+    assert result["status"] == "timeout" and time.monotonic() - started < 12
+    time.sleep(1)
+    leftover = subprocess.run(
+        ["pgrep", "-f", str(tmp_path / "slow.py")], capture_output=True, text=True
+    ).stdout
+    assert leftover == ""

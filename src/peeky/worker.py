@@ -140,7 +140,15 @@ class DebugWorker:
 
     def _dispatch(self, operation, args):
         runtime = self.runtime or self.adapter
-        if operation in {"inspect", "expand", "set_variable", "breakpoints", "continue"}:
+        if operation in {
+            "wait",
+            "inspect",
+            "expand",
+            "set_variable",
+            "breakpoints",
+            "continue",
+            "report",
+        }:
             runtime.assert_current()
         if operation == "launch":
             if self.dap:
@@ -230,6 +238,8 @@ class DebugWorker:
                 updates["breakpoint_events"] = list(self.breakpoint_events)
                 if time.monotonic() >= deadline:
                     return {"state": self.state, "timed_out": True, **updates}
+            # Rebuilt classes or edited sources while running invalidate the evidence.
+            runtime.assert_current()
             self.state = event["event"]
             self.frames.clear()
             self.references.clear()
@@ -605,13 +615,12 @@ def make_server(root, token, port=8765, *, adapter=None):
     probes = threading.Semaphore(1)
 
     def probe(args):
-        # Stateless: a separate single-use worker; nothing survives the request.
-        from peeky.probe import HTTP_PROBE_SECONDS, Probe, run_probe
+        # Stateless and hard-bounded: a separate process with its own worker, killed at
+        # the cap so an HTTP client timeout can never leave work holding the slot.
+        from peeky.probe import HTTP_PROBE_SECONDS, Probe, parse_location
 
         if set(args) - {"at", "capture", "set", "hits", "timeout"}:
             raise ValueError("Unknown probe field")
-        from peeky.probe import parse_location
-
         program, line = parse_location(args.get("at"))
         changes = args.get("set", {})
         if not isinstance(changes, dict) or not isinstance(args.get("capture", []), list):
@@ -622,12 +631,12 @@ def make_server(root, token, port=8765, *, adapter=None):
             tuple(args.get("capture", [])),
             tuple(changes.items()),
             args.get("hits", 1),
-            min(args.get("timeout", HTTP_PROBE_SECONDS), HTTP_PROBE_SECONDS),
+            min(args.get("timeout", HTTP_PROBE_SECONDS), HTTP_PROBE_SECONDS - 5),
         )
         if not probes.acquire(blocking=False):
             raise ValueError("Another probe is running; retry later")
         try:
-            return run_probe(root, request, adapter=adapter)
+            return _run_probe_process(Path(root).resolve(), request, adapter, HTTP_PROBE_SECONDS)
         finally:
             probes.release()
 
@@ -648,7 +657,16 @@ def make_server(root, token, port=8765, *, adapter=None):
                 if not isinstance(args, dict):
                     raise ValueError("Expected a JSON object")
                 operation = self.path.removeprefix("/")
-                result = probe(args) if operation == "probe" else worker.dispatch(operation, args)
+                if operation == "shutdown":
+                    # Token-authenticated: only the owner of this worker can stop it.
+                    with worker.lock:
+                        worker.close()
+                    threading.Thread(target=server.shutdown, daemon=True).start()
+                    result = {"state": "shutdown"}
+                else:
+                    result = (
+                        probe(args) if operation == "probe" else worker.dispatch(operation, args)
+                    )
                 self.reply(200, result)
             except (KeyError, TypeError, ValueError) as exc:
                 self.reply(400, {"error": str(exc)})
@@ -666,6 +684,53 @@ def make_server(root, token, port=8765, *, adapter=None):
     server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     server.worker = worker
     return server
+
+
+def _run_probe_process(root, request, adapter, cap):
+    import dataclasses
+    import signal
+    import subprocess
+    import sys
+    import tempfile
+
+    command = [sys.executable, "-m", "peeky.cli", "probe", str(root), "--json"]
+    command += ["--at", f"{request.program}:{request.line}", "--hits", str(request.hits)]
+    command += ["--timeout", str(request.timeout)]
+    if request.capture:
+        command += ["--capture", ",".join(request.capture)]
+    for name, value in request.set:
+        command += ["--set", f"{name}={value}"]
+    with tempfile.TemporaryDirectory(prefix="peeky-probe-") as scratch:
+        if adapter is not None:
+            config = Path(scratch) / "target.json"
+            config.write_text(json.dumps(dataclasses.asdict(adapter), default=str))
+            config.chmod(0o600)
+            command += ["--config", str(config)]
+        env = {k: v for k, v in os.environ.items() if k != "DEBUG_TOKEN"}
+        process = subprocess.Popen(
+            command,
+            cwd=root,
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+        try:
+            stdout, stderr = process.communicate(timeout=cap)
+        except subprocess.TimeoutExpired:
+            # SIGTERM lets the probe close its debugger and debuggee; then force.
+            os.killpg(process.pid, signal.SIGTERM)
+            try:
+                process.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                os.killpg(process.pid, signal.SIGKILL)
+                process.communicate()
+            return {"status": "timeout", "error": f"Probe exceeded the {cap} s HTTP cap"}
+    try:
+        return json.loads(stdout[: 4 * 1024 * 1024])
+    except json.JSONDecodeError:
+        return {"status": "failed", "error": stderr[-2000:].decode(errors="replace")}
 
 
 def load_java_target(path):

@@ -95,20 +95,81 @@ def test_session_names_cannot_escape_the_state_directory(workspace, capsys):
         assert code == 2 and "Session names" in out.err
 
 
-def test_close_never_signals_a_process_that_is_not_a_peeky_worker(workspace, capsys, monkeypatch):
+def stale_record(workspace, **changes):
     import os
 
     state = workspace / "state" / "sessions"
-    state.mkdir(parents=True)
+    state.mkdir(parents=True, exist_ok=True)
     record = {
         "name": "stale",
         "url": "http://127.0.0.1:9",
         "token": "t" * 32,
-        "session_id": "x",
+        "session_id": "a" * 32,
         "pid": os.getpid(),
+        **changes,
     }
-    (state / "stale.json").write_text(json.dumps(record))
+    path = state / "stale.json"
+    path.write_text(json.dumps(record))
+    path.chmod(0o600)
+    return path
+
+
+def test_close_uses_authenticated_shutdown_and_never_signals_pids(workspace, capsys, monkeypatch):
+    path = stale_record(workspace)
     signalled = []
-    monkeypatch.setattr("peeky.cli.os.killpg", lambda *args: signalled.append(args))
+    monkeypatch.setattr("os.killpg", lambda *args: signalled.append(args))
     assert run(capsys, "session", "close", "--name", "stale")[0] == 2
-    assert signalled == [] and not (state / "stale.json").exists()
+    assert signalled == [] and not path.exists()
+
+
+@pytest.mark.parametrize(
+    "changes, mode",
+    [({"url": "http://10.0.0.5:8765"}, 0o600), ({"session_id": "../x"}, 0o600), ({}, 0o644)],
+)
+def test_malformed_or_shared_session_records_are_refused(workspace, capsys, changes, mode):
+    path = stale_record(workspace, **changes)
+    path.chmod(mode)
+    code, out = run(capsys, "session", "inspect", "--name", "stale")
+    assert code == 2 and ("malformed" in out.err or "private" in out.err)
+
+
+def test_verify_cannot_write_outside_a_scratch_copy(workspace, capsys):
+    source = workspace / "pagination_bug.py"
+    original = source.read_text()
+    check = workspace / "verify_pagination.py"
+    for at in (str(source), "../pagination_bug.py"):
+        code, out = run(
+            capsys,
+            "verify",
+            workspace,
+            "--at",
+            at,
+            "--check",
+            check,
+            "--old",
+            "page * page_size",
+            "--new",
+            "(page - 1) * page_size",
+        )
+        assert source.read_text() == original
+        if at.startswith(".."):
+            assert code == 2 and "inside the target" in out.err
+        else:
+            assert code == 0 and "/candidate/" in out.out
+
+
+def test_probe_that_never_stops_is_not_success(workspace, capsys):
+    code, out = run(capsys, "probe", workspace / "pagination_bug.py", "--at", "6", "--capture", "x")
+    assert code == 1 and "status: no-stop" in out.out and "finished without stopping" in out.out
+
+
+def test_explicit_file_types_win_over_cargo_ancestors(workspace, capsys):
+    (workspace / "Cargo.toml").write_text('[package]\nname = "x"\n')
+    code, out = run(capsys, "describe", workspace / "pagination_bug.py", "--json")
+    assert code == 0 and json.loads(out.out)["language"] == "python"
+
+
+def test_session_timeouts_are_finite(workspace, capsys):
+    stale_record(workspace)
+    code, out = run(capsys, "session", "wait", "--name", "stale", "--timeout", "inf")
+    assert code == 2 and "--timeout" in out.err

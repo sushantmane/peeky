@@ -25,4 +25,4 @@ All existing guarantees are unchanged: fresh builds and provenance checks, stop/
 
 Agents can learn Peeky from `describe` and the guide, then call it the way they call `git` or `heappy`. Humans get the same commands. Session state lives in a local worker process and a `0600` record under `~/.peeky/sessions`. That record holds a loopback URL and a random token and must be treated as a credential.
 
-Next: Java attach to a JVM started by Gradle (`--debug-jvm`) so Venice end-to-end tests can be investigated, with provenance explicitly labeled as attached rather than freshly built.
+Java attach to a JVM started by Gradle (`--debug-jvm`) is delivered experimentally ([JAVA_ATTACH.md](../JAVA_ATTACH.md)) and has been exercised on a Venice end-to-end test. Its provenance is labeled `attached`, not freshly built. Session records are validated (loopback URL, hex session ID, `0600`, owned by you); `session close` stops the worker through a token-authenticated `shutdown` call and never signals PIDs.

@@ -11,9 +11,11 @@ trusted code, not a sandbox.
 
 import hashlib
 import json
+import os
 import re
 import shutil
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -24,6 +26,7 @@ from peeky.java_metadata import MAX_CLASS_BYTES, _class_metadata
 MAX_ATTACH_SOURCES = 64
 MAX_ATTACH_CLASSES = 2048
 MAX_ATTACH_BYTES = 64 * 1024 * 1024
+MAX_PACKAGE_ENTRIES = 20000
 _PACKAGE = re.compile(r"^\s*package\s+([A-Za-z_][\w]*(?:\.[A-Za-z_][\w]*)*)\s*;", re.MULTILINE)
 
 
@@ -34,14 +37,18 @@ def _inside(root, name, label):
     return path
 
 
-def attached_source_map(class_roots, sources):
+def attached_source_map(class_roots, sources, deadline=None):
     """Map only classes whose package and SourceFile identify a declared source.
 
     Only each declared source's package directory is read in every class root, so
     large projects stay bounded. Ambiguous or duplicate identities fail closed.
     """
-    packages, counts = {}, {}
+    packages, counts, source_bytes = {}, {}, 0
     for source in sources:
+        size = source.stat().st_size
+        source_bytes += size
+        if size > MAX_CLASS_BYTES or source_bytes > MAX_ATTACH_BYTES:
+            raise ValueError("Attached Java sources exceed their size limit")
         text = source.read_text(encoding="utf-8")
         match = _PACKAGE.search(text[:65536])
         package = match[1] if match else ""
@@ -56,7 +63,16 @@ def attached_source_map(class_roots, sources):
             directory = class_root.joinpath(*package.split(".")) if package else class_root
             if not directory.is_dir():
                 continue
-            for path in sorted(directory.glob("*.class")):
+            entries = []
+            with os.scandir(directory) as listing:
+                for entry in listing:
+                    if len(entries) >= MAX_PACKAGE_ENTRIES:
+                        raise ValueError("Package directory has too many entries to attach")
+                    if entry.name.endswith(".class"):
+                        entries.append(Path(entry.path))
+            for path in sorted(entries):
+                if deadline is not None and time.monotonic() >= deadline:
+                    raise TimeoutError("Java attach preparation exceeded its deadline")
                 if path.is_symlink() or not path.is_file():
                     raise ValueError("Class files must be regular files")
                 size = path.stat().st_size
@@ -92,7 +108,7 @@ class JavaAttachTarget:
     host: str = "127.0.0.1"
     timeout_ms: int = 10000
 
-    supports_deadline = False
+    supports_deadline = True
     language = "java"
 
     def __post_init__(self):
@@ -132,7 +148,7 @@ class JavaAttachTarget:
         if any(set(point) != {"line"} for point in points):
             raise ValueError("Java supports unconditional line breakpoints only")
 
-    def prepare(self, program, root, *, edit=None):
+    def prepare(self, program, root, *, edit=None, deadline=None):
         if edit is not None:
             raise ValueError("Attached JVMs cannot verify edits; verify with a fresh build")
         root = Path(root).resolve(strict=True)
@@ -144,7 +160,7 @@ class JavaAttachTarget:
         java = _tool(self.java)
         bundle = Path(self.bundle).resolve(strict=True)
         command, bundle_hash = _bundle(bundle, java)
-        mapping = attached_source_map(class_roots, sources)
+        mapping = attached_source_map(class_roots, sources, deadline)
         workspace = Path(tempfile.mkdtemp(prefix="peeky-java-attach-"))
         try:
             path = workspace / "peeky-source-map.json"

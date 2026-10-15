@@ -14,6 +14,7 @@ import json
 import os
 import re
 import secrets
+import select
 import shutil
 import signal
 import subprocess
@@ -29,10 +30,38 @@ from peeky.probe import Probe, _capture, _table, parse_selector, run_probe
 RUST_VERSION = "1.96.0"
 
 
+MAX_SESSION_SECONDS = 300
+
+
 def _state_dir():
     path = Path(os.environ.get("PEEKY_STATE_DIR", Path.home() / ".peeky")) / "sessions"
     path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    info = path.lstat()
+    if path.is_symlink() or info.st_uid != os.getuid():
+        raise ValueError(f"Session directory must be a real directory owned by you: {path}")
+    if info.st_mode & 0o077:
+        path.chmod(0o700)
     return path
+
+
+def _private_write(path, text):
+    """Atomically create or replace a 0600 file (session credentials, configs)."""
+    temporary = path.with_name(f".{path.name}.{secrets.token_hex(4)}")
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(descriptor, "w") as stream:
+        stream.write(text)
+    os.replace(temporary, path)
+
+
+def _confined(root, program):
+    """A program path relative to and inside the target root."""
+    if program is None:
+        return None
+    path = (root / program).resolve()
+    try:
+        return path.relative_to(root.resolve()).as_posix()
+    except ValueError:
+        raise ValueError("--at must name a file inside the target") from None
 
 
 def _which(*names):
@@ -136,6 +165,11 @@ def resolve(target, at=None, config=None):
             program, line = location, int(number)
         else:
             program = text
+    root, program, line, language, data = _resolve(path, program, line, config)
+    return root, _confined(root, program), line, language, data
+
+
+def _resolve(path, program, line, config):
     if config is not None:
         data = json.loads(Path(config).read_text())
         if not isinstance(data, dict):
@@ -157,14 +191,24 @@ def resolve(target, at=None, config=None):
         return root, program, line, language, data
     if path.is_file() and path.suffix == ".py":
         return path.parent, program or path.name, line, "python", None
-    if crate := _cargo_root(path if path.is_dir() else path.parent):
+    if path.is_dir() and program and program.endswith(".py"):
+        return path, program, line, "python", None
+    rust_intent = (
+        (path.is_dir() and (path / "Cargo.toml").is_file())
+        or path.name == "Cargo.toml"
+        or path.suffix == ".rs"
+        or (path.is_dir() and program and program.endswith(".rs"))
+    )
+    if rust_intent and (crate := _cargo_root(path if path.is_dir() else path.parent)):
         manifest = tomllib.loads((crate / "Cargo.toml").read_text())
         binary = manifest.get("bin", [{}])[0].get("path", "src/main.rs")
         tests = tuple(item["path"] for item in manifest.get("test", []) if "path" in item)
         sources = tuple(
             sorted(p.relative_to(crate).as_posix() for p in (crate / "src").rglob("*.rs"))
-        )[:64]
-        if path.is_file():
+        )
+        if len(sources) > 64:
+            raise ValueError("Rust targets support at most 64 source files; use --config")
+        if path.is_file() and path.suffix == ".rs":
             program = program or path.relative_to(crate).as_posix()
         data = {"sources": sources, "tests": tests, **rust_tools()}
         return crate, program or binary, line, "rust", data
@@ -180,8 +224,6 @@ def resolve(target, at=None, config=None):
             **native_tools(language),
         }
         return root, program or path.name, line, language, data
-    if path.is_dir() and program and program.endswith(".py"):
-        return path, program, line, "python", None
     raise ValueError(
         "Cannot detect the target; pass a .py/.c/.cpp file, a Cargo crate, or --config"
     )
@@ -333,37 +375,37 @@ def _record(name):
     return _state_dir() / f"{name}.json"
 
 
-def _stop_worker(pid):
-    """Signal only a process whose command line is a peeky worker owned by this record."""
-    if type(pid) is not int or pid <= 1:
-        return
-    shown = subprocess.run(
-        ["ps", "-o", "command=", "-p", str(pid)], capture_output=True, text=True, check=False
-    ).stdout
-    if "peeky.worker" not in shown:
-        return
-    try:
-        os.killpg(pid, signal.SIGTERM)
-    except (ProcessLookupError, PermissionError):
-        pass
-
-
 def _load(name):
     path = _record(name)
-    if not path.is_file():
+    if not path.is_file() or path.is_symlink():
         raise ValueError(f"No session named {name!r}; start one with `peeky session start`")
+    if path.stat().st_uid != os.getuid() or path.stat().st_mode & 0o077:
+        raise ValueError(f"Session record {path} must be private (0600) and owned by you")
     record = json.loads(path.read_text())
+    if (
+        not isinstance(record, dict)
+        or record.get("name") != name
+        or not re.fullmatch(r"http://127\.0\.0\.1:[0-9]{1,5}", str(record.get("url")))
+        or not isinstance(record.get("token"), str)
+        or len(record["token"]) < 16
+        or not re.fullmatch(r"[0-9a-f]{32}", str(record.get("session_id")))
+    ):
+        raise ValueError(f"Session record {path} is malformed; remove it")
     return record, Client(record["url"], record["token"])
 
 
 def _save(record):
-    path = _record(record["name"])
-    path.write_text(json.dumps(record, indent=2))
-    path.chmod(0o600)
+    _private_write(_record(record["name"]), json.dumps(record, indent=2))
+
+
+def _seconds(value):
+    if not isinstance(value, (int, float)) or not 0 < value <= MAX_SESSION_SECONDS:
+        raise ValueError(f"--timeout must be within (0, {MAX_SESSION_SECONDS}] seconds")
+    return value
 
 
 def _wait(record, client, timeout):
-    deadline = time.monotonic() + timeout
+    deadline = time.monotonic() + _seconds(timeout)
     state = {"state": "running"}
     while state["state"] == "running" and time.monotonic() < deadline:
         state = client.call(
@@ -451,7 +493,11 @@ def session(args):
         try:
             client.call("close", session_id=record["session_id"])
         finally:
-            _stop_worker(record.get("pid"))
+            try:
+                # Authenticated by this record's token, so only its own worker stops.
+                client.call("shutdown")
+            except Exception:
+                pass
             for suffix in (".json", ".target.json", ".log"):
                 (_state_dir() / f"{args.name}{suffix}").unlink(missing_ok=True)
         print(f"closed {args.name}")
@@ -468,9 +514,10 @@ def _start(args):
     command = [sys.executable, "-m", "peeky.worker", "--root", str(root), "--port", "0"]
     if data is not None:
         config = _state_dir() / f"{args.name}.target.json"
-        config.write_text(json.dumps(data, default=list))
+        _private_write(config, json.dumps(data, default=list))
         command += [f"--{'native' if language in ('c', 'cpp') else language}-config", str(config)]
-    log = (_state_dir() / f"{args.name}.log").open("w")
+    log_path = _state_dir() / f"{args.name}.log"
+    log = os.fdopen(os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w")
     process = subprocess.Popen(
         command,
         env={**os.environ, "DEBUG_TOKEN": token},
@@ -479,7 +526,8 @@ def _start(args):
         text=True,
         start_new_session=True,
     )
-    banner = process.stdout.readline()
+    ready, _, _ = select.select([process.stdout], [], [], 30)
+    banner = process.stdout.readline() if ready else ""
     match = re.search(r"(http://127\.0\.0\.1:[0-9]+)", banner)
     if not match:
         process.kill()
@@ -510,15 +558,19 @@ def verify(args):
     source, check = (root / program).resolve(strict=True), Path(args.check).resolve(strict=True)
     destination = Path(tempfile.mkdtemp(prefix="peeky-verify-"))
     if language == "python":
+        from peeky.agent import digest
         from peeky.agent import verify as run_checker
 
+        original = digest(source)
         text = source.read_text()
         if text.count(args.old) != 1 or args.old == args.new:
             raise ValueError("--old must match exactly once and --new must change it")
-        candidate = destination / program
+        candidate = destination / "candidate" / program
         candidate.parent.mkdir(parents=True, exist_ok=True)
         candidate.write_text(text.replace(args.old, args.new, 1))
         result = {**run_checker(check, candidate, root), "candidate": str(candidate)}
+        if digest(source) != original:
+            raise RuntimeError("Original source changed during verification")
     else:
         from peeky.compiled_verification import CompiledVerification
 
@@ -587,6 +639,12 @@ def main(argv=None):
     sub.add_argument("--new", required=True)
     args = parser.parse_args(argv)
     handlers = {"describe": describe, "probe": probe, "session": session, "verify": verify}
+
+    def terminate(signum, frame):
+        # Unwind so `finally` blocks close debuggers and owned debuggees.
+        raise SystemExit(128 + signum)
+
+    signal.signal(signal.SIGTERM, terminate)
     try:
         return handlers[args.command](args)
     except (OSError, ValueError, RuntimeError, KeyError) as exc:

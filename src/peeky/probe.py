@@ -106,13 +106,18 @@ def _resolve(worker, stop, snapshot, segments):
         handle = variable.get("variablesReference", 0)
         if not handle:
             raise ValueError(f"cannot expand {variable['name']!r} ({variable.get('view', 'leaf')})")
-        found, start = None, 0
+        found, start, incomplete = None, 0, False
         while found is None:
             page = worker.dispatch("expand", {**stop, "handle": handle, "start": start})
             found = next((v for v in page["variables"] if v["name"] in names), None)
-            if found is not None or not page["truncated"] or start + 64 > 511:
+            if found is not None or not page["truncated"]:
+                break
+            if start + 64 > 511 or page.get("remaining_nodes", 1) <= 0:
+                incomplete = True
                 break
             start += 64
+        if found is None and incomplete:
+            raise ValueError(f"{segment!r} is beyond the bounded inspection window (512 children)")
         if found is None:
             raise ValueError(f"{segment!r} not found")
         variable = found
@@ -163,7 +168,7 @@ def run_probe(root, probe, *, adapter=None):
             if state["state"] == "running":
                 continue
             if state["state"] == "terminated":
-                status = "completed"
+                status = "completed" if hits else "no-stop"
                 break
             hits += 1
             stop = {**session, "stop_id": state["stop_id"]}
@@ -201,6 +206,11 @@ def run_probe(root, probe, *, adapter=None):
             output=report["output"],
             output_truncated=report["output_truncated"],
         )
+        if status == "no-stop":
+            result["error"] = (
+                f"The program finished without stopping at {probe.program}:{probe.line}; "
+                "check `peeky describe` for executable lines"
+            )
     except Exception as exc:
         result.update(status="failed", error=f"{type(exc).__name__}: {exc}")
     finally:
