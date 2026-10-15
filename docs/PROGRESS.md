@@ -20,20 +20,15 @@ An hourly thread heartbeat (`continue-peeky-mvp`) checks for available usage and
 
 ## Active slice
 
-Branch `feat/rust-worker`, draft PR [#23](https://github.com/sushantmane/peeky/pull/23). Codex's heartbeat opened the PR and recorded a follow-up review. Copilot claimed ownership of the next edits in a PR comment. RUST_PLAN steps 1–5 are delivered on narrow fixtures:
+PR #23 merged as `2995958` (Rust worker, active Option views, compiled-test plus checker verification, five review rounds, no blocking issues on the final head `825c075`, all nine lanes green).
 
-- Application-unit Rust symbols (exact `comp_dir`, crate-root CU names, offset-scoped tables, unchanged 2 MiB parser) and DWARF-validated `Option<i32>` active-variant views. Other data-carrying enums are opaque, and `$` storage is refused everywhere.
-- Experimental `RustTarget`/`RustSession` HTTP worker (`--rust-config`): offline/locked Cargo with real sysroot tools, staged-input/ancestry/version checks before each Cargo command, hashed `target/debug/deps` plus uplifted test target, i32-only root mutation, symbol-file scripts disabled, 40 s launch deadline.
-- Verification (`RustVerification`, `peeky-agent --rust-config`): the hashed compiled integration-test binary runs directly (no Cargo at verification time) **and** the unchanged independent checker must complete. A deterministic investigation rejects a compile failure and a test-passing overfit before verifying the general fix (docs/RUST_AGENT.md).
-- ADR 0004 records the owner's stateless probe direction (not started).
+Branch `feat/stateless-probe` (pushed; the Copilot PR tool is blocked until the project's GitHub account is re-linked, so open the PR manually). It implements the owner's direction (ADR 0004 and ADR 0005): **Peeky is a standalone tool that models, harnesses and humans call; it never calls a model, and there is no mode switch.** One `peeky` CLI provides `describe` (manifest), `probe` (one stateless question), `session start|wait|inspect|get|set|continue|report|close|list` (step by step across shell commands via a local worker) and `verify` (fresh build plus independent checker). Targets are auto-detected with toolchain discovery. There is a stateless HTTP `probe` plus `Client.probe`, docs/AGENT_GUIDE.md and skills/peeky-debug. 506 unit and integration tests pass locally, along with the real Rust CLI and probe tests.
 
-Reviews: three independent reviews across the slice. Every finding is fixed with regressions; see docs/reviews/RUST_WORKER_FOLLOWUP.md (dispositions table). Earlier symbol-review dispositions are recorded below.
+Next (owner request): Java on Venice end-to-end tests. This needs a Java **attach** slice: the adapter whitelist allows only `launch` today. Planned shape: `gradlew :internal:venice-test-common:integrationTest --tests <Test> --debug-jvm` starts the test JVM suspended on port 5005; `peeky session attach` connects through the java-debug core's attach handler, using a source map generated from Venice's compiled classes for the declared modules. Provenance is reported as attached/unverified because the build is Gradle's, not a fresh Peeky build. Mutation stays limited to scalar locals.
 
-Local evidence (macOS, Apple LLVM 21, Rust 1.96.0): 436 unit tests in about 9.3 s. `tests/rust` + `tests/integration`: 12 passed in 15.31 s; full Rust investigation 5.04 s, frozen-test drift 2.32 s, HTTP worker flow 1.33 s, raw probe 0.92 s. Hosted evidence for the final head is recorded on PR #23 and in TESTING.md.
+Blocker: the local Venice build fails at `:internal:venice-common:generateProto` because `protoc-gen-grpc-java-1.59.1-osx-aarch_64.exe` is an x86_64 binary and Rosetta 2 is not installed. Peeky did not change the system; the owner can run `softwareupdate --install-rosetta --agree-to-license`. A Linux workflow is the alternative, as a separate manual/nightly job, not a required lane (Venice e2e exceeds the five-minute CI target).
 
-Next: confirm all nine lanes on the final head, re-review if new boundary changes land, then merge. After merge, candidates are a live-model Rust evaluation, lifecycle issue #6, corpus #7, separate-host SSH #8, and ADR 0004 probe mode, which starts with an in-process `run_probe` over existing worker operations.
-
-Earlier symbol review (of `5ef785f`): inactive payload swap, label-trusted base types, unterminated DIE trees, positional `$variant$N`, offset-width indentation, `comp_dir` resolution and per-call timeouts were all fixed in `09820c6`/`2e587fa` with regressions.
+Known local-only limitation (pre-existing on main): test_native_adapter_death_reaps_stopped_target fails with Apple LLDB on macOS and passes on hosted Linux.
 
 ## Next slices
 
