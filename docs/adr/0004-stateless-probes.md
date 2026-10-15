@@ -1,6 +1,6 @@
 # ADR 0004: Stateless probes alongside debugger sessions
 
-Status: accepted direction (owner, 2026-10-14); interface unified by [ADR 0005](0005-tool-not-agent.md) (`peeky probe`, `peeky session`, `peeky describe`). Steps 1–3 are delivered experimentally: in-process `run_probe`, the `peeky-probe` CLI, a single-flight HTTP `probe` operation (bounded to 40 s, below the client timeout) and `Client.probe`. Steps 3–5 (`describe`, the query grammar and evidence store, build caching) remain. Both modes are product requirements; session mode is unchanged.
+Status: accepted direction (owner, 2026-10-14); interface unified by [ADR 0005](0005-tool-not-agent.md) (`peeky probe`, `peeky session`, `peeky describe`). Steps 1–3 are delivered experimentally: in-process `run_probe`, the `peeky-probe` CLI, a single-flight HTTP `probe` operation (bounded to 40 s, below the client timeout) and `Client.probe`. Step 3 is `peeky describe`. Steps 4–5 (query grammar with captured-evidence store, measured build caching) remain. Both modes are product requirements; session mode is unchanged.
 
 ## Context
 
