@@ -92,17 +92,16 @@ In a second terminal, set the same secret and use the SDK:
 import os
 from peeky.client import Client
 
-client = Client('http://127.0.0.1:8765', os.environ['DEBUG_TOKEN'])
-launch = client.call('launch', program='examples/pagination_bug.py',
-                     breakpoints=[{'line': 8}])
-session = {'session_id': launch['session_id']}
-stop = client.call('wait', **session, timeout=2)
-while stop['state'] == 'running':
-    stop = client.call('wait', **session, timeout=2)
-if stop['state'] == 'stopped':
-    print(client.call('inspect', **session, stop_id=stop['stop_id']))
-print(client.call('report', **session))
-client.call('close', **session)
+client = Client("http://127.0.0.1:8765", os.environ["DEBUG_TOKEN"])
+launch = client.call("launch", program="examples/pagination_bug.py", breakpoints=[{"line": 8}])
+session = {"session_id": launch["session_id"]}
+stop = client.call("wait", **session, timeout=2)
+while stop["state"] == "running":
+    stop = client.call("wait", **session, timeout=2)
+if stop["state"] == "stopped":
+    print(client.call("inspect", **session, stop_id=stop["stop_id"]))
+print(client.call("report", **session))
+client.call("close", **session)
 ```
 
 For remote use, run the worker on the target and forward its loopback port:

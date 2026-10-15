@@ -1015,8 +1015,9 @@ def job(args):
         _emit(
             jobs,
             args.json,
-            lambda jobs: "\n".join(f"{j['job']}  {j['command']}  {j['status']}" for j in jobs)
-            or "no jobs",
+            lambda jobs: (
+                "\n".join(f"{j['job']}  {j['command']}  {j['status']}" for j in jobs) or "no jobs"
+            ),
         )
         return 0
     path = _job_dir(args.id)
@@ -1031,9 +1032,11 @@ def job(args):
         _emit(
             state,
             args.json,
-            lambda s: f"job {s['job']}: still running ({s['elapsed_s']} s)\n"
-            + "".join(f"  {line}\n" for line in s["progress"])
-            + f"run `{s['next']}` again",
+            lambda s: (
+                f"job {s['job']}: still running ({s['elapsed_s']} s)\n"
+                + "".join(f"  {line}\n" for line in s["progress"])
+                + f"run `{s['next']}` again"
+            ),
         )
         return 3
     if state["status"] == "lost":
