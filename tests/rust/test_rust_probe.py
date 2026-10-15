@@ -36,11 +36,27 @@ def test_pinned_rust_raw_debugger_gate(tmp_path):
     assert report["rust_version_pin"] == "1.96.0"
     assert report["raw_children"]["request"]
     assert set(report["raw_children"]) == {"request", "mode", "some", "none"}
+    symbols = report["application_symbols"]
+    assert symbols["observe_line"] in symbols["lines"]["src/main.rs"]
+    assert report["active_variant_qualified"]
+    assert report["active_variants"]["views"]["some"]["value"] == "Some(3)"
+    assert report["active_variants"]["views"]["none"]["value"] == "None"
     print(
         json.dumps(
             {
                 "rust_gate_seconds": report["seconds"],
                 "line_metadata": report["line_metadata"],
+                "application_symbols": {
+                    "seconds": symbols["seconds"],
+                    "units": symbols["units"],
+                    "line_count": len(symbols["lines"]["src/main.rs"]),
+                    "layout_kinds": sorted(
+                        {
+                            name: layout["kind"] for name, layout in symbols["layouts"].items()
+                        }.items()
+                    ),
+                },
+                "active_variants": report["active_variants"],
                 "scalar_types": {
                     v["name"]: v["type"] for v in report["locals"] if v["name"] == "start"
                 },
