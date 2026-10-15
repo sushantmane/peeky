@@ -180,3 +180,32 @@ def test_java_cli_rejects_non_array_inputs_before_starting_server(
         main()
     assert error.value.code == 2
     assert "JSON arrays" in capsys.readouterr().err
+
+
+class CrashStop:
+    """A stop whose stack cannot be read (e.g. a native signal stop)."""
+
+    closed = False
+
+    def wait_event(self, names, cursor, timeout):
+        import time
+
+        body = {"reason": "signal", "threadId": 3}
+        return {"event": "stopped", "cursor": 1, "received": time.monotonic(), "body": body}
+
+    def request(self, command, args, timeout=None):
+        raise RuntimeError("stack unavailable at crash")
+
+    def close(self, *args, **kwargs):
+        self.closed = True
+
+
+def test_location_read_failure_never_closes_the_session(tmp_path):
+    worker = DebugWorker(tmp_path)
+    worker.dap = CrashStop()
+    worker.session, worker.state, worker.cursor = "session", "running", 0
+    state = worker.dispatch("wait", {"session_id": "session", "timeout": 1})
+    assert state["state"] == "stopped" and "location" not in state
+    assert worker.dap is not None and not worker.dap.closed and worker.session == "session"
+    again = worker.dispatch("wait", {"session_id": "session", "timeout": 1})
+    assert again["stop_id"] == state["stop_id"]

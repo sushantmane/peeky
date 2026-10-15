@@ -35,7 +35,13 @@ class Client:
                 exc.url,
                 exc.code,
                 exc.headers,
-                {"code": "INVALID_REQUEST", "message": raw.decode(errors="replace")[:2000]},
+                {
+                    "code": "INVALID_REQUEST",
+                    "message": raw.decode(errors="replace")[:2000],
+                    "hint": "The worker returned an unexpected error body; check its log.",
+                    "retryable": False,
+                    "session_closed": False,
+                },
                 raw,
             ) from None
 

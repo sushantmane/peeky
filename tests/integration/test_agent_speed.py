@@ -88,8 +88,10 @@ def test_a_stop_older_than_the_pause_budget_is_auto_resumed(target):
         with pytest.raises(ValueError, match="auto-resumed after its 0.5 s pause budget"):
             worker.dispatch("inspect", stop)
         state = wait_stopped(worker, session)
-        assert state["auto_resumed"] == 1
+        assert state["auto_resumed"] == 1 and state["location"].endswith("loop.py:7")
         assert any(entry["operation"] == "auto_resume" for entry in worker.audit)
+        events = worker.dispatch("report", session)["debugger_events"]
+        assert [e["event"] for e in events["recent"]].count("stopped") >= 2
     finally:
         worker.close()
 

@@ -71,6 +71,7 @@ class DebugWorker:
         self.stopped_at = None
         self.auto_resumed = []
         self.cursor = 0
+        self.stop_location = None
         # Below Client.call's 45 s HTTP timeout: a launch either returns within this
         # bound or is discarded, so an abandoned slow launch cannot leave a session.
         self.launch_deadline_s = 40
@@ -89,6 +90,25 @@ class DebugWorker:
                     "pause budget (--max-pause); wait for the next stop or use a probe"
                 )
             raise ValueError("Stale stop_id or program is not stopped; inspect the latest stop")
+
+    def read_location(self):
+        """Best-effort top-frame location for display; never evidence, never fatal.
+
+        Crash or signal stops may fail runtime validation; that belongs to `inspect`,
+        so a failed read here only omits the location.
+        """
+        try:
+            stack = self.dap.request(
+                "stackTrace", {"threadId": self.thread_id, "levels": 1}, timeout=2
+            )
+            frame = (stack.get("stackFrames") or [{}])[0]
+            path = frame.get("source", {}).get("path")
+            return f"{path}:{frame.get('line')}" if path else None
+        except Exception:
+            return None
+
+    def location(self):
+        return {"location": self.stop_location} if self.stop_location else {}
 
     def pause_status(self):
         if self.state != "stopped" or self.stopped_at is None:
@@ -133,6 +153,11 @@ class DebugWorker:
                 )
                 self.audit = self.audit[-500:]
             except Exception:
+                import sys
+                import traceback
+
+                print("peeky: pause guard failed; closing the session", file=sys.stderr)
+                traceback.print_exc()
                 self.close()
 
     def dispatch(self, operation, args):
@@ -307,6 +332,7 @@ class DebugWorker:
                 return {
                     "state": self.state,
                     "stop_id": self.stop_id,
+                    **self.location(),
                     **self.pause_status(),
                     **updates,
                 }
@@ -339,10 +365,12 @@ class DebugWorker:
             self.stop_id = uuid.uuid4().hex if self.state == "stopped" else None
             self.stopped_at = event.get("received", time.monotonic()) if self.stop_id else None
             self.thread_id = event.get("body", {}).get("threadId")
+            self.stop_location = self.read_location() if self.stop_id else None
             return {
                 "state": self.state,
                 "stop_id": self.stop_id,
                 "event": event,
+                **self.location(),
                 **self.pause_status(),
                 **updates,
             }
@@ -466,6 +494,7 @@ class DebugWorker:
             self.dap.request("continue", {"threadId": self.thread_id})
             self.state = "running"
             self.stopped_at = None
+            self.stop_location = None
             self.children.clear()
             self.stop_id = None
             self.frames.clear()
@@ -483,6 +512,7 @@ class DebugWorker:
                 "history": [e for e in self.audit if e["operation"] != "report"],
                 "artifact_manifest_id": runtime.manifest_id,
                 "breakpoint_events": list(self.breakpoint_events),
+                "debugger_events": self.dap.recent_events(),
             }
         if operation == "close":
             self.close()

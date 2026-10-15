@@ -10,6 +10,7 @@ detection with a trusted target configuration (required for Java).
 """
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -442,10 +443,7 @@ def _wait(record, client, timeout):
         )
     record["state"], record["stop_id"] = state["state"], state.get("stop_id")
     _save(record)
-    if state["state"] == "stopped" and state.get("stop_id"):
-        snapshot = client.call("inspect", **_stop(record))
-        frame = snapshot["frames"][0] if snapshot["frames"] else {}
-        state["location"] = f"{frame.get('source', {}).get('path')}:{frame.get('line')}"
+    state.pop("event", None)
     return state
 
 
@@ -547,8 +545,12 @@ def session(args):
                 client.call("shutdown")
             except Exception:
                 pass
-            for suffix in (".json", ".target.json", ".log"):
+            for suffix in (".json", ".target.json"):
                 (_state_dir() / f"{args.name}{suffix}").unlink(missing_ok=True)
+            log = _state_dir() / f"{args.name}.log"
+            if log.is_file() and not log.is_symlink():
+                # Kept for post-mortem diagnosis until the next session of this name.
+                os.replace(log, _state_dir() / f"{args.name}.last.log")
         print(f"closed {args.name}")
     return 0
 
@@ -674,7 +676,9 @@ def _verify_candidate(args, root, program, language, data, source, check, destin
         candidate = destination / "candidate" / program
         candidate.parent.mkdir(parents=True, exist_ok=True)
         candidate.write_text(text.replace(args.old, args.new, 1))
+        candidate_sha256 = hashlib.sha256(candidate.read_bytes()).hexdigest()
         result = {**run_checker(check, candidate, root), "candidate": str(candidate)}
+        result["candidate_sha256"] = candidate_sha256
         if digest(source) != original:
             raise RuntimeError("Original source changed during verification")
         return result
@@ -699,6 +703,13 @@ def verify(args):
     destination = Path(tempfile.mkdtemp(prefix="peeky-verify-"))
     try:
         result = _verify_candidate(args, root, program, language, data, source, check, destination)
+        # The reported diff must describe exactly the candidate that was verified.
+        expected = original.replace(args.old, args.new, 1).encode()
+        if hashlib.sha256(expected).hexdigest() != result.get("candidate_sha256"):
+            raise RuntimeError(
+                "Original source changed during verification; the verified candidate does "
+                "not match the reported edit"
+            )
     finally:
         if not args.keep:
             shutil.rmtree(destination, ignore_errors=True)
@@ -988,8 +999,8 @@ def main(argv=None, _job=False):
         payload = classify(exc, session_closed=False if isinstance(exc, ValueError) else None)
         if getattr(args, "json", False):
             print(json.dumps({"error": payload}, indent=2))
-        print(f"peeky: [{payload['code']}] {payload['message']}", file=sys.stderr)
-        print(f"  hint: {payload['hint']}", file=sys.stderr)
+        print(f"peeky: [{payload.get('code')}] {payload.get('message')}", file=sys.stderr)
+        print(f"  hint: {payload.get('hint', '')}", file=sys.stderr)
         return 2
 
 

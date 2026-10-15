@@ -60,7 +60,7 @@ def test_session_commands_share_state_across_processes(workspace, capsys):
     assert run(capsys, "session", "list")[1].out.strip() == "default"
     assert run(capsys, "session", "close")[0] == 0
     assert run(capsys, "session", "list")[1].out.strip() == "no sessions"
-    assert not list((workspace / "state" / "sessions").iterdir())
+    assert [p.name for p in (workspace / "state" / "sessions").iterdir()] == ["default.last.log"]
     code, out = run(capsys, "session", "inspect")
     assert code == 2 and "No session" in out.err
 
@@ -250,3 +250,72 @@ def test_cli_errors_are_machine_readable_with_json(workspace, capsys):
     payload = json.loads(out.out)["error"]
     assert code == 2 and payload["code"] == "NO_SESSION" and payload["hint"]
     assert "[NO_SESSION]" in out.err and "hint:" in out.err
+
+
+def test_verify_refuses_when_the_source_changes_before_the_candidate_is_built(
+    workspace, capsys, monkeypatch
+):
+    import peeky.cli as cli
+
+    real = cli._check_edit
+    source = workspace / "pagination_bug.py"
+
+    def racing(text, old, new):
+        real(text, old, new)
+        source.write_text(source.read_text().replace("end = start + page_size", "end = start"))
+
+    monkeypatch.setattr(cli, "_check_edit", racing)
+    code, out = run(
+        capsys,
+        "verify",
+        source,
+        "--check",
+        workspace / "verify_pagination.py",
+        "--old",
+        "page * page_size",
+        "--new",
+        "(page - 1) * page_size",
+        "--json",
+    )
+    error = json.loads(out.out)["error"]
+    assert code == 2 and error["code"] == "PROVENANCE_CHANGED"
+    assert "does not match the reported edit" in error["message"]
+
+
+def test_unexpected_worker_error_bodies_render_cleanly(workspace, capsys, monkeypatch):
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    from peeky.client import Client
+
+    class Broken(BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.rfile.read(int(self.headers.get("Content-Length", 0)))
+            body = b"<html>bad gateway</html>"
+            self.send_response(502)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Broken)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        client = Client(f"http://127.0.0.1:{server.server_port}", "t" * 32)
+        with pytest.raises(OSError) as caught:
+            client.call("version")
+        payload = caught.value.payload
+        assert {"code", "message", "hint", "retryable", "session_closed"} <= set(payload)
+        import peeky.cli as cli
+
+        def boom(args):
+            raise caught.value
+
+        monkeypatch.setattr(cli, "describe", boom)
+        code, out = run(capsys, "describe", workspace / "pagination_bug.py")
+        assert code == 2 and "[INVALID_REQUEST]" in out.err and "hint:" in out.err
+    finally:
+        server.shutdown()
+        server.server_close()

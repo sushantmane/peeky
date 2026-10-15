@@ -239,6 +239,20 @@ class DAP:
                     raise TimeoutError("No matching debugger event before deadline")
                 self.condition.wait(remaining)
 
+    def recent_events(self, limit=20):
+        """Diagnostics: the latest lifecycle events and counts of ignored ones."""
+        with self.condition:
+            recent = [
+                {
+                    "cursor": event["cursor"],
+                    "event": event["event"],
+                    "reason": event.get("body", {}).get("reason"),
+                    "thread": event.get("body", {}).get("threadId"),
+                }
+                for event in list(self.events)[-limit:]
+            ]
+            return {"recent": recent, "ignored": dict(self.ignored_events)}
+
     def pending_stop(self, after):
         """Receive time of the first unconsumed stop or exit after ``after``, else None."""
         with self.condition:

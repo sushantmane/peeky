@@ -40,8 +40,17 @@ Stacked on `feat/java-attach` (2026-10-15):
   - Probes warn about relocated breakpoints and short runs.
   - All failures now use one error object.
   - With every real toolchain lane enabled, 644 tests pass locally.
-- **Next:** an independent review of `feat/error-codes` plus `feat/corpus`, then one PR from `feat/corpus` covering the whole stack. After that:
-  - agent-friendliness for long or timed targets (background probes, pause budgets for TestNG/JUnit timeouts);
+- **Review:** the independent review of error codes plus corpus found no blocking issues. Its two should-fix issues and one nit are fixed ([reviews/ERRORS_CORPUS_REVIEW.md](reviews/ERRORS_CORPUS_REVIEW.md)).
+- **Agent speed ([ADR 0006](adr/0006-agent-speed.md), owner priority):**
+  - Probes report `pauses_ms`, and on attached JVMs they end at the last hit.
+  - Sessions take `--max-pause` (10 s by default for attached JVMs). The worker auto-resumes overdue stops, even unobserved ones.
+  - `probe` and `verify` take `--background`, collected with `peeky job wait` (exit 3 while running).
+  - `describe` reports the timing contract.
+  - Verified on Venice's timed test: the background probe took 19.2 s, and the slow-agent and absent-agent sessions both auto-resumed. All runs PASSED.
+  - Open issue: one Venice session never received a `stopped` event (see JAVA_ATTACH.md). Diagnostics were added.
+- **Next:**
+  - an independent review of the agent-speed slice;
+  - one PR from `feat/corpus` covering the whole stack;
   - SSH separate host (#8; needs a second host);
   - a user-selected non-synthetic program.
 

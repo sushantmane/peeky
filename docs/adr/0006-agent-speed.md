@@ -26,6 +26,13 @@ Agents are slow and impatient in specific ways:
    - Sessions already have a resumable form, because `session start` and `wait` return `running` after `--timeout`.
 5. **`describe` states the timing contract** for the target in a `timing` field: probe pause, the session pause budget, and advice.
 
+## Evidence
+
+On Venice's timed `TestEmptyPush` test (TestNG `timeOut` 30 s), see [JAVA_ATTACH.md](../JAVA_ATTACH.md):
+- A background probe returned both hits in 19.2 s, with pauses of 100–115 ms.
+- A slow agent's session and an absent agent's session both had their stops auto-resumed after 10 s.
+- All three runs passed both tests.
+
 ## Consequences
 
 - Agents get a safe default: a probe never stalls a timed program on a model turn.
