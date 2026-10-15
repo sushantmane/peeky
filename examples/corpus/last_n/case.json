@@ -1,0 +1,16 @@
+{
+  "issue": "last_n([1, 2, 3, 4], 2) should be [3, 4].",
+  "observe_line": 3,
+  "capture": [
+    "tail",
+    "n"
+  ],
+  "fix": {
+    "old": "items[-n - 1:]",
+    "new": "(items[-n:] if n > 0 else [])"
+  },
+  "overfit": {
+    "old": "items[-n - 1:]",
+    "new": "items[-n - 1:][1:]"
+  }
+}

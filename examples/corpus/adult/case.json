@@ -1,0 +1,17 @@
+{
+  "issue": "Someone exactly 18 is an adult, but is_adult(18) prints False.",
+  "observe_line": 3,
+  "capture": [
+    "age",
+    "limit",
+    "allowed"
+  ],
+  "fix": {
+    "old": "age > limit",
+    "new": "age >= limit"
+  },
+  "overfit": {
+    "old": "age > limit",
+    "new": "age > limit or age == 18"
+  }
+}

@@ -106,7 +106,7 @@ class AgentControllerTests(unittest.TestCase):
                 1,
             )
             report = runner.run("Fix pagination")
-            self.assertEqual(report["status"], "budget_exhausted")
+            self.assertEqual(report["status"], "insufficient_evidence")
             self.assertIn("runtime intervention", report["steps"][0]["error"])
             self.assertFalse((Path(tmp) / "candidate.py").exists())
 

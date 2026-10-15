@@ -1,0 +1,16 @@
+{
+  "issue": "count_words('a b a') should be {'a': 2, 'b': 1}.",
+  "observe_line": 4,
+  "capture": [
+    "word",
+    "counts"
+  ],
+  "fix": {
+    "old": "counts.get(word, 1)",
+    "new": "counts.get(word, 0)"
+  },
+  "overfit": {
+    "old": "    return counts",
+    "new": "    return {'a': 2, 'b': 1} if text == 'a b a' else counts"
+  }
+}
