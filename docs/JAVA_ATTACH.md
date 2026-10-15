@@ -83,3 +83,9 @@ Verified on 2026-10-15. Each run captured both data-provider invocations, return
 | `CreateStore.java:64` (controller HTTP handler, on a Jetty thread) | `clusterName`, `storeName`, `owner`, `isSystemStore=false` | 178–186 ms | 21.4 s |
 
 Open issue: in one earlier run, the worker received no `stopped` event for about 200 s while the test thread sat at the breakpoint, so both tests timed out. This did not reproduce in two identical attempts. `session report` now includes `debugger_events` (recent lifecycle events and counts of ignored events), and `session close` keeps the worker log as `<name>.last.log` for diagnosis.
+
+## Dropped exit events (#27)
+
+The Java adapter (java-debug) occasionally never sends `exited`/`terminated` after a launched JVM finishes. In a stress run this happened in about 1 of 50–100 runs; the program's output had arrived and the adapter was alive but silent. Peeky now checks liveness for Java runtimes: after 2 quiet seconds it asks the adapter for `threads`, and an empty reply means the VM is gone. The run then ends as `terminated` with `exit_inferred: true` and a warning, instead of waiting for the timeout. In 200 stress runs after the change, all completed, and the single dropped exit resolved in 2.8 s.
+
+A live VM always has threads, so a running program is never mistaken for an exited one. The separate case of an attached JVM whose `stopped` event is lost is not detected yet; see #27.

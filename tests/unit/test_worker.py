@@ -209,3 +209,59 @@ def test_location_read_failure_never_closes_the_session(tmp_path):
     assert worker.dap is not None and not worker.dap.closed and worker.session == "session"
     again = worker.dispatch("wait", {"session_id": "session", "timeout": 1})
     assert again["stop_id"] == state["stop_id"]
+
+
+class QuietDap:
+    """An adapter that resumed the program but never reports its exit (java-debug #27)."""
+
+    def __init__(self, threads):
+        self.threads, self.calls, self.closed = threads, [], False
+
+    def wait_event(self, names, cursor, timeout):
+        raise TimeoutError("poll expired")
+
+    def request(self, command, args, timeout=None):
+        self.calls.append(command)
+        return {"threads": self.threads} if self.threads is not None else {}
+
+    def close(self, *args, **kwargs):
+        self.closed = True
+
+
+class JavaLike:
+    liveness_by_threads = True
+
+    def assert_current(self):
+        pass
+
+
+@pytest.mark.parametrize(
+    "threads, runtime, inferred",
+    [(None, JavaLike(), True), ([], JavaLike(), True), ([{"id": 1}], JavaLike(), False)],
+)
+def test_java_exit_is_inferred_only_when_no_threads_remain(tmp_path, threads, runtime, inferred):
+    import time
+
+    worker = DebugWorker(tmp_path)
+    worker.dap, worker.runtime = QuietDap(threads), runtime
+    worker.session, worker.state, worker.cursor = "session", "running", 0
+    worker.resumed_at = time.monotonic() - 5
+    state = worker.dispatch("wait", {"session_id": "session", "timeout": 0.1})
+    assert worker.dap.calls == ["threads"]
+    if inferred:
+        assert state["state"] == "terminated" and state["exit_inferred"] is True
+        assert any(entry["operation"] == "exit_inferred" for entry in worker.audit)
+    else:
+        assert state == {"state": "running", "timed_out": True}
+
+
+def test_exit_is_never_inferred_for_other_adapters_or_right_after_resuming(tmp_path):
+    import time
+
+    for runtime, resumed in ((PythonAdapter(), 5), (JavaLike(), 0)):
+        worker = DebugWorker(tmp_path)
+        worker.dap, worker.runtime = QuietDap(None), runtime
+        worker.session, worker.state, worker.cursor = "session", "running", 0
+        worker.resumed_at = time.monotonic() - resumed
+        state = worker.dispatch("wait", {"session_id": "session", "timeout": 0.1})
+        assert state["state"] == "running" and worker.dap.calls == []

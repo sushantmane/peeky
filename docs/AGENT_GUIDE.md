@@ -32,7 +32,10 @@ Every command takes `--json`: stdout is then one JSON object (progress goes to s
 - Each row has a `function`, which tells a function body apart from a generator or lambda frame on the same line.
 - `output_complete: false` means the probe ended (`--until hits`) before the program did, so `output` holds only what was printed so far.
 - `by_hit` groups values per hit: `{hit, line, observed: {selector: value}, after-set: {...}}`. A selector that failed shows `{"error": ...}`. `rows` holds the same data with one entry per hit, phase and selector. `phase` is `observed`, or `after-set` (the value after your intervention). `line` is where the program actually stopped.
-- Read `warnings` every time. They flag a breakpoint the debugger moved to another line (the values then come from that line) and runs that ended before all requested hits.
+- Read `warnings` every time. They flag:
+  - a breakpoint the debugger moved to another line (the values then come from that line);
+  - runs that ended before all requested hits;
+  - a Java exit that Peeky inferred because the debugger dropped its exit event (the result is still valid).
 - If a selector is missing, the row's error lists the visible names. For Python, `peeky describe` also lists the names each function can see (`scopes`).
 - Selectors take indexes from the end (`items[-1]`), but only when the debugger states the sequence's length and shows every element. Otherwise you get an error, never a guess. Long debugpy lists show 100 elements individually, so for them use a non-negative index.
 - Failures carry `error: {code, message, hint, retryable, session_closed}` (see [ERRORS.md](ERRORS.md)). `status` is `completed`, `no-stop`, `failed` or `timeout`.

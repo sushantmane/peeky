@@ -71,6 +71,9 @@ class DebugWorker:
         self.stopped_at = None
         self.auto_resumed = []
         self.cursor = 0
+        self.resumed_at = 0.0
+        self.liveness_checked = 0.0
+        self.exit_inferred = False
         self.program = None
         self.stop_location = None
         self.stop_reason = None
@@ -96,6 +99,20 @@ class DebugWorker:
                     "pause budget (--max-pause); wait for the next stop or use a probe"
                 )
             raise ValueError("Stale stop_id or program is not stopped; inspect the latest stop")
+
+    def debuggee_gone(self, runtime):
+        """Liveness check for adapters known to drop exit events (java-debug, #27).
+
+        A running JVM always has threads; an empty `threads` reply after two quiet
+        seconds means the VM is gone even though no `exited`/`terminated` arrived.
+        """
+        if not getattr(runtime, "liveness_by_threads", False) or self.state != "running":
+            return False
+        now = time.monotonic()
+        if now - self.resumed_at < 2 or now - self.liveness_checked < 2:
+            return False
+        self.liveness_checked = now
+        return not self.dap.request("threads", {}, timeout=2).get("threads")
 
     def read_location(self):
         """Best-effort top-frame location for display; never evidence, never fatal.
@@ -350,6 +367,8 @@ class DebugWorker:
                 left()
                 self.state = "running"
                 self.cursor = 0
+                self.resumed_at = time.monotonic()
+                self.exit_inferred = False
                 return {
                     "session_id": self.session,
                     "state": self.state,
@@ -395,6 +414,22 @@ class DebugWorker:
                         max(0, deadline - time.monotonic()),
                     )
                 except TimeoutError:
+                    if self.debuggee_gone(runtime):
+                        event = {
+                            "event": "terminated",
+                            "cursor": self.cursor,
+                            "body": {"peeky": "exit inferred: no live threads, no exit event"},
+                        }
+                        self.exit_inferred = True
+                        self.audit.append(
+                            {
+                                "time": time.time(),
+                                "operation": "exit_inferred",
+                                "arguments": {},
+                                "result": {"reason": "debugger reported no live threads"},
+                            }
+                        )
+                        break
                     return {"state": self.state, "timed_out": True, **updates}
                 self.cursor = event["cursor"]
                 if event["event"] != "breakpoint":
@@ -421,6 +456,7 @@ class DebugWorker:
                 "state": self.state,
                 "stop_id": self.stop_id,
                 "event": event,
+                **({"exit_inferred": True} if self.exit_inferred else {}),
                 **self.location(),
                 **self.pause_status(),
                 **updates,
@@ -550,6 +586,7 @@ class DebugWorker:
                     {"source": {"path": str(runtime.source_path(self.program))}, "breakpoints": []},
                 )
             self.dap.request("continue", {"threadId": self.thread_id})
+            self.resumed_at = time.monotonic()
             self.state = "running"
             self.stopped_at = None
             self.stop_location = None

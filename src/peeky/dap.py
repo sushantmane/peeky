@@ -87,6 +87,9 @@ class DAP:
         self.abandoned = set()
         self.events = collections.deque(maxlen=MAX_CONTROL_EVENTS)
         self.ignored_events = {}
+        # Bounded message summaries (no arguments or values) for diagnosing lost events.
+        self.trace = collections.deque(maxlen=200)
+        self.started = time.monotonic()
         self.output = collections.deque(maxlen=500)
         self.output_truncated = False
         self.sequence = 0
@@ -95,8 +98,30 @@ class DAP:
         self.reader = threading.Thread(target=self._read, daemon=True)
         self.reader.start()
 
+    def _note(self, direction, body):
+        trace = getattr(self, "trace", None)
+        if trace is None:
+            return
+        kind = body.get("type")
+        entry = {
+            "t": round(time.monotonic() - getattr(self, "started", 0.0), 3),
+            "dir": direction,
+            "type": kind,
+            "name": body.get("command") or body.get("event"),
+        }
+        if kind == "response":
+            entry.update(request_seq=body.get("request_seq"), success=body.get("success"))
+        elif kind == "request":
+            entry["seq"] = body.get("seq")
+        elif kind == "event" and body.get("event") not in ("output", "thread"):
+            detail = body.get("body") or {}
+            entry.update(reason=detail.get("reason"), thread=detail.get("threadId"))
+        if kind != "event" or body.get("event") not in ("output", "thread"):
+            trace.append(entry)
+
     def _accept(self, body):
         with self.condition:
+            self._note("in", body)
             if body["type"] == "response":
                 if body["request_seq"] in self.abandoned:
                     # A reply to a request whose caller already timed out: discard it.
@@ -157,6 +182,7 @@ class DAP:
                     raise RuntimeError(self.error)
                 self.sequence += 1
                 seq = self.sequence
+                self._note("out", {"type": "request", "command": command, "seq": seq})
             data = json.dumps(
                 dict(seq=seq, type="request", command=command, arguments=arguments or {})
             ).encode()
@@ -251,7 +277,11 @@ class DAP:
                 }
                 for event in list(self.events)[-limit:]
             ]
-            return {"recent": recent, "ignored": dict(self.ignored_events)}
+            return {
+                "recent": recent,
+                "ignored": dict(self.ignored_events),
+                "trace": list(getattr(self, "trace", ()))[-60:],
+            }
 
     def pending_stop(self, after):
         """(receive time, reason) of the first unconsumed stop after ``after``, else None."""
