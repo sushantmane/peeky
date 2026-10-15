@@ -328,7 +328,24 @@ class _Remote:
 
 
 def _record(name):
+    if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,32}", name):
+        raise ValueError("Session names use 1-32 letters, digits, '-' or '_'")
     return _state_dir() / f"{name}.json"
+
+
+def _stop_worker(pid):
+    """Signal only a process whose command line is a peeky worker owned by this record."""
+    if type(pid) is not int or pid <= 1:
+        return
+    shown = subprocess.run(
+        ["ps", "-o", "command=", "-p", str(pid)], capture_output=True, text=True, check=False
+    ).stdout
+    if "peeky.worker" not in shown:
+        return
+    try:
+        os.killpg(pid, signal.SIGTERM)
+    except (ProcessLookupError, PermissionError):
+        pass
 
 
 def _load(name):
@@ -434,10 +451,7 @@ def session(args):
         try:
             client.call("close", session_id=record["session_id"])
         finally:
-            try:
-                os.killpg(record["pid"], signal.SIGTERM)
-            except (ProcessLookupError, PermissionError):
-                pass
+            _stop_worker(record.get("pid"))
             for suffix in (".json", ".target.json", ".log"):
                 (_state_dir() / f"{args.name}{suffix}").unlink(missing_ok=True)
         print(f"closed {args.name}")

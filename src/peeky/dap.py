@@ -122,9 +122,8 @@ class DAP:
                 else:
                     # Thread/module churn (thousands per second in large JVMs) must not
                     # evict lifecycle events; keep only bounded counts.
-                    self.ignored_events[body["event"]] = (
-                        self.ignored_events.get(body["event"], 0) + 1
-                    )
+                    name = body["event"] if len(self.ignored_events) < 64 else "<other>"
+                    self.ignored_events[name] = self.ignored_events.get(name, 0) + 1
             self.condition.notify_all()
 
     def _read(self):

@@ -226,3 +226,10 @@ def test_thread_churn_cannot_evict_lifecycle_events():
         dap._accept({"type": "event", "event": "thread", "body": {"reason": "started"}})
     assert dap.wait_event({"stopped"}, timeout=0)["cursor"] == 1
     assert dap.ignored_events == {"thread": MAX_CONTROL_EVENTS * 3}
+
+
+def test_ignored_event_names_are_bounded():
+    dap = transport()
+    for index in range(200):
+        dap._accept({"type": "event", "event": f"custom{index}"})
+    assert len(dap.ignored_events) == 65 and dap.ignored_events["<other>"] == 136

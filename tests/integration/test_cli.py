@@ -87,3 +87,28 @@ def test_unknown_targets_and_bad_locations_fail_clearly(workspace, capsys):
     assert code == 2 and "--at" in out.err
     code, out = run(capsys, "probe", workspace / "pagination_bug.py", "--at", "pagination_bug.py")
     assert code == 2 and "requires --at" in out.err
+
+
+def test_session_names_cannot_escape_the_state_directory(workspace, capsys):
+    for name in ("../escape", "a/b", "", "x" * 40):
+        code, out = run(capsys, "session", "inspect", "--name", name)
+        assert code == 2 and "Session names" in out.err
+
+
+def test_close_never_signals_a_process_that_is_not_a_peeky_worker(workspace, capsys, monkeypatch):
+    import os
+
+    state = workspace / "state" / "sessions"
+    state.mkdir(parents=True)
+    record = {
+        "name": "stale",
+        "url": "http://127.0.0.1:9",
+        "token": "t" * 32,
+        "session_id": "x",
+        "pid": os.getpid(),
+    }
+    (state / "stale.json").write_text(json.dumps(record))
+    signalled = []
+    monkeypatch.setattr("peeky.cli.os.killpg", lambda *args: signalled.append(args))
+    assert run(capsys, "session", "close", "--name", "stale")[0] == 2
+    assert signalled == [] and not (state / "stale.json").exists()
