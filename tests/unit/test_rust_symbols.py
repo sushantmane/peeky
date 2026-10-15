@@ -76,6 +76,9 @@ def option_dump(
     scope="DW_TAG_namespace",
     root=0x0B,
     extra_offset=None,
+    i32=("DW_TAG_base_type", "DW_ATE_signed", "0x04"),
+    u32=("DW_TAG_base_type", "DW_ATE_unsigned", "0x04"),
+    closing=True,
 ):
     tag = [("DW_AT_type", f'0x00000400 "{tag_type}"'), ("DW_AT_data_member_location", "0x00")]
     if artificial:
@@ -118,9 +121,19 @@ def option_dump(
     lines += null(0x220, 4)
     lines += null(0x230, 3)
     lines += null(0x240, 2)
-    lines += entry(0x300, 1, "DW_TAG_base_type", ("DW_AT_name", '"i32"'))
-    lines += entry(extra_offset or 0x400, 1, "DW_TAG_base_type", ("DW_AT_name", '"u32"'))
-    lines += null(0x500, 1)
+    for offset, name, base in ((0x300, "i32", i32), (extra_offset or 0x400, "u32", u32)):
+        if base is not None:
+            tag, encoding, size = base
+            lines += entry(
+                offset,
+                1,
+                tag,
+                ("DW_AT_name", json.dumps(name)),
+                ("DW_AT_encoding", encoding),
+                ("DW_AT_byte_size", size),
+            )
+    if closing:
+        lines += null(0x500, 1)
     return "\n".join(lines) + "\n"
 
 
@@ -158,6 +171,23 @@ def test_application_units_reject_ambiguous_or_unsupported_units(tmp_path, chang
     )
     with pytest.raises(ValueError):
         application_units(text, tmp_path, entrypoint="src/main.rs", crate="peeky_pagination")
+
+
+@pytest.mark.parametrize("alias", ["{w}/", "{w}/.", "{w}/../{n}", "link"])
+def test_application_units_require_the_exact_recorded_workspace(tmp_path, alias):
+    workspace = (tmp_path / "workspace").resolve()
+    workspace.mkdir()
+    (tmp_path / "link").symlink_to(workspace)
+    recorded = (
+        str(tmp_path / "link") if alias == "link" else alias.format(w=workspace, n=workspace.name)
+    )
+    with pytest.raises(ValueError, match="Ambiguous"):
+        application_units(
+            index(unit(0, 0x1000, comp_dir=recorded)),
+            workspace,
+            entrypoint="src/main.rs",
+            crate="peeky_pagination",
+        )
 
 
 def test_application_units_reject_missing_duplicate_or_excess_units(tmp_path):
@@ -255,12 +285,58 @@ def test_enum_layouts_follow_compiler_discriminants_and_qualify_only_i32():
         {"tag_type": "u8"},
         {"artificial": False},
         {"scope": "DW_TAG_subprogram"},
+        {"i32": ("DW_TAG_pointer_type", "DW_ATE_signed", "0x04")},
+        {"i32": ("DW_TAG_base_type", "DW_ATE_unsigned", "0x04")},
+        {"i32": ("DW_TAG_base_type", "DW_ATE_signed", "0x08")},
+        {"u32": ("DW_TAG_base_type", "DW_ATE_signed", "0x04")},
+        {"i32": None},
+        {"u32": None},
+        {"discriminants": ("0x00", "0x100000000")},
     ],
 )
 def test_enum_layouts_mark_niche_unexpected_or_unscoped_layouts_unqualified(options):
     layouts = enum_layouts(option_dump(**options), UNIT)
     assert len(layouts) == 1
     assert next(iter(layouts.values())) == {"kind": "unqualified"}
+
+
+def test_die_tree_requires_every_child_list_to_close():
+    text = option_dump()
+    with pytest.raises(ValueError, match="Unterminated"):
+        enum_layouts(option_dump(closing=False), UNIT)
+    marker = "DW_AT_data_member_location\t(0x04)"
+    truncated = text[: text.index(marker) + len(marker) + 1]
+    with pytest.raises(ValueError, match="Unterminated"):
+        enum_layouts(truncated, UNIT)
+    missing = text.replace("0x0000021c:           NULL\n", "")
+    with pytest.raises(ValueError, match="Unterminated"):
+        enum_layouts(missing, UNIT)
+    extra = text.replace(
+        "0x00000230:       NULL\n", "0x00000230:       NULL\n0x00000231:       NULL\n"
+    )
+    with pytest.raises(ValueError, match="Unbalanced"):
+        enum_layouts(extra, UNIT)
+
+
+def test_die_attributes_indent_by_depth_not_offset_width():
+    wide = "\n".join(
+        [
+            "0x000000010000000b: DW_TAG_compile_unit",
+            '              DW_AT_name\t("x")',
+            "0x0000000100000010:   DW_TAG_base_type",
+            '                DW_AT_name\t("i32")',
+            "0x0000000100000020:   NULL",
+        ]
+    )
+    (root,) = parse_dies(wide, units=False)
+    assert root.offset == 0x10000000B and root.children[0].attributes["DW_AT_name"] == '"i32")'
+    with pytest.raises(ValueError, match="attached"):
+        parse_dies(
+            wide.replace(
+                '                DW_AT_name\t("i32")', '                        DW_AT_name\t("i32")'
+            ),
+            units=False,
+        )
 
 
 def test_enum_layouts_bind_entries_to_the_selected_unit():
@@ -316,6 +392,34 @@ def rust_workspace(tmp_path):
     (workspace / "src").mkdir(parents=True)
     (workspace / "src/main.rs").write_text("fn main() {\n    let x = 1;\n}\n")
     return workspace
+
+
+def test_application_symbols_share_one_deadline(tmp_path, monkeypatch):
+    workspace = rust_workspace(tmp_path)
+    tool, env = fake_dwarfdump(
+        tmp_path,
+        {
+            "index": standard_index(workspace),
+            "line-0x00000000": line_table(),
+            "0x0000000b": option_dump(),
+        },
+    )
+    clock = iter([0.0, 1.0, 31.0])
+    monkeypatch.setattr("peeky.rust_symbols._clock", lambda: next(clock))
+    with pytest.raises(ValueError, match="deadline"):
+        application_symbols(
+            tool,
+            "program",
+            workspace,
+            env,
+            entrypoint="src/main.rs",
+            crate="peeky_pagination",
+            declared=("src/main.rs",),
+        )
+    with pytest.raises(ValueError, match="time limit"):
+        from peeky.native import _metadata
+
+        _metadata(tool, [], workspace, env, timeout=16)
 
 
 def test_application_symbols_dump_only_selected_tables(tmp_path):
@@ -491,6 +595,8 @@ def corrupt(children, reference, index_, **changes):
         lambda c: corrupt(c, 19, 0, variablesReference=4),
         lambda c: {**c, 19: []},
         lambda c: corrupt(c, 15, 1, variablesReference=0),
+        lambda c: {**c, 14: [c[14][0], c[15][1]], 15: [c[15][0], c[14][1]]},
+        lambda c: corrupt(c, 15, 1, type=f"{OPTION}::Some<long>"),
     ],
 )
 def test_active_variant_shape_mismatch_is_opaque_not_guessed(mutate):

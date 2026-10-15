@@ -16,6 +16,7 @@ is opaque. This is trusted-code evidence, not a sandbox or formatter.
 
 import json
 import re
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -26,6 +27,8 @@ MAX_APPLICATION_UNITS = 16
 MAX_DIES = 200_000
 MAX_DEPTH = 64
 MAX_LAYOUTS = 4096
+SYMBOL_DEADLINE_S = 30
+_clock = time.monotonic
 # Exact qualified enum type -> (DWARF payload base type, debugger display type).
 # Other Option payloads are opaque until separately qualified on each pinned pair.
 QUALIFIED_OPTIONS = {"core::option::Option<i32>": ("i32", "int")}
@@ -50,7 +53,8 @@ class _Die:
     attributes: dict
     children: list
     unit: dict | None = None
-    column: int = 0
+    depth: int = 0
+    closed: bool = False
 
 
 @dataclass(frozen=True)
@@ -90,8 +94,19 @@ def _reference(raw):
     return int(match[1], 16), name
 
 
+def _close_deeper(stack, depth):
+    """Entries leaving the open path must not abandon an unterminated child list."""
+    if any(die.children and not die.closed for die in stack[depth:]):
+        raise ValueError("Unterminated DWARF child list")
+    del stack[depth:]
+
+
 def parse_dies(text, *, units):
-    """Parse llvm-dwarfdump DIE output by indentation; unknown rows fail closed."""
+    """Parse llvm-dwarfdump DIE output by indentation; unknown rows fail closed.
+
+    Attributes print at 12 + 2 + 2*depth columns independent of offset width.
+    Every child list in --show-children output must end with its own NULL.
+    """
     if len(text.encode()) > MAX_METADATA:
         raise ValueError("Rust debug information exceeds limit")
     roots, stack, pending, last, seen, count = [], [], None, None, False, 0
@@ -112,6 +127,7 @@ def parse_dies(text, *, units):
                 "version": int(version[1], 16),
                 "end": int(match[4], 16),
             }
+            _close_deeper(stack, 0)
             stack, last, seen = [], None, True
             continue
         if match := _DIE.fullmatch(raw):
@@ -120,18 +136,17 @@ def parse_dies(text, *, units):
             if spaces % 2 != 1 or (spaces - 1) // 2 > MAX_DEPTH:
                 raise ValueError("Malformed DWARF entry indentation")
             depth = (spaces - 1) // 2
-            column = len(match[1]) + spaces
             if match[3] == "NULL":
-                if not 0 < depth <= len(stack):
+                if not 0 < depth <= len(stack) or stack[depth - 1].closed:
                     raise ValueError("Unbalanced DWARF entry list")
-                del stack[depth - 1 :]
+                _close_deeper(stack, depth)
+                stack[depth - 1].closed = True
                 last = None
                 continue
             count += 1
             if count > MAX_DIES:
                 raise ValueError("Too many DWARF entries")
-            die = _Die(int(match[1][2:-1], 16), match[3], {}, [])
-            die.column = column
+            die = _Die(int(match[1][2:-1], 16), match[3], {}, [], depth=depth)
             if depth == 0:
                 if units:
                     if pending is None:
@@ -139,18 +154,19 @@ def parse_dies(text, *, units):
                     die.unit, pending = pending, None
                 elif roots:
                     raise ValueError("Expected exactly one DWARF unit entry")
+                _close_deeper(stack, 0)
                 roots.append(die)
                 stack = [die]
             else:
-                if depth > len(stack):
-                    raise ValueError("DWARF entry has no parent")
-                del stack[depth:]
+                if depth > len(stack) or stack[depth - 1].closed:
+                    raise ValueError("DWARF entry has no open parent")
+                _close_deeper(stack, depth)
                 stack[-1].children.append(die)
                 stack.append(die)
             last = die
             continue
         if match := _ATTRIBUTE.fullmatch(raw):
-            if last is None or len(match[1]) != last.column + 2:
+            if last is None or len(match[1]) != 14 + 2 * last.depth:
                 raise ValueError("DWARF attribute is not attached to an entry")
             if match[2] in last.attributes:
                 raise ValueError("Duplicate DWARF attribute")
@@ -161,6 +177,9 @@ def parse_dies(text, *, units):
         raise ValueError("Unrecognized DWARF entry output")
     if pending is not None or not roots:
         raise ValueError("Missing DWARF unit entry")
+    _close_deeper(stack, 0)
+    if not units and roots[0].children and not roots[0].closed:
+        raise ValueError("Unterminated DWARF unit entry")
     return roots
 
 
@@ -180,11 +199,8 @@ def application_units(text, workspace, *, entrypoint, crate):
         comp_dir = die.attributes.get("DW_AT_comp_dir")
         name = die.attributes.get("DW_AT_name")
         directory = _string(comp_dir) if comp_dir is not None else None
-        local = (
-            directory is not None
-            and Path(directory).is_absolute()
-            and Path(directory).resolve() == workspace
-        )
+        # Compare the recorded string exactly; resolving it would accept aliases.
+        local = directory == str(workspace)
         named = name is not None and _string(name).startswith(entrypoint + "/@/")
         if not local and not named:
             continue
@@ -228,6 +244,21 @@ def _walk(die, by_offset, unit):
         _walk(child, by_offset, unit)
 
 
+def _base_type(reference, by_offset, name, encoding):
+    """Follow a reference to an in-unit four-byte base type; labels are not trusted."""
+    offset, label = _reference(reference)
+    die = by_offset.get(offset)
+    return (
+        die is not None
+        and label == name
+        and die.tag == "DW_TAG_base_type"
+        and not die.children
+        and die.attributes.get("DW_AT_name") == f'"{name}")'
+        and die.attributes.get("DW_AT_encoding") == f"{encoding})"
+        and die.attributes.get("DW_AT_byte_size") == "0x04)"
+    )
+
+
 def _option_layout(struct, qualified, by_offset):
     """Return the compiler-emitted layout of a qualified Option or an unqualified marker."""
     payload = QUALIFIED_OPTIONS.get(qualified)
@@ -241,11 +272,11 @@ def _option_layout(struct, qualified, by_offset):
     if len(members) + len(variants) != len(part.children) or len(members) != 1:
         return {"kind": "unqualified"}
     tag = members[0]
-    kind = _reference(tag.attributes.get("DW_AT_type"))[1]
+    kind = "u32"
     if (
         tag.offset != discriminant
         or tag.attributes.get("DW_AT_artificial") != "true)"
-        or kind not in DISCRIMINANT_TYPES
+        or not _base_type(tag.attributes.get("DW_AT_type"), by_offset, kind, "DW_ATE_unsigned")
         or "DW_AT_data_member_location" not in tag.attributes
     ):
         return {"kind": "unqualified"}
@@ -264,9 +295,11 @@ def _option_layout(struct, qualified, by_offset):
                 target,
             )
         )
-    if [name for _, name, _ in mapping] != ["None", "Some"] or len(
-        {value for value, _, _ in mapping}
-    ) != len(mapping):
+    if (
+        [name for _, name, _ in mapping] != ["None", "Some"]
+        or len({value for value, _, _ in mapping}) != len(mapping)
+        or any(value >= 2**32 for value, _, _ in mapping)
+    ):
         return {"kind": "unqualified"}
     (_, _, none), (_, _, some) = mapping
     if (
@@ -281,7 +314,9 @@ def _option_layout(struct, qualified, by_offset):
     if (
         len(fields) != 1
         or _string(fields[0].attributes.get("DW_AT_name")) != "__0"
-        or _reference(fields[0].attributes.get("DW_AT_type"))[1] != payload[0]
+        or not _base_type(
+            fields[0].attributes.get("DW_AT_type"), by_offset, payload[0], "DW_ATE_signed"
+        )
     ):
         return {"kind": "unqualified"}
     return {
@@ -330,25 +365,24 @@ def enum_layouts(text, unit):
 def application_symbols(dwarfdump, symbols, workspace, env, *, entrypoint, crate, declared):
     """Return declared-source lines and enum layouts from application units only."""
     workspace = Path(workspace).resolve(strict=True)
-    index = _metadata(
-        dwarfdump, ["--debug-info", "--recurse-depth=0", str(symbols)], workspace, env
-    )
+    deadline = _clock() + SYMBOL_DEADLINE_S
+
+    def dump(arguments):
+        remaining = deadline - _clock()
+        if remaining <= 0:
+            raise ValueError("Rust symbol extraction exceeded its shared deadline")
+        return _metadata(dwarfdump, arguments, workspace, env, timeout=min(15, remaining))
+
+    index = dump(["--debug-info", "--recurse-depth=0", str(symbols)])
     units = application_units(index, workspace, entrypoint=entrypoint, crate=crate)
     tables, layouts = [], {}
     for unit in units:
-        table = _metadata(
-            dwarfdump, [f"--debug-line=0x{unit.stmt_list:08x}", str(symbols)], workspace, env
-        )
+        table = dump([f"--debug-line=0x{unit.stmt_list:08x}", str(symbols)])
         offsets = re.findall(r"^debug_line\[0x([0-9a-f]{8,16})\]$", table, re.MULTILINE)
         if [int(offset, 16) for offset in offsets] != [unit.stmt_list]:
             raise ValueError("Rust line table does not match its application unit")
         tables.append(table)
-        info = _metadata(
-            dwarfdump,
-            [f"--debug-info=0x{unit.die:08x}", "--show-children", str(symbols)],
-            workspace,
-            env,
-        )
+        info = dump([f"--debug-info=0x{unit.die:08x}", "--show-children", str(symbols)])
         for name, layout in enum_layouts(info, unit).items():
             if layouts.get(name, layout) != layout:
                 layout = {"kind": "unqualified"}
@@ -387,6 +421,8 @@ def _option_value(variable, fetch, layout, kind):
         if child.get("type") != f"{kind}::{kind}$Inner::{name}$Variant":
             raise ValueError("Rust enum variant type mismatch")
         tag, value = _named(fetch(_reference_of(child)), ["$discr$", "value"])
+        if value.get("type") != f"{kind}::{name}<{QUALIFIED_OPTIONS[kind][1]}>":
+            raise ValueError("Rust enum variant payload type mismatch")
         text = tag.get("value")
         if (
             tag.get("type") != DISCRIMINANT_TYPES[layout["discriminant"]]

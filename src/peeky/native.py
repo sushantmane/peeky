@@ -55,10 +55,12 @@ def _path_name(name, suffix):
         raise ValueError("Expected a plain relative native input path")
 
 
-def _metadata(tool, arguments, workspace, env, *, max_bytes=MAX_METADATA):
+def _metadata(tool, arguments, workspace, env, *, max_bytes=MAX_METADATA, timeout=15):
     """Bound metadata capture; larger engineering probes do not change parser limits."""
     if type(max_bytes) is not int or not 0 < max_bytes <= 16 * 1024 * 1024:
         raise ValueError("Invalid native metadata capture limit")
+    if type(timeout) not in (int, float) or not 0 < timeout <= 15:
+        raise ValueError("Invalid native metadata time limit")
     with tempfile.TemporaryDirectory(prefix="peeky-symbols-", dir=workspace) as scratch:
         output = Path(scratch) / "dump.txt"
         errors = Path(scratch) / "errors.txt"
@@ -72,7 +74,7 @@ def _metadata(tool, arguments, workspace, env, *, max_bytes=MAX_METADATA):
                 stderr=stderr,
                 start_new_session=True,
             )
-            deadline = time.monotonic() + 15
+            deadline = time.monotonic() + timeout
             exceeded = False
             try:
                 while process.poll() is None:
