@@ -5,6 +5,8 @@ next, whether retrying the same request can help, and whether the session was
 closed. Codes are part of the protocol; messages are for humans and may change.
 """
 
+import io
+import json
 import re
 from urllib.error import HTTPError
 
@@ -138,14 +140,20 @@ def classify(exc, *, session_closed=None):
 class PeekyError(HTTPError):
     """Raised by the SDK; still an HTTPError (``.code`` is the HTTP status)."""
 
-    def __init__(self, url, status, headers, payload):
+    def __init__(self, url, status, headers, payload, body=None):
         self.payload = payload
         self.error_code = payload.get("code", "INVALID_REQUEST")
         self.hint = payload.get("hint", "")
         self.retryable = payload.get("retryable", False)
         self.session_closed = payload.get("session_closed", False)
+        # Keep the original JSON body readable for callers that inspect the response.
+        raw = body if body is not None else json.dumps({"error": payload}).encode()
         super().__init__(
-            url, status, f"[{self.error_code}] {payload.get('message', '')}", headers, None
+            url,
+            status,
+            f"[{self.error_code}] {payload.get('message', '')}",
+            headers,
+            io.BytesIO(raw),
         )
 
     def __str__(self):

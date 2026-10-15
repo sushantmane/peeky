@@ -24,13 +24,20 @@ class Client:
             with urlopen(request, timeout=45) as response:
                 return json.load(response)
         except HTTPError as exc:
+            raw = exc.read() or b"{}"
             try:
-                body = json.loads(exc.read() or b"{}")
+                body = json.loads(raw)
             except ValueError:
-                raise exc from None
+                body = None
             if isinstance(body, dict) and isinstance(body.get("error"), dict):
-                raise PeekyError(exc.url, exc.code, exc.headers, body["error"]) from None
-            raise
+                raise PeekyError(exc.url, exc.code, exc.headers, body["error"], raw) from None
+            raise PeekyError(
+                exc.url,
+                exc.code,
+                exc.headers,
+                {"code": "INVALID_REQUEST", "message": raw.decode(errors="replace")[:2000]},
+                raw,
+            ) from None
 
     def probe(self, at, capture=(), set=None, hits=1, timeout=40):
         """One stateless request: stop at `path:line`, capture, optionally set, report."""

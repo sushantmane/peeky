@@ -98,7 +98,7 @@ def assert_http_error(code, client, operation, **args):
     with pytest.raises(HTTPError) as caught:
         client.call(operation, **args)
     assert caught.value.code == code
-    return json.load(caught.value)["error"]
+    return json.load(caught.value)["error"]["message"]
 
 
 def assert_process_gone(pid):

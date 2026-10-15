@@ -131,7 +131,7 @@ def fail_http(code, client, operation, **args):
     with pytest.raises(HTTPError) as caught:
         client.call(operation, **args)
     assert caught.value.code == code
-    return json.load(caught.value)["error"]
+    return json.load(caught.value)["error"]["message"]
 
 
 def gone(pid):
@@ -259,7 +259,7 @@ def test_native_missing_symbols_fails_launch(native_worker, native_config, tmp_p
     client, worker = start(compiler=str(wrapper))
     with pytest.raises(HTTPError) as caught:
         client.call("launch", program="branch_bug.c", breakpoints=[{"line": first}])
-    message = json.load(caught.value)["error"]
+    message = json.load(caught.value)["error"]["message"]
     assert any(
         word in message.lower()
         for word in ("debug", "symbol", "dwarf", "line table", "line information")
