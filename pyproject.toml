@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "A debugger worker and runtime experimentation client for coding agents"
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = ["debugpy==1.8.21"]
+dependencies = ["debugpy==1.8.22"]
 
 [project.optional-dependencies]
 dev = ["pytest==8.4.2", "pytest-timeout==2.4.0", "ruff==0.14.0", "build==1.3.0"]
