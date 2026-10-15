@@ -13,6 +13,8 @@ peeky verify examples/pagination_bug.py --check examples/verify_pagination.py \
   --old 'page * page_size' --new '(page - 1) * page_size'
 ```
 
+Java services and Gradle tests (for example Venice end-to-end tests): attach to a `--debug-jvm` JVM; see [docs/JAVA_ATTACH.md](docs/JAVA_ATTACH.md).
+
 Agents: read [docs/AGENT_GUIDE.md](docs/AGENT_GUIDE.md) or install [skills/peeky-debug](skills/peeky-debug/SKILL.md). Design: [ADR 0005](docs/adr/0005-tool-not-agent.md).
 
 Peeky gives a coding agent a controlled debugging loop: choose a breakpoint, inspect live state, test a hypothesis by changing a variable, and validate a candidate fix in a fresh process. Runtime experiments produce evidence; a separate verifier decides whether the source change passes the supplied checks.

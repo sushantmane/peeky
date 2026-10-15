@@ -92,9 +92,16 @@ def test_java_runtime_intervention(bundle, tmp_path, nested):
             },
         )
         assert caps == {"supportsConfigurationDoneRequest": True, "supportsSetVariable": True}
-        for command in ("evaluate", "attach", "completions", "restart", "stepIn"):
+        for command in ("evaluate", "completions", "restart", "stepIn"):
             with pytest.raises(RuntimeError, match="unsupported command"):
                 dap.request(command, {})
+        for arguments, message in (
+            ({}, "requires loopback"),
+            ({"hostName": "10.0.0.5", "port": 5005}, "loopback-only"),
+            ({"hostName": "127.0.0.1", "port": 0}, "invalid attach port"),
+        ):
+            with pytest.raises(RuntimeError, match=message):
+                dap.request("attach", arguments)
         launch = dap.send("launch", {"mainClass": "demo.BranchBug", "classPaths": [str(classes)]})
         dap.wait_event({"initialized"})
         for field in ("condition", "logMessage", "hitCondition"):

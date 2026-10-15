@@ -20,7 +20,7 @@ You debug programs with **peeky**, a standalone tool. You decide what to do; pee
 | `peeky session inspect` / `get a.b c[0]` / `set x=0` / `continue` / `report` / `close` | instant | Work with the stopped program. Always `close`. |
 | `peeky verify <target> --check <checker.py> --old '<exact text>' --new '<replacement>'` | one build | Verify one candidate edit on a fresh build. |
 
-Targets: a `.py` file, a `.c`/`.cpp` file, a Cargo crate directory, or any target with `--config <trusted.json>` (required for Java). Selectors are dotted paths and indexes (`request.page`, `args[0]`); expressions are rejected.
+Targets: a `.py` file, a `.c`/`.cpp` file, a Cargo crate directory, or any target with `--config <trusted.json>` (required for Java). A Java attach config (`port`, `sources`, `class_roots`) attaches to a running `--debug-jvm` JVM; attached targets cannot be verified, and closing detaches without killing the JVM. Selectors are dotted paths and indexes (`request.page`, `args[0]`); expressions are rejected.
 
 ## Workflow
 

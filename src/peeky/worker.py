@@ -172,7 +172,9 @@ class DebugWorker:
                 )
                 self.capabilities = runtime.normalize_capabilities(capabilities)
                 launch = self.dap.send(
-                    "launch", runtime.launch_args(program, self.root), timeout=left(5)
+                    getattr(runtime, "dap_request", "launch"),
+                    runtime.launch_args(program, self.root),
+                    timeout=left(5),
                 )
                 self.dap.wait_event({"initialized"}, failed_request=launch, timeout=left())
                 points = self.dap.request(
@@ -587,7 +589,10 @@ class DebugWorker:
         self.children.clear()
         try:
             if adapter:
-                adapter.close()
+                if runtime is not None and getattr(runtime, "terminate_debuggee", True) is False:
+                    adapter.close(terminate=False)
+                else:
+                    adapter.close()
         finally:
             if runtime:
                 runtime.close()
@@ -746,6 +751,26 @@ def load_rust_target(path):
     return RustTarget(**config)
 
 
+def load_java_attach_target(path):
+    """Trusted attach configuration: loopback port, declared sources and class roots."""
+    from peeky.java_attach import JavaAttachTarget
+
+    path = Path(path)
+    config = json.loads(path.read_text())
+    if not isinstance(config, dict):
+        raise ValueError("Java attach configuration must be an object")
+    config.pop("language", None)
+    allowed = {"bundle", "port", "sources", "class_roots", "java", "host", "timeout_ms"}
+    if set(config) - allowed or not {"bundle", "port", "sources", "class_roots"} <= set(config):
+        raise ValueError("Java attach configuration needs bundle, port, sources and class_roots")
+    for key in ("sources", "class_roots"):
+        if not isinstance(config[key], list):
+            raise ValueError(f"Java attach {key} must be a JSON array")
+        config[key] = tuple(config[key])
+    config["bundle"] = (path.resolve().parent / config["bundle"]).resolve()
+    return JavaAttachTarget(**config)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", default=".")
@@ -760,14 +785,19 @@ def main():
     targets.add_argument(
         "--rust-config", type=Path, help="Trusted fixed Cargo binary JSON configuration"
     )
+    targets.add_argument(
+        "--java-attach-config", type=Path, help="Trusted loopback JVM attach configuration"
+    )
     args = parser.parse_args()
     token = os.environ.get("DEBUG_TOKEN")
     if not token or len(token) < 16:
         parser.error("Set DEBUG_TOKEN to a random secret of at least 16 characters")
     adapter = None
-    if args.java_config or args.native_config or args.rust_config:
+    if args.java_config or args.native_config or args.rust_config or args.java_attach_config:
         try:
-            if args.java_config:
+            if args.java_attach_config:
+                adapter = load_java_attach_target(args.java_attach_config)
+            elif args.java_config:
                 adapter = load_java_target(args.java_config)
             elif args.native_config:
                 adapter = load_native_target(args.native_config)

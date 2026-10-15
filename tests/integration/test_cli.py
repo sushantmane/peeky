@@ -85,3 +85,5 @@ def test_unknown_targets_and_bad_locations_fail_clearly(workspace, capsys):
     assert code == 2 and "Cannot detect" in out.err
     code, out = run(capsys, "probe", workspace / "pagination_bug.py", "--at", "x:y")
     assert code == 2 and "--at" in out.err
+    code, out = run(capsys, "probe", workspace / "pagination_bug.py", "--at", "pagination_bug.py")
+    assert code == 2 and "requires --at" in out.err

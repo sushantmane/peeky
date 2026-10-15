@@ -126,19 +126,31 @@ def resolve(target, at=None, config=None):
     path = Path(target).resolve(strict=True)
     program, line = None, None
     if at:
-        location, _, number = str(at).rpartition(":")
-        if not location and re.fullmatch(r"[1-9][0-9]{0,6}", str(at)):
-            number = str(at)
-        elif not re.fullmatch(r"[1-9][0-9]{0,6}", number):
-            raise ValueError("--at must be <line> or <path>:<line>")
-        program, line = location or None, int(number)
+        text = str(at)
+        if re.fullmatch(r"[1-9][0-9]{0,6}", text):
+            line = int(text)
+        elif ":" in text:
+            location, _, number = text.rpartition(":")
+            if not location or not re.fullmatch(r"[1-9][0-9]{0,6}", number):
+                raise ValueError("--at must be <line>, <path> or <path>:<line>")
+            program, line = location, int(number)
+        else:
+            program = text
     if config is not None:
         data = json.loads(Path(config).read_text())
         if not isinstance(data, dict):
             raise ValueError("Target configuration must be a JSON object")
         language = data.pop("language", None) or (
-            "rust" if "cargo" in data else "java" if "main_class" in data else "c"
+            "rust"
+            if "cargo" in data
+            else "java-attach"
+            if "port" in data
+            else "java"
+            if "main_class" in data
+            else "c"
         )
+        if language == "java-attach":
+            data["bundle"] = str((Path(config).resolve().parent / data["bundle"]).resolve())
         if language in ("c", "cpp"):
             data["language"] = language
         root = path if path.is_dir() else path.parent
@@ -187,6 +199,10 @@ def adapter_for(language, data):
         from peeky.java import JavaTarget
 
         return JavaTarget(**{**data, "bundle": Path(data["bundle"]).resolve()})
+    if language == "java-attach":
+        from peeky.java_attach import JavaAttachTarget
+
+        return JavaAttachTarget(**{**data, "bundle": Path(data["bundle"])})
     from peeky.native import NativeTarget
 
     return NativeTarget(**data)
@@ -240,6 +256,7 @@ def describe(args):
             "c": "int/unsigned int root locals",
             "cpp": "int/unsigned int root locals",
             "java": "numeric/boolean root locals",
+            "java-attach": "numeric/boolean root locals (attached JVM; no edit verification)",
         }[language]
     _emit(manifest, args.json, _describe_text)
     return 0
@@ -474,6 +491,8 @@ def _start(args):
 
 def verify(args):
     root, program, _, language, data = resolve(args.target, args.at, args.config)
+    if language == "java-attach":
+        raise ValueError("Attached JVMs cannot verify edits; verify with a fresh build target")
     source, check = (root / program).resolve(strict=True), Path(args.check).resolve(strict=True)
     destination = Path(tempfile.mkdtemp(prefix="peeky-verify-"))
     if language == "python":

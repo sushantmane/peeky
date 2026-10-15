@@ -20,6 +20,9 @@ class ResponseTimeout(TimeoutError):
 
 MAX_HEADER_BYTES = 8192
 MAX_CONTROL_EVENTS = 2000
+LIFECYCLE_EVENTS = frozenset(
+    {"initialized", "stopped", "continued", "terminated", "exited", "breakpoint", "process"}
+)
 
 
 def read_message(stream):
@@ -83,6 +86,7 @@ class DAP:
         self.responses = {}
         self.abandoned = set()
         self.events = collections.deque(maxlen=MAX_CONTROL_EVENTS)
+        self.ignored_events = {}
         self.output = collections.deque(maxlen=500)
         self.output_truncated = False
         self.sequence = 0
@@ -111,10 +115,16 @@ class DAP:
                             len(self.output) == self.output.maxlen or len(output) > 8192
                         )
                         self.output.append(output[:8192])
-                else:
+                elif body["event"] in LIFECYCLE_EVENTS:
                     self.event_sequence += 1
                     body["cursor"] = self.event_sequence
                     self.events.append(body)
+                else:
+                    # Thread/module churn (thousands per second in large JVMs) must not
+                    # evict lifecycle events; keep only bounded counts.
+                    self.ignored_events[body["event"]] = (
+                        self.ignored_events.get(body["event"], 0) + 1
+                    )
             self.condition.notify_all()
 
     def _read(self):
@@ -233,14 +243,15 @@ class DAP:
         with self.condition:
             return "".join(self.output), self.output_truncated
 
-    def close(self):
+    def close(self, terminate=True):
+        """Disconnect and reap the adapter; attached debuggees are detached, not killed."""
         with self.close_lock:
             if self.closed:
                 return
             self.closed = True
             if self.process.poll() is None:
                 try:
-                    seq = self.send("disconnect", {"terminateDebuggee": True}, timeout=0.25)
+                    seq = self.send("disconnect", {"terminateDebuggee": terminate}, timeout=0.25)
                     self.response(seq, timeout=1)
                 except Exception:
                     pass
