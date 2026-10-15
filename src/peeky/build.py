@@ -300,16 +300,38 @@ def _budget(command, deadline):
     return min(command.timeout_s, remaining), remaining < command.timeout_s
 
 
-def prepare(recipe, source_root, *, parent=None, edit=None, deadline=None, before_command=None):
+def _assert_tools(tools, stage):
+    """Every previously recorded tool still has its probed bytes (drivers delegate to them)."""
+    try:
+        unchanged = all(_digest(Path(tool.path))[0] == tool.sha256 for tool in tools)
+    except (OSError, ValueError) as exc:
+        raise RuntimeError(f"Toolchain changed during {stage}") from exc
+    if not unchanged:
+        raise RuntimeError(f"Toolchain changed during {stage}")
+
+
+def prepare(
+    recipe,
+    source_root,
+    *,
+    parent=None,
+    edit=None,
+    deadline=None,
+    before_command=None,
+    validate_workspace=None,
+):
     """Copy declared inputs to a fresh workspace, build, and retain a manifest.
 
     An optional single SourceEdit preserves the original relative filename.
     Callers own cleanup (or use the returned PreparedRun as a context manager).
     Build failures clean their temporary workspace automatically. ``deadline`` is
     an overall time.monotonic() bound; exhausting it is a fatal TimeoutError, never
-    retryable compiler feedback. ``before_command(workspace, probes, command)``
-    validates the exact staged inputs and probe results immediately before each
-    build command; a failure there is fatal, never compiler feedback.
+    retryable compiler feedback. Immediately before **every** probe and build
+    command, the trusted ``validate_workspace(workspace, env)`` callback checks the
+    staged workspace and environment, ``before_command(workspace, probes, command)``
+    additionally validates probe results before each build command, and every tool
+    recorded so far plus the original and staged inputs are rechecked. Any failure
+    there is fatal, never compiler feedback.
     """
     _validate(recipe)
     source_root = Path(source_root).resolve(strict=True)
@@ -337,7 +359,27 @@ def prepare(recipe, source_root, *, parent=None, edit=None, deadline=None, befor
         env = {key: os.environ[key] for key in INHERITED_ENV if key in os.environ}
         env.update(dict(recipe.environment))
         env.pop("DEBUG_TOKEN", None)
+
+        def check(command=None):
+            # Runs before each command: an earlier command or callback must not have
+            # changed what the next one reads or delegates to.
+            if validate_workspace is not None:
+                validate_workspace(workspace, dict(env))
+            if command is not None and before_command is not None:
+                before_command(workspace, tuple(probes), command)
+            _assert_tools(tools, "preparation")
+            try:
+                original_unchanged = _files(source_root, recipe.inputs) == original
+                staged_unchanged = _files(workspace, recipe.inputs) == inputs
+            except (OSError, ValueError) as exc:
+                raise RuntimeError("Source provenance changed during preparation") from exc
+            if not original_unchanged:
+                raise RuntimeError("Source provenance changed during preparation")
+            if not staged_unchanged:
+                raise RuntimeError("Staged inputs changed during preparation (provenance mismatch)")
+
         for command in recipe.toolchain_probes:
+            check()
             timeout, _ = _budget(command, deadline)
             try:
                 tool, result = _run(command, workspace, env, timeout)
@@ -346,10 +388,7 @@ def prepare(recipe, source_root, *, parent=None, edit=None, deadline=None, befor
             tools.append(tool)
             probes.append(ProbeResult(command.argv, result["stdout"], result["stderr"]))
         for command in recipe.build_commands:
-            if before_command is not None:
-                before_command(workspace, tuple(probes), command)
-                if _files(workspace, recipe.inputs) != inputs:
-                    raise RuntimeError("Staged inputs changed during build validation")
+            check(command)
             timeout, limited = _budget(command, deadline)
             try:
                 tool, _ = _run(command, workspace, env, timeout)
@@ -358,6 +397,9 @@ def prepare(recipe, source_root, *, parent=None, edit=None, deadline=None, befor
                     raise TimeoutError("Build preparation exceeded its overall deadline") from exc
                 raise
             tools.append(tool)
+        # The last command may have delegated to helpers (e.g. dsymutil via PATH);
+        # recheck before its outputs are recorded against the declared tools.
+        check()
         manifest = BuildManifest(
             1,
             _json_digest(asdict(recipe)),
@@ -385,12 +427,7 @@ def prepare(recipe, source_root, *, parent=None, edit=None, deadline=None, befor
             if not unchanged:
                 raise RuntimeError("Source provenance changed during failed build")
             # Drivers delegate to earlier probed tools; their drift is never compiler feedback.
-            try:
-                tools_unchanged = all(_digest(Path(t.path))[0] == t.sha256 for t in tools)
-            except (OSError, ValueError) as exc:
-                raise RuntimeError("Toolchain changed during failed build") from exc
-            if not tools_unchanged:
-                raise RuntimeError("Toolchain changed during failed build")
+            _assert_tools(tools, "failed build")
             raise
         finally:
             shutil.rmtree(workspace)
