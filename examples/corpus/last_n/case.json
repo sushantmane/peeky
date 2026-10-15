@@ -6,11 +6,11 @@
     "n"
   ],
   "fix": {
-    "old": "items[-n - 1:]",
+    "old": "items[-n - 1 :]",
     "new": "(items[-n:] if n > 0 else [])"
   },
   "overfit": {
-    "old": "items[-n - 1:]",
-    "new": "items[-n - 1:][1:]"
+    "old": "items[-n - 1 :]",
+    "new": "items[-n - 1 :][1:]"
   }
 }

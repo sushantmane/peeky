@@ -1,6 +1,6 @@
 # Autonomous execution checkpoint
 
-Updated: 2026-10-14. Repository: https://github.com/sushantmane/peeky (private).
+Updated: 2026-10-15. Repository: https://github.com/sushantmane/peeky (private).
 
 ## Direction and authorization
 
@@ -31,6 +31,19 @@ Venice on Apple Silicon without Rosetta: grpc-java ships only x86_64 macOS code 
 Reviews: the CLI and attach review found 3 blocking and 7 should-fix issues, all fixed in `3bd1e38`/`d41bdf7` with regressions (path confinement in verify, `no-stop` probes, provenance on wait/report, hard-capped HTTP probe subprocess, token-authenticated worker shutdown, private validated session records, selector truncation, bounded attach discovery, detection precedence, pinned Venice helper, narrowed docs). A verification pass found five more (HTTP probe child isolation, stop validation, cleanup inside the cap, complete JSON results, full attach entry bounds); these are fixed in `27937b7`, and the final review reported **no blocking issues**. Evidence on `27937b7`: all nine CI lanes passed (run 38691568364, longest 71 s); 562 local tests passed (unit, integration, Java including attach, Rust); and the Venice probe again captured both hits, with both tests PASSED.
 
 Next: open one PR from `feat/java-attach` (it contains `feat/stateless-probe`) and merge after reconfirming lanes on its head. Then: a live-model session where an agent drives `peeky` against a Venice bug using docs/AGENT_GUIDE.md; production-class breakpoints in Venice (add `services/*/build/classes/java/main` roots); ADR 0004 steps 4–5 (query grammar, evidence store); lifecycle #6, corpus #7, SSH #8.
+
+Stacked on `feat/java-attach` (2026-10-15):
+- **`feat/error-codes` (#6):** protocol version 1, machine-readable error codes with hints, retryable and session_closed flags ([ERRORS.md](ERRORS.md)), and lifecycle regressions. CI green, run 38694056033.
+- **`feat/corpus` (#7):** the ten-bug corpus and distinct outcomes. A live agent evaluation ([evaluations/2026-10-15-agent-cli.md](evaluations/2026-10-15-agent-cli.md)) had three independent agents each reach verified general fixes. Its findings are fixed:
+  - Python `--set` is now limited to literals; it previously evaluated expressions inside the debuggee.
+  - `verify` cleans up its scratch copy, shows the failure reason and diff, and explains `--old` mismatches.
+  - Probes warn about relocated breakpoints and short runs.
+  - All failures now use one error object.
+  - With every real toolchain lane enabled, 644 tests pass locally.
+- **Next:** an independent review of `feat/error-codes` plus `feat/corpus`, then one PR from `feat/corpus` covering the whole stack. After that:
+  - agent-friendliness for long or timed targets (background probes, pause budgets for TestNG/JUnit timeouts);
+  - SSH separate host (#8; needs a second host);
+  - a user-selected non-synthetic program.
 
 Known local-only limitation (pre-existing on main): test_native_adapter_death_reaps_stopped_target fails with Apple LLDB on macOS and passes on hosted Linux.
 

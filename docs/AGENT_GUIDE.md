@@ -20,6 +20,26 @@ You debug programs with **peeky**, a standalone tool. You decide what to do; pee
 | `peeky session inspect` / `get a.b c[0]` / `set x=0` / `continue` / `report` / `close` | instant | Work with the stopped program. Always `close`. |
 | `peeky verify <target> --check <checker.py> --old '<exact text>' --new '<replacement>'` | one build | Verify one candidate edit on a fresh build. |
 
+Every command takes `--json`: stdout is then one JSON object (progress goes to stderr; `--quiet` silences it). Session records live in `$PEEKY_STATE_DIR` (default `~/.peeky`), so set it per task to keep sessions apart.
+
+### Interventions (`--set name=value`)
+
+- Only existing locals in the stopped frame can be set. Python accepts literal values, including containers (`0`, `'x'`, `None`, `[]`, `{'k': 1}`). Compiled languages accept scalars only. Expressions, names and calls (`min(xs)`, `float('inf')`) are rejected with `MUTATION_REJECTED` and are never evaluated. Use `-1e309` for negative infinity.
+- A probe applies its interventions once, at hit 1. Later `--hits` observe without re-applying. For per-iteration changes, use a session: `continue`, then `set` again.
+
+### Reading probe results
+
+- `rows` has one entry per hit, phase and selector. `phase` is `observed`, or `after-set` (the value after your intervention). `line` is where the program actually stopped.
+- Read `warnings` every time. They flag a breakpoint the debugger moved to another line (the values then come from that line) and runs that ended before all requested hits.
+- If a selector is missing, the row's error lists the visible names.
+- Failures carry `error: {code, message, hint, retryable, session_closed}` (see [ERRORS.md](ERRORS.md)). `status` is `completed`, `no-stop`, `failed` or `timeout`.
+
+### Verifying an edit
+
+- `--old` must match the source exactly once. Pass real newlines for multi-line text (bash: `--old $'a\n    b'`). If it fails, the error gives the match count and the lines where it matched.
+- The result includes `stage` (`build` or `verification`), the unified `diff` that was applied, and on failure a `reason` (the checker's exception or the build diagnostic).
+- The scratch copy is deleted afterwards. Pass `--keep` to keep it for inspection.
+
 Targets: a `.py` file, a `.c`/`.cpp` file, a Cargo crate directory, or any target with `--config <trusted.json>` (required for Java). A Java attach config (`port`, `sources`, `class_roots`) attaches to a running `--debug-jvm` JVM; attached targets cannot be verified, and closing detaches without killing the JVM. Selectors are dotted paths and indexes (`request.page`, `args[0]`); expressions are rejected.
 
 ## Workflow

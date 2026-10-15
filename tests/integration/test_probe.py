@@ -45,8 +45,35 @@ def test_probe_without_intervention_observes_original_behavior(program):
 
 def test_probe_failure_is_reported_and_cleaned(program):
     result = run_probe(program, Probe("pagination_bug.py", 8, ("start",), (("nope", "1"),)))
-    assert result["status"] == "failed" and "nope" in result["error"]
+    assert result["status"] == "failed" and "nope" in result["error"]["message"]
+    assert result["error"]["code"] == "NOT_FOUND" and "visible: " in result["error"]["message"]
+    assert "page_size" in result["error"]["message"]
     assert result["rows"][0]["value"] == "3"
+
+
+@pytest.mark.parametrize("value", ["min(items)", "__import__('os').getpid()", "page", "x.y", ""])
+def test_python_interventions_accept_only_inert_literals(program, value):
+    result = run_probe(program, Probe("pagination_bug.py", 8, ("start",), (("start", value),)))
+    assert result["status"] == "failed" and result["error"]["code"] == "MUTATION_REJECTED"
+    assert result["interventions"] == [] and result["rows"][0]["value"] == "3"
+
+
+def test_python_container_literals_are_valid_interventions(program):
+    probe = Probe("pagination_bug.py", 9, ("items",), (("items", "[1, 2, 3, 4, 5, 6, -7]"),))
+    result = run_probe(program, probe)
+    assert result["status"] == "completed" and "PAGE: [4, 5, 6]" in result["output"]
+
+
+def test_relocated_breakpoints_and_short_runs_are_flagged(program):
+    result = run_probe(program, Probe("pagination_bug.py", 8, ("start",), hits=3))
+    assert result["status"] == "completed" and result["hits"] == 1
+    assert any("Only 1 of 3 requested hits" in w for w in result["warnings"])
+    result = run_probe(program, Probe("pagination_bug.py", 10, ("start",)))
+    if result["status"] == "completed":
+        line = result["rows"][0]["line"]
+        assert line != 10 and any("moved the breakpoint" in w for w in result["warnings"])
+    else:
+        assert result["error"]["code"] == "NO_STOP"
 
 
 def test_probe_cli_prints_a_table_and_exit_status(program, capsys):

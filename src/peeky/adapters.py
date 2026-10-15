@@ -4,8 +4,43 @@ Adapter commands and launch configuration are not accepted from HTTP clients.
 Python runs directly; compiled runtimes require prepared build provenance.
 """
 
+import ast
 import sys
 from dataclasses import dataclass
+
+PYTHON_LITERAL_NODES = (
+    ast.Expression,
+    ast.Constant,
+    ast.List,
+    ast.Tuple,
+    ast.Set,
+    ast.Dict,
+    ast.UnaryOp,
+    ast.USub,
+    ast.UAdd,
+    ast.BinOp,
+    ast.Add,
+    ast.Sub,
+    ast.Load,
+)
+
+
+def validate_python_literal(value):
+    # debugpy evaluates the value inside the debuggee, so only inert literal syntax
+    # (no names, calls, attributes or subscripts) may reach it.
+    message = (
+        "Python --set values must be a literal (number, string, bytes, True/False/None, "
+        "or a list/tuple/dict/set of literals); expressions are not evaluated"
+    )
+    if not isinstance(value, str) or not value.strip() or len(value) > 4096:
+        raise ValueError(message)
+    try:
+        tree = ast.parse(value.strip(), mode="eval")
+        if not all(isinstance(node, PYTHON_LITERAL_NODES) for node in ast.walk(tree)):
+            raise ValueError(message)
+        ast.literal_eval(tree)
+    except (SyntaxError, ValueError, TypeError, MemoryError, RecursionError):
+        raise ValueError(message) from None
 
 
 class ViewBudgetExhausted(ValueError):
@@ -34,7 +69,7 @@ class PythonAdapter:
         pass
 
     def validate_value(self, value):
-        pass
+        validate_python_literal(value)
 
     def close(self):
         pass

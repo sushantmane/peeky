@@ -9,7 +9,7 @@ Follow docs/AGENT_GUIDE.md in the peeky repository. Short form:
 
 1. `peeky describe <target>`: valid breakpoint lines and what can be read or changed.
 2. `peeky probe <target> --at <file>:<line> --capture <a,b.c>`: observe real values.
-3. `peeky probe ... --set <local>=<value>`: test the hypothesis. This is evidence only.
+3. `peeky probe ... --set <local>=<value>`: test the hypothesis. Values must be literals, and they are applied at hit 1 only. This is evidence only. Always read `warnings`.
 4. Edit the source generally, then `peeky verify <target> --check <checker> --old '<text>' --new '<text>'`.
 5. Report the commands, the observed values, the intervention's effect and the verify result. Never claim a fix without `passed: True` from `verify`.
 

@@ -79,6 +79,59 @@ def test_verify_runs_the_independent_checker_on_a_candidate(workspace, capsys):
     assert "page * page_size" in (workspace / "pagination_bug.py").read_text()
 
 
+def _peeky_verify_dirs():
+    import tempfile
+
+    return set(Path(tempfile.gettempdir()).glob("peeky-verify-*"))
+
+
+def test_verify_reports_stage_reason_diff_and_cleans_up(workspace, capsys):
+    before = _peeky_verify_dirs()
+    args = [
+        "verify",
+        workspace / "pagination_bug.py",
+        "--check",
+        workspace / "verify_pagination.py",
+    ]
+    code, out = run(capsys, *args, "--old", "page * page_size", "--new", "0", "--json")
+    result = json.loads(out.out)
+    assert code == 1 and result["stage"] == "verification" and not result["passed"]
+    assert "candidate" not in result and "+    start = 0" in result["diff"]
+    code, out = run(capsys, *args, "--old", "page * page_size", "--new", "0")
+    assert code == 1 and "reason: " in out.out and "diff:" in out.out
+    assert _peeky_verify_dirs() == before
+    code, out = run(
+        capsys, *args, "--old", "page * page_size", "--new", "(page-1)*page_size", "--keep"
+    )
+    kept = _peeky_verify_dirs() - before
+    assert code == 0 and len(kept) == 1 and "candidate: " in out.out
+    shutil.rmtree(kept.pop())
+
+
+def test_verify_explains_why_old_text_does_not_match(workspace, capsys):
+    args = [
+        "verify",
+        workspace / "pagination_bug.py",
+        "--check",
+        workspace / "verify_pagination.py",
+    ]
+    code, out = run(capsys, *args, "--old", "page_size", "--new", "n")
+    assert code == 2 and "matched 5 times (lines " in out.err
+    code, out = run(capsys, *args, "--old", "start = page * page_size\\n", "--new", "x")
+    assert code == 2 and "literal backslash-n" in out.err
+    code, out = run(capsys, *args, "--old", "nothing like this", "--new", "x")
+    assert code == 2 and "matched 0 times" in out.err
+
+
+def test_session_continue_reports_where_it_stopped(workspace, capsys):
+    target = workspace / "pagination_bug.py"
+    code, out = run(capsys, "session", "start", target, "--at", "8")
+    assert code == 0 and "pagination_bug.py:8" in out.out
+    code, out = run(capsys, "session", "continue", "--json")
+    assert code == 0 and json.loads(out.out)["state"] == "terminated"
+    assert run(capsys, "session", "close")[0] == 0
+
+
 def test_unknown_targets_and_bad_locations_fail_clearly(workspace, capsys):
     (workspace / "notes.txt").write_text("x")
     code, out = run(capsys, "probe", workspace / "notes.txt", "--at", "1")
@@ -155,7 +208,7 @@ def test_verify_cannot_write_outside_a_scratch_copy(workspace, capsys):
         if at.startswith(".."):
             assert code == 2 and "inside the target" in out.err
         else:
-            assert code == 0 and "/candidate/" in out.out
+            assert code == 0 and "-    start = page * page_size" in out.out
 
 
 def test_probe_that_never_stops_is_not_success(workspace, capsys):

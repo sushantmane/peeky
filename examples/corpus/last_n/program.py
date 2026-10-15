@@ -1,5 +1,5 @@
 def last_n(items, n):
-    tail = items[-n - 1:]
+    tail = items[-n - 1 :]
     return tail
 
 

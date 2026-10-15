@@ -781,13 +781,20 @@ def _run_probe_process(root, request, adapter, cap):
             except subprocess.TimeoutExpired:
                 os.killpg(process.pid, signal.SIGKILL)
                 process.communicate()
-            return {"status": "timeout", "error": f"Probe exceeded the {cap} s HTTP cap"}
+            return _probe_failure("timeout", TimeoutError(f"Probe exceeded the {cap} s HTTP cap"))
     if len(stdout) > 16 * 1024 * 1024:
-        return {"status": "failed", "error": "Probe result exceeded 16 MiB"}
+        return _probe_failure("failed", ValueError("Probe result exceeds limit of 16 MiB"))
     try:
         return json.loads(stdout)
     except json.JSONDecodeError:
-        return {"status": "failed", "error": stderr[-2000:].decode(errors="replace")}
+        message = stderr[-2000:].decode(errors="replace") or "Probe process failed"
+        return _probe_failure("failed", RuntimeError(message))
+
+
+def _probe_failure(status, exc):
+    from peeky.errors import classify
+
+    return {"status": status, "error": classify(exc, session_closed=True)}
 
 
 def load_java_target(path):

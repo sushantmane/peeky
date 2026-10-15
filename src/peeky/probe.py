@@ -90,6 +90,12 @@ class Probe:
             raise ValueError(f"Probe timeout must be within (0, {MAX_SECONDS}] seconds")
 
 
+def _visible(snapshot):
+    names = sorted({v["name"] for scope in snapshot["scopes"] for v in scope["variables"]})
+    shown = ", ".join(names[:40]) + (f", ... ({len(names)} total)" if len(names) > 40 else "")
+    return shown or "(none)"
+
+
 def _resolve(worker, stop, snapshot, segments):
     matches = [
         variable
@@ -98,7 +104,7 @@ def _resolve(worker, stop, snapshot, segments):
         if variable["name"] == segments[0]
     ]
     if not matches:
-        raise ValueError("not found in the inspected scopes")
+        raise ValueError(f"not found; visible: {_visible(snapshot)}")
     variable = matches[0]
     for segment in segments[1:]:
         # LLDB names elements `[1]`; debugpy names them `1`.
@@ -164,7 +170,7 @@ def run_probe(root, probe, *, adapter=None, progress=None):
     started = time.monotonic()
     deadline = started + probe.timeout
     result = {"probe": {**asdict(probe), "set": [list(change) for change in probe.set]}}
-    rows, changes, hits = [], [], 0
+    rows, changes, hits, warnings, relocated = [], [], 0, [], False
     try:
         launch = worker.dispatch(
             "launch", {"program": probe.program, "breakpoints": [{"line": probe.line}]}
@@ -220,6 +226,14 @@ def run_probe(root, probe, *, adapter=None, progress=None):
                     f"{probe.program}:{expected}"
                 )
             hits += 1
+            if expected != probe.line and not relocated:
+                relocated = True
+                warnings.append(
+                    f"The debugger moved the breakpoint from line {probe.line} to line "
+                    f"{expected} (line {probe.line} has no code of its own); values are from "
+                    f"line {expected}. Choose a line from `peeky describe`."
+                )
+                say(warnings[-1])
             say(f"hit {hits}/{probe.hits} at {probe.program}:{expected}; capturing")
             rows.extend(_capture(worker, stop, probe.capture, hits, "observed"))
             if hits == 1 and probe.set:
@@ -234,7 +248,10 @@ def run_probe(root, probe, *, adapter=None, progress=None):
                         None,
                     )
                     if scope is None:
-                        raise ValueError(f"Intervention target {name!r} is not a visible local")
+                        raise ValueError(
+                            f"Intervention target {name!r} is not a visible local; "
+                            f"visible: {_visible(snapshot)}"
+                        )
                     changes.append(
                         worker.dispatch(
                             "set_variable",
@@ -257,26 +274,37 @@ def run_probe(root, probe, *, adapter=None, progress=None):
             output=report["output"],
             output_truncated=report["output_truncated"],
         )
+        if status == "timeout":
+            from peeky.errors import classify
+
+            result["error"] = classify(
+                TimeoutError(f"Probe exceeded its {probe.timeout} s timeout"), session_closed=True
+            )
         if status == "no-stop":
-            result["error_code"] = "NO_STOP"
-            result["hint"] = "Pick a line the program executes; see `peeky describe`."
-            result["error"] = (
-                f"The program finished without stopping at {probe.program}:{probe.line}; "
-                "check `peeky describe` for executable lines"
+            result["error"] = {
+                "code": "NO_STOP",
+                "message": f"The program finished without stopping at {probe.program}:"
+                f"{probe.line}; check `peeky describe` for executable lines",
+                "hint": "Pick a line the program executes; see `peeky describe`.",
+                "retryable": False,
+                "session_closed": True,
+            }
+        elif status == "completed" and hits < probe.hits:
+            warnings.append(
+                f"Only {hits} of {probe.hits} requested hits occurred before the program exited."
             )
     except Exception as exc:
         from peeky.errors import classify
 
-        payload = classify(exc)
-        result.update(
-            status="failed",
-            error=f"{type(exc).__name__}: {exc}",
-            error_code=payload["code"],
-            hint=payload["hint"],
-        )
+        result.update(status="failed", error=classify(exc, session_closed=True))
     finally:
         worker.close()
+    if changes and probe.hits > 1:
+        warnings.append(
+            "Interventions are applied once, at hit 1; later hits observe without re-applying."
+        )
     result.update(
+        warnings=warnings,
         hits=hits,
         rows=rows,
         interventions=changes,
@@ -311,8 +339,11 @@ def _table(result):
     lines.append(
         f"status: {result['status']}  hits: {result['hits']}  seconds: {result['seconds']}"
     )
-    if result.get("error"):
-        lines.append(f"error: {result['error']}")
+    for warning in result.get("warnings", ()):
+        lines.append(f"warning: {warning}")
+    if error := result.get("error"):
+        lines.append(f"error [{error['code']}]: {error['message']}")
+        lines.append(f"hint: {error['hint']}")
     if result.get("output"):
         lines.append("output:")
         lines.extend("  " + line for line in result["output"].splitlines()[-20:])

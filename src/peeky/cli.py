@@ -279,7 +279,9 @@ def describe(args):
     }
     if language == "python":
         manifest["breakpoint_lines"] = {program: _python_lines(root / program)}
-        manifest["mutable_types"] = "Python scalars accepted by debugpy setVariable"
+        manifest["mutable_types"] = (
+            "Python literals: numbers, strings, bytes, True/False/None and lists/tuples/dicts/sets of them"
+        )
     else:
         target = adapter_for(language, data)
         manifest["target_identity"] = target.target_identity
@@ -418,7 +420,21 @@ def _wait(record, client, timeout):
         )
     record["state"], record["stop_id"] = state["state"], state.get("stop_id")
     _save(record)
+    if state["state"] == "stopped" and state.get("stop_id"):
+        snapshot = client.call("inspect", **_stop(record))
+        frame = snapshot["frames"][0] if snapshot["frames"] else {}
+        state["location"] = f"{frame.get('source', {}).get('path')}:{frame.get('line')}"
     return state
+
+
+def _state_text(state):
+    where = f" at {state['location']}" if state.get("location") else ""
+    hint = ""
+    if state["state"] == "running":
+        hint = " (still running; run `peeky session wait`)"
+    elif state["state"] == "terminated":
+        hint = " (program exited; `peeky session report` shows output)"
+    return f"state: {state['state']}{where}{hint}"
 
 
 def _stop(record):
@@ -455,7 +471,7 @@ def session(args):
     record, client = _load(args.name)
     if args.action == "wait":
         state = _wait(record, client, args.timeout)
-        _emit(state, args.json, lambda s: f"state: {s['state']}")
+        _emit(state, args.json, _state_text)
     elif args.action == "inspect":
         snapshot = client.call("inspect", **_stop(record))
         _emit(snapshot, args.json, _variables_text)
@@ -486,7 +502,7 @@ def session(args):
     elif args.action == "continue":
         client.call("continue", **_stop(record))
         state = _wait(record, client, args.timeout)
-        _emit(state, args.json, lambda s: f"state: {s['state']}")
+        _emit(state, args.json, _state_text)
     elif args.action == "report":
         report = client.call("report", session_id=record["session_id"])
         _emit(
@@ -549,19 +565,47 @@ def _start(args):
     _save(record)
     state = _wait(record, client, args.timeout)
     _emit(
-        {"session": args.name, "language": language, "state": state["state"]},
+        {"session": args.name, "language": language, **state},
         args.json,
-        lambda s: f"session {s['session']} ({s['language']}): {s['state']}",
+        lambda s: f"session {s['session']} ({s['language']}): " + _state_text(s),
     )
     return 0
 
 
-def verify(args):
-    root, program, _, language, data = resolve(args.target, args.at, args.config)
-    if language == "java-attach":
-        raise ValueError("Attached JVMs cannot verify edits; verify with a fresh build target")
-    source, check = (root / program).resolve(strict=True), Path(args.check).resolve(strict=True)
-    destination = Path(tempfile.mkdtemp(prefix="peeky-verify-"))
+def _check_edit(text, old, new):
+    if not old or old == new:
+        raise ValueError("--old must match exactly once and --new must change it")
+    count = text.count(old)
+    if count == 1:
+        return
+    if count:
+        lines, start = [], 0
+        while (index := text.find(old, start)) >= 0 and len(lines) < 10:
+            lines.append(str(text.count("\n", 0, index) + 1))
+            start = index + len(old)
+        raise ValueError(
+            f"--old must match exactly once and --new must change it; it matched {count} "
+            f"times (lines {', '.join(lines)}); include more surrounding text"
+        )
+    advice = "copy the exact text, including indentation"
+    if "\\n" in old and "\n" not in old:
+        advice = "it contains a literal backslash-n; pass real newlines (bash: $'a\\nb')"
+    raise ValueError(
+        f"--old must match exactly once and --new must change it; it matched 0 times: {advice}"
+    )
+
+
+def _diff(before, after, name):
+    import difflib
+
+    lines = difflib.unified_diff(
+        before.splitlines(keepends=True), after.splitlines(keepends=True), name, name
+    )
+    text = "".join(lines)
+    return text if len(text) <= 8000 else text[:8000] + "\n... (diff truncated)\n"
+
+
+def _verify_candidate(args, root, program, language, data, source, check, destination):
     if language == "python":
         from peeky.agent import digest
         from peeky.agent import verify as run_checker
@@ -576,26 +620,56 @@ def verify(args):
         result = {**run_checker(check, candidate, root), "candidate": str(candidate)}
         if digest(source) != original:
             raise RuntimeError("Original source changed during verification")
+        return result
+    from peeky.compiled_verification import CompiledVerification
+
+    class Verification(CompiledVerification):
+        pass
+
+    Verification.language = language
+    return Verification(adapter_for(language, data), root).candidate(
+        source, check, args.old, args.new, destination
+    )
+
+
+def verify(args):
+    root, program, _, language, data = resolve(args.target, args.at, args.config)
+    if language == "java-attach":
+        raise ValueError("Attached JVMs cannot verify edits; verify with a fresh build target")
+    source, check = (root / program).resolve(strict=True), Path(args.check).resolve(strict=True)
+    original = source.read_text()
+    _check_edit(original, args.old, args.new)
+    destination = Path(tempfile.mkdtemp(prefix="peeky-verify-"))
+    try:
+        result = _verify_candidate(args, root, program, language, data, source, check, destination)
+    finally:
+        if not args.keep:
+            shutil.rmtree(destination, ignore_errors=True)
+    result.setdefault("stage", "verification")
+    result["diff"] = _diff(original, original.replace(args.old, args.new, 1), program)
+    if args.keep:
+        result["kept"] = str(destination)
     else:
-        from peeky.compiled_verification import CompiledVerification
-
-        class Verification(CompiledVerification):
-            pass
-
-        Verification.language = language
-        result = Verification(adapter_for(language, data), root).candidate(
-            source, check, args.old, args.new, destination
-        )
+        for key in ("candidate", "evidence_file"):
+            result.pop(key, None)
 
     def text(result):
-        lines = [f"passed: {result['passed']}  stage: {result.get('stage', 'verification')}"]
+        lines = [f"passed: {result['passed']}  stage: {result['stage']}"]
         if tests := result.get("tests"):
             lines.append(f"compiled tests: {tests['passed']} {tests.get('summary')}")
+        if not result["passed"]:
+            reason = result.get("diagnostic") or (result.get("checker") or {}).get("error")
+            if result.get("timed_out"):
+                reason = "checker timed out"
+            if reason:
+                lines.append(f"reason: {reason}")
         lines.append(f"checker exit: {result.get('exit_code')}")
-        lines.extend(
-            ("output:", (result.get("stdout") or "")[-2000:], (result.get("stderr") or "")[-2000:])
-        )
-        lines.append(f"candidate: {result.get('candidate')}")
+        output = [(result.get(key) or "")[-2000:] for key in ("stdout", "stderr")]
+        if any(output):
+            lines.extend(("output:", *output))
+        if args.keep:
+            lines.append(f"candidate: {result.get('candidate')}")
+        lines.append("diff:\n" + result["diff"])
         return "\n".join(line for line in lines if line)
 
     _emit(result, args.json, text)
@@ -641,8 +715,11 @@ def main(argv=None):
     common(sub)
     sub.add_argument("--at", help="Program path (for multi-file targets)")
     sub.add_argument("--check", required=True, help="Trusted checker script")
-    sub.add_argument("--old", required=True)
-    sub.add_argument("--new", required=True)
+    sub.add_argument("--old", required=True, help="Exact source text to replace (once)")
+    sub.add_argument("--new", required=True, help="Replacement text")
+    sub.add_argument(
+        "--keep", action="store_true", help="Keep the scratch candidate (default: removed)"
+    )
     args = parser.parse_args(argv)
     handlers = {"describe": describe, "probe": probe, "session": session, "verify": verify}
 

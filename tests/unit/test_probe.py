@@ -126,6 +126,6 @@ def test_only_the_requested_breakpoint_counts_as_a_hit(monkeypatch, fake, ok):
         assert result["status"] == "completed" and result["hits"] == 1
     else:
         assert result["status"] == "failed" and result["hits"] == 0
-        assert "not the requested" in result["error"]
+        assert "not the requested" in result["error"]["message"]
         assert "set_variable" not in worker.calls and result["rows"] == []
     assert worker.calls[-1] == "close"

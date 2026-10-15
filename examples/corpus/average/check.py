@@ -9,6 +9,12 @@ def load(name):
 
 
 f = load("average")
-for values, expected in [([1, 2], 1.5), ([1, 2, 3, 4], 2.5), ([5], 5), ([2, 4], 3), ([1, 1, 2], 4 / 3)]:
+for values, expected in [
+    ([1, 2], 1.5),
+    ([1, 2, 3, 4], 2.5),
+    ([5], 5),
+    ([2, 4], 3),
+    ([1, 1, 2], 4 / 3),
+]:
     assert abs(f(values) - expected) < 1e-9, (values, f(values), expected)
 print("PASS: average")

@@ -1,6 +1,6 @@
 # Error codes (protocol 1)
 
-Every Peeky failure, from the HTTP worker, the SDK (`peeky.errors.PeekyError`) or the CLI (`--json` prints `{"error": {...}}`; stderr shows `[CODE] message` plus a hint), carries:
+Every Peeky failure, from the HTTP worker, the SDK (`peeky.errors.PeekyError`) or the CLI (`--json` prints `{"error": {...}}`; stderr shows `[CODE] message` plus a hint), carries the fields below. Probe results use the same object in their `error` field, with a `status` of `failed`, `no-stop` or `timeout`.
 
 | Field | Meaning |
 | --- | --- |
@@ -14,8 +14,8 @@ Every Peeky failure, from the HTTP worker, the SDK (`peeky.errors.PeekyError`) o
 | `STALE_STOP` | The program moved on; `stop_id` is old | `wait` until stopped, then `inspect` |
 | `INSPECT_REQUIRED` | Mutation without a fresh scope, or a value-view read still pending | `inspect` again, use the new reference |
 | `STALE_HANDLE` | Expansion handle revoked or frame/scope changed | `inspect` again |
-| `NOT_FOUND` | Name/selector not visible | `inspect` to list names |
-| `MUTATION_REJECTED` | Not a root scalar local or not a literal | Observe instead, or edit and `verify` |
+| `NOT_FOUND` | Name/selector not visible | Use a name from the message's `visible:` list (or `inspect`) |
+| `MUTATION_REJECTED` | Not a root local, or the value is not a literal (Python) / scalar (compiled) | Use a literal, observe instead, or edit and `verify` |
 | `BUDGET_EXHAUSTED` | A bounded read limit was reached | Narrow the request |
 | `INVALID_BREAKPOINT` | Line not executable or unsupported breakpoint field | Use `peeky describe` lines |
 | `NO_STOP` (probe result) | Program finished without reaching the line | Pick an executed line |

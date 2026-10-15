@@ -24,6 +24,12 @@ Bootstrap supplies the loop and regressions. Remaining acceptance: ten varied bu
 
 Exit criterion: each successful example includes a passing checker and exact source diff; wrong/overfit candidates and premature exits are rejected. A manual live-model evaluation records model, success rate, actions, runtime and cost/usage where available.
 
+Status (2026-10-15, `feat/corpus`):
+- **Done:** ten bugs in `examples/corpus/`, each with an independent checker, a general fix and an overfit (`tests/integration/test_corpus.py`); distinct `no_reproduction` / `insufficient_evidence` / `no_fix` / `budget_exhausted` / `verified` outcomes.
+- **Done:** a live evaluation with three agents, all of which reached verified general fixes ([evaluation](evaluations/2026-10-15-agent-cli.md)). Its ten usability findings are fixed.
+- **Remaining:** the user-selected non-synthetic program.
+- **Deferred usability work:** `--set-on-hit`, names in scope per line in `describe`, negative selector indexes, and probe rows grouped by hit.
+
 ## Slice 3 — remote developer workflow
 
 Document/run SSH-tunneled client and worker on separate machines, validate matching source, explicit disconnect behavior, target interpreter configuration, CLI ergonomics, artifact portability.

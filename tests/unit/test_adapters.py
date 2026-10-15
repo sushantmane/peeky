@@ -83,3 +83,46 @@ def test_python_accepts_existing_breakpoint_features():
     PythonAdapter().validate_breakpoints(
         [{"line": 7, "condition": "x > 0", "hitCondition": "3", "logMessage": "value={x}"}]
     )
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "0",
+        "-3",
+        "1.5e3",
+        "'x'",
+        "b'x'",
+        "None",
+        "True",
+        "[]",
+        "[1, 'a', (2,)]",
+        "{'k': {1}}",
+        "1+2j",
+    ],
+)
+def test_python_literals_are_accepted(value):
+    PythonAdapter().validate_value(value)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "",
+        "x",
+        "set()",
+        "float('-inf')",
+        "__import__('os').system('true')",
+        "[x]",
+        "a.b",
+        "a[0]",
+        "1; 2",
+        "lambda: 0",
+        "(yield)",
+        "1" * 5000,
+        "[" * 1000 + "]" * 1000,
+    ],
+)
+def test_python_expressions_are_rejected_before_reaching_debugpy(value):
+    with pytest.raises(ValueError, match="must be a literal"):
+        PythonAdapter().validate_value(value)
