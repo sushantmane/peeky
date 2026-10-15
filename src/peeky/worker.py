@@ -74,8 +74,12 @@ class DebugWorker:
         self.program = None
         self.stop_location = None
         self.stop_reason = None
-        # Below Client.call's 45 s HTTP timeout: a launch either returns within this
-        # bound or is discarded, so an abandoned slow launch cannot leave a session.
+        # The single absolute launch budget, below Client.call's 45 s HTTP timeout.
+        # Preparation (supports_deadline adapters: builds, symbols, module identity)
+        # and every DAP launch phase receive only the remaining time, so a launch
+        # either returns within this bound or is discarded and an abandoned slow
+        # launch cannot leave a session. Cleanup after expiry has its own bounded
+        # grace (DAP close) outside this budget; adapters do not declare their own.
         self.launch_deadline_s = 40
 
     def path(self, name):

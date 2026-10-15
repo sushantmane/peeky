@@ -119,14 +119,17 @@ def cargo_artifacts(names, crate, test_crate):
 def compiler_diagnostic(result, sources):
     """Retry only when every rustc error has its primary span in a declared source.
 
-    Uses Cargo's JSON messages from stdout. Span-less errors (linking, driver),
-    errors elsewhere, malformed or possibly truncated output are not retryable.
+    Uses Cargo's JSON messages from stdout and scans all of them before deciding.
+    Span-less errors (linking, driver), errors elsewhere, internal compiler errors,
+    malformed messages or spans and possibly truncated output are not retryable.
     """
     stdout, stderr = result.get("stdout", ""), result.get("stderr", "")
     if (
         result.get("exit_code") != 101
         or result.get("timed_out")
         or result.get("output_limit_exceeded")
+        or not isinstance(stdout, str)
+        or not isinstance(stderr, str)
         or len(stdout.encode()) >= 16000
         or len(stderr.encode()) >= 16000
         or not stdout.endswith("\n")
@@ -140,7 +143,7 @@ def compiler_diagnostic(result, sources):
     lines = stdout.splitlines()
     try:
         final = json.loads(lines[-1])
-    except (IndexError, json.JSONDecodeError):
+    except (IndexError, ValueError, RecursionError):
         return False
     if final != {"reason": "build-finished", "success": False}:
         return False
@@ -148,7 +151,7 @@ def compiler_diagnostic(result, sources):
     for line in lines[:-1]:
         try:
             message = json.loads(line)
-        except json.JSONDecodeError:
+        except (ValueError, RecursionError):
             return False
         if not isinstance(message, dict) or message.get("reason") == "build-finished":
             return False
@@ -165,11 +168,15 @@ def compiler_diagnostic(result, sources):
             return False
         if diagnostic["level"] != "error":
             continue
-        primary = [
-            span
-            for span in diagnostic.get("spans") or []
-            if isinstance(span, dict) and span.get("is_primary") is True
-        ]
+        text, spans = diagnostic.get("message", ""), diagnostic.get("spans")
+        if (
+            not isinstance(text, str)
+            or "internal compiler error" in text.lower()
+            or not isinstance(spans, list)
+            or not all(isinstance(span, dict) for span in spans)
+        ):
+            return False
+        primary = [span for span in spans if span.get("is_primary") is True]
         if not primary or any(span.get("file_name") not in sources for span in primary):
             return False
         errors += 1
@@ -367,10 +374,13 @@ class RustTarget:
             Command((dwarfdump, "--version")),
             Command((linker, "--version")),
         ]
+        # Resolved once: every later PATH lookup must still select exactly these bytes.
+        dsymutil = self._dsymutil()
         if sys.platform == "darwin":
-            probes.append(Command((self._dsymutil(), "--version")))
+            probes.append(Command((dsymutil, "--version")))
         elif sys.platform != "linux":
             raise ValueError("Rust target supports Linux and macOS hosts only")
+        environment = self._environment(rustc)
         uplift = f"target/debug/{cargo_inputs.binary}"
         recipe = BuildRecipe(
             "rust",
@@ -381,15 +391,24 @@ class RustTarget:
                 ArtifactSpec(uplift, role="cargo-test-target"),
             ),
             tuple(probes),
-            tuple(sorted(self._environment(rustc).items())),
+            tuple(sorted(environment.items())),
         )
 
-        def before_command(workspace, results, command):
-            # Revalidate the exact staged bytes Cargo will read, not the earlier preflight.
+        def validate_workspace(workspace, env):
+            # Before every probe and Cargo command: revalidate the exact staged bytes
+            # Cargo will read (not the earlier preflight), ancestor configuration and
+            # the helper rustc will select from PATH.
             staged = validate_cargo_inputs(workspace, sources=self.sources, tests=self.tests)
             if staged != cargo_inputs:
                 raise RuntimeError("Staged Cargo inputs differ from validated preflight")
             assert_cargo_ancestry_clear(workspace)
+            if dsymutil is not None:
+                selected = shutil.which("dsymutil", path=env.get("PATH"))
+                if not selected or str(Path(selected).resolve()) != dsymutil:
+                    raise RuntimeError("Cargo dsymutil PATH resolution changed during preparation")
+
+        def before_command(workspace, results, command):
+            # Probe output must prove the pinned versions before any Cargo command runs.
             versions = {probe.argv[0]: probe.stdout for probe in results}
             if not versions[rustc].startswith(f"rustc {self.rust_version} ") or not versions[
                 cargo
@@ -408,6 +427,7 @@ class RustTarget:
                     edit=edit,
                     deadline=deadline,
                     before_command=before_command,
+                    validate_workspace=validate_workspace,
                 )
             except BuildCommandError as exc:
                 if exc.command != build.argv or not compiler_diagnostic(exc.result, self.sources):
