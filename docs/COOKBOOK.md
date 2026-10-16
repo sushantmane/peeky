@@ -418,9 +418,35 @@ operations: 11 (worker requests in this session, including waits; --json lists t
 closed default
 ```
 
-`session get` on a list, dict or struct lists one level of children, each with the selector that reads it. If any selector fails, every row is still printed and the exit status is 1. `session continue` without `--to-exit` runs to the next stop at the session's breakpoint; there is no single-stepping, so start the session at the line you want to look at.
+`session get` on a list, dict or struct lists one level of children, each with the selector that reads it. If any selector fails, every row is still printed and the exit status is 1. `session continue` without `--to-exit` runs to the next stop at the session's breakpoint.
 
-### 5.2 Several Sessions at Once
+### 5.2 Stepping and Running to a Line
+
+**What it answers:** What happens line by line from here, inside a call, or a few lines further on?
+
+```sh
+peeky session start examples/pagination_bug.py --at 13
+peeky session step --into          # into the call on this line
+peeky session step                 # the next line (over calls)
+peeky session step
+peeky session get start
+peeky session step --out           # until this function returns
+peeky session continue --to-exit
+```
+
+```
+session default (python): state: stopped at .../pagination_bug.py:13 (paused 0.0 s)
+state: stopped at .../pagination_bug.py:5 (paused 0.0 s)
+state: stopped at .../pagination_bug.py:7 (paused 0.0 s)
+state: stopped at .../pagination_bug.py:8 (paused 0.0 s)
+start: int = 3
+state: stopped at .../pagination_bug.py:13 (paused 0.0 s)
+state: terminated (program exited; `peeky session report` shows output)
+```
+
+`peeky session continue --to 9` stops once at line 9 of the session's file (the extra breakpoint is removed at the next stop), then the session's own breakpoint applies again. A step can leave your sources, for example into the C library past the end of `main` or into Rust's standard library. The state then says `outside the program's sources`, nothing there is read, and `step --out` or `continue` brings you back. Java sessions take `continue --to` but not `step` yet (`UNSUPPORTED`).
+
+### 5.3 Several Sessions at Once
 
 ```sh
 peeky session start app.py --at 12 --name a
@@ -431,7 +457,7 @@ peeky session list
 
 A second `session start` with a name that is already taken fails with "exists". It never takes over the other session.
 
-### 5.3 Programs with Timeouts
+### 5.4 Programs with Timeouts
 
 Tests with timeouts, heartbeats and RPC deadlines keep their clocks running while the program is paused. Prefer probes, which pause for milliseconds per hit, or give sessions a pause budget:
 
@@ -440,9 +466,9 @@ peeky session start app.py --at 12 --max-pause 5      # auto-resume after 5 s
 peeky session inspect                                   # shows paused_s and resume_in_s
 ```
 
-A breakpoint stop older than the budget is resumed; your next call says so (`STALE_STOP`). Crash and exception stops are never auto-resumed.
+A breakpoint or step stop older than the budget is resumed; your next call says so (`STALE_STOP`). Crash and exception stops are never auto-resumed.
 
-### 5.4 Cleaning Up
+### 5.5 Cleaning Up
 
 A session's worker ends with `session close`, when its start fails or is interrupted, and after 5 idle minutes. `peeky session close --forget` drops a record whose worker is gone for good.
 
@@ -678,6 +704,8 @@ All codes are listed in [ERRORS.md](ERRORS.md). If you suspect a filesystem with
 | `condition 1 x > 5` | `--hits N`, then `peeky sql "... WHERE num > 5"` | Conditions would run code in the program |
 | `info locals`, `print *obj` | `peeky session inspect`, `peeky session get obj` | `get` lists one level of children with their selectors |
 | `bt` | `peeky session inspect --json \| jq '.frames'` | The stack at the stop; values come from the top frame |
-| `continue` | `peeky session continue [--to-exit]` | Runs to the next stop or to exit; there is no step or step-out |
+| `next`, `step`, `finish` | `peeky session step`, `step --into`, `step --out` | Not for Java yet |
+| `until 42`, `advance 42` | `peeky session continue --to 42` | One-shot; the session's own breakpoint stays |
+| `continue` | `peeky session continue [--to-exit]` | Runs to the next stop or to exit |
 | "rerun with another input and compare by eye" | `--arg ... --label A`, then `peeky queries diff` | The first diff row is the first divergence |
 | "I think this fixes it" | `peeky verify --old ... --new ...` | Fresh build plus an independent checker |

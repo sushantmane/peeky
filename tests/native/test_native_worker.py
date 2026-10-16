@@ -533,3 +533,31 @@ def test_describe_lists_each_functions_span_and_locals(tmp_path, native_config, 
         assert {s["source"] for s in manifest["scopes"]} <= set(manifest["breakpoint_lines"])
         assert main(["describe", str(tmp_path / path)]) == 0
         assert f"names in {function} ({program}:{first}-{last}):" in capsys.readouterr().out
+
+
+def test_native_sessions_step_and_report_leaving_the_program(
+    tmp_path, native_config, capsys, monkeypatch
+):
+    from peeky.cli import main
+
+    shutil.copytree(ROOT / "examples" / "c", tmp_path / "c")
+    program = str(tmp_path / "c" / "pagination_bug.c")
+    monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
+    lines = (tmp_path / "c" / "pagination_bug.c").read_text().splitlines()
+    last = max(i for i, text in enumerate(lines, 1) if "return 0" in text)
+    assert main(["session", "start", program, "--at", str(last)]) == 0
+    capsys.readouterr()
+    # Stepping past main's end leaves the program's sources: said so, nothing read,
+    # and the session stays usable.
+    state = None
+    for _ in range(4):
+        assert main(["session", "step", "--json"]) == 0
+        state = json.loads(capsys.readouterr().out)
+        if state.get("outside_program") or state["state"] != "stopped":
+            break
+    assert state["state"] == "stopped" and state["outside_program"] is True
+    assert main(["session", "inspect"]) == 2
+    assert "outside the program's sources" in capsys.readouterr().err
+    assert main(["session", "continue"]) == 0
+    assert "terminated" in capsys.readouterr().out
+    assert main(["session", "close"]) == 0

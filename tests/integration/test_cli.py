@@ -573,3 +573,43 @@ def test_keys_read_in_busy_frames_and_never_from_an_impostor(workspace, capsys):
     # The impostor is listed under the plain name and the real "a" is past debugpy's
     # 500-entry cap: refused, never read as 'weird'.
     assert "ambiguous" in rows["tw['a']"]["error"] and "value" not in rows["tw['a']"]
+
+
+def test_sessions_step_over_into_and_out_and_run_to_a_line(workspace, capsys):
+    program = workspace / "pagination_bug.py"
+    assert run(capsys, "session", "start", program, "--at", "13")[0] == 0
+    code, out = run(capsys, "session", "step", "--into")
+    assert code == 0 and "pagination_bug.py:5" in out.out
+    assert "pagination_bug.py:7" in run(capsys, "session", "step")[1].out
+    code, out = run(capsys, "session", "step", "--json")
+    state = json.loads(out.out)
+    assert state["location"].endswith("pagination_bug.py:8") and state["reason"] == "step"
+    assert "outside_program" not in state
+    assert "start: int = 3" in run(capsys, "session", "get", "start")[1].out
+    assert "pagination_bug.py:13" in run(capsys, "session", "step", "--out")[1].out
+    assert "terminated" in run(capsys, "session", "step")[1].out
+    assert "PAGE: [40, 50, 60]" in run(capsys, "session", "report")[1].out
+    assert run(capsys, "session", "close")[0] == 0
+
+    # continue --to stops once at another line, then only the session's own breakpoint.
+    assert run(capsys, "session", "start", program, "--at", "7")[0] == 0
+    code, out = run(capsys, "session", "continue", "--to", "9")
+    assert code == 0 and "pagination_bug.py:9" in out.out
+    assert "end: int = 6" in run(capsys, "session", "get", "end")[1].out
+    assert "terminated" in run(capsys, "session", "continue")[1].out
+    assert run(capsys, "session", "close")[0] == 0
+    code, out = run(capsys, "session", "continue", "--to", "9", "--to-exit")
+    assert code == 2
+
+
+def test_step_and_continue_requests_are_validated(tmp_path):
+    from peeky.worker import DebugWorker
+
+    for operation, args, message in (
+        ("step", {"kind": "sideways"}, "over, in or out"),
+        ("continue", {"to_line": 0}, "positive line"),
+        ("continue", {"to_line": "9"}, "positive line"),
+        ("continue", {"to_line": 9, "to_exit": True}, "not both"),
+    ):
+        with pytest.raises(ValueError, match=message):
+            DebugWorker.validate(operation, args)

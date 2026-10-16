@@ -361,3 +361,32 @@ def test_launched_java_takes_per_run_arguments(java_worker):
         args=['quote"d'],
     )
     assert "Invalid Java application arguments" in message
+
+
+def test_java_sessions_run_to_a_line_but_refuse_steps(
+    java_worker, java_bundle, tmp_path, capsys, monkeypatch
+):
+    from peeky.cli import main
+
+    _, _, first, second = java_worker
+    monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
+    config = tmp_path / "java.json"
+    config.write_text(
+        json.dumps(
+            {
+                "bundle": str(java_bundle),
+                "sources": ["demo/BranchBug.java"],
+                "main_class": "demo.BranchBug",
+            }
+        )
+    )
+    start = ["session", "start", str(tmp_path), "--config", str(config)]
+    assert main([*start, "--at", f"demo/BranchBug.java:{first}"]) == 0
+    capsys.readouterr()
+    # Peeky's Java launcher has no step requests: refused, and the session survives.
+    assert main(["session", "step", "--json"]) == 2
+    assert json.loads(capsys.readouterr().out)["error"]["code"] == "UNSUPPORTED"
+    assert main(["session", "continue", "--to", str(second), "--json"]) == 0
+    state = json.loads(capsys.readouterr().out)
+    assert state["state"] == "stopped" and state["location"].endswith(f"BranchBug.java:{second}")
+    assert main(["session", "close"]) == 0

@@ -32,6 +32,7 @@ OPERATIONS = frozenset(
         "set_variable",
         "breakpoints",
         "continue",
+        "step",
         "report",
         "close",
         "probe",
@@ -39,6 +40,10 @@ OPERATIONS = frozenset(
         "version",
     }
 )
+# Stops the pause budget (--max-pause) may auto-resume: Peeky's own breakpoints and the
+# user's own steps. Crashes, exceptions and signals stay stopped for inspection.
+RESUMABLE_STOPS = frozenset({"breakpoint", "step"})
+STEPS = {"over": "next", "in": "stepIn", "out": "stepOut"}
 
 
 # Debugger placeholders for a local that has no value at this point (optimized out,
@@ -124,6 +129,8 @@ class DebugWorker:
         self.program = None
         self.stop_location = None
         self.stop_reason = None
+        self.points, self.temporary_line = [], None
+        self.stop_outside = False
         # The single absolute launch budget, below Client.call's 45 s HTTP timeout.
         # Preparation (supports_deadline adapters: builds, symbols, module identity)
         # and every DAP launch phase receive only the remaining time, so a launch
@@ -197,6 +204,9 @@ class DebugWorker:
                 "stackTrace", {"threadId": self.thread_id, "levels": 1}, timeout=2
             )
             frame = (stack.get("stackFrames") or [{}])[0]
+            self.stop_outside = self.stop_reason == "step" and not _inside_program(
+                self.runtime, frame, self.root
+            )
             path = frame.get("source", {}).get("path")
             return f"{_display_path(self.runtime, path)}:{frame.get('line')}" if path else None
         except Exception:
@@ -204,6 +214,9 @@ class DebugWorker:
 
     def location(self):
         where = {"location": self.stop_location} if self.stop_location else {}
+        if self.stop_id and self.stop_outside:
+            # A step that left the program (into a library, past main): nothing to read.
+            where["outside_program"] = True
         return {**where, "reason": self.stop_reason} if self.stop_id else where
 
     def pause_status(self):
@@ -211,7 +224,7 @@ class DebugWorker:
             return {}
         paused = round(time.monotonic() - self.stopped_at, 2)
         status = {"paused_s": paused}
-        if self.max_pause and self.stop_reason == "breakpoint":
+        if self.max_pause and self.stop_reason in RESUMABLE_STOPS:
             status["resume_in_s"] = round(max(0.0, self.max_pause - paused), 2)
         return status
 
@@ -219,7 +232,7 @@ class DebugWorker:
         """Auto-resume a stop that outlived the session's pause budget.
 
         Called periodically by the worker server. Only stops at Peeky's own breakpoints
-        are resumed; crashes, exceptions and signals stay stopped for inspection (and
+        and the user's own steps are resumed; crashes, exceptions and signals stay stopped for inspection (and
         resuming a fault would usually re-fault). Any failure releases the program by
         closing the session (detaching an attached JVM) rather than leaving it paused.
         """
@@ -229,14 +242,14 @@ class DebugWorker:
             try:
                 if self.state == "running":
                     pending = self.dap.pending_stop(self.cursor)
-                    if pending is None or pending[1] != "breakpoint":
+                    if pending is None or pending[1] not in RESUMABLE_STOPS:
                         return
                     if time.monotonic() - pending[0] < self.max_pause:
                         return
                     self._dispatch("wait", {"timeout": 0.1})
                 if self.state != "stopped" or self.stopped_at is None:
                     return
-                if self.stop_reason != "breakpoint":
+                if self.stop_reason not in RESUMABLE_STOPS:
                     return
                 paused = time.monotonic() - self.stopped_at
                 if paused < self.max_pause:
@@ -319,7 +332,21 @@ class DebugWorker:
             self.audit.pop(0)
             self.audit_bytes -= self.audit_sizes.pop(0)
 
+    def set_points(self, runtime, points, temporary=None):
+        """Replace the session program's breakpoints (deduplicated by line)."""
+        unique = list({point["line"]: point for point in points}.values())
+        runtime.validate_breakpoints(unique)
+        if check_lines := getattr(runtime, "check_breakpoint_lines", None):
+            check_lines(self.program, unique)
+        self.dap.request(
+            "setBreakpoints",
+            {"source": {"path": str(runtime.source_path(self.program))}, "breakpoints": unique},
+        )
+        self.breakpoint_counts[str(self.program)] = len(unique)
+        self.temporary_line = temporary
+
     def forget_stop(self):
+        self.stop_outside = False
         self.state = "running"
         self.stopped_at = None
         self.stop_location = None
@@ -359,10 +386,19 @@ class DebugWorker:
             "set_variable",
             "breakpoints",
             "continue",
+            "step",
             "report",
             "close",
         }:
             raise ValueError("Unknown operation")
+        if operation == "step" and args.get("kind", "over") not in STEPS:
+            raise ValueError("step kind must be over, in or out")
+        if operation == "continue" and args.get("to_line") is not None:
+            line = args["to_line"]
+            if type(line) is not int or line < 1:
+                raise ValueError("to_line must be a positive line number")
+            if args.get("to_exit"):
+                raise ValueError("Pass to_line or to_exit, not both")
         if operation == "launch" and args.get("entry") is not None:
             if not isinstance(args["entry"], str):
                 raise ValueError("entry must be a string")
@@ -436,6 +472,7 @@ class DebugWorker:
             "set_variable",
             "breakpoints",
             "continue",
+            "step",
             "report",
         }:
             runtime.assert_current()
@@ -479,6 +516,10 @@ class DebugWorker:
             self.audit, self.audit_sizes, self.audit_bytes = [], [], 0
             self.breakpoint_events = []
             self.breakpoint_counts = {str(program): len(args.get("breakpoints", []))}
+            # The session's own breakpoints in its program, restored after a one-shot
+            # `continue --to` line is reached.
+            self.points = list(args.get("breakpoints", []))
+            self.temporary_line = None
             self.stop_all_threads = False
             self.max_pause = args.get("max_pause")
             self.stopped_at = None
@@ -641,6 +682,10 @@ class DebugWorker:
             self.stop_all_threads = event.get("body", {}).get("allThreadsStopped") is True
             self.stop_reason = event.get("body", {}).get("reason") if self.stop_id else None
             self.stop_location = self.read_location() if self.stop_id else None
+            if self.stop_id and self.temporary_line is not None:
+                # The one-shot `continue --to` line served its purpose (or another stop
+                # came first): only the session's own breakpoints remain.
+                self.set_points(runtime, self.points)
             return {
                 "state": self.state,
                 "stop_id": self.stop_id,
@@ -672,6 +717,15 @@ class DebugWorker:
             try:
                 runtime.validate_stop(selected_frame)
             except RuntimeError as exc:
+                if self.stop_reason == "step" and not _inside_program(
+                    runtime, selected_frame, self.root
+                ):
+                    # The user's own step left the program (into a library, or out of
+                    # main): nothing there is read, and the session stays usable.
+                    raise ValueError(
+                        f"The step stopped outside the program's sources (in "
+                        f"{selected_frame.get('name')}); step out or continue"
+                    ) from exc
                 if selected == frames[0]["id"] or _inside_program(runtime, selected_frame):
                     # A mismatch inside the program's own sources is provenance: fail closed.
                     raise
@@ -790,6 +844,8 @@ class DebugWorker:
         if operation == "breakpoints":
             runtime.validate_breakpoints(args["breakpoints"])
             self.breakpoint_counts[str(self.path(args["program"]))] = len(args["breakpoints"])
+            if self.path(args["program"]) == self.program:
+                self.points, self.temporary_line = list(args["breakpoints"]), None
             if check_lines := getattr(runtime, "check_breakpoint_lines", None):
                 check_lines(self.path(args["program"]), args["breakpoints"])
             return self.dap.request(
@@ -817,6 +873,13 @@ class DebugWorker:
                     {"source": {"path": str(runtime.source_path(self.program))}, "breakpoints": []},
                 )
                 self.breakpoint_counts[str(self.program)] = 0
+                self.points, self.temporary_line = [], None
+            elif args.get("to_line") is not None:
+                self.set_points(
+                    runtime,
+                    [*self.points, {"line": args["to_line"]}],
+                    temporary=args["to_line"],
+                )
             cursor = getattr(self.dap, "event_cursor", None)
             consumed = cursor() if cursor else self.cursor
             resumed = self.dap.request("continue", {"threadId": self.thread_id})
@@ -827,6 +890,27 @@ class DebugWorker:
                     self.breakpoint_events.append(update.get("body", {}))
                 self.breakpoint_events = self.breakpoint_events[-100:]
                 self.cursor = max(self.cursor, consumed)
+            self.resumed_at = time.monotonic()
+            self.empty_thread_replies = 0
+            self.forget_stop()
+            return {"state": self.state}
+        if operation == "step":
+            self.stopped(args)
+            if not getattr(runtime, "supports_stepping", True):
+                raise ValueError(
+                    "Stepping is not supported for this target yet; use `session continue --to "
+                    "LINE` to stop at another line"
+                )
+            if self.co_stopped() is not None:
+                raise ValueError(
+                    "Other threads stopped at this breakpoint too; `session continue` serves "
+                    "them before stepping"
+                )
+            cursor = getattr(self.dap, "event_cursor", None)
+            consumed = cursor() if cursor else self.cursor
+            self.dap.request(STEPS[args.get("kind", "over")], {"threadId": self.thread_id})
+            # Stops reported before this step describe nothing current.
+            self.cursor = max(self.cursor, consumed)
             self.resumed_at = time.monotonic()
             self.empty_thread_replies = 0
             self.forget_stop()
@@ -1133,8 +1217,9 @@ def _display_path(runtime, path):
     return str(Path(source_root) / relative)
 
 
-def _inside_program(runtime, frame):
-    """Whether a frame's source lies in the prepared or declared program directories."""
+def _inside_program(runtime, frame, *roots):
+    """Whether a frame's source lies in the prepared or declared program directories
+    (or in any of ``roots``, such as the worker's own root for Python targets)."""
     path = (frame.get("source") or {}).get("path")
     if not isinstance(path, str) or not path:
         return False
@@ -1143,6 +1228,7 @@ def _inside_program(runtime, frame):
         getattr(prepared, "workspace", None),
         getattr(prepared, "source_root", None),
         getattr(runtime, "root", None),
+        *roots,
     ]
     try:
         resolved = Path(path).resolve()

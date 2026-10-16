@@ -120,6 +120,19 @@ _RULES = (
         False,
     ),
     (
+        r"step stopped outside the program's sources",
+        "INVALID_REQUEST",
+        "`peeky session step --out` until the state shows your source again, or "
+        "`peeky session continue`.",
+        False,
+    ),
+    (
+        r"Stepping is not supported",
+        "UNSUPPORTED",
+        "Use `peeky session continue --to LINE` to stop at another line.",
+        False,
+    ),
+    (
         r"cannot verify edits|Attached JVMs cannot",
         "UNSUPPORTED",
         "Verify on a fresh-build target, not an attached JVM.",
