@@ -246,11 +246,13 @@ def snapshot(*variables):
 
 
 ORDER = {"name": "order", "type": "dict", "value": "{...}", "variablesReference": 1}
+# debugpy marks entries whose key's repr evaluates back to the key (the worker passes
+# that on as `evaluable`, never the expression itself).
 ORDER_CHILDREN = [
     {"name": "special variables", "value": "", "variablesReference": 9},
-    {"name": "'id'", "type": "int", "value": "18", "variablesReference": 0},
-    {"name": '"it\'s"', "type": "int", "value": "5", "variablesReference": 0},
-    {"name": "3", "type": "str", "value": "'three'", "variablesReference": 0},
+    {"name": "'id'", "type": "int", "value": "18", "variablesReference": 0, "evaluable": True},
+    {"name": '"it\'s"', "type": "int", "value": "5", "variablesReference": 0, "evaluable": True},
+    {"name": "3", "type": "str", "value": "'three'", "variablesReference": 0, "evaluable": True},
     {"name": "len()", "type": "int", "value": "3", "variablesReference": 0},
 ]
 
@@ -298,17 +300,26 @@ class PagedTree(Tree):
         return {"variables": children[start : start + 64], "truncated": start + 64 < len(children)}
 
 
-def test_a_key_whose_repr_is_shared_is_ambiguous_on_any_page():
+def test_a_key_shown_by_an_impostor_object_is_refused():
     from peeky.probe import _resolve
 
-    # debugpy renames a later entry whose key has the same repr: "'id' (id: 4336031232)".
-    filler = [{"name": f"'k{i}'", "type": "int", "value": str(i)} for i in range(100)]
-    twins = [*ORDER_CHILDREN, *filler, {"name": "'id' (id: 4336031232)", "value": "'real'"}]
-    with pytest.raises(ValueError, match="ambiguous"):
-        _resolve(PagedTree({1: twins}), {}, snapshot(ORDER), parse_selector("order['id']"))
+    filler = [
+        {"name": f"'k{i}'", "type": "int", "value": str(i), "evaluable": True} for i in range(100)
+    ]
     unique = [*ORDER_CHILDREN, *filler]
     found = _resolve(PagedTree({1: unique}), {}, snapshot(ORDER), parse_selector("order['k99']"))
     assert found["value"] == "99"
+    # An object whose __repr__ returns "'a'" is listed first under the plain name; the
+    # real "a" follows as "'a' (id: N)". Neither may be read as order['a'].
+    impostor = [{"name": "'a'", "type": "str", "value": "'weird'"}, *filler]
+    impostor.append({"name": "'a' (id: 4336031232)", "value": "'real'", "evaluable": True})
+    with pytest.raises(ValueError, match="ambiguous"):
+        _resolve(PagedTree({1: impostor}), {}, snapshot(ORDER), parse_selector("order['a']"))
+    # The real key first: it is the plain-named, evaluable entry, read at once without
+    # scanning the rest of the mapping.
+    real_first = [{"name": "'a'", "value": "'real'", "evaluable": True}, *filler]
+    found = _resolve(PagedTree({1: real_first}), {}, snapshot(ORDER), parse_selector("order['a']"))
+    assert found["value"] == "'real'"
 
 
 @pytest.mark.parametrize(

@@ -930,16 +930,19 @@ class DebugWorker:
                 # A child (a dict entry keyed by a long string, a long C++ type) is shown
                 # without its full identity: never expandable or selectable, and the
                 # session survives.
-                result.append(
-                    {
-                        "name": name if len(name) <= 2000 else f"<{len(name)}-character name>",
-                        "value": str(variable.get("value", ""))[:2000],
-                        "variablesReference": 0,
-                        **({"type": kind[:200] + "…"} if kind and len(kind) > 2000 else {}),
-                        **({"type": kind} if kind and len(kind) <= 2000 else {}),
-                        "identity_truncated": True,
-                    }
-                )
+                shown = {
+                    "name": name if len(name) <= 2000 else f"<{len(name)}-character name>",
+                    "value": str(variable.get("value", ""))[:2000],
+                    "variablesReference": 0,
+                    **({"type": kind if len(kind) <= 2000 else kind[:200] + "…"} if kind else {}),
+                    "identity_truncated": True,
+                }
+                if view_variable:
+                    # Values that need a qualified view (Rust enums) are never shown raw.
+                    shown["value"] = "<not shown: type name too long to verify>"
+                elif self.placeholders() and is_unavailable(shown["value"]):
+                    shown.update(value=None, unavailable=True, reason=shown["value"][1:-1][:300])
+                result.append(shown)
                 self.inspection_nodes += 1
                 continue
             view = view_variable(variable, self.view_fetch) if view_variable else None
@@ -975,6 +978,11 @@ class DebugWorker:
                 output["value"] = None
             if kind is not None:
                 output["type"] = kind
+            if isinstance(variable.get("evaluateName"), str) and variable["evaluateName"]:
+                # Only whether the debugger could name it as an expression; the expression
+                # itself never leaves the worker. debugpy names a dict entry only when its
+                # key's repr evaluates back to the key (str, int, ... not an impostor).
+                output["evaluable"] = True
             for key in ("indexedVariables", "namedVariables"):
                 value = variable.get(key)
                 if type(value) is int and 0 <= value <= 2**31 - 1:

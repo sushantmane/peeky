@@ -237,20 +237,17 @@ def _resolve(worker, stop, snapshot, segments):
             continue
         key = _key(segment)
         found, start, incomplete, children = None, 0, False, []
-        while found is None or key is not None:
+        while found is None:
             page = worker.dispatch("expand", {**stop, "handle": handle, "start": start})
             children.extend(page["variables"])
-            if found is None:
-                found = next((v for v in page["variables"] if _names(v, segment)), None)
-            # A key is accepted only after every listed entry was seen: debugpy shows a
-            # later entry whose repr repeats an earlier one as "<repr> (id: N)".
-            if (found is not None and key is None) or not page["truncated"]:
+            found = next((v for v in page["variables"] if _names(v, segment)), None)
+            if found is not None or not page["truncated"]:
                 break
             if start + 64 > 511 or page.get("remaining_nodes", 1) <= 0:
                 incomplete = True
                 break
             start += 64
-        if (found is None or key is not None) and incomplete:
+        if found is None and incomplete:
             raise ValueError(
                 f"{_shown(segment)} is beyond the bounded inspection window (512 children)"
             )
@@ -273,15 +270,18 @@ def _resolve(worker, stop, snapshot, segments):
             )
         if found is None:
             raise ValueError(_not_found(variable, segment, children))
-        if key is not None and any(
-            child["name"].startswith(f"{key} (id: ")
-            or child is not found
-            and _names(child, segment)
-            for child in children
+        if key is not None and (
+            not found.get("evaluable")
+            or any(child["name"].startswith(f"{key} (id: ") for child in children)
         ):
-            # Keys are matched by their repr; entries whose keys share a repr (an object
-            # whose __repr__ mimics a string) cannot be told apart.
-            raise ValueError(f"{_shown(segment)} is ambiguous: several entries display as {key}")
+            # Keys are matched by their repr. debugpy marks an entry evaluable only when
+            # its key's repr evaluates back to the key, and renames a later entry whose
+            # repr repeats an earlier one "<repr> (id: N)". An object whose __repr__
+            # mimics a string is neither, so it is refused rather than read as that key.
+            raise ValueError(
+                f"{_shown(segment)} is ambiguous: an entry displays as {key} but its key is "
+                "not that plain value (an object whose repr looks like it)"
+            )
         variable = found
     return variable
 

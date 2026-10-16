@@ -520,3 +520,45 @@ def test_mapping_keys_never_read_the_wrong_entry(workspace, capsys):
     assert "longkey['short']: int = 2" in out.out
     assert run(capsys, "session", "get", "longkey['short']", "--name", "maps")[0] == 0
     assert run(capsys, "session", "close", "--name", "maps")[0] == 0
+
+
+BUSY = """class K:
+    def __repr__(self):
+        return "'a'"
+
+
+def look():
+    a1 = a2 = a3 = a4 = a5 = a6 = a7 = a8 = a9 = 0
+    big = {f"k{i}": i for i in range(505)}
+    mid = {f"m{i}": i for i in range(470)}
+    outer = {f"o{i}": i for i in range(300)}
+    outer["a"] = {f"k{i}": i for i in range(250)}
+    tw = {K(): "weird", **{f"p{i}": i for i in range(500)}, "a": "real-a"}
+    return big, mid, outer, tw, a1, a2, a3, a4, a5, a6, a7, a8, a9
+
+
+look()
+"""
+
+
+def test_keys_read_in_busy_frames_and_never_from_an_impostor(workspace, capsys):
+    (workspace / "busy.py").write_text(BUSY)
+    selectors = "big['k3'],mid['m0'],outer['a']['k1'],tw['a'],tw['p0']"
+    code, out = run(
+        capsys,
+        "probe",
+        workspace / "busy.py",
+        "--at",
+        "13",
+        "--capture",
+        selectors,
+        "--json",
+        "--no-save",
+    )
+    rows = {row["selector"]: row for row in json.loads(out.out)["rows"]}
+    assert code == 0
+    assert rows["big['k3']"]["value"] == "3" and rows["mid['m0']"]["value"] == "0"
+    assert rows["outer['a']['k1']"]["value"] == "1" and rows["tw['p0']"]["value"] == "0"
+    # The impostor is listed under the plain name and the real "a" is past debugpy's
+    # 500-entry cap: refused, never read as 'weird'.
+    assert "ambiguous" in rows["tw['a']"]["error"] and "value" not in rows["tw['a']"]

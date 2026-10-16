@@ -312,3 +312,46 @@ def test_expansion_revokes_mutable_root_scope_handles(worker):
     with pytest.raises(ValueError):
         call(worker, "set_variable", reference=scope, name="value", value="2")
     assert not any(op == "setVariable" for op, _ in worker.dap.calls)
+
+
+def test_over_long_child_identities_keep_value_rules(tmp_path):
+    """The placeholder for a child whose identity is too long still never shows a
+    debugger 'no value' message, or an unverified value, as its value."""
+    from types import SimpleNamespace
+
+    long_type = "std::tuple<" + "int, " * 500 + "int>"
+    child = {
+        "name": "m",
+        "type": long_type,
+        "value": "<error: variable not available>",
+        "variablesReference": 5,
+        "evaluateName": "s.m",
+    }
+    instance = DebugWorker(tmp_path)
+    instance.runtime = SimpleNamespace(reports_unavailable_as_text=True)
+    [shown] = instance.expose_variables([child], {}, ("Locals",), (("s", "S"),))
+    assert shown["value"] is None and shown["unavailable"] and shown["identity_truncated"]
+    assert shown["variablesReference"] == 0 and shown["type"].endswith("…")
+    instance.runtime = SimpleNamespace(view_variable=lambda variable, fetch: None)
+    [shown] = instance.expose_variables(
+        [{**child, "value": "Some(3)"}], {}, ("Locals",), (("s", "S"),)
+    )
+    assert shown["value"] == "<not shown: type name too long to verify>"
+    # Root locals still fail closed.
+    with pytest.raises(RuntimeError, match="identity exceeds limit"):
+        instance.expose_variables([child], {}, ("Locals",), ())
+
+
+def test_only_whether_a_child_is_evaluable_leaves_the_worker(tmp_path):
+    instance = DebugWorker(tmp_path)
+    [shown] = instance.expose_variables(
+        [{"name": "'a'", "type": "str", "value": "'x'", "evaluateName": "d['a']"}],
+        {},
+        ("Locals",),
+        (("d", "dict"),),
+    )
+    assert shown["evaluable"] is True and "d['a']" not in str(shown)
+    [shown] = instance.expose_variables(
+        [{"name": "'a'", "type": "str", "value": "'x'"}], {}, ("Locals",), (("d", "dict"),)
+    )
+    assert "evaluable" not in shown
