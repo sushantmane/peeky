@@ -1247,6 +1247,12 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", default=".")
     parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument(
+        "--idle-timeout",
+        type=float,
+        default=300,
+        help="Close a session (and its debuggee) after this many idle seconds (default 300)",
+    )
     targets = parser.add_mutually_exclusive_group()
     targets.add_argument(
         "--java-config", type=Path, help="Trusted fixed Java target JSON configuration"
@@ -1279,11 +1285,15 @@ def main():
             parser.error(str(exc))
     server = make_server(args.root, token, args.port, adapter=adapter)
 
+    if not 1 <= args.idle_timeout <= 86400:
+        parser.error("--idle-timeout must be within [1, 86400] seconds")
+
     def expire():
         while True:
-            time.sleep(5)
+            time.sleep(min(5, args.idle_timeout / 2))
             with server.worker.lock:
-                if server.worker.dap and time.monotonic() - server.worker.last_used > 300:
+                idle = time.monotonic() - server.worker.last_used
+                if server.worker.dap and idle > args.idle_timeout:
                     server.worker.close()
 
     def guard():

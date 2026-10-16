@@ -1,12 +1,22 @@
 """JSON HTTP SDK and CLI, usable by any agent with shell or HTTP tools."""
 
 import argparse
+import http.client
 import json
 import os
-from urllib.error import HTTPError
+import socket
+from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from peeky.errors import PeekyError
+
+
+class WorkerUnreachable(OSError):
+    """No connection reached the worker, so the request was not applied."""
+
+
+class TransportLost(OSError):
+    """The connection broke mid-request: the request's outcome is unknown."""
 
 
 class Client:
@@ -24,26 +34,45 @@ class Client:
             with urlopen(request, timeout=45) as response:
                 return json.load(response)
         except HTTPError as exc:
-            raw = exc.read() or b"{}"
-            try:
-                body = json.loads(raw)
-            except ValueError:
-                body = None
-            if isinstance(body, dict) and isinstance(body.get("error"), dict):
-                raise PeekyError(exc.url, exc.code, exc.headers, body["error"], raw) from None
-            raise PeekyError(
-                exc.url,
-                exc.code,
-                exc.headers,
-                {
-                    "code": "INVALID_REQUEST",
-                    "message": raw.decode(errors="replace")[:2000],
-                    "hint": "The worker returned an unexpected error body; check its log.",
-                    "retryable": False,
-                    "session_closed": False,
-                },
-                raw,
+            return self._http_error(exc)
+        except URLError as exc:
+            reason = exc.reason
+            if isinstance(reason, (ConnectionRefusedError, socket.gaierror, FileNotFoundError)):
+                raise WorkerUnreachable(
+                    f"Worker at {self.url} is unreachable ({reason}); the request was not sent. "
+                    "Check the worker process or SSH tunnel, then retry"
+                ) from None
+            raise TransportLost(
+                f"Connection to the worker at {self.url} broke during {operation!r} ({reason}); "
+                "its outcome is unknown"
             ) from None
+        except (http.client.HTTPException, ConnectionError, TimeoutError, socket.timeout) as exc:
+            raise TransportLost(
+                f"Connection to the worker at {self.url} broke during {operation!r} "
+                f"({type(exc).__name__}); its outcome is unknown"
+            ) from None
+
+    def _http_error(self, exc):
+        raw = exc.read() or b"{}"
+        try:
+            body = json.loads(raw)
+        except ValueError:
+            body = None
+        if isinstance(body, dict) and isinstance(body.get("error"), dict):
+            raise PeekyError(exc.url, exc.code, exc.headers, body["error"], raw) from None
+        raise PeekyError(
+            exc.url,
+            exc.code,
+            exc.headers,
+            {
+                "code": "INVALID_REQUEST",
+                "message": raw.decode(errors="replace")[:2000],
+                "hint": "The worker returned an unexpected error body; check its log.",
+                "retryable": False,
+                "session_closed": False,
+            },
+            raw,
+        ) from None
 
     def probe(
         self,

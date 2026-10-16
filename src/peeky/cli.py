@@ -26,6 +26,7 @@ import tomllib
 from pathlib import Path
 
 from peeky.client import Client
+from peeky.errors import PROTOCOL_VERSION
 from peeky.probe import Probe, _capture, _table, parse_selector, run_probe
 
 RUST_VERSION = "1.96.0"
@@ -492,7 +493,10 @@ def probe(args):
         if args.quiet
         else lambda message: print(f"peeky: {message}", file=sys.stderr, flush=True)
     )
-    result = run_probe(root, request, adapter=adapter_for(language, data), progress=progress)
+    if args.worker:
+        result = _probe_remote(args, root, request)
+    else:
+        result = run_probe(root, request, adapter=adapter_for(language, data), progress=progress)
     _emit(result, args.json, _table)
     return 0 if result["status"] == "completed" else 1
 
@@ -679,11 +683,13 @@ def session(args):
         try:
             client.call("close", session_id=record["session_id"])
         finally:
-            try:
-                # Authenticated by this record's token, so only its own worker stops.
-                client.call("shutdown")
-            except Exception:
-                pass
+            if not record.get("remote"):
+                try:
+                    # Authenticated by this record's token, so only its own worker stops.
+                    # A remote worker is shared infrastructure: it keeps running.
+                    client.call("shutdown")
+                except Exception:
+                    pass
             for suffix in (".json", ".target.json"):
                 (_state_dir() / f"{args.name}{suffix}").unlink(missing_ok=True)
             log = _state_dir() / f"{args.name}.log"
@@ -718,12 +724,112 @@ def _pause_text(state):
     return f" ({text})"
 
 
+WORKER_TOKEN_ENV = "PEEKY_WORKER_TOKEN"
+
+
+def _remote(url):
+    """A client for a worker reached over loopback (e.g. an SSH -L tunnel)."""
+    if not re.fullmatch(r"http://127\.0\.0\.1:[0-9]{1,5}", url or ""):
+        raise ValueError(
+            "--worker must be a loopback URL such as http://127.0.0.1:8765; reach remote "
+            "workers through an SSH tunnel (ssh -N -L 8765:127.0.0.1:8765 user@host)"
+        )
+    token = os.environ.get(WORKER_TOKEN_ENV, "")
+    if len(token) < 16:
+        raise ValueError(
+            f"Set {WORKER_TOKEN_ENV} to the worker's DEBUG_TOKEN; tokens are never accepted "
+            "as arguments"
+        )
+    client = Client(url, token)
+    version = client.call("version")
+    if version.get("protocol") != PROTOCOL_VERSION:
+        raise ValueError(
+            f"Worker speaks protocol {version.get('protocol')}, this client {PROTOCOL_VERSION}"
+        )
+    return client, token
+
+
+def _source_matches(root, relative, remote_sha256, what):
+    local = hashlib.sha256((root / relative).read_bytes()).hexdigest()
+    if local != remote_sha256:
+        raise RuntimeError(
+            f"Worker source provenance differs for {what} {relative}: local sha256 {local[:12]}, "
+            f"worker {str(remote_sha256)[:12]}. Sync sources before debugging remotely"
+        )
+
+
+def _probe_remote(args, root, request):
+    client, _ = _remote(args.worker)
+    result = client.probe(
+        f"{request.program}:{request.line}",
+        request.capture,
+        dict(request.set),
+        hits=request.hits,
+        timeout=min(request.timeout, 30),
+        until=request.until,
+        set_hit=request.set_hit,
+        entry=request.entry,
+        args=request.args,
+    )
+    result["worker"] = args.worker
+    try:
+        if result.get("source_sha256") is not None:
+            _source_matches(root, request.program, result["source_sha256"], "program")
+        if request.entry and result.get("entry_sha256") is not None:
+            _source_matches(root, request.entry, result["entry_sha256"], "entry script")
+    except RuntimeError as exc:
+        from peeky.errors import classify
+
+        # Values from different source text cannot be attributed to the local lines.
+        result.update(
+            status="failed",
+            error=classify(exc, session_closed=True),
+            rows=[],
+            by_hit=[],
+            interventions=[],
+            results_discarded=True,
+        )
+    return result
+
+
+def _start_remote(args, root, program, line, language):
+    client, token = _remote(args.worker)
+    launch = client.call(
+        "launch",
+        program=program,
+        breakpoints=[{"line": line}],
+        max_pause=_max_pause(args.max_pause, language),
+        **({"entry": entry} if (entry := _entry(root, args.run, language)) else {}),
+        **({"args": list(args.arg)} if args.arg else {}),
+    )
+    try:
+        _source_matches(root, program, launch.get("source_sha256"), "program")
+        if entry:
+            _source_matches(root, entry, launch.get("entry_sha256"), "entry script")
+    except Exception:
+        client.call("close", session_id=launch["session_id"])
+        raise
+    record = {"name": args.name, "url": args.worker, "token": token, "remote": True}
+    record.update(root=str(root), program=program, language=language)
+    record.update(session_id=launch["session_id"], state="running", stop_id=None)
+    _save(record)
+    state = _wait(record, client, args.timeout)
+    _emit(
+        {"session": args.name, "language": language, "worker": args.worker, **state},
+        args.json,
+        lambda s: f"session {s['session']} ({s['language']}, remote): " + _state_text(s),
+    )
+    return 0
+
+
 def _start(args):
     root, program, line, language, data = resolve(args.target, args.at, args.config)
     if line is None:
         raise ValueError("session start requires --at <path>:<line>")
     if _record(args.name).exists():
         raise ValueError(f"Session {args.name!r} exists; close it or pass --name")
+    if args.worker:
+        return _start_remote(args, root, program, line, language)
     token = secrets.token_urlsafe(32)
     command = [sys.executable, "-m", "peeky.worker", "--root", str(root), "--port", "0"]
     if data is not None:
@@ -1119,6 +1225,11 @@ def main(argv=None, _job=False, _edits=None):
         "--run", help="Python: script to run when --at is in a module it imports (e.g. main.py)"
     )
     sub.add_argument(
+        "--worker",
+        help="Probe on a running worker at this loopback URL (e.g. through ssh -L); token "
+        "from $PEEKY_WORKER_TOKEN; local and worker sources must match",
+    )
+    sub.add_argument(
         "--arg", action="append", default=[], help="Python: program argument (repeatable)"
     )
     sub.add_argument("--timeout", type=float, default=60)
@@ -1137,6 +1248,11 @@ def main(argv=None, _job=False, _edits=None):
     common(start)
     start.add_argument("--at", required=True)
     start.add_argument("--run", help="Python: script to run when --at is in an imported module")
+    start.add_argument(
+        "--worker",
+        help="Use a running worker at this loopback URL (e.g. through ssh -L) instead of "
+        "starting one; token from $PEEKY_WORKER_TOKEN",
+    )
     start.add_argument("--arg", action="append", default=[], help="Python: program argument")
     start.add_argument(
         "--max-pause",

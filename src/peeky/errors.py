@@ -15,6 +15,20 @@ PROTOCOL_VERSION = 1
 # (pattern on the message, code, hint, retryable). First match wins.
 _RULES = (
     (
+        r"is unreachable \(.*the request was not sent",
+        "UNREACHABLE",
+        "No request reached the worker. Restore the worker or SSH tunnel and retry; the worker "
+        "keeps a session until its idle timeout.",
+        True,
+    ),
+    (
+        r"broke during .*its outcome is unknown",
+        "TRANSPORT_LOST",
+        "The request may or may not have been applied. Restore the tunnel, then `inspect`/`wait` "
+        "before anything else; never repeat a mutation blindly.",
+        False,
+    ),
+    (
         r"^Job [0-9a-f]{16} was lost",
         "JOB_LOST",
         "The background job process died; rerun the command. The message has its log.",
@@ -131,6 +145,9 @@ def classify(exc, *, session_closed=None):
         }
     for pattern, code, hint, retryable in _RULES:
         if re.search(pattern, message):
+            if code in ("UNREACHABLE", "TRANSPORT_LOST"):
+                # A client-side transport failure never closes the worker's session.
+                closed = False
             break
     else:
         if isinstance(exc, TimeoutError):

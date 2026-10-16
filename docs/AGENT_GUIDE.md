@@ -49,6 +49,8 @@ Every command takes `--json`: stdout is then one JSON object (progress goes to s
 
 **Python programs with several files:** pass the project directory as the target and `--at <module.py>:<line>` for the breakpoint. If the module is imported rather than run directly, add `--run <script.py>` to say which script to run, for example `peeky probe app/ --at lib/parse.py:42 --run main.py`. Pass program arguments with repeatable `--arg` (for example `--arg ::ffff:8.8.8.8`, or `--arg=-v` for a value that starts with a dash); use them to narrow the run to the failing input. `session start` accepts `--run` and `--arg` too, and `verify` edits the `--at` file. `peeky describe <dir> --at <module.py>` lists each function's line span and names (`IPv6Address.is_private (lines 2000-2008)`), so you can jump straight to the line.
 
+**Remote targets:** if a worker runs on another host behind an SSH tunnel, add `--worker http://127.0.0.1:<port>` to `probe` or `session start`, with the token in `$PEEKY_WORKER_TOKEN`. Your local copy of the source must match the worker's, or the results are discarded. See [REMOTE.md](REMOTE.md).
+
 Targets: a `.py` file, a `.c`/`.cpp` file, a Cargo crate directory, or any target with `--config <trusted.json>` (required for Java). A Java attach config (`port`, `sources`, `class_roots`) attaches to a running `--debug-jvm` JVM; attached targets cannot be verified, and closing detaches without killing the JVM. Selectors are dotted paths and indexes (`request.page`, `args[0]`); expressions are rejected.
 
 ## Workflow
