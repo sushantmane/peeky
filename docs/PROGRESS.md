@@ -41,6 +41,12 @@ An hourly thread heartbeat (`continue-peeky-mvp`) checks for available usage and
   - Disconnects return `UNREACHABLE` (retryable, nothing sent) or `TRANSPORT_LOST`, and the session record is kept.
   - Adds `session close --forget` and the worker's `--idle-timeout`.
   - Two-process relay tests cover a mismatch refusal, a dropped tunnel, reconnecting, and a dead local worker.
+- **#35 (`1706807`):** the captured-evidence store, ADR 0004 step 4 (the owner's "as easy as heappy" direction).
+  - Every probe (local, `--worker` and `--background`) is saved on the client to SQLite and gets a `run_id`.
+  - `peeky sql` runs one read-only, bounded SELECT over saved runs.
+  - `peeky queries` adds canned questions such as `diff`, `set_effect` and `hits`.
+  - `peeky sql --schema` is the manifest, and the new error code is `INVALID_QUERY`.
+  - Two review rounds; every finding is fixed (worker probes stay stateless, read-only open with journal recovery, result bounds).
 - **Dependabot:** #1, #3, #4 and #5 were merged. #2 (`upload-artifact` v7) was validated by dispatching `artifact.yml`, then fast-forwarded over SSH as `7308955`, because the API token lacks the `workflow` scope.
 
 **Closed issues:** #6, #7, #9, #10, #11, #12, #13.
@@ -105,7 +111,7 @@ Known local-only limitation (pre-existing on main): test_native_adapter_death_re
 The original slices are delivered: #6, #7, #9, #10, #11, #12 and #13 are closed, and the code for #8 is merged. Remaining:
 1. **#8:** attach a recorded run on a real second host (see REMOTE.md).
 2. **#27:** if the lost `stopped` event on an attached JVM recurs, capture the DAP trace and fix it from that evidence.
-3. **ADR 0004, steps 4–5:** the query grammar and the evidence store (SQL over captured evidence).
+3. **ADR 0004, step 5:** a prepared-build cache, only if measured probe latency requires it. Step 4 shipped in #35; the SQL-shaped probe form was deliberately not implemented.
 4. Implement the bounded evidence correlation design (code, logs, metrics).
 
 Read AGENTS.md, DESIGN.md, LANGUAGES.md, and ROADMAP.md for acceptance criteria. Runtime intervention is evidence only; never claim a fix without fresh verification and matching source/build identity. Preserve a checkpoint when usage runs low; report shipped work and actual limitations.
