@@ -93,4 +93,4 @@ PEEKY_E2E_DOCKER=1 PEEKY_E2E_RECORD=remote-run.json pytest tests/remote -v
 | Host's source differs | `peeky probe … --set start=0 --worker URL` | 1 | 0.06 | `PROVENANCE_CHANGED`, refused before launching; the host's changed program never ran |
 | Worker stopped behind a live tunnel | `peeky probe … --worker URL` | 2 | 0.008 | `TRANSPORT_LOST`, `session_closed: false` |
 
-Across five consecutive local runs, the module took 4.6–5.0 s, including starting the container and sshd. The token never appears in any command's output (asserted on every step).
+Across five consecutive local runs, the module took 4.6–5.0 s, including starting the container and sshd. On GitHub's `ubuntu-latest` runner (x86_64 client and container), the same module took 21.7 s including the image build, and every step gave the same result. The token never appears in any command's output (asserted on every step).
