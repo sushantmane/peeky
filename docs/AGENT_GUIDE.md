@@ -44,7 +44,11 @@ Every command takes `--json`: stdout is then one JSON object (progress goes to s
 
 ### Querying saved evidence (`peeky sql`, `peeky queries`)
 
-Every probe is saved: the result's `evidence.run_id` names it. Capture broadly once (`--hits 50`, several selectors), then answer follow-up questions with SQL instead of rerunning the program:
+Every probe is saved, and the result's `evidence.run_id` names it. **SQL is optional.** For a single probe, read its JSON result. Use saved evidence when:
+- **a capture is large** (many hits or selectors): query only the rows you need instead of reading them all;
+- **you are comparing runs** (two inputs, or with and without `--set`): `peeky queries diff` gives the first divergence;
+- **runs are slow or unrepeatable** (JVM tests, timing-dependent programs): query what already happened instead of rerunning.
+
 
 - `peeky sql --schema` lists the tables (`runs`, `captures`, `interventions`, `pauses`), the `evidence` and `last_run` views, and the canned queries. Read it before writing SQL.
 - `peeky queries` needs no SQL. `run` shows a run's values, `hits` shows a selector across hits with `changed`, `compare`/`diff` put two runs side by side (the first `diff` row is the first divergence), `outputs` shows two runs' outputs and outcomes, `set_effect` shows values before and after an intervention, `values` shows the distinct values of a selector across runs, and `unreadable` and `failures` list what has no value. Pass `--param name=value`.

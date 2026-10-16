@@ -83,7 +83,7 @@ The bundled pagination program uses one-based page numbers incorrectly. The agen
 
 ## Ask follow-up questions with SQL
 
-Every `peeky probe` is saved with a `run_id` in a local SQLite evidence store (`$PEEKY_STATE_DIR/evidence/evidence.db`, newest 500 runs). Capture once, then ask as many questions as you like without rerunning the program, as heappy does for heap dumps:
+Every `peeky probe` is saved with a `run_id` in a local SQLite evidence store (`$PEEKY_STATE_DIR/evidence/evidence.db`, newest 500 runs). Capture once, then ask as many questions as you like without rerunning the program, as heappy does for heap dumps. This is optional: a single probe's output is already the answer. The store helps with large captures (query only what you need), comparing runs, and slow or unrepeatable runs:
 
 ```sh
 peeky probe app/ --at lib/parse.py:42 --run main.py --capture n,acc --hits 50 --label input=a
