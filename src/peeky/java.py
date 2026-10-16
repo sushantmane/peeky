@@ -230,6 +230,9 @@ class JavaTarget:
 
 
 class JavaSession:
+    # Peeky's Java launcher allows no step requests yet; `continue --to` works.
+    supports_stepping = False
+
     # java-debug accepts variables start/count only for arrays.
     ranges_only_for_indexed = True
     # java-debug occasionally drops VM-death events (#27); infer exit from no threads.

@@ -435,7 +435,8 @@ def describe(args):
             "probe": f"peeky probe {args.target} --at {program}:<line>{run} --capture <a,b.c> "
             "[--set name=value] [--set-hit N] [--hits N] [--json]",
             "session": f"peeky session start {args.target} --at {program}:<line>{run}; then "
-            "peeky session inspect | get <a.b> | set <name>=<value> | continue [--to-exit] | "
+            "peeky session inspect | get <a.b> | set <name>=<value> | step [--into|--out] | "
+            "continue [--to LINE|--to-exit] | "
             "report | close",
             "verify": f"peeky verify {args.target} --at {program} --check <checker.py> "
             "--old <text> --new <text> (or --old-file/--new-file)",
@@ -810,7 +811,15 @@ def _state_text(state):
     elif state["state"] == "terminated":
         hint = " (program exited; `peeky session report` shows output)"
     reason = state.get("reason")
-    if reason and reason != "breakpoint":
+    if state.get("outside_program"):
+        where += (
+            " (outside the program's sources: `session step --out` returns to your code, "
+            "or `session continue`)"
+            if state.get("returns_to_program")
+            else " (outside the program's sources, and your code is no longer on the stack: "
+            "`session continue`)"
+        )
+    if reason and reason not in ("breakpoint", "step"):
         where += f" [reason: {reason}; not auto-resumed, inspect it or `session report`]"
     text = f"state: {state['state']}{where}{_pause_text(state)}{hint}"
     if state.get("optimized"):
@@ -843,6 +852,7 @@ def _variables_text(snapshot, name="default"):
                 f" (children: peeky session get {variable['name']}"
                 + (f" --name {name})" if name != "default" else ")")
                 if variable.get("variablesReference")
+                and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", variable["name"])
                 else ""
             )
             if variable.get("unavailable"):
@@ -857,6 +867,17 @@ def _variables_text(snapshot, name="default"):
     if snapshot.get("mutation_blocked"):
         lines.append(f"note: {snapshot['mutation_blocked']}")
     return "\n".join(lines)
+
+
+def _require_stepping(record, client):
+    """Remote workers built before `step` silently ignore `continue --to`: refuse."""
+    if not record.get("remote"):
+        return
+    if "step" not in client.call("version").get("operations", ()):
+        raise ValueError(
+            "This remote worker predates `session step` and `continue --to`; update Peeky "
+            "on the worker host"
+        )
 
 
 def _get_lines(row):
@@ -880,7 +901,7 @@ def _get_lines(row):
 
 
 def session(args):
-    if args.action in ("start", "wait", "continue"):
+    if args.action in ("start", "wait", "continue", "step"):
         # Checked before anything runs: a bad --timeout must not follow a real action.
         _seconds(args.timeout)
     if args.action == "start":
@@ -944,9 +965,32 @@ def session(args):
         _emit(changed, args.json, lambda c: f"set {c['name']}: {c['before']} -> {c['after']}")
     elif args.action == "continue":
         stop = _stop(record)
+        if args.to is not None and args.to_exit:
+            raise ValueError("Pass --to LINE or --to-exit, not both")
+        if args.to is not None:
+            _require_stepping(record, client)
         # --to-exit clears the breakpoints in the same worker operation, after it
         # confirms this stop is still current (it may have been auto-resumed).
-        client.call("continue", **stop, **({"to_exit": True} if args.to_exit else {}))
+        client.call(
+            "continue",
+            **stop,
+            **({"to_exit": True} if args.to_exit else {}),
+            **({"to_line": args.to} if args.to is not None else {}),
+        )
+        state = _wait(record, client, args.timeout)
+        finished = 0
+        while args.to_exit and state["state"] == "stopped" and state.get("reason") == "step":
+            # LLDB completes a step that a breakpoint interrupted before running on.
+            finished += 1
+            if finished > 3:
+                break
+            client.call("continue", **_stop(record), to_exit=True)
+            state = _wait(record, client, args.timeout)
+        _emit(state, args.json, _state_text)
+    elif args.action == "step":
+        kind = "in" if args.into else "out" if args.out else "over"
+        _require_stepping(record, client)
+        client.call("step", **_stop(record), kind=kind)
         state = _wait(record, client, args.timeout)
         _emit(state, args.json, _state_text)
     elif args.action == "report":
@@ -1727,7 +1771,8 @@ def main(argv=None, _job=False, _edits=None):
         ("inspect", "Stack and locals at the current stop"),
         ("get", "Read selectors (a, a.b, a[0], a['key']); lists one level of children"),
         ("set", "Change one root local to a literal (name=value) at the current stop"),
-        ("continue", "Resume to the next breakpoint stop, or --to-exit"),
+        ("continue", "Resume to the next breakpoint stop, --to LINE, or --to-exit"),
+        ("step", "Run to the next line (--into a call, --out of the function)"),
         ("report", "State, program output and the session's operation count"),
         ("close", "End the session and stop its local worker"),
     ):
@@ -1745,6 +1790,15 @@ def main(argv=None, _job=False, _edits=None):
     actions.choices["continue"].add_argument(
         "--to-exit", action="store_true", help="Clear breakpoints and run the program to exit"
     )
+    actions.choices["continue"].add_argument(
+        "--to",
+        type=int,
+        metavar="LINE",
+        help="Also stop at LINE of the session's file, once (removed at the next stop)",
+    )
+    stepping = actions.choices["step"].add_mutually_exclusive_group()
+    stepping.add_argument("--into", action="store_true", help="Step into the call on this line")
+    stepping.add_argument("--out", action="store_true", help="Run until this function returns")
     sub = commands.add_parser("verify", help="Fresh build + independent checker for one edit")
     common(sub)
     sub.add_argument("--at", help="Program path (for multi-file targets)")

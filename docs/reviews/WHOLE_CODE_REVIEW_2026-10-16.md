@@ -136,3 +136,24 @@ Verification of 81123e9 confirmed every fix on macOS and on Linux LLVM 18. Hoste
 - **Should-fix:** the docs claimed `describe` names match the probe's `function` column. Plain functions and methods match. Rust trait impls and closures keep LLDB's symbol escapes there, and C++ frames add signatures. The cookbook now says so and suggests `LIKE` in SQL.
 - **Nit:** a lambda inside a function that exists only inlined (-O1 or higher) lost its function name, because clang parents it under an empty placeholder. The name now comes from the lambda's Itanium local-entity symbol (`_ZZ11apply_twiceiE…`), giving `apply_twice::operator()` at -O2.
 - **Nit:** a single very large optimized C++ unit can exceed the 16 MB dump bound. Splitting by unit does not help there, since it is one unit. It fails closed with a visible reason, and the cookbook documents it.
+
+
+
+## Review of the session-stepping PR (#47, 3dc8add)
+
+One blocking issue, five should-fix issues and two nits. All are fixed with regression tests (real debugpy, lldb-dap and Java):
+- **Blocking:** Python's `validate_stop` never raises, so the "left the program" refusal never fired for Python, and `set` changed locals in a module outside the root. Step stops are now checked before validation for every runtime. A frame counts as the program's own only if it is in a declared source (compiled targets) or under the worker's root (Python). Elsewhere `inspect`, `get` and `set` are refused as request errors and the session is kept (`test_steps_into_code_outside_the_root_read_and_change_nothing`).
+- **Should-fix:**
+  - **Co-stops.** After `continue` served a co-stopped thread, lldb re-reported the other thread's old breakpoint stop when a step ended. `step` is now refused until a real `continue` has resumed every thread (`test_steps_wait_until_threads_stopped_together_have_resumed`).
+  - **Stepping out of the outermost frame.** The debugger's refusal closed the session. Refused requests are now a distinct `RequestFailed`; a refused step is a request error, and nothing moves. The state says when your code is no longer on the stack (`returns_to_program`), and in that case it suggests `continue`, not `step --out`.
+  - **Frames without line information.** LLDB's `module`function` frames under the build directory counted as inside the program, so `inspect` closed the session on a false provenance mismatch. Membership is now by declared source, and such paths are never shown as user files.
+  - **Older remote workers** silently ignored `continue --to`. The client now checks `version` operations first for remote sessions.
+  - **`continue --to` to a line the debugger moves or cannot place** ran the program on. The reply is checked; the session's breakpoints are restored, the stop is kept, and the error is `INVALID_BREAKPOINT`.
+- **Nits:**
+  - `continue --to-exit` finishes a step that a breakpoint interrupted (LLDB completes it first), with at most three extra resumes.
+  - The `breakpoints` operation records the session's breakpoints only after the debugger accepts them.
+  - `inspect` offers `session get` only for selectable names.
+
+Verification of the fixes confirmed all six repros. It found two regressions that the fixes had introduced, both now fixed:
+- **Should-fix:** java-debug verifies a line in a class that hasn't loaded yet (a nested class) only once the class loads, so the new placement check refused valid Java `continue --to` lines. Runtimes that prove lines against their own tables (`check_breakpoint_lines`) now have only a moved line refused (`test_java_sessions_run_to_a_line_but_refuse_steps` now targets the not-yet-loaded `Inner`).
+- **Should-fix:** `co_served`, `stop_outside` and `stop_returns` carried over into the next session on a shared worker. They now reset at launch (`test_a_new_session_on_a_worker_starts_with_no_stop_state`).

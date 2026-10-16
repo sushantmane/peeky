@@ -533,3 +533,124 @@ def test_describe_lists_each_functions_span_and_locals(tmp_path, native_config, 
         assert {s["source"] for s in manifest["scopes"]} <= set(manifest["breakpoint_lines"])
         assert main(["describe", str(tmp_path / path)]) == 0
         assert f"names in {function} ({program}:{first}-{last}):" in capsys.readouterr().out
+
+
+def test_native_sessions_step_and_report_leaving_the_program(
+    tmp_path, native_config, capsys, monkeypatch
+):
+    from peeky.cli import main
+
+    shutil.copytree(ROOT / "examples" / "c", tmp_path / "c")
+    program = str(tmp_path / "c" / "pagination_bug.c")
+    monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
+    lines = (tmp_path / "c" / "pagination_bug.c").read_text().splitlines()
+    last = max(i for i, text in enumerate(lines, 1) if "return 0" in text)
+    assert main(["session", "start", program, "--at", str(last)]) == 0
+    capsys.readouterr()
+    # Stepping past main's end leaves the program's sources: said so, nothing read,
+    # and the session stays usable.
+    state = None
+    for _ in range(4):
+        assert main(["session", "step", "--json"]) == 0
+        state = json.loads(capsys.readouterr().out)
+        if state.get("outside_program") or state["state"] != "stopped":
+            break
+    assert state["state"] == "stopped" and state["outside_program"] is True
+    assert state["returns_to_program"] is False
+    assert main(["session", "inspect"]) == 2
+    assert "outside the program's sources" in capsys.readouterr().err
+    code = main(["session", "step", "--out", "--json"])
+    reply = json.loads(capsys.readouterr().out)
+    if code == 2:
+        # macOS: dyld's start is the outermost frame; the debugger refuses, and the
+        # session stays.
+        assert "refused to step out" in reply["error"]["message"]
+    else:
+        # Linux: libc's callers remain, so the step runs (still outside, or to the end).
+        assert reply["state"] == "terminated" or reply.get("outside_program") is True
+    if reply.get("state") != "terminated":
+        assert main(["session", "continue"]) == 0
+        assert "terminated" in capsys.readouterr().out
+    assert main(["session", "close"]) == 0
+
+
+THREADS = (
+    "#include <pthread.h>\n#include <stdatomic.h>\n#include <stdio.h>\n"
+    "static atomic_int ready;\n"
+    "static void *work(void *arg) {\n"
+    "  int id = (int)(long)arg;\n"
+    "  atomic_fetch_add(&ready, 1);\n"
+    "  while (atomic_load(&ready) < 4) {}\n"
+    "  int seen = id; /* HIT */\n"
+    "  return (void *)(long)seen;\n"
+    "}\n"
+    "int main(void) {\n"
+    "  pthread_t t[4];\n"
+    "  for (long i = 0; i < 4; i++) pthread_create(&t[i], 0, work, (void *)i);\n"
+    "  for (int i = 0; i < 4; i++) pthread_join(t[i], 0);\n"
+    '  puts("done");\n'
+    "  return 0;\n"
+    "}\n"
+)
+
+
+def test_steps_wait_until_threads_stopped_together_have_resumed(
+    tmp_path, native_config, capsys, monkeypatch
+):
+    from peeky.cli import main
+
+    monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
+    (tmp_path / "threads.c").write_text(THREADS)
+    assert main(["session", "start", str(tmp_path / "threads.c"), "--at", "9"]) == 0
+    capsys.readouterr()
+    # Unserved co-stops, and served ones whose threads the debugger still holds at their
+    # old stops (it would re-report them when a step ends): refused, session kept.
+    for _ in range(2):
+        assert main(["session", "step", "--json"]) == 2
+        error = json.loads(capsys.readouterr().out)["error"]
+        assert error["code"] == "INVALID_REQUEST" and "Other threads" in error["message"]
+        assert main(["session", "continue"]) == 0
+        assert "stopped" in capsys.readouterr().out
+    assert main(["session", "continue", "--to-exit"]) == 0
+    assert main(["session", "report"]) == 0 and "done" in capsys.readouterr().out
+    assert main(["session", "close"]) == 0
+
+
+CALLS = """#include <stdio.h>
+
+int twice(int x) {
+    int r = x * 2;
+    return r;
+}
+
+int main(void) {
+    int a = twice(1);
+    int b = twice(2);
+    printf("SUM:%d\\n", a + b);
+    return 0;
+}
+"""
+
+
+def test_runs_to_lines_and_exit_survive_bad_lines_and_interrupted_steps(
+    tmp_path, native_config, capsys, monkeypatch
+):
+    from peeky.cli import main
+
+    monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
+    (tmp_path / "calls.c").write_text(CALLS)
+    assert main(["session", "start", str(tmp_path / "calls.c"), "--at", "4"]) == 0
+    capsys.readouterr()
+    # A line without code is refused before anything runs; the stop is kept.
+    assert main(["session", "continue", "--to", "7", "--json"]) == 2
+    assert json.loads(capsys.readouterr().out)["error"]["code"] == "INVALID_BREAKPOINT"
+    assert main(["session", "get", "x"]) == 0 and "x: int = 1" in capsys.readouterr().out
+    # Stepping over twice(2) is interrupted by the breakpoint inside it; --to-exit then
+    # still runs to the end instead of stopping where LLDB finishes that step.
+    for kind in (["--out"], [], []):
+        assert main(["session", "step", *kind]) == 0
+    assert "calls.c:4" in capsys.readouterr().out
+    assert main(["session", "continue", "--to-exit"]) == 0
+    assert "terminated" in capsys.readouterr().out
+    assert main(["session", "report"]) == 0 and "SUM:6" in capsys.readouterr().out
+    assert main(["session", "close"]) == 0
