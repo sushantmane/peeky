@@ -161,8 +161,11 @@ def test_a_class_rebuilt_while_attaching_is_refused(attached, monkeypatch):
 
     workspaces = set(Path(tempfile.gettempdir()).glob("peeky-java-attach-*"))
     monkeypatch.setattr(java_attach, "_class_metadata", parse_then_rebuild)
-    with pytest.raises(RuntimeError, match="changed while attaching"):
+    with pytest.raises(RuntimeError, match="changed during attach") as caught:
         target.prepare(root / SOURCE, root)
+    from peeky.errors import classify
+
+    assert classify(caught.value)["code"] == "PROVENANCE_CHANGED"
     assert set(Path(tempfile.gettempdir()).glob("peeky-java-attach-*")) == workspaces
 
 
@@ -173,3 +176,25 @@ def test_attach_timeouts_fit_the_worker_wait(tmp_path):
     assert JavaAttachTarget(**base, timeout_ms=15000).timeout_ms == 15000
     with pytest.raises(ValueError, match="1000..15000"):
         JavaAttachTarget(**base, timeout_ms=15001)
+
+
+def test_declared_sources_behind_an_in_root_link_attach(attached):
+    from dataclasses import replace
+
+    root, target, _, _ = attached
+    vendor = root / "vendor" / "util"
+    vendor.mkdir(parents=True)
+    (vendor / "Util.java").write_text(
+        "package util;\npublic class Util {\n  static int one() { return 1; }\n}\n"
+    )
+    (root / "lib").symlink_to(root / "vendor")
+    subprocess.run(
+        [shutil.which("javac"), "-g", "-d", str(root / "classes"), str(vendor / "Util.java")],
+        check=True,
+    )
+    linked = replace(target, sources=(SOURCE, "lib/util/Util.java"))
+    session = linked.prepare(root / SOURCE, root)
+    try:
+        session.assert_current()
+    finally:
+        session.close()

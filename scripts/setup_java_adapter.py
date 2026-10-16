@@ -76,6 +76,7 @@ def setup(output: Path) -> dict:
         raise ValueError("output already exists; choose a fresh directory")
     # Resolved like the worker resolves bundle paths (e.g. /tmp is /private/tmp on
     # macOS); an unresolved path would never match the adapter command check.
+    output.absolute().parent.mkdir(parents=True, exist_ok=True)
     output = output.absolute().parent.resolve(strict=True) / output.name
     java = shutil.which("java")
     javac = shutil.which("javac")

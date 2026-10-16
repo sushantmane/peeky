@@ -404,3 +404,32 @@ def test_cpp_programs_link_the_cpp_standard_library(tmp_path, native_config, cap
     result = json.loads(capsys.readouterr().out)
     assert code == 0, result.get("error")
     assert result["rows"][0]["value"] == "2" and "2bb" in result["output"]
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="xcrun stubs are macOS-only")
+def test_macos_builds_without_a_sysroot_use_the_default_sdk(tmp_path, native_config):
+    from peeky.native import NativeTarget
+
+    shutil.copyfile(ROOT / "examples/c/branch_bug.c", tmp_path / "branch_bug.c")
+    stub = {"compiler": "/usr/bin/clang", "sysroot": None}
+    runtime = NativeTarget(**{**native_config, **stub}).prepare(tmp_path / "branch_bug.c", tmp_path)
+    runtime.close()
+
+
+def test_mains_that_are_not_compiled_do_not_split_a_program(tmp_path, native_config, capsys):
+    from peeky.cli import main
+
+    (tmp_path / "main.c").write_text(
+        "#include <stdio.h>\nint add(int a, int b);\n"
+        'int main(void) {\n  int total = add(2, 3);\n  printf("%d\\n", total);\n'
+        "  return 0;\n}\n"
+    )
+    (tmp_path / "util.c").write_text(
+        "int add(int a, int b) { return a + b; }\n"
+        "#ifdef UTIL_SELFTEST\nint main(void) { return add(1, 1) != 2; }\n#endif\n"
+        "/*\nint main(void) { return 0; }\n*/\n"
+    )
+    code = main(["probe", str(tmp_path / "main.c"), "--at", "5", "--capture", "total", "--json"])
+    result = json.loads(capsys.readouterr().out)
+    assert code == 0, result.get("error")
+    assert result["rows"][0]["value"] == "5"

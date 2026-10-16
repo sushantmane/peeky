@@ -191,3 +191,34 @@ def test_continue_revokes_native_scope_and_frame_binding(tmp_path):
     assert not worker.references and not worker.reference_frames
     with pytest.raises(ValueError, match="stop"):
         mutate(worker, handle)
+
+
+@pytest.mark.parametrize("frame_id", [1, 2])
+def test_module_mismatch_on_any_program_frame_closes_the_session(tmp_path, frame_id):
+    worker = stopped(tmp_path)
+    worker.runtime.module_valid = False
+    with pytest.raises(RuntimeError, match="module"):
+        inspect(worker, frame_id)
+    assert worker.session is None
+
+
+def test_only_caller_frames_outside_the_program_are_request_errors(tmp_path):
+    def validate_stop(frame):
+        if frame["id"] != 1:
+            raise RuntimeError("Native stopped line does not match prepared symbols")
+
+    worker = stopped(tmp_path)
+    worker.runtime.root = "/prepared"
+    worker.runtime.validate_stop = validate_stop
+    # Frame 2 is in the program's own sources: a mismatch there is provenance.
+    with pytest.raises(RuntimeError, match="does not match"):
+        inspect(worker, 2)
+    assert worker.session is None
+    worker = stopped(tmp_path)
+    worker.runtime.root = "/prepared"
+    worker.runtime.validate_stop = validate_stop
+    worker.dap.frames[1]["source"] = {"path": "/usr/lib/system/libdyld.dylib"}
+    with pytest.raises(ValueError, match="not in the prepared program's sources"):
+        inspect(worker, 2)
+    assert worker.session == "session"
+    assert inspect(worker, 1)["scopes"]

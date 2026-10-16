@@ -338,7 +338,8 @@ class JavaSession:
         self.validate_value(value)
         name, kind = variable.get("name"), variable.get("type")
         if kind in _JAVA_INTEGER_BITS:
-            if not re.fullmatch(r"[+-]?[0-9]{1,20}", value):
+            # java-debug parses with Long.decode: a leading 0 means octal.
+            if not re.fullmatch(r"[+-]?(?:0|[1-9][0-9]{0,19})", value):
                 raise ValueError(f"Java mutation requires an integer literal for {kind} {name}")
             bits = _JAVA_INTEGER_BITS[kind]
             if not -(2 ** (bits - 1)) <= int(value) < 2 ** (bits - 1):

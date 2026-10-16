@@ -41,3 +41,11 @@ def test_bootstrap_rejects_changed_download(bootstrap, monkeypatch):
     monkeypatch.setattr(bootstrap.urllib.request, "urlopen", lambda *a, **k: io.BytesIO(b"wrong"))
     with pytest.raises(ValueError, match="checksum/size mismatch"):
         bootstrap.acquire({"url": "https://example.invalid/pinned", "sha256": "0" * 64})
+
+
+def test_setup_accepts_an_output_whose_parent_does_not_exist_yet(bootstrap, tmp_path, monkeypatch):
+    # The documented `--output "$PWD/work/java-adapter"` names a gitignored parent.
+    monkeypatch.setattr(bootstrap.shutil, "which", lambda name: None)
+    with pytest.raises(ValueError, match="JDK required"):
+        bootstrap.setup(tmp_path / "work" / "java-adapter")
+    assert (tmp_path / "work").is_dir()

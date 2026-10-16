@@ -214,7 +214,7 @@ class JavaAttachSession(JavaSession):
         # The baseline is the bytes the line tables came from, not a later re-read.
         self._identities = {name: parsed[name] for name in self._identity_files()}
         if self._current_identities() != self._identities:
-            raise RuntimeError("Attached sources or classes changed while attaching; re-attach")
+            raise RuntimeError("Attached sources or classes changed during attach; re-attach")
         self.manifest_id = hashlib.sha256(
             json.dumps(
                 {
@@ -229,7 +229,8 @@ class JavaAttachSession(JavaSession):
         ).hexdigest()
 
     def _identity_files(self):
-        files = {str(self.root / name) for name in self.target.sources}
+        # Resolved, as preparation reads them (a declared path may cross an in-root link).
+        files = {str((self.root / name).resolve()) for name in self.target.sources}
         files |= {entry["class_file"] for entry in self.mapping["classes"].values()}
         return sorted(files)
 

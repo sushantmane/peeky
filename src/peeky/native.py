@@ -25,6 +25,7 @@ from peeky.build import (
     BuildRecipe,
     Command,
     assert_current,
+    default_sdk,
     prepare,
     real_tool,
 )
@@ -378,8 +379,11 @@ class NativeTarget:
         # its language from the name it runs as; keep C++ mode so libc++ is linked.
         driver = ("--driver-mode=g++",) if self.language == "cpp" else ()
         flags = [*driver, *self.compiler_options]
-        if self.sysroot is not None:
-            sdk = Path(self.sysroot).resolve(strict=True)
+        # Without an explicit sysroot, use the SDK the /usr/bin xcrun stub would have
+        # supplied; it is part of the recorded build commands either way.
+        sysroot = self.sysroot if self.sysroot is not None else default_sdk()
+        if sysroot is not None:
+            sdk = Path(sysroot).resolve(strict=True)
             if not sdk.is_dir():
                 raise ValueError("Native sysroot must be a directory")
             flags.extend(("-isysroot", str(sdk)))
@@ -390,7 +394,7 @@ class NativeTarget:
             Command((compiler, *flags, "-c", source, "-o", obj))
             for source, obj in zip(self.sources, objects)
         ]
-        link_flags = (*driver, *(("-isysroot", str(sdk)) if self.sysroot is not None else ()))
+        link_flags = (*driver, *(("-isysroot", str(sdk)) if sysroot is not None else ()))
         if sys.platform == "linux":
             link_flags = (*link_flags, "-Wl,--build-id=sha1")
         commands.append(Command((compiler, *link_flags, *objects, "-o", "program")))

@@ -45,3 +45,14 @@ The findings are fixed in three PRs. The `PR` column says which one; "this PR" m
 | Non-ASCII auth header and pre-dispatch errors are misreported; `session close`/`list` JSON gaps; log path shows an fd | nit | | B |
 | Rust i32 mutation can write a debug-only copy (`.dbg.spill`) that the program never reads | blocking | | C |
 | Files included from outside the declared inputs (`#include "/abs"`, `#[path]`, `include!`) are not hashed | should-fix | | C |
+
+## Review of PR A (#38, 4a1195f)
+
+No blocking issues. Five should-fix issues and two nits, all fixed, each with a regression test:
+- **Should-fix:** the caller-frame downgrade also covered module mismatches and line mismatches inside the program's own sources. Now only `validate_stop` failures for frames whose source is outside the prepared or declared directories become request errors, and `validate_debugger` always fails closed (`test_module_mismatch_on_any_program_frame_closes_the_session`, `test_only_caller_frames_outside_the_program_are_request_errors`).
+- **Should-fix:** native configs on macOS without `sysroot` lost the SDK once the stub was replaced by the real clang. They now use `xcrun --show-sdk-path`, which is recorded in the build commands (`test_macos_builds_without_a_sysroot_use_the_default_sdk`).
+- **Should-fix:** `main` detection counted `main` functions that are commented out or behind `#ifdef`. When more than one file matches the quick text check, the compiler's preprocessor decides (`test_mains_that_are_not_compiled_do_not_split_a_program`).
+- **Should-fix:** java-debug parses integers with `Long.decode`, so `010` meant 8. Integer literals must have no leading zero (`tests/unit/test_java_values.py`).
+- **Should-fix:** adapter setup failed when the output's parent did not exist yet, which is the documented `work/` path in a fresh clone (`test_setup_accepts_an_output_whose_parent_does_not_exist_yet`).
+- **Nit:** a source reached through an in-root link raised `KeyError` on attach. Sources are now keyed by their resolved path (`test_declared_sources_behind_an_in_root_link_attach`).
+- **Nit:** the attach-race error is reworded so it classifies as `PROVENANCE_CHANGED`.

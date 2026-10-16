@@ -163,6 +163,22 @@ def _xcrun_find(name):
     return found.stdout.strip() if found.returncode == 0 else ""
 
 
+@functools.lru_cache(maxsize=1)
+def default_sdk():
+    """The macOS SDK the xcrun stubs would pass; real compilers need it explicitly."""
+    if sys.platform != "darwin":
+        return None
+    found = subprocess.run(
+        ["/usr/bin/xcrun", "--show-sdk-path"],
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+    )
+    path = found.stdout.strip()
+    return path if found.returncode == 0 and path and Path(path).is_dir() else None
+
+
 def real_tool(path):
     """The executable a tool path really runs.
 
