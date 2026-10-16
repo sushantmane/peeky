@@ -47,6 +47,12 @@ An hourly thread heartbeat (`continue-peeky-mvp`) checks for available usage and
   - `peeky queries` adds canned questions such as `diff`, `set_effect` and `hits`.
   - `peeky sql --schema` is the manifest, and the new error code is `INVALID_QUERY`.
   - Two review rounds; every finding is fixed (worker probes stay stateless, read-only open with journal recovery, result bounds).
+- **#37 (`727ae42`):** docs say SQL over saved evidence is optional (owner asked "why do we need sql?").
+- **Whole-code review (2026-10-16), #38 (`9cd8df9`), #39 (`81d2346`), #40 (`85cc7f9`).** Four independent reviewers read the whole codebase. Every finding was fixed with a regression test that fails on the old code, and each PR had its own verification review. Dispositions are in [reviews/WHOLE_CODE_REVIEW_2026-10-16.md](reviews/WHOLE_CODE_REVIEW_2026-10-16.md).
+  - **Speed (the owner's "would Rust be faster?" question).** `scripts/profile_probe.py` showed Peeky's own CPU was repeated work, not the language. Every operation rehashed clang (125 MB) and the Java adapter bundle, using native SHA-256 code a Rust port would share. Digest and bundle caches fixed it: C++ probe 2.28 → 0.73 s, Java pause per hit 120 → 10 ms. Peeky's CPU is now about 0.5% of a Python probe and 10–15% of a compiled one, so ADR 0003 stands (see PERFORMANCE.md). About 0.5 s of each Python probe is a debugpy exit stall outside Peeky's control.
+  - **Correctness:** Java mutations must fit the declared type; C++ links libc++; C/C++ detection links one program; non-executable Java lines are `INVALID_BREAKPOINT`; caller frames outside the program are request errors.
+  - **Lifecycle:** a debugpy debuggee no longer survives transport failures; session names are reserved atomically and interrupted starts clean up; co-stopped lldb threads are served as hits; Python breakpoint conditions (which ran agent code) are refused; workers bypass HTTP proxies, close on SIGTERM and exit when idle.
+  - **Provenance:** Rust interventions are allowed only on locals the program keeps in memory (LLVM IR; `.dbg.spill` and inlined copies are refused). Every file a compiler read is declared (Rust) or hashed and rechecked (C/C++ headers outside the workspace).
 - **Dependabot:** #1, #3, #4 and #5 were merged. #2 (`upload-artifact` v7) was validated by dispatching `artifact.yml`, then fast-forwarded over SSH as `7308955`, because the API token lacks the `workflow` scope.
 
 **Closed issues:** #6, #7, #9, #10, #11, #12, #13.
