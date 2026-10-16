@@ -24,8 +24,9 @@ _RULES = (
     (
         r"^Evidence store ",
         "INVALID_REQUEST",
-        "The evidence store at the path in the message cannot be used; move it aside (a new "
-        "one is created) or pass --store PATH.",
+        "A missing or empty store means no probe was saved there yet: run a probe, or check "
+        "--store. An unusable store can be moved aside (a new one is created) or replaced "
+        "with --store PATH.",
         False,
     ),
     (

@@ -1114,7 +1114,8 @@ def _run_probe_process(root, request, adapter, cap):
         "from peeky.cli import main; sys.exit(main(sys.argv[1:]))"
     )
     command = [sys.executable, "-I", "-c", bootstrap, package_parent, "probe", str(root)]
-    command += ["--json", "--quiet"]
+    # The client records evidence; the worker host keeps none (stateless probes).
+    command += ["--json", "--quiet", "--no-save"]
     command += ["--at", f"{request.program}:{request.line}", "--hits", str(request.hits)]
     command += ["--timeout", str(request.timeout), "--until", request.until]
     command += ["--set-hit", str(request.set_hit)]

@@ -23,6 +23,8 @@ DEFAULT_ROWS = 200
 MAX_ROWS = 10000
 QUERY_SECONDS = 10
 MAX_VALUE_BYTES = 1_000_000
+MAX_RESULT_BYTES = 16_000_000
+MAX_COLUMNS = 100
 _NUMBER = re.compile(r"[-+]?(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][-+]?[0-9]+)?")
 _PARAM = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,31}")
 _INTEGER = re.compile(r"-?[0-9]{1,18}")
@@ -258,9 +260,26 @@ def _text(value):
 
 
 def _connect(path, timeout=10):
-    connection = sqlite3.connect(path, timeout=timeout, isolation_level=None)
-    connection.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, MAX_VALUE_BYTES)
-    return connection
+    return sqlite3.connect(path, timeout=timeout, isolation_level=None)
+
+
+def _check_version(connection, path, version):
+    if version == SCHEMA_VERSION:
+        return
+    if version == 0 and not connection.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()[0]:
+        raise ValueError(
+            f"Evidence store {path} is empty: no probe has been saved there yet. Run `peeky "
+            "probe` first, or check --store"
+        )
+    if version == 0:
+        raise ValueError(
+            f"Evidence store {path} is a SQLite database that Peeky did not create; pass "
+            "--store with another path"
+        )
+    raise ValueError(
+        f"Evidence store {path} has schema version {version}; this Peeky reads version "
+        f"{SCHEMA_VERSION}. Move it aside (a new one is created) or pass --store"
+    )
 
 
 def _ensure(path):
@@ -277,20 +296,15 @@ def _ensure(path):
             # Rechecked under the write lock: another process may have just created it.
             connection.execute("BEGIN IMMEDIATE")
             version = connection.execute("PRAGMA user_version").fetchone()[0]
-            if version == 0:
-                if connection.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()[0]:
-                    raise ValueError(
-                        f"Evidence store {path} is a SQLite database that Peeky did not create; "
-                        "pass --store with another path"
-                    )
+            if (
+                version == 0
+                and not connection.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()[0]
+            ):
                 for statement in _DDL:
                     connection.execute(statement)
                 connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
-            elif version != SCHEMA_VERSION:
-                raise ValueError(
-                    f"Evidence store {path} has schema version {version}; this Peeky reads "
-                    f"version {SCHEMA_VERSION}. Move it aside (a new one is created) or pass --store"
-                )
+            else:
+                _check_version(connection, path, version)
             connection.execute("COMMIT")
     except sqlite3.DatabaseError as exc:
         connection.close()
@@ -314,6 +328,10 @@ def record(path, result, *, language=None, target=None, label=None, worker=None)
     pauses = result.get("pauses_ms") or []
     seconds = result.get("seconds") or 0
     started = datetime.now(timezone.utc) - timedelta(seconds=seconds)
+    output, cut = result.get("output"), False
+    if isinstance(output, str) and len(encoded := output.encode()) > MAX_VALUE_BYTES:
+        # Stored values stay readable under the query connection's length limit.
+        output, cut = encoded[:MAX_VALUE_BYTES].decode(errors="ignore"), True
     run = {
         "started_at": started.isoformat(timespec="seconds"),
         "label": label,
@@ -335,8 +353,8 @@ def record(path, result, *, language=None, target=None, label=None, worker=None)
         "seconds": seconds,
         "max_pause_ms": max(pauses) if pauses else None,
         "optimized": result.get("optimized"),
-        "output": result.get("output"),
-        "output_truncated": result.get("output_truncated"),
+        "output": output,
+        "output_truncated": result.get("output_truncated") or cut,
         "output_complete": result.get("output_complete"),
         "warnings": json.dumps(result.get("warnings") or []),
         "artifact_manifest_id": result.get("artifact_manifest_id"),
@@ -440,23 +458,57 @@ def _cell(value):
     return value
 
 
+def _size(value):
+    return len(value) if isinstance(value, (str, bytes)) else 8
+
+
+def _open_read_only(path):
+    """A read-only connection to an existing store; never creates or changes anything."""
+    path = Path(path).absolute()
+    if path.is_symlink():
+        raise ValueError(f"Evidence store must not be a symlink: {path}")
+    if not path.is_file():
+        raise ValueError(
+            f"Evidence store {path} does not exist: no probe has been saved there yet. Run "
+            "`peeky probe` first, or check --store"
+        )
+    connection = None
+    try:
+        connection = sqlite3.connect(
+            f"file:{quote(str(path), safe='/')}?mode=ro",
+            uri=True,
+            timeout=10,
+            isolation_level=None,
+        )
+        _check_version(connection, path, connection.execute("PRAGMA user_version").fetchone()[0])
+    except sqlite3.Error as exc:
+        if connection is not None:
+            connection.close()
+        raise ValueError(
+            f"Evidence store {path} cannot be read ({exc}); check that it is a readable Peeky "
+            "store, or pass --store"
+        ) from exc
+    except BaseException:
+        if connection is not None:
+            connection.close()
+        raise
+    return connection
+
+
 def query(path, sql, params=None, *, limit=DEFAULT_ROWS, seconds=QUERY_SECONDS):
     """Run one read-only SQL statement over the store; rows are capped at ``limit``."""
     if not isinstance(sql, str) or not sql.strip():
         raise ValueError("Evidence query failed: the SQL is empty")
     if type(limit) is not int or not 1 <= limit <= MAX_ROWS:
         raise ValueError(f"Evidence query failed: --limit must be within 1..{MAX_ROWS}")
-    _ensure(path).close()
-    connection = sqlite3.connect(
-        f"file:{quote(str(Path(path).absolute()), safe='/')}?mode=ro",
-        uri=True,
-        timeout=10,
-        isolation_level=None,
-    )
+    connection = _open_read_only(path)
+    # Each value, each row's width and the whole result are bounded.
     connection.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, MAX_VALUE_BYTES)
+    connection.setlimit(sqlite3.SQLITE_LIMIT_COLUMN, MAX_COLUMNS)
     connection.set_authorizer(_authorize)
     deadline = time.monotonic() + seconds
     connection.set_progress_handler(lambda: time.monotonic() > deadline, 10000)
+    rows, size, cut = [], 0, None
     try:
         cursor = connection.execute(sql, params or {})
         if cursor.description is None:
@@ -468,7 +520,21 @@ def query(path, sql, params=None, *, limit=DEFAULT_ROWS, seconds=QUERY_SECONDS):
             name = description[0]
             seen[name] = seen.get(name, 0) + 1
             columns.append(name if seen[name] == 1 else f"{name}_{seen[name]}")
-        rows = cursor.fetchmany(limit + 1)
+        for row in cursor:
+            if len(rows) == limit:
+                cut = "rows"
+                break
+            weight = sum(map(_size, row))
+            if size + weight > MAX_RESULT_BYTES:
+                if not rows:
+                    raise ValueError(
+                        f"Evidence query failed: one row exceeds {MAX_RESULT_BYTES} bytes; select "
+                        "fewer or shorter columns (e.g. substr(output, 1, 2000))"
+                    )
+                cut = "size"
+                break
+            size += weight
+            rows.append(row)
     except sqlite3.Error as exc:
         if time.monotonic() > deadline:
             raise ValueError(
@@ -481,12 +547,15 @@ def query(path, sql, params=None, *, limit=DEFAULT_ROWS, seconds=QUERY_SECONDS):
         raise ValueError(f"Evidence query failed: {message}") from exc
     finally:
         connection.close()
-    return {
+    shaped = {
         "columns": columns,
-        "rows": [dict(zip(columns, map(_cell, row))) for row in rows[:limit]],
-        "row_count": min(len(rows), limit),
-        "truncated": len(rows) > limit,
+        "rows": [dict(zip(columns, map(_cell, row))) for row in rows],
+        "row_count": len(rows),
+        "truncated": cut is not None,
     }
+    if cut:
+        shaped["truncated_by"] = cut
+    return shaped
 
 
 def run_query(path, name, params=None, *, limit=DEFAULT_ROWS):
@@ -532,7 +601,9 @@ def schema(path):
             "and ATTACH are refused",
             f"At most --limit rows (default {DEFAULT_ROWS}, max {MAX_ROWS}); `truncated` "
             "says when more matched",
-            f"{QUERY_SECONDS} s per query; values up to {MAX_VALUE_BYTES} bytes",
+            f"{QUERY_SECONDS} s per query; values up to {MAX_VALUE_BYTES} bytes, at most "
+            f"{MAX_COLUMNS} columns, results up to {MAX_RESULT_BYTES} bytes "
+            "(`truncated_by` says which bound stopped it)",
             "Named parameters (:name) take --param name=value; integers are passed as numbers",
             f"The newest {MAX_RUNS} runs are kept",
             "This is evidence already captured; a new question about the program is a new probe",
@@ -556,7 +627,13 @@ def table(result, width=120):
     count = result["row_count"]
     lines.append(
         f"({count} row{'s' if count != 1 else ''}"
-        + ("; more matched: add WHERE/LIMIT or raise --limit)" if result["truncated"] else ")")
+        + (
+            f"; stopped at {MAX_RESULT_BYTES} bytes of results: select fewer or shorter columns)"
+            if result.get("truncated_by") == "size"
+            else "; more matched: add WHERE/LIMIT or raise --limit)"
+            if result["truncated"]
+            else ")"
+        )
     )
     return "\n".join(lines)
 

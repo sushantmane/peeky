@@ -925,6 +925,14 @@ def _probe_remote(args, root, request):
         expect_sha256=expected,
     )
     result["worker"] = args.worker
+    # Evidence is recorded here, on the client; anything the worker reports about its own
+    # store would point at runs that do not exist locally.
+    result.pop("evidence", None)
+    result["warnings"] = [
+        warning
+        for warning in result.get("warnings") or []
+        if not warning.startswith("Evidence was not saved")
+    ]
     ran = bool(result.get("hits") or result.get("rows") or result.get("output"))
     try:
         # Defense in depth: also compare what the worker reports having run.

@@ -93,7 +93,7 @@ peeky queries diff --param a=3 --param b=4   # first rows = first divergence bet
 peeky sql --schema                  # tables, columns, views, canned queries, examples
 ```
 
-`captures` has one row per selector, hit and phase, with `num` holding numeric values for comparisons. `runs` has the inputs, interventions, outcome, program output and build identity, and the `evidence` view joins them. Queries are read-only (one `SELECT`; writes, `ATTACH` and settings are refused) and bounded (`--limit` rows, 10 s). A new question about the running program is a new probe. Opt out per probe with `--no-save`; use `--store PATH` for a separate database.
+`captures` has one row per selector, hit and phase, with `num` holding numeric values for comparisons. `runs` has the inputs, interventions, outcome, program output and build identity, and the `evidence` view joins them. Queries are read-only (one `SELECT`; writes, `ATTACH` and settings are refused) and bounded (`--limit` rows, 10 s, 16 MB per result). A new question about the running program is a new probe. Opt out per probe with `--no-save`; use `--store PATH` for a separate database.
 
 ## Separate worker and client
 

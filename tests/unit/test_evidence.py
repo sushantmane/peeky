@@ -118,6 +118,7 @@ def test_queries_are_read_only_single_selects_and_classified(store, sql):
 
 
 def test_schema_introspection_is_allowed(store):
+    evidence.record(store, result())
     columns = evidence.query(store, "SELECT name FROM pragma_table_info('captures')")["rows"]
     assert [row["name"] for row in columns][:3] == ["run_id", "hit", "phase"]
     names = evidence.query(store, "SELECT name FROM sqlite_master WHERE type = 'view'")["rows"]
@@ -146,6 +147,7 @@ def test_queries_are_bounded_in_time_size_and_rows(store):
 
 
 def test_results_are_strict_json_with_unique_columns(store):
+    evidence.record(store, result())
     shaped = evidence.query(store, "SELECT 1 AS a, 2 AS a, 1e999 AS big, x'00ff' AS raw")
     assert shaped["columns"] == ["a", "a_2", "big", "raw"]
     assert shaped["rows"] == [{"a": 1, "a_2": 2, "big": "inf", "raw": "x'00ff'"}]
@@ -207,6 +209,7 @@ def test_concurrent_probes_record_into_a_new_store(store):
 
 
 def test_canned_queries_answer_comparisons(store):
+    evidence._ensure(store).close()
     for name in evidence.QUERIES:
         params = {"selector": "start"} if name == "values" else {}
         assert evidence.run_query(store, name, params)["row_count"] == 0
@@ -276,6 +279,7 @@ def test_canned_query_parameters_are_checked(store):
     for bad in ("run", "1x=2", "a-b=1"):
         with pytest.raises(ValueError, match="--param"):
             evidence.parse_params([bad])
+    evidence._ensure(store).close()
     with pytest.raises(ValueError, match="binding parameter :run"):
         evidence.query(store, "SELECT * FROM runs WHERE run_id = :run")
 
@@ -304,3 +308,62 @@ def test_schema_manifest_lists_every_table_view_and_query(store):
     assert set(manifest["queries"]) == set(evidence.QUERIES)
     text = evidence.schema_text(manifest)
     assert "table captures" in text and "peeky queries" in text
+
+
+def test_queries_never_create_or_write_the_store(store):
+    for name in ("run", "runs"):
+        with pytest.raises(ValueError, match="does not exist: no probe has been saved") as caught:
+            evidence.run_query(store, name)
+        payload = classify(caught.value, session_closed=False)
+        assert payload["code"] == "INVALID_REQUEST" and "--store" in payload["hint"]
+    assert not store.parent.exists()
+    store.parent.mkdir()
+    store.touch()
+    with pytest.raises(ValueError, match="is empty: no probe has been saved"):
+        evidence.query(store, "SELECT 1")
+    assert store.read_bytes() == b""
+    store.unlink()
+    evidence.record(store, result())
+    store.chmod(0o444)
+    store.parent.chmod(0o500)
+    try:
+        assert evidence.query(store, "SELECT COUNT(*) AS n FROM runs")["rows"] == [{"n": 1}]
+    finally:
+        store.parent.chmod(0o700)
+        store.chmod(0o600)
+    store.chmod(0o000)
+    try:
+        if not os.access(store, os.R_OK):  # root can read anything
+            with pytest.raises(ValueError, match="^Evidence store .* cannot be read"):
+                evidence.query(store, "SELECT 1")
+    finally:
+        store.chmod(0o600)
+
+
+def test_large_program_output_is_kept_within_the_value_bound(store):
+    big = result(output="x" * (evidence.MAX_VALUE_BYTES + 5000))
+    big["output_truncated"] = False
+    evidence.record(store, big)
+    run = evidence.query(store, "SELECT length(output) AS n, output_truncated FROM runs")["rows"]
+    assert run == [{"n": evidence.MAX_VALUE_BYTES, "output_truncated": 1}]
+    assert len(evidence.query(store, "SELECT output FROM runs")["rows"][0]["output"]) == (
+        evidence.MAX_VALUE_BYTES
+    )
+
+
+def test_the_whole_result_and_its_width_are_bounded(store, monkeypatch):
+    evidence.record(store, result())
+    monkeypatch.setattr(evidence, "MAX_RESULT_BYTES", 2500)
+    wide = (
+        "WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c LIMIT 50) "
+        "SELECT x, printf('%.*c', 1000, 'y') AS pad FROM c"
+    )
+    shaped = evidence.query(store, wide, limit=50)
+    assert shaped["row_count"] == 2 and shaped["truncated_by"] == "size"
+    assert "stopped at 2500 bytes" in evidence.table(shaped)
+    assert evidence.query(store, "SELECT * FROM captures", limit=1)["truncated_by"] == "rows"
+    with pytest.raises(ValueError, match="one row exceeds 2500 bytes"):
+        evidence.query(store, "SELECT printf('%.*c', 3000, 'y')")
+    columns = ", ".join(f"{i} AS c{i}" for i in range(evidence.MAX_COLUMNS + 1))
+    with pytest.raises(ValueError, match="too many columns"):
+        evidence.query(store, f"SELECT {columns}")
