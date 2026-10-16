@@ -23,6 +23,9 @@ DEFAULT_ROWS = 200
 MAX_ROWS = 10000
 QUERY_SECONDS = 10
 MAX_VALUE_BYTES = 1_000_000
+# Stored program output stays well below MAX_VALUE_BYTES, so sorting or de-duplicating
+# rows that carry it never builds a record over the query length limit.
+MAX_OUTPUT_BYTES = 256_000
 MAX_RESULT_BYTES = 16_000_000
 MAX_COLUMNS = 100
 _NUMBER = re.compile(r"[-+]?(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][-+]?[0-9]+)?")
@@ -329,9 +332,8 @@ def record(path, result, *, language=None, target=None, label=None, worker=None)
     seconds = result.get("seconds") or 0
     started = datetime.now(timezone.utc) - timedelta(seconds=seconds)
     output, cut = result.get("output"), False
-    if isinstance(output, str) and len(encoded := output.encode()) > MAX_VALUE_BYTES:
-        # Stored values stay readable under the query connection's length limit.
-        output, cut = encoded[:MAX_VALUE_BYTES].decode(errors="ignore"), True
+    if isinstance(output, str) and len(encoded := output.encode()) > MAX_OUTPUT_BYTES:
+        output, cut = encoded[:MAX_OUTPUT_BYTES].decode(errors="ignore"), True
     run = {
         "started_at": started.isoformat(timespec="seconds"),
         "label": label,
@@ -459,28 +461,57 @@ def _cell(value):
 
 
 def _size(value):
-    return len(value) if isinstance(value, (str, bytes)) else 8
+    # As emitted: --json escapes non-ASCII text and blobs become hex.
+    return len(json.dumps(_cell(value)))
+
+
+def _read_only(path):
+    return sqlite3.connect(
+        f"file:{quote(str(path), safe='/')}?mode=ro", uri=True, timeout=10, isolation_level=None
+    )
 
 
 def _open_read_only(path):
     """A read-only connection to an existing store; never creates or changes anything."""
     path = Path(path).absolute()
-    if path.is_symlink():
-        raise ValueError(f"Evidence store must not be a symlink: {path}")
-    if not path.is_file():
+    try:
+        if path.is_symlink():
+            raise ValueError(f"Evidence store must not be a symlink: {path}")
+        exists = path.is_file()
+    except OSError as exc:
+        raise ValueError(
+            f"Evidence store {path} cannot be read ({exc}); check the directory's permissions, "
+            "or pass --store"
+        ) from exc
+    if not exists:
         raise ValueError(
             f"Evidence store {path} does not exist: no probe has been saved there yet. Run "
             "`peeky probe` first, or check --store"
         )
     connection = None
     try:
-        connection = sqlite3.connect(
-            f"file:{quote(str(path), safe='/')}?mode=ro",
-            uri=True,
-            timeout=10,
-            isolation_level=None,
-        )
-        _check_version(connection, path, connection.execute("PRAGMA user_version").fetchone()[0])
+        connection = _read_only(path)
+        try:
+            version = connection.execute("PRAGMA user_version").fetchone()[0]
+        except sqlite3.Error as exc:
+            if getattr(exc, "sqlite_errorname", "") != "SQLITE_READONLY_ROLLBACK":
+                raise
+            # A save was interrupted (process killed) and left a hot journal. Restoring the
+            # last committed state needs a writable connection; mode=rw never creates files.
+            connection.close()
+            connection = None
+            if not os.access(path, os.W_OK):
+                raise
+            recovery = sqlite3.connect(
+                f"file:{quote(str(path), safe='/')}?mode=rw", uri=True, timeout=10
+            )
+            try:
+                recovery.execute("PRAGMA user_version").fetchone()
+            finally:
+                recovery.close()
+            connection = _read_only(path)
+            version = connection.execute("PRAGMA user_version").fetchone()[0]
+        _check_version(connection, path, version)
     except sqlite3.Error as exc:
         if connection is not None:
             connection.close()
@@ -602,8 +633,10 @@ def schema(path):
             f"At most --limit rows (default {DEFAULT_ROWS}, max {MAX_ROWS}); `truncated` "
             "says when more matched",
             f"{QUERY_SECONDS} s per query; values up to {MAX_VALUE_BYTES} bytes, at most "
-            f"{MAX_COLUMNS} columns, results up to {MAX_RESULT_BYTES} bytes "
+            f"{MAX_COLUMNS} columns, results up to {MAX_RESULT_BYTES} bytes of JSON "
             "(`truncated_by` says which bound stopped it)",
+            f"Program output is stored up to {MAX_OUTPUT_BYTES} bytes (output_truncated = 1 "
+            "when cut)",
             "Named parameters (:name) take --param name=value; integers are passed as numbers",
             f"The newest {MAX_RUNS} runs are kept",
             "This is evidence already captured; a new question about the program is a new probe",

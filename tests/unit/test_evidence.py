@@ -3,6 +3,8 @@
 import json
 import os
 import sqlite3
+import subprocess
+import sys
 import threading
 import time
 
@@ -340,15 +342,22 @@ def test_queries_never_create_or_write_the_store(store):
         store.chmod(0o600)
 
 
-def test_large_program_output_is_kept_within_the_value_bound(store):
-    big = result(output="x" * (evidence.MAX_VALUE_BYTES + 5000))
+def test_large_program_output_is_stored_with_room_to_sort_and_group(store):
+    big = result(output="x" * 2_000_000)
     big["output_truncated"] = False
     evidence.record(store, big)
+    evidence.record(store, result(output="y" * 2_000_000))
     run = evidence.query(store, "SELECT length(output) AS n, output_truncated FROM runs")["rows"]
-    assert run == [{"n": evidence.MAX_VALUE_BYTES, "output_truncated": 1}]
-    assert len(evidence.query(store, "SELECT output FROM runs")["rows"][0]["output"]) == (
-        evidence.MAX_VALUE_BYTES
-    )
+    assert run[0] == {"n": evidence.MAX_OUTPUT_BYTES, "output_truncated": 1}
+    for sql in (
+        "SELECT run_id, output FROM runs ORDER BY seconds",
+        "SELECT * FROM runs ORDER BY started_at DESC",
+        "SELECT DISTINCT output FROM runs",
+        "SELECT output, COUNT(*) FROM runs GROUP BY output",
+        "SELECT output, output, output FROM runs ORDER BY label",
+    ):
+        assert evidence.query(store, sql)["row_count"] == 2, sql
+    assert evidence.run_query(store, "outputs")["row_count"] == 2
 
 
 def test_the_whole_result_and_its_width_are_bounded(store, monkeypatch):
@@ -364,6 +373,40 @@ def test_the_whole_result_and_its_width_are_bounded(store, monkeypatch):
     assert evidence.query(store, "SELECT * FROM captures", limit=1)["truncated_by"] == "rows"
     with pytest.raises(ValueError, match="one row exceeds 2500 bytes"):
         evidence.query(store, "SELECT printf('%.*c', 3000, 'y')")
+    # Counted as emitted JSON: 250 characters here are 3000 escaped bytes.
+    with pytest.raises(ValueError, match="one row exceeds 2500 bytes"):
+        evidence.query(store, "SELECT replace(printf('%.*c', 250, 'x'), 'x', '\U0001f600')")
+    assert evidence.query(store, "SELECT x'00ff' AS raw")["rows"] == [{"raw": "x'00ff'"}]
     columns = ", ".join(f"{i} AS c{i}" for i in range(evidence.MAX_COLUMNS + 1))
     with pytest.raises(ValueError, match="too many columns"):
         evidence.query(store, f"SELECT {columns}")
+
+
+def test_a_save_killed_midway_is_recovered_by_the_next_query(store):
+    evidence.record(store, result())
+    killer = (
+        "import os, sqlite3, sys\n"
+        "c = sqlite3.connect(sys.argv[1], isolation_level=None)\n"
+        "c.execute('PRAGMA cache_size = 1')\n"
+        "c.execute('BEGIN IMMEDIATE')\n"
+        "for i in range(3000):\n"
+        "    c.execute(\"INSERT INTO runs (started_at, output) VALUES ('x', ?)\", ('z' * 500,))\n"
+        "os._exit(0)\n"
+    )
+    subprocess.run([sys.executable, "-c", killer, str(store)], check=True)
+    assert store.with_name(store.name + "-journal").stat().st_size > 0
+    assert evidence.query(store, "SELECT COUNT(*) AS n FROM runs")["rows"] == [{"n": 1}]
+    assert evidence.record(store, result()) == 2
+
+
+def test_an_unsearchable_store_directory_is_a_store_error(store):
+    evidence.record(store, result())
+    store.parent.chmod(0o000)
+    try:
+        if os.access(store.parent, os.X_OK):  # root can search anything
+            pytest.skip("running as root")
+        with pytest.raises(ValueError, match="^Evidence store .* cannot be read") as caught:
+            evidence.query(store, "SELECT 1")
+        assert classify(caught.value, session_closed=False)["code"] == "INVALID_REQUEST"
+    finally:
+        store.parent.chmod(0o700)
