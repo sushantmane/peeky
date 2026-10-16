@@ -8,6 +8,8 @@ Peeky is a standalone debugger tool. Your agent (Copilot, Claude, Codex) or you 
 pip install -e .
 peeky describe examples/rust                       # what can I ask? (lines, views, rules)
 peeky probe examples/rust --at 36 --capture start,some,request.page --set start=0
+peeky sql "SELECT hit, selector, value FROM last_run"   # SQL over every saved probe
+peeky queries diff                                  # canned: where two runs diverge
 peeky session start examples/pagination_bug.py --at 8 && peeky session inspect
 peeky verify examples/pagination_bug.py --check examples/verify_pagination.py \
   --old 'page * page_size' --new '(page - 1) * page_size'
@@ -78,6 +80,20 @@ peeky-agent --model YOUR_MODEL --output runs/first-investigation
 ```
 
 The bundled pagination program uses one-based page numbers incorrectly. The agent receives the bug report and source, chooses its own breakpoint and runtime intervention, and proposes a correction. The output directory contains the decision/evidence report, candidate source, and a diff after verification. Original source and verifier files are retained. A live run consumes model usage and sends selected source and runtime evidence to that model. PR CI uses deterministic model fixtures and never calls a paid model.
+
+## Ask follow-up questions with SQL
+
+Every `peeky probe` is saved with a `run_id` in a local SQLite evidence store (`$PEEKY_STATE_DIR/evidence/evidence.db`, newest 500 runs). Capture once, then ask as many questions as you like without rerunning the program, as heappy does for heap dumps:
+
+```sh
+peeky probe app/ --at lib/parse.py:42 --run main.py --capture n,acc --hits 50 --label input=a
+peeky sql "SELECT hit, value FROM last_run WHERE selector = 'acc' AND num > 100"
+peeky queries                       # canned questions: runs, run, hits, compare, diff, outputs, set_effect, values, ...
+peeky queries diff --param a=3 --param b=4   # first rows = first divergence between two runs
+peeky sql --schema                  # tables, columns, views, canned queries, examples
+```
+
+`captures` has one row per selector, hit and phase, with `num` holding numeric values for comparisons. `runs` has the inputs, interventions, outcome, program output and build identity, and the `evidence` view joins them. Queries are read-only (one `SELECT`; writes, `ATTACH` and settings are refused) and bounded (`--limit` rows, 10 s). A new question about the running program is a new probe. Opt out per probe with `--no-save`; use `--store PATH` for a separate database.
 
 ## Separate worker and client
 

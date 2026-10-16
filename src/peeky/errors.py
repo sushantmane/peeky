@@ -15,6 +15,20 @@ PROTOCOL_VERSION = 1
 # (pattern on the message, code, hint, retryable). First match wins.
 _RULES = (
     (
+        r"^Evidence query failed",
+        "INVALID_QUERY",
+        "Fix the SQL or the --param values; `peeky sql --schema` lists the tables, columns and "
+        "canned queries. Queries are one read-only SELECT over captured evidence.",
+        False,
+    ),
+    (
+        r"^Evidence store ",
+        "INVALID_REQUEST",
+        "The evidence store at the path in the message cannot be used; move it aside (a new "
+        "one is created) or pass --store PATH.",
+        False,
+    ),
+    (
         r"is unreachable \(.*the request was not sent",
         "UNREACHABLE",
         "No request reached the worker. Restore the worker or SSH tunnel and retry; the worker "
