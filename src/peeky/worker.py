@@ -445,8 +445,17 @@ class DebugWorker:
             program = self.path(args["program"])
             self.program = program
             entry = None
-            if args.get("args") and not isinstance(self.adapter, PythonAdapter):
-                raise ValueError("Program arguments (--arg) are supported only for Python targets")
+            if args.get("args"):
+                # Launched programs take per-run arguments; an attached JVM is already running.
+                if not getattr(self.adapter, "accepts_arguments", False) and not isinstance(
+                    self.adapter, PythonAdapter
+                ):
+                    raise ValueError(
+                        "Program arguments (--arg) need a launched program; this target attaches "
+                        "to one that is already running"
+                    )
+                if validate_arguments := getattr(self.adapter, "validate_arguments", None):
+                    validate_arguments(tuple(args["args"]))
             if args.get("entry") is not None:
                 # Python only: run one script while breaking in another module it imports.
                 if not isinstance(self.adapter, PythonAdapter):

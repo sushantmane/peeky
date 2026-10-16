@@ -17,7 +17,7 @@ peeky verify examples/pagination_bug.py --check examples/verify_pagination.py \
 
 Java services and Gradle tests (for example Venice end-to-end tests): attach to a `--debug-jvm` JVM; see [docs/JAVA_ATTACH.md](docs/JAVA_ATTACH.md).
 
-Agents: read [docs/AGENT_GUIDE.md](docs/AGENT_GUIDE.md) or install [skills/peeky-debug](skills/peeky-debug/SKILL.md). Design: [ADR 0005](docs/adr/0005-tool-not-agent.md).
+People: start with the [cookbook](docs/COOKBOOK.md), copy-paste recipes with real output. Agents: read [docs/AGENT_GUIDE.md](docs/AGENT_GUIDE.md) or install [skills/peeky-debug](skills/peeky-debug/SKILL.md). Design: [ADR 0005](docs/adr/0005-tool-not-agent.md).
 
 Peeky gives a coding agent a controlled debugging loop: choose a breakpoint, inspect live state, test a hypothesis by changing a variable, and validate a candidate fix in a fresh process. Runtime experiments produce evidence; a separate verifier decides whether the source change passes the supplied checks.
 
@@ -55,23 +55,22 @@ Python 3.11+ is required. Run commands from the repository root.
 Ask one question with one command. Peeky builds fresh, stops at the line, captures values, optionally changes locals, runs to completion, prints a table and cleans up. No session to manage:
 
 ```sh
-peeky-probe --root examples --at pagination_bug.py:8 --capture start,page,items[1] --set start=0
+peeky probe examples/pagination_bug.py --at 8 --capture start,items[1] --set start=0
 ```
 
 ```text
-hit  phase      line  selector  type  value
-1    observed   8     start     int   3
-1    observed   8     page      int   1
-1    observed   8     items[1]  int   20
-1    after-set  8     start     int   0
-...
+hit  phase      line  function  selector  type  value
+1    observed   8     get_page  start     int   3
+1    observed   8     get_page  items[1]  int   20
+1    after-set  8     get_page  start     int   0
+1    after-set  8     get_page  items[1]  int   20
 set start: 3 -> 0
-status: completed  hits: 1  seconds: 1.0
+status: completed  hits: 1  seconds: 1.004  max pause: 10.0 ms
 output:
   PAGE: [10, 20, 30]
 ```
 
-The same works for compiled targets with their trusted configuration (`--rust-config`, `--native-config`, `--java-config`). Rust `Option<i32>` values print as `Some(3)`/`None`. Add `--json` for the full result, `--hits N` to capture repeated stops. Remote agents send the same request as one HTTP call: `Client(url, token).probe("pagination_bug.py:8", ["start"], {"start": "0"})`. Selectors are dotted paths (`request.page`, `args[0]`), never evaluated expressions. Interventions are evidence about that run, not a verified fix. Interactive sessions below remain available for step-by-step exploration. See [ADR 0004](docs/adr/0004-stateless-probes.md).
+The same command works for C, C++, Rust crates and Java (`--config`). Add `--hits N` to capture repeated stops, `--arg` to pass program arguments, and `--json` for the full result. Remote agents send the same request as one HTTP call: `Client(url, token).probe("pagination_bug.py:8", ["start"], {"start": "0"})`. Selectors are dotted paths (`request.page`, `args[0]`), never evaluated expressions. Interventions are evidence about that run, not a verified fix. More recipes are in the [cookbook](docs/COOKBOOK.md). See [ADR 0004](docs/adr/0004-stateless-probes.md).
 
 For a live investigation, install and sign in to Codex CLI, then choose a model available to your CLI account:
 

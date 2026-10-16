@@ -147,3 +147,13 @@ def test_locals_of_always_inlined_functions_cannot_be_changed(crate, capsys):
     code, result = probe(capsys, crate, "--at", at, "--capture", "marker", "--set", "marker=100")
     assert code == 1 and result["error"]["code"] == "MUTATION_REJECTED", result
     assert not result["interventions"]
+
+
+@pytest.mark.timeout(240)
+def test_rust_programs_take_per_run_arguments(crate, capsys):
+    code, result = probe(
+        capsys, crate, "--at", "36", "--capture", "request.page,start", "--arg", "2"
+    )
+    assert code == 0, result.get("error")
+    assert [row["value"] for row in result["rows"]] == ["2", "6"]
+    assert "PAGE:[70, 80]" in result["output"]

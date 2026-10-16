@@ -410,7 +410,13 @@ def _default_program(program, data, command):
 def describe(args):
     root, program, _, language, data = resolve(args.target, args.at, args.config)
     program = _confined(root, _default_program(program, data, "describe"))
-    run = " [--run <script.py>] [--arg A ...]" if language == "python" else ""
+    run = (
+        " [--run <script.py>] [--arg A ...]"
+        if language == "python"
+        else ""
+        if language == "java-attach"
+        else " [--arg A ...]"
+    )
     manifest = {
         "peeky": "describe",
         "language": language,
