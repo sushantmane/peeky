@@ -29,6 +29,7 @@ Every command takes `--json`: stdout is then one JSON object (progress goes to s
 
 ### Reading probe results
 
+- A row with `unavailable: true` has no value at that line (optimized out or not yet live); never treat its error text as a value. In optimized builds, even values that are shown can be stale.
 - Each row has a `function`, which tells a function body apart from a generator or lambda frame on the same line.
 - `output_complete: false` means the probe ended (`--until hits`) before the program did, so `output` holds only what was printed so far.
 - `by_hit` groups values per hit: `{hit, line, observed: {selector: value}, after-set: {...}}`. A selector that failed shows `{"error": ...}`. `rows` holds the same data with one entry per hit, phase and selector. `phase` is `observed`, or `after-set` (the value after your intervention). `line` is where the program actually stopped.

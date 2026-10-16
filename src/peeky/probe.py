@@ -17,7 +17,13 @@ import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from peeky.worker import DebugWorker, load_java_target, load_native_target, load_rust_target
+from peeky.worker import (
+    DebugWorker,
+    load_java_target,
+    load_native_target,
+    load_rust_target,
+    optimization_level,
+)
 
 MAX_SELECTORS = 32
 MAX_SETS = 8
@@ -250,7 +256,20 @@ def _capture(worker, stop, selectors, hit, phase):
         except ValueError as exc:
             row["error"] = str(exc)
         else:
-            row.update(value=variable["value"], type=variable.get("type"))
+            if variable.get("unavailable"):
+                # A placeholder such as "<error: variable not available>" is not a value.
+                reason = variable.get("reason", "unavailable")
+                row.update(
+                    type=variable.get("type"),
+                    unavailable=True,
+                    error=(
+                        f"no value here: optimized out or not live (debugger: {reason})"
+                        if snapshot.get("optimized")
+                        else f"the debugger could not read a value (debugger: {reason})"
+                    ),
+                )
+            else:
+                row.update(value=variable["value"], type=variable.get("type"))
             if "view" in variable:
                 row["view"] = variable["view"]
         rows.append(row)
@@ -434,6 +453,18 @@ def run_probe(root, probe, *, adapter=None, progress=None):
         result.update(status="failed", error=classify(exc, session_closed=True))
     finally:
         worker.close()
+    if level := optimization_level(result.get("target_identity")):
+        result["optimized"] = level
+        warnings.append(
+            f"Optimized build ({level}): values that are shown can still be stale or wrong "
+            "(the debugger cannot tell). Confirm with an unoptimized build before trusting them."
+        )
+    if any(row.get("unavailable") for row in rows):
+        warnings.append(
+            "Some locals have no value at this line (optimized out or not live)."
+            if result.get("optimized")
+            else "Some selectors could not be read by the debugger; see each row's reason."
+        )
     if changes and probe.hits > 1:
         warnings.append(
             f"Interventions are applied once, at hit {probe.set_hit}; other hits observe "

@@ -35,3 +35,7 @@ Local Apple LLVM 21 measurements (2026-10-14, Rust 1.96.0): one application unit
 Real conformance (`tests/rust/test_rust_worker.py`) covers HTTP launch, `Some(3)`/`None`, struct expansion, fieldless enum, rejected Option/out-of-range/expression mutations, `start=0` producing the corrected first page, report, cleanup, source drift failing closed, and compile failure/frozen-test edits leaving no workspace.
 
 Compiled Cargo tests and independent candidate verification are described in [RUST_AGENT.md](RUST_AGENT.md). Not yet delivered: separate-host use, live-model Rust evaluation, and any Option payload other than i32. Raw probe traversal remains engineering evidence only.
+
+## Optimized builds (opt-in)
+
+`opt_level` (`"0"` by default, or `"1"`/`"2"`) sets `CARGO_PROFILE_DEV_OPT_LEVEL`, which is recorded in the target identity's profile. Locals with no value are reported as `unavailable`. Every result carries `optimized` and a warning, because optimized code can show wrong values that LLDB doesn't flag. In a real run, `start` read `1` at `opt-level 2` versus `3` unoptimized. See NATIVE.md.

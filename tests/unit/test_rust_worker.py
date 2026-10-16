@@ -436,7 +436,9 @@ def test_rust_checks_pinned_versions_before_compiling(tmp_path):
     assert not marker.exists()
 
 
-def test_rust_rechecks_cargo_ancestry_before_each_cargo_command(tmp_path):
+def test_rust_rechecks_cargo_ancestry_before_each_cargo_command(
+    tmp_path, tmp_path_factory, monkeypatch
+):
     root = example(tmp_path)
     plant = (
         "parent = pathlib.Path.cwd().parent / '.cargo'\n"
@@ -444,11 +446,12 @@ def test_rust_rechecks_cargo_ancestry_before_each_cargo_command(tmp_path):
         "(parent / 'config.toml').write_text('[build]\\nrustc-wrapper = \"/x\"\\n')\n"
     )
     config, marker = scripted_toolchain(tmp_path, cargo_build=plant)
-    before = set(Path(tempfile.gettempdir()).glob("peeky-rust-*"))
+    private = tmp_path_factory.mktemp("rust-tmp")
+    monkeypatch.setattr(tempfile, "tempdir", str(private))
     with pytest.raises(ValueError, match="Ambient Cargo configuration"):
         RustTarget(**config).prepare(root / "src/main.rs", root)
     assert marker.read_text() == "build\n"
-    assert set(Path(tempfile.gettempdir()).glob("peeky-rust-*")) == before
+    assert list(private.glob("peeky-rust-*")) == []
 
 
 def cargo_message(level, file_name=None, primary=True):

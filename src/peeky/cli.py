@@ -394,6 +394,13 @@ def describe(args):
             "java": "numeric/boolean root locals",
             "java-attach": "numeric/boolean root locals (attached JVM; no edit verification)",
         }[language]
+        from peeky.probe import optimization_level
+
+        if level := optimization_level(manifest.get("target_identity")):
+            manifest["optimized"] = level
+            manifest["mutable_types"] = f"none: changes are refused in optimized builds ({level})"
+            # Enum views are opaque in optimized builds; none is qualified.
+            manifest.pop("value_views", None)
     budget = _max_pause(None, language)
     manifest["timing"] = {
         "probe_pause": "milliseconds per hit; safe for programs with timeouts",
@@ -424,6 +431,13 @@ def _describe_text(manifest):
             continue
         where = f" (lines {scope['lines'][0]}-{scope['lines'][1]})" if scope["lines"] else ""
         lines.append(f"names in {scope['scope']}{where}: {', '.join(scope['names']) or '-'}")
+    from peeky.probe import optimization_level
+
+    if level := optimization_level(manifest.get("target_identity")):
+        lines.append(
+            f"warning: optimized build ({level}); locals may be unavailable, stale or wrong. "
+            "Prefer an unoptimized build for debugging."
+        )
     lines.append(f"mutable: {manifest['mutable_types']}")
     lines.extend(f"{name}: {usage}" for name, usage in manifest["commands"].items())
     lines.append(f"timing: {manifest['timing']['advice']}")
@@ -541,6 +555,12 @@ def _wait(record, client, timeout):
     return state
 
 
+_OPTIMIZED_NOTE = (
+    "warning: optimized build ({}): shown values can be stale or wrong and locals cannot be "
+    "changed; prefer an unoptimized build"
+)
+
+
 def _state_text(state):
     where = f" at {state['location']}" if state.get("location") else ""
     hint = ""
@@ -552,6 +572,8 @@ def _state_text(state):
     if reason and reason != "breakpoint":
         where += f" [reason: {reason}; not auto-resumed, inspect it or `session report`]"
     text = f"state: {state['state']}{where}{_pause_text(state)}{hint}"
+    if state.get("optimized"):
+        text += f"\n{_OPTIMIZED_NOTE.format(state['optimized'])}"
     if state.get("exit_inferred"):
         text += "\nnote: the debugger never reported the exit; Peeky inferred it (no threads left)"
     if state.get("auto_resumed"):
@@ -579,10 +601,15 @@ def _variables_text(snapshot):
         lines.append(f"[{scope['name']}]")
         for variable in scope["variables"]:
             more = " (expand with `get`)" if variable.get("variablesReference") else ""
+            if variable.get("unavailable"):
+                more = f" (no readable value: {variable.get('reason')})"
             view = f"  [{variable['view']}]" if variable.get("view") else ""
             lines.append(
-                f"  {variable['name']}: {variable.get('type', '')} = {variable['value']}{view}{more}"
+                f"  {variable['name']}: {variable.get('type', '')} = "
+                f"{'<no value>' if variable.get('unavailable') else variable['value']}{view}{more}"
             )
+    if snapshot.get("optimized"):
+        lines.append(_OPTIMIZED_NOTE.format(snapshot["optimized"]))
     if snapshot.get("mutation_blocked"):
         lines.append(f"note: {snapshot['mutation_blocked']}")
     return "\n".join(lines)
@@ -606,12 +633,18 @@ def session(args):
         _emit(snapshot, args.json, _variables_text)
     elif args.action == "get":
         rows = _capture(_Remote(client), _stop(record), tuple(args.selectors), 0, "observed")
+        if level := record.get("optimized"):
+            rows = [{**row, "optimized": level} for row in rows]
         _emit(
             rows,
             args.json,
             lambda rows: "\n".join(
-                f"{r['selector']}: {r.get('type', '')} = {r.get('value', '<' + r.get('error', '') + '>')}"
-                for r in rows
+                [
+                    f"{r['selector']}: {r.get('type', '')} = "
+                    + str(r.get("value", "<" + r.get("error", "") + ">"))
+                    for r in rows
+                ]
+                + ([_OPTIMIZED_NOTE.format(record["optimized"])] if record.get("optimized") else [])
             ),
         )
     elif args.action == "set":
@@ -729,8 +762,12 @@ def _start(args):
         os.killpg(process.pid, signal.SIGTERM)
         raise
     record.update(session_id=launch["session_id"], state="running", stop_id=None)
+    if launch.get("optimized"):
+        record["optimized"] = launch["optimized"]
     _save(record)
     state = _wait(record, client, args.timeout)
+    if record.get("optimized"):
+        state["optimized"] = record["optimized"]
     _emit(
         {"session": args.name, "language": language, **state},
         args.json,

@@ -33,7 +33,7 @@ from peeky.build import (
 from peeky.compiled_verification import CompiledVerification
 from peeky.native import NativeSession, _path_name, module_identity
 from peeky.rust_manifest import assert_cargo_ancestry_clear, validate_cargo_inputs
-from peeky.rust_symbols import active_variant, application_symbols
+from peeky.rust_symbols import UNVERIFIED, active_variant, application_symbols
 
 DEPS = "target/debug/deps"
 TEST_TIMEOUT_S = 30
@@ -229,8 +229,12 @@ class RustTarget:
     sysroot: str | None = None
     arguments: tuple[str, ...] = ()
     rust_version: str = "1.96.0"
+    # Opt-in: optimized code can report locals as unavailable or show stale values.
+    opt_level: str = "0"
 
     def __post_init__(self):
+        if self.opt_level not in ("0", "1", "2"):
+            raise ValueError("Rust opt_level must be 0, 1 or 2")
         for field in (self.sources, self.tests):
             if not isinstance(field, tuple) or not field:
                 raise ValueError("Rust sources and tests must be nonempty immutable tuples")
@@ -289,7 +293,7 @@ class RustTarget:
     def profile(self):
         return {
             "CARGO_INCREMENTAL": "0",
-            "CARGO_PROFILE_DEV_OPT_LEVEL": "0",
+            "CARGO_PROFILE_DEV_OPT_LEVEL": self.opt_level,
             "CARGO_PROFILE_DEV_DEBUG": "2",
             "CARGO_PROFILE_DEV_SPLIT_DEBUGINFO": "packed" if sys.platform == "darwin" else "off",
             "CARGO_PROFILE_DEV_STRIP": "none",
@@ -511,7 +515,13 @@ class RustSession(NativeSession):
 
     def view_variable(self, variable, fetch):
         """Active-variant view for compiled enums; None leaves ordinary values unchanged."""
-        return active_variant(variable, fetch, self.layouts)
+        view = active_variant(variable, fetch, self.layouts)
+        if view and view["rust_view"] == "active-variant" and self.target.opt_level != "0":
+            # Optimized code may track an enum's tag and payload separately and LLDB
+            # zero-fills a missing piece without reporting it, so a decoded variant is
+            # not trustworthy there.
+            return {**view, "value": UNVERIFIED, "rust_view": "opaque"}
+        return view
 
     def validate_children(self, variables):
         # `$` cannot start a Rust identifier; such fields are debugger-synthesized storage.

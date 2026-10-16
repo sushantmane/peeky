@@ -158,11 +158,15 @@ def test_rust_source_drift_fails_closed_before_inspection(rust_worker):
 
 
 @pytest.mark.timeout(120)
-def test_rust_compile_failure_and_frozen_test_edit_leave_no_workspace(rust_worker, tmp_path):
+def test_rust_compile_failure_and_frozen_test_edit_leave_no_workspace(
+    rust_worker, tmp_path, tmp_path_factory, monkeypatch
+):
     client, worker, root, line = rust_worker
     from peeky.build import BuildCommandError, SourceEdit
 
-    before = set(Path(tempfile.gettempdir()).glob("peeky-rust-*"))
+    # A private temp root outside the crate, so concurrent Peeky runs cannot interfere.
+    private = tmp_path_factory.mktemp("rust-tmp")
+    monkeypatch.setattr(tempfile, "tempdir", str(private))
     edit = SourceEdit("src/main.rs", "let mut start: i32 =", "let mut start: i32 = ;")
     with pytest.raises(BuildCommandError):
         worker.adapter.prepare(root / "src/main.rs", root, edit=edit)
@@ -170,4 +174,4 @@ def test_rust_compile_failure_and_frozen_test_edit_leave_no_workspace(rust_worke
         worker.adapter.prepare(
             root / "src/main.rs", root, edit=SourceEdit("tests/pagination.rs", "1", "2")
         )
-    assert set(Path(tempfile.gettempdir()).glob("peeky-rust-*")) == before
+    assert list(private.glob("peeky-rust-*")) == []

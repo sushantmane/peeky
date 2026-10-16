@@ -31,6 +31,7 @@ from peeky.build import (
 MAX_METADATA = 2 * 1024 * 1024
 FLAGS = ("-std=c11", "-g", "-gdwarf-4", "-O0", "-fno-omit-frame-pointer")
 CPP_FLAGS = ("-std=c++17", *FLAGS[1:])
+OPTIMIZATIONS = ("O0", "Og", "O1", "O2")
 
 
 def _tool(name):
@@ -299,10 +300,14 @@ class NativeTarget:
     sysroot: str | None = None
     arguments: tuple[str, ...] = ()
     language: str = "c"
+    # Opt-in: optimized code can report locals as unavailable or show stale values.
+    optimization: str = "O0"
 
     def __post_init__(self):
         if self.language not in ("c", "cpp"):
             raise ValueError("Native language must be c or cpp")
+        if self.optimization not in OPTIMIZATIONS:
+            raise ValueError(f"Native optimization must be one of {', '.join(OPTIMIZATIONS)}")
         if self.compiler is None:
             object.__setattr__(self, "compiler", "clang++" if self.language == "cpp" else "clang")
         if (
@@ -327,7 +332,8 @@ class NativeTarget:
 
     @property
     def compiler_options(self):
-        return CPP_FLAGS if self.language == "cpp" else FLAGS
+        flags = CPP_FLAGS if self.language == "cpp" else FLAGS
+        return tuple(f"-{self.optimization}" if flag == "-O0" else flag for flag in flags)
 
     @property
     def verification_inputs(self):
@@ -345,6 +351,7 @@ class NativeTarget:
             "headers": sorted(self.headers),
             "arguments": list(self.arguments),
             "compiler_options": list(self.compiler_options),
+            "optimization": self.optimization,
         }
 
     def validate_breakpoints(self, points):
@@ -445,6 +452,9 @@ class NativeTarget:
 
 
 class NativeSession:
+    # lldb-dap reports optimized-out/not-live locals as `<error: ...>` text.
+    reports_unavailable_as_text = True
+
     def __init__(self, target, prepared, adapter, lines, identity, binary, symbols):
         self.target, self.prepared = target, prepared
         self.binary, self.symbols, self.adapter = binary, symbols, adapter

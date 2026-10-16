@@ -111,3 +111,25 @@ While testing, java-debug itself was found to stall (no breakpoint within 40 s) 
 **Verification review of d54041d / 95560f9:** two findings, both fixed.
 - **Blocking:** the empty-reply count carried over between sessions on a long-lived worker. One empty reply in the next session could then end a live JVM. The count and check time now reset at launch and in `close()`. Regression: `test_empty_replies_never_carry_over_into_the_next_session`.
 - **Medium:** a live pid did not block the two-reply rule. With a known pid, which the reviewer confirmed is the JVM itself, an exit is now inferred only if that process is gone. The two-reply rule applies only when no pid was announced. Regression: `test_with_a_known_pid_only_the_jvm_process_being_gone_proves_exit`.
+
+## Review: optimized builds and unavailable locals (#32)
+
+**Result:** no blocking issues for the default `-O0` path. Four medium/low issues for opt-in optimized builds, all fixed.
+
+| # | Severity | Finding | Disposition |
+| --- | --- | --- | --- |
+| 1 | medium | LLDB zero-fills enum pieces it cannot locate in optimized code without reporting it, so a Rust `Option<i32>` view could show `None`/`Some(0)` labelled `active-variant`. | Fixed. With `opt_level` ≠ 0, Rust enum views are opaque (`<unverified Rust enum value>`). Real Rust regression. |
+| 2 | medium | Sessions on optimized builds never said so, and snapshots kept the placeholder text in `value`. | Fixed. Launch, inspect and `get` carry `optimized`, the session text prints a warning, and unavailable entries have `value: null` with a `reason`. Real C session regression. |
+| 3 | medium | Interventions on optimized builds could look applied while the program uses other copies of the value. | Fixed. Every `set_variable` in an optimized build is refused (`MUTATION_REJECTED`). |
+| 4 | low | Read failures at `-O0` (for example `<error: parent is NULL>`) were called "optimized out", with advice to prefer `-O0`. | Fixed. The wording is neutral ("the debugger could not read a value") with the debugger's reason, unless the build is optimized. |
+
+The reviewer confirmed:
+- No real value can match the placeholder pattern; LLDB quotes strings and starts pointers with `0x`.
+- Expanded children and session `get` are covered.
+- `verify` builds with the same flags as the debugged build.
+
+**Verification review of 84e6491:** no blocking issues; all four earlier fixes were confirmed. Two follow-ups are fixed:
+- **Medium:** `peeky-agent` could never succeed on an optimized target, because it requires an intervention. It now rejects optimized configs up front with a clear message.
+- **Low:** `describe` still advertised changeable locals and qualified enum views for optimized builds. It now reports `optimized`, `mutable_types: none ...`, and no enum views.
+
+Both have real-build regressions in `tests/native/test_native_optimized.py`.
