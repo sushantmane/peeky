@@ -226,11 +226,12 @@ def _resolve(path, program, line, config):
         suffixes = (".c",) if language == "c" else (".cpp", ".cc", ".cxx")
         headers = (".h",) if language == "c" else (".h", ".hpp", ".hh", ".hxx")
         root = path.parent
+        tools = native_tools(language)
         data = {
             "language": language,
-            "sources": tuple(sorted(p.name for p in root.iterdir() if p.suffix in suffixes)),
+            "sources": _native_sources(root, path.name, suffixes, tools, language),
             "headers": tuple(sorted(p.name for p in root.iterdir() if p.suffix in headers)),
-            **native_tools(language),
+            **tools,
         }
         return root, program or path.name, line, language, data
     if path.is_dir() and (scripts := sorted(p.name for p in path.glob("*.py"))[:20]):
@@ -241,6 +242,52 @@ def _resolve(path, program, line, config):
     raise ValueError(
         "Cannot detect the target; pass a .py/.c/.cpp file, a Cargo crate, or --config"
     )
+
+
+_MAIN = re.compile(rb"^[ \t]*(?:int|void)[ \t\n]+main[ \t]*\(", re.MULTILINE)
+_MAIN_DEFINITION = re.compile(
+    rb"(?:^|[;{}\s])(?:int|void)\s+main\s*\([^;{}()]*\)\s*\{", re.MULTILINE
+)
+
+
+def _defines_main(path, tools, language):
+    """Whether the compiled file defines main: comments and inactive #if branches don't."""
+    compiler = (tools or {}).get("compiler")
+    if not compiler:
+        return True
+    sysroot = (tools or {}).get("sysroot")
+    command = [compiler, "-E", "-P", "-x", "c" if language == "c" else "c++"]
+    command += ["-isysroot", sysroot] if sysroot else []
+    try:
+        done = subprocess.run(
+            [*command, str(path)], cwd=path.parent, capture_output=True, timeout=20, check=False
+        )
+    except (OSError, subprocess.SubprocessError):
+        return True
+    return done.returncode != 0 or bool(_MAIN_DEFINITION.search(done.stdout[:16_000_000]))
+
+
+def _native_sources(root, target, suffixes, tools=None, language="c"):
+    """Sources to build for an auto-detected C/C++ file.
+
+    A directory may hold one program split over several files, or several programs.
+    Every file defining `main` is a separate program, so only the target's own `main`
+    is linked with the files that have none. A quick text match finds candidates; when
+    there are several, the compiler's preprocessor settles which really define main.
+    """
+    sources = sorted(p.name for p in root.iterdir() if p.suffix in suffixes and p.is_file())
+    mains = [name for name in sources if _MAIN.search((root / name).read_bytes()[:4_000_000])]
+    if len(mains) > 1:
+        mains = [name for name in mains if _defines_main(root / name, tools, language)]
+    if len(mains) <= 1:
+        return tuple(sources)
+    if target not in mains:
+        raise ValueError(
+            f"{root} holds several programs (main is defined in {', '.join(mains[:10])}); pass "
+            "the file that defines the program's main as the target, or use --config with "
+            "explicit sources"
+        )
+    return tuple(name for name in sources if name == target or name not in mains)
 
 
 def adapter_for(language, data):

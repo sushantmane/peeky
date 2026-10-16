@@ -29,6 +29,7 @@ from peeky.build import (
     Command,
     _digest,
     prepare,
+    real_tool,
 )
 from peeky.compiled_verification import CompiledVerification
 from peeky.native import NativeSession, _path_name, module_identity
@@ -63,7 +64,7 @@ def _remove_owned(parent, error=None):
 def _absolute_tool(path, label):
     if not isinstance(path, str) or not path or "\x00" in path or not Path(path).is_absolute():
         raise ValueError(f"Rust {label} must be an absolute executable path")
-    resolved = Path(path).resolve(strict=True)
+    resolved = real_tool(path)
     if not resolved.is_file():
         raise ValueError(f"Rust {label} must be an executable file")
     return str(resolved)
@@ -316,7 +317,7 @@ class RustTarget:
         # tool's directory first and require PATH resolution to select exactly it.
         tools = [str(Path(rustc).parent)]
         if dsymutil := self._dsymutil():
-            tools.insert(0, str(Path(self.dsymutil).parent))
+            tools.insert(0, str(Path(dsymutil).parent))
         env = {
             "PATH": ":".join((*dict.fromkeys(tools), "/usr/bin", "/bin")),
             "CARGO_HOME": ".peeky-cargo-home",
@@ -408,7 +409,12 @@ class RustTarget:
             assert_cargo_ancestry_clear(workspace)
             if dsymutil is not None:
                 selected = shutil.which("dsymutil", path=env.get("PATH"))
-                if not selected or str(Path(selected).resolve()) != dsymutil:
+                if (
+                    not selected
+                    or str(Path(selected).resolve()) != dsymutil
+                    # The declared path itself must still name the tool PATH runs.
+                    or str(real_tool(self.dsymutil)) != dsymutil
+                ):
                     raise RuntimeError("Cargo dsymutil PATH resolution changed during preparation")
 
         def before_command(workspace, results, command):

@@ -9,6 +9,7 @@ Peeky is a developer tool for trusted code. This document describes the current 
 - User code and assignment expressions: execute with the worker's OS permissions. Root-path checks are entrypoint checks only.
 - Model: receives task data and emits proposed structured decisions; controller validation governs execution.
 - Verifier: supplied and trusted, runs candidate code; completion envelope detects accidental/premature exit, not malicious native tampering.
+- Provenance hashes (sources, build outputs, toolchain binaries, adapter bundles): detect accidental change during a session (rebuilds, edits, toolchain upgrades), not a same-user adversary. Within one process a file's digest is reused while its device, inode, size, mtime and ctime are unchanged and its timestamps are more than 2 s old (`src/peeky/digest.py`). Any write, replacement or rename changes those. Set `PEEKY_NO_DIGEST_CACHE=1` to rehash every time, for example on filesystems whose timestamps are unreliable.
 
 ## Failure handling
 

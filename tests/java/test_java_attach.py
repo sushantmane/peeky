@@ -143,3 +143,58 @@ def test_attach_configuration_is_loopback_only_and_bounded(tmp_path):
         with pytest.raises(ValueError):
             JavaAttachTarget(**{**base, **change})
     time.sleep(0)
+
+
+def test_a_class_rebuilt_while_attaching_is_refused(attached, monkeypatch):
+    import peeky.java_attach as java_attach
+
+    root, target, _, _ = attached
+    real = java_attach._class_metadata
+
+    def parse_then_rebuild(data):
+        parsed = real(data)
+        for path in (root / "classes").rglob("PaginationBug.class"):
+            path.write_bytes(path.read_bytes() + b"\0")  # a later rebuild
+        return parsed
+
+    import tempfile
+
+    workspaces = set(Path(tempfile.gettempdir()).glob("peeky-java-attach-*"))
+    monkeypatch.setattr(java_attach, "_class_metadata", parse_then_rebuild)
+    with pytest.raises(RuntimeError, match="changed during attach") as caught:
+        target.prepare(root / SOURCE, root)
+    from peeky.errors import classify
+
+    assert classify(caught.value)["code"] == "PROVENANCE_CHANGED"
+    assert set(Path(tempfile.gettempdir()).glob("peeky-java-attach-*")) == workspaces
+
+
+def test_attach_timeouts_fit_the_worker_wait(tmp_path):
+    from peeky.java_attach import JavaAttachTarget
+
+    base = {"bundle": tmp_path, "port": 5005, "sources": ("A.java",), "class_roots": ("c",)}
+    assert JavaAttachTarget(**base, timeout_ms=15000).timeout_ms == 15000
+    with pytest.raises(ValueError, match="1000..15000"):
+        JavaAttachTarget(**base, timeout_ms=15001)
+
+
+def test_declared_sources_behind_an_in_root_link_attach(attached):
+    from dataclasses import replace
+
+    root, target, _, _ = attached
+    vendor = root / "vendor" / "util"
+    vendor.mkdir(parents=True)
+    (vendor / "Util.java").write_text(
+        "package util;\npublic class Util {\n  static int one() { return 1; }\n}\n"
+    )
+    (root / "lib").symlink_to(root / "vendor")
+    subprocess.run(
+        [shutil.which("javac"), "-g", "-d", str(root / "classes"), str(vendor / "Util.java")],
+        check=True,
+    )
+    linked = replace(target, sources=(SOURCE, "lib/util/Util.java"))
+    session = linked.prepare(root / SOURCE, root)
+    try:
+        session.assert_current()
+    finally:
+        session.close()

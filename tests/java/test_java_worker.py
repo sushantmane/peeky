@@ -262,3 +262,64 @@ def test_cli_describe_lists_fresh_build_java_lines(java_worker, java_bundle, tmp
     manifest = json.loads(capsys.readouterr().out)
     lines = manifest["breakpoint_lines"]["demo/BranchBug.java"]
     assert manifest["language"] == "java" and {first, second} <= set(lines)
+
+
+def test_java_mutations_must_fit_the_local_type(java_worker):
+    start, _, first, _ = java_worker
+    client, _ = start()
+    _, session, context, snapshot = launch_stopped(client, first)
+    names = values(snapshot)
+    assert names["timeoutMs"]["type"] == "int" and names["tokenPresent"]["type"] == "boolean"
+    for name, value, message in (
+        ("timeoutMs", "3000000000", "outside the int range"),
+        ("timeoutMs", "4294967296", "outside the int range"),
+        ("timeoutMs", "1.5", "integer literal for int"),
+        ("tokenPresent", "1", "true or false"),
+        ("pid", "99999999999999999999", "outside the long range"),
+        ("values", "1", "is int[]"),
+    ):
+        error = assert_http_error(
+            400,
+            client,
+            "set_variable",
+            **context,
+            reference=scope_for(snapshot, name),
+            name=name,
+            value=value,
+        )
+        assert message in error, (name, value, error)
+    # Refusals happen before the adapter is asked: the stop and the values are intact.
+    snapshot = client.call("inspect", **context)
+    assert values(snapshot)["timeoutMs"]["value"] == "0"
+    changed = client.call(
+        "set_variable",
+        **context,
+        reference=scope_for(snapshot, "timeoutMs"),
+        name="timeoutMs",
+        value="-2147483648",
+    )
+    assert changed["after"] == "-2147483648"
+    client.call("close", **session)
+
+
+def test_java_lines_without_code_are_request_errors(java_worker):
+    start, source, first, second = java_worker
+    client, _ = start()
+    blank = 1  # "package demo;"
+    with pytest.raises(HTTPError) as caught:
+        client.call("launch", program="demo/BranchBug.java", breakpoints=[{"line": blank}])
+    error = json.load(caught.value)["error"]
+    assert error["code"] == "INVALID_BREAKPOINT" and "no code to stop at" in error["message"]
+    _, session, context, _ = launch_stopped(client, first)
+    message = assert_http_error(
+        400,
+        client,
+        "breakpoints",
+        session_id=session["session_id"],
+        program="demo/BranchBug.java",
+        breakpoints=[{"line": blank}],
+    )
+    assert "executable lines nearby" in message
+    # The session and its stop survive the refused request.
+    assert client.call("inspect", **context)["frames"][0]["line"] == first
+    client.call("close", **session)

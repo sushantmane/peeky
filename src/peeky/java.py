@@ -5,19 +5,24 @@ launch inputs and stop locations; they are not proof against malicious native
 code or concurrent replacement of an already loaded JVM image.
 """
 
+import functools
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
+import struct
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 from peeky.adapters import PythonAdapter
 from peeky.build import ArtifactSpec, BuildRecipe, Command, assert_current, prepare
+from peeky.digest import sha256_file, tree_fingerprint
 
 MAX_BUNDLE_FILES = 4096
 MAX_BUNDLE_FILE_BYTES = 256 * 1024 * 1024
+_JAVA_INTEGER_BITS = {"byte": 8, "short": 16, "int": 32, "long": 64}
 SCALAR = re.compile(r"(?:true|false|[+-]?[0-9]+(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?)\Z")
 CLASS_NAME = re.compile(r"[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*\Z")
 
@@ -25,11 +30,7 @@ CLASS_NAME = re.compile(r"[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)
 def _hash(path):
     if not path.is_file() or path.stat().st_size > MAX_BUNDLE_FILE_BYTES:
         raise ValueError("Expected a bounded regular bundle file")
-    result = hashlib.sha256()
-    with path.open("rb") as stream:
-        while chunk := stream.read(1024 * 1024):
-            result.update(chunk)
-    return result.hexdigest()
+    return sha256_file(path)
 
 
 def _tool(value):
@@ -58,7 +59,28 @@ def _member(root, name):
     return path
 
 
+_BUNDLES = {}
+
+
 def _bundle(bundle, java):
+    """Verified adapter command and manifest hash; rechecked before every operation.
+
+    A full verification walks and hashes every bundle file. While a stat fingerprint
+    of the whole tree is unchanged, the earlier verified result is reused (see
+    peeky.digest); any added, removed, replaced or rewritten entry verifies again.
+    """
+    key = (str(bundle), java)
+    fingerprint = tree_fingerprint(bundle, MAX_BUNDLE_FILES * 4)
+    cached = _BUNDLES.get(key)
+    if fingerprint is not None and cached is not None and cached[0] == fingerprint:
+        return cached[1]
+    result = _verify_bundle(bundle, java)
+    if fingerprint is not None and tree_fingerprint(bundle, MAX_BUNDLE_FILES * 4) == fingerprint:
+        _BUNDLES[key] = (fingerprint, result)
+    return result
+
+
+def _verify_bundle(bundle, java):
     manifest_path = bundle / "adapter.json"
     if manifest_path.is_symlink() or manifest_path.stat().st_size > 1024 * 1024:
         raise ValueError("Invalid adapter manifest")
@@ -235,8 +257,9 @@ class JavaSession:
     def source_manifest(self):
         return {item.path: item.sha256 for item in self.prepared.manifest.original_inputs}
 
-    @property
+    @functools.cached_property
     def mapping(self):
+        # Parsed once: the bytes are fixed at prepare and rechecked by hash.
         return json.loads(self._mapping_data)
 
     @property
@@ -305,6 +328,59 @@ class JavaSession:
     def validate_value(self, value):
         if not isinstance(value, str) or not SCALAR.fullmatch(value):
             raise ValueError("Java mutation requires a numeric or boolean scalar literal")
+
+    def validate_variable(self, variable, value):
+        """The value must fit the local's declared type exactly.
+
+        java-debug narrows integers, keeps one character of a char and parses any
+        non-"true" boolean as false, then reports success; refuse those instead.
+        """
+        self.validate_value(value)
+        name, kind = variable.get("name"), variable.get("type")
+        if kind in _JAVA_INTEGER_BITS:
+            # java-debug parses with Long.decode: a leading 0 means octal.
+            if not re.fullmatch(r"[+-]?(?:0|[1-9][0-9]{0,19})", value):
+                raise ValueError(f"Java mutation requires an integer literal for {kind} {name}")
+            bits = _JAVA_INTEGER_BITS[kind]
+            if not -(2 ** (bits - 1)) <= int(value) < 2 ** (bits - 1):
+                raise ValueError(f"Java mutation is outside the {kind} range for {name}")
+        elif kind == "boolean":
+            if value not in ("true", "false"):
+                raise ValueError(f"Java mutation requires true or false for boolean {name}")
+        elif kind in ("float", "double"):
+            if value in ("true", "false"):
+                raise ValueError(f"Java mutation requires a number for {kind} {name}")
+            number = float(value)
+            try:
+                stored = (
+                    struct.unpack(">f", struct.pack(">f", number))[0] if kind == "float" else number
+                )
+            except OverflowError:
+                stored = math.inf
+            mantissa = value.lower().split("e")[0]
+            if not math.isfinite(stored) or (stored == 0 and re.search(r"[1-9]", mantissa)):
+                raise ValueError(f"Java mutation is outside the {kind} range for {name}")
+        else:
+            raise ValueError(
+                "Only byte, short, int, long, boolean, float and double locals support Java "
+                f"mutation; {name} is {kind}"
+            )
+
+    def _line_key(self, program):
+        return Path(program).resolve(strict=True).relative_to(self.prepared.source_root).as_posix()
+
+    def check_breakpoint_lines(self, program, points):
+        """Refuse lines without code before the adapter does (it fails the whole launch)."""
+        key = self._line_key(program)
+        lines = self.lines.get(key, [])
+        for point in points:
+            if point.get("line") not in lines:
+                nearby = sorted(lines, key=lambda line: (abs(line - point.get("line", 0)), line))
+                raise ValueError(
+                    f"Line {point.get('line')} of {key} has no code to stop at; executable lines "
+                    f"nearby: {', '.join(map(str, sorted(nearby[:6]))) or 'none'} (see `peeky "
+                    "describe`)"
+                )
 
     def assert_current(self):
         assert_current(self.prepared)

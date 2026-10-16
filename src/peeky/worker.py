@@ -444,6 +444,8 @@ class DebugWorker:
                     timeout=left(5),
                 )
                 self.dap.wait_event({"initialized"}, failed_request=launch, timeout=left())
+                if check_lines := getattr(runtime, "check_breakpoint_lines", None):
+                    check_lines(program, args.get("breakpoints", []))
                 points = self.dap.request(
                     "setBreakpoints",
                     {
@@ -581,7 +583,18 @@ class DebugWorker:
             if selected not in self.frames:
                 raise ValueError("Unknown frame")
             selected_frame = next(frame for frame in frames if frame["id"] == selected)
-            runtime.validate_stop(selected_frame)
+            try:
+                runtime.validate_stop(selected_frame)
+            except RuntimeError as exc:
+                if selected == frames[0]["id"] or _inside_program(runtime, selected_frame):
+                    # A mismatch inside the program's own sources is provenance: fail closed.
+                    raise
+                # A caller frame outside the prepared program (JDK, libc, test runner) is
+                # a request the stop cannot serve, not a debugger failure.
+                raise ValueError(
+                    f"Frame {selected} ({selected_frame.get('name')}) is not in the prepared "
+                    "program's sources; inspect one of your program's frames"
+                ) from exc
             if validate_debugger := getattr(runtime, "validate_debugger", None):
                 validate_debugger(self.dap, selected_frame)
             # Adapters may reuse raw scope IDs for different selected frames.
@@ -681,6 +694,8 @@ class DebugWorker:
             return {"name": args["name"], "before": before, "after": after}
         if operation == "breakpoints":
             runtime.validate_breakpoints(args["breakpoints"])
+            if check_lines := getattr(runtime, "check_breakpoint_lines", None):
+                check_lines(self.path(args["program"]), args["breakpoints"])
             return self.dap.request(
                 "setBreakpoints",
                 {
@@ -969,6 +984,32 @@ class DebugWorker:
         finally:
             if runtime:
                 runtime.close()
+
+
+def _inside_program(runtime, frame):
+    """Whether a frame's source lies in the prepared or declared program directories."""
+    path = (frame.get("source") or {}).get("path")
+    if not isinstance(path, str) or not path:
+        return False
+    prepared = getattr(runtime, "prepared", None)
+    roots = [
+        getattr(prepared, "workspace", None),
+        getattr(prepared, "source_root", None),
+        getattr(runtime, "root", None),
+    ]
+    try:
+        resolved = Path(path).resolve()
+    except (OSError, ValueError):
+        return False
+    for root in roots:
+        if root is None:
+            continue
+        try:
+            resolved.relative_to(Path(root).resolve())
+            return True
+        except (OSError, ValueError):
+            continue
+    return False
 
 
 def make_server(root, token, port=8765, *, adapter=None):

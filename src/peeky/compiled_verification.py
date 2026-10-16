@@ -4,21 +4,17 @@ Descriptors and manifests are evidence, not runnable retained build artifacts.
 The checker is trusted developer code and shares OS permissions with the target.
 """
 
-import hashlib
 import json
 import uuid
 from dataclasses import asdict
 from pathlib import Path
 
 from peeky.build import BuildCommandError, SourceEdit
+from peeky.digest import sha256_file
 
 
 def _hash(path):
-    result = hashlib.sha256()
-    with Path(path).open("rb") as stream:
-        while chunk := stream.read(1024 * 1024):
-            result.update(chunk)
-    return result.hexdigest()
+    return sha256_file(path)
 
 
 class CompiledVerification:

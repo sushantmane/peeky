@@ -137,3 +137,35 @@ def test_cleanup_preserves_original_exception(tmp_path):
         finally:
             investigation.close()
     assert investigation.report["cleanup_errors"] == ["cleanup failure"]
+
+
+def test_worker_refusals_are_step_errors_but_uncertain_failures_stop(tmp_path):
+    import json
+
+    from peeky.errors import PeekyError
+
+    investigation = runner(tmp_path)
+    investigation.check.write_text("raise SystemExit(1)\n")
+    investigation.report["check_sha256"] = __import__("peeky.agent").agent.digest(
+        investigation.check
+    )
+    investigation.max_steps = 3
+    codes = iter(["INVALID_BREAKPOINT", "MUTATION_REJECTED", "TIMEOUT"])
+
+    class Remote:
+        def call(self, operation, **kwargs):
+            assert operation == "launch"
+            code = next(codes)
+            raise PeekyError("http://w", 400, {}, {"code": code, "message": code.lower()})
+
+    investigation.client = Remote()
+    investigation.decide = lambda context: {"action": "observe", "line": 1, "reason": "look"}
+    with pytest.raises(PeekyError, match="TIMEOUT"):
+        investigation.run("issue")
+    report = json.loads((tmp_path / "report.json").read_text())
+    assert [step.get("error_code") for step in report["steps"]] == [
+        "INVALID_BREAKPOINT",
+        "MUTATION_REJECTED",
+        "TIMEOUT",
+    ]
+    assert report["status"] == "failed"

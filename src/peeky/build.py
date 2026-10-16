@@ -7,15 +7,20 @@ are not. Call assert_current before launch, mutation and verification. Adapters
 must additionally establish loaded-artifact identity where available.
 """
 
+import functools
 import hashlib
 import json
 import math
 import os
 import shutil
+import subprocess
+import sys
 import tempfile
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path, PurePosixPath
+
+from peeky.digest import sha256_file
 
 # Inherited flags (JAVA_TOOL_OPTIONS, CFLAGS, etc.) require explicit declaration.
 INHERITED_ENV = ("PATH", "HOME", "TMPDIR", "TMP", "TEMP", "LANG", "LC_ALL")
@@ -145,15 +150,72 @@ def _inside(root, name, *, directory=False):
     return path
 
 
+_XCRUN_STUBS = frozenset(
+    {"cc", "c++", "clang", "clang++", "dsymutil", "dwarfdump", "llvm-dwarfdump", "lldb-dap", "ld"}
+)
+
+
+_XCRUN = "/usr/bin/xcrun"
+
+
+@functools.lru_cache(maxsize=64)
+def _xcrun_find(name):
+    try:
+        found = subprocess.run(
+            [_XCRUN, "--find", name], capture_output=True, text=True, timeout=20, check=False
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return found.stdout.strip() if found.returncode == 0 else ""
+
+
+@functools.lru_cache(maxsize=1)
+def default_sdk():
+    """The macOS SDK the xcrun stubs would pass; real compilers need it explicitly."""
+    if sys.platform != "darwin" or not os.path.exists(_XCRUN):
+        return None
+    try:
+        found = subprocess.run(
+            [_XCRUN, "--show-sdk-path"], capture_output=True, text=True, timeout=20, check=False
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    path = found.stdout.strip()
+    return path if found.returncode == 0 and path and Path(path).is_dir() else None
+
+
+def real_tool(path):
+    """The executable a tool path really runs.
+
+    On macOS, /usr/bin/clang, dsymutil, dwarfdump and friends are one small xcrun
+    stub that runs the selected developer tool. Hashing the stub would not notice an
+    `xcode-select` switch or a Command Line Tools update, so provenance uses the real
+    binary that `xcrun --find` names.
+    """
+    resolved = Path(path).resolve(strict=True)
+    if (
+        sys.platform != "darwin"
+        or resolved.parent != Path("/usr/bin")
+        or resolved.name not in _XCRUN_STUBS
+        # Without xcrun there is no stub: the tool is a real binary.
+        or not os.path.exists(_XCRUN)
+    ):
+        return resolved
+    found = _xcrun_find(resolved.name)
+    real = Path(found) if found else None
+    if real is None or real.resolve(strict=True).parent == Path("/usr/bin"):
+        raise ValueError(
+            f"{resolved} is the macOS xcrun stub and `xcrun --find {resolved.name}` did not name "
+            "the real tool; pass the real tool's path"
+        )
+    return real.resolve(strict=True)
+
+
 def _digest(path):
     size = path.stat().st_size
     if not path.is_file() or size > MAX_FILE_BYTES:
         raise ValueError("Expected a regular file within the identity size limit")
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        while chunk := stream.read(1024 * 1024):
-            digest.update(chunk)
-    return digest.hexdigest(), size
+    return sha256_file(path), size
 
 
 def _files(root, names):
@@ -385,7 +447,8 @@ def prepare(
                 tool, result = _run(command, workspace, env, timeout)
             except BuildCommandError as exc:
                 raise RuntimeError(f"Toolchain probe failed: {command.argv[0]}") from exc
-            tools.append(tool)
+            if tool not in tools:
+                tools.append(tool)
             probes.append(ProbeResult(command.argv, result["stdout"], result["stderr"]))
         for command in recipe.build_commands:
             check(command)
@@ -396,7 +459,9 @@ def prepare(
                 if limited and exc.result.get("timed_out"):
                     raise TimeoutError("Build preparation exceeded its overall deadline") from exc
                 raise
-            tools.append(tool)
+            # One entry per executable: every command rechecks the whole list.
+            if tool not in tools:
+                tools.append(tool)
         # The last command may have delegated to helpers (e.g. dsymutil via PATH);
         # recheck before its outputs are recorded against the declared tools.
         check()

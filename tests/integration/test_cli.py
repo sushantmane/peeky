@@ -417,3 +417,20 @@ def test_background_probes_save_evidence_too(workspace, capsys):
 def test_describe_points_agents_at_the_evidence_store(workspace, capsys):
     code, out = run(capsys, "describe", workspace / "pagination_bug.py", "--json")
     assert code == 0 and "peeky sql" in json.loads(out.out)["commands"]["evidence"]
+
+
+def test_auto_detected_c_targets_link_one_program(tmp_path):
+    from peeky.cli import _native_sources
+
+    program = "#include <stdio.h>\nint helper(void);\nint\nmain(void) { return helper(); }\n"
+    (tmp_path / "one.c").write_text(program)
+    (tmp_path / "two.c").write_text("int main(int argc, char **argv) { return 0; }\n")
+    (tmp_path / "util.c").write_text("/* not main( */\nint helper(void) { return 0; }\n")
+    (tmp_path / "notes.txt").write_text("int main(")
+    assert _native_sources(tmp_path, "one.c", (".c",)) == ("one.c", "util.c")
+    assert _native_sources(tmp_path, "two.c", (".c",)) == ("two.c", "util.c")
+    with pytest.raises(ValueError, match="several programs .*one.c, two.c"):
+        _native_sources(tmp_path, "util.c", (".c",))
+    (tmp_path / "two.c").unlink()
+    # One program split over several files still builds them all.
+    assert _native_sources(tmp_path, "util.c", (".c",)) == ("one.c", "util.c")
