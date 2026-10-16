@@ -16,6 +16,7 @@ You debug programs with **peeky**, a standalone tool. You decide what to do; pee
 | --- | --- | --- |
 | `peeky describe <target> [--json]` | one build | Learn the language, valid breakpoint lines, qualified views and mutation rules. Always first. |
 | `peeky probe <target> --at <path>:<line> --capture a,b.c [--set x=0] [--hits N] [--json]` | one run | Answer one question in one call: values at a line, optionally after one intervention, plus program output. |
+| `peeky sql "SELECT ... FROM last_run"` / `peeky queries [name]` | instant | Ask follow-up questions about evidence that probes already saved. No rerun. `peeky sql --schema` lists the tables. |
 | `peeky session start <target> --at <path>:<line>` | one run | Start step-by-step debugging when you need several looks at the same stop. |
 | `peeky session inspect` / `get a.b c[0]` / `set x=0` / `continue [--to-exit]` / `report` / `close` | instant | Work with the stopped program. `continue --to-exit` clears the breakpoints and runs to the end. Always `close`. |
 | `peeky verify <target> --check <checker.py> --old '<exact text>' --new '<replacement>'` | one build | Verify one candidate edit on a fresh build. |
@@ -41,6 +42,15 @@ Every command takes `--json`: stdout is then one JSON object (progress goes to s
 - Selectors take indexes from the end (`items[-1]`), but only when the debugger states the sequence's length and shows every element. Otherwise you get an error, never a guess. Long debugpy lists show 100 elements individually, so for them use a non-negative index.
 - Failures carry `error: {code, message, hint, retryable, session_closed}` (see [ERRORS.md](ERRORS.md)). `status` is `completed`, `no-stop`, `failed` or `timeout`.
 
+### Querying saved evidence (`peeky sql`, `peeky queries`)
+
+Every probe is saved: the result's `evidence.run_id` names it. Capture broadly once (`--hits 50`, several selectors), then answer follow-up questions with SQL instead of rerunning the program:
+
+- `peeky sql --schema` lists the tables (`runs`, `captures`, `interventions`, `pauses`), the `evidence` and `last_run` views, and the canned queries. Read it before writing SQL.
+- `peeky queries` needs no SQL. `run` shows a run's values, `hits` shows a selector across hits with `changed`, `compare`/`diff` put two runs side by side (the first `diff` row is the first divergence), `outputs` shows two runs' outputs and outcomes, `set_effect` shows values before and after an intervention, `values` shows the distinct values of a selector across runs, and `unreadable` and `failures` list what has no value. Pass `--param name=value`.
+- Use `num` for numeric comparisons (`num > 10`); `value` is the debugger's text. `--label input=a` tags a run so you can find it later.
+- Queries are read-only and bounded. A failing query returns `INVALID_QUERY`; fix the SQL. Saved evidence describes past runs only: a new question about the program needs a new probe.
+
 ### Verifying an edit
 
 - `--old` must match the source exactly once. For multi-line edits, prefer `--old-file`/`--new-file`: they are read byte for byte, whereas shell `$(cat file)` silently strips trailing newlines. Pass real newlines for multi-line text (bash: `--old $'a\n    b'`). If it fails, the error gives the match count and the lines where it matched.
@@ -56,7 +66,7 @@ Targets: a `.py` file, a `.c`/`.cpp` file, a Cargo crate directory, or any targe
 ## Workflow
 
 1. `peeky describe <target>`: pick a line where the suspicious value has just been computed.
-2. `peeky probe <target> --at <file>:<line> --capture <names>`: confirm what the program actually computes.
+2. `peeky probe <target> --at <file>:<line> --capture <names>`: confirm what the program actually computes. To compare inputs or hits, probe each input once (`--label`), then use `peeky queries diff` or `peeky sql`.
 3. Form a hypothesis, then test it: `peeky probe ... --set <name>=<value>`. Did the output change as predicted?
 4. Write the general fix (not a special case for the observed input) and run `peeky verify ...`.
 5. Report the observation, the intervention and its effect, the edit, and the verify result. Quote the commands.

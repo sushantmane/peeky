@@ -1,6 +1,6 @@
 # ADR 0004: Stateless probes alongside debugger sessions
 
-Status: accepted direction (owner, 2026-10-14); interface unified by [ADR 0005](0005-tool-not-agent.md) (`peeky probe`, `peeky session`, `peeky describe`). Steps 1–3 are delivered experimentally: in-process `run_probe`, the `peeky-probe` CLI, a single-flight HTTP `probe` operation that runs in an isolated separate process: SIGTERM at 35 s so the probe closes its debugger and debuggee, SIGKILL at 40 s, below the 45 s client timeout and `Client.probe`. Step 3 is `peeky describe`. Steps 4–5 (query grammar with captured-evidence store, measured build caching) remain. Both modes are product requirements; session mode is unchanged.
+Status: accepted direction (owner, 2026-10-14); interface unified by [ADR 0005](0005-tool-not-agent.md) (`peeky probe`, `peeky session`, `peeky describe`). Steps 1–3 are delivered experimentally: in-process `run_probe`, the `peeky-probe` CLI, a single-flight HTTP `probe` operation that runs in an isolated separate process: SIGTERM at 35 s so the probe closes its debugger and debuggee, SIGKILL at 40 s, below the 45 s client timeout and `Client.probe`. Step 3 is `peeky describe`. Step 4 is delivered as the captured-evidence store (`peeky sql`, `peeky queries`, `peeky sql --schema`; see "Step 4 as delivered"). Step 5 (measured build caching) remains. Both modes are product requirements; session mode is unchanged.
 
 ## Context
 
@@ -58,8 +58,21 @@ Canned probes cover common questions without syntax, for example locals at a lin
 
 Until then, new worker features should be expressible as a declared probe step (location, selector, bounded intervention) rather than depending on long-lived client-held state.
 
+## Step 4 as delivered (2026-10-16)
+
+- **Store:** SQLite from the standard library, at `$PEEKY_STATE_DIR/evidence/evidence.db` (0600) or `--store PATH`. The `peeky` CLI records every probe client-side, including remote (`--worker`) and `--background` probes. `--no-save` opts out. The newest 500 runs are kept. The HTTP `probe` operation and `run_probe` stay stateless: the worker's probe process runs with `--no-save`, and the client drops any evidence fields a worker reports. SDK callers can call `peeky.evidence.record` themselves. Program output over 256 KB is stored cut to 256 KB, with `output_truncated` set. That leaves headroom under the 1 MB read limit for sorting and de-duplicating. If saving fails, the probe result is unchanged apart from a warning.
+- **Schema (version 1, `PRAGMA user_version`):**
+  - `runs`: request, outcome, output, `artifact_manifest_id`, source hashes and target identity;
+  - `captures`: one row per selector, hit and phase, with `num` for numeric values;
+  - `interventions` and `pauses`;
+  - the views `evidence` (captures joined with their run) and `last_run`.
+  - Stores Peeky did not create, or from another schema version, are refused untouched.
+- **Queries:** `peeky sql` opens the store read-only (`mode=ro` plus an authorizer that allows only `SELECT`, reads, functions other than `load_extension`, recursive CTEs and schema-introspection pragmas). It runs one statement with named `--param`s. Bounds: rows by `--limit` (default 200, max 10000), 10 s per query, 1 MB per value, 100 columns, and 16 MB of JSON per result (`truncated_by` names the bound that stopped it). Failures return `INVALID_QUERY`. Queries never create or write the store. The one exception is recovery: if a killed save left a hot journal, the query restores the last committed state through a `mode=rw` connection, which never creates files. A missing or empty store is an `INVALID_REQUEST` saying no probe was saved there yet, and a read-only store can still be queried.
+- **Canned queries (`peeky queries`):** `runs`, `run`, `hits`, `compare`, `diff`, `outputs`, `set_effect`, `values`, `unreadable` and `failures`. The "first divergence between two inputs" and "before/after one intervention" probes from the sketch are `diff` and `set_effect` over two saved runs.
+- **The SQL-shaped probe form (`peeky query "SELECT a FROM 'src/main.rs':36 SET a = 0"`) is not implemented.** Flags already state a probe in one line, and a second syntax for the same request would make agents guess whether SQL runs against the program or against saved evidence. SQL is only ever for saved evidence.
+
 ## Open questions
 
 - Hit semantics: first hit, the first N hits, or all hits up to a bound. Ordering across multiple locations.
-- Whether captured-evidence storage defaults to SQLite (standard library) or an optional DuckDB/Parquet export to match heappy.
+- Resolved: captured evidence defaults to SQLite (standard library). Users who want DuckDB can attach the file with DuckDB's SQLite extension; Parquet export is not offered.
 - Whether probe mode runs candidate verification in the same request or as a separate stateless `verify` call.

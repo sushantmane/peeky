@@ -2,9 +2,10 @@
 
 Peeky never calls a model. A model (Copilot, Claude, Codex), a script or a person
 runs these commands and decides what to do next, as with heappy. There is no mode
-switch: `probe` answers one question in one stateless call, `session` subcommands
-explore step by step, `verify` checks a candidate fix on a fresh build, `describe`
-prints a manifest of what can be asked. Targets are detected from the path:
+switch: `probe` answers one question in one stateless call and saves its evidence,
+`sql` and `queries` ask follow-up questions about saved evidence (read-only SQL),
+`session` subcommands explore step by step, `verify` checks a candidate fix on a fresh
+build, `describe` prints a manifest of what can be asked. Targets are detected from the path:
 `Cargo.toml` -> Rust, `.py` -> Python, `.c`/`.cpp` -> C/C++; `--config` overrides
 detection with a trusted target configuration (required for Java).
 """
@@ -365,6 +366,8 @@ def describe(args):
             "--old <text> --new <text> (or --old-file/--new-file)",
             "background": "add --background to probe or verify, then `peeky job wait <id>` "
             "(exit 3 while running)",
+            "evidence": 'every probe is saved with a run_id: peeky sql "SELECT hit, selector, '
+            'value FROM last_run"; peeky queries [name] (canned, no SQL); peeky sql --schema',
         },
         "selectors": "dotted paths and indexes, e.g. request.page, args[0]; never expressions",
         "interventions": "root locals only; evidence about one run, never a verified fix",
@@ -471,6 +474,8 @@ def _sets(items):
 
 
 def probe(args):
+    if args.label is not None and len(args.label) > 200:
+        raise ValueError("--label is at most 200 characters")
     root, program, line, language, data = resolve(args.target, args.at, args.config)
     if line is None:
         raise ValueError("probe requires --at <path>:<line>")
@@ -498,8 +503,87 @@ def probe(args):
         result = _probe_remote(args, root, request)
     else:
         result = run_probe(root, request, adapter=adapter_for(language, data), progress=progress)
-    _emit(result, args.json, _table)
+    if not args.no_save:
+        _keep_evidence(args, result, root, language)
+    _emit(result, args.json, _probe_text)
     return 0 if result["status"] == "completed" else 1
+
+
+def _evidence_store(args):
+    if getattr(args, "store", None):
+        return Path(os.path.abspath(os.path.expanduser(args.store)))
+    return _private_dir("evidence") / "evidence.db"
+
+
+def _keep_evidence(args, result, root, language):
+    """Record a probe result for later SQL; a failure to save never changes the result."""
+    from peeky import evidence
+
+    try:
+        path = _evidence_store(args)
+        run_id = evidence.record(
+            path, result, language=language, target=root, label=args.label, worker=args.worker
+        )
+    except Exception as exc:
+        result.setdefault("warnings", []).append(f"Evidence was not saved: {exc}")
+        return
+    result["evidence"] = {
+        "run_id": run_id,
+        "store": str(path),
+        "next": f"peeky queries run --param run={run_id}",
+    }
+
+
+def _probe_text(result):
+    text = _table(result)
+    if saved := result.get("evidence"):
+        text += (
+            f"\nevidence: saved as run {saved['run_id']}; query it with `{saved['next']}` or "
+            "`peeky sql` (see `peeky sql --schema`)"
+        )
+    return text
+
+
+def sql(args):
+    from peeky import evidence
+
+    path = _evidence_store(args)
+    if args.schema:
+        if args.query:
+            raise ValueError("Pass either SQL or --schema, not both")
+        _emit(evidence.schema(path), args.json, evidence.schema_text)
+        return 0
+    if not args.query:
+        raise ValueError(
+            'peeky sql needs one SELECT, e.g. peeky sql "SELECT * FROM last_run"; '
+            "`peeky sql --schema` lists the tables"
+        )
+    result = evidence.query(path, args.query, evidence.parse_params(args.param), limit=args.limit)
+    _emit({**result, "store": str(path)}, args.json, evidence.table)
+    return 0
+
+
+def queries(args):
+    from peeky import evidence
+
+    path = _evidence_store(args)
+    if args.name is None:
+        listed = evidence.schema(path)["queries"]
+        _emit(
+            listed,
+            args.json,
+            lambda listed: "\n".join(
+                f"{name}: {info['description']}"
+                + "".join(f"\n  --param {p}=...  {d}" for p, d in info["params"].items())
+                for name, info in listed.items()
+            ),
+        )
+        return 0
+    result = evidence.run_query(
+        path, args.name, evidence.parse_params(args.param), limit=args.limit
+    )
+    _emit({**result, "query": args.name, "store": str(path)}, args.json, evidence.table)
+    return 0
 
 
 class _Remote:
@@ -841,6 +925,14 @@ def _probe_remote(args, root, request):
         expect_sha256=expected,
     )
     result["worker"] = args.worker
+    # Evidence is recorded here, on the client; anything the worker reports about its own
+    # store would point at runs that do not exist locally.
+    result.pop("evidence", None)
+    result["warnings"] = [
+        warning
+        for warning in result.get("warnings") or []
+        if not warning.startswith("Evidence was not saved")
+    ]
     ran = bool(result.get("hits") or result.get("rows") or result.get("output"))
     try:
         # Defense in depth: also compare what the worker reports having run.
@@ -1294,6 +1386,18 @@ def main(argv=None, _job=False, _edits=None):
             sub.add_argument("--config", help="Trusted target JSON (required for Java)")
         sub.add_argument("--json", action="store_true", help="Machine-readable output")
 
+    def evidence_store(sub):
+        sub.add_argument(
+            "--store", help="Evidence database (default: $PEEKY_STATE_DIR/evidence/evidence.db)"
+        )
+
+    def queried(sub):
+        sub.add_argument(
+            "--param", action="append", default=[], help="name=value for :name (repeatable)"
+        )
+        sub.add_argument("--limit", type=int, default=200, help="Most rows to return (max 10000)")
+        evidence_store(sub)
+
     sub = commands.add_parser("describe", help="Manifest: language, breakpoint lines, views")
     common(sub)
     sub.add_argument("--at", help="Program path (for multi-file targets)")
@@ -1327,7 +1431,23 @@ def main(argv=None, _job=False, _edits=None):
         "(auto: hits for attached JVMs, else exit)",
     )
     sub.add_argument("--quiet", action="store_true", help="No progress messages on stderr")
+    sub.add_argument("--label", help="Tag this run in the evidence store (e.g. input=empty)")
+    sub.add_argument(
+        "--no-save", action="store_true", help="Do not record this run in the evidence store"
+    )
+    evidence_store(sub)
     background(sub)
+    sub = commands.add_parser("sql", help="Read-only SQL over saved probe evidence")
+    common(sub, target=False)
+    sub.add_argument("query", nargs="?", help='One SELECT, e.g. "SELECT * FROM last_run"')
+    sub.add_argument(
+        "--schema", action="store_true", help="Tables, columns, canned queries and examples"
+    )
+    queried(sub)
+    sub = commands.add_parser("queries", help="Canned evidence queries: no SQL needed")
+    common(sub, target=False)
+    sub.add_argument("name", nargs="?", help="Query to run; omit to list them")
+    queried(sub)
     sub = commands.add_parser("session", help="Step-by-step debugging across commands")
     actions = sub.add_subparsers(dest="action", required=True)
     start = actions.add_parser("start", help="Build, launch and run to --at")
@@ -1388,6 +1508,8 @@ def main(argv=None, _job=False, _edits=None):
     handlers = {
         "describe": describe,
         "probe": probe,
+        "sql": sql,
+        "queries": queries,
         "session": session,
         "verify": verify,
         "job": job,

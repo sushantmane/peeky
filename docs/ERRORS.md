@@ -26,7 +26,8 @@ Every Peeky failure, from the HTTP worker, the SDK (`peeky.errors.PeekyError`) o
 | `BUSY` | Another probe is running on this worker | Retry later |
 | `UNSUPPORTED` | Operation or capability not offered | Call `version` |
 | `UNAUTHORIZED` | Missing or wrong bearer token | Use the worker's `DEBUG_TOKEN` |
-| `INVALID_REQUEST` | Malformed arguments | Fix the request |
+| `INVALID_REQUEST` | Malformed arguments, or an evidence store that cannot be used | Fix the request; for a store, move it aside or pass `--store` |
+| `INVALID_QUERY` | `peeky sql`/`peeky queries`: bad SQL, a write, a missing `--param`, or a query over its time bound | Fix the query; `peeky sql --schema` lists tables, columns and canned queries |
 | `INTERNAL_ERROR` | A Peeky bug (unexpected exception type) | Report it with the message; do not retry or change your request |
 | `UNREACHABLE` | No connection reached the worker (tunnel or worker down); nothing was applied | Restore the tunnel/worker and retry; the session is kept |
 | `TRANSPORT_LOST` | The connection broke mid-request; outcome unknown | Reconnect, then `inspect`/`wait`; never repeat a mutation blindly |

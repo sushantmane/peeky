@@ -348,3 +348,72 @@ def test_multi_source_targets_describe_all_sources_and_never_traceback(
     monkeypatch.setattr(cli, "probe", broken)
     code, out = run(capsys, "probe", workspace / "pagination_bug.py", "--at", "7", "--json")
     assert code == 2 and json.loads(out.out)["error"]["message"] == "internal bug"
+
+
+def test_probes_save_evidence_that_sql_and_canned_queries_read(workspace, capsys):
+    program = workspace / "pagination_bug.py"
+    probe = ["probe", program, "--at", "8", "--capture", "start,items[1]", "--quiet"]
+    code, out = run(capsys, *probe, "--label", "baseline", "--json")
+    saved = json.loads(out.out)["evidence"]
+    assert code == 0 and saved["run_id"] == 1 and saved["next"].startswith("peeky queries run")
+    code, out = run(capsys, *probe, "--set", "start=0")
+    assert code == 0 and "evidence: saved as run 2" in out.out
+    code, out = run(
+        capsys,
+        "sql",
+        "SELECT run_id, label, selector, value, num FROM evidence WHERE phase = 'observed' "
+        "AND selector = :name ORDER BY run_id",
+        "--param",
+        "name=start",
+        "--json",
+    )
+    rows = json.loads(out.out)["rows"]
+    assert code == 0 and rows == [
+        {"run_id": 1, "label": "baseline", "selector": "start", "value": "3", "num": 3.0},
+        {"run_id": 2, "label": None, "selector": "start", "value": "3", "num": 3.0},
+    ]
+    code, out = run(capsys, "queries", "outputs", "--json")
+    outputs = [row["output"] for row in json.loads(out.out)["rows"]]
+    assert code == 0 and outputs == ["PAGE: [40, 50, 60]\n", "PAGE: [10, 20, 30]\n"]
+    code, out = run(capsys, "queries", "set_effect")
+    assert code == 0 and "start: 3 -> 0" in out.out
+    code, out = run(capsys, "sql", "DELETE FROM runs", "--json")
+    assert code == 2 and json.loads(out.out)["error"]["code"] == "INVALID_QUERY"
+    code, out = run(capsys, "sql", "--schema", "--json")
+    assert code == 0 and "captures" in json.loads(out.out)["tables"]
+    assert "diff" in run(capsys, "queries")[1].out
+
+
+def test_unsaved_and_unsaveable_probes_still_answer(workspace, capsys):
+    program = workspace / "pagination_bug.py"
+    probe = ["probe", program, "--at", "8", "--capture", "start", "--quiet", "--json"]
+    code, out = run(capsys, *probe, "--no-save")
+    assert code == 0 and "evidence" not in json.loads(out.out)
+    assert not (workspace / "state" / "evidence").exists()
+    broken = workspace / "broken.db"
+    broken.write_text("not a database")
+    code, out = run(capsys, *probe, "--store", broken)
+    result = json.loads(out.out)
+    assert code == 0 and result["rows"][0]["value"] == "3" and "evidence" not in result
+    assert any(w.startswith("Evidence was not saved") for w in result["warnings"])
+    assert broken.read_text() == "not a database"
+    code, out = run(capsys, "probe", program, "--at", "8", "--label", "x" * 201)
+    assert code == 2 and "--label" in out.err
+
+
+def test_background_probes_save_evidence_too(workspace, capsys):
+    program = workspace / "pagination_bug.py"
+    code, out = run(capsys, "probe", program, "--at", "8", "--capture", "page", "--background")
+    job = out.out.split()[1]
+    for _ in range(60):
+        code, out = run(capsys, "job", "wait", job, "--timeout", "5")
+        if code != 3:
+            break
+    assert code == 0 and "evidence: saved as run 1" in out.out
+    code, out = run(capsys, "queries", "run", "--param", "run=1", "--json")
+    assert json.loads(out.out)["rows"][0]["value"] == "1"
+
+
+def test_describe_points_agents_at_the_evidence_store(workspace, capsys):
+    code, out = run(capsys, "describe", workspace / "pagination_bug.py", "--json")
+    assert code == 0 and "peeky sql" in json.loads(out.out)["commands"]["evidence"]

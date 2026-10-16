@@ -4,6 +4,7 @@ The relay process stands in for an SSH local forward: it listens on loopback and
 pipes bytes to the worker's loopback port. Killing it models a dropped tunnel.
 """
 
+import hashlib
 import json
 import os
 import shutil
@@ -80,7 +81,11 @@ def remote(tmp_path, monkeypatch):
     processes = []
 
     def worker(*extra):
-        env = {**os.environ, "DEBUG_TOKEN": TOKEN}
+        env = {
+            **os.environ,
+            "DEBUG_TOKEN": TOKEN,
+            "PEEKY_STATE_DIR": str(tmp_path / "worker-state"),
+        }
         env.pop("PEEKY_WORKER_TOKEN", None)
         command = [sys.executable, "-m", "peeky.worker", "--root", str(host), "--port", "0"]
         process, banner = spawn([*command, *extra], env)
@@ -293,3 +298,46 @@ def test_a_local_launch_failure_is_a_closed_session_and_gone_workers_can_be_forg
     code, out = run(capsys, "session", "close", "--forget")
     assert code == 0 and "forgot default" in out.out
     assert not (Path(os.environ["PEEKY_STATE_DIR"]) / "sessions/default.json").exists()
+
+
+def test_remote_probes_are_recorded_by_the_client_only(remote, capsys, tmp_path):
+    host, local, worker, relay = remote
+    _, worker_port = worker()
+    url = f"http://127.0.0.1:{worker_port}"
+    probe = ["probe", local / "pagination_bug.py", "--at", "8", "--capture", "start"]
+    code, out = run(capsys, *probe, "--worker", url, "--no-save")
+    assert code == 0 and "evidence:" not in out.out
+    code, out = run(capsys, *probe, "--worker", url, "--json")
+    result = json.loads(out.out)
+    assert code == 0 and result["evidence"]["run_id"] == 1
+    assert not any("Evidence" in warning for warning in result["warnings"])
+    code, out = run(capsys, "sql", "SELECT worker, status FROM runs", "--json")
+    assert json.loads(out.out)["rows"] == [{"worker": url, "status": "completed"}]
+    # The worker host keeps no evidence: its HTTP probes stay stateless.
+    assert not (tmp_path / "worker-state" / "evidence").exists()
+
+
+def test_worker_side_evidence_never_reaches_the_client_result(remote, capsys, monkeypatch):
+    host, local, worker, relay = remote
+    digest = hashlib.sha256((local / "pagination_bug.py").read_bytes()).hexdigest()
+
+    class Worker:
+        def probe(self, *args, **kwargs):
+            return {
+                "probe": {"program": "pagination_bug.py", "line": 8},
+                "status": "completed",
+                "hits": 1,
+                "rows": [],
+                "interventions": [],
+                "output": "",
+                "source_sha256": digest,
+                "evidence": {"run_id": 41, "store": "/worker/evidence.db"},
+                "warnings": ["Evidence was not saved: worker disk full", "kept"],
+            }
+
+    monkeypatch.setattr("peeky.cli._remote", lambda url: (Worker(), TOKEN))
+    probe = ["probe", local / "pagination_bug.py", "--at", "8", "--json"]
+    result = json.loads(run(capsys, *probe, "--worker", "http://127.0.0.1:1", "--no-save")[1].out)
+    assert "evidence" not in result and result["warnings"] == ["kept"]
+    result = json.loads(run(capsys, *probe, "--worker", "http://127.0.0.1:1")[1].out)
+    assert result["evidence"]["run_id"] == 1 and result["warnings"] == ["kept"]

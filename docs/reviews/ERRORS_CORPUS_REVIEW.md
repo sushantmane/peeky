@@ -152,3 +152,17 @@ The docs now recommend `ssh -o ExitOnForwardFailure=yes` and distinguish a close
 **Verification review of 9640607:** no blocking issues. Two follow-ups are fixed:
 - **Medium:** a local launch failure was still classified as `UNREACHABLE`/`TRANSPORT_LOST`, because the wrapped message kept the transport text. It is reworded (the cause is kept via `from exc`) and classifies as `DEBUGGER_ERROR` with `session_closed: true`. `_start` uses the local-worker client from the first wait.
 - **Low:** a remote session whose worker is gone for good could not be closed. `session close --forget` drops the record without contacting the worker, and the `UNREACHABLE` hint mentions it.
+
+## PR #35: captured-evidence store (`peeky sql`, `peeky queries`)
+
+**Independent review of 88086e6.** The read-only enforcement held: `VACUUM INTO`, `ATTACH`, every pragma outside the whitelist (including the `pragma_*` functions), `ANALYZE`, `REINDEX` and `load_extension` were refused, and stores under paths containing `?#%` worked. Four findings, all fixed, each with a regression test:
+- **Blocking:** the worker's HTTP probe process ran `peeky probe`, so it saved on the worker host and its `evidence` key reached the client. With `--no-save` the client then claimed a saved run that did not exist locally. The worker now passes `--no-save`, and `_probe_remote` drops worker evidence fields and worker save warnings (`test_remote_probes_are_recorded_by_the_client_only`, `test_worker_side_evidence_never_reaches_the_client_result`).
+- **Should-fix:** program output over 1 MB made the insert fail, losing the whole run. The length limit now applies only to query connections, and stored output is cut to 1 MB with `output_truncated` set (`test_large_program_output_is_kept_within_the_value_bound`).
+- **Should-fix:** queries opened the store read-write and created a missing one. A read-only store failed as `DEBUGGER_ERROR`, and a mistyped `--store` silently returned 0 rows. Queries now open the store read-only directly; a missing, empty or unreadable store is an `Evidence store` `INVALID_REQUEST` (`test_queries_never_create_or_write_the_store`).
+- **Should-fix:** total result size was unbounded (rows × columns × 1 MB). Rows are now fetched one at a time under a 16 MB budget (`truncated_by: size`), with SQLite's column limit set to 100 (`test_the_whole_result_and_its_width_are_bounded`).
+
+**Verification review of 3de9bef:** no blocking issues; fix 1 (client-only recording) is correct and complete. One should-fix and three nits, all fixed:
+- **Should-fix:** output cut to exactly the 1 MB read limit made sorts, `DISTINCT` and `GROUP BY` over rows carrying it fail ("string or blob too big"). Stored output is now cut to 256 KB, leaving headroom (`test_large_program_output_is_stored_with_room_to_sort_and_group`).
+- **Nit:** a save killed mid-transaction left a hot journal that a read-only connection cannot roll back (`SQLITE_READONLY_ROLLBACK`), and the hint suggested moving the store aside. The query now restores the last committed state through a `mode=rw` connection (which never creates files) and reopens read-only (`test_a_save_killed_midway_is_recovered_by_the_next_query`).
+- **Nit:** the 16 MB budget counted characters. It now counts emitted JSON bytes, so escaped non-ASCII text and hex blobs are included.
+- **Nit:** an unsearchable store directory raised `PermissionError`, which was classified as `DEBUGGER_ERROR`. It is now an `Evidence store` `INVALID_REQUEST` (`test_an_unsearchable_store_directory_is_a_store_error`).
