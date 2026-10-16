@@ -23,6 +23,19 @@ CI starts quality, unit, Python 3.11/3.13 debugger integration, and wheel smoke 
 
 Direct runtime and development versions are pinned. Keep the dev extra and `requirements-dev.txt` aligned. Actions are pinned by commit SHA and updated by Dependabot. Transitive pip dependencies are not yet locked; a full lock is a follow-up if reproducibility requires it.
 
+## CI's Linux lanes on your machine
+
+When hosted CI cannot run (it was blocked by a GitHub billing hold on 2026-10-16), run the same Linux lanes in Docker. You need Docker or OrbStack; the debugger needs `SYS_PTRACE`:
+
+```sh
+docker build -t peeky-ci-linux scripts/ci_linux
+git archive HEAD | docker run --rm -i --cap-add=SYS_PTRACE --security-opt seccomp=unconfined \
+  peeky-ci-linux bash -c 'mkdir /w && tar -x -C /w && cd /w && scripts/ci_linux/run_lanes.sh'
+PEEKY_E2E_DOCKER=1 pytest tests/remote   # the remote SSH lane, on the host
+```
+
+It runs quality, unit, integration, C, C++, Rust, Java and wheel smoke against the committed tree (`git archive HEAD`), and prints one `PASS`/`FAIL` line per lane. The tree goes in through stdin rather than a bind mount: OrbStack bind mounts from protected folders such as `~/Documents` can hang. The image uses your machine's architecture (arm64 on Apple Silicon); hosted CI is x86_64.
+
 ## Delivery
 
 The manual `Build private artifact` workflow checks out the selected revision, reruns checks, builds distributions, smoke-tests the installed wheel, and retains them as a private repository artifact for seven days. It does not publish to a registry or deploy a worker. Run the normal CI workflow on the revision before sharing an artifact. Production deployment and release automation are later milestones and require their own environment and rollback design.
