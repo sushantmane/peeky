@@ -15,7 +15,6 @@ import json
 import re
 import sys
 import time
-import warnings
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -36,7 +35,9 @@ MAX_SECONDS = 300
 HTTP_PROBE_SECONDS = 40
 _INDEX = re.compile(r"\[?([0-9]{1,6})\]?")
 # A quoted string key, as written in a selector and as debugpy names mapping entries.
-_KEY_LITERAL = r"'(?:[^'\\\n]|\\.){0,256}'" + "|" + r'"(?:[^"\\\n]|\\.){0,256}"'
+# Escapes Python accepts without a warning; anything else (`\d`, `\777`) is refused.
+_ESCAPE = r"""\\(?:[\\'"abfnrtv]|[0-3][0-7]{2}|[0-7]{1,2}(?![0-7])|x[0-9a-fA-F]{2}|u[0-9a-fA-F]{4}|U[0-9a-fA-F]{8}|N\{[A-Z0-9 -]{1,88}\})"""
+_KEY_LITERAL = rf"'(?:[^'\\\n]|{_ESCAPE}){{0,256}}'" + "|" + rf'"(?:[^"\\\n]|{_ESCAPE}){{0,256}}"'
 # One selector step: `.name`, `[3]`, `[-1]`, or a quoted string key `['id']` / `["id"]`.
 _STEP = re.compile(
     r"\.(?P<name>[A-Za-z_][A-Za-z0-9_]{0,127})"
@@ -87,14 +88,40 @@ _SELECTOR_HELP = (
 )
 
 
+def split_selectors(text):
+    """`--capture` text -> selectors, splitting on commas outside quoted keys."""
+    parts, current, quote, escaped = [], [], None, False
+    for char in text:
+        if quote is not None:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = None
+        elif char in "'\"":
+            quote = char
+        elif char == ",":
+            parts.append("".join(current))
+            current = []
+            continue
+        current.append(char)
+    parts.append("".join(current))
+    return tuple(part.strip() for part in parts if part.strip())
+
+
 def _literal(text):
-    """A quoted string literal's value; invalid escapes are errors, not warnings."""
-    with warnings.catch_warnings():
-        warnings.simplefilter("error")
-        try:
-            return ast.literal_eval(text)
-        except (ValueError, SyntaxError, Warning) as exc:
-            raise ValueError(str(exc)) from None
+    """The value of a quoted string literal that matched _KEY_LITERAL.
+
+    Its escapes are pre-validated by the pattern, so evaluation never warns; the
+    process-global warnings filters are left alone (HTTP handlers run in threads).
+    """
+    if not _KEY_NAME.fullmatch(text):
+        raise ValueError(f"not a plain quoted string: {text[:40]}")
+    try:
+        return ast.literal_eval(text)
+    except (ValueError, SyntaxError) as exc:
+        raise ValueError(str(exc)) from None
 
 
 def _key(segment):
@@ -208,22 +235,25 @@ def _resolve(worker, stop, snapshot, segments):
         if segment.startswith("[-"):
             variable = _from_end(worker, stop, variable, int(segment[2:-1]), segment)
             continue
+        key = _key(segment)
         found, start, incomplete, children = None, 0, False, []
-        while found is None:
+        while found is None or key is not None:
             page = worker.dispatch("expand", {**stop, "handle": handle, "start": start})
             children.extend(page["variables"])
-            found = next((v for v in page["variables"] if _names(v, segment)), None)
-            if found is not None or not page["truncated"]:
+            if found is None:
+                found = next((v for v in page["variables"] if _names(v, segment)), None)
+            # A key is accepted only after every listed entry was seen: debugpy shows a
+            # later entry whose repr repeats an earlier one as "<repr> (id: N)".
+            if (found is not None and key is None) or not page["truncated"]:
                 break
             if start + 64 > 511 or page.get("remaining_nodes", 1) <= 0:
                 incomplete = True
                 break
             start += 64
-        if found is None and incomplete:
+        if (found is None or key is not None) and incomplete:
             raise ValueError(
                 f"{_shown(segment)} is beyond the bounded inspection window (512 children)"
             )
-        key = _key(segment)
         if found is None and segment.startswith("[") and key is None:
             length = _declared_length(variable, children)
             if any(child["name"] == "more" for child in children) or (
@@ -236,15 +266,20 @@ def _resolve(worker, stop, snapshot, segments):
                     + (f" (the sequence has {length} elements)" if length is not None else "")
                     + "; capture a smaller index or a slice-sized field instead"
                 )
-        if found is None and key is not None and any(_partial(c) for c in children):
+        if found is None and key is not None and _partial(children):
             raise ValueError(
                 f"{_shown(segment)} is not among the entries the debugger lists for "
                 f"{variable['name']!r} (it shows only part of a large mapping)"
             )
         if found is None:
             raise ValueError(_not_found(variable, segment, children))
-        if key is not None and sum(_names(child, segment) for child in children) > 1:
-            # Keys are matched by their repr; two entries with the same repr (an object
+        if key is not None and any(
+            child["name"].startswith(f"{key} (id: ")
+            or child is not found
+            and _names(child, segment)
+            for child in children
+        ):
+            # Keys are matched by their repr; entries whose keys share a repr (an object
             # whose __repr__ mimics a string) cannot be told apart.
             raise ValueError(f"{_shown(segment)} is ambiguous: several entries display as {key}")
         variable = found
@@ -271,9 +306,20 @@ def _shown(segment):
     return segment if segment.startswith("[") else repr(segment)
 
 
-def _partial(child):
-    """debugpy's marker for a mapping too large to list in full."""
-    return child["name"] == "more" or child["name"].startswith("Too large")
+# debugpy lists at most 500 mapping entries, then a child with one of these names.
+_PARTIAL_MARKERS = ("Unable to handle:", "Too large", "more")
+
+
+def _partial(children):
+    """Whether debugpy listed only part of a mapping: its truncation marker, or fewer
+    entries than the mapping's own `len()`."""
+    if any(child["name"].startswith(_PARTIAL_MARKERS) for child in children):
+        return True
+    entries = [c for c in children if c["name"] not in _GROUPS and c["name"] != "len()"]
+    for child in children:
+        if child["name"] == "len()" and re.fullmatch(r"[0-9]{1,9}", str(child.get("value"))):
+            return int(child["value"]) > len(entries)
+    return False
 
 
 def _not_found(variable, segment, children):
@@ -441,7 +487,15 @@ def _capture(worker, stop, selectors, hit, phase, snapshot=None, children=False)
                 row["view"] = variable["view"]
             if children and variable.get("variablesReference"):
                 try:
-                    row.update(_children(worker, stop, selector, variable))
+                    try:
+                        row.update(_children(worker, stop, selector, variable))
+                    except ValueError as exc:
+                        if not _BUDGET.search(str(exc)):
+                            raise
+                        # As for values: a fresh inspection restores the node budget.
+                        snapshot = worker.dispatch("inspect", stop)
+                        variable = _resolve(worker, stop, snapshot, parse_selector(selector))
+                        row.update(_children(worker, stop, selector, variable))
                 except ValueError as exc:
                     row["children_error"] = str(exc)
         rows.append(row)
@@ -474,6 +528,8 @@ def _children(worker, stop, selector, variable):
         if child["name"] in _GROUPS:
             continue
         entry = {"name": child["name"], "type": child.get("type"), "value": child.get("value")}
+        if child.get("unavailable"):
+            entry.update(unavailable=True, reason=child.get("reason"))
         if path := _child_selector(selector, child["name"]):
             entry["selector"] = path
         if child.get("variablesReference"):
@@ -790,7 +846,7 @@ def main(argv=None):
         probe = Probe(
             program,
             line,
-            tuple(s.strip() for s in args.capture.split(",") if s.strip()),
+            split_selectors(args.capture),
             tuple(changes),
             args.hits,
             args.timeout,

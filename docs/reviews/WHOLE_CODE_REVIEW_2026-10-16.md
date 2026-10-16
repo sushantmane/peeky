@@ -77,3 +77,16 @@ Three should-fix issues and three nits, all fixed:
 - **Should-fix:** section 3.1 built a command in `$P`, which zsh does not split into words. It now uses a shell function.
 - **Should-fix:** run records showed the requested `--arg` list, not what the program received. The launch reply now carries `program_args` (per-run arguments, else the configured ones), and `target_identity.arguments` matches it. `runs.args` records that list, falls back to the requested one when launch failed, and is NULL for an attached JVM, whose arguments are unknown (`test_runs_record_the_arguments_the_program_received`, plus real Java, C and Rust assertions in the per-run argument tests).
 - **Nits:** the troubleshooting row now says values come from the line named in the warning (Python moves breakpoints back, LLDB forward); the gdb table no longer maps `finish` to `continue`; the `--arg` help no longer says "Python:".
+
+## Review of the evaluation-fixes PR (#44, 57fea56)
+
+One blocking issue, three should-fix issues and three nits. All are fixed, each with a regression test (real debugpy where it matters):
+- **Blocking:** debugpy 1.8 lists the first 500 entries of a dict, then a child named `Unable to handle:`, a marker the partial-mapping guard did not recognise. So `big['k502']` in a 505-entry dict was reported as not found. Now that marker, the older markers, or a `len()` larger than the number of listed entries all mean "only part of a large mapping" (`test_mapping_keys_never_read_the_wrong_entry`, `test_keys_missing_from_a_partial_mapping_are_not_called_absent`).
+- **Should-fix:** debugpy never gives two children the same name. A later key with the same repr appears as `"'a' (id: N)"`, so the ambiguity check could not fire, and `w['a']` read the entry of an object whose `__repr__` returns `'a'`. A key is now accepted only after every page of entries has been seen, and any `<repr> (id: …)` sibling makes it ambiguous (`test_a_key_whose_repr_is_shared_is_ambiguous_on_any_page`, plus the real-debugpy case).
+- **Should-fix:** `session get` now lists children, and one child name or type over 2000 characters (a dict keyed by a long string) raised a session-closing error. Over-long child identities are now shown as a non-expandable, non-selectable placeholder (`<3002-character name>`); root locals still fail closed.
+- **Should-fix:** the `inspect` hint ignored `--name`, so following it read another session. It now includes `--name` when the session is not `default`.
+- **Nits:**
+  - A child listing that hits the node budget is retried once on a fresh inspection, as values already are.
+  - `--capture` splits on commas outside quoted keys, so `d['a,b']` works locally and through the worker's probe subprocess.
+  - Key escapes are validated by pattern (no `\d`, `\777` or unknown `\N{}`) instead of process-global warning filters, which HTTP handler threads could race on. 20k random keys round-trip.
+  - Unreadable children show `<no readable value: reason>` instead of `None`.

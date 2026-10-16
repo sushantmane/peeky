@@ -925,7 +925,23 @@ class DebugWorker:
             if not isinstance(name, str) or (kind is not None and not isinstance(kind, str)):
                 raise RuntimeError("Malformed debugger variable identity")
             if len(name) > 2000 or (kind is not None and len(kind) > 2000):
-                raise RuntimeError("Debugger variable identity exceeds limit")
+                if not ancestry:
+                    raise RuntimeError("Debugger variable identity exceeds limit")
+                # A child (a dict entry keyed by a long string, a long C++ type) is shown
+                # without its full identity: never expandable or selectable, and the
+                # session survives.
+                result.append(
+                    {
+                        "name": name if len(name) <= 2000 else f"<{len(name)}-character name>",
+                        "value": str(variable.get("value", ""))[:2000],
+                        "variablesReference": 0,
+                        **({"type": kind[:200] + "…"} if kind and len(kind) > 2000 else {}),
+                        **({"type": kind} if kind and len(kind) <= 2000 else {}),
+                        "identity_truncated": True,
+                    }
+                )
+                self.inspection_nodes += 1
+                continue
             view = view_variable(variable, self.view_fetch) if view_variable else None
             if view is not None:
                 # Interpreted values never carry expansion handles to raw storage.

@@ -476,3 +476,47 @@ def test_mapping_keys_are_selectors_in_probes_and_sessions(workspace, capsys):
     code, out = run(capsys, "session", "get", "amount", "missing")
     assert code == 1 and "amount: int = 14" in out.out and "not found" in out.out
     assert run(capsys, "session", "close")[0] == 0
+
+
+MAPPINGS = """class K:
+    def __repr__(self):
+        return "'a'"
+
+
+def look():
+    big = {f"k{i}": i for i in range(505)}
+    twins = {K(): "weird", "a": "real-a"}
+    longkey = {"x" * 3000: 1, "short": 2}
+    commas = {"a,b": 7}
+    return big, twins, longkey, commas
+
+
+look()
+"""
+
+
+def test_mapping_keys_never_read_the_wrong_entry(workspace, capsys):
+    (workspace / "maps.py").write_text(MAPPINGS)
+    program = workspace / "maps.py"
+    selectors = "big['k3'],big['k499'],big['k502'],twins['a'],commas['a,b']"
+    code, out = run(
+        capsys, "probe", program, "--at", "11", "--capture", selectors, "--json", "--no-save"
+    )
+    rows = {row["selector"]: row for row in json.loads(out.out)["rows"]}
+    assert code == 0 and rows["big['k3']"]["value"] == "3" and rows["big['k499']"]["value"] == "499"
+    # debugpy lists 500 entries: a later key is unknown, never "not found".
+    assert "only part of a large mapping" in rows["big['k502']"]["error"]
+    # Two keys share the repr 'a': refused instead of reading whichever is listed first.
+    assert "ambiguous" in rows["twins['a']"]["error"]
+    assert rows["commas['a,b']"]["value"] == "7"
+
+    assert run(capsys, "session", "start", program, "--at", "11", "--name", "maps")[0] == 0
+    assert "(children: peeky session get big --name maps)" in (
+        run(capsys, "session", "inspect", "--name", "maps")[1].out
+    )
+    # A child whose name is too long to carry is shown, not fatal to the session.
+    code, out = run(capsys, "session", "get", "longkey", "--name", "maps")
+    assert code == 0 and "<3002-character name> [not selectable]: int = 1" in out.out
+    assert "longkey['short']: int = 2" in out.out
+    assert run(capsys, "session", "get", "longkey['short']", "--name", "maps")[0] == 0
+    assert run(capsys, "session", "close", "--name", "maps")[0] == 0

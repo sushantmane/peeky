@@ -29,7 +29,7 @@ from pathlib import Path
 
 from peeky.client import Client
 from peeky.errors import PROTOCOL_VERSION
-from peeky.probe import Probe, _capture, _table, parse_selector, run_probe
+from peeky.probe import Probe, _capture, _table, parse_selector, run_probe, split_selectors
 
 RUST_VERSION = "1.96.0"
 
@@ -553,7 +553,7 @@ def probe(args):
     request = Probe(
         program,
         line,
-        tuple(s.strip() for s in args.capture.split(",") if s.strip()),
+        split_selectors(args.capture),
         _sets(args.set),
         args.hits,
         args.timeout,
@@ -811,7 +811,7 @@ def _stop(record):
     return {"session_id": record["session_id"], "stop_id": record["stop_id"]}
 
 
-def _variables_text(snapshot):
+def _variables_text(snapshot, name="default"):
     frame = snapshot["frames"][0] if snapshot["frames"] else {}
     where = snapshot.get("location") or f"{frame.get('source', {}).get('path')}:{frame.get('line')}"
     lines = [f"stopped at {where}" + _pause_text(snapshot)]
@@ -819,7 +819,8 @@ def _variables_text(snapshot):
         lines.append(f"[{scope['name']}]")
         for variable in scope["variables"]:
             more = (
-                f" (children: peeky session get {variable['name']})"
+                f" (children: peeky session get {variable['name']}"
+                + (f" --name {name})" if name != "default" else ")")
                 if variable.get("variablesReference")
                 else ""
             )
@@ -844,7 +845,12 @@ def _get_lines(row):
     for child in row.get("children", []):
         name = child.get("selector") or f"{child['name']} [not selectable]"
         more = "  (expandable)" if child.get("expandable") else ""
-        lines.append(f"  {name}: {child.get('type') or ''} = {child.get('value')}{more}")
+        value = (
+            f"<no readable value: {child.get('reason')}>"
+            if child.get("unavailable")
+            else child.get("value")
+        )
+        lines.append(f"  {name}: {child.get('type') or ''} = {value}{more}")
     if row.get("children_truncated"):
         lines.append("  ... more children; select one by name or index")
     if row.get("children_error"):
@@ -881,7 +887,7 @@ def session(args):
         _emit(state, args.json, _state_text)
     elif args.action == "inspect":
         snapshot = client.call("inspect", **_stop(record))
-        _emit(snapshot, args.json, _variables_text)
+        _emit(snapshot, args.json, lambda shown: _variables_text(shown, args.name))
     elif args.action == "get":
         rows = _capture(
             _Remote(client), _stop(record), tuple(args.selectors), 0, "observed", children=True

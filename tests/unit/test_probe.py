@@ -289,20 +289,42 @@ def test_missing_entries_list_what_is_there(selector, message):
     assert "special variables" not in str(caught.value)
 
 
-def test_a_key_shown_by_two_entries_is_ambiguous():
+class PagedTree(Tree):
+    """Children served 64 per page, as the worker does."""
+
+    def dispatch(self, operation, args):
+        children = self.tree[args["handle"]]
+        start = args.get("start", 0)
+        return {"variables": children[start : start + 64], "truncated": start + 64 < len(children)}
+
+
+def test_a_key_whose_repr_is_shared_is_ambiguous_on_any_page():
     from peeky.probe import _resolve
 
-    twins = [*ORDER_CHILDREN, {"name": "'id'", "type": "Fake", "value": "0"}]
+    # debugpy renames a later entry whose key has the same repr: "'id' (id: 4336031232)".
+    filler = [{"name": f"'k{i}'", "type": "int", "value": str(i)} for i in range(100)]
+    twins = [*ORDER_CHILDREN, *filler, {"name": "'id' (id: 4336031232)", "value": "'real'"}]
     with pytest.raises(ValueError, match="ambiguous"):
-        _resolve(Tree({1: twins}), {}, snapshot(ORDER), parse_selector("order['id']"))
+        _resolve(PagedTree({1: twins}), {}, snapshot(ORDER), parse_selector("order['id']"))
+    unique = [*ORDER_CHILDREN, *filler]
+    found = _resolve(PagedTree({1: unique}), {}, snapshot(ORDER), parse_selector("order['k99']"))
+    assert found["value"] == "99"
 
 
-def test_keys_missing_from_a_partial_mapping_are_not_called_absent():
+@pytest.mark.parametrize(
+    "listing",
+    [
+        # debugpy 1.8 lists 500 entries, then this marker (pydevd_resolver.TOO_LARGE_ATTR).
+        [ORDER_CHILDREN[1], {"name": "Unable to handle:", "value": "Maximum number of items"}],
+        # Fewer entries than the mapping's own len(), whatever the marker.
+        [ORDER_CHILDREN[1], {"name": "len()", "type": "int", "value": "505"}],
+    ],
+)
+def test_keys_missing_from_a_partial_mapping_are_not_called_absent(listing):
     from peeky.probe import _resolve
 
-    partial = [ORDER_CHILDREN[1], {"name": "Too large to show contents. Max items to show: 300"}]
     with pytest.raises(ValueError, match="only part of a large mapping"):
-        _resolve(Tree({1: partial}), {}, snapshot(ORDER), parse_selector("order['zzz']"))
+        _resolve(Tree({1: listing}), {}, snapshot(ORDER), parse_selector("order['zzz']"))
 
 
 def test_rust_container_indexes_explain_what_is_unsupported():
@@ -382,3 +404,89 @@ def test_children_skip_debugger_groups_and_mark_expandable_entries():
     assert row["children"][-1]["expandable"] is True
     [row] = _capture(Worker({1: nested}), {}, ("order",), 0, "observed")
     assert "children" not in row
+
+
+@pytest.mark.parametrize(
+    "text, selectors",
+    [
+        ("a,b", ("a", "b")),
+        (" a , ,b ", ("a", "b")),
+        ("a,d['x,y'],c", ("a", "d['x,y']", "c")),
+        ('d["a,\\"b"],e', ('d["a,\\"b"]', "e")),
+        ("x['it\\'s,']", ("x['it\\'s,']",)),
+    ],
+)
+def test_capture_lists_split_on_commas_outside_quoted_keys(text, selectors):
+    from peeky.probe import split_selectors
+
+    assert split_selectors(text) == selectors
+    assert all(parse_selector(selector) for selector in selectors)
+
+
+@pytest.mark.parametrize(
+    "text, ok",
+    [
+        ("d['\\x41']", True),
+        ("d['\\N{BULLET}']", True),
+        ("d['\\u00e9\\t\\\\']", True),
+        ("d['\\377']", True),
+        ("d['\\d']", False),
+        ("d['\\777']", False),
+        ("d['\\8']", False),
+        ("d['\\N{NO SUCH CHARACTER NAME}']", False),
+    ],
+)
+def test_key_escapes_are_validated_without_touching_warning_filters(text, ok):
+    import warnings
+
+    before = list(warnings.filters)
+    if ok:
+        assert parse_selector(text)
+    else:
+        with pytest.raises(ValueError):
+            parse_selector(text)
+    assert warnings.filters == before
+
+
+def test_unreadable_children_keep_their_reason():
+    from peeky.cli import _get_lines
+    from peeky.probe import _children
+
+    children = [
+        {
+            "name": "t",
+            "type": "int",
+            "value": None,
+            "unavailable": True,
+            "reason": "error: variable not available",
+        }
+    ]
+    entry = _children(Tree({1: children}), {}, "s", {"variablesReference": 1})["children"][0]
+    assert entry["unavailable"] and entry["reason"] == "error: variable not available"
+    [_, line] = _get_lines(
+        {
+            "selector": "s",
+            "type": "S",
+            "value": "{...}",
+            **_children(Tree({1: children}), {}, "s", {"variablesReference": 1}),
+        }
+    )
+    assert "<no readable value: error: variable not available>" in line
+
+
+def test_child_listings_are_retried_on_a_fresh_inspection():
+    from peeky.probe import _capture
+
+    class Starved(Tree):
+        expansions = 0
+
+        def dispatch(self, operation, args):
+            if operation == "inspect":
+                return {**snapshot(ORDER), "frames": [{"line": 3, "name": "f"}]}
+            Starved.expansions += 1
+            if Starved.expansions == 1:
+                raise ValueError("Inspection node budget exhausted; inspect again")
+            return super().dispatch(operation, args)
+
+    [row] = _capture(Starved({1: ORDER_CHILDREN}), {}, ("order",), 0, "observed", children=True)
+    assert "children_error" not in row and row["children"][0]["selector"] == "order['id']"
