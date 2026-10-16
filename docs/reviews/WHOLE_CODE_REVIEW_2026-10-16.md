@@ -127,7 +127,12 @@ One blocking issue, three should-fix issues and three nits. All are fixed:
   - `decl_file` is the first one found along the origin chain, so optimized out-of-line constructors are listed.
 - **Nits:**
   - Names are decoded from dwarfdump's octal escapes (`größe`, `zähler`).
-  - Rust legacy symbols are named as LLDB names their frames (`peeky_pagination::Pager::pages`, `<peeky_pagination::Pager as core::fmt::Display>::fmt`, `…::{{closure}}`). This matches the probe's `function` column instead of DWARF's `{impl#0}`.
+  - Rust legacy symbols are demangled into readable names (`peeky_pagination::Pager::pages`, `<peeky_pagination::Pager as core::fmt::Display>::fmt`, `…::{{closure}}`) instead of DWARF's `{impl#0}`.
   - Copies are merged through their declaring DIE (C1/C2 constructors, inlined plus out-of-line copies). Identical entries from several units are listed once. Address-0 and tombstoned copies are skipped.
 
 Regression tests: `test_rows_belong_to_the_innermost_function_from_their_own_file`, `test_rust_symbols_are_demangled_like_lldb_frames` and `test_identical_scopes_from_several_units_are_listed_once`. The reviewer's C++ `always_inline`, C++ -O2 constructor, non-ASCII and Rust impl/closure/trait/`#[inline(always)]` cases were rerun with real toolchains.
+
+Verification of 81123e9 confirmed every fix on macOS and on Linux LLVM 18. Hosted CI could not start (a billing block), so the reviewer ran the Rust, C and C++ lanes in Docker. It found one more should-fix and two nits:
+- **Should-fix:** the docs claimed `describe` names match the probe's `function` column. Plain functions and methods match. Rust trait impls and closures keep LLDB's symbol escapes there, and C++ frames add signatures. The cookbook now says so and suggests `LIKE` in SQL.
+- **Nit:** a lambda inside a function that exists only inlined (-O1 or higher) lost its function name, because clang parents it under an empty placeholder. The name now comes from the lambda's Itanium local-entity symbol (`_ZZ11apply_twiceiE…`), giving `apply_twice::operator()` at -O2.
+- **Nit:** a single very large optimized C++ unit can exceed the 16 MB dump bound. Splitting by unit does not help there, since it is one unit. It fails closed with a visible reason, and the cookbook documents it.

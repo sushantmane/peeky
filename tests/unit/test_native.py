@@ -601,3 +601,39 @@ def test_identical_scopes_from_several_units_are_listed_once(tmp_path):
     second = second.replace("(0x00000080 ", "(0x00001080 ")
     scopes = function_scopes(info + second, line, tmp_path, ("app.cpp",))
     assert len(scopes) == 4
+
+
+@pytest.mark.parametrize(
+    "linkage, scope",
+    [
+        ("_ZZ11apply_twiceiENKUliE_clEi", "apply_twice"),
+        ("_ZZN3geo3Box4areaEvENKUlvE_clEv", "geo::Box::area"),
+        ("_ZZNK3geo3Box4areaEvE1x", "geo::Box::area"),
+        ("_ZZ4mainENK3$_0clEii", "main"),
+        ("_ZN3geo3Box4areaEv", None),
+        ("_ZZN3geoIiE", None),
+        (None, None),
+    ],
+)
+def test_local_entities_name_their_enclosing_function(linkage, scope):
+    from peeky.native import _local_scope
+
+    assert _local_scope(linkage) == scope
+
+
+def test_lambdas_under_an_inlined_only_function_keep_its_name(tmp_path):
+    from peeky.native import _dies, _qualified
+
+    # clang parents the lambda class under an empty subprogram when the enclosing
+    # function exists only inlined.
+    info = """0x0000000b: DW_TAG_compile_unit
+0x00000020:   DW_TAG_subprogram
+0x00000028:     DW_TAG_class_type
+0x00000030:       DW_TAG_subprogram
+                    DW_AT_linkage_name\t("_ZZ11apply_twiceiENKUliE_clEi")
+                    DW_AT_name\t("operator()")
+0x00000038:       NULL
+0x00000039:     NULL
+0x0000003a:   NULL
+"""
+    assert _qualified(_dies(info), 0x30) == "apply_twice::operator()"

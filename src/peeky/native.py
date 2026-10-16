@@ -300,8 +300,9 @@ _RUST_ESCAPES = {
 
 
 def _rust_name(linkage):
-    """A legacy-mangled Rust symbol without its hash, as LLDB names Rust frames
-    (`crate::Type::method`, `crate::main::{{closure}}`); None for anything else."""
+    """A legacy-mangled Rust symbol, readable and without its hash
+    (`crate::Type::method`, `<crate::T as Trait>::fmt`, `crate::main::{{closure}}`);
+    None for anything else."""
     if not linkage or not _RUST_LEGACY.fullmatch(linkage):
         return None
     rest, parts = linkage[3:-1], []
@@ -323,9 +324,31 @@ def _rust_name(linkage):
     return "::".join(parts[:-1])
 
 
+def _local_scope(linkage):
+    """The enclosing function of a C++ local entity (`_ZZ11apply_twiceiE…` names
+    `apply_twice`; `_ZZN3geo3Box4areaEvE…` names `geo::Box::area`), or None."""
+    if not linkage or not linkage.startswith("_ZZ"):
+        return None
+    rest, names = linkage[3:], []
+    nested = rest.startswith("N")
+    if nested:
+        rest = rest[1:].lstrip("KVr")
+    while rest[:1].isdigit():
+        digits = re.match(r"[0-9]+", rest)[0]
+        size = int(digits)
+        names.append(rest[len(digits) : len(digits) + size])
+        rest = rest[len(digits) + size :]
+        if not nested:
+            break
+    if not names or (nested and not rest.startswith("E")):
+        return None
+    return "::".join(names)
+
+
 def _qualified(dies, offset, depth=0):
     chain = _chain(dies, offset)
-    if rust := _rust_name(_text(_first(dies, chain, "DW_AT_linkage_name"))):
+    linkage = _text(_first(dies, chain, "DW_AT_linkage_name"))
+    if rust := _rust_name(linkage):
         return rust
     origin = chain[-1]
     name = _text(dies[origin]["attrs"].get("DW_AT_name"))
@@ -337,8 +360,10 @@ def _qualified(dies, offset, depth=0):
         if die["tag"] in _QUALIFIERS and (outer := _text(die["attrs"].get("DW_AT_name"))):
             parts.append(outer)
         elif die["tag"] == "DW_TAG_subprogram" and depth < 8:
-            # A closure or lambda inside a function: `main::operator()`.
-            if outer := _qualified(dies, parent, depth + 1):
+            # A closure or lambda inside a function: `main::operator()`. A function that
+            # only exists inlined leaves an empty placeholder here; its name is then in
+            # the lambda's own local-entity symbol.
+            if outer := _qualified(dies, parent, depth + 1) or _local_scope(linkage):
                 parts.append(outer)
             break
         parent = die["parent"]

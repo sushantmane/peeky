@@ -83,7 +83,7 @@ probe: peeky probe examples/pagination_bug.py --at pagination_bug.py:<line> [--r
 
 For a large module, `--json` and `jq` find a function quickly: `peeky describe dir --at module.py --json | jq '.scopes[] | select(.scope | test("is_private"))'`.
 
-C, C++ and Rust list the same from the build's debug information: each function in your sources, with its file, lines and parameters and locals. Functions carry the names that probes show in their `function` column (Rust: `crate::Type::method`, `<crate::Type as core::fmt::Display>::fmt`). Closures and lambdas are listed under their function. A function inlined into another (`#[inline(always)]`, `always_inline`) keeps its own lines. If the debug information cannot be read, the text says `function names: unavailable (reason)`:
+C, C++ and Rust list the same from the build's debug information: each function in your sources, with its file, lines and parameters and locals. Names are readable (`crate::Type::method`, `<crate::Type as core::fmt::Display>::fmt`, `geo::Box::area`). A probe's `function` column keeps LLDB's frame name, which matches for plain functions and methods. For Rust trait impls and closures it keeps symbol escapes (`_$LT$…`, `_$u7b$$u7b$closure$u7d$$u7d$`), and for C++ it adds the signature, so match those in SQL with `LIKE '%fmt%'`. Closures and lambdas are listed under their function. A function inlined into another (`#[inline(always)]`, `always_inline`) keeps its own lines. If the debug information cannot be read, the text says `function names: unavailable (reason)`. A very large optimized C++ unit can exceed the 16 MB bound on reading it:
 
 ```
 names in parse_count (pagination_bug.c:6-14): end, minimum, result, text, value
