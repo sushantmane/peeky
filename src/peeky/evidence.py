@@ -145,6 +145,8 @@ def _shown(alias=""):
     return f"COALESCE({prefix}value, '<' || COALESCE({prefix}error, 'no value') || '>')"
 
 
+# Selectors a run asked for (runs.capture), whether or not it reached a capture.
+_ASKED = "(SELECT value FROM json_each((SELECT capture FROM runs WHERE run_id = {})))"
 _PAIR = f"""WITH a AS (SELECT hit, phase, selector, {_shown()} AS v, rowid AS pos FROM captures
     WHERE run_id = {_A}),
   b AS (SELECT hit, phase, selector, {_shown()} AS v, rowid AS pos FROM captures
@@ -153,8 +155,10 @@ _PAIR = f"""WITH a AS (SELECT hit, phase, selector, {_shown()} AS v, rowid AS po
   pair AS (SELECT k.hit, k.phase, k.selector, a.v AS value_a, b.v AS value_b,
     a.v IS NOT b.v AS differs, COALESCE(a.pos, b.pos) AS pos,
     CASE
-      WHEN k.selector NOT IN (SELECT selector FROM b) THEN 'only in run a'
-      WHEN k.selector NOT IN (SELECT selector FROM a) THEN 'only in run b'
+      WHEN k.selector NOT IN {_ASKED.format(_B)} THEN 'only in run a'
+      WHEN k.selector NOT IN {_ASKED.format(_A)} THEN 'only in run b'
+      WHEN k.phase = 'after-set' AND b.pos IS NULL THEN 'intervention only in run a'
+      WHEN k.phase = 'after-set' AND a.pos IS NULL THEN 'intervention only in run b'
       WHEN b.pos IS NULL THEN 'missing in run b'
       WHEN a.pos IS NULL THEN 'missing in run a'
       WHEN a.v IS NOT b.v AND no_addresses(a.v) IS no_addresses(b.v) THEN 'addresses only'
@@ -165,28 +169,41 @@ _PAIR_COLUMNS = (
 )
 # Capture order within a hit: the order the probe recorded (its --capture order).
 _PAIR_ORDER = " ORDER BY hit, phase = 'after-set', pos"
-# Real divergences first, in hit and capture order; then values that differ only in
-# memory addresses; then one row per selector that only one run captured. Nothing is
-# dropped: an address-only difference may still be a real one.
+# Real divergences first, in hit and capture order (a hit only one run reached is
+# one); then values changed by an intervention only one run made; then values that
+# differ only in memory addresses; then one row per selector only one run asked for.
+# Nothing is dropped: an address-only difference may still be a real one.
 _DIFF = f"""{_PAIR}
 SELECT {_PAIR_COLUMNS} FROM (
   SELECT 0 AS rank, hit, phase, selector, value_a, value_b, differs, note, pos FROM pair
     WHERE differs AND (note IS NULL OR note LIKE 'missing%')
   UNION ALL SELECT 1, hit, phase, selector, value_a, value_b, differs, note, pos FROM pair
+    WHERE note LIKE 'intervention only%'
+  UNION ALL SELECT 2, hit, phase, selector, value_a, value_b, differs, note, pos FROM pair
     WHERE note = 'addresses only'
-  UNION ALL SELECT 2, NULL, NULL, selector, NULL, NULL, 1, note, MIN(pos) FROM pair
+  UNION ALL SELECT 3, NULL, NULL, selector, NULL, NULL, 1, note, MIN(pos) FROM pair
     WHERE note LIKE 'only in%' GROUP BY selector, note)
 ORDER BY rank, hit, phase = 'after-set', pos"""
-_ADDRESS = re.compile(r"\b0x[0-9a-fA-F]{8,16}\b")
+_HEX = re.compile(r"\b0x([0-9a-fA-F]{1,16})\b")
+
+
+def _mask(match):
+    digits = match[1].lstrip("0").lower()
+    # Heap and stack addresses on 64-bit hosts have at least 9 significant hex digits
+    # (0x1_0000_0000 and up). NULL, small sentinels, all-ones (-1, MAP_FAILED) and
+    # 8-digit data (0xdeadbeef, flags) are values, never masked.
+    if len(digits) < 9 or set(digits) == {"f"}:
+        return match[0]
+    return "0x…"
 
 
 def _no_addresses(value):
-    """`value` with pointer-sized hex addresses masked, for comparing runs.
+    """`value` with heap and stack addresses masked, for comparing runs.
 
     Registered as the SQL function no_addresses(text): an address that changes on
     every run (a C string, a Python object repr) is not a difference in the program.
     """
-    return _ADDRESS.sub("0x…", value) if isinstance(value, str) else value
+    return _HEX.sub(_mask, value) if isinstance(value, str) else value
 
 
 _RUN_PARAM = {"run": "Run id (default: the newest run)"}
@@ -645,6 +662,27 @@ def query(path, sql, params=None, *, limit=DEFAULT_ROWS, seconds=QUERY_SECONDS):
     return shaped
 
 
+_PAIRS = ("compare", "diff", "outputs")
+
+
+def _require_runs(path, params):
+    """Two-run queries name two runs that exist, never a silent half comparison."""
+    found = query(
+        path,
+        f"SELECT {_A} AS a, {_B} AS b, (SELECT COUNT(*) FROM runs WHERE run_id IN ({_A}, {_B})) "
+        "AS n",
+        {"a": params.get("a"), "b": params.get("b")},
+    )["rows"][0]
+    a, b, count = found["a"], found["b"], found["n"]
+    # Comparing a run with itself is allowed; otherwise both runs must exist.
+    if a is not None and b is not None and count == (1 if a == b else 2):
+        return
+    raise ValueError(
+        f"Evidence query failed: comparing needs two saved runs (run a = {a}, run b = {b}); "
+        "`peeky queries runs` lists them, and --param a=<run> --param b=<run> picks two"
+    )
+
+
 def run_query(path, name, params=None, *, limit=DEFAULT_ROWS):
     """Run a canned query by name with optional parameters."""
     if name not in QUERIES:
@@ -658,6 +696,8 @@ def run_query(path, name, params=None, *, limit=DEFAULT_ROWS):
             f"Evidence query failed: {name} does not take {', '.join(unknown)}; it takes: "
             + (", ".join(accepted) or "no parameters")
         )
+    if name in _PAIRS:
+        _require_runs(path, params)
     if missing := [param for param in required if params.get(param) is None]:
         raise ValueError(
             f"Evidence query failed: {name} needs "
@@ -683,8 +723,9 @@ def schema(path):
             for name, (description, _, params, _) in QUERIES.items()
         },
         "functions": {
-            "no_addresses(text)": "The text with pointer-sized hex addresses (0x + 8-16 hex "
-            "digits) masked, to compare values across runs"
+            "no_addresses(text)": "The text with heap and stack addresses (0x and at least 9 "
+            "significant hex digits; never NULL, all-ones or shorter values) masked, to compare "
+            "values across runs"
         },
         "examples": list(EXAMPLES),
         "rules": [
@@ -744,6 +785,9 @@ def schema_text(manifest):
     for name, info in manifest["queries"].items():
         params = ", ".join(f"{p}: {d}" for p, d in info["params"].items())
         lines.append(f"  {name}: {info['description']}" + (f" [{params}]" if params else ""))
+    lines.append("")
+    lines.append("functions:")
+    lines.extend(f"  {name}: {meaning}" for name, meaning in manifest["functions"].items())
     lines.append("")
     lines.append("examples:")
     lines.extend(f"  {example}" for example in manifest["examples"])

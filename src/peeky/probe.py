@@ -168,8 +168,15 @@ class Probe:
 
     @property
     def limit(self):
-        """The most hits this probe captures: --hits N, or the cap for --hits all."""
-        return MAX_HITS if self.hits == "all" else self.hits
+        """The most hits this probe captures: --hits N, or the cap for --hits all.
+
+        `all` stops at MAX_HITS, or earlier when that many hits of every selector (plus
+        one set of after-set rows) would exceed the MAX_ROWS row budget.
+        """
+        if self.hits != "all":
+            return self.hits
+        after_set = len(self.capture) if self.set else 0
+        return max(1, min(MAX_HITS, (MAX_ROWS - after_set) // max(1, len(self.capture))))
 
     def __post_init__(self):
         if not isinstance(self.program, str) or not self.program:
@@ -180,6 +187,9 @@ class Probe:
             raise ValueError(f"At most {MAX_SELECTORS} capture selectors")
         for selector in self.capture:
             parse_selector(selector)
+        if len(set(self.capture)) != len(self.capture):
+            # A repeated selector adds no evidence and would multiply rows in comparisons.
+            object.__setattr__(self, "capture", tuple(dict.fromkeys(self.capture)))
         if not isinstance(self.set, tuple) or len(self.set) > MAX_SETS:
             raise ValueError(f"At most {MAX_SETS} interventions")
         for change in self.set:
@@ -196,6 +206,12 @@ class Probe:
             raise ValueError(f"Probe timeout must be within (0, {MAX_SECONDS}] seconds")
         if self.until not in ("exit", "hits"):
             raise ValueError("Probe until must be 'exit' or 'hits'")
+        if self.hits == "all" and self.until == "hits":
+            # Only the program's exit (or the cap) ends `all`; an attached JVM never exits.
+            raise ValueError(
+                "--hits all runs until the program exits; with --until hits (attached JVMs) "
+                "give a number of hits"
+            )
         if type(self.set_hit) is not int or not 1 <= self.set_hit <= self.limit:
             raise ValueError("Probe set_hit must be within 1..hits")
         if self.entry is not None and (not isinstance(self.entry, str) or not self.entry):
@@ -663,7 +679,7 @@ def run_probe(root, probe, *, adapter=None, progress=None):
                         "because no threads were left (java-debug, issue #27)."
                     )
                 status = "completed" if hits else "no-stop"
-                say("program finished")
+                say(f"program finished after {hits} hit(s)")
                 break
             # From the moment the stop arrived, so debugger reads before capture count too.
             paused = state.get("event", {}).get("received", time.monotonic())
@@ -695,7 +711,7 @@ def run_probe(root, probe, *, adapter=None, progress=None):
                 say(warnings[-1])
             if _report_hit(hits, probe.limit, last_said):
                 last_said = time.monotonic()
-                of = f" (all, up to {MAX_HITS})" if probe.hits == "all" else f"/{probe.limit}"
+                of = f" (all, up to {probe.limit})" if probe.hits == "all" else f"/{probe.limit}"
                 say(f"hit {hits}{of} at {probe.program}:{expected}; capturing")
             # The stop-validation inspection is reused for the first selectors.
             rows.extend(_capture(worker, stop, probe.capture, hits, "observed", snapshot))
@@ -737,7 +753,7 @@ def run_probe(root, probe, *, adapter=None, progress=None):
                     say("all requested hits captured; ending the probe now")
                     break
                 say(
-                    f"reached the {MAX_HITS}-hit cap; letting the program finish"
+                    f"reached the {probe.limit}-hit cap; letting the program finish"
                     if probe.hits == "all"
                     else "all requested hits captured; letting the program finish"
                 )
@@ -773,9 +789,14 @@ def run_probe(root, probe, *, adapter=None, progress=None):
             }
         elif status == "completed" and probe.hits == "all" and hits >= probe.limit:
             warnings.append(
-                f"Captured the first {MAX_HITS} hits, the cap for --hits all; the program may have "
-                "stopped here again later. To see later hits, probe a smaller input or a line "
-                "that runs less often."
+                f"Captured the first {probe.limit} hits, the cap for --hits all"
+                + (
+                    f" with {len(probe.capture)} selectors ({MAX_ROWS}-row budget)"
+                    if probe.limit < MAX_HITS
+                    else ""
+                )
+                + "; the program may have stopped here again later. To see later hits, probe "
+                "a smaller input, fewer selectors, or a line that runs less often."
             )
         elif status == "completed" and probe.hits != "all" and hits < probe.hits:
             warnings.append(

@@ -587,3 +587,17 @@ def test_progress_for_repeated_hits_is_rate_limited(monkeypatch):
     assert not probe._report_hit(5, 30, last_said=99.5)
     clock[0] = 102.0
     assert probe._report_hit(6, 30, last_said=99.5)
+
+
+def test_hits_all_fits_the_row_budget_and_needs_the_program_to_exit():
+    from peeky.probe import MAX_HITS, MAX_ROWS
+
+    assert Probe("main.py", 3, ("a",) * 1, hits="all").limit == MAX_HITS
+    many = tuple(f"s{i}" for i in range(21))
+    assert Probe("main.py", 3, many, hits="all").limit == MAX_ROWS // 21
+    with_set = Probe("main.py", 3, many, (("s0", "1"),), hits="all")
+    assert with_set.limit == (MAX_ROWS - 21) // 21
+    with pytest.raises(ValueError, match="until the program exits"):
+        Probe("main.py", 3, ("a",), hits="all", until="hits")
+    # Repeated selectors add nothing and would multiply comparison rows.
+    assert Probe("main.py", 3, ("a", "b", "a")).capture == ("a", "b")

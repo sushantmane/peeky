@@ -148,7 +148,7 @@ value     3    6     -2     1
 
 `best` starts at 0 and never drops to a negative value, so the running maximum of all-negative input is wrong.
 
-`--hits all` captures every stop, up to 100, without counting iterations first: the summary says `hits: 3 (all)`, and a warning says when the cap was reached. Progress prints the first and last hit and otherwise at most one line every 2 seconds.
+`--hits all` captures every stop, up to 100, without counting iterations first: the summary says `hits: 3 (all)`, and a warning says when the cap was reached. With more than 20 selectors the cap is lower, so that every hit fits the 2000-row probe budget. `all` needs the program to exit, so it cannot be combined with `--until hits` (attached JVMs take a number). Progress prints the first hit, then at most one line every 2 seconds, then the total when the program finishes.
 
 ### 2.3 Test a Hypothesis by Changing a Value
 
@@ -265,7 +265,7 @@ run_a  run_b  hit  phase     selector  value_a                        value_b   
 1      2      1    observed  self._ip  281470816487432                281470849515521              1        NULL
 ```
 
-`diff` keeps only the rows that differ. Real differences come first, in hit order and then in `--capture` order, so the first row is the first divergence. Then come values that differ only in memory addresses (`note: addresses only`, for example a C string's pointer), and last, one row per selector that only one run captured (`only in run a`). Hits that one run never reached say `missing in run b`. `queries compare` shows every value side by side with the same notes. Labels are free text, stored as given.
+`diff` keeps only the rows that differ. Real differences come first, in hit order and then in `--capture` order, so the first row is the first divergence. Then come values that only one run's `--set` changed (`intervention only in run b`), then values that differ only in heap or stack addresses (`note: addresses only`, for example a C string's pointer; NULL is never treated as an address), and last, one row per selector that only one run asked for (`only in run a`). Hits that one run never reached say `missing in run b`. Comparing needs two saved runs; with fewer, the query says so. `queries compare` shows every value side by side with the same notes. Labels are free text, stored as given.
 
 ### 3.2 Inputs, Outcomes and Outputs of the Last Two Runs
 
