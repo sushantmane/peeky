@@ -42,8 +42,9 @@ def test_capability_normalization_does_not_overclaim_operations():
     }
     normalized = adapter.normalize_capabilities(raw)
     assert normalized["supports_set_variable"]
-    assert normalized["supports_conditional_breakpoints"]
-    assert normalized["supports_logpoints"]
+    # Conditions and logpoints are code the debuggee would run: never offered.
+    assert not normalized["supports_conditional_breakpoints"]
+    assert not normalized["supports_logpoints"]
     assert not normalized["supports_hit_conditional_breakpoints"]
     assert not normalized["supports_evaluate"]
     assert not normalized["supports_attach"]
@@ -80,10 +81,16 @@ def test_python_rejects_invalid_breakpoint_shape(points):
         PythonAdapter().validate_breakpoints(points)
 
 
-def test_python_accepts_existing_breakpoint_features():
-    PythonAdapter().validate_breakpoints(
-        [{"line": 7, "condition": "x > 0", "hitCondition": "3", "logMessage": "value={x}"}]
-    )
+@pytest.mark.parametrize(
+    "field", [{"condition": "x > 0"}, {"hitCondition": "3"}, {"logMessage": "value={x}"}]
+)
+def test_python_breakpoints_never_carry_code(field):
+    PythonAdapter().validate_breakpoints([{"line": 7}])
+    with pytest.raises(ValueError, match="would run code in the program") as caught:
+        PythonAdapter().validate_breakpoints([{"line": 7, **field}])
+    from peeky.errors import classify
+
+    assert classify(caught.value)["code"] == "INVALID_BREAKPOINT"
 
 
 @pytest.mark.parametrize(

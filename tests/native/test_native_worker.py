@@ -433,3 +433,36 @@ def test_mains_that_are_not_compiled_do_not_split_a_program(tmp_path, native_con
     result = json.loads(capsys.readouterr().out)
     assert code == 0, result.get("error")
     assert result["rows"][0]["value"] == "5"
+
+
+def test_threads_stopping_together_are_one_stop_not_stale_new_ones(tmp_path, native_config):
+    from peeky.native import NativeTarget
+    from peeky.probe import Probe, run_probe
+
+    source = tmp_path / "threads.c"
+    source.write_text(
+        "#include <pthread.h>\n#include <stdatomic.h>\n#include <stdio.h>\n"
+        "static atomic_int ready;\n"
+        "static void *work(void *arg) {\n"
+        "  int id = (int)(long)arg;\n"
+        "  atomic_fetch_add(&ready, 1);\n"
+        "  while (atomic_load(&ready) < 4) {}\n"
+        "  int seen = id; /* HIT */\n"
+        "  return (void *)(long)seen;\n"
+        "}\n"
+        "int main(void) {\n"
+        "  pthread_t t[4];\n"
+        "  for (long i = 0; i < 4; i++) pthread_create(&t[i], 0, work, (void *)i);\n"
+        "  for (int i = 0; i < 4; i++) pthread_join(t[i], 0);\n"
+        '  puts("done");\n'
+        "  return 0;\n"
+        "}\n"
+    )
+    target = NativeTarget(**{**native_config, "sources": ("threads.c",)})
+    for _ in range(3):
+        result = run_probe(tmp_path, Probe("threads.c", 9, ("id",), hits=4), adapter=target)
+        # lldb reports one `stopped` per thread at the breakpoint; after `continue` they
+        # are history, never a new stop with a frame that no longer exists.
+        assert result["status"] == "completed", result.get("error")
+        assert result["hits"] >= 1 and "done" in result["output"]
+        assert all(row.get("value") in {"0", "1", "2", "3"} for row in result["rows"])

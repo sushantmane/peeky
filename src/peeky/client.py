@@ -6,7 +6,7 @@ import json
 import os
 import socket
 from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+from urllib.request import ProxyHandler, Request, build_opener
 
 from peeky.errors import PeekyError
 
@@ -17,6 +17,11 @@ class WorkerUnreachable(OSError):
 
 class TransportLost(OSError):
     """The connection broke mid-request: the request's outcome is unknown."""
+
+
+# Worker URLs are loopback (or an SSH tunnel's local end): never route them, or the
+# bearer token, through http_proxy/HTTP_PROXY.
+_OPENER = build_opener(ProxyHandler({}))
 
 
 class Client:
@@ -31,7 +36,7 @@ class Client:
             headers={"Authorization": "Bearer " + self.token, "Content-Type": "application/json"},
         )
         try:
-            with urlopen(request, timeout=45) as response:
+            with _OPENER.open(request, timeout=45) as response:
                 return json.load(response)
         except HTTPError as exc:
             return self._http_error(exc)

@@ -24,6 +24,7 @@ import sys
 import tempfile
 import time
 import tomllib
+from dataclasses import asdict
 from pathlib import Path
 
 from peeky.client import Client
@@ -192,7 +193,9 @@ def _resolve(path, program, line, config):
             if "main_class" in data
             else "c"
         )
-        if language == "java-attach":
+        if language in ("java", "java-attach") and isinstance(data.get("bundle"), str):
+            # Relative to the configuration file, wherever the command runs from (session
+            # workers read a copy of the configuration from the state directory).
             data["bundle"] = str((Path(config).resolve().parent / data["bundle"]).resolve())
         if language in ("c", "cpp"):
             data["language"] = language
@@ -311,8 +314,15 @@ def adapter_for(language, data):
     return NativeTarget(**data)
 
 
+def _parse_error(path, exc):
+    return ValueError(f"{path} does not parse as Python: {exc.msg} (line {exc.lineno})")
+
+
 def _python_lines(path):
-    code = compile(path.read_text(), str(path), "exec")
+    try:
+        code = compile(path.read_text(), str(path), "exec")
+    except SyntaxError as exc:
+        raise _parse_error(path, exc) from exc
     lines, stack = set(), [code]
     while stack:
         item = stack.pop()
@@ -335,8 +345,11 @@ def _python_scopes(path):
     import symtable
 
     text = path.read_text()
-    tree = ast.parse(text, str(path))
-    table = symtable.symtable(text, str(path), "exec")
+    try:
+        tree = ast.parse(text, str(path))
+        table = symtable.symtable(text, str(path), "exec")
+    except SyntaxError as exc:
+        raise _parse_error(path, exc) from exc
     spans = {}
     for node in ast.walk(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
@@ -640,7 +653,19 @@ class _Remote:
         self.client = client
 
     def dispatch(self, operation, args):
-        return self.client.call(operation, **args)
+        from peeky.errors import PeekyError
+
+        try:
+            return self.client.call(operation, **args)
+        except PeekyError as exc:
+            # One selector the worker could not read is that row's error (as in a local
+            # probe), not a failure of the whole `get`; session-level errors still raise.
+            if exc.error_code in _ROW_ERRORS and not exc.session_closed:
+                raise ValueError(exc.payload.get("message", str(exc))) from exc
+            raise
+
+
+_ROW_ERRORS = frozenset({"BUDGET_EXHAUSTED", "NOT_FOUND", "STALE_HANDLE"})
 
 
 def _record(name):
@@ -656,6 +681,11 @@ def _load(name):
     if path.stat().st_uid != os.getuid() or path.stat().st_mode & 0o077:
         raise ValueError(f"Session record {path} must be private (0600) and owned by you")
     record = json.loads(path.read_text())
+    if isinstance(record, dict) and record.get("starting"):
+        raise ValueError(
+            f"Session {name!r} is still starting (pid {record['starting']}). If that start was "
+            f"interrupted, run `peeky session close --forget --name {name}`"
+        )
     if (
         not isinstance(record, dict)
         or record.get("name") != name
@@ -790,13 +820,16 @@ def _variables_text(snapshot):
 
 
 def session(args):
+    if args.action in ("start", "wait", "continue"):
+        # Checked before anything runs: a bad --timeout must not follow a real action.
+        _seconds(args.timeout)
     if args.action == "start":
         return _start(args)
     if args.action == "list":
         names = sorted(
             path.stem for path in _state_dir().glob("*.json") if not path.stem.endswith(".target")
         )
-        print("\n".join(names) if names else "no sessions")
+        _emit(names, args.json, lambda names: "\n".join(names) if names else "no sessions")
         return 0
     record, client = _load(args.name)
     if args.action == "wait":
@@ -851,9 +884,12 @@ def session(args):
         )
     elif args.action == "close" and args.forget:
         # The worker is gone for good: drop the local record without contacting it.
-        for suffix in (".json", ".target.json"):
-            (_state_dir() / f"{args.name}{suffix}").unlink(missing_ok=True)
-        print(f"forgot {args.name} (the worker was not contacted)")
+        _release(args.name)
+        _emit(
+            {"forgot": args.name, "worker_contacted": False},
+            args.json,
+            lambda r: f"forgot {r['forgot']} (the worker was not contacted)",
+        )
     elif args.action == "close":
         from peeky.client import TransportLost, WorkerUnreachable
 
@@ -882,7 +918,7 @@ def session(args):
                 if log.is_file() and not log.is_symlink():
                     # Kept for post-mortem diagnosis until the next session of this name.
                     os.replace(log, _state_dir() / f"{args.name}.last.log")
-        print(f"closed {args.name}")
+        _emit({"closed": args.name}, args.json, lambda r: f"closed {r['closed']}")
     return 0
 
 
@@ -971,6 +1007,31 @@ def _probe_remote(args, root, request):
         # The worker refuses before launching when its sources differ.
         expect_sha256=expected,
     )
+    # A worker whose probe child was killed (its cap) or crashed early answers with
+    # only status/error; give every result the same complete shape.
+    if result.get("status") is None:
+        result["status"] = "failed"
+    for key, default in (
+        ("rows", []),
+        ("by_hit", []),
+        ("interventions", []),
+        ("warnings", []),
+        ("pauses_ms", []),
+        ("hits", 0),
+        ("seconds", 0),
+        ("output", ""),
+        ("output_truncated", False),
+        ("probe", {**asdict(request), "set": [list(change) for change in request.set]}),
+    ):
+        result.setdefault(key, default)
+    if result["status"] != "completed" and not isinstance(result.get("error"), dict):
+        result["error"] = {
+            "code": "DEBUGGER_ERROR",
+            "message": "The worker's probe failed without an error description",
+            "hint": "Check the worker's log; start again.",
+            "retryable": False,
+            "session_closed": True,
+        }
     result["worker"] = args.worker
     # Evidence is recorded here, on the client; anything the worker reports about its own
     # store would point at runs that do not exist locally.
@@ -1003,13 +1064,13 @@ def _probe_remote(args, root, request):
     return result
 
 
-def _start_remote(args, root, program, line, language):
+def _start_remote(args, root, program, line, language, max_pause):
     client, token = _remote(args.worker)
     launch = client.call(
         "launch",
         program=program,
         breakpoints=[{"line": line}],
-        max_pause=_max_pause(args.max_pause, language),
+        max_pause=max_pause,
         **({"entry": entry} if (entry := _entry(root, args.run, language)) else {}),
         **({"args": list(args.arg)} if args.arg else {}),
         expect_sha256=_expected(root, program, _entry(root, args.run, language)),
@@ -1038,16 +1099,68 @@ def _start_remote(args, root, program, line, language):
     return 0
 
 
+def _reserve(name):
+    """Claim a session name atomically: two starts with one name cannot both succeed."""
+    try:
+        descriptor = os.open(_record(name), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        raise ValueError(f"Session {name!r} exists; close it or pass --name") from None
+    with os.fdopen(descriptor, "w") as stream:
+        json.dump({"name": name, "starting": os.getpid()}, stream)
+
+
+def _release(name):
+    for suffix in (".json", ".target.json"):
+        (_state_dir() / f"{name}{suffix}").unlink(missing_ok=True)
+
+
+def _stop_worker(process):
+    """Stop a worker this command spawned; SIGTERM lets it close its debugger first."""
+    if process.poll() is not None:
+        return
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        os.killpg(process.pid, signal.SIGKILL)
+        process.wait(timeout=5)
+    except ProcessLookupError:
+        pass
+
+
 def _start(args):
     root, program, line, language, data = resolve(args.target, args.at, args.config)
     if line is None:
         raise ValueError("session start requires --at <path>:<line>")
-    if _record(args.name).exists():
-        raise ValueError(f"Session {args.name!r} exists; close it or pass --name")
-    if args.worker is not None:
-        return _start_remote(args, root, program, line, language)
+    _seconds(args.timeout)
+    max_pause = _max_pause(args.max_pause, language)
+    _reserve(args.name)
+    try:
+        if args.worker is not None:
+            return _start_remote(args, root, program, line, language, max_pause)
+        state = _start_local(args, root, program, line, language, data, max_pause)
+    except BaseException:
+        # Failed or interrupted (e.g. SIGTERM from a tool timeout) before the session
+        # existed: give the name back. Once saved, the session stays for `session wait`.
+        try:
+            if json.loads(_record(args.name).read_text()).get("starting"):
+                _release(args.name)
+        except (OSError, ValueError):
+            pass
+        raise
+    _emit(
+        {"session": args.name, "language": language, **state},
+        args.json,
+        lambda s: f"session {s['session']} ({s['language']}): " + _state_text(s),
+    )
+    return 0
+
+
+def _start_local(args, root, program, line, language, data, max_pause):
     token = secrets.token_urlsafe(32)
     command = [sys.executable, "-m", "peeky.worker", "--root", str(root), "--port", "0"]
+    # A session's own worker ends with the session, including after its idle timeout.
+    command.append("--exit-when-idle")
     if data is not None:
         config = _state_dir() / f"{args.name}.target.json"
         _private_write(config, json.dumps(data, default=list))
@@ -1062,26 +1175,31 @@ def _start(args):
         text=True,
         start_new_session=True,
     )
-    ready, _, _ = select.select([process.stdout], [], [], 30)
-    banner = process.stdout.readline() if ready else ""
-    match = re.search(r"(http://127\.0\.0\.1:[0-9]+)", banner)
-    if not match:
-        process.kill()
-        raise RuntimeError(f"Worker did not start; see {log.name}")
-    client = _LocalClient(match[1], token, process.pid)
-    record = {"name": args.name, "url": match[1], "token": token, "pid": process.pid}
-    record.update(root=str(root), program=program, language=language)
+    # Until the record is saved, this command owns the worker: any failure or
+    # interruption stops it (and its paused debuggee).
     try:
+        ready, _, _ = select.select([process.stdout], [], [], 30)
+        banner = process.stdout.readline() if ready else ""
+        match = re.search(r"(http://127\.0\.0\.1:[0-9]+)", banner)
+        if not match:
+            raise RuntimeError(f"Worker did not start; see {log_path}")
+        client = _LocalClient(match[1], token, process.pid)
+        record = {"name": args.name, "url": match[1], "token": token, "pid": process.pid}
+        record.update(root=str(root), program=program, language=language)
         launch = client.call(
             "launch",
             program=program,
             breakpoints=[{"line": line}],
-            max_pause=_max_pause(args.max_pause, language),
+            max_pause=max_pause,
             **({"entry": entry} if (entry := _entry(root, args.run, language)) else {}),
             **({"args": list(args.arg)} if args.arg else {}),
         )
-    except Exception as exc:
-        os.killpg(process.pid, signal.SIGTERM)
+        record.update(session_id=launch["session_id"], state="running", stop_id=None)
+        if launch.get("optimized"):
+            record["optimized"] = launch["optimized"]
+        _save(record)
+    except BaseException as exc:
+        _stop_worker(process)
         from peeky.client import TransportLost, WorkerUnreachable
 
         if isinstance(exc, (WorkerUnreachable, TransportLost)):
@@ -1091,19 +1209,10 @@ def _start(args):
                 "Start again"
             ) from exc
         raise
-    record.update(session_id=launch["session_id"], state="running", stop_id=None)
-    if launch.get("optimized"):
-        record["optimized"] = launch["optimized"]
-    _save(record)
     state = _wait(record, client, args.timeout)
     if record.get("optimized"):
         state["optimized"] = record["optimized"]
-    _emit(
-        {"session": args.name, "language": language, **state},
-        args.json,
-        lambda s: f"session {s['session']} ({s['language']}): " + _state_text(s),
-    )
-    return 0
+    return state
 
 
 def _submitted_edits(args):
@@ -1515,8 +1624,7 @@ def main(argv=None, _job=False, _edits=None):
     )
     for name in ("list", "wait", "inspect", "get", "set", "continue", "report", "close"):
         action = start if name == "start" else actions.add_parser(name)
-        if name != "list":
-            common(action, target=False)
+        common(action, target=False)
     for action in actions.choices.values():
         action.add_argument("--name", default="default", help="Session name")
         action.add_argument("--timeout", type=float, default=30)

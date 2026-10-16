@@ -11,7 +11,7 @@ The findings are fixed in three PRs. The `PR` column says which one; "this PR" m
 | Every operation rehashed the toolchain binaries: clang (125 MB) 32× per C++ probe, cargo 30× per Rust probe; 58 ms per C++ operation | `peeky.digest.sha256_file` reuses a digest while (device, inode, size, mtime, ctime) are unchanged and settled. All checks still run. C++ probe 2.28 s → 0.73 s, C++ operation 58 → 0.8 ms, Rust probe 1.35 → 1.04 s | A |
 | `build.prepare` listed each compiler once per command, so hashing grew quadratically with source count (16 C files: 10 s) | Tools are deduplicated by identity, and repeated hashes hit the cache | A |
 | The Java adapter bundle (273 files) was walked and rehashed by every check: about 120 ms of JVM pause per hit | The verified bundle is reused while a stat fingerprint of the whole tree is unchanged; any added, removed or written entry triggers full verification. Pause per hit 120 → 9.9 ms | A |
-| `run_probe` runs a full `inspect` per selector | With the cache, an inspect costs about 1–3 ms (C) and 10 ms (Rust), so the per-selector cost is now small. Reusing one snapshot per phase is in PR B | B |
+| `run_probe` runs a full `inspect` per selector | Selectors share one inspection; the stop-validation inspection is reused; a selector that runs out of expansion budget is retried on a fresh inspection (`test_selectors_share_one_inspection_unless_budget_runs_out`) | B |
 | The Python probe's ~0.7 s exit wait | Inside debugpy (pydevd threads wait on each other with a 0.5 s timeout). Peeky cannot shorten it safely; `--until hits` skips it. Documented | — |
 | About 25 ms of imports per CLI command | Measured; low value, not changed | — |
 
@@ -28,21 +28,21 @@ The findings are fixed in three PRs. The `PR` column says which one; "this PR" m
 | `peeky-agent` aborted on any worker refusal and lost the decision | should-fix | Refusals that change nothing (`INVALID_REQUEST`, `INVALID_BREAKPOINT`, `MUTATION_REJECTED`, `NOT_FOUND`, `UNSUPPORTED`) are step errors; every other failure is recorded with its decision, then raised | A |
 | `setup_java_adapter.py` wrote an unresolved bundle path (`/tmp` vs `/private/tmp`) | nit | The output parent is resolved | A |
 | Java attach `timeout_ms` above 15 s had no effect | nit | Capped at 15000 | A |
-| A debugpy debuggee survives a transport failure (its own process group) | blocking | | B |
-| Two `session start` runs with the same name both succeed | blocking | | B |
-| lldb-dap per-thread `stopped` events are reported as new stops after `continue` | should-fix | | B |
-| Python breakpoint `condition`/`hitCondition`/`logMessage` evaluate code in the debuggee | should-fix | | B |
-| The client sends the bearer token through `http_proxy` | should-fix | | B |
-| `report` history has no byte bound | should-fix | | B |
-| "DAP frame exceeds limit" classified as `BUDGET_EXHAUSTED` | should-fix | | B |
-| Workers leak when `session start` is interrupted; workers never exit after idle expiry | should-fix | | B |
-| A relative Java `bundle` path resolves against the CWD or state dir | should-fix | | B |
-| Remote probe failures misreported; JSON mode can print two documents | should-fix | | B |
-| `session get` aborts all selectors when one fails remotely | should-fix | | B |
-| `--timeout` validated after the action ran | should-fix | | B |
-| Python list indexes ≥ 100 reported as not found | should-fix | | B |
-| `describe` on a syntax error reports `INTERNAL_ERROR` | should-fix | | B |
-| Non-ASCII auth header and pre-dispatch errors are misreported; `session close`/`list` JSON gaps; log path shows an fd | nit | | B |
+| A debugpy debuggee survives a transport failure (its own process group) | blocking | The DAP `process` event's pid is recorded. On close, a debuggee that left the adapter's group is killed, but only if its ancestry runs through that group. `disconnect` is still sent after a read-side failure (`test_a_failed_transport_still_ends_the_launched_program`) | B |
+| Two `session start` runs with the same name both succeed | blocking | The name is reserved with `O_EXCL` before anything is spawned (`test_two_starts_with_one_name_cannot_both_succeed`) | B |
+| lldb-dap per-thread `stopped` events are reported as new stops after `continue` | should-fix | When all threads continue, events received before the request are consumed; breakpoint updates among them are kept (`test_threads_stopping_together_are_one_stop_not_stale_new_ones`, real lldb) | B |
+| Python breakpoint `condition`/`hitCondition`/`logMessage` evaluate code in the debuggee | should-fix | Only `{"line"}` is accepted, and the capabilities no longer advertise these (`test_python_breakpoints_never_carry_code`) | B |
+| The client sends the bearer token through `http_proxy` | should-fix | Worker calls use an opener with no proxies (`test_worker_calls_never_use_an_http_proxy`) | B |
+| `report` history has no byte bound | should-fix | Entries over 256 KB keep only size and digest; the oldest go once the history passes 4 MB (`test_history_is_bounded_in_bytes`) | B |
+| "DAP frame exceeds limit" classified as `BUDGET_EXHAUSTED` | should-fix | Protocol-stream failures are `DEBUGGER_ERROR` with a session-closed hint | B |
+| Workers leak when `session start` is interrupted; workers never exit after idle expiry | should-fix | Until its record is saved, `session start` stops the worker on any failure or interrupt and frees the name. Workers close their debugger on SIGTERM, and session workers run with `--exit-when-idle` (`test_an_interrupted_start_…`, `test_workers_close_their_program_on_sigterm`, `test_session_workers_exit_after_their_idle_timeout`) | B |
+| A relative Java `bundle` path resolves against the CWD or state dir | should-fix | Resolved against the configuration file for `java` as well as `java-attach` | B |
+| Remote probe failures misreported; JSON mode can print two documents | should-fix | `_probe_remote` gives partial replies the full result shape and keeps their error | B |
+| `session get` aborts all selectors when one fails remotely | should-fix | Per-selector worker errors (`BUDGET_EXHAUSTED`, `NOT_FOUND`, `STALE_HANDLE`) become row errors | B |
+| `--timeout` validated after the action ran | should-fix | `--timeout` and `--max-pause` are checked first | B |
+| Python list indexes ≥ 100 reported as not found | should-fix | Reported as beyond the debugger's visible window | B |
+| `describe` on a syntax error reports `INTERNAL_ERROR` | should-fix | `INVALID_REQUEST` naming the file and line | B |
+| Non-ASCII auth header and pre-dispatch errors are misreported; `session close`/`list` JSON gaps; log path shows an fd | nit | 401 for any bad header; body errors are `INVALID_REQUEST` with the session untouched; `close`, `close --forget` and `list` emit JSON; the log path is printed | B |
 | Rust i32 mutation can write a debug-only copy (`.dbg.spill`) that the program never reads | blocking | | C |
 | Files included from outside the declared inputs (`#include "/abs"`, `#[path]`, `include!`) are not hashed | should-fix | | C |
 

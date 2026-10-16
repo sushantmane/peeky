@@ -97,6 +97,10 @@ class DAP:
         # Bounded message summaries (no arguments or values) for diagnosing lost events.
         self.trace = collections.deque(maxlen=200)
         self.debuggee_pid = None
+        # The DAP `process` event's pid (debugpy, lldb-dap): cleanup backstop on close.
+        self.process_pid = None
+        # Set only when a write failed; a read-side failure still allows `disconnect`.
+        self.write_error = None
         self.started = time.monotonic()
         self.output = collections.deque(maxlen=500)
         self.output_truncated = False
@@ -149,6 +153,10 @@ class DAP:
                         )
                         self.output.append(output[:8192])
                 elif body["event"] in LIFECYCLE_EVENTS:
+                    if body["event"] == "process" and self.process_pid is None:
+                        pid = (body.get("body") or {}).get("systemProcessId")
+                        if type(pid) is int and pid > 1:
+                            self.process_pid = pid
                     self.event_sequence += 1
                     body["cursor"] = self.event_sequence
                     body["received"] = time.monotonic()
@@ -187,12 +195,15 @@ class DAP:
         deadline = time.monotonic() + timeout
         if not self.write_lock.acquire(timeout=max(0, timeout)):
             exc = TimeoutError("Debugger write lock timed out; outcome may be uncertain")
+            self.write_error = str(exc)
             self._fail(exc)
             raise exc
         try:
             with self.condition:
-                if self.error:
-                    raise RuntimeError(self.error)
+                # After a read-side failure only `disconnect` may still go out: it is
+                # how the adapter is told to terminate the debuggee it launched.
+                if self.write_error or (self.error and command != "disconnect"):
+                    raise RuntimeError(self.error or self.write_error)
                 self.sequence += 1
                 seq = self.sequence
                 self._note("out", {"type": "request", "command": command, "seq": seq})
@@ -220,6 +231,7 @@ class DAP:
                     frame = frame[count:]
             return seq
         except (TimeoutError, OSError) as exc:
+            self.write_error = str(exc)
             self._fail(exc)
             raise
         finally:
@@ -306,6 +318,56 @@ class DAP:
                     return event["received"], event.get("body", {}).get("reason")
             return None
 
+    def event_cursor(self):
+        with self.condition:
+            return self.event_sequence
+
+    def events_between(self, after, upto, names):
+        with self.condition:
+            return [e for e in self.events if after < e["cursor"] <= upto and e["event"] in names]
+
+    def _leftover_debuggee(self):
+        """("group"|"pid", id) of a launched debuggee that left the adapter's group.
+
+        debugpy starts the program in its own process group, so killing the adapter's
+        group does not reach it. Only a process whose ancestry runs through the
+        adapter's group is ours: a reused pid can never match.
+        """
+        pid = self.process_pid
+        if not pid:
+            return None
+        try:
+            os.kill(pid, 0)
+            group = os.getpgid(pid)
+        except OSError:
+            return None
+        if group == self.process.pid:
+            return None
+        try:
+            listing = subprocess.run(
+                ["ps", "-A", "-o", "pid=,ppid=,pgid="],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            ).stdout
+        except (OSError, subprocess.SubprocessError):
+            return None
+        table = {}
+        for line in listing.splitlines():
+            parts = line.split()
+            if len(parts) == 3 and all(part.isdigit() for part in parts):
+                table[int(parts[0])] = (int(parts[1]), int(parts[2]))
+        node = pid
+        for _ in range(16):
+            if node not in table:
+                return None
+            parent, node_group = table[node]
+            if node != pid and node_group == self.process.pid:
+                return ("group", group) if group == pid else ("pid", pid)
+            node = parent
+        return None
+
     def snapshot_output(self):
         with self.condition:
             return "".join(self.output), self.output_truncated
@@ -322,11 +384,20 @@ class DAP:
                     self.response(seq, timeout=1)
                 except Exception:
                     pass
+            leftover = self._leftover_debuggee() if terminate else None
             # Always reap the owned group, including children surviving adapter exit.
             try:
                 os.killpg(self.process.pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
+            if leftover is not None:
+                try:
+                    if leftover[0] == "group":
+                        os.killpg(leftover[1], signal.SIGKILL)
+                    else:
+                        os.kill(leftover[1], signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
             self.process.wait(timeout=3)
             self.reader.join(timeout=3)
             self.process.stdin.close()

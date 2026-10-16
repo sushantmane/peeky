@@ -21,7 +21,7 @@ You debug programs with **peeky**, a standalone tool. You decide what to do; pee
 | `peeky session inspect` / `get a.b c[0]` / `set x=0` / `continue [--to-exit]` / `report` / `close` | instant | Work with the stopped program. `continue --to-exit` clears the breakpoints and runs to the end. Always `close`. |
 | `peeky verify <target> --check <checker.py> --old '<exact text>' --new '<replacement>'` | one build | Verify one candidate edit on a fresh build. |
 
-Every command takes `--json`: stdout is then one JSON object (progress goes to stderr; `--quiet` silences it). Session records live in `$PEEKY_STATE_DIR` (default `~/.peeky`), so set it per task to keep sessions apart.
+Session names are claimed atomically, so a second `session start` with the same name fails with "exists" rather than taking over the first session. A session's worker ends with the session: on `close`, when the start fails or is interrupted, and after its idle timeout (5 minutes). Every command takes `--json`: stdout is then one JSON object (progress goes to stderr; `--quiet` silences it). Session records live in `$PEEKY_STATE_DIR` (default `~/.peeky`), so set it per task to keep sessions apart.
 
 ### Interventions (`--set name=value`)
 
@@ -39,6 +39,7 @@ Every command takes `--json`: stdout is then one JSON object (progress goes to s
   - runs that ended before all requested hits;
   - a Java exit that Peeky inferred because the debugger dropped its exit event (the result is still valid).
 - If a selector is missing, the row's error lists the visible names. For Python, `peeky describe` also lists the names each function can see (`scopes`).
+- debugpy lists only the first 100 items of a long list. A higher index is reported as "beyond the debugger's visible window" rather than missing; it does not mean the list is short.
 - Selectors take indexes from the end (`items[-1]`), but only when the debugger states the sequence's length and shows every element. Otherwise you get an error, never a guess. Long debugpy lists show 100 elements individually, so for them use a non-negative index.
 - Failures carry `error: {code, message, hint, retryable, session_closed}` (see [ERRORS.md](ERRORS.md)). `status` is `completed`, `no-stop`, `failed` or `timeout`.
 
