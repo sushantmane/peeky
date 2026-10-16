@@ -198,7 +198,7 @@ class DebugWorker:
             )
             frame = (stack.get("stackFrames") or [{}])[0]
             path = frame.get("source", {}).get("path")
-            return f"{path}:{frame.get('line')}" if path else None
+            return f"{_display_path(self.runtime, path)}:{frame.get('line')}" if path else None
         except Exception:
             return None
 
@@ -718,8 +718,15 @@ class DebugWorker:
                     self.reference_frames[handle] = selected_frame
                     self.reference_adapter[handle] = reference
                 result.append({"name": scope["name"], "reference": handle, "variables": exposed})
+            source = (selected_frame.get("source") or {}).get("path")
             snapshot = {
                 "stop_id": self.stop_id,
+                # For people: the user's own source file; frames keep the debugger's paths.
+                **(
+                    {"location": f"{_display_path(runtime, source)}:{selected_frame.get('line')}"}
+                    if isinstance(source, str) and source
+                    else {}
+                ),
                 "frames": frames,
                 "scopes": result,
                 **self.pause_status(),
@@ -1082,6 +1089,24 @@ class DebugWorker:
         finally:
             if runtime:
                 runtime.close()
+
+
+def _display_path(runtime, path):
+    """A prepared build's copy of a source, shown as the user's original file.
+
+    Display only: compiled and Java targets run from a private build workspace that
+    mirrors the source tree, so `<workspace>/src/main.rs` is `<source>/src/main.rs`.
+    """
+    prepared = getattr(runtime, "prepared", None)
+    workspace = getattr(prepared, "workspace", None)
+    source_root = getattr(prepared, "source_root", None)
+    if workspace is None or source_root is None:
+        return path
+    try:
+        relative = Path(path).resolve().relative_to(Path(workspace).resolve())
+    except (OSError, ValueError):
+        return path
+    return str(Path(source_root) / relative)
 
 
 def _inside_program(runtime, frame):

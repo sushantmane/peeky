@@ -102,8 +102,9 @@ _RULES = (
         r"numeric or boolean scalar|scalar literal|bounded decimal integer|must be a literal"
         r"|has no readable value here|refused in an optimized build",
         "MUTATION_REJECTED",
-        "Only root locals accept literal values (Python: literals incl. containers; compiled "
-        "languages: scalars); observe instead or edit the source and run verify.",
+        "The message names the rule broken. Root locals only, literal values only (Python: "
+        "literals incl. containers; C, C++, Java: scalars of the local's type; Rust: i32 "
+        "locals kept in memory). Observe instead, or edit the source and run verify.",
         False,
     ),
     (

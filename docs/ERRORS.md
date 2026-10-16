@@ -14,7 +14,7 @@ Every Peeky failure, from the HTTP worker, the SDK (`peeky.errors.PeekyError`) o
 | `STALE_STOP` | The program moved on; `stop_id` is old, or the stop was auto-resumed by `--max-pause` | `wait` until stopped, then `inspect`; on timed programs prefer a probe |
 | `INSPECT_REQUIRED` | Mutation without a fresh scope, or a value-view read still pending | `inspect` again, use the new reference |
 | `STALE_HANDLE` | Expansion handle revoked or frame/scope changed | `inspect` again |
-| `NOT_FOUND` | Name/selector not visible | Use a name from the message's `visible:` list (or `inspect`) |
+| `NOT_FOUND` | Name/selector not visible | Use a name from the message's `visible:` or `children:` list (or `inspect`, `session get <value>`); dict entries are `d['key']` |
 | `MUTATION_REJECTED` | Not a root local, or the value is not a literal (Python) / scalar (compiled) | Use a literal, observe instead, or edit and `verify` |
 | `BUDGET_EXHAUSTED` | A bounded read limit was reached | Narrow the request |
 | `INVALID_BREAKPOINT` | Line not executable or unsupported breakpoint field | Use `peeky describe` lines |

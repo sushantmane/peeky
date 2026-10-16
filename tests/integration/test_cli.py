@@ -436,3 +436,43 @@ def test_auto_detected_c_targets_link_one_program(tmp_path):
     (tmp_path / "two.c").unlink()
     # One program split over several files still builds them all.
     assert _native_sources(tmp_path, "util.c", (".c",)) == ("one.c", "util.c")
+
+
+ORDERS = """def total(order):
+    amount = order["price"] * order["qty"]
+    return amount
+
+
+print(total({"id": 18, "price": 14, "qty": 1, "it's": 2}))
+"""
+
+
+def test_mapping_keys_are_selectors_in_probes_and_sessions(workspace, capsys):
+    (workspace / "orders.py").write_text(ORDERS)
+    program = workspace / "orders.py"
+    selectors = "order['id'],order[\"it's\"],order.id,amount"
+    code, out = run(
+        capsys, "probe", program, "--at", "3", "--capture", selectors, "--json", "--no-save"
+    )
+    rows = {row["selector"]: row for row in json.loads(out.out)["rows"]}
+    assert code == 0 and rows["order['id']"]["value"] == "18"
+    assert rows['order["it\'s"]']["value"] == "2" and rows["amount"]["value"] == "14"
+    assert "select it with ['id'], not .id" in rows["order.id"]["error"]
+    assert "'price'" in rows["order.id"]["error"] and "len()" not in rows["order.id"]["error"]
+
+    assert run(capsys, "session", "start", program, "--at", "3")[0] == 0
+    assert "(children: peeky session get order)" in run(capsys, "session", "inspect")[1].out
+    code, out = run(capsys, "session", "get", "order", "amount")
+    assert code == 0
+    assert "  order['price']: int = 14" in out.out and '  order["it\'s"]: int = 2' in out.out
+    assert "len() [not selectable]: int = 4" in out.out
+    code, out = run(capsys, "session", "get", "order", "--json")
+    [row] = json.loads(out.out)
+    assert "hit" not in row and row["phase"] == "observed"
+    assert {"name": "'qty'", "type": "int", "value": "1", "selector": "order['qty']"} in row[
+        "children"
+    ]
+    # Every row is printed, and the exit status says that one selector failed.
+    code, out = run(capsys, "session", "get", "amount", "missing")
+    assert code == 1 and "amount: int = 14" in out.out and "not found" in out.out
+    assert run(capsys, "session", "close")[0] == 0

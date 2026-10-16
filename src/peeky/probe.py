@@ -10,10 +10,12 @@ evidence about one execution, never a verified fix.
 """
 
 import argparse
+import ast
 import json
 import re
 import sys
 import time
+import warnings
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -32,31 +34,72 @@ MAX_ROWS = 2000
 MAX_SECONDS = 300
 # HTTP probes must finish inside Client.call's 45 s timeout.
 HTTP_PROBE_SECONDS = 40
-_SEGMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,127}|\[-?[0-9]{1,6}\]")
 _INDEX = re.compile(r"\[?([0-9]{1,6})\]?")
+# A quoted string key, as written in a selector and as debugpy names mapping entries.
+_KEY_LITERAL = r"'(?:[^'\\\n]|\\.){0,256}'" + "|" + r'"(?:[^"\\\n]|\\.){0,256}"'
+# One selector step: `.name`, `[3]`, `[-1]`, or a quoted string key `['id']` / `["id"]`.
+_STEP = re.compile(
+    r"\.(?P<name>[A-Za-z_][A-Za-z0-9_]{0,127})"
+    r"|\[(?P<index>-?[0-9]{1,6})\]"
+    rf"|\[(?P<key>{_KEY_LITERAL})\]"
+)
+_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,127}")
 
 
 def parse_selector(text):
-    """`request.page` -> ['request', 'page']; `args[0]` -> ['args', '[0]'].
+    """`request.page` -> ['request', 'page']; `args[0]` -> ['args', '[0]'];
+    `order['id']` -> ['order', "['id']"].
 
     Negative indexes (`items[-1]`) count from the end of a sequence whose elements
-    all fit in the bounded inspection window.
+    all fit in the bounded inspection window. A quoted key reads one entry of a
+    mapping; it is kept in its canonical Python form, `[` + repr(key) + `]`.
     """
     if not isinstance(text, str) or not text or len(text) > 512:
         raise ValueError("Selectors must be nonempty dotted paths")
-    segments = []
-    for part in text.split("."):
-        pieces = re.findall(r"[^\[\]]+|\[[^\]]*\]", part)
-        if not pieces or "".join(pieces) != part:
-            raise ValueError(f"Invalid selector: {text}")
-        segments.extend(pieces)
-    if (
-        len(segments) > 16
-        or not all(_SEGMENT.fullmatch(segment) for segment in segments)
-        or segments[0].startswith("[")
-    ):
-        raise ValueError(f"Invalid selector: {text}")
+    first = _NAME.match(text)
+    if not first:
+        raise ValueError(f"Invalid selector: {text}{_SELECTOR_HELP}")
+    segments, position = [first[0]], first.end()
+    while position < len(text):
+        step = _STEP.match(text, position)
+        if not step:
+            raise ValueError(f"Invalid selector: {text}{_SELECTOR_HELP}")
+        if step["name"]:
+            segments.append(step["name"])
+        elif step["index"]:
+            segments.append(f"[{step['index']}]")
+        else:
+            try:
+                key = _literal(step["key"])
+            except ValueError:
+                raise ValueError(f"Invalid selector: {text}{_SELECTOR_HELP}") from None
+            if not isinstance(key, str):
+                raise ValueError(f"Invalid selector: {text}{_SELECTOR_HELP}")
+            segments.append(f"[{key!r}]")
+        position = step.end()
+    if len(segments) > 16:
+        raise ValueError(f"Invalid selector: {text} (at most 16 steps)")
     return segments
+
+
+_SELECTOR_HELP = (
+    " (selectors are paths, never expressions: name, a.b, a[0], a[-1], a['key'] or a[\"key\"])"
+)
+
+
+def _literal(text):
+    """A quoted string literal's value; invalid escapes are errors, not warnings."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        try:
+            return ast.literal_eval(text)
+        except (ValueError, SyntaxError, Warning) as exc:
+            raise ValueError(str(exc)) from None
+
+
+def _key(segment):
+    """The canonical repr of a string-key segment (`'id'` for `['id']`), else None."""
+    return segment[1:-1] if segment[:2] in ("['", '["') else None
 
 
 def _check_args(args):
@@ -156,6 +199,11 @@ def _resolve(worker, stop, snapshot, segments):
     for segment in segments[1:]:
         handle = variable.get("variablesReference", 0)
         if not handle:
+            if variable.get("depth_limited"):
+                raise ValueError(
+                    f"cannot expand {variable['name']!r}: it is at the inspection depth limit "
+                    f"(4 levels below a local)"
+                )
             raise ValueError(f"cannot expand {variable['name']!r} ({variable.get('view', 'leaf')})")
         if segment.startswith("[-"):
             variable = _from_end(worker, stop, variable, int(segment[2:-1]), segment)
@@ -172,8 +220,11 @@ def _resolve(worker, stop, snapshot, segments):
                 break
             start += 64
         if found is None and incomplete:
-            raise ValueError(f"{segment!r} is beyond the bounded inspection window (512 children)")
-        if found is None and segment.startswith("["):
+            raise ValueError(
+                f"{_shown(segment)} is beyond the bounded inspection window (512 children)"
+            )
+        key = _key(segment)
+        if found is None and segment.startswith("[") and key is None:
             length = _declared_length(variable, children)
             if any(child["name"] == "more" for child in children) or (
                 length is not None and int(segment[1:-1]) < length
@@ -181,19 +232,90 @@ def _resolve(worker, stop, snapshot, segments):
                 # debugpy lists only the first 100 items, then a `more` group: absence
                 # from the listing is not absence from the sequence.
                 raise ValueError(
-                    f"{segment!r} is beyond the debugger's visible window"
+                    f"{_shown(segment)} is beyond the debugger's visible window"
                     + (f" (the sequence has {length} elements)" if length is not None else "")
                     + "; capture a smaller index or a slice-sized field instead"
                 )
+        if found is None and key is not None and any(_partial(c) for c in children):
+            raise ValueError(
+                f"{_shown(segment)} is not among the entries the debugger lists for "
+                f"{variable['name']!r} (it shows only part of a large mapping)"
+            )
         if found is None:
-            raise ValueError(f"{segment!r} not found")
+            raise ValueError(_not_found(variable, segment, children))
+        if key is not None and sum(_names(child, segment) for child in children) > 1:
+            # Keys are matched by their repr; two entries with the same repr (an object
+            # whose __repr__ mimics a string) cannot be told apart.
+            raise ValueError(f"{_shown(segment)} is ambiguous: several entries display as {key}")
         variable = found
     return variable
 
 
+_RUST_CONTAINERS = (
+    "alloc::vec::Vec<",
+    "alloc::string::String",
+    "alloc::collections::",
+    "&[",
+    "&mut [",
+    "&str",
+)
+
+# debugpy's grouping nodes: not entries, fields or elements of the value itself.
+_GROUPS = frozenset(
+    {"special variables", "function variables", "class variables", "protected variables"}
+)
+
+
+def _shown(segment):
+    """A path step as the user wrote it: `'name'`, `[0]`, `['key']`."""
+    return segment if segment.startswith("[") else repr(segment)
+
+
+def _partial(child):
+    """debugpy's marker for a mapping too large to list in full."""
+    return child["name"] == "more" or child["name"].startswith("Too large")
+
+
+def _not_found(variable, segment, children):
+    """Why `segment` is absent, with the selectors that would work."""
+    names = [child["name"] for child in children if child["name"] not in _GROUPS]
+    shown = ", ".join(names[:20]) + (f", ... ({len(names)} total)" if len(names) > 20 else "")
+    kind = variable.get("type") or ""
+    label = repr(variable["name"]) + (f" ({kind})" if kind else "")
+    if not segment.startswith("[") and repr(segment) in names:
+        keys = [name for name in names if name != "len()"]
+        listed = ", ".join(keys[:20]) + (f", ... ({len(keys)} total)" if len(keys) > 20 else "")
+        return (
+            f"{_shown(segment)} not found: {label} is a mapping and {segment!r} is one of its "
+            f"keys; select it with [{segment!r}], not .{segment} (keys: {listed})"
+        )
+    if (
+        segment.startswith("[")
+        and _key(segment) is None
+        and not any(_INDEX.fullmatch(name) for name in names)
+    ):
+        message = (
+            f"{_shown(segment)} not found: {label} has no indexed elements in the debugger's view "
+            f"(children: {shown or 'none'})"
+        )
+        if kind.startswith(_RUST_CONTAINERS):
+            length = next((name for name in ("len", "length") if name in names), None)
+            message += (
+                "; Rust Vec, slice and String contents are not readable yet (LLDB's Rust "
+                "formatters are not loaded)"
+                + (f": capture {variable['name']}.{length} for the length" if length else "")
+                + ", and check contents with `peeky verify`"
+            )
+        return message
+    return f"{_shown(segment)} not found in {label}; children: {shown or 'none'}"
+
+
 def _names(child, segment):
-    """LLDB names elements `[1]`; debugpy `1`, or `001` in long sequences."""
+    """LLDB names elements `[1]`; debugpy `1`, or `001` in long sequences. debugpy
+    names mapping entries by the key's repr (`'id'`), which a key segment holds."""
     name = child["name"]
+    if (key := _key(segment)) is not None:
+        return name == key
     if not segment.startswith("["):
         return name == segment
     match = _INDEX.fullmatch(name)
@@ -270,12 +392,14 @@ _BUDGET = re.compile(
 )
 
 
-def _capture(worker, stop, selectors, hit, phase, snapshot=None):
+def _capture(worker, stop, selectors, hit, phase, snapshot=None, children=False):
     """Rows for each selector at one stop.
 
     Selectors share one inspection (its handles stay valid until the next inspect or
     change); a selector that runs out of expansion budget is retried once on a fresh
-    inspection, so sharing never turns a readable value into an error.
+    inspection, so sharing never turns a readable value into an error. With
+    ``children``, an expandable value also lists its first page of children, each with
+    the selector that reads it.
     """
     rows = []
     for selector in selectors:
@@ -315,8 +439,47 @@ def _capture(worker, stop, selectors, hit, phase, snapshot=None):
                 row.update(value=variable["value"], type=variable.get("type"))
             if "view" in variable:
                 row["view"] = variable["view"]
+            if children and variable.get("variablesReference"):
+                try:
+                    row.update(_children(worker, stop, selector, variable))
+                except ValueError as exc:
+                    row["children_error"] = str(exc)
         rows.append(row)
     return rows
+
+
+_KEY_NAME = re.compile(_KEY_LITERAL)
+
+
+def _child_selector(parent, name):
+    """The selector that reads child `name` of `parent`, or None if no path names it."""
+    if _KEY_NAME.fullmatch(name):
+        try:
+            key = _literal(name)
+        except ValueError:
+            return None
+        return f"{parent}[{key!r}]" if isinstance(key, str) else None
+    if match := _INDEX.fullmatch(name):
+        return f"{parent}[{int(match[1])}]"
+    if _NAME.fullmatch(name):
+        return f"{parent}.{name}"
+    return None
+
+
+def _children(worker, stop, selector, variable):
+    """One page (64) of a value's children, for a person or agent deciding what to read."""
+    page = worker.dispatch("expand", {**stop, "handle": variable["variablesReference"], "start": 0})
+    listed = []
+    for child in page["variables"]:
+        if child["name"] in _GROUPS:
+            continue
+        entry = {"name": child["name"], "type": child.get("type"), "value": child.get("value")}
+        if path := _child_selector(selector, child["name"]):
+            entry["selector"] = path
+        if child.get("variablesReference"):
+            entry["expandable"] = True
+        listed.append(entry)
+    return {"children": listed, **({"children_truncated": True} if page["truncated"] else {})}
 
 
 def _expected_line(breakpoint, state, requested):

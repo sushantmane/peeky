@@ -125,7 +125,7 @@ hit  phase     line  function  selector   type  value
 1    observed  8     get_page  items      list  [10, 20, 30, 40, 50, 60]
 ```
 
-Selectors are dotted paths and indexes (`request.page`, `args[0]`, `items[-1]`), never expressions: Peeky never evaluates code in your program. Quote selectors that contain `[...]`: zsh, the macOS default shell, would otherwise treat them as filename patterns.
+Selectors are dotted paths, indexes and string keys (`request.page`, `args[0]`, `items[-1]`, `order['id']`), never expressions: Peeky never evaluates code in your program. Python dict entries are read by key; `order.id` fails with a message that names `order['id']` and lists the keys. A selector that is not there lists what is. Quote selectors that contain `[...]`: zsh, the macOS default shell, would otherwise treat them as filename patterns.
 
 ### 2.2 Every Iteration of a Loop
 
@@ -168,7 +168,7 @@ output:
   PAGE: [10, 20, 30]
 ```
 
-Python takes literals, including lists and dicts. C, C++, Rust and Java take scalars of the variable's type. Rust only allows locals the program keeps in memory; otherwise the change is refused, because it would not reach the program.
+Only root locals can be changed: the stopped function's own variables (`start`), not their fields or elements. Python takes literals, including lists and dicts. C, C++ and Java take scalars of the local's type. Rust takes `i32` locals that the program keeps in memory; any other change is refused, because it would not reach the program. A refusal (`MUTATION_REJECTED`) names the local and the rule.
 
 ### 2.4 Change the Value at a Later Hit
 
@@ -263,7 +263,7 @@ run_a  run_b  hit  phase     selector  value_a                        value_b   
 1      2      1    observed  self._ip  281470816487432                281470849515521              1
 ```
 
-The first `diff` row is the first divergence. `queries compare` shows every value side by side.
+`diff` keeps only the rows that differ, ordered by hit, so its first row is in the earliest hit where the runs diverge. `queries compare` shows every value side by side. Labels are free text, stored as given.
 
 ### 3.2 Inputs, Outcomes and Outputs of the Last Two Runs
 
@@ -371,6 +371,7 @@ Use a session when you want several looks at one stop. Every command is a separa
 peeky session start examples/pagination_bug.py --at 8
 peeky session inspect
 peeky session get start 'items[0]' page
+peeky session get items
 peeky session set start=0
 peeky session continue --to-exit
 peeky session report
@@ -381,22 +382,31 @@ peeky session close
 session default (python): state: stopped at .../pagination_bug.py:8 (paused 0.0 s)
 stopped at .../pagination_bug.py:8 (paused 0.05 s)
 [Locals]
-  items: list = [10, 20, 30, 40, 50, 60] (expand with `get`)
+  items: list = [10, 20, 30, 40, 50, 60] (children: peeky session get items)
   page: int = 1
   page_size: int = 3
   start: int = 3
 start: int = 3
 items[0]: int = 10
 page: int = 1
+items: list = [10, 20, 30, 40, 50, 60]
+  items[0]: int = 10
+  items[1]: int = 20
+  items[2]: int = 30
+  items[3]: int = 40
+  items[4]: int = 50
+  items[5]: int = 60
+  len() [not selectable]: int = 6
 set start: 3 -> 0
 state: terminated (program exited; `peeky session report` shows output)
 state: terminated
 output:
 PAGE: [10, 20, 30]
+operations: 11 (worker requests in this session, including waits; --json lists them)
 closed default
 ```
 
-`session continue` without `--to-exit` runs to the next stop.
+`session get` on a list, dict or struct lists one level of children, each with the selector that reads it. If any selector fails, every row is still printed and the exit status is 1. `session continue` without `--to-exit` runs to the next stop at the session's breakpoint; there is no single-stepping, so start the session at the line you want to look at.
 
 ### 5.2 Several Sessions at Once
 
@@ -530,7 +540,7 @@ output:
   PAGE:[10, 20, 30]
 ```
 
-Values Peeky cannot decode with certainty show as `<unverified ...>` or as opaque enums; they are never guessed. Only `i32` locals that the program keeps in memory can be changed.
+Values Peeky cannot decode with certainty show as `<unverified ...>` or as opaque enums; they are never guessed (`describe` counts them as "other enum types"). Only `i32` locals that the program keeps in memory can be changed. The elements of a `Vec`, slice or `String` are not readable yet: the error says so and names the length field to capture instead (`ordered.len`, `values.length`).
 
 ### 7.3 Java (launched)
 
@@ -649,12 +659,12 @@ All codes are listed in [ERRORS.md](ERRORS.md). If you suspect a filesystem with
 | You would type | Peeky | Notes |
 | --- | --- | --- |
 | `break file:12`, `run`, `print x` | `peeky probe target --at file:12 --capture x` | One command, one complete run, nothing left running |
-| `print obj.field`, `print a[0]` | `--capture 'obj.field,a[0]'` | Paths and indexes only; no expressions. Quote selectors with `[...]` (zsh globs them) |
+| `print obj.field`, `print a[0]`, `print d['k']` | `--capture "obj.field,a[0],d['k']"` | Paths, indexes and string keys only; no expressions. Quote selectors with `[...]` (zsh globs them) |
 | `set var x = 0`, `continue` | `--set x=0` | Applied once, at `--set-hit N`; the output shows the effect |
 | `ignore 1 9`, `continue` ×10 | `--hits 10`, then `peeky queries hits` | Every hit is captured and saved |
 | `commands 1 / silent / print x / end` | `--hits N --capture x` | Logging without breaking into the run |
 | `condition 1 x > 5` | `--hits N`, then `peeky sql "... WHERE num > 5"` | Conditions would run code in the program |
-| `info locals` | `peeky session inspect` | |
+| `info locals`, `print *obj` | `peeky session inspect`, `peeky session get obj` | `get` lists one level of children with their selectors |
 | `bt` | `peeky session inspect --json \| jq '.frames'` | The stack at the stop; values come from the top frame |
 | `continue` | `peeky session continue [--to-exit]` | Runs to the next stop or to exit; there is no step or step-out |
 | "rerun with another input and compare by eye" | `--arg ... --label A`, then `peeky queries diff` | The first diff row is the first divergence |

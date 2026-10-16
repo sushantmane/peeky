@@ -435,8 +435,10 @@ def describe(args):
             "evidence": 'every probe is saved with a run_id: peeky sql "SELECT hit, selector, '
             'value FROM last_run"; peeky queries [name] (canned, no SQL); peeky sql --schema',
         },
-        "selectors": "dotted paths and indexes, e.g. request.page, args[0]; never expressions",
-        "interventions": "root locals only; evidence about one run, never a verified fix",
+        "selectors": "dotted paths, indexes and string keys, e.g. request.page, args[0], "
+        "order['id']; never expressions",
+        "interventions": "root locals only (the stopped function's own variables, not their "
+        "fields or elements); evidence about one run, never a verified fix",
     }
     if language == "python":
         manifest["breakpoint_lines"] = {program: _python_lines(root / program)}
@@ -458,7 +460,7 @@ def describe(args):
         finally:
             runtime.close()
         manifest["mutable_types"] = {
-            "rust": "i32 root locals (debugger type int)",
+            "rust": "i32 root locals the program keeps in memory (debugger type int)",
             "c": "int/unsigned int root locals",
             "cpp": "int/unsigned int root locals",
             "java": "numeric/boolean root locals",
@@ -494,7 +496,7 @@ def _describe_text(manifest):
     if views := manifest.get("value_views"):
         qualified = [name for name, kind in views.items() if kind != "unqualified"]
         lines.append(f"qualified enum views: {', '.join(qualified) or 'none'}")
-        lines.append(f"opaque enum types: {len(views) - len(qualified)}")
+        lines.append(f"other enum types (shown opaque, not decoded): {len(views) - len(qualified)}")
     for scope in manifest.get("scopes", ()):
         if scope.get("omitted"):
             lines.append(f"... {scope['omitted']} more scopes not listed (first 300 shown)")
@@ -508,7 +510,10 @@ def _describe_text(manifest):
             f"warning: optimized build ({level}); locals may be unavailable, stale or wrong. "
             "Prefer an unoptimized build for debugging."
         )
-    lines.append(f"mutable: {manifest['mutable_types']}")
+    mutable = manifest["mutable_types"]
+    if "root locals" in mutable:
+        mutable += " (root locals: the stopped function's own variables, not fields)"
+    lines.append(f"mutable: {mutable}")
     lines.extend(f"{name}: {usage}" for name, usage in manifest["commands"].items())
     lines.append(f"timing: {manifest['timing']['advice']}")
     return "\n".join(lines)
@@ -808,14 +813,16 @@ def _stop(record):
 
 def _variables_text(snapshot):
     frame = snapshot["frames"][0] if snapshot["frames"] else {}
-    lines = [
-        f"stopped at {frame.get('source', {}).get('path')}:{frame.get('line')}"
-        + _pause_text(snapshot)
-    ]
+    where = snapshot.get("location") or f"{frame.get('source', {}).get('path')}:{frame.get('line')}"
+    lines = [f"stopped at {where}" + _pause_text(snapshot)]
     for scope in snapshot["scopes"]:
         lines.append(f"[{scope['name']}]")
         for variable in scope["variables"]:
-            more = " (expand with `get`)" if variable.get("variablesReference") else ""
+            more = (
+                f" (children: peeky session get {variable['name']})"
+                if variable.get("variablesReference")
+                else ""
+            )
             if variable.get("unavailable"):
                 more = f" (no readable value: {variable.get('reason')})"
             view = f"  [{variable['view']}]" if variable.get("view") else ""
@@ -828,6 +835,21 @@ def _variables_text(snapshot):
     if snapshot.get("mutation_blocked"):
         lines.append(f"note: {snapshot['mutation_blocked']}")
     return "\n".join(lines)
+
+
+def _get_lines(row):
+    """`session get` text: the value, then one level of children with their selectors."""
+    value = row.get("value", "<" + row.get("error", "") + ">")
+    lines = [f"{row['selector']}: {row.get('type') or ''} = {value}"]
+    for child in row.get("children", []):
+        name = child.get("selector") or f"{child['name']} [not selectable]"
+        more = "  (expandable)" if child.get("expandable") else ""
+        lines.append(f"  {name}: {child.get('type') or ''} = {child.get('value')}{more}")
+    if row.get("children_truncated"):
+        lines.append("  ... more children; select one by name or index")
+    if row.get("children_error"):
+        lines.append(f"  <children: {row['children_error']}>")
+    return lines
 
 
 def session(args):
@@ -861,21 +883,24 @@ def session(args):
         snapshot = client.call("inspect", **_stop(record))
         _emit(snapshot, args.json, _variables_text)
     elif args.action == "get":
-        rows = _capture(_Remote(client), _stop(record), tuple(args.selectors), 0, "observed")
+        rows = _capture(
+            _Remote(client), _stop(record), tuple(args.selectors), 0, "observed", children=True
+        )
+        # A session read is not a probe hit: no hit number to explain.
+        rows = [{key: v for key, v in row.items() if key != "hit"} for row in rows]
         if level := record.get("optimized"):
             rows = [{**row, "optimized": level} for row in rows]
         _emit(
             rows,
             args.json,
             lambda rows: "\n".join(
-                [
-                    f"{r['selector']}: {r.get('type', '')} = "
-                    + str(r.get("value", "<" + r.get("error", "") + ">"))
-                    for r in rows
-                ]
+                [line for row in rows for line in _get_lines(row)]
                 + ([_OPTIMIZED_NOTE.format(record["optimized"])] if record.get("optimized") else [])
             ),
         )
+        if any("error" in row for row in rows):
+            # Every row was still printed; the exit status says one selector failed.
+            return 1
     elif args.action == "set":
         (name, value), stop = _sets([args.assignment])[0], _stop(record)
         parse_selector(name)
@@ -902,7 +927,10 @@ def session(args):
         _emit(
             report,
             args.json,
-            lambda r: f"state: {r['state']}\noutput:\n{r['output']}operations: {len(r['history'])}",
+            lambda r: (
+                f"state: {r['state']}\noutput:\n{r['output']}operations: {len(r['history'])} "
+                "(worker requests in this session, including waits; --json lists them)"
+            ),
         )
     elif args.action == "close":
         from peeky.client import TransportLost, WorkerUnreachable
@@ -1661,9 +1689,17 @@ def main(argv=None, _job=False, _edits=None):
         help=f"Auto-resume a stop after this many seconds (0: never; default "
         f"{ATTACH_MAX_PAUSE} for attached JVMs, never otherwise)",
     )
-    for name in ("list", "wait", "inspect", "get", "set", "continue", "report", "close"):
-        action = start if name == "start" else actions.add_parser(name)
-        common(action, target=False)
+    for name, about in (
+        ("list", "Names of this user's sessions"),
+        ("wait", "Wait up to --timeout for the program to stop or exit"),
+        ("inspect", "Stack and locals at the current stop"),
+        ("get", "Read selectors (a, a.b, a[0], a['key']); lists one level of children"),
+        ("set", "Change one root local to a literal (name=value) at the current stop"),
+        ("continue", "Resume to the next breakpoint stop, or --to-exit"),
+        ("report", "State, program output and the session's operation count"),
+        ("close", "End the session and stop its local worker"),
+    ):
+        common(actions.add_parser(name, help=about), target=False)
     for action in actions.choices.values():
         action.add_argument("--name", default="default", help="Session name")
         action.add_argument("--timeout", type=float, default=30)
