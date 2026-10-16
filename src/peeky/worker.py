@@ -263,15 +263,19 @@ class DebugWorker:
     def dispatch(self, operation, args):
         self.validate(operation, args)
         with self.lock:
-            self.last_used = time.monotonic()
             if operation != "launch":
                 if not self.dap or args.get("session_id") != self.session:
                     raise ValueError("Missing or stale session_id")
+            # Activity counts from both ends of an operation, so a long operation is never
+            # mistaken for idleness the moment it returns; rejected requests do not count.
+            self.last_used = time.monotonic()
             try:
                 result = self._dispatch(operation, args)
             except (TimeoutError, RuntimeError, OSError):
                 self.close()
                 raise
+            finally:
+                self.last_used = time.monotonic()
             if operation != "report":
                 self.audit.append(
                     {
@@ -303,6 +307,17 @@ class DebugWorker:
         if operation == "launch" and args.get("entry") is not None:
             if not isinstance(args["entry"], str):
                 raise ValueError("entry must be a string")
+        if operation == "launch" and args.get("expect_sha256") is not None:
+            expected = args["expect_sha256"]
+            if (
+                not isinstance(expected, dict)
+                or set(expected) - {"program", "entry"}
+                or not all(
+                    isinstance(v, str) and re.fullmatch(r"[0-9a-f]{64}", v)
+                    for v in expected.values()
+                )
+            ):
+                raise ValueError("expect_sha256 maps program/entry to sha256 hex digests")
         if operation == "launch" and args.get("args") is not None:
             from peeky.probe import _check_args
 
@@ -380,6 +395,17 @@ class DebugWorker:
                 entry = self.path(args["entry"])
                 if entry.suffix != ".py":
                     raise ValueError("entry must be a .py file inside the root")
+            # A remote client's expected source identity is checked before anything runs,
+            # so a mismatched program is never executed or changed.
+            for role, path in (("program", program), ("entry", entry)):
+                expected = (args.get("expect_sha256") or {}).get(role)
+                if expected and path is None:
+                    raise ValueError(f"expect_sha256 names an {role} that was not given")
+                if expected and hashlib.sha256(path.read_bytes()).hexdigest() != expected:
+                    raise ValueError(
+                        f"Worker source provenance differs for the {role} {path.name}: refused "
+                        "before launching. Sync sources before debugging remotely"
+                    )
             self.adapter.validate_breakpoints(args.get("breakpoints", []))
             self.session = uuid.uuid4().hex
             self.audit = []
@@ -966,6 +992,7 @@ def make_server(root, token, port=8765, *, adapter=None):
             "set_hit",
             "entry",
             "args",
+            "expect_sha256",
         }:
             raise ValueError("Unknown probe field")
         program, line = parse_location(args.get("at"))
@@ -983,6 +1010,9 @@ def make_server(root, token, port=8765, *, adapter=None):
             args.get("set_hit", 1),
             entry=args.get("entry"),
             args=tuple(args.get("args", [])) if isinstance(args.get("args", []), list) else None,
+            expect_sha256=tuple(args["expect_sha256"].items())
+            if isinstance(args.get("expect_sha256"), dict)
+            else (),
         )
         if not probes.acquire(blocking=False):
             raise ValueError("Another probe is running; retry later")
@@ -1092,6 +1122,8 @@ def _run_probe_process(root, request, adapter, cap):
         command += ["--run", request.entry]
     for argument in request.args:
         command += [f"--arg={argument}"]
+    for role, digest in request.expect_sha256:
+        command += [f"--expect-sha256={role}={digest}"]
     if request.capture:
         command += ["--capture", ",".join(request.capture)]
     for name, value in request.set:
@@ -1247,6 +1279,12 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", default=".")
     parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument(
+        "--idle-timeout",
+        type=float,
+        default=300,
+        help="Close a session (and its debuggee) after this many idle seconds (default 300)",
+    )
     targets = parser.add_mutually_exclusive_group()
     targets.add_argument(
         "--java-config", type=Path, help="Trusted fixed Java target JSON configuration"
@@ -1279,11 +1317,15 @@ def main():
             parser.error(str(exc))
     server = make_server(args.root, token, args.port, adapter=adapter)
 
+    if not 1 <= args.idle_timeout <= 86400:
+        parser.error("--idle-timeout must be within [1, 86400] seconds")
+
     def expire():
         while True:
-            time.sleep(5)
+            time.sleep(min(5, args.idle_timeout / 2))
             with server.worker.lock:
-                if server.worker.dap and time.monotonic() - server.worker.last_used > 300:
+                idle = time.monotonic() - server.worker.last_used
+                if server.worker.dap and idle > args.idle_timeout:
                     server.worker.close()
 
     def guard():

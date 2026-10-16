@@ -28,6 +28,8 @@ Every Peeky failure, from the HTTP worker, the SDK (`peeky.errors.PeekyError`) o
 | `UNAUTHORIZED` | Missing or wrong bearer token | Use the worker's `DEBUG_TOKEN` |
 | `INVALID_REQUEST` | Malformed arguments | Fix the request |
 | `INTERNAL_ERROR` | A Peeky bug (unexpected exception type) | Report it with the message; do not retry or change your request |
+| `UNREACHABLE` | No connection reached the worker (tunnel or worker down); nothing was applied | Restore the tunnel/worker and retry; the session is kept |
+| `TRANSPORT_LOST` | The connection broke mid-request; outcome unknown | Reconnect, then `inspect`/`wait`; never repeat a mutation blindly |
 | `JOB_LOST` | A `--background` job's process died before finishing | Rerun the command |
 
 `POST /version` returns the protocol version, supported operations and the error codes. Every HTTP response carries `X-Peeky-Protocol: 1`.

@@ -26,6 +26,7 @@ import tomllib
 from pathlib import Path
 
 from peeky.client import Client
+from peeky.errors import PROTOCOL_VERSION
 from peeky.probe import Probe, _capture, _table, parse_selector, run_probe
 
 RUST_VERSION = "1.96.0"
@@ -486,13 +487,17 @@ def probe(args):
         args.set_hit,
         entry=_entry(root, args.run, language),
         args=tuple(args.arg),
+        expect_sha256=tuple(tuple(item.split("=", 1)) for item in args.expect_sha256),
     )
     progress = (
         None
         if args.quiet
         else lambda message: print(f"peeky: {message}", file=sys.stderr, flush=True)
     )
-    result = run_probe(root, request, adapter=adapter_for(language, data), progress=progress)
+    if args.worker is not None:
+        result = _probe_remote(args, root, request)
+    else:
+        result = run_probe(root, request, adapter=adapter_for(language, data), progress=progress)
     _emit(result, args.json, _table)
     return 0 if result["status"] == "completed" else 1
 
@@ -529,7 +534,45 @@ def _load(name):
         or not re.fullmatch(r"[0-9a-f]{32}", str(record.get("session_id")))
     ):
         raise ValueError(f"Session record {path} is malformed; remove it")
-    return record, Client(record["url"], record["token"])
+    if record.get("remote"):
+        return record, Client(record["url"], record["token"])
+    return record, _LocalClient(record["url"], record["token"], record.get("pid"))
+
+
+class _LocalClient(Client):
+    """A session's own local worker: if its process is gone, the session is lost."""
+
+    def __init__(self, url, token, pid):
+        super().__init__(url, token)
+        self.pid = pid
+
+    def call(self, operation, **arguments):
+        from peeky.client import TransportLost, WorkerUnreachable
+
+        try:
+            return super().call(operation, **arguments)
+        except (WorkerUnreachable, TransportLost):
+            if type(self.pid) is int and not _pid_alive(self.pid):
+                raise RuntimeError(
+                    f"The local worker (pid {self.pid}) has exited; the session is lost. "
+                    "Start a new session"
+                ) from None
+            raise
+
+
+def _pid_alive(pid):
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    try:
+        # A dead worker that is still our own child is a zombie until reaped.
+        reaped, _ = os.waitpid(pid, os.WNOHANG)
+    except ChildProcessError:
+        return True
+    return reaped == 0
 
 
 def _save(record):
@@ -675,21 +718,39 @@ def session(args):
             args.json,
             lambda r: f"state: {r['state']}\noutput:\n{r['output']}operations: {len(r['history'])}",
         )
+    elif args.action == "close" and args.forget:
+        # The worker is gone for good: drop the local record without contacting it.
+        for suffix in (".json", ".target.json"):
+            (_state_dir() / f"{args.name}{suffix}").unlink(missing_ok=True)
+        print(f"forgot {args.name} (the worker was not contacted)")
     elif args.action == "close":
+        from peeky.client import TransportLost, WorkerUnreachable
+
+        keep = False
         try:
             client.call("close", session_id=record["session_id"])
+        except (WorkerUnreachable, TransportLost):
+            # The remote worker may still hold the session: keep the record so the close
+            # can be retried once the tunnel is back.
+            keep = bool(record.get("remote"))
+            raise
         finally:
-            try:
-                # Authenticated by this record's token, so only its own worker stops.
-                client.call("shutdown")
-            except Exception:
+            if keep:
                 pass
-            for suffix in (".json", ".target.json"):
-                (_state_dir() / f"{args.name}{suffix}").unlink(missing_ok=True)
-            log = _state_dir() / f"{args.name}.log"
-            if log.is_file() and not log.is_symlink():
-                # Kept for post-mortem diagnosis until the next session of this name.
-                os.replace(log, _state_dir() / f"{args.name}.last.log")
+            elif not record.get("remote"):
+                try:
+                    # Authenticated by this record's token, so only its own worker stops.
+                    # A remote worker is shared infrastructure: it keeps running.
+                    client.call("shutdown")
+                except Exception:
+                    pass
+            if not keep:
+                for suffix in (".json", ".target.json"):
+                    (_state_dir() / f"{args.name}{suffix}").unlink(missing_ok=True)
+                log = _state_dir() / f"{args.name}.log"
+                if log.is_file() and not log.is_symlink():
+                    # Kept for post-mortem diagnosis until the next session of this name.
+                    os.replace(log, _state_dir() / f"{args.name}.last.log")
         print(f"closed {args.name}")
     return 0
 
@@ -718,12 +779,134 @@ def _pause_text(state):
     return f" ({text})"
 
 
+WORKER_TOKEN_ENV = "PEEKY_WORKER_TOKEN"
+
+
+def _remote(url):
+    """A client for a worker reached over loopback (e.g. an SSH -L tunnel)."""
+    if not re.fullmatch(r"http://127\.0\.0\.1:[0-9]{1,5}", url or ""):
+        raise ValueError(
+            "--worker must be a loopback URL such as http://127.0.0.1:8765; reach remote "
+            "workers through an SSH tunnel (ssh -N -L 8765:127.0.0.1:8765 user@host)"
+        )
+    token = os.environ.get(WORKER_TOKEN_ENV, "")
+    if len(token) < 16:
+        raise ValueError(
+            f"Set {WORKER_TOKEN_ENV} to the worker's DEBUG_TOKEN; tokens are never accepted "
+            "as arguments"
+        )
+    client = Client(url, token)
+    version = client.call("version")
+    if version.get("protocol") != PROTOCOL_VERSION:
+        raise ValueError(
+            f"Worker speaks protocol {version.get('protocol')}, this client {PROTOCOL_VERSION}"
+        )
+    return client, token
+
+
+def _source_matches(root, relative, remote_sha256, what):
+    local = hashlib.sha256((root / relative).read_bytes()).hexdigest()
+    if local != remote_sha256:
+        raise RuntimeError(
+            f"Worker source provenance differs for {what} {relative}: local sha256 {local[:12]}, "
+            f"worker {str(remote_sha256)[:12]}. Sync sources before debugging remotely"
+        )
+
+
+def _sha256(path):
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _expected(root, program, entry):
+    expected = {"program": _sha256(root / program)}
+    if entry:
+        expected["entry"] = _sha256(root / entry)
+    return expected
+
+
+def _probe_remote(args, root, request):
+    client, _ = _remote(args.worker)
+    expected = _expected(root, request.program, request.entry)
+    result = client.probe(
+        f"{request.program}:{request.line}",
+        request.capture,
+        dict(request.set),
+        hits=request.hits,
+        timeout=min(request.timeout, 30),
+        until=request.until,
+        set_hit=request.set_hit,
+        entry=request.entry,
+        args=request.args,
+        # The worker refuses before launching when its sources differ.
+        expect_sha256=expected,
+    )
+    result["worker"] = args.worker
+    ran = bool(result.get("hits") or result.get("rows") or result.get("output"))
+    try:
+        # Defense in depth: also compare what the worker reports having run.
+        if ran or result.get("source_sha256") is not None:
+            _source_matches(root, request.program, result.get("source_sha256"), "program")
+        if request.entry and (ran or result.get("entry_sha256") is not None):
+            _source_matches(root, request.entry, result.get("entry_sha256"), "entry script")
+    except RuntimeError as exc:
+        from peeky.errors import classify
+
+        # Values and output from different source text cannot be attributed locally.
+        result.update(
+            status="failed",
+            error=classify(exc, session_closed=True),
+            rows=[],
+            by_hit=[],
+            interventions=[],
+            output="",
+            results_discarded=True,
+        )
+    return result
+
+
+def _start_remote(args, root, program, line, language):
+    client, token = _remote(args.worker)
+    launch = client.call(
+        "launch",
+        program=program,
+        breakpoints=[{"line": line}],
+        max_pause=_max_pause(args.max_pause, language),
+        **({"entry": entry} if (entry := _entry(root, args.run, language)) else {}),
+        **({"args": list(args.arg)} if args.arg else {}),
+        expect_sha256=_expected(root, program, _entry(root, args.run, language)),
+    )
+    try:
+        _source_matches(root, program, launch.get("source_sha256"), "program")
+        if entry:
+            _source_matches(root, entry, launch.get("entry_sha256"), "entry script")
+    except Exception:
+        client.call("close", session_id=launch["session_id"])
+        raise
+    record = {"name": args.name, "url": args.worker, "token": token, "remote": True}
+    record.update(root=str(root), program=program, language=language)
+    record.update(session_id=launch["session_id"], state="running", stop_id=None)
+    if launch.get("optimized"):
+        record["optimized"] = launch["optimized"]
+    _save(record)
+    state = _wait(record, client, args.timeout)
+    if record.get("optimized"):
+        state["optimized"] = record["optimized"]
+    _emit(
+        {"session": args.name, "language": language, "worker": args.worker, **state},
+        args.json,
+        lambda s: f"session {s['session']} ({s['language']}, remote): " + _state_text(s),
+    )
+    return 0
+
+
 def _start(args):
     root, program, line, language, data = resolve(args.target, args.at, args.config)
     if line is None:
         raise ValueError("session start requires --at <path>:<line>")
     if _record(args.name).exists():
         raise ValueError(f"Session {args.name!r} exists; close it or pass --name")
+    if args.worker is not None:
+        return _start_remote(args, root, program, line, language)
     token = secrets.token_urlsafe(32)
     command = [sys.executable, "-m", "peeky.worker", "--root", str(root), "--port", "0"]
     if data is not None:
@@ -746,7 +929,7 @@ def _start(args):
     if not match:
         process.kill()
         raise RuntimeError(f"Worker did not start; see {log.name}")
-    client = Client(match[1], token)
+    client = _LocalClient(match[1], token, process.pid)
     record = {"name": args.name, "url": match[1], "token": token, "pid": process.pid}
     record.update(root=str(root), program=program, language=language)
     try:
@@ -758,8 +941,16 @@ def _start(args):
             **({"entry": entry} if (entry := _entry(root, args.run, language)) else {}),
             **({"args": list(args.arg)} if args.arg else {}),
         )
-    except Exception:
+    except Exception as exc:
         os.killpg(process.pid, signal.SIGTERM)
+        from peeky.client import TransportLost, WorkerUnreachable
+
+        if isinstance(exc, (WorkerUnreachable, TransportLost)):
+            # Worded so it is classified as a closed session, not a retryable transport error.
+            raise RuntimeError(
+                "The local worker failed while launching and was stopped; no session exists. "
+                "Start again"
+            ) from exc
         raise
     record.update(session_id=launch["session_id"], state="running", stop_id=None)
     if launch.get("optimized"):
@@ -1119,6 +1310,12 @@ def main(argv=None, _job=False, _edits=None):
         "--run", help="Python: script to run when --at is in a module it imports (e.g. main.py)"
     )
     sub.add_argument(
+        "--worker",
+        help="Probe on a running worker at this loopback URL (e.g. through ssh -L); token "
+        "from $PEEKY_WORKER_TOKEN; local and worker sources must match",
+    )
+    sub.add_argument("--expect-sha256", action="append", default=[], help=argparse.SUPPRESS)
+    sub.add_argument(
         "--arg", action="append", default=[], help="Python: program argument (repeatable)"
     )
     sub.add_argument("--timeout", type=float, default=60)
@@ -1137,6 +1334,11 @@ def main(argv=None, _job=False, _edits=None):
     common(start)
     start.add_argument("--at", required=True)
     start.add_argument("--run", help="Python: script to run when --at is in an imported module")
+    start.add_argument(
+        "--worker",
+        help="Use a running worker at this loopback URL (e.g. through ssh -L) instead of "
+        "starting one; token from $PEEKY_WORKER_TOKEN",
+    )
     start.add_argument("--arg", action="append", default=[], help="Python: program argument")
     start.add_argument(
         "--max-pause",
@@ -1153,6 +1355,11 @@ def main(argv=None, _job=False, _edits=None):
         action.add_argument("--timeout", type=float, default=30)
     actions.choices["get"].add_argument("selectors", nargs="+")
     actions.choices["set"].add_argument("assignment", help="name=value")
+    actions.choices["close"].add_argument(
+        "--forget",
+        action="store_true",
+        help="Drop the local record without contacting the worker (worker gone for good)",
+    )
     actions.choices["continue"].add_argument(
         "--to-exit", action="store_true", help="Clear breakpoints and run the program to exit"
     )

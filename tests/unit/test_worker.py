@@ -450,3 +450,22 @@ def test_unreadable_values_in_unoptimized_builds_are_not_called_optimized_out():
     assert "parent is NULL" in plain["error"]
     optimized = _capture(Snapshot(True), {}, ("p",), 1, "observed")[0]
     assert "optimized out" in optimized["error"]
+
+
+def test_activity_is_stamped_when_a_long_operation_ends(tmp_path, monkeypatch):
+    import time
+
+    worker = stopped_worker(tmp_path)
+    worker.last_used = 0.0
+
+    def slow(operation, args):
+        time.sleep(0.3)
+        return {"state": "stopped"}
+
+    monkeypatch.setattr(worker, "_dispatch", slow)
+    worker.dispatch("wait", {"session_id": "session", "timeout": 1})
+    assert time.monotonic() - worker.last_used < 0.1
+    before = worker.last_used
+    with pytest.raises(ValueError, match="stale session_id"):
+        worker.dispatch("wait", {"session_id": "other", "timeout": 1})
+    assert worker.last_used == before  # rejected requests never keep a session alive

@@ -111,7 +111,7 @@ ssh -N -L 8765:127.0.0.1:8765 user@target
 peeky-agent --url http://127.0.0.1:8765 --model YOUR_MODEL --output runs/remote
 ```
 
-Keep matching source on the client and worker. The runner checks source identity. Verification currently executes on the client, so its dependencies must match the target environment. SSH topology is documented; CI exercises the network interface locally, not a live cluster.
+See [docs/REMOTE.md](docs/REMOTE.md) for `peeky probe|session start --worker http://127.0.0.1:8765` with `PEEKY_WORKER_TOKEN`. Keep matching source on the client and worker. The runner checks source identity. Verification currently executes on the client, so its dependencies must match the target environment. SSH topology is documented; CI exercises the network interface locally, not a live cluster.
 
 ## Design and delivery
 
