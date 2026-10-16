@@ -14,7 +14,9 @@ INPUTS = ("Cargo.toml", "Cargo.lock", "src/main.rs", "tests/pagination.rs")
 
 
 @pytest.mark.timeout(120)
-def test_rust_stateless_probe_views_intervention_and_cleanup(tmp_path):
+def test_rust_stateless_probe_views_intervention_and_cleanup(
+    tmp_path, tmp_path_factory, monkeypatch
+):
     names = ("CARGO", "RUSTC", "DAP", "DWARFDUMP", "LINKER")
     if not all(os.environ.get("PEEKY_RUST_" + name) for name in names):
         pytest.skip("set PEEKY_RUST_* tool paths to enable Rust probe conformance")
@@ -39,7 +41,10 @@ def test_rust_stateless_probe_views_intervention_and_cleanup(tmp_path):
         dsymutil=os.environ.get("PEEKY_RUST_DSYMUTIL"),
         sysroot=os.environ.get("PEEKY_RUST_SYSROOT"),
     )
-    before = set(Path(tempfile.gettempdir()).glob("peeky-rust-*"))
+    # A private temp root: other Peeky runs on this machine cannot disturb the check.
+    # Outside the crate: a temp root inside it would (rightly) trip the ancestor check.
+    private = tmp_path_factory.mktemp("rust-tmp")
+    monkeypatch.setattr(tempfile, "tempdir", str(private))
     result = run_probe(
         tmp_path,
         Probe(
@@ -61,7 +66,7 @@ def test_rust_stateless_probe_views_intervention_and_cleanup(tmp_path):
     assert rows["after-set", "start"]["value"] == "0"
     assert "PAGE:[10, 20, 30]" in result["output"]
     assert result["target_identity"]["language"] == "rust" and result["artifact_manifest_id"]
-    assert set(Path(tempfile.gettempdir()).glob("peeky-rust-*")) == before
+    assert list(private.glob("peeky-rust-*")) == []
 
 
 @pytest.mark.timeout(180)
