@@ -43,8 +43,8 @@ The findings are fixed in three PRs. The `PR` column says which one; "this PR" m
 | Python list indexes ≥ 100 reported as not found | should-fix | Reported as beyond the debugger's visible window | B |
 | `describe` on a syntax error reports `INTERNAL_ERROR` | should-fix | `INVALID_REQUEST` naming the file and line | B |
 | Non-ASCII auth header and pre-dispatch errors are misreported; `session close`/`list` JSON gaps; log path shows an fd | nit | 401 for any bad header; body errors are `INVALID_REQUEST` with the session untouched; `close`, `close --forget` and `list` emit JSON; the log path is printed | B |
-| Rust i32 mutation can write a debug-only copy (`.dbg.spill`) that the program never reads | blocking | | C |
-| Files included from outside the declared inputs (`#include "/abs"`, `#[path]`, `include!`) are not hashed | should-fix | | C |
+| Rust i32 mutation can write a debug-only copy (`.dbg.spill`) that the program never reads | blocking | Builds also emit LLVM IR. A change is allowed only if every declaration of that local in the stopped function (matched by its symbol hash) is a real memory slot; otherwise `MUTATION_REJECTED` explains why (`test_locals_the_program_keeps_in_registers_cannot_be_changed`, real cargo: `MARK:1007` stays unchanged) | C |
+| Files included from outside the declared inputs (`#include "/abs"`, `#[path]`, `include!`) are not hashed | should-fix | Rust: every file in rustc's dependency files must be a declared source, or the build fails. C/C++: `-MD` lists every file read; headers outside the workspace (absolute includes, SDK and system headers) are hashed and rechecked before every operation, at about 2 ms for an `<iostream>` program's 824 headers (`test_sources_from_outside_the_crate_fail_the_build`, `test_headers_read_from_outside_the_workspace_are_provenance`) | C |
 
 ## Review of PR A (#38, 4a1195f)
 
