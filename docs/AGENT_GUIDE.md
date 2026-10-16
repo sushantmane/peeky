@@ -15,7 +15,7 @@ You debug programs with **peeky**, a standalone tool. You decide what to do; pee
 | Command | Cost | Use |
 | --- | --- | --- |
 | `peeky describe <target> [--json]` | one build | Learn the language, valid breakpoint lines, qualified views and mutation rules. Always first. |
-| `peeky probe <target> --at <path>:<line> --capture a,b.c [--set x=0] [--hits N] [--json]` | one run | Answer one question in one call: values at a line, optionally after one intervention, plus program output. |
+| `peeky probe <target> --at <path>:<line> --capture a,b.c [--set x=0] [--hits N\|all] [--json]` | one run | Answer one question in one call: values at a line, optionally after one intervention, plus program output. `--hits all` captures every stop up to 100 without counting iterations. |
 | `peeky sql "SELECT ... FROM last_run"` / `peeky queries [name]` | instant | Ask follow-up questions about evidence that probes already saved. No rerun. `peeky sql --schema` lists the tables. |
 | `peeky session start <target> --at <path>:<line>` | one run | Start step-by-step debugging when you need several looks at the same stop. |
 | `peeky session inspect` / `get a.b 'c[0]' "d['k']"` / `set x=0` / `continue [--to-exit]` / `report` / `close` | instant | Work with the stopped program. `get` also lists a value's children, each with the selector that reads it, and exits 1 if any selector failed. `continue` runs to the next stop (there is no single-stepping); `--to-exit` clears the breakpoints and runs to the end. Always `close`. |
@@ -54,8 +54,8 @@ Every probe is saved, and the result's `evidence.run_id` names it. **SQL is opti
 
 
 - `peeky sql --schema` lists the tables (`runs`, `captures`, `interventions`, `pauses`), the `evidence` and `last_run` views, and the canned queries. Read it before writing SQL.
-- `peeky queries` needs no SQL. `run` shows a run's values, `hits` shows a selector across hits with `changed`, `compare` puts every value of two runs side by side and `diff` keeps only the rows that differ (ordered by hit, so the first row is in the earliest hit where the runs diverge), `outputs` shows two runs' outputs and outcomes, `set_effect` shows values before and after an intervention, `values` shows the distinct values of a selector across runs, and `unreadable` and `failures` list what has no value. Pass `--param name=value`.
-- Use `num` for numeric comparisons (`num > 10`); `value` is the debugger's text. `--label` tags a run with free text (`--label no-trailing-space`) so you can find it later; it is stored as given, not parsed.
+- `peeky queries` needs no SQL. `run` shows a run's values, `hits` shows a selector across hits with `changed`, `compare` puts every value of two runs side by side and `diff` keeps only the rows that differ: real differences first in hit and capture order (the first row is the first divergence), then `note: addresses only` rows (values that differ only in a pointer), then one `only in run a/b` row per selector that only one run captured, `outputs` shows two runs' outputs and outcomes, `set_effect` shows values before and after an intervention, `values` shows the distinct values of a selector across runs, and `unreadable` and `failures` list what has no value. Pass `--param name=value`.
+- Use `num` for numeric comparisons (`num > 10`); `value` is the debugger's text. `no_addresses(value)` masks pointer-sized hex addresses, for comparing values across runs in your own SQL. `--label` tags a run with free text (`--label no-trailing-space`) so you can find it later; it is stored as given, not parsed.
 - Queries are read-only and bounded. A failing query returns `INVALID_QUERY`; fix the SQL. Saved evidence describes past runs only: a new question about the program needs a new probe.
 
 ### Verifying an edit

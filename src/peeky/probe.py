@@ -166,6 +166,11 @@ class Probe:
     # Remote clients: (role, sha256) pairs the worker checks before launching.
     expect_sha256: tuple[tuple[str, str], ...] = ()
 
+    @property
+    def limit(self):
+        """The most hits this probe captures: --hits N, or the cap for --hits all."""
+        return MAX_HITS if self.hits == "all" else self.hits
+
     def __post_init__(self):
         if not isinstance(self.program, str) or not self.program:
             raise ValueError("Probe program must be a relative source path")
@@ -185,13 +190,13 @@ class Probe:
                 or len(parse_selector(change[0])) != 1
             ):
                 raise ValueError("Interventions are (local-name, value) string pairs")
-        if type(self.hits) is not int or not 1 <= self.hits <= MAX_HITS:
-            raise ValueError(f"Probe hits must be 1..{MAX_HITS}")
+        if self.hits != "all" and (type(self.hits) is not int or not 1 <= self.hits <= MAX_HITS):
+            raise ValueError(f"Probe hits must be 1..{MAX_HITS} or 'all'")
         if type(self.timeout) not in (int, float) or not 0 < self.timeout <= MAX_SECONDS:
             raise ValueError(f"Probe timeout must be within (0, {MAX_SECONDS}] seconds")
         if self.until not in ("exit", "hits"):
             raise ValueError("Probe until must be 'exit' or 'hits'")
-        if type(self.set_hit) is not int or not 1 <= self.set_hit <= self.hits:
+        if type(self.set_hit) is not int or not 1 <= self.set_hit <= self.limit:
             raise ValueError("Probe set_hit must be within 1..hits")
         if self.entry is not None and (not isinstance(self.entry, str) or not self.entry):
             raise ValueError("Probe entry must be a relative script path")
@@ -205,6 +210,25 @@ class Probe:
             for pair in self.expect_sha256
         ):
             raise ValueError("Probe expect_sha256 holds (program|entry, sha256) pairs")
+
+
+def parse_hits(text):
+    """`--hits`: a count, or `all` (every stop up to the cap)."""
+    if text == "all":
+        return "all"
+    try:
+        return int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"expected a number or 'all', got {text!r}") from None
+
+
+# Progress for repeated hits: the first and the last requested, otherwise at most one
+# line every PROGRESS_SECONDS, so long runs show they are alive without flooding logs.
+PROGRESS_SECONDS = 2.0
+
+
+def _report_hit(hit, limit, last_said):
+    return hit in (1, limit) or time.monotonic() - last_said >= PROGRESS_SECONDS
 
 
 def _visible(snapshot):
@@ -587,6 +611,7 @@ def run_probe(root, probe, *, adapter=None, progress=None):
     deadline = started + probe.timeout
     result = {"probe": {**asdict(probe), "set": [list(change) for change in probe.set]}}
     rows, changes, hits, warnings, relocated, pauses = [], [], 0, [], False, []
+    last_said = 0.0
     try:
         launch = worker.dispatch(
             "launch",
@@ -628,7 +653,7 @@ def run_probe(root, probe, *, adapter=None, progress=None):
             if state["state"] == "running":
                 if time.monotonic() - noted >= 10:
                     noted = time.monotonic()
-                    phase = "for the next stop" if hits < probe.hits else "for the program to exit"
+                    phase = "for the next stop" if hits < probe.limit else "for the program to exit"
                     say(f"still waiting {phase} ({int(noted - started)} s elapsed)")
                 continue
             if state["state"] == "terminated":
@@ -668,7 +693,10 @@ def run_probe(root, probe, *, adapter=None, progress=None):
                     f"line {expected}. Choose a line from `peeky describe`."
                 )
                 say(warnings[-1])
-            say(f"hit {hits}/{probe.hits} at {probe.program}:{expected}; capturing")
+            if _report_hit(hits, probe.limit, last_said):
+                last_said = time.monotonic()
+                of = f" (all, up to {MAX_HITS})" if probe.hits == "all" else f"/{probe.limit}"
+                say(f"hit {hits}{of} at {probe.program}:{expected}; capturing")
             # The stop-validation inspection is reused for the first selectors.
             rows.extend(_capture(worker, stop, probe.capture, hits, "observed", snapshot))
             if hits == probe.set_hit and probe.set:
@@ -697,24 +725,28 @@ def run_probe(root, probe, *, adapter=None, progress=None):
                 rows.extend(_capture(worker, stop, probe.capture, hits, "after-set"))
             if len(rows) > MAX_ROWS:
                 raise ValueError("Probe row budget exceeded")
-            if hits >= probe.hits:
+            if hits >= probe.limit:
                 worker.dispatch(
                     "breakpoints", {**session, "program": probe.program, "breakpoints": []}
                 )
             worker.dispatch("continue", stop)
             pauses.append(round((time.monotonic() - paused) * 1000, 1))
-            if hits >= probe.hits:
+            if hits >= probe.limit:
                 if probe.until == "hits":
                     status = "completed"
                     say("all requested hits captured; ending the probe now")
                     break
-                say("all requested hits captured; letting the program finish")
+                say(
+                    f"reached the {MAX_HITS}-hit cap; letting the program finish"
+                    if probe.hits == "all"
+                    else "all requested hits captured; letting the program finish"
+                )
         report = worker.dispatch("report", session)
         result.update(
             status=status,
             ended=(
                 "hits"
-                if probe.until == "hits" and status == "completed" and hits >= probe.hits
+                if probe.until == "hits" and status == "completed" and hits >= probe.limit
                 else "exit"
                 if report.get("state") == "terminated"
                 else None
@@ -739,7 +771,13 @@ def run_probe(root, probe, *, adapter=None, progress=None):
                 "retryable": False,
                 "session_closed": True,
             }
-        elif status == "completed" and hits < probe.hits:
+        elif status == "completed" and probe.hits == "all" and hits >= probe.limit:
+            warnings.append(
+                f"Captured the first {MAX_HITS} hits, the cap for --hits all; the program may have "
+                "stopped here again later. To see later hits, probe a smaller input or a line "
+                "that runs less often."
+            )
+        elif status == "completed" and probe.hits != "all" and hits < probe.hits:
             warnings.append(
                 f"Only {hits} of {probe.hits} requested hits occurred before the program exited."
             )
@@ -761,7 +799,7 @@ def run_probe(root, probe, *, adapter=None, progress=None):
             if result.get("optimized")
             else "Some selectors could not be read by the debugger; see each row's reason."
         )
-    if changes and probe.hits > 1:
+    if changes and probe.limit > 1:
         warnings.append(
             f"Interventions are applied once, at hit {probe.set_hit}; other hits observe "
             "without re-applying."
@@ -822,7 +860,9 @@ def _table(result):
     for change in result["interventions"]:
         lines.append(f"set {change['name']}: {change['before']} -> {change['after']}")
     lines.append(
-        f"status: {result['status']}  hits: {result['hits']}  seconds: {result['seconds']}"
+        f"status: {result['status']}  hits: {result['hits']}"
+        + (" (all)" if (result.get("probe") or {}).get("hits") == "all" else "")
+        + f"  seconds: {result['seconds']}"
         + (f"  max pause: {max(result['pauses_ms'])} ms" if result.get("pauses_ms") else "")
     )
     for warning in result.get("warnings", ()):
@@ -850,7 +890,9 @@ def main(argv=None):
     parser.add_argument(
         "--set", action="append", default=[], help="Local intervention name=value (repeatable)"
     )
-    parser.add_argument("--hits", type=int, default=1, help="Stops to capture (default 1)")
+    parser.add_argument(
+        "--hits", type=parse_hits, default=1, help="Stops to capture, or 'all' (default 1)"
+    )
     parser.add_argument("--timeout", type=float, default=60, help="Overall seconds (default 60)")
     parser.add_argument("--until", choices=("exit", "hits"), default="exit")
     parser.add_argument("--set-hit", type=int, default=1, help="Hit that gets --set (default 1)")

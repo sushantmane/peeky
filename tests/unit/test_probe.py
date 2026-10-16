@@ -560,3 +560,30 @@ def test_entries_debugpy_groups_by_value_type_are_explained():
                 snapshot({**ORDER, "name": "fn_vals"}),
                 parse_selector(selector),
             )
+
+
+def test_hits_take_a_count_or_all():
+    import argparse
+
+    from peeky.probe import MAX_HITS, parse_hits
+
+    assert parse_hits("all") == "all" and parse_hits("7") == 7
+    with pytest.raises(argparse.ArgumentTypeError):
+        parse_hits("ALL")
+    assert Probe("main.py", 3, hits="all").limit == MAX_HITS
+    assert Probe("main.py", 3, hits="all", set_hit=MAX_HITS).set_hit == MAX_HITS
+    for hits in ("All", "10", 0, True, None):
+        with pytest.raises(ValueError):
+            Probe("main.py", 3, hits=hits)
+
+
+def test_progress_for_repeated_hits_is_rate_limited(monkeypatch):
+    from peeky import probe
+
+    clock = [100.0]
+    monkeypatch.setattr(probe.time, "monotonic", lambda: clock[0])
+    # The first and the last requested hit always print.
+    assert probe._report_hit(1, 30, last_said=100.0) and probe._report_hit(30, 30, 100.0)
+    assert not probe._report_hit(5, 30, last_said=99.5)
+    clock[0] = 102.0
+    assert probe._report_hit(6, 30, last_said=99.5)

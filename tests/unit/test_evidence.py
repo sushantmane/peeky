@@ -228,6 +228,7 @@ def test_canned_queries_answer_comparisons(store):
             "value_a": "6",
             "value_b": "7",
             "differs": 1,
+            "note": None,
         }
     ]
     assert evidence.run_query(store, "compare", {"a": 2, "b": 2})["rows"][0]["differs"] == 0
@@ -434,3 +435,111 @@ def test_runs_record_the_arguments_the_program_received(store, reported, languag
     evidence.record(store, recorded, language=language)
     args = evidence.query(store, "SELECT args FROM runs")["rows"][0]["args"]
     assert (None if args is None else json.loads(args)) == stored
+
+
+def captured(rows, **probe):
+    """A probe result with explicit (hit, phase, selector, value) rows."""
+    recorded = result()
+    recorded["rows"] = [
+        dict(hit=hit, phase=phase, line=8, selector=selector, value=value)
+        for hit, phase, selector, value in rows
+    ]
+    recorded["probe"].update(probe)
+    return recorded
+
+
+def test_diff_puts_the_first_real_divergence_first(store):
+    """Capture order, not alphabetical; addresses and one-sided selectors come last."""
+    text_a = '0x000000016bb97aae "the quick brown fox"'
+    text_b = '0x000000016d2c3aae "the quick brown fox"'
+    evidence.record(
+        store,
+        captured(
+            [
+                (1, "observed", "words", "3"),
+                (1, "observed", "in_word", "1"),
+                (1, "observed", "text", text_a),
+                (1, "observed", "totals", "[]"),
+                (2, "observed", "words", "4"),
+                (2, "observed", "in_word", "0"),
+                (2, "observed", "text", text_a),
+                (2, "observed", "totals", "[]"),
+                (3, "observed", "words", "5"),
+                (3, "observed", "in_word", "0"),
+                (3, "observed", "text", text_a),
+                (3, "observed", "totals", "[]"),
+            ]
+        ),
+    )
+    evidence.record(
+        store,
+        captured(
+            [
+                (1, "observed", "words", "3"),
+                (1, "observed", "in_word", "1"),
+                (1, "observed", "text", text_b),
+                (1, "observed", "zeta", "9"),
+                (2, "observed", "words", "4"),
+                (2, "observed", "in_word", "1"),
+                (2, "observed", "text", text_b),
+                (2, "observed", "zeta", "9"),
+            ]
+        ),
+    )
+    rows = evidence.run_query(store, "diff")["rows"]
+    shape = [(r["hit"], r["selector"], r["note"]) for r in rows]
+    assert shape == [
+        (2, "in_word", None),
+        (3, "words", "missing in run b"),
+        (3, "in_word", "missing in run b"),
+        (3, "text", "missing in run b"),
+        (1, "text", "addresses only"),
+        (2, "text", "addresses only"),
+        (None, "totals", "only in run a"),
+        (None, "zeta", "only in run b"),
+    ]
+    assert all(r["differs"] == 1 for r in rows)
+    compared = evidence.run_query(store, "compare")["rows"]
+    # Every row of both runs, in capture order within each hit.
+    assert [r["selector"] for r in compared if r["hit"] == 1] == [
+        "words",
+        "in_word",
+        "text",
+        "totals",
+        "zeta",
+    ]
+    assert {(r["selector"], r["note"]) for r in compared if r["hit"] == 1} >= {
+        ("words", None),
+        ("text", "addresses only"),
+        ("totals", "only in run a"),
+        ("zeta", "only in run b"),
+    }
+
+
+@pytest.mark.parametrize(
+    "value, masked",
+    [
+        ("0x000000016bb97aae", "0x…"),
+        ('0x16fc5ef38 "hi"', '0x… "hi"'),
+        ("<O object at 0x104a3b2c0>", "<O object at 0x…>"),
+        # Short hex is data, never an address: it still counts as a difference.
+        ("0x1234", "0x1234"),
+        ("10", "10"),
+        (None, None),
+    ],
+)
+def test_only_pointer_sized_addresses_are_masked(value, masked):
+    assert evidence._no_addresses(value) == masked
+
+
+def test_no_addresses_is_available_to_ad_hoc_sql(store):
+    evidence.record(store, captured([(1, "observed", "p", "0x000000016bb97aae")]))
+    rows = evidence.query(store, "SELECT no_addresses(value) AS v FROM last_run")["rows"]
+    assert rows == [{"v": "0x…"}]
+    assert "no_addresses(text)" in evidence.schema(store)["functions"]
+
+
+def test_runs_show_the_start_of_each_output(store):
+    evidence.record(store, result(output="CHARGED: 566 ORDERS: 30\n" + "x" * 100))
+    [run] = evidence.run_query(store, "runs")["rows"]
+    assert run["output_start"] == ("CHARGED: 566 ORDERS: 30\n" + "x" * 100)[:60]

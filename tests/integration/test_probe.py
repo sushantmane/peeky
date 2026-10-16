@@ -212,3 +212,33 @@ def test_http_probe_accepts_until_and_set_hit(tmp_path):
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
+
+
+def test_hits_all_captures_every_stop_up_to_the_cap(tmp_path, capsys):
+    (tmp_path / "few.py").write_text("for i in range(3):\n    x = i * 2\nprint('done')\n")
+    (tmp_path / "many.py").write_text("t = 0\nfor i in range(150):\n    t += i\nprint(t)\n")
+    result = run_probe(tmp_path, Probe("few.py", 2, ("i",), hits="all"))
+    assert result["status"] == "completed" and result["hits"] == 3
+    assert [r["value"] for r in result["rows"]] == ["0", "1", "2"]
+    # Fewer stops than the cap is the whole run, not a shortfall.
+    assert not any("requested hits" in warning for warning in result["warnings"])
+    result = run_probe(tmp_path, Probe("many.py", 3, ("i",), hits="all"))
+    assert result["status"] == "completed" and result["hits"] == 100
+    assert any("the cap for --hits all" in warning for warning in result["warnings"])
+    assert "11175" in result["output"]
+    # Through the CLI and the HTTP worker, `all` is the same request.
+    assert (
+        main(["--root", str(tmp_path), "--at", "few.py:2", "--capture", "i", "--hits", "all"]) == 0
+    )
+    assert "hits: 3 (all)" in capsys.readouterr().out
+    server = make_server(tmp_path, "probe-test-token-123456", 0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        client = Client(f"http://127.0.0.1:{server.server_port}", "probe-test-token-123456")
+        result = client.probe("few.py:2", ["i"], hits="all")
+        assert result["status"] == "completed" and result["hits"] == 3
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)

@@ -29,7 +29,16 @@ from pathlib import Path
 
 from peeky.client import Client
 from peeky.errors import PROTOCOL_VERSION
-from peeky.probe import Probe, _capture, _table, parse_selector, run_probe, split_selectors
+from peeky.probe import (
+    MAX_HITS,
+    Probe,
+    _capture,
+    _table,
+    parse_hits,
+    parse_selector,
+    run_probe,
+    split_selectors,
+)
 
 RUST_VERSION = "1.96.0"
 
@@ -1632,7 +1641,12 @@ def main(argv=None, _job=False, _edits=None):
     sub.add_argument("--at", required=True, help="<line> or <path>:<line>")
     sub.add_argument("--capture", default="", help="Comma-separated selectors, e.g. a,b.c,d[0]")
     sub.add_argument("--set", action="append", default=[], help="name=value (repeatable)")
-    sub.add_argument("--hits", type=int, default=1)
+    sub.add_argument(
+        "--hits",
+        type=parse_hits,
+        default=1,
+        help=f"Stops to capture (default 1), or 'all': every stop, up to {MAX_HITS}",
+    )
     sub.add_argument(
         "--set-hit", type=int, default=1, help="Which hit gets the --set interventions (default 1)"
     )

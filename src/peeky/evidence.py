@@ -46,7 +46,7 @@ TABLES = {
             "capture": "JSON list of requested selectors",
             "sets": "JSON list of requested [name, value] interventions",
             "set_hit": "Hit at which the interventions were applied",
-            "hits_requested": "The probe's --hits",
+            "hits_requested": "The probe's --hits: a number, or 'all'",
             "args": "JSON list of the arguments the program received (--arg, else the "
             "configured ones); NULL for an attached JVM, whose arguments are unknown",
             "entry": "Python --run script, or NULL",
@@ -145,14 +145,50 @@ def _shown(alias=""):
     return f"COALESCE({prefix}value, '<' || COALESCE({prefix}error, 'no value') || '>')"
 
 
-_PAIR = f"""WITH a AS (SELECT hit, phase, selector, {_shown()} AS v FROM captures
+_PAIR = f"""WITH a AS (SELECT hit, phase, selector, {_shown()} AS v, rowid AS pos FROM captures
     WHERE run_id = {_A}),
-  b AS (SELECT hit, phase, selector, {_shown()} AS v FROM captures WHERE run_id = {_B}),
-  k AS (SELECT hit, phase, selector FROM a UNION SELECT hit, phase, selector FROM b)
-SELECT {_A} AS run_a, {_B} AS run_b, k.hit, k.phase, k.selector, a.v AS value_a,
-  b.v AS value_b, a.v IS NOT b.v AS differs
-FROM k LEFT JOIN a USING (hit, phase, selector) LEFT JOIN b USING (hit, phase, selector)"""
-_PAIR_ORDER = " ORDER BY k.hit, k.phase = 'after-set', k.selector"
+  b AS (SELECT hit, phase, selector, {_shown()} AS v, rowid AS pos FROM captures
+    WHERE run_id = {_B}),
+  k AS (SELECT hit, phase, selector FROM a UNION SELECT hit, phase, selector FROM b),
+  pair AS (SELECT k.hit, k.phase, k.selector, a.v AS value_a, b.v AS value_b,
+    a.v IS NOT b.v AS differs, COALESCE(a.pos, b.pos) AS pos,
+    CASE
+      WHEN k.selector NOT IN (SELECT selector FROM b) THEN 'only in run a'
+      WHEN k.selector NOT IN (SELECT selector FROM a) THEN 'only in run b'
+      WHEN b.pos IS NULL THEN 'missing in run b'
+      WHEN a.pos IS NULL THEN 'missing in run a'
+      WHEN a.v IS NOT b.v AND no_addresses(a.v) IS no_addresses(b.v) THEN 'addresses only'
+    END AS note
+    FROM k LEFT JOIN a USING (hit, phase, selector) LEFT JOIN b USING (hit, phase, selector))"""
+_PAIR_COLUMNS = (
+    f"{_A} AS run_a, {_B} AS run_b, hit, phase, selector, value_a, value_b, differs, note"
+)
+# Capture order within a hit: the order the probe recorded (its --capture order).
+_PAIR_ORDER = " ORDER BY hit, phase = 'after-set', pos"
+# Real divergences first, in hit and capture order; then values that differ only in
+# memory addresses; then one row per selector that only one run captured. Nothing is
+# dropped: an address-only difference may still be a real one.
+_DIFF = f"""{_PAIR}
+SELECT {_PAIR_COLUMNS} FROM (
+  SELECT 0 AS rank, hit, phase, selector, value_a, value_b, differs, note, pos FROM pair
+    WHERE differs AND (note IS NULL OR note LIKE 'missing%')
+  UNION ALL SELECT 1, hit, phase, selector, value_a, value_b, differs, note, pos FROM pair
+    WHERE note = 'addresses only'
+  UNION ALL SELECT 2, NULL, NULL, selector, NULL, NULL, 1, note, MIN(pos) FROM pair
+    WHERE note LIKE 'only in%' GROUP BY selector, note)
+ORDER BY rank, hit, phase = 'after-set', pos"""
+_ADDRESS = re.compile(r"\b0x[0-9a-fA-F]{8,16}\b")
+
+
+def _no_addresses(value):
+    """`value` with pointer-sized hex addresses masked, for comparing runs.
+
+    Registered as the SQL function no_addresses(text): an address that changes on
+    every run (a C string, a Python object repr) is not a difference in the program.
+    """
+    return _ADDRESS.sub("0x…", value) if isinstance(value, str) else value
+
+
 _RUN_PARAM = {"run": "Run id (default: the newest run)"}
 _PAIR_PARAMS = {
     "a": "First run id (default: the run before b)",
@@ -164,7 +200,8 @@ QUERIES = {
     "runs": (
         "Recent runs, newest first: where, inputs, outcome",
         "SELECT run_id, started_at, label, program || ':' || line AS at, args, sets, status, "
-        "hits, seconds, error_code FROM runs ORDER BY run_id DESC LIMIT COALESCE(:count, 20)",
+        "hits, seconds, error_code, substr(output, 1, 60) AS output_start FROM runs "
+        "ORDER BY run_id DESC LIMIT COALESCE(:count, 20)",
         {"count": "How many runs (default 20)"},
         (),
     ),
@@ -186,14 +223,17 @@ WINDOW w AS (PARTITION BY selector ORDER BY hit) ORDER BY selector, hit""",
         (),
     ),
     "compare": (
-        "Two runs side by side (e.g. two inputs, or with and without --set)",
-        _PAIR + _PAIR_ORDER,
+        "Every value of two runs side by side, in hit and capture order; note says when a "
+        "value is missing from a run or differs only in memory addresses",
+        f"{_PAIR}\nSELECT {_PAIR_COLUMNS} FROM pair{_PAIR_ORDER}",
         _PAIR_PARAMS,
         (),
     ),
     "diff": (
-        "Only the values that differ between two runs; the first row is the first divergence",
-        _PAIR + " WHERE a.v IS NOT b.v" + _PAIR_ORDER,
+        "Only the values that differ between two runs. Real differences come first, in hit and "
+        "capture order (the first row is the first divergence); then address-only "
+        "differences; then selectors only one run captured",
+        _DIFF,
         _PAIR_PARAMS,
         (),
     ),
@@ -551,6 +591,7 @@ def query(path, sql, params=None, *, limit=DEFAULT_ROWS, seconds=QUERY_SECONDS):
     # Each value, each row's width and the whole result are bounded.
     connection.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, MAX_VALUE_BYTES)
     connection.setlimit(sqlite3.SQLITE_LIMIT_COLUMN, MAX_COLUMNS)
+    connection.create_function("no_addresses", 1, _no_addresses, deterministic=True)
     connection.set_authorizer(_authorize)
     deadline = time.monotonic() + seconds
     connection.set_progress_handler(lambda: time.monotonic() > deadline, 10000)
@@ -640,6 +681,10 @@ def schema(path):
         "queries": {
             name: {"description": description, "params": params}
             for name, (description, _, params, _) in QUERIES.items()
+        },
+        "functions": {
+            "no_addresses(text)": "The text with pointer-sized hex addresses (0x + 8-16 hex "
+            "digits) masked, to compare values across runs"
         },
         "examples": list(EXAMPLES),
         "rules": [
