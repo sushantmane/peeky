@@ -18,7 +18,8 @@ _RULES = (
         r"is unreachable \(.*the request was not sent",
         "UNREACHABLE",
         "No request reached the worker. Restore the worker or SSH tunnel and retry; the worker "
-        "keeps a session until its idle timeout.",
+        "keeps a session until its idle timeout. If the worker is gone for good, use "
+        "`peeky session close --forget`.",
         True,
     ),
     (

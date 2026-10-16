@@ -265,3 +265,31 @@ def test_results_without_the_entry_hash_are_discarded(remote, capsys, monkeypatc
     )
     result = json.loads(out.out)
     assert code == 1 and result["results_discarded"] is True and result["rows"] == []
+
+
+def test_a_local_launch_failure_is_a_closed_session_and_gone_workers_can_be_forgotten(
+    remote, capsys
+):
+    from peeky.errors import classify
+
+    payload = classify(
+        RuntimeError(
+            "The local worker failed while launching and was stopped; no session exists. "
+            "Start again"
+        )
+    )
+    assert payload["code"] == "DEBUGGER_ERROR" and payload["session_closed"] is True
+    assert payload["retryable"] is False
+    host, local, worker, relay = remote
+    _, worker_port = worker()
+    tunnel, port = relay(worker_port)
+    url = f"http://127.0.0.1:{port}"
+    start = ["session", "start", local / "pagination_bug.py", "--at", "8", "--worker", url]
+    assert run(capsys, *start)[0] == 0
+    stop(tunnel)  # the remote worker is now unreachable for good
+    code, out = run(capsys, "session", "close", "--json")
+    error = json.loads(out.out)["error"]
+    assert code == 2 and "--forget" in error["hint"]
+    code, out = run(capsys, "session", "close", "--forget")
+    assert code == 0 and "forgot default" in out.out
+    assert not (Path(os.environ["PEEKY_STATE_DIR"]) / "sessions/default.json").exists()

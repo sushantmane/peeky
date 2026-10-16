@@ -718,6 +718,11 @@ def session(args):
             args.json,
             lambda r: f"state: {r['state']}\noutput:\n{r['output']}operations: {len(r['history'])}",
         )
+    elif args.action == "close" and args.forget:
+        # The worker is gone for good: drop the local record without contacting it.
+        for suffix in (".json", ".target.json"):
+            (_state_dir() / f"{args.name}{suffix}").unlink(missing_ok=True)
+        print(f"forgot {args.name} (the worker was not contacted)")
     elif args.action == "close":
         from peeky.client import TransportLost, WorkerUnreachable
 
@@ -924,7 +929,7 @@ def _start(args):
     if not match:
         process.kill()
         raise RuntimeError(f"Worker did not start; see {log.name}")
-    client = Client(match[1], token)
+    client = _LocalClient(match[1], token, process.pid)
     record = {"name": args.name, "url": match[1], "token": token, "pid": process.pid}
     record.update(root=str(root), program=program, language=language)
     try:
@@ -941,9 +946,11 @@ def _start(args):
         from peeky.client import TransportLost, WorkerUnreachable
 
         if isinstance(exc, (WorkerUnreachable, TransportLost)):
+            # Worded so it is classified as a closed session, not a retryable transport error.
             raise RuntimeError(
-                f"The local worker failed during launch ({exc}); it was stopped. Start again"
-            ) from None
+                "The local worker failed while launching and was stopped; no session exists. "
+                "Start again"
+            ) from exc
         raise
     record.update(session_id=launch["session_id"], state="running", stop_id=None)
     if launch.get("optimized"):
@@ -1348,6 +1355,11 @@ def main(argv=None, _job=False, _edits=None):
         action.add_argument("--timeout", type=float, default=30)
     actions.choices["get"].add_argument("selectors", nargs="+")
     actions.choices["set"].add_argument("assignment", help="name=value")
+    actions.choices["close"].add_argument(
+        "--forget",
+        action="store_true",
+        help="Drop the local record without contacting the worker (worker gone for good)",
+    )
     actions.choices["continue"].add_argument(
         "--to-exit", action="store_true", help="Clear breakpoints and run the program to exit"
     )

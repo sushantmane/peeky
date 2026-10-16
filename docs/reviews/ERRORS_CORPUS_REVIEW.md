@@ -148,3 +148,7 @@ Both have real-build regressions in `tests/native/test_native_optimized.py`.
 | 6 | low | `--worker ""` silently ran locally. | Fixed. `is not None` is checked, and the URL validation then refuses it. |
 
 The docs now recommend `ssh -o ExitOnForwardFailure=yes` and distinguish a closed local tunnel port (`UNREACHABLE`) from a live tunnel to a dead worker (`TRANSPORT_LOST`).
+
+**Verification review of 9640607:** no blocking issues. Two follow-ups are fixed:
+- **Medium:** a local launch failure was still classified as `UNREACHABLE`/`TRANSPORT_LOST`, because the wrapped message kept the transport text. It is reworded (the cause is kept via `from exc`) and classifies as `DEBUGGER_ERROR` with `session_closed: true`. `_start` uses the local-worker client from the first wait.
+- **Low:** a remote session whose worker is gone for good could not be closed. `session close --forget` drops the record without contacting the worker, and the `UNREACHABLE` hint mentions it.

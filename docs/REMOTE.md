@@ -44,7 +44,7 @@ Notes:
 
 | Situation | Client result | What to do |
 | --- | --- | --- |
-| Local tunnel port closed (no ssh, or the worker is local and down) | `UNREACHABLE` (`retryable: true`, `session_closed: false`) | Restore the tunnel and retry. The worker still holds the session. A `session close` that fails this way keeps the record so it can be retried. |
+| Local tunnel port closed (no ssh, or the worker is local and down) | `UNREACHABLE` (`retryable: true`, `session_closed: false`) | Restore the tunnel and retry. The worker still holds the session. A `session close` that fails this way keeps the record so it can be retried; `session close --forget` drops it if the worker is gone for good. |
 | Tunnel up but the remote worker down (ssh accepts, then closes) | `TRANSPORT_LOST` | As below. |
 | The session's own local worker has exited | `DEBUGGER_ERROR` (`session_closed: true`) | Start a new session. |
 | Connection lost during a request | `TRANSPORT_LOST` (`retryable: false`, `session_closed: false`) | The outcome is unknown. Reconnect, then `inspect`/`wait`; never repeat a mutation blindly. |
