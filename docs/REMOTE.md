@@ -52,6 +52,9 @@ Notes:
 
 ## What is automated
 
+See also the [recorded separate-host run](#recorded-separate-host-run-2026-10-16), which CI repeats on every change.
+
+
 `tests/integration/test_remote_worker.py` runs the worker as a separate process and an SSH-like TCP relay as a third process. Its tests cover:
 - probes through the forwarded port;
 - the source-identity mismatch, where results are discarded;
@@ -62,9 +65,32 @@ Notes:
 - rejection of a non-loopback URL, a missing token, a wrong token (`UNAUTHORIZED`) and a closed port;
 - the token never appearing in output.
 
-## Recorded separate-host run
+## Recorded separate-host run (2026-10-16)
 
-This still needs a second machine. Record the following and add it here:
-- the host OS and interpreter on both sides;
-- the commands above and their outputs: one probe, one session, a source mismatch, and a tunnel drop and recovery;
-- the timings.
+`tests/remote/test_ssh_e2e.py` runs the procedure above against a second host: a Linux container started from `scripts/remote_e2e/Dockerfile`, with its own kernel network namespace, filesystem, OS and Python. The container runs a key-only `sshd` that permits a single forward, to `127.0.0.1:8765`. The client uses a throwaway ed25519 key and ignores the user's ssh configuration. The worker binds to the container's loopback and reads its token from stdin, so the token never appears on a command line. Every step goes through a real `ssh -L` tunnel. The same test runs in CI (job "remote SSH e2e"). Run it locally with Docker (for example OrbStack):
+
+```sh
+PEEKY_E2E_DOCKER=1 PEEKY_E2E_RECORD=remote-run.json pytest tests/remote -v
+```
+
+| | Client | Worker host |
+| --- | --- | --- |
+| OS | macOS 27.0.1 arm64 | Linux 7.2.9 (OrbStack) aarch64, Debian 13 |
+| Python / debugpy | 3.13.8 / 1.8.22 | 3.11.17 / 1.8.22 |
+| SSH | OpenSSH 10.3p1 client | OpenSSH 10.0p2 sshd |
+
+| Step | Command (client) | Exit | Seconds | Result |
+| --- | --- | ---: | ---: | --- |
+| Probe with an intervention | `peeky probe pagination_bug.py --at 8 --capture start,page --set start=0 --worker URL` | 0 | 1.55 | `start` 3 → 0; output `PAGE: [10, 20, 30]` |
+| Session start | `peeky session start pagination_bug.py --at 8 --worker URL` | 0 | 0.45 | stopped at line 8 |
+| Read a value | `peeky session get start` | 0 | 0.14 | `3` |
+| Tunnel killed | `peeky session get start` | 2 | 0.005 | `UNREACHABLE`, `retryable: true`, `session_closed: false` |
+| Tunnel reopened on the same port | `peeky session get start` | 0 | 0.10 | `3`: the worker kept the stopped session |
+| Change a local | `peeky session set start=0` | 0 | 0.23 | 3 → 0 |
+| Run to the end | `peeky session continue --to-exit` | 0 | 0.69 | terminated |
+| Program output | `peeky session report` | 0 | 0.007 | `PAGE: [10, 20, 30]` |
+| Close | `peeky session close` | 0 | 0.011 | closed; the shared worker kept running |
+| Host's source differs | `peeky probe … --set start=0 --worker URL` | 1 | 0.06 | `PROVENANCE_CHANGED`, refused before launching; the host's changed program never ran |
+| Worker stopped behind a live tunnel | `peeky probe … --worker URL` | 2 | 0.008 | `TRANSPORT_LOST`, `session_closed: false` |
+
+Across five consecutive local runs, the module took 4.6–5.0 s, including starting the container and sshd. The token never appears in any command's output (asserted on every step).

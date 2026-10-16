@@ -1,0 +1,10 @@
+# Only what scripts/remote_e2e/Dockerfile copies.
+*
+!pyproject.toml
+!README.md
+!MANIFEST.in
+!src/
+!examples/pagination_bug.py
+!examples/verify_pagination.py
+!scripts/remote_e2e/
+**/__pycache__

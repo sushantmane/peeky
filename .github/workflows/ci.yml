@@ -196,6 +196,30 @@ jobs:
           pytest tests/rust --durations=10 -rP
           echo "Rust conformance: $((SECONDS - started)) seconds" >> "$GITHUB_STEP_SUMMARY"
 
+  remote:
+    name: remote SSH e2e
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            pyproject.toml
+            requirements-dev.txt
+      - run: python -m pip install -e '.[dev]'
+      - name: Debug a program on a second host through a real ssh -L tunnel
+        env:
+          PEEKY_E2E_DOCKER: "1"
+          PEEKY_E2E_RECORD: ${{ runner.temp }}/remote-run.json
+        run: |
+          started=$SECONDS
+          pytest tests/remote -v --durations=10
+          echo "Remote SSH e2e: $((SECONDS - started)) seconds" >> "$GITHUB_STEP_SUMMARY"
+          python -c 'import json, os; r = json.load(open(os.environ["PEEKY_E2E_RECORD"])); print(json.dumps(r["environment"], indent=2)); [print(s["exit"], s["seconds"], s["step"]) for s in r["steps"]]'
+
   wheel:
     name: wheel smoke
     runs-on: ubuntu-latest
