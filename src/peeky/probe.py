@@ -93,6 +93,8 @@ class Probe:
     entry: str | None = None
     # Python: command-line arguments for the launched script.
     args: tuple[str, ...] = ()
+    # Remote clients: (role, sha256) pairs the worker checks before launching.
+    expect_sha256: tuple[tuple[str, str], ...] = ()
 
     def __post_init__(self):
         if not isinstance(self.program, str) or not self.program:
@@ -124,6 +126,15 @@ class Probe:
         if self.entry is not None and (not isinstance(self.entry, str) or not self.entry):
             raise ValueError("Probe entry must be a relative script path")
         _check_args(self.args)
+        if not isinstance(self.expect_sha256, tuple) or not all(
+            isinstance(pair, tuple)
+            and len(pair) == 2
+            and pair[0] in ("program", "entry")
+            and isinstance(pair[1], str)
+            and re.fullmatch(r"[0-9a-f]{64}", pair[1])
+            for pair in self.expect_sha256
+        ):
+            raise ValueError("Probe expect_sha256 holds (program|entry, sha256) pairs")
 
 
 def _visible(snapshot):
@@ -305,6 +316,7 @@ def run_probe(root, probe, *, adapter=None, progress=None):
                 "breakpoints": [{"line": probe.line}],
                 **({"entry": probe.entry} if probe.entry else {}),
                 **({"args": list(probe.args)} if probe.args else {}),
+                **({"expect_sha256": dict(probe.expect_sha256)} if probe.expect_sha256 else {}),
             },
         )
         session = {"session_id": launch["session_id"]}
@@ -561,6 +573,7 @@ def main(argv=None):
     parser.add_argument("--set-hit", type=int, default=1, help="Hit that gets --set (default 1)")
     parser.add_argument("--run", help="Python script to run when --at is in an imported module")
     parser.add_argument("--arg", action="append", default=[], help="Python program argument")
+    parser.add_argument("--expect-sha256", action="append", default=[], help=argparse.SUPPRESS)
     parser.add_argument("--json", action="store_true", help="Print the full JSON result")
     targets = parser.add_mutually_exclusive_group()
     targets.add_argument("--java-config", type=Path)
@@ -586,6 +599,7 @@ def main(argv=None):
             args.set_hit,
             entry=args.run,
             args=tuple(args.arg),
+            expect_sha256=tuple(tuple(item.split("=", 1)) for item in args.expect_sha256),
         )
         adapter = None
         if args.java_config:

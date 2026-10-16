@@ -133,3 +133,18 @@ The reviewer confirmed:
 - **Low:** `describe` still advertised changeable locals and qualified enum views for optimized builds. It now reports `optimized`, `mutable_types: none ...`, and no enum views.
 
 Both have real-build regressions in `tests/native/test_native_optimized.py`.
+
+## Review: remote workers over SSH (#33)
+
+**Result:** no security problems; URL and token handling were confirmed safe. Six issues, all fixed with regressions.
+
+| # | Severity | Finding | Disposition |
+| --- | --- | --- | --- |
+| 1 | medium | The idle reaper could close a session right after a long operation returned. `last_used` was stamped only at the start, and also on rejected requests. | Fixed. Activity is stamped after the session check and again when the operation ends. |
+| 2 | medium | A remote `session close` that failed on the transport deleted the only record of the session, so the close could never be retried. | Fixed. On `UNREACHABLE`/`TRANSPORT_LOST`, remote records are kept. |
+| 3 | medium-low | A dead **local** worker was reported as a retryable `UNREACHABLE`. | Fixed. Local sessions check the worker pid (including zombies) and report `DEBUGGER_ERROR` with `session_closed: true`. A transport failure during a local launch reports that the worker was stopped. |
+| 4 | medium | Remote programs (including `--set`) ran before the source check. | Fixed. The client sends `expect_sha256`; the worker refuses before launching, so a mismatched program is never executed. The client still double-checks, and discards output too. |
+| 5 | low-medium | With older workers, the entry-script check was skipped. | Fixed. Results that ran without a reported hash are discarded. |
+| 6 | low | `--worker ""` silently ran locally. | Fixed. `is not None` is checked, and the URL validation then refuses it. |
+
+The docs now recommend `ssh -o ExitOnForwardFailure=yes` and distinguish a closed local tunnel port (`UNREACHABLE`) from a live tunnel to a dead worker (`TRANSPORT_LOST`).

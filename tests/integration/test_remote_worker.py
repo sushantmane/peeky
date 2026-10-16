@@ -92,9 +92,14 @@ def remote(tmp_path, monkeypatch):
         processes.append(process)
         return process, int(line)
 
+    relay.processes = processes
     yield host, local, worker, relay
     for process in processes:
         stop(process)
+
+
+def remote_processes(remote):
+    return remote[3].processes
 
 
 def run(capsys, *argv):
@@ -113,14 +118,20 @@ def test_probe_through_a_forwarded_port_checks_source_identity(remote, capsys):
     assert code == 0 and result["status"] == "completed" and result["worker"] == url
     assert result["rows"][0]["value"] == "3" and "PAGE: [40, 50, 60]" in result["output"]
     assert TOKEN not in out.out and TOKEN not in out.err
-    # The worker host has different source text: its values are discarded, not shown.
+    # The worker host has different source text: the worker refuses before running it.
     (host / "pagination_bug.py").write_text(
-        (host / "pagination_bug.py").read_text().replace("page * page_size", "page")
+        "open('RAN', 'w').close()\n"
+        + (host / "pagination_bug.py").read_text().replace("page * page_size", "page")
     )
-    code, out = run(capsys, *args, "--worker", url)
+    code, out = run(capsys, *args, "--set", "start=0", "--worker", url)
     result = json.loads(out.out)
-    assert code == 1 and result["results_discarded"] is True and result["rows"] == []
-    assert result["error"]["code"] == "PROVENANCE_CHANGED"
+    assert code == 1 and result["error"]["code"] == "PROVENANCE_CHANGED"
+    assert result["rows"] == [] and not result.get("output")
+    assert not (host / "RAN").exists()  # never executed, so never mutated either
+    code, out = run(
+        capsys, "session", "start", local / "pagination_bug.py", "--at", "8", "--worker", url
+    )
+    assert code == 2 and "PROVENANCE_CHANGED" in out.err and not (host / "RAN").exists()
 
 
 def test_remote_session_survives_a_dropped_tunnel_and_closing_keeps_the_worker(remote, capsys):
@@ -145,6 +156,13 @@ def test_remote_session_survives_a_dropped_tunnel_and_closing_keeps_the_worker(r
     relay(worker_port, port)  # the tunnel comes back on the same local port
     code, out = run(capsys, "session", "get", "start")
     assert code == 0 and "start: int = 3" in out.out
+    # A close that cannot reach the worker keeps the record so it can be retried.
+    tunnel = next(p for p in reversed(remote_processes(remote)) if p.poll() is None)
+    stop(tunnel)
+    code, out = run(capsys, "session", "close", "--json")
+    assert code == 2 and json.loads(out.out)["error"]["code"] == "UNREACHABLE"
+    assert (Path(os.environ["PEEKY_STATE_DIR"]) / "sessions/default.json").exists()
+    relay(worker_port, port)
     assert run(capsys, "session", "close")[0] == 0
     # Closing a remote session never stops the shared worker.
     assert worker_process.poll() is None
@@ -190,3 +208,60 @@ def test_remote_options_fail_closed(remote, capsys, monkeypatch):
     monkeypatch.setenv("PEEKY_WORKER_TOKEN", TOKEN)
     code, out = run(capsys, *target, "--worker", f"http://127.0.0.1:{free}")
     assert code == 2 and json.loads(out.out)["error"]["code"] == "UNREACHABLE"
+
+
+def test_a_dead_local_worker_is_a_lost_session_not_a_retry(remote, capsys):
+    host, local, worker, relay = remote
+    code, _ = run(capsys, "session", "start", local / "pagination_bug.py", "--at", "8")
+    assert code == 0
+    record = json.loads((Path(os.environ["PEEKY_STATE_DIR"]) / "sessions/default.json").read_text())
+    os.killpg(record["pid"], signal.SIGKILL)
+    time.sleep(0.5)
+    code, out = run(capsys, "session", "inspect", "--json")
+    error = json.loads(out.out)["error"]
+    assert code == 2 and error["code"] == "DEBUGGER_ERROR" and error["session_closed"] is True
+    assert "has exited" in error["message"]
+    assert run(capsys, "session", "close")[0] == 2
+    assert not (Path(os.environ["PEEKY_STATE_DIR"]) / "sessions/default.json").exists()
+
+
+def test_an_empty_worker_url_never_falls_back_to_running_locally(remote, capsys):
+    host, local, worker, relay = remote
+    code, out = run(
+        capsys, "probe", local / "pagination_bug.py", "--at", "8", "--worker", "", "--json"
+    )
+    assert code == 2 and "loopback URL" in json.loads(out.out)["error"]["message"]
+
+
+def test_results_without_the_entry_hash_are_discarded(remote, capsys, monkeypatch):
+    # An older worker reports no entry_sha256: never accept --run results unverified.
+    host, local, worker, relay = remote
+    (local / "main.py").write_text("import pagination_bug\n")
+    from peeky import client as client_module
+
+    def old_worker_probe(self, at, *args, **kwargs):
+        digest = __import__("hashlib").sha256((local / "pagination_bug.py").read_bytes())
+        return {
+            "status": "completed",
+            "hits": 1,
+            "rows": [{"value": "3"}],
+            "output": "x",
+            "source_sha256": digest.hexdigest(),
+        }
+
+    monkeypatch.setattr(client_module.Client, "probe", old_worker_probe)
+    monkeypatch.setattr(client_module.Client, "call", lambda self, op, **kw: {"protocol": 1})
+    code, out = run(
+        capsys,
+        "probe",
+        local,
+        "--at",
+        "pagination_bug.py:8",
+        "--run",
+        "main.py",
+        "--worker",
+        "http://127.0.0.1:9",
+        "--json",
+    )
+    result = json.loads(out.out)
+    assert code == 1 and result["results_discarded"] is True and result["rows"] == []

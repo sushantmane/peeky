@@ -85,11 +85,14 @@ class Client:
         set_hit=1,
         entry=None,
         args=(),
+        expect_sha256=None,
     ):
         """One stateless request: stop at `path:line`, capture, optionally set, report."""
         options = {"entry": entry} if entry else {}
         if args:
             options["args"] = list(args)
+        if expect_sha256:
+            options["expect_sha256"] = dict(expect_sha256)
         return self.call(
             "probe",
             at=at,

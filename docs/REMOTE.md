@@ -22,7 +22,7 @@ python3 -m peeky.worker --root /srv/app --port 8765 [--idle-timeout 300] \
 On **your machine**, in a checkout with the same sources:
 
 ```sh
-ssh -N -L 8765:127.0.0.1:8765 user@target &
+ssh -N -o ExitOnForwardFailure=yes -L 8765:127.0.0.1:8765 user@target &
 export PEEKY_WORKER_TOKEN='<the token>'
 peeky probe ./app --at lib/parse.py:42 --capture rows,total --worker http://127.0.0.1:8765
 peeky session start ./app --at lib/parse.py:42 --worker http://127.0.0.1:8765
@@ -31,9 +31,8 @@ peeky session inspect; peeky session continue; peeky session close
 
 Notes:
 - **Interpreter and dependencies:** the worker's interpreter and its trusted target config choose the runtime. The client never sends executables or configuration.
-- **Source identity:** before any value is shown, the client compares the sha256 of the local program (and of the `--run` entry script) with the worker's copy.
-  - On a mismatch, a session is closed at once and `PROVENANCE_CHANGED` is reported.
-  - A probe's results are discarded: `results_discarded: true`, no rows.
+- **Source identity:** the client sends the sha256 of the local program (and of the `--run` entry script). The worker refuses with `PROVENANCE_CHANGED` **before launching** if its copies differ, so a mismatched program is never executed or changed. As a second check, the client also compares the hashes the worker reports; any result that can't be confirmed is discarded (`results_discarded: true`, no rows and no output).
+- **`ExitOnForwardFailure=yes`:** without it, ssh only warns when the local port is already taken, and the token would go to whatever process holds that port.
 - **Verification runs locally.** `peeky verify` builds and checks candidates on your machine, so the local interpreter, toolchain and dependencies must match the target for its verdict to transfer. Run `verify` on the target host when they differ.
 - **Secrets:**
   - The token is read only from `PEEKY_WORKER_TOKEN` (or `DEBUG_TOKEN` on the worker) and is never accepted as an argument, so it can't appear in `ps` output.
@@ -45,7 +44,9 @@ Notes:
 
 | Situation | Client result | What to do |
 | --- | --- | --- |
-| Tunnel or worker down when a request starts | `UNREACHABLE` (`retryable: true`, `session_closed: false`) | Restore the tunnel and retry. The worker still holds the session. |
+| Local tunnel port closed (no ssh, or the worker is local and down) | `UNREACHABLE` (`retryable: true`, `session_closed: false`) | Restore the tunnel and retry. The worker still holds the session. A `session close` that fails this way keeps the record so it can be retried. |
+| Tunnel up but the remote worker down (ssh accepts, then closes) | `TRANSPORT_LOST` | As below. |
+| The session's own local worker has exited | `DEBUGGER_ERROR` (`session_closed: true`) | Start a new session. |
 | Connection lost during a request | `TRANSPORT_LOST` (`retryable: false`, `session_closed: false`) | The outcome is unknown. Reconnect, then `inspect`/`wait`; never repeat a mutation blindly. |
 | Client gone for longer than `--idle-timeout` | The worker closes the session and reaps the debuggee | Start a new session. |
 
