@@ -48,6 +48,18 @@ _UNAVAILABLE = re.compile(
 )
 
 
+def optimization_level(identity):
+    """The build's optimization level when it is not a no-optimization debug build."""
+    identity = identity or {}
+    level = identity.get("optimization")
+    if level not in (None, "O0"):
+        return f"-{level}"
+    rust = (identity.get("profile") or {}).get("CARGO_PROFILE_DEV_OPT_LEVEL")
+    if rust not in (None, "0"):
+        return f"opt-level={rust}"
+    return None
+
+
 def is_unavailable(value):
     """LLDB reports "no value" as text such as `<error: variable not available>` or
     `<error: could not evaluate DW_OP_entry_value: ...>`; none of it is a value."""
@@ -127,6 +139,9 @@ class DebugWorker:
                     "pause budget (--max-pause); wait for the next stop or use a probe"
                 )
             raise ValueError("Stale stop_id or program is not stopped; inspect the latest stop")
+
+    def optimized(self):
+        return optimization_level(getattr(self.runtime, "target_identity", None))
 
     def placeholders(self):
         # LLDB (C, C++, Rust) writes "no value" as `<error: ...>` text. Elsewhere such
@@ -437,6 +452,7 @@ class DebugWorker:
                     "artifact_manifest_id": runtime.manifest_id,
                     "source_manifest": getattr(runtime, "source_manifest", None),
                     "target_identity": getattr(runtime, "target_identity", None),
+                    **({"optimized": level} if (level := self.optimized()) else {}),
                 }
             except Exception:
                 self.close()
@@ -582,6 +598,7 @@ class DebugWorker:
                 "frames": frames,
                 "scopes": result,
                 **self.pause_status(),
+                **({"optimized": level} if (level := self.optimized()) else {}),
             }
             if not writable:
                 snapshot["mutation_blocked"] = "A value-view read is still pending; inspect again"
@@ -605,10 +622,15 @@ class DebugWorker:
             if len(matches) != 1:
                 raise ValueError("Expected exactly one existing local variable")
             variable = matches[0]
+            if level := self.optimized():
+                raise ValueError(
+                    f"Changing locals is refused in an optimized build ({level}): the program "
+                    "may keep using other copies of the value. Use an unoptimized build"
+                )
             if self.placeholders() and is_unavailable(variable.get("value")):
                 raise ValueError(
-                    f"{args['name']!r} has no value here (optimized out or not live at this "
-                    "line); it cannot be changed"
+                    f"{args['name']!r} has no readable value here "
+                    f"({str(variable.get('value'))[1:-1][:200]}); it cannot be changed"
                 )
             if validate_variable := getattr(runtime, "validate_variable", None):
                 validate_variable(variable, args["value"])
@@ -785,8 +807,10 @@ class DebugWorker:
                 "variablesReference": handle,
             }
             if self.placeholders() and is_unavailable(output["value"]):
+                # The placeholder text is the debugger's reason, never the value.
                 output["unavailable"] = True
                 output["reason"] = output["value"][1:-1][:300]
+                output["value"] = None
             if kind is not None:
                 output["type"] = kind
             for key in ("indexedVariables", "namedVariables"):

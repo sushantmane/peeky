@@ -46,13 +46,19 @@ def test_optimized_rust_results_carry_an_explicit_warning(tmp_path):
             opt_level=level,
         )
 
-    debug = run_probe(tmp_path, Probe("src/main.rs", line, ("start",)), adapter=target("0"))
+    capture = ("start", "some")
+    debug = run_probe(tmp_path, Probe("src/main.rs", line, capture), adapter=target("0"))
     assert debug["status"] == "completed", debug.get("error")
-    assert "optimized" not in debug and debug["rows"][0]["value"] == "3"
-    optimized = run_probe(tmp_path, Probe("src/main.rs", line, ("start",)), adapter=target("2"))
+    rows = {row["selector"]: row for row in debug["rows"]}
+    assert "optimized" not in debug and rows["start"]["value"] == "3"
+    assert rows["some"]["value"] == "Some(3)" and rows["some"]["view"] == "active-variant"
+    optimized = run_probe(tmp_path, Probe("src/main.rs", line, capture), adapter=target("2"))
     assert optimized["status"] == "completed", optimized.get("error")
     assert optimized["optimized"] == "opt-level=2"
     assert optimized["target_identity"]["profile"]["CARGO_PROFILE_DEV_OPT_LEVEL"] == "2"
     assert any("can still be stale or wrong" in w for w in optimized["warnings"])
+    # LLDB zero-fills enum pieces it cannot locate in optimized code: never decoded.
+    some = next(row for row in optimized["rows"] if row["selector"] == "some")
+    assert some.get("unavailable") or some.get("view") == "opaque", some
     with pytest.raises(ValueError, match="opt_level"):
         target("3")

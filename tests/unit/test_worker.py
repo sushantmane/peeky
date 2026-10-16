@@ -375,14 +375,15 @@ def test_unavailable_locals_are_flagged_and_cannot_be_set(tmp_path):
         ("Locals", None),
         (),
     )
-    assert exposed[0]["unavailable"] is True
+    assert exposed[0]["unavailable"] is True and exposed[0]["value"] is None
+    assert exposed[0]["reason"] == "error: variable not available"
 
     class Placeholder(Adapter):
         def request(self, command, args):
             return {"variables": [{"name": "value", "value": "<optimized out>"}]}
 
     worker.dap = Placeholder()
-    with pytest.raises(ValueError, match="has no value here"):
+    with pytest.raises(ValueError, match="has no readable value here"):
         worker.dispatch(
             "set_variable",
             {
@@ -395,6 +396,57 @@ def test_unavailable_locals_are_flagged_and_cannot_be_set(tmp_path):
         )
     from peeky.errors import classify
 
-    assert (
-        classify(ValueError("'a' has no value here (optimized out)"))["code"] == "MUTATION_REJECTED"
-    )
+    assert classify(ValueError("'a' has no readable value here (x)"))["code"] == "MUTATION_REJECTED"
+    refused = classify(ValueError("Changing locals is refused in an optimized build (-O2): x"))
+    assert refused["code"] == "MUTATION_REJECTED"
+
+
+class OptimizedRuntime(LldbLike):
+    @property
+    def target_identity(self):
+        return {"optimization": "O2"}
+
+
+def test_optimized_builds_refuse_every_change_and_are_marked(tmp_path):
+    worker = stopped_worker(tmp_path)
+    worker.runtime = OptimizedRuntime()
+    assert worker.optimized() == "-O2"
+    with pytest.raises(ValueError, match="refused in an optimized build"):
+        worker.dispatch(
+            "set_variable",
+            {
+                "session_id": "session",
+                "stop_id": "stop",
+                "reference": 7,
+                "name": "value",
+                "value": "2",
+            },
+        )
+    worker.runtime = LldbLike()
+    assert worker.optimized() is None
+
+
+def test_unreadable_values_in_unoptimized_builds_are_not_called_optimized_out():
+    from peeky.probe import _capture
+
+    class Snapshot:
+        def __init__(self, optimized):
+            self.optimized = optimized
+
+        def dispatch(self, operation, args):
+            variable = {
+                "name": "p",
+                "value": None,
+                "unavailable": True,
+                "reason": "error: parent is NULL",
+            }
+            snapshot = {"frames": [{"line": 3}], "scopes": [{"name": "L", "variables": [variable]}]}
+            if self.optimized:
+                snapshot["optimized"] = "-O2"
+            return snapshot
+
+    plain = _capture(Snapshot(False), {}, ("p",), 1, "observed")[0]
+    assert "could not read a value" in plain["error"] and "optimized" not in plain["error"]
+    assert "parent is NULL" in plain["error"]
+    optimized = _capture(Snapshot(True), {}, ("p",), 1, "observed")[0]
+    assert "optimized out" in optimized["error"]

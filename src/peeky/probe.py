@@ -17,7 +17,13 @@ import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from peeky.worker import DebugWorker, load_java_target, load_native_target, load_rust_target
+from peeky.worker import (
+    DebugWorker,
+    load_java_target,
+    load_native_target,
+    load_rust_target,
+    optimization_level,
+)
 
 MAX_SELECTORS = 32
 MAX_SETS = 8
@@ -51,18 +57,6 @@ def parse_selector(text):
     ):
         raise ValueError(f"Invalid selector: {text}")
     return segments
-
-
-def optimization_level(identity):
-    """The build's optimization level when it is not a no-optimization debug build."""
-    identity = identity or {}
-    level = identity.get("optimization")
-    if level not in (None, "O0"):
-        return f"-{level}"
-    rust = (identity.get("profile") or {}).get("CARGO_PROFILE_DEV_OPT_LEVEL")
-    if rust not in (None, "0"):
-        return f"opt-level={rust}"
-    return None
 
 
 def _check_args(args):
@@ -264,11 +258,15 @@ def _capture(worker, stop, selectors, hit, phase):
         else:
             if variable.get("unavailable"):
                 # A placeholder such as "<error: variable not available>" is not a value.
+                reason = variable.get("reason", "unavailable")
                 row.update(
                     type=variable.get("type"),
                     unavailable=True,
-                    error="no value here: optimized out or not live at this line "
-                    f"(debugger: {variable.get('reason', 'unavailable')})",
+                    error=(
+                        f"no value here: optimized out or not live (debugger: {reason})"
+                        if snapshot.get("optimized")
+                        else f"the debugger could not read a value (debugger: {reason})"
+                    ),
                 )
             else:
                 row.update(value=variable["value"], type=variable.get("type"))
@@ -463,8 +461,9 @@ def run_probe(root, probe, *, adapter=None, progress=None):
         )
     if any(row.get("unavailable") for row in rows):
         warnings.append(
-            "Some locals have no value at this line (optimized out or not live). In "
-            "optimized builds other values may also be stale; prefer an -O0 build."
+            "Some locals have no value at this line (optimized out or not live)."
+            if result.get("optimized")
+            else "Some selectors could not be read by the debugger; see each row's reason."
         )
     if changes and probe.hits > 1:
         warnings.append(
