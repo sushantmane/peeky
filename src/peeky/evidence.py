@@ -184,17 +184,10 @@ SELECT {_PAIR_COLUMNS} FROM (
   UNION ALL SELECT 3, NULL, NULL, selector, NULL, NULL, 1, note, MIN(pos) FROM pair
     WHERE note LIKE 'only in%' GROUP BY selector, note)
 ORDER BY rank, hit, phase = 'after-set', pos"""
-_HEX = re.compile(r"\b0x([0-9a-fA-F]{1,16})\b")
-
-
-def _mask(match):
-    digits = match[1].lstrip("0").lower()
-    # Heap and stack addresses on 64-bit hosts have at least 9 significant hex digits
-    # (0x1_0000_0000 and up). NULL, small sentinels, all-ones (-1, MAP_FAILED) and
-    # 8-digit data (0xdeadbeef, flags) are values, never masked.
-    if len(digits) < 9 or set(digits) == {"f"}:
-        return match[0]
-    return "0x…"
+# A heap or stack address: 0x, optional leading zeros, then 9-16 significant hex
+# digits that are not all f. NULL, small sentinels, all-ones (-1, MAP_FAILED) and
+# 8-digit data (0xdeadbeef, flags) are values, never masked. One regex, no callback.
+_ADDRESS = re.compile(r"\b0x(?=[0-9a-fA-F]{1,16}\b)0*(?![fF]+\b)[1-9a-fA-F][0-9a-fA-F]{8,15}\b")
 
 
 def _no_addresses(value):
@@ -203,7 +196,7 @@ def _no_addresses(value):
     Registered as the SQL function no_addresses(text): an address that changes on
     every run (a C string, a Python object repr) is not a difference in the program.
     """
-    return _HEX.sub(_mask, value) if isinstance(value, str) else value
+    return _ADDRESS.sub("0x…", value) if isinstance(value, str) else value
 
 
 _RUN_PARAM = {"run": "Run id (default: the newest run)"}
@@ -608,9 +601,17 @@ def query(path, sql, params=None, *, limit=DEFAULT_ROWS, seconds=QUERY_SECONDS):
     # Each value, each row's width and the whole result are bounded.
     connection.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, MAX_VALUE_BYTES)
     connection.setlimit(sqlite3.SQLITE_LIMIT_COLUMN, MAX_COLUMNS)
-    connection.create_function("no_addresses", 1, _no_addresses, deterministic=True)
-    connection.set_authorizer(_authorize)
     deadline = time.monotonic() + seconds
+
+    def no_addresses(value):
+        # SQLite checks the deadline only between VM steps, never inside a Python
+        # function: a query calling it many times per row checks here too.
+        if time.monotonic() > deadline:
+            raise sqlite3.OperationalError("interrupted: query deadline")
+        return _no_addresses(value)
+
+    connection.create_function("no_addresses", 1, no_addresses, deterministic=True)
+    connection.set_authorizer(_authorize)
     connection.set_progress_handler(lambda: time.monotonic() > deadline, 10000)
     rows, size, cut = [], 0, None
     try:

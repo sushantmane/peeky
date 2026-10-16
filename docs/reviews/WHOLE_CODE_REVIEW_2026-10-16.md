@@ -112,3 +112,7 @@ One blocking issue, three should-fix issues and four nits. All are fixed with re
   - The text schema lists `no_addresses`.
   - Repeated selectors are de-duplicated.
   - Progress ends with "program finished after N hit(s)", and the docs describe that.
+
+Verification of a63c113 confirmed every fix and found one more should-fix and one nit, both fixed:
+- **Should-fix:** SQLite checks the query deadline only between VM steps, never inside a Python function. So a query calling `no_addresses` 20 times per row on hex-dense text ran 81 s against a 1 s deadline. The function now checks the deadline itself, and masking is a single regex with no Python callback per token (`test_no_addresses_cannot_outrun_the_query_deadline` stops within the bound).
+- **Nit:** the `set_hit` error names the `--hits all` cap.

@@ -633,3 +633,17 @@ def test_values_changed_by_an_intervention_rank_after_real_differences(store):
 def test_the_text_schema_lists_sql_functions(store):
     evidence._ensure(store).close()
     assert "no_addresses(text)" in evidence.schema_text(evidence.schema(store))
+
+
+def test_no_addresses_cannot_outrun_the_query_deadline(store):
+    evidence.record(store, captured([(1, "observed", "x", "1")]))
+    calls = ", ".join(f"length(no_addresses(s)) AS c{i}" for i in range(20))
+    sql = (
+        "WITH RECURSIVE big(s) AS MATERIALIZED (SELECT substr(replace(printf('%.*c', 249000, "
+        "'a'), 'a', '0x1 '), 1, 999000)), r(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM r "
+        f"WHERE i < 100000) SELECT {calls} FROM r, big"
+    )
+    started = time.monotonic()
+    with pytest.raises(ValueError, match="ran longer than"):
+        evidence.query(store, sql, seconds=0.5)
+    assert time.monotonic() - started < 3

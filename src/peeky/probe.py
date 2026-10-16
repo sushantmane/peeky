@@ -213,7 +213,10 @@ class Probe:
                 "give a number of hits"
             )
         if type(self.set_hit) is not int or not 1 <= self.set_hit <= self.limit:
-            raise ValueError("Probe set_hit must be within 1..hits")
+            raise ValueError(
+                f"Probe set_hit must be within 1..{self.limit}"
+                + (" (the --hits all cap for these selectors)" if self.hits == "all" else "")
+            )
         if self.entry is not None and (not isinstance(self.entry, str) or not self.entry):
             raise ValueError("Probe entry must be a relative script path")
         _check_args(self.args)
