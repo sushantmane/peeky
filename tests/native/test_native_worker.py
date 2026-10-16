@@ -467,3 +467,30 @@ def test_threads_stopping_together_are_one_stop_not_stale_new_ones(tmp_path, nat
         assert result["hits"] == 4 and not result["warnings"], result["warnings"]
         assert sorted(row.get("value") for row in result["rows"]) == ["0", "1", "2", "3"]
         assert "done" in result["output"]
+
+
+def test_headers_read_from_outside_the_workspace_are_provenance(tmp_path, native_config):
+    from peeky.errors import classify
+    from peeky.native import NativeTarget
+
+    outside = tmp_path / "outside" / "limit.h"
+    outside.parent.mkdir()
+    outside.write_text("#define LIMIT 3\n")
+    root = tmp_path / "program"
+    root.mkdir()
+    (root / "main.c").write_text(
+        f'#include <stdio.h>\n#include "{outside}"\n'
+        'int main(void) {\n  int limit = LIMIT;\n  printf("%d\\n", limit);\n  return 0;\n}\n'
+    )
+    target = NativeTarget(**{**native_config, "sources": ("main.c",)})
+    session = target.prepare(root / "main.c", root)
+    try:
+        assert str(outside.resolve()) in session.external_inputs
+        assert any(path.endswith("/stdio.h") for path in session.external_inputs)
+        session.assert_current()
+        outside.write_text("#define LIMIT 4\n")
+        with pytest.raises(RuntimeError, match="outside the workspace") as caught:
+            session.assert_current()
+        assert classify(caught.value)["code"] == "PROVENANCE_CHANGED"
+    finally:
+        session.close()

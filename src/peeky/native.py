@@ -24,11 +24,14 @@ from peeky.build import (
     BuildCommandError,
     BuildRecipe,
     Command,
+    _digest,
     assert_current,
     default_sdk,
+    dependency_paths,
     prepare,
     real_tool,
 )
+from peeky.digest import sha256_file
 
 MAX_METADATA = 2 * 1024 * 1024
 FLAGS = ("-std=c11", "-g", "-gdwarf-4", "-O0", "-fno-omit-frame-pointer")
@@ -390,8 +393,10 @@ class NativeTarget:
         # Keep objects until dsymutil finishes; single-step clang removes its
         # temporary objects and a subsequent dsymutil can erase valid symbols.
         objects = tuple(f"peeky-object-{index}.o" for index in range(len(self.sources)))
+        # -MD lists every file each compile read: undeclared or outside files must not
+        # escape provenance (`#include "/elsewhere/x.h"`, SDK and system headers).
         commands = [
-            Command((compiler, *flags, "-c", source, "-o", obj))
+            Command((compiler, *flags, "-MD", "-MF", obj + ".d", "-c", source, "-o", obj))
             for source, obj in zip(self.sources, objects)
         ]
         link_flags = (*driver, *(("-isysroot", str(sdk)) if sysroot is not None else ()))
@@ -402,6 +407,7 @@ class NativeTarget:
         artifacts = [
             ArtifactSpec("program"),
             *(ArtifactSpec(obj, role="object") for obj in objects),
+            *(ArtifactSpec(obj + ".d", role="dependencies") for obj in objects),
         ]
         probes = [
             Command((compiler, "--version")),
@@ -451,7 +457,14 @@ class NativeTarget:
             identity = module_identity(
                 dwarfdump, binary, symbols, prepared.workspace, env, deadline=deadline
             )
-            session = NativeSession(self, prepared, adapter, lines, identity, binary, symbols)
+            external = external_inputs(
+                [prepared.workspace / (obj + ".d") for obj in objects],
+                prepared.workspace,
+                self.sources + self.headers,
+            )
+            session = NativeSession(
+                self, prepared, adapter, lines, identity, binary, symbols, external
+            )
             session.assert_current()
             return session
         except BaseException:
@@ -459,12 +472,43 @@ class NativeTarget:
             raise
 
 
+MAX_EXTERNAL_INPUTS = 4096
+
+
+def external_inputs(depfiles, workspace, declared):
+    """{path: sha256} of files the compiler read outside the workspace.
+
+    Files inside the workspace must be declared inputs (they are already hashed);
+    files outside it (SDK and system headers, absolute includes) are hashed here and
+    rechecked before every operation like the declared ones.
+    """
+    root = Path(workspace).resolve()
+    found = {}
+    for depfile in depfiles:
+        for dependency in dependency_paths(depfile.read_text(), root):
+            path = dependency.resolve(strict=True)
+            try:
+                relative = path.relative_to(root).as_posix()
+            except ValueError:
+                if str(path) not in found:
+                    if len(found) >= MAX_EXTERNAL_INPUTS:
+                        raise ValueError("The build read too many files outside the workspace")
+                    found[str(path)] = _digest(path)[0]
+                continue
+            if relative not in declared:
+                raise ValueError(
+                    f"The build read {relative}, which is not a declared source or header"
+                )
+    return dict(sorted(found.items()))
+
+
 class NativeSession:
     # lldb-dap reports optimized-out/not-live locals as `<error: ...>` text.
     reports_unavailable_as_text = True
 
-    def __init__(self, target, prepared, adapter, lines, identity, binary, symbols):
+    def __init__(self, target, prepared, adapter, lines, identity, binary, symbols, external=None):
         self.target, self.prepared = target, prepared
+        self.external_inputs = dict(external or {})
         self.binary, self.symbols, self.adapter = binary, symbols, adapter
         self._lines_data, self.module_identity = json.dumps(lines, sort_keys=True), identity
         self.home = prepared.workspace / ".peeky-lldb-home"
@@ -473,6 +517,7 @@ class NativeSession:
             json.dumps(
                 {
                     "build": prepared.manifest.manifest_id,
+                    "external_inputs": self.external_inputs,
                     "lines": lines,
                     "module": identity,
                     "target": target.target_identity,
@@ -584,6 +629,17 @@ class NativeSession:
 
     def assert_current(self):
         assert_current(self.prepared)
+        for path, expected in getattr(self, "external_inputs", {}).items():
+            try:
+                # One stat per unchanged file (peeky.digest); any change rehashes.
+                current = sha256_file(path)
+            except (OSError, ValueError):
+                current = None
+            if current != expected:
+                raise RuntimeError(
+                    f"Prepared build provenance mismatch: {path}, which the compiler read "
+                    "from outside the workspace, changed; start a new session"
+                )
 
     def validate_stop(self, frame):
         try:

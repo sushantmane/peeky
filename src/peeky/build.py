@@ -12,6 +12,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -520,3 +521,22 @@ def assert_current(prepared):
         raise RuntimeError("Prepared build provenance mismatch") from exc
     if not matches:
         raise RuntimeError("Prepared build provenance mismatch")
+
+
+def dependency_paths(text, base):
+    """Prerequisites listed in a Makefile-style dependency file (`clang -MD`, rustc)."""
+    joined = re.sub(r"\\\r?\n", " ", text)
+    found = []
+    for line in joined.splitlines():
+        if line.lstrip().startswith("#"):
+            # rustc's `# env-dep:NAME=value` notes; a literal `#` in a path is `\#`.
+            continue
+        match = re.search(r"(?<!\\):(?:\s|$)", line)
+        if not match:
+            continue
+        rest = line[match.end() :]
+        for item in re.findall(r"(?:\\.|[^\s\\])+", rest):
+            name = re.sub(r"\\(.)", r"\1", item).replace("$$", "$")
+            path = Path(name)
+            found.append(path if path.is_absolute() else Path(base) / path)
+    return found

@@ -26,6 +26,7 @@ Session names are claimed atomically, so a second `session start` with the same 
 ### Interventions (`--set name=value`)
 
 - Only existing locals in the stopped frame can be set. Python accepts literal values, including containers (`0`, `'x'`, `None`, `[]`, `{'k': 1}`). Compiled languages accept scalars only. Expressions, names and calls (`min(xs)`, `float('inf')`) are rejected with `MUTATION_REJECTED` and are never evaluated. Use `-1e309` for negative infinity.
+- Rust: only locals the program keeps in memory can be changed. These are usually locals the code borrows or reassigns. For other locals the compiler keeps the value in a register, and the debugger only shows a copy, so the change is refused (`MUTATION_REJECTED`) rather than reported as applied.
 - A probe applies its interventions once, at hit 1 by default. Use `--set-hit N` to apply them at a later hit, for example the iteration where things go wrong. Other hits only observe. For changes on several iterations, use a session: `continue`, then `set` again.
 
 ### Reading probe results

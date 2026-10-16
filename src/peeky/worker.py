@@ -735,6 +735,8 @@ class DebugWorker:
                 )
             if validate_variable := getattr(runtime, "validate_variable", None):
                 validate_variable(variable, args["value"])
+            if validate_target := getattr(runtime, "validate_mutation_target", None):
+                validate_target(variable, self.reference_frames.get(ref))
             if validate_debugger := getattr(runtime, "validate_debugger", None):
                 frame = self.reference_frames.get(ref)
                 if frame is None:

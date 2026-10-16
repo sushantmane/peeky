@@ -43,8 +43,8 @@ The findings are fixed in three PRs. The `PR` column says which one; "this PR" m
 | Python list indexes ≥ 100 reported as not found | should-fix | Reported as beyond the debugger's visible window | B |
 | `describe` on a syntax error reports `INTERNAL_ERROR` | should-fix | `INVALID_REQUEST` naming the file and line | B |
 | Non-ASCII auth header and pre-dispatch errors are misreported; `session close`/`list` JSON gaps; log path shows an fd | nit | 401 for any bad header; body errors are `INVALID_REQUEST` with the session untouched; `close`, `close --forget` and `list` emit JSON; the log path is printed | B |
-| Rust i32 mutation can write a debug-only copy (`.dbg.spill`) that the program never reads | blocking | | C |
-| Files included from outside the declared inputs (`#include "/abs"`, `#[path]`, `include!`) are not hashed | should-fix | | C |
+| Rust i32 mutation can write a debug-only copy (`.dbg.spill`) that the program never reads | blocking | Builds also emit LLVM IR. A change is allowed only if every declaration of that local in the stopped function (matched by its symbol hash) is a real memory slot; otherwise `MUTATION_REJECTED` explains why (`test_locals_the_program_keeps_in_registers_cannot_be_changed`, real cargo: `MARK:1007` stays unchanged) | C |
+| Files included from outside the declared inputs (`#include "/abs"`, `#[path]`, `include!`) are not hashed | should-fix | Rust: every file in rustc's dependency files must be a declared source, or the build fails. C/C++: `-MD` lists every file read; headers outside the workspace (absolute includes, SDK and system headers) are hashed and rechecked before every operation, at about 2 ms for an `<iostream>` program's 824 headers (`test_sources_from_outside_the_crate_fail_the_build`, `test_headers_read_from_outside_the_workspace_are_provenance`) | C |
 
 ## Review of PR A (#38, 4a1195f)
 
@@ -63,3 +63,9 @@ One blocking and two should-fix issues, all fixed with regression tests:
 - **Blocking:** the cursor fix consumed the `stopped` events of the other threads that hit the breakpoint in the same all-threads stop. Those were real hits, and resuming steps each thread over the breakpoint, so a probe reported "Only 1 of 4 hits" when there were four. While every thread is stopped and breakpoints remain, `continue` now serves each co-stopped thread as the next stop before resuming anything. `continue --to-exit`, and continues after the breakpoints are cleared, resume at once. `test_threads_stopping_together_are_one_stop_not_stale_new_ones` now requires exactly 4 hits with ids 0–3, across three real-lldb runs per test.
 - **Should-fix:** a `session start` killed with SIGKILL left a "starting" record that `close --forget` could not remove. `close --forget` no longer reads the record. A new start takes over a claim whose starter is dead, or an empty one older than 30 s, under a lock. A command on an abandoned claim is `NO_SESSION` (`test_an_interrupted_start_never_blocks_its_name`).
 - **Should-fix:** with a shared inspection, `items[-1]` could see a budget-starved page and report "more than 512 elements". That message now also triggers the one fresh-inspection retry (`test_a_shared_inspection_never_makes_a_readable_value_an_error`, which fails without the fix).
+
+## Review of PR C (#40, 8987f88)
+
+One blocking issue and one nit, both fixed with regression tests:
+- **Blocking:** `#[inline(always)]` functions are inlined even at opt-level 0. LLVM renames their slots (`marker.dbg.spill.i`), and the end-anchored spill pattern missed the rename, so a change inside an inlined callee was reported as applied while the program printed the old value. Now any name containing `.dbg.spill` is a copy, and any declaration whose location is `inlinedAt` another function is never provably in memory (`test_locals_of_always_inlined_functions_cannot_be_changed`, real cargo and lldb-dap; the IR unit test covers both forms; both fail on the previous parser).
+- **Nit:** rustc writes `# env-dep:NAME=value` notes into `.d` files, and a value containing `": "` was read as a prerequisite. Comment lines are skipped (a literal `#` in a path is escaped as `\#`).

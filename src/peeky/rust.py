@@ -28,11 +28,13 @@ from peeky.build import (
     BuildRecipe,
     Command,
     _digest,
+    dependency_paths,
     prepare,
     real_tool,
 )
 from peeky.compiled_verification import CompiledVerification
 from peeky.native import NativeSession, _path_name, module_identity
+from peeky.rust_ir import memory_locals
 from peeky.rust_manifest import assert_cargo_ancestry_clear, validate_cargo_inputs
 from peeky.rust_symbols import UNVERIFIED, active_variant, application_symbols
 
@@ -101,10 +103,15 @@ def cargo_artifacts(names, crate, test_crate):
         raise ValueError("Cargo application and test crates must have distinct names")
     binary = _executable(names, crate, "application")
     test = _executable(names, test_crate, "integration-test")
-    allowed = {binary, binary + ".d", test, test + ".d"}
+    allowed = {binary, binary + ".d", binary + ".ll", test, test + ".d", test + ".ll"}
+    # rustc keeps its codegen-unit objects when it also emits LLVM IR.
+    units = re.compile(
+        "(?:" + re.escape(binary) + "|" + re.escape(test) + r")\.[A-Za-z0-9_]+\.[0-9a-f]{16}"
+        r"-cgu\.[0-9]{1,4}\.rcgu\.o"
+    )
     bundles = (binary + ".dSYM/", test + ".dSYM/")
     for name in names:
-        if name in allowed:
+        if name in allowed or units.fullmatch(name):
             continue
         if sys.platform == "darwin" and name.startswith(bundles):
             continue
@@ -274,6 +281,9 @@ class RustTarget:
     @property
     def rustflags(self):
         flags = ["-C", "dwarf-version=4", "-C", f"linker={_absolute_tool(self.linker, 'linker')}"]
+        # The LLVM IR shows which locals live in memory (mutation must reach the
+        # program, not a debug-only copy); it is written beside each executable.
+        flags += ["--emit=link,llvm-ir"]
         if sys.platform == "linux":
             flags += ["-C", "link-arg=-Wl,--build-id=sha1"]
         return flags
@@ -457,6 +467,10 @@ class RustTarget:
             )
             if _digest(binary)[0] != _digest(prepared.workspace / uplift)[0]:
                 raise ValueError("Cargo test target differs from the debugged executable")
+            _require_declared_dependencies(
+                (binary, test_binary), prepared.workspace, cargo_inputs.inputs
+            )
+            memory = memory_locals(binary.with_name(binary.name + ".ll"))
             env = dict(prepared.manifest.effective_environment)
             lines, layouts, units = application_symbols(
                 dwarfdump,
@@ -474,7 +488,7 @@ class RustTarget:
                 dwarfdump, binary, symbols, prepared.workspace, env, deadline=deadline
             )
             session = RustSession(
-                self, prepared, adapter, lines, identity, binary, symbols, layouts, parent
+                self, prepared, adapter, lines, identity, binary, symbols, layouts, parent, memory
             )
             session.test_binary = test_binary
             session.test_target = prepared.workspace / uplift
@@ -490,12 +504,48 @@ class RustTarget:
             raise
 
 
+def _require_declared_dependencies(executables, workspace, inputs):
+    """Every file the compiler read (rustc's dependency files) must be declared.
+
+    `#[path = "/elsewhere"] mod x;`, `include!` and `include_str!` would otherwise
+    compile bytes that no provenance check covers.
+    """
+    root = Path(workspace).resolve()
+    for executable in executables:
+        depfile = executable.with_name(executable.name + ".d")
+        if not depfile.is_file():
+            raise ValueError(f"Cargo wrote no dependency file for {executable.name}")
+        for dependency in dependency_paths(depfile.read_text(), root):
+            try:
+                relative = dependency.resolve().relative_to(root).as_posix()
+            except (OSError, ValueError):
+                relative = None
+            if relative not in inputs:
+                raise ValueError(
+                    f"The Rust build read {dependency}, which is not a declared source; "
+                    "declare it as a source or test inside the crate, or remove the "
+                    "#[path]/include! reference"
+                )
+
+
 class RustSession(NativeSession):
     def __init__(
-        self, target, prepared, adapter, lines, identity, binary, symbols, layouts, parent
+        self,
+        target,
+        prepared,
+        adapter,
+        lines,
+        identity,
+        binary,
+        symbols,
+        layouts,
+        parent,
+        memory=None,
     ):
         self._layouts_data = json.dumps(layouts, sort_keys=True)
         self.parent = parent
+        # {(function hash, local): True if every declaration is a real memory slot}.
+        self.memory = dict(memory or {})
         super().__init__(target, prepared, adapter, lines, identity, binary, symbols)
         self.manifest_id = hashlib.sha256(
             json.dumps(
@@ -518,6 +568,19 @@ class RustSession(NativeSession):
         if variable.get("type") != "int":
             raise ValueError("Only writable i32 locals support Rust mutation")
         super().validate_variable(variable, value)
+
+    def validate_mutation_target(self, variable, frame):
+        """Only a local the program keeps in memory can be changed with effect."""
+        name = variable.get("name")
+        function = str((frame or {}).get("name") or "")
+        hashed = re.search(r"::(h[0-9a-f]{16})$", function)
+        if not hashed or self.memory.get((hashed[1], name)) is not True:
+            raise ValueError(
+                f"Rust mutation requires a local the program keeps in memory; {name!r} is "
+                "kept in a register and the debugger only shows a copy of it, so changing "
+                "it would not affect the program. Locals the code borrows or reassigns "
+                "live in memory; otherwise edit the source and run verify"
+            )
 
     def view_variable(self, variable, fetch):
         """Active-variant view for compiled enums; None leaves ordinary values unchanged."""
