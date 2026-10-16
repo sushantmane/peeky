@@ -483,12 +483,18 @@ MAPPINGS = """class K:
         return "'a'"
 
 
+class N:
+    def __repr__(self):
+        return "1"
+
+
 def look():
     big = {f"k{i}": i for i in range(505)}
     twins = {K(): "weird", "a": "real-a"}
     longkey = {"x" * 3000: 1, "short": 2}
     commas = {"a,b": 7}
-    return big, twins, longkey, commas
+    intimp = {N(): "weird-int", 1: "real-int"}
+    return big, twins, longkey, commas, intimp
 
 
 look()
@@ -498,9 +504,9 @@ look()
 def test_mapping_keys_never_read_the_wrong_entry(workspace, capsys):
     (workspace / "maps.py").write_text(MAPPINGS)
     program = workspace / "maps.py"
-    selectors = "big['k3'],big['k499'],big['k502'],twins['a'],commas['a,b']"
+    selectors = "big['k3'],big['k499'],big['k502'],twins['a'],commas['a,b'],intimp[1]"
     code, out = run(
-        capsys, "probe", program, "--at", "11", "--capture", selectors, "--json", "--no-save"
+        capsys, "probe", program, "--at", "17", "--capture", selectors, "--json", "--no-save"
     )
     rows = {row["selector"]: row for row in json.loads(out.out)["rows"]}
     assert code == 0 and rows["big['k3']"]["value"] == "3" and rows["big['k499']"]["value"] == "499"
@@ -508,9 +514,14 @@ def test_mapping_keys_never_read_the_wrong_entry(workspace, capsys):
     assert "only part of a large mapping" in rows["big['k502']"]["error"]
     # Two keys share the repr 'a': refused instead of reading whichever is listed first.
     assert "ambiguous" in rows["twins['a']"]["error"]
+    assert "ambiguous" in rows["intimp[1]"]["error"]
     assert rows["commas['a,b']"]["value"] == "7"
 
-    assert run(capsys, "session", "start", program, "--at", "11", "--name", "maps")[0] == 0
+    assert run(capsys, "session", "start", program, "--at", "17", "--name", "maps")[0] == 0
+    # The listing never pairs an impostor's value with the real key's selector.
+    code, out = run(capsys, "session", "get", "twins", "intimp", "--name", "maps")
+    assert "twins['a']" not in out.out and "intimp[1]" not in out.out
+    assert "'a' [not selectable]: str = 'weird'" in out.out
     assert "(children: peeky session get big --name maps)" in (
         run(capsys, "session", "inspect", "--name", "maps")[1].out
     )

@@ -270,17 +270,14 @@ def _resolve(worker, stop, snapshot, segments):
             )
         if found is None:
             raise ValueError(_not_found(variable, segment, children))
-        if key is not None and (
-            not found.get("evaluable")
-            or any(child["name"].startswith(f"{key} (id: ") for child in children)
-        ):
-            # Keys are matched by their repr. debugpy marks an entry evaluable only when
-            # its key's repr evaluates back to the key, and renames a later entry whose
-            # repr repeats an earlier one "<repr> (id: N)". An object whose __repr__
-            # mimics a string is neither, so it is refused rather than read as that key.
+        if segment.startswith("[") and not _genuine(found, children, key is not None):
+            # Keys and indexes are matched by the entry's displayed name, which is its key's
+            # repr. debugpy marks an entry evaluable only when that repr evaluates back to
+            # the key, so an object whose __repr__ mimics `'a'` or `1` is refused rather
+            # than read as that key.
             raise ValueError(
-                f"{_shown(segment)} is ambiguous: an entry displays as {key} but its key is "
-                "not that plain value (an object whose repr looks like it)"
+                f"{_shown(segment)} is ambiguous: an entry displays as {found['name']} but its "
+                "key is not that plain value (an object whose repr looks like it)"
             )
         variable = found
     return variable
@@ -295,6 +292,8 @@ _RUST_CONTAINERS = (
     "&str",
 )
 
+# Groups debugpy files some mapping entries under (by value type); not reachable.
+_VALUE_GROUPS = frozenset({"function variables", "class variables"})
 # debugpy's grouping nodes: not entries, fields or elements of the value itself.
 _GROUPS = frozenset(
     {"special variables", "function variables", "class variables", "protected variables"}
@@ -310,11 +309,26 @@ def _shown(segment):
 _PARTIAL_MARKERS = ("Unable to handle:", "Too large", "more")
 
 
+def _genuine(child, siblings, key):
+    """Whether a name-matched entry is the plain key it displays as.
+
+    A key must be evaluable. An index must be evaluable when its siblings are (debugpy
+    lists and dicts mark plain keys and elements; other debuggers mark nothing).
+    """
+    if child.get("evaluable"):
+        return True
+    return not key and not any(sibling.get("evaluable") for sibling in siblings)
+
+
 def _partial(children):
     """Whether debugpy listed only part of a mapping: its truncation marker, or fewer
     entries than the mapping's own `len()`."""
     if any(child["name"].startswith(_PARTIAL_MARKERS) for child in children):
         return True
+    if any(child["name"] in _GROUPS for child in children):
+        # Grouped entries (function or class values) count in len() but are not listed
+        # at this level: the comparison would say "partial" for a complete mapping.
+        return False
     entries = [c for c in children if c["name"] not in _GROUPS and c["name"] != "len()"]
     for child in children:
         if child["name"] == "len()" and re.fullmatch(r"[0-9]{1,9}", str(child.get("value"))):
@@ -324,6 +338,17 @@ def _partial(children):
 
 def _not_found(variable, segment, children):
     """Why `segment` is absent, with the selectors that would work."""
+    grouped = sorted({child["name"] for child in children} & _VALUE_GROUPS)
+    reach = (
+        f" (debugpy files entries whose values are functions or classes under "
+        f"{' and '.join(repr(group) for group in grouped)}, which selectors cannot reach)"
+        if grouped
+        else ""
+    )
+    return _absence(variable, segment, children) + reach
+
+
+def _absence(variable, segment, children):
     names = [child["name"] for child in children if child["name"] not in _GROUPS]
     shown = ", ".join(names[:20]) + (f", ... ({len(names)} total)" if len(names) > 20 else "")
     kind = variable.get("type") or ""
@@ -530,7 +555,10 @@ def _children(worker, stop, selector, variable):
         entry = {"name": child["name"], "type": child.get("type"), "value": child.get("value")}
         if child.get("unavailable"):
             entry.update(unavailable=True, reason=child.get("reason"))
-        if path := _child_selector(selector, child["name"]):
+        path = _child_selector(selector, child["name"])
+        if path and (
+            not path.endswith("]") or _genuine(child, page["variables"], path[-2] in "'\"")
+        ):
             entry["selector"] = path
         if child.get("variablesReference"):
             entry["expandable"] = True

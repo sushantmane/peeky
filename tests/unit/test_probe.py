@@ -402,7 +402,13 @@ def test_children_skip_debugger_groups_and_mark_expandable_entries():
 
     nested = [
         *ORDER_CHILDREN,
-        {"name": "'sub'", "type": "dict", "value": "{}", "variablesReference": 4},
+        {
+            "name": "'sub'",
+            "type": "dict",
+            "value": "{}",
+            "variablesReference": 4,
+            "evaluable": True,
+        },
     ]
     [row] = _capture(Worker({1: nested}), {}, ("order",), 0, "observed", children=True)
     assert [child.get("selector") for child in row["children"]] == [
@@ -501,3 +507,56 @@ def test_child_listings_are_retried_on_a_fresh_inspection():
 
     [row] = _capture(Starved({1: ORDER_CHILDREN}), {}, ("order",), 0, "observed", children=True)
     assert "children_error" not in row and row["children"][0]["selector"] == "order['id']"
+
+
+def test_impostor_entries_get_no_selector_and_are_never_read():
+    from peeky.probe import _children, _resolve
+
+    # {K(): 'weird', 'a': 'real-a'} and {N(): 'weird-int', 1: 'real-int'}, where the
+    # impostors' __repr__ return "'a'" and "1": debugpy marks only the real keys evaluable.
+    entries = [
+        {"name": "'a'", "type": "str", "value": "'weird'"},
+        {"name": "'a' (id: 4335162880)", "type": "str", "value": "'real-a'", "evaluable": True},
+        {"name": "1", "type": "str", "value": "'weird-int'"},
+        {"name": "1 (id: 4335162999)", "type": "str", "value": "'real-int'", "evaluable": True},
+        {"name": "'b'", "type": "int", "value": "2", "evaluable": True},
+    ]
+    listed = _children(Tree({1: entries}), {}, "imp", {"variablesReference": 1})["children"]
+    assert [entry.get("selector") for entry in listed] == [None, None, None, None, "imp['b']"]
+    for selector in ("imp['a']", "imp[1]"):
+        with pytest.raises(ValueError, match="ambiguous"):
+            _resolve(
+                Tree({1: entries}), {}, snapshot({**ORDER, "name": "imp"}), parse_selector(selector)
+            )
+    # Debuggers that mark nothing evaluable (LLDB, java-debug) still read indexes.
+    plain = [
+        {"name": "[0]", "type": "int", "value": "7"},
+        {"name": "[1]", "type": "int", "value": "8"},
+    ]
+    found = _resolve(Tree({1: plain}), {}, snapshot({**ORDER, "name": "a"}), parse_selector("a[1]"))
+    assert found["value"] == "8"
+
+
+def test_entries_debugpy_groups_by_value_type_are_explained():
+    from peeky.probe import _partial, _resolve
+
+    # {"it's": len, 'plain': len, 2: len}: debugpy files the function values in a group.
+    entries = [
+        {"name": "function variables", "value": "", "variablesReference": 7},
+        {
+            "name": "'plain'",
+            "type": "builtin_function_or_method",
+            "value": "len",
+            "evaluable": True,
+        },
+        {"name": "len()", "type": "int", "value": "3"},
+    ]
+    assert not _partial(entries)
+    for selector in ('fn_vals["it\'s"]', "fn_vals[2]"):
+        with pytest.raises(ValueError, match="'function variables', which selectors cannot reach"):
+            _resolve(
+                Tree({1: entries}),
+                {},
+                snapshot({**ORDER, "name": "fn_vals"}),
+                parse_selector(selector),
+            )
