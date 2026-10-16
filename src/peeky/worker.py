@@ -198,7 +198,7 @@ class DebugWorker:
             )
             frame = (stack.get("stackFrames") or [{}])[0]
             path = frame.get("source", {}).get("path")
-            return f"{path}:{frame.get('line')}" if path else None
+            return f"{_display_path(self.runtime, path)}:{frame.get('line')}" if path else None
         except Exception:
             return None
 
@@ -718,8 +718,15 @@ class DebugWorker:
                     self.reference_frames[handle] = selected_frame
                     self.reference_adapter[handle] = reference
                 result.append({"name": scope["name"], "reference": handle, "variables": exposed})
+            source = (selected_frame.get("source") or {}).get("path")
             snapshot = {
                 "stop_id": self.stop_id,
+                # For people: the user's own source file; frames keep the debugger's paths.
+                **(
+                    {"location": f"{_display_path(runtime, source)}:{selected_frame.get('line')}"}
+                    if isinstance(source, str) and source
+                    else {}
+                ),
                 "frames": frames,
                 "scopes": result,
                 **self.pause_status(),
@@ -918,7 +925,26 @@ class DebugWorker:
             if not isinstance(name, str) or (kind is not None and not isinstance(kind, str)):
                 raise RuntimeError("Malformed debugger variable identity")
             if len(name) > 2000 or (kind is not None and len(kind) > 2000):
-                raise RuntimeError("Debugger variable identity exceeds limit")
+                if not ancestry:
+                    raise RuntimeError("Debugger variable identity exceeds limit")
+                # A child (a dict entry keyed by a long string, a long C++ type) is shown
+                # without its full identity: never expandable or selectable, and the
+                # session survives.
+                shown = {
+                    "name": name if len(name) <= 2000 else f"<{len(name)}-character name>",
+                    "value": str(variable.get("value", ""))[:2000],
+                    "variablesReference": 0,
+                    **({"type": kind if len(kind) <= 2000 else kind[:200] + "…"} if kind else {}),
+                    "identity_truncated": True,
+                }
+                if view_variable:
+                    # Values that need a qualified view (Rust enums) are never shown raw.
+                    shown["value"] = "<not shown: type name too long to verify>"
+                elif self.placeholders() and is_unavailable(shown["value"]):
+                    shown.update(value=None, unavailable=True, reason=shown["value"][1:-1][:300])
+                result.append(shown)
+                self.inspection_nodes += 1
+                continue
             view = view_variable(variable, self.view_fetch) if view_variable else None
             if view is not None:
                 # Interpreted values never carry expansion handles to raw storage.
@@ -952,6 +978,11 @@ class DebugWorker:
                 output["value"] = None
             if kind is not None:
                 output["type"] = kind
+            if isinstance(variable.get("evaluateName"), str) and variable["evaluateName"]:
+                # Only whether the debugger could name it as an expression; the expression
+                # itself never leaves the worker. debugpy names a dict entry only when its
+                # key's repr evaluates back to the key (str, int, ... not an impostor).
+                output["evaluable"] = True
             for key in ("indexedVariables", "namedVariables"):
                 value = variable.get(key)
                 if type(value) is int and 0 <= value <= 2**31 - 1:
@@ -1082,6 +1113,24 @@ class DebugWorker:
         finally:
             if runtime:
                 runtime.close()
+
+
+def _display_path(runtime, path):
+    """A prepared build's copy of a source, shown as the user's original file.
+
+    Display only: compiled and Java targets run from a private build workspace that
+    mirrors the source tree, so `<workspace>/src/main.rs` is `<source>/src/main.rs`.
+    """
+    prepared = getattr(runtime, "prepared", None)
+    workspace = getattr(prepared, "workspace", None)
+    source_root = getattr(prepared, "source_root", None)
+    if workspace is None or source_root is None:
+        return path
+    try:
+        relative = Path(path).resolve().relative_to(Path(workspace).resolve())
+    except (OSError, ValueError):
+        return path
+    return str(Path(source_root) / relative)
 
 
 def _inside_program(runtime, frame):

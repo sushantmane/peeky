@@ -10,6 +10,12 @@ from peeky.probe import Probe, parse_location, parse_selector
         ("request.page", ["request", "page"]),
         ("args[0]", ["args", "[0]"]),
         ("a.b[12].c", ["a", "b", "[12]", "c"]),
+        # String keys are kept in their canonical repr form, as debugpy names entries.
+        ("order['id']", ["order", "['id']"]),
+        ('order["id"]', ["order", "['id']"]),
+        ('d["it\'s"]', ["d", '["it\'s"]']),
+        ("d['a.b]c'][0].x", ["d", "['a.b]c']", "[0]", "x"]),
+        ("d['']", ["d", "['']"]),
     ],
 )
 def test_selectors_are_plain_dotted_paths(text, segments):
@@ -18,7 +24,31 @@ def test_selectors_are_plain_dotted_paths(text, segments):
 
 @pytest.mark.parametrize(
     "text",
-    ["", "a..b", "[0]", "a[]", "a[x]", "a.b()", "$variants$", "a-b", "a;b", "x" * 600, "a." * 17],
+    [
+        "",
+        "a..b",
+        "[0]",
+        "a[]",
+        "a[x]",
+        "a.b()",
+        "$variants$",
+        "a-b",
+        "a;b",
+        "x" * 600,
+        "a." * 17,
+        "a" + "[0]" * 16,
+        "['id']",
+        "a['x'",
+        "a[b'x']",
+        "a[f'{x}']",
+        "a[r'x']",
+        'a["""x"""]',
+        "a['\\d']",
+        "a['x' + 'y']",
+        "a['x']()",
+        'a["\n"]',
+        "a['" + "x" * 257 + "']",
+    ],
 )
 def test_selectors_reject_expressions_and_synthetic_names(text):
     with pytest.raises(ValueError):
@@ -198,3 +228,335 @@ def test_negative_indexes_never_guess_the_end(names, value, outcome):
     else:
         with pytest.raises(ValueError, match=outcome):
             _from_end(Pages(names, value), {}, variable, 1, "[-1]")
+
+
+class Tree:
+    """A scripted worker whose handles expand to fixed children."""
+
+    def __init__(self, tree):
+        self.tree = tree
+
+    def dispatch(self, operation, args):
+        assert operation == "expand"
+        return {"variables": self.tree[args["handle"]], "truncated": False}
+
+
+def snapshot(*variables):
+    return {"scopes": [{"name": "Locals", "variables": list(variables)}]}
+
+
+ORDER = {"name": "order", "type": "dict", "value": "{...}", "variablesReference": 1}
+# debugpy marks entries whose key's repr evaluates back to the key (the worker passes
+# that on as `evaluable`, never the expression itself).
+ORDER_CHILDREN = [
+    {"name": "special variables", "value": "", "variablesReference": 9},
+    {"name": "'id'", "type": "int", "value": "18", "variablesReference": 0, "evaluable": True},
+    {"name": '"it\'s"', "type": "int", "value": "5", "variablesReference": 0, "evaluable": True},
+    {"name": "3", "type": "str", "value": "'three'", "variablesReference": 0, "evaluable": True},
+    {"name": "len()", "type": "int", "value": "3", "variablesReference": 0},
+]
+
+
+@pytest.mark.parametrize(
+    "selector, value",
+    [
+        ("order['id']", "18"),
+        ('order["id"]', "18"),
+        ('order["it\'s"]', "5"),
+        ("order[3]", "'three'"),
+    ],
+)
+def test_mapping_entries_are_read_by_key(selector, value):
+    from peeky.probe import _resolve
+
+    found = _resolve(Tree({1: ORDER_CHILDREN}), {}, snapshot(ORDER), parse_selector(selector))
+    assert found["value"] == value
+
+
+@pytest.mark.parametrize(
+    "selector, message",
+    [
+        # An attribute path on a mapping names the key syntax that works.
+        ("order.id", "select it with ['id'], not .id"),
+        ("order['nope']", "not found in 'order' (dict); children: 'id', \"it's\", 3, len()"),
+        ("order[7]", "not found in 'order' (dict)"),
+    ],
+)
+def test_missing_entries_list_what_is_there(selector, message):
+    from peeky.probe import _resolve
+
+    with pytest.raises(ValueError) as caught:
+        _resolve(Tree({1: ORDER_CHILDREN}), {}, snapshot(ORDER), parse_selector(selector))
+    assert message in str(caught.value)
+    assert "special variables" not in str(caught.value)
+
+
+class PagedTree(Tree):
+    """Children served 64 per page, as the worker does."""
+
+    def dispatch(self, operation, args):
+        children = self.tree[args["handle"]]
+        start = args.get("start", 0)
+        return {"variables": children[start : start + 64], "truncated": start + 64 < len(children)}
+
+
+def test_a_key_shown_by_an_impostor_object_is_refused():
+    from peeky.probe import _resolve
+
+    filler = [
+        {"name": f"'k{i}'", "type": "int", "value": str(i), "evaluable": True} for i in range(100)
+    ]
+    unique = [*ORDER_CHILDREN, *filler]
+    found = _resolve(PagedTree({1: unique}), {}, snapshot(ORDER), parse_selector("order['k99']"))
+    assert found["value"] == "99"
+    # An object whose __repr__ returns "'a'" is listed first under the plain name; the
+    # real "a" follows as "'a' (id: N)". Neither may be read as order['a'].
+    impostor = [{"name": "'a'", "type": "str", "value": "'weird'"}, *filler]
+    impostor.append({"name": "'a' (id: 4336031232)", "value": "'real'", "evaluable": True})
+    with pytest.raises(ValueError, match="ambiguous"):
+        _resolve(PagedTree({1: impostor}), {}, snapshot(ORDER), parse_selector("order['a']"))
+    # The real key first: it is the plain-named, evaluable entry, read at once without
+    # scanning the rest of the mapping.
+    real_first = [{"name": "'a'", "value": "'real'", "evaluable": True}, *filler]
+    found = _resolve(PagedTree({1: real_first}), {}, snapshot(ORDER), parse_selector("order['a']"))
+    assert found["value"] == "'real'"
+
+
+@pytest.mark.parametrize(
+    "listing",
+    [
+        # debugpy 1.8 lists 500 entries, then this marker (pydevd_resolver.TOO_LARGE_ATTR).
+        [ORDER_CHILDREN[1], {"name": "Unable to handle:", "value": "Maximum number of items"}],
+        # Fewer entries than the mapping's own len(), whatever the marker.
+        [ORDER_CHILDREN[1], {"name": "len()", "type": "int", "value": "505"}],
+    ],
+)
+def test_keys_missing_from_a_partial_mapping_are_not_called_absent(listing):
+    from peeky.probe import _resolve
+
+    with pytest.raises(ValueError, match="only part of a large mapping"):
+        _resolve(Tree({1: listing}), {}, snapshot(ORDER), parse_selector("order['zzz']"))
+
+
+def test_rust_container_indexes_explain_what_is_unsupported():
+    from peeky.probe import _resolve
+
+    vec = {
+        "name": "ordered",
+        "type": "alloc::vec::Vec<int, alloc::alloc::Global>",
+        "value": "",
+        "variablesReference": 1,
+    }
+    fields = [
+        {"name": "buf", "type": "RawVec", "value": "", "variablesReference": 2},
+        {"name": "len", "type": "unsigned long", "value": "3", "variablesReference": 0},
+    ]
+    with pytest.raises(ValueError) as caught:
+        _resolve(Tree({1: fields}), {}, snapshot(vec), parse_selector("ordered[0]"))
+    message = str(caught.value)
+    assert "has no indexed elements" in message and "children: buf, len" in message
+    assert "Rust Vec, slice and String contents are not readable yet" in message
+    assert "capture ordered.len" in message
+
+
+def test_depth_limited_values_say_so():
+    from peeky.probe import _resolve
+
+    deep = {"name": "ptr", "value": "Unique<u8>", "variablesReference": 0, "depth_limited": True}
+    root = {"name": "v", "value": "", "variablesReference": 1}
+    with pytest.raises(ValueError, match="inspection depth limit"):
+        _resolve(Tree({1: [deep]}), {}, snapshot(root), parse_selector("v.ptr.pointer"))
+
+
+@pytest.mark.parametrize(
+    "name, selector",
+    [
+        ("'id'", "order['id']"),
+        ('"it\'s"', 'order["it\'s"]'),
+        ("'\\\\d'", "order['\\\\d']"),
+        ("3", "order[3]"),
+        ("[4]", "order[4]"),
+        ("field", "order.field"),
+        ("len()", None),
+        ("(1, 2)", None),
+        ("'\\d'", None),
+        ("b'x'", None),
+    ],
+)
+def test_children_are_offered_with_the_selector_that_reads_them(name, selector):
+    from peeky.probe import _child_selector
+
+    assert _child_selector("order", name) == selector
+    if selector:
+        assert parse_selector(selector)
+
+
+def test_children_skip_debugger_groups_and_mark_expandable_entries():
+    from peeky.probe import _capture
+
+    class Worker(Tree):
+        def dispatch(self, operation, args):
+            if operation == "inspect":
+                return {**snapshot(ORDER), "frames": [{"line": 3, "name": "f"}]}
+            return super().dispatch(operation, args)
+
+    nested = [
+        *ORDER_CHILDREN,
+        {
+            "name": "'sub'",
+            "type": "dict",
+            "value": "{}",
+            "variablesReference": 4,
+            "evaluable": True,
+        },
+    ]
+    [row] = _capture(Worker({1: nested}), {}, ("order",), 0, "observed", children=True)
+    assert [child.get("selector") for child in row["children"]] == [
+        "order['id']",
+        'order["it\'s"]',
+        "order[3]",
+        None,
+        "order['sub']",
+    ]
+    assert row["children"][-1]["expandable"] is True
+    [row] = _capture(Worker({1: nested}), {}, ("order",), 0, "observed")
+    assert "children" not in row
+
+
+@pytest.mark.parametrize(
+    "text, selectors",
+    [
+        ("a,b", ("a", "b")),
+        (" a , ,b ", ("a", "b")),
+        ("a,d['x,y'],c", ("a", "d['x,y']", "c")),
+        ('d["a,\\"b"],e', ('d["a,\\"b"]', "e")),
+        ("x['it\\'s,']", ("x['it\\'s,']",)),
+    ],
+)
+def test_capture_lists_split_on_commas_outside_quoted_keys(text, selectors):
+    from peeky.probe import split_selectors
+
+    assert split_selectors(text) == selectors
+    assert all(parse_selector(selector) for selector in selectors)
+
+
+@pytest.mark.parametrize(
+    "text, ok",
+    [
+        ("d['\\x41']", True),
+        ("d['\\N{BULLET}']", True),
+        ("d['\\u00e9\\t\\\\']", True),
+        ("d['\\377']", True),
+        ("d['\\d']", False),
+        ("d['\\777']", False),
+        ("d['\\8']", False),
+        ("d['\\N{NO SUCH CHARACTER NAME}']", False),
+    ],
+)
+def test_key_escapes_are_validated_without_touching_warning_filters(text, ok):
+    import warnings
+
+    before = list(warnings.filters)
+    if ok:
+        assert parse_selector(text)
+    else:
+        with pytest.raises(ValueError):
+            parse_selector(text)
+    assert warnings.filters == before
+
+
+def test_unreadable_children_keep_their_reason():
+    from peeky.cli import _get_lines
+    from peeky.probe import _children
+
+    children = [
+        {
+            "name": "t",
+            "type": "int",
+            "value": None,
+            "unavailable": True,
+            "reason": "error: variable not available",
+        }
+    ]
+    entry = _children(Tree({1: children}), {}, "s", {"variablesReference": 1})["children"][0]
+    assert entry["unavailable"] and entry["reason"] == "error: variable not available"
+    [_, line] = _get_lines(
+        {
+            "selector": "s",
+            "type": "S",
+            "value": "{...}",
+            **_children(Tree({1: children}), {}, "s", {"variablesReference": 1}),
+        }
+    )
+    assert "<no readable value: error: variable not available>" in line
+
+
+def test_child_listings_are_retried_on_a_fresh_inspection():
+    from peeky.probe import _capture
+
+    class Starved(Tree):
+        expansions = 0
+
+        def dispatch(self, operation, args):
+            if operation == "inspect":
+                return {**snapshot(ORDER), "frames": [{"line": 3, "name": "f"}]}
+            Starved.expansions += 1
+            if Starved.expansions == 1:
+                raise ValueError("Inspection node budget exhausted; inspect again")
+            return super().dispatch(operation, args)
+
+    [row] = _capture(Starved({1: ORDER_CHILDREN}), {}, ("order",), 0, "observed", children=True)
+    assert "children_error" not in row and row["children"][0]["selector"] == "order['id']"
+
+
+def test_impostor_entries_get_no_selector_and_are_never_read():
+    from peeky.probe import _children, _resolve
+
+    # {K(): 'weird', 'a': 'real-a'} and {N(): 'weird-int', 1: 'real-int'}, where the
+    # impostors' __repr__ return "'a'" and "1": debugpy marks only the real keys evaluable.
+    entries = [
+        {"name": "'a'", "type": "str", "value": "'weird'"},
+        {"name": "'a' (id: 4335162880)", "type": "str", "value": "'real-a'", "evaluable": True},
+        {"name": "1", "type": "str", "value": "'weird-int'"},
+        {"name": "1 (id: 4335162999)", "type": "str", "value": "'real-int'", "evaluable": True},
+        {"name": "'b'", "type": "int", "value": "2", "evaluable": True},
+    ]
+    listed = _children(Tree({1: entries}), {}, "imp", {"variablesReference": 1})["children"]
+    assert [entry.get("selector") for entry in listed] == [None, None, None, None, "imp['b']"]
+    for selector in ("imp['a']", "imp[1]"):
+        with pytest.raises(ValueError, match="ambiguous"):
+            _resolve(
+                Tree({1: entries}), {}, snapshot({**ORDER, "name": "imp"}), parse_selector(selector)
+            )
+    # Debuggers that mark nothing evaluable (LLDB, java-debug) still read indexes.
+    plain = [
+        {"name": "[0]", "type": "int", "value": "7"},
+        {"name": "[1]", "type": "int", "value": "8"},
+    ]
+    found = _resolve(Tree({1: plain}), {}, snapshot({**ORDER, "name": "a"}), parse_selector("a[1]"))
+    assert found["value"] == "8"
+
+
+def test_entries_debugpy_groups_by_value_type_are_explained():
+    from peeky.probe import _partial, _resolve
+
+    # {"it's": len, 'plain': len, 2: len}: debugpy files the function values in a group.
+    entries = [
+        {"name": "function variables", "value": "", "variablesReference": 7},
+        {
+            "name": "'plain'",
+            "type": "builtin_function_or_method",
+            "value": "len",
+            "evaluable": True,
+        },
+        {"name": "len()", "type": "int", "value": "3"},
+    ]
+    assert not _partial(entries)
+    for selector in ('fn_vals["it\'s"]', "fn_vals[2]"):
+        with pytest.raises(ValueError, match="'function variables', which selectors cannot reach"):
+            _resolve(
+                Tree({1: entries}),
+                {},
+                snapshot({**ORDER, "name": "fn_vals"}),
+                parse_selector(selector),
+            )

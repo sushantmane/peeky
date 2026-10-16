@@ -570,8 +570,11 @@ class RustSession(NativeSession):
         }
 
     def validate_variable(self, variable, value):
-        if variable.get("type") != "int":
-            raise ValueError("Only writable i32 locals support Rust mutation")
+        if (kind := variable.get("type")) != "int":
+            raise ValueError(
+                f"Only writable i32 locals support Rust mutation: {variable.get('name')!r} has "
+                f"debugger type {kind!r}, not 'int' (i32)"
+            )
         super().validate_variable(variable, value)
 
     def validate_mutation_target(self, variable, frame):

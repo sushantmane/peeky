@@ -93,10 +93,19 @@ def test_peeky_cli_detects_rust_and_runs_probe_session_and_verify(tmp_path, monk
     assert manifest["language"] == "rust" and line in manifest["breakpoint_lines"]["src/main.rs"]
     assert manifest["value_views"]["core::option::Option<i32>"] == "option"
     assert main(["session", "start", str(crate), "--at", str(line)]) == 0
-    capsys.readouterr()
+    # Locations name the user's source, not the private build workspace's copy.
+    started = capsys.readouterr().out
+    assert f"{(crate / 'src/main.rs').resolve()}:{line}" in started, started
+    assert "peeky-build-" not in started
     assert main(["session", "get", "some", "request.page", "--json"]) == 0
     rows = {row["selector"]: row["value"] for row in json.loads(capsys.readouterr().out)}
     assert rows == {"some": "Some(3)", "request.page": "1"}
+    assert "peeky-build-" not in (main(["session", "inspect"]), capsys.readouterr().out)[1]
+    # Unreadable Rust container elements are explained, not reported as missing.
+    assert main(["session", "get", "args[0]"]) == 1
+    assert "Rust Vec, slice and String contents are not readable yet" in capsys.readouterr().out
+    assert main(["session", "set", "args=1"]) == 2
+    assert "'args' has debugger type 'alloc::vec::Vec<" in capsys.readouterr().err
     assert main(["session", "set", "start=0"]) == 0
     assert main(["session", "continue"]) == 0 and main(["session", "report"]) == 0
     assert "PAGE:[10, 20, 30]" in capsys.readouterr().out

@@ -469,3 +469,19 @@ def test_activity_is_stamped_when_a_long_operation_ends(tmp_path, monkeypatch):
     with pytest.raises(ValueError, match="stale session_id"):
         worker.dispatch("wait", {"session_id": "other", "timeout": 1})
     assert worker.last_used == before  # rejected requests never keep a session alive
+
+
+def test_locations_show_the_users_source_for_a_prepared_build(tmp_path):
+    from types import SimpleNamespace
+
+    from peeky.worker import _display_path
+
+    workspace, source = tmp_path / "peeky-build-x", tmp_path / "crate"
+    (workspace / "src").mkdir(parents=True)
+    runtime = SimpleNamespace(prepared=SimpleNamespace(workspace=workspace, source_root=source))
+    shown = _display_path(runtime, str(workspace / "src/main.rs"))
+    assert shown == str(source / "src/main.rs")
+    # Anything outside the workspace (std, libc) and unprepared targets are unchanged.
+    assert _display_path(runtime, "/rustc/abc/library/core/src/lib.rs").startswith("/rustc/")
+    assert _display_path(SimpleNamespace(), "/w/a.py") == "/w/a.py"
+    assert _display_path(None, "/w/a.py") == "/w/a.py"

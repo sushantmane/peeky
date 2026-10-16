@@ -70,7 +70,7 @@ output:
   PAGE: [10, 20, 30]
 ```
 
-The same command works for C, C++, Rust crates and Java (`--config`). Add `--hits N` to capture repeated stops, `--arg` to pass program arguments, and `--json` for the full result. Remote agents send the same request as one HTTP call: `Client(url, token).probe("pagination_bug.py:8", ["start"], {"start": "0"})`. Selectors are dotted paths (`request.page`, `args[0]`), never evaluated expressions. Interventions are evidence about that run, not a verified fix. More recipes are in the [cookbook](docs/COOKBOOK.md). See [ADR 0004](docs/adr/0004-stateless-probes.md).
+The same command works for C, C++, Rust crates and Java (`--config`). Add `--hits N` to capture repeated stops, `--arg` to pass program arguments, and `--json` for the full result. Remote agents send the same request as one HTTP call: `Client(url, token).probe("pagination_bug.py:8", ["start"], {"start": "0"})`. Selectors are dotted paths, indexes and string keys (`request.page`, `args[0]`, `order['id']`), never evaluated expressions. Interventions are evidence about that run, not a verified fix. More recipes are in the [cookbook](docs/COOKBOOK.md). See [ADR 0004](docs/adr/0004-stateless-probes.md).
 
 For a live investigation, install and sign in to Codex CLI, then choose a model available to your CLI account:
 

@@ -18,14 +18,14 @@ You debug programs with **peeky**, a standalone tool. You decide what to do; pee
 | `peeky probe <target> --at <path>:<line> --capture a,b.c [--set x=0] [--hits N] [--json]` | one run | Answer one question in one call: values at a line, optionally after one intervention, plus program output. |
 | `peeky sql "SELECT ... FROM last_run"` / `peeky queries [name]` | instant | Ask follow-up questions about evidence that probes already saved. No rerun. `peeky sql --schema` lists the tables. |
 | `peeky session start <target> --at <path>:<line>` | one run | Start step-by-step debugging when you need several looks at the same stop. |
-| `peeky session inspect` / `get a.b c[0]` / `set x=0` / `continue [--to-exit]` / `report` / `close` | instant | Work with the stopped program. `continue --to-exit` clears the breakpoints and runs to the end. Always `close`. |
-| `peeky verify <target> --check <checker.py> --old '<exact text>' --new '<replacement>'` | one build | Verify one candidate edit on a fresh build. |
+| `peeky session inspect` / `get a.b 'c[0]' "d['k']"` / `set x=0` / `continue [--to-exit]` / `report` / `close` | instant | Work with the stopped program. `get` also lists a value's children, each with the selector that reads it, and exits 1 if any selector failed. `continue` runs to the next stop (there is no single-stepping); `--to-exit` clears the breakpoints and runs to the end. Always `close`. |
+| `peeky verify <target> [--at <file>] --check <checker.py> --old '<exact text>' --new '<replacement>'` | one build | Verify one candidate edit on a fresh build. `--at` names the file to edit when the target is a directory (a Cargo crate, a Python project). |
 
 Session names are claimed atomically, so a second `session start` with the same name fails with "exists" rather than taking over the first session. A session's worker ends with the session: on `close`, when the start fails or is interrupted, and after its idle timeout (5 minutes). Every command takes `--json`: stdout is then one JSON object (progress goes to stderr; `--quiet` silences it). Session records live in `$PEEKY_STATE_DIR` (default `~/.peeky`), so set it per task to keep sessions apart.
 
 ### Interventions (`--set name=value`)
 
-- Only existing locals in the stopped frame can be set. Python accepts literal values, including containers (`0`, `'x'`, `None`, `[]`, `{'k': 1}`). Compiled languages accept scalars only. Expressions, names and calls (`min(xs)`, `float('inf')`) are rejected with `MUTATION_REJECTED` and are never evaluated. Use `-1e309` for negative infinity.
+- Only root locals can be set: the stopped function's own variables (`start`), not their fields or elements (`request.page`, `items[0]`). Python accepts literal values, including containers (`0`, `'x'`, `None`, `[]`, `{'k': 1}`). C, C++ and Java accept scalars of the local's type, and Rust only `i32`. The `MUTATION_REJECTED` message names the local and the rule it broke. Expressions, names and calls (`min(xs)`, `float('inf')`) are rejected with `MUTATION_REJECTED` and are never evaluated. Use `-1e309` for negative infinity.
 - Rust: only locals the program keeps in memory can be changed. These are usually locals the code borrows or reassigns. For other locals the compiler keeps the value in a register, and the debugger only shows a copy, so the change is refused (`MUTATION_REJECTED`) rather than reported as applied.
 - A probe applies its interventions once, at hit 1 by default. Use `--set-hit N` to apply them at a later hit, for example the iteration where things go wrong. Other hits only observe. For changes on several iterations, use a session: `continue`, then `set` again.
 
@@ -39,7 +39,8 @@ Session names are claimed atomically, so a second `session start` with the same 
   - a breakpoint the debugger moved to another line (the values then come from that line);
   - runs that ended before all requested hits;
   - a Java exit that Peeky inferred because the debugger dropped its exit event (the result is still valid).
-- If a selector is missing, the row's error lists the visible names. For Python, `peeky describe` also lists the names each function can see (`scopes`).
+- If a selector is missing, the row's error lists the visible names, or the children of the value it was reading. Python dict entries are read by key: `order['id']`, not `order.id` (the error says so). For Python, `peeky describe` also lists the names each function can see (`scopes`).
+- Rust `Vec`, slice and `String` elements are not readable yet; the error says so and names the length field to capture instead (`ordered.len`, `values.length`). Check contents with `verify`.
 - debugpy lists only the first 100 items of a long list. A higher index is reported as "beyond the debugger's visible window" rather than missing; it does not mean the list is short.
 - Selectors take indexes from the end (`items[-1]`), but only when the debugger states the sequence's length and shows every element. Otherwise you get an error, never a guess. Long debugpy lists show 100 elements individually, so for them use a non-negative index.
 - Failures carry `error: {code, message, hint, retryable, session_closed}` (see [ERRORS.md](ERRORS.md)). `status` is `completed`, `no-stop`, `failed` or `timeout`.
@@ -53,8 +54,8 @@ Every probe is saved, and the result's `evidence.run_id` names it. **SQL is opti
 
 
 - `peeky sql --schema` lists the tables (`runs`, `captures`, `interventions`, `pauses`), the `evidence` and `last_run` views, and the canned queries. Read it before writing SQL.
-- `peeky queries` needs no SQL. `run` shows a run's values, `hits` shows a selector across hits with `changed`, `compare`/`diff` put two runs side by side (the first `diff` row is the first divergence), `outputs` shows two runs' outputs and outcomes, `set_effect` shows values before and after an intervention, `values` shows the distinct values of a selector across runs, and `unreadable` and `failures` list what has no value. Pass `--param name=value`.
-- Use `num` for numeric comparisons (`num > 10`); `value` is the debugger's text. `--label input=a` tags a run so you can find it later.
+- `peeky queries` needs no SQL. `run` shows a run's values, `hits` shows a selector across hits with `changed`, `compare` puts every value of two runs side by side and `diff` keeps only the rows that differ (ordered by hit, so the first row is in the earliest hit where the runs diverge), `outputs` shows two runs' outputs and outcomes, `set_effect` shows values before and after an intervention, `values` shows the distinct values of a selector across runs, and `unreadable` and `failures` list what has no value. Pass `--param name=value`.
+- Use `num` for numeric comparisons (`num > 10`); `value` is the debugger's text. `--label` tags a run with free text (`--label no-trailing-space`) so you can find it later; it is stored as given, not parsed.
 - Queries are read-only and bounded. A failing query returns `INVALID_QUERY`; fix the SQL. Saved evidence describes past runs only: a new question about the program needs a new probe.
 
 ### Verifying an edit
@@ -67,7 +68,7 @@ Every probe is saved, and the result's `evidence.run_id` names it. **SQL is opti
 
 **Remote targets:** if a worker runs on another host behind an SSH tunnel, add `--worker http://127.0.0.1:<port>` to `probe` or `session start`, with the token in `$PEEKY_WORKER_TOKEN`. Your local copy of the source must match the worker's, or the results are discarded. See [REMOTE.md](REMOTE.md).
 
-Targets: a `.py` file, a `.c`/`.cpp` file, a Cargo crate directory, or any target with `--config <trusted.json>` (required for Java). A Java attach config (`port`, `sources`, `class_roots`) attaches to a running `--debug-jvm` JVM; attached targets cannot be verified, and closing detaches without killing the JVM. Selectors are dotted paths and indexes (`request.page`, `args[0]`); expressions are rejected.
+Targets: a `.py` file, a `.c`/`.cpp` file, a Cargo crate directory, or any target with `--config <trusted.json>` (required for Java). A Java attach config (`port`, `sources`, `class_roots`) attaches to a running `--debug-jvm` JVM; attached targets cannot be verified, and closing detaches without killing the JVM. Selectors are dotted paths, indexes and string keys (`request.page`, `args[0]`, `order['id']`); expressions are rejected. Quote selectors that contain `[...]` in zsh.
 
 ## Workflow
 

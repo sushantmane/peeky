@@ -119,7 +119,8 @@ def test_optimized_sessions_say_so_and_never_show_placeholders_as_values(
     assert snapshot["optimized"] == "-O2"
     unavailable = [v for s in snapshot["scopes"] for v in s["variables"] if v.get("unavailable")]
     assert unavailable and all(v["value"] is None for v in unavailable)
-    assert main(["session", "get", "t", "--json"]) == 0
+    # An optimized-out value is a row without a value, so `get` exits 1.
+    assert main(["session", "get", "t", "--json"]) == 1
     assert json.loads(capsys.readouterr().out)[0]["optimized"] == "-O2"
     assert main(["session", "set", "b=5", "--json"]) == 2
     assert json.loads(capsys.readouterr().out)["error"]["code"] == "MUTATION_REJECTED"

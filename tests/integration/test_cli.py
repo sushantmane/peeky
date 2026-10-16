@@ -436,3 +436,140 @@ def test_auto_detected_c_targets_link_one_program(tmp_path):
     (tmp_path / "two.c").unlink()
     # One program split over several files still builds them all.
     assert _native_sources(tmp_path, "util.c", (".c",)) == ("one.c", "util.c")
+
+
+ORDERS = """def total(order):
+    amount = order["price"] * order["qty"]
+    return amount
+
+
+print(total({"id": 18, "price": 14, "qty": 1, "it's": 2}))
+"""
+
+
+def test_mapping_keys_are_selectors_in_probes_and_sessions(workspace, capsys):
+    (workspace / "orders.py").write_text(ORDERS)
+    program = workspace / "orders.py"
+    selectors = "order['id'],order[\"it's\"],order.id,amount"
+    code, out = run(
+        capsys, "probe", program, "--at", "3", "--capture", selectors, "--json", "--no-save"
+    )
+    rows = {row["selector"]: row for row in json.loads(out.out)["rows"]}
+    assert code == 0 and rows["order['id']"]["value"] == "18"
+    assert rows['order["it\'s"]']["value"] == "2" and rows["amount"]["value"] == "14"
+    assert "select it with ['id'], not .id" in rows["order.id"]["error"]
+    assert "'price'" in rows["order.id"]["error"] and "len()" not in rows["order.id"]["error"]
+
+    assert run(capsys, "session", "start", program, "--at", "3")[0] == 0
+    assert "(children: peeky session get order)" in run(capsys, "session", "inspect")[1].out
+    code, out = run(capsys, "session", "get", "order", "amount")
+    assert code == 0
+    assert "  order['price']: int = 14" in out.out and '  order["it\'s"]: int = 2' in out.out
+    assert "len() [not selectable]: int = 4" in out.out
+    code, out = run(capsys, "session", "get", "order", "--json")
+    [row] = json.loads(out.out)
+    assert "hit" not in row and row["phase"] == "observed"
+    assert {"name": "'qty'", "type": "int", "value": "1", "selector": "order['qty']"} in row[
+        "children"
+    ]
+    # Every row is printed, and the exit status says that one selector failed.
+    code, out = run(capsys, "session", "get", "amount", "missing")
+    assert code == 1 and "amount: int = 14" in out.out and "not found" in out.out
+    assert run(capsys, "session", "close")[0] == 0
+
+
+MAPPINGS = """class K:
+    def __repr__(self):
+        return "'a'"
+
+
+class N:
+    def __repr__(self):
+        return "1"
+
+
+def look():
+    big = {f"k{i}": i for i in range(505)}
+    twins = {K(): "weird", "a": "real-a"}
+    longkey = {"x" * 3000: 1, "short": 2}
+    commas = {"a,b": 7}
+    intimp = {N(): "weird-int", 1: "real-int"}
+    return big, twins, longkey, commas, intimp
+
+
+look()
+"""
+
+
+def test_mapping_keys_never_read_the_wrong_entry(workspace, capsys):
+    (workspace / "maps.py").write_text(MAPPINGS)
+    program = workspace / "maps.py"
+    selectors = "big['k3'],big['k499'],big['k502'],twins['a'],commas['a,b'],intimp[1]"
+    code, out = run(
+        capsys, "probe", program, "--at", "17", "--capture", selectors, "--json", "--no-save"
+    )
+    rows = {row["selector"]: row for row in json.loads(out.out)["rows"]}
+    assert code == 0 and rows["big['k3']"]["value"] == "3" and rows["big['k499']"]["value"] == "499"
+    # debugpy lists 500 entries: a later key is unknown, never "not found".
+    assert "only part of a large mapping" in rows["big['k502']"]["error"]
+    # Two keys share the repr 'a': refused instead of reading whichever is listed first.
+    assert "ambiguous" in rows["twins['a']"]["error"]
+    assert "ambiguous" in rows["intimp[1]"]["error"]
+    assert rows["commas['a,b']"]["value"] == "7"
+
+    assert run(capsys, "session", "start", program, "--at", "17", "--name", "maps")[0] == 0
+    # The listing never pairs an impostor's value with the real key's selector.
+    code, out = run(capsys, "session", "get", "twins", "intimp", "--name", "maps")
+    assert "twins['a']" not in out.out and "intimp[1]" not in out.out
+    assert "'a' [not selectable]: str = 'weird'" in out.out
+    assert "(children: peeky session get big --name maps)" in (
+        run(capsys, "session", "inspect", "--name", "maps")[1].out
+    )
+    # A child whose name is too long to carry is shown, not fatal to the session.
+    code, out = run(capsys, "session", "get", "longkey", "--name", "maps")
+    assert code == 0 and "<3002-character name> [not selectable]: int = 1" in out.out
+    assert "longkey['short']: int = 2" in out.out
+    assert run(capsys, "session", "get", "longkey['short']", "--name", "maps")[0] == 0
+    assert run(capsys, "session", "close", "--name", "maps")[0] == 0
+
+
+BUSY = """class K:
+    def __repr__(self):
+        return "'a'"
+
+
+def look():
+    a1 = a2 = a3 = a4 = a5 = a6 = a7 = a8 = a9 = 0
+    big = {f"k{i}": i for i in range(505)}
+    mid = {f"m{i}": i for i in range(470)}
+    outer = {f"o{i}": i for i in range(300)}
+    outer["a"] = {f"k{i}": i for i in range(250)}
+    tw = {K(): "weird", **{f"p{i}": i for i in range(500)}, "a": "real-a"}
+    return big, mid, outer, tw, a1, a2, a3, a4, a5, a6, a7, a8, a9
+
+
+look()
+"""
+
+
+def test_keys_read_in_busy_frames_and_never_from_an_impostor(workspace, capsys):
+    (workspace / "busy.py").write_text(BUSY)
+    selectors = "big['k3'],mid['m0'],outer['a']['k1'],tw['a'],tw['p0']"
+    code, out = run(
+        capsys,
+        "probe",
+        workspace / "busy.py",
+        "--at",
+        "13",
+        "--capture",
+        selectors,
+        "--json",
+        "--no-save",
+    )
+    rows = {row["selector"]: row for row in json.loads(out.out)["rows"]}
+    assert code == 0
+    assert rows["big['k3']"]["value"] == "3" and rows["mid['m0']"]["value"] == "0"
+    assert rows["outer['a']['k1']"]["value"] == "1" and rows["tw['p0']"]["value"] == "0"
+    # The impostor is listed under the plain name and the real "a" is past debugpy's
+    # 500-entry cap: refused, never read as 'weird'.
+    assert "ambiguous" in rows["tw['a']"]["error"] and "value" not in rows["tw['a']"]

@@ -273,7 +273,8 @@ def test_session_get_reports_one_unreadable_selector_as_a_row(workspace, capsys)
     assert run(capsys, "session", "start", program, "--at", "7")[0] == 0
     code, out = run(capsys, "session", "get", "small[0]", "o.a599", "small[1]", "--json")
     rows = {row["selector"]: row for row in json.loads(out.out)}
-    assert code == 0, out.err
+    # Every row is reported; the exit status says that one selector had no value.
+    assert code == 1, out.err
     assert rows["small[0]"]["value"] == "1" and rows["small[1]"]["value"] == "2"
     assert rows["o.a599"].get("error")
     run(capsys, "session", "close")
