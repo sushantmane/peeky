@@ -34,6 +34,8 @@ from peeky.build import (
 from peeky.digest import sha256_file
 
 MAX_METADATA = 2 * 1024 * 1024
+# Type-rich C++ units (iostream) carry megabytes of DIEs; read only by `describe`.
+MAX_DEBUG_INFO = 16 * 1024 * 1024
 FLAGS = ("-std=c11", "-g", "-gdwarf-4", "-O0", "-fno-omit-frame-pointer")
 CPP_FLAGS = ("-std=c++17", *FLAGS[1:])
 OPTIMIZATIONS = ("O0", "Og", "O1", "O2")
@@ -109,17 +111,21 @@ def _metadata(tool, arguments, workspace, env, *, max_bytes=MAX_METADATA, timeou
         return output.read_text(encoding="utf-8")
 
 
-def parse_lines(text, workspace, declared):
-    """Parse the LLVM DWARF4 line-table dump; unrecognized rows fail closed."""
+def _line_rows(text, workspace, declared):
+    """Rows of the LLVM DWARF4 line-table dump for declared sources: (address, name, line).
+
+    Unrecognized rows fail closed. Rows outside the declared sources (SDK and system
+    headers) and end-of-sequence rows are skipped.
+    """
     if len(text.encode()) > MAX_METADATA:
         raise ValueError("Native line metadata exceeds limit")
     workspace = Path(workspace).resolve()
     inputs = {str((workspace / name).resolve()): name for name in declared}
     counts = {name: len((workspace / name).read_text().splitlines()) for name in declared}
-    result = {name: set() for name in declared}
     directories, files, current = {0: str(workspace)}, {}, None
     table_count = 0
     version = None
+    rows = []
     for raw in text.splitlines():
         line = raw.strip()
         if line.startswith("debug_line["):
@@ -168,10 +174,167 @@ def parse_lines(text, workspace, declared):
             if name is not None:
                 if not 0 < number <= counts[name]:
                     raise ValueError("Native line exceeds declared source length")
-                result[name].add(number)
-    if not table_count or not any(result.values()):
+                rows.append((int(fields[0], 16), name, number))
+    if not table_count:
+        raise ValueError("Missing executable native debug symbol line information")
+    return rows
+
+
+def parse_lines(text, workspace, declared):
+    """Parse the LLVM DWARF4 line-table dump; unrecognized rows fail closed."""
+    result = {name: set() for name in declared}
+    for _, name, number in _line_rows(text, workspace, declared):
+        result[name].add(number)
+    if not any(result.values()):
         raise ValueError("Missing executable native debug symbol line information")
     return {name: sorted(lines) for name, lines in result.items()}
+
+
+MAX_SCOPES = 300
+MAX_DIES = 200_000
+_DIE = re.compile(r"(0x[0-9a-fA-F]+):( +)(DW_TAG_\w+|NULL)")
+_ATTRIBUTE = re.compile(r" +(DW_AT_\w+)\s+\((.*)\)")
+_REFERENCE = re.compile(r"(0x[0-9a-fA-F]+)(?: \"(.*)\")?")
+# Containers that qualify a function's name (`ns::Type::method`, `crate::module::fn`).
+_QUALIFIERS = {
+    "DW_TAG_namespace",
+    "DW_TAG_structure_type",
+    "DW_TAG_class_type",
+    "DW_TAG_union_type",
+}
+
+
+def _dies(text):
+    """A bounded, lenient parse of `dwarfdump --debug-info`, for display only.
+
+    Returns {offset: die} with each die {tag, attrs, parent, children}; nesting is
+    read from the indentation (one level per two spaces after the offset).
+    """
+    dies, stack = {}, []
+    for raw in text.splitlines():
+        if match := _DIE.match(raw):
+            if len(dies) >= MAX_DIES:
+                raise ValueError("Too many debug-info entries to list function scopes")
+            depth = (len(match[2]) - 1) // 2
+            del stack[depth:]
+            if match[3] == "NULL":
+                continue
+            offset = int(match[1], 16)
+            parent = stack[-1] if stack else None
+            die = {"tag": match[3], "attrs": {}, "parent": parent, "children": []}
+            dies[offset] = die
+            if parent is not None:
+                dies[parent]["children"].append(offset)
+            stack.append(offset)
+        elif stack and (match := _ATTRIBUTE.match(raw)):
+            dies[stack[-1]]["attrs"].setdefault(match[1], match[2])
+    return dies
+
+
+def _text(value):
+    if value is None or not value.startswith('"'):
+        return None
+    try:
+        return json.loads(value)
+    except ValueError:
+        return None
+
+
+def _origin(dies, offset):
+    """The DIE that declares this one (out-of-line methods, abstract origins), or itself."""
+    seen = set()
+    while offset not in seen and len(seen) < 8:
+        seen.add(offset)
+        attrs = dies[offset]["attrs"]
+        reference = attrs.get("DW_AT_specification") or attrs.get("DW_AT_abstract_origin")
+        match = _REFERENCE.fullmatch(reference or "")
+        target = int(match[1], 16) if match else None
+        if target not in dies:
+            return offset
+        offset = target
+    return offset
+
+
+def _qualified(dies, offset):
+    origin = _origin(dies, offset)
+    name = _text(dies[origin]["attrs"].get("DW_AT_name"))
+    if name is None:
+        return None
+    parts, parent = [name], dies[origin]["parent"]
+    while parent is not None and len(parts) < 32:
+        die = dies[parent]
+        if die["tag"] in _QUALIFIERS and (outer := _text(die["attrs"].get("DW_AT_name"))):
+            parts.append(outer)
+        elif die["tag"] == "DW_TAG_subprogram" and (outer := _qualified(dies, parent)):
+            # A closure or lambda inside a function: `crate::main::{closure#0}`.
+            parts.append(outer)
+            break
+        parent = die["parent"]
+    return "::".join(reversed(parts))
+
+
+def _locals(dies, offset):
+    """Parameters and variables of one function, including nested blocks."""
+    names, pending = set(), list(dies[offset]["children"])
+    while pending and len(names) < 512:
+        die = dies[pending.pop()]
+        if die["tag"] in ("DW_TAG_formal_parameter", "DW_TAG_variable"):
+            name = _text(die["attrs"].get("DW_AT_name"))
+            if name is None:
+                reference = _REFERENCE.fullmatch(die["attrs"].get("DW_AT_abstract_origin", ""))
+                if reference and int(reference[1], 16) in dies:
+                    name = _text(dies[int(reference[1], 16)]["attrs"].get("DW_AT_name"))
+            # `$`-prefixed names are debugger-synthesized storage, not program locals.
+            if name and not name.startswith("$"):
+                names.add(name)
+        elif die["tag"] == "DW_TAG_lexical_block":
+            pending.extend(die["children"])
+    return sorted(names)
+
+
+def function_scopes(info, line_text, workspace, declared):
+    """Each function in a declared source: qualified name, source, line span, locals.
+
+    Display only (`describe`): spans come from the line-table rows inside the
+    function's address range; names from its DWARF parameters and variables.
+    """
+    workspace = Path(workspace).resolve()
+    inputs = {str((workspace / name).resolve()): name for name in declared}
+    rows = _line_rows(line_text, workspace, declared)
+    dies = _dies(info)
+    found = []
+    for offset, die in dies.items():
+        attrs = die["attrs"]
+        if die["tag"] != "DW_TAG_subprogram" or "DW_AT_low_pc" not in attrs:
+            continue
+        try:
+            low = int(attrs["DW_AT_low_pc"], 16)
+            high = int(attrs.get("DW_AT_high_pc", ""), 16)
+        except ValueError:
+            continue
+        declaring = dies[_origin(dies, offset)]["attrs"]
+        decl = _text(attrs.get("DW_AT_decl_file") or declaring.get("DW_AT_decl_file"))
+        source = inputs.get(str((workspace / decl).resolve())) if decl else None
+        name = _qualified(dies, offset)
+        if source is None or name is None:
+            continue
+        lines = [
+            number for address, file, number in rows if file == source and low <= address < high
+        ]
+        if not lines:
+            continue
+        found.append(
+            {
+                "scope": name,
+                "source": source,
+                "lines": [min(lines), max(lines)],
+                "names": _locals(dies, offset),
+            }
+        )
+    found.sort(key=lambda scope: (scope["source"], scope["lines"][0], scope["scope"]))
+    if len(found) > MAX_SCOPES:
+        found = [*found[:MAX_SCOPES], {"omitted": len(found) - MAX_SCOPES}]
+    return found
 
 
 def elf_build_id(binary):
@@ -579,6 +742,22 @@ class NativeSession:
             "console": "internalConsole",
             "enableAutoVariableSummaries": False,
         }
+
+    def function_scopes(self):
+        """Each function in the declared sources, its line span and locals (for describe)."""
+        dwarfdump = _tool(self.target.dwarfdump)
+        env = dict(self.prepared.manifest.effective_environment)
+        workspace = self.prepared.workspace
+
+        def dump(option, limit):
+            return _metadata(
+                dwarfdump, [option, str(self.symbols)], workspace, env, max_bytes=limit
+            )
+
+        info = dump("--debug-info", MAX_DEBUG_INFO)
+        return function_scopes(
+            info, dump("--debug-line", MAX_METADATA), workspace, tuple(self.lines)
+        )
 
     def source_path(self, original):
         relative = (

@@ -358,3 +358,104 @@ def test_native_verification_keeps_explicit_target_language(tmp_path, language, 
     target = NativeTarget(sources=(name,), language=language)
     verification = NativeVerification(target, tmp_path)
     assert verification.language == language
+
+
+def scope_dumps(workspace):
+    """A C++ unit: a namespaced out-of-line method, a lambda, and an SDK function."""
+    source = workspace / "app.cpp"
+    info = f"""{workspace}/program: file format Mach-O arm64
+
+.debug_info contents:
+0x0000000b: DW_TAG_compile_unit
+              DW_AT_name\t("app.cpp")
+0x00000020:   DW_TAG_namespace
+                DW_AT_name\t("geo")
+0x00000025:     DW_TAG_structure_type
+                  DW_AT_name\t("Box")
+0x0000002a:       DW_TAG_subprogram
+                    DW_AT_name\t("area")
+                    DW_AT_decl_file\t("{source}")
+                    DW_AT_decl_line\t(7)
+0x00000030:       NULL
+0x00000031:     NULL
+0x00000032:   DW_TAG_subprogram
+                DW_AT_low_pc\t(0x0000000100000400)
+                DW_AT_high_pc\t(0x0000000100000440)
+                DW_AT_specification\t(0x0000002a "area")
+0x00000040:     DW_TAG_formal_parameter
+                  DW_AT_name\t("this")
+0x00000048:     DW_TAG_lexical_block
+                  DW_AT_low_pc\t(0x0000000100000410)
+                  DW_AT_high_pc\t(0x0000000100000430)
+0x00000050:       DW_TAG_variable
+                    DW_AT_name\t("product")
+0x00000058:       NULL
+0x00000059:     DW_TAG_variable
+                  DW_AT_name\t("$discr$")
+0x0000005a:     NULL
+0x00000060:   DW_TAG_subprogram
+                DW_AT_low_pc\t(0x0000000100000500)
+                DW_AT_high_pc\t(0x0000000100000540)
+                DW_AT_name\t("main")
+                DW_AT_decl_file\t("{source}")
+0x00000068:     DW_TAG_variable
+                  DW_AT_name\t("total")
+0x00000070:     DW_TAG_subprogram
+                  DW_AT_low_pc\t(0x0000000100000520)
+                  DW_AT_high_pc\t(0x0000000100000530)
+                  DW_AT_name\t("{{closure#0}}")
+                  DW_AT_decl_file\t("{source}")
+0x00000078:       DW_TAG_formal_parameter
+                    DW_AT_name\t("x")
+0x00000080:       NULL
+0x00000081:     NULL
+0x00000090:   DW_TAG_subprogram
+                DW_AT_low_pc\t(0x0000000100000600)
+                DW_AT_high_pc\t(0x0000000100000640)
+                DW_AT_name\t("printf")
+                DW_AT_decl_file\t("/sdk/usr/include/stdio.h")
+0x000000a0:   NULL
+"""
+    rows = [(0x400, 7), (0x410, 8), (0x430, 9), (0x500, 12), (0x520, 13), (0x530, 15), (0x600, 9)]
+    line = 'debug_line[0x00000000]\nversion: 4\nfile_names[ 1]:\nname: "app.cpp"\ndir_index: 0\n'
+    line += "Address Line Column File\n"
+    base = 0x100000000
+    line += "".join(
+        f"0x{base + address:016x} {number} 1 1 0 0 is_stmt\n" for address, number in rows
+    )
+    line += f"0x{base + 0x700:016x} 15 1 1 0 0 end_sequence\n"
+    return info, line
+
+
+def test_function_scopes_list_qualified_names_spans_and_locals(tmp_path):
+    from peeky.native import function_scopes
+
+    (tmp_path / "app.cpp").write_text("\n" * 20)
+    info, line = scope_dumps(tmp_path)
+    scopes = function_scopes(info, line, tmp_path, ("app.cpp",))
+    assert scopes == [
+        # The out-of-line definition takes its name and file from its declaration;
+        # nested blocks contribute locals; `$`-synthesized storage does not.
+        {
+            "scope": "geo::Box::area",
+            "source": "app.cpp",
+            "lines": [7, 9],
+            "names": ["product", "this"],
+        },
+        {"scope": "main", "source": "app.cpp", "lines": [12, 15], "names": ["total"]},
+        # A closure is qualified by its function; SDK functions are not listed.
+        {"scope": "main::{closure#0}", "source": "app.cpp", "lines": [13, 13], "names": ["x"]},
+    ]
+
+
+def test_function_scopes_are_bounded(tmp_path, monkeypatch):
+    import peeky.native as native
+
+    (tmp_path / "app.cpp").write_text("\n" * 20)
+    info, line = scope_dumps(tmp_path)
+    monkeypatch.setattr(native, "MAX_SCOPES", 1)
+    scopes = native.function_scopes(info, line, tmp_path, ("app.cpp",))
+    assert scopes[-1] == {"omitted": 2} and len(scopes) == 2
+    monkeypatch.setattr(native, "MAX_DIES", 3)
+    with pytest.raises(ValueError, match="Too many debug-info entries"):
+        native.function_scopes(info, line, tmp_path, ("app.cpp",))

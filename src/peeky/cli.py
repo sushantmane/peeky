@@ -462,6 +462,12 @@ def describe(args):
         try:
             manifest["breakpoint_lines"] = runtime.lines
             manifest["artifact_manifest_id"] = runtime.manifest_id
+            if scopes := getattr(runtime, "function_scopes", None):
+                # Display only: a dump the parser cannot read omits scopes, never the target.
+                try:
+                    manifest["scopes"] = scopes()
+                except (OSError, ValueError, RuntimeError) as exc:
+                    manifest["scopes_unavailable"] = str(exc)[:300]
             if layouts := getattr(runtime, "layouts", None):
                 manifest["value_views"] = {
                     name: layout["kind"] for name, layout in sorted(layouts.items())
@@ -501,7 +507,7 @@ def describe(args):
 def _describe_text(manifest):
     lines = [f"language: {manifest['language']}", f"root: {manifest['root']}"]
     for source, numbers in manifest["breakpoint_lines"].items():
-        lines.append(f"breakpoint lines in {source}: {_ranges(numbers)}")
+        lines.append(f"breakpoint lines in {source}: {_ranges(numbers) or 'none'}")
     if views := manifest.get("value_views"):
         qualified = [name for name, kind in views.items() if kind != "unqualified"]
         lines.append(f"qualified enum views: {', '.join(qualified) or 'none'}")
@@ -510,7 +516,11 @@ def _describe_text(manifest):
         if scope.get("omitted"):
             lines.append(f"... {scope['omitted']} more scopes not listed (first 300 shown)")
             continue
-        where = f" (lines {scope['lines'][0]}-{scope['lines'][1]})" if scope["lines"] else ""
+        span = f"{scope['lines'][0]}-{scope['lines'][1]}" if scope["lines"] else ""
+        if scope.get("source"):
+            where = f" ({scope['source']}:{span})"
+        else:
+            where = f" (lines {span})" if span else ""
         lines.append(f"names in {scope['scope']}{where}: {', '.join(scope['names']) or '-'}")
     from peeky.probe import optimization_level
 

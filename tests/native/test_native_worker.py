@@ -510,3 +510,26 @@ def test_compiled_programs_take_per_run_arguments(tmp_path, native_config, capsy
     assert result["program_args"] == result["target_identity"]["arguments"] == ["2"]
     code = main([*probe, "--capture", "page", "--arg", "bad\x00arg"])
     assert code == 2 or json.loads(capsys.readouterr().out)["status"] == "failed"
+
+
+def test_describe_lists_each_functions_span_and_locals(tmp_path, native_config, capsys):
+    from peeky.cli import main
+
+    for language in ("c", "cpp"):
+        shutil.copytree(ROOT / "examples" / language, tmp_path / language)
+    for path, function, local in (
+        ("c/pagination_bug.c", "main", "start"),
+        ("cpp/pagination_bug.cpp", "main", "request"),
+    ):
+        assert main(["describe", str(tmp_path / path), "--json"]) == 0
+        program = Path(path).name
+        manifest = json.loads(capsys.readouterr().out)
+        scope = next(s for s in manifest["scopes"] if s["scope"] == function)
+        assert scope["source"] == program and local in scope["names"]
+        first, last = scope["lines"]
+        lines = manifest["breakpoint_lines"][program]
+        assert first in lines and last in lines and first < last
+        # Only the program's own functions: nothing from the SDK or the C++ library.
+        assert {s["source"] for s in manifest["scopes"]} <= set(manifest["breakpoint_lines"])
+        assert main(["describe", str(tmp_path / path)]) == 0
+        assert f"names in {function} ({program}:{first}-{last}):" in capsys.readouterr().out

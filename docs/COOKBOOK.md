@@ -83,6 +83,16 @@ probe: peeky probe examples/pagination_bug.py --at pagination_bug.py:<line> [--r
 
 For a large module, `--json` and `jq` find a function quickly: `peeky describe dir --at module.py --json | jq '.scopes[] | select(.scope | test("is_private"))'`.
 
+C, C++ and Rust list the same from the build's debug information: each function in your sources, with its file, lines and parameters and locals. Closures and lambdas are listed under their function:
+
+```
+names in parse_count (pagination_bug.c:6-14): end, minimum, result, text, value
+names in main (pagination_bug.c:16-31): argc, argv, end, i, items, page, page_size, start, total
+
+names in peeky_pagination::main (src/main.rs:22-41): args, end, mode, none, request, some, start, values
+names in peeky_pagination::main::{closure#0} (src/main.rs:37-37): index
+```
+
 ### 1.2 First Probe
 
 **What it answers:** What does the program actually compute at this line?
