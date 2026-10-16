@@ -69,3 +69,11 @@ One blocking and two should-fix issues, all fixed with regression tests:
 One blocking issue and one nit, both fixed with regression tests:
 - **Blocking:** `#[inline(always)]` functions are inlined even at opt-level 0. LLVM renames their slots (`marker.dbg.spill.i`), and the end-anchored spill pattern missed the rename, so a change inside an inlined callee was reported as applied while the program printed the old value. Now any name containing `.dbg.spill` is a copy, and any declaration whose location is `inlinedAt` another function is never provably in memory (`test_locals_of_always_inlined_functions_cannot_be_changed`, real cargo and lldb-dap; the IR unit test covers both forms; both fail on the previous parser).
 - **Nit:** rustc writes `# env-dep:NAME=value` notes into `.d` files, and a value containing `": "` was read as a prerequisite. Comment lines are skipped (a literal `#` in a path is escaped as `\#`).
+
+## Review of the cookbook PR (#43, 99faeda)
+
+Three should-fix issues and three nits, all fixed:
+- **Should-fix:** selectors with `[...]` were unquoted in the cookbook and README, so zsh (the macOS default) globbed them and the command never ran. Every such selector is now quoted, and section 2.1 says why.
+- **Should-fix:** section 3.1 built a command in `$P`, which zsh does not split into words. It now uses a shell function.
+- **Should-fix:** run records showed the requested `--arg` list, not what the program received. The launch reply now carries `program_args` (per-run arguments, else the configured ones), and `target_identity.arguments` matches it. `runs.args` records that list, falls back to the requested one when launch failed, and is NULL for an attached JVM, whose arguments are unknown (`test_runs_record_the_arguments_the_program_received`, plus real Java, C and Rust assertions in the per-run argument tests).
+- **Nits:** the troubleshooting row now says values come from the line named in the warning (Python moves breakpoints back, LLDB forward); the gdb table no longer maps `finish` to `continue`; the `--arg` help no longer says "Python:".

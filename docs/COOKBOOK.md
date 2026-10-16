@@ -115,7 +115,7 @@ A probe is one complete run: build if needed, launch, stop at the line, capture,
 **What it answers:** What is inside a list, a struct or an object?
 
 ```sh
-peeky probe examples/pagination_bug.py --at 8 --capture items[0],items[-1],items
+peeky probe examples/pagination_bug.py --at 8 --capture 'items[0],items[-1],items'
 ```
 
 ```
@@ -125,7 +125,7 @@ hit  phase     line  function  selector   type  value
 1    observed  8     get_page  items      list  [10, 20, 30, 40, 50, 60]
 ```
 
-Selectors are dotted paths and indexes (`request.page`, `args[0]`, `items[-1]`), never expressions: Peeky never evaluates code in your program.
+Selectors are dotted paths and indexes (`request.page`, `args[0]`, `items[-1]`), never expressions: Peeky never evaluates code in your program. Quote selectors that contain `[...]`: zsh, the macOS default shell, would otherwise treat them as filename patterns.
 
 ### 2.2 Every Iteration of a Loop
 
@@ -153,7 +153,7 @@ value     3    6     -2     1
 **What it answers:** If this value were right, would the output be right?
 
 ```sh
-peeky probe examples/pagination_bug.py --at 8 --capture start,items[1] --set start=0
+peeky probe examples/pagination_bug.py --at 8 --capture 'start,items[1]' --set start=0
 ```
 
 ```
@@ -251,9 +251,9 @@ Every probe is saved with a run id (`--no-save` skips that). `--label` tags a ru
 **What it answers:** Where do two runs diverge?
 
 ```sh
-P="examples/real/ipaddress_mapped --at ipaddress39.py:2008 --run classify.py --capture self,self._ip"
-peeky probe $P --arg ::ffff:8.8.8.8  --label mapped-public
-peeky probe $P --arg ::ffff:10.0.0.1 --label mapped-private
+p() { peeky probe examples/real/ipaddress_mapped --at ipaddress39.py:2008 --run classify.py --capture self,self._ip "$@"; }
+p --arg ::ffff:8.8.8.8  --label mapped-public
+p --arg ::ffff:10.0.0.1 --label mapped-private
 peeky queries diff
 ```
 
@@ -370,7 +370,7 @@ Use a session when you want several looks at one stop. Every command is a separa
 ```sh
 peeky session start examples/pagination_bug.py --at 8
 peeky session inspect
-peeky session get start items[0] page
+peeky session get start 'items[0]' page
 peeky session set start=0
 peeky session continue --to-exit
 peeky session report
@@ -484,7 +484,7 @@ The commands are the same for every language; only the target changes.
 ### 7.1 C and C++
 
 ```sh
-peeky probe examples/c/pagination_bug.c --at 25 --capture start,page,items[1] --set start=0
+peeky probe examples/c/pagination_bug.c --at 25 --capture 'start,page,items[1]' --set start=0
 ```
 
 ```
@@ -629,7 +629,7 @@ Errors carry a stable `code`, a `hint`, and whether retrying can help (`--json` 
 | You see | Meaning | Do this |
 | --- | --- | --- |
 | `NO_STOP` | The line never ran (e.g. `--at 6`, the `raise` that valid input never reaches) | Pick a line the run executes; `describe` lists lines with code, not lines that run |
-| `warning: The debugger moved the breakpoint ...` | The line has no code of its own; values come from the next line | Use a line from `describe` |
+| `warning: The debugger moved the breakpoint ...` | The line has no code of its own; values come from the line named in the warning | Use a line from `describe` |
 | `<not found; visible: items, page, ...>` in a row | The name is not visible at that stop, or is not assigned yet (a breakpoint stops before its line) | Use a listed name, or stop one line later |
 | `MUTATION_REJECTED` | Not a literal (`--set start=min(1, 2)`), wrong type or range, or a Rust local held in a register | Use a literal of the right type, or edit the source and `verify` |
 | `INVALID_BREAKPOINT` | Conditions and logpoints are refused (they run code), or a Java line has no code | Unconditional lines only; probe with `--hits` and filter in SQL |
@@ -649,13 +649,13 @@ All codes are listed in [ERRORS.md](ERRORS.md). If you suspect a filesystem with
 | You would type | Peeky | Notes |
 | --- | --- | --- |
 | `break file:12`, `run`, `print x` | `peeky probe target --at file:12 --capture x` | One command, one complete run, nothing left running |
-| `print obj.field`, `print a[0]` | `--capture obj.field,a[0]` | Paths and indexes only; no expressions |
+| `print obj.field`, `print a[0]` | `--capture 'obj.field,a[0]'` | Paths and indexes only; no expressions. Quote selectors with `[...]` (zsh globs them) |
 | `set var x = 0`, `continue` | `--set x=0` | Applied once, at `--set-hit N`; the output shows the effect |
 | `ignore 1 9`, `continue` ×10 | `--hits 10`, then `peeky queries hits` | Every hit is captured and saved |
 | `commands 1 / silent / print x / end` | `--hits N --capture x` | Logging without breaking into the run |
 | `condition 1 x > 5` | `--hits N`, then `peeky sql "... WHERE num > 5"` | Conditions would run code in the program |
 | `info locals` | `peeky session inspect` | |
 | `bt` | `peeky session inspect --json \| jq '.frames'` | The stack at the stop; values come from the top frame |
-| `finish` / `continue` | `peeky session continue [--to-exit]` | |
+| `continue` | `peeky session continue [--to-exit]` | Runs to the next stop or to exit; there is no step or step-out |
 | "rerun with another input and compare by eye" | `--arg ... --label A`, then `peeky queries diff` | The first diff row is the first divergence |
 | "I think this fixes it" | `peeky verify --old ... --new ...` | Fresh build plus an independent checker |

@@ -534,6 +534,20 @@ class DebugWorker:
                 self.exit_inferred = False
                 self.empty_thread_replies = 0
                 self.liveness_checked = 0.0
+                # What the program actually received: per-run arguments replace the
+                # configured ones, so records never show arguments it did not get. An
+                # attached JVM's arguments are unknown, so none are claimed.
+                launched = getattr(self.adapter, "accepts_arguments", False) or isinstance(
+                    self.adapter, PythonAdapter
+                )
+                program_args = list(
+                    args["args"]
+                    if args.get("args")
+                    else getattr(getattr(runtime, "target", None), "arguments", ()) or ()
+                )
+                identity = getattr(runtime, "target_identity", None)
+                if launched and isinstance(identity, dict) and "arguments" in identity:
+                    identity = {**identity, "arguments": program_args}
                 return {
                     "session_id": self.session,
                     "state": self.state,
@@ -549,7 +563,8 @@ class DebugWorker:
                     "protocol": PROTOCOL_VERSION,
                     "artifact_manifest_id": runtime.manifest_id,
                     "source_manifest": getattr(runtime, "source_manifest", None),
-                    "target_identity": getattr(runtime, "target_identity", None),
+                    "target_identity": identity,
+                    **({"program_args": program_args} if launched else {}),
                     **({"optimized": level} if (level := self.optimized()) else {}),
                 }
             except Exception:

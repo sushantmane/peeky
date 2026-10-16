@@ -157,3 +157,4 @@ def test_rust_programs_take_per_run_arguments(crate, capsys):
     assert code == 0, result.get("error")
     assert [row["value"] for row in result["rows"]] == ["2", "6"]
     assert "PAGE:[70, 80]" in result["output"]
+    assert result["program_args"] == result["target_identity"]["arguments"] == ["2"]

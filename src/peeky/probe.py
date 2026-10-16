@@ -358,6 +358,8 @@ def run_probe(root, probe, *, adapter=None, progress=None):
             target_identity=launch["target_identity"],
             source_sha256=launch["source_sha256"],
         )
+        if "program_args" in launch:
+            result["program_args"] = launch["program_args"]
         if launch.get("entry_sha256"):
             result["entry_sha256"] = launch["entry_sha256"]
         point = result["breakpoint"]

@@ -55,7 +55,7 @@ Python 3.11+ is required. Run commands from the repository root.
 Ask one question with one command. Peeky builds fresh, stops at the line, captures values, optionally changes locals, runs to completion, prints a table and cleans up. No session to manage:
 
 ```sh
-peeky probe examples/pagination_bug.py --at 8 --capture start,items[1] --set start=0
+peeky probe examples/pagination_bug.py --at 8 --capture 'start,items[1]' --set start=0
 ```
 
 ```text

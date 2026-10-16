@@ -507,5 +507,6 @@ def test_compiled_programs_take_per_run_arguments(tmp_path, native_config, capsy
     assert code == 0, result.get("error")
     assert [row["value"] for row in result["rows"]] == ["6", "2"]
     assert "PAGE:[70, 80]" in result["output"] and result["probe"]["args"] == ["2"]
+    assert result["program_args"] == result["target_identity"]["arguments"] == ["2"]
     code = main([*probe, "--capture", "page", "--arg", "bad\x00arg"])
     assert code == 2 or json.loads(capsys.readouterr().out)["status"] == "failed"
