@@ -45,6 +45,14 @@ _RULES = (
         False,
     ),
     (
+        r"^DAP (frame|headers)|^Duplicate DAP header|non-DAP line|^Outgoing DAP frame"
+        r"|^Expected DAP object|^Incomplete DAP frame",
+        "DEBUGGER_ERROR",
+        "The debugger's protocol stream failed (for example a reply larger than 4 MiB) and the "
+        "session was closed. Start a new one; capture narrower selectors if values are huge.",
+        False,
+    ),
+    (
         r"^Job [0-9a-f]{16} was lost",
         "JOB_LOST",
         "The background job process died; rerun the command. The message has its log.",

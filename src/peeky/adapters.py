@@ -109,10 +109,11 @@ class PythonAdapter:
         # Advertise the intersection of backend support and the worker operations.
         return {
             "supports_set_variable": raw.get("supportsSetVariable") is True,
-            "supports_conditional_breakpoints": raw.get("supportsConditionalBreakpoints") is True,
-            "supports_hit_conditional_breakpoints": raw.get("supportsHitConditionalBreakpoints")
-            is True,
-            "supports_logpoints": raw.get("supportsLogPoints") is True,
+            # Conditions, hit conditions and logpoints are expressions the debuggee would
+            # evaluate; Peeky never evaluates agent-supplied code (ADR 0004).
+            "supports_conditional_breakpoints": False,
+            "supports_hit_conditional_breakpoints": False,
+            "supports_logpoints": False,
             "supports_evaluate": False,
             "supports_attach": False,
         }
@@ -127,7 +128,8 @@ class PythonAdapter:
                 or point["line"] < 1
             ):
                 raise ValueError("breakpoint line must be a positive integer")
-            if set(point) - {"line", "condition", "hitCondition", "logMessage"}:
-                raise ValueError("Unsupported breakpoint field")
-            if any(not isinstance(value, str) for key, value in point.items() if key != "line"):
-                raise ValueError("Breakpoint expressions must be strings")
+            if set(point) != {"line"}:
+                raise ValueError(
+                    "Only unconditional line breakpoints are supported: conditions and "
+                    "logpoints would run code in the program"
+                )

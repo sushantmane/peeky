@@ -94,7 +94,7 @@ The model receives numbered source, a plain-language issue, baseline execution/c
 
 The controller rejects a finish before runtime intervention. It writes a separate candidate, never silently overwrites the original, and verifies in a fresh process. A failed check returns to the model for another decision. The total number of decisions and per-call/runtime deadlines are bounded. Transport failures are fatal to the active session. Model failures produce a failed report, not a fabricated diagnosis.
 
-This vocabulary is intentionally small. The worker also supports bounded read-only object expansion; the current model decision vocabulary does not yet select expansion actions. Stepping, condition/logpoint UI, attach, and multiple hypotheses remain later additions with their own contract tests.
+This vocabulary is intentionally small. The worker also supports bounded read-only object expansion; the current model decision vocabulary does not yet select expansion actions. Stepping and multiple hypotheses remain later additions with their own contract tests. Conditional breakpoints, hit conditions and logpoints are refused for every language: they are expressions the debuggee would evaluate, and Peeky never runs agent-supplied code in the program.
 
 ## Verification and evidence
 

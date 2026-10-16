@@ -21,7 +21,7 @@ Every Peeky failure, from the HTTP worker, the SDK (`peeky.errors.PeekyError`) o
 | `NO_STOP` (probe result) | Program finished without reaching the line | Pick an executed line |
 | `PROVENANCE_CHANGED` | Sources, build outputs or tools changed | New session on a fresh build |
 | `TIMEOUT` | A time bound was hit; session discarded | Start again; never blindly retry a mutation |
-| `DEBUGGER_ERROR` | Adapter/debugger failure; session discarded | Start again |
+| `DEBUGGER_ERROR` | Adapter/debugger failure, including a broken protocol stream (for example a reply over 4 MiB); session discarded | Start again; capture narrower selectors if values are huge |
 | `SESSION_ACTIVE` / `NO_SESSION` | Session lifecycle misuse | Close / start a session |
 | `BUSY` | Another probe is running on this worker | Retry later |
 | `UNSUPPORTED` | Operation or capability not offered | Call `version` |

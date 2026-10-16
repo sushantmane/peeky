@@ -160,9 +160,10 @@ def _resolve(worker, stop, snapshot, segments):
         if segment.startswith("[-"):
             variable = _from_end(worker, stop, variable, int(segment[2:-1]), segment)
             continue
-        found, start, incomplete = None, 0, False
+        found, start, incomplete, children = None, 0, False, []
         while found is None:
             page = worker.dispatch("expand", {**stop, "handle": handle, "start": start})
+            children.extend(page["variables"])
             found = next((v for v in page["variables"] if _names(v, segment)), None)
             if found is not None or not page["truncated"]:
                 break
@@ -172,6 +173,18 @@ def _resolve(worker, stop, snapshot, segments):
             start += 64
         if found is None and incomplete:
             raise ValueError(f"{segment!r} is beyond the bounded inspection window (512 children)")
+        if found is None and segment.startswith("["):
+            length = _declared_length(variable, children)
+            if any(child["name"] == "more" for child in children) or (
+                length is not None and int(segment[1:-1]) < length
+            ):
+                # debugpy lists only the first 100 items, then a `more` group: absence
+                # from the listing is not absence from the sequence.
+                raise ValueError(
+                    f"{segment!r} is beyond the debugger's visible window"
+                    + (f" (the sequence has {length} elements)" if length is not None else "")
+                    + "; capture a smaller index or a slice-sized field instead"
+                )
         if found is None:
             raise ValueError(f"{segment!r} not found")
         variable = found
@@ -251,19 +264,38 @@ def _from_end(worker, stop, variable, offset, segment):
     return elements[count - offset]
 
 
-def _capture(worker, stop, selectors, hit, phase):
+# Errors a fresh inspection can cure: it restores the expansion node budget.
+_BUDGET = re.compile(
+    r"budget|beyond the bounded|bounded inspection window|exceeds bounded expansion"
+)
+
+
+def _capture(worker, stop, selectors, hit, phase, snapshot=None):
+    """Rows for each selector at one stop.
+
+    Selectors share one inspection (its handles stay valid until the next inspect or
+    change); a selector that runs out of expansion budget is retried once on a fresh
+    inspection, so sharing never turns a readable value into an error.
+    """
     rows = []
     for selector in selectors:
         row = {"hit": hit, "phase": phase, "selector": selector}
-        # A fresh inspection per selector restores node budgets and handle validity.
-        snapshot = worker.dispatch("inspect", stop)
+        fresh = snapshot is None
+        if fresh:
+            snapshot = worker.dispatch("inspect", stop)
         frame = snapshot["frames"][0] if snapshot["frames"] else {}
         row["line"] = frame.get("line")
         if frame.get("name"):
             # Tells a function body from a nested generator/lambda frame on the same line.
             row["function"] = frame["name"]
         try:
-            variable = _resolve(worker, stop, snapshot, parse_selector(selector))
+            try:
+                variable = _resolve(worker, stop, snapshot, parse_selector(selector))
+            except ValueError as exc:
+                if fresh or not _BUDGET.search(str(exc)):
+                    raise
+                snapshot = worker.dispatch("inspect", stop)
+                variable = _resolve(worker, stop, snapshot, parse_selector(selector))
         except ValueError as exc:
             row["error"] = str(exc)
         else:
@@ -388,7 +420,8 @@ def run_probe(root, probe, *, adapter=None, progress=None):
                 )
                 say(warnings[-1])
             say(f"hit {hits}/{probe.hits} at {probe.program}:{expected}; capturing")
-            rows.extend(_capture(worker, stop, probe.capture, hits, "observed"))
+            # The stop-validation inspection is reused for the first selectors.
+            rows.extend(_capture(worker, stop, probe.capture, hits, "observed", snapshot))
             if hits == probe.set_hit and probe.set:
                 for name, value in probe.set:
                     snapshot = worker.dispatch("inspect", stop)

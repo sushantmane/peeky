@@ -7,6 +7,7 @@ import json
 import math
 import os
 import re
+import signal
 import threading
 import time
 import uuid
@@ -18,6 +19,8 @@ from peeky.dap import DAP, ResponseTimeout
 from peeky.errors import _RULES, PROTOCOL_VERSION, classify
 
 VIEW_SECONDS = 10
+MAX_HISTORY_BYTES = 4_000_000
+MAX_HISTORY_ENTRY_BYTES = 256_000
 
 
 OPERATIONS = frozenset(
@@ -100,8 +103,12 @@ class DebugWorker:
         self.view_bytes = 0
         self.view_deadline = 0.0
         self.view_timed_out = False
-        self.audit = []
+        self.audit, self.audit_sizes, self.audit_bytes = [], [], 0
         self.breakpoint_events = []
+        # Breakpoint count per source path, and whether the current stop stopped every
+        # thread (then other threads' stops in the same event are still pending).
+        self.breakpoint_counts = {}
+        self.stop_all_threads = False
         self.lock = threading.Lock()
         self.last_used = time.monotonic()
         # Optional per-session pause budget: a stop older than this is auto-resumed so
@@ -243,7 +250,7 @@ class DebugWorker:
                 self._dispatch("continue", {"stop_id": self.stop_id})
                 self.auto_resumed.append(entry)
                 self.auto_resumed = self.auto_resumed[-100:]
-                self.audit.append(
+                self.record(
                     {
                         "time": time.time(),
                         "operation": "auto_resume",
@@ -251,7 +258,6 @@ class DebugWorker:
                         "result": {**entry, "max_pause": self.max_pause},
                     }
                 )
-                self.audit = self.audit[-500:]
             except Exception:
                 import sys
                 import traceback
@@ -277,7 +283,7 @@ class DebugWorker:
             finally:
                 self.last_used = time.monotonic()
             if operation != "report":
-                self.audit.append(
+                self.record(
                     {
                         "time": time.time(),
                         "operation": operation,
@@ -285,8 +291,61 @@ class DebugWorker:
                         "result": result,
                     }
                 )
-            self.audit = self.audit[-500:]
             return result
+
+    def record(self, entry):
+        """Append to the report history, bounded in entries and bytes.
+
+        An oversized result (a large inspect snapshot) keeps its size and digest; the
+        oldest entries go first once the whole history passes MAX_HISTORY_BYTES.
+        """
+        text = json.dumps(entry["result"], default=str, sort_keys=True)
+        if len(text) > MAX_HISTORY_ENTRY_BYTES:
+            entry = {
+                **entry,
+                "result": {
+                    "omitted": "result too large for the history",
+                    "bytes": len(text),
+                    "sha256": hashlib.sha256(text.encode()).hexdigest(),
+                },
+            }
+            text = json.dumps(entry["result"])
+        self.audit.append(entry)
+        self.audit_sizes.append(len(text))
+        self.audit_bytes += len(text)
+        while len(self.audit) > 500 or (
+            self.audit_bytes > MAX_HISTORY_BYTES and len(self.audit) > 1
+        ):
+            self.audit.pop(0)
+            self.audit_bytes -= self.audit_sizes.pop(0)
+
+    def forget_stop(self):
+        self.state = "running"
+        self.stopped_at = None
+        self.stop_location = None
+        self.stop_reason = None
+        self.children.clear()
+        self.stop_id = None
+        self.frames.clear()
+        self.references.clear()
+        self.reference_frames.clear()
+        self.reference_adapter.clear()
+
+    def co_stopped(self):
+        """The next unserved breakpoint stop of another thread in this all-threads stop."""
+        events_between = getattr(self.dap, "events_between", None)
+        cursor = getattr(self.dap, "event_cursor", None)
+        if not (self.stop_all_threads and events_between and cursor):
+            return None
+        if not any(self.breakpoint_counts.values()):
+            return None
+        for event in events_between(self.cursor, cursor(), {"stopped", "continued"}):
+            body = event.get("body", {})
+            if event["event"] == "continued":
+                return None
+            if body.get("reason") == "breakpoint" and body.get("threadId") != self.thread_id:
+                return event
+        return None
 
     @staticmethod
     def validate(operation, args):
@@ -408,8 +467,10 @@ class DebugWorker:
                     )
             self.adapter.validate_breakpoints(args.get("breakpoints", []))
             self.session = uuid.uuid4().hex
-            self.audit = []
+            self.audit, self.audit_sizes, self.audit_bytes = [], [], 0
             self.breakpoint_events = []
+            self.breakpoint_counts = {str(program): len(args.get("breakpoints", []))}
+            self.stop_all_threads = False
             self.max_pause = args.get("max_pause")
             self.stopped_at = None
             self.auto_resumed = []
@@ -524,7 +585,7 @@ class DebugWorker:
                         else:
                             self.cursor = event["cursor"]
                             break
-                        self.audit.append(
+                        self.record(
                             {
                                 "time": time.time(),
                                 "operation": "exit_inferred",
@@ -553,6 +614,7 @@ class DebugWorker:
             self.stop_id = uuid.uuid4().hex if self.state == "stopped" else None
             self.stopped_at = event.get("received", time.monotonic()) if self.stop_id else None
             self.thread_id = event.get("body", {}).get("threadId")
+            self.stop_all_threads = event.get("body", {}).get("allThreadsStopped") is True
             self.stop_reason = event.get("body", {}).get("reason") if self.stop_id else None
             self.stop_location = self.read_location() if self.stop_id else None
             return {
@@ -694,6 +756,7 @@ class DebugWorker:
             return {"name": args["name"], "before": before, "after": after}
         if operation == "breakpoints":
             runtime.validate_breakpoints(args["breakpoints"])
+            self.breakpoint_counts[str(self.path(args["program"]))] = len(args["breakpoints"])
             if check_lines := getattr(runtime, "check_breakpoint_lines", None):
                 check_lines(self.path(args["program"]), args["breakpoints"])
             return self.dap.request(
@@ -705,6 +768,14 @@ class DebugWorker:
             )
         if operation == "continue":
             self.stopped(args)
+            pending = None if args.get("to_exit") else self.co_stopped()
+            if pending is not None:
+                # Another thread stopped at a breakpoint in this same all-threads stop:
+                # it is a real hit. Serve it as the next stop before resuming anything,
+                # because resuming would step it over the breakpoint unreported.
+                self.cursor = pending["cursor"] - 1
+                self.forget_stop()
+                return {"state": self.state}
             if args.get("to_exit"):
                 # Checked and applied under one lock: clear the launch breakpoints only
                 # while this exact stop is still current.
@@ -712,19 +783,20 @@ class DebugWorker:
                     "setBreakpoints",
                     {"source": {"path": str(runtime.source_path(self.program))}, "breakpoints": []},
                 )
-            self.dap.request("continue", {"threadId": self.thread_id})
+                self.breakpoint_counts[str(self.program)] = 0
+            cursor = getattr(self.dap, "event_cursor", None)
+            consumed = cursor() if cursor else self.cursor
+            resumed = self.dap.request("continue", {"threadId": self.thread_id})
+            if cursor and resumed.get("allThreadsContinued", True) is not False:
+                # Every thread runs again, so stops reported before this continue (lldb
+                # sends one per thread that hit the breakpoint) describe nothing current.
+                for update in self.dap.events_between(self.cursor, consumed, {"breakpoint"}):
+                    self.breakpoint_events.append(update.get("body", {}))
+                self.breakpoint_events = self.breakpoint_events[-100:]
+                self.cursor = max(self.cursor, consumed)
             self.resumed_at = time.monotonic()
             self.empty_thread_replies = 0
-            self.state = "running"
-            self.stopped_at = None
-            self.stop_location = None
-            self.stop_reason = None
-            self.children.clear()
-            self.stop_id = None
-            self.frames.clear()
-            self.references.clear()
-            self.reference_frames.clear()
-            self.reference_adapter.clear()
+            self.forget_stop()
             return {"state": self.state}
         if operation == "report":
             output, truncated = self.dap.snapshot_output()
@@ -1067,7 +1139,9 @@ def make_server(root, token, port=8765, *, adapter=None):
             pass
 
         def do_POST(self):
-            if not hmac.compare_digest(self.headers.get("Authorization", ""), "Bearer " + token):
+            # Compared as bytes: a non-ASCII header must be a 401, not a dropped connection.
+            supplied = self.headers.get("Authorization", "").encode("latin-1", "replace")
+            if not hmac.compare_digest(supplied, ("Bearer " + token).encode()):
                 self.reply(
                     401,
                     {
@@ -1083,11 +1157,21 @@ def make_server(root, token, port=8765, *, adapter=None):
                 )
                 return
             try:
-                size = int(self.headers.get("Content-Length", 0))
-                if not 0 < size <= 65536:
-                    raise ValueError("Request body must be 1..65536 bytes")
-                self.connection.settimeout(10)
-                args = json.loads(self.rfile.read(size))
+                # Nothing before dispatch touches the session: its failures are request
+                # errors, never "session closed".
+                try:
+                    size = int(self.headers.get("Content-Length", 0))
+                    if not 0 < size <= 65536:
+                        raise ValueError("Request body must be 1..65536 bytes")
+                    self.connection.settimeout(10)
+                    body = self.rfile.read(size)
+                    if len(body) != size:
+                        raise ValueError("Request body ended early")
+                    args = json.loads(body)
+                except (OSError, RecursionError, UnicodeDecodeError) as exc:
+                    raise ValueError(
+                        f"Request body could not be read as JSON ({type(exc).__name__})"
+                    ) from exc
                 if not isinstance(args, dict):
                     raise ValueError("Expected a JSON object")
                 operation = self.path.removeprefix("/")
@@ -1327,6 +1411,11 @@ def main():
         default=300,
         help="Close a session (and its debuggee) after this many idle seconds (default 300)",
     )
+    parser.add_argument(
+        "--exit-when-idle",
+        action="store_true",
+        help="Also exit once idle with no session (workers started by `peeky session start`)",
+    )
     targets = parser.add_mutually_exclusive_group()
     targets.add_argument(
         "--java-config", type=Path, help="Trusted fixed Java target JSON configuration"
@@ -1369,12 +1458,24 @@ def main():
                 idle = time.monotonic() - server.worker.last_used
                 if server.worker.dap and idle > args.idle_timeout:
                     server.worker.close()
+                    # The close counts as activity; a private worker exits right away.
+                    if args.exit_when_idle:
+                        idle = args.idle_timeout + 1
+                if args.exit_when_idle and not server.worker.dap and idle > args.idle_timeout:
+                    threading.Thread(target=server.shutdown, daemon=True).start()
+                    return
 
     def guard():
         while True:
             time.sleep(0.25)
             server.worker.guard_pause()
 
+    def terminate(signum, frame):
+        # Unwind serve_forever so `finally` closes the debugger and the debuggee; the
+        # adapter runs in its own process session, so a group kill would orphan it.
+        raise SystemExit(128 + signum)
+
+    signal.signal(signal.SIGTERM, terminate)
     threading.Thread(target=expire, daemon=True).start()
     threading.Thread(target=guard, daemon=True).start()
     print(
@@ -1383,7 +1484,7 @@ def main():
     )
     try:
         server.serve_forever()
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, SystemExit):
         pass
     finally:
         server.worker.close()
