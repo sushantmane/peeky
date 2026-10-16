@@ -613,3 +613,59 @@ def test_step_and_continue_requests_are_validated(tmp_path):
     ):
         with pytest.raises(ValueError, match=message):
             DebugWorker.validate(operation, args)
+
+
+def test_steps_into_code_outside_the_root_read_and_change_nothing(tmp_path, capsys, monkeypatch):
+    monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
+    (tmp_path / "app").mkdir()
+    (tmp_path / "lib").mkdir()
+    (tmp_path / "lib" / "helper.py").write_text("def scale(value):\n    return value * 3\n")
+    (tmp_path / "app" / "main.py").write_text(
+        "import sys\n"
+        "sys.path.insert(0, __file__.rsplit('/', 2)[0] + '/lib')\n"
+        "import helper\n\n"
+        "total = 5\n"
+        "print('RESULT:', helper.scale(total))\n"
+    )
+    assert run(capsys, "session", "start", tmp_path / "app" / "main.py", "--at", "6")[0] == 0
+    code, out = run(capsys, "session", "step", "--into", "--json")
+    state = json.loads(out.out)
+    assert state["outside_program"] is True and state["returns_to_program"] is True
+    for command in (("inspect",), ("get", "value"), ("set", "value=100")):
+        code, out = run(capsys, "session", *command)
+        assert code == 2 and "outside the program's sources" in out.err
+    assert "main.py:6" in run(capsys, "session", "step", "--out")[1].out
+    # A line the debugger would move is refused, and the stop is kept.
+    code, out = run(capsys, "session", "continue", "--to", "500")
+    assert code == 2 and "has no code to stop at" in out.err
+    assert "total: int = 5" in run(capsys, "session", "get", "total")[1].out
+    assert "terminated" in run(capsys, "session", "continue")[1].out
+    assert "RESULT: 15" in run(capsys, "session", "report")[1].out
+    assert run(capsys, "session", "close")[0] == 0
+
+
+def test_remote_workers_without_step_are_refused_before_anything_runs():
+    from peeky.cli import _require_stepping
+
+    class Old:
+        def call(self, operation, **args):
+            assert operation == "version"
+            return {"operations": ["continue", "inspect", "version"]}
+
+    with pytest.raises(ValueError, match="predates `session step`"):
+        _require_stepping({"remote": True}, Old())
+    _require_stepping({"remote": False}, Old())
+
+
+def test_a_new_session_on_a_worker_starts_with_no_stop_state(workspace):
+    from peeky.worker import DebugWorker
+
+    worker = DebugWorker(workspace)
+    worker.co_served = worker.stop_outside = worker.stop_returns = True
+    launch = worker.dispatch(
+        "launch", {"program": "pagination_bug.py", "breakpoints": [{"line": 8}]}
+    )
+    try:
+        assert not (worker.co_served or worker.stop_outside or worker.stop_returns)
+    finally:
+        worker.dispatch("close", {"session_id": launch["session_id"]})

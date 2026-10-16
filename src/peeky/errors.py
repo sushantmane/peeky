@@ -114,6 +114,24 @@ _RULES = (
         False,
     ),
     (
+        r"Other threads stopped at this breakpoint",
+        "INVALID_REQUEST",
+        "`peeky session continue` serves the other threads' stops; step after that.",
+        False,
+    ),
+    (
+        r"has no code to stop at",
+        "INVALID_BREAKPOINT",
+        "Choose a line from `peeky describe` breakpoint_lines.",
+        False,
+    ),
+    (
+        r"debugger refused to step",
+        "INVALID_REQUEST",
+        "Nothing moved; `peeky session continue` instead.",
+        False,
+    ),
+    (
         r"[Bb]reakpoint|executable lines|line must be",
         "INVALID_BREAKPOINT",
         "Choose a line from `peeky describe` breakpoint_lines.",
@@ -122,8 +140,8 @@ _RULES = (
     (
         r"step stopped outside the program's sources",
         "INVALID_REQUEST",
-        "`peeky session step --out` until the state shows your source again, or "
-        "`peeky session continue`.",
+        "Nothing outside your sources is read or changed; follow the message (step out "
+        "while your code is on the stack, otherwise continue).",
         False,
     ),
     (

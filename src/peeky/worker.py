@@ -15,7 +15,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from peeky.adapters import PythonAdapter, ViewBudgetExhausted
-from peeky.dap import DAP, ResponseTimeout
+from peeky.dap import DAP, RequestFailed, ResponseTimeout
 from peeky.errors import _RULES, PROTOCOL_VERSION, classify
 
 VIEW_SECONDS = 10
@@ -130,7 +130,7 @@ class DebugWorker:
         self.stop_location = None
         self.stop_reason = None
         self.points, self.temporary_line = [], None
-        self.stop_outside = False
+        self.stop_outside = self.stop_returns = self.co_served = False
         # The single absolute launch budget, below Client.call's 45 s HTTP timeout.
         # Preparation (supports_deadline adapters: builds, symbols, module identity)
         # and every DAP launch phase receive only the remaining time, so a launch
@@ -200,12 +200,17 @@ class DebugWorker:
         so a failed read here only omits the location.
         """
         try:
+            levels = 20 if self.stop_reason == "step" else 1
             stack = self.dap.request(
-                "stackTrace", {"threadId": self.thread_id, "levels": 1}, timeout=2
+                "stackTrace", {"threadId": self.thread_id, "levels": levels}, timeout=2
             )
-            frame = (stack.get("stackFrames") or [{}])[0]
-            self.stop_outside = self.stop_reason == "step" and not _inside_program(
+            frames = stack.get("stackFrames") or [{}]
+            frame = frames[0]
+            self.stop_outside = self.stop_reason == "step" and not _in_program_sources(
                 self.runtime, frame, self.root
+            )
+            self.stop_returns = self.stop_outside and any(
+                _in_program_sources(self.runtime, caller, self.root) for caller in frames[1:]
             )
             path = frame.get("source", {}).get("path")
             return f"{_display_path(self.runtime, path)}:{frame.get('line')}" if path else None
@@ -217,6 +222,7 @@ class DebugWorker:
         if self.stop_id and self.stop_outside:
             # A step that left the program (into a library, past main): nothing to read.
             where["outside_program"] = True
+            where["returns_to_program"] = self.stop_returns
         return {**where, "reason": self.stop_reason} if self.stop_id else where
 
     def pause_status(self):
@@ -338,15 +344,39 @@ class DebugWorker:
         runtime.validate_breakpoints(unique)
         if check_lines := getattr(runtime, "check_breakpoint_lines", None):
             check_lines(self.program, unique)
-        self.dap.request(
+        placed = self.dap.request(
             "setBreakpoints",
             {"source": {"path": str(runtime.source_path(self.program))}, "breakpoints": unique},
         )
         self.breakpoint_counts[str(self.program)] = len(unique)
         self.temporary_line = temporary
+        if temporary is None:
+            return
+        point = ((placed or {}).get("breakpoints") or [])[
+            [entry["line"] for entry in unique].index(temporary) :
+        ][:1]
+        point = point[0] if point else {}
+        # Runtimes that already proved the line from their own line tables (Java) report
+        # `verified: false` until the class loads: only a moved line is refused there.
+        pending_ok = getattr(runtime, "check_breakpoint_lines", None) is not None
+        if point.get("line", temporary) != temporary or (
+            point.get("verified") is not True and not pending_ok
+        ):
+            # The debugger would stop elsewhere (or nowhere): restore the session's own
+            # breakpoints and keep this stop, rather than run on.
+            self.set_points(runtime, self.points)
+            moved = (
+                f" (the debugger would use line {point['line']})"
+                if point.get("line") not in (None, temporary)
+                else ""
+            )
+            raise ValueError(
+                f"Line {temporary} has no code to stop at{moved}; choose a line from "
+                "`peeky describe`"
+            )
 
     def forget_stop(self):
-        self.stop_outside = False
+        self.stop_outside = self.stop_returns = False
         self.state = "running"
         self.stopped_at = None
         self.stop_location = None
@@ -520,6 +550,8 @@ class DebugWorker:
             # `continue --to` line is reached.
             self.points = list(args.get("breakpoints", []))
             self.temporary_line = None
+            # Nothing about an earlier session's stops carries over on a shared worker.
+            self.co_served = self.stop_outside = self.stop_returns = False
             self.stop_all_threads = False
             self.max_pause = args.get("max_pause")
             self.stopped_at = None
@@ -714,18 +746,23 @@ class DebugWorker:
             if selected not in self.frames:
                 raise ValueError("Unknown frame")
             selected_frame = next(frame for frame in frames if frame["id"] == selected)
+            if self.stop_reason == "step" and not _in_program_sources(
+                runtime, selected_frame, self.root
+            ):
+                # The user's own step left the program (into a library, or out of main):
+                # nothing there is read or changed, and the session stays usable.
+                raise ValueError(
+                    f"The step stopped outside the program's sources (in "
+                    f"{selected_frame.get('name')}); "
+                    + (
+                        "`session step --out` returns to your code, or `session continue`"
+                        if self.stop_returns
+                        else "your code is no longer on the stack: `session continue`"
+                    )
+                )
             try:
                 runtime.validate_stop(selected_frame)
             except RuntimeError as exc:
-                if self.stop_reason == "step" and not _inside_program(
-                    runtime, selected_frame, self.root
-                ):
-                    # The user's own step left the program (into a library, or out of
-                    # main): nothing there is read, and the session stays usable.
-                    raise ValueError(
-                        f"The step stopped outside the program's sources (in "
-                        f"{selected_frame.get('name')}); step out or continue"
-                    ) from exc
                 if selected == frames[0]["id"] or _inside_program(runtime, selected_frame):
                     # A mismatch inside the program's own sources is provenance: fail closed.
                     raise
@@ -844,17 +881,18 @@ class DebugWorker:
         if operation == "breakpoints":
             runtime.validate_breakpoints(args["breakpoints"])
             self.breakpoint_counts[str(self.path(args["program"]))] = len(args["breakpoints"])
-            if self.path(args["program"]) == self.program:
-                self.points, self.temporary_line = list(args["breakpoints"]), None
             if check_lines := getattr(runtime, "check_breakpoint_lines", None):
                 check_lines(self.path(args["program"]), args["breakpoints"])
-            return self.dap.request(
+            placed = self.dap.request(
                 "setBreakpoints",
                 {
                     "source": {"path": str(runtime.source_path(self.path(args["program"])))},
                     "breakpoints": args["breakpoints"],
                 },
             )
+            if self.path(args["program"]) == self.program:
+                self.points, self.temporary_line = list(args["breakpoints"]), None
+            return placed
         if operation == "continue":
             self.stopped(args)
             pending = None if args.get("to_exit") else self.co_stopped()
@@ -864,6 +902,8 @@ class DebugWorker:
                 # because resuming would step it over the breakpoint unreported.
                 self.cursor = pending["cursor"] - 1
                 self.forget_stop()
+                # Those threads keep their old stops in the debugger until a real resume.
+                self.co_served = True
                 return {"state": self.state}
             if args.get("to_exit"):
                 # Checked and applied under one lock: clear the launch breakpoints only
@@ -883,6 +923,7 @@ class DebugWorker:
             cursor = getattr(self.dap, "event_cursor", None)
             consumed = cursor() if cursor else self.cursor
             resumed = self.dap.request("continue", {"threadId": self.thread_id})
+            self.co_served = False
             if cursor and resumed.get("allThreadsContinued", True) is not False:
                 # Every thread runs again, so stops reported before this continue (lldb
                 # sends one per thread that hit the breakpoint) describe nothing current.
@@ -901,14 +942,22 @@ class DebugWorker:
                     "Stepping is not supported for this target yet; use `session continue --to "
                     "LINE` to stop at another line"
                 )
-            if self.co_stopped() is not None:
+            if self.co_stopped() is not None or self.co_served:
+                # The debugger re-reports the other threads' old stops when a step ends.
                 raise ValueError(
-                    "Other threads stopped at this breakpoint too; `session continue` serves "
-                    "them before stepping"
+                    "Other threads stopped at this breakpoint too and are still paused there; "
+                    "`session continue` serves and resumes them before stepping"
                 )
             cursor = getattr(self.dap, "event_cursor", None)
             consumed = cursor() if cursor else self.cursor
-            self.dap.request(STEPS[args.get("kind", "over")], {"threadId": self.thread_id})
+            kind = args.get("kind", "over")
+            try:
+                self.dap.request(STEPS[kind], {"threadId": self.thread_id})
+            except RequestFailed as exc:
+                # Refused (e.g. stepping out of the outermost frame): nothing moved.
+                raise ValueError(
+                    f"The debugger refused to step {kind} here ({exc}); `session continue` instead"
+                ) from None
             # Stops reported before this step describe nothing current.
             self.cursor = max(self.cursor, consumed)
             self.resumed_at = time.monotonic()
@@ -1210,11 +1259,42 @@ def _display_path(runtime, path):
     source_root = getattr(prepared, "source_root", None)
     if workspace is None or source_root is None:
         return path
+    if "`" in path:
+        # LLDB's name for a frame without line information (`module`function`).
+        return path
     try:
         relative = Path(path).resolve().relative_to(Path(workspace).resolve())
     except (OSError, ValueError):
         return path
-    return str(Path(source_root) / relative)
+    shown = Path(source_root) / relative
+    # Only a file the user has (a source, not a build product) is shown as theirs.
+    return str(shown) if shown.is_file() else path
+
+
+def _in_program_sources(runtime, frame, root):
+    """Whether a frame is in one of the program's own source files.
+
+    Compiled targets: a declared source of the prepared build (a frame without line
+    information, which LLDB names with a backquote, never is). Python: a file under
+    the worker's root.
+    """
+    path = (frame.get("source") or {}).get("path")
+    if not isinstance(path, str) or not path or "`" in path:
+        return False
+    try:
+        resolved = Path(path).resolve(strict=True)
+    except (OSError, ValueError):
+        return False
+    lines, prepared = getattr(runtime, "lines", None), getattr(runtime, "prepared", None)
+    if isinstance(lines, dict) and prepared is not None:
+        for base in (prepared.workspace, prepared.source_root):
+            try:
+                relative = resolved.relative_to(Path(base).resolve()).as_posix()
+            except (OSError, ValueError):
+                continue
+            return relative in lines
+        return False
+    return _inside_program(runtime, frame, root)
 
 
 def _inside_program(runtime, frame, *roots):

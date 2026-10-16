@@ -444,7 +444,7 @@ state: stopped at .../pagination_bug.py:13 (paused 0.0 s)
 state: terminated (program exited; `peeky session report` shows output)
 ```
 
-`peeky session continue --to 9` stops once at line 9 of the session's file (the extra breakpoint is removed at the next stop), then the session's own breakpoint applies again. A step can leave your sources, for example into the C library past the end of `main` or into Rust's standard library. The state then says `outside the program's sources`, nothing there is read, and `step --out` or `continue` brings you back. Java sessions take `continue --to` but not `step` yet (`UNSUPPORTED`).
+`peeky session continue --to 9` stops once at line 9 of the session's file (the extra breakpoint is removed at the next stop), then the session's own breakpoint applies again. A step can leave your sources, for example into a library, into Rust's standard library, or past the end of `main`. The state then says `outside the program's sources`, and nothing there is read or changed. While your code is still on the stack, `step --out` returns to it; past `main`, the state says so and `continue` finishes. `continue --to` refuses a line the debugger would move (no code there) and keeps the stop. When several threads stop at the breakpoint together, `step` waits until `continue` has served and resumed them. Java sessions take `continue --to` but not `step` yet (`UNSUPPORTED`, [#48](https://github.com/sushantmane/peeky/issues/48)).
 
 ### 5.3 Several Sessions at Once
 

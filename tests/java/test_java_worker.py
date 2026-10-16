@@ -381,12 +381,19 @@ def test_java_sessions_run_to_a_line_but_refuse_steps(
         )
     )
     start = ["session", "start", str(tmp_path), "--config", str(config)]
-    assert main([*start, "--at", f"demo/BranchBug.java:{first}"]) == 0
+    # Line 4 is in main, before the nested class Inner is loaded.
+    assert main([*start, "--at", "demo/BranchBug.java:4"]) == 0
     capsys.readouterr()
     # Peeky's Java launcher has no step requests: refused, and the session survives.
     assert main(["session", "step", "--json"]) == 2
     assert json.loads(capsys.readouterr().out)["error"]["code"] == "UNSUPPORTED"
-    assert main(["session", "continue", "--to", str(second), "--json"]) == 0
-    state = json.loads(capsys.readouterr().out)
-    assert state["state"] == "stopped" and state["location"].endswith(f"BranchBug.java:{second}")
+    # java-debug verifies a line in a class that is not loaded yet only once it loads:
+    # pending, not refused (the line is already checked against the class metadata).
+    for line in (first, second):
+        assert main(["session", "continue", "--to", str(line), "--json"]) == 0
+        state = json.loads(capsys.readouterr().out)
+        assert state["state"] == "stopped"
+        assert state["location"].endswith(f"BranchBug.java:{line}")
+    assert main(["session", "continue", "--to", "1", "--json"]) == 2
+    assert json.loads(capsys.readouterr().out)["error"]["code"] == "INVALID_BREAKPOINT"
     assert main(["session", "close"]) == 0

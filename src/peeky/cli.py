@@ -813,8 +813,11 @@ def _state_text(state):
     reason = state.get("reason")
     if state.get("outside_program"):
         where += (
-            " (outside the program's sources: `session continue` to finish, or "
-            "`session step --out`)"
+            " (outside the program's sources: `session step --out` returns to your code, "
+            "or `session continue`)"
+            if state.get("returns_to_program")
+            else " (outside the program's sources, and your code is no longer on the stack: "
+            "`session continue`)"
         )
     if reason and reason not in ("breakpoint", "step"):
         where += f" [reason: {reason}; not auto-resumed, inspect it or `session report`]"
@@ -849,6 +852,7 @@ def _variables_text(snapshot, name="default"):
                 f" (children: peeky session get {variable['name']}"
                 + (f" --name {name})" if name != "default" else ")")
                 if variable.get("variablesReference")
+                and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", variable["name"])
                 else ""
             )
             if variable.get("unavailable"):
@@ -863,6 +867,17 @@ def _variables_text(snapshot, name="default"):
     if snapshot.get("mutation_blocked"):
         lines.append(f"note: {snapshot['mutation_blocked']}")
     return "\n".join(lines)
+
+
+def _require_stepping(record, client):
+    """Remote workers built before `step` silently ignore `continue --to`: refuse."""
+    if not record.get("remote"):
+        return
+    if "step" not in client.call("version").get("operations", ()):
+        raise ValueError(
+            "This remote worker predates `session step` and `continue --to`; update Peeky "
+            "on the worker host"
+        )
 
 
 def _get_lines(row):
@@ -952,6 +967,8 @@ def session(args):
         stop = _stop(record)
         if args.to is not None and args.to_exit:
             raise ValueError("Pass --to LINE or --to-exit, not both")
+        if args.to is not None:
+            _require_stepping(record, client)
         # --to-exit clears the breakpoints in the same worker operation, after it
         # confirms this stop is still current (it may have been auto-resumed).
         client.call(
@@ -961,9 +978,18 @@ def session(args):
             **({"to_line": args.to} if args.to is not None else {}),
         )
         state = _wait(record, client, args.timeout)
+        finished = 0
+        while args.to_exit and state["state"] == "stopped" and state.get("reason") == "step":
+            # LLDB completes a step that a breakpoint interrupted before running on.
+            finished += 1
+            if finished > 3:
+                break
+            client.call("continue", **_stop(record), to_exit=True)
+            state = _wait(record, client, args.timeout)
         _emit(state, args.json, _state_text)
     elif args.action == "step":
         kind = "in" if args.into else "out" if args.out else "over"
+        _require_stepping(record, client)
         client.call("step", **_stop(record), kind=kind)
         state = _wait(record, client, args.timeout)
         _emit(state, args.json, _state_text)

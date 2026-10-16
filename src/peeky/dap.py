@@ -14,6 +14,10 @@ from peeky.adapters import PythonAdapter
 MAX_FRAME_BYTES = 4 * 1024 * 1024
 
 
+class RequestFailed(RuntimeError):
+    """The debugger answered and refused the request; the session itself is intact."""
+
+
 class ResponseTimeout(TimeoutError):
     """A complete request received no response in time; reads may treat this as budget."""
 
@@ -251,7 +255,7 @@ class DAP:
                 self.condition.wait(remaining)
             value = self.responses.pop(seq)
         if not value.get("success"):
-            raise RuntimeError(value.get("message", "Debugger request failed"))
+            raise RequestFailed(value.get("message", "Debugger request failed"))
         return value.get("body", {})
 
     def drained(self, timeout=1):

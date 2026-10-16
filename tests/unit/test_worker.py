@@ -478,6 +478,8 @@ def test_locations_show_the_users_source_for_a_prepared_build(tmp_path):
 
     workspace, source = tmp_path / "peeky-build-x", tmp_path / "crate"
     (workspace / "src").mkdir(parents=True)
+    (source / "src").mkdir(parents=True)
+    (source / "src/main.rs").write_text("fn main() {}\n")
     runtime = SimpleNamespace(prepared=SimpleNamespace(workspace=workspace, source_root=source))
     shown = _display_path(runtime, str(workspace / "src/main.rs"))
     assert shown == str(source / "src/main.rs")
@@ -485,3 +487,49 @@ def test_locations_show_the_users_source_for_a_prepared_build(tmp_path):
     assert _display_path(runtime, "/rustc/abc/library/core/src/lib.rs").startswith("/rustc/")
     assert _display_path(SimpleNamespace(), "/w/a.py") == "/w/a.py"
     assert _display_path(None, "/w/a.py") == "/w/a.py"
+
+
+def test_frames_without_line_information_are_never_shown_as_user_files(tmp_path):
+    from types import SimpleNamespace
+
+    from peeky.worker import _display_path, _in_program_sources
+
+    workspace, source = tmp_path / "peeky-build-x", tmp_path / "crate"
+    (workspace / "src").mkdir(parents=True)
+    (source / "src").mkdir(parents=True)
+    (workspace / "src/main.rs").write_text("fn main() {}\n")
+    (source / "src/main.rs").write_text("fn main() {}\n")
+    (workspace / "target").mkdir()
+    (workspace / "target/bin").write_text("")
+    prepared = SimpleNamespace(workspace=workspace, source_root=source)
+    runtime = SimpleNamespace(prepared=prepared, lines={"src/main.rs": [1]})
+    synthetic = f"{workspace}/target/bin`main"
+    assert _display_path(runtime, synthetic) == synthetic
+    assert _display_path(runtime, str(workspace / "target/bin")) == str(workspace / "target/bin")
+    frame = {"source": {"path": str(workspace / "src/main.rs")}}
+    assert _in_program_sources(runtime, frame, tmp_path)
+    for path in (synthetic, str(workspace / "target/bin"), "/rustc/abc/library/core/src/lib.rs"):
+        assert not _in_program_sources(runtime, {"source": {"path": path}}, tmp_path)
+
+
+def test_a_step_the_debugger_refuses_keeps_the_stop_and_session(tmp_path):
+    from types import SimpleNamespace
+
+    from peeky.dap import RequestFailed
+    from peeky.worker import DebugWorker
+
+    class Refusing:
+        def request(self, command, arguments=None, **_):
+            assert command == "stepOut"
+            raise RequestFailed("Cannot step out of the outermost frame")
+
+        def close(self):
+            raise AssertionError("the session must not be closed")
+
+    worker = DebugWorker(tmp_path)
+    worker.dap, worker.session, worker.thread_id = Refusing(), "s1", 1
+    worker.runtime = SimpleNamespace(assert_current=lambda: None)
+    worker.state, worker.stop_id = "stopped", "stop1"
+    with pytest.raises(ValueError, match="refused to step out"):
+        worker.dispatch("step", {"session_id": "s1", "stop_id": "stop1", "kind": "out"})
+    assert worker.state == "stopped" and worker.stop_id == "stop1" and worker.dap is not None
