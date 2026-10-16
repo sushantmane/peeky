@@ -105,6 +105,10 @@ class DebugWorker:
         self.view_timed_out = False
         self.audit, self.audit_sizes, self.audit_bytes = [], [], 0
         self.breakpoint_events = []
+        # Breakpoint count per source path, and whether the current stop stopped every
+        # thread (then other threads' stops in the same event are still pending).
+        self.breakpoint_counts = {}
+        self.stop_all_threads = False
         self.lock = threading.Lock()
         self.last_used = time.monotonic()
         # Optional per-session pause budget: a stop older than this is auto-resumed so
@@ -315,6 +319,34 @@ class DebugWorker:
             self.audit.pop(0)
             self.audit_bytes -= self.audit_sizes.pop(0)
 
+    def forget_stop(self):
+        self.state = "running"
+        self.stopped_at = None
+        self.stop_location = None
+        self.stop_reason = None
+        self.children.clear()
+        self.stop_id = None
+        self.frames.clear()
+        self.references.clear()
+        self.reference_frames.clear()
+        self.reference_adapter.clear()
+
+    def co_stopped(self):
+        """The next unserved breakpoint stop of another thread in this all-threads stop."""
+        events_between = getattr(self.dap, "events_between", None)
+        cursor = getattr(self.dap, "event_cursor", None)
+        if not (self.stop_all_threads and events_between and cursor):
+            return None
+        if not any(self.breakpoint_counts.values()):
+            return None
+        for event in events_between(self.cursor, cursor(), {"stopped", "continued"}):
+            body = event.get("body", {})
+            if event["event"] == "continued":
+                return None
+            if body.get("reason") == "breakpoint" and body.get("threadId") != self.thread_id:
+                return event
+        return None
+
     @staticmethod
     def validate(operation, args):
         if not isinstance(args, dict):
@@ -437,6 +469,8 @@ class DebugWorker:
             self.session = uuid.uuid4().hex
             self.audit, self.audit_sizes, self.audit_bytes = [], [], 0
             self.breakpoint_events = []
+            self.breakpoint_counts = {str(program): len(args.get("breakpoints", []))}
+            self.stop_all_threads = False
             self.max_pause = args.get("max_pause")
             self.stopped_at = None
             self.auto_resumed = []
@@ -580,6 +614,7 @@ class DebugWorker:
             self.stop_id = uuid.uuid4().hex if self.state == "stopped" else None
             self.stopped_at = event.get("received", time.monotonic()) if self.stop_id else None
             self.thread_id = event.get("body", {}).get("threadId")
+            self.stop_all_threads = event.get("body", {}).get("allThreadsStopped") is True
             self.stop_reason = event.get("body", {}).get("reason") if self.stop_id else None
             self.stop_location = self.read_location() if self.stop_id else None
             return {
@@ -721,6 +756,7 @@ class DebugWorker:
             return {"name": args["name"], "before": before, "after": after}
         if operation == "breakpoints":
             runtime.validate_breakpoints(args["breakpoints"])
+            self.breakpoint_counts[str(self.path(args["program"]))] = len(args["breakpoints"])
             if check_lines := getattr(runtime, "check_breakpoint_lines", None):
                 check_lines(self.path(args["program"]), args["breakpoints"])
             return self.dap.request(
@@ -732,6 +768,14 @@ class DebugWorker:
             )
         if operation == "continue":
             self.stopped(args)
+            pending = None if args.get("to_exit") else self.co_stopped()
+            if pending is not None:
+                # Another thread stopped at a breakpoint in this same all-threads stop:
+                # it is a real hit. Serve it as the next stop before resuming anything,
+                # because resuming would step it over the breakpoint unreported.
+                self.cursor = pending["cursor"] - 1
+                self.forget_stop()
+                return {"state": self.state}
             if args.get("to_exit"):
                 # Checked and applied under one lock: clear the launch breakpoints only
                 # while this exact stop is still current.
@@ -739,6 +783,7 @@ class DebugWorker:
                     "setBreakpoints",
                     {"source": {"path": str(runtime.source_path(self.program))}, "breakpoints": []},
                 )
+                self.breakpoint_counts[str(self.program)] = 0
             cursor = getattr(self.dap, "event_cursor", None)
             consumed = cursor() if cursor else self.cursor
             resumed = self.dap.request("continue", {"threadId": self.thread_id})
@@ -751,16 +796,7 @@ class DebugWorker:
                 self.cursor = max(self.cursor, consumed)
             self.resumed_at = time.monotonic()
             self.empty_thread_replies = 0
-            self.state = "running"
-            self.stopped_at = None
-            self.stop_location = None
-            self.stop_reason = None
-            self.children.clear()
-            self.stop_id = None
-            self.frames.clear()
-            self.references.clear()
-            self.reference_frames.clear()
-            self.reference_adapter.clear()
+            self.forget_stop()
             return {"state": self.state}
         if operation == "report":
             output, truncated = self.dap.snapshot_output()

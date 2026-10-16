@@ -63,7 +63,9 @@ def test_session_commands_share_state_across_processes(workspace, capsys):
     assert run(capsys, "session", "list")[1].out.strip() == "default"
     assert run(capsys, "session", "close")[0] == 0
     assert run(capsys, "session", "list")[1].out.strip() == "no sessions"
-    assert [p.name for p in (workspace / "state" / "sessions").iterdir()] == ["default.last.log"]
+    left = [p.name for p in (workspace / "state" / "sessions").iterdir()]
+    # The reservation lock is shared by every start; nothing of the session remains.
+    assert sorted(name for name in left if name != ".reserve.lock") == ["default.last.log"]
     code, out = run(capsys, "session", "inspect")
     assert code == 2 and "No session" in out.err
 

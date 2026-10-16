@@ -682,9 +682,14 @@ def _load(name):
         raise ValueError(f"Session record {path} must be private (0600) and owned by you")
     record = json.loads(path.read_text())
     if isinstance(record, dict) and record.get("starting"):
+        if _abandoned(path):
+            raise ValueError(
+                f"No session named {name!r}: its start was interrupted. Start again (the name "
+                f"is taken over) or run `peeky session close --forget --name {name}`"
+            )
         raise ValueError(
-            f"Session {name!r} is still starting (pid {record['starting']}). If that start was "
-            f"interrupted, run `peeky session close --forget --name {name}`"
+            f"Session {name!r} is still starting (pid {record['starting']}); wait for it, or "
+            f"pass another --name"
         )
     if (
         not isinstance(record, dict)
@@ -831,6 +836,17 @@ def session(args):
         )
         _emit(names, args.json, lambda names: "\n".join(names) if names else "no sessions")
         return 0
+    if args.action == "close" and args.forget:
+        # The worker is gone for good, or the start never finished: drop the local
+        # record without reading it or contacting any worker.
+        _record(args.name)
+        _release(args.name)
+        _emit(
+            {"forgot": args.name, "worker_contacted": False},
+            args.json,
+            lambda r: f"forgot {r['forgot']} (the worker was not contacted)",
+        )
+        return 0
     record, client = _load(args.name)
     if args.action == "wait":
         state = _wait(record, client, args.timeout)
@@ -881,14 +897,6 @@ def session(args):
             report,
             args.json,
             lambda r: f"state: {r['state']}\noutput:\n{r['output']}operations: {len(r['history'])}",
-        )
-    elif args.action == "close" and args.forget:
-        # The worker is gone for good: drop the local record without contacting it.
-        _release(args.name)
-        _emit(
-            {"forgot": args.name, "worker_contacted": False},
-            args.json,
-            lambda r: f"forgot {r['forgot']} (the worker was not contacted)",
         )
     elif args.action == "close":
         from peeky.client import TransportLost, WorkerUnreachable
@@ -1099,14 +1107,36 @@ def _start_remote(args, root, program, line, language, max_pause):
     return 0
 
 
+def _abandoned(path):
+    """A reservation whose `session start` died (SIGKILL) before saving the session."""
+    try:
+        record = json.loads(path.read_text())
+    except (OSError, ValueError):
+        # Killed between creating and writing the reservation.
+        try:
+            return time.time() - path.stat().st_mtime > 30
+        except OSError:
+            return False
+    starter = record.get("starting") if isinstance(record, dict) else None
+    return type(starter) is int and starter > 0 and not _pid_alive(starter)
+
+
 def _reserve(name):
     """Claim a session name atomically: two starts with one name cannot both succeed."""
-    try:
-        descriptor = os.open(_record(name), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    except FileExistsError:
-        raise ValueError(f"Session {name!r} exists; close it or pass --name") from None
-    with os.fdopen(descriptor, "w") as stream:
-        json.dump({"name": name, "starting": os.getpid()}, stream)
+    import fcntl
+
+    path = _record(name)
+    with open(_state_dir() / ".reserve.lock", "a") as lock:
+        # Serializes takeovers: two starters cannot both remove an abandoned claim.
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if path.exists() and not path.is_symlink() and _abandoned(path):
+            path.unlink()
+        try:
+            descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            raise ValueError(f"Session {name!r} exists; close it or pass --name") from None
+        with os.fdopen(descriptor, "w") as stream:
+            json.dump({"name": name, "starting": os.getpid()}, stream)
 
 
 def _release(name):

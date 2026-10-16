@@ -461,8 +461,9 @@ def test_threads_stopping_together_are_one_stop_not_stale_new_ones(tmp_path, nat
     target = NativeTarget(**{**native_config, "sources": ("threads.c",)})
     for _ in range(3):
         result = run_probe(tmp_path, Probe("threads.c", 9, ("id",), hits=4), adapter=target)
-        # lldb reports one `stopped` per thread at the breakpoint; after `continue` they
-        # are history, never a new stop with a frame that no longer exists.
+        # lldb reports one `stopped` per thread at the breakpoint: each is a real hit,
+        # served in turn before the program resumes, never dropped or replayed later.
         assert result["status"] == "completed", result.get("error")
-        assert result["hits"] >= 1 and "done" in result["output"]
-        assert all(row.get("value") in {"0", "1", "2", "3"} for row in result["rows"])
+        assert result["hits"] == 4 and not result["warnings"], result["warnings"]
+        assert sorted(row.get("value") for row in result["rows"]) == ["0", "1", "2", "3"]
+        assert "done" in result["output"]

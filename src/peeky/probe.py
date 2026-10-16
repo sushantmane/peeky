@@ -265,7 +265,9 @@ def _from_end(worker, stop, variable, offset, segment):
 
 
 # Errors a fresh inspection can cure: it restores the expansion node budget.
-_BUDGET = re.compile(r"budget|beyond the bounded|exceeds bounded expansion")
+_BUDGET = re.compile(
+    r"budget|beyond the bounded|bounded inspection window|exceeds bounded expansion"
+)
 
 
 def _capture(worker, stop, selectors, hit, phase, snapshot=None):

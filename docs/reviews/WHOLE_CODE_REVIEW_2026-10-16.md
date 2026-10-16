@@ -56,3 +56,10 @@ No blocking issues. Five should-fix issues and two nits, all fixed, each with a 
 - **Should-fix:** adapter setup failed when the output's parent did not exist yet, which is the documented `work/` path in a fresh clone (`test_setup_accepts_an_output_whose_parent_does_not_exist_yet`).
 - **Nit:** a source reached through an in-root link raised `KeyError` on attach. Sources are now keyed by their resolved path (`test_declared_sources_behind_an_in_root_link_attach`).
 - **Nit:** the attach-race error is reworded so it classifies as `PROVENANCE_CHANGED`.
+
+## Review of PR B (#39, 981c6c8)
+
+One blocking and two should-fix issues, all fixed with regression tests:
+- **Blocking:** the cursor fix consumed the `stopped` events of the other threads that hit the breakpoint in the same all-threads stop. Those were real hits, and resuming steps each thread over the breakpoint, so a probe reported "Only 1 of 4 hits" when there were four. While every thread is stopped and breakpoints remain, `continue` now serves each co-stopped thread as the next stop before resuming anything. `continue --to-exit`, and continues after the breakpoints are cleared, resume at once. `test_threads_stopping_together_are_one_stop_not_stale_new_ones` now requires exactly 4 hits with ids 0–3, across three real-lldb runs per test.
+- **Should-fix:** a `session start` killed with SIGKILL left a "starting" record that `close --forget` could not remove. `close --forget` no longer reads the record. A new start takes over a claim whose starter is dead, or an empty one older than 30 s, under a lock. A command on an abandoned claim is `NO_SESSION` (`test_an_interrupted_start_never_blocks_its_name`).
+- **Should-fix:** with a shared inspection, `items[-1]` could see a budget-starved page and report "more than 512 elements". That message now also triggers the one fresh-inspection retry (`test_a_shared_inspection_never_makes_a_readable_value_an_error`, which fails without the fix).

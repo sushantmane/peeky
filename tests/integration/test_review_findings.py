@@ -340,3 +340,40 @@ def test_selectors_share_one_inspection_unless_budget_runs_out():
     worker = Worker()
     rows = _capture(worker, {"stop_id": "s"}, ("o.c",) * 4, 1, "observed")
     assert [r.get("value") for r in rows] == ["9"] * 4 and worker.inspects == 2
+
+
+def test_a_shared_inspection_never_makes_a_readable_value_an_error(workspace, capsys):
+    program = workspace / "spent.py"
+    program.write_text("a = list(range(300))\nitems = list(range(60))\nprint(len(a))\n")
+    selectors = ",".join(["a[10]"] * 7 + ["items[-1]", "items[59]"])
+    code, out = run(
+        capsys, "probe", program, "--at", "3", "--capture", selectors, "--json", "--no-save"
+    )
+    rows = {row["selector"]: row for row in json.loads(out.out)["rows"]}
+    assert code == 0 and rows["items[-1]"].get("value") == "59", rows["items[-1]"]
+    assert rows["items[59]"]["value"] == "59"
+
+
+def test_an_interrupted_start_never_blocks_its_name(workspace, capsys):
+    sessions = workspace / "state" / "sessions"
+    sessions.mkdir(parents=True, mode=0o700)
+    dead = subprocess.Popen([sys.executable, "-c", "pass"])
+    dead.wait()
+    record = sessions / "default.json"
+    record.write_text(json.dumps({"name": "default", "starting": dead.pid}))
+    record.chmod(0o600)
+    code, out = run(capsys, "session", "inspect", "--json")
+    assert code == 2 and json.loads(out.out)["error"]["code"] == "NO_SESSION"
+    code, out = run(capsys, "session", "close", "--forget", "--json")
+    assert code == 0 and json.loads(out.out) == {"forgot": "default", "worker_contacted": False}
+    record.write_text(json.dumps({"name": "default", "starting": dead.pid}))
+    record.chmod(0o600)
+    # A new start takes over the abandoned claim.
+    code, out = run(capsys, "session", "start", workspace / "pagination_bug.py", "--at", "8")
+    assert code == 0, out.err
+    run(capsys, "session", "close")
+    record.write_text(json.dumps({"name": "default", "starting": os.getpid()}))
+    record.chmod(0o600)
+    code, out = run(capsys, "session", "start", workspace / "pagination_bug.py", "--at", "8")
+    assert code == 2 and "exists" in out.err  # a live start keeps its claim
+    assert run(capsys, "session", "close", "--forget")[0] == 0
