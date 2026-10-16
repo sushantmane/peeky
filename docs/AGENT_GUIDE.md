@@ -39,7 +39,7 @@ Session names are claimed atomically, so a second `session start` with the same 
   - a breakpoint the debugger moved to another line (the values then come from that line);
   - runs that ended before all requested hits;
   - a Java exit that Peeky inferred because the debugger dropped its exit event (the result is still valid).
-- If a selector is missing, the row's error lists the visible names, or the children of the value it was reading. Python dict entries are read by key: `order['id']`, not `order.id` (the error says so). For Python, `peeky describe` also lists the names each function can see (`scopes`).
+- If a selector is missing, the row's error lists the visible names, or the children of the value it was reading. Python dict entries are read by key: `order['id']`, not `order.id` (the error says so). `peeky describe` also lists each function's lines and the names it can see (`scopes`), for Python, C, C++ and Rust; `scopes_unavailable` says why when the debug information could not be read.
 - Rust `Vec`, slice and `String` elements are not readable yet; the error says so and names the length field to capture instead (`ordered.len`, `values.length`). Check contents with `verify`.
 - debugpy lists only the first 100 items of a long list. A higher index is reported as "beyond the debugger's visible window" rather than missing; it does not mean the list is short.
 - Selectors take indexes from the end (`items[-1]`), but only when the debugger states the sequence's length and shows every element. Otherwise you get an error, never a guess. Long debugpy lists show 100 elements individually, so for them use a non-negative index.

@@ -5,6 +5,7 @@ Supported formats are single-architecture Mach-O (UUID) and ELF64 little-endian
 against hostile in-memory patching. SDK/system headers are not hermetic inputs.
 """
 
+import codecs
 import hashlib
 import json
 import os
@@ -34,6 +35,8 @@ from peeky.build import (
 from peeky.digest import sha256_file
 
 MAX_METADATA = 2 * 1024 * 1024
+# Type-rich C++ units (iostream) carry megabytes of DIEs; read only by `describe`.
+MAX_DEBUG_INFO = 16 * 1024 * 1024
 FLAGS = ("-std=c11", "-g", "-gdwarf-4", "-O0", "-fno-omit-frame-pointer")
 CPP_FLAGS = ("-std=c++17", *FLAGS[1:])
 OPTIMIZATIONS = ("O0", "Og", "O1", "O2")
@@ -109,17 +112,21 @@ def _metadata(tool, arguments, workspace, env, *, max_bytes=MAX_METADATA, timeou
         return output.read_text(encoding="utf-8")
 
 
-def parse_lines(text, workspace, declared):
-    """Parse the LLVM DWARF4 line-table dump; unrecognized rows fail closed."""
+def _line_rows(text, workspace, declared):
+    """Rows of the LLVM DWARF4 line-table dump for declared sources: (address, name, line).
+
+    Unrecognized rows fail closed. Rows outside the declared sources (SDK and system
+    headers) and end-of-sequence rows are skipped.
+    """
     if len(text.encode()) > MAX_METADATA:
         raise ValueError("Native line metadata exceeds limit")
     workspace = Path(workspace).resolve()
     inputs = {str((workspace / name).resolve()): name for name in declared}
     counts = {name: len((workspace / name).read_text().splitlines()) for name in declared}
-    result = {name: set() for name in declared}
     directories, files, current = {0: str(workspace)}, {}, None
     table_count = 0
     version = None
+    rows = []
     for raw in text.splitlines():
         line = raw.strip()
         if line.startswith("debug_line["):
@@ -168,10 +175,301 @@ def parse_lines(text, workspace, declared):
             if name is not None:
                 if not 0 < number <= counts[name]:
                     raise ValueError("Native line exceeds declared source length")
-                result[name].add(number)
-    if not table_count or not any(result.values()):
+                rows.append((int(fields[0], 16), name, number))
+    if not table_count:
+        raise ValueError("Missing executable native debug symbol line information")
+    return rows
+
+
+def parse_lines(text, workspace, declared):
+    """Parse the LLVM DWARF4 line-table dump; unrecognized rows fail closed."""
+    result = {name: set() for name in declared}
+    for _, name, number in _line_rows(text, workspace, declared):
+        result[name].add(number)
+    if not any(result.values()):
         raise ValueError("Missing executable native debug symbol line information")
     return {name: sorted(lines) for name, lines in result.items()}
+
+
+MAX_SCOPES = 300
+MAX_DIES = 200_000
+_DIE = re.compile(r"(0x[0-9a-fA-F]+):( +)(DW_TAG_\w+|NULL)")
+_ATTRIBUTE = re.compile(r" +(DW_AT_\w+)\s+\((.*)\)$")
+_RANGES_START = re.compile(r" +DW_AT_ranges\s+\((0x[0-9a-fA-F]+)\s*$")
+_RANGE = re.compile(r"\[(0x[0-9a-fA-F]+), (0x[0-9a-fA-F]+)\)")
+_REFERENCE = re.compile(r"(0x[0-9a-fA-F]+)(?: \"(.*)\")?")
+# Containers that qualify a function's name (`ns::Type::method`).
+_QUALIFIERS = {
+    "DW_TAG_namespace",
+    "DW_TAG_structure_type",
+    "DW_TAG_class_type",
+    "DW_TAG_union_type",
+}
+_CODE = ("DW_TAG_subprogram", "DW_TAG_inlined_subroutine")
+# Addresses linkers write for discarded code (COMDAT copies, dead functions).
+_TOMBSTONE = 0xFFFF_FFFF_0000_0000
+
+
+def _dies(text):
+    """A bounded, lenient parse of `dwarfdump --debug-info`, for display only.
+
+    Returns {offset: die} with each die {tag, attrs, parent, children, depth, ranges};
+    nesting is read from the indentation (one level per two spaces after the offset).
+    """
+    dies, stack, ranges = {}, [], None
+    for raw in text.splitlines():
+        if ranges is not None:
+            ranges.extend((int(lo, 16), int(hi, 16)) for lo, hi in _RANGE.findall(raw))
+            if raw.rstrip().endswith("))") or not _RANGE.search(raw):
+                ranges = None
+            continue
+        if match := _DIE.match(raw):
+            if len(dies) >= MAX_DIES:
+                raise ValueError("Too many debug-info entries to list function scopes")
+            depth = (len(match[2]) - 1) // 2
+            del stack[depth:]
+            if match[3] == "NULL":
+                continue
+            offset = int(match[1], 16)
+            parent = stack[-1] if stack else None
+            dies[offset] = {
+                "tag": match[3],
+                "attrs": {},
+                "parent": parent,
+                "children": [],
+                "depth": depth,
+                "ranges": [],
+            }
+            if parent is not None:
+                dies[parent]["children"].append(offset)
+            stack.append(offset)
+        elif stack and _RANGES_START.match(raw):
+            # A multi-line range list: `[low, high)` rows until the closing `))`.
+            ranges = dies[stack[-1]]["ranges"]
+        elif stack and (match := _ATTRIBUTE.match(raw)):
+            dies[stack[-1]]["attrs"].setdefault(match[1], match[2])
+            if match[1] == "DW_AT_ranges":
+                found = _RANGE.findall(match[2])
+                dies[stack[-1]]["ranges"].extend((int(lo, 16), int(hi, 16)) for lo, hi in found)
+    return dies
+
+
+def _text(value):
+    """A dwarfdump string attribute; non-ASCII bytes are printed as octal escapes."""
+    if value is None or len(value) < 2 or value[0] != '"' or value[-1] != '"':
+        return None
+    try:
+        return codecs.escape_decode(value[1:-1].encode())[0].decode("utf-8")
+    except (ValueError, UnicodeDecodeError):
+        return None
+
+
+def _chain(dies, offset):
+    """This DIE, then the DIEs it completes (abstract origin, specification)."""
+    chain, seen = [offset], {offset}
+    while len(chain) < 8:
+        attrs = dies[chain[-1]]["attrs"]
+        reference = attrs.get("DW_AT_abstract_origin") or attrs.get("DW_AT_specification")
+        match = _REFERENCE.fullmatch(reference or "")
+        target = int(match[1], 16) if match else None
+        if target not in dies or target in seen:
+            break
+        chain.append(target)
+        seen.add(target)
+    return chain
+
+
+def _first(dies, chain, attribute):
+    for offset in chain:
+        if attribute in dies[offset]["attrs"]:
+            return dies[offset]["attrs"][attribute]
+    return None
+
+
+_RUST_LEGACY = re.compile(r"_ZN[0-9].*17h[0-9a-f]{16}E")
+_RUST_ESCAPES = {
+    "$LT$": "<",
+    "$GT$": ">",
+    "$RF$": "&",
+    "$BP$": "*",
+    "$C$": ",",
+    "$SP$": "@",
+    "$LP$": "(",
+    "$RP$": ")",
+}
+
+
+def _rust_name(linkage):
+    """A legacy-mangled Rust symbol, readable and without its hash
+    (`crate::Type::method`, `<crate::T as Trait>::fmt`, `crate::main::{{closure}}`);
+    None for anything else."""
+    if not linkage or not _RUST_LEGACY.fullmatch(linkage):
+        return None
+    rest, parts = linkage[3:-1], []
+    while rest and rest[0].isdigit():
+        digits = re.match(r"[0-9]+", rest)[0]
+        size = int(digits)
+        part, rest = rest[len(digits) : len(digits) + size], rest[len(digits) + size :]
+        if len(part) != size:
+            return None
+        if part.startswith("_$"):
+            part = part[1:]
+        part = part.replace("..", "::")
+        for escape, character in _RUST_ESCAPES.items():
+            part = part.replace(escape, character)
+        part = re.sub(r"\$u([0-9a-f]{1,6})\$", lambda m: chr(int(m[1], 16)), part)
+        parts.append(part)
+    if rest or len(parts) < 2 or not re.fullmatch(r"h[0-9a-f]{16}", parts[-1]):
+        return None
+    return "::".join(parts[:-1])
+
+
+def _local_scope(linkage):
+    """The enclosing function of a C++ local entity (`_ZZ11apply_twiceiE…` names
+    `apply_twice`; `_ZZN3geo3Box4areaEvE…` names `geo::Box::area`), or None."""
+    if not linkage or not linkage.startswith("_ZZ"):
+        return None
+    rest, names = linkage[3:], []
+    nested = rest.startswith("N")
+    if nested:
+        rest = rest[1:].lstrip("KVr")
+    while rest[:1].isdigit():
+        digits = re.match(r"[0-9]+", rest)[0]
+        size = int(digits)
+        names.append(rest[len(digits) : len(digits) + size])
+        rest = rest[len(digits) + size :]
+        if not nested:
+            break
+    if not names or (nested and not rest.startswith("E")):
+        return None
+    return "::".join(names)
+
+
+def _qualified(dies, offset, depth=0):
+    chain = _chain(dies, offset)
+    linkage = _text(_first(dies, chain, "DW_AT_linkage_name"))
+    if rust := _rust_name(linkage):
+        return rust
+    origin = chain[-1]
+    name = _text(dies[origin]["attrs"].get("DW_AT_name"))
+    if name is None:
+        return None
+    parts, parent = [name], dies[origin]["parent"]
+    while parent is not None and len(parts) < 32:
+        die = dies[parent]
+        if die["tag"] in _QUALIFIERS and (outer := _text(die["attrs"].get("DW_AT_name"))):
+            parts.append(outer)
+        elif die["tag"] == "DW_TAG_subprogram" and depth < 8:
+            # A closure or lambda inside a function: `main::operator()`. A function that
+            # only exists inlined leaves an empty placeholder here; its name is then in
+            # the lambda's own local-entity symbol.
+            if outer := _qualified(dies, parent, depth + 1) or _local_scope(linkage):
+                parts.append(outer)
+            break
+        parent = die["parent"]
+    return "::".join(reversed(parts))
+
+
+def _locals(dies, offset):
+    """Parameters and variables of one function body, including nested blocks but not
+    the bodies of calls inlined into it."""
+    names, pending = set(), list(dies[offset]["children"])
+    while pending and len(names) < 512:
+        child = pending.pop()
+        die = dies[child]
+        if die["tag"] in ("DW_TAG_formal_parameter", "DW_TAG_variable"):
+            name = _text(_first(dies, _chain(dies, child), "DW_AT_name"))
+            # `$`-prefixed names are debugger-synthesized storage, not program locals.
+            if name and not name.startswith("$"):
+                names.add(name)
+        elif die["tag"] == "DW_TAG_lexical_block":
+            pending.extend(die["children"])
+    return names
+
+
+def _code_ranges(die):
+    attrs = die["attrs"]
+    try:
+        low = int(attrs["DW_AT_low_pc"], 16)
+        high = int(attrs["DW_AT_high_pc"], 16)
+    except (KeyError, ValueError):
+        spans = die["ranges"]
+    else:
+        # DWARF4 high_pc may be an offset from low_pc rather than an address.
+        spans = [(low, high if high > low else low + high)]
+    return [(lo, hi) for lo, hi in spans if 0 < lo < hi and lo < _TOMBSTONE]
+
+
+def function_scopes(info, line_text, workspace, declared):
+    """Each function in a declared source: qualified name, source, line span, locals.
+
+    Display only (`describe`). A line-table row belongs to the innermost function or
+    inlined call whose address range covers it, so an inlined callee's lines count for
+    the callee, not its caller. Copies of one function (C1/C2 constructors, inlined and
+    out-of-line copies) are merged through the DIE that declares them.
+    """
+    import bisect
+
+    workspace = Path(workspace).resolve()
+    inputs = {str((workspace / name).resolve()): name for name in declared}
+    rows = sorted(_line_rows(line_text, workspace, declared))
+    addresses = [row[0] for row in rows]
+    dies = _dies(info)
+    owner = [None] * len(rows)
+    functions = {}
+    for offset, die in dies.items():
+        if die["tag"] not in _CODE:
+            continue
+        spans = _code_ranges(die)
+        if not spans:
+            continue
+        chain = _chain(dies, offset)
+        decl = _text(_first(dies, chain, "DW_AT_decl_file"))
+        source = inputs.get(str((workspace / decl).resolve())) if decl else None
+        if source is None:
+            # SDK and std code: never listed, and never claims the caller's rows.
+            continue
+        root = chain[-1]
+        entry = functions.setdefault(root, {"bodies": [], "chain": chain, "source": source})
+        entry["bodies"].append(offset)
+        for low, high in spans:
+            first = bisect.bisect_left(addresses, low)
+            for index in range(first, bisect.bisect_left(addresses, high)):
+                # A row belongs to the innermost covering function from its own file:
+                # an inlined callee from the same file takes its lines, while std code
+                # inlined around the caller's own rows does not.
+                if rows[index][1] == source and (
+                    owner[index] is None or die["depth"] > owner[index][0]
+                ):
+                    owner[index] = (die["depth"], root)
+    lines = {}
+    for (_, _, number), claimed in zip(rows, owner):
+        if claimed is not None:
+            lines.setdefault(claimed[1], set()).add(number)
+    found = {}
+    for root, entry in functions.items():
+        chain, source = entry["chain"], entry["source"]
+        name = _qualified(dies, entry["bodies"][0])
+        numbers = lines.get(root)
+        if name is None or not numbers:
+            continue
+        first_line = _first(dies, chain, "DW_AT_decl_line")
+        if first_line and first_line.isdigit():
+            numbers = {number for number in numbers if number >= int(first_line)} or numbers
+        names = set()
+        for body in (*entry["bodies"], root):
+            names |= _locals(dies, body)
+        scope = {
+            "scope": name,
+            "source": source,
+            "lines": [min(numbers), max(numbers)],
+            "names": sorted(names),
+        }
+        found[json.dumps(scope, sort_keys=True)] = scope
+    scopes = sorted(found.values(), key=lambda s: (s["source"], s["lines"][0], s["scope"]))
+    if len(scopes) > MAX_SCOPES:
+        scopes = [*scopes[:MAX_SCOPES], {"omitted": len(scopes) - MAX_SCOPES}]
+    return scopes
 
 
 def elf_build_id(binary):
@@ -579,6 +877,22 @@ class NativeSession:
             "console": "internalConsole",
             "enableAutoVariableSummaries": False,
         }
+
+    def function_scopes(self):
+        """Each function in the declared sources, its line span and locals (for describe)."""
+        dwarfdump = _tool(self.target.dwarfdump)
+        env = dict(self.prepared.manifest.effective_environment)
+        workspace = self.prepared.workspace
+
+        def dump(option, limit):
+            return _metadata(
+                dwarfdump, [option, str(self.symbols)], workspace, env, max_bytes=limit
+            )
+
+        info = dump("--debug-info", MAX_DEBUG_INFO)
+        return function_scopes(
+            info, dump("--debug-line", MAX_METADATA), workspace, tuple(self.lines)
+        )
 
     def source_path(self, original):
         relative = (

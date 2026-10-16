@@ -92,6 +92,13 @@ def test_peeky_cli_detects_rust_and_runs_probe_session_and_verify(tmp_path, monk
     manifest = json.loads(capsys.readouterr().out)
     assert manifest["language"] == "rust" and line in manifest["breakpoint_lines"]["src/main.rs"]
     assert manifest["value_views"]["core::option::Option<i32>"] == "option"
+    scopes = {scope["scope"]: scope for scope in manifest["scopes"]}
+    assert {"start", "request", "some", "none"} <= set(scopes["peeky_pagination::main"]["names"])
+    assert scopes["peeky_pagination::main"]["source"] == "src/main.rs"
+    assert line in range(
+        scopes["peeky_pagination::main"]["lines"][0],
+        scopes["peeky_pagination::main"]["lines"][1] + 1,
+    )
     assert main(["session", "start", str(crate), "--at", str(line)]) == 0
     # Locations name the user's source, not the private build workspace's copy.
     started = capsys.readouterr().out
