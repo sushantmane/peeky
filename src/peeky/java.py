@@ -141,17 +141,26 @@ class JavaTarget:
             _member(Path("."), source)
             if not source.endswith(".java") or source.startswith(("-", "@")):
                 raise ValueError("Expected relative .java source files")
+        self.validate_arguments(self.arguments)
+
+    accepts_arguments = True
+
+    @staticmethod
+    def validate_arguments(arguments):
+        # JDI's launcher tokenizes double quotes; it does not use a shell.
         if (
-            not isinstance(self.arguments, tuple)
-            or len(self.arguments) > 100
+            not isinstance(arguments, tuple)
+            or len(arguments) > 100
             or any(
                 not isinstance(arg, str)
                 or any(c in arg for c in ("\x00", '"', "\r", "\n"))
                 or len(arg) > 8192
-                for arg in self.arguments
+                for arg in arguments
             )
         ):
-            raise ValueError("Invalid Java application arguments")
+            raise ValueError(
+                "Invalid Java application arguments (no quotes, newlines or NUL; at most 100)"
+            )
 
     @property
     def verification_inputs(self):
@@ -287,9 +296,10 @@ class JavaSession:
     def initialize_args(self):
         return {**PythonAdapter().initialize_args(), "adapterID": "java"}
 
-    def launch_args(self, program, root):
+    def launch_args(self, program, root, args=None):
         self.assert_current()
         self.source_path(program)
+        arguments = self.target.arguments if args is None else tuple(args)
         return {
             "mainClass": self.target.main_class,
             "classPaths": [str(self.prepared.workspace / "classes")],
@@ -297,7 +307,7 @@ class JavaSession:
             "javaExec": self.java,
             # JDI's launcher tokenizes double quotes; it does not use a shell.
             # Embedded quotes/newlines are rejected at configuration validation.
-            "args": " ".join('"' + arg + '"' for arg in self.target.arguments),
+            "args": " ".join('"' + arg + '"' for arg in arguments),
             "console": "internalConsole",
         }
 

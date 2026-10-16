@@ -236,11 +236,15 @@ def test_rust_mutation_is_limited_to_i32_locals(variable):
 
 
 def test_rust_launch_disables_symbol_file_scripts(monkeypatch):
-    monkeypatch.setattr(NativeSession, "launch_args", lambda self, program, root: {"a": 1})
+    monkeypatch.setattr(
+        NativeSession, "launch_args", lambda self, program, root, args=None: {"args": args}
+    )
     assert bare_session().launch_args("p", "r") == {
-        "a": 1,
+        "args": None,
         "initCommands": ["settings set target.load-script-from-symbol-file false"],
     }
+    # Per-run arguments (--arg) reach the native launch unchanged.
+    assert bare_session().launch_args("p", "r", ["2"])["args"] == ["2"]
 
 
 def test_load_rust_target_requires_explicit_known_fields(tmp_path):

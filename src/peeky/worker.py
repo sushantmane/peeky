@@ -445,8 +445,17 @@ class DebugWorker:
             program = self.path(args["program"])
             self.program = program
             entry = None
-            if args.get("args") and not isinstance(self.adapter, PythonAdapter):
-                raise ValueError("Program arguments (--arg) are supported only for Python targets")
+            if args.get("args"):
+                # Launched programs take per-run arguments; an attached JVM is already running.
+                if not getattr(self.adapter, "accepts_arguments", False) and not isinstance(
+                    self.adapter, PythonAdapter
+                ):
+                    raise ValueError(
+                        "Program arguments (--arg) need a launched program; this target attaches "
+                        "to one that is already running"
+                    )
+                if validate_arguments := getattr(self.adapter, "validate_arguments", None):
+                    validate_arguments(tuple(args["args"]))
             if args.get("entry") is not None:
                 # Python only: run one script while breaking in another module it imports.
                 if not isinstance(self.adapter, PythonAdapter):
@@ -525,6 +534,20 @@ class DebugWorker:
                 self.exit_inferred = False
                 self.empty_thread_replies = 0
                 self.liveness_checked = 0.0
+                # What the program actually received: per-run arguments replace the
+                # configured ones, so records never show arguments it did not get. An
+                # attached JVM's arguments are unknown, so none are claimed.
+                launched = getattr(self.adapter, "accepts_arguments", False) or isinstance(
+                    self.adapter, PythonAdapter
+                )
+                program_args = list(
+                    args["args"]
+                    if args.get("args")
+                    else getattr(getattr(runtime, "target", None), "arguments", ()) or ()
+                )
+                identity = getattr(runtime, "target_identity", None)
+                if launched and isinstance(identity, dict) and "arguments" in identity:
+                    identity = {**identity, "arguments": program_args}
                 return {
                     "session_id": self.session,
                     "state": self.state,
@@ -540,7 +563,8 @@ class DebugWorker:
                     "protocol": PROTOCOL_VERSION,
                     "artifact_manifest_id": runtime.manifest_id,
                     "source_manifest": getattr(runtime, "source_manifest", None),
-                    "target_identity": getattr(runtime, "target_identity", None),
+                    "target_identity": identity,
+                    **({"program_args": program_args} if launched else {}),
                     **({"optimized": level} if (level := self.optimized()) else {}),
                 }
             except Exception:

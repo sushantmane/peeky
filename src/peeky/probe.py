@@ -358,6 +358,8 @@ def run_probe(root, probe, *, adapter=None, progress=None):
             target_identity=launch["target_identity"],
             source_sha256=launch["source_sha256"],
         )
+        if "program_args" in launch:
+            result["program_args"] = launch["program_args"]
         if launch.get("entry_sha256"):
             result["entry_sha256"] = launch["entry_sha256"]
         point = result["breakpoint"]
@@ -556,7 +558,8 @@ def _table(result):
             str(row["hit"]),
             row["phase"],
             str(row.get("line", "")),
-            row.get("function") or "",
+            # Rust frame names end with a symbol hash (`main::h56a2…`); JSON keeps it.
+            re.sub(r"::h[0-9a-f]{16}$", "", row.get("function") or ""),
             row["selector"],
             row.get("type") or "",
             row.get("value", "<" + row.get("error", "") + ">")

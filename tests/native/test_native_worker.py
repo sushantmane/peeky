@@ -494,3 +494,19 @@ def test_headers_read_from_outside_the_workspace_are_provenance(tmp_path, native
         assert classify(caught.value)["code"] == "PROVENANCE_CHANGED"
     finally:
         session.close()
+
+
+def test_compiled_programs_take_per_run_arguments(tmp_path, native_config, capsys):
+    from peeky.cli import main
+
+    shutil.copyfile(ROOT / "examples/c/pagination_bug.c", tmp_path / "pagination_bug.c")
+    shutil.copyfile(ROOT / "examples/c/pagination.h", tmp_path / "pagination.h")
+    probe = ["probe", str(tmp_path / "pagination_bug.c"), "--at", "25", "--json", "--no-save"]
+    code = main([*probe, "--capture", "start,page", "--arg", "2"])
+    result = json.loads(capsys.readouterr().out)
+    assert code == 0, result.get("error")
+    assert [row["value"] for row in result["rows"]] == ["6", "2"]
+    assert "PAGE:[70, 80]" in result["output"] and result["probe"]["args"] == ["2"]
+    assert result["program_args"] == result["target_identity"]["arguments"] == ["2"]
+    code = main([*probe, "--capture", "page", "--arg", "bad\x00arg"])
+    assert code == 2 or json.loads(capsys.readouterr().out)["status"] == "failed"

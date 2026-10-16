@@ -325,12 +325,17 @@ class NativeTarget:
             _path_name(name, (".cpp", ".cc", ".cxx") if self.language == "cpp" else ".c")
         for name in self.headers:
             _path_name(name, (".h", ".hpp", ".hh", ".hxx") if self.language == "cpp" else ".h")
+        self.validate_arguments(self.arguments)
+
+    accepts_arguments = True
+
+    @staticmethod
+    def validate_arguments(arguments):
         if (
-            not isinstance(self.arguments, tuple)
-            or len(self.arguments) > 100
+            not isinstance(arguments, tuple)
+            or len(arguments) > 100
             or any(
-                not isinstance(arg, str) or "\x00" in arg or len(arg) > 8192
-                for arg in self.arguments
+                not isinstance(arg, str) or "\x00" in arg or len(arg) > 8192 for arg in arguments
             )
         ):
             raise ValueError("Invalid native application arguments")
@@ -561,13 +566,14 @@ class NativeSession:
             "sourceInitFile": False,
         }
 
-    def launch_args(self, program, root):
+    def launch_args(self, program, root, args=None):
         self.assert_current()
         self.source_path(program)
         return {
             "program": str(self.binary),
             "cwd": str(self.prepared.workspace),
-            "args": list(self.target.arguments),
+            # Per-run arguments (--arg) replace the configured ones.
+            "args": list(self.target.arguments if args is None else args),
             "disableASLR": False,
             "shellExpandArguments": False,
             "console": "internalConsole",

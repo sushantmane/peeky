@@ -410,3 +410,27 @@ def test_an_unsearchable_store_directory_is_a_store_error(store):
         assert classify(caught.value, session_closed=False)["code"] == "INVALID_REQUEST"
     finally:
         store.parent.chmod(0o700)
+
+
+@pytest.mark.parametrize(
+    "reported, language, stored",
+    [
+        # The worker's account of what the program received wins: configured
+        # arguments used without --arg are recorded, not an empty list.
+        (["cfg"], "c", ["cfg"]),
+        ([], "python", []),
+        # A failure before launch has no account: the requested arguments stand.
+        (None, "rust", ["x"]),
+        ("not-a-list", "java", ["x"]),
+        ([1], "java", ["x"]),
+        # An attached JVM's own arguments are unknown.
+        (None, "java-attach", None),
+    ],
+)
+def test_runs_record_the_arguments_the_program_received(store, reported, language, stored):
+    recorded = result()
+    if reported is not None:
+        recorded["program_args"] = reported
+    evidence.record(store, recorded, language=language)
+    args = evidence.query(store, "SELECT args FROM runs")["rows"][0]["args"]
+    assert (None if args is None else json.loads(args)) == stored

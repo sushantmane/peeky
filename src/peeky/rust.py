@@ -248,15 +248,7 @@ class RustTarget:
                 raise ValueError("Rust sources and tests must be nonempty immutable tuples")
             for name in field:
                 _path_name(name, ".rs")
-        if (
-            not isinstance(self.arguments, tuple)
-            or len(self.arguments) > 100
-            or any(
-                not isinstance(arg, str) or "\x00" in arg or len(arg) > 8192
-                for arg in self.arguments
-            )
-        ):
-            raise ValueError("Invalid Rust application arguments")
+        self.validate_arguments(self.arguments)
         if not isinstance(self.rust_version, str) or not re.fullmatch(
             r"[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}", self.rust_version
         ):
@@ -267,6 +259,19 @@ class RustTarget:
         if self.dsymutil is not None:
             _absolute_tool(self.dsymutil, "dsymutil")
         self._dsymutil()
+
+    accepts_arguments = True
+
+    @staticmethod
+    def validate_arguments(arguments):
+        if (
+            not isinstance(arguments, tuple)
+            or len(arguments) > 100
+            or any(
+                not isinstance(arg, str) or "\x00" in arg or len(arg) > 8192 for arg in arguments
+            )
+        ):
+            raise ValueError("Invalid Rust application arguments")
 
     language = "rust"
 
@@ -557,9 +562,9 @@ class RustSession(NativeSession):
     def layouts(self):
         return json.loads(self._layouts_data)
 
-    def launch_args(self, program, root):
+    def launch_args(self, program, root, args=None):
         return {
-            **super().launch_args(program, root),
+            **super().launch_args(program, root, args),
             # Never execute Python scripts embedded beside symbol files.
             "initCommands": ["settings set target.load-script-from-symbol-file false"],
         }

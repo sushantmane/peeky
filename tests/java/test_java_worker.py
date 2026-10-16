@@ -323,3 +323,41 @@ def test_java_lines_without_code_are_request_errors(java_worker):
     # The session and its stop survive the refused request.
     assert client.call("inspect", **context)["frames"][0]["line"] == first
     client.call("close", **session)
+
+
+def test_launched_java_takes_per_run_arguments(java_worker):
+    start, _, first, _ = java_worker
+    client, _ = start(arguments=("configured",))
+    launch = client.call(
+        "launch",
+        program="demo/BranchBug.java",
+        breakpoints=[{"line": first}],
+        args=["one", "two words"],
+    )
+    session = {"session_id": launch["session_id"]}
+    # Records state what the program received: --arg replaces the configured arguments.
+    assert launch["program_args"] == ["one", "two words"]
+    assert launch["target_identity"]["arguments"] == ["one", "two words"]
+    stop = wait(client, session, "stopped")
+    client.call("continue", **session, stop_id=stop["stop_id"])
+    wait(client, session, "terminated")
+    assert "ARGS=2:[one, two words]" in client.call("report", **session)["output"]
+    client.call("close", **session)
+    launch = client.call("launch", program="demo/BranchBug.java", breakpoints=[{"line": first}])
+    session = {"session_id": launch["session_id"]}
+    assert launch["program_args"] == ["configured"]
+    assert launch["target_identity"]["arguments"] == ["configured"]
+    stop = wait(client, session, "stopped")
+    client.call("continue", **session, stop_id=stop["stop_id"])
+    wait(client, session, "terminated")
+    assert "ARGS=1:[configured]" in client.call("report", **session)["output"]
+    client.call("close", **session)
+    message = assert_http_error(
+        400,
+        client,
+        "launch",
+        program="demo/BranchBug.java",
+        breakpoints=[{"line": first}],
+        args=['quote"d'],
+    )
+    assert "Invalid Java application arguments" in message

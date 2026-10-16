@@ -198,3 +198,14 @@ def test_declared_sources_behind_an_in_root_link_attach(attached):
         session.assert_current()
     finally:
         session.close()
+
+
+def test_attached_jvms_refuse_per_run_arguments(attached, tmp_path):
+    from peeky.worker import DebugWorker
+
+    root, target, _, line = attached
+    worker = DebugWorker(root, adapter=target)
+    with pytest.raises(ValueError, match="already running"):
+        worker.dispatch(
+            "launch", {"program": SOURCE, "breakpoints": [{"line": line}], "args": ["x"]}
+        )

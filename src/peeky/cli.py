@@ -410,7 +410,13 @@ def _default_program(program, data, command):
 def describe(args):
     root, program, _, language, data = resolve(args.target, args.at, args.config)
     program = _confined(root, _default_program(program, data, "describe"))
-    run = " [--run <script.py>] [--arg A ...]" if language == "python" else ""
+    run = (
+        " [--run <script.py>] [--arg A ...]"
+        if language == "python"
+        else ""
+        if language == "java-attach"
+        else " [--arg A ...]"
+    )
     manifest = {
         "peeky": "describe",
         "language": language,
@@ -1606,7 +1612,10 @@ def main(argv=None, _job=False, _edits=None):
     )
     sub.add_argument("--expect-sha256", action="append", default=[], help=argparse.SUPPRESS)
     sub.add_argument(
-        "--arg", action="append", default=[], help="Python: program argument (repeatable)"
+        "--arg",
+        action="append",
+        default=[],
+        help="Program argument (repeatable; replaces configured arguments)",
     )
     sub.add_argument("--timeout", type=float, default=60)
     sub.add_argument(
@@ -1645,7 +1654,7 @@ def main(argv=None, _job=False, _edits=None):
         help="Use a running worker at this loopback URL (e.g. through ssh -L) instead of "
         "starting one; token from $PEEKY_WORKER_TOKEN",
     )
-    start.add_argument("--arg", action="append", default=[], help="Python: program argument")
+    start.add_argument("--arg", action="append", default=[], help="Program argument (repeatable)")
     start.add_argument(
         "--max-pause",
         type=float,

@@ -47,7 +47,8 @@ TABLES = {
             "sets": "JSON list of requested [name, value] interventions",
             "set_hit": "Hit at which the interventions were applied",
             "hits_requested": "The probe's --hits",
-            "args": "JSON list of program arguments (--arg)",
+            "args": "JSON list of the arguments the program received (--arg, else the "
+            "configured ones); NULL for an attached JVM, whose arguments are unknown",
             "entry": "Python --run script, or NULL",
             "worker": "Remote worker URL, or NULL for a local run",
             "status": "completed, no-stop, failed or timeout",
@@ -262,6 +263,20 @@ def _text(value):
     return json.dumps(value, sort_keys=True, default=str)
 
 
+def _program_args(result, probe, language):
+    """The arguments the program received, as reported by the worker that launched it.
+
+    A probe that failed before launch falls back to the requested arguments; an
+    attached JVM's own arguments are unknown, so none are claimed.
+    """
+    actual = result.get("program_args")
+    if isinstance(actual, list) and all(isinstance(arg, str) for arg in actual):
+        return json.dumps(actual)
+    if language == "java-attach":
+        return None
+    return json.dumps(list(probe.get("args") or []))
+
+
 def _connect(path, timeout=10):
     return sqlite3.connect(path, timeout=timeout, isolation_level=None)
 
@@ -345,7 +360,7 @@ def record(path, result, *, language=None, target=None, label=None, worker=None)
         "sets": json.dumps([list(change) for change in probe.get("set") or []]),
         "set_hit": probe.get("set_hit"),
         "hits_requested": probe.get("hits"),
-        "args": json.dumps(list(probe.get("args") or [])),
+        "args": _program_args(result, probe, language),
         "entry": probe.get("entry"),
         "worker": worker,
         "status": result.get("status"),
