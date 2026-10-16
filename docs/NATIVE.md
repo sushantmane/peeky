@@ -2,7 +2,14 @@
 
 The native slice runs a fixed C target through LLDB-DAP and the existing authenticated HTTP worker. It builds declared sources in a fresh workspace with debug information, checks source/binary/symbol provenance, verifies the loaded executable and stopped location, and permits qualified integer-local intervention. C++ and Rust are planned separate qualification steps using the same debugger family.
 
-The [C investigation loop](NATIVE_AGENT.md) now provides candidate rebuilding and independent verification through the shared compiled-verification boundary. A successful runtime intervention is not a permanent source fix. Attach, arbitrary expression evaluation, pointer mutation, memory writes, remote debug-server deployment and optimized builds are outside the current support boundary.
+The [C investigation loop](NATIVE_AGENT.md) now provides candidate rebuilding and independent verification through the shared compiled-verification boundary. A successful runtime intervention is not a permanent source fix. Attach, arbitrary expression evaluation, pointer mutation, memory writes and remote debug-server deployment are outside the current support boundary.
+
+**Optimized builds** (opt-in, #12/#13):
+- **Enabling:** set `"optimization": "Og" | "O1" | "O2"` in the native target config; the default stays `O0`. The level is part of `compiler_options` and `target_identity`.
+- **Missing values:** LLDB reports a local with no value at a line as text, such as `<error: variable not available>` or `<error: could not evaluate DW_OP_entry_value: ...>`. Peeky marks those locals `unavailable`: they get no value, an explanatory error quoting the debugger's reason, and a warning. Changing them is refused with `MUTATION_REJECTED`.
+- **Stale values:** optimized code can also show stale values that look normal. For example, an inlined `-O2` function reported `b=2, t=8` where the live values were 0 and 3. Peeky cannot detect this, so prefer `O0` for debugging.
+- **Warnings:** every probe result from an optimized build therefore carries `optimized` and a warning, and `describe` warns too. Rust is the same: set `"opt_level": "1" | "2"` (default `"0"`). At `opt-level 2`, `start` read `1` where the program's value is `3`, with no unavailable marker.
+- **Scope:** this applies to C, C++ and Rust (all LLDB). Other adapters never reinterpret value text.
 
 ## Local macOS setup
 

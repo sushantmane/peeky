@@ -331,3 +331,70 @@ def test_exit_is_never_inferred_for_attach_other_adapters_or_right_after_resumin
         worker.resumed_at = time.monotonic() - resumed
         state = poll(worker)
         assert state["state"] == "running" and worker.dap.calls == []
+
+
+@pytest.mark.parametrize(
+    "value, unavailable",
+    [
+        ("<error: variable not available>", True),
+        ("<variable not available>", True),
+        ("<optimized out>", True),
+        ("<value optimized out>", True),
+        ("<unavailable>", True),
+        ("<error: could not evaluate DW_OP_entry_value: no parent function>", True),
+        ("0", False),
+        ('"<optimized out>"', False),
+        ("<not a placeholder>", False),
+        ("", False),
+    ],
+)
+def test_debugger_placeholders_are_recognized_and_never_values(value, unavailable):
+    from peeky.worker import is_unavailable
+
+    assert is_unavailable(value) is unavailable
+
+
+class LldbLike(PythonAdapter):
+    reports_unavailable_as_text = True
+
+
+def test_python_values_that_look_like_placeholders_stay_values(tmp_path):
+    worker = stopped_worker(tmp_path)
+    exposed = worker.expose_variables(
+        [{"name": "x", "value": "<error: user repr>", "type": "Thing"}], {"id": 1}, ("L", None), ()
+    )
+    assert "unavailable" not in exposed[0] and exposed[0]["value"] == "<error: user repr>"
+
+
+def test_unavailable_locals_are_flagged_and_cannot_be_set(tmp_path):
+    worker = stopped_worker(tmp_path)
+    worker.runtime = LldbLike()
+    exposed = worker.expose_variables(
+        [{"name": "a", "value": "<error: variable not available>", "type": "int"}],
+        {"id": 1},
+        ("Locals", None),
+        (),
+    )
+    assert exposed[0]["unavailable"] is True
+
+    class Placeholder(Adapter):
+        def request(self, command, args):
+            return {"variables": [{"name": "value", "value": "<optimized out>"}]}
+
+    worker.dap = Placeholder()
+    with pytest.raises(ValueError, match="has no value here"):
+        worker.dispatch(
+            "set_variable",
+            {
+                "session_id": "session",
+                "stop_id": "stop",
+                "reference": 7,
+                "name": "value",
+                "value": "2",
+            },
+        )
+    from peeky.errors import classify
+
+    assert (
+        classify(ValueError("'a' has no value here (optimized out)"))["code"] == "MUTATION_REJECTED"
+    )

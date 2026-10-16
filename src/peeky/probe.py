@@ -53,6 +53,18 @@ def parse_selector(text):
     return segments
 
 
+def optimization_level(identity):
+    """The build's optimization level when it is not a no-optimization debug build."""
+    identity = identity or {}
+    level = identity.get("optimization")
+    if level not in (None, "O0"):
+        return f"-{level}"
+    rust = (identity.get("profile") or {}).get("CARGO_PROFILE_DEV_OPT_LEVEL")
+    if rust not in (None, "0"):
+        return f"opt-level={rust}"
+    return None
+
+
 def _check_args(args):
     if (
         not isinstance(args, tuple)
@@ -250,7 +262,16 @@ def _capture(worker, stop, selectors, hit, phase):
         except ValueError as exc:
             row["error"] = str(exc)
         else:
-            row.update(value=variable["value"], type=variable.get("type"))
+            if variable.get("unavailable"):
+                # A placeholder such as "<error: variable not available>" is not a value.
+                row.update(
+                    type=variable.get("type"),
+                    unavailable=True,
+                    error="no value here: optimized out or not live at this line "
+                    f"(debugger: {variable.get('reason', 'unavailable')})",
+                )
+            else:
+                row.update(value=variable["value"], type=variable.get("type"))
             if "view" in variable:
                 row["view"] = variable["view"]
         rows.append(row)
@@ -434,6 +455,17 @@ def run_probe(root, probe, *, adapter=None, progress=None):
         result.update(status="failed", error=classify(exc, session_closed=True))
     finally:
         worker.close()
+    if level := optimization_level(result.get("target_identity")):
+        result["optimized"] = level
+        warnings.append(
+            f"Optimized build ({level}): values that are shown can still be stale or wrong "
+            "(the debugger cannot tell). Confirm with an unoptimized build before trusting them."
+        )
+    if any(row.get("unavailable") for row in rows):
+        warnings.append(
+            "Some locals have no value at this line (optimized out or not live). In "
+            "optimized builds other values may also be stale; prefer an -O0 build."
+        )
     if changes and probe.hits > 1:
         warnings.append(
             f"Interventions are applied once, at hit {probe.set_hit}; other hits observe "

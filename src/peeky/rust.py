@@ -229,8 +229,12 @@ class RustTarget:
     sysroot: str | None = None
     arguments: tuple[str, ...] = ()
     rust_version: str = "1.96.0"
+    # Opt-in: optimized code can report locals as unavailable or show stale values.
+    opt_level: str = "0"
 
     def __post_init__(self):
+        if self.opt_level not in ("0", "1", "2"):
+            raise ValueError("Rust opt_level must be 0, 1 or 2")
         for field in (self.sources, self.tests):
             if not isinstance(field, tuple) or not field:
                 raise ValueError("Rust sources and tests must be nonempty immutable tuples")
@@ -289,7 +293,7 @@ class RustTarget:
     def profile(self):
         return {
             "CARGO_INCREMENTAL": "0",
-            "CARGO_PROFILE_DEV_OPT_LEVEL": "0",
+            "CARGO_PROFILE_DEV_OPT_LEVEL": self.opt_level,
             "CARGO_PROFILE_DEV_DEBUG": "2",
             "CARGO_PROFILE_DEV_SPLIT_DEBUGINFO": "packed" if sys.platform == "darwin" else "off",
             "CARGO_PROFILE_DEV_STRIP": "none",

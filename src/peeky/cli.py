@@ -424,6 +424,13 @@ def _describe_text(manifest):
             continue
         where = f" (lines {scope['lines'][0]}-{scope['lines'][1]})" if scope["lines"] else ""
         lines.append(f"names in {scope['scope']}{where}: {', '.join(scope['names']) or '-'}")
+    from peeky.probe import optimization_level
+
+    if level := optimization_level(manifest.get("target_identity")):
+        lines.append(
+            f"warning: optimized build ({level}); locals may be unavailable, stale or wrong. "
+            "Prefer an unoptimized build for debugging."
+        )
     lines.append(f"mutable: {manifest['mutable_types']}")
     lines.extend(f"{name}: {usage}" for name, usage in manifest["commands"].items())
     lines.append(f"timing: {manifest['timing']['advice']}")
@@ -579,6 +586,8 @@ def _variables_text(snapshot):
         lines.append(f"[{scope['name']}]")
         for variable in scope["variables"]:
             more = " (expand with `get`)" if variable.get("variablesReference") else ""
+            if variable.get("unavailable"):
+                more = " (no value here: optimized out or not live)"
             view = f"  [{variable['view']}]" if variable.get("view") else ""
             lines.append(
                 f"  {variable['name']}: {variable.get('type', '')} = {variable['value']}{view}{more}"

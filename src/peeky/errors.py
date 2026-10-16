@@ -61,7 +61,8 @@ _RULES = (
     (r"Another probe is running", "BUSY", "Wait for the running probe, then retry.", True),
     (
         r"Only writable|mutation requires|mutation is outside|Only .*locals support|"
-        r"numeric or boolean scalar|scalar literal|bounded decimal integer|must be a literal",
+        r"numeric or boolean scalar|scalar literal|bounded decimal integer|must be a literal"
+        r"|has no value here",
         "MUTATION_REJECTED",
         "Only root locals accept literal values (Python: literals incl. containers; compiled "
         "languages: scalars); observe instead or edit the source and run verify.",
