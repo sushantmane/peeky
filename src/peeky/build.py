@@ -155,26 +155,31 @@ _XCRUN_STUBS = frozenset(
 )
 
 
+_XCRUN = "/usr/bin/xcrun"
+
+
 @functools.lru_cache(maxsize=64)
 def _xcrun_find(name):
-    found = subprocess.run(
-        ["/usr/bin/xcrun", "--find", name], capture_output=True, text=True, timeout=20, check=False
-    )
+    try:
+        found = subprocess.run(
+            [_XCRUN, "--find", name], capture_output=True, text=True, timeout=20, check=False
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
     return found.stdout.strip() if found.returncode == 0 else ""
 
 
 @functools.lru_cache(maxsize=1)
 def default_sdk():
     """The macOS SDK the xcrun stubs would pass; real compilers need it explicitly."""
-    if sys.platform != "darwin":
+    if sys.platform != "darwin" or not os.path.exists(_XCRUN):
         return None
-    found = subprocess.run(
-        ["/usr/bin/xcrun", "--show-sdk-path"],
-        capture_output=True,
-        text=True,
-        timeout=20,
-        check=False,
-    )
+    try:
+        found = subprocess.run(
+            [_XCRUN, "--show-sdk-path"], capture_output=True, text=True, timeout=20, check=False
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
     path = found.stdout.strip()
     return path if found.returncode == 0 and path and Path(path).is_dir() else None
 
@@ -192,6 +197,8 @@ def real_tool(path):
         sys.platform != "darwin"
         or resolved.parent != Path("/usr/bin")
         or resolved.name not in _XCRUN_STUBS
+        # Without xcrun there is no stub: the tool is a real binary.
+        or not os.path.exists(_XCRUN)
     ):
         return resolved
     found = _xcrun_find(resolved.name)

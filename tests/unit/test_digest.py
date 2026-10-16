@@ -184,3 +184,18 @@ def test_verified_trees_are_reused_only_while_unchanged(tmp_path, monkeypatch):
     monkeypatch.setattr(digest, "SETTLE_SECONDS", -1.0)
     monkeypatch.setenv("PEEKY_NO_DIGEST_CACHE", "1")
     assert check() == 10 and check() == 11
+
+
+def test_tool_resolution_without_xcrun_is_a_no_op(tmp_path, monkeypatch):
+    from peeky import build
+
+    monkeypatch.setattr(build.sys, "platform", "darwin")
+    monkeypatch.setattr(build, "_XCRUN", str(tmp_path / "no-xcrun"))
+    build._xcrun_find.cache_clear()
+    build.default_sdk.cache_clear()
+    try:
+        assert build.default_sdk() is None
+        assert build.real_tool("/bin/sh") == Path("/bin/sh").resolve()
+    finally:
+        build._xcrun_find.cache_clear()
+        build.default_sdk.cache_clear()
