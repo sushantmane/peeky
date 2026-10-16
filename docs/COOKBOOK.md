@@ -148,6 +148,8 @@ value     3    6     -2     1
 
 `best` starts at 0 and never drops to a negative value, so the running maximum of all-negative input is wrong.
 
+`--hits all` captures every stop, up to 100, without counting iterations first: the summary says `hits: 3 (all)`, and a warning says when the cap was reached. With more than 20 selectors the cap is lower, so that every hit fits the 2000-row probe budget. `all` needs the program to exit, so it cannot be combined with `--until hits` (attached JVMs take a number). Progress prints the first hit, then at most one line every 2 seconds, then the total when the program finishes.
+
 ### 2.3 Test a Hypothesis by Changing a Value
 
 **What it answers:** If this value were right, would the output be right?
@@ -258,12 +260,12 @@ peeky queries diff
 ```
 
 ```
-run_a  run_b  hit  phase     selector  value_a                        value_b                      differs
-1      2      1    observed  self      IPv6Address('::ffff:808:808')  IPv6Address('::ffff:a00:1')  1
-1      2      1    observed  self._ip  281470816487432                281470849515521              1
+run_a  run_b  hit  phase     selector  value_a                        value_b                      differs  note
+1      2      1    observed  self      IPv6Address('::ffff:808:808')  IPv6Address('::ffff:a00:1')  1        NULL
+1      2      1    observed  self._ip  281470816487432                281470849515521              1        NULL
 ```
 
-`diff` keeps only the rows that differ, ordered by hit, so its first row is in the earliest hit where the runs diverge. `queries compare` shows every value side by side. Labels are free text, stored as given.
+`diff` keeps only the rows that differ. Real differences come first, in hit order and then in `--capture` order, so the first row is the first divergence. Then come values that only one run's `--set` changed (`intervention only in run b`), then values that differ only in heap or stack addresses (`note: addresses only`, for example a C string's pointer; NULL is never treated as an address), and last, one row per selector that only one run asked for (`only in run a`). Hits that one run never reached say `missing in run b`. Comparing needs two saved runs; with fewer, the query says so. `queries compare` shows every value side by side with the same notes. Labels are free text, stored as given.
 
 ### 3.2 Inputs, Outcomes and Outputs of the Last Two Runs
 
@@ -607,7 +609,7 @@ peeky job list
 
 `--background` works for `probe` and `verify`. Other bounds:
 - `--timeout S`: per probe (default 60 s, at most 300);
-- `--hits N`: at most 100;
+- `--hits N`: at most 100 (`--hits all` captures every stop up to 100);
 - `--until hits`: skips waiting for the program to exit.
 
 ---
@@ -661,7 +663,7 @@ All codes are listed in [ERRORS.md](ERRORS.md). If you suspect a filesystem with
 | `break file:12`, `run`, `print x` | `peeky probe target --at file:12 --capture x` | One command, one complete run, nothing left running |
 | `print obj.field`, `print a[0]`, `print d['k']` | `--capture "obj.field,a[0],d['k']"` | Paths, indexes and string keys only; no expressions. Quote selectors with `[...]` (zsh globs them) |
 | `set var x = 0`, `continue` | `--set x=0` | Applied once, at `--set-hit N`; the output shows the effect |
-| `ignore 1 9`, `continue` ×10 | `--hits 10`, then `peeky queries hits` | Every hit is captured and saved |
+| `ignore 1 9`, `continue` ×10 | `--hits 10` (or `--hits all`), then `peeky queries hits` | Every hit is captured and saved |
 | `commands 1 / silent / print x / end` | `--hits N --capture x` | Logging without breaking into the run |
 | `condition 1 x > 5` | `--hits N`, then `peeky sql "... WHERE num > 5"` | Conditions would run code in the program |
 | `info locals`, `print *obj` | `peeky session inspect`, `peeky session get obj` | `get` lists one level of children with their selectors |

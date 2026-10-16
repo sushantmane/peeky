@@ -46,7 +46,7 @@ TABLES = {
             "capture": "JSON list of requested selectors",
             "sets": "JSON list of requested [name, value] interventions",
             "set_hit": "Hit at which the interventions were applied",
-            "hits_requested": "The probe's --hits",
+            "hits_requested": "The probe's --hits: a number, or 'all'",
             "args": "JSON list of the arguments the program received (--arg, else the "
             "configured ones); NULL for an attached JVM, whose arguments are unknown",
             "entry": "Python --run script, or NULL",
@@ -145,14 +145,60 @@ def _shown(alias=""):
     return f"COALESCE({prefix}value, '<' || COALESCE({prefix}error, 'no value') || '>')"
 
 
-_PAIR = f"""WITH a AS (SELECT hit, phase, selector, {_shown()} AS v FROM captures
+# Selectors a run asked for (runs.capture), whether or not it reached a capture.
+_ASKED = "(SELECT value FROM json_each((SELECT capture FROM runs WHERE run_id = {})))"
+_PAIR = f"""WITH a AS (SELECT hit, phase, selector, {_shown()} AS v, rowid AS pos FROM captures
     WHERE run_id = {_A}),
-  b AS (SELECT hit, phase, selector, {_shown()} AS v FROM captures WHERE run_id = {_B}),
-  k AS (SELECT hit, phase, selector FROM a UNION SELECT hit, phase, selector FROM b)
-SELECT {_A} AS run_a, {_B} AS run_b, k.hit, k.phase, k.selector, a.v AS value_a,
-  b.v AS value_b, a.v IS NOT b.v AS differs
-FROM k LEFT JOIN a USING (hit, phase, selector) LEFT JOIN b USING (hit, phase, selector)"""
-_PAIR_ORDER = " ORDER BY k.hit, k.phase = 'after-set', k.selector"
+  b AS (SELECT hit, phase, selector, {_shown()} AS v, rowid AS pos FROM captures
+    WHERE run_id = {_B}),
+  k AS (SELECT hit, phase, selector FROM a UNION SELECT hit, phase, selector FROM b),
+  pair AS (SELECT k.hit, k.phase, k.selector, a.v AS value_a, b.v AS value_b,
+    a.v IS NOT b.v AS differs, COALESCE(a.pos, b.pos) AS pos,
+    CASE
+      WHEN k.selector NOT IN {_ASKED.format(_B)} THEN 'only in run a'
+      WHEN k.selector NOT IN {_ASKED.format(_A)} THEN 'only in run b'
+      WHEN k.phase = 'after-set' AND b.pos IS NULL THEN 'intervention only in run a'
+      WHEN k.phase = 'after-set' AND a.pos IS NULL THEN 'intervention only in run b'
+      WHEN b.pos IS NULL THEN 'missing in run b'
+      WHEN a.pos IS NULL THEN 'missing in run a'
+      WHEN a.v IS NOT b.v AND no_addresses(a.v) IS no_addresses(b.v) THEN 'addresses only'
+    END AS note
+    FROM k LEFT JOIN a USING (hit, phase, selector) LEFT JOIN b USING (hit, phase, selector))"""
+_PAIR_COLUMNS = (
+    f"{_A} AS run_a, {_B} AS run_b, hit, phase, selector, value_a, value_b, differs, note"
+)
+# Capture order within a hit: the order the probe recorded (its --capture order).
+_PAIR_ORDER = " ORDER BY hit, phase = 'after-set', pos"
+# Real divergences first, in hit and capture order (a hit only one run reached is
+# one); then values changed by an intervention only one run made; then values that
+# differ only in memory addresses; then one row per selector only one run asked for.
+# Nothing is dropped: an address-only difference may still be a real one.
+_DIFF = f"""{_PAIR}
+SELECT {_PAIR_COLUMNS} FROM (
+  SELECT 0 AS rank, hit, phase, selector, value_a, value_b, differs, note, pos FROM pair
+    WHERE differs AND (note IS NULL OR note LIKE 'missing%')
+  UNION ALL SELECT 1, hit, phase, selector, value_a, value_b, differs, note, pos FROM pair
+    WHERE note LIKE 'intervention only%'
+  UNION ALL SELECT 2, hit, phase, selector, value_a, value_b, differs, note, pos FROM pair
+    WHERE note = 'addresses only'
+  UNION ALL SELECT 3, NULL, NULL, selector, NULL, NULL, 1, note, MIN(pos) FROM pair
+    WHERE note LIKE 'only in%' GROUP BY selector, note)
+ORDER BY rank, hit, phase = 'after-set', pos"""
+# A heap or stack address: 0x, optional leading zeros, then 9-16 significant hex
+# digits that are not all f. NULL, small sentinels, all-ones (-1, MAP_FAILED) and
+# 8-digit data (0xdeadbeef, flags) are values, never masked. One regex, no callback.
+_ADDRESS = re.compile(r"\b0x(?=[0-9a-fA-F]{1,16}\b)0*(?![fF]+\b)[1-9a-fA-F][0-9a-fA-F]{8,15}\b")
+
+
+def _no_addresses(value):
+    """`value` with heap and stack addresses masked, for comparing runs.
+
+    Registered as the SQL function no_addresses(text): an address that changes on
+    every run (a C string, a Python object repr) is not a difference in the program.
+    """
+    return _ADDRESS.sub("0x…", value) if isinstance(value, str) else value
+
+
 _RUN_PARAM = {"run": "Run id (default: the newest run)"}
 _PAIR_PARAMS = {
     "a": "First run id (default: the run before b)",
@@ -164,7 +210,8 @@ QUERIES = {
     "runs": (
         "Recent runs, newest first: where, inputs, outcome",
         "SELECT run_id, started_at, label, program || ':' || line AS at, args, sets, status, "
-        "hits, seconds, error_code FROM runs ORDER BY run_id DESC LIMIT COALESCE(:count, 20)",
+        "hits, seconds, error_code, substr(output, 1, 60) AS output_start FROM runs "
+        "ORDER BY run_id DESC LIMIT COALESCE(:count, 20)",
         {"count": "How many runs (default 20)"},
         (),
     ),
@@ -186,14 +233,17 @@ WINDOW w AS (PARTITION BY selector ORDER BY hit) ORDER BY selector, hit""",
         (),
     ),
     "compare": (
-        "Two runs side by side (e.g. two inputs, or with and without --set)",
-        _PAIR + _PAIR_ORDER,
+        "Every value of two runs side by side, in hit and capture order; note says when a "
+        "value is missing from a run or differs only in memory addresses",
+        f"{_PAIR}\nSELECT {_PAIR_COLUMNS} FROM pair{_PAIR_ORDER}",
         _PAIR_PARAMS,
         (),
     ),
     "diff": (
-        "Only the values that differ between two runs; the first row is the first divergence",
-        _PAIR + " WHERE a.v IS NOT b.v" + _PAIR_ORDER,
+        "Only the values that differ between two runs. Real differences come first, in hit and "
+        "capture order (the first row is the first divergence); then address-only "
+        "differences; then selectors only one run captured",
+        _DIFF,
         _PAIR_PARAMS,
         (),
     ),
@@ -551,8 +601,17 @@ def query(path, sql, params=None, *, limit=DEFAULT_ROWS, seconds=QUERY_SECONDS):
     # Each value, each row's width and the whole result are bounded.
     connection.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, MAX_VALUE_BYTES)
     connection.setlimit(sqlite3.SQLITE_LIMIT_COLUMN, MAX_COLUMNS)
-    connection.set_authorizer(_authorize)
     deadline = time.monotonic() + seconds
+
+    def no_addresses(value):
+        # SQLite checks the deadline only between VM steps, never inside a Python
+        # function: a query calling it many times per row checks here too.
+        if time.monotonic() > deadline:
+            raise sqlite3.OperationalError("interrupted: query deadline")
+        return _no_addresses(value)
+
+    connection.create_function("no_addresses", 1, no_addresses, deterministic=True)
+    connection.set_authorizer(_authorize)
     connection.set_progress_handler(lambda: time.monotonic() > deadline, 10000)
     rows, size, cut = [], 0, None
     try:
@@ -604,6 +663,27 @@ def query(path, sql, params=None, *, limit=DEFAULT_ROWS, seconds=QUERY_SECONDS):
     return shaped
 
 
+_PAIRS = ("compare", "diff", "outputs")
+
+
+def _require_runs(path, params):
+    """Two-run queries name two runs that exist, never a silent half comparison."""
+    found = query(
+        path,
+        f"SELECT {_A} AS a, {_B} AS b, (SELECT COUNT(*) FROM runs WHERE run_id IN ({_A}, {_B})) "
+        "AS n",
+        {"a": params.get("a"), "b": params.get("b")},
+    )["rows"][0]
+    a, b, count = found["a"], found["b"], found["n"]
+    # Comparing a run with itself is allowed; otherwise both runs must exist.
+    if a is not None and b is not None and count == (1 if a == b else 2):
+        return
+    raise ValueError(
+        f"Evidence query failed: comparing needs two saved runs (run a = {a}, run b = {b}); "
+        "`peeky queries runs` lists them, and --param a=<run> --param b=<run> picks two"
+    )
+
+
 def run_query(path, name, params=None, *, limit=DEFAULT_ROWS):
     """Run a canned query by name with optional parameters."""
     if name not in QUERIES:
@@ -617,6 +697,8 @@ def run_query(path, name, params=None, *, limit=DEFAULT_ROWS):
             f"Evidence query failed: {name} does not take {', '.join(unknown)}; it takes: "
             + (", ".join(accepted) or "no parameters")
         )
+    if name in _PAIRS:
+        _require_runs(path, params)
     if missing := [param for param in required if params.get(param) is None]:
         raise ValueError(
             f"Evidence query failed: {name} needs "
@@ -640,6 +722,11 @@ def schema(path):
         "queries": {
             name: {"description": description, "params": params}
             for name, (description, _, params, _) in QUERIES.items()
+        },
+        "functions": {
+            "no_addresses(text)": "The text with heap and stack addresses (0x and at least 9 "
+            "significant hex digits; never NULL, all-ones or shorter values) masked, to compare "
+            "values across runs"
         },
         "examples": list(EXAMPLES),
         "rules": [
@@ -699,6 +786,9 @@ def schema_text(manifest):
     for name, info in manifest["queries"].items():
         params = ", ".join(f"{p}: {d}" for p, d in info["params"].items())
         lines.append(f"  {name}: {info['description']}" + (f" [{params}]" if params else ""))
+    lines.append("")
+    lines.append("functions:")
+    lines.extend(f"  {name}: {meaning}" for name, meaning in manifest["functions"].items())
     lines.append("")
     lines.append("examples:")
     lines.extend(f"  {example}" for example in manifest["examples"])

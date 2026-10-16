@@ -214,6 +214,11 @@ def test_canned_queries_answer_comparisons(store):
     evidence._ensure(store).close()
     for name in evidence.QUERIES:
         params = {"selector": "start"} if name == "values" else {}
+        if name in ("compare", "diff", "outputs"):
+            # Nothing to compare: said plainly, never an empty or one-sided comparison.
+            with pytest.raises(ValueError, match="comparing needs two saved runs"):
+                evidence.run_query(store, name, params)
+            continue
         assert evidence.run_query(store, name, params)["row_count"] == 0
     evidence.record(store, result(starts=("3", "6"), output="PAGE: [40]\n"), label="one")
     evidence.record(store, result(starts=("3", "7"), output="PAGE: [10]\n"), label="two")
@@ -228,6 +233,7 @@ def test_canned_queries_answer_comparisons(store):
             "value_a": "6",
             "value_b": "7",
             "differs": 1,
+            "note": None,
         }
     ]
     assert evidence.run_query(store, "compare", {"a": 2, "b": 2})["rows"][0]["differs"] == 0
@@ -434,3 +440,210 @@ def test_runs_record_the_arguments_the_program_received(store, reported, languag
     evidence.record(store, recorded, language=language)
     args = evidence.query(store, "SELECT args FROM runs")["rows"][0]["args"]
     assert (None if args is None else json.loads(args)) == stored
+
+
+def captured(rows, **probe):
+    """A probe result with explicit (hit, phase, selector, value) rows; by default it
+    asked for exactly the selectors it captured."""
+    recorded = result()
+    recorded["rows"] = [
+        dict(hit=hit, phase=phase, line=8, selector=selector, value=value)
+        for hit, phase, selector, value in rows
+    ]
+    recorded["probe"]["capture"] = list(dict.fromkeys(row[2] for row in rows))
+    recorded["probe"].update(probe)
+    return recorded
+
+
+def test_diff_puts_the_first_real_divergence_first(store):
+    """Capture order, not alphabetical; addresses and one-sided selectors come last."""
+    text_a = '0x000000016bb97aae "the quick brown fox"'
+    text_b = '0x000000016d2c3aae "the quick brown fox"'
+    evidence.record(
+        store,
+        captured(
+            [
+                (1, "observed", "words", "3"),
+                (1, "observed", "in_word", "1"),
+                (1, "observed", "text", text_a),
+                (1, "observed", "totals", "[]"),
+                (2, "observed", "words", "4"),
+                (2, "observed", "in_word", "0"),
+                (2, "observed", "text", text_a),
+                (2, "observed", "totals", "[]"),
+                (3, "observed", "words", "5"),
+                (3, "observed", "in_word", "0"),
+                (3, "observed", "text", text_a),
+                (3, "observed", "totals", "[]"),
+            ]
+        ),
+    )
+    evidence.record(
+        store,
+        captured(
+            [
+                (1, "observed", "words", "3"),
+                (1, "observed", "in_word", "1"),
+                (1, "observed", "text", text_b),
+                (1, "observed", "zeta", "9"),
+                (2, "observed", "words", "4"),
+                (2, "observed", "in_word", "1"),
+                (2, "observed", "text", text_b),
+                (2, "observed", "zeta", "9"),
+            ]
+        ),
+    )
+    rows = evidence.run_query(store, "diff")["rows"]
+    shape = [(r["hit"], r["selector"], r["note"]) for r in rows]
+    assert shape == [
+        (2, "in_word", None),
+        (3, "words", "missing in run b"),
+        (3, "in_word", "missing in run b"),
+        (3, "text", "missing in run b"),
+        (1, "text", "addresses only"),
+        (2, "text", "addresses only"),
+        (None, "totals", "only in run a"),
+        (None, "zeta", "only in run b"),
+    ]
+    assert all(r["differs"] == 1 for r in rows)
+    compared = evidence.run_query(store, "compare")["rows"]
+    # Every row of both runs, in capture order within each hit.
+    assert [r["selector"] for r in compared if r["hit"] == 1] == [
+        "words",
+        "in_word",
+        "text",
+        "totals",
+        "zeta",
+    ]
+    assert {(r["selector"], r["note"]) for r in compared if r["hit"] == 1} >= {
+        ("words", None),
+        ("text", "addresses only"),
+        ("totals", "only in run a"),
+        ("zeta", "only in run b"),
+    }
+
+
+@pytest.mark.parametrize(
+    "value, masked",
+    [
+        ("0x000000016bb97aae", "0x…"),
+        ('0x16fc5ef38 "hi"', '0x… "hi"'),
+        ("<O object at 0x104a3b2c0>", "<O object at 0x…>"),
+        ("0x00005555deadbeef", "0x…"),
+        # NULL, all-ones, sentinels and short hex are values, never addresses: they
+        # still count as differences.
+        ("0x0000000000000000", "0x0000000000000000"),
+        ("0xffffffffffffffff", "0xffffffffffffffff"),
+        ("0x00000000deadbeef", "0x00000000deadbeef"),
+        ("flags=0x80000000", "flags=0x80000000"),
+        ("0x1234", "0x1234"),
+        ("10", "10"),
+        (None, None),
+    ],
+)
+def test_only_pointer_sized_addresses_are_masked(value, masked):
+    assert evidence._no_addresses(value) == masked
+
+
+def test_no_addresses_is_available_to_ad_hoc_sql(store):
+    evidence.record(store, captured([(1, "observed", "p", "0x000000016bb97aae")]))
+    rows = evidence.query(store, "SELECT no_addresses(value) AS v FROM last_run")["rows"]
+    assert rows == [{"v": "0x…"}]
+    assert "no_addresses(text)" in evidence.schema(store)["functions"]
+
+
+def test_runs_show_the_start_of_each_output(store):
+    evidence.record(store, result(output="CHARGED: 566 ORDERS: 30\n" + "x" * 100))
+    [run] = evidence.run_query(store, "runs")["rows"]
+    assert run["output_start"] == ("CHARGED: 566 ORDERS: 30\n" + "x" * 100)[:60]
+
+
+def test_a_null_pointer_is_a_real_divergence(store):
+    """NULL against a live pointer is the first divergence, never 'addresses only'."""
+    evidence.record(
+        store,
+        captured(
+            [
+                (1, "observed", "p.next", "0x00000001051a8660"),
+                (2, "observed", "p.next", "0x00000001051a8aa0"),
+                (3, "observed", "p.next", "0x0000000000000000"),
+            ]
+        ),
+    )
+    evidence.record(
+        store,
+        captured(
+            [
+                (1, "observed", "p.next", "0x00000001056bc660"),
+                (2, "observed", "p.next", "0x0000000000000000"),
+            ]
+        ),
+    )
+    rows = evidence.run_query(store, "diff")["rows"]
+    assert [(r["hit"], r["note"]) for r in rows] == [
+        (2, None),
+        (3, "missing in run b"),
+        (1, "addresses only"),
+    ]
+
+
+def test_a_run_that_never_stopped_is_missing_hits_not_selectors(store):
+    evidence.record(store, captured([(1, "observed", "item", "1"), (2, "observed", "item", "2")]))
+    no_stop = captured([], capture=["item"])
+    no_stop["status"] = "no-stop"
+    evidence.record(store, no_stop)
+    rows = evidence.run_query(store, "diff")["rows"]
+    assert [(r["hit"], r["value_a"], r["note"]) for r in rows] == [
+        (1, "1", "missing in run b"),
+        (2, "2", "missing in run b"),
+    ]
+
+
+def test_comparisons_need_two_runs_that_exist(store):
+    evidence.record(store, captured([(1, "observed", "x", "1")]))
+    with pytest.raises(ValueError, match="run a = None, run b = 1"):
+        evidence.run_query(store, "diff")
+    evidence.record(store, captured([(1, "observed", "x", "2")]))
+    with pytest.raises(ValueError, match="run a = 7"):
+        evidence.run_query(store, "compare", {"a": 7})
+    assert evidence.run_query(store, "compare", {"a": 2, "b": 2})["row_count"] == 1
+    assert evidence.run_query(store, "diff", {"a": 1, "b": 2})["row_count"] == 1
+
+
+def test_values_changed_by_an_intervention_rank_after_real_differences(store):
+    evidence.record(store, captured([(1, "observed", "x", "1"), (2, "observed", "x", "5")]))
+    evidence.record(
+        store,
+        captured(
+            [
+                (1, "observed", "x", "1"),
+                (1, "after-set", "x", "0"),
+                (2, "observed", "x", "6"),
+            ],
+            set=[["x", "0"]],
+        ),
+    )
+    rows = evidence.run_query(store, "diff")["rows"]
+    assert [(r["hit"], r["phase"], r["note"]) for r in rows] == [
+        (2, "observed", None),
+        (1, "after-set", "intervention only in run b"),
+    ]
+
+
+def test_the_text_schema_lists_sql_functions(store):
+    evidence._ensure(store).close()
+    assert "no_addresses(text)" in evidence.schema_text(evidence.schema(store))
+
+
+def test_no_addresses_cannot_outrun_the_query_deadline(store):
+    evidence.record(store, captured([(1, "observed", "x", "1")]))
+    calls = ", ".join(f"length(no_addresses(s)) AS c{i}" for i in range(20))
+    sql = (
+        "WITH RECURSIVE big(s) AS MATERIALIZED (SELECT substr(replace(printf('%.*c', 249000, "
+        "'a'), 'a', '0x1 '), 1, 999000)), r(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM r "
+        f"WHERE i < 100000) SELECT {calls} FROM r, big"
+    )
+    started = time.monotonic()
+    with pytest.raises(ValueError, match="ran longer than"):
+        evidence.query(store, sql, seconds=0.5)
+    assert time.monotonic() - started < 3

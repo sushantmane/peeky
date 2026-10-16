@@ -98,3 +98,21 @@ Verification of cf8cb1f found one regression and one nit, both fixed:
 A final check of f555349 confirmed that debugpy carries `evaluateName` through attributes, method frames, list, tuple and deque elements, nested and subclassed dicts, dataclasses, slots and module globals. It found one should-fix and three nits, all fixed:
 - **Should-fix:** the `session get` listing still offered `imp['a']` next to the impostor's value. Listings and reads now share one rule. A key must be evaluable. An index must be evaluable whenever its siblings are, which catches `{N(): …, 1: …}` where `N.__repr__` returns `1`. Debuggers that mark nothing evaluable (LLDB, java-debug) keep reading indexes. A plain-named evaluable entry is the real key, so the `(id: N)` check and its misleading message are gone.
 - **Nits:** entries debugpy files under "function variables" or "class variables" are named as unreachable instead of reported as missing, and they no longer trip the `len()` partial check (`test_impostor_entries_get_no_selector_and_are_never_read`, `test_entries_debugpy_groups_by_value_type_are_explained`, plus the real-debugpy listing check).
+
+
+## Review of the evidence-diff PR (#45, ce54aa0)
+
+One blocking issue, three should-fix issues and four nits. All are fixed with regression tests:
+- **Blocking:** address masking (`0x` + 8–16 hex digits) also hid NULL, so a list cut short (NULL against a live pointer) was ranked as "addresses only" below later rows. Masking now needs at least 9 significant hex digits and never applies to all-ones values, so NULL, `-1`/`MAP_FAILED` and 8-digit data such as `0xdeadbeef` stay real differences (`test_a_null_pointer_is_a_real_divergence`, plus the masking cases).
+- **Should-fix:** "only in run a/b" was decided from captured rows, so a run that never stopped turned every selector into one empty `only in` row. It is now decided from each run's requested selectors (`runs.capture`, via `json_each`), so such a run shows `missing in run b` for each hit. `diff`, `compare` and `outputs` refuse a missing run, or a store with only one run, with a clear `INVALID_QUERY` (`test_a_run_that_never_stopped_is_missing_hits_not_selectors`, `test_comparisons_need_two_runs_that_exist`).
+- **Should-fix:** `--hits all` with more than 20 selectors exceeded the 2000-row probe budget and failed mid-run. Its cap is now the largest hit count that fits the budget, and the cap warning names it.
+- **Should-fix:** `--hits all --until hits` (the attached-JVM default) could only end at the deadline. That combination is refused up front (`test_hits_all_fits_the_row_budget_and_needs_the_program_to_exit`).
+- **Nits:**
+  - After-set rows from a run with an intervention, compared with a run without one, are noted `intervention only in run b` and ranked after real differences.
+  - The text schema lists `no_addresses`.
+  - Repeated selectors are de-duplicated.
+  - Progress ends with "program finished after N hit(s)", and the docs describe that.
+
+Verification of a63c113 confirmed every fix and found one more should-fix and one nit, both fixed:
+- **Should-fix:** SQLite checks the query deadline only between VM steps, never inside a Python function. So a query calling `no_addresses` 20 times per row on hex-dense text ran 81 s against a 1 s deadline. The function now checks the deadline itself, and masking is a single regex with no Python callback per token (`test_no_addresses_cannot_outrun_the_query_deadline` stops within the bound).
+- **Nit:** the `set_hit` error names the `--hits all` cap.
