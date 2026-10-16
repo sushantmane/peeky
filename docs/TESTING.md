@@ -11,6 +11,7 @@ All five jobs start independently. No build/install job sits ahead of the tests.
 | integration (Python 3.11) | Real debugpy + HTTP + runtime intervention + owned target cleanup | 180s |
 | integration (Python 3.13) | Same integration contract on the newer interpreter | 180s |
 | wheel smoke | Build wheel/sdist, install clean, import and CLI entry points outside source tree | 90s |
+| remote SSH e2e | A second host (Linux container with key-only sshd) reached through a real `ssh -L`: probe, session, tunnel drop and recovery, source-mismatch refusal, worker loss (`tests/remote`, `PEEKY_E2E_DOCKER=1`) | 120s |
 
 Every lane has a four-minute timeout. The goal is <5 minutes of execution wall time for the required checks, ideally <3 minutes. Queue delays are recorded separately and are outside the workflow's control. Cold cache and dependency service availability can affect duration. A timeout is a failure, not evidence that the speed goal was met.
 

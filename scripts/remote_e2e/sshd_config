@@ -1,0 +1,9 @@
+# Key-only login for the test user; the only forward allowed is to the worker port.
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PermitRootLogin no
+PubkeyAuthentication yes
+AllowUsers peeky
+AllowTcpForwarding local
+PermitOpen 127.0.0.1:8765
+X11Forwarding no
