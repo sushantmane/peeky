@@ -459,3 +459,145 @@ def test_function_scopes_are_bounded(tmp_path, monkeypatch):
     monkeypatch.setattr(native, "MAX_DIES", 3)
     with pytest.raises(ValueError, match="Too many debug-info entries"):
         native.function_scopes(info, line, tmp_path, ("app.cpp",))
+
+
+def ownership_dumps(workspace):
+    """main (lines 10-20) inlines helper (lines 2-4, same file) and a std function whose
+    range also covers one of main's own rows; plus an O2-style out-of-line copy whose
+    decl_file sits on its abstract origin, a tombstoned COMDAT copy, a range list, a
+    non-ASCII name and a legacy-mangled Rust symbol."""
+    source = workspace / "app.cpp"
+    info = f""".debug_info contents:
+0x0000000b: DW_TAG_compile_unit
+              DW_AT_name\t("app.cpp")
+0x00000010:   DW_TAG_subprogram
+                DW_AT_name\t("helper")
+                DW_AT_decl_file\t("{source}")
+                DW_AT_decl_line\t(2)
+                DW_AT_inline\t(DW_INL_inlined)
+0x00000018:     DW_TAG_formal_parameter
+                  DW_AT_name\t("x")
+0x00000020:     NULL
+0x00000030:   DW_TAG_subprogram
+                DW_AT_low_pc\t(0x0000000100001000)
+                DW_AT_high_pc\t(0x0000000100001100)
+                DW_AT_name\t("main")
+                DW_AT_decl_file\t("{source}")
+                DW_AT_decl_line\t(10)
+0x00000040:     DW_TAG_inlined_subroutine
+                  DW_AT_abstract_origin\t(0x00000010 "helper")
+                  DW_AT_ranges\t(0x00000000
+                     [0x0000000100001010, 0x0000000100001020)
+                     [0x0000000100001030, 0x0000000100001040))
+0x00000050:       DW_TAG_formal_parameter
+                    DW_AT_abstract_origin\t(0x00000018 "x")
+0x00000058:       NULL
+0x00000060:     DW_TAG_inlined_subroutine
+                  DW_AT_abstract_origin\t(0x000000f0 "write_fmt")
+                  DW_AT_low_pc\t(0x0000000100001050)
+                  DW_AT_high_pc\t(0x0000000100001070)
+0x00000068:     DW_TAG_variable
+                  DW_AT_name\t("total")
+0x00000070:     NULL
+0x00000080:   DW_TAG_subprogram
+                DW_AT_name\t("gr\\303\\266\\303\\237e")
+                DW_AT_decl_file\t("{source}")
+                DW_AT_decl_line\t(30)
+0x00000088:   DW_TAG_subprogram
+                DW_AT_abstract_origin\t(0x00000080 "gr\\303\\266\\303\\237e")
+                DW_AT_low_pc\t(0x0000000100002000)
+                DW_AT_high_pc\t(0x0000000100002010)
+0x00000090:   DW_TAG_subprogram
+                DW_AT_low_pc\t(0x0000000000000000)
+                DW_AT_high_pc\t(0x0000000000000010)
+                DW_AT_name\t("discarded")
+                DW_AT_decl_file\t("{source}")
+0x000000a0:   DW_TAG_subprogram
+                DW_AT_low_pc\t(0x0000000100003000)
+                DW_AT_high_pc\t(0x0000000100003010)
+                DW_AT_linkage_name\t("_ZN5crate5Pager5pages17h0123456789abcdefE")
+                DW_AT_name\t("pages")
+                DW_AT_decl_file\t("{source}")
+0x000000f0:   DW_TAG_subprogram
+                DW_AT_name\t("write_fmt")
+                DW_AT_decl_file\t("/sdk/core/fmt.rs")
+0x000000f8:   NULL
+"""
+    rows = [
+        (0x1000, 10),
+        (0x1010, 3),
+        (0x1020, 11),
+        (0x1030, 4),
+        (0x1040, 12),
+        (0x1058, 13),
+        (0x1070, 20),
+        (0x2000, 31),
+        (0x2008, 32),
+        (0x3000, 40),
+        (0x3008, 41),
+        (0x0, 99),
+    ]
+    line = 'debug_line[0x00000000]\nversion: 4\nfile_names[ 1]:\nname: "app.cpp"\ndir_index: 0\n'
+    line += "Address Line Column File\n"
+    base = 0x100000000
+    line += "".join(
+        f"0x{(base + address) if address else 0:016x} {number} 1 1 0 0 is_stmt\n"
+        for address, number in rows
+    )
+    line += f"0x{base + 0x4000:016x} 41 1 1 0 0 end_sequence\n"
+    return info, line
+
+
+def test_rows_belong_to_the_innermost_function_from_their_own_file(tmp_path):
+    from peeky.native import function_scopes
+
+    (tmp_path / "app.cpp").write_text("\n" * 100)
+    info, line = ownership_dumps(tmp_path)
+    scopes = {s["scope"]: s for s in function_scopes(info, line, tmp_path, ("app.cpp",))}
+    # The inlined same-file callee takes its own lines; main keeps line 13 even though
+    # an inlined std function's range covers it.
+    assert scopes["helper"]["lines"] == [3, 4] and scopes["helper"]["names"] == ["x"]
+    assert scopes["main"]["lines"] == [10, 20] and scopes["main"]["names"] == ["total"]
+    # decl_file found on the abstract origin; octal-escaped UTF-8 names decoded.
+    assert scopes["größe"]["lines"] == [31, 32]
+    # Rust legacy symbols are named as LLDB names their frames.
+    assert scopes["crate::Pager::pages"]["lines"] == [40, 41]
+    # Tombstoned (address 0) copies and SDK functions are never listed.
+    assert set(scopes) == {"helper", "main", "größe", "crate::Pager::pages"}
+
+
+@pytest.mark.parametrize(
+    "linkage, name",
+    [
+        ("_ZN16peeky_pagination4main17h0123456789abcdefE", "peeky_pagination::main"),
+        (
+            "_ZN16peeky_pagination5Pager5pages28_$u7b$$u7b$closure$u7d$$u7d$17h0123456789abcdefE",
+            "peeky_pagination::Pager::pages::{{closure}}",
+        ),
+        (
+            "_ZN62_$LT$peeky_pagination..Pager$u20$as$u20$core..fmt..Display$GT$3fmt"
+            "17h0123456789abcdefE",
+            "<peeky_pagination::Pager as core::fmt::Display>::fmt",
+        ),
+        ("_ZN3geo3Box4areaEv", None),
+        ("_ZN5crate5Pager17h0123E", None),
+        ("_ZN99short17h0123456789abcdefE", None),
+        (None, None),
+    ],
+)
+def test_rust_symbols_are_demangled_like_lldb_frames(linkage, name):
+    from peeky.native import _rust_name
+
+    assert _rust_name(linkage) == name
+
+
+def test_identical_scopes_from_several_units_are_listed_once(tmp_path):
+    from peeky.native import function_scopes
+
+    (tmp_path / "app.cpp").write_text("\n" * 100)
+    info, line = ownership_dumps(tmp_path)
+    second = info.replace("0x000000", "0x000010").replace("(0x00000010 ", "(0x00001010 ")
+    second = second.replace("(0x00000018 ", "(0x00001018 ").replace("(0x000000f0 ", "(0x000010f0 ")
+    second = second.replace("(0x00000080 ", "(0x00001080 ")
+    scopes = function_scopes(info + second, line, tmp_path, ("app.cpp",))
+    assert len(scopes) == 4

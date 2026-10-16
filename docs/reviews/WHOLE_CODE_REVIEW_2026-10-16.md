@@ -116,3 +116,18 @@ One blocking issue, three should-fix issues and four nits. All are fixed with re
 Verification of a63c113 confirmed every fix and found one more should-fix and one nit, both fixed:
 - **Should-fix:** SQLite checks the query deadline only between VM steps, never inside a Python function. So a query calling `no_addresses` 20 times per row on hex-dense text ran 81 s against a 1 s deadline. The function now checks the deadline itself, and masking is a single regex with no Python callback per token (`test_no_addresses_cannot_outrun_the_query_deadline` stops within the bound).
 - **Nit:** the `set_hit` error names the `--hits all` cap.
+
+## Review of the compiled-describe PR (#46, 59947ce)
+
+One blocking issue, three should-fix issues and three nits. All are fixed:
+- **Blocking:** Rust scopes read the whole binary's debug info, which is mostly std. That was 4.8 MB of line table on Linux, over the 2 MB cap, so the Rust CI lane failed. On macOS it was 16.7 MB of DIEs, at the 16 MB cap. `RustSession.function_scopes` now dumps only the application units `prepare` already selected (per-unit `--debug-info=0x…` and `--debug-line=0x…`), which takes 0.8 s for the example crate.
+- **Should-fix:**
+  - Text `describe` prints `function names: unavailable (reason)`.
+  - Spans no longer absorb inlined callees. Each line-table row belongs to the innermost function or inlined call, from the row's own file, whose address range (`low_pc`/`high_pc` or a multi-line `DW_AT_ranges`) covers it. So an inlined same-file helper keeps its lines (and is listed), and std code inlined around the caller's rows does not take them.
+  - `decl_file` is the first one found along the origin chain, so optimized out-of-line constructors are listed.
+- **Nits:**
+  - Names are decoded from dwarfdump's octal escapes (`größe`, `zähler`).
+  - Rust legacy symbols are named as LLDB names their frames (`peeky_pagination::Pager::pages`, `<peeky_pagination::Pager as core::fmt::Display>::fmt`, `…::{{closure}}`). This matches the probe's `function` column instead of DWARF's `{impl#0}`.
+  - Copies are merged through their declaring DIE (C1/C2 constructors, inlined plus out-of-line copies). Identical entries from several units are listed once. Address-0 and tombstoned copies are skipped.
+
+Regression tests: `test_rows_belong_to_the_innermost_function_from_their_own_file`, `test_rust_symbols_are_demangled_like_lldb_frames` and `test_identical_scopes_from_several_units_are_listed_once`. The reviewer's C++ `always_inline`, C++ -O2 constructor, non-ASCII and Rust impl/closure/trait/`#[inline(always)]` cases were rerun with real toolchains.

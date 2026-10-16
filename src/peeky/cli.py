@@ -512,6 +512,8 @@ def _describe_text(manifest):
         qualified = [name for name, kind in views.items() if kind != "unqualified"]
         lines.append(f"qualified enum views: {', '.join(qualified) or 'none'}")
         lines.append(f"other enum types (shown opaque, not decoded): {len(views) - len(qualified)}")
+    if reason := manifest.get("scopes_unavailable"):
+        lines.append(f"function names: unavailable ({reason})")
     for scope in manifest.get("scopes", ()):
         if scope.get("omitted"):
             lines.append(f"... {scope['omitted']} more scopes not listed (first 300 shown)")

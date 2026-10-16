@@ -83,14 +83,14 @@ probe: peeky probe examples/pagination_bug.py --at pagination_bug.py:<line> [--r
 
 For a large module, `--json` and `jq` find a function quickly: `peeky describe dir --at module.py --json | jq '.scopes[] | select(.scope | test("is_private"))'`.
 
-C, C++ and Rust list the same from the build's debug information: each function in your sources, with its file, lines and parameters and locals. Closures and lambdas are listed under their function:
+C, C++ and Rust list the same from the build's debug information: each function in your sources, with its file, lines and parameters and locals. Functions carry the names that probes show in their `function` column (Rust: `crate::Type::method`, `<crate::Type as core::fmt::Display>::fmt`). Closures and lambdas are listed under their function. A function inlined into another (`#[inline(always)]`, `always_inline`) keeps its own lines. If the debug information cannot be read, the text says `function names: unavailable (reason)`:
 
 ```
 names in parse_count (pagination_bug.c:6-14): end, minimum, result, text, value
 names in main (pagination_bug.c:16-31): argc, argv, end, i, items, page, page_size, start, total
 
 names in peeky_pagination::main (src/main.rs:22-41): args, end, mode, none, request, some, start, values
-names in peeky_pagination::main::{closure#0} (src/main.rs:37-37): index
+names in peeky_pagination::main::{{closure}} (src/main.rs:37-37): index
 ```
 
 ### 1.2 First Probe

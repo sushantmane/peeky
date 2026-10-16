@@ -33,7 +33,13 @@ from peeky.build import (
     real_tool,
 )
 from peeky.compiled_verification import CompiledVerification
-from peeky.native import NativeSession, _path_name, module_identity
+from peeky.native import (
+    NativeSession,
+    _metadata,
+    _path_name,
+    function_scopes,
+    module_identity,
+)
 from peeky.rust_ir import memory_locals
 from peeky.rust_manifest import assert_cargo_ancestry_clear, validate_cargo_inputs
 from peeky.rust_symbols import UNVERIFIED, active_variant, application_symbols
@@ -497,6 +503,7 @@ class RustTarget:
             )
             session.test_binary = test_binary
             session.test_target = prepared.workspace / uplift
+            session.units = tuple(units)
             session.assert_current()
             return session
         except BaseException as exc:
@@ -561,6 +568,33 @@ class RustSession(NativeSession):
     @property
     def layouts(self):
         return json.loads(self._layouts_data)
+
+    units = ()
+
+    def function_scopes(self):
+        """Functions of the application units only, as `prepare` read them: the whole
+        binary's debug info is mostly the standard library (megabytes)."""
+        dwarfdump = _absolute_tool(self.target.dwarfdump, "dwarfdump")
+        env = dict(self.prepared.manifest.effective_environment)
+        workspace, symbols = self.prepared.workspace, str(self.symbols)
+        infos, tables = [], []
+        for unit in self.units:
+            tables.append(
+                _metadata(
+                    dwarfdump, [f"--debug-line=0x{unit.stmt_list:08x}", symbols], workspace, env
+                )
+            )
+            infos.append(
+                _metadata(
+                    dwarfdump,
+                    [f"--debug-info=0x{unit.die:08x}", "--show-children", symbols],
+                    workspace,
+                    env,
+                )
+            )
+        if not infos:
+            raise ValueError("No application units were recorded for this build")
+        return function_scopes("\n".join(infos), "\n".join(tables), workspace, tuple(self.lines))
 
     def launch_args(self, program, root, args=None):
         return {
