@@ -528,6 +528,9 @@ def dependency_paths(text, base):
     joined = re.sub(r"\\\r?\n", " ", text)
     found = []
     for line in joined.splitlines():
+        if line.lstrip().startswith("#"):
+            # rustc's `# env-dep:NAME=value` notes; a literal `#` in a path is `\#`.
+            continue
         match = re.search(r"(?<!\\):(?:\s|$)", line)
         if not match:
             continue

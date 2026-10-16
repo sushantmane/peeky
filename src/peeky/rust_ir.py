@@ -5,24 +5,33 @@ in an SSA register. For the debugger it stores a copy in a stack slot named
 `<name>.dbg.spill`; LLDB shows and writes that copy, but the program never reads it,
 so changing it would report a successful intervention that changed nothing.
 Locals the program really keeps in memory are declared on an ordinary alloca.
+`#[inline(always)]` functions are inlined even at opt-level 0: their declarations
+carry an `inlinedAt` location and renamed slots (`x.dbg.spill.i`), and are never
+treated as provably in memory.
 """
 
 import re
 
 MAX_IR_BYTES = 256 * 1024 * 1024
 _ENTRY = re.compile(
-    r"^(![0-9]+) = (?:distinct )?!(DILocalVariable|DISubprogram|DILexicalBlock|DILexicalBlockFile)\((.*)\)\s*$"
+    r"^(![0-9]+) = (?:distinct )?!(DILocalVariable|DISubprogram|DILexicalBlock"
+    r"|DILexicalBlockFile|DILocation)\((.*)\)\s*$"
 )
 _FIELD = {
     "name": re.compile(r'(?:^|, )name: "((?:[^"\\]|\\.)*)"'),
     "scope": re.compile(r"(?:^|, )scope: (![0-9]+)"),
     "linkage": re.compile(r'(?:^|, )linkageName: "([^"]*)"'),
+    "inlined": re.compile(r"(?:^|, )inlinedAt: (![0-9]+)"),
 }
+# (pointer, variable, location); the location is the record's last operand.
 _DECLARES = (
-    re.compile(r"#dbg_declare\(ptr %([-\w.$]+), (![0-9]+),"),
-    re.compile(r"@llvm\.dbg\.declare\(metadata ptr %([-\w.$]+), metadata (![0-9]+),"),
+    re.compile(r"#dbg_declare\(ptr %([-\w.$]+), (![0-9]+), .*, (![0-9]+)\)\s*$"),
+    re.compile(
+        r"@llvm\.dbg\.declare\(metadata ptr %([-\w.$]+), metadata (![0-9]+), .*\), "
+        r"!dbg (![0-9]+)"
+    ),
 )
-_SPILL = re.compile(r"\.dbg\.spill[0-9]*$")
+_SPILL = re.compile(r"\.dbg\.spill")
 _HASH = re.compile(r"17(h[0-9a-f]{16})E$")
 
 
@@ -51,9 +60,10 @@ def memory_locals(path):
                 continue
             for pattern in _DECLARES:
                 if found := pattern.search(line):
-                    declares.append((found[1], found[2]))
+                    declares.append((found[1], found[2], found[3]))
+                    break
     result = {}
-    for pointer, variable in declares:
+    for pointer, variable, location in declares:
         kind, fields = entries.get(variable, (None, {}))
         if kind != "DILocalVariable" or "name" not in fields:
             continue
@@ -61,8 +71,10 @@ def memory_locals(path):
         hashed = _HASH.search(function or "")
         if not hashed:
             continue
+        where = entries.get(location, (None, {}))
+        real = not _SPILL.search(pointer) and where[0] == "DILocation" and "inlined" not in where[1]
         key = (hashed[1], fields["name"])
-        result[key] = result.get(key, True) and not _SPILL.search(pointer)
+        result[key] = result.get(key, True) and real
     return result
 
 
