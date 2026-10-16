@@ -364,3 +364,43 @@ def test_pause_guard_resumes_breakpoints_but_never_crash_stops(native_worker, tm
     assert len(worker.auto_resumed) == 1
     snapshot = client.call("inspect", **session, stop_id=crash["stop_id"])
     assert snapshot["frames"][0]["line"] == line + 2
+
+
+def test_caller_frames_outside_the_program_are_request_errors(native_worker):
+    start, _, first, _ = native_worker
+    client, _ = start()
+    _, session, context, snapshot = launch(client, first)
+    frames = client.call("inspect", **context)["frames"]
+    outside = [
+        frame
+        for frame in frames[1:]
+        if not str(frame.get("source", {}).get("path", "")).endswith("/branch_bug.c")
+    ]
+    if not outside:
+        pytest.skip("the debugger listed no frame outside the program")
+    with pytest.raises(HTTPError) as caught:
+        client.call("inspect", **context, frame_id=outside[-1]["id"])
+    error = json.load(caught.value)["error"]
+    assert caught.value.code == 400 and error["session_closed"] is False
+    assert "not in the prepared program's sources" in error["message"]
+    assert client.call("inspect", **context)["frames"][0]["line"] == first
+    client.call("close", **session)
+
+
+def test_cpp_programs_link_the_cpp_standard_library(tmp_path, native_config, capsys):
+    from peeky.cli import main
+
+    source = tmp_path / "words.cpp"
+    source.write_text(
+        "#include <iostream>\n#include <string>\n#include <vector>\n"
+        "int main() {\n"
+        '  std::vector<std::string> words{"a", "bb"};\n'
+        "  int n = static_cast<int>(words.size());\n"
+        "  std::cout << n << words[1] << std::endl;\n"
+        "  return 0;\n"
+        "}\n"
+    )
+    code = main(["probe", str(source), "--at", "7", "--capture", "n", "--json", "--no-save"])
+    result = json.loads(capsys.readouterr().out)
+    assert code == 0, result.get("error")
+    assert result["rows"][0]["value"] == "2" and "2bb" in result["output"]

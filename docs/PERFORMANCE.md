@@ -55,3 +55,25 @@ Ten sequential repetitions on one stopped C++ process using Apple LLVM21, each s
 | Complete sequence | 437.95 | 450.80 |
 
 [Raw samples and tool versions](performance/cpp-2026-10-14.json). The sequence inspects pagination_bug.cpp at OBSERVE, expands pagination, then items and its raw storage member (three values). Each expansion revalidates provenance and resolves its ancestry. Profile those costs before caching or batching; optimizations must retain identity and invalidation guarantees.
+
+## Where a probe's time goes, 2026-10-16
+
+Measured with `python scripts/profile_probe.py <target> --at <line> --capture <names> --runs N` on macOS arm64 (Apple Silicon), Python 3.13, debugpy 1.8.22 and Apple LLVM. The script splits wall time into CPU used by Peeky itself (all of its threads), CPU of child processes (compilers, adapters, debuggee; descendants are counted once reaped) and the rest (waiting). Only Peeky's own CPU could shrink by rewriting Peeky in another language.
+
+| Probe (examples) | Wall | Peeky CPU | Child CPU | Mostly |
+| --- | ---: | ---: | ---: | --- |
+| Python `pagination_bug.py:8` | ~1.0 s | 5 ms | ~50 ms | waiting: 0.15 s debugpy launch, 0.11 s to the first stop, 0.73 s for the program to exit |
+| C `pagination_bug.c:24`, before | failed | | | the auto-detected build also linked `branch_bug.c` (duplicate `main`) |
+| C, after | 0.65 s | 0.10 s | 0.40 s | clang, dsymutil, lldb-dap |
+| C++ `pagination_bug.cpp`, before | 2.28 s | 1.72 s | 0.48 s | rehashing clang (125 MB) 32 times: 4 GB of SHA-256 |
+| C++, after | 0.73 s | 0.10 s | 0.47 s | clang, dsymutil, lldb-dap |
+| Rust `examples/rust:36`, before | 1.35 s | 0.50 s | 0.82 s | cargo build; rehashing cargo (32 MB) 30 times |
+| Rust, after | 1.04 s | 0.16 s | 0.79 s | cargo build, dsymutil, dwarfdump, lldb-dap |
+| Java, 8 hits on a loop line, before | 1.61 s | | | 120 ms pause per hit: each check walked and rehashed the 273-file adapter bundle, about 6 checks per hit |
+| Java, after | 0.58 s | | | 9.9 ms pause per hit |
+
+Each debugger operation (inspect, continue, report) went from 58 ms to 0.8 ms for C++ and from 17 ms to 5 ms for Rust, because provenance checks no longer rehash unchanged toolchain binaries (see `src/peeky/digest.py`). This also explains the 62–129 ms C++ inspect and expansion times in the 2026-10-14 microbaseline above. Java reuses its verified adapter bundle while a stat fingerprint of the whole bundle tree is unchanged, which cut the time a paused JVM waits per hit by 12×. That matters for tests with timeouts and for the 10 s pause budget of attached JVMs.
+
+**Python probes:** about 0.5 s of the 0.73 s exit wait is inside debugpy. At exit, pydevd's CheckAliveThread and CommandThread each wait for the other with a 0.5 s timeout ("The following pydb threads may not have finished correctly: pydevd.CommandThread" in a `PYDEVD_DEBUG` log), so the process exits half a second late. Nothing Peeky sends triggers it, and no Peeky implementation can avoid it while it waits for the program's real exit, which it does to report complete output. `--until hits` ends the probe right after the last hit when the output is not needed.
+
+**Rewriting Peeky in Rust:** after these fixes, Peeky's own CPU is about 0.5% of a Python probe and 10–15% of a compiled one. Interpreter start plus imports adds about 40 ms per `peeky` command. A Rust implementation could save at most those amounts. Most of the remaining time belongs to compilers, debug adapters and the program, and they take the same time whichever language calls them. This supports [ADR 0003](adr/0003-measure-before-rewriting.md).

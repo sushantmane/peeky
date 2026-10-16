@@ -26,6 +26,7 @@ from peeky.build import (
     Command,
     assert_current,
     prepare,
+    real_tool,
 )
 
 MAX_METADATA = 2 * 1024 * 1024
@@ -40,7 +41,7 @@ def _tool(name):
     path = shutil.which(name)
     if not path:
         raise ValueError(f"Missing native tool: {name}")
-    return str(Path(path).resolve(strict=True))
+    return str(real_tool(path))
 
 
 def _path_name(name, suffix):
@@ -373,7 +374,10 @@ class NativeTarget:
                 else "Native candidate edits require a declared C++ source"
             )
         compiler, adapter, dwarfdump = map(_tool, (self.compiler, self.adapter, self.dwarfdump))
-        flags = list(self.compiler_options)
+        # The compiler path is resolved (clang++ is a symlink to clang), and clang picks
+        # its language from the name it runs as; keep C++ mode so libc++ is linked.
+        driver = ("--driver-mode=g++",) if self.language == "cpp" else ()
+        flags = [*driver, *self.compiler_options]
         if self.sysroot is not None:
             sdk = Path(self.sysroot).resolve(strict=True)
             if not sdk.is_dir():
@@ -386,7 +390,7 @@ class NativeTarget:
             Command((compiler, *flags, "-c", source, "-o", obj))
             for source, obj in zip(self.sources, objects)
         ]
-        link_flags = ("-isysroot", str(sdk)) if self.sysroot is not None else ()
+        link_flags = (*driver, *(("-isysroot", str(sdk)) if self.sysroot is not None else ()))
         if sys.platform == "linux":
             link_flags = (*link_flags, "-Wl,--build-id=sha1")
         commands.append(Command((compiler, *link_flags, *objects, "-o", "program")))

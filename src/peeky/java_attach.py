@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from peeky.adapters import PythonAdapter
-from peeky.java import SCALAR, JavaSession, _bundle, _hash, _tool
+from peeky.java import JavaSession, _bundle, _hash, _tool
 from peeky.java_metadata import MAX_CLASS_BYTES, _class_metadata
 
 MAX_ATTACH_SOURCES = 64
@@ -37,12 +37,15 @@ def _inside(root, name, label):
     return path
 
 
-def attached_source_map(class_roots, sources, deadline=None):
+def attached_source_map(class_roots, sources, deadline=None, identities=None):
     """Map only classes whose package and SourceFile identify a declared source.
 
     Only each declared source's package directory is read in every class root, so
     large projects stay bounded. Ambiguous or duplicate identities fail closed.
+    ``identities`` (a dict) receives the SHA-256 of exactly the bytes that were
+    parsed, so a rebuild after parsing cannot become the provenance baseline.
     """
+    identities = {} if identities is None else identities
     packages, counts, source_bytes = {}, {}, 0
     for source in sources:
         if deadline is not None and time.monotonic() >= deadline:
@@ -53,7 +56,9 @@ def attached_source_map(class_roots, sources, deadline=None):
         source_bytes += size
         if size > MAX_CLASS_BYTES or source_bytes > MAX_ATTACH_BYTES:
             raise ValueError("Attached Java sources exceed their size limit")
-        text = source.read_text(encoding="utf-8")
+        raw = source.read_bytes()
+        identities[str(source)] = hashlib.sha256(raw).hexdigest()
+        text = raw.decode("utf-8")
         match = _PACKAGE.search(text[:65536])
         package = match[1] if match else ""
         key = (package, source.name)
@@ -86,7 +91,8 @@ def attached_source_map(class_roots, sources, deadline=None):
                 total += size
                 if size > MAX_CLASS_BYTES or total > MAX_ATTACH_BYTES:
                     raise ValueError("Attached class metadata exceeds its size limit")
-                internal, source_name, lines = _class_metadata(path.read_bytes())
+                data = path.read_bytes()
+                internal, source_name, lines = _class_metadata(data)
                 if path.relative_to(class_root).as_posix() != internal + ".class":
                     raise ValueError("Class file path does not match binary identity")
                 source = packages.get((package, source_name))
@@ -98,6 +104,7 @@ def attached_source_map(class_roots, sources, deadline=None):
                 if lines and lines[-1] > counts[source]:
                     raise ValueError("Class lines exceed the declared source; rebuild or resync")
                 classes[binary] = {"path": str(source), "lines": lines, "class_file": str(path)}
+                identities[str(path)] = hashlib.sha256(data).hexdigest()
                 if len(classes) > MAX_ATTACH_CLASSES:
                     raise ValueError("Too many attached classes")
     if not classes:
@@ -123,8 +130,9 @@ class JavaAttachTarget:
             raise ValueError("Java attach is loopback-only; tunnel remote JVMs over SSH")
         if type(self.port) is not int or not 1 <= self.port <= 65535:
             raise ValueError("Java attach port must be 1..65535")
-        if type(self.timeout_ms) is not int or not 1000 <= self.timeout_ms <= 30000:
-            raise ValueError("Java attach timeout must be 1000..30000 ms")
+        # The worker waits at most 15 s for the adapter to attach.
+        if type(self.timeout_ms) is not int or not 1000 <= self.timeout_ms <= 15000:
+            raise ValueError("Java attach timeout must be 1000..15000 ms")
         for field, limit in ((self.sources, MAX_ATTACH_SOURCES), (self.class_roots, 32)):
             if not isinstance(field, tuple) or not 0 < len(field) <= limit:
                 raise ValueError("Declare bounded nonempty sources and class roots")
@@ -167,13 +175,14 @@ class JavaAttachTarget:
         java = _tool(self.java)
         bundle = Path(self.bundle).resolve(strict=True)
         command, bundle_hash = _bundle(bundle, java)
-        mapping = attached_source_map(class_roots, sources, deadline)
+        parsed = {}
+        mapping = attached_source_map(class_roots, sources, deadline, parsed)
         workspace = Path(tempfile.mkdtemp(prefix="peeky-java-attach-"))
         try:
             path = workspace / "peeky-source-map.json"
             path.write_text(json.dumps(mapping, sort_keys=True))
             return JavaAttachSession(
-                self, root, java, bundle, command, bundle_hash, path, workspace
+                self, root, java, bundle, command, bundle_hash, path, workspace, parsed
             )
         except BaseException:
             shutil.rmtree(workspace, ignore_errors=True)
@@ -192,7 +201,9 @@ class JavaAttachSession(JavaSession):
     terminate_debuggee = False
     provenance = "attached"
 
-    def __init__(self, target, root, java, bundle, command, bundle_hash, mapping_path, workspace):
+    def __init__(
+        self, target, root, java, bundle, command, bundle_hash, mapping_path, workspace, parsed
+    ):
         self.target, self.root, self.java, self.bundle = target, root, java, bundle
         self.workspace = workspace
         self._command = (*command, str(mapping_path))
@@ -200,7 +211,10 @@ class JavaAttachSession(JavaSession):
         self._mapping_data = mapping_path.read_bytes()
         self.mapping_path = mapping_path
         self.mapping_hash = _hash(mapping_path)
-        self._identities = self._current_identities()
+        # The baseline is the bytes the line tables came from, not a later re-read.
+        self._identities = {name: parsed[name] for name in self._identity_files()}
+        if self._current_identities() != self._identities:
+            raise RuntimeError("Attached sources or classes changed while attaching; re-attach")
         self.manifest_id = hashlib.sha256(
             json.dumps(
                 {
@@ -214,10 +228,13 @@ class JavaAttachSession(JavaSession):
             ).encode()
         ).hexdigest()
 
-    def _current_identities(self):
+    def _identity_files(self):
         files = {str(self.root / name) for name in self.target.sources}
         files |= {entry["class_file"] for entry in self.mapping["classes"].values()}
-        return {name: _hash(Path(name)) for name in sorted(files)}
+        return sorted(files)
+
+    def _current_identities(self):
+        return {name: _hash(Path(name)) for name in self._identity_files()}
 
     @property
     def lines(self):
@@ -257,9 +274,8 @@ class JavaAttachSession(JavaSession):
     def normalize_capabilities(self, raw):
         return {**super().normalize_capabilities(raw), "supports_attach": True}
 
-    def validate_value(self, value):
-        if not isinstance(value, str) or not SCALAR.fullmatch(value):
-            raise ValueError("Java mutation requires a numeric or boolean scalar literal")
+    def _line_key(self, program):
+        return Path(program).resolve(strict=True).relative_to(self.root).as_posix()
 
     def assert_current(self):
         try:

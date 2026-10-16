@@ -143,3 +143,33 @@ def test_attach_configuration_is_loopback_only_and_bounded(tmp_path):
         with pytest.raises(ValueError):
             JavaAttachTarget(**{**base, **change})
     time.sleep(0)
+
+
+def test_a_class_rebuilt_while_attaching_is_refused(attached, monkeypatch):
+    import peeky.java_attach as java_attach
+
+    root, target, _, _ = attached
+    real = java_attach._class_metadata
+
+    def parse_then_rebuild(data):
+        parsed = real(data)
+        for path in (root / "classes").rglob("PaginationBug.class"):
+            path.write_bytes(path.read_bytes() + b"\0")  # a later rebuild
+        return parsed
+
+    import tempfile
+
+    workspaces = set(Path(tempfile.gettempdir()).glob("peeky-java-attach-*"))
+    monkeypatch.setattr(java_attach, "_class_metadata", parse_then_rebuild)
+    with pytest.raises(RuntimeError, match="changed while attaching"):
+        target.prepare(root / SOURCE, root)
+    assert set(Path(tempfile.gettempdir()).glob("peeky-java-attach-*")) == workspaces
+
+
+def test_attach_timeouts_fit_the_worker_wait(tmp_path):
+    from peeky.java_attach import JavaAttachTarget
+
+    base = {"bundle": tmp_path, "port": 5005, "sources": ("A.java",), "class_roots": ("c",)}
+    assert JavaAttachTarget(**base, timeout_ms=15000).timeout_ms == 15000
+    with pytest.raises(ValueError, match="1000..15000"):
+        JavaAttachTarget(**base, timeout_ms=15001)

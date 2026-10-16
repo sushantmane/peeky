@@ -21,8 +21,14 @@ import time
 from pathlib import Path
 
 from peeky.client import Client
+from peeky.errors import PeekyError
 from peeky.verification import __file__ as verification_script
 from peeky.worker import load_java_target, load_native_target, load_rust_target, make_server
+
+# Worker refusals that happen before anything changes: the step failed, the run goes on.
+RECOVERABLE_STEP_ERRORS = frozenset(
+    {"INVALID_REQUEST", "INVALID_BREAKPOINT", "MUTATION_REJECTED", "NOT_FOUND", "UNSUPPORTED"}
+)
 
 ROOT = Path.cwd()
 SCHEMA = {
@@ -471,8 +477,21 @@ class Investigation:
                     else:
                         raise ValueError("Unknown action")
                     entry["result"] = result
+                except PeekyError as exc:
+                    entry["error"] = str(exc)
+                    entry["error_code"] = exc.error_code
+                    if exc.error_code not in RECOVERABLE_STEP_ERRORS:
+                        # Uncertain outcomes stay fatal; keep the decision that caused them.
+                        self.report["steps"].append(entry)
+                        self.save()
+                        raise
                 except (ValueError, KeyError) as exc:
                     entry["error"] = str(exc)
+                except Exception as exc:
+                    entry["error"] = str(exc)
+                    self.report["steps"].append(entry)
+                    self.save()
+                    raise
                 # Transport timeouts/errors are fatal: never blindly repeat an uncertain mutation.
                 self.report["steps"].append(entry)
                 self.save()

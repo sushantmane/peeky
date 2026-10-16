@@ -228,7 +228,7 @@ def _resolve(path, program, line, config):
         root = path.parent
         data = {
             "language": language,
-            "sources": tuple(sorted(p.name for p in root.iterdir() if p.suffix in suffixes)),
+            "sources": _native_sources(root, path.name, suffixes),
             "headers": tuple(sorted(p.name for p in root.iterdir() if p.suffix in headers)),
             **native_tools(language),
         }
@@ -241,6 +241,29 @@ def _resolve(path, program, line, config):
     raise ValueError(
         "Cannot detect the target; pass a .py/.c/.cpp file, a Cargo crate, or --config"
     )
+
+
+_MAIN = re.compile(rb"^[ \t]*(?:int|void)[ \t\n]+main[ \t]*\(", re.MULTILINE)
+
+
+def _native_sources(root, target, suffixes):
+    """Sources to build for an auto-detected C/C++ file.
+
+    A directory may hold one program split over several files, or several programs.
+    Every file defining `main` is a separate program, so only the target's own `main`
+    is linked with the files that have none.
+    """
+    sources = sorted(p.name for p in root.iterdir() if p.suffix in suffixes and p.is_file())
+    mains = [name for name in sources if _MAIN.search((root / name).read_bytes()[:4_000_000])]
+    if len(mains) <= 1:
+        return tuple(sources)
+    if target not in mains:
+        raise ValueError(
+            f"{root} holds several programs (main is defined in {', '.join(mains[:10])}); pass "
+            "the file that defines the program's main as the target, or use --config with "
+            "explicit sources"
+        )
+    return tuple(name for name in sources if name == target or name not in mains)
 
 
 def adapter_for(language, data):
