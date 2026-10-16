@@ -557,6 +557,14 @@ def main():
                 execution = RustVerification(target, source_root)
         except (OSError, ValueError, TypeError) as exc:
             parser.error(str(exc))
+        from peeky.worker import optimization_level
+
+        if level := optimization_level(getattr(target, "target_identity", None)):
+            # Investigations require a runtime intervention, which optimized builds refuse.
+            parser.error(
+                f"peeky-agent needs an unoptimized build (this target is {level}); "
+                "remove optimization/opt_level from the config"
+            )
     source, check = (source_root / args.program).resolve(), (source_root / args.check).resolve()
     destination = Path(args.output).resolve()
     if destination.exists() and any(destination.iterdir()):

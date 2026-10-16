@@ -124,3 +124,44 @@ def test_optimized_sessions_say_so_and_never_show_placeholders_as_values(
     assert main(["session", "set", "b=5", "--json"]) == 2
     assert json.loads(capsys.readouterr().out)["error"]["code"] == "MUTATION_REJECTED"
     assert main(["session", "close"]) == 0
+
+
+def test_describe_and_agent_reflect_that_optimized_builds_refuse_changes(
+    tmp_path, capsys, monkeypatch
+):
+    import json
+    import sys
+
+    from peeky import agent
+    from peeky.cli import main
+
+    adapter = target("c", "O2")
+    (tmp_path / "opt.c").write_text(SOURCE)
+    (tmp_path / "check.py").write_text("print('PASS')\\n")
+    config = tmp_path / "native.json"
+    config.write_text(
+        json.dumps(
+            {
+                "language": "c",
+                "sources": ["opt.c"],
+                "compiler": adapter.compiler,
+                "adapter": adapter.adapter,
+                "dwarfdump": adapter.dwarfdump,
+                "dsymutil": adapter.dsymutil,
+                "sysroot": adapter.sysroot,
+                "optimization": "O2",
+            }
+        )
+    )
+    assert (
+        main(["describe", str(tmp_path), "--config", str(config), "--at", "opt.c", "--json"]) == 0
+    )
+    manifest = json.loads(capsys.readouterr().out)
+    assert manifest["optimized"] == "-O2" and manifest["mutable_types"].startswith("none")
+    argv = ["peeky-agent", "--root", str(tmp_path), "--program", "opt.c", "--check", "check.py"]
+    argv += ["--native-config", str(config), "--output", str(tmp_path / "out")]
+    monkeypatch.setattr(sys, "argv", argv)
+    monkeypatch.setattr(agent.shutil, "which", lambda name: "/usr/bin/true")
+    with pytest.raises(SystemExit) as stopped:
+        agent.main()
+    assert stopped.value.code == 2 and "needs an unoptimized build" in capsys.readouterr().err

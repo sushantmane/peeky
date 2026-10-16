@@ -394,6 +394,13 @@ def describe(args):
             "java": "numeric/boolean root locals",
             "java-attach": "numeric/boolean root locals (attached JVM; no edit verification)",
         }[language]
+        from peeky.probe import optimization_level
+
+        if level := optimization_level(manifest.get("target_identity")):
+            manifest["optimized"] = level
+            manifest["mutable_types"] = f"none: changes are refused in optimized builds ({level})"
+            # Enum views are opaque in optimized builds; none is qualified.
+            manifest.pop("value_views", None)
     budget = _max_pause(None, language)
     manifest["timing"] = {
         "probe_pause": "milliseconds per hit; safe for programs with timeouts",

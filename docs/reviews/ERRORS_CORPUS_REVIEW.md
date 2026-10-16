@@ -127,3 +127,9 @@ The reviewer confirmed:
 - No real value can match the placeholder pattern; LLDB quotes strings and starts pointers with `0x`.
 - Expanded children and session `get` are covered.
 - `verify` builds with the same flags as the debugged build.
+
+**Verification review of 84e6491:** no blocking issues; all four earlier fixes were confirmed. Two follow-ups are fixed:
+- **Medium:** `peeky-agent` could never succeed on an optimized target, because it requires an intervention. It now rejects optimized configs up front with a clear message.
+- **Low:** `describe` still advertised changeable locals and qualified enum views for optimized builds. It now reports `optimized`, `mutable_types: none ...`, and no enum views.
+
+Both have real-build regressions in `tests/native/test_native_optimized.py`.
