@@ -286,3 +286,5 @@ The review confirmed the main-method cases, attach paths, source-map stability, 
 - **Nit:** a method reference compiled to a lambda (`int[]::new`) has no line of its own. The warning now says so and points to `session step --into`.
 
 Test: `test_a_shared_line_warns_which_method_stops_and_which_never_does` (real JVM: `main`, the static initializer's lambda, nested lambdas, and a lambda's own line).
+
+Verification of 009148e had no blocking or should-fix findings. Every warning named the method that actually stopped, for the static field, `static {}`, enum constants, nested lambdas and `int[]::new` (javac). ECJ, which lists `<clinit>` first, was also right, and so were ordinary code (field initializers across constructors, record and enum headers, bridges, inner and anonymous classes). The cookbook example now names `needsRestock` as the method that stops.
