@@ -309,3 +309,22 @@ The review confirmed every type name and range against lldb-dap (LLDB 18, 20 and
 Verification of 7b7f7d0 found no blocking issues. The bitfield bindings and the typedef-float case behaved as intended on lldb-dap 18, 20 and 21, on Linux and macOS: refused or unchanged writes keep the session, and lossy ones close it. Setting a value to what it already is, Rust values read back through `mutation_value`, and failed writes in debugpy and java-debug all checked out. Two remaining items are fixed:
 - **Should-fix (low):** the comment and this review doc credited the memory-location check with catching bitfield bindings. lldb-dap 20 gives them a `memoryReference` too. Both now say the read-back is the guarantee everywhere.
 - **Nit:** a refusal now carries the debugger's reason from DAP's `body.error.format` (`Cannot change the value of a constant`) instead of "Debugger request failed".
+
+## Review of CUDA phase 0 (#67, c4159aa)
+
+No GPU was available, so the reviewer ran `qualify.py` in the Linux CI image with fake `nvcc`, `compute-sanitizer` and `cuda-gdb` wrappers, and `tests/gdb` five times against GDB 15.1. It confirmed the launch sequence, including 15.1's harmless `notStopped` refusal of `configurationDone`. It reported one high and one medium issue, both fixed:
+- **High:** a debugger that timed out, died, or refused `launch` produced a passing report. DAP checks were added only after each step succeeded, and `passed` covered only the checks that had been recorded. With a working build and sanitizer, a cuda-gdb whose kernel stop never came printed only PASS lines and exited 0. Now:
+  - every DAP check starts as False (`DAP_CHECKS`), and so does `debugger_started`;
+  - a refused `launch` ends the launch at once, rather than waiting for a stop that cannot come;
+  - continuing to exit tolerates warps that report stops after the breakpoint is cleared, up to 20 times, so a slow drain is not taken for a failure.
+
+  Test: `test_a_broken_debugger_fails_the_report_even_when_everything_else_passes` (fake tools: every other check passes, every DAP check is present and False, exit 1).
+- **Medium:** an explicit `--cuda-gdb`, `--nvcc` or `--compute-sanitizer` path was never checked. A bad `--cuda-gdb` raised before the report was written, and the others gave exit 1 instead of 2. Every path now goes through `shutil.which`, which also checks that it is executable, and the report lists the resolved tools. The debugger also starts inside the recorded steps.
+
+  Tests: `test_explicit_tool_paths_must_be_executable`, `test_a_debugger_that_cannot_start_is_recorded_not_raised`.
+
+Verification of ac6cda3 confirmed both fixes, in the Linux image (dash, GDB 15.1) and on macOS. It also ran the whole script with GDB standing in for cuda-gdb and a C version of the scale program; every run stopped and exited. It found two more issues, both fixed:
+- **Medium (pre-existing):** GDB's DAP forwards the program's stdout on its own thread, so the last lines can arrive after `exited`. `program_output_seen` read the output at once, and under CPU load it failed 17 of 40 times while `continued_to_exit` passed. The output is now read until `SUM:` appears or 5 s pass (`settled_output`), and that reading also goes into the report.
+- **Medium:** `shutil.which("tools/nvcc")` returns a relative path, but builds run in a scratch directory, so a relative tool looked like a failed build (exit 1) rather than a missing tool. Found tools are now made absolute.
+
+Tests: `test_relative_tool_paths_are_made_absolute`, `test_output_that_arrives_after_the_exit_event_is_still_seen`, `test_output_that_never_arrives_ends_at_the_deadline`.

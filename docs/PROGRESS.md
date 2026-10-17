@@ -104,7 +104,7 @@ An hourly thread heartbeat (`continue-peeky-mvp`) checks for available usage and
 **Open issues:**
 - **#27:** an attached JVM whose `stopped` event is lost (seen once on Venice). The launch case is fixed. 160 targeted stress runs (simple and Venice-like thread churn) did not reproduce it; diagnostics stay in place.
 - **#57 (rest):** probing a candidate fix (a probe with `--old`/`--new`).
-- **#61:** NVIDIA CUDA debugging, sanitizers and profiling, filed by the owner. Phase 0 (toolchain qualification) needs a Linux host with an NVIDIA GPU, reachable over Peeky's SSH remote worker; this Mac has none.
+- **#61:** NVIDIA CUDA debugging, sanitizers and profiling, filed by the owner. [ADR 0007](adr/0007-cuda-gdb-dap.md) proposes driving `cuda-gdb -i=dap`; `scripts/cuda/qualify.py` is the phase 0 qualification, and its DAP sequence is tested against upstream GDB (lane `gdb-dap`). Running it needs a Linux host with an NVIDIA GPU, reachable over Peeky's SSH remote worker; this Mac has none.
 - **#53:** reading owned Rust `Vec`/`String` locals from memory needs a liveness proof. LLVM IR cannot tell a move from a borrow, and stable MIR has no spans. The options are on the issue.
 
 **Process notes:**
@@ -172,7 +172,7 @@ The original slices are delivered: #6–#13 are closed. Remaining:
 5. Implement the bounded evidence correlation design (code, logs, metrics).
 6. A live-model evaluation on Venice, using the cookbook.
 7. **#53:** owned Rust locals, once a sound liveness proof is designed.
-8. **#61:** CUDA phase 0 on a real GPU host: qualify `cuda-gdb -i=dap` (GDB 14.2 and later inside cuda-gdb 12.9 and later), then a known kernel bug end to end.
+8. **#61:** CUDA phase 0 on a real GPU host: run `scripts/cuda/qualify.py` to qualify `cuda-gdb -i=dap` (GDB 14.2 and later inside cuda-gdb 12.9 and later), then a known kernel bug end to end.
 
 Read AGENTS.md, DESIGN.md, LANGUAGES.md, and ROADMAP.md for acceptance criteria. Runtime intervention is evidence only; never claim a fix without fresh verification and matching source/build identity. Preserve a checkpoint when usage runs low; report shipped work and actual limitations.
 
