@@ -59,22 +59,49 @@ MIR_DIR = "target/peeky-mir"
 # binary crate alone it adds the MIR the owned-local proof reads (rust_mir): no MIR
 # optimizations, so moves stay moves and blocks keep their names in the IR. Unstable
 # flags are allowed for that one crate, and legacy mangling keeps the frame hashes
-# Peeky's IR facts are keyed by. Dependencies and tests compile unchanged.
-MIR_WRAPPER = """#!/bin/sh
-crate= bin= prev=
-for arg in "$@"; do
-  case "$prev" in --crate-name) crate=$arg ;; --crate-type) [ "$arg" = bin ] && bin=1 ;; esac
-  prev=$arg
-done
-if [ -n "$PEEKY_MIR_CRATE" ] && [ "$crate" = "$PEEKY_MIR_CRATE" ] && [ -n "$bin" ]; then
-  RUSTC_BOOTSTRAP=$crate
-  export RUSTC_BOOTSTRAP
-  exec "$@" -Zmir-opt-level=0 "-Zdump-mir=all & PreCodegen" \\
-    -Zdump-mir-dir=target/peeky-mir -Zmir-include-spans=yes -Zunstable-options \\
-    -Csymbol-mangling-version=legacy
-fi
-exec "$@"
+# Peeky's IR facts are keyed by. Dependencies and tests compile unchanged. Python, not a
+# shell: dash drops variables like CARGO_BIN_EXE_<bin-with-dashes> that tests need.
+MIR_WRAPPER = """import os
+import sys
+
+args = sys.argv[1:]
+crate = binary = None
+for previous, arg in zip(args, args[1:]):
+    if previous == "--crate-name":
+        crate = arg
+    elif previous == "--crate-type" and arg == "bin":
+        binary = True
+wanted = os.environ.get("PEEKY_MIR_CRATE")
+if wanted and crate == wanted and binary:
+    os.environ["RUSTC_BOOTSTRAP"] = crate
+    args += [
+        "-Zmir-opt-level=0",
+        "-Zdump-mir=all & PreCodegen",
+        "-Zdump-mir-dir=target/peeky-mir",
+        "-Zmir-include-spans=yes",
+        "-Zunstable-options",
+        "-Csymbol-mangling-version=legacy",
+    ]
+os.execv(args[0], args)
 """
+
+
+def mir_wrapper(directory):
+    """Write the wrapper into ``directory``; returns (wrapper, its exact text).
+
+    Its interpreter is this Python through a short symlink beside it, so the shebang
+    has no spaces or length limits, run isolated (-I) from PYTHON* variables.
+    """
+    directory = Path(directory)
+    interpreter = directory / "python"
+    interpreter.symlink_to(Path(sys.executable).resolve())
+    text = f"#!{interpreter} -I\n{MIR_WRAPPER}"
+    wrapper = directory / "rustc-mir"
+    wrapper.write_text(text)
+    wrapper.chmod(0o700)
+    return wrapper, text
+
+
 TEST_TIMEOUT_S = 30
 _CARGO_STDERR = re.compile(
     r" *Compiling [a-z0-9_-]{1,64} v[0-9.]{1,64} \(.{1,4096}\)"
@@ -484,7 +511,7 @@ class RustTarget:
             ArtifactSpec(DEPS, "directory", "cargo-deps"),
             ArtifactSpec(uplift, role="cargo-test-target"),
         )
-        wrapper = None
+        wrapper = wrapper_text = None
 
         def validate_workspace(workspace, env):
             # Before every probe and Cargo command: revalidate the exact staged bytes
@@ -497,7 +524,8 @@ class RustTarget:
             if wrapper is not None and (
                 env.get("RUSTC_WORKSPACE_WRAPPER") != str(wrapper)
                 or wrapper.is_symlink()
-                or wrapper.read_bytes() != MIR_WRAPPER.encode()
+                or wrapper.read_text() != wrapper_text
+                or Path(wrapper.parent / "python").resolve() != Path(sys.executable).resolve()
             ):
                 raise RuntimeError("The Rust MIR wrapper changed during preparation")
             if dsymutil is not None:
@@ -525,9 +553,7 @@ class RustTarget:
             if self.opt_level == "0":
                 # Outside the workspace, in Peeky's own directory; checked before every
                 # command (validate_workspace).
-                wrapper = parent / "rustc-mir"
-                wrapper.write_text(MIR_WRAPPER)
-                wrapper.chmod(0o700)
+                wrapper, wrapper_text = mir_wrapper(parent)
                 environment = {
                     **environment,
                     "RUSTC_WORKSPACE_WRAPPER": str(wrapper),

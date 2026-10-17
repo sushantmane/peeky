@@ -214,10 +214,13 @@ def test_a_function_is_proven_only_against_a_single_matching_body(tmp_path):
     assert OwnedLocals([body, body], functions).body("h0123456789abcdef") is None
 
 
-WRAPPER_RUSTC = "import os, sys; print(os.environ.get('RUSTC_BOOTSTRAP', '-'), *sys.argv[1:])"
+WRAPPER_RUSTC = (
+    "import os, sys; print(os.environ.get('RUSTC_BOOTSTRAP', '-'), "
+    "os.environ.get('CARGO_BIN_EXE_my-app', '-'), *sys.argv[1:])"
+)
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX shell wrapper")
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX shebang wrapper")
 @pytest.mark.parametrize(
     ("args", "flagged"),
     [
@@ -228,12 +231,12 @@ WRAPPER_RUSTC = "import os, sys; print(os.environ.get('RUSTC_BOOTSTRAP', '-'), *
     ],
 )
 def test_the_rustc_wrapper_flags_only_the_debugged_binary_crate(tmp_path, args, flagged):
-    from peeky.rust import MIR_WRAPPER
+    from peeky.rust import mir_wrapper
 
-    wrapper = tmp_path / "rustc-mir"
-    wrapper.write_text(MIR_WRAPPER)
-    wrapper.chmod(0o700)
-    env = {"PATH": "/usr/bin:/bin", "PEEKY_MIR_CRATE": "app"}
+    wrapper, text = mir_wrapper(tmp_path)
+    assert wrapper.read_text() == text and text.startswith(f"#!{tmp_path}/python -I\n")
+    # A variable that is not a shell identifier (dash would drop it) reaches rustc.
+    env = {"PATH": "/usr/bin:/bin", "PEEKY_MIR_CRATE": "app", "CARGO_BIN_EXE_my-app": "/b"}
     out = subprocess.run(
         [str(wrapper), sys.executable, "-c", WRAPPER_RUSTC, *args],
         capture_output=True,
@@ -241,7 +244,7 @@ def test_the_rustc_wrapper_flags_only_the_debugged_binary_crate(tmp_path, args, 
         env=env,
         check=True,
     ).stdout.split()
-    assert out[0] == ("app" if flagged else "-")
+    assert out[0] == ("app" if flagged else "-") and out[1] == "/b"
     assert ("-Zmir-opt-level=0" in out) is flagged
     assert ("-Csymbol-mangling-version=legacy" in out) is flagged
-    assert out[1 : 1 + len(args)] == args
+    assert out[2 : 2 + len(args)] == args
