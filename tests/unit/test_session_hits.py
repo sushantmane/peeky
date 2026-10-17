@@ -18,15 +18,13 @@ def test_hits_count_the_sessions_own_breakpoints_and_never_a_to_line(tmp_path):
     worker = DebugWorker(tmp_path)
     worker.record_own_points([{"line": 14}], {"breakpoints": [{"id": 1, "line": 14}]})
     assert stop(worker, 14) == 1
-    # `continue --to 9`: four threads stop at line 9 together; only the first stop sees
-    # the temporary line, the others are served after it is cleared.
-    worker.temporary_line = 9
-    assert stop(worker, 9) is None
-    worker.temporary_line = None
-    assert [stop(worker, 9) for _ in range(3)] == [None, None, None]
-    # A thread from the same stop that is at the session's line is a hit.
+    # `continue --to 9`: threads stop at line 9. LLDB serves the others before
+    # resuming; java-debug serves them after the next continue. Neither is a hit.
+    worker.temporary_lines.add(9)
+    assert [stop(worker, 9) for _ in range(4)] == [None, None, None, None]
     assert stop(worker, 14) == 2
-    worker.served_temporary = None  # a real resume
+    # A crash first, then a co-stop at the --to line: still not a hit.
+    assert stop(worker, 30, reason="exception") is None and stop(worker, 9) is None
     assert stop(worker, 14) == 3 and stop(worker, 9, reason="step") is None
 
 
@@ -34,23 +32,18 @@ def test_a_to_line_where_the_debugger_placed_the_sessions_breakpoint_is_a_hit(tm
     worker = DebugWorker(tmp_path)
     # Requested on a comment line (3); the debugger placed it on line 2.
     worker.record_own_points([{"line": 3}], {"breakpoints": [{"id": 7, "line": 2}]})
-    worker.temporary_line = 2
+    worker.temporary_lines.add(2)
     assert stop(worker, 2) == 1
-    # A later `breakpoint` event moving an own breakpoint adds its new line.
-    worker.own_lines.discard(2)
-    worker.record_own_points([], {"breakpoints": [{"id": 7, "line": 2}]})
-    assert 2 in worker.own_lines
 
 
-def test_an_unreadable_location_ends_numbering_only_when_it_could_be_a_to_line(tmp_path):
+def test_an_unclassifiable_stop_ends_numbering_never_guessed(tmp_path):
     worker = DebugWorker(tmp_path)
     worker.record_own_points([{"line": 5}], {"breakpoints": [{"id": 1, "line": 5}]})
-    # No `--to` line pending: every breakpoint stop is the session's.
-    assert stop(worker, None) == 1
-    worker.temporary_line = 8
+    # No --to line ever used: every breakpoint stop is the session's own.
+    assert stop(worker, None) == 1 and stop(worker, 6) == 2
+    worker.temporary_lines.add(8)
     assert stop(worker, None) is None and worker.hits is None
-    worker.temporary_line = None
-    assert stop(worker, 5) is None  # never guessed again in this session
+    assert stop(worker, 5) is None  # never numbered again in this session
 
 
 class Scripted:

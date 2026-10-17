@@ -247,3 +247,10 @@ It reported two blocking issues, two should-fix and two nits, all fixed in 1240c
 - **Should-fix:** reaching the deadline before the target exited 0 with no note. Now the note reads `reached K of N stops before --timeout (…); last hit H`, and the exit status is 3, as is any run that fell short.
 - **Nit:** the `(output)` row could show two identical 200-character prefixes. It now shows each output from just before the first differing character, and the note gives the offset (`output differs at character 213`).
 - **Nit:** the cookbook's `--hit` note now gives the last hit reached.
+
+The verification of 1240cdc confirmed seven of the eight repros. It found one remaining blocking issue, now fixed:
+- **Blocking:** java-debug stops each thread separately, so another thread's stop at a `continue --to` line was served after the next real `continue` and numbered. The same happened to a co-stop at that line after a crash stop. Classification no longer depends on when a stop is served: the session's only breakpoints are its own lines and its `--to` lines. A breakpoint stop at an own line (requested or placed) is a hit, and one at a `--to` line that is not an own line never is. Without any `--to`, every breakpoint stop is the session's own. Anything else ends numbering.
+
+  Tests:
+  - `test_threads_stopped_separately_at_a_to_line_are_never_numbered`, a real JVM with two threads (3 of 3 runs);
+  - the updated unit tests, including a crash followed by a co-stop.

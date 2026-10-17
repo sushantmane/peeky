@@ -89,3 +89,50 @@ def test_java_fields_are_read_through_this_and_commands_keep_the_config(counter,
         assert "in Counter.add(int)" in capsys.readouterr().out
     finally:
         main(["session", "close"])
+
+
+THREADS = """package demo;
+import java.util.concurrent.CountDownLatch;
+public class Threads {
+  static final CountDownLatch READY = new CountDownLatch(2);
+  public static void main(String[] args) throws Exception {
+    Thread a = new Thread(() -> work(1));
+    Thread b = new Thread(() -> work(2));
+    a.start(); b.start(); a.join(); b.join();
+    System.out.println("DONE");
+  }
+  static void work(int id) {
+    READY.countDown();
+    try { READY.await(); } catch (InterruptedException e) { throw new RuntimeException(e); }
+    int x = id * 10;
+    System.out.println("W" + id + "=" + (x + id));
+  }
+}
+"""
+
+
+@pytest.mark.timeout(120)
+def test_threads_stopped_separately_at_a_to_line_are_never_numbered(counter, capsys):
+    root, config = counter
+    (root / "demo" / "Threads.java").write_text(THREADS)
+    data = json.loads(config.read_text())
+    config.write_text(
+        json.dumps({**data, "sources": ["demo/Threads.java"], "main_class": "demo.Threads"})
+    )
+    common = [str(root), "--config", str(config), "--json"]
+    states = []
+    try:
+        assert main(["session", "start", *common, "--at", "demo/Threads.java:6"]) == 0
+        states.append(json.loads(capsys.readouterr().out))
+        assert main(["session", "continue", "--to", "14", "--json"]) == 0
+        states.append(json.loads(capsys.readouterr().out))
+        while states[-1]["state"] == "stopped" and len(states) < 6:
+            assert main(["session", "continue", "--json"]) == 0
+            states.append(json.loads(capsys.readouterr().out))
+    finally:
+        main(["session", "close"])
+    stops = [(s["location"].rsplit(":", 1)[-1], s.get("hit")) for s in states if s.get("location")]
+    # Line 6 is the session's breakpoint; both threads' stops at the --to line 14 are not.
+    assert stops[0] == ("6", 1) and all(hit is None for line, hit in stops[1:]), stops
+    assert [line for line, _ in stops[1:]] == ["14", "14"], stops
+    assert states[-1]["state"] == "terminated"

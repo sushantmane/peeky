@@ -137,9 +137,8 @@ class DebugWorker:
         # classified: numbers are never guessed); the current stop's number.
         self.hits, self.stop_hit, self.stop_line = 0, None, None
         # Lines the session's own breakpoints were requested at or placed on, their
-        # adapter ids, and the `--to` line of the stop being served (other threads'
-        # stops from that same all-threads stop are served after it is cleared).
-        self.own_lines, self.own_ids, self.served_temporary = set(), set(), None
+        # adapter ids, and every one-shot `--to` line the session has used.
+        self.own_lines, self.own_ids, self.temporary_lines = set(), set(), set()
         self.stop_outside = self.stop_returns = self.co_served = False
         # The single absolute launch budget, below Client.call's 45 s HTTP timeout.
         # Preparation (supports_deadline adapters: builds, symbols, module identity)
@@ -388,23 +387,21 @@ class DebugWorker:
                 self.own_ids.add(reply["id"])
 
     def classify_hit(self):
-        """Number this stop if it is at one of the session's own breakpoints."""
+        """Number this stop if it is at one of the session's own breakpoints.
+
+        The session's breakpoints are its own and its one-shot `--to` lines. A stop at
+        an own line (requested or placed) is a hit; one at a `--to` line that is not an
+        own line never is, whenever it is served (LLDB serves other threads' stops
+        before resuming, java-debug after). With no `--to` ever used, every breakpoint
+        stop is the session's. Anything else is never guessed: numbering ends.
+        """
         if self.stop_reason != "breakpoint" or self.hits is None:
             return
-        temporary = (
-            self.temporary_line if self.temporary_line is not None else self.served_temporary
-        )
-        if temporary is not None and self.temporary_line is not None:
-            # Other threads' stops served from this same stop compare with it too.
-            self.served_temporary = temporary
-        if temporary is None or (
-            type(self.stop_line) is int
-            and (self.stop_line != temporary or self.stop_line in self.own_lines)
-        ):
+        line = self.stop_line
+        if line in self.own_lines or not self.temporary_lines:
             self.hits += 1
             self.stop_hit = self.hits
-        elif type(self.stop_line) is not int:
-            # Unknown line while a `--to` stop is possible: no number is ever guessed.
+        elif line not in self.temporary_lines:
             self.hits = None
 
     def set_points(self, runtime, points, temporary=None):
@@ -419,6 +416,8 @@ class DebugWorker:
         )
         self.breakpoint_counts[str(self.program)] = len(unique)
         self.temporary_line = temporary
+        if temporary is not None:
+            self.temporary_lines.add(temporary)
         replies = (placed or {}).get("breakpoints") or []
         self.record_own_points(
             [point for point in unique if point["line"] != temporary],
@@ -631,7 +630,7 @@ class DebugWorker:
             self.points = list(args.get("breakpoints", []))
             self.temporary_line = None
             self.hits, self.stop_hit, self.stop_line = 0, None, None
-            self.own_lines, self.own_ids, self.served_temporary = set(), set(), None
+            self.own_lines, self.own_ids, self.temporary_lines = set(), set(), set()
             # Nothing about an earlier session's stops carries over on a shared worker.
             self.co_served = self.stop_outside = self.stop_returns = False
             self.stop_all_threads = False
@@ -1021,7 +1020,6 @@ class DebugWorker:
                 )
             cursor = getattr(self.dap, "event_cursor", None)
             consumed = cursor() if cursor else self.cursor
-            self.served_temporary = None
             resumed = self.dap.request("continue", {"threadId": self.thread_id})
             self.co_served = False
             if cursor and resumed.get("allThreadsContinued", True) is not False:
@@ -1054,7 +1052,6 @@ class DebugWorker:
             consumed = cursor() if cursor else self.cursor
             kind = args.get("kind", "over")
             try:
-                self.served_temporary = None
                 self.dap.request(STEPS[kind], {"threadId": self.thread_id})
             except RequestFailed as exc:
                 # Refused (e.g. stepping out of the outermost frame): nothing moved.
