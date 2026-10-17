@@ -3,8 +3,8 @@
 Scope: one explicit edition-2021 binary with immutable declared integration-test
 files, built offline/locked into a fresh workspace with a controlled environment
 and explicit real (non-rustup-proxy) cargo/rustc executables. Symbols come only
-from application compile units (see rust_symbols). Root i32 locals are the only
-mutable values; qualified Option<i32> values are shown by active variant and other
+from application compile units (see rust_symbols). Root integer locals kept in
+memory are the only mutable values; qualified Option<i32> values are shown by active variant and other
 data-carrying enums are opaque. Prepared builds also compile the declared Cargo
 integration test; verification runs that hashed test executable directly (never
 Cargo, so nothing can be rebuilt or substituted) and still requires the
@@ -38,6 +38,7 @@ from peeky.native import (
     NativeSession,
     _metadata,
     _path_name,
+    _writable_integer,
     function_scopes,
     module_identity,
 )
@@ -590,6 +591,12 @@ def _require_declared_dependencies(executables, workspace, inputs):
                 )
 
 
+# LLDB's names for Rust integers (i16/u16, i32/u32, i64/u64, isize/usize) on LP64.
+RUST_INTEGERS = frozenset(
+    {"short", "unsigned short", "int", "unsigned int", "long", "unsigned long"}
+)
+
+
 def _frame_hash(frame):
     return re.search(r"::(h[0-9a-f]{16})$", str((frame or {}).get("name") or ""))
 
@@ -661,11 +668,18 @@ class RustSession(NativeSession):
             "initCommands": ["settings set target.load-script-from-symbol-file false"],
         }
 
+    def settable(self, variable, frame=None):
+        """A Rust integer local the program keeps in memory (see validate_mutation_target)."""
+        if variable.get("type") not in RUST_INTEGERS or not _writable_integer(variable):
+            return False
+        hashed = _frame_hash(frame)
+        return bool(hashed) and self.memory.get((hashed[1], variable.get("name"))) is True
+
     def validate_variable(self, variable, value):
-        if (kind := variable.get("type")) != "int":
+        if (kind := variable.get("type")) not in RUST_INTEGERS:
             raise ValueError(
-                f"Only writable i32 locals support Rust mutation: {variable.get('name')!r} has "
-                f"debugger type {kind!r}, not 'int' (i32)"
+                f"Only writable integer locals (i16 to i64, u16 to u64, isize, usize) support "
+                f"Rust mutation: {variable.get('name')!r} has debugger type {kind!r}"
             )
         super().validate_variable(variable, value)
 

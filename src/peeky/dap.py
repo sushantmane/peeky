@@ -255,7 +255,14 @@ class DAP:
                 self.condition.wait(remaining)
             value = self.responses.pop(seq)
         if not value.get("success"):
-            raise RequestFailed(value.get("message", "Debugger request failed"))
+            # DAP puts the human-readable reason in body.error.format when it has one.
+            error = (value.get("body") or {}).get("error") or {}
+            reason = error.get("format") if isinstance(error, dict) else None
+            raise RequestFailed(
+                str(reason)[:300]
+                if isinstance(reason, str) and reason
+                else value.get("message", "Debugger request failed")
+            )
         return value.get("body", {})
 
     def drained(self, timeout=1):

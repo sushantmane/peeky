@@ -334,3 +334,24 @@ def test_a_line_shared_with_a_closure_names_each_function_it_stops_in(crate, cap
     assert "through reference parameters (#53)" in rows["best"]["note"]
     assert rows["best.len"]["value"] == "3" and "note" not in rows["best.len"]
     assert any("#53" in warning for warning in result["warnings"])
+
+
+@pytest.mark.timeout(240)
+def test_rust_usize_locals_kept_in_memory_can_be_changed(crate, capsys):
+    first = edit_main(
+        crate,
+        "let mut start: i32",
+        [
+            "    let mut index: usize = 2;",
+            "    let index_ref = &mut index;",
+            "    *index_ref += 1;",
+            '    println!("INDEX:{}", index);',
+        ],
+    )
+    at = first + 3  # the println: index is in memory (borrowed) and assigned
+    code, result = probe(capsys, crate, "--at", at, "--capture", "index", "--set", "index=7")
+    assert code == 0, result.get("error")
+    assert "INDEX:7" in result["output"] and result["rows"][0]["value"] == "3"
+    code, result = probe(capsys, crate, "--at", at, "--set", "index=-1")
+    assert code == 1 and result["error"]["code"] == "MUTATION_REJECTED"
+    assert "outside the range of unsigned long" in result["error"]["message"]
