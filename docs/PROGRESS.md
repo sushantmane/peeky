@@ -18,7 +18,7 @@ An hourly thread heartbeat (`continue-peeky-mvp`) checks for available usage and
 - PR #19 merged (`b26c216`): guarded C LLDB worker and scope ownership, 221 collected tests. All seven hosted lanes passed; C34 seconds, longest lane71 seconds (run38538891500). Mixed-runtime inference direction captured in MIXED_RUNTIME.md.
 - Private branch protection is unavailable on the current GitHub plan; manually verify all required checks before merging.
 
-## Current state (2026-10-16, latest)
+## Current state (2026-10-17, latest)
 
 **Merged to `main`** (each after an independent adversarial review, with every finding fixed, all nine CI lanes green, and the full real-toolchain suite passing locally; dispositions in `docs/reviews/ERRORS_CORPUS_REVIEW.md` and `RUST_REPAIR_REVIEW.md`):
 - **#25 (`10ac271`):** the standalone `peeky` CLI, Java attach (Venice), protocol v1 error codes, the ten-bug corpus, and agent-speed debugging (pause budgets, background jobs). Closed #6.
@@ -97,13 +97,20 @@ An hourly thread heartbeat (`continue-peeky-mvp`) checks for available usage and
     - C, C++ and Rust integers of 16 to 64 bits can be changed, and `inspect` marks them `[settable]`.
     - Every native write is read back: unchanged is refused, anything else closes the session.
   - **#65 (`70774c9`):** on a Java line several methods share (lambda bodies, static initializers), the warning names the one java-debug stops in and the ones it never does.
+  - **#68 (`0c2c362`):** `probe --old/--new` probes a candidate fix on a fresh build (C, C++, Rust, launched Java); your files are never changed (closes #57).
+    - `--at` keeps the original's line numbers, mapped into the candidate. A line with no faithful match (inside an edit that adds or removes lines, or joined onto the edit) is refused before any build.
+    - Values are kept only if the build that ran hashes to the edited text, locally and over `--worker`.
+    - A build that fails is now `BUILD_FAILED` with the compiler's output, for every probe and session.
+    - Evidence schema 3: `runs.edit` holds the diff; the views have `candidate`; `queries runs` marks candidate runs, `values` leaves them out, and `diff` adds an `(edit)` row. Older stores upgrade in place.
+- **#67 (`0a1fad7`): CUDA phase 0** for #61. [ADR 0007](adr/0007-cuda-gdb-dap.md) (proposed) drives `cuda-gdb -i=dap`. `scripts/cuda/qualify.py` is the qualification to run on a GPU host.
+  - Found by experiment: upstream GDB 14.2, 15.1 and 16.3 start the program at different DAP requests. One order works on all three (breakpoints, `launch`, then `configurationDone`).
+  - The new `gdb-dap` lane keeps that order tested against GDB 15.1; 14.2 and 16.3 were run by hand.
 - **Dependabot:** #1, #3, #4 and #5 were merged. #2 (`upload-artifact` v7) was validated by dispatching `artifact.yml`, then fast-forwarded over SSH as `7308955`, because the API token lacks the `workflow` scope.
 
-**Closed issues:** #6, #7, #8, #9, #10, #11, #12, #13, #48, #49, #55, #56, #58, #59.
+**Closed issues:** #6, #7, #8, #9, #10, #11, #12, #13, #48, #49, #55, #56, #57, #58, #59.
 
 **Open issues:**
 - **#27:** an attached JVM whose `stopped` event is lost (seen once on Venice). The launch case is fixed. 160 targeted stress runs (simple and Venice-like thread churn) did not reproduce it; diagnostics stay in place.
-- **#57 (rest):** probing a candidate fix (a probe with `--old`/`--new`).
 - **#61:** NVIDIA CUDA debugging, sanitizers and profiling, filed by the owner. [ADR 0007](adr/0007-cuda-gdb-dap.md) proposes driving `cuda-gdb -i=dap`; `scripts/cuda/qualify.py` is the phase 0 qualification, and its DAP sequence is tested against upstream GDB (lane `gdb-dap`). Running it needs a Linux host with an NVIDIA GPU, reachable over Peeky's SSH remote worker; this Mac has none.
 - **#53:** reading owned Rust `Vec`/`String` locals from memory needs a liveness proof. LLVM IR cannot tell a move from a borrow, and stable MIR has no spans. The options are on the issue.
 
