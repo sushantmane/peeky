@@ -1,6 +1,7 @@
 """Single-session HTTP debugger worker. Bind locally; tunnel for remote use."""
 
 import argparse
+import base64
 import hashlib
 import hmac
 import json
@@ -1071,6 +1072,39 @@ class DebugWorker:
             raise ViewBudgetExhausted("Value view budget exhausted")
         return values
 
+    def view_read(self, reference, count):
+        """Bounded memory reads used only by a runtime's trusted value-view hook; shares
+        the inspection's view budgets with view_fetch."""
+        remaining = self.view_deadline - time.monotonic()
+        if self.view_fetches >= 128 or remaining <= 0:
+            raise ViewBudgetExhausted("Value view budget exhausted")
+        self.view_fetches += 1
+        if not self.capabilities.get("supports_read_memory"):
+            raise ValueError("The debugger cannot read memory")
+        if not isinstance(reference, str) or not re.fullmatch(r"0x[0-9A-Fa-f]{1,16}", reference):
+            raise ValueError("Invalid memory reference")
+        if type(count) is not int or not 0 < count <= 4096:
+            raise ValueError("Memory read exceeds limit")
+        if self.view_bytes + count > 1024 * 1024:
+            raise ViewBudgetExhausted("Value view budget exhausted")
+        try:
+            reply = self.dap.request(
+                "readMemory", {"memoryReference": reference, "count": count}, timeout=remaining
+            )
+        except ResponseTimeout as exc:
+            self.view_timed_out = True
+            raise ViewBudgetExhausted("Value view budget exhausted") from exc
+        except RequestFailed as exc:
+            raise ValueError(f"The debugger refused the memory read: {exc}") from None
+        try:
+            data = base64.b64decode(reply.get("data") or "", validate=True)
+        except ValueError:
+            raise ValueError("Malformed memory read reply") from None
+        if len(data) != count or reply.get("unreadableBytes"):
+            raise ValueError("Partial memory read")
+        self.view_bytes += count
+        return data
+
     def expose_variables(self, variables, frame, scope, ancestry):
         """Only worker-issued handles leave the process; child handles never permit writes."""
         result = []
@@ -1100,15 +1134,26 @@ class DebugWorker:
                 result.append(shown)
                 self.inspection_nodes += 1
                 continue
-            view = view_variable(variable, self.view_fetch) if view_variable else None
+            view = (
+                view_variable(variable, self.view_fetch, self.view_read) if view_variable else None
+            )
             if view is not None:
-                # Interpreted values never carry expansion handles to raw storage.
+                # Interpreted values never carry expansion handles to raw storage. Their
+                # decoded elements get a worker-owned handle that never reaches the
+                # debugger and never authorizes a write.
+                handle = 0
+                if view.get("children"):
+                    self.reference_counter += 1
+                    handle = self.reference_counter
+                    self.children[handle] = ("view", list(view["children"][:512]))
                 output = {
                     "name": name,
                     "value": str(view["value"])[:2000],
-                    "variablesReference": 0,
+                    "variablesReference": handle,
                     "view": str(view["rust_view"])[:100],
                 }
+                if type(view.get("length")) is int:
+                    output["length"] = view["length"]
                 if kind is not None:
                     output["type"] = kind
                 result.append(output)
@@ -1192,6 +1237,23 @@ class DebugWorker:
             raise ValueError("Unknown or stale expansion handle; inspect again")
         if self.inspection_nodes >= 512:
             raise ValueError("Inspection node budget exhausted; inspect again")
+        if record[0] == "view":
+            # Elements a value view already decoded at this stop: nothing to re-read.
+            runtime.assert_current()
+            elements = record[1]
+            start = args.get("start", 0)
+            count = min(args.get("count", 64), 512 - self.inspection_nodes)
+            page = [
+                {**element, "variablesReference": 0, "view": "memory"}
+                for element in elements[start : start + count]
+            ]
+            self.inspection_nodes += len(page)
+            return {
+                "variables": page,
+                "start": start,
+                "truncated": start + len(page) < len(elements),
+                "remaining_nodes": 512 - self.inspection_nodes,
+            }
         original_frame, scope_identity, ancestry = record
         frames = self.dap.request("stackTrace", {"threadId": self.thread_id, "levels": 10}).get(
             "stackFrames", []

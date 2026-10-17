@@ -355,7 +355,7 @@ def test_rust_container_indexes_explain_what_is_unsupported():
         _resolve(Tree({1: fields}), {}, snapshot(vec), parse_selector("ordered[0]"))
     message = str(caught.value)
     assert "has no indexed elements" in message and "children: buf, len" in message
-    assert "Rust Vec, slice and String contents are not readable yet" in message
+    assert "Peeky reads Rust container contents only for Vec<i32>" in message
     assert "capture ordered.len" in message
 
 

@@ -578,7 +578,7 @@ output:
   PAGE:[10, 20, 30]
 ```
 
-Values Peeky cannot decode with certainty show as `<unverified ...>` or as opaque enums; they are never guessed (`describe` counts them as "other enum types"). Only `i32` locals that the program keeps in memory can be changed. The elements of a `Vec`, slice or `String` are not readable yet: the error says so and names the length field to capture instead (`ordered.len`, `values.length`).
+Values Peeky cannot decode with certainty show as `<unverified ...>` or as opaque enums; they are never guessed (`describe` counts them as "other enum types"). Only `i32` locals that the program keeps in memory can be changed. `Vec<i32>`, `&[i32]`, `String` and `&str` are read from memory at offsets checked against the build's debug information (`describe` lists them), so `--capture 'ordered,ordered[0],ordered[-1],title'` shows `[5, 1, 3]`, `5`, `3` and `"größe: 3 values"`. At most 512 elements or 4096 bytes are read. A container that is not initialized yet is shown as `<unverified Rust container value>`, never as contents. This needs a debugger with `readMemory` (lldb-dap from LLVM 19). Other element types, and older debuggers, keep the raw fields, with an error that names the length field (`ordered.len`).
 
 ### 7.3 Java (launched)
 

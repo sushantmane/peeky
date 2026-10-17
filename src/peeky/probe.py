@@ -415,8 +415,9 @@ def _absence(variable, segment, children):
         if kind.startswith(_RUST_CONTAINERS):
             length = next((name for name in ("len", "length") if name in names), None)
             message += (
-                "; Rust Vec, slice and String contents are not readable yet (LLDB's Rust "
-                "formatters are not loaded)"
+                "; Peeky reads Rust container contents only for Vec<i32>, &[i32], String and "
+                "&str, from memory, with a debugger that supports readMemory (lldb-dap from "
+                "LLVM 19)"
                 + (f": capture {variable['name']}.{length} for the length" if length else "")
                 + ", and check contents with `peeky verify`"
             )
@@ -449,6 +450,9 @@ def _declared_length(variable, children):
     Container summaries such as LLDB's `size=N` and DAP `indexedVariables` can equal a
     capped child count (e.g. `target.max-children-count`), so they never count.
     """
+    if variable.get("view") == "memory" and type(variable.get("length")) is int:
+        # A container Peeky read from memory states its own length.
+        return variable["length"]
     if variable.get("type") in _PY_SEQUENCES:
         for child in children:
             if child["name"] == "len()" and re.fullmatch(r"[0-9]{1,9}", str(child.get("value"))):

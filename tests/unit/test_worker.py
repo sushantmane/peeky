@@ -533,3 +533,95 @@ def test_a_step_the_debugger_refuses_keeps_the_stop_and_session(tmp_path):
     with pytest.raises(ValueError, match="refused to step out"):
         worker.dispatch("step", {"session_id": "s1", "stop_id": "stop1", "kind": "out"})
     assert worker.state == "stopped" and worker.stop_id == "stop1" and worker.dap is not None
+
+
+class MemoryDap:
+    def __init__(self, reply=None, error=None):
+        self.reply, self.error, self.requests = reply, error, []
+
+    def request(self, command, arguments=None, **_):
+        self.requests.append((command, arguments))
+        if self.error:
+            raise self.error
+        return self.reply
+
+
+@pytest.mark.parametrize(
+    "capabilities, reference, count, dap, message",
+    [
+        ({}, "0x10", 8, MemoryDap({"data": "AAAAAAAAAAA="}), "cannot read memory"),
+        ({"supports_read_memory": True}, "10", 8, MemoryDap(), "Invalid memory reference"),
+        ({"supports_read_memory": True}, "0x10", 0, MemoryDap(), "exceeds limit"),
+        ({"supports_read_memory": True}, "0x10", 4097, MemoryDap(), "exceeds limit"),
+        ({"supports_read_memory": True}, "0x10", 8, MemoryDap({"data": "AAAA"}), "Partial"),
+        (
+            {"supports_read_memory": True},
+            "0x10",
+            8,
+            MemoryDap({"data": "AAAAAAAAAAA=", "unreadableBytes": 2}),
+            "Partial",
+        ),
+        ({"supports_read_memory": True}, "0x10", 8, MemoryDap({"data": "%%%"}), "Malformed"),
+    ],
+)
+def test_memory_reads_for_value_views_are_bounded_and_exact(
+    tmp_path, capabilities, reference, count, dap, message
+):
+    import time as clock
+
+    from peeky.worker import DebugWorker
+
+    worker = DebugWorker(tmp_path)
+    worker.capabilities, worker.dap = capabilities, dap
+    worker.view_deadline, worker.view_fetches, worker.view_bytes = clock.monotonic() + 5, 0, 0
+    with pytest.raises(ValueError, match=message):
+        worker.view_read(reference, count)
+
+
+def test_a_refused_memory_read_is_a_value_error_not_a_session_failure(tmp_path):
+    import time as clock
+
+    from peeky.dap import RequestFailed
+    from peeky.worker import DebugWorker
+
+    worker = DebugWorker(tmp_path)
+    worker.capabilities = {"supports_read_memory": True}
+    worker.dap = MemoryDap(error=RequestFailed("memory read failed"))
+    worker.view_deadline, worker.view_fetches, worker.view_bytes = clock.monotonic() + 5, 0, 0
+    with pytest.raises(ValueError, match="refused the memory read"):
+        worker.view_read("0x10", 8)
+    worker.dap = MemoryDap({"data": "AQAAAAAAAAA="})
+    assert worker.view_read("0x10", 8) == (1).to_bytes(8, "little")
+
+
+def test_decoded_elements_get_worker_owned_handles_that_never_authorize_writes(tmp_path):
+    from types import SimpleNamespace
+
+    from peeky.worker import DebugWorker
+
+    elements = [{"name": f"[{i}]", "type": "i32", "value": str(v)} for i, v in enumerate((5, 1))]
+    runtime = SimpleNamespace(
+        assert_current=lambda: None,
+        view_variable=lambda variable, fetch, read: {
+            "value": "[5, 1]",
+            "rust_view": "memory",
+            "length": 2,
+            "children": elements,
+        },
+    )
+    worker = DebugWorker(tmp_path)
+    worker.runtime, worker.state, worker.stop_id = runtime, "stopped", "stop1"
+    [shown] = worker.expose_variables(
+        [{"name": "ordered", "type": "Vec", "value": "raw", "variablesReference": 7}],
+        {"id": 1},
+        ("Locals",),
+        (),
+    )
+    assert shown["value"] == "[5, 1]" and shown["length"] == 2 and shown["view"] == "memory"
+    handle = shown["variablesReference"]
+    assert handle and handle not in worker.references
+    page = worker.expand({"stop_id": "stop1", "handle": handle, "start": 1}, runtime)
+    assert page["variables"] == [
+        {"name": "[1]", "type": "i32", "value": "1", "variablesReference": 0, "view": "memory"}
+    ]
+    assert page["truncated"] is False

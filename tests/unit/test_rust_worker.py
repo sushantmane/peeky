@@ -329,7 +329,7 @@ class Runtime:
     def local_scopes(self, scopes):
         return PythonAdapter().local_scopes(scopes)
 
-    def view_variable(self, variable, fetch):
+    def view_variable(self, variable, fetch, read=None):
         return active_variant(variable, fetch, self.layouts)
 
     validate_children = RustSession.validate_children

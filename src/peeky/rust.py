@@ -42,7 +42,12 @@ from peeky.native import (
 )
 from peeky.rust_ir import memory_locals
 from peeky.rust_manifest import assert_cargo_ancestry_clear, validate_cargo_inputs
-from peeky.rust_symbols import UNVERIFIED, active_variant, application_symbols
+from peeky.rust_symbols import (
+    UNVERIFIED,
+    active_variant,
+    application_symbols,
+    container_view,
+)
 
 DEPS = "target/debug/deps"
 TEST_TIMEOUT_S = 30
@@ -624,8 +629,14 @@ class RustSession(NativeSession):
                 "live in memory; otherwise edit the source and run verify"
             )
 
-    def view_variable(self, variable, fetch):
-        """Active-variant view for compiled enums; None leaves ordinary values unchanged."""
+    def view_variable(self, variable, fetch, read=None):
+        """Qualified views: containers read from memory, active enum variants; None
+        leaves ordinary values unchanged."""
+        container = container_view(
+            variable, read, self.layouts, optimized=self.target.opt_level != "0"
+        )
+        if container is not None:
+            return container
         view = active_variant(variable, fetch, self.layouts)
         if view and view["rust_view"] == "active-variant" and self.target.opt_level != "0":
             # Optimized code may track an enum's tag and payload separately and LLDB

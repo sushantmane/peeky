@@ -158,3 +158,22 @@ def test_rust_programs_take_per_run_arguments(crate, capsys):
     assert [row["value"] for row in result["rows"]] == ["2", "6"]
     assert "PAGE:[70, 80]" in result["output"]
     assert result["program_args"] == result["target_identity"]["arguments"] == ["2"]
+
+
+@pytest.mark.timeout(240)
+def test_rust_containers_are_read_from_memory_when_the_debugger_can(crate, capsys):
+    lines = (crate / "src/main.rs").read_text().splitlines()
+    at = next(i for i, text in enumerate(lines, 1) if 'println!("PAGE' in text)
+    code, result = probe(capsys, crate, "--at", at, "--capture", "values,values[0],values[-1],args")
+    assert code == 0, result.get("error")
+    rows = {row["selector"]: row for row in result["rows"]}
+    if rows["values"].get("view") == "memory":
+        # lldb-dap with readMemory (LLVM 19+): read at DWARF-validated offsets.
+        assert rows["values"]["value"] == "[40, 50, 60]"
+        assert rows["values[0]"]["value"] == "40" and rows["values[-1]"]["value"] == "60"
+    else:
+        # LLVM 18 lldb-dap has no readMemory: the raw value, and an explicit reason.
+        assert "Peeky reads Rust container contents only for" in rows["values[0]"]["error"]
+    # Vec<String> is not a qualified container: never decoded from memory.
+    assert rows["args"].get("view") != "memory"
+    assert "PAGE:[40, 50, 60]" in result["output"]
