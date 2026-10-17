@@ -555,11 +555,18 @@ candidate: values are from a fresh build with this edit; your files are unchange
 run_a  run_b  hit   phase     selector  value_a           value_b               differs  note
 1      2      1     observed  start     6                 3                     1        NULL
 1      2      NULL  NULL      (output)  PAGE:[70, 80]\n  PAGE:[40, 50, 60]\n  1        output differs at character 6
+1      2      NULL  NULL      (edit)    none              candidate             1        the runs built different edits (runs.edit has each diff)
 ```
 
-- **Lines:** `--at` uses the original file's numbering, so the same command works before and after. A line after an edit that adds or removes lines is moved to match (`line 25 is line 27 of the candidate`). A line inside such an edit has no faithful match and is refused.
+- **Lines:** `--at` uses the original file's numbering, so the same command works before and after. A line after an edit that adds or removes lines is moved to match (`line 25 is line 27 of the candidate`). Some lines have no faithful match and are refused before anything is built:
+  - a line inside such an edit;
+  - the line right after an edit whose `--old` ends with a newline but whose `--new` does not, because the candidate joins that line onto the edit.
 - **Build errors:** an edit that does not compile fails with `BUILD_FAILED` and the compiler's message.
-- **Evidence:** the saved run's `edit` column holds the diff, and its `source_sha256` is the edited text's.
+- **Evidence:**
+  - The run's `edit` column holds the diff, and its `source_sha256` is the edited text's.
+  - `queries runs` marks the run `(candidate)`, and the `evidence` and `last_run` views have a `candidate` column. Captured `line`s are in the candidate's own numbering.
+  - `queries values` leaves candidate runs out, so they never mix with values the real program produced.
+  - `queries diff` pairs values by hit and selector, so a candidate whose lines moved still compares.
 - **Not a verification:** this is evidence about one run. Only `peeky verify` checks a fix.
 - **Python:** there is no build step, so edit the file and probe again (or use `verify`). Attached JVMs refuse it.
 

@@ -163,6 +163,15 @@ def candidate_line(text, old, new, line):
     if line < first:
         return line
     if line > last:
+        head = text[:start] + new
+        if line == last + 1 and old.endswith("\n") and head and not head.endswith("\n"):
+            # --old ends a line but --new does not: this line is joined onto the edit's
+            # last line, and a breakpoint there would stop before the edited code runs.
+            raise ValueError(
+                f"Line {line} starts right after the edit, and --new does not end with a "
+                f"newline as --old does, so the candidate joins it onto line "
+                f"{head.count(chr(10)) + 1}; end --new with a newline, or probe another line"
+            )
         return line + delta
     if delta == 0:
         return line

@@ -76,7 +76,8 @@ TABLES = {
             "run_id": "-> runs.run_id",
             "hit": "Hit number, from 1",
             "phase": "observed, or after-set (the value after that hit's interventions)",
-            "line": "Line where the program actually stopped",
+            "line": "Line where the program actually stopped (a candidate run's own numbering; "
+            "runs.line is the requested line in the original file)",
             "function": "Function (frame) name",
             "selector": "Selector as requested, e.g. request.page or items[0]",
             "type": "Type as the debugger reports it",
@@ -104,12 +105,22 @@ TABLES = {
 }
 _EVIDENCE_COLUMNS = (
     "run_id, started_at, label, program, line, status, hit, phase, function, selector, type, "
-    "value, num, unavailable, error, view, args, sets, artifact_manifest_id, source_sha256"
+    "value, num, unavailable, error, view, args, sets, artifact_manifest_id, source_sha256, "
+    "candidate"
 )
 VIEWS = {
-    "evidence": f"captures joined with their run, so no join is needed: {_EVIDENCE_COLUMNS}",
+    "evidence": f"captures joined with their run, so no join is needed: {_EVIDENCE_COLUMNS} "
+    "(candidate is 1 for a run that built an edit with probe --old/--new)",
     "last_run": "The evidence rows of the newest run",
 }
+_EVIDENCE_VIEW = """CREATE VIEW evidence AS SELECT c.run_id, r.started_at, r.label, r.program,
+        c.line, r.status, c.hit, c.phase, c.function, c.selector, c.type, c.value, c.num,
+        c.unavailable, c.error, c.view, r.args, r.sets, r.artifact_manifest_id,
+        r.source_sha256, r.edit IS NOT NULL AS candidate
+        FROM captures c JOIN runs r ON r.run_id = c.run_id"""
+_LAST_RUN_VIEW = (
+    "CREATE VIEW last_run AS SELECT * FROM evidence WHERE run_id = (SELECT MAX(run_id) FROM runs)"
+)
 _DDL = (
     """CREATE TABLE runs (
         run_id INTEGER PRIMARY KEY AUTOINCREMENT, started_at TEXT NOT NULL, label TEXT,
@@ -130,16 +141,21 @@ _DDL = (
     "CREATE INDEX captures_selector ON captures (selector)",
     "CREATE INDEX interventions_run ON interventions (run_id)",
     "CREATE INDEX pauses_run ON pauses (run_id)",
-    """CREATE VIEW evidence AS SELECT c.run_id, r.started_at, r.label, r.program, c.line,
-        r.status, c.hit, c.phase, c.function, c.selector, c.type, c.value, c.num,
-        c.unavailable, c.error, c.view, r.args, r.sets, r.artifact_manifest_id,
-        r.source_sha256 FROM captures c JOIN runs r ON r.run_id = c.run_id""",
-    "CREATE VIEW last_run AS SELECT * FROM evidence WHERE run_id = (SELECT MAX(run_id) FROM runs)",
+    _EVIDENCE_VIEW,
+    _LAST_RUN_VIEW,
 )
 
-# Older schemas a writer upgrades in place: {version: statements to the next version}.
-# Readers never change a store, so they also read these versions as they are.
-_MIGRATIONS = {1: ("ALTER TABLE runs ADD COLUMN edit TEXT",)}
+# Older schemas upgraded in place: {version: statements to the next version}. A writer
+# upgrades before saving; a reader upgrades a writable store before opening it read-only.
+_MIGRATIONS = {
+    1: (
+        "ALTER TABLE runs ADD COLUMN edit TEXT",
+        "DROP VIEW last_run",
+        "DROP VIEW evidence",
+        _EVIDENCE_VIEW,
+        _LAST_RUN_VIEW,
+    )
+}
 
 _LATEST = "(SELECT MAX(run_id) FROM runs)"
 _RUN = f"COALESCE(:run, {_LATEST})"
@@ -199,7 +215,13 @@ SELECT {_PAIR_COLUMNS} FROM (
     output_window(rb.output, ra.output), 1,
     'output differs at character ' || first_difference(ra.output, rb.output), 0
     FROM runs ra, runs rb WHERE ra.run_id = {_A} AND rb.run_id = {_B}
-    AND ra.output IS NOT rb.output)
+    AND ra.output IS NOT rb.output
+  UNION ALL SELECT 6, NULL, NULL, '(edit)',
+    CASE WHEN ra.edit IS NULL THEN 'none' ELSE 'candidate' END,
+    CASE WHEN rb.edit IS NULL THEN 'none' ELSE 'candidate' END, 1,
+    'the runs built different edits (runs.edit has each diff)', 0
+    FROM runs ra, runs rb WHERE ra.run_id = {_A} AND rb.run_id = {_B}
+    AND ra.edit IS NOT rb.edit)
 ORDER BY rank, hit, phase = 'after-set', pos"""
 # A heap or stack address: 0x, optional leading zeros, then 9-16 significant hex
 # digits that are not all f. NULL, small sentinels, all-ones (-1, MAP_FAILED) and
@@ -245,7 +267,8 @@ _PAIR_PARAMS = {
 QUERIES = {
     "runs": (
         "Recent runs, newest first: where, inputs, outcome",
-        "SELECT run_id, started_at, label, program || ':' || line AS at, args, sets, status, "
+        "SELECT run_id, started_at, label, program || ':' || line || "
+        "CASE WHEN edit IS NULL THEN '' ELSE ' (candidate)' END AS at, args, sets, status, "
         "hits, seconds, error_code, substr(output, 1, 60) AS output_start FROM runs "
         "ORDER BY run_id DESC LIMIT COALESCE(:count, 20)",
         {"count": "How many runs (default 20)"},
@@ -305,10 +328,11 @@ WHERE o.run_id = {_RUN} AND o.phase = 'observed' ORDER BY o.hit, o.rowid""",
         (),
     ),
     "values": (
-        "Distinct observed values of one selector across all runs, most frequent first",
+        "Distinct observed values of one selector across all runs, most frequent first "
+        "(candidate runs, from probe --old/--new, are left out)",
         "SELECT program, line, value, COUNT(*) AS seen, COUNT(DISTINCT run_id) AS runs, "
         "MIN(run_id) AS first_run, MAX(run_id) AS last_run FROM evidence "
-        "WHERE selector = :selector AND phase = 'observed' "
+        "WHERE selector = :selector AND phase = 'observed' AND NOT candidate "
         "GROUP BY program, line, value ORDER BY seen DESC, value",
         {"selector": "Selector, e.g. request.page (required)"},
         ("selector",),
@@ -586,7 +610,11 @@ def _read_only(path):
 
 
 def _open_read_only(path):
-    """A read-only connection to an existing store; never creates or changes anything."""
+    """A read-only connection to an existing store; never creates it or changes its data.
+
+    A store with an older schema is upgraded first (as the next save would), so canned
+    queries can rely on the current columns.
+    """
     path = Path(path).absolute()
     try:
         if path.is_symlink():
@@ -626,6 +654,19 @@ def _open_read_only(path):
             connection = _read_only(path)
             version = connection.execute("PRAGMA user_version").fetchone()[0]
         _check_version(connection, path, version)
+        if version in _MIGRATIONS:
+            connection.close()
+            connection = None
+            if not os.access(path, os.W_OK):
+                raise ValueError(
+                    f"Evidence store {path} has schema version {version}, which this Peeky "
+                    "upgrades in place, but the file is read-only; make it writable or pass "
+                    "--store"
+                )
+            _ensure(path).close()
+            connection = _read_only(path)
+            version = connection.execute("PRAGMA user_version").fetchone()[0]
+            _check_version(connection, path, version)
     except sqlite3.Error as exc:
         if connection is not None:
             connection.close()

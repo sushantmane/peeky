@@ -44,6 +44,19 @@ def test_a_line_inside_an_edit_that_changes_the_line_count_is_refused(old, new, 
     assert words in str(caught.value) and "before or after the edit" in str(caught.value)
 
 
+@pytest.mark.parametrize("new", ["B;", "B;\nx;"])
+def test_a_line_joined_onto_the_edit_is_refused(new):
+    # --old ends with a newline, --new does not: original line 3 joins the edit's last line.
+    with pytest.raises(ValueError, match="joins it onto line") as caught:
+        candidate_line(TEXT, "b;\n", new, 3)
+    assert "end --new with a newline" in str(caught.value)
+    assert candidate_line(TEXT, "b;\n", new, 4) == 4 + new.count("\n") - 1
+
+
+def test_an_edit_that_empties_the_start_of_the_file_keeps_the_next_line():
+    assert candidate_line(TEXT, "a;\n", "", 2) == 1
+
+
 def test_an_edit_must_match_exactly_once():
     with pytest.raises(ValueError, match="exactly once"):
         candidate_line("x;\nx;\n", "x;", "y;", 1)
@@ -78,28 +91,81 @@ def test_build_failures_are_build_failed_with_the_compilers_words(result, words)
 
 
 def v1_store(path):
-    """A store as Peeky with evidence schema 1 wrote it."""
+    """A store as Peeky with evidence schema 1 wrote it, holding one run with a capture."""
     path.parent.mkdir(parents=True)
     connection = sqlite3.connect(path)
     for statement in evidence._DDL:
+        if statement.startswith("CREATE VIEW evidence"):
+            statement = statement.replace(", r.edit IS NOT NULL AS candidate", "")
         connection.execute(statement.replace(", edit TEXT)", ")"))
     connection.execute("PRAGMA user_version = 1")
     connection.execute("INSERT INTO runs (started_at, program, line) VALUES ('t', 'x.c', 3)")
+    connection.execute(
+        "INSERT INTO captures (run_id, hit, phase, line, selector, value, unavailable) "
+        "VALUES (1, 1, 'observed', 3, 'n', '7', 0)"
+    )
     connection.commit()
     connection.close()
 
 
-def test_schema_1_stores_are_read_unchanged_and_upgraded_by_the_next_save(tmp_path):
+def test_schema_1_stores_are_upgraded_in_place_keeping_their_runs(tmp_path):
+    store = tmp_path / "evidence" / "evidence.db"
+    v1_store(store)
+    rows = evidence.run_query(store, "values", {"selector": "n"})["rows"]
+    assert [(row["program"], row["value"]) for row in rows] == [("x.c", "7")]
+    connection = sqlite3.connect(store)
+    assert connection.execute("PRAGMA user_version").fetchone() == (evidence.SCHEMA_VERSION,)
+    assert connection.execute("SELECT candidate FROM evidence").fetchall() == [(0,)]
+    run = evidence.record(store, {"probe": {"program": "y.c", "line": 4}, "status": "completed"})
+    assert connection.execute("SELECT COUNT(*), MAX(run_id) FROM runs").fetchone() == (2, run)
+
+
+def test_a_save_upgrades_a_schema_1_store(tmp_path):
+    store = tmp_path / "evidence" / "evidence.db"
+    v1_store(store)
+    evidence.record(store, {"probe": {"program": "y.c", "line": 4}, "status": "completed"})
+    connection = sqlite3.connect(store)
+    assert connection.execute("PRAGMA user_version").fetchone() == (evidence.SCHEMA_VERSION,)
+    assert connection.execute("SELECT edit FROM runs").fetchall() == [(None,), (None,)]
+
+
+def test_a_read_only_schema_1_store_is_refused_unchanged(tmp_path, monkeypatch):
     store = tmp_path / "evidence" / "evidence.db"
     v1_store(store)
     before = store.read_bytes()
-    rows = evidence.query(store, "SELECT program, line FROM runs")["rows"]
-    assert rows == [{"program": "x.c", "line": 3}] and store.read_bytes() == before
-    run = evidence.record(store, {"probe": {"program": "y.c", "line": 4}, "status": "completed"})
-    connection = sqlite3.connect(store)
-    assert connection.execute("PRAGMA user_version").fetchone() == (evidence.SCHEMA_VERSION,)
-    assert connection.execute("SELECT COUNT(*), MAX(run_id) FROM runs").fetchone() == (2, run)
-    assert connection.execute("SELECT edit FROM runs").fetchall() == [(None,), (None,)]
+    # Simulated: file modes do not stop root (CI's Linux image runs as root).
+    real = evidence.os.access
+    monkeypatch.setattr(
+        evidence.os, "access", lambda path, mode: mode != evidence.os.W_OK and real(path, mode)
+    )
+    with pytest.raises(ValueError, match="read-only"):
+        evidence.query(store, "SELECT * FROM runs")
+    assert store.read_bytes() == before
+
+
+def test_candidate_runs_are_marked_and_kept_apart(tmp_path):
+    store = tmp_path / "evidence.db"
+    rows = [{"hit": 1, "phase": "observed", "line": 5, "selector": "n", "value": "1"}]
+    probe = {"program": "x.c", "line": 5, "capture": ["n"]}
+    base = {"probe": probe, "status": "completed", "rows": rows}
+    evidence.record(store, {**base, "output": "A\n"})
+    candidate = {"sha256": "e", "diff": "--- x.c\n", "line": 7, "original_line": 5}
+    moved = [{**rows[0], "line": 7, "value": "2"}]
+    evidence.record(store, {**base, "rows": moved, "output": "B\n", "candidate": candidate})
+    runs = evidence.run_query(store, "runs", {})["rows"]
+    assert [row["at"] for row in runs] == ["x.c:5 (candidate)", "x.c:5"]
+    values = evidence.run_query(store, "values", {"selector": "n"})["rows"]
+    assert [(row["line"], row["value"]) for row in values] == [(5, "1")]
+    assert [
+        row["candidate"] for row in evidence.query(store, "SELECT * FROM last_run")["rows"]
+    ] == [1]
+    diff = evidence.run_query(store, "diff", {})["rows"]
+    edit = next(row for row in diff if row["selector"] == "(edit)")
+    assert (edit["value_a"], edit["value_b"]) == ("none", "candidate")
+    # Captures pair by hit and selector, so a candidate whose lines moved still compares.
+    assert any(
+        row["selector"] == "n" and row["value_b"] == "2" and row["note"] is None for row in diff
+    )
 
 
 def test_a_candidate_run_records_the_source_that_ran_and_its_edit(tmp_path):
@@ -219,3 +285,29 @@ def test_the_http_probe_refuses_malformed_edits(tmp_path, edit):
         server.shutdown()
         server.server_close()
         thread.join(timeout=3)
+
+
+def test_the_cli_refuses_a_line_the_candidate_joins_onto_the_edit(tmp_path, capsys):
+    from peeky.cli import main
+
+    source = tmp_path / "page.c"
+    source.write_text("int main(void) {\n    int start = 6;\n    int end = start + 3;\n}\n")
+    code = main(
+        [
+            "probe",
+            str(source),
+            "--at",
+            "3",
+            "--old",
+            "    int start = 6;\n",
+            "--new",
+            "    int start = 3;",
+            "--json",
+        ]
+    )
+    error = json.loads(capsys.readouterr().out)["error"]
+    assert (
+        code == 2
+        and error["code"] == "INVALID_REQUEST"
+        and "joins it onto line 2" in error["message"]
+    )
