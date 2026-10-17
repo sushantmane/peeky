@@ -18,6 +18,7 @@ import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from peeky.names import display_function
 from peeky.worker import (
     DebugWorker,
     load_java_target,
@@ -251,9 +252,41 @@ def _report_hit(hit, limit, last_said):
 
 
 def _visible(snapshot):
-    names = sorted({v["name"] for scope in snapshot["scopes"] for v in scope["variables"]})
+    # lldb-dap names a nameless slot (a closure's environment) "<null>": not selectable.
+    names = sorted(
+        {v["name"] for scope in snapshot["scopes"] for v in scope["variables"]} - {"<null>"}
+    )
     shown = ", ".join(names[:40]) + (f", ... ({len(names)} total)" if len(names) > 40 else "")
     return shown or "(none)"
+
+
+def _member_hint(worker, stop, snapshot, name):
+    """`; select it as this.name` when the stopped method's object (C++, Java) has a
+    member of that name. Never read implicitly: the debugger's list of locals can be
+    incomplete (no local-variable table, statics, truncated scopes), so a missing local
+    does not prove the code means the member."""
+    receiver = snapshot.get("receiver")
+    holder = next(
+        (
+            v
+            for scope in snapshot["scopes"]
+            for v in scope["variables"]
+            if receiver and v["name"] == receiver
+        ),
+        None,
+    )
+    if name.startswith("[") or not holder or not holder.get("variablesReference"):
+        return ""
+    try:
+        page = worker.dispatch("expand", {**stop, "handle": holder["variablesReference"]})
+    except ValueError:
+        return ""
+    if any(child["name"] == name for child in page["variables"]):
+        return (
+            f"; {receiver} has a member {name!r}: select it as {receiver}.{name} if the "
+            "code means the member"
+        )
+    return ""
 
 
 def _resolve(worker, stop, snapshot, segments):
@@ -264,7 +297,10 @@ def _resolve(worker, stop, snapshot, segments):
         if variable["name"] == segments[0]
     ]
     if not matches:
-        raise ValueError(f"not found; visible: {_visible(snapshot)}")
+        raise ValueError(
+            f"not found; visible: {_visible(snapshot)}"
+            + _member_hint(worker, stop, snapshot, segments[0])
+        )
     variable = matches[0]
     for segment in segments[1:]:
         handle = variable.get("variablesReference", 0)
@@ -327,6 +363,15 @@ def _resolve(worker, stop, snapshot, segments):
 
 
 _RUST_TEXT = frozenset({"&str", "&mut str", "alloc::string::String *"})
+# Owned Rust containers are raw: a moved or dropped local can still point at freed memory.
+_OWNED_RUST_TYPES = frozenset(
+    {"alloc::vec::Vec<int, alloc::alloc::Global>", "alloc::string::String"}
+)
+_OWNED_RUST = (
+    "Owned Rust Vec and String locals show their raw fields; Peeky reads contents only "
+    "through reference parameters (#53). Capture `.len` for the length, or read the value "
+    "where it is passed as &Vec, &[T], &String or &str."
+)
 _RUST_CONTAINERS = (
     "alloc::vec::Vec<",
     "alloc::string::String",
@@ -561,6 +606,8 @@ def _capture(worker, stop, selectors, hit, phase, snapshot=None, children=False)
                 )
             else:
                 row.update(value=variable["value"], type=variable.get("type"))
+                if "view" not in variable and str(variable.get("type")) in _OWNED_RUST_TYPES:
+                    row["note"] = _OWNED_RUST
             if "view" in variable:
                 row["view"] = variable["view"]
             if children and variable.get("variablesReference"):
@@ -640,6 +687,8 @@ def run_probe(root, probe, *, adapter=None, progress=None):
     deadline = started + probe.timeout
     result = {"probe": {**asdict(probe), "set": [list(change) for change in probe.set]}}
     rows, changes, hits, warnings, relocated, pauses = [], [], 0, [], False, []
+    # {function: [hits]}: a line shared by a function and a closure or lambda stops in each.
+    functions = {}
     last_said = 0.0
     try:
         launch = worker.dispatch(
@@ -714,6 +763,7 @@ def run_probe(root, probe, *, adapter=None, progress=None):
                     f"{probe.program}:{expected}"
                 )
             hits += 1
+            functions.setdefault(display_function(frame.get("name")), []).append(hits)
             if expected != probe.line and not relocated:
                 relocated = True
                 warnings.append(
@@ -743,6 +793,10 @@ def run_probe(root, probe, *, adapter=None, progress=None):
                         raise ValueError(
                             f"Intervention target {name!r} is not a visible local; "
                             f"visible: {_visible(snapshot)}"
+                            + _member_hint(worker, stop, snapshot, name).replace(
+                                "select it as", "it can be read as"
+                            )
+                            + "; only the stopped function's own locals can be changed"
                         )
                     changes.append(
                         worker.dispatch(
@@ -833,6 +887,19 @@ def run_probe(root, probe, *, adapter=None, progress=None):
             if result.get("optimized")
             else "Some selectors could not be read by the debugger; see each row's reason."
         )
+    if len(functions) > 1:
+        warnings.append(
+            f"Line {probe.line} stopped in {len(functions)} functions: "
+            + "; ".join(
+                f"{name or '?'} (hit{'s' if len(numbers) > 1 else ''} "
+                f"{', '.join(map(str, numbers[:8]))}{', ...' if len(numbers) > 8 else ''})"
+                for name, numbers in list(functions.items())[:4]
+            )
+            + ". --hits and --set-hit count every stop; the function column says which "
+            "is which."
+        )
+    if any(row.get("note") == _OWNED_RUST for row in rows):
+        warnings.append(_OWNED_RUST)
     if changes and probe.limit > 1:
         warnings.append(
             f"Interventions are applied once, at hit {probe.set_hit}; other hits observe "
@@ -878,7 +945,7 @@ def _table(result):
             row["phase"],
             str(row.get("line", "")),
             # Rust frame names end with a symbol hash (`main::h56a2…`); JSON keeps it.
-            re.sub(r"::h[0-9a-f]{16}$", "", row.get("function") or ""),
+            display_function(row.get("function")),
             row["selector"],
             row.get("type") or "",
             row.get("value", "<" + row.get("error", "") + ">")

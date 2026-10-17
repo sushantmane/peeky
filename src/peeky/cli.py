@@ -210,6 +210,8 @@ def _resolve(path, program, line, config):
             data["language"] = language
         root = path if path.is_dir() else path.parent
         return root, program, line, language, data
+    if path.suffix == ".java" or str(program or "").endswith(".java"):
+        raise ValueError(_JAVA_NEEDS_CONFIG)
     if path.is_file() and path.suffix == ".py":
         return path.parent, program or path.name, line, "python", None
     if path.is_dir() and program and program.endswith(".py"):
@@ -233,6 +235,9 @@ def _resolve(path, program, line, config):
             program = program or path.relative_to(crate).as_posix()
         data = {"sources": sources, "tests": tests, **rust_tools()}
         return crate, program or binary, line, "rust", data
+    if path.is_dir() and (native := _native_program(path, program)):
+        # A directory names its program by --at (`ring.cpp:16`), or holds exactly one.
+        path, program = native
     if path.is_file() and path.suffix in (".c", ".cpp", ".cc", ".cxx"):
         language = "c" if path.suffix == ".c" else "cpp"
         suffixes = (".c",) if language == "c" else (".cpp", ".cc", ".cxx")
@@ -246,6 +251,12 @@ def _resolve(path, program, line, config):
             **tools,
         }
         return root, program or path.name, line, language, data
+    if (
+        path.is_dir()
+        and not program
+        and (next(path.glob("*.java"), None) or next(path.glob("*/*.java"), None))
+    ):
+        raise ValueError(_JAVA_NEEDS_CONFIG)
     if path.is_dir() and (scripts := sorted(p.name for p in path.glob("*.py"))[:20]):
         raise ValueError(
             "Python directory target: pass --at <module.py>[:<line>] (and --run <script.py> "
@@ -254,6 +265,60 @@ def _resolve(path, program, line, config):
     raise ValueError(
         "Cannot detect the target; pass a .py/.c/.cpp file, a Cargo crate, or --config"
     )
+
+
+_NATIVE_SUFFIXES = (".c", ".cpp", ".cc", ".cxx")
+_JAVA_NEEDS_CONFIG = (
+    "Java targets need --config <file.json> naming the adapter bundle, the sources and the "
+    'main class, e.g. {"bundle": "work/java-adapter", "sources": ["shop/Main.java"], '
+    '"main_class": "shop.Main"} (COOKBOOK 7.3; attached JVMs: 7.4)'
+)
+
+
+def _native_program(directory, program):
+    """(file, program) for a C/C++ program in ``directory``, or None.
+
+    `--at ring.cpp[:16]` names it; with only a line (or nothing), the directory must
+    hold exactly one C/C++ file that defines `main`. Several are listed, never guessed.
+    """
+    if program:
+        if Path(program).suffix not in _NATIVE_SUFFIXES:
+            return None
+        if "/" in program.replace("\\", "/"):
+            # A C/C++ program is built with the files of its own directory.
+            raise ValueError(
+                f"Pass the program's own directory as the target: peeky probe "
+                f"{(directory / Path(program).parent).resolve()} --at {Path(program).name}:<line>"
+            )
+        candidate = (directory / program).resolve()
+        if not candidate.is_relative_to(directory) or not candidate.is_file():
+            raise ValueError(f"No C/C++ file {program} inside {directory}")
+        return candidate, candidate.name
+    mains = sorted(
+        item.name
+        for item in directory.iterdir()
+        if item.suffix in _NATIVE_SUFFIXES
+        and item.is_file()
+        and item.resolve().parent == directory
+        and _MAIN.search(item.read_bytes()[:4_000_000])
+    )[:20]
+    if len(mains) > 1:
+        # As for a file target: the preprocessor settles which really define main.
+        mains = [
+            name
+            for name in mains
+            if _defines_main(
+                directory / name,
+                native_tools(language := "c" if name.endswith(".c") else "cpp"),
+                language,
+            )
+        ]
+    if len(mains) > 1:
+        raise ValueError(
+            f"Several C/C++ programs define main here ({', '.join(mains)}); name one with "
+            f"--at, e.g. --at {mains[0]}:<line>"
+        )
+    return ((directory / mains[0]).resolve(), mains[0]) if mains else None
 
 
 _MAIN = re.compile(rb"^[ \t]*(?:int|void)[ \t\n]+main[ \t]*\(", re.MULTILINE)
@@ -426,19 +491,21 @@ def describe(args):
         if language == "java-attach"
         else " [--arg A ...]"
     )
+    # The commands repeat the --config this describe was given (Java, explicit targets).
+    target = f"{args.target} --config {args.config}" if args.config else args.target
     manifest = {
         "peeky": "describe",
         "language": language,
         "root": str(root),
         "program": program,
         "commands": {
-            "probe": f"peeky probe {args.target} --at {program}:<line>{run} --capture <a,b.c> "
+            "probe": f"peeky probe {target} --at {program}:<line>{run} --capture <a,b.c> "
             "[--set name=value] [--set-hit N] [--hits N] [--json]",
-            "session": f"peeky session start {args.target} --at {program}:<line>{run}; then "
+            "session": f"peeky session start {target} --at {program}:<line>{run}; then "
             "peeky session inspect | get <a.b> | set <name>=<value> | step [--into|--out] | "
             "continue [--to LINE|--to-exit] | "
             "report | close",
-            "verify": f"peeky verify {args.target} --at {program} --check <checker.py> "
+            "verify": f"peeky verify {target} --at {program} --check <checker.py> "
             "--old <text> --new <text> (or --old-file/--new-file)",
             "background": "add --background to probe or verify, then `peeky job wait <id>` "
             "(exit 3 while running)",
@@ -822,6 +889,10 @@ _OPTIMIZED_NOTE = (
 
 def _state_text(state):
     where = f" at {state['location']}" if state.get("location") else ""
+    if where and state.get("function"):
+        from peeky.names import display_function
+
+        where += f" in {display_function(state['function'])}"
     hint = ""
     if state["state"] == "running":
         hint = " (still running; run `peeky session wait`)"
@@ -861,6 +932,10 @@ def _stop(record):
 def _variables_text(snapshot, name="default"):
     frame = snapshot["frames"][0] if snapshot["frames"] else {}
     where = snapshot.get("location") or f"{frame.get('source', {}).get('path')}:{frame.get('line')}"
+    if function := snapshot.get("function"):
+        from peeky.names import display_function
+
+        where += f" in {display_function(function)}"
     lines = [f"stopped at {where}" + _pause_text(snapshot)]
     for scope in snapshot["scopes"]:
         lines.append(f"[{scope['name']}]")
@@ -914,6 +989,8 @@ def _get_lines(row):
         lines.append("  ... more children; select one by name or index")
     if row.get("children_error"):
         lines.append(f"  <children: {row['children_error']}>")
+    if row.get("note"):
+        lines.append(f"  note: {row['note']}")
     return lines
 
 
@@ -975,7 +1052,15 @@ def session(args):
             None,
         )
         if scope is None:
-            raise ValueError(f"{name!r} is not a visible local")
+            from peeky.probe import _member_hint, _visible
+
+            hint = _member_hint(_Remote(client), stop, snapshot, name.partition(".")[0])
+            raise ValueError(
+                f"{name!r} is not a visible local; visible: {_visible(snapshot)}"
+                + hint.replace("select it as", "it can be read as")
+                + "; only the stopped function's own locals can be changed (fields and "
+                "elements cannot)"
+            )
         changed = client.call(
             "set_variable", **stop, reference=scope["reference"], name=name, value=value
         )
@@ -1678,6 +1763,10 @@ def job(args):
 
 def main(argv=None, _job=False, _edits=None):
     argv = list(sys.argv[1:] if argv is None else argv)
+    if "--" in argv and (argv[:1] == ["probe"] or argv[:2] == ["session", "start"]):
+        # `peeky probe t --at 5 -- a b c` passes a, b and c to the program.
+        split = argv.index("--")
+        argv = argv[:split] + [f"--arg={value}" for value in argv[split + 1 :]]
     parser = argparse.ArgumentParser(prog="peeky", description=__doc__.split("\n\n")[0])
     commands = parser.add_subparsers(dest="command", required=True)
 
@@ -1736,9 +1825,16 @@ def main(argv=None, _job=False, _edits=None):
         "--arg",
         action="append",
         default=[],
-        help="Program argument (repeatable; replaces configured arguments)",
+        help="Program argument (repeatable; replaces configured arguments). Or put the "
+        "program's arguments after `--`: peeky probe t --at 5 -- a b c",
     )
-    sub.add_argument("--timeout", type=float, default=60)
+    sub.add_argument(
+        "--timeout",
+        type=float,
+        default=60,
+        help="Seconds for the whole probe, build included (default 60); then it stops the "
+        "program and fails with TIMEOUT",
+    )
     sub.add_argument(
         "--until",
         choices=("auto", "exit", "hits"),
@@ -1775,7 +1871,12 @@ def main(argv=None, _job=False, _edits=None):
         help="Use a running worker at this loopback URL (e.g. through ssh -L) instead of "
         "starting one; token from $PEEKY_WORKER_TOKEN",
     )
-    start.add_argument("--arg", action="append", default=[], help="Program argument (repeatable)")
+    start.add_argument(
+        "--arg",
+        action="append",
+        default=[],
+        help="Program argument (repeatable), or put them after `--`",
+    )
     start.add_argument(
         "--max-pause",
         type=float,
@@ -1796,7 +1897,13 @@ def main(argv=None, _job=False, _edits=None):
         common(actions.add_parser(name, help=about), target=False)
     for action in actions.choices.values():
         action.add_argument("--name", default="default", help="Session name")
-        action.add_argument("--timeout", type=float, default=30)
+        action.add_argument(
+            "--timeout",
+            type=float,
+            default=30,
+            help="Seconds this command waits (default 30). A program still "
+            "running is left running: `session wait` again",
+        )
     actions.choices["get"].add_argument("selectors", nargs="+")
     actions.choices["set"].add_argument("assignment", help="name=value")
     actions.choices["close"].add_argument(

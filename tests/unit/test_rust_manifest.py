@@ -130,7 +130,7 @@ def test_symlinked_declared_input_rejected(project, file):
 @pytest.mark.parametrize("file", ["Cargo.toml", "Cargo.lock"])
 def test_oversized_or_invalid_toml_rejected(project, file):
     (project / file).write_bytes(b"x" * (1024 * 1024 + 1))
-    with pytest.raises(ValueError, match="bounded"):
+    with pytest.raises(ValueError, match=f"{file} must be a regular file of at most 1 MiB"):
         validate(project)
     (project / file).write_bytes(b"\xff")
     with pytest.raises(ValueError, match="Invalid"):
@@ -173,3 +173,9 @@ def test_project_manifest_allowed_but_own_config_rejected(project):
     (project / ".cargo").symlink_to(Path("missing-directory"))
     with pytest.raises(ValueError, match="symlink"):
         assert_cargo_ancestry_clear(project)
+
+
+def test_a_missing_lockfile_says_how_to_create_it(project):
+    (project / "Cargo.lock").unlink()
+    with pytest.raises(ValueError, match="Cargo.lock is missing: run `cargo generate-lockfile`"):
+        validate(project)

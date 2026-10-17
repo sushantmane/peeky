@@ -203,3 +203,26 @@ Verification of 6b94246 found no blocking or should-fix issues. The reviewer re-
 The reviewer probed the soundness argument through async fns, pattern parameters, generics, `impl Trait`, closures, inlined copies, `mem::swap` and writes through `&mut`, and found no hole in safe Rust. It also checked the display limits (Vec, multi-byte and escaped text, `i32::MIN`) and the enum views. It found two problems in the follow-up commit beb5230, both fixed:
 - **Should-fix:** the LLVM 20 Docker image could not be built, because `python3-lldb-18` and `-20` conflict. The image now unpacks `lldb-20` and llvm-20's own Python tree from verified downloads, so lldb-dap-20 starts without errors and lldb-18 is untouched. The `rust-llvm20` lane sets `PEEKY_EXPECT_READ_MEMORY=1`, so it fails if values fall back to raw fields.
 - **Nit:** AGENT_GUIDE said optimized builds show containers opaque. Optimized IR has no parameter proof, so those parameters keep their raw fields or show as optimized out. The sentence now says so.
+
+## Review of the second-evaluation fixes PR (#60, b70ae63)
+
+The review confirmed several things:
+- `receiver` is never set for C, Python or Rust.
+- Cargo crates are still detected first.
+- The `--` rewrite applies only to `probe` and `session start`, and survives `--background` replays.
+- JSON rows keep raw frame names.
+- The multi-function warning holds for failures and `--hits all`.
+- The cookbook transcripts match.
+
+It reported one blocking issue, three should-fix and two nits, all fixed:
+- **Blocking:** implicit `this` read a member whenever no local had the name. The debugger's local list can be incomplete, and in three real cases Peeky showed the member's value under the local's name:
+  - an attached Java class without a local-variable table, where the setter parameter `total` was missing;
+  - a C++ function-local static, which lldb-dap lists outside Locals;
+  - a scope truncated at 50 variables.
+
+  Members are no longer read implicitly. A bare member name's error names the selector (`select it as this.head_ if the code means the member`), and `this.head_` reads it. `test_a_static_that_shadows_a_member_is_never_read_as_the_member` uses real lldb-dap, and the unit test covers nested selectors and shadowing.
+- **Should-fix:** nested implicit selectors were reworded as "not a member". This is gone with implicit reads: the error now names the first segment's selector.
+- **Should-fix:** `session set head_=2` (and `probe --set`) sent agents to "dotted paths". Both now say the member can be read as `this.head_` and that only the function's own locals can be changed, and the `NOT_FOUND` hint covers reads and changes.
+- **Should-fix:** `describe proj --at ring/ring.cpp` printed a command that failed. A C/C++ program in a subdirectory is now refused with the command that works (`peeky probe …/proj/ring --at ring.cpp:<line>`).
+- **Nit:** a symlinked candidate outside the directory was taken by `--at <line>`. Only files whose real parent is the directory count, and the several-programs message suggests `--at <file>:<line>`.
+- **Nit:** `display_function` raised on impossible `$u…$` escapes. They stay as written, here and in `describe`'s symbol demangler (`peeky.names.unicode_escape`).

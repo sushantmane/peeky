@@ -669,3 +669,29 @@ def test_a_new_session_on_a_worker_starts_with_no_stop_state(workspace):
         assert not (worker.co_served or worker.stop_outside or worker.stop_returns)
     finally:
         worker.dispatch("close", {"session_id": launch["session_id"]})
+
+
+def test_program_arguments_can_follow_a_double_dash(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
+    script = tmp_path / "args.py"
+    script.write_text("import sys\ncount = len(sys.argv)\nprint('ARGS:', sys.argv[1:])\n")
+    code, out = run(
+        capsys,
+        "probe",
+        script,
+        "--at",
+        "3",
+        "--capture",
+        "count",
+        "--json",
+        "--no-save",
+        "--",
+        "a",
+        "--b",
+        "-5",
+    )
+    result = json.loads(out.out)
+    assert code == 0, result.get("error")
+    assert result["program_args"] == ["a", "--b", "-5"]
+    assert "ARGS: ['a', '--b', '-5']" in result["output"]
+    assert result["rows"][0]["value"] == "4"

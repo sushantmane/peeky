@@ -222,3 +222,24 @@ def test_only_caller_frames_outside_the_program_are_request_errors(tmp_path):
         inspect(worker, 2)
     assert worker.session == "session"
     assert inspect(worker, 1)["scopes"]
+
+
+def test_inspections_name_the_receiver_only_for_cpp_and_java():
+    from types import SimpleNamespace
+
+    from peeky.java import JavaSession
+    from peeky.native import NativeSession
+
+    def receiver(language):
+        target = SimpleNamespace(language=language) if language else SimpleNamespace()
+        return NativeSession.implicit_receiver.fget(SimpleNamespace(target=target))
+
+    assert (receiver("cpp"), receiver("c"), receiver(None)) == ("this", None, None)
+    assert JavaSession.implicit_receiver == "this"
+
+
+def test_the_receiver_reaches_the_inspection(tmp_path):
+    worker = stopped(tmp_path)
+    assert "receiver" not in inspect(worker)
+    worker.runtime.implicit_receiver = "this"
+    assert inspect(worker)["receiver"] == "this"
