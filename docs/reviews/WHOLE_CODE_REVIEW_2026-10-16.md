@@ -227,7 +227,7 @@ It reported one blocking issue, three should-fix and two nits, all fixed:
 - **Nit:** a symlinked candidate outside the directory was taken by `--at <line>`. Only files whose real parent is the directory count, and the several-programs message suggests `--at <file>:<line>`.
 - **Nit:** `display_function` raised on impossible `$u…$` escapes. They stay as written, here and in `describe`'s symbol demangler (`peeky.names.unicode_escape`).
 
-## Review of the session-hits PR (#62, b6a8f0e)
+## Review of the session-hits PR (#62, bd241d8)
 
 The review confirmed several things:
 - LLDB threads that stop together are numbered one by one, and Java's separate thread stops are numbered too.
