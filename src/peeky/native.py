@@ -975,8 +975,10 @@ class NativeSession:
         if not isinstance(value, str) or not re.fullmatch(r"[+-]?(?:0|[1-9][0-9]{0,19})", value):
             raise ValueError("Native mutations require bounded decimal integer literals")
 
-    # lldb-dap 20+ gives memory-backed values a memoryReference; one without it is
-    # computed (a bitfield binding), and a write would change only LLDB's copy.
+    # A value lldb-dap gives no memoryReference has no address at all, so a write could
+    # only change LLDB's copy. This catches nothing in practice (lldb-dap 20 and 21 give
+    # even bitfield bindings one, set to their value): confirm_mutation's read-back is
+    # what guarantees every reported change, on every adapter.
     requires_memory_location = True
 
     def settable(self, variable, frame=None):

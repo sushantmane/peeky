@@ -297,7 +297,7 @@ The review confirmed every type name and range against lldb-dap (LLDB 18, 20 and
   - **Unchanged:** `MUTATION_REJECTED` ("did not change … its value is computed"), and the session is kept.
   - **Anything else:** the session is closed.
   - **A `setVariable` the debugger refuses:** `MUTATION_REJECTED`, and the session is kept, since nothing changed.
-  - **No memory location** on adapters that report memory references: never `[settable]` and refused before writing. Apple's lldb-dap gives these bindings an address, so `[settable]` is documented as type-based; the read-back is what guarantees no false success.
+  - **No memory location** on adapters that report memory references: never `[settable]` and refused before writing. In practice this catches nothing: lldb-dap 20 and 21 give even bitfield bindings a `memoryReference`, set to their value. So `[settable]` is documented as type-based, and the read-back is what guarantees no false success on every adapter.
 
   Test: `test_writes_that_cannot_reach_the_program_are_never_reported_as_done` (real lldb-dap, clang 21).
 - **Should-fix:** optimized builds marked `[settable]`. Now nothing is marked when every change would be refused.
@@ -305,3 +305,7 @@ The review confirmed every type name and range against lldb-dap (LLDB 18, 20 and
 - **Should-fix:** the agent guide, README and RUST_GATE stated the old rules. All three are updated.
 - **Nit:** the refusal message now names the accepted types (`time_t`, `off_t` and similar typedefs are not accepted). The `[settable]` text says it applies to C, C++ and Rust, and the hint lists Rust's exact types.
 - **Nit (pre-existing):** `+5` and an unsigned `-0` made LLDB fail and close the session. Literals are now sent in canonical decimal (`str(int(value))`).
+
+Verification of 7b7f7d0 found no blocking issues. The bitfield bindings and the typedef-float case behaved as intended on lldb-dap 18, 20 and 21, on Linux and macOS: refused or unchanged writes keep the session, and lossy ones close it. Setting a value to what it already is, Rust values read back through `mutation_value`, and failed writes in debugpy and java-debug all checked out. Two remaining items are fixed:
+- **Should-fix (low):** the comment and this review doc credited the memory-location check with catching bitfield bindings. lldb-dap 20 gives them a `memoryReference` too. Both now say the read-back is the guarantee everywhere.
+- **Nit:** a refusal now carries the debugger's reason from DAP's `body.error.format` (`Cannot change the value of a constant`) instead of "Debugger request failed".

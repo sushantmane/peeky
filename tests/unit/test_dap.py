@@ -246,3 +246,23 @@ def test_non_dap_lines_on_the_protocol_stream_fail_with_a_clear_message():
     stream = io.BytesIO(b"Warning: something odd\r\n\r\n")
     with pytest.raises(ValueError, match="no Content-Length header"):
         read_message(stream)
+
+
+def test_a_refusal_carries_the_debuggers_own_reason():
+    from peeky.dap import RequestFailed
+
+    dap = transport()
+    dap._accept(
+        {
+            "type": "response",
+            "request_seq": 3,
+            "success": False,
+            "message": "Debugger request failed",
+            "body": {"error": {"id": 1, "format": "Cannot change the value of a constant"}},
+        }
+    )
+    with pytest.raises(RequestFailed, match="^Cannot change the value of a constant$"):
+        dap.response(3, timeout=0)
+    dap._accept({"type": "response", "request_seq": 4, "success": False, "message": "notStopped"})
+    with pytest.raises(RequestFailed, match="^notStopped$"):
+        dap.response(4, timeout=0)
