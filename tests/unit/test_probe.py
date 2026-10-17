@@ -616,3 +616,33 @@ def test_hits_all_fits_the_row_budget_and_needs_the_program_to_exit():
         Probe("main.py", 3, ("a",), hits="all", until="hits")
     # Repeated selectors add nothing and would multiply comparison rows.
     assert Probe("main.py", 3, ("a", "b", "a")).capture == ("a", "b")
+
+
+def test_cpp_and_java_selectors_name_members_of_this_without_it():
+    from peeky.probe import _resolve
+
+    this = {"name": "this", "type": "Ring *", "value": "0x1", "variablesReference": 1}
+    tail = {"name": "tail", "type": "int", "value": "1", "variablesReference": 0}
+    members = [
+        {"name": "head_", "type": "int", "value": "2", "variablesReference": 0},
+        {"name": "tail", "type": "int", "value": "9", "variablesReference": 0},
+    ]
+    tree, snap = Tree({1: members}), {**snapshot(this, tail), "receiver": "this"}
+    assert _resolve(tree, {}, snap, parse_selector("head_"))["value"] == "2"
+    # A local of the same name comes first, as the language looks it up.
+    assert _resolve(tree, {}, snap, parse_selector("tail"))["value"] == "1"
+    with pytest.raises(ValueError) as caught:
+        _resolve(tree, {}, snap, parse_selector("size_"))
+    message = str(caught.value)
+    assert message.startswith("not found; visible: tail, this; not a member of this either")
+    assert "children: head_, tail" in message
+    # Without a receiver (C, Python, Rust), `this` is only a local's name.
+    with pytest.raises(ValueError, match=r"^not found; visible: tail, this$"):
+        _resolve(tree, {}, snapshot(this, tail), parse_selector("head_"))
+
+
+def test_nameless_debugger_slots_are_not_listed_as_visible():
+    from peeky.probe import _visible
+
+    shown = _visible(snapshot({"name": "<null>"}, {"name": "score"}))
+    assert shown == "score"

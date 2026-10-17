@@ -33,6 +33,7 @@ from peeky.build import (
     real_tool,
 )
 from peeky.compiled_verification import CompiledVerification
+from peeky.names import display_function
 from peeky.native import (
     NativeSession,
     _metadata,
@@ -639,10 +640,12 @@ class RustSession(NativeSession):
         name = variable.get("name")
         hashed = _frame_hash(frame)
         if not hashed or self.memory.get((hashed[1], name)) is not True:
+            where = display_function((frame or {}).get("name")) or "this frame"
             raise ValueError(
-                f"Rust mutation requires a local the program keeps in memory; {name!r} is "
-                "kept in a register and the debugger only shows a copy of it, so changing "
-                "it would not affect the program. Locals the code borrows or reassigns "
+                f"Rust mutation requires a local the program keeps in memory; {name!r} in "
+                f"{where} is kept in a register and the debugger only shows a copy of it, "
+                "so changing it would not affect the program. Locals the code borrows or "
+                "reassigns "
                 "live in memory; otherwise edit the source and run verify"
             )
 

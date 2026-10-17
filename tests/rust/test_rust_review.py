@@ -273,3 +273,64 @@ def test_rust_reference_parameters_are_read_from_memory_and_locals_never_are(cra
         assert "only for reference parameters" in rows["values[0]"]["error"]
         assert rows["list.len"]["value"] == "3"
     assert "SHOWN:" in result["output"] and "PAGE:[40, 50, 60]" in result["output"]
+
+
+RANKED = """
+fn ranked(best: &mut Vec<i32>, score: i32) -> usize {
+    let position = best.iter().position(|&b| b < score).unwrap_or(best.len()); // RANKED
+    best.insert(position, score);
+    position
+}
+"""
+
+
+@pytest.mark.timeout(240)
+def test_a_line_shared_with_a_closure_names_each_function_it_stops_in(crate, capsys):
+    path = crate / "src/main.rs"
+    path.write_text(path.read_text() + RANKED)
+    edit_main(
+        crate,
+        'println!("PAGE:{values:?}");',
+        [
+            "    let mut best: Vec<i32> = Vec::new();",
+            "    for score in [5, 9, 1] {",
+            "        ranked(&mut best, score);",
+            "    }",
+            '    println!("BEST:{best:?}"); // BEST',
+        ],
+    )
+    lines = path.read_text().splitlines()
+    at = next(i for i, line in enumerate(lines, 1) if "// RANKED" in line)
+    code, result = probe(capsys, crate, "--at", at, "--capture", "score", "--hits", "all")
+    assert code == 0, result.get("error")
+    functions = {row["function"] for row in result["rows"]}
+    assert len(functions) == 2, functions
+    [warning] = [w for w in result["warnings"] if "stopped in 2 functions" in w]
+    # The first call (empty `best`) never runs the closure; later calls stop in it too.
+    assert "peeky_pagination::ranked (hits 1, 2, 5)" in warning
+    assert "peeky_pagination::ranked::{{closure}} (hits 3, 4" in warning
+    # A rejected change names the frame it was tried in.
+    code, result = probe(
+        capsys,
+        crate,
+        "--at",
+        at,
+        "--capture",
+        "score",
+        "--hits",
+        "3",
+        "--set",
+        "score=6",
+        "--set-hit",
+        "3",
+    )
+    assert code == 1 and result["error"]["code"] == "MUTATION_REJECTED", result
+    assert "'score' in peeky_pagination::ranked::{{closure}}" in result["error"]["message"]
+    # Owned containers say why they are raw, and how to read them.
+    at = next(i for i, line in enumerate(lines, 1) if "// BEST" in line)
+    code, result = probe(capsys, crate, "--at", at, "--capture", "best,best.len")
+    assert code == 0, result.get("error")
+    rows = {row["selector"]: row for row in result["rows"]}
+    assert "through reference parameters (#53)" in rows["best"]["note"]
+    assert rows["best.len"]["value"] == "3" and "note" not in rows["best.len"]
+    assert any("#53" in warning for warning in result["warnings"])

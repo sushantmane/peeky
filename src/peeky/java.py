@@ -232,6 +232,8 @@ class JavaTarget:
 class JavaSession:
     # java-debug accepts variables start/count only for arrays.
     ranges_only_for_indexed = True
+    # Selectors name fields of `this` without it, as Java code does.
+    implicit_receiver = "this"
     # java-debug occasionally drops VM-death events (#27); infer exit from no threads.
     liveness_by_threads = True
 

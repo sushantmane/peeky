@@ -221,7 +221,7 @@ output:
   ::ffff:8.8.8.8: private
 ```
 
-`--run` names the script to execute when the breakpoint is in a module it imports. `--arg` is repeatable; use `--arg=-v` for values starting with a dash. C, C++, Rust and launched Java programs take `--arg` too.
+`--run` names the script to execute when the breakpoint is in a module it imports. `--arg` is repeatable; use `--arg=-v` for values starting with a dash. Or put all of the program's arguments after `--`: `peeky probe app.py --at 5 -- A 5 5 0`. C, C++, Rust and launched Java programs take arguments too.
 
 ### 2.6 Stop Right After the Last Hit
 
@@ -391,8 +391,8 @@ peeky session close
 ```
 
 ```
-session default (python): state: stopped at .../pagination_bug.py:8 (paused 0.0 s)
-stopped at .../pagination_bug.py:8 (paused 0.05 s)
+session default (python): state: stopped at .../pagination_bug.py:8 in get_page (paused 0.0 s)
+stopped at .../pagination_bug.py:8 in get_page (paused 0.05 s)
 [Locals]
   items: list = [10, 20, 30, 40, 50, 60] (children: peeky session get items)
   page: int = 1
@@ -435,12 +435,12 @@ peeky session continue --to-exit
 ```
 
 ```
-session default (python): state: stopped at .../pagination_bug.py:13 (paused 0.0 s)
-state: stopped at .../pagination_bug.py:5 (paused 0.0 s)
-state: stopped at .../pagination_bug.py:7 (paused 0.0 s)
-state: stopped at .../pagination_bug.py:8 (paused 0.0 s)
+session default (python): state: stopped at .../pagination_bug.py:13 in <module> (paused 0.0 s)
+state: stopped at .../pagination_bug.py:5 in get_page (paused 0.0 s)
+state: stopped at .../pagination_bug.py:7 in get_page (paused 0.0 s)
+state: stopped at .../pagination_bug.py:8 in get_page (paused 0.0 s)
 start: int = 3
-state: stopped at .../pagination_bug.py:13 (paused 0.0 s)
+state: stopped at .../pagination_bug.py:13 in <module> (paused 0.0 s)
 state: terminated (program exited; `peeky session report` shows output)
 ```
 
@@ -553,7 +553,7 @@ peeky probe examples/c/pagination_bug.c --at 25 --capture start,page --arg 2    
 peeky probe examples/cpp/pagination_bug.cpp --at 28 --capture start
 ```
 
-All `.c` files in the directory that don't define their own `main` are built together with the target. A directory holding several programs links only the target's `main`. Headers read from outside the directory, including SDK headers, are hashed and rechecked.
+All `.c` files in the directory that don't define their own `main` are built together with the target. A directory holding several programs links only the target's `main`. A directory works as the target too: `peeky probe ring/ --at 16` finds its one program (a checker script beside it doesn't count), and `--at ring.cpp:16` names one when there are several. In C++ and Java methods, selectors name members without `this`, as the code does: `head_` reads `this->head_` unless a local has that name. Headers read from outside the directory, including SDK headers, are hashed and rechecked.
 
 ### 7.2 Rust (a Cargo crate)
 

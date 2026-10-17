@@ -30,8 +30,13 @@ class CargoInputs:
 
 def _toml(root, name):
     path = _inside(root, name)
+    if name == "Cargo.lock" and not path.exists():
+        raise ValueError(
+            "Cargo.lock is missing: run `cargo generate-lockfile` in the crate once (Peeky "
+            "builds offline, from the lockfile)"
+        )
     if not path.is_file() or path.stat().st_size > 1024 * 1024:
-        raise ValueError("Cargo manifest/lockfile must be a bounded regular file")
+        raise ValueError(f"{name} must be a regular file of at most 1 MiB")
     try:
         return tomllib.loads(path.read_text(encoding="utf-8"))
     except (UnicodeError, tomllib.TOMLDecodeError) as exc:

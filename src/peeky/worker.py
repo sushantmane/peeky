@@ -130,6 +130,7 @@ class DebugWorker:
         self.exit_inferred = False
         self.program = None
         self.stop_location = None
+        self.stop_function = None
         self.stop_reason = None
         self.points, self.temporary_line = [], None
         self.stop_outside = self.stop_returns = self.co_served = False
@@ -215,12 +216,15 @@ class DebugWorker:
                 _in_program_sources(self.runtime, caller, self.root) for caller in frames[1:]
             )
             path = frame.get("source", {}).get("path")
+            self.stop_function = str(frame.get("name") or "")[:300] or None
             return f"{_display_path(self.runtime, path)}:{frame.get('line')}" if path else None
         except Exception:
             return None
 
     def location(self):
         where = {"location": self.stop_location} if self.stop_location else {}
+        if self.stop_location and self.stop_function:
+            where["function"] = self.stop_function
         if self.stop_id and self.stop_outside:
             # A step that left the program (into a library, past main): nothing to read.
             where["outside_program"] = True
@@ -399,6 +403,7 @@ class DebugWorker:
         self.state = "running"
         self.stopped_at = None
         self.stop_location = None
+        self.stop_function = None
         self.stop_reason = None
         self.children.clear()
         self.stop_id = None
@@ -732,6 +737,7 @@ class DebugWorker:
             self.thread_id = event.get("body", {}).get("threadId")
             self.stop_all_threads = event.get("body", {}).get("allThreadsStopped") is True
             self.stop_reason = event.get("body", {}).get("reason") if self.stop_id else None
+            self.stop_function = None
             self.stop_location = self.read_location() if self.stop_id else None
             if self.stop_id and self.temporary_line is not None:
                 # The one-shot `continue --to` line served its purpose (or another stop
@@ -838,8 +844,15 @@ class DebugWorker:
                     if isinstance(source, str) and source
                     else {}
                 ),
+                "function": str(selected_frame.get("name") or "")[:300],
                 "frames": frames,
                 "scopes": result,
+                # The object whose members selectors may name without it (C++, Java).
+                **(
+                    {"receiver": receiver}
+                    if (receiver := getattr(runtime, "implicit_receiver", None))
+                    else {}
+                ),
                 **self.pause_status(),
                 **({"optimized": level} if (level := self.optimized()) else {}),
             }
@@ -1322,6 +1335,7 @@ class DebugWorker:
         self.stopped_at = None
         self.empty_thread_replies = 0
         self.stop_location = None
+        self.stop_function = None
         self.stop_reason = None
         self.session = None
         self.stop_id = None

@@ -809,6 +809,12 @@ class NativeSession:
     # lldb-dap reports optimized-out/not-live locals as `<error: ...>` text.
     reports_unavailable_as_text = True
 
+    @property
+    def implicit_receiver(self):
+        """C++ selectors name members of `this` without it, as C++ code does; in C a
+        local may itself be called `this`."""
+        return "this" if getattr(self.target, "language", None) == "cpp" else None
+
     def __init__(self, target, prepared, adapter, lines, identity, binary, symbols, external=None):
         self.target, self.prepared = target, prepared
         self.external_inputs = dict(external or {})
