@@ -918,6 +918,8 @@ def _state_text(state):
         text += "\nnote: the debugger never reported the exit; Peeky inferred it (no threads left)"
     if state.get("note"):
         text += f"\nnote: {state['note']}"
+    for warning in state.get("warnings", []):
+        text += f"\nwarning: {warning}"
     if state.get("auto_resumed"):
         last = state.get("last_auto_resumed") or {}
         text += (
@@ -1331,6 +1333,8 @@ def _start_remote(args, root, program, line, language, max_pause):
     state, complete = _until_hit(record, client, args.hit, args.timeout)
     if record.get("optimized"):
         state["optimized"] = record["optimized"]
+    if launch.get("warnings"):
+        state["warnings"] = launch["warnings"]
     _emit(
         {"session": args.name, "language": language, "worker": args.worker, **state},
         args.json,
@@ -1477,6 +1481,8 @@ def _start_local(args, root, program, line, language, data, max_pause):
         state["optimized"] = record["optimized"]
     if not complete:
         state["incomplete"] = True
+    if launch.get("warnings"):
+        state["warnings"] = launch["warnings"]
     return state
 
 

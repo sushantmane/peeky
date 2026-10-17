@@ -229,6 +229,15 @@ class JavaTarget:
             raise
 
 
+def _method_shown(name):
+    """A class-file method name as people read it."""
+    if name.startswith("<clinit>"):
+        return "the static initializer"
+    if name.startswith("<init>"):
+        return f"the constructor{name[6:]}" if name != "<init>" else "the constructor"
+    return name
+
+
 class JavaSession:
     # java-debug accepts variables start/count only for arrays.
     ranges_only_for_indexed = True
@@ -282,6 +291,27 @@ class JavaSession:
             name = Path(entry["path"]).resolve().relative_to(workspace).as_posix()
             result.setdefault(name, set()).update(entry["lines"])
         return {name: sorted(lines) for name, lines in result.items()}
+
+    def breakpoint_notes(self, program, breakpoints):
+        """Warnings for breakpoint lines that several methods share: java-debug stops in
+        the first one only (class-file order), never in the others."""
+        path = Path(self.source_path(program)).resolve()
+        notes = []
+        for point in breakpoints:
+            line = point.get("line")
+            for entry in self.mapping["classes"].values():
+                if Path(entry["path"]).resolve() != path:
+                    continue
+                if not (shared := entry.get("shared_lines", {}).get(str(line))):
+                    continue
+                never = ", ".join(_method_shown(name) for name in shared["never"][:3])
+                notes.append(
+                    f"Line {line} runs in several methods; the debugger stops only in "
+                    f"{_method_shown(shared['stops'])} there, never in {never}. To stop in "
+                    "one of those, put the breakpoint on a line of its own, or `session step "
+                    "--into` from this line (a method reference has no line of its own)"
+                )
+        return notes
 
     @property
     def environment(self):

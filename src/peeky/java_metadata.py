@@ -73,7 +73,13 @@ def _modified_utf8(raw):
     return b"".join(units).decode("utf-16-be", errors="surrogatepass")
 
 
-def _class_metadata(data):
+def _class_metadata(data, shared=None):
+    """(binary internal name, SourceFile, sorted executable lines). With ``shared`` (a
+    dict), also records {line: {"stops": method, "never": [methods]}} for lines that
+    several methods of the class share (a lambda body on its enclosing method's line, a
+    static initializer's lambda, nested lambdas, a field initializer in each
+    constructor). java-debug binds a line breakpoint to the first such method in
+    class-file order only, so the others never stop there."""
     if len(data) > MAX_CLASS_BYTES:
         raise ValueError("Class file exceeds metadata size limit")
     reader = _Reader(data)
@@ -154,10 +160,11 @@ def _class_metadata(data):
             if name in {"Code", "SourceFile", "LineNumberTable", "SourceDebugExtension"}:
                 raise ValueError("Debug metadata in unsupported field context")
     lines = set()
+    line_methods = {}
     for _ in range(reader.u2()):
         flags = reader.u2()
-        utf(reader.u2())
-        utf(reader.u2())
+        method_name = utf(reader.u2())
+        descriptor = utf(reader.u2())
         code_count = 0
         for name, body in attrs(reader):
             if name != "Code":
@@ -197,6 +204,9 @@ def _class_metadata(data):
             if not method_lines:
                 raise ValueError("Missing executable line debug information; compile with -g")
             lines.update(method_lines.values())
+            for line in sorted(set(method_lines.values())):
+                # Class-file order, which is the order java-debug considers them in.
+                line_methods.setdefault(line, []).append((method_name, descriptor))
         if not flags & (0x0100 | 0x0400) and code_count != 1:
             raise ValueError("Missing Code attribute")
     source = None
@@ -211,6 +221,15 @@ def _class_metadata(data):
             source = utf(body.u2())
             body.end()
     reader.end()
+    if shared is not None:
+        for line, methods in line_methods.items():
+            if len(methods) > 1:
+                names = [name for name, _ in methods]
+                shown = [
+                    f"{name}{descriptor}" if names.count(name) > 1 else name
+                    for name, descriptor in methods
+                ]
+                shared[line] = {"stops": shown[0], "never": shown[1:]}
     if not source or not source.endswith(".java") or any(c in source for c in "/\\\x00"):
         raise ValueError("Missing or unsupported SourceFile debug information")
     return internal, source, sorted(lines)
@@ -280,7 +299,8 @@ def generate_source_map(classes_dir: Path, source_paths: list[Path], source_root
             or len(classes) >= MAX_CLASSES
         ):
             raise ValueError("Class metadata size/count limit exceeded")
-        internal, source_name, lines = _class_metadata(path.read_bytes())
+        shared = {}
+        internal, source_name, lines = _class_metadata(path.read_bytes(), shared)
         binary = internal.replace("/", ".")
         if binary in classes:
             raise ValueError("Duplicate binary class identity")
@@ -297,7 +317,12 @@ def generate_source_map(classes_dir: Path, source_paths: list[Path], source_root
         source = matches[0]
         if lines and lines[-1] > sources[source]:
             raise ValueError("Class source line exceeds declared source length")
-        classes[binary] = {"path": str(source), "lines": lines}
+        classes[binary] = {
+            "path": str(source),
+            "lines": lines,
+            # Lines several methods share; only the first stops (see _class_metadata).
+            **({"shared_lines": {str(k): v for k, v in sorted(shared.items())}} if shared else {}),
+        }
     if not classes:
         raise ValueError("No executable Java classes found")
     return {"classes": dict(sorted(classes.items()))}

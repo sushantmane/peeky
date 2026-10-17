@@ -184,3 +184,33 @@ def test_bounds_and_empty_class_directory(tmp_path, monkeypatch):
     binary.unlink()
     with pytest.raises(ValueError, match="No executable"):
         generate_source_map(classes, [path], root)
+
+
+def test_breakpoint_notes_say_which_method_stops_on_a_shared_line():
+    from types import SimpleNamespace
+
+    from peeky.java import JavaSession
+
+    shared = {
+        "7": {"stops": "main", "never": ["lambda$main$0"]},
+        "4": {"stops": "lambda$static$0", "never": ["<clinit>"]},
+        "9": {"stops": "<init>(I)V", "never": ["<init>()V"]},
+    }
+    session = SimpleNamespace(
+        source_path=lambda program: program,
+        mapping={
+            "classes": {
+                "demo.A": {"path": "/w/demo/A.java", "lines": [4, 7, 9], "shared_lines": shared},
+                "demo.B": {"path": "/w/demo/B.java", "lines": [7]},
+            }
+        },
+    )
+    points = [{"line": 7}, {"line": 4}, {"line": 9}, {"line": 5}]
+    notes = JavaSession.breakpoint_notes(session, "/w/demo/A.java", points)
+    assert [note.split(" there")[0] for note in notes] == [
+        "Line 7 runs in several methods; the debugger stops only in main",
+        "Line 4 runs in several methods; the debugger stops only in lambda$static$0",
+        "Line 9 runs in several methods; the debugger stops only in the constructor(I)V",
+    ]
+    assert "never in the static initializer" in notes[1]
+    assert JavaSession.breakpoint_notes(session, "/w/demo/B.java", [{"line": 7}]) == []

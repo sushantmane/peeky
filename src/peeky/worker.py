@@ -453,6 +453,18 @@ class DebugWorker:
                 "`peeky describe`"
             )
 
+    def breakpoint_notes(self, program, args):
+        """Runtime warnings about the requested breakpoint lines (display only)."""
+        notes = getattr(self.runtime, "breakpoint_notes", None)
+        try:
+            return (
+                [str(note)[:500] for note in notes(program, args.get("breakpoints", []))][:5]
+                if notes
+                else []
+            )
+        except (KeyError, TypeError, ValueError, OSError):
+            return []
+
     def forget_stop(self):
         self.stop_outside = self.stop_returns = False
         self.stop_hit = self.stop_line = None
@@ -722,6 +734,11 @@ class DebugWorker:
                     "target_identity": identity,
                     **({"program_args": program_args} if launched else {}),
                     **({"optimized": level} if (level := self.optimized()) else {}),
+                    **(
+                        {"warnings": notes}
+                        if (notes := self.breakpoint_notes(program, args))
+                        else {}
+                    ),
                 }
             except Exception:
                 self.close()

@@ -92,7 +92,8 @@ def attached_source_map(class_roots, sources, deadline=None, identities=None):
                 if size > MAX_CLASS_BYTES or total > MAX_ATTACH_BYTES:
                     raise ValueError("Attached class metadata exceeds its size limit")
                 data = path.read_bytes()
-                internal, source_name, lines = _class_metadata(data)
+                shared = {}
+                internal, source_name, lines = _class_metadata(data, shared)
                 if path.relative_to(class_root).as_posix() != internal + ".class":
                     raise ValueError("Class file path does not match binary identity")
                 source = packages.get((package, source_name))
@@ -103,7 +104,16 @@ def attached_source_map(class_roots, sources, deadline=None, identities=None):
                     raise ValueError("Duplicate binary class identity across class roots")
                 if lines and lines[-1] > counts[source]:
                     raise ValueError("Class lines exceed the declared source; rebuild or resync")
-                classes[binary] = {"path": str(source), "lines": lines, "class_file": str(path)}
+                classes[binary] = {
+                    "path": str(source),
+                    "lines": lines,
+                    "class_file": str(path),
+                    **(
+                        {"shared_lines": {str(k): v for k, v in sorted(shared.items())}}
+                        if shared
+                        else {}
+                    ),
+                }
                 identities[str(path)] = hashlib.sha256(data).hexdigest()
                 if len(classes) > MAX_ATTACH_CLASSES:
                     raise ValueError("Too many attached classes")
