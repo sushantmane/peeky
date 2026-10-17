@@ -91,9 +91,16 @@ class Client:
         entry=None,
         args=(),
         expect_sha256=None,
+        edit=None,
     ):
-        """One stateless request: stop at `path:line`, capture, optionally set, report."""
+        """One stateless request: stop at `path:line`, capture, optionally set, report.
+
+        ``edit=(old, new)`` probes a candidate fix: the worker builds the program with
+        ``old`` replaced once by ``new``; ``at`` is in the original's line numbering.
+        """
         options = {"entry": entry} if entry else {}
+        if edit:
+            options["edit"] = {"old": edit[0], "new": edit[1]}
         if args:
             options["args"] = list(args)
         if expect_sha256:

@@ -182,6 +182,31 @@ _RULES = (
 )
 
 
+def _build_failure(exc):
+    """BUILD_FAILED with the compiler's own words, for a build command that failed."""
+    from peeky.build import BuildCommandError
+
+    if not isinstance(exc, BuildCommandError):
+        return None
+    result, tool = exc.result, (exc.command[0].rsplit("/", 1)[-1] if exc.command else "build")
+    if result.get("timed_out"):
+        what = f"{tool} timed out"
+    elif result.get("output_limit_exceeded"):
+        what = f"{tool} wrote more output than Peeky keeps"
+    else:
+        what = f"{tool} exited with code {result.get('exit_code')}"
+    output = str(result.get("stderr") or result.get("stdout") or "").strip()
+    if len(output) > 1500:
+        output = output[:1500] + "\n... (output truncated)"
+    return {
+        "code": "BUILD_FAILED",
+        "message": f"The build failed: {what}" + (f"\n{output}" if output else ""),
+        "hint": "Fix the error the compiler reports and run again. With --old/--new it is the "
+        "edit that does not build; your files were not changed.",
+        "retryable": False,
+    }
+
+
 def classify(exc, *, session_closed=None):
     """Map an exception to the protocol error object."""
     message = str(exc) or type(exc).__name__
@@ -192,6 +217,8 @@ def classify(exc, *, session_closed=None):
         if session_closed is None
         else session_closed
     )
+    if failure := _build_failure(exc):
+        return {**failure, "session_closed": True}
     if isinstance(exc, FileNotFoundError):
         # A missing target, config, checker or tool: the request, not the debugger.
         return {

@@ -30,10 +30,12 @@ from pathlib import Path
 from peeky.client import Client
 from peeky.errors import PROTOCOL_VERSION
 from peeky.probe import (
+    CANDIDATE_NEEDS_BUILD,
     MAX_HITS,
     Probe,
     _capture,
     _table,
+    candidate_line,
     parse_hits,
     parse_selector,
     run_probe,
@@ -509,6 +511,15 @@ def describe(args):
             "--old <text> --new <text> (or --old-file/--new-file)",
             "background": "add --background to probe or verify, then `peeky job wait <id>` "
             "(exit 3 while running)",
+            **(
+                {}
+                if language in ("python", "java-attach")
+                else {
+                    "candidate": f"peeky probe {target} --at {program}:<line> --capture <a,b> "
+                    "--old <text> --new <text> (or --old-file/--new-file): the same probe on a "
+                    "fresh build with the edit, your files unchanged; then `peeky queries diff`"
+                }
+            ),
             "evidence": 'every probe is saved with a run_id: peeky sql "SELECT hit, selector, '
             'value FROM last_run"; peeky queries [name] (canned, no SQL); peeky sql --schema',
         },
@@ -659,6 +670,7 @@ def probe(args):
     root, program, line, language, data = resolve(args.target, args.at, args.config)
     if line is None:
         raise ValueError("probe requires --at <path>:<line>")
+    edit, original = _probe_edit(args, root, program, line, language)
     request = Probe(
         program,
         line,
@@ -673,6 +685,7 @@ def probe(args):
         entry=_entry(root, args.run, language),
         args=tuple(args.arg),
         expect_sha256=tuple(tuple(item.split("=", 1)) for item in args.expect_sha256),
+        edit=edit,
     )
     progress = (
         None
@@ -683,10 +696,61 @@ def probe(args):
         result = _probe_remote(args, root, request)
     else:
         result = run_probe(root, request, adapter=adapter_for(language, data), progress=progress)
+    if edit:
+        _bind_candidate(result, original, edit, program)
     if not args.no_save:
         _keep_evidence(args, result, root, language)
     _emit(result, args.json, _probe_text)
     return 0 if result["status"] == "completed" else 1
+
+
+def _probe_edit(args, root, program, line, language):
+    """(old, new) and the original text for `probe --old/--new`, else (None, None)."""
+    edits = getattr(args, "_edits", None)
+    given = (args.old, args.new, args.old_file, args.new_file)
+    if not edits and all(value is None for value in given):
+        return None, None
+    if language in ("python", "java-attach"):
+        raise ValueError(CANDIDATE_NEEDS_BUILD)
+    if edits:
+        old, new = edits["old"], edits["new"]
+    else:
+        old = _edit_text(args.old, args.old_file, "old")
+        new = _edit_text(args.new, args.new_file, "new")
+    original = (root / program).read_text()
+    _check_edit(original, old, new)
+    candidate_line(original, old, new, line)  # refused before anything is built
+    return (old, new), original
+
+
+def _bind_candidate(result, original, edit, program):
+    """Attach the diff, and keep values only if they came from exactly this candidate."""
+    candidate = original.replace(edit[0], edit[1], 1)
+    expected = hashlib.sha256(candidate.encode()).hexdigest()
+    (result.get("probe") or {}).pop("edit", None)
+    info = result.setdefault("candidate", {})
+    info["diff"] = _diff(original, candidate, program)
+    ran = bool(result.get("hits") or result.get("rows") or result.get("output"))
+    if info.get("sha256") != expected and (ran or info.get("sha256") is not None):
+        from peeky.errors import classify
+
+        # A worker without candidate probes, or a source changed mid-run: these values
+        # cannot be attributed to this edit.
+        result.update(
+            status="failed",
+            error=classify(
+                RuntimeError(
+                    "Provenance: the build that ran is not this candidate (expected sha256 "
+                    f"{expected[:12]}, got {str(info.get('sha256'))[:12]}); values discarded"
+                ),
+                session_closed=True,
+            ),
+            rows=[],
+            by_hit=[],
+            interventions=[],
+            output="",
+            results_discarded=True,
+        )
 
 
 def _evidence_store(args):
@@ -716,6 +780,19 @@ def _keep_evidence(args, result, root, language):
 
 def _probe_text(result):
     text = _table(result)
+    if candidate := result.get("candidate"):
+        ran = result.get("hits") or result.get("rows") or result.get("output")
+        text += (
+            "\ncandidate: values are from a fresh build with this edit"
+            if ran
+            else "\ncandidate: this edit"
+        ) + "; your files are unchanged"
+        if candidate.get("line") not in (None, candidate.get("original_line")):
+            text += (
+                f" (line {candidate['original_line']} is line {candidate['line']} of the candidate)"
+            )
+        if diff := candidate.get("diff"):
+            text += "\n" + diff.rstrip("\n")
     if saved := result.get("evidence"):
         text += (
             f"\nevidence: saved as run {saved['run_id']}; query it with `{saved['next']}` or "
@@ -1253,6 +1330,7 @@ def _probe_remote(args, root, request):
         args=request.args,
         # The worker refuses before launching when its sources differ.
         expect_sha256=expected,
+        edit=request.edit,
     )
     # A worker whose probe child was killed (its cap) or crashed early answers with
     # only status/error; give every result the same complete shape.
@@ -1557,7 +1635,7 @@ def _until_hit(record, client, hit, timeout):
 
 
 def _submitted_edits(args):
-    if args.command != "verify" or (args.old_file is None and args.new_file is None):
+    if args.command not in ("verify", "probe") or (args.old_file is None and args.new_file is None):
         return None
     return {
         "old": _edit_text(args.old, args.old_file, "old"),
@@ -1990,6 +2068,13 @@ def main(argv=None, _job=False, _edits=None):
     sub.add_argument(
         "--no-save", action="store_true", help="Do not record this run in the evidence store"
     )
+    candidate = "Probe a candidate fix (C, C++, Rust, Java): build with this edit, never "
+    sub.add_argument(
+        "--old", help=candidate + "touching your files. Exact text to replace once in the --at file"
+    )
+    sub.add_argument("--new", help="Replacement text for --old")
+    sub.add_argument("--old-file", help="Read --old verbatim from a file (keeps newlines)")
+    sub.add_argument("--new-file", help="Read --new verbatim from a file (keeps newlines)")
     evidence_store(sub)
     background(sub)
     sub = commands.add_parser("sql", help="Read-only SQL over saved probe evidence")

@@ -17,7 +17,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import quote
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 MAX_RUNS = 500
 DEFAULT_ROWS = 200
 MAX_ROWS = 10000
@@ -63,8 +63,11 @@ TABLES = {
             "output_complete": "0 when the probe ended before the program did",
             "warnings": "JSON list of the probe's warnings",
             "artifact_manifest_id": "Identity of the build the values came from",
-            "source_sha256": "SHA-256 of the breakpoint's source file",
+            "source_sha256": "SHA-256 of the breakpoint's source file as it ran: for a candidate "
+            "run, the edited text",
             "target_identity": "JSON target identity (toolchain, flags)",
+            "edit": "For a candidate run (probe --old/--new), the unified diff of the edit the "
+            "build had; NULL otherwise. Values never come from your files when this is set",
         },
     ),
     "captures": (
@@ -115,7 +118,7 @@ _DDL = (
         status TEXT, error_code TEXT, error_message TEXT, hits INTEGER, seconds REAL,
         max_pause_ms REAL, optimized TEXT, output TEXT, output_truncated INTEGER,
         output_complete INTEGER, warnings TEXT, artifact_manifest_id TEXT,
-        source_sha256 TEXT, target_identity TEXT)""",
+        source_sha256 TEXT, target_identity TEXT, edit TEXT)""",
     """CREATE TABLE captures (
         run_id INTEGER NOT NULL, hit INTEGER, phase TEXT, line INTEGER, function TEXT,
         selector TEXT, type TEXT, value TEXT, num REAL, unavailable INTEGER NOT NULL,
@@ -133,6 +136,10 @@ _DDL = (
         r.source_sha256 FROM captures c JOIN runs r ON r.run_id = c.run_id""",
     "CREATE VIEW last_run AS SELECT * FROM evidence WHERE run_id = (SELECT MAX(run_id) FROM runs)",
 )
+
+# Older schemas a writer upgrades in place: {version: statements to the next version}.
+# Readers never change a store, so they also read these versions as they are.
+_MIGRATIONS = {1: ("ALTER TABLE runs ADD COLUMN edit TEXT",)}
 
 _LATEST = "(SELECT MAX(run_id) FROM runs)"
 _RUN = f"COALESCE(:run, {_LATEST})"
@@ -364,7 +371,7 @@ def _connect(path, timeout=10):
 
 
 def _check_version(connection, path, version):
-    if version == SCHEMA_VERSION:
+    if version == SCHEMA_VERSION or version in _MIGRATIONS:
         return
     if version == 0 and not connection.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()[0]:
         raise ValueError(
@@ -403,6 +410,12 @@ def _ensure(path):
                 for statement in _DDL:
                     connection.execute(statement)
                 connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+            elif version in _MIGRATIONS:
+                while version != SCHEMA_VERSION:
+                    for statement in _MIGRATIONS[version]:
+                        connection.execute(statement)
+                    version += 1
+                connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             else:
                 _check_version(connection, path, version)
             connection.execute("COMMIT")
@@ -426,6 +439,8 @@ def record(path, result, *, language=None, target=None, label=None, worker=None)
     probe = result.get("probe") or {}
     error = result.get("error") or {}
     pauses = result.get("pauses_ms") or []
+    candidate = result.get("candidate") or {}
+    edited = bool(candidate)
     seconds = result.get("seconds") or 0
     started = datetime.now(timezone.utc) - timedelta(seconds=seconds)
     output, cut = result.get("output"), False
@@ -457,8 +472,10 @@ def record(path, result, *, language=None, target=None, label=None, worker=None)
         "output_complete": result.get("output_complete"),
         "warnings": json.dumps(result.get("warnings") or []),
         "artifact_manifest_id": result.get("artifact_manifest_id"),
-        "source_sha256": _text(result.get("source_sha256")),
+        # A candidate's values came from the edited text, never from the file on disk.
+        "source_sha256": _text(candidate.get("sha256") if edited else result.get("source_sha256")),
         "target_identity": _text(result.get("target_identity")),
+        "edit": candidate.get("diff") if edited else None,
     }
     connection = _ensure(path)
     try:
