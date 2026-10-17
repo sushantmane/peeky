@@ -151,8 +151,8 @@ def test_a_class_rebuilt_while_attaching_is_refused(attached, monkeypatch):
     root, target, _, _ = attached
     real = java_attach._class_metadata
 
-    def parse_then_rebuild(data):
-        parsed = real(data)
+    def parse_then_rebuild(data, *rest):
+        parsed = real(data, *rest)
         for path in (root / "classes").rglob("PaginationBug.class"):
             path.write_bytes(path.read_bytes() + b"\0")  # a later rebuild
         return parsed

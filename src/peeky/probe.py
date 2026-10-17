@@ -710,6 +710,9 @@ def run_probe(root, probe, *, adapter=None, progress=None):
         )
         if "program_args" in launch:
             result["program_args"] = launch["program_args"]
+        for note in launch.get("warnings", []):
+            warnings.append(note)
+            say(note)
         if launch.get("entry_sha256"):
             result["entry_sha256"] = launch["entry_sha256"]
         point = result["breakpoint"]

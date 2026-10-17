@@ -184,3 +184,28 @@ def test_bounds_and_empty_class_directory(tmp_path, monkeypatch):
     binary.unlink()
     with pytest.raises(ValueError, match="No executable"):
         generate_source_map(classes, [path], root)
+
+
+def test_breakpoint_notes_name_the_lambda_bodies_a_line_shares():
+    from types import SimpleNamespace
+
+    from peeky.java import JavaSession
+
+    session = SimpleNamespace(
+        source_path=lambda program: program,
+        mapping={
+            "classes": {
+                "demo.A": {
+                    "path": "/w/demo/A.java",
+                    "lines": [7, 9],
+                    "lambda_lines": {"7": ["lambda$main$0"]},
+                },
+                "demo.B": {"path": "/w/demo/B.java", "lines": [7]},
+            }
+        },
+    )
+    notes = JavaSession.breakpoint_notes(session, "/w/demo/A.java", [{"line": 7}, {"line": 9}])
+    assert len(notes) == 1 and notes[0].startswith(
+        "Line 7 also holds a lambda body (lambda$main$0)"
+    )
+    assert JavaSession.breakpoint_notes(session, "/w/demo/B.java", [{"line": 7}]) == []

@@ -283,6 +283,29 @@ class JavaSession:
             result.setdefault(name, set()).update(entry["lines"])
         return {name: sorted(lines) for name, lines in result.items()}
 
+    def breakpoint_notes(self, program, breakpoints):
+        """Warnings for breakpoint lines whose lambda bodies the debugger never stops in."""
+        path = Path(self.source_path(program)).resolve()
+        notes = []
+        for point in breakpoints:
+            line = point.get("line")
+            names = sorted(
+                {
+                    name
+                    for entry in self.mapping["classes"].values()
+                    if Path(entry["path"]).resolve() == path
+                    for name in entry.get("lambda_lines", {}).get(str(line), [])
+                }
+            )
+            if names:
+                notes.append(
+                    f"Line {line} also holds a lambda body ({', '.join(names[:3])}): the "
+                    "debugger stops there only in the enclosing method, never inside the "
+                    "lambda. Put the breakpoint on a line of the lambda's own, or "
+                    "`session step --into` from this line"
+                )
+        return notes
+
     @property
     def environment(self):
         return dict(self.prepared.manifest.effective_environment)

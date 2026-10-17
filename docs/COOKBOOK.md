@@ -606,7 +606,7 @@ output:
   PAGE:[10, 20, 30]
 ```
 
-A value must fit the variable's type exactly. For example, `int` 3000000000 and `010` (octal for `Long.decode`) are refused rather than silently changed.
+A value must fit the variable's type exactly. For example, `int` 3000000000 and `010` (octal for `Long.decode`) are refused rather than silently changed. A breakpoint on a line that also holds a lambda body (`.filter(item -> below(item))`) stops only in the enclosing method, never inside the lambda; Peeky warns and names the lambda (`lambda$needsRestock$0`). Put the breakpoint on a line of the lambda's own body, or `session step --into` from that line.
 
 ### 7.4 Java Tests Already Running (Gradle `--debug-jvm`, e.g. Venice)
 
