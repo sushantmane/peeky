@@ -711,14 +711,14 @@ def test_sessions_number_their_hits_and_run_on_to_the_nth(tmp_path, monkeypatch,
         code, out = run(capsys, "session", "continue", "--to", "4")
         assert code == 0 and "loop.py:4 in <module> (paused" in out.out, out
         code, out = run(capsys, "session", "continue", "--count", "3")
-        assert "note: the program exited after 0 of 3 stops" in out.out, out
+        assert code == 3 and "note: the program exited before stop 3" in out.out, out
         code, out = run(capsys, "session", "continue", "--count", "2", "--to-exit")
         assert code == 2 and "cannot go with --to" in out.err
     finally:
         run(capsys, "session", "close")
     try:
         code, out = run(capsys, "session", "start", script, "--at", "3", "--hit", "9")
-        assert "note: the program exited before hit 9" in out.out, out
+        assert code == 3 and "note: the program exited before hit 9; last hit 5" in out.out, out
     finally:
         run(capsys, "session", "close")
     with pytest.raises(SystemExit) as exit_:

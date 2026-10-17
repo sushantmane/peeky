@@ -245,7 +245,7 @@ def test_canned_queries_answer_comparisons(store):
             "value_a": "PAGE: [40]\n",
             "value_b": "PAGE: [10]\n",
             "differs": 1,
-            "note": "output differs",
+            "note": "output differs at character 7",
         },
     ]
     assert evidence.run_query(store, "compare", {"a": 2, "b": 2})["rows"][0]["differs"] == 0
@@ -674,10 +674,23 @@ def test_diff_ends_with_the_outcome_and_a_trimmed_output_when_they_differ(store)
     assert [(r["selector"], r["note"]) for r in rows] == [
         ("x", "intervention only in run b"),
         ("(status)", "outcome differs"),
-        ("(output)", "output differs"),
+        ("(output)", "output differs at character 0"),
     ]
     assert rows[-1]["value_a"] == "SUM:14\n" and rows[-1]["value_b"] == "x" * 200 + "…"
     # Same outputs: no output row.
     evidence.record(store, first)
     evidence.record(store, first)
     assert evidence.run_query(store, "diff")["row_count"] == 0
+
+
+def test_the_output_row_shows_where_long_outputs_first_differ(store):
+    prefix = "".join(f"log line {n}\n" for n in range(40))
+    first, second = captured([(1, "observed", "x", "1")]), captured([(1, "observed", "x", "1")])
+    first["output"], second["output"] = prefix + "RESULT: 14\n", prefix + "RESULT: 15\n"
+    evidence.record(store, first)
+    evidence.record(store, second)
+    [row] = evidence.run_query(store, "diff")["rows"]
+    offset = len(prefix) + len("RESULT: 1")
+    assert row["note"] == f"output differs at character {offset}"
+    assert row["value_a"].startswith("…") and row["value_a"].endswith("RESULT: 14\n")
+    assert row["value_b"].endswith("RESULT: 15\n") and row["value_a"] != row["value_b"]

@@ -1088,16 +1088,21 @@ def session(args):
         )
         deadline = time.monotonic() + args.timeout
         state = _wait(record, client, args.timeout)
-        reached = int(state["state"] == "stopped")
-        while reached and reached < args.count and time.monotonic() < deadline:
-            # --count N: the Nth stop from here, within one --timeout.
-            client.call("continue", **_stop(record))
-            state = _wait(record, client, max(0.1, deadline - time.monotonic()))
-            if state["state"] != "stopped":
-                break
-            reached += 1
-        if args.count > 1 and state["state"] == "terminated":
-            state["note"] = f"the program exited after {reached} of {args.count} stops"
+        complete = True
+        if args.count > 1:
+            if _counted(state):
+                state, _, complete = _run_on(
+                    record, client, state, args.count - 1, deadline, f"stop {args.count}"
+                )
+            else:
+                complete = False
+                state["note"] = (
+                    f"the program exited before stop {args.count}"
+                    if state["state"] == "terminated"
+                    else f"stopped for another reason before stop {args.count} (shown above)"
+                    if state["state"] == "stopped"
+                    else f"the program is still running (stop {args.count}); `peeky session wait`"
+                )
         finished = 0
         while args.to_exit and state["state"] == "stopped" and state.get("reason") == "step":
             # LLDB completes a step that a breakpoint interrupted before running on.
@@ -1107,6 +1112,8 @@ def session(args):
             client.call("continue", **_stop(record), to_exit=True)
             state = _wait(record, client, args.timeout)
         _emit(state, args.json, _state_text)
+        if not complete:
+            return 3
     elif args.action == "step":
         kind = "in" if args.into else "out" if args.out else "over"
         _require_stepping(record, client)
@@ -1321,7 +1328,7 @@ def _start_remote(args, root, program, line, language, max_pause):
     if launch.get("optimized"):
         record["optimized"] = launch["optimized"]
     _save(record)
-    state = _until_hit(record, client, args.hit, args.timeout)
+    state, complete = _until_hit(record, client, args.hit, args.timeout)
     if record.get("optimized"):
         state["optimized"] = record["optimized"]
     _emit(
@@ -1329,7 +1336,7 @@ def _start_remote(args, root, program, line, language, max_pause):
         args.json,
         lambda s: f"session {s['session']} ({s['language']}, remote): " + _state_text(s),
     )
-    return 0
+    return 0 if complete else 3
 
 
 def _abandoned(path):
@@ -1408,7 +1415,8 @@ def _start(args):
         args.json,
         lambda s: f"session {s['session']} ({s['language']}): " + _state_text(s),
     )
-    return 0
+    # 3: the session exists but is not at the requested hit (see the note).
+    return 3 if state.pop("incomplete", False) else 0
 
 
 def _start_local(args, root, program, line, language, data, max_pause):
@@ -1464,9 +1472,11 @@ def _start_local(args, root, program, line, language, data, max_pause):
                 "Start again"
             ) from exc
         raise
-    state = _until_hit(record, client, args.hit, args.timeout)
+    state, complete = _until_hit(record, client, args.hit, args.timeout)
     if record.get("optimized"):
         state["optimized"] = record["optimized"]
+    if not complete:
+        state["incomplete"] = True
     return state
 
 
@@ -1476,23 +1486,63 @@ def _positive_count(text):
     return int(text)
 
 
-def _until_hit(record, client, hit, timeout):
-    """Wait for the first stop, then continue to the session's Nth breakpoint stop
-    (`session start --hit N`), all within one --timeout."""
-    deadline = time.monotonic() + _seconds(timeout)
-    state = _wait(record, client, timeout)
-    while (
-        hit
-        and state["state"] == "stopped"
-        and type(state.get("hit")) is int
-        and state["hit"] < hit
-        and time.monotonic() < deadline
-    ):
+def _counted(state):
+    """Whether a stop is one of the session's numbered breakpoint stops. A worker that
+    does not number hits (older Peeky) counts its breakpoint stops by reason."""
+    if state["state"] != "stopped":
+        return False
+    if "numbered" in state:
+        return type(state.get("hit")) is int
+    return state.get("reason") == "breakpoint"
+
+
+def _run_on(record, client, state, more, deadline, target):
+    """Continue while the stop is a counted breakpoint stop, `more` times at most.
+    Anything else (a crash, a finished step, the program's exit) ends it and is shown.
+    Returns (state, stops reached, complete)."""
+    reached, last = 0, state.get("hit")
+    while reached < more:
+        if not _counted(state) or time.monotonic() >= deadline:
+            break
         client.call("continue", **_stop(record))
         state = _wait(record, client, max(0.1, deadline - time.monotonic()))
-    if hit and state["state"] == "terminated":
-        state["note"] = f"the program exited before hit {hit}"
-    return state
+        if not _counted(state):
+            break
+        reached, last = reached + 1, state.get("hit", last)
+    if reached == more:
+        return state, reached, True
+    if state["state"] == "terminated":
+        state["note"] = f"the program exited before {target}"
+    elif state["state"] == "stopped" and not _counted(state):
+        state["note"] = f"stopped for another reason before {target} (shown above)"
+    elif state["state"] == "stopped":
+        state["note"] = f"reached {reached} of {more} stops before --timeout ({target})"
+    else:
+        state["note"] = f"the program is still running ({target}); `peeky session wait`"
+    if type(last) is int:
+        state["note"] += f"; last hit {last}"
+    return state, reached, False
+
+
+def _until_hit(record, client, hit, timeout):
+    """Wait for the first stop, then continue to the session's Nth breakpoint stop
+    (`session start --hit N`), all within one --timeout. Returns (state, complete)."""
+    deadline = time.monotonic() + _seconds(timeout)
+    state = _wait(record, client, timeout)
+    if not hit or state["state"] != "stopped":
+        if hit and state["state"] == "terminated":
+            state["note"] = f"the program exited before hit {hit}"
+        return state, not hit or state["state"] == "stopped"
+    if not state.get("numbered") or type(state.get("hit")) is not int:
+        state["note"] = (
+            "this stop has no hit number (the worker predates hit numbers: update Peeky on "
+            "the worker host)"
+            if "numbered" not in state
+            else "this stop has no hit number"
+        ) + f"; stopped at the first stop instead of hit {hit}"
+        return state, False
+    state, _, complete = _run_on(record, client, state, hit - state["hit"], deadline, f"hit {hit}")
+    return state, complete
 
 
 def _submitted_edits(args):
