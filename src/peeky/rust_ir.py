@@ -8,6 +8,14 @@ Locals the program really keeps in memory are declared on an ordinary alloca.
 `#[inline(always)]` functions are inlined even at opt-level 0: their declarations
 carry an `inlinedAt` location and renamed slots (`x.dbg.spill.i`), and are never
 treated as provably in memory.
+
+The same declarations prove when a reference parameter's contents can be read.
+rustc stores every parameter (in its own slot or a `<name>.dbg.spill` copy) in the
+entry block, before any statement. A reference parameter's lifetime outlives the
+function body, and the borrow checker rejects assigning it anything shorter-lived
+(even through `&mut` or in a closure), so past its declaration lines it points at
+live, initialized memory. Locals have no such proof: a moved, dropped or
+not-yet-initialized local can still hold a stale pointer.
 """
 
 import re
@@ -15,13 +23,17 @@ import re
 MAX_IR_BYTES = 256 * 1024 * 1024
 _ENTRY = re.compile(
     r"^(![0-9]+) = (?:distinct )?!(DILocalVariable|DISubprogram|DILexicalBlock"
-    r"|DILexicalBlockFile|DILocation)\((.*)\)\s*$"
+    r"|DILexicalBlockFile|DILocation|DICompositeType|DIDerivedType)\((.*)\)\s*$"
 )
 _FIELD = {
     "name": re.compile(r'(?:^|, )name: "((?:[^"\\]|\\.)*)"'),
     "scope": re.compile(r"(?:^|, )scope: (![0-9]+)"),
     "linkage": re.compile(r'(?:^|, )linkageName: "([^"]*)"'),
     "inlined": re.compile(r"(?:^|, )inlinedAt: (![0-9]+)"),
+    "arg": re.compile(r"(?:^|, )arg: ([0-9]+)"),
+    "line": re.compile(r"(?:^|, )line: ([0-9]+)"),
+    "scope_line": re.compile(r"(?:^|, )scopeLine: ([0-9]+)"),
+    "type": re.compile(r"(?:^|, )type: (![0-9]+)"),
 }
 # (pointer, variable, location); the location is the record's last operand.
 _DECLARES = (
@@ -36,14 +48,25 @@ _HASH = re.compile(r"17(h[0-9a-f]{16})E$")
 
 
 def memory_locals(path):
-    """{(function hash, local name): True only if every declaration is a real slot}.
+    """{(function hash, local name): True only if every declaration is a real slot}."""
+    return ir_locals(path)[0]
+
+
+def ir_locals(path):
+    """(memory locals, reference parameters), read in one pass over the IR.
+
+    Memory locals: {(function hash, local name): True only if every declaration is a
+    real slot}. Reference parameters: {(function hash, name): {"type": declared type,
+    "line": last line before the body}} for parameters whose only declaration is a
+    non-inlined slot of their own (`<name>` or `<name>.dbg.spill`).
 
     The function hash is the `h<16 hex>` of the legacy-mangled linkage name, which
     LLDB also ends Rust frame names with. Locals without any declaration, or whose
-    function cannot be identified, are absent: absent means "not provably in memory".
+    function cannot be identified, are absent: absent means "not provably in memory"
+    and "no proof", respectively.
     """
     if path.stat().st_size > MAX_IR_BYTES:
-        return {}
+        return {}, {}
     entries, declares = {}, []
     with path.open(encoding="utf-8", errors="replace") as stream:
         for line in stream:
@@ -62,27 +85,43 @@ def memory_locals(path):
                 if found := pattern.search(line):
                     declares.append((found[1], found[2], found[3]))
                     break
-    result = {}
+    memory, parameters = {}, {}
     for pointer, variable, location in declares:
         kind, fields = entries.get(variable, (None, {}))
         if kind != "DILocalVariable" or "name" not in fields:
             continue
         function = _function(entries, fields.get("scope"))
-        hashed = _HASH.search(function or "")
+        hashed = _HASH.search((function or {}).get("linkage", ""))
         if not hashed:
             continue
         where = entries.get(location, (None, {}))
-        real = not _SPILL.search(pointer) and where[0] == "DILocation" and "inlined" not in where[1]
+        located = where[0] == "DILocation" and "inlined" not in where[1]
+        real = not _SPILL.search(pointer) and located
         key = (hashed[1], fields["name"])
-        result[key] = result.get(key, True) and real
-    return result
+        memory[key] = memory.get(key, True) and real
+        declared = entries.get(fields.get("type"), (None, {}))[1].get("name")
+        lines = [function.get("line"), function.get("scope_line"), fields.get("line")]
+        proven = (
+            pointer in (fields["name"], fields["name"] + ".dbg.spill")
+            and located
+            and "arg" in fields
+            and declared
+            and all(lines)
+        )
+        # A second declaration of the name (shadowing, an inlined copy) proves nothing.
+        parameters[key] = (
+            {"type": declared, "line": max(map(int, lines))}
+            if proven and key not in parameters
+            else None
+        )
+    return memory, {key: proof for key, proof in parameters.items() if proof}
 
 
 def _function(entries, scope):
     for _ in range(256):
         kind, fields = entries.get(scope, (None, {}))
         if kind == "DISubprogram":
-            return fields.get("linkage")
+            return fields
         if kind not in ("DILexicalBlock", "DILexicalBlockFile"):
             return None
         scope = fields.get("scope")

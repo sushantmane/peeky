@@ -335,14 +335,26 @@ def _option_layout(struct, qualified, by_offset):
 QUALIFIED_CONTAINERS = {
     "alloc::vec::Vec<i32, alloc::alloc::Global>": ("vec", ("i32", 4, "DW_ATE_signed")),
     "&[i32]": ("slice", ("i32", 4, "DW_ATE_signed")),
+    "&mut [i32]": ("slice", ("i32", 4, "DW_ATE_signed")),
     "alloc::string::String": ("string", ("u8", 1, "DW_ATE_unsigned")),
     "&str": ("str", ("u8", 1, "DW_ATE_unsigned")),
+    "&mut str": ("str", ("u8", 1, "DW_ATE_unsigned")),
+}
+# Reference parameters whose contents Peeky reads, by their declared (DWARF/IR) type:
+# (LLDB's name for the parameter's type, qualified container, read through a pointer).
+# Only parameters qualify: their referent outlives the call (see rust_ir).
+_VEC = "alloc::vec::Vec<i32, alloc::alloc::Global>"
+REFERENCE_PARAMETERS = {
+    "&[i32]": ("&[i32]", "&[i32]", False),
+    "&mut [i32]": ("&mut [i32]", "&mut [i32]", False),
+    "&str": ("&str", "&str", False),
+    "&mut str": ("&mut str", "&mut str", False),
+    f"&{_VEC}": ("alloc::vec::Vec<int, alloc::alloc::Global> *", _VEC, True),
+    f"&mut {_VEC}": ("alloc::vec::Vec<int, alloc::alloc::Global> *", _VEC, True),
+    "&alloc::string::String": ("alloc::string::String *", "alloc::string::String", True),
+    "&mut alloc::string::String": ("alloc::string::String *", "alloc::string::String", True),
 }
 CONTAINER_KINDS = frozenset(kind for kind, _ in QUALIFIED_CONTAINERS.values())
-# LLDB's names for these types where they differ from DWARF's.
-CONTAINER_ALIASES = {
-    "alloc::vec::Vec<int, alloc::alloc::Global>": "alloc::vec::Vec<i32, alloc::alloc::Global>",
-}
 
 
 def _sized_base(die, name, size, encoding):
@@ -635,30 +647,73 @@ def active_variant(variable, fetch, layouts):
     return {**view, "value": value, "rust_view": "active-variant"}
 
 
-MAX_ELEMENTS = 512
+MAX_ELEMENTS = 256
 MAX_TEXT_BYTES = 4096
+# A shown value stays well inside the worker's 2000-character value limit, so its
+# "(first k of N)" marker is never cut off.
+MAX_SHOWN = 1000
 UNVERIFIED_CONTAINER = "<unverified Rust container value>"
 UNQUALIFIED_CONTAINER = "<unqualified Rust container layout>"
+_ADDRESS = re.compile(r"0x[0-9a-fA-F]{1,16}")
 
 
 def _word(raw, offset):
     return int.from_bytes(raw[offset : offset + 8], "little")
 
 
-def container_view(variable, read, layouts, *, optimized):
-    """A qualified container read from memory, or None to leave the value raw.
+def _shown_list(elements, length):
+    """`[a, b, c]`, or the longest whole-element prefix that fits plus its marker."""
+    texts = [str(element) for element in elements]
+    whole = "[" + ", ".join(texts) + "]"
+    if len(texts) == length and len(whole) <= MAX_SHOWN:
+        return whole
+    room = MAX_SHOWN - len(f", ...] (first {len(texts)} of {length})") - 1
+    kept, used = [], 0
+    for text in texts:
+        used += len(text) + (2 if kept else 0)
+        if used > room:
+            break
+        kept.append(text)
+    return "[" + ", ".join(kept + ["..."]) + f"] (first {len(kept)} of {length})"
 
+
+def _shown_text(text, length):
+    """The quoted text, or its longest whole-character prefix that fits plus a marker."""
+    whole = json.dumps(text, ensure_ascii=False)
+    if len(text.encode()) == length and len(whole) <= MAX_SHOWN:
+        return whole
+    room = MAX_SHOWN - len(f" (first {length} of {length} bytes)")
+    low, high = 0, len(text)
+    while low < high:
+        middle = (low + high + 1) // 2
+        if len(json.dumps(text[:middle], ensure_ascii=False)) <= room:
+            low = middle
+        else:
+            high = middle - 1
+    prefix = text[:low]
+    shown = json.dumps(prefix, ensure_ascii=False)
+    return f"{shown} (first {len(prefix.encode())} of {length} bytes)"
+
+
+def container_view(variable, read, layouts, *, optimized, parameter=None):
+    """A reference parameter's container read from memory, or None to leave it raw.
+
+    ``parameter`` is the declared type of a parameter whose liveness the compiler's IR
+    proves (rust_ir); anything else, including every local, stays raw: a moved,
+    dropped or not-yet-initialized local can hold a pointer into freed memory.
     ``read(address, count)`` returns exactly ``count`` bytes or raises. The container
     is read at its compiler-validated offsets, then its first MAX_ELEMENTS elements (or
-    MAX_TEXT_BYTES of text). A value that is not live yet can hold garbage: a length
-    above the capacity, or a null or misaligned buffer, is never shown as contents.
+    MAX_TEXT_BYTES of text). A length above the capacity, or a null or misaligned
+    buffer, is never shown as contents.
     """
-    kind = variable.get("type")
-    name = CONTAINER_ALIASES.get(kind, kind) if isinstance(kind, str) else None
-    if name not in QUALIFIED_CONTAINERS or name not in layouts:
+    reference_type = REFERENCE_PARAMETERS.get(parameter)
+    if reference_type is None or variable.get("type") != reference_type[0]:
+        return None
+    _, name, thin = reference_type
+    if name not in layouts:
         return None
     layout = layouts[name]
-    view = {"name": variable.get("name"), "type": kind, "variablesReference": 0}
+    view = {"name": variable.get("name"), "type": variable["type"], "variablesReference": 0}
     if layout["kind"] == "unqualified":
         return {**view, "value": UNQUALIFIED_CONTAINER, "rust_view": "opaque"}
     if optimized:
@@ -667,41 +722,69 @@ def container_view(variable, read, layouts, *, optimized):
     if read is None or not isinstance(reference, str):
         return None
     try:
+        shown_value = str(variable.get("value") or "")
+        if thin:
+            # memoryReference is the parameter's own slot; the debugger shows the
+            # pointer it holds, and the two must agree.
+            target = _word(read(reference, 8), 0)
+            if not _ADDRESS.fullmatch(shown_value) or int(shown_value, 16) != target:
+                raise ValueError("Rust reference does not match the debugger's pointer")
+            if target == 0 or target % 8:
+                raise ValueError("Rust reference is null or misaligned")
+            reference = f"0x{target:X}"
+        elif (at := shown_value.rpartition(" @ ")[2]) and _ADDRESS.fullmatch(at):
+            if int(at, 16) != int(reference, 16):
+                raise ValueError("Rust slice is not at the debugger's address")
         raw = read(reference, layout["size"])
         data, length = _word(raw, layout["data"]), _word(raw, layout["length"])
         width = layout["element_size"]
-        if "capacity" in layout and not length <= _word(raw, layout["capacity"]) < 2**63:
+        capacity = _word(raw, layout["capacity"]) if "capacity" in layout else None
+        if capacity is not None and not length <= capacity < 2**63:
             raise ValueError("Rust container length exceeds its capacity")
+        if length * width >= 2**63:
+            raise ValueError("Rust container is larger than isize::MAX bytes")
         if length and (data == 0 or data % width):
             raise ValueError("Rust container buffer is null or misaligned")
+        sizes = [
+            {
+                "name": "len" if capacity is not None else "length",
+                "type": "usize",
+                "value": str(length),
+            },
+            *(
+                [{"name": "capacity", "type": "usize", "value": str(capacity)}]
+                if capacity is not None
+                else []
+            ),
+        ]
         if layout["kind"] in ("string", "str"):
             count = min(length, MAX_TEXT_BYTES)
             payload = read(f"0x{data:X}", count) if count else b""
             # An incomplete character at a truncation point is not an error.
             text = codecs.getincrementaldecoder("utf-8")().decode(payload, final=count == length)
-            shown = json.dumps(text, ensure_ascii=False)
-            if count < length:
-                shown += f" (first {count} of {length} bytes)"
-            return {**view, "value": shown, "rust_view": "memory", "length": length}
+            return {
+                **view,
+                "value": _shown_text(text, length),
+                "rust_view": "memory",
+                "length": length,
+                "children": sizes,
+            }
         count = min(length, MAX_ELEMENTS)
         payload = read(f"0x{data:X}", count * width) if count else b""
         elements = [
             int.from_bytes(payload[i * width : (i + 1) * width], "little", signed=True)
             for i in range(count)
         ]
-        shown = "[" + ", ".join(map(str, elements)) + (", ..." if count < length else "") + "]"
-        if count < length:
-            shown += f" (first {count} of {length})"
         children = [
             {"name": f"[{index}]", "type": layout["element"], "value": str(element)}
             for index, element in enumerate(elements)
         ]
         return {
             **view,
-            "value": shown,
+            "value": _shown_list(elements, length),
             "rust_view": "memory",
             "length": length,
-            "children": children,
+            "children": sizes + children,
         }
     except ViewBudgetExhausted:
         return {**view, "value": BUDGET, "rust_view": "budget-exhausted"}

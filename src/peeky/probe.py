@@ -326,6 +326,7 @@ def _resolve(worker, stop, snapshot, segments):
     return variable
 
 
+_RUST_TEXT = frozenset({"&str", "&mut str", "alloc::string::String *"})
 _RUST_CONTAINERS = (
     "alloc::vec::Vec<",
     "alloc::string::String",
@@ -412,13 +413,17 @@ def _absence(variable, segment, children):
             f"{_shown(segment)} not found: {label} has no indexed elements in the debugger's view "
             f"(children: {shown or 'none'})"
         )
-        if kind.startswith(_RUST_CONTAINERS):
-            length = next((name for name in ("len", "length") if name in names), None)
+        length = next((name for name in ("len", "length") if name in names), None)
+        if variable.get("view") == "memory":
+            if kind in _RUST_TEXT:
+                message += "; text read from memory is shown whole, not by element"
+        elif kind.startswith(_RUST_CONTAINERS):
             message += (
-                "; Peeky reads Rust container contents only for Vec<i32>, &[i32], String and "
-                "&str, from memory, with a debugger that supports readMemory (lldb-dap from "
-                "LLVM 19)"
-                + (f": capture {variable['name']}.{length} for the length" if length else "")
+                "; Peeky reads Rust contents only for reference parameters (&[i32], &str, "
+                "&Vec<i32>, &String, or &mut), with a debugger that supports readMemory "
+                "(lldb-dap from LLVM 20). Owned Vec and String locals stay raw: a moved or "
+                "dropped local can still point at freed memory"
+                + (f". Capture {variable['name']}.{length} for the length" if length else "")
                 + ", and check contents with `peeky verify`"
             )
         return message
@@ -451,8 +456,9 @@ def _declared_length(variable, children):
     capped child count (e.g. `target.max-children-count`), so they never count.
     """
     if variable.get("view") == "memory" and type(variable.get("length")) is int:
-        # A container Peeky read from memory states its own length.
-        return variable["length"]
+        # A container Peeky read from memory states its own length; text states its
+        # length in bytes and has no elements.
+        return None if variable.get("type") in _RUST_TEXT else variable["length"]
     if variable.get("type") in _PY_SEQUENCES:
         for child in children:
             if child["name"] == "len()" and re.fullmatch(r"[0-9]{1,9}", str(child.get("value"))):

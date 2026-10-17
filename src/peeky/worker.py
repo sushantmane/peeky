@@ -98,6 +98,7 @@ class DebugWorker:
         self.stop_id = None
         self.thread_id = None
         self.frames = set()
+        self.innermost_frame = None
         self.references = set()
         self.reference_frames = {}
         self.reference_adapter = {}
@@ -760,6 +761,7 @@ class DebugWorker:
             stack = self.dap.request("stackTrace", {"threadId": self.thread_id, "levels": 10})
             frames = stack.get("stackFrames", [])[:10]
             self.frames = {f["id"] for f in frames}
+            self.innermost_frame = frames[0].get("id") if frames else None
             selected = args.get("frame_id", frames[0]["id"] if frames else None)
             if selected not in self.frames:
                 raise ValueError("Unknown frame")
@@ -1135,7 +1137,16 @@ class DebugWorker:
                 self.inspection_nodes += 1
                 continue
             view = (
-                view_variable(variable, self.view_fetch, self.view_read) if view_variable else None
+                view_variable(
+                    variable,
+                    self.view_fetch,
+                    self.view_read,
+                    frame=frame,
+                    top=not ancestry,
+                    innermost=not ancestry and frame.get("id") == self.innermost_frame,
+                )
+                if view_variable
+                else None
             )
             if view is not None:
                 # Interpreted values never carry expansion handles to raw storage. Their

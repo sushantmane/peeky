@@ -602,7 +602,7 @@ def test_decoded_elements_get_worker_owned_handles_that_never_authorize_writes(t
     elements = [{"name": f"[{i}]", "type": "i32", "value": str(v)} for i, v in enumerate((5, 1))]
     runtime = SimpleNamespace(
         assert_current=lambda: None,
-        view_variable=lambda variable, fetch, read: {
+        view_variable=lambda variable, fetch, read, **_: {
             "value": "[5, 1]",
             "rust_view": "memory",
             "length": 2,

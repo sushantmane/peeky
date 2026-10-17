@@ -510,10 +510,14 @@ def _describe_text(manifest):
     for source, numbers in manifest["breakpoint_lines"].items():
         lines.append(f"breakpoint lines in {source}: {_ranges(numbers) or 'none'}")
     if views := manifest.get("value_views"):
-        from peeky.rust_symbols import CONTAINER_KINDS, QUALIFIED_CONTAINERS
+        from peeky.rust_symbols import CONTAINER_KINDS, QUALIFIED_CONTAINERS, REFERENCE_PARAMETERS
 
         enums = [name for name, kind in views.items() if kind == "option"]
-        containers = [name for name, kind in views.items() if kind in CONTAINER_KINDS]
+        containers = [
+            declared
+            for declared, (_, name, _) in REFERENCE_PARAMETERS.items()
+            if views.get(name) in CONTAINER_KINDS
+        ]
         opaque = [
             name
             for name, kind in views.items()
@@ -522,7 +526,8 @@ def _describe_text(manifest):
         lines.append(f"qualified enum views: {', '.join(enums) or 'none'}")
         if containers:
             lines.append(
-                "containers read from memory (debuggers with readMemory): " + ", ".join(containers)
+                "reference parameters read from memory (debuggers with readMemory; locals stay "
+                "raw): " + ", ".join(containers)
             )
         lines.append(f"other enum types (shown opaque, not decoded): {len(opaque)}")
     if reason := manifest.get("scopes_unavailable"):
