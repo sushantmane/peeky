@@ -100,12 +100,14 @@ _RULES = (
     (
         r"Only writable|mutation requires|mutation is outside|Only .*locals support|"
         r"numeric or boolean scalar|scalar literal|bounded decimal integer|must be a literal"
-        r"|has no readable value here|refused in an optimized build",
+        r"|has no readable value here|refused in an optimized build|did not change "
+        r"|has no memory location|refused to change",
         "MUTATION_REJECTED",
         "The message names the rule broken. Root locals only, literal values only (Python: "
         "literals incl. containers; C, C++: integers of 16 to 64 bits; Java: scalars of the "
-        "local's type; Rust: integers kept in memory). `session inspect` marks what can be "
-        "changed [settable]. Observe instead, or edit the source and run verify.",
+        "local's type; Rust: i16 to i64, u16 to u64, isize and usize kept in memory; for C, "
+        "C++ and Rust `session inspect` marks them [settable]). Observe instead, or edit the "
+        "source and run verify.",
         False,
     ),
     (

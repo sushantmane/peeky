@@ -203,3 +203,48 @@ def test_cpp_size_t_and_long_locals_can_be_changed_within_their_range(ring, caps
         assert "count: " in text and "[settable]" in text.split("count: ", 1)[1].splitlines()[0]
     finally:
         main(["session", "close"])
+
+
+BITS = """#include <cstdio>
+
+struct Bits {
+    int lo : 3;
+    unsigned short hi : 5;
+};
+
+int main() {
+    typedef float int64_t;
+    int64_t lossy = 1;
+    Bits bits{1, 2};
+    auto [lo, hi] = bits;
+    int plain = 7;
+    std::printf("BITS:%d %d %d %.0f\\n", lo, hi, plain, lossy);
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(120)
+def test_writes_that_cannot_reach_the_program_are_never_reported_as_done(ring, capsys):
+    (ring / "ring.cpp").write_text(BITS)
+    try:
+        assert main(["session", "start", str(ring), "--at", "14"]) == 0
+        capsys.readouterr()
+        assert main(["session", "inspect", "--json"]) == 0
+        names = {
+            v["name"] for s in json.loads(capsys.readouterr().out)["scopes"] for v in s["variables"]
+        }
+        if "hi" in names:  # clang 19+ describes structured bindings of bitfields
+            # A computed value: refused (or unchanged), never "set hi: 2 -> 2".
+            assert main(["session", "set", "hi=17"]) != 0
+            error = capsys.readouterr().err
+            assert "MUTATION_REJECTED" in error and ("refused" in error or "did not" in error)
+        # The session is still usable, and a stored local takes a canonical literal.
+        assert main(["session", "set", "plain=+5"]) == 0
+        assert "set plain: 7 -> 5" in capsys.readouterr().out
+        # A typedef that redefines int64_t as float: the read-back differs; fail closed.
+        assert main(["session", "set", "lossy=16777217"]) != 0
+        error = capsys.readouterr().err
+        assert "stored 16777216 in 'lossy', not 16777217" in error, error
+    finally:
+        main(["session", "close"])

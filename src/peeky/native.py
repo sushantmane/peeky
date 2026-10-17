@@ -975,16 +975,44 @@ class NativeSession:
         if not isinstance(value, str) or not re.fullmatch(r"[+-]?(?:0|[1-9][0-9]{0,19})", value):
             raise ValueError("Native mutations require bounded decimal integer literals")
 
+    # lldb-dap 20+ gives memory-backed values a memoryReference; one without it is
+    # computed (a bitfield binding), and a write would change only LLDB's copy.
+    requires_memory_location = True
+
     def settable(self, variable, frame=None):
         """Whether a root local is a writable integer of a type Peeky can change."""
         return _writable_integer(variable)
+
+    def mutation_literal(self, value):
+        """The canonical decimal sent to LLDB (`+5` and unsigned `-0` are not its syntax)."""
+        return str(int(value))
+
+    def confirm_mutation(self, name, value, before, after):
+        """The value read back must be exactly the one requested. Nothing written: the
+        change is refused and the session kept. Anything else (a lossy conversion, a
+        redefined type) changed the program in a way nobody asked for: fail closed."""
+        wanted = str(int(value))
+        if after == wanted:
+            return
+        if after == before:
+            raise ValueError(
+                f"The debugger did not change {name!r} (still {before}): its value is "
+                "computed rather than stored, so a change cannot reach the program; edit "
+                "the source and run verify"
+            )
+        raise RuntimeError(
+            f"The debugger stored {after} in {name!r}, not {wanted}: the change did not "
+            "reach the program as stated, so the session is closed"
+        )
 
     def validate_variable(self, variable, value):
         self.validate_value(value)
         kind = variable.get("type")
         if not _writable_integer(variable):
             raise ValueError(
-                f"Only writable integer locals (16 to 64 bits) support native mutation: "
+                f"Only writable integer locals of these types support native mutation: "
+                f"short, int, long, long long (signed or unsigned), int16_t to uint64_t, "
+                f"size_t, ssize_t, ptrdiff_t, intptr_t, uintptr_t; "
                 f"{variable.get('name')!r} has debugger type {kind!r}"
             )
         low, high = INTEGER_RANGES[kind]

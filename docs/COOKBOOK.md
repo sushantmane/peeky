@@ -180,7 +180,7 @@ output:
   PAGE: [10, 20, 30]
 ```
 
-Only root locals can be changed: the stopped function's own variables (`start`), not their fields or elements. Python takes literals, including lists and dicts. C and C++ take integers of 16 to 64 bits (`int`, `long`, `size_t`, `int64_t`, …) within the local's range; Java takes scalars of the local's type. Rust takes integer locals (`i16` to `i64`, `u16` to `u64`, `isize`, `usize`) that the program keeps in memory; any other change is refused, because it would not reach the program. `session inspect` marks the locals that can be changed with `[settable]`. A refusal (`MUTATION_REJECTED`) names the local and the rule.
+Only root locals can be changed: the stopped function's own variables (`start`), not their fields or elements. Python takes literals, including lists and dicts. C and C++ take integers of 16 to 64 bits (`int`, `long`, `size_t`, `int64_t`, …) within the local's range; Java takes scalars of the local's type. Rust takes integer locals (`i16` to `i64`, `u16` to `u64`, `isize`, `usize`) that the program keeps in memory; any other change is refused, because it would not reach the program. For C, C++ and Rust, `session inspect` marks the locals whose type allows a change with `[settable]`. Every change is read back: one the debugger refuses or cannot store (a computed value, such as a structured binding of a bitfield) is refused and the session kept, and a value stored differently from the one asked for (a type redefined as a float) closes the session. A refusal (`MUTATION_REJECTED`) names the local and the rule.
 
 ### 2.4 Change the Value at a Later Hit
 

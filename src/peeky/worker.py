@@ -465,6 +465,15 @@ class DebugWorker:
         except (KeyError, TypeError, ValueError, OSError):
             return []
 
+    def has_memory_location(self, variable):
+        """False only when the adapter reports memory locations (lldb-dap 20+) and this
+        value has none: it is computed, so writing it changes only the debugger's copy."""
+        return not (
+            getattr(self.runtime, "requires_memory_location", False)
+            and self.capabilities.get("supports_read_memory")
+            and not variable.get("memoryReference")
+        )
+
     def forget_stop(self):
         self.stop_outside = self.stop_returns = False
         self.stop_hit = self.stop_line = None
@@ -970,6 +979,11 @@ class DebugWorker:
                     f"{args['name']!r} has no readable value here "
                     f"({str(variable.get('value'))[1:-1][:200]}); it cannot be changed"
                 )
+            if not self.has_memory_location(variable):
+                raise ValueError(
+                    f"{args['name']!r} has no memory location here (a computed value, such "
+                    "as a bitfield binding): a change would not reach the program"
+                )
             if validate_variable := getattr(runtime, "validate_variable", None):
                 validate_variable(variable, args["value"])
             if validate_target := getattr(runtime, "validate_mutation_target", None):
@@ -981,17 +995,28 @@ class DebugWorker:
                 runtime.validate_stop(frame)
                 validate_debugger(self.dap, frame)
             before = variable.get("value")
-            changed = self.dap.request(
-                "setVariable",
-                {
-                    "variablesReference": adapter_ref,
-                    "name": args["name"],
-                    "value": args["value"],
-                },
-            )
+            literal = getattr(runtime, "mutation_literal", None)
+            try:
+                changed = self.dap.request(
+                    "setVariable",
+                    {
+                        "variablesReference": adapter_ref,
+                        "name": args["name"],
+                        "value": literal(args["value"]) if literal else args["value"],
+                    },
+                )
+            except RequestFailed as exc:
+                # A refused write changed nothing (e.g. LLDB's "Cannot change the value of
+                # a constant" for a computed value): the session stays usable.
+                raise ValueError(
+                    f"The debugger refused to change {args['name']!r} ({str(exc)[:200]}); "
+                    "it is unchanged. Edit the source and run verify instead"
+                ) from None
             runtime.assert_current()
             normalize_value = getattr(runtime, "mutation_value", None)
             after = normalize_value(changed) if normalize_value else changed.get("value")
+            if confirm := getattr(runtime, "confirm_mutation", None):
+                confirm(args["name"], args["value"], before, after)
             return {"name": args["name"], "before": before, "after": after}
         if operation == "breakpoints":
             runtime.validate_breakpoints(args["breakpoints"])
@@ -1268,8 +1293,13 @@ class DebugWorker:
                 continue
             settable = None
             if not ancestry and (check := getattr(self.runtime, "settable", None)):
-                # Root locals `set` can change, so agents need not try and be refused.
-                settable = bool(check(variable, frame))
+                # Root locals `set` can change, so agents need not try and be refused;
+                # optimized builds refuse every change.
+                settable = (
+                    not self.optimized()
+                    and self.has_memory_location(variable)
+                    and bool(check(variable, frame))
+                )
             path = (*ancestry, (name, kind))
             handle = 0
             raw = variable.get("variablesReference", 0)

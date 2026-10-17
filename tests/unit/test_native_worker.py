@@ -264,7 +264,7 @@ def test_native_integer_locals_take_values_within_their_own_type():
         change("unsigned short", "65536")
     for kind in ("char", "unsigned char", "bool", "const int", "float", "int *"):
         assert kind not in INTEGER_RANGES
-        with pytest.raises(ValueError, match="16 to 64 bits"):
+        with pytest.raises(ValueError, match="Only writable integer locals of these types"):
             change(kind, "1")
     with pytest.raises(ValueError, match="bounded decimal integer literals"):
         change("long", "123456789012345678901")
@@ -277,3 +277,33 @@ def test_inspections_mark_settable_root_locals_only(tmp_path):
     marks = {v["name"]: v.get("settable") for s in snapshot["scopes"] for v in s["variables"]}
     assert marks and marks.get("value") is True
     assert all(mark is False for name, mark in marks.items() if name != "value")
+    # Optimized builds refuse every change: nothing is marked.
+    worker.optimized = lambda: "-O2"
+    snapshot = inspect(worker)
+    assert all(v.get("settable") is False for s in snapshot["scopes"] for v in s["variables"])
+
+
+def test_native_writes_are_read_back_and_never_reported_otherwise():
+    from types import SimpleNamespace
+
+    from peeky.native import NativeSession
+
+    session = SimpleNamespace()
+    confirm = NativeSession.confirm_mutation
+    confirm(session, "n", "+5", "2", "5")  # canonical match
+    with pytest.raises(ValueError, match="did not change 'hi' \\(still 2\\)"):
+        confirm(session, "hi", "17", "2", "2")
+    with pytest.raises(RuntimeError, match="stored 16777216 in 'f', not 16777217"):
+        confirm(session, "f", "16777217", "1", "16777216")
+    assert NativeSession.mutation_literal(session, "+5") == "5"
+    assert NativeSession.mutation_literal(session, "-0") == "0"
+
+
+def test_values_without_a_memory_location_are_never_settable(tmp_path):
+    worker = stopped(tmp_path)
+    worker.runtime.requires_memory_location = True
+    worker.capabilities["supports_read_memory"] = True
+    assert worker.has_memory_location({"memoryReference": "0x10"})
+    assert not worker.has_memory_location({"name": "hi"})
+    worker.capabilities["supports_read_memory"] = False  # LLVM 18: nothing to go on
+    assert worker.has_memory_location({"name": "hi"})
