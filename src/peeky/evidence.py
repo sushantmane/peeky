@@ -17,7 +17,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import quote
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 MAX_RUNS = 500
 DEFAULT_ROWS = 200
 MAX_ROWS = 10000
@@ -147,14 +147,16 @@ _DDL = (
 
 # Older schemas upgraded in place: {version: statements to the next version}. A writer
 # upgrades before saving; a reader upgrades a writable store before opening it read-only.
+# Version 2 added runs.edit; version 3 rebuilt the views with `candidate` (an early
+# version 2 had the column but the old views).
 _MIGRATIONS = {
-    1: (
-        "ALTER TABLE runs ADD COLUMN edit TEXT",
-        "DROP VIEW last_run",
-        "DROP VIEW evidence",
+    1: ("ALTER TABLE runs ADD COLUMN edit TEXT",),
+    2: (
+        "DROP VIEW IF EXISTS last_run",
+        "DROP VIEW IF EXISTS evidence",
         _EVIDENCE_VIEW,
         _LAST_RUN_VIEW,
-    )
+    ),
 }
 
 _LATEST = "(SELECT MAX(run_id) FROM runs)"

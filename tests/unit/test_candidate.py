@@ -90,15 +90,23 @@ def test_build_failures_are_build_failed_with_the_compilers_words(result, words)
         assert "expected expression" in error["message"]
 
 
-def v1_store(path):
-    """A store as Peeky with evidence schema 1 wrote it, holding one run with a capture."""
+def v1_store(path, version=1, views=True):
+    """A store as an older Peeky wrote it, holding one run with a capture.
+
+    Version 1 has no runs.edit; version 2 (an early candidate-probe build) has the column
+    but views without `candidate`.
+    """
     path.parent.mkdir(parents=True)
     connection = sqlite3.connect(path)
     for statement in evidence._DDL:
-        if statement.startswith("CREATE VIEW evidence"):
+        if statement.startswith("CREATE VIEW"):
+            if not views:
+                continue
             statement = statement.replace(", r.edit IS NOT NULL AS candidate", "")
-        connection.execute(statement.replace(", edit TEXT)", ")"))
-    connection.execute("PRAGMA user_version = 1")
+        if version == 1:
+            statement = statement.replace(", edit TEXT)", ")")
+        connection.execute(statement)
+    connection.execute(f"PRAGMA user_version = {version}")
     connection.execute("INSERT INTO runs (started_at, program, line) VALUES ('t', 'x.c', 3)")
     connection.execute(
         "INSERT INTO captures (run_id, hit, phase, line, selector, value, unavailable) "
@@ -108,9 +116,10 @@ def v1_store(path):
     connection.close()
 
 
-def test_schema_1_stores_are_upgraded_in_place_keeping_their_runs(tmp_path):
+@pytest.mark.parametrize(("version", "views"), [(1, True), (2, True), (1, False)])
+def test_older_stores_are_upgraded_in_place_keeping_their_runs(tmp_path, version, views):
     store = tmp_path / "evidence" / "evidence.db"
-    v1_store(store)
+    v1_store(store, version, views)
     rows = evidence.run_query(store, "values", {"selector": "n"})["rows"]
     assert [(row["program"], row["value"]) for row in rows] == [("x.c", "7")]
     connection = sqlite3.connect(store)

@@ -353,3 +353,12 @@ It reported one high and one medium issue, both fixed:
   Tests: `test_candidate_runs_are_marked_and_kept_apart`, `test_schema_1_stores_are_upgraded_in_place_keeping_their_runs`, `test_a_read_only_schema_1_store_is_refused_unchanged`.
 
 The reviewer also noted that any save by this version upgrades the shared default store, after which older Peeky installs refuse it. That is how schema versions already worked (they ask to move the store aside); it is noted here rather than changed.
+
+Verification of 0952752 confirmed both fixes. It brute-forced `candidate_line` over about 3.5M mapped lines: every line before or after an edit landed at exactly its shifted offset. That covered `--old` starting with a newline, edits starting mid-line, empty `--new`, edits at the start and end of a file, and files without a trailing newline. It also confirmed that migrations run inside `BEGIN IMMEDIATE` and roll back whole, that concurrent upgrades happen exactly once, and that hot-journal recovery comes before the version check. One medium issue, fixed:
+- **Medium:** stores already upgraded by c84f613 had `user_version` 2 with the old views. 0952752 changed the views but kept version 2, so those stores were never rebuilt and `queries values` failed with `no such column: candidate`. This included this machine's own store. The schema is now version 3:
+  - 1→2 adds `runs.edit`;
+  - 2→3 rebuilds the views with `DROP VIEW IF EXISTS`, which also lets a store with a hand-dropped view upgrade instead of being refused as unusable.
+
+  This machine's store was repaired by its next read.
+
+  Test: `test_older_stores_are_upgraded_in_place_keeping_their_runs` (schema 1, early schema 2, and schema 1 without views).
