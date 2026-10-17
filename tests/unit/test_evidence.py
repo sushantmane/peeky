@@ -234,13 +234,26 @@ def test_canned_queries_answer_comparisons(store):
             "value_b": "7",
             "differs": 1,
             "note": None,
-        }
+        },
+        # The outputs differ too: the last row says so.
+        {
+            "run_a": 1,
+            "run_b": 2,
+            "hit": None,
+            "phase": None,
+            "selector": "(output)",
+            "value_a": "PAGE: [40]\n",
+            "value_b": "PAGE: [10]\n",
+            "differs": 1,
+            "note": "output differs",
+        },
     ]
     assert evidence.run_query(store, "compare", {"a": 2, "b": 2})["rows"][0]["differs"] == 0
     hits = evidence.run_query(store, "hits", {"run": 1, "selector": "start"})["rows"]
     assert [(row["value"], row["changed"]) for row in hits] == [("3", None), ("6", 1)]
     outputs = evidence.run_query(store, "outputs")["rows"]
     assert [row["output"] for row in outputs] == ["PAGE: [40]\n", "PAGE: [10]\n"]
+    assert "set_hit" in outputs[0]
     values = evidence.run_query(store, "values", {"selector": "start"})["rows"]
     assert values[0] == {
         "program": "a.py",
@@ -596,6 +609,7 @@ def test_a_run_that_never_stopped_is_missing_hits_not_selectors(store):
     assert [(r["hit"], r["value_a"], r["note"]) for r in rows] == [
         (1, "1", "missing in run b"),
         (2, "2", "missing in run b"),
+        (None, "completed", "outcome differs"),
     ]
 
 
@@ -647,3 +661,23 @@ def test_no_addresses_cannot_outrun_the_query_deadline(store):
     with pytest.raises(ValueError, match="ran longer than"):
         evidence.query(store, sql, seconds=0.5)
     assert time.monotonic() - started < 3
+
+
+def test_diff_ends_with_the_outcome_and_a_trimmed_output_when_they_differ(store):
+    first = captured([(1, "observed", "x", "1")])
+    first["output"] = "SUM:14\n"
+    evidence.record(store, first)
+    second = captured([(1, "observed", "x", "1"), (1, "after-set", "x", "2")])
+    second.update(output="x" * 300, status="failed")
+    evidence.record(store, second)
+    rows = evidence.run_query(store, "diff")["rows"]
+    assert [(r["selector"], r["note"]) for r in rows] == [
+        ("x", "intervention only in run b"),
+        ("(status)", "outcome differs"),
+        ("(output)", "output differs"),
+    ]
+    assert rows[-1]["value_a"] == "SUM:14\n" and rows[-1]["value_b"] == "x" * 200 + "…"
+    # Same outputs: no output row.
+    evidence.record(store, first)
+    evidence.record(store, first)
+    assert evidence.run_query(store, "diff")["row_count"] == 0

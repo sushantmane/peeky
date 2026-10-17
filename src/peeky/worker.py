@@ -133,6 +133,8 @@ class DebugWorker:
         self.stop_function = None
         self.stop_reason = None
         self.points, self.temporary_line = [], None
+        # Stops at the session's own breakpoints so far; the current stop's number.
+        self.hits, self.stop_hit, self.stop_line = 0, None, None
         self.stop_outside = self.stop_returns = self.co_served = False
         # The single absolute launch budget, below Client.call's 45 s HTTP timeout.
         # Preparation (supports_deadline adapters: builds, symbols, module identity)
@@ -217,6 +219,7 @@ class DebugWorker:
             )
             path = frame.get("source", {}).get("path")
             self.stop_function = str(frame.get("name") or "")[:300] or None
+            self.stop_line = frame.get("line")
             return f"{_display_path(self.runtime, path)}:{frame.get('line')}" if path else None
         except Exception:
             return None
@@ -225,6 +228,8 @@ class DebugWorker:
         where = {"location": self.stop_location} if self.stop_location else {}
         if self.stop_location and self.stop_function:
             where["function"] = self.stop_function
+        if self.stop_id and self.stop_hit:
+            where["hit"] = self.stop_hit
         if self.stop_id and self.stop_outside:
             # A step that left the program (into a library, past main): nothing to read.
             where["outside_program"] = True
@@ -400,6 +405,7 @@ class DebugWorker:
 
     def forget_stop(self):
         self.stop_outside = self.stop_returns = False
+        self.stop_hit = self.stop_line = None
         self.state = "running"
         self.stopped_at = None
         self.stop_location = None
@@ -574,6 +580,7 @@ class DebugWorker:
             # `continue --to` line is reached.
             self.points = list(args.get("breakpoints", []))
             self.temporary_line = None
+            self.hits, self.stop_hit, self.stop_line = 0, None, None
             # Nothing about an earlier session's stops carries over on a shared worker.
             self.co_served = self.stop_outside = self.stop_returns = False
             self.stop_all_threads = False
@@ -737,8 +744,18 @@ class DebugWorker:
             self.thread_id = event.get("body", {}).get("threadId")
             self.stop_all_threads = event.get("body", {}).get("allThreadsStopped") is True
             self.stop_reason = event.get("body", {}).get("reason") if self.stop_id else None
-            self.stop_function = None
+            self.stop_function = self.stop_line = self.stop_hit = None
             self.stop_location = self.read_location() if self.stop_id else None
+            own = {point.get("line") for point in self.points}
+            if (
+                self.stop_reason == "breakpoint"
+                and type(self.stop_line) is int
+                and (self.stop_line != self.temporary_line or self.stop_line in own)
+            ):
+                # Counted like a probe's hits: every stop at the session's breakpoints,
+                # including other threads' stops served one by one; never `--to` lines.
+                self.hits += 1
+                self.stop_hit = self.hits
             if self.stop_id and self.temporary_line is not None:
                 # The one-shot `continue --to` line served its purpose (or another stop
                 # came first): only the session's own breakpoints remain.

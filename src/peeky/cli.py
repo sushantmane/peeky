@@ -501,9 +501,9 @@ def describe(args):
         "commands": {
             "probe": f"peeky probe {target} --at {program}:<line>{run} --capture <a,b.c> "
             "[--set name=value] [--set-hit N] [--hits N] [--json]",
-            "session": f"peeky session start {target} --at {program}:<line>{run}; then "
+            "session": f"peeky session start {target} --at {program}:<line>{run} [--hit N]; then "
             "peeky session inspect | get <a.b> | set <name>=<value> | step [--into|--out] | "
-            "continue [--to LINE|--to-exit] | "
+            "continue [--count N|--to LINE|--to-exit] | "
             "report | close",
             "verify": f"peeky verify {target} --at {program} --check <checker.py> "
             "--old <text> --new <text> (or --old-file/--new-file)",
@@ -893,6 +893,8 @@ def _state_text(state):
         from peeky.names import display_function
 
         where += f" in {display_function(state['function'])}"
+    if where and type(state.get("hit")) is int:
+        where += f", hit {state['hit']}"
     hint = ""
     if state["state"] == "running":
         hint = " (still running; run `peeky session wait`)"
@@ -914,6 +916,8 @@ def _state_text(state):
         text += f"\n{_OPTIMIZED_NOTE.format(state['optimized'])}"
     if state.get("exit_inferred"):
         text += "\nnote: the debugger never reported the exit; Peeky inferred it (no threads left)"
+    if state.get("note"):
+        text += f"\nnote: {state['note']}"
     if state.get("auto_resumed"):
         last = state.get("last_auto_resumed") or {}
         text += (
@@ -1066,9 +1070,12 @@ def session(args):
         )
         _emit(changed, args.json, lambda c: f"set {c['name']}: {c['before']} -> {c['after']}")
     elif args.action == "continue":
-        stop = _stop(record)
+        # Argument errors first, whatever state the program is in.
         if args.to is not None and args.to_exit:
             raise ValueError("Pass --to LINE or --to-exit, not both")
+        if args.count != 1 and (args.to is not None or args.to_exit):
+            raise ValueError("--count counts breakpoint stops; it cannot go with --to or --to-exit")
+        stop = _stop(record)
         if args.to is not None:
             _require_stepping(record, client)
         # --to-exit clears the breakpoints in the same worker operation, after it
@@ -1079,7 +1086,18 @@ def session(args):
             **({"to_exit": True} if args.to_exit else {}),
             **({"to_line": args.to} if args.to is not None else {}),
         )
+        deadline = time.monotonic() + args.timeout
         state = _wait(record, client, args.timeout)
+        reached = int(state["state"] == "stopped")
+        while reached and reached < args.count and time.monotonic() < deadline:
+            # --count N: the Nth stop from here, within one --timeout.
+            client.call("continue", **_stop(record))
+            state = _wait(record, client, max(0.1, deadline - time.monotonic()))
+            if state["state"] != "stopped":
+                break
+            reached += 1
+        if args.count > 1 and state["state"] == "terminated":
+            state["note"] = f"the program exited after {reached} of {args.count} stops"
         finished = 0
         while args.to_exit and state["state"] == "stopped" and state.get("reason") == "step":
             # LLDB completes a step that a breakpoint interrupted before running on.
@@ -1303,7 +1321,7 @@ def _start_remote(args, root, program, line, language, max_pause):
     if launch.get("optimized"):
         record["optimized"] = launch["optimized"]
     _save(record)
-    state = _wait(record, client, args.timeout)
+    state = _until_hit(record, client, args.hit, args.timeout)
     if record.get("optimized"):
         state["optimized"] = record["optimized"]
     _emit(
@@ -1446,9 +1464,34 @@ def _start_local(args, root, program, line, language, data, max_pause):
                 "Start again"
             ) from exc
         raise
-    state = _wait(record, client, args.timeout)
+    state = _until_hit(record, client, args.hit, args.timeout)
     if record.get("optimized"):
         state["optimized"] = record["optimized"]
+    return state
+
+
+def _positive_count(text):
+    if not re.fullmatch(r"[1-9][0-9]{0,3}", text):
+        raise argparse.ArgumentTypeError("expected a whole number from 1 to 9999")
+    return int(text)
+
+
+def _until_hit(record, client, hit, timeout):
+    """Wait for the first stop, then continue to the session's Nth breakpoint stop
+    (`session start --hit N`), all within one --timeout."""
+    deadline = time.monotonic() + _seconds(timeout)
+    state = _wait(record, client, timeout)
+    while (
+        hit
+        and state["state"] == "stopped"
+        and type(state.get("hit")) is int
+        and state["hit"] < hit
+        and time.monotonic() < deadline
+    ):
+        client.call("continue", **_stop(record))
+        state = _wait(record, client, max(0.1, deadline - time.monotonic()))
+    if hit and state["state"] == "terminated":
+        state["note"] = f"the program exited before hit {hit}"
     return state
 
 
@@ -1878,6 +1921,11 @@ def main(argv=None, _job=False, _edits=None):
         help="Program argument (repeatable), or put them after `--`",
     )
     start.add_argument(
+        "--hit",
+        type=_positive_count,
+        help="Run on to the Nth stop at the breakpoint (state lines show `hit N`)",
+    )
+    start.add_argument(
         "--max-pause",
         type=float,
         help=f"Auto-resume a stop after this many seconds (0: never; default "
@@ -1913,6 +1961,12 @@ def main(argv=None, _job=False, _edits=None):
     )
     actions.choices["continue"].add_argument(
         "--to-exit", action="store_true", help="Clear breakpoints and run the program to exit"
+    )
+    actions.choices["continue"].add_argument(
+        "--count",
+        type=_positive_count,
+        default=1,
+        help="Continue N times: the Nth stop from here (default 1)",
     )
     actions.choices["continue"].add_argument(
         "--to",

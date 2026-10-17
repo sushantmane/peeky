@@ -73,6 +73,8 @@ def test_state_lines_name_the_stopped_function():
         "state: stopped at /w/src/main.rs:16 in topk::insert_sorted::{{closure}}"
     )
     assert " in " not in cli._state_text({"state": "stopped", "function": "f"})
+    numbered = cli._state_text({"state": "stopped", "location": "/w/a.py:3", "hit": 4})
+    assert numbered.startswith("state: stopped at /w/a.py:3, hit 4")
 
 
 def test_a_program_in_a_subdirectory_or_behind_a_link_is_not_taken_from_elsewhere(tmp_path):
