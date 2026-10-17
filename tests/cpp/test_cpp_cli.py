@@ -53,7 +53,7 @@ def ring(tmp_path, monkeypatch):
 
 
 @pytest.mark.timeout(120)
-def test_a_cpp_directory_probes_its_program_and_reads_members_without_this(ring, capsys):
+def test_a_cpp_directory_probes_its_program_and_members_are_read_through_this(ring, capsys):
     code = main(
         [
             "probe",
@@ -61,7 +61,7 @@ def test_a_cpp_directory_probes_its_program_and_reads_members_without_this(ring,
             "--at",
             "10",
             "--capture",
-            "tail,head_,size_,this.size_,slots_[0]",
+            "tail,this.head_,this.size_,this.slots_[0]",
             "--hits",
             "2",
             "--json",
@@ -76,10 +76,10 @@ def test_a_cpp_directory_probes_its_program_and_reads_members_without_this(ring,
     result = json.loads(capsys.readouterr().out)
     assert code == 0, result.get("error")
     values = [(row["hit"], row["selector"], row.get("value")) for row in result["rows"]]
-    assert (1, "head_", "0") in values and (1, "size_", "0") in values
-    assert (2, "size_", "1") in values and (2, "this.size_", "1") in values
-    assert (2, "slots_[0]", "7") in values
+    assert (1, "this.head_", "0") in values and (1, "this.size_", "0") in values
+    assert (2, "this.size_", "1") in values and (2, "this.slots_[0]", "7") in values
     assert all(row["function"].startswith("Ring::push") for row in result["rows"])
+    # A bare member name is never read in place of a local; the error names the selector.
     code = main(
         [
             "probe",
@@ -87,7 +87,7 @@ def test_a_cpp_directory_probes_its_program_and_reads_members_without_this(ring,
             "--at",
             "10",
             "--capture",
-            "missing_",
+            "size_,missing_",
             "--json",
             "--no-save",
             "--quiet",
@@ -96,5 +96,61 @@ def test_a_cpp_directory_probes_its_program_and_reads_members_without_this(ring,
             "7",
         ]
     )
-    [row] = json.loads(capsys.readouterr().out)["rows"]
-    assert "not a member of this either" in row["error"] and "size_" in row["error"]
+    rows = {row["selector"]: row for row in json.loads(capsys.readouterr().out)["rows"]}
+    assert "value" not in rows["size_"]
+    assert "select it as this.size_ if the code means the member" in rows["size_"]["error"]
+    assert "member" not in rows["missing_"]["error"]
+    try:
+        assert main(["session", "start", str(ring), "--at", "10", "--", "3", "7"]) == 0
+        assert " in Ring::push(int)" in capsys.readouterr().out
+        assert main(["session", "set", "size_=2"]) != 0
+        error = capsys.readouterr().err
+        assert "it can be read as this.size_" in error
+        assert "only the stopped function's own locals can be changed" in error
+    finally:
+        main(["session", "close"])
+
+
+STATIC = """#include <cstdio>
+
+struct Acc {
+    int calls = 7;
+    int run() {
+        static int calls = 100;
+        calls += 1;
+        std::printf("static calls=%d\\n", calls);
+        return calls;
+    }
+};
+
+int main() {
+    Acc acc;
+    return acc.run() > 0 ? 0 : 1;
+}
+"""
+
+
+@pytest.mark.timeout(120)
+def test_a_static_that_shadows_a_member_is_never_read_as_the_member(ring, capsys):
+    # lldb-dap lists function-local statics outside the Locals scope: `calls` is not a
+    # visible local here, yet the code means the static, not this->calls.
+    (ring / "ring.cpp").write_text(STATIC)
+    code = main(
+        [
+            "probe",
+            str(ring),
+            "--at",
+            "8",
+            "--capture",
+            "calls,this.calls",
+            "--json",
+            "--no-save",
+            "--quiet",
+        ]
+    )
+    result = json.loads(capsys.readouterr().out)
+    assert code == 0, result.get("error")
+    rows = {row["selector"]: row for row in result["rows"]}
+    assert "value" not in rows["calls"] and "if the code means the member" in rows["calls"]["error"]
+    assert rows["this.calls"]["value"] == "7"
+    assert "static calls=101" in result["output"]

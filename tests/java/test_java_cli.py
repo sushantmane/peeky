@@ -1,4 +1,4 @@
-"""The CLI on a launched Java program: fields read without this; commands carry --config."""
+"""The CLI on a launched Java program: fields through this; commands carry --config."""
 
 import json
 import os
@@ -55,7 +55,7 @@ def counter(tmp_path, monkeypatch):
 
 
 @pytest.mark.timeout(120)
-def test_java_fields_read_without_this_and_commands_keep_the_config(counter, capsys):
+def test_java_fields_are_read_through_this_and_commands_keep_the_config(counter, capsys):
     root, config = counter
     common = [str(root), "--config", str(config)]
     assert main(["describe", *common, "--json"]) == 0
@@ -68,7 +68,7 @@ def test_java_fields_read_without_this_and_commands_keep_the_config(counter, cap
             "--at",
             "demo/Counter.java:11",
             "--capture",
-            "total,step,this.total,i",
+            "this.total,this.step,total,i",
             "--hits",
             "2",
             "--json",
@@ -79,8 +79,11 @@ def test_java_fields_read_without_this_and_commands_keep_the_config(counter, cap
     result = json.loads(capsys.readouterr().out)
     assert code == 0, result.get("error")
     values = [(row["hit"], row["selector"], row.get("value")) for row in result["rows"]]
-    assert (1, "total", "0") in values and (1, "step", "3") in values
-    assert (2, "total", "3") in values and (2, "this.total", "3") in values
+    assert (1, "this.total", "0") in values and (1, "this.step", "3") in values
+    assert (2, "this.total", "3") in values and (2, "i", "1") in values
+    # A bare field name is never read in place of a local; the error names the selector.
+    bare = next(row for row in result["rows"] if row["selector"] == "total")
+    assert "value" not in bare and "select it as this.total" in bare["error"]
     try:
         assert main(["session", "start", *common, "--at", "demo/Counter.java:11"]) == 0
         assert "in Counter.add(int)" in capsys.readouterr().out

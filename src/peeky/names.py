@@ -15,6 +15,12 @@ _RUST_ESCAPES = {
 }
 
 
+def unicode_escape(match):
+    """A legacy `$u<hex>$` escape as its character; an impossible one stays as written."""
+    code = int(match[1], 16)
+    return chr(code) if code <= 0x10FFFF and not 0xD800 <= code <= 0xDFFF else match[0]
+
+
 def display_function(name):
     """A debugger frame name for display. Rust frames (`…::h<16 hex>`) lose their hash
     and legacy escapes, so `top::f::_$u7b$$u7b$closure$u7d$$u7d$::h0123…` reads
@@ -31,6 +37,6 @@ def display_function(name):
             part = part.replace("..", "::")
             for escape, character in _RUST_ESCAPES.items():
                 part = part.replace(escape, character)
-            part = re.sub(r"\$u([0-9a-f]{1,6})\$", lambda m: chr(int(m[1], 16)), part)
+            part = re.sub(r"\$u([0-9a-f]{1,6})\$", unicode_escape, part)
         parts.append(part)
     return "::".join(parts)

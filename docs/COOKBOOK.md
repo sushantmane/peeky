@@ -553,7 +553,7 @@ peeky probe examples/c/pagination_bug.c --at 25 --capture start,page --arg 2    
 peeky probe examples/cpp/pagination_bug.cpp --at 28 --capture start
 ```
 
-All `.c` files in the directory that don't define their own `main` are built together with the target. A directory holding several programs links only the target's `main`. A directory works as the target too: `peeky probe ring/ --at 16` finds its one program (a checker script beside it doesn't count), and `--at ring.cpp:16` names one when there are several. In C++ and Java methods, selectors name members without `this`, as the code does: `head_` reads `this->head_` unless a local has that name. Headers read from outside the directory, including SDK headers, are hashed and rechecked.
+All `.c` files in the directory that don't define their own `main` are built together with the target. A directory holding several programs links only the target's `main`. A directory works as the target too: `peeky probe ring/ --at 16` finds its one program (a checker script beside it doesn't count), and `--at ring.cpp:16` names one when there are several. In C++ and Java methods, read members through `this` (`this.head_`); a bare `head_` that is a member gives an error naming that selector. Peeky never reads a member in place of a local: the debugger's list of locals can be incomplete (statics, classes built without local-variable tables), so a missing local does not mean the code uses the member. Headers read from outside the directory, including SDK headers, are hashed and rechecked.
 
 ### 7.2 Rust (a Cargo crate)
 

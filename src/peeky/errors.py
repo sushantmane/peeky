@@ -110,7 +110,8 @@ _RULES = (
     (
         r"not a visible local|Expected exactly one existing local|not found in the inspected",
         "NOT_FOUND",
-        "Inspect to list visible names; selectors are dotted paths.",
+        "Inspect to list visible names. Reads take dotted paths (a.b, this.x); changes take "
+        "only the stopped function's own locals.",
         False,
     ),
     (

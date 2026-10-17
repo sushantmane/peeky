@@ -260,6 +260,35 @@ def _visible(snapshot):
     return shown or "(none)"
 
 
+def _member_hint(worker, stop, snapshot, name):
+    """`; select it as this.name` when the stopped method's object (C++, Java) has a
+    member of that name. Never read implicitly: the debugger's list of locals can be
+    incomplete (no local-variable table, statics, truncated scopes), so a missing local
+    does not prove the code means the member."""
+    receiver = snapshot.get("receiver")
+    holder = next(
+        (
+            v
+            for scope in snapshot["scopes"]
+            for v in scope["variables"]
+            if receiver and v["name"] == receiver
+        ),
+        None,
+    )
+    if name.startswith("[") or not holder or not holder.get("variablesReference"):
+        return ""
+    try:
+        page = worker.dispatch("expand", {**stop, "handle": holder["variablesReference"]})
+    except ValueError:
+        return ""
+    if any(child["name"] == name for child in page["variables"]):
+        return (
+            f"; {receiver} has a member {name!r}: select it as {receiver}.{name} if the "
+            "code means the member"
+        )
+    return ""
+
+
 def _resolve(worker, stop, snapshot, segments):
     matches = [
         variable
@@ -267,24 +296,11 @@ def _resolve(worker, stop, snapshot, segments):
         for variable in scope["variables"]
         if variable["name"] == segments[0]
     ]
-    receiver = snapshot.get("receiver")
-    if (
-        not matches
-        and receiver
-        and not segments[0].startswith("[")
-        and any(v["name"] == receiver for scope in snapshot["scopes"] for v in scope["variables"])
-    ):
-        # C++ and Java code names the members of `this` without it; a local of the same
-        # name was looked up first, as the language does.
-        try:
-            return _resolve(worker, stop, {**snapshot, "receiver": None}, [receiver, *segments])
-        except ValueError as exc:
-            raise ValueError(
-                f"not found; visible: {_visible(snapshot)}; not a member of {receiver} "
-                f"either ({exc})"
-            ) from None
     if not matches:
-        raise ValueError(f"not found; visible: {_visible(snapshot)}")
+        raise ValueError(
+            f"not found; visible: {_visible(snapshot)}"
+            + _member_hint(worker, stop, snapshot, segments[0])
+        )
     variable = matches[0]
     for segment in segments[1:]:
         handle = variable.get("variablesReference", 0)
@@ -777,6 +793,10 @@ def run_probe(root, probe, *, adapter=None, progress=None):
                         raise ValueError(
                             f"Intervention target {name!r} is not a visible local; "
                             f"visible: {_visible(snapshot)}"
+                            + _member_hint(worker, stop, snapshot, name).replace(
+                                "select it as", "it can be read as"
+                            )
+                            + "; only the stopped function's own locals can be changed"
                         )
                     changes.append(
                         worker.dispatch(

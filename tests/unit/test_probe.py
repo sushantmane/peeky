@@ -618,7 +618,7 @@ def test_hits_all_fits_the_row_budget_and_needs_the_program_to_exit():
     assert Probe("main.py", 3, ("a", "b", "a")).capture == ("a", "b")
 
 
-def test_cpp_and_java_selectors_name_members_of_this_without_it():
+def test_a_bare_member_name_points_to_its_this_selector_never_reads_it():
     from peeky.probe import _resolve
 
     this = {"name": "this", "type": "Ring *", "value": "0x1", "variablesReference": 1}
@@ -628,14 +628,19 @@ def test_cpp_and_java_selectors_name_members_of_this_without_it():
         {"name": "tail", "type": "int", "value": "9", "variablesReference": 0},
     ]
     tree, snap = Tree({1: members}), {**snapshot(this, tail), "receiver": "this"}
-    assert _resolve(tree, {}, snap, parse_selector("head_"))["value"] == "2"
-    # A local of the same name comes first, as the language looks it up.
+    # The debugger's list of locals can be incomplete, so a member is never read in
+    # place of a missing local: the error names the selector instead.
+    for selector in ("head_", "head_.x"):
+        with pytest.raises(ValueError) as caught:
+            _resolve(tree, {}, snap, parse_selector(selector))
+        assert str(caught.value) == (
+            "not found; visible: tail, this; this has a member 'head_': select it as "
+            "this.head_ if the code means the member"
+        )
+    assert _resolve(tree, {}, snap, parse_selector("this.head_"))["value"] == "2"
     assert _resolve(tree, {}, snap, parse_selector("tail"))["value"] == "1"
-    with pytest.raises(ValueError) as caught:
+    with pytest.raises(ValueError, match=r"^not found; visible: tail, this$"):
         _resolve(tree, {}, snap, parse_selector("size_"))
-    message = str(caught.value)
-    assert message.startswith("not found; visible: tail, this; not a member of this either")
-    assert "children: head_, tail" in message
     # Without a receiver (C, Python, Rust), `this` is only a local's name.
     with pytest.raises(ValueError, match=r"^not found; visible: tail, this$"):
         _resolve(tree, {}, snapshot(this, tail), parse_selector("head_"))

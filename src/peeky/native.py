@@ -33,6 +33,7 @@ from peeky.build import (
     real_tool,
 )
 from peeky.digest import sha256_file
+from peeky.names import unicode_escape
 
 MAX_METADATA = 2 * 1024 * 1024
 # Type-rich C++ units (iostream) carry megabytes of DIEs; read only by `describe`.
@@ -317,7 +318,7 @@ def _rust_name(linkage):
         part = part.replace("..", "::")
         for escape, character in _RUST_ESCAPES.items():
             part = part.replace(escape, character)
-        part = re.sub(r"\$u([0-9a-f]{1,6})\$", lambda m: chr(int(m[1], 16)), part)
+        part = re.sub(r"\$u([0-9a-f]{1,6})\$", unicode_escape, part)
         parts.append(part)
     if rest or len(parts) < 2 or not re.fullmatch(r"h[0-9a-f]{16}", parts[-1]):
         return None

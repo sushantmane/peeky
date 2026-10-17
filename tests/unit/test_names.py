@@ -14,3 +14,8 @@ def test_other_languages_are_unchanged():
     assert display_function(java) == java
     assert display_function("Ring::push(int)") == "Ring::push(int)"
     assert display_function(None) == ""
+
+
+def test_impossible_escapes_stay_as_written():
+    name = "odd::_$uffffff$$ud800$x::h0123456789abcdef"
+    assert display_function(name) == "odd::$uffffff$$ud800$x"

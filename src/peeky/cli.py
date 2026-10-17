@@ -284,6 +284,12 @@ def _native_program(directory, program):
     if program:
         if Path(program).suffix not in _NATIVE_SUFFIXES:
             return None
+        if "/" in program.replace("\\", "/"):
+            # A C/C++ program is built with the files of its own directory.
+            raise ValueError(
+                f"Pass the program's own directory as the target: peeky probe "
+                f"{(directory / Path(program).parent).resolve()} --at {Path(program).name}:<line>"
+            )
         candidate = (directory / program).resolve()
         if not candidate.is_relative_to(directory) or not candidate.is_file():
             raise ValueError(f"No C/C++ file {program} inside {directory}")
@@ -293,6 +299,7 @@ def _native_program(directory, program):
         for item in directory.iterdir()
         if item.suffix in _NATIVE_SUFFIXES
         and item.is_file()
+        and item.resolve().parent == directory
         and _MAIN.search(item.read_bytes()[:4_000_000])
     )[:20]
     if len(mains) > 1:
@@ -308,8 +315,8 @@ def _native_program(directory, program):
         ]
     if len(mains) > 1:
         raise ValueError(
-            f"Several C/C++ programs define main here ({', '.join(mains)}); pass one: "
-            f"peeky probe {directory.name}/{mains[0]} --at <line>"
+            f"Several C/C++ programs define main here ({', '.join(mains)}); name one with "
+            f"--at, e.g. --at {mains[0]}:<line>"
         )
     return ((directory / mains[0]).resolve(), mains[0]) if mains else None
 
@@ -1045,7 +1052,15 @@ def session(args):
             None,
         )
         if scope is None:
-            raise ValueError(f"{name!r} is not a visible local")
+            from peeky.probe import _member_hint, _visible
+
+            hint = _member_hint(_Remote(client), stop, snapshot, name.partition(".")[0])
+            raise ValueError(
+                f"{name!r} is not a visible local; visible: {_visible(snapshot)}"
+                + hint.replace("select it as", "it can be read as")
+                + "; only the stopped function's own locals can be changed (fields and "
+                "elements cannot)"
+            )
         changed = client.call(
             "set_variable", **stop, reference=scope["reference"], name=name, value=value
         )
