@@ -16,7 +16,8 @@ for ADR 0007's open questions.
 
 Usage (from a Peeky checkout, with Peeky installed):
     python scripts/cuda/qualify.py --out cuda-qualification.json
-Options: --cuda-gdb, --nvcc, --compute-sanitizer (default: found on PATH),
+Options: --cuda-gdb, --nvcc, --compute-sanitizer (default: found on PATH; a given path
+must be executable),
 --timeout seconds per debugger step (default 120; the first CUDA launch can be slow).
 Exit status: 0 when every check passed, 1 when one failed, 2 when a tool is missing.
 """
@@ -94,6 +95,20 @@ INITIALIZE = {
     "pathFormat": "path",
 }
 FOCUS = re.compile(r"block \(2,0,0\).*thread \(255,0,0\)")
+LAUNCH_CHECKS = ("dap_initialize", "breakpoint_accepted", "stopped_at_breakpoint")
+# Every DAP check starts False, so a debugger that hangs or dies fails the report.
+DAP_CHECKS = (
+    "debugger_started",
+    *LAUNCH_CHECKS,
+    "kernel_frame_named",
+    "focus_moved_to_block_2_thread_255",
+    "dap_frame_follows_focus",
+    "dap_locals_match_cli",
+    "missing_block_left_focus_unchanged",
+    "continued_to_exit",
+    "program_output_seen",
+)
+MAX_EXTRA_STOPS = 20
 
 
 class Steps:
@@ -125,6 +140,8 @@ class Steps:
             entry["body"] = bounded(self.dap.response(seq, timeout=self.timeout))
         except RequestFailed as exc:
             entry["refused"] = str(exc)
+            return False
+        return True
 
     def repl(self, command):
         """A CLI command; no frameId, which would reselect a frame from the old focus."""
@@ -152,9 +169,10 @@ def launch_to_stop(steps, program, cwd, source, line):
     15.x at launch, and 16.x at configurationDone, which it refuses before launch.
     Breakpoints right after ``initialized``, then launch, then configurationDone works on
     all three (ADR 0007). 15.x may refuse configurationDone because the program is
-    already running; that refusal is recorded and harmless.
+    already running; that refusal is recorded and harmless. A refused launch ends here.
     """
-    checks = {"dap_initialize": steps.request("initialize", INITIALIZE) is not None}
+    checks = dict.fromkeys(LAUNCH_CHECKS, False)
+    checks["dap_initialize"] = steps.request("initialize", INITIALIZE) is not None
     if not checks["dap_initialize"]:
         return checks, None
     steps.event({"initialized"}, after=0)
@@ -164,7 +182,8 @@ def launch_to_stop(steps, program, cwd, source, line):
     checks["breakpoint_accepted"] = bool(placed and placed.get("breakpoints"))
     launch = steps.dap.send("launch", {"program": str(program), "cwd": str(cwd)})
     steps.request("configurationDone")
-    steps.response(launch, "launch")
+    if not steps.response(launch, "launch"):
+        return checks, None
     stopped = steps.event({"stopped", "terminated", "exited"}, after=0)
     checks["stopped_at_breakpoint"] = stopped["event"] == "stopped"
     return checks, stopped
@@ -209,10 +228,12 @@ def debug_scale(tools, workdir, timeout):
 
     source = workdir / "scale_bug.cu"
     line = marker_line(source, "// BREAK")
-    dap = DAP(command=[tools["cuda-gdb"], "-q", "-i=dap"])
-    steps = Steps(dap, timeout)
-    checks = {}
+    steps = Steps(None, timeout)
+    checks = dict.fromkeys(DAP_CHECKS, False)
+    dap = None
     try:
+        steps.dap = dap = DAP(command=[tools["cuda-gdb"], "-q", "-i=dap"])
+        checks["debugger_started"] = True
         started, stopped = launch_to_stop(steps, workdir / "scale", workdir, source, line)
         checks.update(started)
         if not stopped or stopped["event"] != "stopped":
@@ -237,18 +258,29 @@ def debug_scale(tools, workdir, timeout):
             FOCUS.search(steps.repl("cuda block thread") or "")
         )
         steps.request("setBreakpoints", {"source": {"path": str(source)}, "breakpoints": []})
-        cursor = dap.event_cursor()
-        steps.request("continue", {"threadId": thread})
-        ended = steps.event({"terminated", "exited"}, after=cursor)
-        checks["continued_to_exit"] = ended["event"] in ("terminated", "exited")
+        checks["continued_to_exit"] = continue_to_exit(steps, thread)
         output = dap.snapshot_output()[0]
         checks["program_output_seen"] = "SUM:1536" in output
         return checks, steps.log, output
     except Exception as exc:
         steps.log.append({"error": f"{type(exc).__name__}: {exc}"})
-        return checks, steps.log, dap.snapshot_output()[0]
+        return checks, steps.log, dap.snapshot_output()[0] if dap else ""
     finally:
-        dap.close()
+        if dap:
+            dap.close()
+
+
+def continue_to_exit(steps, thread):
+    """Continue until the program ends; warps that hit the cleared breakpoint may still stop."""
+    for _ in range(MAX_EXTRA_STOPS + 1):
+        cursor = steps.dap.event_cursor()
+        if steps.request("continue", {"threadId": thread}) is None:
+            return False
+        event = steps.event({"stopped", "terminated", "exited"}, after=cursor)
+        if event["event"] != "stopped":
+            return True
+        thread = event.get("body", {}).get("threadId", thread)
+    return False
 
 
 def sanitize_oob(tools, workdir):
@@ -309,9 +341,9 @@ def main(argv=None):
     args = parser.parse_args(argv)
     tools = {}
     for tool in ("cuda-gdb", "nvcc", "compute-sanitizer"):
-        tools[tool] = getattr(args, tool.replace("-", "_")) or shutil.which(tool)
+        tools[tool] = shutil.which(getattr(args, tool.replace("-", "_")) or tool)
     missing = sorted(name for name, path in tools.items() if not path)
-    report = {"schema": 1, "issue": 61, "missing_tools": missing}
+    report = {"schema": 1, "issue": 61, "tools": tools, "missing_tools": missing}
     if missing:
         report["toolchain"] = {"platform": platform.platform()}
         Path(args.out).write_text(json.dumps(report, indent=2))
