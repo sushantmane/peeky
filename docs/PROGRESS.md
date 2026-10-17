@@ -71,13 +71,23 @@ An hourly thread heartbeat (`continue-peeky-mvp`) checks for available usage and
     - A step that leaves your sources reads and changes nothing, and keeps the session.
     - Threads that stopped together are resumed before stepping.
     - Java stepping followed in the #48 fix: the launcher allows `next`/`stepIn`/`stepOut` with fixed JDK step filters.
+- **#51 (`5d970c0`):** Java session stepping (closes #48).
+  - The launcher allows `next`, `stepIn` and `stepOut` (with `threadId` only) and sets fixed JDK step filters on launch and attach.
+  - A thread that stopped separately is refused until it is served.
+  - LLDB all-threads stops are unaffected.
+  - Verified on Venice attach.
+- **#52 (`29182bc`):** Rust reference parameters read from memory: `&[i32]`, `&str`, `&Vec<i32>` and `&String`, shared or `&mut` (closes #49).
+  - The build's LLVM IR proves each parameter live. `&mut` parameters are read only in the innermost frame.
+  - Owned locals stay raw (#53): review showed that a dropped or moved local can point at reused memory.
+  - Values are bounded to 1000 characters with a `(first k of N)` marker, and views carry `len`/`length`/`capacity` children.
+  - The Docker CI image gained a `rust-llvm20` lane that must take the memory path.
 - **Dependabot:** #1, #3, #4 and #5 were merged. #2 (`upload-artifact` v7) was validated by dispatching `artifact.yml`, then fast-forwarded over SSH as `7308955`, because the API token lacks the `workflow` scope.
 
-**Closed issues:** #6, #7, #8, #9, #10, #11, #12, #13.
+**Closed issues:** #6, #7, #8, #9, #10, #11, #12, #13, #48, #49.
 
 **Open issues:**
 - **#27:** an attached JVM whose `stopped` event is lost (seen once on Venice). The launch case is fixed. 160 targeted stress runs (simple and Venice-like thread churn) did not reproduce it; diagnostics stay in place.
-- **#49:** Rust `Vec`, slice and `String` element views. This needs lldb-dap `readMemory`, which arrived after the LLVM 18 that CI qualifies.
+- **#53:** reading owned Rust `Vec`/`String` locals from memory needs a liveness proof. LLVM IR cannot tell a move from a borrow, and stable MIR has no spans. The options are on the issue.
 
 **Process notes:**
 - Create PRs and issues with `gh api` (REST): `gh pr create`/`gh issue create` GraphQL calls returned 504s, and the app's PR tool needs the project's GitHub link.
@@ -138,11 +148,12 @@ Known local-only limitation (pre-existing on main): test_native_adapter_death_re
 
 The original slices are delivered: #6–#13 are closed. Remaining:
 1. **Hosted CI:** restore it (billing). Then rerun CI on `main` to confirm the Docker-verified merges on x86_64.
-2. **#49:** Rust container views (needs a newer lldb-dap lane).
+2. **Hosted LLVM 20 Rust job:** mirror the Docker `rust-llvm20` lane in `ci.yml` once Actions runs again. It needs a workflow-scope push over SSH.
 3. **#27:** if the lost `stopped` event on an attached JVM recurs, capture the DAP trace and fix it from that evidence. It recurred twice under full-suite load in the launch-only adapter test; details are on the issue.
 4. **ADR 0004, step 5:** a prepared-build cache, only if measured probe latency requires it. Step 4 shipped in #35; the SQL-shaped probe form was deliberately not implemented.
 5. Implement the bounded evidence correlation design (code, logs, metrics).
 6. A live-model evaluation on Venice, using the cookbook.
+7. **#53:** owned Rust locals, once a sound liveness proof is designed.
 
 Read AGENTS.md, DESIGN.md, LANGUAGES.md, and ROADMAP.md for acceptance criteria. Runtime intervention is evidence only; never claim a fix without fresh verification and matching source/build identity. Preserve a checkpoint when usage runs low; report shipped work and actual limitations.
 
