@@ -355,8 +355,23 @@ def test_rust_container_indexes_explain_what_is_unsupported():
         _resolve(Tree({1: fields}), {}, snapshot(vec), parse_selector("ordered[0]"))
     message = str(caught.value)
     assert "has no indexed elements" in message and "children: buf, len" in message
-    assert "Rust Vec, slice and String contents are not readable yet" in message
-    assert "capture ordered.len" in message
+    assert "Peeky reads Rust contents only for reference parameters" in message
+    assert "Owned Vec and String locals stay raw" in message
+    assert "Capture ordered.len" in message
+    # Text read from memory has only its length as children: no element hint.
+    text = {
+        "name": "label",
+        "type": "&str",
+        "value": '"ab"',
+        "view": "memory",
+        "length": 2,
+        "variablesReference": 1,
+    }
+    length = [{"name": "length", "type": "usize", "value": "2", "variablesReference": 0}]
+    with pytest.raises(ValueError) as caught:
+        _resolve(Tree({1: length}), {}, snapshot(text), parse_selector("label[0]"))
+    message = str(caught.value)
+    assert "shown whole, not by element" in message and "reference parameters" not in message
 
 
 def test_depth_limited_values_say_so():

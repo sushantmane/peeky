@@ -170,3 +170,36 @@ Verification of 17ff75f confirmed all four fixes on launched and attached JVMs (
 - **Should-fix:** `pending_stop_elsewhere` also applied to all-threads stops. Stepping over a call during which another thread hit the breakpoint left the stepping thread's own `step` event pending, so every later `step` was refused. The check now applies only when threads stop separately (java-debug); for all-threads stops `co_stopped`/`co_served` already cover the other threads. `test_a_step_interrupted_by_another_threads_hit_can_still_step` (real lldb-dap, three runs) fails without the fix.
 
 Two older problems found in passing, not caused by this PR: a Java breakpoint on a line owned by two classes fails at start with `DEBUGGER_ERROR` instead of `INVALID_BREAKPOINT`; and debugpy reports one stop when two threads reach a breakpoint together.
+
+## Review of the Rust container-view PR (#52, 5f9faf2)
+
+The review confirmed the memory-reference semantics (lldb-dap 20, 21 and main: the variable's own load address), `view_read`'s bounds, the worker-owned handles and the layout checks. It reported two blocking findings, two should-fix and one nit. All are fixed:
+- **Blocking:** memory views showed freed, moved-from and uninitialized storage as contents. A dropped `Vec` read as a later `Vec`'s elements; a slice that outlived its owner, a `String` moved into its shadow and a deferred `let label: String;` behaved the same way. Nothing in DWARF or memory shows a local's liveness at opt-level 0.
+  - Containers are now read only for **reference parameters** proven by the build's LLVM IR (`rust_ir.ir_locals`). The parameter must have an `arg:` declaration, a single non-inlined slot of its own, and a declared type of `&[i32]`, `&mut [i32]`, `&str`, `&mut str`, `&Vec<i32>`, `&String` or their `&mut` forms. The frame must be past the parameter's declaration lines: rustc stores parameters in the entry block before any statement, as the IR shows.
+  - A reference parameter's referent outlives the call. The borrow checker rejects assigning it anything shorter-lived, even by direct reassignment, through `&mut` or in a closure (checked with rustc), so borrowed and reassigned parameters qualify too.
+  - `&mut` parameters are read only in the innermost frame. From an outer frame, a callee such as `retain` or `sort_by`, calling back into user code, may be midway through changing the referent.
+  - Further checks:
+    - a thin reference's slot must hold the pointer the debugger shows;
+    - a slice must sit at the address the debugger shows;
+    - `length * size` must not exceed `isize::MAX`.
+  - Owned locals and reference locals stay raw (`ordered.len` works); #53 tracks a compiler-derived liveness proof. Tests:
+    - `test_rust_reference_parameters_are_read_from_memory_and_locals_never_are` (real toolchain: dropped, moved, shadowed and outliving locals stay raw);
+    - `test_reference_parameters_are_proven_only_from_their_entry_spill`;
+    - `test_rust_sessions_read_containers_only_past_a_proven_parameters_declaration`;
+    - `test_only_proven_reference_parameters_are_read_from_memory`;
+    - the thin-reference cross-check tests.
+- **Blocking:** the worker's 2000-character value limit cut long views mid-number and dropped the `(first N of M)` marker. Values are now built within 1000 characters, keeping only whole elements or characters, and always end with their marker (`test_long_containers_keep_whole_elements_and_their_marker_within_the_value_limit`).
+- **Should-fix:** `ordered.len` stopped working on debuggers with `readMemory`, and the length of a large container could not be read at all. Views now carry read-only `length` (slices, `&str`) or `len` and `capacity` (`&Vec`, `&String`) children from the same header read. Text views no longer treat their byte length as an element count, so `label[0]` says text is shown whole instead of "beyond the visible window".
+- **Should-fix:** the docs and the error message said readMemory arrived in LLVM 19; it arrived in LLVM 20. Both now say LLVM 20, and say that text is not indexed.
+- **Nit:** fewer than the documented 512 elements were selectable within the 512-node budget. Views now decode 256 elements, which stay selectable alongside the locals, and the docs say 256.
+
+Verification of 6b94246 found no blocking or should-fix issues. The reviewer re-ran all four liveness repros (they stay raw) and these parameter variants:
+- borrowed and reassigned parameters are read, and show their current value;
+- a shadowed parameter is refused;
+- in an outer frame during `retain` and `sort_by` callbacks, `&mut` stays raw and `&String` is read;
+- a stop on the `fn` line and `step --into` both work;
+- a one-line `fn` stays raw.
+
+The reviewer probed the soundness argument through async fns, pattern parameters, generics, `impl Trait`, closures, inlined copies, `mem::swap` and writes through `&mut`, and found no hole in safe Rust. It also checked the display limits (Vec, multi-byte and escaped text, `i32::MIN`) and the enum views. It found two problems in the follow-up commit beb5230, both fixed:
+- **Should-fix:** the LLVM 20 Docker image could not be built, because `python3-lldb-18` and `-20` conflict. The image now unpacks `lldb-20` and llvm-20's own Python tree from verified downloads, so lldb-dap-20 starts without errors and lldb-18 is untouched. The `rust-llvm20` lane sets `PEEKY_EXPECT_READ_MEMORY=1`, so it fails if values fall back to raw fields.
+- **Nit:** AGENT_GUIDE said optimized builds show containers opaque. Optimized IR has no parameter proof, so those parameters keep their raw fields or show as optimized out. The sentence now says so.

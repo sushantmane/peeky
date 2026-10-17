@@ -40,9 +40,14 @@ from peeky.native import (
     function_scopes,
     module_identity,
 )
-from peeky.rust_ir import memory_locals
+from peeky.rust_ir import ir_locals
 from peeky.rust_manifest import assert_cargo_ancestry_clear, validate_cargo_inputs
-from peeky.rust_symbols import UNVERIFIED, active_variant, application_symbols
+from peeky.rust_symbols import (
+    UNVERIFIED,
+    active_variant,
+    application_symbols,
+    container_view,
+)
 
 DEPS = "target/debug/deps"
 TEST_TIMEOUT_S = 30
@@ -481,7 +486,7 @@ class RustTarget:
             _require_declared_dependencies(
                 (binary, test_binary), prepared.workspace, cargo_inputs.inputs
             )
-            memory = memory_locals(binary.with_name(binary.name + ".ll"))
+            memory, parameters = ir_locals(binary.with_name(binary.name + ".ll"))
             env = dict(prepared.manifest.effective_environment)
             lines, layouts, units = application_symbols(
                 dwarfdump,
@@ -499,7 +504,17 @@ class RustTarget:
                 dwarfdump, binary, symbols, prepared.workspace, env, deadline=deadline
             )
             session = RustSession(
-                self, prepared, adapter, lines, identity, binary, symbols, layouts, parent, memory
+                self,
+                prepared,
+                adapter,
+                lines,
+                identity,
+                binary,
+                symbols,
+                layouts,
+                parent,
+                memory,
+                parameters,
             )
             session.test_binary = test_binary
             session.test_target = prepared.workspace / uplift
@@ -540,6 +555,10 @@ def _require_declared_dependencies(executables, workspace, inputs):
                 )
 
 
+def _frame_hash(frame):
+    return re.search(r"::(h[0-9a-f]{16})$", str((frame or {}).get("name") or ""))
+
+
 class RustSession(NativeSession):
     def __init__(
         self,
@@ -553,11 +572,15 @@ class RustSession(NativeSession):
         layouts,
         parent,
         memory=None,
+        parameters=None,
     ):
         self._layouts_data = json.dumps(layouts, sort_keys=True)
         self.parent = parent
         # {(function hash, local): True if every declaration is a real memory slot}.
         self.memory = dict(memory or {})
+        # {(function hash, parameter): {"type", "line"}}: reference parameters whose
+        # contents are live past "line" (rust_ir); only these are read from memory.
+        self.parameters = dict(parameters or {})
         super().__init__(target, prepared, adapter, lines, identity, binary, symbols)
         self.manifest_id = hashlib.sha256(
             json.dumps(
@@ -614,8 +637,7 @@ class RustSession(NativeSession):
     def validate_mutation_target(self, variable, frame):
         """Only a local the program keeps in memory can be changed with effect."""
         name = variable.get("name")
-        function = str((frame or {}).get("name") or "")
-        hashed = re.search(r"::(h[0-9a-f]{16})$", function)
+        hashed = _frame_hash(frame)
         if not hashed or self.memory.get((hashed[1], name)) is not True:
             raise ValueError(
                 f"Rust mutation requires a local the program keeps in memory; {name!r} is "
@@ -624,8 +646,36 @@ class RustSession(NativeSession):
                 "live in memory; otherwise edit the source and run verify"
             )
 
-    def view_variable(self, variable, fetch):
-        """Active-variant view for compiled enums; None leaves ordinary values unchanged."""
+    def view_variable(self, variable, fetch, read=None, *, frame=None, top=False, innermost=False):
+        """Qualified views: reference parameters' containers read from memory, active
+        enum variants; None leaves ordinary values unchanged.
+
+        A container is read only for a top-level variable of ``frame`` that is a proven
+        reference parameter (rust_ir), once the frame is past the parameter's
+        declaration lines, where the entry block has stored it. A `&mut` parameter is
+        read only in the innermost frame: from an outer frame, a callee (`retain`,
+        `sort_by` calling back into your code) may be midway through changing it.
+        """
+        parameter = None
+        hashed = _frame_hash(frame) if top else None
+        proof = self.parameters.get((hashed[1], variable.get("name"))) if hashed else None
+        line = (frame or {}).get("line")
+        if (
+            proof
+            and type(line) is int
+            and line > proof["line"]
+            and (innermost or not proof["type"].startswith("&mut "))
+        ):
+            parameter = proof["type"]
+        container = container_view(
+            variable,
+            read,
+            self.layouts,
+            optimized=self.target.opt_level != "0",
+            parameter=parameter,
+        )
+        if container is not None:
+            return container
         view = active_variant(variable, fetch, self.layouts)
         if view and view["rust_view"] == "active-variant" and self.target.opt_level != "0":
             # Optimized code may track an enum's tag and payload separately and LLDB

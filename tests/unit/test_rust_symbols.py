@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import sys
 
 import pytest
@@ -605,3 +606,440 @@ def test_active_variant_shape_mismatch_is_opaque_not_guessed(mutate):
     view = active_variant(variable, fetcher(mutate(children))[0], LAYOUTS)
     assert view["value"] == UNVERIFIED and view["rust_view"] == "opaque"
     assert view["variablesReference"] == 0
+
+
+def _tree_dump(tree, unit_offset=0x0B):
+    """Serialize (label, tag, attributes, children) nodes in DFS order; an attribute
+    value ("ref", label) becomes that node's offset and quoted name."""
+    offsets, names, order = {}, {}, []
+
+    def assign(node, depth, offset):
+        label, tag, attributes, children = node
+        offsets[label], names[label] = offset, dict(attributes).get("DW_AT_name")
+        order.append((node, depth))
+        offset += 8
+        for child in children:
+            offset = assign(child, depth + 1, offset)
+        if children:
+            order.append((("null", offset), depth + 1))
+            offset += 1
+        return offset
+
+    end = assign(tree, 0, unit_offset)
+    lines = []
+    for node, depth in order:
+        if node[0] == "null":
+            lines += null(node[1], depth)
+            continue
+        label, tag, attributes, _ = node
+        rendered = []
+        for name, value in attributes:
+            if isinstance(value, tuple):
+                target = value[1]
+                quoted = names.get(target)
+                value = f"0x{offsets[target]:08x}" + (f" {quoted}" if quoted else "")
+            rendered.append((name, value))
+        lines += entry(offsets[label], depth, tag, *rendered)
+    return "\n".join(lines) + "\n", RustUnit(0, unit_offset, end + 16, 0, APP)
+
+
+def _base(label, name, size, encoding):
+    return (
+        label,
+        "DW_TAG_base_type",
+        [("DW_AT_name", f'"{name}"'), ("DW_AT_encoding", encoding), ("DW_AT_byte_size", size)],
+        [],
+    )
+
+
+def _member(label, name, target, offset):
+    return (
+        label,
+        "DW_TAG_member",
+        [
+            ("DW_AT_name", f'"{name}"'),
+            ("DW_AT_type", ("ref", target)),
+            ("DW_AT_data_member_location", offset),
+        ],
+        [],
+    )
+
+
+def _struct(label, name, size, *children):
+    return (
+        label,
+        "DW_TAG_structure_type",
+        [("DW_AT_name", f'"{name}"'), ("DW_AT_byte_size", size)],
+        list(children),
+    )
+
+
+def _param(label, target):
+    return (
+        label,
+        "DW_TAG_template_type_parameter",
+        [("DW_AT_type", ("ref", target)), ("DW_AT_name", '"T"')],
+        [],
+    )
+
+
+def _namespace(label, name, *children):
+    return (label, "DW_TAG_namespace", [("DW_AT_name", f'"{name}"')], list(children))
+
+
+def container_dump(*, len_offset="0x10", element="i32", data_ptr="i32_ptr"):
+    vec = lambda label, t, raw: _struct(  # noqa: E731
+        label,
+        f"Vec<{t}, alloc::alloc::Global>",
+        "0x18",
+        _param(f"{label}_t", t),
+        _member(f"{label}_buf", "buf", raw, "0x00"),
+        _member(f"{label}_len", "len", "usize", len_offset),
+    )
+    raw_vec = lambda label, t: _struct(  # noqa: E731
+        label,
+        f"RawVec<{t}, alloc::alloc::Global>",
+        "0x10",
+        _param(f"{label}_t", t),
+        _member(f"{label}_inner", "inner", "inner", "0x00"),
+    )
+    tree = (
+        "cu",
+        "DW_TAG_compile_unit",
+        [("DW_AT_name", '"src/main.rs/@/median"')],
+        [
+            _namespace(
+                "alloc",
+                "alloc",
+                _namespace(
+                    "vec_ns", "vec", vec("vec", element, "raw_i32"), vec("vec_u8", "u8", "raw_u8")
+                ),
+                _namespace(
+                    "raw_ns",
+                    "raw_vec",
+                    raw_vec("raw_i32", element),
+                    raw_vec("raw_u8", "u8"),
+                    _struct(
+                        "inner",
+                        "RawVecInner<alloc::alloc::Global>",
+                        "0x10",
+                        _member("inner_ptr", "ptr", "unique", "0x08"),
+                        _member("inner_cap", "cap", "cap", "0x00"),
+                    ),
+                ),
+                _namespace(
+                    "string_ns",
+                    "string",
+                    _struct("string", "String", "0x18", _member("s_vec", "vec", "vec_u8", "0x00")),
+                ),
+            ),
+            _namespace(
+                "core",
+                "core",
+                _struct(
+                    "unique", "Unique<u8>", "0x08", _member("u_ptr", "pointer", "nonnull", "0x00")
+                ),
+                _struct(
+                    "nonnull", "NonNull<u8>", "0x08", _member("n_ptr", "pointer", "u8_ptr", "0x00")
+                ),
+                _struct("cap", "UsizeNoHighBit", "0x08", _member("cap0", "__0", "usize", "0x00")),
+            ),
+            _struct(
+                "slice",
+                "&[i32]",
+                "0x10",
+                _member("sl_data", "data_ptr", data_ptr, "0x00"),
+                _member("sl_len", "length", "usize", "0x08"),
+            ),
+            _struct(
+                "str",
+                "&str",
+                "0x10",
+                _member("st_data", "data_ptr", "u8_ptr", "0x00"),
+                _member("st_len", "length", "usize", "0x08"),
+            ),
+            _base("i32", "i32", "0x04", "DW_ATE_signed"),
+            _base("u8", "u8", "0x01", "DW_ATE_unsigned"),
+            _base("usize", "usize", "0x08", "DW_ATE_unsigned"),
+            ("u8_ptr", "DW_TAG_pointer_type", [("DW_AT_type", ("ref", "u8"))], []),
+            ("i32_ptr", "DW_TAG_pointer_type", [("DW_AT_type", ("ref", "i32"))], []),
+        ],
+    )
+    return _tree_dump(tree)
+
+
+def test_container_layouts_follow_the_compiler_member_chain():
+    from peeky.rust_symbols import container_layouts
+
+    text, unit_ = container_dump()
+    layouts = container_layouts(text, unit_)
+    assert layouts["alloc::vec::Vec<i32, alloc::alloc::Global>"] == {
+        "kind": "vec",
+        "size": 0x18,
+        "data": 8,
+        "length": 0x10,
+        "capacity": 0,
+        "element": "i32",
+        "element_size": 4,
+    }
+    assert layouts["alloc::string::String"]["kind"] == "string"
+    assert layouts["&[i32]"] == {
+        "kind": "slice",
+        "size": 0x10,
+        "data": 0,
+        "length": 8,
+        "element": "i32",
+        "element_size": 4,
+    }
+    assert layouts["&str"]["element"] == "u8"
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"len_offset": "0x08"},  # overlaps the data pointer
+        {"element": "u8"},  # Vec<u8> is not the qualified Vec<i32>
+        {"data_ptr": "u8_ptr"},  # &[i32] must point at i32
+    ],
+)
+def test_container_layouts_refuse_anything_unexpected(change):
+    from peeky.rust_symbols import container_layouts
+
+    text, unit_ = container_dump(**change)
+    layouts = container_layouts(text, unit_)
+    if change.get("element"):
+        assert "alloc::vec::Vec<i32, alloc::alloc::Global>" not in layouts
+    else:
+        assert any(layout == {"kind": "unqualified"} for layout in layouts.values())
+
+
+VEC = "alloc::vec::Vec<int, alloc::alloc::Global>"
+VEC_NAME = "alloc::vec::Vec<i32, alloc::alloc::Global>"
+VEC_LAYOUT = {
+    "kind": "vec",
+    "size": 24,
+    "data": 8,
+    "length": 16,
+    "capacity": 0,
+    "element": "i32",
+    "element_size": 4,
+}
+SLICE_LAYOUT = {
+    "kind": "slice",
+    "size": 16,
+    "data": 0,
+    "length": 8,
+    "element": "i32",
+    "element_size": 4,
+}
+STR_LAYOUT = {"kind": "str", "size": 16, "data": 0, "length": 8, "element": "u8", "element_size": 1}
+CONTAINERS = {VEC_NAME: VEC_LAYOUT, "&[i32]": SLICE_LAYOUT, "&str": STR_LAYOUT}
+
+
+def memory(blocks):
+    def read(address, count):
+        block = blocks[address]
+        assert len(block) >= count
+        return block[:count]
+
+    return read
+
+
+def words(*values):
+    return b"".join(value.to_bytes(8, "little") for value in values)
+
+
+def ints(*values):
+    return b"".join(value.to_bytes(4, "little", signed=True) for value in values)
+
+
+def view(variable, read, parameter, optimized=False):
+    from peeky.rust_symbols import container_view
+
+    return container_view(variable, read, CONTAINERS, optimized=optimized, parameter=parameter)
+
+
+def test_only_proven_reference_parameters_are_read_from_memory():
+    read = memory({"0x10": words(0x1000, 3), "0x1000": ints(5, -1, 3)})
+    slice_ = {"name": "values", "type": "&[i32]", "memoryReference": "0x10"}
+    shown = view(slice_, read, "&[i32]")
+    assert shown["value"] == "[5, -1, 3]" and shown["length"] == 3
+    names = [child["name"] for child in shown["children"]]
+    assert names == ["length", "[0]", "[1]", "[2]"]
+    assert shown["children"][0] == {"name": "length", "type": "usize", "value": "3"}
+    # Locals (no proof), and a proof for another type, leave the value raw: a moved or
+    # dropped local can still point at freed memory.
+    assert view(slice_, read, None) is None
+    assert view(slice_, read, "&str") is None
+    assert view({**slice_, "type": VEC}, read, "&[i32]") is None
+    text = "größe".encode()
+    read = memory({"0x20": words(0x2000, len(text)), "0x2000": text})
+    label = {"name": "label", "type": "&str", "memoryReference": "0x20"}
+    shown = view(label, read, "&str")
+    assert shown["value"] == '"größe"'
+    assert shown["children"] == [{"name": "length", "type": "usize", "value": str(len(text))}]
+
+
+@pytest.mark.parametrize("declared", [f"&{VEC_NAME}", f"&mut {VEC_NAME}"])
+def test_vec_references_are_read_through_their_pointer(declared):
+    read = memory({"0x10": words(0x2000), "0x2000": words(4, 0x3000, 2), "0x3000": ints(7, 8)})
+    variable = {"name": "list", "type": f"{VEC} *", "memoryReference": "0x10"}
+    shown = view({**variable, "value": "0x0000000000002000"}, read, declared)
+    assert shown["value"] == "[7, 8]"
+    assert [child["name"] for child in shown["children"]] == ["len", "capacity", "[0]", "[1]"]
+    assert shown["children"][:2] == [
+        {"name": "len", "type": "usize", "value": "2"},
+        {"name": "capacity", "type": "usize", "value": "4"},
+    ]
+
+
+@pytest.mark.parametrize(
+    "slot, value, reason",
+    [
+        (0x2000, "0x0000000000002008", "the slot disagrees with the debugger's pointer"),
+        (0x2000, "<not a pointer>", "no pointer to cross-check"),
+        (0, "0x0", "null reference"),
+        (0x2004, "0x2004", "misaligned reference"),
+    ],
+)
+def test_vec_references_that_do_not_check_out_are_never_read(slot, value, reason):
+    from peeky.rust_symbols import UNVERIFIED_CONTAINER
+
+    read = memory(
+        {
+            "0x10": words(slot),
+            "0x2000": words(4, 0x3000, 2),
+            "0x2004": words(4, 0x3000, 2),
+            "0x3000": ints(7, 8),
+        }
+    )
+    variable = {"name": "v", "type": f"{VEC} *", "memoryReference": "0x10", "value": value}
+    assert view(variable, read, f"&{VEC_NAME}")["value"] == UNVERIFIED_CONTAINER, reason
+
+
+def test_a_slice_away_from_the_debuggers_address_is_never_read():
+    from peeky.rust_symbols import UNVERIFIED_CONTAINER
+
+    read = memory({"0x10": words(0x1000, 2), "0x1000": ints(1, 2)})
+    variable = {"name": "s", "type": "&[i32]", "memoryReference": "0x10"}
+    assert view({**variable, "value": "&[i32] @ 0x10"}, read, "&[i32]")["value"] == "[1, 2]"
+    shown = view({**variable, "value": "&[i32] @ 0x18"}, read, "&[i32]")
+    assert shown["value"] == UNVERIFIED_CONTAINER
+
+
+@pytest.mark.parametrize(
+    "header, reason",
+    [
+        (words(2, 0x1000, 3), "length above capacity"),
+        (words(4, 0, 3), "null buffer"),
+        (words(4, 0x1001, 3), "misaligned buffer"),
+    ],
+)
+def test_garbage_containers_are_never_shown_as_contents(header, reason):
+    from peeky.rust_symbols import UNVERIFIED_CONTAINER
+
+    read = memory({"0x10": words(0x20), "0x20": header, "0x1000": bytes(16), "0x1001": bytes(16)})
+    variable = {"name": "v", "type": f"{VEC} *", "memoryReference": "0x10", "value": "0x20"}
+    assert view(variable, read, f"&{VEC_NAME}")["value"] == UNVERIFIED_CONTAINER, reason
+
+
+def test_a_slice_longer_than_isize_max_bytes_is_never_read():
+    from peeky.rust_symbols import UNVERIFIED_CONTAINER
+
+    read = memory({"0x10": words(0x1000, 2**61), "0x1000": bytes(64)})
+    variable = {"name": "s", "type": "&[i32]", "memoryReference": "0x10"}
+    assert view(variable, read, "&[i32]")["value"] == UNVERIFIED_CONTAINER
+
+
+def test_long_containers_keep_whole_elements_and_their_marker_within_the_value_limit():
+    from peeky.rust_symbols import MAX_ELEMENTS, MAX_SHOWN
+
+    count = 300
+    numbers = [1_000_000 + i for i in range(count)]
+    read = memory({"0x10": words(0x1000, count), "0x1000": ints(*numbers)})
+    shown = view({"name": "big", "type": "&[i32]", "memoryReference": "0x10"}, read, "&[i32]")
+    value = shown["value"]
+    assert len(value) <= MAX_SHOWN and value.endswith(f", ...] (first {value.count(',')} of 300)")
+    listed = value[1 : value.index(", ...]")].split(", ")
+    assert listed == [str(n) for n in numbers[: len(listed)]]
+    # Selectors still reach every decoded element.
+    assert len(shown["children"]) == 1 + MAX_ELEMENTS and shown["length"] == count
+    text = ("ä" * 1500 + "tail").encode()
+    read = memory({"0x20": words(0x2000, len(text)), "0x2000": text})
+    shown = view({"name": "t", "type": "&str", "memoryReference": "0x20"}, read, "&str")
+    value = shown["value"]
+    marker = re.search(r'" \(first ([0-9]+) of ([0-9]+) bytes\)$', value)
+    assert len(value) <= MAX_SHOWN and marker and marker[2] == str(len(text))
+    assert json.loads(value[: marker.start() + 1]).encode() == text[: int(marker[1])]
+
+
+def test_container_views_are_opaque_when_optimized_and_raw_without_memory():
+    from peeky.rust_symbols import UNVERIFIED_CONTAINER
+
+    read = memory({"0x10": words(0x1000, 1), "0x1000": ints(1)})
+    variable = {"name": "s", "type": "&[i32]", "memoryReference": "0x10"}
+    assert view(variable, read, "&[i32]", optimized=True)["value"] == UNVERIFIED_CONTAINER
+    # No memory reads (LLVM 18 and 19 lldb-dap) or no reference: the raw value stays.
+    assert view(variable, None, "&[i32]") is None
+    assert view({**variable, "memoryReference": None}, read, "&[i32]") is None
+    assert view({"name": "x", "type": "i32"}, read, "&[i32]") is None
+
+
+def test_rust_sessions_read_containers_only_past_a_proven_parameters_declaration():
+    from types import SimpleNamespace
+
+    from peeky.rust import RustSession
+
+    read = memory({"0x10": words(0x1000, 1), "0x1000": ints(9)})
+    variable = {"name": "values", "type": "&[i32]", "memoryReference": "0x10"}
+    session = SimpleNamespace(
+        parameters={("h0123456789abcdef", "values"): {"type": "&[i32]", "line": 4}},
+        layouts=CONTAINERS,
+        target=SimpleNamespace(opt_level="0"),
+    )
+    frame = {"name": "demo::median::h0123456789abcdef", "line": 5}
+
+    def shown(**changes):
+        arguments = {"frame": frame, "top": True, **changes}
+        result = RustSession.view_variable(session, variable, None, read, **arguments)
+        return (result or {}).get("value")
+
+    assert shown() == "[9]"
+    # On the declaration lines the entry block may not have stored the parameter yet.
+    assert shown(frame={**frame, "line": 4}) is None
+    assert shown(frame={**frame, "line": None}) is None
+    # Another function (hash), a field of something (not top-level), or no frame.
+    assert shown(frame={**frame, "name": "demo::median::hfedcba9876543210"}) is None
+    assert shown(top=False) is None
+    assert shown(frame=None) is None
+    # A `&mut` parameter only in the innermost frame: from an outer frame, a callee
+    # may be midway through changing it. Shared references are read in any frame.
+    session.parameters[("h0123456789abcdef", "values")]["type"] = "&mut [i32]"
+    variable["type"] = "&mut [i32]"
+    session.layouts = {**CONTAINERS, "&mut [i32]": SLICE_LAYOUT}
+    assert shown() is None
+    assert shown(innermost=True) == "[9]"
+
+
+def test_describe_lists_the_reference_parameters_it_reads_from_memory():
+    from peeky.cli import _describe_text
+
+    text = _describe_text(
+        {
+            "language": "rust",
+            "root": "/crate",
+            "breakpoint_lines": {},
+            "value_views": {
+                VEC_NAME: "vec",
+                "&[i32]": "slice",
+                "&str": "unqualified",
+                "core::option::Option<i32>": "option",
+            },
+            "mutable_types": "i32",
+            "commands": {},
+            "timing": {"advice": "fast"},
+        }
+    )
+    [line] = [line for line in text.splitlines() if line.startswith("reference parameters")]
+    assert line.endswith(f": &[i32], &{VEC_NAME}, &mut {VEC_NAME}")
+    assert "locals stay raw" in line

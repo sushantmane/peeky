@@ -9,7 +9,7 @@ import pytest
 
 from peeky.build import dependency_paths
 from peeky.cli import main
-from peeky.rust_ir import memory_locals
+from peeky.rust_ir import ir_locals, memory_locals
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -116,6 +116,53 @@ def test_memory_locals_follow_the_declared_storage(tmp_path):
     assert found[(inner, "inlined")] is False and found[(inner, "slot")] is False
 
 
+PARAMETERS_IR = """
+define internal i64 @_ZN4demo3sum17h1111111111111111E() !dbg !40 {
+start:
+  #dbg_declare(ptr %values.dbg.spill, !50, !DIExpression(), !60)
+  #dbg_declare(ptr %list.dbg.spill, !51, !DIExpression(), !60)
+  #dbg_declare(ptr %moved, !52, !DIExpression(), !60)
+  #dbg_declare(ptr %local.dbg.spill, !53, !DIExpression(), !60)
+  #dbg_declare(ptr %shadow.dbg.spill, !54, !DIExpression(), !60)
+  #dbg_declare(ptr %shadow, !55, !DIExpression(), !60)
+  #dbg_declare(ptr %copied.dbg.spill.i, !56, !DIExpression(), !61)
+  #dbg_declare(ptr %untyped.dbg.spill, !57, !DIExpression(), !60)
+  #dbg_declare(ptr %other.dbg.spill, !58, !DIExpression(), !60)
+  ret i64 0
+}
+!40 = distinct !DISubprogram(name: "sum", linkageName: "_ZN4demo3sum17h1111111111111111E", scope: !1, file: !2, line: 10, type: !3, scopeLine: 11, unit: !9)
+!45 = !DICompositeType(tag: DW_TAG_structure_type, name: "&[i32]", file: !2, size: 128, align: 64, elements: !4)
+!46 = !DIDerivedType(tag: DW_TAG_pointer_type, name: "&alloc::vec::Vec<i32, alloc::alloc::Global>", baseType: !47, size: 64, align: 64, dwarfAddressSpace: 0)
+!50 = !DILocalVariable(name: "values", arg: 1, scope: !40, file: !2, line: 12, type: !45)
+!51 = !DILocalVariable(name: "list", arg: 2, scope: !40, file: !2, line: 10, type: !46)
+!52 = !DILocalVariable(name: "moved", arg: 3, scope: !40, file: !2, line: 10, type: !45)
+!53 = !DILocalVariable(name: "local", scope: !40, file: !2, line: 13, type: !45, align: 64)
+!54 = !DILocalVariable(name: "shadow", arg: 4, scope: !40, file: !2, line: 10, type: !45)
+!55 = !DILocalVariable(name: "shadow", scope: !40, file: !2, line: 14, type: !45)
+!56 = !DILocalVariable(name: "copied", arg: 1, scope: !40, file: !2, line: 10, type: !45)
+!57 = !DILocalVariable(name: "untyped", arg: 5, scope: !40, file: !2, line: 10)
+!58 = !DILocalVariable(name: "renamed", arg: 6, scope: !40, file: !2, line: 10, type: !45)
+!60 = !DILocation(line: 10, column: 1, scope: !40)
+!61 = !DILocation(line: 10, column: 1, scope: !40, inlinedAt: !60)
+"""
+
+
+def test_reference_parameters_are_proven_only_from_their_entry_spill(tmp_path):
+    path = tmp_path / "demo.ll"
+    path.write_text(PARAMETERS_IR)
+    _, parameters = ir_locals(path)
+    function = "h1111111111111111"
+    # Readable past the last of the function, body-scope and parameter lines.
+    assert parameters == {
+        (function, "values"): {"type": "&[i32]", "line": 12},
+        (function, "list"): {"type": "&alloc::vec::Vec<i32, alloc::alloc::Global>", "line": 11},
+        # Borrowed or reassigned: its own slot, still stored on entry.
+        (function, "moved"): {"type": "&[i32]", "line": 11},
+    }
+    # Not proven: a local, a parameter that a local shadows, an inlined copy, an
+    # unknown type, and a slot named for another variable.
+
+
 def test_dependency_files_list_every_prerequisite(tmp_path):
     text = (
         f"{tmp_path}/target/x.d: src/main.rs src/a\\ b.rs \\\n  /abs/helper.rs\n\n"
@@ -158,3 +205,71 @@ def test_rust_programs_take_per_run_arguments(crate, capsys):
     assert [row["value"] for row in result["rows"]] == ["2", "6"]
     assert "PAGE:[70, 80]" in result["output"]
     assert result["program_args"] == result["target_identity"]["arguments"] == ["2"]
+
+
+SHOWN = """
+fn shown(values: &[i32], label: &str, list: &Vec<i32>, text: &mut String, big: &Vec<i32>) -> usize {
+    let ordered: Vec<i32> = values.to_vec();
+    let view: &[i32] = &ordered;
+    let n = view.len();
+    drop(ordered);
+    let other: Vec<i32> = vec![-1, -2, -3];
+    let s = String::from("first");
+    let s = s + "-second-and-longer";
+    text.push('!');
+    let titled = format!("{label}:{n}");
+    n + other.len() + s.len() + titled.len() + list.len() + big.len() // SHOWN
+}
+"""
+
+
+@pytest.mark.timeout(240)
+def test_rust_reference_parameters_are_read_from_memory_and_locals_never_are(crate, capsys):
+    path = crate / "src/main.rs"
+    path.write_text(path.read_text() + SHOWN)
+    edit_main(
+        crate,
+        'println!("PAGE:{values:?}");',
+        [
+            '    let mut text = String::from("größe");',
+            "    let big: Vec<i32> = (0..300).map(|i| 1_000_000 + i).collect();",
+            '    println!("SHOWN:{}", shown(&values, "größe", &values, &mut text, &big));',
+        ],
+    )
+    at = next(i for i, line in enumerate(path.read_text().splitlines(), 1) if "// SHOWN" in line)
+    selectors = (
+        "values,values[0],values[-1],values.length,label,label.length,label[0],list,list.len,"
+        "list.capacity,list[2],text,big,big[200],big.len,ordered,view,other,s,titled"
+    )
+    code, result = probe(capsys, crate, "--at", at, "--capture", selectors)
+    assert code == 0, result.get("error")
+    rows = {row["selector"]: row for row in result["rows"]}
+    # Locals are never read from memory: `ordered` was dropped, `view` outlived it,
+    # `s` was moved into its shadow. Their stale pointers can reach reused memory.
+    # `label` is a parameter that format! borrows: still read.
+    for local in ("ordered", "view", "other", "s", "titled"):
+        assert rows[local].get("view") != "memory", rows[local]
+    if os.environ.get("PEEKY_EXPECT_READ_MEMORY"):
+        # A lane qualifying memory views must not pass on the raw fallback.
+        assert rows["values"].get("view") == "memory", rows["values"]
+    if rows["values"].get("view") == "memory":
+        # lldb-dap with readMemory (LLVM 20+): read at DWARF-validated offsets.
+        value = {selector: row.get("value") for selector, row in rows.items()}
+        assert value["values"] == value["list"] == "[40, 50, 60]"
+        assert (value["values[0]"], value["values[-1]"], value["values.length"]) == (
+            "40",
+            "60",
+            "3",
+        )
+        assert value["label"] == '"größe"' and value["label.length"] == str(len("größe".encode()))
+        assert "shown whole" in rows["label[0]"]["error"]
+        assert (value["list.len"], value["list[2]"]) == ("3", "60")
+        assert int(value["list.capacity"]) >= 3
+        assert value["text"] == '"größe!"'
+        assert len(value["big"]) <= 1000 and value["big"].endswith(" of 300)")
+        assert (value["big[200]"], value["big.len"]) == ("1000200", "300")
+    else:
+        # LLVM 18 and 19 lldb-dap have no readMemory: the raw value, and an explicit reason.
+        assert "only for reference parameters" in rows["values[0]"]["error"]
+        assert rows["list.len"]["value"] == "3"
+    assert "SHOWN:" in result["output"] and "PAGE:[40, 50, 60]" in result["output"]

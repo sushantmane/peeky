@@ -908,6 +908,8 @@ class NativeSession:
     def normalize_capabilities(self, raw):
         return {
             "supports_set_variable": raw.get("supportsSetVariable") is True,
+            # Used only inside the worker, by qualified value views (Rust containers).
+            "supports_read_memory": raw.get("supportsReadMemoryRequest") is True,
             "supports_conditional_breakpoints": False,
             "supports_hit_conditional_breakpoints": False,
             "supports_logpoints": False,

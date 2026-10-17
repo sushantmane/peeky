@@ -578,7 +578,7 @@ output:
   PAGE:[10, 20, 30]
 ```
 
-Values Peeky cannot decode with certainty show as `<unverified ...>` or as opaque enums; they are never guessed (`describe` counts them as "other enum types"). Only `i32` locals that the program keeps in memory can be changed. The elements of a `Vec`, slice or `String` are not readable yet: the error says so and names the length field to capture instead (`ordered.len`, `values.length`).
+Values Peeky cannot decode with certainty show as `<unverified ...>` or as opaque enums; they are never guessed (`describe` counts them as "other enum types"). Only `i32` locals that the program keeps in memory can be changed. Reference parameters (`&[i32]`, `&str`, `&Vec<i32>`, `&String`, shared or `&mut`) are read from memory at offsets checked against the build's debug information (`describe` lists them). In `fn median(values: &[i32], label: &str)`, `--capture 'values,values[0],values[-1],values.length,label'` shows `[5, 1, 3]`, `5`, `3`, `3` and `"größe"`. Only parameters qualify: their referent outlives the call. A local such as `let ordered: Vec<i32>` keeps its raw fields (`ordered.len`), since a dropped or moved local can still point at reused memory, and its contents would be a guess (#53). Long values show their first elements with `(first k of N)`, and up to 256 elements stay selectable. This needs a debugger with `readMemory` (lldb-dap from LLVM 20); older debuggers keep the raw fields, with an error that names the length field.
 
 ### 7.3 Java (launched)
 
