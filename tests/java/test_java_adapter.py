@@ -4,11 +4,14 @@ import hashlib
 import json
 import os
 import subprocess
+import sys
+import time
 from pathlib import Path
 
 import pytest
 
 from peeky.dap import DAP
+from peeky.worker import _process_alive
 
 
 @pytest.fixture(scope="module")
@@ -69,6 +72,24 @@ public class BranchBug {
     mapping = tmp_path / "source-map.json"
     mapping.write_text(json.dumps({"classes": entries}))
     return source, classes, mapping, line
+
+
+def wait_for_exit(dap, timeout=30):
+    """The JVM's exit: `terminated`/`exited`, or its announced pid gone.
+
+    java-debug can drop its exit events for a JVM that is gone (#27). The worker infers
+    the exit the same way (`debuggee_gone`); this test drives DAP directly, so it must too.
+    Without a pid, or with the JVM still alive, it fails at the deadline.
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            return dap.wait_event({"terminated", "exited"}, timeout=2)["event"]
+        except TimeoutError:
+            if dap.debuggee_pid and not _process_alive(dap.debuggee_pid):
+                return "exit inferred: the JVM is gone"
+            if time.monotonic() >= deadline:
+                raise
 
 
 @pytest.mark.parametrize("nested", [False, True], ids=["package", "nested-class"])
@@ -156,9 +177,30 @@ def test_java_runtime_intervention(bundle, tmp_path, nested):
         )
         assert changed["value"] == "5000"
         dap.request("continue", {"threadId": tid})
-        dap.wait_event({"terminated"})
+        wait_for_exit(dap)
+        deadline = time.monotonic() + 5
+        while "request:success" not in dap.snapshot_output()[0] and time.monotonic() < deadline:
+            time.sleep(0.05)
         assert "request:success" in dap.snapshot_output()[0]
     finally:
         dap.close()
     assert before == {p: hashlib.sha256(p.read_bytes()).hexdigest() for p in protected}
     assert dap.process.poll() is not None
+
+
+def test_a_dropped_exit_event_is_inferred_only_when_the_jvm_is_gone():
+    class Silent:
+        """An adapter that never sends an exit event (#27)."""
+
+        def __init__(self, pid):
+            self.debuggee_pid = pid
+
+        def wait_event(self, names, timeout):
+            raise TimeoutError
+
+    finished = subprocess.Popen([sys.executable, "-c", "pass"])
+    finished.wait()
+    assert wait_for_exit(Silent(finished.pid), timeout=0).startswith("exit inferred")
+    for alive_or_unknown in (os.getpid(), None):
+        with pytest.raises(TimeoutError):
+            wait_for_exit(Silent(alive_or_unknown), timeout=0)
