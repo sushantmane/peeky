@@ -241,25 +241,32 @@ def libtest_summary(result):
     return {"summary": summary, "passed": clean, **({"failures": failures} if failures else {})}
 
 
-# libtest's own result lines: `test name ... FAILED`, or `test name - should panic ...`.
-_FAILED_TEST = re.compile(r"^test (\S{1,200})(?: - [a-z ]{1,40})? \.\.\. FAILED$", re.MULTILINE)
-
-
 def _libtest_failures(stdout, limit):
     """Names of failed tests and the start of each one's captured output, for people;
-    never part of the pass/fail decision. Names come only from the result lines before
-    libtest's `failures:` section (captured output there could imitate them), and never
-    more than the summary's failed count."""
-    results, _, details = stdout.partition("\nfailures:\n")
+    never part of the pass/fail decision.
+
+    Names come from libtest's final `failures:` list, printed after every test has
+    finished (result lines can be interleaved with a program's own output); never more
+    than the summary's failed count. Each message is the test's captured output, from
+    its line-anchored `---- name stdout ----` block before that list.
+    """
+    details, header, listing = stdout.rpartition("\nfailures:\n")
+    if not header:
+        return []
+    names = [
+        line.strip()
+        for line in listing.split("\n\n", 1)[0].splitlines()
+        if line.startswith("    ") and line.strip()
+    ][: min(limit, 10)]
     failures = []
-    for match in _FAILED_TEST.finditer(results):
-        if len(failures) >= min(limit, 10):
-            break
-        name = match[1]
-        block = details.partition(f"---- {name} stdout ----")[2]
-        message = block.split("\n\n\n", 1)[0].split("\n---- ", 1)[0]
-        message = re.sub(r"\n?note: run with `RUST_BACKTRACE=1`.*", "", message).strip()
-        failures.append({"name": name, "message": message[:500]})
+    for name in names:
+        marker = f"\n---- {name} stdout ----\n"
+        index = details.rfind(marker)
+        message = ""
+        if index >= 0:
+            message = details[index + len(marker) :].split("\n---- ", 1)[0]
+            message = re.sub(r"\n?note: run with `RUST_BACKTRACE=1`.*", "", message).strip()
+        failures.append({"name": name[:200], "message": message[:500]})
     return failures
 
 

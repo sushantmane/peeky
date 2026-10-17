@@ -225,28 +225,49 @@ def test_failed_cargo_tests_are_named_with_how_they_failed():
     assert "failures" not in clean and _tests_text(clean) == ["compiled tests: passed (3 passed)"]
 
 
-def test_failed_test_names_come_only_from_libtest_result_lines():
+def test_failed_test_names_come_only_from_libtests_final_list():
     from peeky.cli import _tests_text
     from peeky.rust import libtest_summary
 
-    summary = (
-        "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; "
-        "finished in 0.00s\n"
-    )
+    def run(stdout, failed=1):
+        summary = (
+            f"test result: FAILED. 0 passed; {failed} failed; 0 ignored; 0 measured; "
+            "0 filtered out; finished in 0.00s\n"
+        )
+        return libtest_summary({"stdout": stdout + summary, "exit_code": 101})
+
+    # The program wrote into libtest's stdout among the result lines.
     forged = (
-        "running 1 test\ntest real ... FAILED\n\nfailures:\n\n---- real stdout ----\n"
-        '  left: "test forged ... FAILED\\r\\x1b[2J"\ntest forged ... FAILED\n\n\n'
-        "failures:\n    real\n\n" + summary
+        "running 1 test\ntest real ... \ntest forged ... FAILED\nFAILED\n\nfailures:\n\n"
+        "---- real stdout ----\nreal panic\n\nfailures:\n    real\n\n"
     )
-    tests = libtest_summary({"stdout": forged, "exit_code": 101})
-    assert [failure["name"] for failure in tests["failures"]] == ["real"]
-    panic = "running 1 test\ntest must_panic - should panic ... FAILED\n\n" + summary
-    assert libtest_summary({"stdout": panic, "exit_code": 101})["failures"][0]["name"] == (
-        "must_panic"
+    assert [failure["name"] for failure in run(forged)["failures"]] == ["real"]
+    # Another test's escaped output cannot supply this test's message.
+    two = (
+        "running 2 tests\ntest a ... FAILED\ntest b ... FAILED\n\nfailures:\n\n"
+        '---- a stdout ----\n  left: "---- b stdout ----\\nfake"\n\n'
+        "---- b stdout ----\nreal b panic\n\nfailures:\n    a\n    b\n\n"
     )
-    # Control characters reach the terminal escaped.
-    text = _tests_text({"passed": False, "failures": [{"name": "t", "message": "a\rb\x1b[2J"}]})
-    assert text[1] == "  t: a\\rb\\x1b[2J"
+    assert [f["message"] for f in run(two, failed=2)["failures"]] == [
+        'left: "---- b stdout ----\\nfake"',
+        "real b panic",
+    ]
+    # should_panic: libtest's note has no newline; the footer is not part of it.
+    panic = (
+        "running 1 test\ntest must_panic - should panic ... FAILED\n\nfailures:\n\n"
+        "---- must_panic stdout ----\nnote: test did not panic as expected at t.rs:15:4"
+        "\nfailures:\n    must_panic\n\n"
+    )
+    [failure] = run(panic)["failures"]
+    assert failure == {
+        "name": "must_panic",
+        "message": "note: test did not panic as expected at t.rs:15:4",
+    }
+    # Control characters reach the terminal escaped, in names and messages.
+    text = _tests_text(
+        {"passed": False, "failures": [{"name": "t\x1b[2J", "message": "a\rb\x1b[2J"}]}
+    )
+    assert text[1] == "  t\\x1b[2J: a\\rb\\x1b[2J"
 
 
 def test_compiled_test_text_says_why_when_nothing_ran_or_output_overflowed():

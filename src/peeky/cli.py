@@ -1715,7 +1715,8 @@ def _tests_text(tests):
     lines = [f"compiled tests: failed ({counts or '0 tests ran'})"]
     for failure in tests.get("failures", []):
         message = "\n    ".join(_printable(failure["message"]).splitlines())
-        lines.append(f"  {failure['name']}: {message}" if message else f"  {failure['name']}")
+        name = _printable(failure["name"])
+        lines.append(f"  {name}: {message}" if message else f"  {name}")
     if tests.get("timed_out"):
         lines.append("  (the tests timed out)")
     if tests.get("output_limit_exceeded"):

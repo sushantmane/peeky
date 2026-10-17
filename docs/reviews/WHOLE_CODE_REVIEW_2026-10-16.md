@@ -270,3 +270,10 @@ The review confirmed that the pass/fail decision is untouched (`clean` is comput
 - **Nit:** `--keep` keeps the edited file and, for compiled programs, its build evidence beside it. The help and text now say so.
 
 Tests: `test_failed_test_names_come_only_from_libtest_result_lines` and `test_compiled_test_text_says_why_when_nothing_ran_or_output_overflowed`.
+
+The verification of 92934be confirmed all five fixes and found three more should-fix issues in the displayed failure list (never the verdict), all fixed:
+- A program writing straight into libtest's stdout (a test using `.status()`) could still put a name among the result lines. Names now come only from libtest's final `failures:` list, which libtest prints after every test has finished. They are escaped for the terminal like messages.
+- One test's escaped output could supply another's message. Message blocks are now matched on their own line (`\n---- name stdout ----\n`).
+- A `should_panic` message ran into libtest's footer. Messages now end before the final list.
+
+Test: `test_failed_test_names_come_only_from_libtests_final_list`.
