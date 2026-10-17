@@ -172,7 +172,9 @@ _PAIR_ORDER = " ORDER BY hit, phase = 'after-set', pos"
 # Real divergences first, in hit and capture order (a hit only one run reached is
 # one); then values changed by an intervention only one run made; then values that
 # differ only in memory addresses; then one row per selector only one run asked for.
-# Nothing is dropped: an address-only difference may still be a real one.
+# Nothing is dropped: an address-only difference may still be a real one. Last, the
+# runs' outcomes and outputs when they differ, each output shown from just before the
+# first character that differs (an intervention's effect shows there).
 _DIFF = f"""{_PAIR}
 SELECT {_PAIR_COLUMNS} FROM (
   SELECT 0 AS rank, hit, phase, selector, value_a, value_b, differs, note, pos FROM pair
@@ -182,12 +184,39 @@ SELECT {_PAIR_COLUMNS} FROM (
   UNION ALL SELECT 2, hit, phase, selector, value_a, value_b, differs, note, pos FROM pair
     WHERE note = 'addresses only'
   UNION ALL SELECT 3, NULL, NULL, selector, NULL, NULL, 1, note, MIN(pos) FROM pair
-    WHERE note LIKE 'only in%' GROUP BY selector, note)
+    WHERE note LIKE 'only in%' GROUP BY selector, note
+  UNION ALL SELECT 4, NULL, NULL, '(status)', ra.status, rb.status, 1, 'outcome differs', 0
+    FROM runs ra, runs rb WHERE ra.run_id = {_A} AND rb.run_id = {_B}
+    AND ra.status IS NOT rb.status
+  UNION ALL SELECT 5, NULL, NULL, '(output)', output_window(ra.output, rb.output),
+    output_window(rb.output, ra.output), 1,
+    'output differs at character ' || first_difference(ra.output, rb.output), 0
+    FROM runs ra, runs rb WHERE ra.run_id = {_A} AND rb.run_id = {_B}
+    AND ra.output IS NOT rb.output)
 ORDER BY rank, hit, phase = 'after-set', pos"""
 # A heap or stack address: 0x, optional leading zeros, then 9-16 significant hex
 # digits that are not all f. NULL, small sentinels, all-ones (-1, MAP_FAILED) and
 # 8-digit data (0xdeadbeef, flags) are values, never masked. One regex, no callback.
 _ADDRESS = re.compile(r"\b0x(?=[0-9a-fA-F]{1,16}\b)0*(?![fF]+\b)[1-9a-fA-F][0-9a-fA-F]{8,15}\b")
+
+
+def _first_difference(a, b):
+    """0-based offset of the first character where two outputs differ."""
+    a, b = a or "", b or ""
+    for index, (left, right) in enumerate(zip(a, b)):
+        if left != right:
+            return index
+    return min(len(a), len(b))
+
+
+def _output_window(value, other):
+    """Up to 200 characters of ``value`` from shortly before where it first differs from
+    ``other``, with `…` where text is cut."""
+    if value is None:
+        return None
+    start = max(0, _first_difference(value, other) - 60)
+    window = value[start : start + 200]
+    return ("…" if start else "") + window + ("…" if start + 200 < len(value) else "")
 
 
 def _no_addresses(value):
@@ -242,14 +271,17 @@ WINDOW w AS (PARTITION BY selector ORDER BY hit) ORDER BY selector, hit""",
     "diff": (
         "Only the values that differ between two runs. Real differences come first, in hit and "
         "capture order (the first row is the first divergence); then address-only "
-        "differences; then selectors only one run captured",
+        "differences; then selectors only one run captured; then (status) and (output) "
+        "rows when the runs' outcomes or outputs differ",
         _DIFF,
         _PAIR_PARAMS,
         (),
     ),
     "outputs": (
-        "Inputs, interventions, outcome and program output of two runs",
-        f"SELECT run_id, label, args, sets, status, error_code, output FROM runs "
+        "Inputs, interventions (and the hit they were applied at), outcome and program output "
+        "of two runs",
+        f"SELECT run_id, label, args, sets, CASE WHEN sets = '[]' OR sets IS NULL THEN NULL "
+        f"ELSE set_hit END AS set_hit, status, error_code, output FROM runs "
         f"WHERE run_id IN ({_A}, {_B}) ORDER BY run_id",
         _PAIR_PARAMS,
         (),
@@ -611,6 +643,19 @@ def query(path, sql, params=None, *, limit=DEFAULT_ROWS, seconds=QUERY_SECONDS):
         return _no_addresses(value)
 
     connection.create_function("no_addresses", 1, no_addresses, deterministic=True)
+
+    def bounded(function):
+        def call(*values):
+            if time.monotonic() > deadline:
+                raise sqlite3.OperationalError("interrupted: query deadline")
+            return function(*values)
+
+        return call
+
+    connection.create_function(
+        "first_difference", 2, bounded(_first_difference), deterministic=True
+    )
+    connection.create_function("output_window", 2, bounded(_output_window), deterministic=True)
     connection.set_authorizer(_authorize)
     connection.set_progress_handler(lambda: time.monotonic() > deadline, 10000)
     rows, size, cut = [], 0, None
@@ -726,7 +771,10 @@ def schema(path):
         "functions": {
             "no_addresses(text)": "The text with heap and stack addresses (0x and at least 9 "
             "significant hex digits; never NULL, all-ones or shorter values) masked, to compare "
-            "values across runs"
+            "values across runs",
+            "first_difference(a, b)": "Offset of the first character where two texts differ",
+            "output_window(a, b)": "Up to 200 characters of a from just before where it first "
+            "differs from b",
         },
         "examples": list(EXAMPLES),
         "rules": [

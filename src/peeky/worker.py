@@ -133,6 +133,12 @@ class DebugWorker:
         self.stop_function = None
         self.stop_reason = None
         self.points, self.temporary_line = [], None
+        # Stops at the session's own breakpoints so far (None once a stop could not be
+        # classified: numbers are never guessed); the current stop's number.
+        self.hits, self.stop_hit, self.stop_line = 0, None, None
+        # Lines the session's own breakpoints were requested at or placed on, their
+        # adapter ids, and every one-shot `--to` line the session has used.
+        self.own_lines, self.own_ids, self.temporary_lines = set(), set(), set()
         self.stop_outside = self.stop_returns = self.co_served = False
         # The single absolute launch budget, below Client.call's 45 s HTTP timeout.
         # Preparation (supports_deadline adapters: builds, symbols, module identity)
@@ -217,6 +223,7 @@ class DebugWorker:
             )
             path = frame.get("source", {}).get("path")
             self.stop_function = str(frame.get("name") or "")[:300] or None
+            self.stop_line = frame.get("line")
             return f"{_display_path(self.runtime, path)}:{frame.get('line')}" if path else None
         except Exception:
             return None
@@ -225,6 +232,12 @@ class DebugWorker:
         where = {"location": self.stop_location} if self.stop_location else {}
         if self.stop_location and self.stop_function:
             where["function"] = self.stop_function
+        if self.stop_id and self.stop_hit:
+            where["hit"] = self.stop_hit
+        if self.stop_id:
+            # This worker numbers hits (older ones never send `hit`); False once a stop
+            # could not be classified.
+            where["numbered"] = self.hits is not None
         if self.stop_id and self.stop_outside:
             # A step that left the program (into a library, past main): nothing to read.
             where["outside_program"] = True
@@ -361,6 +374,37 @@ class DebugWorker:
             for event in events_between(self.cursor, cursor(), {"stopped"})
         )
 
+    def record_own_points(self, requested, placed):
+        """Remember where the session's own breakpoints are: requested and placed lines,
+        and their ids (later `breakpoint` events for those ids add their new lines)."""
+        self.own_lines.update(
+            point["line"] for point in requested if type(point.get("line")) is int
+        )
+        for reply in (placed or {}).get("breakpoints") or []:
+            if type(reply.get("line")) is int:
+                self.own_lines.add(reply["line"])
+            if reply.get("id") is not None:
+                self.own_ids.add(reply["id"])
+
+    def classify_hit(self):
+        """Number this stop if it is at one of the session's own breakpoints.
+
+        The session's breakpoints are its own and its one-shot `--to` lines. A stop at
+        an own line (requested or placed) is a hit; one at a `--to` line that is not an
+        own line never is, whenever it is served (LLDB serves other threads' stops
+        before resuming, java-debug after). A stop whose line could not be read is the
+        session's own while no `--to` was ever used. Anything else (a program's own
+        `breakpoint()` call, a line Peeky did not place) is never guessed: numbering ends.
+        """
+        if self.stop_reason != "breakpoint" or self.hits is None:
+            return
+        line = self.stop_line
+        if line in self.own_lines or (line is None and not self.temporary_lines):
+            self.hits += 1
+            self.stop_hit = self.hits
+        elif line is None or line not in self.temporary_lines:
+            self.hits = None
+
     def set_points(self, runtime, points, temporary=None):
         """Replace the session program's breakpoints (deduplicated by line)."""
         unique = list({point["line"]: point for point in points}.values())
@@ -373,6 +417,17 @@ class DebugWorker:
         )
         self.breakpoint_counts[str(self.program)] = len(unique)
         self.temporary_line = temporary
+        if temporary is not None:
+            self.temporary_lines.add(temporary)
+        replies = (placed or {}).get("breakpoints") or []
+        self.record_own_points(
+            [point for point in unique if point["line"] != temporary],
+            {
+                "breakpoints": [
+                    reply for point, reply in zip(unique, replies) if point["line"] != temporary
+                ]
+            },
+        )
         if temporary is None:
             return
         point = ((placed or {}).get("breakpoints") or [])[
@@ -400,6 +455,7 @@ class DebugWorker:
 
     def forget_stop(self):
         self.stop_outside = self.stop_returns = False
+        self.stop_hit = self.stop_line = None
         self.state = "running"
         self.stopped_at = None
         self.stop_location = None
@@ -574,6 +630,8 @@ class DebugWorker:
             # `continue --to` line is reached.
             self.points = list(args.get("breakpoints", []))
             self.temporary_line = None
+            self.hits, self.stop_hit, self.stop_line = 0, None, None
+            self.own_lines, self.own_ids, self.temporary_lines = set(), set(), set()
             # Nothing about an earlier session's stops carries over on a shared worker.
             self.co_served = self.stop_outside = self.stop_returns = False
             self.stop_all_threads = False
@@ -621,6 +679,7 @@ class DebugWorker:
                     },
                     timeout=left(),
                 )
+                self.record_own_points(args.get("breakpoints", []), points)
                 self.dap.request("configurationDone", timeout=left())
                 self.dap.response(launch, timeout=left())
                 runtime.assert_current()
@@ -722,6 +781,9 @@ class DebugWorker:
                 self.breakpoint_events.append(event.get("body", {}))
                 self.breakpoint_events = self.breakpoint_events[-100:]
                 updates["breakpoint_events"] = list(self.breakpoint_events)
+                moved = event.get("body", {}).get("breakpoint") or {}
+                if moved.get("id") in self.own_ids and type(moved.get("line")) is int:
+                    self.own_lines.add(moved["line"])
                 if time.monotonic() >= deadline:
                     return {"state": self.state, "timed_out": True, **updates}
             # Rebuilt classes or edited sources while running invalidate the evidence.
@@ -737,8 +799,11 @@ class DebugWorker:
             self.thread_id = event.get("body", {}).get("threadId")
             self.stop_all_threads = event.get("body", {}).get("allThreadsStopped") is True
             self.stop_reason = event.get("body", {}).get("reason") if self.stop_id else None
-            self.stop_function = None
+            self.stop_function = self.stop_line = self.stop_hit = None
             self.stop_location = self.read_location() if self.stop_id else None
+            # Counted like a probe's hits: every stop at the session's breakpoints,
+            # including other threads' stops served one by one; never `--to` lines.
+            self.classify_hit()
             if self.stop_id and self.temporary_line is not None:
                 # The one-shot `continue --to` line served its purpose (or another stop
                 # came first): only the session's own breakpoints remain.
@@ -925,6 +990,7 @@ class DebugWorker:
             )
             if self.path(args["program"]) == self.program:
                 self.points, self.temporary_line = list(args["breakpoints"]), None
+                self.record_own_points(args["breakpoints"], placed)
             return placed
         if operation == "continue":
             self.stopped(args)

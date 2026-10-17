@@ -695,3 +695,56 @@ def test_program_arguments_can_follow_a_double_dash(tmp_path, monkeypatch, capsy
     assert result["program_args"] == ["a", "--b", "-5"]
     assert "ARGS: ['a', '--b', '-5']" in result["output"]
     assert result["rows"][0]["value"] == "4"
+
+
+def test_sessions_number_their_hits_and_run_on_to_the_nth(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
+    script = tmp_path / "loop.py"
+    script.write_text("total = 0\nfor i in range(5):\n    total += i\nprint('TOTAL:', total)\n")
+    try:
+        code, out = run(capsys, "session", "start", script, "--at", "3", "--hit", "3")
+        assert code == 0 and ", hit 3 (paused" in out.out, out
+        assert run(capsys, "session", "get", "i")[1].out.strip() == "i: int = 2"
+        code, out = run(capsys, "session", "continue", "--count", "2")
+        assert code == 0 and ", hit 5 (paused" in out.out, out
+        # A one-shot --to line is not a hit, and has no hit number.
+        code, out = run(capsys, "session", "continue", "--to", "4")
+        assert code == 0 and "loop.py:4 in <module> (paused" in out.out, out
+        code, out = run(capsys, "session", "continue", "--count", "3")
+        assert code == 3 and "note: the program exited before stop 3" in out.out, out
+        code, out = run(capsys, "session", "continue", "--count", "2", "--to-exit")
+        assert code == 2 and "cannot go with --to" in out.err
+    finally:
+        run(capsys, "session", "close")
+    try:
+        code, out = run(capsys, "session", "start", script, "--at", "3", "--hit", "9")
+        assert code == 3 and "note: the program exited before hit 9; last hit 5" in out.out, out
+    finally:
+        run(capsys, "session", "close")
+    with pytest.raises(SystemExit) as exit_:
+        run(capsys, "session", "start", script, "--at", "3", "--hit", "0")
+    assert exit_.value.code == 2 and "whole number from 1" in capsys.readouterr().err
+
+
+def test_a_programs_own_breakpoint_call_ends_hit_numbering(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
+    script = tmp_path / "bp.py"
+    script.write_text(
+        "total = 0\nfor i in range(3):\n    total += i\n    if i == 1:\n"
+        "        breakpoint()\n        x = i\nprint(total)\n"
+    )
+    states = []
+    try:
+        code, out = run(capsys, "session", "start", script, "--at", "3", "--json")
+        states.append(json.loads(out.out))
+        for _ in range(3):
+            code, out = run(capsys, "session", "continue", "--json")
+            assert code == 0, out
+            states.append(json.loads(out.out))
+    finally:
+        run(capsys, "session", "close")
+    lines = [(s["location"].rsplit(":", 1)[-1], s.get("hit"), s.get("numbered")) for s in states]
+    # breakpoint() is not the session's: no number from there on, never a shifted one.
+    assert lines[:2] == [("3", 1, True), ("3", 2, True)], lines
+    assert lines[2][0] != "3" and lines[2][1:] == (None, False), lines
+    assert lines[3] == ("3", None, False), lines

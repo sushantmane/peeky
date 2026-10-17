@@ -270,12 +270,13 @@ peeky queries diff
 ```
 
 ```
-run_a  run_b  hit  phase     selector  value_a                        value_b                      differs  note
-1      2      1    observed  self      IPv6Address('::ffff:808:808')  IPv6Address('::ffff:a00:1')  1        NULL
-1      2      1    observed  self._ip  281470816487432                281470849515521              1        NULL
+run_a  run_b  hit   phase     selector  value_a                        value_b                      differs  note
+1      2      1     observed  self      IPv6Address('::ffff:808:808')  IPv6Address('::ffff:a00:1')  1        NULL
+1      2      1     observed  self._ip  281470816487432                281470849515521              1        NULL
+1      2      NULL  NULL      (output)  ::ffff:8.8.8.8: private\n      ::ffff:10.0.0.1: private\n   1        output differs
 ```
 
-`diff` keeps only the rows that differ. Real differences come first, in hit order and then in `--capture` order, so the first row is the first divergence. Then come values that only one run's `--set` changed (`intervention only in run b`), then values that differ only in heap or stack addresses (`note: addresses only`, for example a C string's pointer; NULL is never treated as an address), and last, one row per selector that only one run asked for (`only in run a`). Hits that one run never reached say `missing in run b`. Comparing needs two saved runs; with fewer, the query says so. `queries compare` shows every value side by side with the same notes. Labels are free text, stored as given.
+`diff` keeps only the rows that differ. Real differences come first, in hit order and then in `--capture` order, so the first row is the first divergence. Then come values that only one run's `--set` changed (`intervention only in run b`), then values that differ only in heap or stack addresses (`note: addresses only`, for example a C string's pointer; NULL is never treated as an address), then one row per selector that only one run asked for (`only in run a`), and last, `(status)` and `(output)` rows when the runs' outcomes or outputs differ. The `(output)` row shows each output from just before the first character that differs (`output differs at character 213`), so after a `--set` it shows the intervention's effect. Hits that one run never reached say `missing in run b`. Comparing needs two saved runs; with fewer, the query says so. `queries compare` shows every value side by side with the same notes. Labels are free text, stored as given.
 
 ### 3.2 Inputs, Outcomes and Outputs of the Last Two Runs
 
@@ -284,12 +285,12 @@ peeky queries outputs
 ```
 
 ```
-run_id  label           args                 sets  status     error_code  output
-1       mapped-public   ["::ffff:8.8.8.8"]   []    completed  NULL        ::ffff:8.8.8.8: private\n
-2       mapped-private  ["::ffff:10.0.0.1"]  []    completed  NULL        ::ffff:10.0.0.1: private\n
+run_id  label           args                 sets  set_hit  status     error_code  output
+1       mapped-public   ["::ffff:8.8.8.8"]   []    NULL     completed  NULL        ::ffff:8.8.8.8: private\n
+2       mapped-private  ["::ffff:10.0.0.1"]  []    NULL     completed  NULL        ::ffff:10.0.0.1: private\n
 ```
 
-Both are labelled private: the public one is the bug.
+Both are labelled private: the public one is the bug. `set_hit` is the hit a run's `--set` was applied at.
 
 ### 3.3 What My Intervention Changed
 
@@ -444,7 +445,7 @@ state: stopped at .../pagination_bug.py:13 in <module> (paused 0.0 s)
 state: terminated (program exited; `peeky session report` shows output)
 ```
 
-`peeky session continue --to 9` stops once at line 9 of the session's file (the extra breakpoint is removed at the next stop), then the session's own breakpoint applies again. A step can leave your sources, for example into a library, into Rust's standard library, or past the end of `main`. The state then says `outside the program's sources`, and nothing there is read or changed. While your code is still on the stack, `step --out` returns to it; past `main`, the state says so and `continue` finishes. `continue --to` refuses a line the debugger would move (no code there) and keeps the stop. When other threads are stopped at the breakpoint too (LLDB stops them together; Java stops each one separately), `step` waits until `continue` has served them. For Java, `--into` and `--out` skip JDK classes (`java.*`, `javax.*`, `jdk.*`, `sun.*`, `com.sun.*`), so `step --into` on a line that calls `Math.min` stays in your code and reaches lambda bodies. A plain `step` at the end of a method that JDK code called (a `Runnable`, a comparator) stops outside your sources; `continue` from there. Java adapter bundles built before stepping are refused with a hint to rebuild them.
+State lines number the stops at the session's breakpoint (`…:8 in get_page, hit 3`). `session start --hit 5` runs on to the 5th stop, and `session continue --count 3` to the 3rd breakpoint stop from here, each within one `--timeout`. They never run past anything else: a crash, a finished step or the program's exit ends them there, with a note saying why and the last hit reached, and exit status 3 (as when `--timeout` ends them first). `peeky session continue --to 9` stops once at line 9 of the session's file (the extra breakpoint is removed at the next stop), then the session's own breakpoint applies again. A step can leave your sources, for example into a library, into Rust's standard library, or past the end of `main`. The state then says `outside the program's sources`, and nothing there is read or changed. While your code is still on the stack, `step --out` returns to it; past `main`, the state says so and `continue` finishes. `continue --to` refuses a line the debugger would move (no code there) and keeps the stop. When other threads are stopped at the breakpoint too (LLDB stops them together; Java stops each one separately), `step` waits until `continue` has served them. For Java, `--into` and `--out` skip JDK classes (`java.*`, `javax.*`, `jdk.*`, `sun.*`, `com.sun.*`), so `step --into` on a line that calls `Math.min` stays in your code and reaches lambda bodies. A plain `step` at the end of a method that JDK code called (a `Runnable`, a comparator) stops outside your sources; `continue` from there. Java adapter bundles built before stepping are refused with a hint to rebuild them.
 
 ### 5.3 Several Sessions at Once
 

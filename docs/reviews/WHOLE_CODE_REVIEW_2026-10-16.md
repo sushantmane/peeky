@@ -226,3 +226,36 @@ It reported one blocking issue, three should-fix and two nits, all fixed:
 - **Should-fix:** `describe proj --at ring/ring.cpp` printed a command that failed. A C/C++ program in a subdirectory is now refused with the command that works (`peeky probe …/proj/ring --at ring.cpp:<line>`).
 - **Nit:** a symlinked candidate outside the directory was taken by `--at <line>`. Only files whose real parent is the directory count, and the several-programs message suggests `--at <file>:<line>`.
 - **Nit:** `display_function` raised on impossible `$u…$` escapes. They stay as written, here and in `describe`'s symbol demangler (`peeky.names.unicode_escape`).
+
+## Review of the session-hits PR (#62, bd241d8)
+
+The review confirmed several things:
+- LLDB threads that stop together are numbered one by one, and Java's separate thread stops are numbered too.
+- Steps onto a breakpoint line are counted correctly.
+- No stale number leaks into later states.
+- The two-run queries keep their parameters and NULL semantics.
+
+It reported two blocking issues, two should-fix and two nits, all fixed in 1240cdc:
+- **Blocking:** `continue --count N` counted every stop and resumed a crash stop, which lost it. `--count` and `--hit` now count only numbered breakpoint stops. Anything else (a crash, a finished step, the exit) ends them there, shown with a note and the last hit reached, and nothing is resumed past it. Test: `test_counting_stops_at_a_crash_and_never_resumes_it`.
+- **Blocking:** hit numbers were wrong in three reproducible cases, all now handled:
+  - **Other threads' stops at a served `continue --to` line** compare against that line until the next real resume.
+  - **A `--to` line where the debugger had placed the session's breakpoint** counts. Own lines now include the placed lines, plus `breakpoint` events for the session's breakpoint ids.
+  - **A stop whose line could not be read while a `--to` line could apply** ends numbering for the session (`numbered: false`), never a guess.
+
+  Tests in `tests/unit/test_session_hits.py`.
+- **Should-fix:** `--hit` against an older worker silently returned the first stop. States now carry `numbered`. A worker without it is named ("the worker predates hit numbers: update Peeky on the worker host"), and `--count` counts its breakpoint stops by reason.
+- **Should-fix:** reaching the deadline before the target exited 0 with no note. Now the note reads `reached K of N stops before --timeout (…); last hit H`, and the exit status is 3, as is any run that fell short.
+- **Nit:** the `(output)` row could show two identical 200-character prefixes. It now shows each output from just before the first differing character, and the note gives the offset (`output differs at character 213`).
+- **Nit:** the cookbook's `--hit` note now gives the last hit reached.
+
+The verification of 1240cdc confirmed seven of the eight repros. It found one remaining blocking issue, now fixed:
+- **Blocking:** java-debug stops each thread separately, so another thread's stop at a `continue --to` line was served after the next real `continue` and numbered. The same happened to a co-stop at that line after a crash stop. Classification no longer depends on when a stop is served: the session's only breakpoints are its own lines and its `--to` lines. A breakpoint stop at an own line (requested or placed) is a hit, and one at a `--to` line that is not an own line never is. Without any `--to`, every breakpoint stop is the session's own. Anything else ends numbering.
+
+  Tests:
+  - `test_threads_stopped_separately_at_a_to_line_are_never_numbered`, a real JVM with two threads (3 of 3 runs);
+  - the updated unit tests, including a crash followed by a co-stop.
+
+The final check confirmed the Java, crash-then-co-stop and LLDB repros, plus moved breakpoints in Python, C and Rust, and found no regressions. One should-fix remained, now fixed:
+- **Should-fix:** before any `--to`, a stop at a known line Peeky did not place was numbered. An example is a Python program's own `breakpoint()` call, which debugpy reports with reason `breakpoint`. It shifted every later hit away from the probe's numbering. The "no `--to` used" rule now applies only to a stop whose line could not be read; a known line that is neither own nor `--to` ends numbering. Tests:
+  - `test_a_programs_own_breakpoint_call_ends_hit_numbering` (real debugpy);
+  - `test_a_stop_at_a_line_peeky_did_not_place_ends_numbering`.
