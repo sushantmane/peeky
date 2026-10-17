@@ -431,3 +431,101 @@ def test_java_adapters_built_before_stepping_are_refused_cleanly(tmp_path):
     with pytest.raises(ValueError, match="rebuild it with scripts/setup_java_adapter.py"):
         worker.dispatch("step", {"session_id": "s1", "stop_id": "stop1", "kind": "over"})
     assert worker.state == "stopped"
+
+
+THREADS_JAVA = """package demo;
+import java.util.concurrent.CountDownLatch;
+public class Threads {
+  static final CountDownLatch READY = new CountDownLatch(2);
+  public static void main(String[] args) throws Exception {
+    Thread a = new Thread(() -> work(1));
+    Thread b = new Thread(() -> work(2));
+    a.start(); b.start(); a.join(); b.join();
+    System.out.println("DONE");
+  }
+  static void work(int id) {
+    READY.countDown();
+    try { READY.await(); } catch (InterruptedException e) { throw new RuntimeException(e); }
+    int x = id * 10; // HIT
+    System.out.println("W" + id + "=" + (x + id));
+  }
+}
+"""
+
+CALLBACKS_JAVA = """package demo;
+import java.util.List;
+public class Callbacks {
+  public static void main(String[] args) {
+    List<Integer> xs = List.of(4, 2);
+    xs.forEach(x -> sink(x)); // EACH
+    System.out.println("END");
+  }
+  static void sink(int value) {
+    int doubled = value * 2;
+    System.out.println("S" + doubled);
+  }
+}
+"""
+
+
+def java_cli(tmp_path, java_bundle, monkeypatch, name, source):
+    monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
+    path = tmp_path / f"demo/{name}.java"
+    path.parent.mkdir(exist_ok=True)
+    path.write_text(source)
+    config = tmp_path / f"{name}.json"
+    config.write_text(
+        json.dumps(
+            {
+                "bundle": str(java_bundle),
+                "sources": [f"demo/{name}.java"],
+                "main_class": f"demo.{name}",
+            }
+        )
+    )
+    lines = source.splitlines()
+    marker = next(i for i, text in enumerate(lines, 1) if "// HIT" in text or "// EACH" in text)
+    return ["session", "start", str(tmp_path), "--config", str(config)], marker
+
+
+def test_java_steps_wait_for_threads_stopped_separately(java_bundle, tmp_path, capsys, monkeypatch):
+    from peeky.cli import main
+
+    start, hit = java_cli(tmp_path, java_bundle, monkeypatch, "Threads", THREADS_JAVA)
+    assert main([*start, "--at", f"demo/Threads.java:{hit}"]) == 0
+    capsys.readouterr()
+    time.sleep(1.5)  # the second thread reaches the breakpoint and is suspended there
+    # java-debug suspends each thread separately: the other thread's stop is served
+    # before any step, never skipped (which would leave it suspended for good).
+    assert main(["session", "step", "--json"]) == 2
+    assert "Other threads" in json.loads(capsys.readouterr().out)["error"]["message"]
+    assert main(["session", "continue", "--json"]) == 0
+    state = json.loads(capsys.readouterr().out)
+    assert state["state"] == "stopped" and state["location"].endswith(f"Threads.java:{hit}")
+    assert main(["session", "step", "--json"]) == 0
+    state = json.loads(capsys.readouterr().out)
+    assert state["reason"] == "step" and state["location"].endswith(f"Threads.java:{hit + 1}")
+    assert main(["session", "continue", "--to-exit"]) == 0
+    assert main(["session", "report"]) == 0
+    output = capsys.readouterr().out
+    assert "W1=11" in output and "W2=22" in output and "DONE" in output
+    assert main(["session", "close"]) == 0
+
+
+def test_java_step_into_reaches_lambda_bodies(java_bundle, tmp_path, capsys, monkeypatch):
+    from peeky.cli import main
+
+    start, each = java_cli(tmp_path, java_bundle, monkeypatch, "Callbacks", CALLBACKS_JAVA)
+    assert main([*start, "--at", f"demo/Callbacks.java:{each}"]) == 0
+    capsys.readouterr()
+    locations = []
+    for _ in range(3):
+        assert main(["session", "step", "--into", "--json"]) == 0
+        state = json.loads(capsys.readouterr().out)
+        assert not state.get("outside_program"), state
+        locations.append(state["location"].rsplit(":", 1)[1])
+    # The lambda body (synthetic lambda$main$0, line 6), then sink's first two lines.
+    assert locations == [str(each), "10", "11"]
+    assert main(["session", "get", "doubled"]) == 0 and "= 8" in capsys.readouterr().out
+    assert main(["session", "continue", "--to-exit"]) == 0
+    assert main(["session", "close"]) == 0

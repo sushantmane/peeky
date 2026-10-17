@@ -157,3 +157,11 @@ One blocking issue, five should-fix issues and two nits. All are fixed with regr
 Verification of the fixes confirmed all six repros. It found two regressions that the fixes had introduced, both now fixed:
 - **Should-fix:** java-debug verifies a line in a class that hasn't loaded yet (a nested class) only once the class loads, so the new placement check refused valid Java `continue --to` lines. Runtimes that prove lines against their own tables (`check_breakpoint_lines`) now have only a moved line refused (`test_java_sessions_run_to_a_line_but_refuse_steps` now targets the not-yet-loaded `Inner`).
 - **Should-fix:** `co_served`, `stop_outside` and `stop_returns` carried over into the next session on a shared worker. They now reset at launch (`test_a_new_session_on_a_worker_starts_with_no_stop_state`).
+
+## Review of the Java-stepping PR (#51, a7f267a)
+
+One blocking issue, two should-fix issues and one nit. All are fixed with real-JVM regression tests:
+- **Blocking:** java-debug suspends each thread separately (`allThreadsStopped: false`). `step` moved the event cursor past another thread's pending breakpoint stop, which left that thread suspended indefinitely, even past the attach pause budget. Now the cursor moves only for all-threads stops, and `step` is refused while another thread's stop is pending; `continue` serves that stop first (`test_java_steps_wait_for_threads_stopped_separately`, five runs in a row).
+- **Should-fix:** `skipSynthetics` made lambda bodies (synthetic `lambda$main$0`) unreachable by `step --into`. It is now off: `--into` on `xs.forEach(x -> sink(x))` reaches the lambda body, then `sink` (`test_java_step_into_reaches_lambda_bodies`).
+- **Should-fix:** java-debug applies class filters only to step into and step out. A plain step at the end of a method that JDK code called can stop in JDK code, where reads are refused. The docs now say so.
+- **Nit:** the launcher accepted `"1"`, `1.5`, `-1`, `0` and out-of-range `threadId` values. Only a positive integer is accepted now (adapter test).

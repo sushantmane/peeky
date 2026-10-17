@@ -23,7 +23,8 @@ public final class PeekyJavaAdapter extends ProtocolServer {
         JsonArray skip=new JsonArray();
         for (String pattern : List.of("java.*", "javax.*", "jdk.*", "sun.*", "com.sun.*")) skip.add(pattern);
         filters.add("skipClasses", skip);
-        filters.addProperty("skipSynthetics", true);
+        // Lambda bodies are synthetic methods: skipping them would make them unreachable.
+        filters.addProperty("skipSynthetics", false);
         filters.addProperty("skipStaticInitializers", false);
         filters.addProperty("skipConstructors", false);
         return filters;
@@ -65,9 +66,16 @@ public final class PeekyJavaAdapter extends ProtocolServer {
             }
             if (STEPS.contains(request.command)) {
                 // Only the thread: no step-in targets, granularity or other options.
-                if (args==null || !args.has("threadId") || !args.get("threadId").isJsonPrimitive())
-                    throw new IllegalArgumentException("step requires threadId");
-                long thread=args.get("threadId").getAsLong();
+                JsonElement id=args==null ? null : args.get("threadId");
+                if (id==null || !id.isJsonPrimitive() || !id.getAsJsonPrimitive().isNumber())
+                    throw new IllegalArgumentException("step requires a numeric threadId");
+                long thread;
+                try {
+                    thread=id.getAsBigDecimal().longValueExact();
+                } catch (ArithmeticException error) {
+                    throw new IllegalArgumentException("step threadId must be a positive integer");
+                }
+                if (thread<1) throw new IllegalArgumentException("step threadId must be a positive integer");
                 for (String key : new ArrayList<>(args.keySet())) args.remove(key);
                 args.addProperty("threadId", thread);
             }

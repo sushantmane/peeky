@@ -96,9 +96,14 @@ def test_java_runtime_intervention(bundle, tmp_path, nested):
             "supportsSetVariable": True,
             "peekySteps": True,
         }
-        # Steps are allowed with a thread only; step-in targets, step back and goto are not.
-        with pytest.raises(RuntimeError, match="step requires threadId"):
-            dap.request("stepIn", {})
+        # Steps are allowed with a positive integer thread only; step-in targets, step back
+        # and goto are not.
+        for arguments in ({}, {"threadId": "1"}, {"threadId": True}, {"threadId": None}):
+            with pytest.raises(RuntimeError, match="numeric threadId"):
+                dap.request("stepIn", arguments)
+        for thread in (1.5, -1, 0, 1e300, 2**63):
+            with pytest.raises(RuntimeError, match="positive integer"):
+                dap.request("next", {"threadId": thread})
         for command in ("evaluate", "completions", "restart", "stepBack", "stepInTargets", "goto"):
             with pytest.raises(RuntimeError, match="unsupported command"):
                 dap.request(command, {})
