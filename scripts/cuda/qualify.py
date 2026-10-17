@@ -24,6 +24,7 @@ Exit status: 0 when every check passed, 1 when one failed, 2 when a tool is miss
 
 import argparse
 import json
+import os
 import platform
 import re
 import shutil
@@ -259,7 +260,8 @@ def debug_scale(tools, workdir, timeout):
         )
         steps.request("setBreakpoints", {"source": {"path": str(source)}, "breakpoints": []})
         checks["continued_to_exit"] = continue_to_exit(steps, thread)
-        output = dap.snapshot_output()[0]
+        output = settled_output(dap, "SUM:") if checks["continued_to_exit"] else ""
+        output = output or dap.snapshot_output()[0]
         checks["program_output_seen"] = "SUM:1536" in output
         return checks, steps.log, output
     except Exception as exc:
@@ -268,6 +270,15 @@ def debug_scale(tools, workdir, timeout):
     finally:
         if dap:
             dap.close()
+
+
+def settled_output(dap, marker, seconds=5):
+    """The program's output once ``marker`` is in it: GDB forwards stdout on its own
+    thread, so the last lines can arrive after the exit event."""
+    deadline = time.monotonic() + seconds
+    while marker not in (output := dap.snapshot_output()[0]) and time.monotonic() < deadline:
+        time.sleep(0.05)
+    return output
 
 
 def continue_to_exit(steps, thread):
@@ -341,7 +352,9 @@ def main(argv=None):
     args = parser.parse_args(argv)
     tools = {}
     for tool in ("cuda-gdb", "nvcc", "compute-sanitizer"):
-        tools[tool] = shutil.which(getattr(args, tool.replace("-", "_")) or tool)
+        found = shutil.which(getattr(args, tool.replace("-", "_")) or tool)
+        # Absolute: builds run in a scratch directory, where a relative path means nothing.
+        tools[tool] = os.path.abspath(found) if found else None
     missing = sorted(name for name, path in tools.items() if not path)
     report = {"schema": 1, "issue": 61, "tools": tools, "missing_tools": missing}
     if missing:

@@ -322,3 +322,9 @@ No GPU was available, so the reviewer ran `qualify.py` in the Linux CI image wit
 - **Medium:** an explicit `--cuda-gdb`, `--nvcc` or `--compute-sanitizer` path was never checked. A bad `--cuda-gdb` raised before the report was written, and the others gave exit 1 instead of 2. Every path now goes through `shutil.which`, which also checks that it is executable, and the report lists the resolved tools. The debugger also starts inside the recorded steps.
 
   Tests: `test_explicit_tool_paths_must_be_executable`, `test_a_debugger_that_cannot_start_is_recorded_not_raised`.
+
+Verification of ac6cda3 confirmed both fixes, in the Linux image (dash, GDB 15.1) and on macOS. It also ran the whole script with GDB standing in for cuda-gdb and a C version of the scale program; every run stopped and exited. It found two more issues, both fixed:
+- **Medium (pre-existing):** GDB's DAP forwards the program's stdout on its own thread, so the last lines can arrive after `exited`. `program_output_seen` read the output at once, and under CPU load it failed 17 of 40 times while `continued_to_exit` passed. The output is now read until `SUM:` appears or 5 s pass (`settled_output`), and that reading also goes into the report.
+- **Medium:** `shutil.which("tools/nvcc")` returns a relative path, but builds run in a scratch directory, so a relative tool looked like a failed build (exit 1) rather than a missing tool. Found tools are now made absolute.
+
+Tests: `test_relative_tool_paths_are_made_absolute`, `test_output_that_arrives_after_the_exit_event_is_still_seen`, `test_output_that_never_arrives_ends_at_the_deadline`.

@@ -112,3 +112,38 @@ def test_explicit_tool_paths_must_be_executable(tmp_path):
     assert qualify.main(["--out", str(out), *args]) == 2
     report = json.loads(out.read_text())
     assert report["missing_tools"] == ["cuda-gdb"] and report["tools"]["cuda-gdb"] is None
+
+
+def test_relative_tool_paths_are_made_absolute(tmp_path, monkeypatch):
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    args = fake_toolchain(tools)
+    monkeypatch.chdir(tmp_path)
+    relative = [value if value.startswith("--") else f"tools/{Path(value).name}" for value in args]
+    out = tmp_path / "report.json"
+    qualify.main(["--out", str(out), "--timeout", "5", *relative])
+    report = json.loads(out.read_text())
+    assert report["missing_tools"] == []
+    assert all(Path(path).is_absolute() for path in report["tools"].values())
+    assert report["checks"]["build_scale"] and report["checks"]["memcheck_flagged_errors"]
+
+
+def test_output_that_arrives_after_the_exit_event_is_still_seen():
+    class Late:
+        def __init__(self):
+            self.reads = 0
+
+        def snapshot_output(self):
+            self.reads += 1
+            return ("SUM:1536\n" if self.reads > 3 else "", False)
+
+    late = Late()
+    assert qualify.settled_output(late, "SUM:") == "SUM:1536\n" and late.reads == 4
+
+
+def test_output_that_never_arrives_ends_at_the_deadline():
+    class Silent:
+        def snapshot_output(self):
+            return ("other\n", False)
+
+    assert qualify.settled_output(Silent(), "SUM:", seconds=0.2) == "other\n"
