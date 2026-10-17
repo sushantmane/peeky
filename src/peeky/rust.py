@@ -233,25 +233,33 @@ def libtest_summary(result):
         and summary["measured"] == 0
         and summary["filtered_out"] == 0
     )
-    failures = _libtest_failures(result.get("stdout", "")) if not clean else []
+    failures = (
+        _libtest_failures(result.get("stdout", ""), summary["failed"])
+        if summary and not clean
+        else []
+    )
     return {"summary": summary, "passed": clean, **({"failures": failures} if failures else {})}
 
 
-_FAILED_TEST = re.compile(r"test (\S{1,200}) \.\.\. FAILED")
+# libtest's own result lines: `test name ... FAILED`, or `test name - should panic ...`.
+_FAILED_TEST = re.compile(r"^test (\S{1,200})(?: - [a-z ]{1,40})? \.\.\. FAILED$", re.MULTILINE)
 
 
-def _libtest_failures(stdout):
+def _libtest_failures(stdout, limit):
     """Names of failed tests and the start of each one's captured output, for people;
-    never part of the pass/fail decision."""
+    never part of the pass/fail decision. Names come only from the result lines before
+    libtest's `failures:` section (captured output there could imitate them), and never
+    more than the summary's failed count."""
+    results, _, details = stdout.partition("\nfailures:\n")
     failures = []
-    for match in _FAILED_TEST.finditer(stdout):
+    for match in _FAILED_TEST.finditer(results):
+        if len(failures) >= min(limit, 10):
+            break
         name = match[1]
-        block = stdout.partition(f"---- {name} stdout ----")[2]
+        block = details.partition(f"---- {name} stdout ----")[2]
         message = block.split("\n\n\n", 1)[0].split("\n---- ", 1)[0]
         message = re.sub(r"\n?note: run with `RUST_BACKTRACE=1`.*", "", message).strip()
         failures.append({"name": name, "message": message[:500]})
-        if len(failures) == 10:
-            break
     return failures
 
 

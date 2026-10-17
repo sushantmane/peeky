@@ -1685,8 +1685,8 @@ def verify(args):
             lines.extend(("output:", *output))
         if args.keep:
             lines.append(
-                f"candidate: {result.get('candidate')} (the edited file only; build "
-                "artifacts are not kept)"
+                f"candidate: {result.get('candidate')} (the edited file, and for compiled "
+                "programs the build evidence beside it; build artifacts are not kept)"
             )
         lines.append("diff:\n" + result["diff"])
         return "\n".join(line for line in lines if line)
@@ -1695,22 +1695,33 @@ def verify(args):
     return 0 if result["passed"] else 1
 
 
+def _printable(text):
+    """Test output for a terminal: control characters (\\r, ANSI escapes) escaped."""
+    return "".join(c if c.isprintable() or c == "\n" else repr(c)[1:-1] for c in text)
+
+
 def _tests_text(tests):
     """`compiled tests: passed (3 passed)`, or the failed tests and how they failed."""
-    summary = tests.get("summary") or {}
+    summary = tests.get("summary")
     counts = ", ".join(
         f"{summary[key]} {key.replace('_', ' ')}"
         for key in ("passed", "failed", "ignored", "filtered_out")
-        if summary.get(key)
+        if summary and summary.get(key)
     )
     if tests.get("passed"):
         return [f"compiled tests: passed ({counts})"]
-    lines = [f"compiled tests: failed ({counts or 'no test summary'})"]
+    if summary is None:
+        counts = "no test summary"
+    lines = [f"compiled tests: failed ({counts or '0 tests ran'})"]
     for failure in tests.get("failures", []):
-        message = failure["message"].replace("\n", "\n    ")
+        message = "\n    ".join(_printable(failure["message"]).splitlines())
         lines.append(f"  {failure['name']}: {message}" if message else f"  {failure['name']}")
     if tests.get("timed_out"):
         lines.append("  (the tests timed out)")
+    if tests.get("output_limit_exceeded"):
+        lines.append("  (the tests wrote more output than Peeky keeps)")
+    elif summary and summary.get("status") == "ok" and tests.get("exit_code") not in (0, None):
+        lines.append(f"  (the test binary exited with code {tests['exit_code']})")
     return lines
 
 
@@ -2065,7 +2076,8 @@ def main(argv=None, _job=False, _edits=None):
     sub.add_argument(
         "--keep",
         action="store_true",
-        help="Keep the edited candidate file (default: removed); build artifacts are not kept",
+        help="Keep the edited candidate file and its build evidence (default: removed); "
+        "build artifacts are not kept",
     )
     sub.add_argument(
         "--details",

@@ -223,3 +223,50 @@ def test_failed_cargo_tests_are_named_with_how_they_failed():
     )
     clean = libtest_summary({"stdout": passed, "exit_code": 0})
     assert "failures" not in clean and _tests_text(clean) == ["compiled tests: passed (3 passed)"]
+
+
+def test_failed_test_names_come_only_from_libtest_result_lines():
+    from peeky.cli import _tests_text
+    from peeky.rust import libtest_summary
+
+    summary = (
+        "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; "
+        "finished in 0.00s\n"
+    )
+    forged = (
+        "running 1 test\ntest real ... FAILED\n\nfailures:\n\n---- real stdout ----\n"
+        '  left: "test forged ... FAILED\\r\\x1b[2J"\ntest forged ... FAILED\n\n\n'
+        "failures:\n    real\n\n" + summary
+    )
+    tests = libtest_summary({"stdout": forged, "exit_code": 101})
+    assert [failure["name"] for failure in tests["failures"]] == ["real"]
+    panic = "running 1 test\ntest must_panic - should panic ... FAILED\n\n" + summary
+    assert libtest_summary({"stdout": panic, "exit_code": 101})["failures"][0]["name"] == (
+        "must_panic"
+    )
+    # Control characters reach the terminal escaped.
+    text = _tests_text({"passed": False, "failures": [{"name": "t", "message": "a\rb\x1b[2J"}]})
+    assert text[1] == "  t: a\\rb\\x1b[2J"
+
+
+def test_compiled_test_text_says_why_when_nothing_ran_or_output_overflowed():
+    from peeky.cli import _tests_text
+
+    empty = {
+        "status": "ok",
+        "passed": 0,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 0,
+    }
+    assert _tests_text({"passed": False, "summary": empty}) == [
+        "compiled tests: failed (0 tests ran)"
+    ]
+    overflow = _tests_text({"passed": False, "summary": None, "output_limit_exceeded": True})
+    assert overflow == [
+        "compiled tests: failed (no test summary)",
+        "  (the tests wrote more output than Peeky keeps)",
+    ]
+    exited = _tests_text({"passed": False, "summary": {**empty, "passed": 2}, "exit_code": 3})
+    assert exited[-1] == "  (the test binary exited with code 3)"
