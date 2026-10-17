@@ -73,11 +73,13 @@ def _modified_utf8(raw):
     return b"".join(units).decode("utf-16-be", errors="surrogatepass")
 
 
-def _class_metadata(data, lambdas=None):
-    """(binary internal name, SourceFile, sorted executable lines). With ``lambdas`` (a
-    dict), also records {line: [lambda method names]} for lines that a lambda body
-    shares with another method of the class: a line breakpoint there binds only the
-    enclosing method (java-debug), so the lambda's calls never stop."""
+def _class_metadata(data, shared=None):
+    """(binary internal name, SourceFile, sorted executable lines). With ``shared`` (a
+    dict), also records {line: {"stops": method, "never": [methods]}} for lines that
+    several methods of the class share (a lambda body on its enclosing method's line, a
+    static initializer's lambda, nested lambdas, a field initializer in each
+    constructor). java-debug binds a line breakpoint to the first such method in
+    class-file order only, so the others never stop there."""
     if len(data) > MAX_CLASS_BYTES:
         raise ValueError("Class file exceeds metadata size limit")
     reader = _Reader(data)
@@ -158,11 +160,11 @@ def _class_metadata(data, lambdas=None):
             if name in {"Code", "SourceFile", "LineNumberTable", "SourceDebugExtension"}:
                 raise ValueError("Debug metadata in unsupported field context")
     lines = set()
-    lambda_lines, method_lines_all = {}, set()
+    line_methods = {}
     for _ in range(reader.u2()):
         flags = reader.u2()
         method_name = utf(reader.u2())
-        utf(reader.u2())
+        descriptor = utf(reader.u2())
         code_count = 0
         for name, body in attrs(reader):
             if name != "Code":
@@ -202,11 +204,9 @@ def _class_metadata(data, lambdas=None):
             if not method_lines:
                 raise ValueError("Missing executable line debug information; compile with -g")
             lines.update(method_lines.values())
-            if method_name.startswith("lambda$"):
-                for line in set(method_lines.values()):
-                    lambda_lines.setdefault(line, []).append(method_name)
-            else:
-                method_lines_all.update(method_lines.values())
+            for line in sorted(set(method_lines.values())):
+                # Class-file order, which is the order java-debug considers them in.
+                line_methods.setdefault(line, []).append((method_name, descriptor))
         if not flags & (0x0100 | 0x0400) and code_count != 1:
             raise ValueError("Missing Code attribute")
     source = None
@@ -221,14 +221,15 @@ def _class_metadata(data, lambdas=None):
             source = utf(body.u2())
             body.end()
     reader.end()
-    if lambdas is not None:
-        lambdas.update(
-            {
-                line: sorted(names)
-                for line, names in lambda_lines.items()
-                if line in method_lines_all
-            }
-        )
+    if shared is not None:
+        for line, methods in line_methods.items():
+            if len(methods) > 1:
+                names = [name for name, _ in methods]
+                shown = [
+                    f"{name}{descriptor}" if names.count(name) > 1 else name
+                    for name, descriptor in methods
+                ]
+                shared[line] = {"stops": shown[0], "never": shown[1:]}
     if not source or not source.endswith(".java") or any(c in source for c in "/\\\x00"):
         raise ValueError("Missing or unsupported SourceFile debug information")
     return internal, source, sorted(lines)
@@ -319,8 +320,8 @@ def generate_source_map(classes_dir: Path, source_paths: list[Path], source_root
         classes[binary] = {
             "path": str(source),
             "lines": lines,
-            # Lines a lambda body shares with another method (see _class_metadata).
-            **({"lambda_lines": {str(k): v for k, v in sorted(shared.items())}} if shared else {}),
+            # Lines several methods share; only the first stops (see _class_metadata).
+            **({"shared_lines": {str(k): v for k, v in sorted(shared.items())}} if shared else {}),
         }
     if not classes:
         raise ValueError("No executable Java classes found")

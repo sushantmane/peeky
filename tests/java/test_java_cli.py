@@ -141,21 +141,25 @@ def test_threads_stopped_separately_at_a_to_line_are_never_numbered(counter, cap
 LAMBDAS = """package demo;
 import java.util.List;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 public class Lambdas {
+  static final List<Integer> LOW = Stream.of(1, 2, 3).filter(x -> x < 3).collect(Collectors.toList());
   public static void main(String[] args) {
     List<Integer> stock = List.of(5, 2, 9);
     List<Integer> low = stock.stream().filter(s -> s < 6).collect(Collectors.toList());
     List<Integer> doubled = stock.stream().map(s -> {
       return s * 2;
     }).collect(Collectors.toList());
-    System.out.println("LOW:" + low + " DOUBLED:" + doubled);
+    stock.forEach(a ->
+        List.of(1, 2).forEach(b -> System.out.print("")));
+    System.out.println("LOW:" + low + " DOUBLED:" + doubled + " " + LOW);
   }
 }
 """
 
 
-@pytest.mark.timeout(120)
-def test_a_line_shared_with_a_lambda_body_warns_that_the_lambda_never_stops(counter, capsys):
+@pytest.mark.timeout(180)
+def test_a_shared_line_warns_which_method_stops_and_which_never_does(counter, capsys):
     root, config = counter
     (root / "demo" / "Lambdas.java").write_text(LAMBDAS)
     data = json.loads(config.read_text())
@@ -163,19 +167,33 @@ def test_a_line_shared_with_a_lambda_body_warns_that_the_lambda_never_stops(coun
         json.dumps({**data, "sources": ["demo/Lambdas.java"], "main_class": "demo.Lambdas"})
     )
     common = [str(root), "--config", str(config)]
-    probe = ["probe", *common, "--capture", "s", "--hits", "all", "--json", "--no-save", "--quiet"]
-    assert main([*probe, "--at", "demo/Lambdas.java:7"]) == 0
-    result = json.loads(capsys.readouterr().out)
-    [warning] = [w for w in result["warnings"] if "lambda body" in w]
-    assert warning.startswith("Line 7 also holds a lambda body (lambda$main$0)")
-    assert result["hits"] == 1  # only main; the filter lambda's three calls never stop
-    # A line of the lambda's own stops in it, with no warning.
-    assert main([*probe, "--at", "demo/Lambdas.java:9"]) == 0
-    result = json.loads(capsys.readouterr().out)
-    assert result["hits"] == 3 and not any("lambda body" in w for w in result["warnings"])
-    assert {row["function"] for row in result["rows"]} == {"Lambdas.lambda$main$1(Integer)"}
+    probe = ["probe", *common, "--hits", "all", "--json", "--no-save", "--quiet"]
+
+    def run(line):
+        assert main([*probe, "--at", f"demo/Lambdas.java:{line}"]) == 0
+        result = json.loads(capsys.readouterr().out)
+        notes = [w for w in result["warnings"] if "runs in several methods" in w]
+        functions = {row["function"] for row in result["rows"]} if result["rows"] else set()
+        return result["hits"], notes, functions
+
+    # main's line: main stops once; the filter lambda's three calls never do.
+    hits, [note], _ = run(9)
+    assert hits == 1 and note.startswith(
+        "Line 9 runs in several methods; the debugger stops only in main there, never in "
+        "lambda$main$"
+    )
+    # A static initializer's line: its lambda stops (javac lists it first), never <clinit>.
+    hits, [note], _ = run(6)
+    assert hits == 3 and "stops only in lambda$static$" in note
+    assert "never in the static initializer" in note
+    # Nested lambdas: the outer one stops; the inner one never does.
+    hits, [note], _ = run(14)
+    assert hits == 3 and note.count("lambda$main$") == 2
+    # A line of a lambda's own: it stops, with no warning.
+    hits, notes, _ = run(11)
+    assert hits == 3 and not notes
     try:
-        assert main(["session", "start", *common, "--at", "demo/Lambdas.java:7"]) == 0
-        assert "warning: Line 7 also holds a lambda body" in capsys.readouterr().out
+        assert main(["session", "start", *common, "--at", "demo/Lambdas.java:9"]) == 0
+        assert "warning: Line 9 runs in several methods" in capsys.readouterr().out
     finally:
         main(["session", "close"])

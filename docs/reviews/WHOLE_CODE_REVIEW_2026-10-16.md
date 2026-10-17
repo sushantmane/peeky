@@ -277,3 +277,12 @@ The verification of 92934be confirmed all five fixes and found three more should
 - A `should_panic` message ran into libtest's footer. Messages now end before the final list.
 
 Test: `test_failed_test_names_come_only_from_libtests_final_list`.
+
+## Review of the Java lambda-line PR (#65, 5fd50f5)
+
+The review confirmed the main-method cases, attach paths, source-map stability, parsing and launch safety. It reported one blocking issue, one should-fix and one nit, all fixed:
+- **Blocking:** java-debug does not bind "the enclosing method". It keeps the first method in class-file order that has the line, and javac writes `<clinit>` after the lambdas. So for a static initializer or an enum constant the lambda is what stops, and the warning was backwards. The metadata now copies that rule. Each line several methods share records the method that stops (`stops`) and those that never stop there (`never`), whatever their kind: lambdas, static initializers, nested lambdas, several constructors sharing a field initializer, record accessors. The warning names both.
+- **Should-fix:** lines shared only by nested lambdas got no warning, though the inner one never stops. This is covered by the same rule.
+- **Nit:** a method reference compiled to a lambda (`int[]::new`) has no line of its own. The warning now says so and points to `session step --into`.
+
+Test: `test_a_shared_line_warns_which_method_stops_and_which_never_does` (real JVM: `main`, the static initializer's lambda, nested lambdas, and a lambda's own line).

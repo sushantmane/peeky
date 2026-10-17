@@ -109,7 +109,7 @@ def attached_source_map(class_roots, sources, deadline=None, identities=None):
                     "lines": lines,
                     "class_file": str(path),
                     **(
-                        {"lambda_lines": {str(k): v for k, v in sorted(shared.items())}}
+                        {"shared_lines": {str(k): v for k, v in sorted(shared.items())}}
                         if shared
                         else {}
                     ),
