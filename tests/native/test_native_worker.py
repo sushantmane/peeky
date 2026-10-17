@@ -654,3 +654,60 @@ def test_runs_to_lines_and_exit_survive_bad_lines_and_interrupted_steps(
     assert "terminated" in capsys.readouterr().out
     assert main(["session", "report"]) == 0 and "SUM:6" in capsys.readouterr().out
     assert main(["session", "close"]) == 0
+
+
+RACE = """#include <pthread.h>
+#include <stdatomic.h>
+#include <stdio.h>
+static atomic_int go;
+static int mark(int id) {
+  int seen = id * 10; /* MARK */
+  return seen;
+}
+static void release(void) { atomic_store(&go, 1); }
+static void *b_main(void *arg) {
+  while (!atomic_load(&go)) {}
+  printf("B%d\\n", mark(2));
+  return NULL;
+}
+static void *a_main(void *arg) {
+  int a = mark(1);
+  release(); /* RELEASE */
+  printf("A%d\\n", a);
+  return NULL;
+}
+int main(void) {
+  pthread_t b, a;
+  pthread_create(&b, 0, b_main, 0);
+  pthread_create(&a, 0, a_main, 0);
+  pthread_join(a, 0);
+  pthread_join(b, 0);
+  return 0;
+}
+"""
+
+
+def test_a_step_interrupted_by_another_threads_hit_can_still_step(
+    tmp_path, native_config, capsys, monkeypatch
+):
+    from peeky.cli import main
+
+    monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
+    (tmp_path / "race.c").write_text(RACE)
+    lines = RACE.splitlines()
+    mark = next(i for i, text in enumerate(lines, 1) if "MARK" in text)
+    release = next(i for i, text in enumerate(lines, 1) if "RELEASE" in text)
+    for _ in range(3):
+        assert main(["session", "start", str(tmp_path / "race.c"), "--at", str(mark)]) == 0
+        assert main(["session", "continue", "--to", str(release)]) == 0
+        # Stepping over release() lets thread B hit the breakpoint while A steps: LLDB
+        # reports both in one all-threads stop. Whichever is served, stepping works.
+        assert main(["session", "step"]) == 0
+        capsys.readouterr()
+        assert main(["session", "step", "--json"]) == 0
+        assert json.loads(capsys.readouterr().out)["state"] in ("stopped", "terminated")
+        assert main(["session", "continue", "--to-exit"]) == 0
+        assert main(["session", "report"]) == 0
+        output = capsys.readouterr().out
+        assert "A10" in output and "B20" in output
+        assert main(["session", "close"]) == 0

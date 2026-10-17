@@ -70,14 +70,13 @@ An hourly thread heartbeat (`continue-peeky-mvp`) checks for available usage and
   - **#47 (`978b75e`):** `session step` (over, into, out) and `continue --to LINE`.
     - A step that leaves your sources reads and changes nothing, and keeps the session.
     - Threads that stopped together are resumed before stepping.
-    - Java steps await #48.
+    - Java stepping followed in the #48 fix: the launcher allows `next`/`stepIn`/`stepOut` with fixed JDK step filters.
 - **Dependabot:** #1, #3, #4 and #5 were merged. #2 (`upload-artifact` v7) was validated by dispatching `artifact.yml`, then fast-forwarded over SSH as `7308955`, because the API token lacks the `workflow` scope.
 
 **Closed issues:** #6, #7, #8, #9, #10, #11, #12, #13.
 
 **Open issues:**
 - **#27:** an attached JVM whose `stopped` event is lost (seen once on Venice). The launch case is fixed. 160 targeted stress runs (simple and Venice-like thread churn) did not reproduce it; diagnostics stay in place.
-- **#48:** Java session stepping. Peeky's launcher allowlist has no step requests yet; adding them requires a rebuilt bundle and qualification on real JVMs.
 - **#49:** Rust `Vec`, slice and `String` element views. This needs lldb-dap `readMemory`, which arrived after the LLVM 18 that CI qualifies.
 
 **Process notes:**
@@ -90,7 +89,7 @@ An hourly thread heartbeat (`continue-peeky-mvp`) checks for available usage and
   - every Linux CI lane in Docker (`scripts/ci_linux`, see CONTRIBUTING.md), with the evidence in each PR. Fixing billing is the owner's decision.
 - **Docker under OrbStack:** containers that hang on a bind mount cannot be killed. Feed trees with `git archive HEAD | docker run -i …`; if it hangs anyway, `orb stop && orb start`.
 
-**Local Java adapter bundle:** `outputs/peeky/work/java-adapter-strcap` (with the String cap). `~/.peeky/venice/attach-*.json` point to it. Rebuild with `scripts/setup_java_adapter.py --output <absolute path>`.
+**Local Java adapter bundle:** `outputs/peeky/work/java-adapter-step` (String cap and stepping). `~/.peeky/venice/attach-*.json` point to it. Rebuild with `scripts/setup_java_adapter.py --output <absolute path>`.
 
 ## Previous slices
 
@@ -139,7 +138,7 @@ Known local-only limitation (pre-existing on main): test_native_adapter_death_re
 
 The original slices are delivered: #6–#13 are closed. Remaining:
 1. **Hosted CI:** restore it (billing). Then rerun CI on `main` to confirm the Docker-verified merges on x86_64.
-2. **#48 / #49:** Java stepping; Rust container views (needs a newer lldb-dap lane).
+2. **#49:** Rust container views (needs a newer lldb-dap lane).
 3. **#27:** if the lost `stopped` event on an attached JVM recurs, capture the DAP trace and fix it from that evidence. It recurred twice under full-suite load in the launch-only adapter test; details are on the issue.
 4. **ADR 0004, step 5:** a prepared-build cache, only if measured probe latency requires it. Step 4 shipped in #35; the SQL-shaped probe form was deliberately not implemented.
 5. Implement the bounded evidence correlation design (code, logs, metrics).

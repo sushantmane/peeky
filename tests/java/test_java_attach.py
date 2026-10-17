@@ -209,3 +209,35 @@ def test_attached_jvms_refuse_per_run_arguments(attached, tmp_path):
         worker.dispatch(
             "launch", {"program": SOURCE, "breakpoints": [{"line": line}], "args": ["x"]}
         )
+
+
+@pytest.mark.timeout(120)
+def test_attached_sessions_step_within_the_declared_sources(
+    attached, tmp_path, monkeypatch, capsys
+):
+    import json
+
+    root, target, process, line = attached
+    monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
+    config = tmp_path / "attach.json"
+    config.write_text(
+        json.dumps(
+            {
+                "bundle": str(target.bundle),
+                "port": target.port,
+                "sources": [SOURCE],
+                "class_roots": ["classes"],
+            }
+        )
+    )
+    start = ["session", "start", str(root), "--config", str(config), "--at", f"{SOURCE}:{line}"]
+    assert main(start) == 0
+    capsys.readouterr()
+    assert main(["session", "step", "--json"]) == 0
+    state = json.loads(capsys.readouterr().out)
+    assert state["reason"] == "step" and state["location"].endswith(f"{SOURCE}:{line + 1}")
+    assert "outside_program" not in state
+    assert main(["session", "get", "end"]) == 0 and "end: int = 6" in capsys.readouterr().out
+    assert main(["session", "close"]) == 0
+    output = process.stdout.read()
+    assert process.wait(timeout=30) == 0 and "PAGE:[40, 50, 60]" in output

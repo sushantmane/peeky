@@ -338,6 +338,23 @@ class DebugWorker:
             self.audit.pop(0)
             self.audit_bytes -= self.audit_sizes.pop(0)
 
+    def pending_stop_elsewhere(self):
+        """Whether another thread, stopped separately (java-debug), awaits service.
+
+        All-threads stops (LLDB) are covered by co_stopped/co_served; their other
+        pending events go stale once every thread resumes.
+        """
+        if self.stop_all_threads:
+            return False
+        events_between = getattr(self.dap, "events_between", None)
+        cursor = getattr(self.dap, "event_cursor", None)
+        if not (events_between and cursor):
+            return False
+        return any(
+            event["event"] == "stopped" and event.get("body", {}).get("threadId") != self.thread_id
+            for event in events_between(self.cursor, cursor(), {"stopped"})
+        )
+
     def set_points(self, runtime, points, temporary=None):
         """Replace the session program's breakpoints (deduplicated by line)."""
         unique = list({point["line"]: point for point in points}.values())
@@ -937,13 +954,15 @@ class DebugWorker:
             return {"state": self.state}
         if operation == "step":
             self.stopped(args)
-            if not getattr(runtime, "supports_stepping", True):
+            if self.capabilities.get("supports_stepping") is False:
                 raise ValueError(
-                    "Stepping is not supported for this target yet; use `session continue --to "
-                    "LINE` to stop at another line"
+                    "Stepping is not supported by this debugger adapter (a Java adapter bundle "
+                    "built before stepping: rebuild it with scripts/setup_java_adapter.py); use "
+                    "`session continue --to LINE` to stop at another line"
                 )
-            if self.co_stopped() is not None or self.co_served:
-                # The debugger re-reports the other threads' old stops when a step ends.
+            if self.co_stopped() is not None or self.co_served or self.pending_stop_elsewhere():
+                # LLDB re-reports the other threads' old stops when a step ends; java-debug
+                # suspends each thread separately, and its pending stop must be served.
                 raise ValueError(
                     "Other threads stopped at this breakpoint too and are still paused there; "
                     "`session continue` serves and resumes them before stepping"
@@ -958,8 +977,11 @@ class DebugWorker:
                 raise ValueError(
                     f"The debugger refused to step {kind} here ({exc}); `session continue` instead"
                 ) from None
-            # Stops reported before this step describe nothing current.
-            self.cursor = max(self.cursor, consumed)
+            if self.stop_all_threads:
+                # Every thread was stopped together and is resumed now: stops reported
+                # before this step describe nothing current. Otherwise (java-debug) each
+                # earlier stop is a thread still suspended there, so none is skipped.
+                self.cursor = max(self.cursor, consumed)
             self.resumed_at = time.monotonic()
             self.empty_thread_replies = 0
             self.forget_stop()
@@ -1286,8 +1308,15 @@ def _in_program_sources(runtime, frame, root):
     except (OSError, ValueError):
         return False
     lines, prepared = getattr(runtime, "lines", None), getattr(runtime, "prepared", None)
-    if isinstance(lines, dict) and prepared is not None:
-        for base in (prepared.workspace, prepared.source_root):
+    bases = (
+        (prepared.workspace, prepared.source_root)
+        if prepared is not None
+        else (runtime.root,)
+        if getattr(runtime, "root", None) is not None
+        else ()
+    )
+    if isinstance(lines, dict) and bases:
+        for base in bases:
             try:
                 relative = resolved.relative_to(Path(base).resolve()).as_posix()
             except (OSError, ValueError):
