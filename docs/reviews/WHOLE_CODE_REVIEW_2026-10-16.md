@@ -226,3 +226,24 @@ It reported one blocking issue, three should-fix and two nits, all fixed:
 - **Should-fix:** `describe proj --at ring/ring.cpp` printed a command that failed. A C/C++ program in a subdirectory is now refused with the command that works (`peeky probe …/proj/ring --at ring.cpp:<line>`).
 - **Nit:** a symlinked candidate outside the directory was taken by `--at <line>`. Only files whose real parent is the directory count, and the several-programs message suggests `--at <file>:<line>`.
 - **Nit:** `display_function` raised on impossible `$u…$` escapes. They stay as written, here and in `describe`'s symbol demangler (`peeky.names.unicode_escape`).
+
+## Review of the session-hits PR (#62, b6a8f0e)
+
+The review confirmed several things:
+- LLDB threads that stop together are numbered one by one, and Java's separate thread stops are numbered too.
+- Steps onto a breakpoint line are counted correctly.
+- No stale number leaks into later states.
+- The two-run queries keep their parameters and NULL semantics.
+
+It reported two blocking issues, two should-fix and two nits, all fixed in 1240cdc:
+- **Blocking:** `continue --count N` counted every stop and resumed a crash stop, which lost it. `--count` and `--hit` now count only numbered breakpoint stops. Anything else (a crash, a finished step, the exit) ends them there, shown with a note and the last hit reached, and nothing is resumed past it. Test: `test_counting_stops_at_a_crash_and_never_resumes_it`.
+- **Blocking:** hit numbers were wrong in three reproducible cases, all now handled:
+  - **Other threads' stops at a served `continue --to` line** compare against that line until the next real resume.
+  - **A `--to` line where the debugger had placed the session's breakpoint** counts. Own lines now include the placed lines, plus `breakpoint` events for the session's breakpoint ids.
+  - **A stop whose line could not be read while a `--to` line could apply** ends numbering for the session (`numbered: false`), never a guess.
+
+  Tests in `tests/unit/test_session_hits.py`.
+- **Should-fix:** `--hit` against an older worker silently returned the first stop. States now carry `numbered`. A worker without it is named ("the worker predates hit numbers: update Peeky on the worker host"), and `--count` counts its breakpoint stops by reason.
+- **Should-fix:** reaching the deadline before the target exited 0 with no note. Now the note reads `reached K of N stops before --timeout (…); last hit H`, and the exit status is 3, as is any run that fell short.
+- **Nit:** the `(output)` row could show two identical 200-character prefixes. It now shows each output from just before the first differing character, and the note gives the offset (`output differs at character 213`).
+- **Nit:** the cookbook's `--hit` note now gives the last hit reached.
