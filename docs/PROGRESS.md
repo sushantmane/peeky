@@ -81,12 +81,30 @@ An hourly thread heartbeat (`continue-peeky-mvp`) checks for available usage and
   - Owned locals stay raw (#53): review showed that a dropped or moved local can point at reused memory.
   - Values are bounded to 1000 characters with a `(first k of N)` marker, and views carry `len`/`length`/`capacity` children.
   - The Docker CI image gained a `rust-llvm20` lane that must take the memory path.
+- **Second agent evaluation (2026-10-16).** [Report](evaluations/2026-10-16-agent-second-round.md). Three new bugs in Java (launched), C++ and Rust, debugged from the docs alone with stepping. All three agents reached verified general fixes, with 0, 1 and 5 wasted calls. Their friction drove:
+  - **#60 (`1c5796b`):**
+    - A probe warns when its line stops in several functions (a closure on the line).
+    - States and `inspect` name the stopped function, and Rust names read as `describe` shows them.
+    - A C/C++ directory is its one program; Java without `--config` says what the config needs, and `describe` repeats `--config`.
+    - Program arguments can follow `--`.
+    - Members are never read in place of a local; the error names `this.x`.
+  - **#62 (`9e38df3`):**
+    - Sessions number their hits.
+    - `session start --hit N` and `continue --count N`; they never run past a crash or a finished step, and exit 3 short of the target.
+    - `queries diff` ends with outcome and output rows; `outputs` shows `set_hit`.
+  - **#63 (`ae817d4`):** compact `verify --json` (`--details` for the rest); failed Cargo tests named from libtest's final list; a clearer `--keep`.
+  - **#64 (`72d408f`):**
+    - C, C++ and Rust integers of 16 to 64 bits can be changed, and `inspect` marks them `[settable]`.
+    - Every native write is read back: unchanged is refused, anything else closes the session.
+  - **#65 (`70774c9`):** on a Java line several methods share (lambda bodies, static initializers), the warning names the one java-debug stops in and the ones it never does.
 - **Dependabot:** #1, #3, #4 and #5 were merged. #2 (`upload-artifact` v7) was validated by dispatching `artifact.yml`, then fast-forwarded over SSH as `7308955`, because the API token lacks the `workflow` scope.
 
-**Closed issues:** #6, #7, #8, #9, #10, #11, #12, #13, #48, #49.
+**Closed issues:** #6, #7, #8, #9, #10, #11, #12, #13, #48, #49, #55, #56, #58, #59.
 
 **Open issues:**
 - **#27:** an attached JVM whose `stopped` event is lost (seen once on Venice). The launch case is fixed. 160 targeted stress runs (simple and Venice-like thread churn) did not reproduce it; diagnostics stay in place.
+- **#57 (rest):** probing a candidate fix (a probe with `--old`/`--new`).
+- **#61:** NVIDIA CUDA debugging, sanitizers and profiling, filed by the owner. Phase 0 (toolchain qualification) needs a Linux host with an NVIDIA GPU, reachable over Peeky's SSH remote worker; this Mac has none.
 - **#53:** reading owned Rust `Vec`/`String` locals from memory needs a liveness proof. LLVM IR cannot tell a move from a borrow, and stable MIR has no spans. The options are on the issue.
 
 **Process notes:**
@@ -154,6 +172,7 @@ The original slices are delivered: #6–#13 are closed. Remaining:
 5. Implement the bounded evidence correlation design (code, logs, metrics).
 6. A live-model evaluation on Venice, using the cookbook.
 7. **#53:** owned Rust locals, once a sound liveness proof is designed.
+8. **#61:** CUDA phase 0 on a real GPU host: qualify `cuda-gdb -i=dap` (GDB 14.2 and later inside cuda-gdb 12.9 and later), then a known kernel bug end to end.
 
 Read AGENTS.md, DESIGN.md, LANGUAGES.md, and ROADMAP.md for acceptance criteria. Runtime intervention is evidence only; never claim a fix without fresh verification and matching source/build identity. Preserve a checkpoint when usage runs low; report shipped work and actual limitations.
 
