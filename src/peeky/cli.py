@@ -1663,11 +1663,16 @@ def verify(args):
     else:
         for key in ("candidate", "evidence_file"):
             result.pop(key, None)
+    if not args.details:
+        # Provenance the hashes and ids already identify; --details keeps it (with the
+        # toolchain probes, it is several KB an agent rarely needs).
+        for key in ("descriptor", "build_manifest"):
+            result.pop(key, None)
 
     def text(result):
         lines = [f"passed: {result['passed']}  stage: {result['stage']}"]
         if tests := result.get("tests"):
-            lines.append(f"compiled tests: {tests['passed']} {tests.get('summary')}")
+            lines.extend(_tests_text(tests))
         if not result["passed"]:
             reason = result.get("diagnostic") or (result.get("checker") or {}).get("error")
             if result.get("timed_out"):
@@ -1679,12 +1684,46 @@ def verify(args):
         if any(output):
             lines.extend(("output:", *output))
         if args.keep:
-            lines.append(f"candidate: {result.get('candidate')}")
+            lines.append(
+                f"candidate: {result.get('candidate')} (the edited file, and for compiled "
+                "programs the build evidence beside it; build artifacts are not kept)"
+            )
         lines.append("diff:\n" + result["diff"])
         return "\n".join(line for line in lines if line)
 
     _emit(result, args.json, text)
     return 0 if result["passed"] else 1
+
+
+def _printable(text):
+    """Test output for a terminal: control characters (\\r, ANSI escapes) escaped."""
+    return "".join(c if c.isprintable() or c == "\n" else repr(c)[1:-1] for c in text)
+
+
+def _tests_text(tests):
+    """`compiled tests: passed (3 passed)`, or the failed tests and how they failed."""
+    summary = tests.get("summary")
+    counts = ", ".join(
+        f"{summary[key]} {key.replace('_', ' ')}"
+        for key in ("passed", "failed", "ignored", "filtered_out")
+        if summary and summary.get(key)
+    )
+    if tests.get("passed"):
+        return [f"compiled tests: passed ({counts})"]
+    if summary is None:
+        counts = "no test summary"
+    lines = [f"compiled tests: failed ({counts or '0 tests ran'})"]
+    for failure in tests.get("failures", []):
+        message = "\n    ".join(_printable(failure["message"]).splitlines())
+        name = _printable(failure["name"])
+        lines.append(f"  {name}: {message}" if message else f"  {name}")
+    if tests.get("timed_out"):
+        lines.append("  (the tests timed out)")
+    if tests.get("output_limit_exceeded"):
+        lines.append("  (the tests wrote more output than Peeky keeps)")
+    elif summary and summary.get("status") == "ok" and tests.get("exit_code") not in (0, None):
+        lines.append(f"  (the test binary exited with code {tests['exit_code']})")
+    return lines
 
 
 JOB_RETENTION_S = 24 * 3600
@@ -2036,7 +2075,15 @@ def main(argv=None, _job=False, _edits=None):
     sub.add_argument("--old-file", help="Read --old verbatim from a file (keeps newlines)")
     sub.add_argument("--new-file", help="Read --new verbatim from a file (keeps newlines)")
     sub.add_argument(
-        "--keep", action="store_true", help="Keep the scratch candidate (default: removed)"
+        "--keep",
+        action="store_true",
+        help="Keep the edited candidate file and its build evidence (default: removed); "
+        "build artifacts are not kept",
+    )
+    sub.add_argument(
+        "--details",
+        action="store_true",
+        help="JSON: include the checker's full descriptor and build manifest",
     )
     background(sub)
     sub = commands.add_parser("job", help="Results of --background probes and verifies")

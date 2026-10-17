@@ -233,7 +233,41 @@ def libtest_summary(result):
         and summary["measured"] == 0
         and summary["filtered_out"] == 0
     )
-    return {"summary": summary, "passed": clean}
+    failures = (
+        _libtest_failures(result.get("stdout", ""), summary["failed"])
+        if summary and not clean
+        else []
+    )
+    return {"summary": summary, "passed": clean, **({"failures": failures} if failures else {})}
+
+
+def _libtest_failures(stdout, limit):
+    """Names of failed tests and the start of each one's captured output, for people;
+    never part of the pass/fail decision.
+
+    Names come from libtest's final `failures:` list, printed after every test has
+    finished (result lines can be interleaved with a program's own output); never more
+    than the summary's failed count. Each message is the test's captured output, from
+    its line-anchored `---- name stdout ----` block before that list.
+    """
+    details, header, listing = stdout.rpartition("\nfailures:\n")
+    if not header:
+        return []
+    names = [
+        line.strip()
+        for line in listing.split("\n\n", 1)[0].splitlines()
+        if line.startswith("    ") and line.strip()
+    ][: min(limit, 10)]
+    failures = []
+    for name in names:
+        marker = f"\n---- {name} stdout ----\n"
+        index = details.rfind(marker)
+        message = ""
+        if index >= 0:
+            message = details[index + len(marker) :].split("\n---- ", 1)[0]
+            message = re.sub(r"\n?note: run with `RUST_BACKTRACE=1`.*", "", message).strip()
+        failures.append({"name": name[:200], "message": message[:500]})
+    return failures
 
 
 @dataclass(frozen=True)

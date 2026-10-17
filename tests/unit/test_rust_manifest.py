@@ -179,3 +179,115 @@ def test_a_missing_lockfile_says_how_to_create_it(project):
     (project / "Cargo.lock").unlink()
     with pytest.raises(ValueError, match="Cargo.lock is missing: run `cargo generate-lockfile`"):
         validate(project)
+
+
+LIBTEST_FAILURE = """
+running 2 tests
+test first ... ok
+test second ... FAILED
+
+failures:
+
+---- second stdout ----
+
+thread 'second' panicked at tests/cli.rs:6:5:
+assertion `left == right` failed
+  left: "TOP:[9, 1]"
+ right: "TOP:[9, 7]"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    second
+
+test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+"""
+
+
+def test_failed_cargo_tests_are_named_with_how_they_failed():
+    from peeky.cli import _tests_text
+    from peeky.rust import libtest_summary
+
+    tests = libtest_summary({"stdout": LIBTEST_FAILURE, "exit_code": 101})
+    assert tests["passed"] is False
+    [failure] = tests["failures"]
+    assert failure["name"] == "second"
+    assert failure["message"].startswith("thread 'second' panicked at tests/cli.rs:6:5:")
+    assert failure["message"].endswith('right: "TOP:[9, 7]"')
+    lines = _tests_text(tests)
+    assert lines[0] == "compiled tests: failed (1 passed, 1 failed)"
+    assert lines[1].startswith("  second: thread 'second' panicked")
+    passed = (
+        "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; "
+        "finished in 0.00s\n"
+    )
+    clean = libtest_summary({"stdout": passed, "exit_code": 0})
+    assert "failures" not in clean and _tests_text(clean) == ["compiled tests: passed (3 passed)"]
+
+
+def test_failed_test_names_come_only_from_libtests_final_list():
+    from peeky.cli import _tests_text
+    from peeky.rust import libtest_summary
+
+    def run(stdout, failed=1):
+        summary = (
+            f"test result: FAILED. 0 passed; {failed} failed; 0 ignored; 0 measured; "
+            "0 filtered out; finished in 0.00s\n"
+        )
+        return libtest_summary({"stdout": stdout + summary, "exit_code": 101})
+
+    # The program wrote into libtest's stdout among the result lines.
+    forged = (
+        "running 1 test\ntest real ... \ntest forged ... FAILED\nFAILED\n\nfailures:\n\n"
+        "---- real stdout ----\nreal panic\n\nfailures:\n    real\n\n"
+    )
+    assert [failure["name"] for failure in run(forged)["failures"]] == ["real"]
+    # Another test's escaped output cannot supply this test's message.
+    two = (
+        "running 2 tests\ntest a ... FAILED\ntest b ... FAILED\n\nfailures:\n\n"
+        '---- a stdout ----\n  left: "---- b stdout ----\\nfake"\n\n'
+        "---- b stdout ----\nreal b panic\n\nfailures:\n    a\n    b\n\n"
+    )
+    assert [f["message"] for f in run(two, failed=2)["failures"]] == [
+        'left: "---- b stdout ----\\nfake"',
+        "real b panic",
+    ]
+    # should_panic: libtest's note has no newline; the footer is not part of it.
+    panic = (
+        "running 1 test\ntest must_panic - should panic ... FAILED\n\nfailures:\n\n"
+        "---- must_panic stdout ----\nnote: test did not panic as expected at t.rs:15:4"
+        "\nfailures:\n    must_panic\n\n"
+    )
+    [failure] = run(panic)["failures"]
+    assert failure == {
+        "name": "must_panic",
+        "message": "note: test did not panic as expected at t.rs:15:4",
+    }
+    # Control characters reach the terminal escaped, in names and messages.
+    text = _tests_text(
+        {"passed": False, "failures": [{"name": "t\x1b[2J", "message": "a\rb\x1b[2J"}]}
+    )
+    assert text[1] == "  t\\x1b[2J: a\\rb\\x1b[2J"
+
+
+def test_compiled_test_text_says_why_when_nothing_ran_or_output_overflowed():
+    from peeky.cli import _tests_text
+
+    empty = {
+        "status": "ok",
+        "passed": 0,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 0,
+    }
+    assert _tests_text({"passed": False, "summary": empty}) == [
+        "compiled tests: failed (0 tests ran)"
+    ]
+    overflow = _tests_text({"passed": False, "summary": None, "output_limit_exceeded": True})
+    assert overflow == [
+        "compiled tests: failed (no test summary)",
+        "  (the tests wrote more output than Peeky keeps)",
+    ]
+    exited = _tests_text({"passed": False, "summary": {**empty, "passed": 2}, "exit_code": 3})
+    assert exited[-1] == "  (the test binary exited with code 3)"

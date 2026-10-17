@@ -497,7 +497,7 @@ diff:
 +    start = (page - 1) * page_size
 ```
 
-Your files are not changed. The edit is applied to a scratch copy (`--keep` keeps it).
+Your files are not changed. The edit is applied to a scratch copy; `--keep` keeps the edited file (build artifacts are always removed). For a Cargo crate, its compiled tests run too, and a failure names each failed test with how it failed (`compiled tests: failed (1 failed)`, then `first_page_starts_at_zero: thread … panicked at tests/pagination.rs:10:5: assertion `left == right` failed …`). `--json` identifies the checker's descriptor and build by hash (`descriptor_sha256`, `artifact_manifest_id`); `--details` adds both in full.
 
 ### 6.2 An Overfit Fix Is Rejected
 

@@ -259,3 +259,21 @@ The final check confirmed the Java, crash-then-co-stop and LLDB repros, plus mov
 - **Should-fix:** before any `--to`, a stop at a known line Peeky did not place was numbered. An example is a Python program's own `breakpoint()` call, which debugpy reports with reason `breakpoint`. It shifted every later hit away from the probe's numbering. The "no `--to` used" rule now applies only to a stop whose line could not be read; a known line that is neither own nor `--to` ends numbering. Tests:
   - `test_a_programs_own_breakpoint_call_ends_hit_numbering` (real debugpy);
   - `test_a_stop_at_a_line_peeky_did_not_place_ends_numbering`.
+
+## Review of the verify-output PR (#63, d37996a)
+
+The review confirmed that the pass/fail decision is untouched (`clean` is computed before `failures`) and that nothing consumes `descriptor` or `build_manifest` from the CLI's verify JSON. `job wait` replays `--details`, and the evidence store records probes only. It reported three should-fix issues and two nits, all fixed in 92934be:
+- **Should-fix:** the program under test could add a failed-test name by printing `test x ... FAILED` into a panic message. Names now come only from libtest's own result lines before its `failures:` section, line-anchored, and never more than the summary's failed count. Control characters in messages are escaped for the terminal.
+- **Should-fix:** failed `#[should_panic]` tests (`test t - should panic ... FAILED`) were not named. They are now.
+- **Should-fix:** zero tests ran but the text said "no test summary". It now says `0 tests ran`; "no test summary" is kept for when there is none.
+- **Nit:** overflowing test output, and a nonzero exit despite an `ok` summary, are now explained.
+- **Nit:** `--keep` keeps the edited file and, for compiled programs, its build evidence beside it. The help and text now say so.
+
+Tests: `test_failed_test_names_come_only_from_libtest_result_lines` and `test_compiled_test_text_says_why_when_nothing_ran_or_output_overflowed`.
+
+The verification of 92934be confirmed all five fixes and found three more should-fix issues in the displayed failure list (never the verdict), all fixed:
+- A program writing straight into libtest's stdout (a test using `.status()`) could still put a name among the result lines. Names now come only from libtest's final `failures:` list, which libtest prints after every test has finished. They are escaped for the terminal like messages.
+- One test's escaped output could supply another's message. Message blocks are now matched on their own line (`\n---- name stdout ----\n`).
+- A `should_panic` message ran into libtest's footer. Messages now end before the final list.
+
+Test: `test_failed_test_names_come_only_from_libtests_final_list`.
