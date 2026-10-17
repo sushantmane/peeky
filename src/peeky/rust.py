@@ -233,7 +233,26 @@ def libtest_summary(result):
         and summary["measured"] == 0
         and summary["filtered_out"] == 0
     )
-    return {"summary": summary, "passed": clean}
+    failures = _libtest_failures(result.get("stdout", "")) if not clean else []
+    return {"summary": summary, "passed": clean, **({"failures": failures} if failures else {})}
+
+
+_FAILED_TEST = re.compile(r"test (\S{1,200}) \.\.\. FAILED")
+
+
+def _libtest_failures(stdout):
+    """Names of failed tests and the start of each one's captured output, for people;
+    never part of the pass/fail decision."""
+    failures = []
+    for match in _FAILED_TEST.finditer(stdout):
+        name = match[1]
+        block = stdout.partition(f"---- {name} stdout ----")[2]
+        message = block.split("\n\n\n", 1)[0].split("\n---- ", 1)[0]
+        message = re.sub(r"\n?note: run with `RUST_BACKTRACE=1`.*", "", message).strip()
+        failures.append({"name": name, "message": message[:500]})
+        if len(failures) == 10:
+            break
+    return failures
 
 
 @dataclass(frozen=True)

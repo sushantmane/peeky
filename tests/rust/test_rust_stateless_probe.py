@@ -121,3 +121,19 @@ def test_peeky_cli_detects_rust_and_runs_probe_session_and_verify(tmp_path, monk
     fix = ["--old", "request.page * request.page_size", "--new"]
     assert main(["verify", str(crate), *check, *fix, "(request.page - 1) * request.page_size"]) == 0
     assert main(["verify", str(crate), *check, *fix, "0"]) == 1
+    capsys.readouterr()
+    general = [*check, *fix, "(request.page - 1) * request.page_size", "--json"]
+    assert main(["verify", str(crate), *general]) == 0
+    compact = json.loads(capsys.readouterr().out)
+    # Provenance stays identified by hash; the full descriptor needs --details.
+    assert "descriptor" not in compact and "build_manifest" not in compact
+    assert compact["artifact_manifest_id"] and compact["descriptor_sha256"]
+    assert main(["verify", str(crate), *general, "--details"]) == 0
+    assert "build_manifest" in json.loads(capsys.readouterr().out)
+    # A failing compiled test is named, with how it failed.
+    shifted = [*check, *fix, "request.page * request.page_size + 1"]
+    assert main(["verify", str(crate), *shifted]) == 1
+    text = capsys.readouterr().out
+    assert "compiled tests: failed (1 failed)" in text, text
+    assert "  first_page_starts_at_zero: thread 'first_page_starts_at_zero'" in text
+    assert "assertion `left == right` failed" in text

@@ -179,3 +179,47 @@ def test_a_missing_lockfile_says_how_to_create_it(project):
     (project / "Cargo.lock").unlink()
     with pytest.raises(ValueError, match="Cargo.lock is missing: run `cargo generate-lockfile`"):
         validate(project)
+
+
+LIBTEST_FAILURE = """
+running 2 tests
+test first ... ok
+test second ... FAILED
+
+failures:
+
+---- second stdout ----
+
+thread 'second' panicked at tests/cli.rs:6:5:
+assertion `left == right` failed
+  left: "TOP:[9, 1]"
+ right: "TOP:[9, 7]"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    second
+
+test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+"""
+
+
+def test_failed_cargo_tests_are_named_with_how_they_failed():
+    from peeky.cli import _tests_text
+    from peeky.rust import libtest_summary
+
+    tests = libtest_summary({"stdout": LIBTEST_FAILURE, "exit_code": 101})
+    assert tests["passed"] is False
+    [failure] = tests["failures"]
+    assert failure["name"] == "second"
+    assert failure["message"].startswith("thread 'second' panicked at tests/cli.rs:6:5:")
+    assert failure["message"].endswith('right: "TOP:[9, 7]"')
+    lines = _tests_text(tests)
+    assert lines[0] == "compiled tests: failed (1 passed, 1 failed)"
+    assert lines[1].startswith("  second: thread 'second' panicked")
+    passed = (
+        "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; "
+        "finished in 0.00s\n"
+    )
+    clean = libtest_summary({"stdout": passed, "exit_code": 0})
+    assert "failures" not in clean and _tests_text(clean) == ["compiled tests: passed (3 passed)"]
