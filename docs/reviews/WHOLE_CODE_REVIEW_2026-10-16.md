@@ -192,3 +192,14 @@ The review confirmed the memory-reference semantics (lldb-dap 20, 21 and main: t
 - **Should-fix:** `ordered.len` stopped working on debuggers with `readMemory`, and the length of a large container could not be read at all. Views now carry read-only `length` (slices, `&str`) or `len` and `capacity` (`&Vec`, `&String`) children from the same header read. Text views no longer treat their byte length as an element count, so `label[0]` says text is shown whole instead of "beyond the visible window".
 - **Should-fix:** the docs and the error message said readMemory arrived in LLVM 19; it arrived in LLVM 20. Both now say LLVM 20, and say that text is not indexed.
 - **Nit:** fewer than the documented 512 elements were selectable within the 512-node budget. Views now decode 256 elements, which stay selectable alongside the locals, and the docs say 256.
+
+Verification of 6b94246 found no blocking or should-fix issues. The reviewer re-ran all four liveness repros (they stay raw) and these parameter variants:
+- borrowed and reassigned parameters are read, and show their current value;
+- a shadowed parameter is refused;
+- in an outer frame during `retain` and `sort_by` callbacks, `&mut` stays raw and `&String` is read;
+- a stop on the `fn` line and `step --into` both work;
+- a one-line `fn` stays raw.
+
+The reviewer probed the soundness argument through async fns, pattern parameters, generics, `impl Trait`, closures, inlined copies, `mem::swap` and writes through `&mut`, and found no hole in safe Rust. It also checked the display limits (Vec, multi-byte and escaped text, `i32::MIN`) and the enum views. It found two problems in the follow-up commit beb5230, both fixed:
+- **Should-fix:** the LLVM 20 Docker image could not be built, because `python3-lldb-18` and `-20` conflict. The image now unpacks `lldb-20` and llvm-20's own Python tree from verified downloads, so lldb-dap-20 starts without errors and lldb-18 is untouched. The `rust-llvm20` lane sets `PEEKY_EXPECT_READ_MEMORY=1`, so it fails if values fall back to raw fields.
+- **Nit:** AGENT_GUIDE said optimized builds show containers opaque. Optimized IR has no parameter proof, so those parameters keep their raw fields or show as optimized out. The sentence now says so.
