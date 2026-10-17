@@ -669,6 +669,8 @@ class NativeTarget:
             raise ValueError("Native targets support unconditional line breakpoints only")
 
     supports_deadline = True
+    # Candidate probes stage an edit into a fresh build (the worker's launch `edit`).
+    supports_edits = True
 
     def prepare(self, program, root, *, edit=None, deadline=None):
         root = Path(root).resolve(strict=True)

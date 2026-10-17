@@ -139,6 +139,54 @@ def _check_args(args):
         raise ValueError("Program arguments are at most 64 strings of up to 4096 characters")
 
 
+MAX_EDIT_BYTES = 1024 * 1024
+CANDIDATE_NEEDS_BUILD = (
+    "A candidate edit (--old/--new) needs a target Peeky builds (C, C++, Rust or Java). Python "
+    "runs its files as they are: edit the file and probe again, or check the edit with "
+    "`peeky verify`. An attached JVM is already running"
+)
+
+
+def candidate_line(text, old, new, line):
+    """The line of the edited text that holds original line ``line``.
+
+    Lines before the edit keep their number and lines after it shift by the lines the
+    edit adds or removes. A line inside the edit maps only when the edit keeps its line
+    count; otherwise there is no faithful answer, so it is refused.
+    """
+    start = text.find(old)
+    if start < 0 or text.count(old) != 1:
+        raise ValueError("--old must match the --at file exactly once")
+    first = text.count("\n", 0, start) + 1
+    last = text.count("\n", 0, start + len(old) - 1) + 1
+    delta = new.count("\n") - old.count("\n")
+    if line < first:
+        return line
+    if line > last:
+        head = text[:start] + new
+        if line == last + 1 and old.endswith("\n") and head and not head.endswith("\n"):
+            # --old ends a line but --new does not: this line is joined onto the edit's
+            # last line, and a breakpoint there would stop before the edited code runs.
+            raise ValueError(
+                f"Line {line} starts right after the edit, and --new does not end with a "
+                f"newline as --old does, so the candidate joins it onto line "
+                f"{head.count(chr(10)) + 1}; end --new with a newline, or probe another line"
+            )
+        return line + delta
+    if delta == 0:
+        return line
+    span = (
+        f"line {first}, which becomes" if first == last else f"lines {first}-{last}, which become"
+    )
+    after = last + delta
+    became = f"line {first}" if after <= first else f"lines {first}-{after}"
+    raise ValueError(
+        f"Line {line} is inside the edit ({span} {became} of the candidate). An edit that "
+        "changes the number of lines has no matching line inside it: probe a line before or "
+        "after the edit"
+    )
+
+
 def parse_location(text):
     """`src/main.rs:36` -> ('src/main.rs', 36)."""
     program, separator, line = (text or "").rpartition(":")
@@ -166,6 +214,9 @@ class Probe:
     args: tuple[str, ...] = ()
     # Remote clients: (role, sha256) pairs the worker checks before launching.
     expect_sha256: tuple[tuple[str, str], ...] = ()
+    # A candidate fix: (old, new) applied once to `program` in a fresh build; `line` is
+    # in the original's numbering. The files on disk are never changed.
+    edit: tuple[str, str] | None = None
 
     @property
     def limit(self):
@@ -220,6 +271,18 @@ class Probe:
             )
         if self.entry is not None and (not isinstance(self.entry, str) or not self.entry):
             raise ValueError("Probe entry must be a relative script path")
+        if self.edit is not None and (
+            not isinstance(self.edit, tuple)
+            or len(self.edit) != 2
+            or not all(isinstance(text, str) for text in self.edit)
+            or not self.edit[0]
+            or self.edit[0] == self.edit[1]
+            or any(len(text.encode()) > MAX_EDIT_BYTES for text in self.edit)
+        ):
+            raise ValueError(
+                "A candidate edit is (old, new): old nonempty, new different, each at most "
+                f"{MAX_EDIT_BYTES // (1024 * 1024)} MiB"
+            )
         _check_args(self.args)
         if not isinstance(self.expect_sha256, tuple) or not all(
             isinstance(pair, tuple)
@@ -686,16 +749,25 @@ def run_probe(root, probe, *, adapter=None, progress=None):
     started = time.monotonic()
     deadline = started + probe.timeout
     result = {"probe": {**asdict(probe), "set": [list(change) for change in probe.set]}}
+    # The edit's texts are not evidence of the run; the CLI adds the diff.
+    result["probe"].pop("edit")
     rows, changes, hits, warnings, relocated, pauses = [], [], 0, [], False, []
+    # The breakpoint line in the build that runs: the candidate's numbering with an edit.
+    line = probe.line
     # {function: [hits]}: a line shared by a function and a closure or lambda stops in each.
     functions = {}
     last_said = 0.0
     try:
+        if probe.edit:
+            old, new = probe.edit
+            line = candidate_line(worker.path(probe.program).read_text(), old, new, probe.line)
+            result["candidate"] = {"line": line, "original_line": probe.line}
         launch = worker.dispatch(
             "launch",
             {
                 "program": probe.program,
-                "breakpoints": [{"line": probe.line}],
+                "breakpoints": [{"line": line}],
+                **({"edit": {"old": old, "new": new}} if probe.edit else {}),
                 **({"entry": probe.entry} if probe.entry else {}),
                 **({"args": list(probe.args)} if probe.args else {}),
                 **({"expect_sha256": dict(probe.expect_sha256)} if probe.expect_sha256 else {}),
@@ -708,6 +780,8 @@ def run_probe(root, probe, *, adapter=None, progress=None):
             target_identity=launch["target_identity"],
             source_sha256=launch["source_sha256"],
         )
+        if probe.edit:
+            result["candidate"]["sha256"] = launch.get("candidate_sha256")
         if "program_args" in launch:
             result["program_args"] = launch["program_args"]
         for note in launch.get("warnings", []):
@@ -718,7 +792,8 @@ def run_probe(root, probe, *, adapter=None, progress=None):
         point = result["breakpoint"]
         verified = point.get("verified") is True
         say(
-            f"started; breakpoint {probe.program}:{point.get('line', probe.line)} "
+            f"started; breakpoint {probe.program}:{point.get('line', line)} "
+            + ("in the candidate " if probe.edit else "")
             + ("verified" if verified else "pending until its class or module loads")
         )
         say("waiting for the program to reach it...")
@@ -751,7 +826,7 @@ def run_probe(root, probe, *, adapter=None, progress=None):
             stop = {**session, "stop_id": state["stop_id"]}
             # Only the requested breakpoint counts; a crash, signal or other stop fails
             # closed before any capture or intervention.
-            expected = _expected_line(result["breakpoint"], state, probe.line)
+            expected = _expected_line(result["breakpoint"], state, line)
             snapshot = worker.dispatch("inspect", stop)
             frame = snapshot["frames"][0] if snapshot["frames"] else {}
             reason = state.get("event", {}).get("body", {}).get("reason")
@@ -767,12 +842,14 @@ def run_probe(root, probe, *, adapter=None, progress=None):
                 )
             hits += 1
             functions.setdefault(display_function(frame.get("name")), []).append(hits)
-            if expected != probe.line and not relocated:
+            if expected != line and not relocated:
                 relocated = True
                 warnings.append(
-                    f"The debugger moved the breakpoint from line {probe.line} to line "
-                    f"{expected} (line {probe.line} has no code of its own); values are from "
-                    f"line {expected}. Choose a line from `peeky describe`."
+                    f"The debugger moved the breakpoint from line {line} to line "
+                    f"{expected} (line {line} has no code of its own); values are from "
+                    f"line {expected}"
+                    + (" of the candidate" if probe.edit else "")
+                    + ". Choose a line from `peeky describe`."
                 )
                 say(warnings[-1])
             if _report_hit(hits, probe.limit, last_said):
@@ -852,7 +929,9 @@ def run_probe(root, probe, *, adapter=None, progress=None):
             result["error"] = {
                 "code": "NO_STOP",
                 "message": f"The program finished without stopping at {probe.program}:"
-                f"{probe.line}; check `peeky describe` for executable lines",
+                f"{line}"
+                + (f" of the candidate (line {probe.line} before the edit)" if probe.edit else "")
+                + "; check `peeky describe` for executable lines",
                 "hint": "Pick a line the program executes; see `peeky describe`.",
                 "retryable": False,
                 "session_closed": True,
@@ -892,7 +971,7 @@ def run_probe(root, probe, *, adapter=None, progress=None):
         )
     if len(functions) > 1:
         warnings.append(
-            f"Line {probe.line} stopped in {len(functions)} functions: "
+            f"Line {line} stopped in {len(functions)} functions: "
             + "; ".join(
                 f"{name or '?'} (hit{'s' if len(numbers) > 1 else ''} "
                 f"{', '.join(map(str, numbers[:8]))}{', ...' if len(numbers) > 8 else ''})"

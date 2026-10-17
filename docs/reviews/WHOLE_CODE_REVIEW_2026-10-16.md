@@ -328,3 +328,37 @@ Verification of ac6cda3 confirmed both fixes, in the Linux image (dash, GDB 15.1
 - **Medium:** `shutil.which("tools/nvcc")` returns a relative path, but builds run in a scratch directory, so a relative tool looked like a failed build (exit 1) rather than a missing tool. Found tools are now made absolute.
 
 Tests: `test_relative_tool_paths_are_made_absolute`, `test_output_that_arrives_after_the_exit_event_is_still_seen`, `test_output_that_never_arrives_ends_at_the_deadline`.
+
+## Review of candidate probes (#68, c84f613)
+
+The review confirmed several areas with real lldb-dap:
+- **Provenance binding:** the worker hashes the staged bytes, and the CLI recomputes the expected hash. CRLF stays consistent through universal newlines on every side; symlinks resolve the same way in the worker and the adapters.
+- **Remote and version skew:** older workers refuse the `edit` field, and the edit files are byte-exact.
+- **Migration:** concurrent writers are safe, because the version is rechecked under `BEGIN IMMEDIATE`.
+- **`BUILD_FAILED`:** it changes no existing flow. `verify` still handles its own build stage.
+- **Flags and sessions:** the flag interactions and exit codes are right, and sessions have no edit flags, so they drop nothing silently.
+
+It reported one high and one medium issue, both fixed:
+- **High:** when `--old` ends with a newline and `--new` does not, the candidate joins the next original line onto the edit's last line. `candidate_line` still mapped that line to `line + delta`, so the breakpoint stopped before the edited code ran. It reported `start = 0` for a candidate that computes 3, with no warning. That line is now refused before anything is built, with the fix in the message: end `--new` with a newline, or probe another line.
+
+  Tests: `test_a_line_joined_onto_the_edit_is_refused`, `test_the_cli_refuses_a_line_the_candidate_joins_onto_the_edit` (the reviewer's command).
+- **Medium:** candidate values could not be told apart from real ones in the evidence. The `evidence`/`last_run` views and `queries values` mixed them with real runs, at the candidate's line numbers. Now:
+  - the views have a `candidate` column; the 1→2 migration recreates them;
+  - `queries runs` marks `(candidate)`;
+  - `queries values` leaves candidate runs out;
+  - `queries diff` adds an `(edit)` row when the runs built different edits. Pairing is by hit and selector, so moved lines still compare.
+
+  Because canned queries now use the new column, a reader upgrades a writable schema 1 store before opening it read-only, as it already did for hot-journal recovery. A read-only schema 1 store is refused, unchanged, with a clear message.
+
+  Tests: `test_candidate_runs_are_marked_and_kept_apart`, `test_schema_1_stores_are_upgraded_in_place_keeping_their_runs`, `test_a_read_only_schema_1_store_is_refused_unchanged`.
+
+The reviewer also noted that any save by this version upgrades the shared default store, after which older Peeky installs refuse it. That is how schema versions already worked (they ask to move the store aside); it is noted here rather than changed.
+
+Verification of 0952752 confirmed both fixes. It brute-forced `candidate_line` over about 3.5M mapped lines: every line before or after an edit landed at exactly its shifted offset. That covered `--old` starting with a newline, edits starting mid-line, empty `--new`, edits at the start and end of a file, and files without a trailing newline. It also confirmed that migrations run inside `BEGIN IMMEDIATE` and roll back whole, that concurrent upgrades happen exactly once, and that hot-journal recovery comes before the version check. One medium issue, fixed:
+- **Medium:** stores already upgraded by c84f613 had `user_version` 2 with the old views. 0952752 changed the views but kept version 2, so those stores were never rebuilt and `queries values` failed with `no such column: candidate`. This included this machine's own store. The schema is now version 3:
+  - 1→2 adds `runs.edit`;
+  - 2→3 rebuilds the views with `DROP VIEW IF EXISTS`, which also lets a store with a hand-dropped view upgrade instead of being refused as unusable.
+
+  This machine's store was repaired by its next read.
+
+  Test: `test_older_stores_are_upgraded_in_place_keeping_their_runs` (schema 1, early schema 2, and schema 1 without views).

@@ -148,6 +148,36 @@ class DebugWorker:
         # grace (DAP close) outside this budget; adapters do not declare their own.
         self.launch_deadline_s = 40
 
+    def candidate_edit(self, program, edit):
+        """(SourceEdit, sha256 of the edited text) for a candidate launch, else (None, None).
+
+        The edit is staged into a fresh build by the same mechanism as `verify`; the
+        program's own file is never written.
+        """
+        if edit is None:
+            return None, None
+        if not getattr(self.adapter, "supports_edits", False):
+            from peeky.probe import CANDIDATE_NEEDS_BUILD
+
+            raise ValueError(CANDIDATE_NEEDS_BUILD)
+        if (
+            not isinstance(edit, dict)
+            or set(edit) != {"old", "new"}
+            or not all(isinstance(edit[key], str) for key in ("old", "new"))
+        ):
+            raise ValueError("edit must be an object with string fields old and new")
+        from peeky.build import SourceEdit
+
+        old, new = edit["old"], edit["new"]
+        text = program.read_text()
+        if not old or old == new or text.count(old) != 1:
+            raise ValueError("--old must match the --at file exactly once and --new must change it")
+        candidate = text.replace(old, new, 1).encode()
+        return (
+            SourceEdit(program.relative_to(self.root).as_posix(), old, new),
+            hashlib.sha256(candidate).hexdigest(),
+        )
+
     def path(self, name):
         path = (self.root / name).resolve()
         if self.root not in path.parents or not path.is_file():
@@ -642,6 +672,7 @@ class DebugWorker:
                         f"Worker source provenance differs for the {role} {path.name}: refused "
                         "before launching. Sync sources before debugging remotely"
                     )
+            edit, candidate_sha256 = self.candidate_edit(program, args.get("edit"))
             self.adapter.validate_breakpoints(args.get("breakpoints", []))
             self.session = uuid.uuid4().hex
             self.audit, self.audit_sizes, self.audit_bytes = [], [], 0
@@ -668,12 +699,20 @@ class DebugWorker:
                 return min(limit, remaining)
 
             try:
+                staging = {"edit": edit} if edit else {}
                 if getattr(self.adapter, "supports_deadline", False):
-                    prepared = self.adapter.prepare(program, self.root, deadline=deadline)
+                    prepared = self.adapter.prepare(
+                        program, self.root, deadline=deadline, **staging
+                    )
                 else:
-                    prepared = self.adapter.prepare(program, self.root)
+                    prepared = self.adapter.prepare(program, self.root, **staging)
                 self.runtime = runtime = prepared
                 runtime.assert_current()
+                staged = Path(runtime.source_path(program)) if edit else None
+                if edit and hashlib.sha256(staged.read_bytes()).hexdigest() != candidate_sha256:
+                    raise RuntimeError(
+                        "Provenance: the staged candidate differs from the requested edit; nothing ran"
+                    )
                 left()
                 self.dap = DAP(command=runtime.command, env=getattr(runtime, "environment", None))
                 capabilities = self.dap.request(
@@ -730,6 +769,7 @@ class DebugWorker:
                     "state": self.state,
                     "breakpoints": points.get("breakpoints", []),
                     "source_sha256": hashlib.sha256(program.read_bytes()).hexdigest(),
+                    **({"candidate_sha256": candidate_sha256} if edit else {}),
                     **(
                         {"entry_sha256": hashlib.sha256(entry.read_bytes()).hexdigest()}
                         if entry
@@ -1582,8 +1622,16 @@ def make_server(root, token, port=8765, *, adapter=None):
             "entry",
             "args",
             "expect_sha256",
+            "edit",
         }:
             raise ValueError("Unknown probe field")
+        edit = args.get("edit")
+        if edit is not None and (
+            not isinstance(edit, dict)
+            or set(edit) != {"old", "new"}
+            or not all(isinstance(edit[key], str) for key in ("old", "new"))
+        ):
+            raise ValueError("Probe edit must be an object with string fields old and new")
         program, line = parse_location(args.get("at"))
         changes = args.get("set", {})
         if not isinstance(changes, dict) or not isinstance(args.get("capture", []), list):
@@ -1602,6 +1650,7 @@ def make_server(root, token, port=8765, *, adapter=None):
             expect_sha256=tuple(args["expect_sha256"].items())
             if isinstance(args.get("expect_sha256"), dict)
             else (),
+            edit=(edit["old"], edit["new"]) if edit is not None else None,
         )
         if not probes.acquire(blocking=False):
             raise ValueError("Another probe is running; retry later")
@@ -1731,6 +1780,13 @@ def _run_probe_process(root, request, adapter, cap):
     for name, value in request.set:
         command += ["--set", f"{name}={value}"]
     with tempfile.TemporaryDirectory(prefix="peeky-probe-") as scratch:
+        if request.edit:
+            # Files, not arguments: edit texts keep their newlines and stay off `ps`.
+            for flag, text in zip(("--old-file", "--new-file"), request.edit, strict=True):
+                path = Path(scratch) / flag.strip("-")
+                path.write_bytes(text.encode())
+                path.chmod(0o600)
+                command += [flag, str(path)]
         if adapter is not None:
             config = Path(scratch) / "target.json"
             config.write_text(json.dumps(dataclasses.asdict(adapter), default=str))

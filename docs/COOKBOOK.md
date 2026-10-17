@@ -524,6 +524,52 @@ peeky verify app/ --at lib/parse.py --check checks/parse_check.py --old-file old
 
 A checker is a trusted script, run as `python checker.py <candidate-path>`. It exits 0 only when the behavior is right. Test the general rule, not the one input from the bug report (see `examples/verify_pagination.py`). For C, C++ and Rust it gets a build description to run the fresh binary (see [NATIVE_AGENT.md](NATIVE_AGENT.md) and [RUST_AGENT.md](RUST_AGENT.md)); for Rust, the crate's compiled Cargo tests must pass too.
 
+### 6.5 See What a Fix Does Before Making It (C, C++, Rust, Java)
+
+**What it answers:** With this edit, what would the program compute at the same line, and what would it print?
+
+Run the same probe twice: once as it is, once with `--old`/`--new`. The second builds a fresh copy with the edit; your files are not changed.
+
+```sh
+peeky probe examples/c/pagination_bug.c --at 25 --capture start --arg 2
+peeky probe examples/c/pagination_bug.c --at 25 --capture start --arg 2 \
+  --old 'int start = page * page_size;' --new 'int start = (page - 1) * page_size;'
+peeky queries diff
+```
+
+```
+hit  phase     line  function  selector  type  value
+1    observed  25    main      start     int   3
+status: completed  hits: 1  seconds: 0.665  max pause: 13.7 ms
+output:
+  PAGE:[40, 50, 60]
+candidate: values are from a fresh build with this edit; your files are unchanged
+--- pagination_bug.c
++++ pagination_bug.c
+@@ -21,7 +21,7 @@
+...
+-    int start = page * page_size;
++    int start = (page - 1) * page_size;
+     int end = start + page_size; /* OBSERVE */
+
+run_a  run_b  hit   phase     selector  value_a           value_b               differs  note
+1      2      1     observed  start     6                 3                     1        NULL
+1      2      NULL  NULL      (output)  PAGE:[70, 80]\n  PAGE:[40, 50, 60]\n  1        output differs at character 6
+1      2      NULL  NULL      (edit)    none              candidate             1        the runs built different edits (runs.edit has each diff)
+```
+
+- **Lines:** `--at` uses the original file's numbering, so the same command works before and after. A line after an edit that adds or removes lines is moved to match (`line 25 is line 27 of the candidate`). Some lines have no faithful match and are refused before anything is built:
+  - a line inside such an edit;
+  - the line right after an edit whose `--old` ends with a newline but whose `--new` does not, because the candidate joins that line onto the edit.
+- **Build errors:** an edit that does not compile fails with `BUILD_FAILED` and the compiler's message.
+- **Evidence:**
+  - The run's `edit` column holds the diff, and its `source_sha256` is the edited text's.
+  - `queries runs` marks the run `(candidate)`, and the `evidence` and `last_run` views have a `candidate` column. Captured `line`s are in the candidate's own numbering.
+  - `queries values` leaves candidate runs out, so they never mix with values the real program produced.
+  - `queries diff` pairs values by hit and selector, so a candidate whose lines moved still compares.
+- **Not a verification:** this is evidence about one run. Only `peeky verify` checks a fix.
+- **Python:** there is no build step, so edit the file and probe again (or use `verify`). Attached JVMs refuse it.
+
 ---
 
 ## 7. C, C++, Rust and Java
