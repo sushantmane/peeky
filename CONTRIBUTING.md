@@ -34,7 +34,7 @@ git archive HEAD | docker run --rm -i --cap-add=SYS_PTRACE --security-opt seccom
 PEEKY_E2E_DOCKER=1 pytest tests/remote   # the remote SSH lane, on the host
 ```
 
-It runs quality, unit, integration, C, C++, Rust, Java and wheel smoke against the committed tree (`git archive HEAD`), and prints one `PASS`/`FAIL` line per lane. The tree goes in through stdin rather than a bind mount: OrbStack bind mounts from protected folders such as `~/Documents` can hang. The image uses your machine's architecture (arm64 on Apple Silicon); hosted CI is x86_64.
+It runs quality, unit, integration, C, C++, Rust, Java and wheel smoke against the committed tree (`git archive HEAD`), plus a Rust lane with LLVM 20's lldb-dap, whose `readMemory` qualifies Rust memory views (hosted CI has only LLVM 18), and prints one `PASS`/`FAIL` line per lane. The tree goes in through stdin rather than a bind mount: OrbStack bind mounts from protected folders such as `~/Documents` can hang. The image uses your machine's architecture (arm64 on Apple Silicon); hosted CI is x86_64.
 
 ## Delivery
 

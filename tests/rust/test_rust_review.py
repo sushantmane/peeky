@@ -249,6 +249,9 @@ def test_rust_reference_parameters_are_read_from_memory_and_locals_never_are(cra
     # `label` is a parameter that format! borrows: still read.
     for local in ("ordered", "view", "other", "s", "titled"):
         assert rows[local].get("view") != "memory", rows[local]
+    if os.environ.get("PEEKY_EXPECT_READ_MEMORY"):
+        # A lane qualifying memory views must not pass on the raw fallback.
+        assert rows["values"].get("view") == "memory", rows["values"]
     if rows["values"].get("view") == "memory":
         # lldb-dap with readMemory (LLVM 20+): read at DWARF-validated offsets.
         value = {selector: row.get("value") for selector, row in rows.items()}
