@@ -103,8 +103,9 @@ _RULES = (
         r"|has no readable value here|refused in an optimized build",
         "MUTATION_REJECTED",
         "The message names the rule broken. Root locals only, literal values only (Python: "
-        "literals incl. containers; C, C++, Java: scalars of the local's type; Rust: i32 "
-        "locals kept in memory). Observe instead, or edit the source and run verify.",
+        "literals incl. containers; C, C++: integers of 16 to 64 bits; Java: scalars of the "
+        "local's type; Rust: integers kept in memory). `session inspect` marks what can be "
+        "changed [settable]. Observe instead, or edit the source and run verify.",
         False,
     ),
     (

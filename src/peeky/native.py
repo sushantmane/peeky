@@ -806,6 +806,50 @@ def external_inputs(depfiles, workspace, declared):
     return dict(sorted(found.items()))
 
 
+def _integer_ranges():
+    """LLDB's names for integer types on LP64 targets (macOS, Linux; C, C++ and Rust),
+    with the standard <stdint.h>/<stddef.h> typedefs, and each one's range. Character
+    and boolean types are excluded: their values are not plain integers."""
+    ranges = {}
+    for names, bits, signed in (
+        (("short", "short int", "int16_t"), 16, True),
+        (("unsigned short", "unsigned short int", "uint16_t"), 16, False),
+        (("int", "int32_t"), 32, True),
+        (("unsigned int", "unsigned", "uint32_t"), 32, False),
+        (
+            ("long", "long int", "long long", "long long int", "int64_t", "ssize_t")
+            + ("ptrdiff_t", "intptr_t"),
+            64,
+            True,
+        ),
+        (
+            ("unsigned long", "unsigned long int", "unsigned long long")
+            + ("unsigned long long int", "uint64_t", "size_t", "uintptr_t"),
+            64,
+            False,
+        ),
+    ):
+        span = (-(2 ** (bits - 1)), 2 ** (bits - 1) - 1) if signed else (0, 2**bits - 1)
+        for name in names:
+            ranges[name] = span
+            if name.endswith("_t"):
+                ranges[f"std::{name}"] = span
+    return ranges
+
+
+INTEGER_RANGES = _integer_ranges()
+
+
+def _writable_integer(variable):
+    attributes = variable.get("presentationHint", {}).get("attributes", [])
+    return (
+        variable.get("type") in INTEGER_RANGES
+        and variable.get("variablesReference", 0) == 0
+        and "readOnly" not in attributes
+        and bool(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", str(variable.get("name", ""))))
+    )
+
+
 class NativeSession:
     # lldb-dap reports optimized-out/not-live locals as `<error: ...>` text.
     reports_unavailable_as_text = True
@@ -928,26 +972,26 @@ class NativeSession:
         self.target.validate_breakpoints(points)
 
     def validate_value(self, value):
-        if not isinstance(value, str) or not re.fullmatch(r"[+-]?(?:0|[1-9][0-9]{0,9})", value):
+        if not isinstance(value, str) or not re.fullmatch(r"[+-]?(?:0|[1-9][0-9]{0,19})", value):
             raise ValueError("Native mutations require bounded decimal integer literals")
+
+    def settable(self, variable, frame=None):
+        """Whether a root local is a writable integer of a type Peeky can change."""
+        return _writable_integer(variable)
 
     def validate_variable(self, variable, value):
         self.validate_value(value)
         kind = variable.get("type")
-        attributes = variable.get("presentationHint", {}).get("attributes", [])
-        if (
-            kind not in ("int", "unsigned int")
-            or variable.get("variablesReference", 0) != 0
-            or "readOnly" in attributes
-        ):
-            raise ValueError("Only writable int or unsigned int locals support native mutation")
-        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", variable.get("name", "")):
-            raise ValueError("Native mutation requires an exact local identifier")
-        number = int(value)
-        if not (
-            -2147483648 <= number <= 2147483647 if kind == "int" else 0 <= number <= 4294967295
-        ):
-            raise ValueError("Native integer mutation is outside the supported 32-bit range")
+        if not _writable_integer(variable):
+            raise ValueError(
+                f"Only writable integer locals (16 to 64 bits) support native mutation: "
+                f"{variable.get('name')!r} has debugger type {kind!r}"
+            )
+        low, high = INTEGER_RANGES[kind]
+        if not low <= int(value) <= high:
+            raise ValueError(
+                f"Native integer mutation is outside the range of {kind} ({low} to {high})"
+            )
 
     def mutation_value(self, response):
         # LLVM18 used result; current DAP adapters use value.

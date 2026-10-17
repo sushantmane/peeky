@@ -154,3 +154,52 @@ def test_a_static_that_shadows_a_member_is_never_read_as_the_member(ring, capsys
     assert "value" not in rows["calls"] and "if the code means the member" in rows["calls"]["error"]
     assert rows["this.calls"]["value"] == "7"
     assert "static calls=101" in result["output"]
+
+
+WIDE = """#include <cstddef>
+#include <cstdio>
+
+int main() {
+    std::size_t count = 3;
+    long total = 5000000000L;
+    std::printf("COUNT:%zu TOTAL:%ld\\n", count, total);
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(120)
+def test_cpp_size_t_and_long_locals_can_be_changed_within_their_range(ring, capsys):
+    (ring / "ring.cpp").write_text(WIDE)
+    code = main(
+        [
+            "probe",
+            str(ring),
+            "--at",
+            "7",
+            "--capture",
+            "count,total",
+            "--set",
+            "count=18446744073709551615",
+            "--set",
+            "total=-9000000000",
+            "--json",
+            "--no-save",
+            "--quiet",
+        ]
+    )
+    result = json.loads(capsys.readouterr().out)
+    assert code == 0, result.get("error")
+    assert "COUNT:18446744073709551615 TOTAL:-9000000000" in result["output"]
+    code = main(
+        ["probe", str(ring), "--at", "7", "--set", "count=-1", "--json", "--no-save", "--quiet"]
+    )
+    result = json.loads(capsys.readouterr().out)
+    assert code == 1 and result["error"]["code"] == "MUTATION_REJECTED"
+    try:
+        assert main(["session", "start", str(ring), "--at", "7"]) == 0
+        assert main(["session", "inspect"]) == 0
+        text = capsys.readouterr().out
+        assert "count: " in text and "[settable]" in text.split("count: ", 1)[1].splitlines()[0]
+    finally:
+        main(["session", "close"])

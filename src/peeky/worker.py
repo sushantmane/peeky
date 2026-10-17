@@ -1266,6 +1266,10 @@ class DebugWorker:
                 result.append(output)
                 self.inspection_nodes += 1
                 continue
+            settable = None
+            if not ancestry and (check := getattr(self.runtime, "settable", None)):
+                # Root locals `set` can change, so agents need not try and be refused.
+                settable = bool(check(variable, frame))
             path = (*ancestry, (name, kind))
             handle = 0
             raw = variable.get("variablesReference", 0)
@@ -1308,6 +1312,8 @@ class DebugWorker:
                 output["presentationHint"] = safe_hint
             if type(raw) is int and raw > 0 and len(path) >= 4:
                 output["depth_limited"] = True
+            if settable is not None:
+                output["settable"] = settable
             result.append(output)
             self.inspection_nodes += 1
         return result

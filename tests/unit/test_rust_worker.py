@@ -224,15 +224,23 @@ def bare_session():
 @pytest.mark.parametrize(
     "variable",
     [
-        {"name": "flag", "type": "unsigned int", "variablesReference": 0},
         {"name": "some", "type": OPTION, "variablesReference": 0},
-        {"name": "wide", "type": "long", "variablesReference": 0},
+        {"name": "byte", "type": "unsigned char", "variablesReference": 0},
+        {"name": "flag", "type": "bool", "variablesReference": 0},
+        {"name": "wide", "type": "__int128", "variablesReference": 0},
     ],
 )
-def test_rust_mutation_is_limited_to_i32_locals(variable):
-    with pytest.raises(ValueError, match="i32"):
+def test_rust_mutation_is_limited_to_integer_locals(variable):
+    with pytest.raises(ValueError, match="i16 to i64, u16 to u64, isize, usize"):
         bare_session().validate_variable(variable, "1")
     bare_session().validate_variable({"name": "start", "type": "int"}, "0")
+    bare_session().validate_variable(
+        {"name": "index", "type": "unsigned long"}, "18446744073709551615"
+    )
+    with pytest.raises(ValueError, match="outside the range of unsigned int"):
+        bare_session().validate_variable({"name": "count", "type": "unsigned int"}, "-1")
+    with pytest.raises(ValueError, match="outside the range of long"):
+        bare_session().validate_variable({"name": "big", "type": "long"}, "9223372036854775808")
 
 
 def test_rust_launch_disables_symbol_file_scripts(monkeypatch):
@@ -836,3 +844,13 @@ def test_provenance_is_rechecked_on_wait_and_report(worker):
     with pytest.raises(RuntimeError, match="changed"):
         call(worker, "wait")
     assert worker.dap is None and worker.session is None
+
+
+def test_rust_locals_are_settable_only_when_kept_in_memory():
+    session = bare_session()
+    session.memory = {("h0123456789abcdef", "index"): True, ("h0123456789abcdef", "copy"): False}
+    frame = {"name": "demo::f::h0123456789abcdef"}
+    assert session.settable({"name": "index", "type": "unsigned long"}, frame) is True
+    assert session.settable({"name": "copy", "type": "int"}, frame) is False
+    assert session.settable({"name": "index", "type": "unsigned char"}, frame) is False
+    assert session.settable({"name": "index", "type": "unsigned long"}, {"name": "f"}) is False

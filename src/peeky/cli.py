@@ -543,9 +543,12 @@ def describe(args):
         finally:
             runtime.close()
         manifest["mutable_types"] = {
-            "rust": "i32 root locals the program keeps in memory (debugger type int)",
-            "c": "int/unsigned int root locals",
-            "cpp": "int/unsigned int root locals",
+            "rust": "integer root locals (i16 to i64, u16 to u64, isize, usize) the program "
+            "keeps in memory; `inspect` marks them [settable]",
+            "c": "integer root locals (16 to 64 bits, incl. size_t/int64_t); `inspect` marks "
+            "them [settable]",
+            "cpp": "integer root locals (16 to 64 bits, incl. size_t/int64_t); `inspect` marks "
+            "them [settable]",
             "java": "numeric/boolean root locals",
             "java-attach": "numeric/boolean root locals (attached JVM; no edit verification)",
         }[language]
@@ -956,6 +959,8 @@ def _variables_text(snapshot, name="default"):
             if variable.get("unavailable"):
                 more = f" (no readable value: {variable.get('reason')})"
             view = f"  [{variable['view']}]" if variable.get("view") else ""
+            if variable.get("settable"):
+                view += "  [settable]"
             lines.append(
                 f"  {variable['name']}: {variable.get('type', '')} = "
                 f"{'<no value>' if variable.get('unavailable') else variable['value']}{view}{more}"

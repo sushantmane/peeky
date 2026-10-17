@@ -243,3 +243,37 @@ def test_the_receiver_reaches_the_inspection(tmp_path):
     assert "receiver" not in inspect(worker)
     worker.runtime.implicit_receiver = "this"
     assert inspect(worker)["receiver"] == "this"
+
+
+def test_native_integer_locals_take_values_within_their_own_type():
+    from types import SimpleNamespace
+
+    from peeky.native import INTEGER_RANGES, NativeSession
+
+    session = SimpleNamespace(
+        validate_value=lambda value: NativeSession.validate_value(None, value)
+    )
+
+    def change(kind, value):
+        NativeSession.validate_variable(session, {"name": "n", "type": kind}, value)
+
+    change("size_t", "18446744073709551615")
+    change("std::int64_t", "-9223372036854775808")
+    change("short", "-32768")
+    with pytest.raises(ValueError, match=r"outside the range of unsigned short \(0 to 65535\)"):
+        change("unsigned short", "65536")
+    for kind in ("char", "unsigned char", "bool", "const int", "float", "int *"):
+        assert kind not in INTEGER_RANGES
+        with pytest.raises(ValueError, match="16 to 64 bits"):
+            change(kind, "1")
+    with pytest.raises(ValueError, match="bounded decimal integer literals"):
+        change("long", "123456789012345678901")
+
+
+def test_inspections_mark_settable_root_locals_only(tmp_path):
+    worker = stopped(tmp_path)
+    worker.runtime.settable = lambda variable, frame: variable["name"] == "value"
+    snapshot = inspect(worker)
+    marks = {v["name"]: v.get("settable") for s in snapshot["scopes"] for v in s["variables"]}
+    assert marks and marks.get("value") is True
+    assert all(mark is False for name, mark in marks.items() if name != "value")
