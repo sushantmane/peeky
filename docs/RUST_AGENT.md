@@ -11,6 +11,22 @@ A Rust candidate passes only when both of these pass on the same fresh build:
 
 Baseline test failure is recorded and does not stop the investigation; the checker must fail on the original. A failed test assertion or checker case is a verification failure that returns to the decision loop. Candidate compile errors are retryable `build` results only when Cargo's JSON messages (`--message-format=json-diagnostic-short`) show every rustc `error` with a primary span in a declared application source. Span-less errors such as linker or driver failures, errors elsewhere, and malformed or possibly truncated messages are fatal. A test-target compile failure, toolchain/probe failure, unexpected artifact, executable drift or source/test/checker change is fatal.
 
+## The MIR behind owned-local views (#53)
+
+Unoptimized builds also compile the binary crate through a small rustc wrapper (`RUSTC_WORKSPACE_WRAPPER`). It is written into Peeky's own build directory, and its bytes are rechecked before every command. For that crate only, the wrapper adds:
+- `-Zmir-opt-level=0`;
+- a `PreCodegen` MIR dump into `target/peeky-mir`;
+- legacy symbol mangling.
+
+`RUSTC_BOOTSTRAP` is set to that crate's name only, so no other crate gets unstable features. The test target and anything else Cargo compiles get no flags, and Cargo reuses the one binary unit for both commands. The dumps are a hashed build artifact.
+
+`rust_mir` uses them as follows:
+- It parses the dumps and runs a definite-initialization dataflow over each body.
+- It maps the stop line to MIR blocks through the LLVM IR's debug locations, which already attribute macro-expanded code to the invoking line.
+- It reads an owned `Vec<i32>` or `String` local only if every such block has the local initialized on entry and never moves, drops or ends it.
+
+Anything not understood proves nothing: an unparsed statement, a coroutine, a projected or doubly bound name, a body that is ambiguous for its IR function, or a block of unknown origin. Optimized builds use no wrapper and read no owned locals. Unsafe code that duplicates ownership (`ptr::read`) is outside the proof.
+
 ## Required deterministic proof
 
 ```sh

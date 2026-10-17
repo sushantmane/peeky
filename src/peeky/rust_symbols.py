@@ -354,6 +354,12 @@ REFERENCE_PARAMETERS = {
     "&alloc::string::String": ("alloc::string::String *", "alloc::string::String", True),
     "&mut alloc::string::String": ("alloc::string::String *", "alloc::string::String", True),
 }
+# Owned locals read when rust_mir proves them initialized: {debugger type: layout}
+# (LLDB names i32 `int`).
+OWNED_CONTAINERS = {
+    "alloc::vec::Vec<int, alloc::alloc::Global>": _VEC,
+    "alloc::string::String": "alloc::string::String",
+}
 CONTAINER_KINDS = frozenset(kind for kind, _ in QUALIFIED_CONTAINERS.values())
 
 
@@ -695,18 +701,21 @@ def _shown_text(text, length):
     return f"{shown} (first {len(prefix.encode())} of {length} bytes)"
 
 
-def container_view(variable, read, layouts, *, optimized, parameter=None):
-    """A reference parameter's container read from memory, or None to leave it raw.
+def container_view(variable, read, layouts, *, optimized, parameter=None, owned=False):
+    """A proven container read from memory, or None to leave it raw.
 
     ``parameter`` is the declared type of a parameter whose liveness the compiler's IR
-    proves (rust_ir); anything else, including every local, stays raw: a moved,
-    dropped or not-yet-initialized local can hold a pointer into freed memory.
+    proves (rust_ir); ``owned`` says the compiler's MIR proves this owned local
+    initialized at the stop (rust_mir). Anything else stays raw: a moved, dropped or
+    not-yet-initialized local can hold a pointer into freed memory.
     ``read(address, count)`` returns exactly ``count`` bytes or raises. The container
     is read at its compiler-validated offsets, then its first MAX_ELEMENTS elements (or
     MAX_TEXT_BYTES of text). A length above the capacity, or a null or misaligned
     buffer, is never shown as contents.
     """
     reference_type = REFERENCE_PARAMETERS.get(parameter)
+    if owned and variable.get("type") in OWNED_CONTAINERS:
+        reference_type = (variable["type"], OWNED_CONTAINERS[variable["type"]], False)
     if reference_type is None or variable.get("type") != reference_type[0]:
         return None
     _, name, thin = reference_type

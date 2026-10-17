@@ -607,8 +607,9 @@ def _describe_text(manifest):
         lines.append(f"qualified enum views: {', '.join(enums) or 'none'}")
         if containers:
             lines.append(
-                "reference parameters read from memory (debuggers with readMemory; locals stay "
-                "raw): " + ", ".join(containers)
+                "read from memory (debuggers with readMemory): reference parameters, and owned "
+                "Vec<i32>/String locals where the build's MIR proves them initialized: "
+                + ", ".join(containers)
             )
         lines.append(f"other enum types (shown opaque, not decoded): {len(opaque)}")
     if reason := manifest.get("scopes_unavailable"):

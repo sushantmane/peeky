@@ -244,10 +244,12 @@ def test_rust_reference_parameters_are_read_from_memory_and_locals_never_are(cra
     code, result = probe(capsys, crate, "--at", at, "--capture", selectors)
     assert code == 0, result.get("error")
     rows = {row["selector"]: row for row in result["rows"]}
-    # Locals are never read from memory: `ordered` was dropped, `view` outlived it,
-    # `s` was moved into its shadow. Their stale pointers can reach reused memory.
+    # `ordered` was dropped and `view` (a reference local) outlived it: their stale
+    # pointers can reach reused memory, so they are never read. `s` names two bindings
+    # (the second shadows the first), so the plain name finds neither. `other` and
+    # `titled` are owned locals the build's MIR proves initialized here (#53).
     # `label` is a parameter that format! borrows: still read.
-    for local in ("ordered", "view", "other", "s", "titled"):
+    for local in ("ordered", "view", "s"):
         assert rows[local].get("view") != "memory", rows[local]
     if os.environ.get("PEEKY_EXPECT_READ_MEMORY"):
         # A lane qualifying memory views must not pass on the raw fallback.
@@ -268,6 +270,7 @@ def test_rust_reference_parameters_are_read_from_memory_and_locals_never_are(cra
         assert value["text"] == '"größe!"'
         assert len(value["big"]) <= 1000 and value["big"].endswith(" of 300)")
         assert (value["big[200]"], value["big.len"]) == ("1000200", "300")
+        assert value["other"] == "[-1, -2, -3]" and value["titled"] == '"größe:3"'
     else:
         # LLVM 18 and 19 lldb-dap have no readMemory: the raw value, and an explicit reason.
         assert "only for reference parameters" in rows["values[0]"]["error"]
@@ -326,14 +329,18 @@ def test_a_line_shared_with_a_closure_names_each_function_it_stops_in(crate, cap
     )
     assert code == 1 and result["error"]["code"] == "MUTATION_REJECTED", result
     assert "'score' in peeky_pagination::ranked::{{closure}}" in result["error"]["message"]
-    # Owned containers say why they are raw, and how to read them.
+    # An owned container live at the line is read (#53); without readMemory it stays
+    # raw and says why, and how to read it.
     at = next(i for i, line in enumerate(lines, 1) if "// BEST" in line)
     code, result = probe(capsys, crate, "--at", at, "--capture", "best,best.len")
     assert code == 0, result.get("error")
     rows = {row["selector"]: row for row in result["rows"]}
-    assert "through reference parameters (#53)" in rows["best"]["note"]
+    if os.environ.get("PEEKY_EXPECT_READ_MEMORY") or rows["best"].get("view") == "memory":
+        assert rows["best"]["value"] == "[9, 5, 1]" and rows["best"]["view"] == "memory"
+    else:
+        assert "(#53)" in rows["best"]["note"]
+        assert any("#53" in warning for warning in result["warnings"])
     assert rows["best.len"]["value"] == "3" and "note" not in rows["best.len"]
-    assert any("#53" in warning for warning in result["warnings"])
 
 
 @pytest.mark.timeout(240)
