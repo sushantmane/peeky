@@ -254,3 +254,8 @@ The verification of 1240cdc confirmed seven of the eight repros. It found one re
   Tests:
   - `test_threads_stopped_separately_at_a_to_line_are_never_numbered`, a real JVM with two threads (3 of 3 runs);
   - the updated unit tests, including a crash followed by a co-stop.
+
+The final check confirmed the Java, crash-then-co-stop and LLDB repros, plus moved breakpoints in Python, C and Rust, and found no regressions. One should-fix remained, now fixed:
+- **Should-fix:** before any `--to`, a stop at a known line Peeky did not place was numbered. An example is a Python program's own `breakpoint()` call, which debugpy reports with reason `breakpoint`. It shifted every later hit away from the probe's numbering. The "no `--to` used" rule now applies only to a stop whose line could not be read; a known line that is neither own nor `--to` ends numbering. Tests:
+  - `test_a_programs_own_breakpoint_call_ends_hit_numbering` (real debugpy);
+  - `test_a_stop_at_a_line_peeky_did_not_place_ends_numbering`.

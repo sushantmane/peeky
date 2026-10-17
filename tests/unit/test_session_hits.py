@@ -39,11 +39,19 @@ def test_a_to_line_where_the_debugger_placed_the_sessions_breakpoint_is_a_hit(tm
 def test_an_unclassifiable_stop_ends_numbering_never_guessed(tmp_path):
     worker = DebugWorker(tmp_path)
     worker.record_own_points([{"line": 5}], {"breakpoints": [{"id": 1, "line": 5}]})
-    # No --to line ever used: every breakpoint stop is the session's own.
-    assert stop(worker, None) == 1 and stop(worker, 6) == 2
+    # No --to line ever used: a stop whose line could not be read is the session's own.
+    assert stop(worker, None) == 1 and stop(worker, 5) == 2
     worker.temporary_lines.add(8)
     assert stop(worker, None) is None and worker.hits is None
     assert stop(worker, 5) is None  # never numbered again in this session
+
+
+def test_a_stop_at_a_line_peeky_did_not_place_ends_numbering(tmp_path):
+    # debugpy reports a program's own `breakpoint()` call with reason "breakpoint".
+    worker = DebugWorker(tmp_path)
+    worker.record_own_points([{"line": 3}], {"breakpoints": [{"id": 1, "line": 3}]})
+    assert stop(worker, 3) == 1
+    assert stop(worker, 6) is None and worker.hits is None and stop(worker, 3) is None
 
 
 class Scripted:

@@ -724,3 +724,27 @@ def test_sessions_number_their_hits_and_run_on_to_the_nth(tmp_path, monkeypatch,
     with pytest.raises(SystemExit) as exit_:
         run(capsys, "session", "start", script, "--at", "3", "--hit", "0")
     assert exit_.value.code == 2 and "whole number from 1" in capsys.readouterr().err
+
+
+def test_a_programs_own_breakpoint_call_ends_hit_numbering(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
+    script = tmp_path / "bp.py"
+    script.write_text(
+        "total = 0\nfor i in range(3):\n    total += i\n    if i == 1:\n"
+        "        breakpoint()\n        x = i\nprint(total)\n"
+    )
+    states = []
+    try:
+        code, out = run(capsys, "session", "start", script, "--at", "3", "--json")
+        states.append(json.loads(out.out))
+        for _ in range(3):
+            code, out = run(capsys, "session", "continue", "--json")
+            assert code == 0, out
+            states.append(json.loads(out.out))
+    finally:
+        run(capsys, "session", "close")
+    lines = [(s["location"].rsplit(":", 1)[-1], s.get("hit"), s.get("numbered")) for s in states]
+    # breakpoint() is not the session's: no number from there on, never a shifted one.
+    assert lines[:2] == [("3", 1, True), ("3", 2, True)], lines
+    assert lines[2][0] != "3" and lines[2][1:] == (None, False), lines
+    assert lines[3] == ("3", None, False), lines

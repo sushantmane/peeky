@@ -392,16 +392,17 @@ class DebugWorker:
         The session's breakpoints are its own and its one-shot `--to` lines. A stop at
         an own line (requested or placed) is a hit; one at a `--to` line that is not an
         own line never is, whenever it is served (LLDB serves other threads' stops
-        before resuming, java-debug after). With no `--to` ever used, every breakpoint
-        stop is the session's. Anything else is never guessed: numbering ends.
+        before resuming, java-debug after). A stop whose line could not be read is the
+        session's own while no `--to` was ever used. Anything else (a program's own
+        `breakpoint()` call, a line Peeky did not place) is never guessed: numbering ends.
         """
         if self.stop_reason != "breakpoint" or self.hits is None:
             return
         line = self.stop_line
-        if line in self.own_lines or not self.temporary_lines:
+        if line in self.own_lines or (line is None and not self.temporary_lines):
             self.hits += 1
             self.stop_hit = self.hits
-        elif line not in self.temporary_lines:
+        elif line is None or line not in self.temporary_lines:
             self.hits = None
 
     def set_points(self, runtime, points, temporary=None):
