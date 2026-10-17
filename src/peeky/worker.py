@@ -339,7 +339,13 @@ class DebugWorker:
             self.audit_bytes -= self.audit_sizes.pop(0)
 
     def pending_stop_elsewhere(self):
-        """Whether another thread's breakpoint stop has arrived but not been served."""
+        """Whether another thread, stopped separately (java-debug), awaits service.
+
+        All-threads stops (LLDB) are covered by co_stopped/co_served; their other
+        pending events go stale once every thread resumes.
+        """
+        if self.stop_all_threads:
+            return False
         events_between = getattr(self.dap, "events_between", None)
         cursor = getattr(self.dap, "event_cursor", None)
         if not (events_between and cursor):

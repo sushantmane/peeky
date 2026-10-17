@@ -165,3 +165,8 @@ One blocking issue, two should-fix issues and one nit. All are fixed with real-J
 - **Should-fix:** `skipSynthetics` made lambda bodies (synthetic `lambda$main$0`) unreachable by `step --into`. It is now off: `--into` on `xs.forEach(x -> sink(x))` reaches the lambda body, then `sink` (`test_java_step_into_reaches_lambda_bodies`).
 - **Should-fix:** java-debug applies class filters only to step into and step out. A plain step at the end of a method that JDK code called can stop in JDK code, where reads are refused. The docs now say so.
 - **Nit:** the launcher accepted `"1"`, `1.5`, `-1`, `0` and out-of-range `threadId` values. Only a positive integer is accepted now (adapter test).
+
+Verification of 17ff75f confirmed all four fixes on launched and attached JVMs (two threads with `--max-pause`, lambdas, JDK callers, raw `threadId` values). It found one regression in LLDB sessions, now fixed:
+- **Should-fix:** `pending_stop_elsewhere` also applied to all-threads stops. Stepping over a call during which another thread hit the breakpoint left the stepping thread's own `step` event pending, so every later `step` was refused. The check now applies only when threads stop separately (java-debug); for all-threads stops `co_stopped`/`co_served` already cover the other threads. `test_a_step_interrupted_by_another_threads_hit_can_still_step` (real lldb-dap, three runs) fails without the fix.
+
+Two older problems found in passing, not caused by this PR: a Java breakpoint on a line owned by two classes fails at start with `DEBUGGER_ERROR` instead of `INVALID_BREAKPOINT`; and debugpy reports one stop when two threads reach a breakpoint together.
