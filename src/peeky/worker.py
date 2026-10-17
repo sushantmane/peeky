@@ -937,10 +937,11 @@ class DebugWorker:
             return {"state": self.state}
         if operation == "step":
             self.stopped(args)
-            if not getattr(runtime, "supports_stepping", True):
+            if self.capabilities.get("supports_stepping") is False:
                 raise ValueError(
-                    "Stepping is not supported for this target yet; use `session continue --to "
-                    "LINE` to stop at another line"
+                    "Stepping is not supported by this debugger adapter (a Java adapter bundle "
+                    "built before stepping: rebuild it with scripts/setup_java_adapter.py); use "
+                    "`session continue --to LINE` to stop at another line"
                 )
             if self.co_stopped() is not None or self.co_served:
                 # The debugger re-reports the other threads' old stops when a step ends.
@@ -1286,8 +1287,15 @@ def _in_program_sources(runtime, frame, root):
     except (OSError, ValueError):
         return False
     lines, prepared = getattr(runtime, "lines", None), getattr(runtime, "prepared", None)
-    if isinstance(lines, dict) and prepared is not None:
-        for base in (prepared.workspace, prepared.source_root):
+    bases = (
+        (prepared.workspace, prepared.source_root)
+        if prepared is not None
+        else (runtime.root,)
+        if getattr(runtime, "root", None) is not None
+        else ()
+    )
+    if isinstance(lines, dict) and bases:
+        for base in bases:
             try:
                 relative = resolved.relative_to(Path(base).resolve()).as_posix()
             except (OSError, ValueError):

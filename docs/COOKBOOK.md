@@ -444,7 +444,7 @@ state: stopped at .../pagination_bug.py:13 (paused 0.0 s)
 state: terminated (program exited; `peeky session report` shows output)
 ```
 
-`peeky session continue --to 9` stops once at line 9 of the session's file (the extra breakpoint is removed at the next stop), then the session's own breakpoint applies again. A step can leave your sources, for example into a library, into Rust's standard library, or past the end of `main`. The state then says `outside the program's sources`, and nothing there is read or changed. While your code is still on the stack, `step --out` returns to it; past `main`, the state says so and `continue` finishes. `continue --to` refuses a line the debugger would move (no code there) and keeps the stop. When several threads stop at the breakpoint together, `step` waits until `continue` has served and resumed them. Java sessions take `continue --to` but not `step` yet (`UNSUPPORTED`, [#48](https://github.com/sushantmane/peeky/issues/48)).
+`peeky session continue --to 9` stops once at line 9 of the session's file (the extra breakpoint is removed at the next stop), then the session's own breakpoint applies again. A step can leave your sources, for example into a library, into Rust's standard library, or past the end of `main`. The state then says `outside the program's sources`, and nothing there is read or changed. While your code is still on the stack, `step --out` returns to it; past `main`, the state says so and `continue` finishes. `continue --to` refuses a line the debugger would move (no code there) and keeps the stop. When several threads stop at the breakpoint together, `step` waits until `continue` has served and resumed them. Java steps skip JDK code (`java.*`, `javax.*`, `jdk.*`, `sun.*`, `com.sun.*`), so `step --into` on a line that calls `Math.min` stays in your code. Java adapter bundles built before stepping are refused with a hint to rebuild them.
 
 ### 5.3 Several Sessions at Once
 
@@ -704,7 +704,7 @@ All codes are listed in [ERRORS.md](ERRORS.md). If you suspect a filesystem with
 | `condition 1 x > 5` | `--hits N`, then `peeky sql "... WHERE num > 5"` | Conditions would run code in the program |
 | `info locals`, `print *obj` | `peeky session inspect`, `peeky session get obj` | `get` lists one level of children with their selectors |
 | `bt` | `peeky session inspect --json \| jq '.frames'` | The stack at the stop; values come from the top frame |
-| `next`, `step`, `finish` | `peeky session step`, `step --into`, `step --out` | Not for Java yet |
+| `next`, `step`, `finish` | `peeky session step`, `step --into`, `step --out` | Java steps skip JDK code |
 | `until 42`, `advance 42` | `peeky session continue --to 42` | One-shot; the session's own breakpoint stays |
 | `continue` | `peeky session continue [--to-exit]` | Runs to the next stop or to exit |
 | "rerun with another input and compare by eye" | `--arg ... --label A`, then `peeky queries diff` | The first diff row is the first divergence |

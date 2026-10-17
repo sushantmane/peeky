@@ -14,7 +14,20 @@ import java.util.concurrent.CompletableFuture;
 public final class PeekyJavaAdapter extends ProtocolServer {
     private static final Set<String> COMMANDS = Set.of("initialize", "launch", "attach", "setBreakpoints",
         "configurationDone", "threads", "stackTrace", "scopes", "variables", "setVariable",
-        "continue", "disconnect");
+        "continue", "next", "stepIn", "stepOut", "disconnect");
+    private static final Set<String> STEPS = Set.of("next", "stepIn", "stepOut");
+
+    /** Fixed step filters: steps never stop inside the JDK; requests cannot change them. */
+    private static JsonObject stepFilters() {
+        JsonObject filters=new JsonObject();
+        JsonArray skip=new JsonArray();
+        for (String pattern : List.of("java.*", "javax.*", "jdk.*", "sun.*", "com.sun.*")) skip.add(pattern);
+        filters.add("skipClasses", skip);
+        filters.addProperty("skipSynthetics", true);
+        filters.addProperty("skipStaticInitializers", false);
+        filters.addProperty("skipConstructors", false);
+        return filters;
+    }
     private final SourceMap sources;
 
     private PeekyJavaAdapter(ProviderContext context, SourceMap sources) {
@@ -34,6 +47,7 @@ public final class PeekyJavaAdapter extends ProtocolServer {
                 if (args.has("console") && !args.get("console").getAsString().equals("internalConsole"))
                     throw new IllegalArgumentException("only internalConsole supported");
                 args.addProperty("console", "internalConsole");
+                args.add("stepFilters", stepFilters());
             }
             if (request.command.equals("attach")) {
                 // Loopback JDWP only; remote JVMs must be reached through an SSH tunnel.
@@ -47,6 +61,15 @@ public final class PeekyJavaAdapter extends ProtocolServer {
                 if (port<1 || port>65535) throw new IllegalArgumentException("invalid attach port");
                 for (String key : new ArrayList<>(args.keySet()))
                     if (!Set.of("hostName", "port", "timeout").contains(key)) args.remove(key);
+                args.add("stepFilters", stepFilters());
+            }
+            if (STEPS.contains(request.command)) {
+                // Only the thread: no step-in targets, granularity or other options.
+                if (args==null || !args.has("threadId") || !args.get("threadId").isJsonPrimitive())
+                    throw new IllegalArgumentException("step requires threadId");
+                long thread=args.get("threadId").getAsLong();
+                for (String key : new ArrayList<>(args.keySet())) args.remove(key);
+                args.addProperty("threadId", thread);
             }
             if (request.command.equals("setBreakpoints")) {
                 if (args.has("breakpoints")) for (JsonElement e : args.getAsJsonArray("breakpoints")) {
@@ -73,6 +96,8 @@ public final class PeekyJavaAdapter extends ProtocolServer {
             JsonObject caps=new JsonObject();
             caps.addProperty("supportsConfigurationDoneRequest", true);
             caps.addProperty("supportsSetVariable", true);
+            // Peeky's own marker: this launcher allows next/stepIn/stepOut (with fixed filters).
+            caps.addProperty("peekySteps", true);
             response.body=caps;
         }
         super.sendResponse(response);

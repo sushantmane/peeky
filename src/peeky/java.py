@@ -230,9 +230,6 @@ class JavaTarget:
 
 
 class JavaSession:
-    # Peeky's Java launcher allows no step requests yet; `continue --to` works.
-    supports_stepping = False
-
     # java-debug accepts variables start/count only for arrays.
     ranges_only_for_indexed = True
     # java-debug occasionally drops VM-death events (#27); infer exit from no threads.
@@ -328,6 +325,8 @@ class JavaSession:
     def normalize_capabilities(self, raw):
         return {
             "supports_set_variable": raw.get("supportsSetVariable") is True,
+            # Launcher bundles built before stepping lack the marker: refuse cleanly.
+            "supports_stepping": raw.get("peekySteps") is True,
             "supports_conditional_breakpoints": False,
             "supports_hit_conditional_breakpoints": False,
             "supports_logpoints": False,

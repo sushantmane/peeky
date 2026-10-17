@@ -91,8 +91,15 @@ def test_java_runtime_intervention(bundle, tmp_path, nested):
                 "columnsStartAt1": True,
             },
         )
-        assert caps == {"supportsConfigurationDoneRequest": True, "supportsSetVariable": True}
-        for command in ("evaluate", "completions", "restart", "stepIn"):
+        assert caps == {
+            "supportsConfigurationDoneRequest": True,
+            "supportsSetVariable": True,
+            "peekySteps": True,
+        }
+        # Steps are allowed with a thread only; step-in targets, step back and goto are not.
+        with pytest.raises(RuntimeError, match="step requires threadId"):
+            dap.request("stepIn", {})
+        for command in ("evaluate", "completions", "restart", "stepBack", "stepInTargets", "goto"):
             with pytest.raises(RuntimeError, match="unsupported command"):
                 dap.request(command, {})
         for arguments, message in (
