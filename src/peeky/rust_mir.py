@@ -456,13 +456,11 @@ class OwnedLocals:
             return self._matched[hashed]
         function = self.functions.get(hashed)
         found = None
-        if function is not None and (lines := function.lines()):
-            # Positive identification: the body has a span on the line the function is
-            # declared on (its signature), and every line the function has code on lies
-            # between that line and the body's last span, or is a line the body has a
-            # span on (code of a same-file macro it expands: rustc keeps local macros'
-            # own lines in debug info). A same-named body elsewhere has no span on this
-            # function's `fn` line.
+        if function is not None and function.lines():
+            # Positive identification, never by elimination: exactly one body of this
+            # name and file (and parent) has a span on the line the function is declared
+            # on. Twins a local macro generates share that line (the `fn` is in the
+            # macro), so they are refused rather than told apart by their other lines.
             candidates = [
                 body
                 for body in self.bodies
@@ -474,12 +472,9 @@ class OwnedLocals:
                     or body.parent == function.parent
                 )
                 and function.line in body.lines
-                and all(
-                    function.line <= number <= max(body.lines) or number in body.lines
-                    for number in lines
-                )
-                and function.labeled() <= set(body.blocks)
             ]
+            if len(candidates) == 1 and not function.labeled() <= set(candidates[0].blocks):
+                candidates = []
             found = candidates[0] if len(candidates) == 1 else None
             if found is not None and not _covered(found, function):
                 found = None

@@ -307,3 +307,122 @@ def test_a_macro_defined_above_the_function_does_not_hide_its_proofs(crate, caps
     assert code == 0, result.get("error")
     if memory_views(result["rows"]):
         assert result["rows"][0]["value"] == "[1, 2, 3]"
+
+
+MACRO_TWIN_METHODS = """macro_rules! method {
+    ($($b:tt)*) => {
+        fn run() { $($b)* }
+    };
+}
+
+struct A;
+struct B;
+
+impl A {
+    method! {
+        let v = vec![1, 2, 3];
+        let mut u = v;
+        u.clear();
+        u.shrink_to_fit();
+        let w = vec![7, 7, 7];
+        let k = w.len(); // STOP
+        println!("a");
+    }
+}
+
+impl B {
+    method! {
+        let x = vec![4, 5, 6];
+        let mut u = x;
+        u.clear();
+        u.shrink_to_fit();
+        let v = vec![7, 7, 7];
+        let k = v.len();
+        println!("b");
+    }
+}
+
+fn main() {
+    A::run();
+    B::run();
+}
+"""
+
+MACRO_TWIN_CLOSURES = """macro_rules! scoped {
+    ($($b:tt)*) => {
+        (|| { $($b)* })()
+    };
+}
+
+mod a {
+    pub fn work() {
+        scoped! {
+            let v = vec![1, 2, 3];
+            let mut u = v;
+            u.clear();
+            u.shrink_to_fit();
+            let w = vec![7, 7, 7];
+            let k = w.len(); // STOP
+            println!("a");
+        }
+    }
+}
+
+mod b {
+    pub fn work() {
+        scoped! {
+            let x = vec![4, 5, 6];
+            let mut u = x;
+            u.clear();
+            u.shrink_to_fit();
+            let v = vec![7, 7, 7];
+            let k = v.len();
+            println!("b");
+        }
+    }
+}
+
+fn main() {
+    a::work();
+    b::work();
+}
+"""
+
+WRAPPER_MACRO = """macro_rules! say {
+    ($($t:tt)*) => {
+        println!($($t)*)
+    };
+}
+
+fn main() {
+    let v = vec![1, 2, 3];
+    say!("start");
+    let m = v.len() + 1; // BELOW
+    println!("{v:?} {m}");
+}
+"""
+
+
+@pytest.mark.parametrize(
+    "program", [MACRO_TWIN_METHODS, MACRO_TWIN_CLOSURES], ids=["methods", "closures"]
+)
+@pytest.mark.timeout(300)
+def test_functions_a_macro_generates_twice_are_never_proven_with_each_other(crate, capsys, program):
+    (crate / "src/main.rs").write_text(program)
+    at = next(i for i, text in enumerate(program.splitlines(), 1) if "// STOP" in text)
+    code = main(["probe", str(crate), "--at", f"src/main.rs:{at}", "--capture", "v", "--json"])
+    result = json.loads(capsys.readouterr().out)
+    assert code == 0, result.get("error")
+    # `v` was moved into `u` and freed by shrink_to_fit; its buffer went to `w`.
+    assert result["rows"][0].get("view") != "memory", result["rows"][0]
+
+
+@pytest.mark.timeout(300)
+def test_a_wrapper_macro_around_println_keeps_the_functions_proofs(crate, capsys):
+    (crate / "src/main.rs").write_text(WRAPPER_MACRO)
+    at = next(i for i, text in enumerate(WRAPPER_MACRO.splitlines(), 1) if "BELOW" in text)
+    code = main(["probe", str(crate), "--at", f"src/main.rs:{at}", "--capture", "v", "--json"])
+    result = json.loads(capsys.readouterr().out)
+    assert code == 0, result.get("error")
+    if memory_views(result["rows"]):
+        assert result["rows"][0]["value"] == "[1, 2, 3]"

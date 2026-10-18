@@ -311,9 +311,27 @@ def test_spans_of_a_macro_defined_above_do_not_hide_the_body():
     assert OwnedLocals([body], {"h": function}, SOURCES).body("h") is None  # no span on 7
     body.lines |= {7}
     assert OwnedLocals([body], {"h": function}, SOURCES).body("h") is body
-    # Code above the function on a line the body has no span on: not this body.
+    # External macros a local macro expands report the local macro's line: still it.
     function.blocks["bb1"].add(1)
-    assert OwnedLocals([body], {"h": function}, SOURCES).body("h") is None
+    assert OwnedLocals([body], {"h": function}, SOURCES).body("h") is body
+
+
+def test_twins_a_macro_generates_are_refused_not_told_apart():
+    def run(lines):
+        body = mir(
+            {0: ["_1 = make() -> [return: bb1, unwind continue];"], 1: ["return;"]},
+            header="fn <impl at src/main.rs:8:1: 8:7>::run() -> () {",
+            bindings=V,
+        )
+        body.lines = frozenset(lines)
+        return body
+
+    # Both expansions put their `fn`, return place and closing brace on the macro's
+    # line 3; only their bodies' tokens differ.
+    a, b = run({3, 12, 13, 14}), run({3, 21, 22, 23, 24})
+    function = IrFunction("run", "A", "src/main.rs", {"start": {3, 12}, "bb1": {13, 14}}, {}, 3)
+    assert OwnedLocals([a, b], {"h": function}, SOURCES).body("h") is None
+    assert OwnedLocals([a], {"h": function}, SOURCES).body("h") is a
 
 
 WRAPPER_RUSTC = (

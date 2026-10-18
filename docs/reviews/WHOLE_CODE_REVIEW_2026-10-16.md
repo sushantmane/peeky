@@ -394,3 +394,16 @@ Verification of 2bf24a3 confirmed both fixes: the three regressions fail on cce7
   - every IR line of the function either between that line and the body's last span, or on a line the body has a span on.
 
   Tests: `test_spans_of_a_macro_defined_above_do_not_hide_the_body`, and the real-build `test_a_macro_defined_above_the_function_does_not_hide_its_proofs`.
+
+The second verification (02a5ad1) confirmed both fixes. It also confirmed that one same-file macro used twice around `drop(v)` is refused at the drop and read where `v` is live, that adjacent `impl` methods named `new` resolve correctly, and that rustfmt-style signatures work. It found one more blocking issue and one false negative. Both are fixed:
+- **Blocking (older than 02a5ad1):** functions or closures that one local macro generates twice share their `fn` line, return place and closing brace, all from the macro definition. Matching still worked partly by elimination:
+  - A's own body failed the line check, on a call-site line that had only `println!` code.
+  - B's body then remained as the single candidate.
+  - Twin `run` methods and twin closures in `a::work`/`b::work` read a moved and freed `v` as `[7, 7, 7]`.
+
+  A body is now chosen only positively: exactly one body of that name, file and parent with a span on the function's `DISubprogram` line, so twins are refused. The IR-line containment check is gone, since it no longer decides anything.
+
+  Tests: `test_twins_a_macro_generates_are_refused_not_told_apart`, and the real-build `test_functions_a_macro_generates_twice_are_never_proven_with_each_other[methods, closures]` (both fail on 02a5ad1).
+- **False negative:** a local wrapper macro around `println!` (`say!`) defined above a function put code on the macro's line, where the body has no span, so the whole function lost its proofs. Removing the containment check fixes it.
+
+  Test: `test_a_wrapper_macro_around_println_keeps_the_functions_proofs` (fails on 02a5ad1).
