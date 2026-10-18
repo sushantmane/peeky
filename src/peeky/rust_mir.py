@@ -678,7 +678,8 @@ def _merged(body, function, blocks):
 # A line that ends inside a path (an identifier, `::`, a raw identifier's `#`) before
 # any line comment: a macro invocation's path may start here and reach its `!` later.
 _PATH_END = re.compile(r"[A-Za-z0-9_#:]\s*(?://.*)?$")
-_PATH_TAIL = re.compile(r"(?:\s+|//[^\n]*|/\*.*?\*/|::|[A-Za-z0-9_#])*", re.S)
+# What may continue such a path: whitespace, line comments, `::` and ASCII identifiers.
+_PATH_TAIL = re.compile(r"(?:\s+|//[^\n]*|::|[A-Za-z0-9_#])*")
 
 
 def may_invoke_macro(text, line):
@@ -686,19 +687,23 @@ def may_invoke_macro(text, line):
 
     rustc collapses a macro from another crate onto the line where its invocation's
     path starts (#[collapse_debuginfo]), so code spanning another file can be on such a
-    line only. Any `!` or block comment on the line counts; so does a line ending in a
-    path that a later `!` may complete. Unknown text means any line can.
+    line only. Any `!`, block comment or non-ASCII character on the line counts; so does
+    a line ending in a path that a later `!` may complete, or that continues past a
+    block comment or a non-ASCII identifier. Unknown text means any line can.
+
+    ``text`` must be split into lines as rustc does, on `\n` alone (never a lone `\r`).
     """
     lines = text.split("\n") if isinstance(text, str) else []
     if not 1 <= line <= len(lines):
         return True
     own = lines[line - 1]
-    if "!" in own or "/*" in own:
+    if "!" in own or "/*" in own or not own.isascii():
         return True
     if not _PATH_END.search(own):
         return False
     rest = "\n".join(lines[line:])
-    return rest[_PATH_TAIL.match(rest).end() :][:1] == "!"
+    following = rest[_PATH_TAIL.match(rest).end() :][:1]
+    return following in ("!", "/") or not following.isascii()
 
 
 def _shared(body, function, blocks):

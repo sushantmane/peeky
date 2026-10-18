@@ -675,7 +675,11 @@ def owned_locals(workspace, artifacts, crate, ir, sources):
         ir_functions(ir, sources),
         sources,
         precise=not collapsed,
-        texts={name: (Path(workspace) / name).read_text(errors="replace") for name in sources},
+        # Bytes, so lines split on `\n` alone as rustc counts them (no universal newlines).
+        texts={
+            name: (Path(workspace) / name).read_bytes().decode("utf-8", errors="replace")
+            for name in sources
+        },
     )
 
 

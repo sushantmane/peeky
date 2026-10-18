@@ -582,3 +582,24 @@ def test_lines_that_can_start_a_macro_invocation(line, possible):
         text = f"fn f() {{\n{line}\n    }}\n"
     assert may_invoke_macro(text, 2) is possible
     assert may_invoke_macro(None, 2) and may_invoke_macro(text, 99)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # Review of #80: each made the line read as macro-free while rustc put `vec!`
+        # code on it.
+        "fn f() {\n    let u = std::\n        /* see /* nested */ note */ vec![1];\n}\n",
+        "fn f() {\n    let u = crate::\n        m\u00f3dulo::vec![1];\n}\n",
+        "fn f() {\n    let u = crate::m\u00f3dulo\n        ::vec![1];\n}\n",
+        "fn f() {\n    let u = std::\n        /* c */ vec![1];\n}\n",
+    ],
+)
+def test_a_path_continued_past_a_block_comment_or_non_ascii_text_may_invoke(text):
+    assert may_invoke_macro(text, 2)
+
+
+def test_a_lone_carriage_return_is_not_a_line_break():
+    # rustc counts `\n` only: line 4 has the vec!, line 3 does not.
+    text = "fn main() {\n    // a\r(note)\n    let x = [1];\n    let v = vec![0]; for y in x {\n}\n"
+    assert may_invoke_macro(text, 4) and not may_invoke_macro(text, 3)
