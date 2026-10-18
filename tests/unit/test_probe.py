@@ -161,6 +161,30 @@ def test_only_the_requested_breakpoint_counts_as_a_hit(monkeypatch, fake, ok):
     assert worker.calls[-1] == "close"
 
 
+def test_a_failed_probe_keeps_the_output_so_far_and_never_says_all(monkeypatch):
+    import peeky.probe as probe_module
+    from peeky.probe import _table
+
+    class Refusing(FakeWorker):
+        def dispatch(self, operation, args):
+            if operation == "set_variable":
+                raise ValueError("'x' is kept in a register")
+            if operation == "report":
+                self.calls.append(operation)
+                return {"output": "before\n", "output_truncated": False, "state": "stopped"}
+            return super().dispatch(operation, args)
+
+    worker = Refusing()
+    monkeypatch.setattr(probe_module, "DebugWorker", lambda *args, **kwargs: worker)
+    result = probe_module.run_probe("/w", Probe("main.py", 8, ("x",), (("x", "2"),), hits="all"))
+    assert result["status"] == "failed" and result["hits"] == 1
+    assert (result["output"], result["output_complete"]) == ("before\n", False)
+    text = _table(result)
+    assert "hits: 1 before it failed" in text and "(all)" not in text
+    assert "output so far (the program was stopped when the probe failed):\n  before" in text
+    assert worker.calls[-1] == "close"
+
+
 @pytest.mark.parametrize("selector", ["items[-1]", "a.b[-12]", "x[0][-1]"])
 def test_negative_index_selectors_parse(selector):
     from peeky.probe import parse_selector
@@ -384,6 +408,30 @@ def test_depth_limited_values_say_so():
 
 
 @pytest.mark.parametrize(
+    "value, message",
+    [
+        ("null", r"^'current' is null: it has no members to select$"),
+        ("None", r"^'current' is None: it has no members to select$"),
+        ("10", r"^cannot expand 'current' \(leaf; value 10\)$"),
+    ],
+)
+def test_a_leaf_or_null_selector_says_what_it_is(value, message):
+    from peeky.probe import _resolve
+
+    leaf = {"name": "current", "value": value, "variablesReference": 0}
+    with pytest.raises(ValueError, match=message):
+        _resolve(Tree({}), {}, snapshot(leaf), parse_selector("current.end"))
+
+
+def test_a_view_that_cannot_expand_names_the_view_not_the_value():
+    from peeky.probe import _resolve
+
+    view = {"name": "o", "value": "None", "variablesReference": 0, "view": "active-variant"}
+    with pytest.raises(ValueError, match=r"^cannot expand 'o' \(active-variant\)$"):
+        _resolve(Tree({}), {}, snapshot(view), parse_selector("o.x"))
+
+
+@pytest.mark.parametrize(
     "name, selector",
     [
         ("'id'", "order['id']"),
@@ -504,6 +552,44 @@ def test_unreadable_children_keep_their_reason():
         }
     )
     assert "<no readable value: error: variable not available>" in line
+
+
+def test_session_get_text_shows_why_for_a_missing_name_and_how_to_expand_a_child():
+    from peeky.cli import _get_lines
+
+    assert _get_lines({"selector": "x", "error": "not found; visible: a, b"}) == [
+        "x: <not found; visible: a, b>"
+    ]
+    lines = _get_lines(
+        {
+            "selector": "o",
+            "type": "Obj",
+            "value": "Obj@1",
+            "children": [
+                {
+                    "name": "inner",
+                    "selector": "o.inner",
+                    "type": "In",
+                    "value": "In@2",
+                    "expandable": True,
+                },
+                {"name": "n", "selector": "o.n", "type": "int", "value": "3"},
+                {
+                    "name": "[0]",
+                    "selector": "o[0]",
+                    "type": "int",
+                    "value": "4",
+                    "expandable": True,
+                },
+            ],
+        }
+    )
+    assert lines == [
+        "o: Obj = Obj@1",
+        "  o.inner: In = In@2 (children: peeky session get o.inner)",
+        "  o.n: int = 3",
+        "  o[0]: int = 4 (children: peeky session get 'o[0]')",
+    ]
 
 
 def test_child_listings_are_retried_on_a_fresh_inspection():

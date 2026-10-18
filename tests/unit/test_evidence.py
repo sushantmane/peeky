@@ -245,7 +245,7 @@ def test_canned_queries_answer_comparisons(store):
             "value_a": "PAGE: [40]\n",
             "value_b": "PAGE: [10]\n",
             "differs": 1,
-            "note": "output differs at character 7",
+            "note": "output differs at line 1, column 8",
         },
     ]
     assert evidence.run_query(store, "compare", {"a": 2, "b": 2})["rows"][0]["differs"] == 0
@@ -674,7 +674,7 @@ def test_diff_ends_with_the_outcome_and_a_trimmed_output_when_they_differ(store)
     assert [(r["selector"], r["note"]) for r in rows] == [
         ("x", "intervention only in run b"),
         ("(status)", "outcome differs"),
-        ("(output)", "output differs at character 0"),
+        ("(output)", "output differs at line 1, column 1"),
     ]
     assert rows[-1]["value_a"] == "SUM:14\n" and rows[-1]["value_b"] == "x" * 200 + "…"
     # Same outputs: no output row.
@@ -690,7 +690,43 @@ def test_the_output_row_shows_where_long_outputs_first_differ(store):
     evidence.record(store, first)
     evidence.record(store, second)
     [row] = evidence.run_query(store, "diff")["rows"]
-    offset = len(prefix) + len("RESULT: 1")
-    assert row["note"] == f"output differs at character {offset}"
+    assert row["note"] == f"output differs at line 41, column {len('RESULT: 1') + 1}"
     assert row["value_a"].startswith("…") and row["value_a"].endswith("RESULT: 14\n")
     assert row["value_b"].endswith("RESULT: 15\n") and row["value_a"] != row["value_b"]
+
+
+def test_hits_and_run_keep_an_error_out_of_the_value_column(store):
+    # A selector that has no value at one hit (Java's `current.end` while `current` is
+    # null) is not a value, so it is never compared as one.
+    recorded = result(starts=("10", "10", "3"))
+    recorded["rows"][0] = dict(
+        hit=1, phase="observed", line=8, selector="start", error="'current' is null"
+    )
+    evidence.record(store, recorded)
+    hits = evidence.run_query(store, "hits", {"run": 1, "selector": "start"})["rows"]
+    assert [(row["value"], row["error"], row["changed"]) for row in hits] == [
+        (None, "'current' is null", None),
+        ("10", None, None),
+        ("3", None, 1),
+    ]
+    rows = evidence.run_query(store, "run", {"run": 1})["rows"]
+    assert [(row["selector"], row["value"], row["error"]) for row in rows[:2]] == [
+        ("start", None, "'current' is null"),
+        ("gone", None, "not visible"),
+    ]
+
+
+def test_diff_says_when_the_runs_stopped_at_different_lines(store):
+    evidence.record(store, captured([(1, "observed", "tokens", "0")]))
+    evidence.record(store, captured([(1, "observed", "tokens", "1")], line=22))
+    rows = evidence.run_query(store, "diff")["rows"]
+    assert [(r["selector"], r["value_a"], r["value_b"]) for r in rows] == [
+        ("tokens", "0", "1"),
+        ("(line)", "a.py:8", "a.py:22"),
+    ]
+    assert rows[-1]["note"].startswith("the runs stopped at different lines")
+    evidence.record(store, captured([(1, "observed", "tokens", "1")], program="b.py", line=22))
+    rows = evidence.run_query(store, "diff")["rows"]
+    assert [(r["value_a"], r["value_b"]) for r in rows if r["selector"] == "(line)"] == [
+        ("a.py:22", "b.py:22")
+    ]

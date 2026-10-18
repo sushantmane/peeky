@@ -51,6 +51,7 @@ from peeky.rust_symbols import (
     active_variant,
     application_symbols,
     container_view,
+    lldb_float_debug,
 )
 
 DEPS = "target/debug/deps"
@@ -674,6 +675,7 @@ def owned_locals(workspace, artifacts, crate, ir, sources):
         ir_functions(ir, sources),
         sources,
         precise=not collapsed,
+        texts={name: (Path(workspace) / name).read_text(errors="replace") for name in sources},
     )
 
 
@@ -864,6 +866,10 @@ class RustSession(NativeSession):
             # not trustworthy there.
             return {**view, "value": UNVERIFIED, "rust_view": "opaque"}
         return view
+
+    def display_value(self, variable):
+        """A scalar `f64`/`f32` as Rust's `{:?}` shows it (`10.0`, not LLDB's `10`)."""
+        return lldb_float_debug(variable.get("value"), variable.get("type"))
 
     def validate_children(self, variables):
         # `$` cannot start a Rust identifier; such fields are debugger-synthesized storage.

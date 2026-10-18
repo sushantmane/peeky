@@ -1,6 +1,8 @@
 """Rust containers of every scalar element type: integers, bool and floats (f32, f64)."""
 
+import decimal
 import math
+import random
 import struct
 
 import pytest
@@ -12,6 +14,7 @@ from peeky.rust_symbols import (
     UNQUALIFIED_CONTAINER,
     UNVERIFIED_CONTAINER,
     container_view,
+    lldb_float_debug,
     rust_float_debug,
 )
 
@@ -149,3 +152,70 @@ def test_every_element_type_is_reachable_through_each_kind_of_container():
         assert REFERENCE_PARAMETERS[f"&mut {vec_name}"][1] == vec_name
         for lldb in lldb_names:
             assert vec_name in OWNED_CONTAINERS[f"alloc::vec::Vec<{lldb}, alloc::alloc::Global>"]
+
+
+def _lldb_text(value, precision, positional):
+    """LLDB's rendering: APFloat natural precision, a dropped half rounded up."""
+    if math.isnan(value):
+        return "NaN"
+    if math.isinf(value):
+        return "+Inf" if value > 0 else "-Inf"
+    sign = "-" if math.copysign(1.0, value) < 0 else ""
+    if value == 0:
+        return sign + "0"
+    rounded = decimal.Context(prec=precision, rounding=decimal.ROUND_HALF_UP).plus(
+        decimal.Decimal(abs(value))
+    )
+    digits = "".join(map(str, rounded.as_tuple().digits)).rstrip("0") or "0"
+    exponent = rounded.adjusted()
+    if positional and -6 <= exponent < precision:
+        if exponent >= 0:
+            whole = digits[: exponent + 1].ljust(exponent + 1, "0")
+            rest = digits[exponent + 1 :]
+            return sign + whole + ("." + rest if rest else "")
+        return sign + "0." + "0" * (-exponent - 1) + digits
+    rest = digits[1:]
+    return f"{sign}{digits[0]}{'.' + rest if rest else ''}E{exponent:+d}"
+
+
+@pytest.mark.parametrize("bits,kind,precision", [(64, "double", 17), (32, "float", 9)])
+def test_lldb_float_text_shows_as_rust_debug(bits, kind, precision):
+    pack, raw, _ = {32: ("<f", "<I", 0), 64: ("<d", "<Q", 0)}[bits]
+    generator = random.Random(bits)
+    patterns = [generator.getrandbits(bits) for _ in range(4000)]
+    patterns += [0, 1, 2 ** (bits - 1), 2 ** (bits - 1) + 1, (2 ** (bits - 1)) - 1]
+    for pattern in patterns:
+        value = struct.unpack(pack, struct.pack(raw, pattern))[0]
+        for positional in (True, False):
+            text = _lldb_text(value, precision, positional)
+            assert lldb_float_debug(text, kind) == rust_float_debug(value, bits), text
+
+
+@pytest.mark.parametrize(
+    "text,kind",
+    [
+        ("0.1", "double"),  # LLDB would print 0.10000000000000001: not its rendering
+        ("10.000000000000002", "float"),  # more digits than an f32 has
+        ("3.5E+38", "float"),  # beyond f32
+        ("1.8E+309", "double"),
+        ("0x4024000000000000", "double"),  # a user's type format
+        ("<variable not available>", "double"),
+        ("1e5", "double"),
+        ("10", "int"),
+        ("10", "unsigned long"),
+        (None, "double"),
+        (" 10", "double"),
+        ("10.", "double"),
+    ],
+)
+def test_lldb_float_text_that_is_not_an_exact_rendering_stays_raw(text, kind):
+    assert lldb_float_debug(text, kind) is None
+
+
+def test_lldb_float_text_keeps_sign_and_specials():
+    assert lldb_float_debug("-3", "float") == "-3.0"
+    assert lldb_float_debug("-0", "double") == "-0.0"
+    assert lldb_float_debug("-NaN", "double") == "NaN"
+    assert lldb_float_debug("-Inf", "float") == "-inf"
+    assert lldb_float_debug("9.9999999999999995E-8", "double") == "1e-7"
+    assert lldb_float_debug("0.100000001", "float") == "0.1"

@@ -26,6 +26,14 @@ fn deferred(first: bool) -> usize {
     label.len() + n // AFTER
 }
 
+fn tally(values: &[usize], buckets: usize) -> Vec<usize> {
+    let mut counts = vec![0usize; buckets];
+    for &x in values { // HEAD
+        counts[x % buckets] += 1;
+    }
+    counts
+}
+
 fn main() {
     let dropped = vec![7, 8, 9];
     drop(dropped);
@@ -51,6 +59,7 @@ fn main() {
     let s = s + "-second";
     println!("{s}"); // SHADOW
     println!("{} {} {:?}", deferred(true), deferred(false), acc);
+    println!("{:?}", tally(&[1, 2, 4], 3));
 }
 """
 
@@ -116,6 +125,18 @@ def test_a_vector_pushed_in_a_loop_is_read_at_each_hit(crate, capsys):
     assert len(acc) == 3
     if memory_views(result["rows"]):
         assert [row["value"] for row in acc] == ["[]", "[0]", "[0, 1]"]
+
+
+@pytest.mark.timeout(300)
+def test_a_vector_from_vec_macro_is_read_at_the_loop_head_after_it(crate, capsys):
+    # std's vec! code spans another file; the loop head invokes no macro, so that code
+    # is not on it (eval 3: `counts` was refused here).
+    result = probe(capsys, crate, "HEAD", "counts", "--hits", "all")
+    assert result["rows"]
+    if memory_views(result["rows"]):
+        assert result["rows"][0]["value"] == "[0, 0, 0]", result["rows"]
+        assert all("note" not in row for row in result["rows"])
+    assert "[0, 2, 1]" in result["output"]
 
 
 @pytest.mark.timeout(300)

@@ -373,7 +373,16 @@ def _resolve(worker, stop, snapshot, segments):
                     f"cannot expand {variable['name']!r}: it is at the inspection depth limit "
                     f"(4 levels below a local)"
                 )
-            raise ValueError(f"cannot expand {variable['name']!r} ({variable.get('view', 'leaf')})")
+            value = variable.get("value")
+            if "view" not in variable and value in ("null", "None"):
+                # Java's null and Python's None have no members.
+                raise ValueError(f"{variable['name']!r} is {value}: it has no members to select")
+            shown = (
+                f"; value {value[:80]}" if isinstance(value, str) and "view" not in variable else ""
+            )
+            raise ValueError(
+                f"cannot expand {variable['name']!r} ({variable.get('view', 'leaf')}{shown})"
+            )
         if segment.startswith("[-"):
             variable = _from_end(worker, stop, variable, int(segment[2:-1]), segment)
             continue
@@ -768,6 +777,7 @@ def run_probe(root, probe, *, adapter=None, progress=None):
     # {function: [hits]}: a line shared by a function and a closure or lambda stops in each.
     functions = {}
     last_said = 0.0
+    session = None
     try:
         if probe.edit:
             old, new = probe.edit
@@ -895,7 +905,6 @@ def run_probe(root, probe, *, adapter=None, progress=None):
                             {**stop, "reference": scope["reference"], "name": name, "value": value},
                         )
                     )
-                    say(f"set {name}: {changes[-1].get('before')} -> {changes[-1].get('after')}")
                 rows.extend(_capture(worker, stop, probe.capture, hits, "after-set"))
             if len(rows) > MAX_ROWS:
                 raise ValueError("Probe row budget exceeded")
@@ -930,6 +939,8 @@ def run_probe(root, probe, *, adapter=None, progress=None):
             # False when the probe ended before the program did (--until hits).
             output_complete=report.get("state") == "terminated",
         )
+        if type(report.get("exit_code")) is int:
+            result["exit_code"] = report["exit_code"]
         if status == "timeout":
             from peeky.errors import classify
 
@@ -937,13 +948,37 @@ def run_probe(root, probe, *, adapter=None, progress=None):
                 TimeoutError(f"Probe exceeded its {probe.timeout} s timeout"), session_closed=True
             )
         if status == "no-stop":
+            code = result.get("exit_code")
+            where = f"{probe.program}:{line}" + (
+                f" of the candidate (line {probe.line} before the edit)" if probe.edit else ""
+            )
+            if code == 0:
+                message = (
+                    f"The program finished without stopping at {where}; check `peeky "
+                    "describe` for executable lines"
+                )
+                hint = "Pick a line the program executes; see `peeky describe`."
+            elif code is not None:
+                message = (
+                    f"The program failed (exit code {code}) without stopping at {where}; "
+                    "its output says why"
+                )
+                hint = (
+                    "The program failed before it reached the line: read its output, and "
+                    "check its arguments (everything after `--`) and input."
+                )
+            else:
+                # java-debug reports no exit code: a crash and a normal exit look alike.
+                message = f"The program ended without stopping at {where} (exit code unknown)"
+                hint = (
+                    "If the output shows an error, the program failed before the line: check "
+                    "its arguments and input. Otherwise pick a line the program executes; "
+                    "see `peeky describe`."
+                )
             result["error"] = {
                 "code": "NO_STOP",
-                "message": f"The program finished without stopping at {probe.program}:"
-                f"{line}"
-                + (f" of the candidate (line {probe.line} before the edit)" if probe.edit else "")
-                + "; check `peeky describe` for executable lines",
-                "hint": "Pick a line the program executes; see `peeky describe`.",
+                "message": message,
+                "hint": hint,
                 "retryable": False,
                 "session_closed": True,
             }
@@ -966,6 +1001,18 @@ def run_probe(root, probe, *, adapter=None, progress=None):
         from peeky.errors import classify
 
         result.update(status="failed", error=classify(exc, session_closed=True))
+        if session is not None:
+            # What the program printed before the failure says how far it got.
+            try:
+                report = worker.dispatch("report", session)
+            except Exception:
+                report = {}
+            if isinstance(report.get("output"), str) and report["output"]:
+                result.update(
+                    output=report["output"],
+                    output_truncated=report.get("output_truncated", False),
+                    output_complete=report.get("state") == "terminated",
+                )
     finally:
         worker.close()
     if level := optimization_level(result.get("target_identity")):
@@ -1055,7 +1102,13 @@ def _table(result):
         lines.append(f"set {change['name']}: {change['before']} -> {change['after']}")
     lines.append(
         f"status: {result['status']}  hits: {result['hits']}"
-        + (" (all)" if (result.get("probe") or {}).get("hits") == "all" else "")
+        + (
+            {"failed": " before it failed", "timeout": " before it timed out"}.get(
+                result["status"],
+                " (all)" if (result.get("probe") or {}).get("hits") == "all" else "",
+            )
+        )
+        + (f"  exit code: {result['exit_code']}" if result.get("exit_code") else "")
         + f"  seconds: {result['seconds']}"
         + (f"  max pause: {max(result['pauses_ms'])} ms" if result.get("pauses_ms") else "")
     )
@@ -1066,7 +1119,13 @@ def _table(result):
         lines.append(f"hint: {error['hint']}")
     if result.get("output"):
         complete = result.get("output_complete", True)
-        lines.append("output:" if complete else "output so far (the program was still running):")
+        lines.append(
+            "output:"
+            if complete
+            else "output so far (the program was stopped when the probe failed):"
+            if result.get("status") == "failed"
+            else "output so far (the program was still running):"
+        )
         lines.extend("  " + line for line in result["output"].splitlines()[-20:])
     return "\n".join(lines)
 

@@ -101,6 +101,8 @@ class DAP:
         # Bounded message summaries (no arguments or values) for diagnosing lost events.
         self.trace = collections.deque(maxlen=200)
         self.debuggee_pid = None
+        # The program's exit status from the `exited` event, when the debugger sends one.
+        self.exit_code = None
         # The DAP `process` event's pid (debugpy, lldb-dap): cleanup backstop on close.
         self.process_pid = None
         # Set only when a write failed; a read-side failure still allows `disconnect`.
@@ -157,6 +159,10 @@ class DAP:
                         )
                         self.output.append(output[:8192])
                 elif body["event"] in LIFECYCLE_EVENTS:
+                    if body["event"] == "exited":
+                        code = (body.get("body") or {}).get("exitCode")
+                        if type(code) is int and -(2**31) <= code < 2**32:
+                            self.exit_code = code
                     if body["event"] == "process" and self.process_pid is None:
                         pid = (body.get("body") or {}).get("systemProcessId")
                         if type(pid) is int and pid > 1:

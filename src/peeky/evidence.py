@@ -165,6 +165,10 @@ _B = f"COALESCE(:b, {_LATEST})"
 _A = f"COALESCE(:a, (SELECT MAX(run_id) FROM runs WHERE run_id < {_B}))"
 
 
+# Why a value is NULL; never shown in the value column, so no reason reads as a value.
+_ERROR = "CASE WHEN value IS NULL THEN COALESCE(error, 'no value') END"
+
+
 def _shown(alias=""):
     prefix = f"{alias}." if alias else ""
     return f"COALESCE({prefix}value, '<' || COALESCE({prefix}error, 'no value') || '>')"
@@ -215,7 +219,7 @@ SELECT {_PAIR_COLUMNS} FROM (
     AND ra.status IS NOT rb.status
   UNION ALL SELECT 5, NULL, NULL, '(output)', output_window(ra.output, rb.output),
     output_window(rb.output, ra.output), 1,
-    'output differs at character ' || first_difference(ra.output, rb.output), 0
+    'output differs at ' || difference_position(ra.output, rb.output), 0
     FROM runs ra, runs rb WHERE ra.run_id = {_A} AND rb.run_id = {_B}
     AND ra.output IS NOT rb.output
   UNION ALL SELECT 6, NULL, NULL, '(edit)',
@@ -223,7 +227,12 @@ SELECT {_PAIR_COLUMNS} FROM (
     CASE WHEN rb.edit IS NULL THEN 'none' ELSE 'candidate' END, 1,
     'the runs built different edits (runs.edit has each diff)', 0
     FROM runs ra, runs rb WHERE ra.run_id = {_A} AND rb.run_id = {_B}
-    AND ra.edit IS NOT rb.edit)
+    AND ra.edit IS NOT rb.edit
+  UNION ALL SELECT 7, NULL, NULL, '(line)', ra.program || ':' || ra.line,
+    rb.program || ':' || rb.line, 1,
+    'the runs stopped at different lines: values also differ by where they were read', 0
+    FROM runs ra, runs rb WHERE ra.run_id = {_A} AND rb.run_id = {_B}
+    AND (ra.program, ra.line) IS NOT (rb.program, rb.line))
 ORDER BY rank, hit, phase = 'after-set', pos"""
 # A heap or stack address: 0x, optional leading zeros, then 9-16 significant hex
 # digits that are not all f. NULL, small sentinels, all-ones (-1, MAP_FAILED) and
@@ -238,6 +247,15 @@ def _first_difference(a, b):
         if left != right:
             return index
     return min(len(a), len(b))
+
+
+def _difference_position(a, b):
+    """Where two texts first differ, as `line L, column C` counted from 1."""
+    a = a or ""
+    offset = _first_difference(a, b)
+    line = a.count("\n", 0, offset) + 1
+    column = offset - (a.rfind("\n", 0, offset) + 1) + 1
+    return f"line {line}, column {column}"
 
 
 def _output_window(value, other):
@@ -277,18 +295,20 @@ QUERIES = {
         (),
     ),
     "run": (
-        "Every captured value of one run, in capture order",
-        f"SELECT hit, phase, line, function, selector, type, {_shown()} AS value, view "
+        "Every captured value of one run, in capture order; error says why a value is NULL",
+        f"SELECT hit, phase, line, function, selector, type, value, {_ERROR} AS error, view "
         f"FROM captures WHERE run_id = {_RUN} ORDER BY rowid",
         _RUN_PARAM,
         (),
     ),
     "hits": (
-        "Each selector across hits, with changed = 1 where it differs from the previous hit",
-        f"""SELECT selector, hit, line, v AS value,
-  CASE WHEN LAG(hit) OVER w IS NULL THEN NULL ELSE v IS NOT LAG(v) OVER w END AS changed
-FROM (SELECT selector, hit, line, {_shown()} AS v FROM captures
-  WHERE run_id = {_RUN} AND phase = 'observed' AND (:selector IS NULL OR selector = :selector))
+        "Each selector across hits, with changed = 1 where its value differs from the "
+        "previous hit's; changed is NULL when either hit has no value (error says why)",
+        f"""SELECT selector, hit, line, value, {_ERROR} AS error,
+  CASE WHEN value IS NULL OR LAG(value) OVER w IS NULL THEN NULL
+    ELSE value IS NOT LAG(value) OVER w END AS changed
+FROM captures
+WHERE run_id = {_RUN} AND phase = 'observed' AND (:selector IS NULL OR selector = :selector)
 WINDOW w AS (PARTITION BY selector ORDER BY hit) ORDER BY selector, hit""",
         {**_RUN_PARAM, "selector": "Only this selector (default: all)"},
         (),
@@ -716,6 +736,9 @@ def query(path, sql, params=None, *, limit=DEFAULT_ROWS, seconds=QUERY_SECONDS):
         "first_difference", 2, bounded(_first_difference), deterministic=True
     )
     connection.create_function("output_window", 2, bounded(_output_window), deterministic=True)
+    connection.create_function(
+        "difference_position", 2, bounded(_difference_position), deterministic=True
+    )
     connection.set_authorizer(_authorize)
     connection.set_progress_handler(lambda: time.monotonic() > deadline, 10000)
     rows, size, cut = [], 0, None
@@ -832,7 +855,10 @@ def schema(path):
             "no_addresses(text)": "The text with heap and stack addresses (0x and at least 9 "
             "significant hex digits; never NULL, all-ones or shorter values) masked, to compare "
             "values across runs",
-            "first_difference(a, b)": "Offset of the first character where two texts differ",
+            "first_difference(a, b)": "Offset, from 0, of the first character where two texts "
+            "differ",
+            "difference_position(a, b)": "Where two texts first differ, as `line L, column C` "
+            "(from 1)",
             "output_window(a, b)": "Up to 200 characters of a from just before where it first "
             "differs from b",
         },

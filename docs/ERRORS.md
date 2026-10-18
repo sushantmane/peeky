@@ -18,7 +18,7 @@ Every Peeky failure, from the HTTP worker, the SDK (`peeky.errors.PeekyError`) o
 | `MUTATION_REJECTED` | Not a root local, or the value is not a literal (Python) / scalar (compiled) | Use a literal, observe instead, or edit and `verify` |
 | `BUDGET_EXHAUSTED` | A bounded read limit was reached | Narrow the request |
 | `INVALID_BREAKPOINT` | Line not executable or unsupported breakpoint field | Use `peeky describe` lines |
-| `NO_STOP` (probe result) | Program finished without reaching the line | Pick an executed line |
+| `NO_STOP` (probe result) | Program ended without reaching the line: the line never runs, or the program failed first (`exit_code` when the debugger reports it) | Pick an executed line; after a failure, read the output and check the program's arguments |
 | `BUILD_FAILED` | The program did not compile, or its build timed out (with `--old/--new`: the edit does not build); the message has the compiler's output | Fix what the compiler reports and run again; your files were not changed |
 | `PROVENANCE_CHANGED` | Sources, build outputs or tools changed | New session on a fresh build |
 | `TIMEOUT` | A time bound was hit; session discarded | Start again; never blindly retry a mutation |

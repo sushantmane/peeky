@@ -291,3 +291,11 @@ def test_compiled_test_text_says_why_when_nothing_ran_or_output_overflowed():
     ]
     exited = _tests_text({"passed": False, "summary": {**empty, "passed": 2}, "exit_code": 3})
     assert exited[-1] == "  (the test binary exited with code 3)"
+
+
+@pytest.mark.parametrize("test_name", ["peeky-pagination", "peeky_pagination"])
+def test_test_target_sharing_the_binary_crate_name_is_refused_with_the_fix(project, test_name):
+    (project / "Cargo.toml").write_text(MANIFEST.replace('"pagination"', f'"{test_name}"'))
+    with pytest.raises(ValueError, match=r'must not share the \[\[bin\]\] name.*_test"') as error:
+        validate(project)
+    assert 'name = "peeky_pagination_test"' in str(error.value)
