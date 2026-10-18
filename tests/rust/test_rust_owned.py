@@ -246,3 +246,64 @@ def test_review_false_proofs_stay_refused(crate, capsys, program, marker, select
     # fix these read [7, 7, 7] or [1, 2, 3] from memory.
     [row] = result["rows"]
     assert row["selector"] == "v" and row.get("view") != "memory", row
+
+
+MACRO_USER = """#[macro_use]
+mod macros;
+fn tick() {}
+fn main() {
+    let v = vec![1, 2, 3];
+    let k = v.len();
+    let n = eat!(v);
+    println!("{k} {n}");
+}
+"""
+
+MACROS = """macro_rules! eat {
+    ($v:expr) => {{
+        tick();
+        drop($v);
+        std::mem::forget(vec![7, 7, 7]);
+        let n = std::hint::black_box(1); // IN_MACRO
+        n
+    }};
+}
+"""
+
+MACRO_ABOVE = """macro_rules! twice {
+    ($e:expr) => {
+        $e * 2
+    };
+}
+
+fn main() {
+    let v = vec![1, 2, 3];
+    let n = twice!(v.len());
+    let m = n + 1; // BELOW
+    println!("{v:?} {m}");
+}
+"""
+
+
+@pytest.mark.timeout(300)
+def test_a_stop_in_a_macro_from_another_file_is_never_proven_with_this_files_lines(crate, capsys):
+    (crate / "src/main.rs").write_text(MACRO_USER)
+    (crate / "src/macros.rs").write_text(MACROS)
+    at = next(i for i, text in enumerate(MACROS.splitlines(), 1) if "IN_MACRO" in text)
+    code = main(["probe", str(crate), "--at", f"src/macros.rs:{at}", "--capture", "v,k", "--json"])
+    result = json.loads(capsys.readouterr().out)
+    assert code == 0, result.get("error")
+    rows = {row["selector"]: row for row in result["rows"]}
+    # Dropped on the macro's line 4, its buffer reused: main.rs's line 6 says nothing.
+    assert rows["v"].get("view") != "memory", rows["v"]
+
+
+@pytest.mark.timeout(300)
+def test_a_macro_defined_above_the_function_does_not_hide_its_proofs(crate, capsys):
+    (crate / "src/main.rs").write_text(MACRO_ABOVE)
+    at = next(i for i, text in enumerate(MACRO_ABOVE.splitlines(), 1) if "BELOW" in text)
+    code = main(["probe", str(crate), "--at", f"src/main.rs:{at}", "--capture", "v", "--json"])
+    result = json.loads(capsys.readouterr().out)
+    assert code == 0, result.get("error")
+    if memory_views(result["rows"]):
+        assert result["rows"][0]["value"] == "[1, 2, 3]"

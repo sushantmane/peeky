@@ -665,7 +665,9 @@ def owned_locals(workspace, artifacts, crate, ir, sources):
     )
     if not mir or not all(pattern.fullmatch(name) for name in mir):
         raise ValueError("Unexpected Rust MIR artifact")
-    return OwnedLocals(load_bodies(Path(workspace) / MIR_DIR, crate), ir_functions(ir, sources))
+    return OwnedLocals(
+        load_bodies(Path(workspace) / MIR_DIR, crate), ir_functions(ir, sources), sources
+    )
 
 
 def _require_declared_dependencies(executables, workspace, inputs):
@@ -830,7 +832,12 @@ class RustSession(NativeSession):
             and innermost
             and proofs is not None
             and variable.get("type") in OWNED_CONTAINERS
-            and proofs.proven(hashed[1], variable.get("name"), line)
+            and proofs.proven(
+                hashed[1],
+                variable.get("name"),
+                line,
+                ((frame or {}).get("source") or {}).get("path"),
+            )
         )
         container = container_view(
             variable,

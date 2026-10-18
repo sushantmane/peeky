@@ -67,8 +67,9 @@ class Body:
     blocks: dict  # {number: Block}
     bindings: dict  # {name: [(local or None, file, line)]}
     supported: bool = True
-    # (first, last) line of every span in the body's own file: its signature to its `}`.
-    range: tuple | None = None
+    # Lines of every span in the body's own file (its own code, and the definitions of
+    # same-file macros it expands).
+    lines: frozenset = frozenset()
     _entry: dict | None = None
 
     @property
@@ -258,8 +259,7 @@ def parse_body(text):
             spans.append((span[1], int(span[2])))
     if block is not None or not body.blocks or 0 not in body.blocks or body.file is None:
         body.supported = False
-    own = [number for file, number in spans if file == body.file]
-    body.range = (min(own), max(own)) if own else None
+    body.lines = frozenset(number for file, number in spans if file == body.file)
     return body
 
 
@@ -444,9 +444,10 @@ def _file(meta, scope):
 class OwnedLocals:
     """Proofs that an owned local is initialized at a stop (see the module docstring)."""
 
-    def __init__(self, bodies, functions):
+    def __init__(self, bodies, functions, sources=()):
         self.bodies = list(bodies)
         self.functions = dict(functions)
+        self.sources = tuple(sources)
         self._matched = {}
 
     def body(self, hashed):
@@ -456,9 +457,12 @@ class OwnedLocals:
         function = self.functions.get(hashed)
         found = None
         if function is not None and (lines := function.lines()):
-            # Positive identification: every line the function has code on lies within
-            # the body's own span range (its signature to its closing brace), and the
-            # function is declared at or before it. Same-named bodies elsewhere fail.
+            # Positive identification: the body has a span on the line the function is
+            # declared on (its signature), and every line the function has code on lies
+            # between that line and the body's last span, or is a line the body has a
+            # span on (code of a same-file macro it expands: rustc keeps local macros'
+            # own lines in debug info). A same-named body elsewhere has no span on this
+            # function's `fn` line.
             candidates = [
                 body
                 for body in self.bodies
@@ -469,10 +473,11 @@ class OwnedLocals:
                     or body.parent.startswith("<")
                     or body.parent == function.parent
                 )
-                and body.range is not None
-                and body.range[0] <= min(lines)
-                and max(lines) <= body.range[1]
-                and (function.line is None or function.line <= body.range[0])
+                and function.line in body.lines
+                and all(
+                    function.line <= number <= max(body.lines) or number in body.lines
+                    for number in lines
+                )
                 and function.labeled() <= set(body.blocks)
             ]
             found = candidates[0] if len(candidates) == 1 else None
@@ -481,12 +486,19 @@ class OwnedLocals:
         self._matched[hashed] = found
         return found
 
-    def proven(self, hashed, variable_name, line):
+    def proven(self, hashed, variable_name, line, path):
         """True only if the frame's local ``variable_name`` (an lldb-dap name: `v`, or
-        `v @ main.rs:8` when shadowed) is initialized at ``line``."""
+        `v @ main.rs:8` when shadowed) is initialized at ``line`` of ``path``.
+
+        The stop must be in the function's own file: a breakpoint in a macro defined in
+        another file (or `include!`d code) stops in this frame at another file's line.
+        """
         body = self.body(hashed)
         function = self.functions.get(hashed)
         if body is None or function is None or type(line) is not int:
+            return False
+        shown = str(path or "").replace("\\", "/")
+        if [source for source in self.sources if shown.endswith("/" + source)] != [function.file]:
             return False
         name, at, declared = str(variable_name).partition(" @ ")
         where = None

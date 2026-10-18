@@ -384,3 +384,13 @@ It found two false proofs, both blocking and both reproduced with `probe`. Both 
   Tests: `test_a_body_is_identified_by_its_own_lines_not_by_elimination`, `test_review_false_proofs_stay_refused[same-named-method]`.
 
 All three real-build regressions fail on cce72eb and pass with the fix.
+
+Verification of 2bf24a3 confirmed both fixes: the three regressions fail on cce72eb and pass now. It checked rustc's block merging for every terminator and unwind kind, `start`/`bb0`, nested and generic functions, inlined callees, and storage reuse, and found no further false proof from these. It found one more blocking issue and one false negative, both fixed:
+- **Blocking:** the proof was given only the stop line, never its file. A breakpoint inside a `macro_rules!` defined in another crate file stops in the calling function's frame at the other file's line. The proof then checked that line number in the function's own file: a `drop($v)` in `macros.rs` read `[7, 7, 7]`. `proven()` now takes the frame's source path and proves nothing unless it is the function's own file, unambiguously among the declared sources.
+
+  Tests: `test_a_stop_in_another_file_is_never_checked_against_this_files_line`, and the real-build `test_a_stop_in_a_macro_from_another_file_is_never_proven_with_this_files_lines` (it fails on 2bf24a3).
+- **False negative:** a function that expands a same-file macro defined above it got no proof. rustc keeps local macros' own lines in debug info, and those spans put the body's range above its `fn` line. Identification now requires:
+  - a span on the function's `DISubprogram` line;
+  - every IR line of the function either between that line and the body's last span, or on a line the body has a span on.
+
+  Tests: `test_spans_of_a_macro_defined_above_do_not_hide_the_body`, and the real-build `test_a_macro_defined_above_the_function_does_not_hide_its_proofs`.

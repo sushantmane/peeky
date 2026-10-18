@@ -29,6 +29,8 @@ def mir(blocks, header="fn main() -> () {", bindings=""):
     return parse_body("\n".join([*lines, "}", ""]))
 
 
+SOURCES = ("src/main.rs", "src/macros.rs")
+MAIN = "/w/src/main.rs"
 V = "debug v => _1;   // in scope 1 at src/main.rs:2:9: 2:10"
 
 
@@ -204,14 +206,14 @@ def test_a_function_is_proven_only_against_a_single_matching_body(tmp_path):
         bindings=V,
     )
     body.blocks[0].statements[-1] = (body.blocks[0].terminator, "src/main.rs", 3)
-    owned = OwnedLocals([body], functions)
+    owned = OwnedLocals([body], functions, SOURCES)
     assert owned.body("h0123456789abcdef") is body
-    assert owned.proven("h0123456789abcdef", "v", 4) and not owned.proven(
-        "h0123456789abcdef", "v", 3
+    assert owned.proven("h0123456789abcdef", "v", 4, MAIN) and not owned.proven(
+        "h0123456789abcdef", "v", 3, MAIN
     )
-    assert not owned.proven("h0123456789abcdef", "v @ main.rs:x", 4)
-    assert not owned.proven("hffffffffffffffff", "v", 4)
-    assert OwnedLocals([body, body], functions).body("h0123456789abcdef") is None
+    assert not owned.proven("h0123456789abcdef", "v @ main.rs:x", 4, MAIN)
+    assert not owned.proven("hffffffffffffffff", "v", 4, MAIN)
+    assert OwnedLocals([body, body], functions, SOURCES).body("h0123456789abcdef") is None
 
 
 def chain_body():
@@ -235,14 +237,14 @@ def test_blocks_merged_into_a_labeled_block_are_checked_too():
         "main", "app", "src/main.rs", {"start": {2}, "bb1": {4, 5}, "bb3": {6}}, {}
     )
     function.line = 1
-    owned = OwnedLocals([body], {"h0": function})
+    owned = OwnedLocals([body], {"h0": function}, SOURCES)
     assert owned.body("h0") is body
-    assert not owned.proven("h0", "v", 5) and not owned.proven("h0", "v", 4)
+    assert not owned.proven("h0", "v", 5, MAIN) and not owned.proven("h0", "v", 4, MAIN)
     # Labeled on its own, bb1 alone holds the line, and nothing in it moves `v`.
     labeled = IrFunction(
         "main", "app", "src/main.rs", {"start": {2}, "bb1": {4}, "bb2": {5}, "bb3": {6}}, {}, 1
     )
-    assert OwnedLocals([chain_body()], {"h1": labeled}).proven("h1", "v", 4)
+    assert OwnedLocals([chain_body()], {"h1": labeled}, SOURCES).proven("h1", "v", 4, MAIN)
 
 
 def test_an_unlabeled_block_codegen_could_not_have_merged_proves_nothing():
@@ -259,8 +261,8 @@ def test_an_unlabeled_block_codegen_could_not_have_merged_proves_nothing():
     function = IrFunction(
         "main", "app", "src/main.rs", {"start": {2}, "bb1": {4}, "bb2": {5}, "bb3": {5}}, {}, 1
     )
-    owned = OwnedLocals([body], {"h0": function})
-    assert owned.body("h0") is None and not owned.proven("h0", "v", 4)
+    owned = OwnedLocals([body], {"h0": function}, SOURCES)
+    assert owned.body("h0") is None and not owned.proven("h0", "v", 4, MAIN)
 
 
 def test_a_body_is_identified_by_its_own_lines_not_by_elimination():
@@ -270,7 +272,7 @@ def test_a_body_is_identified_by_its_own_lines_not_by_elimination():
             header="fn <impl at src/main.rs:1:1: 1:7>::new() -> () {",
             bindings=V,
         )
-        body.range = (first, first + 8)
+        body.lines = frozenset(range(first, first + 9))
         body.blocks[0].statements[-1] = (body.blocks[0].terminator, "src/main.rs", calls)
         return body
 
@@ -279,8 +281,39 @@ def test_a_body_is_identified_by_its_own_lines_not_by_elimination():
     function = IrFunction(
         "new", "A", "src/main.rs", {"start": {20}, "bb1": {21, 23, 24, 26}}, {}, 19
     )
-    assert OwnedLocals([a, b], {"h": function}).body("h") is a
-    assert OwnedLocals([b], {"h": function}).body("h") is None
+    assert OwnedLocals([a, b], {"h": function}, SOURCES).body("h") is a
+    assert OwnedLocals([b], {"h": function}, SOURCES).body("h") is None
+
+
+def test_a_stop_in_another_file_is_never_checked_against_this_files_line(tmp_path):
+    path = tmp_path / "app.ll"
+    path.write_text(IR)
+    functions = ir_functions(path, ["src/main.rs"])
+    body = mir(
+        {0: ["_1 = make() -> [return: bb1, unwind continue];"], 1: ["return;"], 2: ["return;"]},
+        bindings=V,
+    )
+    owned = OwnedLocals([body], functions, SOURCES)
+    assert owned.proven("h0123456789abcdef", "v", 4, MAIN)
+    # A macro defined in macros.rs, expanded here, stops this frame at macros.rs:4.
+    assert not owned.proven("h0123456789abcdef", "v", 4, "/w/src/macros.rs")
+    assert not owned.proven("h0123456789abcdef", "v", 4, None)
+    # A path that two declared sources end with is ambiguous.
+    nested = OwnedLocals([body], functions, ("src/main.rs", "x/src/main.rs"))
+    assert not nested.proven("h0123456789abcdef", "v", 4, "/w/x/src/main.rs")
+
+
+def test_spans_of_a_macro_defined_above_do_not_hide_the_body():
+    body = mir({0: ["_1 = make() -> [return: bb1, unwind continue];"], 1: ["return;"]}, bindings=V)
+    body.lines = frozenset({2, 3, 8, 9, 10, 11, 12})  # 2-3: a macro_rules! above `fn`
+    # Line 3: code of the local macro, which keeps its own lines in debug info.
+    function = IrFunction("main", "app", "src/main.rs", {"start": {8}, "bb1": {3, 9, 12}}, {}, 7)
+    assert OwnedLocals([body], {"h": function}, SOURCES).body("h") is None  # no span on 7
+    body.lines |= {7}
+    assert OwnedLocals([body], {"h": function}, SOURCES).body("h") is body
+    # Code above the function on a line the body has no span on: not this body.
+    function.blocks["bb1"].add(1)
+    assert OwnedLocals([body], {"h": function}, SOURCES).body("h") is None
 
 
 WRAPPER_RUSTC = (
