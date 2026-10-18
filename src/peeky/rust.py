@@ -665,8 +665,15 @@ def owned_locals(workspace, artifacts, crate, ir, sources):
     )
     if not mir or not all(pattern.fullmatch(name) for name in mir):
         raise ValueError("Unexpected Rust MIR artifact")
+    collapsed = any(
+        "collapse_debuginfo" in (Path(workspace) / name).read_text(errors="replace")
+        for name in sources
+    )
     return OwnedLocals(
-        load_bodies(Path(workspace) / MIR_DIR, crate), ir_functions(ir, sources), sources
+        load_bodies(Path(workspace) / MIR_DIR, crate),
+        ir_functions(ir, sources),
+        sources,
+        precise=not collapsed,
     )
 
 

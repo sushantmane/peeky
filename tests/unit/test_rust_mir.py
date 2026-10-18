@@ -216,6 +216,69 @@ def test_a_function_is_proven_only_against_a_single_matching_body(tmp_path):
     assert OwnedLocals([body, body], functions, SOURCES).body("h0123456789abcdef") is None
 
 
+def test_a_local_assigned_earlier_in_the_block_is_proven_at_a_later_line():
+    body = parse_body(
+        "fn main() -> () {\n"
+        "    let mut _0: ();  // return place in scope 0 at src/main.rs:1:10: 1:10\n"
+        "    scope 1 {\n"
+        "        debug w => _2;  // in scope 1 at src/main.rs:3:9: 3:10\n"
+        "    }\n"
+        "    bb0: {\n"
+        "        _1 = make() -> [return: bb1, unwind continue];  // scope 0 at src/main.rs:2:13: 2:19\n"
+        "    }\n"
+        "    bb1: {\n"
+        "        _2 = move _1;  // scope 1 at src/main.rs:3:13: 3:14\n"
+        "        _3 = &_2;  // scope 1 at src/main.rs:4:13: 4:14\n"
+        "        _4 = len(move _3) -> [return: bb2, unwind continue];  // scope 1 at src/main.rs:4:13: 4:20\n"
+        "    }\n"
+        "    bb2: {\n"
+        '        _5 = core::panicking::panic(const "x") -> unwind continue;  // scope 1 at /rustc/x/library/core/src/macros.rs:9:9: 9:20\n'
+        "    }\n"
+        "}\n"
+    )
+    assert body.supported and body.local("w") == 2
+    assert body.initialized_at(2, {1}, 4, "src/main.rs")  # after `let w = v;`
+    assert not body.initialized_at(2, {1}, 3, "src/main.rs")  # on that line: not yet
+    assert not body.initialized_at(1, {1}, 4, "src/main.rs")  # `v` was moved into `w`
+    # Code from an external macro may carry any invoking line: checked where it is.
+    assert body.initialized_at(2, {2}, 4, "src/main.rs")
+    assert not body.initialized_at(3, {2}, 4, "src/main.rs")
+
+
+def test_a_block_holding_only_a_callers_result_store_is_checked_at_its_start():
+    body = parse_body(
+        "fn main() -> () {\n"
+        "    let mut _0: ();  // return place in scope 0 at src/main.rs:1:10: 1:10\n"
+        "    scope 1 {\n"
+        "        debug acc => _1;  // in scope 1 at src/main.rs:2:9: 2:12\n"
+        "    }\n"
+        "    bb0: {\n"
+        "        _1 = make() -> [return: bb1, unwind continue];  // scope 0 at src/main.rs:2:15: 2:21\n"
+        "    }\n"
+        "    bb1: {\n"
+        "        _3 = &_1;  // scope 1 at src/main.rs:3:13: 3:16\n"
+        "        _2 = len(move _3) -> [return: bb2, unwind continue];  // scope 1 at src/main.rs:3:13: 3:22\n"
+        "    }\n"
+        "    bb2: {\n"
+        "        StorageDead(_3);  // scope 1 at src/main.rs:3:21: 3:22\n"
+        "        _4 = move _1;  // scope 1 at src/main.rs:4:15: 4:18\n"
+        "        _5 = consume(move _4) -> [return: bb3, unwind continue];  // scope 1 at src/main.rs:4:5: 4:19\n"
+        "    }\n"
+        "    bb3: {\n"
+        "        return;  // scope 0 at src/main.rs:5:2: 5:2\n"
+        "    }\n"
+        "}\n"
+    )
+    # Line 3 has code in bb1 and, through len's result store, at bb2's start: the
+    # move on line 4 comes after it.
+    assert body.initialized_at(1, {1, 2}, 3, "src/main.rs", 1)
+    # Without the checked caller, bb2's line-3 code is unexplained: the whole block,
+    # move included, must keep the local.
+    assert not body.initialized_at(1, {2}, 3, "src/main.rs", 1)
+    # bb0's start is the prologue only on the function's own line.
+    assert not body.initialized_at(1, {0}, 1, "src/main.rs", 1)
+
+
 def chain_body():
     """bb1 calls a function that cannot unwind; codegen merges bb2 (a move) into bb1."""
     body = mir(

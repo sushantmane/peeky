@@ -465,3 +465,53 @@ def test_a_wrapper_macro_around_println_keeps_the_functions_proofs(crate, capsys
     assert code == 0, result.get("error")
     if memory_views(result["rows"]):
         assert result["rows"][0]["value"] == "[1, 2, 3]"
+
+
+ASSIGNED_IN_BLOCK = """fn consume(v: Vec<i32>) -> usize {
+    v.len()
+}
+
+fn main() {
+    let v = vec![1, 2, 3];
+    let w = v;
+    let n = w.len(); // MOVED_INTO_W
+    let mut acc = vec![0];
+    let mut total = n;
+    for i in 0..3 {
+        acc = vec![i, i];
+        let k = acc.len(); // REASSIGNED
+        total += consume(acc) + k;
+    }
+    println!("{total}");
+}
+"""
+
+
+@pytest.mark.timeout(300)
+def test_a_local_assigned_on_the_previous_line_is_read(crate, capsys):
+    (crate / "src/main.rs").write_text(ASSIGNED_IN_BLOCK)
+    program = ASSIGNED_IN_BLOCK.splitlines()
+    rows = {}
+    for marker, selectors in (("MOVED_INTO_W", "v,w"), ("REASSIGNED", "acc")):
+        at = next(i for i, text in enumerate(program, 1) if marker in text)
+        code = main(
+            [
+                "probe",
+                str(crate),
+                "--at",
+                f"src/main.rs:{at}",
+                "--capture",
+                selectors,
+                "--hits",
+                "all",
+                "--json",
+            ]
+        )
+        result = json.loads(capsys.readouterr().out)
+        assert code == 0, result.get("error")
+        rows[marker] = result["rows"]
+    moved = {row["selector"]: row for row in rows["MOVED_INTO_W"]}
+    assert moved["v"].get("view") != "memory", moved["v"]
+    if memory_views(rows["MOVED_INTO_W"] + rows["REASSIGNED"]):
+        assert moved["w"]["value"] == "[1, 2, 3]"
+        assert [row["value"] for row in rows["REASSIGNED"]] == ["[0, 0]", "[1, 1]", "[2, 2]"]

@@ -23,9 +23,9 @@ Unoptimized builds also compile the binary crate through a small rustc wrapper (
 `rust_mir` uses them as follows:
 - It parses the dumps and runs a definite-initialization dataflow over each body.
 - It maps the stop line to MIR blocks through the LLVM IR's debug locations, which already attribute macro-expanded code to the invoking line.
-- It reads an owned `Vec<i32>` or `String` local only if every such block has the local initialized on entry and never moves, drops or ends it.
+- It reads an owned `Vec<i32>` or `String` local only if, in every such block (and any block codegen merged into it), the local is initialized at each place code of that line can be: before each statement on the line, or from another file (external macro code), following moves, drops and assignments statement by statement. A block whose code of the line no statement explains must keep the local throughout. The stop must be in the function's own file, and the MIR body must be identified positively: exactly one same-named body with a span on the function's `fn` line, owning every line of its code that any body has a span on.
 
-Anything not understood proves nothing: an unparsed statement, a coroutine, a projected or doubly bound name, a body that is ambiguous for its IR function, or a block of unknown origin. Optimized builds use no wrapper and read no owned locals. Unsafe code that duplicates ownership (`ptr::read`) is outside the proof.
+Anything not understood proves nothing: an unparsed statement, a coroutine, a projected or doubly bound name, a body that is ambiguous for its IR function (macro-generated twins included), a block of unknown origin, or a stop in another file (a macro defined there). A crate using `#[collapse_debuginfo]` gets the whole-block rule only. Optimized builds use no wrapper and read no owned locals. Unsafe code that duplicates ownership (`ptr::read`) is outside the proof.
 
 ## Required deterministic proof
 

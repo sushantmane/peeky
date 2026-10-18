@@ -13,12 +13,17 @@ the LLVM IR (`bb0` is `start`). The IR's debug locations say which blocks hold c
 the stop line, with macro-expanded code already attributed to the line that invoked
 the macro.
 
-The proof for a local at a stop: in every MIR block holding code of the stop line, the
-local is definitely initialized on entry (a must dataflow over the whole CFG, unwind
-edges included), and nothing in the block moves, drops or ends it. Anything not
-understood gives no proof: an unparsed statement or terminator, a coroutine, a debug
-binding through a projection, a name bound twice, an IR block of unknown origin.
-Unsafe code that duplicates ownership (`ptr::read`) is outside the proof.
+The proof for a local at a stop: in every MIR block holding code of the stop line
+(including blocks codegen merged into it), the local is initialized at every place that
+code can be. That is, before each code-emitting statement spanning the line, or spanning
+another file (external macro code takes the invoking line), following moves, drops and
+assignments statement by statement from the block's entry state, which a must dataflow
+over the whole CFG (unwind edges included) gives. A block whose code of the line no
+statement explains (other than a checked caller's result store at its start) must keep
+the local throughout. Anything not understood gives no proof: an unparsed statement or
+terminator, a coroutine, a debug binding through a projection, a name bound twice, a
+body that cannot be identified positively, an IR block of unknown origin, a stop in
+another file. Unsafe code that duplicates ownership (`ptr::read`) is outside the proof.
 """
 
 import re
@@ -48,6 +53,7 @@ _ANY_LOCAL = re.compile(r"\b_([0-9]+)\b")
 _SUCCESSOR = re.compile(r"\bbb([0-9]+)\b")
 _RETURN_EDGE = re.compile(r"\breturn: bb([0-9]+)\b")
 _EXITS = re.compile(r"^(?:return|unreachable|resume|abort|terminate)\b")
+_NO_CODE = re.compile(r"^(?:StorageLive|StorageDead|Deinit)\(_[0-9]+\);$|^nop;$")
 _UNSUPPORTED = re.compile(r"^(?:yield|coroutine_drop|falseEdge|falseUnwind|tailcall|asm!)\b")
 
 
@@ -115,6 +121,63 @@ class Body:
             block = self.blocks[number]
             if any(local in _kills(text) for text, _, _ in block.statements):
                 return False
+        return True
+
+    def initialized_at(self, local, blocks, line, file, declared=None):
+        """True if ``local`` is initialized wherever code of ``line`` in ``file`` can be
+        in these blocks: a statement spanning that line, or spanning another file or
+        none (external macro code takes the line that invoked it), and bb0's start when
+        the line is the function's own (``declared``: its prologue). Moves, drops and
+        assignments are followed statement by statement in between.
+
+        Statements that emit no code at opt-level 0 (storage markers) are never
+        positions. A call's result is stored at its target's start, at the call's line;
+        then the call's own block has code of that line too and is checked before the
+        call, which is stricter: built MIR passes locals to calls only through temps.
+        """
+        if not self.supported or not blocks:
+            return False
+        entry = self._dataflow()
+        if entry is None:
+            return False
+        bit, predecessors = 1 << local, self.predecessors()
+        for number in blocks:
+            state = entry.get(number)
+            if state is None:
+                return False
+            block = self.blocks[number]
+            starts_here = number == 0 and line == declared
+            positions = [
+                index
+                for index, (text, spanned, spanned_line) in enumerate(block.statements)
+                if (spanned != file or spanned_line == line) and not _NO_CODE.match(text)
+            ]
+            stored = any(
+                caller in blocks
+                and self.blocks[caller].returns == number
+                and (
+                    self.blocks[caller].statements[-1][1] != file
+                    or self.blocks[caller].statements[-1][2] == line
+                )
+                for caller in predecessors.get(number, ())
+            )
+            if not starts_here and not positions:
+                if stored:
+                    # Only a checked caller's result store, at this block's start.
+                    if not state & bit:
+                        return False
+                    continue
+                # The IR has code of this line here, yet no statement can have made it:
+                # not understood, so the whole block must keep the local.
+                if not state & bit or any(local in _kills(text) for text, _, _ in block.statements):
+                    return False
+                continue
+            if starts_here and not state & bit:
+                return False
+            for index, (text, _, _) in enumerate(block.statements):
+                if index in positions and not state & bit:
+                    return False
+                state = _transfer(text, state)
         return True
 
     def _dataflow(self):
@@ -444,8 +507,11 @@ def _file(meta, scope):
 class OwnedLocals:
     """Proofs that an owned local is initialized at a stop (see the module docstring)."""
 
-    def __init__(self, bodies, functions, sources=()):
+    def __init__(self, bodies, functions, sources=(), *, precise=True):
         self.bodies = list(bodies)
+        # Statement-level positions rely on local macro code keeping its own lines in
+        # debug info; `#[collapse_debuginfo]` changes that, and then whole blocks count.
+        self.precise = precise
         self.functions = dict(functions)
         self.sources = tuple(sources)
         self._matched = {}
@@ -521,7 +587,10 @@ class OwnedLocals:
         blocks = function.mir_blocks(line)
         if local is None or blocks is None:
             return False
-        return body.initialized_throughout(local, _merged(body, function, blocks))
+        blocks = _merged(body, function, blocks)
+        if not self.precise:
+            return body.initialized_throughout(local, blocks)
+        return body.initialized_at(local, blocks, line, function.file, function.line)
 
 
 def _merge_target(body, function, number, predecessors):
