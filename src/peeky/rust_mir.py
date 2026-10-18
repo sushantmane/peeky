@@ -67,6 +67,8 @@ class Body:
     blocks: dict  # {number: Block}
     bindings: dict  # {name: [(local or None, file, line)]}
     supported: bool = True
+    # (first, last) line of every span in the body's own file: its signature to its `}`.
+    range: tuple | None = None
     _entry: dict | None = None
 
     @property
@@ -78,13 +80,12 @@ class Body:
         parts = _segments(self.path)
         return parts[-2] if len(parts) > 1 else None
 
-    def call_lines(self):
-        """Lines of call terminators in the body's own file: each is a call instruction."""
-        return {
-            block.statements[-1][2]
-            for block in self.blocks.values()
-            if block.returns is not None and block.statements[-1][1] == self.file
-        }
+    def predecessors(self):
+        found = {}
+        for number, block in self.blocks.items():
+            for target in block.successors:
+                found.setdefault(target, set()).add(number)
+        return found
 
     def local(self, name, declared=None):
         """The MIR local an lldb-dap variable shows: `name`, or `name @ file:line` when
@@ -214,7 +215,7 @@ def parse_body(text):
         return None
     arguments = frozenset(int(n) for n in _ARGUMENT.findall(header[2]))
     body = Body(header[1], arguments, None, {}, {})
-    block = None
+    block, spans = None, []
     for line in lines[start + 1 :]:
         if line == "}":
             break
@@ -223,12 +224,14 @@ def parse_body(text):
         if local := _LOCAL.match(line):
             if local[1] == "0":
                 body.file = local[2]
+            spans.append((local[2], int(local[3])))
             continue
         if debug := _DEBUG.match(line):
             whole = _WHOLE_LOCAL.match(debug[2])
             body.bindings.setdefault(debug[1], []).append(
                 (int(whole[1]) if whole else None, debug[3], int(debug[4]))
             )
+            spans.append((debug[3], int(debug[4])))
             continue
         if opened := _BLOCK.match(line):
             block = body.blocks.setdefault(int(opened[1]), Block())
@@ -251,8 +254,12 @@ def parse_body(text):
         block.statements.append(
             (statement[1], span[1] if span else None, int(span[2]) if span else None)
         )
+        if span:
+            spans.append((span[1], int(span[2])))
     if block is not None or not body.blocks or 0 not in body.blocks or body.file is None:
         body.supported = False
+    own = [number for file, number in spans if file == body.file]
+    body.range = (min(own), max(own)) if own else None
     return body
 
 
@@ -312,6 +319,15 @@ class IrFunction:
     file: str
     blocks: dict  # {label: {line, ...}} for code of this function (not inlined)
     preds: dict  # {label: [label, ...]}
+    line: int | None = None  # the DISubprogram's: where the function is declared
+
+    def labeled(self):
+        """MIR blocks that have an IR block of their own (`start` is bb0)."""
+        return {
+            0 if label == "start" else int(label[2:])
+            for label in self.blocks
+            if label == "start" or re.fullmatch(r"bb[0-9]+", label)
+        }
 
     def lines(self):
         return set().union(*self.blocks.values()) if self.blocks else set()
@@ -404,7 +420,12 @@ def ir_functions(path, files):
                     lines[label].add(number)
         parent = meta.get(fields.get("scope"), (None, {}))[1].get("name")
         functions[hashed] = IrFunction(
-            re.sub(r"<.*>$", "", fields.get("name", "")), parent, file, lines, preds
+            re.sub(r"<.*>$", "", fields.get("name", "")),
+            parent,
+            file,
+            lines,
+            preds,
+            int(fields["line"]) if str(fields.get("line", "")).isdigit() else None,
         )
     return functions
 
@@ -434,11 +455,10 @@ class OwnedLocals:
             return self._matched[hashed]
         function = self.functions.get(hashed)
         found = None
-        if function is not None:
-            lines = function.lines()
-            numbers = {
-                int(m[1]) for label in function.blocks if (m := re.fullmatch(r"bb([0-9]+)", label))
-            }
+        if function is not None and (lines := function.lines()):
+            # Positive identification: every line the function has code on lies within
+            # the body's own span range (its signature to its closing brace), and the
+            # function is declared at or before it. Same-named bodies elsewhere fail.
             candidates = [
                 body
                 for body in self.bodies
@@ -449,10 +469,15 @@ class OwnedLocals:
                     or body.parent.startswith("<")
                     or body.parent == function.parent
                 )
-                and body.call_lines() <= lines
-                and numbers <= set(body.blocks)
+                and body.range is not None
+                and body.range[0] <= min(lines)
+                and max(lines) <= body.range[1]
+                and (function.line is None or function.line <= body.range[0])
+                and function.labeled() <= set(body.blocks)
             ]
             found = candidates[0] if len(candidates) == 1 else None
+            if found is not None and not _covered(found, function):
+                found = None
         self._matched[hashed] = found
         return found
 
@@ -472,6 +497,48 @@ class OwnedLocals:
             where = (file, int(number))
         local = body.local(name, where)
         blocks = function.mir_blocks(line)
-        return (
-            local is not None and blocks is not None and body.initialized_throughout(local, blocks)
-        )
+        if local is None or blocks is None:
+            return False
+        return body.initialized_throughout(local, _merged(body, function, blocks))
+
+
+def _merge_target(body, function, number, predecessors):
+    """The MIR block codegen emits inside ``number``'s IR block, if any.
+
+    rustc appends a block to its predecessor's IR block (no label of its own) when the
+    predecessor has that one successor and it has that one predecessor: after a
+    `goto`, or a call that cannot unwind (an `extern "C"` function).
+    """
+    successors = body.blocks[number].successors
+    if len(successors) != 1:
+        return None
+    target = successors[0]
+    if target in function.labeled() or predecessors.get(target) != {number}:
+        return None
+    return target
+
+
+def _merged(body, function, blocks):
+    """``blocks`` plus every block codegen merged into them."""
+    predecessors, found = body.predecessors(), set(blocks)
+    for number in blocks:
+        seen = {number}
+        while (target := _merge_target(body, function, number, predecessors)) is not None:
+            if target in seen:
+                break
+            seen.add(target)
+            found.add(target)
+            number = target
+    return found
+
+
+def _covered(body, function):
+    """Every reachable MIR block has its own IR block or was merged into one; any other
+    layout is not understood, so nothing in the function is proven."""
+    entry = body._dataflow()
+    if entry is None:
+        return False
+    covered = _merged(body, function, function.labeled() & set(entry))
+    return all(
+        number in covered or body.blocks[number].terminator == "unreachable;" for number in entry
+    )

@@ -362,3 +362,25 @@ Verification of 0952752 confirmed both fixes. It brute-forced `candidate_line` o
   This machine's store was repaired by its next read.
 
   Test: `test_older_stores_are_upgraded_in_place_keeping_their_runs` (schema 1, early schema 2, and schema 1 without views).
+
+## Review of owned Rust locals (#71, cce72eb)
+
+The review reproduced, with real builds, that several cases are correctly refused or correctly read:
+- **Refused:** `move` closure captures, `match` and `if let` moves, moves inside nested blocks, moves later in a loop body, the moved binding of a shadowed `String`.
+- **Read:** `let … else`, `break` values, and a local moved on one branch and reassigned on it.
+- **Mapped correctly:** a closure on the same line as its enclosing function.
+
+It found two false proofs, both blocking and both reproduced with `probe`. Both are fixed:
+- **rustc merges MIR blocks during codegen.**
+  - **What happens:** a block is appended to its predecessor's IR block, with no label of its own, when the predecessor has exactly that one successor and the block has exactly that one predecessor. That is the case after a `goto`, or after a call that cannot unwind (any `extern "C"` function).
+  - **Why it was a false proof:** the proof checked only the labeled head block, so a move or free in the merged block went unseen. A `Vec` moved into an `extern "C" fn` that frees it read as `[7, 7, 7]` from the reused allocation. One moved by `let w = v` after `getpid()` read as `[1, 2, 3]`, while the live `w` was shown raw.
+  - **The fix:** each labeled block is now expanded through its merge chain, and every block in the chain must be free of moves, drops and storage ends. A function with any reachable MIR block that is neither labeled nor in such a chain proves nothing.
+
+  Tests: `test_blocks_merged_into_a_labeled_block_are_checked_too`, `test_an_unlabeled_block_codegen_could_not_have_merged_proves_nothing`, and the real-build `test_review_false_proofs_stay_refused[freed-after-a-call-that-cannot-unwind, moved-after-it]`.
+- **IR functions were matched to MIR bodies by elimination.**
+  - **What happened:** an `#[inline(always)]` call left its line without code, which excluded `A::new`'s own body. `B::new`, whose only calls come from `vec!`, then remained as the single candidate. The proof ran on B's dataflow, and A's moved and freed `v` read as `[7, 7, 7]`.
+  - **The fix:** bodies are now identified positively. Every line the IR function has code on must lie within the body's own span range (its signature to its closing brace), and the function's `DISubprogram` line must not come after it. The call-line test is gone.
+
+  Tests: `test_a_body_is_identified_by_its_own_lines_not_by_elimination`, `test_review_false_proofs_stay_refused[same-named-method]`.
+
+All three real-build regressions fail on cce72eb and pass with the fix.

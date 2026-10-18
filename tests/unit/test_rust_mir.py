@@ -214,6 +214,75 @@ def test_a_function_is_proven_only_against_a_single_matching_body(tmp_path):
     assert OwnedLocals([body, body], functions).body("h0123456789abcdef") is None
 
 
+def chain_body():
+    """bb1 calls a function that cannot unwind; codegen merges bb2 (a move) into bb1."""
+    body = mir(
+        {
+            0: ["_1 = make() -> [return: bb1, unwind continue];"],
+            1: ["_2 = getpid() -> [return: bb2, unwind unreachable];"],
+            2: ["_3 = move _1;", "goto -> bb3;"],
+            3: ["return;"],
+        },
+        bindings=V,
+    )
+    return body
+
+
+def test_blocks_merged_into_a_labeled_block_are_checked_too():
+    body = chain_body()
+    # bb2 has no IR label: its move runs inside bb1's IR block, at line 5.
+    function = IrFunction(
+        "main", "app", "src/main.rs", {"start": {2}, "bb1": {4, 5}, "bb3": {6}}, {}
+    )
+    function.line = 1
+    owned = OwnedLocals([body], {"h0": function})
+    assert owned.body("h0") is body
+    assert not owned.proven("h0", "v", 5) and not owned.proven("h0", "v", 4)
+    # Labeled on its own, bb1 alone holds the line, and nothing in it moves `v`.
+    labeled = IrFunction(
+        "main", "app", "src/main.rs", {"start": {2}, "bb1": {4}, "bb2": {5}, "bb3": {6}}, {}, 1
+    )
+    assert OwnedLocals([chain_body()], {"h1": labeled}).proven("h1", "v", 4)
+
+
+def test_an_unlabeled_block_codegen_could_not_have_merged_proves_nothing():
+    body = mir(
+        {
+            0: ["_1 = make() -> [return: bb1, unwind continue];"],
+            1: ["switchInt(copy _4) -> [0: bb2, otherwise: bb3];"],
+            2: ["goto -> bb4;"],
+            3: ["goto -> bb4;"],
+            4: ["_3 = move _1;", "return;"],  # two predecessors, yet no IR block
+        },
+        bindings=V,
+    )
+    function = IrFunction(
+        "main", "app", "src/main.rs", {"start": {2}, "bb1": {4}, "bb2": {5}, "bb3": {5}}, {}, 1
+    )
+    owned = OwnedLocals([body], {"h0": function})
+    assert owned.body("h0") is None and not owned.proven("h0", "v", 4)
+
+
+def test_a_body_is_identified_by_its_own_lines_not_by_elimination():
+    def new(first, calls):
+        body = mir(
+            {0: ["_1 = make() -> [return: bb1, unwind continue];"], 1: ["return;"]},
+            header="fn <impl at src/main.rs:1:1: 1:7>::new() -> () {",
+            bindings=V,
+        )
+        body.range = (first, first + 8)
+        body.blocks[0].statements[-1] = (body.blocks[0].terminator, "src/main.rs", calls)
+        return body
+
+    a, b = new(19, 22), new(29, 31)
+    # A's line 22 (an always-inlined call) left no code of its own in the IR.
+    function = IrFunction(
+        "new", "A", "src/main.rs", {"start": {20}, "bb1": {21, 23, 24, 26}}, {}, 19
+    )
+    assert OwnedLocals([a, b], {"h": function}).body("h") is a
+    assert OwnedLocals([b], {"h": function}).body("h") is None
+
+
 WRAPPER_RUSTC = (
     "import os, sys; print(os.environ.get('RUSTC_BOOTSTRAP', '-'), "
     "os.environ.get('CARGO_BIN_EXE_my-app', '-'), *sys.argv[1:])"

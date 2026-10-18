@@ -144,3 +144,105 @@ def test_a_shadowed_string_is_read_only_through_its_live_binding(crate, capsys):
     assert variables[first].get("view") != "memory", variables[first]
     if os.environ.get("PEEKY_EXPECT_READ_MEMORY") or variables[second].get("view") == "memory":
         assert variables[second]["value"] == '"first-second"'
+
+
+FFI_FREED = """extern "C" {
+    fn getpid() -> i32;
+}
+
+#[allow(improper_ctypes_definitions)]
+extern "C" fn consume(v: Vec<i32>) {
+    drop(v);
+    std::mem::forget(vec![7, 7, 7]);
+}
+
+fn main() {
+    let v = vec![1, 2, 3];
+    let pid = unsafe { getpid() };
+    consume(v);
+    let n = pid; // FFI_FREED
+    println!("{n}");
+}
+"""
+
+FFI_MOVED = """extern "C" {
+    fn getpid() -> i32;
+}
+
+fn main() {
+    let v = vec![1, 2, 3];
+    let pid = unsafe { getpid() };
+    let w = v;
+    let n = pid; // FFI_MOVED
+    println!("{n} {w:?}");
+}
+"""
+
+SAME_NAME = """#[inline(always)]
+fn tick() {}
+
+fn consume(v: Vec<i32>) -> usize {
+    let n = v.len();
+    drop(v);
+    std::mem::forget(vec![7, 7, 7]);
+    n
+}
+
+struct A {
+    n: usize,
+}
+
+struct B {
+    n: usize,
+}
+
+impl A {
+    fn new() -> A {
+        let v = vec![1, 2, 3];
+        tick();
+        let n = consume(v);
+        let m = n; // SAME
+        A { n: m }
+    }
+}
+
+impl B {
+    fn new(k: usize) -> B {
+        let v = vec![4, 5, 6];
+        let a = k + 1;
+        let b = a + 1;
+        let c = b + 1;
+        let d = c + 1;
+        let e = d + 1;
+        let n = e + 1;
+        let w = &v;
+        B { n: n + 1 }
+    }
+}
+
+fn main() {
+    let a = A::new();
+    let b = B::new(a.n);
+    println!("{} {}", a.n, b.n);
+}
+"""
+
+
+@pytest.mark.parametrize(
+    ("program", "marker", "selectors"),
+    [(FFI_FREED, "FFI_FREED", "v"), (FFI_MOVED, "FFI_MOVED", "v"), (SAME_NAME, "SAME", "v")],
+    ids=["freed-after-a-call-that-cannot-unwind", "moved-after-it", "same-named-method"],
+)
+@pytest.mark.timeout(300)
+def test_review_false_proofs_stay_refused(crate, capsys, program, marker, selectors):
+    (crate / "src/main.rs").write_text(program)
+    at = next(i for i, text in enumerate(program.splitlines(), 1) if f"// {marker}" in text)
+    code = main(
+        ["probe", str(crate), "--at", f"src/main.rs:{at}", "--capture", selectors, "--json"]
+    )
+    result = json.loads(capsys.readouterr().out)
+    assert code == 0, result.get("error")
+    # Moved (or moved and freed, its buffer reused by [7, 7, 7]): never read. Before the
+    # fix these read [7, 7, 7] or [1, 2, 3] from memory.
+    [row] = result["rows"]
+    assert row["selector"] == "v" and row.get("view") != "memory", row
