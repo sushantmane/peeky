@@ -362,3 +362,81 @@ Verification of 0952752 confirmed both fixes. It brute-forced `candidate_line` o
   This machine's store was repaired by its next read.
 
   Test: `test_older_stores_are_upgraded_in_place_keeping_their_runs` (schema 1, early schema 2, and schema 1 without views).
+
+## Review of owned Rust locals (#71, cce72eb)
+
+The review reproduced, with real builds, that several cases are correctly refused or correctly read:
+- **Refused:** `move` closure captures, `match` and `if let` moves, moves inside nested blocks, moves later in a loop body, the moved binding of a shadowed `String`.
+- **Read:** `let … else`, `break` values, and a local moved on one branch and reassigned on it.
+- **Mapped correctly:** a closure on the same line as its enclosing function.
+
+It found two false proofs, both blocking and both reproduced with `probe`. Both are fixed:
+- **rustc merges MIR blocks during codegen.**
+  - **What happens:** a block is appended to its predecessor's IR block, with no label of its own, when the predecessor has exactly that one successor and the block has exactly that one predecessor. That is the case after a `goto`, or after a call that cannot unwind (any `extern "C"` function).
+  - **Why it was a false proof:** the proof checked only the labeled head block, so a move or free in the merged block went unseen. A `Vec` moved into an `extern "C" fn` that frees it read as `[7, 7, 7]` from the reused allocation. One moved by `let w = v` after `getpid()` read as `[1, 2, 3]`, while the live `w` was shown raw.
+  - **The fix:** each labeled block is now expanded through its merge chain, and every block in the chain must be free of moves, drops and storage ends. A function with any reachable MIR block that is neither labeled nor in such a chain proves nothing.
+
+  Tests: `test_blocks_merged_into_a_labeled_block_are_checked_too`, `test_an_unlabeled_block_codegen_could_not_have_merged_proves_nothing`, and the real-build `test_review_false_proofs_stay_refused[freed-after-a-call-that-cannot-unwind, moved-after-it]`.
+- **IR functions were matched to MIR bodies by elimination.**
+  - **What happened:** an `#[inline(always)]` call left its line without code, which excluded `A::new`'s own body. `B::new`, whose only calls come from `vec!`, then remained as the single candidate. The proof ran on B's dataflow, and A's moved and freed `v` read as `[7, 7, 7]`.
+  - **The fix:** bodies are now identified positively. Every line the IR function has code on must lie within the body's own span range (its signature to its closing brace), and the function's `DISubprogram` line must not come after it. The call-line test is gone.
+
+  Tests: `test_a_body_is_identified_by_its_own_lines_not_by_elimination`, `test_review_false_proofs_stay_refused[same-named-method]`.
+
+All three real-build regressions fail on cce72eb and pass with the fix.
+
+Verification of 2bf24a3 confirmed both fixes: the three regressions fail on cce72eb and pass now. It checked rustc's block merging for every terminator and unwind kind, `start`/`bb0`, nested and generic functions, inlined callees, and storage reuse, and found no further false proof from these. It found one more blocking issue and one false negative, both fixed:
+- **Blocking:** the proof was given only the stop line, never its file. A breakpoint inside a `macro_rules!` defined in another crate file stops in the calling function's frame at the other file's line. The proof then checked that line number in the function's own file: a `drop($v)` in `macros.rs` read `[7, 7, 7]`. `proven()` now takes the frame's source path and proves nothing unless it is the function's own file, unambiguously among the declared sources.
+
+  Tests: `test_a_stop_in_another_file_is_never_checked_against_this_files_line`, and the real-build `test_a_stop_in_a_macro_from_another_file_is_never_proven_with_this_files_lines` (it fails on 2bf24a3).
+- **False negative:** a function that expands a same-file macro defined above it got no proof. rustc keeps local macros' own lines in debug info, and those spans put the body's range above its `fn` line. Identification now requires:
+  - a span on the function's `DISubprogram` line;
+  - every IR line of the function either between that line and the body's last span, or on a line the body has a span on.
+
+  Tests: `test_spans_of_a_macro_defined_above_do_not_hide_the_body`, and the real-build `test_a_macro_defined_above_the_function_does_not_hide_its_proofs`.
+
+The second verification (02a5ad1) confirmed both fixes. It also confirmed that one same-file macro used twice around `drop(v)` is refused at the drop and read where `v` is live, that adjacent `impl` methods named `new` resolve correctly, and that rustfmt-style signatures work. It found one more blocking issue and one false negative. Both are fixed:
+- **Blocking (older than 02a5ad1):** functions or closures that one local macro generates twice share their `fn` line, return place and closing brace, all from the macro definition. Matching still worked partly by elimination:
+  - A's own body failed the line check, on a call-site line that had only `println!` code.
+  - B's body then remained as the single candidate.
+  - Twin `run` methods and twin closures in `a::work`/`b::work` read a moved and freed `v` as `[7, 7, 7]`.
+
+  A body is now chosen only positively: exactly one body of that name, file and parent with a span on the function's `DISubprogram` line, so twins are refused. The IR-line containment check is gone, since it no longer decides anything.
+
+  Tests: `test_twins_a_macro_generates_are_refused_not_told_apart`, and the real-build `test_functions_a_macro_generates_twice_are_never_proven_with_each_other[methods, closures]` (both fail on 02a5ad1).
+- **False negative:** a local wrapper macro around `println!` (`say!`) defined above a function put code on the macro's line, where the body has no span, so the whole function lost its proofs. Removing the containment check fixes it.
+
+  Test: `test_a_wrapper_macro_around_println_keeps_the_functions_proofs` (fails on 02a5ad1).
+
+The third verification (f3c54d7) confirmed the twin fix. It checked these cases and found them correct:
+- trait default methods, and `impl Trait for X` against an inherent method of the same name;
+- derived methods, nested `fn`s, and closures in `const`s, `static`s, impl methods and other closures;
+- generic instances;
+- async bodies (refused).
+
+It found one more blocking case, now fixed:
+- **Blocking:** with a multi-line signature, the only span a body has on its `fn` line is its cleanup `resume`. So of two macro twins, only the one with an unwind path has a span on the shared `fn` line, and it was the unique candidate for the other twin. A moved `Vec` read as `[7, 7, 7]`. A candidate is now also refused when any line the function has code on is a span line of another body in the file but not of the candidate. Here, the other twin's own lines give it away. Lines no body has a span on (an external macro inside a local wrapper) still don't matter. Bodies are told apart by identity, never by equality, so identical twins are not confused.
+
+  Tests: `test_a_twin_whose_fn_line_matches_alone_is_refused_by_the_other_twins_lines`, and the real-build `test_functions_a_macro_generates_twice_are_never_proven_with_each_other[only-one-twin-has-cleanup]` (fails on f3c54d7).
+- **Known false negative, not changed:** a closure three levels deep (`{closure#0}` inside `{closure#0}` inside `{closure#0}`) shares its name and parent with the middle closure, which constructs it on its own definition line. Both are candidates, so it is never proven.
+
+**Statement-level positions (ae76546).** The whole-block rule refused live locals often: `let w = v; let n = w.len();` never read `w` on the second line, because its block also holds `w`'s assignment. A local is now checked at every place code of the stop line can be:
+- before each code-emitting statement on the line, or from another file (external macro code takes the invoking line), following moves, drops and assignments statement by statement;
+- at bb0's start on the function's own line;
+- at a block's start when a checked caller's call result is stored there.
+
+Any other block with code of the line keeps the whole-block rule, and `#[collapse_debuginfo]` anywhere falls back to it entirely.
+
+The review agents were unavailable for this round ("model not supported", three attempts), so it was verified by hand with real builds on lldb-dap 21:
+- **Never read:**
+  - a multi-line call that moves its argument, at the call line and at its closing line;
+  - a `match` scrutinee moved into its arm;
+  - `let Some(k) = Some(c) else`, for `c`;
+  - a `Vec` moved into a closure call on the same line as a live one;
+  - three statements on one line (`let s = …; let t = s; …`), at each of the line's three breakpoint locations;
+  - mid-line stops after `step --out`, from `consume(a)` and from the closure, both after the move.
+- **Read:** `k`, `e` and `t` where they are live.
+- **Scope-end `drop`:** rustc puts it in the parent scope, so the dropped local is not visible at all, before the drop or after stepping out of `drop_in_place`.
+- **Defense in depth:** a stop at a call's or drop's return address is still on the line, so the state after such a terminator on the stop line must also hold the local.
+
+Tests: `test_a_local_assigned_earlier_in_the_block_is_proven_at_a_later_line`, `test_a_block_holding_only_a_callers_result_store_is_checked_at_its_start`, `test_a_stop_after_a_drop_on_the_line_is_never_proven`, and the real-build `test_a_local_assigned_on_the_previous_line_is_read`.

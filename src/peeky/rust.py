@@ -44,7 +44,9 @@ from peeky.native import (
 )
 from peeky.rust_ir import ir_locals
 from peeky.rust_manifest import assert_cargo_ancestry_clear, validate_cargo_inputs
+from peeky.rust_mir import OwnedLocals, ir_functions, load_bodies
 from peeky.rust_symbols import (
+    OWNED_CONTAINERS,
     UNVERIFIED,
     active_variant,
     application_symbols,
@@ -52,6 +54,54 @@ from peeky.rust_symbols import (
 )
 
 DEPS = "target/debug/deps"
+MIR_DIR = "target/peeky-mir"
+# Cargo runs this for workspace crates only (RUSTC_WORKSPACE_WRAPPER). For the debugged
+# binary crate alone it adds the MIR the owned-local proof reads (rust_mir): no MIR
+# optimizations, so moves stay moves and blocks keep their names in the IR. Unstable
+# flags are allowed for that one crate, and legacy mangling keeps the frame hashes
+# Peeky's IR facts are keyed by. Dependencies and tests compile unchanged. Python, not a
+# shell: dash drops variables like CARGO_BIN_EXE_<bin-with-dashes> that tests need.
+MIR_WRAPPER = """import os
+import sys
+
+args = sys.argv[1:]
+crate = binary = None
+for previous, arg in zip(args, args[1:]):
+    if previous == "--crate-name":
+        crate = arg
+    elif previous == "--crate-type" and arg == "bin":
+        binary = True
+wanted = os.environ.get("PEEKY_MIR_CRATE")
+if wanted and crate == wanted and binary:
+    os.environ["RUSTC_BOOTSTRAP"] = crate
+    args += [
+        "-Zmir-opt-level=0",
+        "-Zdump-mir=all & PreCodegen",
+        "-Zdump-mir-dir=target/peeky-mir",
+        "-Zmir-include-spans=yes",
+        "-Zunstable-options",
+        "-Csymbol-mangling-version=legacy",
+    ]
+os.execv(args[0], args)
+"""
+
+
+def mir_wrapper(directory):
+    """Write the wrapper into ``directory``; returns (wrapper, its exact text).
+
+    Its interpreter is this Python through a short symlink beside it, so the shebang
+    has no spaces or length limits, run isolated (-I) from PYTHON* variables.
+    """
+    directory = Path(directory)
+    interpreter = directory / "python"
+    interpreter.symlink_to(Path(sys.executable).resolve())
+    text = f"#!{interpreter} -I\n{MIR_WRAPPER}"
+    wrapper = directory / "rustc-mir"
+    wrapper.write_text(text)
+    wrapper.chmod(0o700)
+    return wrapper, text
+
+
 TEST_TIMEOUT_S = 30
 _CARGO_STDERR = re.compile(
     r" *Compiling [a-z0-9_-]{1,64} v[0-9.]{1,64} \(.{1,4096}\)"
@@ -350,6 +400,11 @@ class RustTarget:
             "rust_version": self.rust_version,
             "rustflags": self.rustflags,
             "profile": self.profile,
+            **(
+                {"mir_wrapper_sha256": hashlib.sha256(MIR_WRAPPER.encode()).hexdigest()}
+                if self.opt_level == "0"
+                else {}
+            ),
         }
 
     @property
@@ -451,17 +506,12 @@ class RustTarget:
             raise ValueError("Rust target supports Linux and macOS hosts only")
         environment = self._environment(rustc)
         uplift = f"target/debug/{cargo_inputs.binary}"
-        recipe = BuildRecipe(
-            "rust",
-            cargo_inputs.inputs,
-            (build, tests),
-            (
-                ArtifactSpec(DEPS, "directory", "cargo-deps"),
-                ArtifactSpec(uplift, role="cargo-test-target"),
-            ),
-            tuple(probes),
-            tuple(sorted(environment.items())),
+        crate = cargo_inputs.binary.replace("-", "_")
+        artifacts = (
+            ArtifactSpec(DEPS, "directory", "cargo-deps"),
+            ArtifactSpec(uplift, role="cargo-test-target"),
         )
+        wrapper = wrapper_text = None
 
         def validate_workspace(workspace, env):
             # Before every probe and Cargo command: revalidate the exact staged bytes
@@ -471,6 +521,13 @@ class RustTarget:
             if staged != cargo_inputs:
                 raise RuntimeError("Staged Cargo inputs differ from validated preflight")
             assert_cargo_ancestry_clear(workspace)
+            if wrapper is not None and (
+                env.get("RUSTC_WORKSPACE_WRAPPER") != str(wrapper)
+                or wrapper.is_symlink()
+                or wrapper.read_text() != wrapper_text
+                or Path(wrapper.parent / "python").resolve() != Path(sys.executable).resolve()
+            ):
+                raise RuntimeError("The Rust MIR wrapper changed during preparation")
             if dsymutil is not None:
                 selected = shutil.which("dsymutil", path=env.get("PATH"))
                 if (
@@ -493,6 +550,24 @@ class RustTarget:
         parent = Path(tempfile.mkdtemp(prefix="peeky-rust-")).resolve()
         try:
             assert_cargo_ancestry_clear(parent)
+            if self.opt_level == "0":
+                # Outside the workspace, in Peeky's own directory; checked before every
+                # command (validate_workspace).
+                wrapper, wrapper_text = mir_wrapper(parent)
+                environment = {
+                    **environment,
+                    "RUSTC_WORKSPACE_WRAPPER": str(wrapper),
+                    "PEEKY_MIR_CRATE": crate,
+                }
+                artifacts += (ArtifactSpec(MIR_DIR, "directory", "rust-mir"),)
+            recipe = BuildRecipe(
+                "rust",
+                cargo_inputs.inputs,
+                (build, tests),
+                artifacts,
+                tuple(probes),
+                tuple(sorted(environment.items())),
+            )
             try:
                 prepared = prepare(
                     recipe,
@@ -513,8 +588,11 @@ class RustTarget:
         try:
             if deadline is not None and deadline - time.monotonic() <= 0:
                 raise TimeoutError("Rust preparation exceeded its overall deadline")
-            crate = cargo_inputs.binary.replace("-", "_")
-            names = [item.path for item in prepared.manifest.artifacts if item.path != uplift]
+            names = [
+                item.path
+                for item in prepared.manifest.artifacts
+                if item.path != uplift and not item.path.startswith(MIR_DIR + "/")
+            ]
             binary, symbols, test_binary = (
                 prepared.workspace / name
                 for name in cargo_artifacts(names, crate, cargo_inputs.test.replace("-", "_"))
@@ -525,6 +603,15 @@ class RustTarget:
                 (binary, test_binary), prepared.workspace, cargo_inputs.inputs
             )
             memory, parameters = ir_locals(binary.with_name(binary.name + ".ll"))
+            owned = None
+            if wrapper is not None:
+                owned = owned_locals(
+                    prepared.workspace,
+                    [item.path for item in prepared.manifest.artifacts],
+                    crate,
+                    binary.with_name(binary.name + ".ll"),
+                    self.sources,
+                )
             env = dict(prepared.manifest.effective_environment)
             lines, layouts, units = application_symbols(
                 dwarfdump,
@@ -553,6 +640,7 @@ class RustTarget:
                 parent,
                 memory,
                 parameters,
+                owned,
             )
             session.test_binary = test_binary
             session.test_target = prepared.workspace / uplift
@@ -567,6 +655,26 @@ class RustTarget:
             finally:
                 _remove_owned(parent, exc)
             raise
+
+
+def owned_locals(workspace, artifacts, crate, ir, sources):
+    """The owned-local proofs (rust_mir) for this build, from its hashed MIR dumps."""
+    mir = [name for name in artifacts if name.startswith(MIR_DIR + "/")]
+    pattern = re.compile(
+        re.escape(f"{MIR_DIR}/{crate}.") + r".+\.PreCodegen\.(?:before|after)\.mir"
+    )
+    if not mir or not all(pattern.fullmatch(name) for name in mir):
+        raise ValueError("Unexpected Rust MIR artifact")
+    collapsed = any(
+        "collapse_debuginfo" in (Path(workspace) / name).read_text(errors="replace")
+        for name in sources
+    )
+    return OwnedLocals(
+        load_bodies(Path(workspace) / MIR_DIR, crate),
+        ir_functions(ir, sources),
+        sources,
+        precise=not collapsed,
+    )
 
 
 def _require_declared_dependencies(executables, workspace, inputs):
@@ -617,8 +725,11 @@ class RustSession(NativeSession):
         parent,
         memory=None,
         parameters=None,
+        owned=None,
     ):
         self._layouts_data = json.dumps(layouts, sort_keys=True)
+        # Proofs that an owned Vec/String local is initialized at a stop (rust_mir).
+        self.owned = owned
         self.parent = parent
         # {(function hash, local): True if every declaration is a real memory slot}.
         self.memory = dict(memory or {})
@@ -700,14 +811,16 @@ class RustSession(NativeSession):
             )
 
     def view_variable(self, variable, fetch, read=None, *, frame=None, top=False, innermost=False):
-        """Qualified views: reference parameters' containers read from memory, active
-        enum variants; None leaves ordinary values unchanged.
+        """Qualified views: containers read from memory, active enum variants; None
+        leaves ordinary values unchanged.
 
-        A container is read only for a top-level variable of ``frame`` that is a proven
-        reference parameter (rust_ir), once the frame is past the parameter's
-        declaration lines, where the entry block has stored it. A `&mut` parameter is
-        read only in the innermost frame: from an outer frame, a callee (`retain`,
-        `sort_by` calling back into your code) may be midway through changing it.
+        A container is read only for a top-level variable of ``frame`` that is either a
+        proven reference parameter (rust_ir), once the frame is past the parameter's
+        declaration lines, where the entry block has stored it, or an owned `Vec<i32>`
+        or `String` local the build's MIR proves initialized at the frame's line
+        (rust_mir). A `&mut` parameter and an owned local are read only in the
+        innermost frame: from an outer frame, a callee (`retain`, `sort_by` calling back
+        into your code) may be midway through changing it.
         """
         parameter = None
         hashed = _frame_hash(frame) if top else None
@@ -720,12 +833,26 @@ class RustSession(NativeSession):
             and (innermost or not proof["type"].startswith("&mut "))
         ):
             parameter = proof["type"]
+        proofs = getattr(self, "owned", None)
+        owned = bool(
+            hashed
+            and innermost
+            and proofs is not None
+            and variable.get("type") in OWNED_CONTAINERS
+            and proofs.proven(
+                hashed[1],
+                variable.get("name"),
+                line,
+                ((frame or {}).get("source") or {}).get("path"),
+            )
+        )
         container = container_view(
             variable,
             read,
             self.layouts,
             optimized=self.target.opt_level != "0",
             parameter=parameter,
+            owned=owned,
         )
         if container is not None:
             return container

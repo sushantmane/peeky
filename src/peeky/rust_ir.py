@@ -14,8 +14,9 @@ rustc stores every parameter (in its own slot or a `<name>.dbg.spill` copy) in t
 entry block, before any statement. A reference parameter's lifetime outlives the
 function body, and the borrow checker rejects assigning it anything shorter-lived
 (even through `&mut` or in a closure), so past its declaration lines it points at
-live, initialized memory. Locals have no such proof: a moved, dropped or
-not-yet-initialized local can still hold a stale pointer.
+live, initialized memory. Locals have no such proof here: a moved, dropped or
+not-yet-initialized local can still hold a stale pointer. Owned locals get theirs from
+the compiler's MIR instead (rust_mir).
 """
 
 import re

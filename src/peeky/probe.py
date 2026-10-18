@@ -431,8 +431,10 @@ _OWNED_RUST_TYPES = frozenset(
     {"alloc::vec::Vec<int, alloc::alloc::Global>", "alloc::string::String"}
 )
 _OWNED_RUST = (
-    "Owned Rust Vec and String locals show their raw fields; Peeky reads contents only "
-    "through reference parameters (#53). Capture `.len` for the length, or read the value "
+    "This owned Rust Vec or String shows its raw fields: Peeky reads an owned local's "
+    "contents only where the build's MIR proves it initialized at the stop line, in the "
+    "innermost frame, and here it may be moved, dropped or not yet assigned around this "
+    "line (#53). Capture `.len` for the length, probe a line where it is live, or read it "
     "where it is passed as &Vec, &[T], &String or &str."
 )
 _RUST_CONTAINERS = (
@@ -528,9 +530,11 @@ def _absence(variable, segment, children):
         elif kind.startswith(_RUST_CONTAINERS):
             message += (
                 "; Peeky reads Rust contents only for reference parameters (&[i32], &str, "
-                "&Vec<i32>, &String, or &mut), with a debugger that supports readMemory "
-                "(lldb-dap from LLVM 20). Owned Vec and String locals stay raw: a moved or "
-                "dropped local can still point at freed memory"
+                "&Vec<i32>, &String, or &mut) and for owned Vec<i32>/String locals the "
+                "build's MIR proves initialized at the stop line (innermost frame), with a "
+                "debugger that supports readMemory (lldb-dap from LLVM 20). This one stays "
+                "raw: a moved, dropped or not-yet-assigned local can still point at freed "
+                "memory"
                 + (f". Capture {variable['name']}.{length} for the length" if length else "")
                 + ", and check contents with `peeky verify`"
             )

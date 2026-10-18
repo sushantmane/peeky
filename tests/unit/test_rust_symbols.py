@@ -1040,6 +1040,6 @@ def test_describe_lists_the_reference_parameters_it_reads_from_memory():
             "timing": {"advice": "fast"},
         }
     )
-    [line] = [line for line in text.splitlines() if line.startswith("reference parameters")]
+    [line] = [line for line in text.splitlines() if line.startswith("read from memory")]
     assert line.endswith(f": &[i32], &{VEC_NAME}, &mut {VEC_NAME}")
-    assert "locals stay raw" in line
+    assert "reference parameters, and owned" in line and "MIR proves" in line
