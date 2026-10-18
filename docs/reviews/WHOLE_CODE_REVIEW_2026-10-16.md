@@ -440,3 +440,13 @@ The review agents were unavailable for this round ("model not supported", three 
 - **Defense in depth:** a stop at a call's or drop's return address is still on the line, so the state after such a terminator on the stop line must also hold the local.
 
 Tests: `test_a_local_assigned_earlier_in_the_block_is_proven_at_a_later_line`, `test_a_block_holding_only_a_callers_result_store_is_checked_at_its_start`, `test_a_stop_after_a_drop_on_the_line_is_never_proven`, and the real-build `test_a_local_assigned_on_the_previous_line_is_read`.
+
+## Review of Rust container views for every element type (#73, 9a4d486)
+
+No issues. The review checked these on real builds and found them sound:
+- **Decoding:** width and sign per type; `Vec<bool>` from bytes `[2, 1, 0]` becomes `<unverified>`; signalling, negative and payload NaNs print `NaN`; the alignment check is inert for one-byte elements.
+- **Type names:** LLDB builds container names from the element's template argument, so only the scalar pairs `u64`/`usize` and `i64`/`isize` share a name. Rust `char` (`char32_t`) does not collide with `i8` (`char`).
+- **Parameters:** `&[usize]` and `&[u64]` in one function stay exact, and `&Vec<T>` is decided by the IR's declared type.
+- **Owned locals:** their exact type comes from MIR. A generic `Vec<T>`, or a by-value `Vec<u64>` parameter, falls back to the identical-layout label `u64 or usize`, which is correct.
+- **Floats:** the reviewer's own differential run against rustc 1.96 covered 121,018 cases (every power of two ±2 ULP, ±50 ULP around `1e-4`, `1e16` and the maximum values, every power of ten ±3 ULP, 20,000 random subnormals per type, both signs) with 0 mismatches. 256 f64 elements take 20–32 ms per view.
+- **Evidence:** `inf`, `NaN` and `true` are not numeric in the `num` column.
