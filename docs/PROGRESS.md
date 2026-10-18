@@ -102,21 +102,26 @@ An hourly thread heartbeat (`continue-peeky-mvp`) checks for available usage and
     - Values are kept only if the build that ran hashes to the edited text, locally and over `--worker`.
     - A build that fails is now `BUILD_FAILED` with the compiler's output, for every probe and session.
     - Evidence schema 3: `runs.edit` holds the diff; the views have `candidate`; `queries runs` marks candidate runs, `values` leaves them out, and `diff` adds an `(edit)` row. Older stores upgrade in place.
+- **#71 (`146ab4f`): owned Rust `Vec<i32>`/`String` locals** are read from memory where the build's MIR proves them initialized at the stop line (closes #53).
+  - The binary crate is compiled through a rustc wrapper: `-Zmir-opt-level=0`, a `PreCodegen` MIR dump, legacy mangling, and `RUSTC_BOOTSTRAP` for that crate only.
+  - `rust_mir` runs a definite-initialization dataflow, checked at every place code of the stop line can be.
+  - Five review rounds found five false proofs (merged codegen blocks, matching by elimination, a stop in another file, two kinds of macro twins), each fixed with a real-build regression.
+- **#70 (`ea6c728`):** the Java adapter test infers a dropped exit the way the worker does (#27, observation 3).
 - **#67 (`0a1fad7`): CUDA phase 0** for #61. [ADR 0007](adr/0007-cuda-gdb-dap.md) (proposed) drives `cuda-gdb -i=dap`. `scripts/cuda/qualify.py` is the qualification to run on a GPU host.
   - Found by experiment: upstream GDB 14.2, 15.1 and 16.3 start the program at different DAP requests. One order works on all three (breakpoints, `launch`, then `configurationDone`).
   - The new `gdb-dap` lane keeps that order tested against GDB 15.1; 14.2 and 16.3 were run by hand.
 - **Dependabot:** #1, #3, #4 and #5 were merged. #2 (`upload-artifact` v7) was validated by dispatching `artifact.yml`, then fast-forwarded over SSH as `7308955`, because the API token lacks the `workflow` scope.
 
-**Closed issues:** #6, #7, #8, #9, #10, #11, #12, #13, #48, #49, #55, #56, #57, #58, #59.
+**Closed issues:** #6, #7, #8, #9, #10, #11, #12, #13, #48, #49, #53, #55, #56, #57, #58, #59.
 
 **Open issues:**
 - **#27:** an attached JVM whose `stopped` event is lost (seen once on Venice). The launch case is fixed. 160 targeted stress runs (simple and Venice-like thread churn) did not reproduce it; diagnostics stay in place.
 - **#61:** NVIDIA CUDA debugging, sanitizers and profiling, filed by the owner. [ADR 0007](adr/0007-cuda-gdb-dap.md) proposes driving `cuda-gdb -i=dap`; `scripts/cuda/qualify.py` is the phase 0 qualification, and its DAP sequence is tested against upstream GDB (lane `gdb-dap`). Running it needs a Linux host with an NVIDIA GPU, reachable over Peeky's SSH remote worker; this Mac has none.
-- **#53:** reading owned Rust `Vec`/`String` locals from memory needs a liveness proof. LLVM IR cannot tell a move from a borrow, and stable MIR has no spans. The options are on the issue.
 
 **Process notes:**
 - Create PRs and issues with `gh api` (REST): `gh pr create`/`gh issue create` GraphQL calls returned 504s, and the app's PR tool needs the project's GitHub link.
 - Squash-merge with `gh api -X PUT .../pulls/N/merge -f merge_method=squash -f sha=<head>`.
+- **2026-10-17:** the `code-review` agent started failing with "400 The requested model is not supported" (also the general-purpose agent). The last #71 round was verified by hand with real builds and recorded as such in the review doc.
 - Never pipe pytest output through `tail` before checking its exit code.
 - Changes to workflow files cannot be merged through the API (no `workflow` scope). Validate them by dispatching the workflow, then push to `main` over SSH.
 - **2026-10-16:** GitHub Actions stopped starting jobs ("recent account payments have failed or your spending limit needs to be increased"). The owner was unavailable, so #46 and #47 were merged on equivalent verification:
@@ -178,8 +183,7 @@ The original slices are delivered: #6–#13 are closed. Remaining:
 4. **ADR 0004, step 5:** a prepared-build cache, only if measured probe latency requires it. Step 4 shipped in #35; the SQL-shaped probe form was deliberately not implemented.
 5. Implement the bounded evidence correlation design (code, logs, metrics).
 6. A live-model evaluation on Venice, using the cookbook.
-7. **#53:** owned Rust locals, once a sound liveness proof is designed.
-8. **#61:** CUDA phase 0 on a real GPU host: run `scripts/cuda/qualify.py` to qualify `cuda-gdb -i=dap` (GDB 14.2 and later inside cuda-gdb 12.9 and later), then a known kernel bug end to end.
+7. **#61:** CUDA phase 0 on a real GPU host: run `scripts/cuda/qualify.py` to qualify `cuda-gdb -i=dap` (GDB 14.2 and later inside cuda-gdb 12.9 and later), then a known kernel bug end to end.
 
 Read AGENTS.md, DESIGN.md, LANGUAGES.md, and ROADMAP.md for acceptance criteria. Runtime intervention is evidence only; never claim a fix without fresh verification and matching source/build identity. Preserve a checkpoint when usage runs low; report shipped work and actual limitations.
 
