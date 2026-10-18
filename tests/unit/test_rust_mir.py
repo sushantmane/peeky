@@ -279,6 +279,32 @@ def test_a_block_holding_only_a_callers_result_store_is_checked_at_its_start():
     assert not body.initialized_at(1, {0}, 1, "src/main.rs", 1)
 
 
+def test_a_stop_after_a_drop_on_the_line_is_never_proven():
+    body = parse_body(
+        "fn main() -> () {\n"
+        "    let mut _0: ();  // return place in scope 0 at src/main.rs:1:10: 1:10\n"
+        "    scope 1 {\n"
+        "        debug v => _1;  // in scope 1 at src/main.rs:2:9: 2:10\n"
+        "    }\n"
+        "    bb0: {\n"
+        "        _1 = make() -> [return: bb1, unwind continue];  // scope 0 at src/main.rs:2:13: 2:19\n"
+        "    }\n"
+        "    bb1: {\n"
+        "        drop(_1) -> [return: bb2, unwind continue];  // scope 1 at src/main.rs:3:5: 3:6\n"
+        "    }\n"
+        "    bb2: {\n"
+        "        _2 = other() -> [return: bb3, unwind continue];  // scope 0 at src/main.rs:4:5: 4:12\n"
+        "    }\n"
+        "    bb3: {\n"
+        "        return;  // scope 0 at src/main.rs:5:2: 5:2\n"
+        "    }\n"
+        "}\n"
+    )
+    # Before the drop `v` is valid, but `step --out` from drop_in_place returns to
+    # line 3 after it: the line as a whole proves nothing.
+    assert not body.initialized_at(1, {1}, 3, "src/main.rs", 1)
+
+
 def chain_body():
     """bb1 calls a function that cannot unwind; codegen merges bb2 (a move) into bb1."""
     body = mir(

@@ -419,3 +419,24 @@ It found one more blocking case, now fixed:
 
   Tests: `test_a_twin_whose_fn_line_matches_alone_is_refused_by_the_other_twins_lines`, and the real-build `test_functions_a_macro_generates_twice_are_never_proven_with_each_other[only-one-twin-has-cleanup]` (fails on f3c54d7).
 - **Known false negative, not changed:** a closure three levels deep (`{closure#0}` inside `{closure#0}` inside `{closure#0}`) shares its name and parent with the middle closure, which constructs it on its own definition line. Both are candidates, so it is never proven.
+
+**Statement-level positions (ae76546).** The whole-block rule refused live locals often: `let w = v; let n = w.len();` never read `w` on the second line, because its block also holds `w`'s assignment. A local is now checked at every place code of the stop line can be:
+- before each code-emitting statement on the line, or from another file (external macro code takes the invoking line), following moves, drops and assignments statement by statement;
+- at bb0's start on the function's own line;
+- at a block's start when a checked caller's call result is stored there.
+
+Any other block with code of the line keeps the whole-block rule, and `#[collapse_debuginfo]` anywhere falls back to it entirely.
+
+The review agents were unavailable for this round ("model not supported", three attempts), so it was verified by hand with real builds on lldb-dap 21:
+- **Never read:**
+  - a multi-line call that moves its argument, at the call line and at its closing line;
+  - a `match` scrutinee moved into its arm;
+  - `let Some(k) = Some(c) else`, for `c`;
+  - a `Vec` moved into a closure call on the same line as a live one;
+  - three statements on one line (`let s = …; let t = s; …`), at each of the line's three breakpoint locations;
+  - mid-line stops after `step --out`, from `consume(a)` and from the closure, both after the move.
+- **Read:** `k`, `e` and `t` where they are live.
+- **Scope-end `drop`:** rustc puts it in the parent scope, so the dropped local is not visible at all, before the drop or after stepping out of `drop_in_place`.
+- **Defense in depth:** a stop at a call's or drop's return address is still on the line, so the state after such a terminator on the stop line must also hold the local.
+
+Tests: `test_a_local_assigned_earlier_in_the_block_is_proven_at_a_later_line`, `test_a_block_holding_only_a_callers_result_store_is_checked_at_its_start`, `test_a_stop_after_a_drop_on_the_line_is_never_proven`, and the real-build `test_a_local_assigned_on_the_previous_line_is_read`.

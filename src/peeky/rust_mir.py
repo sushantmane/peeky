@@ -178,6 +178,12 @@ class Body:
                 if index in positions and not state & bit:
                     return False
                 state = _transfer(text, state)
+            # A stop at a call's or drop's return address (`step --out`) is still on
+            # this line, after the terminator's moves and drops.
+            last = len(block.statements) - 1
+            if last in positions and (block.returns is not None or _DROP.match(block.terminator)):
+                if not state & bit:
+                    return False
         return True
 
     def _dataflow(self):
