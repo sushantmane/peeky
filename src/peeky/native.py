@@ -113,13 +113,13 @@ def _metadata(tool, arguments, workspace, env, *, max_bytes=MAX_METADATA, timeou
         return output.read_text(encoding="utf-8")
 
 
-def _line_rows(text, workspace, declared):
+def _line_rows(text, workspace, declared, limit=MAX_METADATA):
     """Rows of the LLVM DWARF4 line-table dump for declared sources: (address, name, line).
 
     Unrecognized rows fail closed. Rows outside the declared sources (SDK and system
     headers) and end-of-sequence rows are skipped.
     """
-    if len(text.encode()) > MAX_METADATA:
+    if len(text.encode()) > limit:
         raise ValueError("Native line metadata exceeds limit")
     workspace = Path(workspace).resolve()
     inputs = {str((workspace / name).resolve()): name for name in declared}
@@ -182,10 +182,10 @@ def _line_rows(text, workspace, declared):
     return rows
 
 
-def parse_lines(text, workspace, declared):
+def parse_lines(text, workspace, declared, *, limit=MAX_METADATA):
     """Parse the LLVM DWARF4 line-table dump; unrecognized rows fail closed."""
     result = {name: set() for name in declared}
-    for _, name, number in _line_rows(text, workspace, declared):
+    for _, name, number in _line_rows(text, workspace, declared, limit):
         result[name].add(number)
     if not any(result.values()):
         raise ValueError("Missing executable native debug symbol line information")

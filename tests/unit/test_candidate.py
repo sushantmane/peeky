@@ -90,6 +90,36 @@ def test_build_failures_are_build_failed_with_the_compilers_words(result, words)
         assert "expected expression" in error["message"]
 
 
+def test_a_cargo_build_failure_shows_rustcs_errors_not_only_cargos_footer():
+    messages = [
+        {"reason": "compiler-artifact"},
+        {
+            "reason": "compiler-message",
+            "message": {"level": "warning", "rendered": "src/main.rs:2:9: warning: unused\n"},
+        },
+        {
+            "reason": "compiler-message",
+            "message": {
+                "level": "error",
+                "rendered": "src/main.rs:3:22: error[E0308]: mismatched types\n",
+            },
+        },
+        {"reason": "build-finished", "success": False},
+    ]
+    result = {
+        "exit_code": 101,
+        "stdout": "".join(json.dumps(message) + "\n" for message in messages),
+        "stderr": "   Compiling app v0.1.0 (/tmp/peeky-build-x)\n"
+        'error: could not compile `app` (bin "app") due to 1 previous error\n',
+    }
+    error = classify(BuildCommandError(["/x/cargo", "build"], result), session_closed=False)
+    assert error["message"].splitlines() == [
+        "The build failed: cargo exited with code 101",
+        "src/main.rs:3:22: error[E0308]: mismatched types",
+        'error: could not compile `app` (bin "app") due to 1 previous error',
+    ]
+
+
 def v1_store(path, version=1, views=True):
     """A store as an older Peeky wrote it, holding one run with a capture.
 

@@ -603,3 +603,21 @@ def test_a_lone_carriage_return_is_not_a_line_break():
     # rustc counts `\n` only: line 4 has the vec!, line 3 does not.
     text = "fn main() {\n    // a\r(note)\n    let x = [1];\n    let v = vec![0]; for y in x {\n}\n"
     assert may_invoke_macro(text, 4) and not may_invoke_macro(text, 3)
+
+
+def test_a_block_codegen_left_without_predecessors_keeps_its_own_label(tmp_path):
+    # `debug_assert!` branches on a constant; codegen leaves the dead arm as
+    # `bbN: ; No predecessors!`. Dropping that label gave its code to the block before
+    # it, and left the MIR block uncovered, so nothing in the function was proven.
+    path = tmp_path / "app.ll"
+    path.write_text(
+        IR.replace(
+            "bb2:                                              ; preds = %bb1\n  ret void, !dbg !24\n",
+            "bb2:                                              ; preds = %bb1\n  ret void, !dbg !24\n"
+            "\nbb3:                                              ; No predecessors!\n"
+            "  br label %bb2, !dbg !24\n",
+        )
+    )
+    function = ir_functions(path, ["src/main.rs"])["h0123456789abcdef"]
+    assert function.blocks["bb2"] == {5} and function.blocks["bb3"] == {5}
+    assert 3 in function.labeled() and "bb3" not in function.preds

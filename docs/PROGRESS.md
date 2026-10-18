@@ -108,6 +108,11 @@ An hourly thread heartbeat (`continue-peeky-mvp`) checks for available usage and
   - Rust `f64`/`f32` scalars print as Rust does;
   - failed probes keep their output, and `NO_STOP` gives the exit code and names Peeky options placed after `--`;
   - `diff` gets a `(line)` row and gives line and column.
+  - From its review rounds:
+    - the macro-line premise is qualified per toolchain (`test_rust_macro_lines.py`);
+    - functions using `debug_assert!` can be proven;
+    - Rust builds with many diagnostics are `BUILD_FAILED` with rustc's errors;
+    - programs using `HashMap` no longer exceed the 2 MiB DWARF cap.
   - Issues filed: #74 to #79.
 - **#73 (`f8e5efa`):** Rust containers of every scalar element type (`Vec<T>`, `&[T]`, `&mut [T]`, `&Vec<T>` for i8–i64, u8–u64, isize, usize, bool, f32, f64), with floats printed exactly as Rust's `{:?}`.
 - **#71 (`146ab4f`): owned Rust `Vec<i32>`/`String` locals** are read from memory where the build's MIR proves them initialized at the stop line (closes #53).

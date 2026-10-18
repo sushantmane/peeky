@@ -92,8 +92,16 @@ def kill_process_group(process):
             pass
 
 
-def execute(command, cwd, timeout=20, *, input_text=None, env=None, output_limit=1048576):
+# A build keeps all of its output up to the kill limit: compiler diagnostics can be long.
+BUILD_RETAINED = 1048576
+
+
+def execute(
+    command, cwd, timeout=20, *, input_text=None, env=None, output_limit=1048576, retain=16000
+):
     """Bound output and kill the owned POSIX process group, including descendants.
+
+    The first ``retain`` bytes of each stream are kept; more than ``output_limit`` kills it.
 
     Targets are trusted development code, not sandboxed. A child deliberately
     escaping the process group is outside the MVP ownership guarantee.
@@ -116,7 +124,7 @@ def execute(command, cwd, timeout=20, *, input_text=None, env=None, output_limit
         total = 0
         while chunk := stream.read(8192):
             total += len(chunk)
-            buffers[slot].extend(chunk[: max(0, 16000 - len(buffers[slot]))])
+            buffers[slot].extend(chunk[: max(0, retain - len(buffers[slot]))])
             if total > output_limit:
                 overflow.set()
 

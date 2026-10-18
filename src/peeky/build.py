@@ -321,7 +321,7 @@ def _validate(recipe):
 def _run(command, workspace, env, timeout=None):
     # Temporary dependency reuse. Move execute to a shared process module when
     # the build boundary is integrated; never import agent at module scope.
-    from peeky.agent import execute
+    from peeky.agent import BUILD_RETAINED, execute
 
     cwd = _inside(workspace, command.cwd, directory=True)
     if not cwd.is_dir():
@@ -341,7 +341,9 @@ def _run(command, workspace, env, timeout=None):
     executable = Path(executable).resolve(strict=True)
     digest, _ = _digest(executable)
     timeout = command.timeout_s if timeout is None else timeout
-    result = execute([str(executable), *command.argv[1:]], cwd, timeout, env=env)
+    result = execute(
+        [str(executable), *command.argv[1:]], cwd, timeout, env=env, retain=BUILD_RETAINED
+    )
     try:
         unchanged = _digest(executable)[0] == digest
     except (OSError, ValueError) as exc:

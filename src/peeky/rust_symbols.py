@@ -26,7 +26,12 @@ from fractions import Fraction
 from pathlib import Path
 
 from peeky.adapters import ViewBudgetExhausted
-from peeky.native import MAX_METADATA, _metadata, parse_lines
+from peeky.native import _metadata, parse_lines
+
+# An application unit's own DWARF: a program using std's collections has megabytes of
+# monomorphized types (4.4 MB for one using HashMap); dumping and parsing it takes
+# tens of milliseconds, inside the symbol deadline.
+RUST_METADATA = 16 * 1024 * 1024
 
 MAX_UNITS = 4096
 MAX_APPLICATION_UNITS = 16
@@ -114,7 +119,7 @@ def parse_dies(text, *, units):
     Attributes print at 12 + 2 + 2*depth columns independent of offset width.
     Every child list in --show-children output must end with its own NULL.
     """
-    if len(text.encode()) > MAX_METADATA:
+    if len(text.encode()) > RUST_METADATA:
         raise ValueError("Rust debug information exceeds limit")
     roots, stack, pending, last, seen, count = [], [], None, None, False, 0
     for raw in text.splitlines():
@@ -599,7 +604,14 @@ def application_symbols(
         remaining = deadline - _clock()
         if remaining <= 0:
             raise ValueError("Rust symbol extraction exceeded its shared deadline")
-        return _metadata(dwarfdump, arguments, workspace, env, timeout=min(15, remaining))
+        return _metadata(
+            dwarfdump,
+            arguments,
+            workspace,
+            env,
+            max_bytes=RUST_METADATA,
+            timeout=min(15, remaining),
+        )
 
     index = dump(["--debug-info", "--recurse-depth=0", str(symbols)])
     units = application_units(index, workspace, entrypoint=entrypoint, crate=crate)
@@ -616,7 +628,7 @@ def application_symbols(
             if layouts.get(name, layout) != layout:
                 layout = {"kind": "unqualified"}
             layouts[name] = layout
-    lines = parse_lines("\n".join(tables), workspace, declared)
+    lines = parse_lines("\n".join(tables), workspace, declared, limit=RUST_METADATA)
     return lines, layouts, units
 
 

@@ -8,6 +8,7 @@ import pytest
 from peeky.native import MAX_METADATA
 from peeky.rust_symbols import (
     QUALIFIED_OPTIONS,
+    RUST_METADATA,
     UNQUALIFIED,
     UNVERIFIED,
     RustUnit,
@@ -255,6 +256,9 @@ def test_die_parser_tolerates_only_attribute_range_continuations():
             units=False,
         )
     with pytest.raises(ValueError, match="exceeds"):
+        parse_dies(" " * (RUST_METADATA + 1), units=False)
+    # A program using std's collections has megabytes of its own DWARF (eval 3 follow-up).
+    with pytest.raises(ValueError, match="Missing DWARF unit"):  # past the size check
         parse_dies(" " * (MAX_METADATA + 1), units=False)
 
 

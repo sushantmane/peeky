@@ -393,7 +393,9 @@ def load_bodies(directory, crate):
 
 _DEFINE = re.compile(r'^define .*?@("?)([^"(\s]+)\1\(.*!dbg (![0-9]+) \{$')
 _LEGACY_HASH = re.compile(r"17(h[0-9a-f]{16})E$")
-_LABEL = re.compile(r"^([-$._A-Za-z0-9]+):(?:\s+; preds = (.*))?$")
+# A block codegen left unreachable (the dead arm of `if cfg!(debug_assertions)` in
+# `debug_assert!`) is labeled `; No predecessors!`.
+_LABEL = re.compile(r"^([-$._A-Za-z0-9]+):(?:\s+; (?:preds = (.*)|No predecessors!))?$")
 _DBG = re.compile(r"!dbg (![0-9]+)")
 _META = re.compile(
     r"^(![0-9]+) = (?:distinct )?!(DILocation|DISubprogram|DILexicalBlock|DILexicalBlockFile"

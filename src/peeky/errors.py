@@ -182,6 +182,27 @@ _RULES = (
 )
 
 
+def _compiler_errors(stdout):
+    """rustc's rendered error diagnostics from Cargo's JSON messages, in order."""
+    found = []
+    for line in stdout.splitlines():
+        if not line.startswith("{"):
+            continue
+        try:
+            message = json.loads(line)
+        except (ValueError, RecursionError):
+            continue
+        diagnostic = message.get("message") if isinstance(message, dict) else None
+        if (
+            message.get("reason") == "compiler-message"
+            and isinstance(diagnostic, dict)
+            and diagnostic.get("level") == "error"
+            and isinstance(diagnostic.get("rendered"), str)
+        ):
+            found.append(diagnostic["rendered"].strip())
+    return found
+
+
 def _build_failure(exc):
     """BUILD_FAILED with the compiler's own words, for a build command that failed."""
     from peeky.build import BuildCommandError
@@ -196,6 +217,14 @@ def _build_failure(exc):
     else:
         what = f"{tool} exited with code {result.get('exit_code')}"
     output = str(result.get("stderr") or result.get("stdout") or "").strip()
+    if errors := _compiler_errors(str(result.get("stdout") or "")):
+        # Cargo writes rustc's diagnostics to stdout as JSON and only a footer to stderr.
+        footer = [
+            line.strip()
+            for line in str(result.get("stderr") or "").splitlines()
+            if line.strip() and not line.strip().startswith("Compiling ")
+        ]
+        output = "\n".join([*errors, *footer])
     if len(output) > 1500:
         output = output[:1500] + "\n... (output truncated)"
     return {

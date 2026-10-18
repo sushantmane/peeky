@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from peeky.adapters import PythonAdapter
+from peeky.agent import BUILD_RETAINED
 from peeky.build import (
     ArtifactSpec,
     BuildCommandError,
@@ -202,8 +203,8 @@ def compiler_diagnostic(result, sources):
         or result.get("output_limit_exceeded")
         or not isinstance(stdout, str)
         or not isinstance(stderr, str)
-        or len(stdout.encode()) >= 16000
-        or len(stderr.encode()) >= 16000
+        or len(stdout.encode()) >= BUILD_RETAINED
+        or len(stderr.encode()) >= BUILD_RETAINED
         or not stdout.endswith("\n")
     ):
         return False
