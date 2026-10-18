@@ -816,7 +816,7 @@ class RustSession(NativeSession):
 
         A container is read only for a top-level variable of ``frame`` that is either a
         proven reference parameter (rust_ir), once the frame is past the parameter's
-        declaration lines, where the entry block has stored it, or an owned `Vec<i32>`
+        declaration lines, where the entry block has stored it, or an owned `Vec<T>`
         or `String` local the build's MIR proves initialized at the frame's line
         (rust_mir). A `&mut` parameter and an owned local are read only in the
         innermost frame: from an outer frame, a callee (`retain`, `sort_by` calling back
@@ -853,6 +853,7 @@ class RustSession(NativeSession):
             optimized=self.target.opt_level != "0",
             parameter=parameter,
             owned=owned,
+            declared=proofs.declared_type(hashed[1], variable.get("name")) if owned else None,
         )
         if container is not None:
             return container

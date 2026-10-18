@@ -36,7 +36,7 @@ MAX_ITERATIONS = 10_000
 _HEADER = re.compile(r"^fn (.+?)\((.*)\) -> .* \{$")
 _ARGUMENT = re.compile(r"(?:^|, )_([0-9]+): ")
 _LOCAL = re.compile(
-    r"^ +let (?:mut )?_([0-9]+): .*?; +// (?:return place )?in scope [0-9]+ at "
+    r"^ +let (?:mut )?_([0-9]+): (.*?); +// (?:return place )?in scope [0-9]+ at "
     r"([^:]+):([0-9]+):[0-9]+"
 )
 _DEBUG = re.compile(r"^ +debug (.+?) => (.+?); +// in scope [0-9]+ at ([^:]+):([0-9]+):[0-9]+")
@@ -76,6 +76,7 @@ class Body:
     # Lines of every span in the body's own file (its own code, and the definitions of
     # same-file macros it expands).
     lines: frozenset = frozenset()
+    types: dict = field(default_factory=dict)  # {local: its type as MIR prints it}
     _entry: dict | None = None
 
     @property
@@ -293,8 +294,9 @@ def parse_body(text):
             continue
         if local := _LOCAL.match(line):
             if local[1] == "0":
-                body.file = local[2]
-            spans.append((local[2], int(local[3])))
+                body.file = local[3]
+            body.types[int(local[1])] = local[2]
+            spans.append((local[3], int(local[4])))
             continue
         if debug := _DEBUG.match(line):
             whole = _WHOLE_LOCAL.match(debug[2])
@@ -568,6 +570,24 @@ class OwnedLocals:
         self._matched[hashed] = found
         return found
 
+    @staticmethod
+    def _local(body, variable_name):
+        name, at, declared = str(variable_name).partition(" @ ")
+        where = None
+        if at:
+            file, _, number = declared.rpartition(":")
+            if not number.isdigit():
+                return None
+            where = (file, int(number))
+        return body.local(name, where)
+
+    def declared_type(self, hashed, variable_name):
+        """The MIR type of the frame's local ``variable_name`` (`std::vec::Vec<usize>`),
+        which LLDB's C-style names cannot tell apart (u64 and usize); else None."""
+        body = self.body(hashed)
+        local = self._local(body, variable_name) if body is not None else None
+        return None if local is None else body.types.get(local)
+
     def proven(self, hashed, variable_name, line, path):
         """True only if the frame's local ``variable_name`` (an lldb-dap name: `v`, or
         `v @ main.rs:8` when shadowed) is initialized at ``line`` of ``path``.
@@ -582,14 +602,7 @@ class OwnedLocals:
         shown = str(path or "").replace("\\", "/")
         if [source for source in self.sources if shown.endswith("/" + source)] != [function.file]:
             return False
-        name, at, declared = str(variable_name).partition(" @ ")
-        where = None
-        if at:
-            file, _, number = declared.rpartition(":")
-            if not number.isdigit():
-                return False
-            where = (file, int(number))
-        local = body.local(name, where)
+        local = self._local(body, variable_name)
         blocks = function.mir_blocks(line)
         if local is None or blocks is None:
             return False
