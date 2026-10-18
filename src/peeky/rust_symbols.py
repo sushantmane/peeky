@@ -16,9 +16,12 @@ is opaque. This is trusted-code evidence, not a sandbox or formatter.
 
 import codecs
 import json
+import math
 import re
+import struct
 import time
 from dataclasses import dataclass
+from fractions import Fraction
 from pathlib import Path
 
 from peeky.adapters import ViewBudgetExhausted
@@ -330,36 +333,83 @@ def _option_layout(struct, qualified, by_offset):
     }
 
 
+# Element types of the containers Peeky reads: {Rust name: (size, DWARF encoding,
+# LLDB's names for it)}. LLDB names scalars as C types, so i64 and isize (u64 and usize)
+# share a name; owned locals are told apart by their layouts, which must agree.
+ELEMENT_TYPES = {
+    "i8": (1, "DW_ATE_signed", ("char", "signed char")),
+    "u8": (1, "DW_ATE_unsigned", ("unsigned char",)),
+    "i16": (2, "DW_ATE_signed", ("short",)),
+    "u16": (2, "DW_ATE_unsigned", ("unsigned short",)),
+    "i32": (4, "DW_ATE_signed", ("int",)),
+    "u32": (4, "DW_ATE_unsigned", ("unsigned int",)),
+    "i64": (8, "DW_ATE_signed", ("long",)),
+    "u64": (8, "DW_ATE_unsigned", ("unsigned long",)),
+    "isize": (8, "DW_ATE_signed", ("long",)),
+    "usize": (8, "DW_ATE_unsigned", ("unsigned long",)),
+    "bool": (1, "DW_ATE_boolean", ("bool",)),
+    "f32": (4, "DW_ATE_float", ("float",)),
+    "f64": (8, "DW_ATE_float", ("double",)),
+}
+
+
+def _vec_name(element):
+    return f"alloc::vec::Vec<{element}, alloc::alloc::Global>"
+
+
 # Containers whose contents Peeky reads from memory at compiler-validated offsets
 # (LLDB's Rust formatter scripts are never loaded). Element: (DWARF name, size, encoding).
 QUALIFIED_CONTAINERS = {
-    "alloc::vec::Vec<i32, alloc::alloc::Global>": ("vec", ("i32", 4, "DW_ATE_signed")),
-    "&[i32]": ("slice", ("i32", 4, "DW_ATE_signed")),
-    "&mut [i32]": ("slice", ("i32", 4, "DW_ATE_signed")),
+    **{
+        name: (kind, (element, size, encoding))
+        for element, (size, encoding, _) in ELEMENT_TYPES.items()
+        for name, kind in (
+            (_vec_name(element), "vec"),
+            (f"&[{element}]", "slice"),
+            (f"&mut [{element}]", "slice"),
+        )
+    },
     "alloc::string::String": ("string", ("u8", 1, "DW_ATE_unsigned")),
     "&str": ("str", ("u8", 1, "DW_ATE_unsigned")),
     "&mut str": ("str", ("u8", 1, "DW_ATE_unsigned")),
 }
 # Reference parameters whose contents Peeky reads, by their declared (DWARF/IR) type:
-# (LLDB's name for the parameter's type, qualified container, read through a pointer).
+# (LLDB's names for the parameter's type, qualified container, read through a pointer).
 # Only parameters qualify: their referent outlives the call (see rust_ir).
-_VEC = "alloc::vec::Vec<i32, alloc::alloc::Global>"
+_VEC = _vec_name("i32")
 REFERENCE_PARAMETERS = {
-    "&[i32]": ("&[i32]", "&[i32]", False),
-    "&mut [i32]": ("&mut [i32]", "&mut [i32]", False),
-    "&str": ("&str", "&str", False),
-    "&mut str": ("&mut str", "&mut str", False),
-    f"&{_VEC}": ("alloc::vec::Vec<int, alloc::alloc::Global> *", _VEC, True),
-    f"&mut {_VEC}": ("alloc::vec::Vec<int, alloc::alloc::Global> *", _VEC, True),
-    "&alloc::string::String": ("alloc::string::String *", "alloc::string::String", True),
-    "&mut alloc::string::String": ("alloc::string::String *", "alloc::string::String", True),
+    **{
+        declared: entry
+        for element, (_, _, lldb) in ELEMENT_TYPES.items()
+        for declared, entry in (
+            (f"&[{element}]", ((f"&[{element}]",), f"&[{element}]", False)),
+            (f"&mut [{element}]", ((f"&mut [{element}]",), f"&mut [{element}]", False)),
+            (
+                f"&{_vec_name(element)}",
+                (tuple(f"{_vec_name(n)} *" for n in lldb), _vec_name(element), True),
+            ),
+            (
+                f"&mut {_vec_name(element)}",
+                (tuple(f"{_vec_name(n)} *" for n in lldb), _vec_name(element), True),
+            ),
+        )
+    },
+    "&str": (("&str",), "&str", False),
+    "&mut str": (("&mut str",), "&mut str", False),
+    "&alloc::string::String": (("alloc::string::String *",), "alloc::string::String", True),
+    "&mut alloc::string::String": (
+        ("alloc::string::String *",),
+        "alloc::string::String",
+        True,
+    ),
 }
-# Owned locals read when rust_mir proves them initialized: {debugger type: layout}
-# (LLDB names i32 `int`).
-OWNED_CONTAINERS = {
-    "alloc::vec::Vec<int, alloc::alloc::Global>": _VEC,
-    "alloc::string::String": "alloc::string::String",
-}
+# Owned locals read when rust_mir proves them initialized: {LLDB type: qualified
+# containers it can be}.
+OWNED_CONTAINERS = {"alloc::string::String": ("alloc::string::String",)}
+for _element, (_, _, _names) in ELEMENT_TYPES.items():
+    for _name in _names:
+        OWNED_CONTAINERS.setdefault(_vec_name(_name), ())
+        OWNED_CONTAINERS[_vec_name(_name)] += (_vec_name(_element),)
 CONTAINER_KINDS = frozenset(kind for kind, _ in QUALIFIED_CONTAINERS.values())
 
 
@@ -701,7 +751,112 @@ def _shown_text(text, length):
     return f"{shown} (first {len(prefix.encode())} of {length} bytes)"
 
 
-def container_view(variable, read, layouts, *, optimized, parameter=None, owned=False):
+def _one_layout(names, layouts):
+    """The layout an owned local's LLDB type names: one candidate, or several (i64 and
+    isize) whose layouts agree in everything but the element's name; else None."""
+    if not names:
+        return None
+    if len(names) == 1:
+        return layouts[names[0]]
+    if any(layouts[n].get("kind") == "unqualified" for n in names):
+        return None
+    shapes = {
+        json.dumps({k: v for k, v in layouts[n].items() if k != "element"}, sort_keys=True)
+        for n in names
+    }
+    encodings = {ELEMENT_TYPES[QUALIFIED_CONTAINERS[n][1][0]][:2] for n in names}
+    if len(shapes) != 1 or len(encodings) != 1:
+        return None
+    return {**layouts[names[0]], "element": " or ".join(layouts[n]["element"] for n in names)}
+
+
+def _decoder(layout):
+    """bytes -> the element as Rust's `{:?}` shows it, for the layout's element type."""
+    element = layout["element"].split(" or ")[0]
+    size, encoding, _ = ELEMENT_TYPES[element]
+    if encoding == "DW_ATE_boolean":
+
+        def boolean(raw):
+            if raw not in (b"\x00", b"\x01"):
+                raise ValueError("Rust bool is neither 0 nor 1")
+            return "true" if raw == b"\x01" else "false"
+
+        return boolean
+    if encoding == "DW_ATE_float":
+        pack = "<f" if size == 4 else "<d"
+        return lambda raw: rust_float_debug(struct.unpack(pack, raw)[0], size * 8)
+    signed = encoding == "DW_ATE_signed"
+    return lambda raw: str(int.from_bytes(raw, "little", signed=signed))
+
+
+_FLOATS = {32: ("<f", "<I", 23), 64: ("<d", "<Q", 52)}
+
+
+def _float_bounds(value, bits):
+    """(lower, upper, inclusive): the interval of reals that round to ``value``."""
+    pack, word, mantissa = _FLOATS[bits]
+    raw = struct.unpack(word, struct.pack(pack, value))[0]
+    below = Fraction(struct.unpack(pack, struct.pack(word, raw - 1))[0])
+    exact = Fraction(value)
+    top = (1 << (bits - 1 - mantissa)) - 1
+    if ((raw + 1) >> mantissa) & top == top:
+        upper = exact + (exact - below) / 2  # the largest finite value
+    else:
+        upper = (exact + Fraction(struct.unpack(pack, struct.pack(word, raw + 1))[0])) / 2
+    return (below + exact) / 2, upper, raw % 2 == 0
+
+
+def _shortest_digits(value, bits):
+    """(digits, exponent) with value ~ d.ddd * 10**exponent: the fewest digits that read
+    back as ``value``, the closest of them, ties away from zero (Rust's shortest)."""
+    lower, upper, inclusive = _float_bounds(value, bits)
+    exact = Fraction(value)
+    exponent = math.floor(math.log10(value))
+    while Fraction(10) ** exponent > exact:
+        exponent -= 1
+    while Fraction(10) ** (exponent + 1) <= exact:
+        exponent += 1
+    for count in range(1, 40):
+        scale = Fraction(10) ** (exponent - count + 1)
+        floor = math.floor(exact / scale)
+        options = [
+            q
+            for q in (floor, floor + 1)
+            if q > 0 and (lower <= q * scale <= upper if inclusive else lower < q * scale < upper)
+        ]
+        if options:
+            best = min(options, key=lambda q: (abs(q * scale - exact), -q))
+            digits = str(best)
+            return digits.rstrip("0") or "0", exponent + len(digits) - count
+    raise ValueError("Rust float has no shortest representation")
+
+
+def rust_float_debug(value, bits):
+    """``value`` as Rust's `{:?}` prints an f32 (bits=32) or f64: shortest round-trip
+    digits, in exponent form below 1e-4 or from 1e16 (checked against rustc 1.96)."""
+    if math.isnan(value):
+        return "NaN"
+    if math.isinf(value):
+        return "inf" if value > 0 else "-inf"
+    sign = "-" if math.copysign(1.0, value) < 0 else ""
+    value = abs(value)
+    if value == 0:
+        return sign + "0.0"
+    digits, exponent = _shortest_digits(value, bits)
+    pack = _FLOATS[bits][0]
+    small, large = (struct.unpack(pack, struct.pack(pack, x))[0] for x in (1e-4, 1e16))
+    if value < small or value >= large:
+        rest = digits[1:]
+        return f"{sign}{digits[0]}{'.' + rest if rest else ''}e{exponent}"
+    if exponent >= 0:
+        whole = digits[: exponent + 1].ljust(exponent + 1, "0")
+        return f"{sign}{whole}.{digits[exponent + 1 :] or '0'}"
+    return f"{sign}0.{'0' * (-exponent - 1)}{digits}"
+
+
+def container_view(
+    variable, read, layouts, *, optimized, parameter=None, owned=False, declared=None
+):
     """A proven container read from memory, or None to leave it raw.
 
     ``parameter`` is the declared type of a parameter whose liveness the compiler's IR
@@ -714,14 +869,20 @@ def container_view(variable, read, layouts, *, optimized, parameter=None, owned=
     buffer, is never shown as contents.
     """
     reference_type = REFERENCE_PARAMETERS.get(parameter)
-    if owned and variable.get("type") in OWNED_CONTAINERS:
-        reference_type = (variable["type"], OWNED_CONTAINERS[variable["type"]], False)
-    if reference_type is None or variable.get("type") != reference_type[0]:
+    if reference_type is not None and variable.get("type") in reference_type[0]:
+        _, name, thin = reference_type
+        layout = layouts.get(name)
+    elif owned and variable.get("type") in OWNED_CONTAINERS:
+        candidates = [c for c in OWNED_CONTAINERS[variable["type"]] if c in layouts]
+        # The MIR's declared type names the one candidate (`std::vec::Vec<usize>`).
+        exact = re.fullmatch(r"std::vec::Vec<(\w+)>", str(declared or ""))
+        if exact and _vec_name(exact[1]) in candidates:
+            candidates = [_vec_name(exact[1])]
+        layout, thin = _one_layout(candidates, layouts), False
+    else:
         return None
-    _, name, thin = reference_type
-    if name not in layouts:
+    if layout is None:
         return None
-    layout = layouts[name]
     view = {"name": variable.get("name"), "type": variable["type"], "variablesReference": 0}
     if layout["kind"] == "unqualified":
         return {**view, "value": UNQUALIFIED_CONTAINER, "rust_view": "opaque"}
@@ -780,12 +941,10 @@ def container_view(variable, read, layouts, *, optimized, parameter=None, owned=
             }
         count = min(length, MAX_ELEMENTS)
         payload = read(f"0x{data:X}", count * width) if count else b""
-        elements = [
-            int.from_bytes(payload[i * width : (i + 1) * width], "little", signed=True)
-            for i in range(count)
-        ]
+        decode = _decoder(layout)
+        elements = [decode(payload[i * width : (i + 1) * width]) for i in range(count)]
         children = [
-            {"name": f"[{index}]", "type": layout["element"], "value": str(element)}
+            {"name": f"[{index}]", "type": layout["element"], "value": element}
             for index, element in enumerate(elements)
         ]
         return {

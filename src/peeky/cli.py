@@ -608,7 +608,7 @@ def _describe_text(manifest):
         if containers:
             lines.append(
                 "read from memory (debuggers with readMemory): reference parameters, and owned "
-                "Vec<i32>/String locals where the build's MIR proves them initialized: "
+                "Vec<T>/String locals where the build's MIR proves them initialized: "
                 + ", ".join(containers)
             )
         lines.append(f"other enum types (shown opaque, not decoded): {len(opaque)}")

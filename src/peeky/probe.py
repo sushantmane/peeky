@@ -426,10 +426,16 @@ def _resolve(worker, stop, snapshot, segments):
 
 
 _RUST_TEXT = frozenset({"&str", "&mut str", "alloc::string::String *"})
+
+
 # Owned Rust containers are raw: a moved or dropped local can still point at freed memory.
-_OWNED_RUST_TYPES = frozenset(
-    {"alloc::vec::Vec<int, alloc::alloc::Global>", "alloc::string::String"}
-)
+def _owned_rust_types():
+    from peeky.rust_symbols import OWNED_CONTAINERS
+
+    return frozenset(OWNED_CONTAINERS)
+
+
+_OWNED_RUST_TYPES = _owned_rust_types()
 _OWNED_RUST = (
     "This owned Rust Vec or String shows its raw fields: Peeky reads an owned local's "
     "contents only where the build's MIR proves it initialized at the stop line, in the "
@@ -529,9 +535,10 @@ def _absence(variable, segment, children):
                 message += "; text read from memory is shown whole, not by element"
         elif kind.startswith(_RUST_CONTAINERS):
             message += (
-                "; Peeky reads Rust contents only for reference parameters (&[i32], &str, "
-                "&Vec<i32>, &String, or &mut) and for owned Vec<i32>/String locals the "
-                "build's MIR proves initialized at the stop line (innermost frame), with a "
+                "; Peeky reads Rust contents only for reference parameters (&[T], &str, "
+                "&Vec<T>, &String, or &mut) and for owned Vec<T>/String locals the "
+                "build's MIR proves initialized at the stop line (innermost frame), where "
+                "T is an integer, bool or float type, with a "
                 "debugger that supports readMemory (lldb-dap from LLVM 20). This one stays "
                 "raw: a moved, dropped or not-yet-assigned local can still point at freed "
                 "memory"
