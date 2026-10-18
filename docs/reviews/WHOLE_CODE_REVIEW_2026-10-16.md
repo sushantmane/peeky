@@ -407,3 +407,15 @@ The second verification (02a5ad1) confirmed both fixes. It also confirmed that o
 - **False negative:** a local wrapper macro around `println!` (`say!`) defined above a function put code on the macro's line, where the body has no span, so the whole function lost its proofs. Removing the containment check fixes it.
 
   Test: `test_a_wrapper_macro_around_println_keeps_the_functions_proofs` (fails on 02a5ad1).
+
+The third verification (f3c54d7) confirmed the twin fix. It checked these cases and found them correct:
+- trait default methods, and `impl Trait for X` against an inherent method of the same name;
+- derived methods, nested `fn`s, and closures in `const`s, `static`s, impl methods and other closures;
+- generic instances;
+- async bodies (refused).
+
+It found one more blocking case, now fixed:
+- **Blocking:** with a multi-line signature, the only span a body has on its `fn` line is its cleanup `resume`. So of two macro twins, only the one with an unwind path has a span on the shared `fn` line, and it was the unique candidate for the other twin. A moved `Vec` read as `[7, 7, 7]`. A candidate is now also refused when any line the function has code on is a span line of another body in the file but not of the candidate. Here, the other twin's own lines give it away. Lines no body has a span on (an external macro inside a local wrapper) still don't matter. Bodies are told apart by identity, never by equality, so identical twins are not confused.
+
+  Tests: `test_a_twin_whose_fn_line_matches_alone_is_refused_by_the_other_twins_lines`, and the real-build `test_functions_a_macro_generates_twice_are_never_proven_with_each_other[only-one-twin-has-cleanup]` (fails on f3c54d7).
+- **Known false negative, not changed:** a closure three levels deep (`{closure#0}` inside `{closure#0}` inside `{closure#0}`) shares its name and parent with the middle closure, which constructs it on its own definition line. Both are candidates, so it is never proven.

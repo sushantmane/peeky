@@ -449,6 +449,11 @@ class OwnedLocals:
         self.functions = dict(functions)
         self.sources = tuple(sources)
         self._matched = {}
+        # {(file, line): {body index}}: which bodies have a span on each line.
+        self._owners = {}
+        for index, body in enumerate(self.bodies):
+            for number in body.lines:
+                self._owners.setdefault((body.file, number), set()).add(index)
 
     def body(self, hashed):
         """The one MIR body the IR function ``hashed`` was generated from, else None."""
@@ -473,8 +478,18 @@ class OwnedLocals:
                 )
                 and function.line in body.lines
             ]
-            if len(candidates) == 1 and not function.labeled() <= set(candidates[0].blocks):
-                candidates = []
+            if len(candidates) == 1:
+                chosen = next(i for i, b in enumerate(self.bodies) if b is candidates[0])
+                # A line with this function's code that only other bodies have spans on
+                # is theirs: the candidate is a twin whose `fn` line merely matches
+                # (macro-generated, one with cleanup on that line, one without).
+                foreign = any(
+                    chosen not in owners
+                    for number in function.lines()
+                    if (owners := self._owners.get((function.file, number)))
+                )
+                if foreign or not function.labeled() <= set(candidates[0].blocks):
+                    candidates = []
             found = candidates[0] if len(candidates) == 1 else None
             if found is not None and not _covered(found, function):
                 found = None

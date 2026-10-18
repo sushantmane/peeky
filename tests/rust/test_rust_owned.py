@@ -403,8 +403,47 @@ fn main() {
 """
 
 
+MACRO_TWIN_ONE_CLEANUP = """macro_rules! numbers {
+    ($t:ident, $limit:ident, $body:block) => {
+        impl $t {
+            fn numbers(
+                $limit: i32,
+            ) -> Vec<i32> $body
+        }
+    };
+}
+
+struct A;
+struct B;
+
+numbers!(A, limit, {
+    let v = Vec::from([7, 7, 7]);
+    let w = v;
+    if limit > 3 {
+        let z = limit; // STOP
+        w
+    } else {
+        w
+    }
+});
+
+numbers!(B, limit, {
+    let v = Vec::from([1, 2, 3]);
+    let a = v.len();
+    let b = v.len();
+    v
+});
+
+fn main() {
+    println!("{:?} {:?}", A::numbers(5), B::numbers(1));
+}
+"""
+
+
 @pytest.mark.parametrize(
-    "program", [MACRO_TWIN_METHODS, MACRO_TWIN_CLOSURES], ids=["methods", "closures"]
+    "program",
+    [MACRO_TWIN_METHODS, MACRO_TWIN_CLOSURES, MACRO_TWIN_ONE_CLEANUP],
+    ids=["methods", "closures", "only-one-twin-has-cleanup"],
 )
 @pytest.mark.timeout(300)
 def test_functions_a_macro_generates_twice_are_never_proven_with_each_other(crate, capsys, program):
@@ -413,7 +452,7 @@ def test_functions_a_macro_generates_twice_are_never_proven_with_each_other(crat
     code = main(["probe", str(crate), "--at", f"src/main.rs:{at}", "--capture", "v", "--json"])
     result = json.loads(capsys.readouterr().out)
     assert code == 0, result.get("error")
-    # `v` was moved into `u` and freed by shrink_to_fit; its buffer went to `w`.
+    # `v` was moved (into `u`, freed by shrink_to_fit; or into `w`).
     assert result["rows"][0].get("view") != "memory", result["rows"][0]
 
 

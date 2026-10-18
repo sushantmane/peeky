@@ -334,6 +334,28 @@ def test_twins_a_macro_generates_are_refused_not_told_apart():
     assert OwnedLocals([a], {"h": function}, SOURCES).body("h") is a
 
 
+def test_a_twin_whose_fn_line_matches_alone_is_refused_by_the_other_twins_lines():
+    def numbers(lines):
+        body = mir(
+            {0: ["_1 = make() -> [return: bb1, unwind continue];"], 1: ["return;"]},
+            header="fn <impl at src/main.rs:3:9: 3:16>::numbers(_1: i32) -> Vec<i32> {",
+            bindings=V,
+        )
+        body.lines = frozenset(lines)
+        return body
+
+    # A (lines 15-21) has no cleanup, so no span on the shared `fn` line 4; B has one.
+    a, b = numbers({15, 16, 17, 18, 19, 21}), numbers({4, 24, 25, 26, 27})
+    function = IrFunction(
+        "numbers", "A", "src/main.rs", {"start": {15, 16}, "bb1": {17, 18, 21}}, {}, 4
+    )
+    assert OwnedLocals([a, b], {"h": function}, SOURCES).body("h") is None
+    # Identical twins are told apart by identity, never by equality.
+    twin = numbers({4, 15, 16, 17, 18, 21})
+    alone = OwnedLocals([twin], {"h": function}, SOURCES)
+    assert alone.body("h") is twin
+
+
 WRAPPER_RUSTC = (
     "import os, sys; print(os.environ.get('RUSTC_BOOTSTRAP', '-'), "
     "os.environ.get('CARGO_BIN_EXE_my-app', '-'), *sys.argv[1:])"
