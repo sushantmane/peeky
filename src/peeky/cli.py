@@ -189,7 +189,37 @@ def resolve(target, at=None, config=None):
         else:
             program = text
     root, program, line, language, data = _resolve(path, program, line, config)
-    return root, _confined(root, program), line, language, data
+    program = _confined(root, program)
+    if language == "python" and program:
+        # A Python candidate runs a copy whose files keep their stored names, and the
+        # debugger reports those: `APP.py` typed for `app.py` must not stop elsewhere.
+        program = _stored_name(root, program)
+    return root, program, line, language, data
+
+
+def _stored_name(root, program):
+    """``program`` (relative to ``root``) as the file system stores it, where it was
+    typed in another case or Unicode form on a volume that ignores the difference."""
+    import unicodedata
+
+    def key(name):
+        return unicodedata.normalize("NFC", name).casefold()
+
+    current, parts = Path(root), []
+    for part in Path(program).parts:
+        try:
+            names = [name for name in os.listdir(current) if key(name) == key(part)]
+        except OSError:
+            return program
+        if (
+            part not in names
+            and len(names) == 1
+            and os.path.samefile(current / names[0], current / part)
+        ):
+            part = names[0]
+        parts.append(part)
+        current = current / part
+    return Path(*parts).as_posix()
 
 
 def _resolve(path, program, line, config):

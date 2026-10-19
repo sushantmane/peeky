@@ -8,6 +8,7 @@ import ast
 import os
 import re
 import shutil
+import stat
 import sys
 import tempfile
 from dataclasses import dataclass
@@ -60,7 +61,6 @@ _LINKED_DIRS = frozenset(
         "venv",
         ".tox",
         ".nox",
-        "__pycache__",
         ".mypy_cache",
         ".pytest_cache",
         ".ruff_cache",
@@ -70,6 +70,11 @@ _LINKED_DIRS = frozenset(
 )
 MAX_COPIED_FILES = 20_000
 MAX_COPIED_BYTES = 256 * 1024 * 1024
+_TOO_LARGE = (
+    f"A Python candidate copies the target root, and this one is too large (over "
+    f"{MAX_COPIED_FILES} files or {MAX_COPIED_BYTES >> 20} MB): give a smaller target "
+    "directory, or check the edit with `peeky verify`"
+)
 # Code that reaches above its own directory: `..`, `os.pardir`, `parents[1]`, `.parent.parent`.
 _ABOVE = re.compile(r"""['"]\.\.['"/\\]|os\.pardir|\.parents\[|\.parent\.parent""")
 
@@ -94,16 +99,16 @@ class PythonCandidate:
         self.scratch = Path(tempfile.mkdtemp(prefix="peeky-candidate-"))
         try:
             self.root = self.scratch / (root.name or "root")
-            self._copy(root, self.root)
-            self.staged = self.root / relative
+            # The copy of the --at file, under the name it has on disk (`--at APP.py`
+            # names `app.py` on a case-insensitive volume; imports use the stored name).
+            self.staged = self._copy(root, self.root, os.stat(self.original))
             # The edited file replaces its copy, and is never written through a link.
             for parent in self.staged.parents:
                 if parent == self.root:
                     break
                 if parent.is_symlink() or not parent.is_dir():
                     raise ValueError("A Python candidate's --at path leaves the copied root")
-            if os.path.lexists(self.staged):
-                os.unlink(self.staged)
+            os.unlink(self.staged)
             handle = os.open(self.staged, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW)
             with os.fdopen(handle, "w", encoding="utf-8") as stream:
                 stream.write(text.replace(edit.old, edit.new, 1))
@@ -122,36 +127,62 @@ class PythonCandidate:
         )
 
     @staticmethod
-    def _copy(source, destination):
-        """Real directories and files; symlinks as symlinks; _LINKED_DIRS linked."""
+    def _copy(source, destination, program):
+        """Copy ``source`` to ``destination``: real directories, and regular files' bytes
+        and modes. Links point where the originals do (inside the root, into the copy;
+        outside, at the resolved original). _LINKED_DIRS, anything not a regular file
+        (sockets, FIFOs) and unreadable files are links to the originals. `__pycache__`
+        is left out, so the copy compiles its own. Returns the copy of ``program`` (an
+        os.stat_result), by identity, under its stored name."""
         files = size = 0
+        staged = None
+
+        def link(target, original):
+            real = Path(os.path.realpath(original))
+            if real == source or source in real.parents:
+                inside = destination / real.relative_to(source)
+                target.symlink_to(os.path.relpath(inside, target.parent))
+            else:
+                target.symlink_to(real)
+
         for here, directories, names in os.walk(source):
-            target = destination / Path(here).relative_to(source)
-            target.mkdir()
+            folder = destination / Path(here).relative_to(source)
+            folder.mkdir()
             kept = []
             for name in directories:
                 path = Path(here) / name
-                if name in _LINKED_DIRS and not path.is_symlink():
-                    (target / name).symlink_to(path, target_is_directory=True)
-                elif path.is_symlink():
-                    (target / name).symlink_to(os.readlink(path))
+                if name == "__pycache__":
+                    continue
+                if path.is_symlink():
+                    link(folder / name, path)
+                elif name in _LINKED_DIRS:
+                    (folder / name).symlink_to(path, target_is_directory=True)
                 else:
                     kept.append(name)
             directories[:] = kept
             for name in names:
                 path = Path(here) / name
                 files += 1
+                if files > MAX_COPIED_FILES:
+                    raise ValueError(_TOO_LARGE)
+                status = path.lstat()
                 if path.is_symlink():
-                    (target / name).symlink_to(os.readlink(path))
+                    link(folder / name, path)
                     continue
-                size += path.lstat().st_size
-                if files > MAX_COPIED_FILES or size > MAX_COPIED_BYTES:
-                    raise ValueError(
-                        "A Python candidate copies the target root, and this one is too large "
-                        f"(over {MAX_COPIED_FILES} files or {MAX_COPIED_BYTES >> 20} MB): give a "
-                        "smaller target directory, or check the edit with `peeky verify`"
-                    )
-                shutil.copy2(path, target / name, follow_symlinks=False)
+                if not stat.S_ISREG(status.st_mode) or not os.access(path, os.R_OK):
+                    (folder / name).symlink_to(path)
+                    continue
+                size += status.st_size
+                if size > MAX_COPIED_BYTES:
+                    raise ValueError(_TOO_LARGE)
+                # Bytes and mode only: no flags (a locked file could not be removed).
+                shutil.copyfile(path, folder / name, follow_symlinks=False)
+                shutil.copymode(path, folder / name, follow_symlinks=False)
+                if (status.st_dev, status.st_ino) == (program.st_dev, program.st_ino):
+                    staged = folder / name
+        if staged is None:
+            raise ValueError("A Python candidate's --at file is not in the copied root")
+        return staged
 
     def __getattr__(self, name):
         return getattr(self.adapter, name)

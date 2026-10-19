@@ -282,6 +282,58 @@ def test_python_candidates_run_an_edited_copy(tmp_path, capsys, monkeypatch):
     assert "with --run, the entry script would import the original module" in error["message"]
 
 
+def test_a_python_candidates_copy_keeps_links_specials_and_the_users_bytecode(
+    tmp_path, capsys, monkeypatch
+):
+    # Review of #109: the linked __pycache__ let the edit's bytecode reach the user's
+    # tree; links were recreated with their old text (pointing elsewhere); a FIFO in the
+    # root failed every candidate; `--at APP.py` broke imports of `app`.
+    import os
+
+    from peeky.cli import main
+
+    monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
+    (tmp_path / "shared").mkdir()
+    (tmp_path / "shared" / "conf.json").write_text('{"rate": 5}')
+    proj = tmp_path / "proj"
+    (proj / "lib").mkdir(parents=True)
+    (proj / "conf.json").symlink_to("../shared/conf.json")
+    (proj / "lib" / "__init__.py").write_text("")
+    (proj / "lib" / "const.py").write_text("RATE = 1\n")
+    (proj / "libabs").symlink_to(proj / "lib")
+    os.mkfifo(proj / "pipe")
+    (proj / "helper.py").write_text(
+        "from libabs import const\nfrom app import RATE\ndef both():\n    return (const.RATE, RATE)\n"
+    )
+    script = proj / "app.py"
+    script.write_text(
+        "import json\nfrom pathlib import Path\nRATE = 1\nif __name__ == '__main__':\n"
+        "    import helper\n"
+        "    rate = json.loads((Path(__file__).parent / 'conf.json').read_text())['rate']\n"
+        "    pair = helper.both()\n    print('OUT', rate, pair)\n"
+    )
+    cache = proj / "__pycache__"
+    cache.mkdir()
+    (cache / "marker").write_text("user's")
+    typed = "APP.py" if (proj / "APP.py").exists() else "app.py"
+    probe = [
+        "probe",
+        str(proj),
+        "--at",
+        f"{typed}:8",
+        "--capture",
+        "rate,pair",
+        "--json",
+        "--quiet",
+    ]
+    code = main([*probe, "--old", "RATE = 1", "--new", "RATE = 7"])
+    result = json.loads(capsys.readouterr().out)
+    assert code == 0, result.get("error")
+    assert [row["value"] for row in result["rows"]] == ["5", "(1, 7)"]
+    assert sorted(path.name for path in cache.iterdir()) == ["marker"]
+    assert "RATE = 1" in script.read_text()
+
+
 def test_a_python_candidate_warns_when_the_script_reaches_above_its_root(
     tmp_path, capsys, monkeypatch
 ):
