@@ -101,7 +101,7 @@ _RULES = (
         r"Only writable|mutation requires|mutation is outside|Only .*locals support|"
         r"numeric or boolean scalar|scalar literal|bounded decimal integer|must be a literal"
         r"|has no readable value here|refused in an optimized build|did not change "
-        r"|has no memory location|refused to change",
+        r"|has no memory location|refused to change|would overwrite a change",
         "MUTATION_REJECTED",
         "The message names the rule broken. Root locals only, literal values only (Python: "
         "literals incl. containers; C, C++: integers of 16 to 64 bits; Java: scalars of the "

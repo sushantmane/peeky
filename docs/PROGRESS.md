@@ -102,6 +102,10 @@ An hourly thread heartbeat (`continue-peeky-mvp`) checks for available usage and
     - Values are kept only if the build that ran hashes to the edited text, locally and over `--worker`.
     - A build that fails is now `BUILD_FAILED` with the compiler's output, for every probe and session.
     - Evidence schema 3: `runs.edit` holds the diff; the views have `candidate`; `queries runs` marks candidate runs, `values` leaves them out, and `diff` adds an `(edit)` row. Older stores upgrade in place.
+- **Settable locals up front** (#77).
+  - Probe rows carry `settable` (`[settable]` in text) for root locals, so the observation probe tells which interventions will work.
+  - A refused `--set` lists what can be changed at that stop (`settable here: …`).
+  - A C/C++ local declared below the stop is MUTATION_REJECTED.
 - **Rust scalars by their Rust types** (#79).
   - Locals and parameters take theirs from the build's MIR: `usize`, `u64`, `f64` and `char`, where LLDB says `unsigned long`, `double` or `char32_t`.
   - Fields take the one primitive LLDB's name can be.
@@ -144,7 +148,7 @@ An hourly thread heartbeat (`continue-peeky-mvp`) checks for available usage and
 
 **Open issues:**
 - **#27:** an attached JVM whose `stopped` event is lost (seen once on Venice). The launch case is fixed. 160 targeted stress runs (simple and Venice-like thread churn) did not reproduce it; diagnostics stay in place.
-- **#77 and #78** (third evaluation): `--set` settability up front, Java object previews and lists.
+- **#78** (third evaluation): Java object previews and lists.
 - **#61:** NVIDIA CUDA debugging, sanitizers and profiling, filed by the owner. [ADR 0007](adr/0007-cuda-gdb-dap.md) proposes driving `cuda-gdb -i=dap`; `scripts/cuda/qualify.py` is the phase 0 qualification, and its DAP sequence is tested against upstream GDB (lane `gdb-dap`). Running it needs a Linux host with an NVIDIA GPU, reachable over Peeky's SSH remote worker; this Mac has none.
 
 **Process notes:**

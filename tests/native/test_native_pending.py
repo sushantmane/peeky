@@ -91,8 +91,13 @@ def test_a_shadowed_local_declared_below_is_withheld_and_the_outer_one_shown(buc
 @pytest.mark.timeout(120)
 def test_a_local_declared_below_cannot_be_set(bucket, capsys):
     code, result = probe(capsys, bucket, "--at", "7", "--capture", "elapsed", "--set", "refill=5")
-    assert code == 1 and result["error"]["code"] == "INVALID_REQUEST"
+    assert code == 1 and result["error"]["code"] == "MUTATION_REJECTED"
     assert "declared at line 8" in result["error"]["message"]
+    # #77: the refusal lists what can be changed at that stop.
+    assert result["error"]["message"].endswith("settable here: now_ms, elapsed")
+    code, result = probe(capsys, bucket, "--at", "7", "--capture", "elapsed,refill,last")
+    settable = {row["selector"]: row.get("settable") for row in result["rows"]}
+    assert settable == {"elapsed": True, "refill": False, "last": False}
     code, result = probe(capsys, bucket, "--at", "7", "--capture", "elapsed", "--set", "elapsed=5")
     assert code == 0 and result["interventions"][0]["after"] == "5"
 

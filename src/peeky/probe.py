@@ -770,6 +770,9 @@ def _capture(worker, stop, selectors, hit, phase, snapshot=None, children=False)
                     row["note"] = _OWNED_RUST
             if "view" in variable:
                 row["view"] = variable["view"]
+            if type(variable.get("settable")) is bool and len(parse_selector(selector)) == 1:
+                # Whether --set can change this local here (C, C++, Rust, Java).
+                row["settable"] = variable["settable"]
             if variable.get("debugger_type"):
                 row["debugger_type"] = variable["debugger_type"]
             if children and variable.get("variablesReference"):
@@ -787,6 +790,20 @@ def _capture(worker, stop, selectors, hit, phase, snapshot=None, children=False)
                     row["children_error"] = str(exc)
         rows.append(row)
     return rows
+
+
+def _settable_here(snapshot):
+    """`; settable here: a, b` (or none) when the debugger reports settability."""
+    known = [
+        variable
+        for scope in snapshot["scopes"]
+        for variable in scope["variables"]
+        if type(variable.get("settable")) is bool
+    ]
+    if not known:
+        return ""
+    names = [variable["name"] for variable in known if variable["settable"]]
+    return f"; settable here: {', '.join(names[:20]) if names else 'none'}"
 
 
 _KEY_NAME = re.compile(_KEY_LITERAL)
@@ -980,12 +997,20 @@ def run_probe(root, probe, *, adapter=None, progress=None):
                             )
                             + "; only the stopped function's own locals can be changed"
                         )
-                    changes.append(
-                        worker.dispatch(
-                            "set_variable",
-                            {**stop, "reference": scope["reference"], "name": name, "value": value},
+                    try:
+                        changes.append(
+                            worker.dispatch(
+                                "set_variable",
+                                {
+                                    **stop,
+                                    "reference": scope["reference"],
+                                    "name": name,
+                                    "value": value,
+                                },
+                            )
                         )
-                    )
+                    except ValueError as exc:
+                        raise ValueError(f"{exc}{_settable_here(snapshot)}") from None
                 rows.extend(_capture(worker, stop, probe.capture, hits, "after-set"))
             if len(rows) > MAX_ROWS:
                 raise ValueError("Probe row budget exceeded")
@@ -1170,7 +1195,8 @@ def _table(result):
             row["selector"],
             row.get("type") or "",
             row.get("value", "<" + row.get("error", "") + ">")
-            + (f"  [{row['view']}]" if row.get("view") else ""),
+            + (f"  [{row['view']}]" if row.get("view") else "")
+            + ("  [settable]" if row.get("settable") else ""),
         )
         for row in result["rows"]
     ]
