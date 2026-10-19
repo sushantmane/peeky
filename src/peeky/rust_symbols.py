@@ -689,8 +689,24 @@ def _composite(die, by_offset):
     }
 
 
+# A container of composites whose element is not readable: it stays raw, and a readable
+# container of the same name (another struct with that path, in a function's block or
+# another unit) can then not be told apart from it.
+_UNREAD = {"kind": "unread"}
+
+
 def _composite_layout(struct, kind, element, by_offset):
-    """The layout of a `Vec<T>` or `&[T]` of composites, or None to leave it raw."""
+    """The layout of a `Vec<T>` or `&[T]` of composites; _UNREAD when T is not a
+    tuple or struct of qualified scalars; None for a declaration without a body."""
+    params = [
+        child
+        for child in struct.children
+        if child.tag == "DW_TAG_template_type_parameter"
+        and child.attributes.get("DW_AT_name") == '"T")'
+    ]
+    target = _target(params[0], by_offset) if len(params) == 1 else None
+    if target is not None and "DW_AT_declaration" in target.attributes:
+        return None
     try:
         size = _hex(struct.attributes.get("DW_AT_byte_size"))
         capacity = None
@@ -716,10 +732,10 @@ def _composite_layout(struct, kind, element, by_offset):
             length, length_type = _member(struct, "length", by_offset)
             _usize(length_type)
     except (KeyError, ValueError, IndexError):
-        return None
+        return _UNREAD
     fields = sorted((start, start + 8) for start in (data, length, capacity) if start is not None)
     if any(a[1] > b[0] for a, b in zip(fields, fields[1:])) or fields[-1][1] > size or size > 64:
-        return None
+        return _UNREAD
     return {
         "kind": kind,
         "size": size,
@@ -740,6 +756,9 @@ def container_layouts(text, unit):
     by_offset = {}
     _walk(root, by_offset, unit)
     layouts = {}
+    # Structs are read only from the crate itself: the standard library's (`Range`,
+    # `Wrapping`) implement their own Debug, which a derived rendering would misstate.
+    crate = unit.name.rpartition("/@/")[2].split(".")[0]
 
     def visit(die, prefix):
         for child in die.children:
@@ -753,7 +772,9 @@ def container_layouts(text, unit):
                     if layouts.get(qualified, layout) != layout:
                         layout = {"kind": "unqualified"}
                     layouts[qualified] = layout
-                elif composite := composite_container(qualified):
+                elif (composite := composite_container(qualified)) and (
+                    composite[1].startswith("(") or composite[1].startswith(f"{crate}::")
+                ):
                     layout = _composite_layout(child, *composite, by_offset)
                     if layout is not None and layouts.get(qualified, layout) != layout:
                         layout = {"kind": "unqualified"}
@@ -910,7 +931,8 @@ def active_variant(variable, fetch, layouts):
     """
     kind = variable.get("type")
     layout = layouts.get(kind) if isinstance(kind, str) else None
-    if layout is None or layout["kind"] in CONTAINER_KINDS:
+    # A Vec or slice of composites is never an enum, whatever its layout's state.
+    if layout is None or layout["kind"] in CONTAINER_KINDS or composite_container(kind):
         return None
     view = {"name": variable.get("name"), "type": kind, "variablesReference": 0}
     if layout["kind"] != "option":
@@ -1241,7 +1263,7 @@ def container_view(
         layout, thin = _one_layout(candidates, layouts), False
     else:
         return None
-    if layout is None:
+    if layout is None or layout["kind"] == "unread":
         return None
     view = {"name": variable.get("name"), "type": variable["type"], "variablesReference": 0}
     if layout["kind"] == "unqualified":

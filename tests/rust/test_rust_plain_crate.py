@@ -415,3 +415,52 @@ def _reads(plain, capsys, name):
     at = f"src/main.rs:{line_of(COMPOSITE, 'OWNED')}"
     _, result = run(capsys, "probe", str(plain), "--at", at, "--capture", name, "--quiet")
     return result["rows"][0].get("view") == "memory"
+
+
+TWINS = """use std::num::Wrapping;
+use std::ops::Range;
+
+mod parse {
+    #[derive(Debug, Clone, Copy)]
+    pub struct Token { pub start: u32, pub end: u32 }
+}
+
+fn parse(text: &str) -> usize {
+    #[derive(Debug)]
+    struct Token { text: String, line: u32 }
+    let tokens: Vec<Token> = text.split(' ').map(|w| Token { text: w.to_string(), line: 7 }).collect();
+    println!("{:?}", tokens); // LOCAL
+    tokens.len()
+}
+
+fn show(spans: &[Range<usize>], w: &Vec<Wrapping<u8>>, toks: &[parse::Token]) -> usize {
+    println!("{:?} {:?} {:?}", spans, w, toks); // STD
+    spans.len() + w.len() + toks.len()
+}
+
+fn main() {
+    let spans = vec![parse::Token { start: 0, end: 3 }];
+    let n = parse("ab cd");
+    let m = show(&[1..5, 7..9], &vec![Wrapping(250u8), Wrapping(3)], &spans);
+    println!("{:?} {} {}", spans, n, m); // MAIN
+}
+"""
+
+
+@pytest.mark.timeout(300)
+def test_same_named_structs_and_std_structs_are_never_decoded(plain, capsys):
+    # Review of #98: a function's own `Token` (with a String) shares its path with
+    # `mod parse`'s, so its bytes were decoded with the other's fields; std's `Range`
+    # and `Wrapping` were shown in derived style although they print as `1..5`, `250`.
+    (plain / "src/main.rs").write_text(TWINS)
+    shown = {}
+    for marker, capture in (("LOCAL", "tokens"), ("STD", "spans,w,toks"), ("MAIN", "spans")):
+        at = f"src/main.rs:{line_of(TWINS, marker)}"
+        code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", capture, "--quiet")
+        assert code == 0, result.get("error")
+        shown.update({(marker, row["selector"]): row for row in result["rows"]})
+    assert not any(row.get("view") == "memory" for row in shown.values()), shown
+    for key in (("LOCAL", "tokens"), ("STD", "toks"), ("MAIN", "spans")):
+        assert shown[key]["view"] == "opaque", shown[key]
+    for key in (("STD", "spans"), ("STD", "w")):
+        assert "LLDB's summary" in shown[key]["note"], shown[key]

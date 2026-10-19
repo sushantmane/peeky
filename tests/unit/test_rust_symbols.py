@@ -1101,7 +1101,7 @@ def composite_dump(element, slice_name):
                 _member("sl_data", "data_ptr", "el_ptr", "0x00"),
                 _member("sl_len", "length", "usize", "0x08"),
             ),
-            _namespace("comp", "comp", element),
+            _namespace("crate", "peeky_pagination", element),
             _base("char", "char", "0x04", "DW_ATE_UTF"),
             _base("usize", "usize", "0x08", "DW_ATE_unsigned"),
             _base("i64", "i64", "0x08", "DW_ATE_signed"),
@@ -1146,8 +1146,8 @@ def test_composite_layouts_take_fields_and_shape_from_the_dwarf():
         "shape": "tuple",
         "shown": "(char, usize)",
     }
-    layouts = container_layouts(*composite_dump(INTERVAL, "&[comp::Interval]"))
-    layout = layouts["&[comp::Interval]"]
+    layouts = container_layouts(*composite_dump(INTERVAL, "&[peeky_pagination::Interval]"))
+    layout = layouts["&[peeky_pagination::Interval]"]
     assert (layout["shape"], layout["shown"], layout["element_size"]) == ("struct", "Interval", 24)
 
 
@@ -1174,10 +1174,13 @@ def test_composite_layouts_take_fields_and_shape_from_the_dwarf():
                 _member("f0", "start", "i64", "0x00"),
                 _member("f1", "end", "i64", "0x08"),
             ),
-            "&[comp::Interval]",
+            "&[peeky_pagination::Interval]",
         ),
         # A field that is not a qualified scalar (a pointer).
-        (_struct("el", "Boxed", "0x08", _member("f0", "p", "u_ptr", "0x00")), "&[comp::Boxed]"),
+        (
+            _struct("el", "Boxed", "0x08", _member("f0", "p", "u_ptr", "0x00")),
+            "&[peeky_pagination::Boxed]",
+        ),
         # A tuple whose name does not match its fields.
         (
             _struct(
@@ -1198,7 +1201,7 @@ def test_composite_layouts_take_fields_and_shape_from_the_dwarf():
                 _member("f0", "flag", "bool", "0x00"),
                 _member("f1", "n", "usize", "0x01"),
             ),
-            "&[comp::Packed]",
+            "&[peeky_pagination::Packed]",
         ),
         # An enum: Rust's enums are structures with a variant part.
         (
@@ -1208,7 +1211,7 @@ def test_composite_layouts_take_fields_and_shape_from_the_dwarf():
                 [("DW_AT_name", '"Choice"'), ("DW_AT_byte_size", "0x08")],
                 [("vp", "DW_TAG_variant_part", [], [])],
             ),
-            "&[comp::Choice]",
+            "&[peeky_pagination::Choice]",
         ),
         # No fields.
         (
@@ -1218,14 +1221,15 @@ def test_composite_layouts_take_fields_and_shape_from_the_dwarf():
                 [("DW_AT_name", '"Unit"'), ("DW_AT_byte_size", "0x00")],
                 [],
             ),
-            "&[comp::Unit]",
+            "&[peeky_pagination::Unit]",
         ),
     ],
 )
 def test_composite_layouts_refuse_anything_unexpected(element, name):
     from peeky.rust_symbols import container_layouts
 
-    assert name not in container_layouts(*composite_dump(element, name))
+    # Recorded as unread, so a readable struct of the same path is not trusted either.
+    assert container_layouts(*composite_dump(element, name))[name] == {"kind": "unread"}
 
 
 def _composite_layout(shape, shown, fields, size, alignment):
@@ -1250,7 +1254,7 @@ def test_composite_elements_show_as_derived_debug_with_their_fields():
         "&[(char, usize)]": _composite_layout(
             "tuple", "(char, usize)", [["__0", 8, "char"], ["__1", 0, "usize"]], 16, 8
         ),
-        "&[comp::Interval]": _composite_layout(
+        "&[peeky_pagination::Interval]": _composite_layout(
             "struct",
             "Interval",
             [["start", 0, "i64"], ["end", 8, "i64"], ["open", 16, "bool"]],
@@ -1281,7 +1285,7 @@ def test_composite_elements_show_as_derived_debug_with_their_fields():
         {"name": "__1", "type": "usize", "value": "3"},
     ]
     interval = words(1) + (-10).to_bytes(8, "little", signed=True) + bytes([1]) + bytes(7)
-    assert shown("&[comp::Interval]", interval, 1)["value"] == (
+    assert shown("&[peeky_pagination::Interval]", interval, 1)["value"] == (
         "[Interval { start: 1, end: -10, open: true }]"
     )
     point = ints(-3) + bytes([255, 0, 0, 0])
@@ -1290,11 +1294,11 @@ def test_composite_elements_show_as_derived_debug_with_their_fields():
     assert shown("&[(i8)]", bytes([7, 0xFF]), 2)["value"] == "[(7,), (-1,)]"
     # An element misaligned for its widest field is not read.
     read = memory({"0x10": words(0x1004, 1), "0x1004": interval})
-    variable = {"name": "v", "type": "&[comp::Interval]", "memoryReference": "0x10"}
+    variable = {"name": "v", "type": "&[peeky_pagination::Interval]", "memoryReference": "0x10"}
     assert (
-        container_view(variable, read, layouts, optimized=False, parameter="&[comp::Interval]")[
-            "rust_view"
-        ]
+        container_view(
+            variable, read, layouts, optimized=False, parameter="&[peeky_pagination::Interval]"
+        )["rust_view"]
         == "opaque"
     )
 
@@ -1329,3 +1333,76 @@ def test_owned_composites_take_their_layout_from_the_mir_type_not_lldbs_name():
     # Two crates' worth of one name is ambiguous.
     twice = {**layouts, vec("other::Pair<i8>"): {}}
     assert _composite_owned(shown, "std::vec::Vec<Pair<i8>>", twice) is None
+
+
+def test_composites_are_read_only_from_the_crate_and_never_beside_an_unreadable_twin():
+    from peeky.rust_symbols import active_variant, container_layouts
+
+    # Review of #98: `Range<usize>` passes the field checks but has its own Debug.
+    std = (
+        "el",
+        "DW_TAG_structure_type",
+        [("DW_AT_name", '"Range<usize>"'), ("DW_AT_byte_size", "0x10")],
+        [_member("f0", "start", "usize", "0x00"), _member("f1", "end", "usize", "0x08")],
+    )
+    tree = (
+        "cu",
+        "DW_TAG_compile_unit",
+        [("DW_AT_name", '"src/main.rs/@/comp"')],
+        [
+            _struct(
+                "slice",
+                "&[core::ops::range::Range<usize>]",
+                "0x10",
+                _member("sl_data", "data_ptr", "el_ptr", "0x00"),
+                _member("sl_len", "length", "usize", "0x08"),
+            ),
+            _namespace("core", "core", _namespace("ops", "ops", _namespace("r", "range", std))),
+            _base("usize", "usize", "0x08", "DW_ATE_unsigned"),
+            ("el_ptr", "DW_TAG_pointer_type", [("DW_AT_type", ("ref", "el"))], []),
+        ],
+    )
+    assert container_layouts(*_tree_dump(tree)) == {}
+    # Review of #98: a struct in a function's body shares its path with a module's
+    # (`crate::parse::Token`); when only one is readable, neither is read.
+    readable = INTERVAL
+    unreadable = _struct("el2", "Interval", "0x08", _member("g0", "p", "u_ptr", "0x00"))
+
+    def twins(first, second):
+        tree = (
+            "cu",
+            "DW_TAG_compile_unit",
+            [("DW_AT_name", '"src/main.rs/@/comp"')],
+            [
+                _struct(
+                    "slice",
+                    "&[peeky_pagination::Interval]",
+                    "0x10",
+                    _member("sl_data", "data_ptr", "el_ptr", "0x00"),
+                    _member("sl_len", "length", "usize", "0x08"),
+                ),
+                _struct(
+                    "slice2",
+                    "&[peeky_pagination::Interval]",
+                    "0x10",
+                    _member("sl2_data", "data_ptr", "el2_ptr", "0x00"),
+                    _member("sl2_len", "length", "usize", "0x08"),
+                ),
+                _namespace("crate", "peeky_pagination", first, second),
+                _base("i64", "i64", "0x08", "DW_ATE_signed"),
+                _base("bool", "bool", "0x01", "DW_ATE_boolean"),
+                _base("usize", "usize", "0x08", "DW_ATE_unsigned"),
+                ("el_ptr", "DW_TAG_pointer_type", [("DW_AT_type", ("ref", "el"))], []),
+                ("el2_ptr", "DW_TAG_pointer_type", [("DW_AT_type", ("ref", "el2"))], []),
+                ("u_ptr", "DW_TAG_pointer_type", [("DW_AT_type", ("ref", "usize"))], []),
+            ],
+        )
+        return container_layouts(*_tree_dump(tree))["&[peeky_pagination::Interval]"]
+
+    assert twins(readable, unreadable) == {"kind": "unqualified"}
+    alone = _struct("el", "Interval", "0x08", _member("g0", "p", "u_ptr", "0x00"))
+    alone = container_layouts(*composite_dump(alone, "&[peeky_pagination::Interval]"))
+    assert alone == {"&[peeky_pagination::Interval]": {"kind": "unread"}}
+    # Such a container is never mistaken for an enum.
+    variable = {"name": "v", "type": "&[peeky_pagination::Interval]", "variablesReference": 1}
+    assert active_variant(variable, None, alone) is None

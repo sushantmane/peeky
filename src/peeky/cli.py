@@ -559,7 +559,9 @@ def describe(args):
                     manifest["scopes_unavailable"] = str(exc)[:300]
             if layouts := getattr(runtime, "layouts", None):
                 manifest["value_views"] = {
-                    name: layout["kind"] for name, layout in sorted(layouts.items())
+                    name: layout["kind"]
+                    for name, layout in sorted(layouts.items())
+                    if layout["kind"] != "unread"
                 }
         finally:
             runtime.close()
