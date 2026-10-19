@@ -691,8 +691,16 @@ class OwnedLocals:
         self._matched[hashed] = found
         return found
 
-    @staticmethod
-    def _local(body, variable_name, line=None, path=None):
+    def _visible(self, body, line, path):
+        """The scopes a binding shown at ``line`` can be in, or None to keep them all.
+        A line that may invoke a macro runs code whose spans are in another file
+        (`eprintln!`'s, collapsed onto the line), in scopes no statement of this file
+        there shows: the stop can be in one of those."""
+        if line is None or may_invoke_macro(self.texts.get(body.file), line):
+            return None
+        return body.visible_scopes(line, path)
+
+    def _local(self, body, variable_name, line=None, path=None):
         name, at, declared = str(variable_name).partition(" @ ")
         where = None
         if at:
@@ -700,8 +708,7 @@ class OwnedLocals:
             if not number.isdigit():
                 return None
             where = (file, int(number))
-        visible = body.visible_scopes(line, path) if line is not None else None
-        return body.local(name, where, visible)
+        return body.local(name, where, self._visible(body, line, path))
 
     def declared_type(self, hashed, variable_name, line=None, path=None):
         """The MIR type of the frame's local ``variable_name`` (`std::vec::Vec<usize>`),
@@ -737,7 +744,7 @@ class OwnedLocals:
         for candidate in bodies:
             # Only the bindings in scope on the stop line: a name `println!` or a sibling
             # block binds (`args`, `q`) is not the one lldb-dap shows.
-            visible = candidate.visible_scopes(line, path) if line is not None else None
+            visible = self._visible(candidate, line, path)
             bindings = candidate.in_scopes(candidate.bindings.get(name, ()), visible)
             for local, file, number, projected, _ in bindings:
                 if at and f"{Path(file).name}:{number}" != declared:

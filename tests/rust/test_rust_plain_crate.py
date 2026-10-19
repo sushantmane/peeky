@@ -903,6 +903,21 @@ fn rebound_box(boxes: Vec<Box<Pt>>, pts: &[Pt]) -> i64 {
     total
 }
 
+fn churn() -> i64 {
+    Box::leak(Box::new(Pt { x: 777, y: 888 })).x
+}
+
+fn macro_sibling(q: &Pt, flag: bool) -> i64 {
+    let k;
+    let r = if flag {
+        let b = Box::new(Pt { x: 1, y: 2 });
+        drop(b);
+        k = churn();
+        eprintln!("dropped") } else { k = churn(); let b = q; std::hint::black_box(b.x); }; // MACRO_SIBLING
+    let _ = r;
+    k
+}
+
 fn make() -> Box<dyn Debug> {
     Box::new(1u8)
 }
@@ -978,6 +993,7 @@ fn main() {
     let args = Args { verbose: true, count: 21 };
     let owned = vec![Box::new(Pt { x: 5, y: 6 })];
     println!("{} {} {} {}", run(&args), shadows(&pts, 1), param(&pts[1]), rebound_box(owned, &pts));
+    println!("{}", macro_sibling(&pts[0], true));
     println!("{} {}", fat_params(Box::new(takes as fn(*const [u8])), Box::new(tables)), factories());
     println!("{} {} {:?} {} {}", a, b, r, closures(&[1, 2]), exported(&Pt { x: 10, y: 1 }, &[1, 2]));
 }
@@ -1070,6 +1086,12 @@ def test_generic_boxes_are_gated_and_non_owning_values_read(plain, capsys):
         at = f"src/main.rs:{line_of(BOX_GENERIC, '// ' + marker)}"
         code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", capture, "--quiet")
         assert result["rows"][0].get("value") == value, (marker, result["rows"])
+    # Verification of #103: `eprintln!`'s code runs on its line in the dropped Box's
+    # block, with spans in std's macros.rs, so no statement of this file shows that scope:
+    # a line that may invoke a macro keeps every binding.
+    at = f"src/main.rs:{line_of(BOX_GENERIC, '// MACRO_SIBLING')}"
+    code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "b", "--quiet")
+    assert result["rows"][0].get("view") == "unproven", result["rows"]
     at = f"src/main.rs:{line_of(BOX_GENERIC, '// LIVE_ARRAY')}"
     code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "arr[0].x", "--quiet")
     assert result["rows"][0].get("value") == "1", result["rows"]
