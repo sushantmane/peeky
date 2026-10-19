@@ -493,3 +493,48 @@ def test_a_rust_reference_is_never_indexed_as_a_pointer(plain, capsys):
     code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "r[0]", "--quiet")
     row = result["rows"][0]
     assert "value" not in row and "carries no length" not in row["error"], row
+
+
+BOXES = """#[derive(Debug)]
+struct Pt {
+    x: i64,
+    y: i64,
+}
+
+fn consume(b: Box<Pt>) -> i64 {
+    b.x + b.y
+}
+
+fn main() {
+    let bp = Box::new(Pt { x: 1, y: 2 });
+    let bi = Box::new(41i32);
+    let live = Box::new(Pt { x: 7, y: 8 });
+    println!("{}", bp.x); // LIVE
+    let total = consume(bp) + *bi as i64;
+    drop(bi);
+    let later = vec![Pt { x: 1000, y: 2000 }, Pt { x: 3000, y: 4000 }];
+    let again = Box::new(555i32);
+    println!("{} {:?} {:?} {}", total, later, live, again); // HERE
+}
+"""
+
+
+@pytest.mark.timeout(300)
+def test_a_moved_or_dropped_box_shows_only_its_pointer(plain, capsys):
+    # #101: after `consume(bp)` and `drop(bi)`, LLDB read the freed allocations as
+    # their contents (`again` reuses `bi`'s, so `bi` would show 555).
+    (plain / "src/main.rs").write_text(BOXES)
+    at = f"src/main.rs:{line_of(BOXES, 'HERE')}"
+    capture = "bp,bp.x,bi,live,live.x"
+    code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", capture, "--quiet")
+    assert code == 0, result.get("error")
+    rows = {row["selector"]: row for row in result["rows"]}
+    for name in ("bp", "bi"):
+        assert rows[name]["view"] == "unproven" and "may be moved or dropped" in rows[name]["note"]
+        assert rows[name]["value"].startswith("0x")
+    assert "value" not in rows["bp.x"] and "freed memory" in rows["bp.x"]["error"]
+    assert rows["live.x"]["value"] == "7" and "view" not in rows["live"]
+    # Where the Box is live, its contents read as before.
+    at = f"src/main.rs:{line_of(BOXES, 'LIVE')}"
+    code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "bp.x", "--quiet")
+    assert result["rows"][0]["value"] == "1"

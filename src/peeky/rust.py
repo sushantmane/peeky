@@ -886,6 +886,27 @@ class RustSession(NativeSession):
         )
         if container is not None:
             return container
+        if hashed and proofs is not None and self.target.opt_level == "0":
+            declared = proofs.declared_type(hashed[1], variable.get("name")) or ""
+            if declared.startswith("std::boxed::Box<") and not (
+                innermost
+                and proofs.proven(
+                    hashed[1],
+                    variable.get("name"),
+                    line,
+                    ((frame or {}).get("source") or {}).get("path"),
+                )
+            ):
+                # #101: a moved or dropped Box still holds its pointer, and LLDB would
+                # read the freed allocation as its fields. The pointer is shown; what it
+                # points at is not.
+                return {
+                    "name": variable.get("name"),
+                    "type": variable.get("type"),
+                    "value": str(variable.get("value") or ""),
+                    "variablesReference": 0,
+                    "rust_view": "unproven",
+                }
         view = active_variant(variable, fetch, self.layouts)
         if view and view["rust_view"] == "active-variant" and self.target.opt_level != "0":
             # Optimized code may track an enum's tag and payload separately and LLDB
