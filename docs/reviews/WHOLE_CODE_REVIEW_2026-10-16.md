@@ -770,3 +770,11 @@ Checked and found sound:
 | 3 | The cookbook said higher indexes are read only where the array is declared. A pointer to an array or a container already lists that pointee's elements (`pa[1]` is `(*pa)[1]`). | Low (docs) | **Fixed:** the cookbook says which pointers index their pointee. |
 | 4 | (verification of 6ea203e) A pointer was recognized by its type ending in `*`, so `int *const`, `int *volatile`, `const float *__restrict` and typedef'd pointers (`intp`) kept the old refusal and showed `*in [not selectable]`. The verification also confirmed: the language flag is passed on every path that reads values (probe, candidate, after-set, `session get`, `--worker`); the session record holds `c`, `cpp` or `rust`; `--set 'p[0]=…'` is refused clearly; the hint's path matches what was typed for `.name`, `[N]` and `[-N]` steps; Rust references, Boxes and raw pointers stay refused with no hint. | Medium | **Fixed:** in C and C++, a single child named `*name` is the sign, whatever the type's spelling: no C or C++ member can be named that. Test: the same test (`cp`, `rp`, `tp`). |
 
+The final verification (b3a3002) found nothing wrong.
+- **No false pointers:** no C or C++ value other than a pointer shows a single child named `*name`. Checked: references, one-element arrays, smart pointers, optionals, atomics, iterators, `reference_wrapper`, `std::function`, struct and block pointers, function, member and `void` pointers.
+- **Pointers inside other values:** `up.pointer[0]` and `ap.Value[0]` read.
+- **Qualified and nested pointers:** qualified, typedef'd, union-member and pointer-to-pointer forms read.
+- **Null and bad pointers:** come back `unavailable`.
+- **Rust:** stays refused.
+- **Older, filed as #102:** a pointer to an array indexes its pointee (`parr[1]` is `(*parr)[1]`, as the cookbook says), not C's rows.
+
