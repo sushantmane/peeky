@@ -32,6 +32,8 @@ from pathlib import Path
 
 MAX_MIR_BYTES = 64 * 1024 * 1024
 MAX_ITERATIONS = 10_000
+# The dataflow's budget per reachable block, beyond MAX_ITERATIONS in all.
+STEPS_PER_BLOCK = 50
 
 _HEADER = re.compile(r"^fn (.+?)\((.*)\) -> .* \{$")
 _ARGUMENT = re.compile(r"(?:^|, )_([0-9]+): ")
@@ -103,14 +105,19 @@ _BRANCHES = re.compile(r"^(?:assert\(!?(?:move|copy) |switchInt\((?:move|copy) )
 _STRING = re.compile(r'"(?:[^"\\]|\\.)*"')
 _DROP_PLACE = re.compile(r"^drop\((.+)\) -> ")
 _STORE = re.compile(r"^(\(+\*_[0-9]+\).*?|\(\*_[0-9]+\)) = ")
+# `_23 = copy ((BOX.0: Unique<T>).0: NonNull<T>) as *const T (Transmute)`: BOX is a Box
+# place (`_1`, `(_1.2: Box<T>)`, `((*_13).1: Box<Inner>)`).
 _BOX_POINTER = re.compile(
-    r"^_([0-9]+) = copy \(+_([0-9]+)\b.*\bUnique<.*\bNonNull<.*\) as \*(?:const|mut) .*\(Transmute\);$"
+    r"^_([0-9]+) = copy \(\((.+?)\.0: (?:std::ptr::|core::ptr::)?Unique<.*\bNonNull<.*\) "
+    r"as \*(?:const|mut) .*\(Transmute\);$"
+)
+# A copy of a Box held in a place (`_17 = copy ((*_37).1: Box<Inner>)`) or of such a
+# copy (`_18 = copy _17`): the built MIR derefs a nested Box through it.
+_BOX_COPY = re.compile(
+    r"^_([0-9]+) = copy (\(.*: (?:std::boxed::|alloc::boxed::)?Box<.*>\)|_[0-9]+);$"
 )
 # A move or drop through a pointer: `move ((*_23).1: T)`, `drop(((*_23).1: T))`.
 _THROUGH = re.compile(r"(?:\bmove\s+|^drop\()\(*\*_([0-9]+)\b")
-_DERIVED = re.compile(
-    r"^(?:&(?:mut |raw const |raw mut )?\(*\*_([0-9]+)\)|(?:copy|move) _([0-9]+)$)"
-)
 _WRITABLE_BORROW = re.compile(r"&(?:mut |raw const |raw mut )\(*_([0-9]+)\b")
 _DIRECT_BORROW = re.compile(r"&(?:mut |raw const |raw mut |fake \w+ )?\(*_([0-9]+)\b")
 _ANY_LOCAL = re.compile(r"\b_([0-9]+)\b")
@@ -156,6 +163,7 @@ class Body:
     _writable: set | None = None
     _preds: dict | None = None
     _box_temps: dict | None = None
+    _box_paths: dict | None = None
     _replaced: dict | None = None
     _alias_cache: dict | None = None
     _offset: int | None = None
@@ -647,14 +655,52 @@ class Body:
     def _boxes(self):
         """{temp: Box local}: the raw pointers built from a Box's own pointer
         (`_23 = copy ((_1.0: Unique<T>).0: NonNull<T>) as *const T (Transmute)`), which
-        the built MIR derefs in place of the Box."""
+        the built MIR derefs in place of the Box. A Box inside one (`bx.inner.data`) is
+        reached through such a pointer (`((*_23).1: Box<Inner>)`): its own pointers map
+        to the outermost local too, as do pointers made from a copy of such a Box
+        (`_17 = copy ((*_37).1: Box<Inner>)`). ``_box_paths`` names each pointer's Box
+        by a place from that local."""
         if self._box_temps is None:
-            self._box_temps = {
-                int(found[1]): int(found[2])
-                for block in self.blocks.values()
-                for text, _, _ in block.statements
-                if (found := _BOX_POINTER.match(text))
-            }
+            made = []
+            for block in self.blocks.values():
+                for text, _, _ in block.statements:
+                    if found := _BOX_POINTER.match(text):
+                        made.append((False, int(found[1]), found[2]))
+                    elif found := _BOX_COPY.match(text):
+                        made.append((True, int(found[1]), found[2]))
+            # A pointer made from a copy waits for the copy to be told apart; a copy
+            # whose Box never is (copied out of a reference) is a Box of its own.
+            waiting = {temp for copy, temp, _ in made if copy}
+            boxes, paths, copies, changed = {}, {}, {}, True
+            while changed or waiting - copies.keys():
+                if not changed:
+                    waiting = set(copies)
+                changed = False
+                for copy, temp, place in made:
+                    if temp in (copies if copy else boxes):
+                        continue
+                    root = re.match(r"\(*(\*?)_([0-9]+)\b", place)
+                    if root is None:
+                        continue
+                    inner = int(root[2])
+                    if root[1]:
+                        if inner not in boxes:
+                            continue
+                        box = boxes[inner]
+                        path = place.replace(f"(*_{inner})", f"(*{paths[inner]})", 1)
+                    elif inner in copies:
+                        box, held = copies[inner]
+                        path = re.sub(rf"\b_{inner}\b", lambda _, held=held: held, place, count=1)
+                    elif inner in waiting or (copy and place == f"_{inner}"):
+                        continue
+                    else:
+                        box, path = inner, f"B{place}"
+                    if copy:
+                        copies[temp] = (box, path)
+                    else:
+                        boxes[temp], paths[temp] = box, path
+                    changed = True
+            self._box_temps, self._box_paths = boxes, paths
         return self._box_temps
 
     def _kills(self, text):
@@ -703,7 +749,7 @@ class Body:
                 target = _target(block)
                 if not dropped or target is None or target not in self.blocks:
                     continue
-                place = _through_box(dropped[1], boxes)
+                place = _through_box(dropped[1], boxes, self._box_paths)
                 if place is None:
                     continue
                 # The next thing it does, past storage markers, new pointers to the Box,
@@ -728,7 +774,7 @@ class Body:
                     else:
                         break
                 store = _STORE.match(text or "")
-                if store and _through_box(store[1], boxes) == place:
+                if store and _through_box(store[1], boxes, self._box_paths) == place:
                     found[text] = place[0]
                     drops[block.terminator] = place[0]
             self._replaced = (drops, found)
@@ -746,12 +792,14 @@ class Body:
             changed = False
             for block in self.blocks.values():
                 for text, _, _ in block.statements:
-                    whole = _WHOLE_ASSIGNMENT.match(text)
-                    if not whole or int(whole[1]) in found:
+                    # Anything made from it, whole or in part: a reborrow, a copy, a
+                    # struct holding it (`Ctx { v: move _5 }`), a call's result.
+                    assigned = _WHOLE_ASSIGNMENT.match(text) or _PART_ASSIGNMENT.match(text)
+                    if not assigned or int(assigned[1]) in found:
                         continue
-                    base = _DERIVED.match(whole[2])
-                    if base and int(base[1] or base[2]) in found:
-                        found.add(int(whole[1]))
+                    used = {int(n) for n in _MENTIONED.findall(_STRING.sub('""', assigned[2]))}
+                    if used & found:
+                        found.add(int(assigned[1]))
                         changed = True
         self._alias_cache[local] = found
         return found
@@ -762,8 +810,10 @@ class Body:
         its target is a dropped value there."""
         # Drops and stores through a reborrow or a copy of it (`let w = &mut *v;`) count.
         names = "|".join(str(alias) for alias in sorted(self._aliases(local)))
-        dropped = re.compile(rf"^drop\(\(*\*_(?:{names})\)")
-        written = re.compile(rf"^\(+\*_(?:{names})\)[^=]*= |^_{local} = ")
+        dropped = re.compile(rf"^drop\(\(*\*\(*_(?:{names})\b")
+        written = re.compile(rf"^\(+\*\(*_(?:{names})\b[^=]*= |^_{local} = ")
+        if not any(dropped.match(block.terminator) for block in self.blocks.values()):
+            return False
         predecessors = self.predecessors()
         pending, seen = [start], set()
         while pending:
@@ -805,13 +855,15 @@ class Body:
         entry = {number: top for number in reachable}
         entry[0] = _mask(self.arguments)
         work = sorted(reachable, reverse=True)  # every block is processed at least once
-        steps = 0
+        queued, steps = set(work), 0
+        limit = max(MAX_ITERATIONS, STEPS_PER_BLOCK * len(reachable))
         while work:
             steps += 1
-            if steps > MAX_ITERATIONS:
+            if steps > limit:
                 self._entry = {}
                 return None
             number = work.pop()
+            queued.discard(number)
             block = self.blocks[number]
             state = entry[number]
             for text, _, _ in block.statements[:-1]:
@@ -826,7 +878,8 @@ class Body:
                 merged = entry[target] & out
                 if merged != entry[target]:
                     entry[target] = merged
-                    if target not in work:
+                    if target not in queued:
+                        queued.add(target)
                         work.append(target)
         self._entry = entry
         return entry
@@ -935,14 +988,14 @@ def _encloses(body, outer, inner):
     return False
 
 
-def _through_box(place, boxes):
+def _through_box(place, boxes, paths):
     """(Box local, the place with the pointer named by its Box) for a place through a
     pointer made from a Box (`((*_13).1: String)`), else None."""
     found = re.search(r"\(\*_([0-9]+)\)", place)
     if found is None or int(found[1]) not in boxes or not place.lstrip("(").startswith("*"):
         return None
-    box = boxes[int(found[1])]
-    return box, place[: found.start()] + f"(*B{box})" + place[found.end() :]
+    temp = int(found[1])
+    return boxes[temp], place[: found.start()] + f"(*{paths[temp]})" + place[found.end() :]
 
 
 def _span(block, index):
@@ -1354,6 +1407,7 @@ class OwnedLocals:
         # {source: text}, to tell which lines can invoke a macro; absent means any can.
         self.texts = dict(texts or {})
         self._matched = {}
+        self._unanalyzed = {}
         # {(file, line): {body index}}: which bodies have a span on each line.
         self._owners = {}
         for index, body in enumerate(self.bodies):
@@ -1397,6 +1451,8 @@ class OwnedLocals:
                     candidates = []
             found = candidates[0] if len(candidates) == 1 else None
             if found is not None and not _covered(found, function):
+                # Identified, but its layout or dataflow is not understood.
+                self._unanalyzed[hashed] = found
                 found = None
         self._matched[hashed] = found
         return found
@@ -1545,24 +1601,31 @@ class OwnedLocals:
 
     def _elsewhere(self, hashed, variable_name, path):
         """False where the stop is in another of the crate's files than its function's
-        (a `macro_rules!` from another module, `include!`d code) and the name's bindings
-        may borrow: no line of the function's own can place the stop; else None."""
+        (a `macro_rules!` from another module, `include!`d code), or anywhere in a
+        function whose body was identified but not analyzed (a dataflow past its
+        budget), and the name's bindings may borrow: no line can place the stop; else
+        None."""
         body, function = self.body(hashed), self.functions.get(hashed)
+        unanalyzed = body is None and hashed in self._unanalyzed
+        if unanalyzed:
+            body = self._unanalyzed[hashed]
         if body is None or function is None:
             return None
         shown = str(path or "").replace("\\", "/")
         sources = [source for source in self.sources if shown.endswith("/" + source)]
-        if not sources or sources == [function.file]:
+        if not sources or (sources == [function.file] and not unanalyzed):
             return None
         name = str(variable_name).partition(" @ ")[0]
         for local, _, _, projected, _ in body.bindings.get(name, ()):
             kind = body.types.get(local) if local is not None else projected
             if not kind or not _BORROWING.search(kind) or _FN_POINTER.match(kind):
                 continue
-            # A reference parameter never reassigned or written through: the caller's.
+            # A reference parameter never reassigned or written through: the caller's
+            # (unanalyzed, only a shared one: nothing tells a `&mut`'s replacement).
             if (
                 local in body.arguments
                 and kind.startswith("&")
+                and not (unanalyzed and kind.startswith("&mut "))
                 and not _RAW_POINTER.search(kind)
                 and local not in body._assignments()
                 and local not in body._written_through()

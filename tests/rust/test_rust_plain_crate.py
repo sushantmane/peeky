@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from peeky import rust_mir
 from peeky.cli import main
 
 MANIFEST = """[package]
@@ -1988,6 +1989,8 @@ def test_references_in_collapsed_and_other_file_macros_and_parameters(plain, cap
     attributes = (
         "#[collapse_debuginfo(yes)]",
         "#[cfg_attr(debug_assertions, collapse_debuginfo(yes))]",
+        # Round 7: after a comment on the same line.
+        "/* eat collapses */ #[collapse_debuginfo(yes)]",
     )
     for attribute in attributes:
         (plain / "src/main.rs").write_text(COLLAPSED_REFS.replace(attributes[0], attribute))
@@ -2166,3 +2169,173 @@ def test_references_into_moved_box_contents_and_mid_replacement_values(plain, ca
     at = f"src/main.rs:{line_of(DROPPED_INSIDE, '// M6_MOVED_THEN')}"
     code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "bx", "--quiet")
     assert result["rows"][0].get("view") == "unproven", result["rows"]
+
+
+BRANCHES = "\n".join(
+    f"            if total > i {{ total += {n}; }} else {{ total -= j; }}" for n in range(700)
+)
+
+ALIASED_DROPS = """#[derive(Debug, Clone, Copy)]
+pub struct Pt {
+    x: i64,
+    y: i64,
+}
+
+#[derive(Debug)]
+pub struct Res {
+    x: i64,
+}
+
+impl Drop for Res {
+    fn drop(&mut self) {
+        churn(); // M7_IN_DROP
+    }
+}
+
+#[inline(never)]
+fn churn() -> i64 {
+    Box::leak(Box::new(Pt { x: 777, y: 888 })).x + Box::leak(Box::new([777i64; 4]))[0]
+}
+
+#[inline(never)]
+fn consume(b: Box<Pt>) -> i64 {
+    b.y
+}
+
+struct Inner {
+    data: Box<Pt>,
+}
+
+struct Outer {
+    tag: i64,
+    inner: Box<Inner>,
+}
+
+fn nested_move() -> i64 {
+    let bx = Box::new(Outer { tag: 1, inner: Box::new(Inner { data: Box::new(Pt { x: 5, y: 6 }) }) });
+    let d = bx.inner.data;
+    let n = consume(d);
+    let z = churn() + n;
+    z + bx.tag // M7_NESTED_MOVE
+}
+
+struct Held {
+    data: Box<Res>,
+}
+
+struct Holder {
+    tag: i64,
+    held: Box<Held>,
+}
+
+fn nested_replace(n: i64) -> i64 {
+    let mut bx = Box::new(Holder { tag: 1, held: Box::new(Held { data: Box::new(Res { x: 5 }) }) });
+    bx.held.data = Box::new(Res { x: n }); // M7_NESTED_REPLACE
+    bx.tag + bx.held.data.x
+}
+
+struct Ctx<'a> {
+    v: &'a mut Vec<Res>,
+}
+
+fn via_struct(v: &mut Vec<Res>, n: i64) -> i64 {
+    let k = v[0].x;
+    let c = Ctx { v: &mut *v };
+    *c.v = vec![Res { x: n }]; // M7_VIA_STRUCT
+    k
+}
+
+#[inline(never)]
+fn id_mut<T>(x: &mut T) -> &mut T {
+    x
+}
+
+fn via_call(v: &mut Vec<Res>, n: i64) -> i64 {
+    let k = v[0].x;
+    let w = id_mut(v);
+    *w = vec![Res { x: n }]; // M7_VIA_CALL
+    k
+}
+
+fn big(n: i64, p: &Pt) -> i64 {
+    let mut total = 0i64;
+    let b = Box::new(Pt { x: 5, y: 6 });
+    let r: &Pt = &*b;
+    let k = r.x;
+    let m = consume(b);
+    for i in 0..n {
+        for j in 0..n {
+BRANCHES
+        }
+    }
+    let z = churn();
+    total + k + m + z + p.y // M7_BIG
+}
+
+fn main() {
+    let mut s = vec![Res { x: 3 }];
+    let mut t = vec![Res { x: 4 }];
+    println!("{}", via_struct(&mut s, 9));
+    println!("{}", via_call(&mut t, 9));
+    println!("{}", nested_replace(9));
+    println!("{} {}", nested_move(), big(2, &Pt { x: 7, y: 8 }));
+    std::mem::forget(s);
+    std::mem::forget(t);
+}
+""".replace("BRANCHES", BRANCHES)
+
+
+def _stepped_out_to(plain, capsys, at, continues, line):
+    """The variables at ``line`` after stopping at ``at``, continuing ``continues``
+    times and stepping out until there."""
+    assert main(["session", "start", str(plain), "--at", at]) == 0
+    capsys.readouterr()
+    try:
+        for _ in range(continues):
+            main(["session", "continue"])
+            capsys.readouterr()
+        state = {}
+        for _ in range(8):
+            main(["session", "step", "--out", "--json"])
+            state = json.loads(capsys.readouterr().out)
+            if str(state.get("location")).endswith(f"main.rs:{line}"):
+                break
+        assert str(state.get("location")).endswith(f"main.rs:{line}"), state
+        assert main(["session", "inspect", "--json"]) == 0
+        snapshot = json.loads(capsys.readouterr().out)
+    finally:
+        main(["session", "close"])
+        capsys.readouterr()
+    return {v["name"]: v for scope in snapshot["scopes"] for v in scope["variables"]}
+
+
+@pytest.mark.timeout(600)
+def test_references_through_nested_boxes_struct_fields_calls_and_big_functions(
+    plain, capsys, monkeypatch
+):
+    # Verification of #110 (round 7): a Box inside a Box is moved out of or dropped
+    # through a copy of it; a `&mut` stored in a struct or returned by a call aliases the
+    # reference it came from; and the dataflow's budget gave up in a big function.
+    (plain / "src/main.rs").write_text(ALIASED_DROPS)
+    at = f"src/main.rs:{line_of(ALIASED_DROPS, '// M7_IN_DROP')}"
+    for continues, marker, names in (
+        (0, "M7_VIA_STRUCT", ("v", "c")),
+        (1, "M7_VIA_CALL", ("v", "w")),
+        (2, "M7_NESTED_REPLACE", ("bx",)),
+    ):
+        line = line_of(ALIASED_DROPS, "// " + marker)
+        variables = _stepped_out_to(plain, capsys, at, continues, line)
+        for name in names:
+            assert variables[name].get("view") == "unproven", (marker, variables[name])
+    for marker, capture in (("M7_NESTED_MOVE", "bx"), ("M7_BIG", "r")):
+        at = f"src/main.rs:{line_of(ALIASED_DROPS, '// ' + marker)}"
+        code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", capture, "--quiet")
+        assert result["rows"][0].get("view") == "unproven", (marker, result["rows"])
+    # A function whose dataflow still runs past its budget gates its references; a
+    # shared reference parameter is the caller's and reads.
+    monkeypatch.setattr(rust_mir, "MAX_ITERATIONS", 1)
+    monkeypatch.setattr(rust_mir, "STEPS_PER_BLOCK", 1)
+    code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "r,p.x", "--quiet")
+    rows = result["rows"]
+    assert [row.get("view") for row in rows][:1] == ["unproven"], rows
+    assert rows[1].get("value") == "7", rows

@@ -974,3 +974,56 @@ CONTINUED = "\n".join(
         "",
     ]
 )
+
+
+UNIQUE = (
+    "copy ((_{0}.0: std::ptr::Unique<{1}>).0: std::ptr::NonNull<{1}>) as *const {1} (Transmute);"
+)
+
+
+def test_a_box_in_a_box_is_moved_out_of_through_a_copy_in_any_block_order():
+    # The pointer made from the copy (`_38`) comes in a block before the copy (`_17`).
+    body = mir(
+        {
+            0: [f"_37 = {UNIQUE.format(1, 'Outer')}", "goto -> bb2;"],
+            1: [
+                f"_38 = {UNIQUE.format(17, 'Inner')}",
+                "_7 = move ((*_38).0: std::boxed::Box<Pt>);",
+                "_21 = " + UNIQUE.format(20, "Pt"),
+                "goto -> bb3;",
+            ],
+            2: [
+                "_17 = copy ((*_37).1: std::boxed::Box<Inner>);",
+                "_20 = copy ((*_5).0: std::boxed::Box<Pt>);",
+                "goto -> bb1;",
+            ],
+            3: ["return;"],
+        }
+    )
+    boxes = body._boxes()
+    assert boxes[37] == boxes[38] == 1
+    assert body._box_paths[38] == "((*B_1).1: std::boxed::Box<Inner>)"
+    assert 1 in body._kills("_7 = move ((*_38).0: std::boxed::Box<Pt>);")
+    # A copy out of a reference is a Box of its own.
+    assert boxes[21] == 20
+
+
+@pytest.mark.parametrize(
+    "text, kept",
+    [
+        ("/* eat collapses */ #[collapse_debuginfo(yes)]", True),
+        ('let g = "src/*.rs";\n#[collapse_debuginfo(yes)]\n/* x */', True),
+        ('let u = "http://x"; #[collapse_debuginfo(yes)]', True),
+        ("let c = '\"'; #[collapse_debuginfo(yes)] // \"", True),
+        ('let r = r#"/*"#; #[collapse_debuginfo(yes)] /* */', True),
+        ('let r = br"\\"; #[collapse_debuginfo(yes)] // "', True),
+        ('let s = "unterminated /* collapse_debuginfo', True),
+        ("/* outer /* inner */ collapse_debuginfo */", False),
+        ("/// #[collapse_debuginfo(yes)]\nfn f() {}", False),
+        ("fn f<'a>(x: &'a str) {} /* collapse_debuginfo */", False),
+    ],
+)
+def test_comments_are_told_from_strings_where_collapse_is_looked_for(text, kept):
+    from peeky.rust import without_comments
+
+    assert ("collapse_debuginfo" in without_comments(text)) is kept

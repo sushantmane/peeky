@@ -65,6 +65,51 @@ from peeky.rust_symbols import (
 DEPS = "target/debug/deps"
 MIR_DIR = "target/peeky-mir"
 _COLLAPSE = re.compile(r"\bcollapse_debuginfo\b")
+# Where a comment, string or char literal may start: `r"`/`br#"` only after a non-word.
+_LEXEME = re.compile(r"//|/\*|(?<!\w)b?r(#*)\"|\"|'")
+_BLOCK_EDGE = re.compile(r"/\*|\*/")
+_QUOTED = re.compile(r'"(?:[^"\\]|\\.)*"', re.DOTALL)
+_CHAR = re.compile(r"'(?:\\(?:u\{[0-9a-fA-F]{1,6}\}|x[0-9a-fA-F]{2}|.)|[^\\'\n])'")
+
+
+def without_comments(text):
+    """``text`` with its comments (`//`, nested `/* */`) blanked. Strings, raw strings
+    and char literals stay whole, so a `//` or `/*` inside one starts no comment; an
+    unterminated one keeps the rest."""
+    kept, at = [], 0
+    while (found := _LEXEME.search(text, at)) is not None:
+        start, token = found.start(), found[0]
+        if token == "//":
+            end = text.find("\n", start)
+            end = len(text) if end < 0 else end
+        elif token == "/*":
+            depth, end = 1, start + 2
+            while depth:
+                edge = _BLOCK_EDGE.search(text, end)
+                if edge is None:
+                    end = len(text)
+                    break
+                depth += 1 if edge[0] == "/*" else -1
+                end = edge.end()
+        else:
+            if token == "'":
+                literal = _CHAR.match(text, start)
+                end = literal.end() if literal else start + 1
+            elif token == '"':
+                literal = _QUOTED.match(text, start)
+                end = literal.end() if literal else len(text)
+            else:
+                close = text.find('"' + found[1], found.end())
+                end = len(text) if close < 0 else close + 1 + len(found[1])
+            kept.append(text[at:end])
+            at = end
+            continue
+        kept.append(text[at:start] + " ")
+        at = end
+    kept.append(text[at:])
+    return "".join(kept)
+
+
 # Cargo runs this for workspace crates only (RUSTC_WORKSPACE_WRAPPER). For the debugged
 # binary crate alone it adds the MIR the owned-local proof reads (rust_mir): no MIR
 # optimizations, so moves stay moves and blocks keep their names in the IR. Unstable
@@ -683,11 +728,12 @@ def owned_locals(workspace, artifacts, crate, ir, sources):
     )
     if not mir or not all(pattern.fullmatch(name) for name in mir):
         raise ValueError("Unexpected Rust MIR artifact")
-    # Any mention outside a comment line (`#[collapse_debuginfo]`, inside `cfg_attr`).
+    # Any mention outside comments (`#[collapse_debuginfo]`, inside `cfg_attr`); a
+    # string naming it only counts too much.
     collapsed = any(
-        _COLLAPSE.search(line) and not re.match(r"\s*(?://|/\*|\*)", line)
+        _COLLAPSE.search(text) and _COLLAPSE.search(without_comments(text))
         for name in sources
-        for line in (Path(workspace) / name).read_text(errors="replace").splitlines()
+        for text in [(Path(workspace) / name).read_text(errors="replace")]
     )
     return OwnedLocals(
         load_bodies(Path(workspace) / MIR_DIR, crate),
