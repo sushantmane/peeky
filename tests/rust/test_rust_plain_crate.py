@@ -801,6 +801,21 @@ fn fat_params<T: Debug, U: Debug>(t: T, u: U) -> usize {
     reuse.len() // DROPPED_FAT
 }
 
+fn thin_arrays<T: Debug>(t: T) -> usize {
+    drop(t);
+    let reuse = Box::new([0x309i64; 2]);
+    let again = Box::new([0x309i64; 2]);
+    reuse.len() + again.len() // DROPPED_THIN
+}
+
+fn plain_array() -> i64 {
+    let arr: [Box<Pt>; 2] = [Box::new(Pt { x: 1, y: 2 }), Box::new(Pt { x: 3, y: 4 })];
+    let n = arr[0].x; // LIVE_ARRAY
+    drop(arr);
+    let reuse = Box::new(Pt { x: 777, y: 777 });
+    n + reuse.x // DROPPED_PLAIN_ARRAY
+}
+
 fn make() -> Box<dyn Debug> {
     Box::new(1u8)
 }
@@ -870,6 +885,8 @@ fn main() {
         0
     }
     let tables: [fn(*const str) -> u8; 2] = [named, named];
+    let boxes = [Box::new(Pt { x: 1, y: 2 }), Box::new(Pt { x: 3, y: 4 })];
+    println!("{} {}", thin_arrays(boxes), plain_array());
     println!("{} {}", fat_params(Box::new(takes as fn(*const [u8])), Box::new(tables)), factories());
     println!("{} {} {:?} {} {}", a, b, r, closures(&[1, 2]), exported(&Pt { x: 10, y: 1 }, &[1, 2]));
 }
@@ -911,6 +928,9 @@ def test_generic_boxes_are_gated_and_non_owning_values_read(plain, capsys):
         ("DROPPED_TUPLES", "t,w"),
         # LLDB: `void (**)(*const [u8])`, `unsigned char (*(*)[2])(*const str)`.
         ("DROPPED_FAT", "t,u"),
+        # `[Box<Pt>; 2]`, which LLDB names `Pt *[2]`, held by a generic and by its owner.
+        ("DROPPED_THIN", "t"),
+        ("DROPPED_PLAIN_ARRAY", "arr"),
     ):
         at = f"src/main.rs:{line_of(BOX_GENERIC, '// ' + marker)}"
         code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", capture, "--quiet")
@@ -931,6 +951,9 @@ def test_generic_boxes_are_gated_and_non_owning_values_read(plain, capsys):
     assert not any(row.get("view") for row in rows), rows
     assert "px" in str(rows[3].get("value")), rows
     assert "not shown" not in str(rows[4].get("value")), rows
+    at = f"src/main.rs:{line_of(BOX_GENERIC, '// LIVE_ARRAY')}"
+    code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "arr[0].x", "--quiet")
+    assert result["rows"][0].get("value") == "1", result["rows"]
     # Arrays of fn pointers returning a Box, and of references to one, own no Box.
     at = f"src/main.rs:{line_of(BOX_GENERIC, '// FACTORIES')}"
     code, result = run(

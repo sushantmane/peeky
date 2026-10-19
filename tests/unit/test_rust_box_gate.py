@@ -2,7 +2,7 @@
 
 import pytest
 
-from peeky.rust import _NON_OWNING, _is_pointer, _is_wide_box
+from peeky.rust import _NON_OWNING, _holds_data_pointers, _is_pointer, _is_wide_box
 
 
 @pytest.mark.parametrize(
@@ -129,3 +129,43 @@ def test_wide_boxes(kind):
 )
 def test_not_wide_boxes(kind):
     assert not _is_wide_box(kind)
+
+
+@pytest.mark.parametrize(
+    "kind",
+    [
+        "Pt *",
+        "long (**)(long)",
+        "unsigned char (*)[8]",
+        # Arrays of data pointers: what `[Box<Pt>; 2]` is (verification of #103).
+        "vb9a::Pt *[2]",
+        "vb9d::Pt *[1][2]",
+        "unsigned char (*[2])[4]",
+        "long (**[2])(long)",
+        "alloc::boxed::Box<str> *[2]",
+    ],
+)
+def test_data_pointers_and_arrays_of_them(kind):
+    assert _holds_data_pointers(kind)
+
+
+@pytest.mark.parametrize(
+    "kind",
+    [
+        # A fn pointer points at code, never at a Box's allocation.
+        "long (*)(long)",
+        "long (*[2])(long)",
+        "alloc::boxed::Box<dyn S> (*[2])()",
+        "unsigned char[4]",
+        "(long, long)",
+        "&[unsigned char]",
+        "Vec<Pt *>",
+    ],
+)
+def test_not_data_pointers(kind):
+    assert not _holds_data_pointers(kind)
+
+
+@pytest.mark.parametrize("mir", ["[&Pt; 2]", "[[&Pt; 2]; 3]", "[fn(i64) -> i64; 2]"])
+def test_arrays_of_non_owning_mir_types(mir):
+    assert _NON_OWNING.match(mir.lstrip("["))

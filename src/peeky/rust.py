@@ -12,6 +12,7 @@ independent checker. Trusted code; not a sandbox.
 """
 
 import hashlib
+import itertools
 import json
 import re
 import shutil
@@ -739,18 +740,53 @@ def _is_pointer(kind):
     """Whether LLDB's C-style type is a pointer at its top level: `Pt *`, `unsigned char
     (*)[8]`, `long (**)()`, `unsigned char (*(*)[2])[2]`; not a generic's argument
     (`Vec<Pt *>`) or an array of pointers (`long (*[2])(long)`, `unsigned char *[2]`)."""
-    text = _without_generics(kind)
-    if re.search(r"\*\s*(?:const\s*)?$", text):
-        return True
-    # The innermost `(*…)` group decides: what follows its stars is the declared thing's
-    # own suffix (`[2]` array, `(…)` function) or a deeper group; nothing means pointer.
-    group = _declarator_group(text)
-    while group is not None:
-        text = re.sub(r"^(?:\s*(?:\*|const\b|volatile\b|restrict\b))*\s*", "", group)
-        if not text:
-            return True
-        group = _group_at(text, 0) if re.match(r"\(\s*\*", text) else None
-    return False
+    return _constructors(kind)[:1] == ["pointer"]
+
+
+def _holds_data_pointers(kind):
+    """Whether LLDB's type is a data pointer, or an array of them (`Pt *[2]`, which a
+    `[Box<Pt>; 2]` is too): what a Box may be. A fn pointer (`long (*)(long)`, `long
+    (*[2])(long)`) points at code, never at a Box's allocation."""
+    levels = list(itertools.dropwhile(lambda level: level == "array", _constructors(kind)))
+    return levels[:1] == ["pointer"] and levels[1:2] != ["function"]
+
+
+def _constructors(kind):
+    """What LLDB's C-style type is, outermost first, one of "pointer", "array" or
+    "function" per declarator level: `long (*[2])(long)` is an array of pointers to
+    functions, ["array", "pointer", "function"]; a plain type is []."""
+    text = _without_generics(kind).rstrip()
+    start = _declarator_start(text)
+    if start is None:
+        # No `(*…)` group: trailing stars and array suffixes (`Pt *[2]`, `Pt *const`).
+        tail = re.search(r"((?:\*\s*(?:const\b\s*)?)*)((?:\[\d*\]\s*)*)$", text)
+        return ["array"] * tail[2].count("[") + ["pointer"] * tail[1].count("*")
+    return _declarator(text[start:])
+
+
+def _declarator(text):
+    """A C abstract declarator's levels: `*`s, then an optional `(…)` group holding an
+    inner declarator, then suffixes (`[N]`, `(parameters)`). The inner declarator's
+    levels come first, then the suffixes', then the stars'."""
+    stars = re.match(r"(?:\s|\*|const\b|volatile\b|restrict\b)*", text)
+    rest = text[stars.end() :]
+    inner = []
+    if re.match(r"\(\s*\*", rest):
+        group = _group_at(rest, 0)
+        if group is None:
+            return []
+        inner, rest = _declarator(group), rest[len(group) + 2 :]
+    suffixes = []
+    while rest := rest.lstrip():
+        if rest[0] == "[" and "]" in rest:
+            suffixes.append("array")
+            rest = rest[rest.index("]") + 1 :]
+        elif rest[0] == "(" and (group := _group_at(rest, 0)) is not None:
+            suffixes.append("function")
+            rest = rest[len(group) + 2 :]
+        else:
+            break
+    return inner + suffixes + ["pointer"] * stars[0].count("*")
 
 
 def _without_generics(kind):
@@ -772,9 +808,9 @@ def _is_wide_box(kind):
     )
 
 
-def _declarator_group(text):
-    """The contents of the declarator's `(*…)` group: the last one outside any parentheses
-    or brackets with a base type before it. A parameter list's `(*)` (`unsigned char
+def _declarator_start(text):
+    """Where the declarator's `(*…)` group opens: the last one outside any parentheses or
+    brackets with a base type before it. A parameter list's `(*)` (`unsigned char
     (*[2])(unsigned char (*)[4])`) never counts, nor does a tuple base that starts like
     one (`(*const u8, i64) (*)[2]`). A `(` right after `)` opens a parameter list, which
     can start like one too (`void (**)(*const [u8])`)."""
@@ -792,7 +828,7 @@ def _declarator_group(text):
             depth += 1
         elif char in ")]":
             depth -= 1
-    return None if last is None else _group_at(text, last)
+    return last
 
 
 def _group_at(text, at):
@@ -983,16 +1019,18 @@ class RustSession(NativeSession):
                     ),
                 )
             )
-            plain = bool(types) and all(_NON_OWNING.match(t or "") for t in types)
+            # An array is judged by its elements (`[&Pt; 2]` is plain, `[Box<Pt>; 2]` owns).
+            plain = bool(types) and all(_NON_OWNING.match((t or "").lstrip("[")) for t in types)
             # LLDB names a wide Box (`Box<str>`, `Box<[T]>`, `Box<dyn Trait>`) itself, even
             # where the MIR says only `T`; a reference to one (`&Box<str>`) is not owning.
             owning = any(
-                re.match(r"(?:std::boxed::|alloc::boxed::)?Box<", t or "") for t in types
+                re.match(r"\[*(?:std::boxed::|alloc::boxed::)?Box<", t or "") for t in types
             ) or (_is_wide_box(variable.get("type")) and not plain)
-            # What LLDB shows as a pointer (`Pt *`, `unsigned char (*)[8]`, `long (**)()`)
-            # is read through only when the MIR says every binding is a reference, a raw
-            # pointer or a fn pointer: a generic `T`, `Self` or `impl Trait` may be a Box.
-            pointer = _is_pointer(variable.get("type"))
+            # What LLDB shows as a data pointer, or an array of them (`Pt *`, `unsigned char
+            # (*)[8]`, `long (**)()`, `Pt *[2]`), is read through only when the MIR says
+            # every binding is a reference, a raw pointer or a fn pointer (or an array of
+            # them): a generic `T`, `Self` or `impl Trait` may be a Box.
+            pointer = _holds_data_pointers(variable.get("type"))
             if (owning or (pointer and not plain)) and not (
                 innermost
                 and hashed
