@@ -64,6 +64,7 @@ from peeky.rust_symbols import (
 
 DEPS = "target/debug/deps"
 MIR_DIR = "target/peeky-mir"
+_COLLAPSE = re.compile(r"#\s*!?\s*\[\s*collapse_debuginfo\b")
 # Cargo runs this for workspace crates only (RUSTC_WORKSPACE_WRAPPER). For the debugged
 # binary crate alone it adds the MIR the owned-local proof reads (rust_mir): no MIR
 # optimizations, so moves stay moves and blocks keep their names in the IR. Unstable
@@ -682,9 +683,9 @@ def owned_locals(workspace, artifacts, crate, ir, sources):
     )
     if not mir or not all(pattern.fullmatch(name) for name in mir):
         raise ValueError("Unexpected Rust MIR artifact")
+    # The attribute itself, not a mention in a comment or string.
     collapsed = any(
-        "collapse_debuginfo" in (Path(workspace) / name).read_text(errors="replace")
-        for name in sources
+        _COLLAPSE.search((Path(workspace) / name).read_text(errors="replace")) for name in sources
     )
     return OwnedLocals(
         load_bodies(Path(workspace) / MIR_DIR, crate),
@@ -981,6 +982,35 @@ class RustSession(NativeSession):
         proofs = getattr(self, "owned", None)
         # An optimized build's line table cannot place a proof (#13): nothing is proven.
         unoptimized = self.target.opt_level == "0"
+        shown_path = ((frame or {}).get("source") or {}).get("path")
+        verdict = []
+
+        def reference_valid():
+            # #110, once per variable: True, False or None (see OwnedLocals).
+            if not verdict:
+                verdict.append(
+                    proofs.reference_valid(
+                        hashed[1],
+                        variable.get("name"),
+                        line,
+                        shown_path,
+                        breakpoint=stop == "breakpoint",
+                        column=(frame or {}).get("column"),
+                    )
+                )
+            return verdict[0]
+
+        if (
+            parameter
+            and innermost
+            and unoptimized
+            and hashed
+            and proofs is not None
+            and reference_valid() is False
+        ):
+            # A reference parameter whose target the frame dropped (`*v = new` between
+            # its drop and its store) is not read as a container either.
+            parameter = None
         owned = bool(
             hashed
             and innermost
@@ -1057,7 +1087,6 @@ class RustSession(NativeSession):
             # them): a generic `T`, `Self` or `impl Trait` may be a Box.
             pointer = _holds_data_pointers(kind)
             provable = innermost and unoptimized and hashed
-            shown_path = ((frame or {}).get("source") or {}).get("path")
             gated = (owning or (pointer and not plain)) and not (
                 provable and proofs.proven(hashed[1], variable.get("name"), line, shown_path)
             )
@@ -1068,17 +1097,7 @@ class RustSession(NativeSession):
                 # each lexical block, at the frame's column (`stop`); a step or a pause can
                 # stop anywhere in it. What cannot be told (a site or local not understood)
                 # reads as before.
-                gated = (
-                    proofs.reference_valid(
-                        hashed[1],
-                        variable.get("name"),
-                        line,
-                        shown_path,
-                        breakpoint=stop == "breakpoint",
-                        column=(frame or {}).get("column"),
-                    )
-                    is False
-                )
+                gated = reference_valid() is False
             if gated:
                 # #101: a moved or dropped Box still holds its pointer, and LLDB would
                 # read the freed allocation as its fields. The pointer is shown; what it

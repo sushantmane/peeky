@@ -101,6 +101,11 @@ _DROP = re.compile(r"^drop\([(*]*_([0-9]+)\b")
 _BRANCHES = re.compile(r"^(?:assert\(!?(?:move|copy) |switchInt\((?:move|copy) )")
 # A borrow of a local's own storage: no `*` before the local in the place.
 _STRING = re.compile(r'"(?:[^"\\]|\\.)*"')
+_BOX_POINTER = re.compile(
+    r"^_([0-9]+) = copy \(+_([0-9]+)\b.*\bUnique<.*\bNonNull<.*\) as \*(?:const|mut) .*\(Transmute\);$"
+)
+# A move or drop through a pointer: `move ((*_23).1: T)`, `drop(((*_23).1: T))`.
+_THROUGH = re.compile(r"(?:\bmove\s+|^drop\()\(*\*_([0-9]+)\b")
 _WRITABLE_BORROW = re.compile(r"&(?:mut |raw const |raw mut )\(*_([0-9]+)\b")
 _DIRECT_BORROW = re.compile(r"&(?:mut |raw const |raw mut |fake \w+ )?\(*_([0-9]+)\b")
 _ANY_LOCAL = re.compile(r"\b_([0-9]+)\b")
@@ -145,6 +150,7 @@ class Body:
     _direct: set | None = None
     _writable: set | None = None
     _preds: dict | None = None
+    _box_temps: dict | None = None
 
     @property
     def name(self):
@@ -539,7 +545,7 @@ class Body:
             if state is None or not state & bit:
                 return False
             block = self.blocks[number]
-            if any(local in _kills(text) for text, _, _ in block.statements):
+            if any(local in self._kills(text) for text, _, _ in block.statements):
                 return False
         return True
 
@@ -611,7 +617,9 @@ class Body:
                     continue
                 # The IR has code of this line here, yet no statement can have made it:
                 # not understood, so the whole block must keep the local.
-                if not state & bit or any(local in _kills(text) for text, _, _ in block.statements):
+                if not state & bit or any(
+                    local in self._kills(text) for text, _, _ in block.statements
+                ):
                     return False
                 continue
             if starts_here and not state & bit:
@@ -619,7 +627,7 @@ class Body:
             for index, (text, _, _) in enumerate(block.statements):
                 if index in positions and not state & bit:
                     return False
-                state = _transfer(text, state)
+                state = self._transfer(text, state)
             # A stop at a call's or drop's return address (`step --out`) is still on
             # this line, after the terminator's moves and drops.
             last = len(block.statements) - 1
@@ -627,6 +635,60 @@ class Body:
                 if not state & bit:
                     return False
         return True
+
+    def _boxes(self):
+        """{temp: Box local}: the raw pointers built from a Box's own pointer
+        (`_23 = copy ((_1.0: Unique<T>).0: NonNull<T>) as *const T (Transmute)`), which
+        the built MIR derefs in place of the Box."""
+        if self._box_temps is None:
+            self._box_temps = {
+                int(found[1]): int(found[2])
+                for block in self.blocks.values()
+                for text, _, _ in block.statements
+                if (found := _BOX_POINTER.match(text))
+            }
+        return self._box_temps
+
+    def _kills(self, text):
+        """Locals ``text`` moves out of, drops or ends; moving or dropping through a
+        Box's pointer (`move ((*_23).1: Box<Pt>)`) leaves the Box partly moved."""
+        killed = _kills(text)
+        if boxes := self._boxes():
+            killed |= {boxes[int(n)] for n in _THROUGH.findall(text) if int(n) in boxes}
+        return killed
+
+    def _transfer(self, text, state):
+        state &= ~_mask(self._kills(text))
+        if assigned := _ASSIGN.match(text):
+            state |= 1 << int(assigned[1])
+        return state
+
+    def dropped_through(self, local, start):
+        """True if some path into ``start`` (block, index) drops what ``local`` points at
+        (`drop((*_1))`, the first half of `*v = new`) with no write through it since:
+        its target is a dropped value there."""
+        dropped = re.compile(rf"^drop\(\(*\*_{local}\)")
+        written = re.compile(rf"^\(+\*_{local}\)[^=]*= |^_{local} = ")
+        predecessors = self.predecessors()
+        pending, seen = [start], set()
+        while pending:
+            number, index = pending.pop()
+            if (number, index) in seen or number not in self.blocks:
+                continue
+            seen.add((number, index))
+            ended = False
+            for text, _, _ in reversed(self.blocks[number].statements[:index]):
+                if dropped.match(text):
+                    return True
+                if written.match(text):
+                    ended = True
+                    break
+            if not ended:
+                pending.extend(
+                    (other, len(self.blocks[other].statements))
+                    for other in predecessors.get(number, ())
+                )
+        return False
 
     def _dataflow(self):
         """{block: initialized-locals bitset on entry} for blocks reachable from bb0, by
@@ -657,10 +719,10 @@ class Body:
             block = self.blocks[number]
             state = entry[number]
             for text, _, _ in block.statements[:-1]:
-                state = _transfer(text, state)
+                state = self._transfer(text, state)
             # The terminator moves and drops on every edge; a call sets its result only
             # on its return edge.
-            state &= ~_mask(_kills(block.terminator))
+            state &= ~_mask(self._kills(block.terminator))
             for target in block.successors:
                 out = state
                 if target == block.returns:
@@ -1387,10 +1449,19 @@ class OwnedLocals:
         if not sources or sources == [function.file]:
             return None
         name = str(variable_name).partition(" @ ")[0]
-        kinds = [
-            body.types.get(b[0]) if b[0] is not None else b[3] for b in body.bindings.get(name, ())
-        ]
-        if any(k and _BORROWING.search(k) and not _FN_POINTER.match(k) for k in kinds):
+        for local, _, _, projected, _ in body.bindings.get(name, ()):
+            kind = body.types.get(local) if local is not None else projected
+            if not kind or not _BORROWING.search(kind) or _FN_POINTER.match(kind):
+                continue
+            # A reference parameter never reassigned or written through: the caller's.
+            if (
+                local in body.arguments
+                and kind.startswith("&")
+                and not _RAW_POINTER.search(kind)
+                and local not in body._assignments()
+                and local not in body._written_through()
+            ):
+                continue
             return False
         return None
 
@@ -1416,13 +1487,10 @@ class OwnedLocals:
         argument = (
             free and local in body.arguments and not assigned and not _RAW_POINTER.search(kind)
         )
-        if argument and kind.startswith("&"):
-            return True
-        if free and assigned and all(value.startswith("const ") for value in assigned):
-            return True
         file = function.file
-        if self.precise:
-            foreign = may_invoke_macro(self.texts.get(file), line)
+        text = self.texts.get(file)
+        if self.precise or not may_invoke_macro(text, line):
+            foreign = may_invoke_macro(text, line)
             positions = body.stop_positions(blocks, line, file, foreign, facts, site[3])
         else:
             # `#[collapse_debuginfo]` puts a local macro's code on the line invoking it,
@@ -1430,6 +1498,13 @@ class OwnedLocals:
             positions = body.anywhere(blocks)
         if not positions:
             return None
+        # Between `drop((*v))` and the store of `*v = new`, it points at a dropped value.
+        if any(body.dropped_through(local, position) for position in positions):
+            return False
+        if argument and kind.startswith("&"):
+            return True
+        if free and assigned and all(value.startswith("const ") for value in assigned):
+            return True
         # Not yet assigned (its declaration line), it holds whatever its slot last held.
         if not self._initialized(site, local, line):
             return False

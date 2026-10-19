@@ -1893,7 +1893,8 @@ MACRO_FILE = """macro_rules! eat {
 }
 """
 
-PARAMETER_REFS = """#[macro_use]
+PARAMETER_REFS = """// Mentions collapse_debuginfo, but has no such attribute.
+#[macro_use]
 mod macros;
 
 #[derive(Debug, Clone, Copy)]
@@ -1948,12 +1949,30 @@ fn view(v: View<'_>, pair: (&Pt, i64)) -> i64 {
     z + k // M4_VIEW
 }
 
+fn with_param(p: &Pt, b: Box<Pt>) -> i64 {
+    let t = eat!(b);
+    t + p.x
+}
+
+fn score(p: &Pt) -> i64 {
+    p.x * 2
+}
+
+fn scored(items: &[Pt]) -> i64 {
+    let mut total = 0;
+    for item in items {
+        total += score(item); // M4_SCORED
+    }
+    total
+}
+
 fn main() {
     let mut c = Counter { count: 1 };
     let mut p = Pt { x: 5, y: 6 };
     let q = Pt { x: 7, y: 8 };
     println!("{} {} {}", c.tick(2), bump(&mut p, 3), view(View { p: &q }, (&q, 1)));
     println!("{}", other_file());
+    println!("{} {}", with_param(&q, Box::new(Pt { x: 5, y: 6 })), scored(&[q]));
 }
 """
 
@@ -1976,12 +1995,104 @@ def test_references_in_collapsed_and_other_file_macros_and_parameters(plain, cap
     at = f"src/macros.rs:{line_of(MACRO_FILE, '// M4_IN_MACRO')}"
     code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "r", "--quiet")
     assert result["rows"][0].get("view") == "unproven", result["rows"]
+    # Round 5: a reference parameter the frame never reassigns is the caller's there too.
+    code, result = run(
+        capsys, "probe", str(plain), "--at", at, "--capture", "p.x", "--hits", "2", "--quiet"
+    )
+    assert "7" in [row.get("value") for row in result["rows"]], result["rows"]
     for marker, capture, value in (
         ("M4_TICK", "self.count", "3"),
         ("M4_BUMP", "p.x", "8"),
         ("M4_VIEW", "v.p.x", "7"),
         ("M4_VIEW", "pair.__0.y", "8"),
+        # A comment naming the attribute is not the attribute (round 5).
+        ("M4_SCORED", "item.x", "7"),
     ):
         at = f"src/main.rs:{line_of(PARAMETER_REFS, '// ' + marker)}"
         code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", capture, "--quiet")
         assert result["rows"][0].get("value") == value, (marker, result["rows"])
+
+
+DROPPED_INSIDE = """#[derive(Debug, Clone, Copy)]
+pub struct Pt {
+    x: i64,
+    y: i64,
+}
+
+#[derive(Debug)]
+pub struct Res {
+    x: i64,
+}
+
+impl Drop for Res {
+    fn drop(&mut self) {
+        churn(); // M5_IN_DROP
+    }
+}
+
+#[inline(never)]
+fn churn() -> i64 {
+    Box::leak(Box::new(Pt { x: 777, y: 888 })).x + Box::leak(Box::new([777i64; 4]))[0]
+}
+
+#[inline(never)]
+fn consume(b: Box<Pt>) -> i64 {
+    b.y
+}
+
+struct Node {
+    tag: i64,
+    data: Box<Pt>,
+}
+
+fn moved_out() -> i64 {
+    let bx = Box::new(Node { tag: 1, data: Box::new(Pt { x: 5, y: 6 }) });
+    let d = bx.data;
+    let n = consume(d);
+    let z = churn() + n;
+    z + bx.tag // M5_MOVED_OUT
+}
+
+fn replace_vec(v: &mut Vec<Res>, n: i64) -> i64 {
+    let k = v[0].x;
+    *v = vec![Res { x: n }]; // M5_REPLACE
+    k + v[0].x
+}
+
+fn main() {
+    let mut v = vec![Res { x: 5 }, Res { x: 7 }];
+    println!("{}", replace_vec(&mut v, 9));
+    println!("{}", moved_out());
+    std::mem::forget(v);
+}
+"""
+
+
+@pytest.mark.timeout(600)
+def test_references_into_moved_box_contents_and_mid_replacement_values(plain, capsys):
+    # Verification of #110 (round 5): the built MIR moves out of a Box's contents through
+    # a raw pointer made from it, so the Box looked initialized after `let d = bx.data;`;
+    # and between `drop((*v))` and the store of `*v = new`, `v` points at a dropped value.
+    (plain / "src/main.rs").write_text(DROPPED_INSIDE)
+    at = f"src/main.rs:{line_of(DROPPED_INSIDE, '// M5_MOVED_OUT')}"
+    code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "bx", "--quiet")
+    assert result["rows"][0].get("view") == "unproven", result["rows"]
+    replace = line_of(DROPPED_INSIDE, "// M5_REPLACE")
+    at = f"src/main.rs:{line_of(DROPPED_INSIDE, '// M5_IN_DROP')}"
+    assert main(["session", "start", str(plain), "--at", at]) == 0
+    capsys.readouterr()
+    try:
+        state = {}
+        for _ in range(8):
+            main(["session", "step", "--out", "--json"])
+            state = json.loads(capsys.readouterr().out)
+            if str(state.get("location")).endswith(f"main.rs:{replace}"):
+                break
+        assert str(state.get("location")).endswith(f"main.rs:{replace}"), state
+        assert main(["session", "inspect", "--json"]) == 0
+        snapshot = json.loads(capsys.readouterr().out)
+    finally:
+        main(["session", "close"])
+        capsys.readouterr()
+    variables = {v["name"]: v for scope in snapshot["scopes"] for v in scope["variables"]}
+    assert variables["v"].get("view") == "unproven", variables["v"]
