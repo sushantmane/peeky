@@ -376,9 +376,57 @@ def _qualified(dies, offset, depth=0):
     return "::".join(reversed(parts))
 
 
-_ANONYMOUS = re.compile(
-    r"(?:(?:const|volatile) +)*(?:structure|union|class|enumeration) *(?:(?:const|volatile)? *[*&] *)*"
-)
+# Types that wrap another (`T *`, `const T`, `T[3]`): an unnamed struct, union, class
+# or enum inside one is still unnamed.
+_TYPE_WRAPPERS = {
+    "DW_TAG_pointer_type",
+    "DW_TAG_const_type",
+    "DW_TAG_volatile_type",
+    "DW_TAG_restrict_type",
+    "DW_TAG_atomic_type",
+    "DW_TAG_reference_type",
+    "DW_TAG_rvalue_reference_type",
+    "DW_TAG_array_type",
+}
+_RECORDS = {
+    "DW_TAG_structure_type",
+    "DW_TAG_union_type",
+    "DW_TAG_class_type",
+    "DW_TAG_enumeration_type",
+}
+
+
+def _type_name(dies, value, depth=0):
+    """The name dwarfdump gives a DW_AT_type reference (`long long`, `Stats *`), or None
+    for one no program could write: dwarfdump names an unnamed struct, union, class (a
+    lambda) or enum by its tag word (`structure `, `const class  &`, `structure [3]`).
+    It prints a restrict pointer as `restrict ` alone, so that is named from its
+    pointee (`const float *restrict`)."""
+    reference = _REFERENCE.fullmatch(value or "")
+    name = _text(f'"{reference[2]}"') if reference and reference[2] else None
+    if name is None or depth > 16:
+        return None
+    offset = int(reference[1], 16)
+    if offset not in dies:
+        return None if re.search(r"\brestrict\b", name) else name
+    if dies[offset]["tag"] == "DW_TAG_restrict_type":
+        pointee = _type_name(dies, dies[offset]["attrs"].get("DW_AT_type"), depth + 1)
+        return f"{pointee}{'' if pointee.endswith('*') else ' '}restrict" if pointee else None
+    for _ in range(16):
+        die = dies.get(offset)
+        if die is None or die["tag"] not in _TYPE_WRAPPERS:
+            break
+        inner = _REFERENCE.fullmatch(die["attrs"].get("DW_AT_type") or "")
+        if inner is None:
+            break
+        if die["tag"] == "DW_TAG_restrict_type":
+            # A qualifier on a restrict pointer: dwarfdump has dropped its pointee.
+            return None
+        offset = int(inner[1], 16)
+    die = dies.get(offset)
+    if die is not None and die["tag"] in _RECORDS and "DW_AT_name" not in die["attrs"]:
+        return None
+    return name
 
 
 def _locals(dies, offset):
@@ -394,12 +442,7 @@ def _locals(dies, offset):
             name = _text(_first(dies, chain, "DW_AT_name"))
             # `$`-prefixed names are debugger-synthesized storage, not program locals.
             if name and not name.startswith("$"):
-                reference = _REFERENCE.fullmatch(_first(dies, chain, "DW_AT_type") or "")
-                kind = _text(f'"{reference[2]}"') if reference and reference[2] else None
-                if kind and _ANONYMOUS.fullmatch(kind):
-                    # dwarfdump names an unnamed struct, union, class (a lambda) or enum
-                    # by its tag alone (`structure `): no type a program could write.
-                    kind = None
+                kind = _type_name(dies, _first(dies, chain, "DW_AT_type"))
                 names.setdefault(name, set()).update({kind} if kind else set())
         elif die["tag"] == "DW_TAG_lexical_block":
             pending.extend(die["children"])

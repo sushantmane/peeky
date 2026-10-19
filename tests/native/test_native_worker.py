@@ -3,6 +3,7 @@
 import hashlib
 import json
 import os
+import re
 import shutil
 import sys
 import threading
@@ -724,11 +725,29 @@ def test_describe_leaves_out_types_a_program_cannot_write(tmp_path, native_confi
 
     (tmp_path / "anon.c").write_text(
         "#include <stdio.h>\n"
+        "struct structure { int s; };\n"
+        "enum enumeration { ONE };\n"
+        "typedef struct { int c; } class_t;\n"
+        "static float dot(const float *restrict a, int *restrict b, int n) {\n"
+        "    float s = 0;\n"
+        "    for (int i = 0; i < n; i++) s += a[i] * b[i];\n"
+        "    return s;\n"
+        "}\n"
         "int main(void) {\n"
         "    struct { int x; } inl = {1};\n"
         "    union { int a; float b; } un = {2};\n"
         "    struct { int y; } *ptr = 0;\n"
-        "    int plain = inl.x + un.a + (ptr != 0);\n"
+        "    struct { int z; } arr[3] = {{0}};\n"
+        "    struct { int w; } *const cptr = 0;\n"
+        "    struct { int v; } *volatile vptr = 0;\n"
+        "    const struct { int u; } cst = {3};\n"
+        "    struct structure named = {4}, *named_ptr = &named;\n"
+        "    enum enumeration en = ONE;\n"
+        "    class_t ct = {5};\n"
+        "    float xs[2] = {1, 2};\n"
+        "    int ys[2] = {3, 4};\n"
+        "    int plain = inl.x + un.a + (ptr != 0) + arr[0].z + (cptr != 0) + (vptr != 0) + cst.u\n"
+        "        + named_ptr->s + en + ct.c + (int)dot(xs, ys, 2);\n"
         '    printf("%d\\n", plain);\n'
         "    return 0;\n"
         "}\n"
@@ -742,18 +761,31 @@ def test_describe_leaves_out_types_a_program_cannot_write(tmp_path, native_confi
         "    return 0;\n"
         "}\n"
     )
-    for name, typed, untyped in (
-        ("anon.c", {"plain": "int"}, ("inl", "un", "ptr")),
-        ("lam.cpp", {"base": "int"}, ("add",)),
+    named = {
+        "plain": "int",
+        "named": "structure",
+        "named_ptr": "structure *",
+        "en": "enumeration",
+        "ct": "class_t",
+        "xs": "float[2]",
+        "ys": "int[2]",
+    }
+    unnamed = ("inl", "un", "ptr", "arr", "cptr", "vptr", "cst")
+    for name, function, typed, untyped in (
+        ("anon.c", "main", named, unnamed),
+        # dwarfdump prints a restrict pointer as `restrict ` alone.
+        ("anon.c", "dot", {"a": "const float *restrict", "b": "int *restrict", "n": "int"}, ()),
+        ("lam.cpp", "main", {"base": "int"}, ("add",)),
     ):
         assert main(["describe", str(tmp_path / name), "--json"]) == 0
         scopes = json.loads(capsys.readouterr().out)["scopes"]
-        scope = next(s for s in scopes if s["scope"] == "main")
+        scope = next(s for s in scopes if s["scope"] == function)
         assert set(untyped) <= set(scope["names"])
-        assert scope.get("types", {}) == typed, scope
+        assert {k: v for k, v in scope.get("types", {}).items() if k in typed or k in untyped} == (
+            typed
+        ), scope
+        # dwarfdump's forms for unnamed types, in any scope (the lambda's own `this`).
+        unwritable = re.compile(r"  |restrict $|(?:structure|union|class|enumeration) (?:$|\[)")
         assert not any(
-            word in kind
-            for s in scopes
-            for kind in s.get("types", {}).values()
-            for word in ("structure", "union ", "class ")
+            unwritable.search(kind) for s in scopes for kind in s.get("types", {}).values()
         ), scopes
