@@ -48,6 +48,7 @@ from peeky.rust_manifest import assert_cargo_ancestry_clear, validate_cargo_inpu
 from peeky.rust_mir import OwnedLocals, ir_functions, load_bodies
 from peeky.rust_symbols import (
     OWNED_CONTAINERS,
+    RUST_SCALARS,
     UNVERIFIED,
     active_variant,
     application_symbols,
@@ -871,6 +872,17 @@ class RustSession(NativeSession):
             # not trustworthy there.
             return {**view, "value": UNVERIFIED, "rust_view": "opaque"}
         return view
+
+    def display_type(self, variable, frame):
+        """A root local's Rust primitive type (`usize`, `f64`) from the build's MIR, when
+        LLDB's C-style name (`unsigned long`, `double`) is one that type renders as."""
+        hashed, proofs = _frame_hash(frame), getattr(self, "owned", None)
+        if not hashed or proofs is None:
+            return None
+        declared = proofs.declared_type(hashed[1], variable.get("name"))
+        if variable.get("type") in RUST_SCALARS.get(declared, ()):
+            return declared
+        return None
 
     def display_value(self, variable):
         """A scalar `f64`/`f32` as Rust's `{:?}` shows it (`10.0`, not LLDB's `10`)."""

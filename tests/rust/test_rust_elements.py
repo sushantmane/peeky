@@ -91,6 +91,11 @@ fn main() {
     let f_l: f32 = f32::NAN;
     let f_m: f32 = -3.0;
     let pt = Pt { x: 2.5e-5, y: 3.0 };
+    let t_usize: usize = 3;
+    let t_u64: u64 = 4;
+    let t_i8: i8 = -1;
+    let t_char: char = 'x';
+    let t_bool: bool = true;
     println!("v_u8={:?}", v_u8); // OBSERVE
     println!("v_i8={:?}", v_i8);
     println!("v_u16={:?}", v_u16);
@@ -122,6 +127,7 @@ fn main() {
     println!("f_m={:?}", f_m);
     println!("pt.x={:?}", pt.x);
     println!("pt.y={:?}", pt.y);
+    println!("{t_usize} {t_u64} {t_i8} {t_char} {t_bool}");
 }
 """
 
@@ -183,7 +189,24 @@ def test_float_scalars_and_fields_show_as_the_program_prints_them(crate, capsys)
     assert {name: rows[name]["value"] for name in SCALARS} == {
         name: expected[name] for name in SCALARS
     }
-    assert rows["f_a"]["type"] == "double" and rows["pt.y"]["type"] == "float"
+    # A root local by its Rust type (from the build's MIR); a field keeps LLDB's name.
+    assert (rows["f_a"]["type"], rows["f_a"]["debugger_type"]) == ("f64", "double")
+    assert rows["pt.y"]["type"] == "float" and "debugger_type" not in rows["pt.y"]
+
+
+@pytest.mark.timeout(300)
+def test_scalar_locals_show_their_rust_types(crate, capsys):
+    # #79: LLDB names usize and u64 both `unsigned long`; the MIR tells them apart.
+    rows, _ = probe(capsys, crate, "OBSERVE", ("t_usize", "t_u64", "t_i8", "t_char", "t_bool", "n"))
+    assert {name: rows[name]["type"] for name in rows} == {
+        "t_usize": "usize",
+        "t_u64": "u64",
+        "t_i8": "i8",
+        "t_char": "char",
+        "t_bool": "bool",
+        "n": "usize",
+    }
+    assert rows["t_u64"]["debugger_type"] == rows["t_usize"]["debugger_type"] == "unsigned long"
 
 
 @pytest.mark.timeout(300)

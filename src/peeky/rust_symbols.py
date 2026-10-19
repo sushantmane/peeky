@@ -359,6 +359,16 @@ ELEMENT_TYPES = {
 }
 
 
+# Each Rust primitive and the C-style names LLDB gives it (TypeSystemClang reads Rust's
+# DWARF base types by encoding and size), for showing a local by its Rust type.
+RUST_SCALARS = {
+    **{name: names for name, (_, _, names) in ELEMENT_TYPES.items()},
+    "char": ("char32_t",),
+    "i128": ("__int128",),
+    "u128": ("unsigned __int128",),
+}
+
+
 def _vec_name(element):
     return f"alloc::vec::Vec<{element}, alloc::alloc::Global>"
 

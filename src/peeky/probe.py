@@ -770,6 +770,8 @@ def _capture(worker, stop, selectors, hit, phase, snapshot=None, children=False)
                     row["note"] = _OWNED_RUST
             if "view" in variable:
                 row["view"] = variable["view"]
+            if variable.get("debugger_type"):
+                row["debugger_type"] = variable["debugger_type"]
             if children and variable.get("variablesReference"):
                 try:
                     try:
