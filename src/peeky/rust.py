@@ -49,10 +49,12 @@ from peeky.rust_mir import OwnedLocals, ir_functions, load_bodies
 from peeky.rust_symbols import (
     OWNED_CONTAINERS,
     RUST_SCALARS,
+    UNIQUE_SCALARS,
     UNVERIFIED,
     active_variant,
     application_symbols,
     container_view,
+    lldb_byte,
     lldb_float_debug,
 )
 
@@ -873,20 +875,23 @@ class RustSession(NativeSession):
             return {**view, "value": UNVERIFIED, "rust_view": "opaque"}
         return view
 
-    def display_type(self, variable, frame):
-        """A root local's Rust primitive type (`usize`, `f64`) from the build's MIR, when
-        LLDB's C-style name (`unsigned long`, `double`) is one that type renders as."""
+    def display_type(self, variable, frame, top=True):
+        """A value's Rust primitive type where LLDB shows a C-style name: a root local's
+        from the build's MIR (`usize`, not `unsigned long`), any other's when only one
+        primitive renders as that name (`double` is `f64`)."""
+        kind = variable.get("type")
         hashed, proofs = _frame_hash(frame), getattr(self, "owned", None)
-        if not hashed or proofs is None:
-            return None
-        declared = proofs.declared_type(hashed[1], variable.get("name"))
-        if variable.get("type") in RUST_SCALARS.get(declared, ()):
-            return declared
-        return None
+        if top and hashed and proofs is not None:
+            declared = proofs.declared_type(hashed[1], variable.get("name"))
+            if kind in RUST_SCALARS.get(declared, ()):
+                return declared
+        return UNIQUE_SCALARS.get(kind)
 
     def display_value(self, variable):
-        """A scalar `f64`/`f32` as Rust's `{:?}` shows it (`10.0`, not LLDB's `10`)."""
-        return lldb_float_debug(variable.get("value"), variable.get("type"))
+        """A scalar as Rust's `{:?}` shows it: `f64`/`f32` (`10.0`, not LLDB's `10`), and
+        `u8`/`i8` as integers (`65`, not LLDB's `'A'`)."""
+        value, kind = variable.get("value"), variable.get("type")
+        return lldb_float_debug(value, kind) or lldb_byte(value, kind)
 
     def validate_children(self, variables):
         # `$` cannot start a Rust identifier; such fields are debugger-synthesized storage.

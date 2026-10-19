@@ -219,3 +219,25 @@ def test_lldb_float_text_keeps_sign_and_specials():
     assert lldb_float_debug("-Inf", "float") == "-inf"
     assert lldb_float_debug("9.9999999999999995E-8", "double") == "1e-7"
     assert lldb_float_debug("0.100000001", "float") == "0.1"
+
+
+def _lldb_char(byte):
+    """LLDB's rendering of a char scalar (observed on Apple LLDB and LLVM 18/20)."""
+    named = {0: "\\0", 7: "\\a", 8: "\\b", 9: "\\t", 10: "\\n", 11: "\\v", 12: "\\f", 13: "\\r"}
+    named[27] = "\\e"
+    if byte in named:
+        return f"'{named[byte]}'"
+    if 0x20 <= byte <= 0x7E:
+        return f"'{chr(byte)}'"
+    return f"'\\x{byte:02x}'"
+
+
+def test_lldb_byte_literals_show_as_rust_integers():
+    from peeky.rust_symbols import lldb_byte
+
+    for byte in range(256):
+        assert lldb_byte(_lldb_char(byte), "unsigned char") == str(byte)
+        assert lldb_byte(_lldb_char(byte), "char") == str(byte if byte < 128 else byte - 256)
+    for text, kind in [("'AB'", "char"), ("65", "char"), ("'A'", "int"), ("'\\x100'", "char")]:
+        assert lldb_byte(text, kind) is None
+    assert lldb_byte("'\\x1B'", "signed char") == "27" and lldb_byte("'\\033'", "char") == "27"

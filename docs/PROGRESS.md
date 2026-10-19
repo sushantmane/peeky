@@ -102,7 +102,11 @@ An hourly thread heartbeat (`continue-peeky-mvp`) checks for available usage and
     - Values are kept only if the build that ran hashes to the edited text, locally and over `--worker`.
     - A build that fails is now `BUILD_FAILED` with the compiler's output, for every probe and session.
     - Evidence schema 3: `runs.edit` holds the diff; the views have `candidate`; `queries runs` marks candidate runs, `values` leaves them out, and `diff` adds an `(edit)` row. Older stores upgrade in place.
-- **Rust scalar locals by their Rust types** (#79): `usize`, `u64`, `f64` and `char` come from the build's MIR, where LLDB says `unsigned long`, `double` or `char32_t`; LLDB's name is kept as `debugger_type`.
+- **Rust scalars by their Rust types** (#79).
+  - Locals and parameters take theirs from the build's MIR: `usize`, `u64`, `f64` and `char`, where LLDB says `unsigned long`, `double` or `char32_t`.
+  - Fields take the one primitive LLDB's name can be.
+  - `u8`/`i8` values print as integers, not C character literals.
+  - LLDB's name is kept as `debugger_type`.
 - **Several edits per candidate** (#76): `verify` and candidate probes take repeated `--old`/`--new` (or `-file`) pairs, each quoting the original file, up to 32 and never overlapping. They are built as one edit with their combined effect, so workers, hashes and diffs are unchanged; a candidate probe maps `--at` through every edit. The HTTP probe's `edit` takes a list.
 - **Exact integers in the evidence store** (#75): schema 4 makes `captures.num` NUMERIC, so `600` stays `600` and 64-bit integers are exact. The table is rebuilt in capture order, and older stores are upgraded in place.
 - **C/C++ locals declared below the stop are withheld** (#74).

@@ -52,6 +52,11 @@ struct Pt {
     y: f32,
 }
 
+fn scaled(count: usize, scale: f64, level: i8, letter: u8) -> f64 {
+    let local: u64 = count as u64;
+    (local as f64) * scale + (level as f64) - (level as f64) + (letter as f64) * 0.0 // SCALED
+}
+
 fn params(a: &[f32], b: &Vec<u16>, c: &mut [i8], d: &[bool], e: &mut Vec<u64>) -> usize {
     c[0] = -128;
     e.push(1);
@@ -128,6 +133,7 @@ fn main() {
     println!("pt.x={:?}", pt.x);
     println!("pt.y={:?}", pt.y);
     println!("{t_usize} {t_u64} {t_i8} {t_char} {t_bool}");
+    println!("scaled={:?}", scaled(2, 1.5, -3, b'A'));
 }
 """
 
@@ -189,9 +195,10 @@ def test_float_scalars_and_fields_show_as_the_program_prints_them(crate, capsys)
     assert {name: rows[name]["value"] for name in SCALARS} == {
         name: expected[name] for name in SCALARS
     }
-    # A root local by its Rust type (from the build's MIR); a field keeps LLDB's name.
+    # Rust types where LLDB has C names: from the build's MIR for a local, and for a
+    # field from the one primitive LLDB's name can be.
     assert (rows["f_a"]["type"], rows["f_a"]["debugger_type"]) == ("f64", "double")
-    assert rows["pt.y"]["type"] == "float" and "debugger_type" not in rows["pt.y"]
+    assert (rows["pt.y"]["type"], rows["pt.y"]["debugger_type"]) == ("f32", "float")
 
 
 @pytest.mark.timeout(300)
@@ -207,6 +214,23 @@ def test_scalar_locals_show_their_rust_types(crate, capsys):
         "n": "usize",
     }
     assert rows["t_u64"]["debugger_type"] == rows["t_usize"]["debugger_type"] == "unsigned long"
+    # Review of #84: LLDB shows u8/i8 as C character literals ('\xff').
+    assert rows["t_i8"]["value"] == "-1"
+
+
+@pytest.mark.timeout(300)
+def test_scalar_parameters_show_their_rust_types_and_bytes_their_values(crate, capsys):
+    # Review of #84: MIR types arguments only in the function's header.
+    rows, output = probe(capsys, crate, "SCALED", ("count", "scale", "level", "letter", "local"))
+    shown = {name: (rows[name]["type"], rows[name]["value"]) for name in rows}
+    assert shown == {
+        "count": ("usize", "2"),
+        "scale": ("f64", "1.5"),
+        "level": ("i8", "-3"),
+        "letter": ("u8", "65"),
+        "local": ("u64", "2"),
+    }, shown
+    assert "scaled=3.0" in output
 
 
 @pytest.mark.timeout(300)

@@ -369,6 +369,42 @@ RUST_SCALARS = {
 }
 
 
+# LLDB names only one Rust primitive renders as: a struct field or parameter of these
+# types is that primitive. `long` and `unsigned long` are i64/isize and u64/usize.
+UNIQUE_SCALARS = {
+    lldb: rust
+    for rust, names in RUST_SCALARS.items()
+    for lldb in names
+    if sum(lldb in others for others in RUST_SCALARS.values()) == 1
+}
+_BYTE_TYPES = {"unsigned char": "u8", "char": "i8", "signed char": "i8"}
+_BYTE_ESCAPES = {"0": 0, "a": 7, "b": 8, "t": 9, "n": 10, "v": 11, "f": 12, "r": 13, "e": 27}
+
+
+def lldb_byte(text, kind):
+    """LLDB's C character literal for a Rust u8 (`unsigned char`) or i8 (`char`) as Rust
+    prints the integer (`'A'` -> `65`, `'\\xfd'` -> `253` or `-3`), else None."""
+    rust = _BYTE_TYPES.get(kind)
+    if rust is None or not isinstance(text, str) or len(text) < 3:
+        return None
+    if text[0] != "'" or text[-1] != "'":
+        return None
+    body = text[1:-1]
+    if len(body) == 1 and " " <= body <= "~":
+        value = ord(body)
+    elif match := re.fullmatch(r"\\x([0-9a-fA-F]{1,2})", body):
+        value = int(match[1], 16)
+    elif match := re.fullmatch(r"\\([0-7]{1,3})", body):
+        value = int(match[1], 8)
+    elif len(body) == 2 and body[0] == "\\" and body[1] in _BYTE_ESCAPES:
+        value = _BYTE_ESCAPES[body[1]]
+    else:
+        return None
+    if value > 255:
+        return None
+    return str(value if rust == "u8" or value < 128 else value - 256)
+
+
 def _vec_name(element):
     return f"alloc::vec::Vec<{element}, alloc::alloc::Global>"
 

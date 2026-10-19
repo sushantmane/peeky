@@ -300,6 +300,22 @@ def _transfer(text, state):
     return state
 
 
+def _top_level(text):
+    """``text`` split at the commas outside brackets (`_1: HashMap<K, V>, _2: u8`)."""
+    parts, depth, start = [], 0, 0
+    for index, char in enumerate(text):
+        if char in "<([{":
+            depth += 1
+        elif char in ")]}" or char == ">" and text[index - 1 : index] != "-":
+            # `->` in a function type closes nothing.
+            depth -= 1
+        if char == "," and depth == 0:
+            parts.append(text[start:index].strip())
+            start = index + 1
+    parts.append(text[start:].strip())
+    return [part for part in parts if part]
+
+
 def parse_body(text):
     """One `-Zdump-mir` body, or None when the file holds no function body."""
     lines = text.splitlines()
@@ -308,6 +324,10 @@ def parse_body(text):
         return None
     arguments = frozenset(int(n) for n in _ARGUMENT.findall(header[2]))
     body = Body(header[1], arguments, None, {}, {})
+    # Arguments are typed in the header only (`fn f(_1: &[u8], _2: usize)`).
+    for argument in _top_level(header[2]):
+        if found := re.fullmatch(r"_([0-9]+): (.+)", argument):
+            body.types[int(found[1])] = found[2]
     block, spans = None, []
     for line in lines[start + 1 :]:
         if line == "}":
