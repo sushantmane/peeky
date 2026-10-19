@@ -735,9 +735,16 @@ def _frame_hash(frame):
     return re.search(r"::(h[0-9a-f]{16})$", str((frame or {}).get("name") or ""))
 
 
-# A top-level pointer declarator in LLDB's C-style type: `Pt *`, `unsigned char (*)[8]`,
-# `long (**)()`; not `alloc::vec::Vec<Pt *>` or an array of pointers `long (*[2])(long)`.
-_POINTER = re.compile(r"\*\s*$|\(\*+\)\s*(?:(?:\[[0-9]*\])+|\(.*\))\s*$")
+def _is_pointer(kind):
+    """Whether LLDB's C-style type is a pointer at its top level: `Pt *`, `unsigned char
+    (*)[8]`, `long (**)()`, `unsigned char (*(*)[2])[2]`; not a generic's argument
+    (`Vec<Pt *>`) or an array of pointers (`long (*[2])(long)`, `unsigned char *[2]`)."""
+    text = str(kind or "")
+    while (stripped := re.sub(r"<[^<>]*>", "", text)) != text:
+        text = stripped
+    return bool(re.search(r"\*\s*$|\(\*+\)", text))
+
+
 # MIR types that do not own what they point at.
 _NON_OWNING = re.compile(r"&|\*const |\*mut |(?:unsafe )?(?:extern \S+ )?fn\(")
 
@@ -916,16 +923,16 @@ class RustSession(NativeSession):
                     ),
                 )
             )
+            plain = bool(types) and all(_NON_OWNING.match(t or "") for t in types)
             # LLDB names a wide Box (`Box<str>`, `Box<[T]>`, `Box<dyn Trait>`) itself, even
-            # where the MIR says only `T`.
-            owning = str(variable.get("type") or "").startswith("alloc::boxed::Box<") or any(
+            # where the MIR says only `T`; a reference to one (`&Box<str>`) is not owning.
+            owning = any(
                 re.match(r"(?:std::boxed::|alloc::boxed::)?Box<", t or "") for t in types
-            )
+            ) or (str(variable.get("type") or "").startswith("alloc::boxed::Box<") and not plain)
             # What LLDB shows as a pointer (`Pt *`, `unsigned char (*)[8]`, `long (**)()`)
             # is read through only when the MIR says every binding is a reference, a raw
             # pointer or a fn pointer: a generic `T`, `Self` or `impl Trait` may be a Box.
-            pointer = bool(_POINTER.search(str(variable.get("type") or "")))
-            plain = bool(types) and all(_NON_OWNING.match(t or "") for t in types)
+            pointer = _is_pointer(variable.get("type"))
             if (owning or (pointer and not plain)) and not (
                 innermost
                 and hashed

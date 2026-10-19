@@ -771,6 +771,21 @@ fn grid<T: Debug>(g: T) -> usize {
     reuse.len() // DROPPED_GRID
 }
 
+fn arrays<T: Debug>(a: T) -> usize {
+    drop(a);
+    let reuse = Box::new([&[81u8, 81][..], &[81u8, 81][..]]);
+    reuse.len() // DROPPED_ARRAYS
+}
+
+fn wide_ref() -> usize {
+    let label: Box<str> = Box::from("label");
+    let held = &label;
+    let f = move || {
+        held.len() + 1 // WIDE_REF
+    };
+    f()
+}
+
 fn by_ref<T: Debug>(t: T) -> T {
     println!("{:?}", t); // LIVE_GENERIC
     t
@@ -793,7 +808,8 @@ fn main() {
     let b = derefs(Box::new(Pt { x: 3, y: 4 }));
     let r = by_ref(&Pt { x: 9, y: 9 });
     let n = wide(Box::<str>::from("FREEDTXT"), Box::<str>::from("SECOND!!")) + grid(Box::new([[1u8; 4]; 2]));
-    println!("{}", n);
+    let ones: [&[u8; 2]; 2] = [&[1, 1], &[1, 1]];
+    println!("{} {} {}", n, arrays(Box::new(ones)), wide_ref());
     println!("{} {} {:?} {} {}", a, b, r, closures(&[1, 2]), exported(&Pt { x: 10, y: 1 }, &[1, 2]));
 }
 """
@@ -826,11 +842,19 @@ def test_generic_boxes_are_gated_and_non_owning_values_read(plain, capsys):
             assert field["value"] == value and "view" not in whole, (marker, result["rows"])
     # Verification of #103: a wide Box (`Box<str>`, which LLDB names itself) and a 2-D
     # array Box (`unsigned char (*)[2][4]`) held by a generic `T`.
-    for marker, capture in (("DROPPED_WIDE", "w,s"), ("DROPPED_GRID", "g")):
+    for marker, capture in (
+        ("DROPPED_WIDE", "w,s"),
+        ("DROPPED_GRID", "g"),
+        ("DROPPED_ARRAYS", "a"),
+    ):
         at = f"src/main.rs:{line_of(BOX_GENERIC, '// ' + marker)}"
         code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", capture, "--quiet")
         assert all(row.get("view") == "unproven" for row in result["rows"]), result["rows"]
         assert not any("FREEDTXT" in str(row.get("value")) for row in result["rows"])
+    # A reference to a wide Box (LLDB: `alloc::boxed::Box<str> *`) does not own it.
+    at = f"src/main.rs:{line_of(BOX_GENERIC, '// WIDE_REF')}"
+    code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "held", "--quiet")
+    assert result["rows"][0].get("view") != "unproven", result["rows"]
     at = f"src/main.rs:{line_of(BOX_GENERIC, '// CAPTURE')}"
     code, result = run(
         capsys, "probe", str(plain), "--at", at, "--capture", "refs.len,fs,p.x", "--quiet"
