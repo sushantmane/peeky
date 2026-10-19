@@ -7,6 +7,7 @@ against hostile in-memory patching. SDK/system headers are not hermetic inputs.
 
 import bisect
 import codecs
+import contextlib
 import hashlib
 import json
 import os
@@ -16,6 +17,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -217,12 +219,35 @@ _CODE = ("DW_TAG_subprogram", "DW_TAG_inlined_subroutine")
 _TOMBSTONE = 0xFFFF_FFFF_0000_0000
 
 
+# (text, its DIEs) while `_reusing_dies` holds: launch reads one dump twice.
+_PARSED = threading.local()
+
+
+@contextlib.contextmanager
+def _reusing_dies():
+    _PARSED.last = (None, None)
+    try:
+        yield
+    finally:
+        _PARSED.last = None
+
+
 def _dies(text):
     """A bounded, lenient parse of `dwarfdump --debug-info`, for display only.
 
     Returns {offset: die} with each die {tag, attrs, parent, children, depth, ranges};
     nesting is read from the indentation (one level per two spaces after the offset).
     """
+    last = getattr(_PARSED, "last", None)
+    if last is not None and last[0] is text:
+        return last[1]
+    dies = _parse_dies(text)
+    if last is not None:
+        _PARSED.last = (text, dies)
+    return dies
+
+
+def _parse_dies(text):
     dies, stack, ranges = {}, [], None
     for raw in text.splitlines():
         if ranges is not None:
@@ -350,6 +375,43 @@ def _local_scope(linkage):
     if not names or (nested and not rest.startswith("E")):
         return None
     return "::".join(names)
+
+
+def pointer_typedefs(info):
+    """{typedef name: the name of what it points at, or "" when unnamed}: typedefs and
+    C++ aliases (also through qualifiers and other typedefs) that name a pointer. lldb-dap
+    shows a variable of one by the typedef's name alone, as it shows a reference, so
+    `RowPtr rp` cannot be told from `RowRef rr` by its type (#102). A name some typedef
+    gives another type is left out."""
+    dies, found, others = _dies(info), {}, set()
+    for offset, die in dies.items():
+        if die["tag"] != "DW_TAG_typedef":
+            continue
+        names = {_text(die["attrs"].get("DW_AT_name")), _qualified(dies, offset)} - {None}
+        target, pointee = die["attrs"].get("DW_AT_type"), None
+        for _ in range(16):
+            reference = _REFERENCE.fullmatch(target or "")
+            inner = dies.get(int(reference[1], 16)) if reference else None
+            if inner is None:
+                break
+            if inner["tag"] in (
+                "DW_TAG_typedef",
+                "DW_TAG_const_type",
+                "DW_TAG_volatile_type",
+                "DW_TAG_restrict_type",
+            ):
+                target = inner["attrs"].get("DW_AT_type")
+                continue
+            if inner["tag"] == "DW_TAG_pointer_type":
+                pointee = _type_name(dies, inner["attrs"].get("DW_AT_type")) or ""
+            break
+        for name in names:
+            if pointee is None or name in others or found.get(name, pointee) != pointee:
+                others.add(name)
+                found.pop(name, None)
+            else:
+                found[name] = pointee
+    return found
 
 
 def _qualified(dies, offset, depth=0):
@@ -1217,6 +1279,7 @@ class NativeTarget:
                 prepared.workspace,
                 self.sources + self.headers,
             )
+            typedefs = {}
             try:
                 info = _metadata(
                     dwarfdump,
@@ -1226,19 +1289,21 @@ class NativeTarget:
                     max_bytes=MAX_DEBUG_INFO,
                     timeout=_remaining(deadline),
                 )
-                declarations = (
-                    None
-                    if has_nonlocal_jumps(binary)
-                    or mentions_nonlocal_jumps(
-                        prepared.workspace / name for name in self.sources + self.headers
+                with _reusing_dies():
+                    typedefs = pointer_typedefs(info)
+                    declarations = (
+                        None
+                        if has_nonlocal_jumps(binary)
+                        or mentions_nonlocal_jumps(
+                            prepared.workspace / name for name in self.sources + self.headers
+                        )
+                        # A header outside the workspace can hide the builtin in a macro;
+                        # the SDK's own setjmp.h names `setjmp`, so only the builtin counts.
+                        or mentions_nonlocal_jumps(external, (b"__builtin_setjmp",))
+                        else local_declarations(
+                            info, text, prepared.workspace, self.sources + self.headers
+                        )
                     )
-                    # A header outside the workspace can hide the builtin in a macro;
-                    # the SDK's own setjmp.h names `setjmp`, so only the builtin counts.
-                    or mentions_nonlocal_jumps(external, (b"__builtin_setjmp",))
-                    else local_declarations(
-                        info, text, prepared.workspace, self.sources + self.headers
-                    )
-                )
             except (RuntimeError, ValueError, OSError):
                 # Display aid only: without it, values show as the debugger reads them.
                 declarations = None
@@ -1252,6 +1317,7 @@ class NativeTarget:
                 symbols,
                 external,
                 declarations=declarations,
+                typedefs=typedefs,
             )
             session.assert_current()
             return session
@@ -1355,10 +1421,13 @@ class NativeSession:
         symbols,
         external=None,
         declarations=None,
+        typedefs=None,
     ):
         self.target, self.prepared = target, prepared
         # local_declarations of the build; None (unknown) never withholds a value.
         self.declarations = declarations
+        # pointer_typedefs of the build: {} (unknown) treats no typedef as a pointer.
+        self.typedefs = dict(typedefs or {})
         self.external_inputs = dict(external or {})
         self.binary, self.symbols, self.adapter = binary, symbols, adapter
         self._lines_data, self.module_identity = json.dumps(lines, sort_keys=True), identity
@@ -1441,6 +1510,11 @@ class NativeSession:
         return function_scopes(
             info, dump("--debug-line", MAX_METADATA), workspace, tuple(self.lines)
         )
+
+    def pointee_type(self, kind):
+        """What a typedef'd pointer type (`RowPtr`) points at (`int[3]`; "" unnamed), or
+        None: lldb-dap shows it by the typedef's name, as it shows a reference."""
+        return self.typedefs.get(kind) if isinstance(kind, str) else None
 
     def not_yet_declared(self, variable, frame):
         """Why a root local of ``frame`` has no value yet (declared below the stop), or

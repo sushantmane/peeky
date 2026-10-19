@@ -459,24 +459,26 @@ def _resolve(worker, stop, snapshot, segments, pointers=False):
             + _member_hint(worker, stop, snapshot, segments[0])
         )
     variable, path = matches[0], segments[0]
+    pages = {}  # {handle: its first page}, fetched once per selector
+
+    def first_page(handle):
+        if handle not in pages:
+            pages[handle] = worker.dispatch("expand", {**stop, "handle": handle, "start": 0})
+        return pages[handle]
+
     for segment in segments[1:]:
         handle = variable.get("variablesReference", 0)
-        first = None
-        if (
-            pointers
-            and handle
-            and segment.startswith("[")
-            and _key(segment) is None
-            and (pointee := _c_pointee_type(variable.get("type"))) is not None
-        ):
-            first = worker.dispatch("expand", {**stop, "handle": handle, "start": 0})
+        pointee = _c_pointee(variable) if pointers else None
+        if pointee is not None and segment.startswith("[") and _key(segment) is None:
+            first = first_page(handle) if handle else {"variables": []}
             listed = [child for child in first["variables"] if child["name"] not in _GROUPS]
-            if listed and _pointee(variable, first["variables"]) is None:
+            if _pointee(variable, first["variables"]) is None:
                 # #102: the debugger lists what a pointer to an array, a container or a
                 # struct points at as the pointer's own children. In C, p[0] is that
                 # pointee and p[1] the one after it, which no pointer's length tells.
+                _readable(variable, path, listed)
                 index = int(segment[1:-1])
-                if index == 0:
+                if index == 0 and segment[1] != "-":
                     variable = _dereferenced(variable, pointee)
                     path += segment
                     continue
@@ -509,8 +511,8 @@ def _resolve(worker, stop, snapshot, segments, pointers=False):
         found, start, incomplete, children = None, 0, False, []
         while found is None:
             page = (
-                first
-                if start == 0 and first is not None
+                first_page(handle)
+                if start == 0
                 else worker.dispatch("expand", {**stop, "handle": handle, "start": start})
             )
             children.extend(page["variables"])
@@ -1175,6 +1177,30 @@ def _c_pointee_type(kind):
     return None
 
 
+def _c_pointee(variable):
+    """What a C/C++ pointer variable points at (its type's name), or None: from its type
+    as written, or for a typedef'd pointer from the build's debug information."""
+    if (pointee := _c_pointee_type(variable.get("type"))) is not None:
+        return pointee
+    found = variable.get("pointee_type")
+    return found if isinstance(found, str) else None
+
+
+def _readable(variable, path, children):
+    """Refuse a pointer that points nowhere: NULL, or memory the debugger cannot read."""
+    address = re.match(r"0x([0-9a-fA-F]+)", str(variable.get("value") or ""))
+    if address and int(address[1], 16) == 0:
+        raise ValueError(f"{path} is NULL: it points at nothing")
+    if children and all(child.get("unavailable") for child in children):
+        reason = children[0].get("reason") or "unreadable"
+        raise ValueError(f"cannot read what {path} points at (debugger: {reason})")
+    if not address or not children:
+        if _c_pointee_type(variable.get("type")) in (None, "void") and not variable.get(
+            "pointee_type"
+        ):
+            raise ValueError(f"{path} points at nothing the debugger can show")
+
+
 def _dereferenced(variable, pointee):
     """`*p` for a C/C++ pointer whose children the debugger lists from its pointee."""
     value = str(variable.get("value") or "")
@@ -1183,8 +1209,8 @@ def _dereferenced(variable, pointee):
     summary = value[address.end() :].strip() if address else ""
     shown = {
         "name": f"*{variable['name']}",
-        "value": summary or (f"{pointee} @ {address[0]}" if address else ""),
-        "type": pointee,
+        "value": summary or (f"{pointee or 'pointee'} @ {address[0]}" if address else ""),
+        "type": pointee or None,
         "variablesReference": variable["variablesReference"],
     }
     for key in ("indexedVariables", "namedVariables"):
@@ -1196,13 +1222,17 @@ def _dereferenced(variable, pointee):
 def _beyond_pointee(variable, path, pointee, segment, children):
     elements = any(_INDEX.fullmatch(child["name"]) for child in children)
     label = f"{path} ({variable.get('type')})"
+    what = pointee or "value"
     message = (
-        f"{_shown(segment)} not read: {label} points at one {pointee}, and in C and C++ "
+        f"{_shown(segment)} not read: {label} points at one {what}, and in C and C++ "
         f"{path}{segment} is not inside it; a pointer carries no length. {path}[0] is the "
-        f"{pointee} it points at"
+        f"{what} it points at"
     )
-    if elements:
+    # Counting from the end needs a length the type states (`int[3]`).
+    if elements and (segment[1] != "-" or re.search(r"\[[0-9]+\]$", pointee or "")):
         return message + f": read {path}[0]{segment} for its element"
+    if elements:
+        return message + f": read its elements from {path}[0][0]"
     return message + (
         "; index the array where it is declared (in the caller: `peeky session step --out`, "
         "or a probe there)"
@@ -1285,7 +1315,7 @@ def _children(worker, stop, selector, variable, pointers=False):
             pointers
             and path is not None
             and _INDEX.fullmatch(child["name"])
-            and _c_pointee_type(variable.get("type")) is not None
+            and _c_pointee(variable) is not None
             and _pointee(variable, page["variables"]) is None
         ):
             # A pointer to an array or container lists its pointee's elements: in C,

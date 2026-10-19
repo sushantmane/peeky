@@ -861,3 +861,26 @@ Checked and found sound:
 |---|---|---|---|
 | 1 | lldb-dap names optimized frames `... [opt]` (macOS), which neither `_frame_hash` nor `frame_shape` expected. A closure or async frame then had depth 0, so its bindings came from the enclosing function: a dropped Box there read freed memory when that function bound the name to a reference, and a closure's reference was hidden. The PR's `unoptimized` guards were dead code for the same reason. | High | **Fixed:**<br>• Both parsers strip ` [opt]`.<br>• With hashes now parsed in optimized builds, the reference-parameter proof and Rust `--set` (`settable`, `validate_mutation_target`, which read an unoptimized build's IR) require opt-level 0. `--set` says so plainly.<br>Test: `test_an_optimized_build_never_reads_a_box` (`CLOSURE_BOX`, `CLOSURE_REF`). |
 | 2 | (verification of 496c718) No issues. Checked:<br>• Gating at opt-level 1 and 2: closures (nested and by-move), inlined callees, generics, unmangled functions, async bodies and blocks.<br>• References read.<br>• Hashes now parse: body matches are always right, `display_type` gives MIR types, and the worker refuses changes in optimized builds first.<br>• Linux lldb-dap 18 and 20 never add ` [opt]`.<br>Also found by the lanes: a bare test session has no `target`, so the opt level is read defensively (`_optimized`). | — | **Closed.** |
+
+## Review of C/C++ pointers to arrays (#117, f138be1)
+
+Checked and found sound:
+- Arrays of pointers, function pointers, `void *`.
+- `char *`, `const char *`, `char (*)[6]`.
+- Pointers to pointers, `int (*)[2][3]` with nested `p[0][1][2]`.
+- `const` and `_Nonnull` qualifiers.
+- Unions, classes with base classes, `std::string*`, `std::map*`, `std::array*`, `vector<vector>*`.
+- Pointers held in struct fields, `unique_ptr`/`shared_ptr`.
+- C++ references, `-O2` builds, truncated pages.
+- Session child selectors, the evidence store, `--set` (refused as on main).
+- Python, Rust and Java are unaffected.
+- Linux lldb-dap 18 and 20.
+
+| # | Finding | Severity | Disposition |
+|---|---|---|---|
+| 1 | A typedef'd pointer (`typedef int (*RowPtr)[3]`, `using VecPtr = std::vector<int>*`) still indexed LLDB's way: `rp[1]` read `(*rp)[1]` (same on main). lldb-dap shows it by the typedef's name alone, as it shows a typedef'd reference. | Medium | **Fixed:**<br>• At launch, `pointer_typedefs` reads the debug information for typedefs naming a pointer (through qualifiers and other typedefs), with their pointee's name; a name some typedef gives another type is left out.<br>• The worker adds `pointee_type` to such values.<br>• Typedef'd references still index their referent.<br>• The launch parses the debug information once for this and `local_declarations` (`_reusing_dies`). |
+| 2 | `p[0]` through a NULL or invalid pointer showed a value (`pt @ 0x0`, `int[3] @ 0x10`, `Summary Unavailable`) where main gave an error. | Low | **Fixed:** address 0 is refused as `p is NULL`, a pointee whose listed children are all unreadable as `cannot read what p points at`, and a `void` pointee as pointing at nothing showable. An empty pointee (`std::vector` of size 0) now reads as `p[0]`. |
+| 3 | The page fetched for `p[0]` was thrown away and fetched again for `p[0][N]`, costing 64 of the 512-node budget: `bigp[0][450]` was refused while `big[450]` read. | Low | **Fixed:** each handle's first page is fetched once per selector. |
+| 4 | The hint for `vp[-1]` suggested `vp[0][-1]`, which a vector cannot serve (its length is not one the type states). | Low | **Fixed:** `[0][-N]` is offered only for a pointee of declared length (`int[3]`); otherwise the hint says to read elements from `p[0][0]`. |
+
+Tests: `test_a_pointer_to_an_array_or_container_indexes_as_c_does` (`ALIASES`: a typedef'd pointer and references, a 500-element vector, an empty one, NULL and invalid pointers).

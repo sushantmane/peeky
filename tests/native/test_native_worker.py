@@ -845,6 +845,12 @@ def test_a_pointer_to_an_array_or_container_indexes_as_c_does(tmp_path, native_c
     for name, text, line, capture in (
         ("rows.c", ROWS, 8, "parr[0],parr[0][1],parr[1],parr[-1],pp[0].y,pp.y,pp[1]"),
         ("rows.cpp", VECTOR, 7, "vp[0],vp[0][1],vp[1]"),
+        (
+            "aliases.cpp",
+            ALIASES,
+            18,
+            "rp[0][1],rp[1],rr[1],vr[1],bigp[0][450],bigp[-1],ep[0],np[0],garbage[0]",
+        ),
     ):
         (tmp_path / name).write_text(text)
         probe = ["probe", str(tmp_path / name), "--at", str(line), "--json", "--no-save"]
@@ -856,9 +862,21 @@ def test_a_pointer_to_an_array_or_container_indexes_as_c_does(tmp_path, native_c
             assert "read parr[0][1] for its element" in rows["parr[1]"]["error"]
             assert "read parr[0][-1]" in rows["parr[-1]"]["error"]
             assert "index the array where it is declared" in rows["pp[1]"]["error"]
-        else:
+        elif name == "rows.cpp":
             assert rows["vp[0]"]["value"] == "size=3" and rows["vp[0][1]"]["value"] == "8"
             assert "read vp[0][1] for its element" in rows["vp[1]"]["error"]
+        else:
+            # Review of #117: a typedef'd pointer shows by the typedef's name alone, as a
+            # typedef'd reference does; the build's debug information tells them apart.
+            assert rows["rp[0][1]"]["value"] == "2" and "read rp[0][1]" in rows["rp[1]"]["error"]
+            assert rows["rr[1]"]["value"] == "2" and rows["vr[1]"]["value"] == "8"
+            # One fetch of the pointee's first page serves both segments.
+            assert rows["bigp[0][450]"]["value"] == "4"
+            # A vector's own length is not one its type states.
+            assert "read its elements from bigp[0][0]" in rows["bigp[-1]"]["error"]
+            assert rows["ep[0]"]["value"] == "size=0"
+            assert "np is NULL" in rows["np[0]"]["error"]
+            assert "cannot read what garbage points at" in rows["garbage[0]"]["error"]
     main(["session", "start", str(tmp_path / "rows.c"), "--at", "8"])
     capsys.readouterr()
     try:
@@ -891,6 +909,28 @@ int main() {
     std::vector<int> v{7, 8, 9};
     std::vector<int> *vp = &v;
     int n = (*vp)[1];
+    std::printf("%d\\n", n);
+    return 0;
+}
+"""
+
+ALIASES = """#include <cstdio>
+#include <vector>
+typedef int (*RowPtr)[3];
+typedef int (&RowRef)[3];
+using VecRef = std::vector<int> &;
+struct pt { int x, y; };
+int main() {
+    int rows[2][3] = {{1, 2, 3}, {4, 5, 6}};
+    std::vector<int> v{7, 8, 9}, big(500, 4), empty;
+    std::vector<int> *bigp = &big, *ep = &empty;
+    RowPtr rp = rows;
+    RowRef rr = rows[0];
+    VecRef vr = v;
+    pt *np = nullptr;
+    int (*garbage)[3] = (int (*)[3])0x10;
+    int n = rp[1][0] + rr[1] + vr[1] + (int)bigp->size() + (int)ep->size();
+    n += (np ? 1 : 0) + (garbage ? 1 : 0);
     std::printf("%d\\n", n);
     return 0;
 }
