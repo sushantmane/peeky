@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from peeky.adapters import PythonAdapter
+from peeky.agent import BUILD_RETAINED
 from peeky.build import (
     ArtifactSpec,
     BuildCommandError,
@@ -51,6 +52,7 @@ from peeky.rust_symbols import (
     active_variant,
     application_symbols,
     container_view,
+    lldb_float_debug,
 )
 
 DEPS = "target/debug/deps"
@@ -201,8 +203,8 @@ def compiler_diagnostic(result, sources):
         or result.get("output_limit_exceeded")
         or not isinstance(stdout, str)
         or not isinstance(stderr, str)
-        or len(stdout.encode()) >= 16000
-        or len(stderr.encode()) >= 16000
+        or len(stdout.encode()) >= BUILD_RETAINED
+        or len(stderr.encode()) >= BUILD_RETAINED
         or not stdout.endswith("\n")
     ):
         return False
@@ -674,6 +676,11 @@ def owned_locals(workspace, artifacts, crate, ir, sources):
         ir_functions(ir, sources),
         sources,
         precise=not collapsed,
+        # Bytes, so lines split on `\n` alone as rustc counts them (no universal newlines).
+        texts={
+            name: (Path(workspace) / name).read_bytes().decode("utf-8", errors="replace")
+            for name in sources
+        },
     )
 
 
@@ -864,6 +871,10 @@ class RustSession(NativeSession):
             # not trustworthy there.
             return {**view, "value": UNVERIFIED, "rust_view": "opaque"}
         return view
+
+    def display_value(self, variable):
+        """A scalar `f64`/`f32` as Rust's `{:?}` shows it (`10.0`, not LLDB's `10`)."""
+        return lldb_float_debug(variable.get("value"), variable.get("type"))
 
     def validate_children(self, variables):
         # `$` cannot start a Rust identifier; such fields are debugger-synthesized storage.

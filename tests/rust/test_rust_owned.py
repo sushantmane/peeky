@@ -26,6 +26,23 @@ fn deferred(first: bool) -> usize {
     label.len() + n // AFTER
 }
 
+fn after_carriage_return() -> usize {
+    // a lone carriage return here is no line break for rustc:\r(old note)
+    let values = [1usize, 2];
+    let mut v = vec![0usize; 3]; for x in values { // CR
+        v[x] += 1;
+    }
+    v.len()
+}
+
+fn tally(values: &[usize], buckets: usize) -> Vec<usize> {
+    let mut counts = vec![0usize; buckets];
+    for &x in values { // HEAD
+        counts[x % buckets] += 1;
+    }
+    counts
+}
+
 fn main() {
     let dropped = vec![7, 8, 9];
     drop(dropped);
@@ -51,6 +68,8 @@ fn main() {
     let s = s + "-second";
     println!("{s}"); // SHADOW
     println!("{} {} {:?}", deferred(true), deferred(false), acc);
+    println!("{:?}", tally(&[1, 2, 4], 3));
+    println!("{}", after_carriage_return());
 }
 """
 
@@ -68,7 +87,8 @@ def crate(tmp_path, monkeypatch):
 
 
 def line(marker):
-    return next(i for i, text in enumerate(PROGRAM.splitlines(), 1) if f"// {marker}" in text)
+    # Lines as rustc counts them: `\n` only (splitlines would also split a lone `\r`).
+    return next(i for i, text in enumerate(PROGRAM.split("\n"), 1) if f"// {marker}" in text)
 
 
 def probe(capsys, crate, marker, selectors, *extra):
@@ -116,6 +136,28 @@ def test_a_vector_pushed_in_a_loop_is_read_at_each_hit(crate, capsys):
     assert len(acc) == 3
     if memory_views(result["rows"]):
         assert [row["value"] for row in acc] == ["[]", "[0]", "[0, 1]"]
+
+
+@pytest.mark.timeout(300)
+def test_a_vector_from_vec_macro_is_read_at_the_loop_head_after_it(crate, capsys):
+    # std's vec! code spans another file; the loop head invokes no macro, so that code
+    # is not on it (eval 3: `counts` was refused here).
+    result = probe(capsys, crate, "HEAD", "counts", "--hits", "all")
+    assert result["rows"]
+    if memory_views(result["rows"]):
+        assert result["rows"][0]["value"] == "[0, 0, 0]", result["rows"]
+        assert all("note" not in row for row in result["rows"])
+    assert "[0, 2, 1]" in result["output"]
+
+
+@pytest.mark.timeout(300)
+def test_a_line_where_vec_runs_is_never_read_even_after_a_lone_carriage_return(crate, capsys):
+    # Review of #80: reading the source with universal newlines shifted every later line
+    # by one, so this line looked macro-free and `v` was read before vec! had run.
+    result = probe(capsys, crate, "CR", "v", "--hits", "all")
+    shown = [row for row in result["rows"] if "value" in row]
+    assert shown and all(row.get("view") != "memory" for row in shown), result["rows"]
+    assert all("(#53)" in row["note"] for row in shown), result["rows"]
 
 
 @pytest.mark.timeout(300)

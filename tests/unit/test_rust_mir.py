@@ -5,7 +5,14 @@ import sys
 
 import pytest
 
-from peeky.rust_mir import IrFunction, OwnedLocals, _segments, ir_functions, parse_body
+from peeky.rust_mir import (
+    IrFunction,
+    OwnedLocals,
+    _segments,
+    ir_functions,
+    may_invoke_macro,
+    parse_body,
+)
 
 
 def mir(blocks, header="fn main() -> () {", bindings=""):
@@ -479,3 +486,138 @@ def test_the_rustc_wrapper_flags_only_the_debugged_binary_crate(tmp_path, args, 
     assert ("-Zmir-opt-level=0" in out) is flagged
     assert ("-Csymbol-mangling-version=legacy" in out) is flagged
     assert out[2 : 2 + len(args)] == args
+
+
+STD = "/rustc/0000/library/alloc/src/macros.rs"
+
+
+def vec_then_loop():
+    """`let v = vec![..];` then `for x in values {`: `vec!` is std code (another file);
+    from_elem cannot unwind here, so codegen emits bb1 (line 3) inside bb0's IR block."""
+    return parse_body(
+        "fn main() -> () {\n"
+        "    let mut _0: ();  // return place in scope 0 at src/main.rs:1:10: 1:10\n"
+        "    scope 1 {\n"
+        "        debug v => _1;  // in scope 1 at src/main.rs:2:9: 2:10\n"
+        "    }\n"
+        "    bb0: {\n"
+        f"        _1 = from_elem(const 0_usize, const 3_usize) -> [return: bb1, unwind continue];  // scope 0 at {STD}:47:36: 47:66\n"
+        "    }\n"
+        "    bb1: {\n"
+        "        _3 = copy _2;  // scope 1 at src/main.rs:3:14: 3:20\n"
+        "        _4 = into_iter(move _3) -> [return: bb2, unwind: bb3];  // scope 1 at src/main.rs:3:14: 3:20\n"
+        "    }\n"
+        "    bb2: {\n"
+        "        drop(_1) -> [return: bb4, unwind continue];  // scope 0 at src/main.rs:5:1: 5:2\n"
+        "    }\n"
+        "    bb3 (cleanup): {\n"
+        "        drop(_1) -> [return: bb5, unwind terminate(cleanup)];  // scope 0 at src/main.rs:5:1: 5:2\n"
+        "    }\n"
+        "    bb4: {\n"
+        "        return;  // scope 0 at src/main.rs:5:2: 5:2\n"
+        "    }\n"
+        "    bb5 (cleanup): {\n"
+        "        resume;  // scope 0 at src/main.rs:1:1: 5:2\n"
+        "    }\n"
+        "}\n"
+    )
+
+
+LOOP = "fn main() {\n    let v = vec![0usize; 3];\n    for x in values {\n    }\n}\n"
+
+
+@pytest.mark.parametrize(
+    "texts, proven",
+    [
+        ({"src/main.rs": LOOP}, True),
+        # Unknown source: std code may be on any line, so bb0's call counts as line 3's.
+        (None, False),
+        # Line 3 invokes a macro: std code may be collapsed onto it.
+        ({"src/main.rs": LOOP.replace("in values", "in mk!(values)")}, False),
+    ],
+)
+def test_std_macro_code_counts_only_on_a_line_that_can_invoke_a_macro(texts, proven):
+    # The IR's start block holds bb0 and bb1: lines 2 (the collapsed vec!) and 3.
+    function = IrFunction(
+        "main",
+        "app",
+        "src/main.rs",
+        {"start": {2, 3}, "bb2": {5}, "bb3": {5}, "bb4": {5}, "bb5": {5}},
+        {},
+        1,
+    )
+    owned = OwnedLocals([vec_then_loop()], {"h0": function}, SOURCES, texts=texts)
+    assert owned.body("h0") is not None
+    assert owned.proven("h0", "v", 3, MAIN) is proven
+    # On the vec! line itself the local is never initialized before the call returns.
+    assert not owned.proven("h0", "v", 2, MAIN)
+
+
+def test_a_merged_block_with_no_code_of_the_line_defers_to_the_one_with_code():
+    body = vec_then_loop()
+    # Without knowing bb0 and bb1 share an IR block, bb0's line-3 code is unexplained.
+    assert not body.initialized_at(1, {0, 1}, 3, "src/main.rs", 1, foreign=False)
+    shared = {0: {0, 1}, 1: {0, 1}}
+    assert body.initialized_at(1, {0, 1}, 3, "src/main.rs", 1, shared, foreign=False)
+    # A merged block that does not explain the line is never skipped for a block that
+    # also explains nothing: then the whole IR block must keep the local.
+    assert not body.initialized_at(1, {0, 1}, 4, "src/main.rs", 1, shared, foreign=False)
+
+
+@pytest.mark.parametrize(
+    "line, possible",
+    [
+        ("    let v = vec![0; n];", True),
+        ("    for &x in values {", False),
+        ("    let a = x != y;", True),  # any `!` counts
+        ("    let z = 1; /* c */", True),
+        ("    counts[i] += 1; // note", False),  # the next line starts no path
+        ("    let v = std::", True),  # its path ends on the next line with `!`
+        ("    let w = vec", True),
+    ],
+)
+def test_lines_that_can_start_a_macro_invocation(line, possible):
+    text = f"fn f() {{\n{line}\n        vec![1];\n    }}\n"
+    if not line.endswith(("std::", "vec")):
+        text = f"fn f() {{\n{line}\n    }}\n"
+    assert may_invoke_macro(text, 2) is possible
+    assert may_invoke_macro(None, 2) and may_invoke_macro(text, 99)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # Review of #80: each made the line read as macro-free while rustc put `vec!`
+        # code on it.
+        "fn f() {\n    let u = std::\n        /* see /* nested */ note */ vec![1];\n}\n",
+        "fn f() {\n    let u = crate::\n        m\u00f3dulo::vec![1];\n}\n",
+        "fn f() {\n    let u = crate::m\u00f3dulo\n        ::vec![1];\n}\n",
+        "fn f() {\n    let u = std::\n        /* c */ vec![1];\n}\n",
+    ],
+)
+def test_a_path_continued_past_a_block_comment_or_non_ascii_text_may_invoke(text):
+    assert may_invoke_macro(text, 2)
+
+
+def test_a_lone_carriage_return_is_not_a_line_break():
+    # rustc counts `\n` only: line 4 has the vec!, line 3 does not.
+    text = "fn main() {\n    // a\r(note)\n    let x = [1];\n    let v = vec![0]; for y in x {\n}\n"
+    assert may_invoke_macro(text, 4) and not may_invoke_macro(text, 3)
+
+
+def test_a_block_codegen_left_without_predecessors_keeps_its_own_label(tmp_path):
+    # `debug_assert!` branches on a constant; codegen leaves the dead arm as
+    # `bbN: ; No predecessors!`. Dropping that label gave its code to the block before
+    # it, and left the MIR block uncovered, so nothing in the function was proven.
+    path = tmp_path / "app.ll"
+    path.write_text(
+        IR.replace(
+            "bb2:                                              ; preds = %bb1\n  ret void, !dbg !24\n",
+            "bb2:                                              ; preds = %bb1\n  ret void, !dbg !24\n"
+            "\nbb3:                                              ; No predecessors!\n"
+            "  br label %bb2, !dbg !24\n",
+        )
+    )
+    function = ir_functions(path, ["src/main.rs"])["h0123456789abcdef"]
+    assert function.blocks["bb2"] == {5} and function.blocks["bb3"] == {5}
+    assert 3 in function.labeled() and "bb3" not in function.preds

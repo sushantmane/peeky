@@ -108,6 +108,28 @@ def test_companion_header_is_frozen_at_investigation_creation(investigation):
     assert "config.h" in verifier.source_manifest
 
 
+def test_a_long_build_failure_stays_bounded_with_the_compilers_errors_first(investigation):
+    # Review of #80: builds keep up to 1 MiB per stream, which used to reach the verify
+    # text (`reason:` was the exception's repr of the whole result), JSON and prompts.
+    _, target, _, _, _ = investigation
+    error = json.dumps(
+        {
+            "reason": "compiler-message",
+            "message": {"level": "error", "rendered": "src/main.rs:3:9: error[E0308]: x\n"},
+        }
+    )
+    target.failure = BuildCommandError(
+        ("/x/cargo", "build"),
+        {"exit_code": 101, "stdout": (error + "\n") * 5000, "stderr": "e" * 300000},
+    )
+    result = candidate(investigation)
+    assert result["stage"] == "build" and len(result["diagnostic"]) < 2000
+    assert result["diagnostic"].startswith("The build failed: cargo exited with code 101")
+    assert "error[E0308]" in result["diagnostic"]
+    assert len(result["stdout"]) <= 16000 and len(result["stderr"]) <= 16000
+    assert str(target.failure) == "Build command failed: /x/cargo: exit code 101"
+
+
 def test_header_is_not_an_editable_candidate(investigation):
     verifier, target, source, check, destination = investigation
     with pytest.raises(ValueError, match="source|input"):
@@ -213,3 +235,22 @@ def test_session_test_hook_cannot_replace_or_bypass_the_checker(
     result = candidate(investigation)
     assert calls == ["tests", "checker"]
     assert result["passed"] is passed and result["tests"]["passed"] is tests
+
+
+@pytest.mark.parametrize(
+    "stage, reason",
+    [("build", "reason: The build failed: clang timed out"), ("verification", "checker timed")],
+)
+def test_a_build_timeout_is_not_reported_as_the_checkers(stage, reason):
+    from peeky.cli import _verify_text
+
+    text = _verify_text(
+        {
+            "passed": False,
+            "stage": stage,
+            "timed_out": True,
+            "diagnostic": "The build failed: clang timed out",
+            "diff": "",
+        }
+    )
+    assert reason in text

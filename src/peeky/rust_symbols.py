@@ -15,6 +15,7 @@ is opaque. This is trusted-code evidence, not a sandbox or formatter.
 """
 
 import codecs
+import decimal
 import json
 import math
 import re
@@ -25,7 +26,12 @@ from fractions import Fraction
 from pathlib import Path
 
 from peeky.adapters import ViewBudgetExhausted
-from peeky.native import MAX_METADATA, _metadata, parse_lines
+from peeky.native import _metadata, parse_lines
+
+# An application unit's own DWARF: a program using std's collections has megabytes of
+# monomorphized types (4.4 MB for one using HashMap); dumping and parsing it takes
+# tens of milliseconds, inside the symbol deadline.
+RUST_METADATA = 16 * 1024 * 1024
 
 MAX_UNITS = 4096
 MAX_APPLICATION_UNITS = 16
@@ -113,7 +119,7 @@ def parse_dies(text, *, units):
     Attributes print at 12 + 2 + 2*depth columns independent of offset width.
     Every child list in --show-children output must end with its own NULL.
     """
-    if len(text.encode()) > MAX_METADATA:
+    if len(text.encode()) > RUST_METADATA:
         raise ValueError("Rust debug information exceeds limit")
     roots, stack, pending, last, seen, count = [], [], None, None, False, 0
     for raw in text.splitlines():
@@ -598,7 +604,14 @@ def application_symbols(
         remaining = deadline - _clock()
         if remaining <= 0:
             raise ValueError("Rust symbol extraction exceeded its shared deadline")
-        return _metadata(dwarfdump, arguments, workspace, env, timeout=min(15, remaining))
+        return _metadata(
+            dwarfdump,
+            arguments,
+            workspace,
+            env,
+            max_bytes=RUST_METADATA,
+            timeout=min(15, remaining),
+        )
 
     index = dump(["--debug-info", "--recurse-depth=0", str(symbols)])
     units = application_units(index, workspace, entrypoint=entrypoint, crate=crate)
@@ -615,7 +628,7 @@ def application_symbols(
             if layouts.get(name, layout) != layout:
                 layout = {"kind": "unqualified"}
             layouts[name] = layout
-    lines = parse_lines("\n".join(tables), workspace, declared)
+    lines = parse_lines("\n".join(tables), workspace, declared, limit=RUST_METADATA)
     return lines, layouts, units
 
 
@@ -852,6 +865,47 @@ def rust_float_debug(value, bits):
         whole = digits[: exponent + 1].ljust(exponent + 1, "0")
         return f"{sign}{whole}.{digits[exponent + 1 :] or '0'}"
     return f"{sign}0.{'0' * (-exponent - 1)}{digits}"
+
+
+# LLDB prints a `double`/`float` with APFloat's natural precision, 17 or 9 significant
+# digits with trailing zeros trimmed, which always round-trips (LLDB 18, 20, Apple 2103).
+_LLDB_FLOAT = re.compile(r"(-?)([0-9]{1,330})(?:\.([0-9]{1,400}))?(?:E([+-][0-9]{1,3}))?")
+_LLDB_FLOAT_BITS = {"double": (64, 17), "float": (32, 9)}
+
+
+def lldb_float_debug(text, kind):
+    """LLDB's text for an f64 (`double`) or f32 (`float`) as Rust's `{:?}` shows it, or
+    None when the text is not LLDB's exact round-trip rendering of a value of that type."""
+    bits, precision = _LLDB_FLOAT_BITS.get(kind, (None, None))
+    if bits is None or not isinstance(text, str):
+        return None
+    if text in ("NaN", "-NaN"):
+        return "NaN"
+    if text in ("+Inf", "-Inf"):
+        return "inf" if text[0] == "+" else "-inf"
+    match = _LLDB_FLOAT.fullmatch(text)
+    if not match:
+        return None
+    sign, whole, fraction, power = match.groups()
+    shown = (whole + (fraction or "")).lstrip("0")
+    if not shown:
+        return rust_float_debug(-0.0 if sign else 0.0, bits)
+    exponent = len(whole) - 1 - (len(whole + (fraction or "")) - len(shown)) + int(power or 0)
+    pack = _FLOATS[bits][0]
+    try:
+        value = struct.unpack(pack, struct.pack(pack, float(text)))[0]
+    except (OverflowError, struct.error):
+        return None
+    if math.isinf(value):
+        return None
+    exact = decimal.Decimal(abs(value))
+    # APFloat rounds a dropped half up; accept either tie rule, never a lossy rendering.
+    for rounding in (decimal.ROUND_HALF_UP, decimal.ROUND_HALF_EVEN):
+        rounded = decimal.Context(prec=precision, rounding=rounding).plus(exact)
+        digits = "".join(map(str, rounded.as_tuple().digits)).rstrip("0")
+        if (digits, rounded.adjusted()) == (shown.rstrip("0"), exponent):
+            return rust_float_debug(value, bits)
+    return None
 
 
 def container_view(

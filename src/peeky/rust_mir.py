@@ -124,7 +124,9 @@ class Body:
                 return False
         return True
 
-    def initialized_at(self, local, blocks, line, file, declared=None):
+    def initialized_at(
+        self, local, blocks, line, file, declared=None, shared=None, *, foreign=True
+    ):
         """True if ``local`` is initialized wherever code of ``line`` in ``file`` can be
         in these blocks: a statement spanning that line, or spanning another file or
         none (external macro code takes the line that invoked it), and bb0's start when
@@ -135,6 +137,12 @@ class Body:
         positions. A call's result is stored at its target's start, at the call's line;
         then the call's own block has code of that line too and is checked before the
         call, which is stricter: built MIR passes locals to calls only through temps.
+
+        ``foreign=False`` says the line cannot invoke a macro, so no code from another
+        file is on it.
+        ``shared`` maps a block to every block codegen emitted into the same IR block
+        (``_merged``): the IR cannot say which of them a line's code came from, so a
+        block without code of the line is passed over when another of them has some.
         """
         if not self.supported or not blocks:
             return False
@@ -142,27 +150,41 @@ class Body:
         if entry is None:
             return False
         bit, predecessors = 1 << local, self.predecessors()
-        for number in blocks:
-            state = entry.get(number)
-            if state is None:
-                return False
+
+        def explained(number):
+            """(prologue, statement positions, result store): this block's code of line."""
             block = self.blocks[number]
-            starts_here = number == 0 and line == declared
             positions = [
                 index
                 for index, (text, spanned, spanned_line) in enumerate(block.statements)
-                if (spanned != file or spanned_line == line) and not _NO_CODE.match(text)
+                if (spanned_line == line if spanned == file else spanned is None or foreign)
+                and not _NO_CODE.match(text)
             ]
             stored = any(
                 caller in blocks
                 and self.blocks[caller].returns == number
                 and (
-                    self.blocks[caller].statements[-1][1] != file
-                    or self.blocks[caller].statements[-1][2] == line
+                    self.blocks[caller].statements[-1][2] == line
+                    if self.blocks[caller].statements[-1][1] == file
+                    else self.blocks[caller].statements[-1][1] is None or foreign
                 )
                 for caller in predecessors.get(number, ())
             )
+            return number == 0 and line == declared, positions, stored
+
+        for number in blocks:
+            state = entry.get(number)
+            if state is None:
+                return False
+            block = self.blocks[number]
+            starts_here, positions, stored = explained(number)
             if not starts_here and not positions:
+                if not stored and any(
+                    any(explained(other)) for other in (shared or {}).get(number, set()) - {number}
+                ):
+                    # The line's code in this IR block is another merged block's, and that
+                    # block is checked itself.
+                    continue
                 if stored:
                     # Only a checked caller's result store, at this block's start.
                     if not state & bit:
@@ -371,7 +393,9 @@ def load_bodies(directory, crate):
 
 _DEFINE = re.compile(r'^define .*?@("?)([^"(\s]+)\1\(.*!dbg (![0-9]+) \{$')
 _LEGACY_HASH = re.compile(r"17(h[0-9a-f]{16})E$")
-_LABEL = re.compile(r"^([-$._A-Za-z0-9]+):(?:\s+; preds = (.*))?$")
+# A block codegen left unreachable (the dead arm of `if cfg!(debug_assertions)` in
+# `debug_assert!`) is labeled `; No predecessors!`.
+_LABEL = re.compile(r"^([-$._A-Za-z0-9]+):(?:\s+; (?:preds = (.*)|No predecessors!))?$")
 _DBG = re.compile(r"!dbg (![0-9]+)")
 _META = re.compile(
     r"^(![0-9]+) = (?:distinct )?!(DILocation|DISubprogram|DILexicalBlock|DILexicalBlockFile"
@@ -515,13 +539,15 @@ def _file(meta, scope):
 class OwnedLocals:
     """Proofs that an owned local is initialized at a stop (see the module docstring)."""
 
-    def __init__(self, bodies, functions, sources=(), *, precise=True):
+    def __init__(self, bodies, functions, sources=(), *, precise=True, texts=None):
         self.bodies = list(bodies)
         # Statement-level positions rely on local macro code keeping its own lines in
         # debug info; `#[collapse_debuginfo]` changes that, and then whole blocks count.
         self.precise = precise
         self.functions = dict(functions)
         self.sources = tuple(sources)
+        # {source: text}, to tell which lines can invoke a macro; absent means any can.
+        self.texts = dict(texts or {})
         self._matched = {}
         # {(file, line): {body index}}: which bodies have a span on each line.
         self._owners = {}
@@ -606,10 +632,19 @@ class OwnedLocals:
         blocks = function.mir_blocks(line)
         if local is None or blocks is None:
             return False
-        blocks = _merged(body, function, blocks)
+        shared = _shared(body, function, blocks)
+        blocks = set(shared)
         if not self.precise:
             return body.initialized_throughout(local, blocks)
-        return body.initialized_at(local, blocks, line, function.file, function.line)
+        return body.initialized_at(
+            local,
+            blocks,
+            line,
+            function.file,
+            function.line,
+            shared,
+            foreign=may_invoke_macro(self.texts.get(function.file), line),
+        )
 
 
 def _merge_target(body, function, number, predecessors):
@@ -640,6 +675,52 @@ def _merged(body, function, blocks):
             found.add(target)
             number = target
     return found
+
+
+# A line that ends inside a path (an identifier, `::`, a raw identifier's `#`) before
+# any line comment: a macro invocation's path may start here and reach its `!` later.
+_PATH_END = re.compile(r"[A-Za-z0-9_#:]\s*(?://.*)?$")
+# What may continue such a path: whitespace, line comments, `::` and ASCII identifiers.
+_PATH_TAIL = re.compile(r"(?:\s+|//[^\n]*|::|[A-Za-z0-9_#])*")
+
+
+def may_invoke_macro(text, line):
+    """False only if source ``line`` cannot start a macro invocation.
+
+    rustc collapses a macro from another crate onto the line where its invocation's
+    path starts (#[collapse_debuginfo]), so code spanning another file can be on such a
+    line only. Any `!`, block comment or non-ASCII character on the line counts; so does
+    a line ending in a path that a later `!` may complete, or that continues past a
+    block comment or a non-ASCII identifier. Unknown text means any line can.
+
+    ``text`` must be split into lines as rustc does, on `\n` alone (never a lone `\r`).
+    """
+    lines = text.split("\n") if isinstance(text, str) else []
+    if not 1 <= line <= len(lines):
+        return True
+    own = lines[line - 1]
+    if "!" in own or "/*" in own or not own.isascii():
+        return True
+    if not _PATH_END.search(own):
+        return False
+    rest = "\n".join(lines[line:])
+    following = rest[_PATH_TAIL.match(rest).end() :][:1]
+    return following in ("!", "/") or not following.isascii()
+
+
+def _shared(body, function, blocks):
+    """{block: the blocks in its IR block} for ``blocks`` and every block codegen merged
+    into them."""
+    predecessors, shared = body.predecessors(), {}
+    for number in blocks:
+        chain = [number]
+        while (target := _merge_target(body, function, chain[-1], predecessors)) is not None:
+            if target in chain:
+                break
+            chain.append(target)
+        for member in chain:
+            shared.setdefault(member, set()).update(chain)
+    return shared
 
 
 def _covered(body, function):

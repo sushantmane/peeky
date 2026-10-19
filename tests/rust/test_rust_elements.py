@@ -30,7 +30,29 @@ NAMES = (
     "v_f32",
     "v_f64",
 )
-PROGRAM = """fn params(a: &[f32], b: &Vec<u16>, c: &mut [i8], d: &[bool], e: &mut Vec<u64>) -> usize {
+SCALAR_VALUES = (
+    ("f_a", "f64", "10.0"),
+    ("f_b", "f64", "0.1 + 0.2"),
+    ("f_c", "f64", "1e-7"),
+    ("f_d", "f64", "1e300"),
+    ("f_e", "f64", "-0.0"),
+    ("f_f", "f64", "5e-324"),
+    ("f_g", "f64", "1e16"),
+    ("f_h", "f64", "f64::NEG_INFINITY"),
+    ("f_i", "f32", "0.1"),
+    ("f_j", "f32", "16777217.0"),
+    ("f_k", "f32", "1e-45"),
+    ("f_l", "f32", "f32::NAN"),
+    ("f_m", "f32", "-3.0"),
+)
+SCALARS = (*(name for name, _, _ in SCALAR_VALUES), "pt.x", "pt.y")
+PROGRAM = """#[derive(Debug)]
+struct Pt {
+    x: f64,
+    y: f32,
+}
+
+fn params(a: &[f32], b: &Vec<u16>, c: &mut [i8], d: &[bool], e: &mut Vec<u64>) -> usize {
     c[0] = -128;
     e.push(1);
     a.len() + b.len() + c.len() + d.len() + e.len() // PARAMS
@@ -55,6 +77,20 @@ fn main() {
     let mut c = v_i8.clone();
     let mut e = v_u64.clone();
     let n = params(&v_f32, &v_u16, &mut c, &v_bool, &mut e);
+    let f_a: f64 = 10.0;
+    let f_b: f64 = 0.1 + 0.2;
+    let f_c: f64 = 1e-7;
+    let f_d: f64 = 1e300;
+    let f_e: f64 = -0.0;
+    let f_f: f64 = 5e-324;
+    let f_g: f64 = 1e16;
+    let f_h: f64 = f64::NEG_INFINITY;
+    let f_i: f32 = 0.1;
+    let f_j: f32 = 16777217.0;
+    let f_k: f32 = 1e-45;
+    let f_l: f32 = f32::NAN;
+    let f_m: f32 = -3.0;
+    let pt = Pt { x: 2.5e-5, y: 3.0 };
     println!("v_u8={:?}", v_u8); // OBSERVE
     println!("v_i8={:?}", v_i8);
     println!("v_u16={:?}", v_u16);
@@ -71,6 +107,21 @@ fn main() {
     println!("c={:?}", c);
     println!("e={:?}", e);
     println!("n={n}");
+    println!("f_a={:?}", f_a);
+    println!("f_b={:?}", f_b);
+    println!("f_c={:?}", f_c);
+    println!("f_d={:?}", f_d);
+    println!("f_e={:?}", f_e);
+    println!("f_f={:?}", f_f);
+    println!("f_g={:?}", f_g);
+    println!("f_h={:?}", f_h);
+    println!("f_i={:?}", f_i);
+    println!("f_j={:?}", f_j);
+    println!("f_k={:?}", f_k);
+    println!("f_l={:?}", f_l);
+    println!("f_m={:?}", f_m);
+    println!("pt.x={:?}", pt.x);
+    println!("pt.y={:?}", pt.y);
 }
 """
 
@@ -122,6 +173,17 @@ def test_every_element_type_reads_as_the_program_prints_it(crate, capsys):
         assert {name: rows[name]["value"] for name in NAMES} == {
             name: expected[name] for name in NAMES
         }
+
+
+@pytest.mark.timeout(300)
+def test_float_scalars_and_fields_show_as_the_program_prints_them(crate, capsys):
+    # LLDB shows an f64 10.0 as `10` and 1e-7 as `9.9999999999999995E-8`.
+    rows, output = probe(capsys, crate, "OBSERVE", SCALARS)
+    expected = printed(output)
+    assert {name: rows[name]["value"] for name in SCALARS} == {
+        name: expected[name] for name in SCALARS
+    }
+    assert rows["f_a"]["type"] == "double" and rows["pt.y"]["type"] == "float"
 
 
 @pytest.mark.timeout(300)

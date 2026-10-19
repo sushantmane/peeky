@@ -33,6 +33,10 @@ def test_describe_lists_breakpoint_lines_and_commands(workspace, capsys):
     assert get_page["lines"][0] == 4
     assert 7 in manifest["breakpoint_lines"]["pagination_bug.py"]
     assert {"probe", "session", "verify"} <= set(manifest["commands"])
+    # The file target is the file to edit: verify needs no --at.
+    assert manifest["commands"]["verify"].startswith(
+        f"peeky verify {workspace / 'pagination_bug.py'} --check "
+    )
 
 
 def test_probe_detects_python_and_needs_no_mode(workspace, capsys):
@@ -219,6 +223,29 @@ def test_verify_cannot_write_outside_a_scratch_copy(workspace, capsys):
 def test_probe_that_never_stops_is_not_success(workspace, capsys):
     code, out = run(capsys, "probe", workspace / "pagination_bug.py", "--at", "6", "--capture", "x")
     assert code == 1 and "status: no-stop" in out.out and "finished without stopping" in out.out
+
+
+def test_a_program_that_fails_before_the_line_says_so_and_why(workspace, capsys):
+    program = workspace / "parse.py"
+    program.write_text("import sys\nx = float(sys.argv[1])\nprint(x)\n")
+    code, out = run(
+        capsys, "probe", program, "--at", "3", "--capture", "x", "--json", "--", "--old", "1"
+    )
+    result = json.loads(out.out)
+    assert code == 1 and result["status"] == "no-stop" and result["exit_code"] == 1
+    assert "failed (exit code 1) without stopping" in result["error"]["message"]
+    # The hint names the real cause: Peeky's own option went to the program.
+    assert "including --old, which Peeky also takes" in result["error"]["hint"]
+    assert "could not convert string to float: '--old'" in result["output"]
+    code, out = run(capsys, "probe", program, "--at", "3", "--capture", "x", "--", "2.5")
+    assert code == 0 and "exit code" not in out.out and "warning" not in out.out
+
+
+def test_options_after_the_separator_are_flagged_even_when_the_probe_succeeds(workspace, capsys):
+    program = workspace / "echo.py"
+    program.write_text("import sys\nargs = sys.argv[1:]\nprint(args)\n")
+    code, out = run(capsys, "probe", program, "--at", "3", "--capture", "args", "--", "--hits=2")
+    assert code == 0 and "including --hits, which Peeky also takes" in out.out
 
 
 def test_explicit_file_types_win_over_cargo_ancestors(workspace, capsys):

@@ -17,6 +17,7 @@ import os
 import re
 import secrets
 import select
+import shlex
 import shutil
 import signal
 import subprocess
@@ -495,6 +496,11 @@ def describe(args):
     )
     # The commands repeat the --config this describe was given (Java, explicit targets).
     target = f"{args.target} --config {args.config}" if args.config else args.target
+    # A file target is the file to edit; a directory needs --at to name it.
+    single = (
+        Path(args.target).is_file() and Path(args.target).resolve() == (root / program).resolve()
+    )
+    at = "" if single else f" --at {program}"
     manifest = {
         "peeky": "describe",
         "language": language,
@@ -507,7 +513,7 @@ def describe(args):
             "peeky session inspect | get <a.b> | set <name>=<value> | step [--into|--out] | "
             "continue [--count N|--to LINE|--to-exit] | "
             "report | close",
-            "verify": f"peeky verify {target} --at {program} --check <checker.py> "
+            "verify": f"peeky verify {target}{at} --check <checker.py> "
             "--old <text> --new <text> (or --old-file/--new-file)",
             "background": "add --background to probe or verify, then `peeky job wait <id>` "
             "(exit 3 while running)",
@@ -699,10 +705,28 @@ def probe(args):
         result = run_probe(root, request, adapter=adapter_for(language, data), progress=progress)
     if edit:
         _bind_candidate(result, original, edit, program)
+    if misplaced := _misplaced_options(args):
+        if (result.get("error") or {}).get("code") == "NO_STOP":
+            result["error"]["hint"] = misplaced + "."
+        else:
+            result.setdefault("warnings", []).append(misplaced)
     if not args.no_save:
         _keep_evidence(args, result, root, language)
     _emit(result, args.json, _probe_text)
     return 0 if result["status"] == "completed" else 1
+
+
+def _misplaced_options(args):
+    """Program arguments after `--` that look like Peeky's own options, as a warning."""
+    options = getattr(args, "_options", None) or ()
+    found = [arg.split("=", 1)[0] for arg in getattr(args, "arg", None) or ()]
+    found = sorted({name for name in found if name in options})
+    if not found:
+        return None
+    return (
+        f"Everything after `--` goes to the program, including {', '.join(found[:4])}, which "
+        "Peeky also takes: put Peeky's options before `--`"
+    )
 
 
 def _probe_edit(args, root, program, line, language):
@@ -1063,11 +1087,19 @@ def _require_stepping(record, client):
 
 def _get_lines(row):
     """`session get` text: the value, then one level of children with their selectors."""
-    value = row.get("value", "<" + row.get("error", "") + ">")
-    lines = [f"{row['selector']}: {row.get('type') or ''} = {value}"]
+    if "value" not in row and not row.get("unavailable"):
+        # Nothing was read: there is no type or value to show, only why.
+        lines = [f"{row['selector']}: <{row.get('error', '')}>"]
+    else:
+        value = row.get("value", "<" + row.get("error", "") + ">")
+        lines = [f"{row['selector']}: {row.get('type') or ''} = {value}"]
     for child in row.get("children", []):
         name = child.get("selector") or f"{child['name']} [not selectable]"
-        more = "  (expandable)" if child.get("expandable") else ""
+        more = (
+            f" (children: peeky session get {shlex.quote(child['selector'])})"
+            if child.get("expandable") and child.get("selector")
+            else ""
+        )
         value = (
             f"<no readable value: {child.get('reason')}>"
             if child.get("unavailable")
@@ -1419,6 +1451,8 @@ def _start_remote(args, root, program, line, language, max_pause):
         state["optimized"] = record["optimized"]
     if launch.get("warnings"):
         state["warnings"] = launch["warnings"]
+    if misplaced := _misplaced_options(args):
+        state["warnings"] = [*state.get("warnings", []), misplaced]
     _emit(
         {"session": args.name, "language": language, "worker": args.worker, **state},
         args.json,
@@ -1567,6 +1601,8 @@ def _start_local(args, root, program, line, language, data, max_pause):
         state["incomplete"] = True
     if launch.get("warnings"):
         state["warnings"] = launch["warnings"]
+    if misplaced := _misplaced_options(args):
+        state["warnings"] = [*state.get("warnings", []), misplaced]
     return state
 
 
@@ -1759,30 +1795,32 @@ def verify(args):
         for key in ("descriptor", "build_manifest"):
             result.pop(key, None)
 
-    def text(result):
-        lines = [f"passed: {result['passed']}  stage: {result['stage']}"]
-        if tests := result.get("tests"):
-            lines.extend(_tests_text(tests))
-        if not result["passed"]:
-            reason = result.get("diagnostic") or (result.get("checker") or {}).get("error")
-            if result.get("timed_out"):
-                reason = "checker timed out"
-            if reason:
-                lines.append(f"reason: {reason}")
-        lines.append(f"checker exit: {result.get('exit_code')}")
-        output = [(result.get(key) or "")[-2000:] for key in ("stdout", "stderr")]
-        if any(output):
-            lines.extend(("output:", *output))
-        if args.keep:
-            lines.append(
-                f"candidate: {result.get('candidate')} (the edited file, and for compiled "
-                "programs the build evidence beside it; build artifacts are not kept)"
-            )
-        lines.append("diff:\n" + result["diff"])
-        return "\n".join(line for line in lines if line)
-
-    _emit(result, args.json, text)
+    _emit(result, args.json, lambda shown: _verify_text(shown, args.keep))
     return 0 if result["passed"] else 1
+
+
+def _verify_text(result, keep=False):
+    lines = [f"passed: {result['passed']}  stage: {result['stage']}"]
+    if tests := result.get("tests"):
+        lines.extend(_tests_text(tests))
+    if not result["passed"]:
+        reason = result.get("diagnostic") or (result.get("checker") or {}).get("error")
+        # A build's own timeout is in its diagnostic (`The build failed: clang timed out`).
+        if result.get("timed_out") and result.get("stage") != "build":
+            reason = "checker timed out"
+        if reason:
+            lines.append(f"reason: {reason}")
+    lines.append(f"checker exit: {result.get('exit_code')}")
+    output = [(result.get(key) or "")[-2000:] for key in ("stdout", "stderr")]
+    if any(output):
+        lines.extend(("output:", *output))
+    if keep:
+        lines.append(
+            f"candidate: {result.get('candidate')} (the edited file, and for compiled "
+            "programs the build evidence beside it; build artifacts are not kept)"
+        )
+    lines.append("diff:\n" + result["diff"])
+    return "\n".join(line for line in lines if line)
 
 
 def _printable(text):
@@ -2021,6 +2059,7 @@ def main(argv=None, _job=False, _edits=None):
     common(sub)
     sub.add_argument("--at", help="Program path (for multi-file targets)")
     sub = commands.add_parser("probe", help="One stateless question: stop, capture, set, report")
+    probe_parser = sub
     common(sub)
     sub.add_argument("--at", required=True, help="<line> or <path>:<line>")
     sub.add_argument("--capture", default="", help="Comma-separated selectors, e.g. a,b.c,d[0]")
@@ -2193,6 +2232,9 @@ def main(argv=None, _job=False, _edits=None):
         common(action, target=False)
     args = parser.parse_args(argv)
     args._edits = _edits
+    if args.command == "probe" or getattr(args, "action", None) == "start":
+        chosen = probe_parser if args.command == "probe" else start
+        args._options = set(chosen._option_string_actions)
     handlers = {
         "describe": describe,
         "probe": probe,

@@ -105,6 +105,12 @@ def validate_cargo_inputs(root, *, sources, tests):
         raise ValueError("First Rust qualification requires explicit edition 2021")
     binary, entrypoint = _target(manifest, "bin", sources)
     test, test_entrypoint = _target(manifest, "test", tests)
+    if binary.replace("-", "_") == test.replace("-", "_"):
+        # Both executables would be deps/<crate>-<hash>; Peeky could not tell them apart.
+        raise ValueError(
+            f'The Cargo [[test]] target must not share the [[bin]] name "{binary}": '
+            f'rename it in Cargo.toml, for example name = "{test.replace("-", "_")}_test"'
+        )
     lock = _toml(root, "Cargo.lock")
     if (
         set(lock) != {"version", "package"}

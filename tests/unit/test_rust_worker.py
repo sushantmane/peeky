@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from peeky.adapters import PythonAdapter
+from peeky.agent import BUILD_RETAINED
 from peeky.build import SourceEdit
 from peeky.native import NativeSession
 from peeky.rust import (
@@ -516,7 +517,13 @@ def cargo_failure(lines, **changes):
         {"stderr": STDERR + "error: failed to run custom build command\n"},
         {"stderr": "   Compiling peeky-pagination v0.1.0 (/tmp/w)\n"},
         {"stdout": cargo_message("error", "src/main.rs") + "\n"},
-        {"stdout": (cargo_message("error", "src/main.rs") + "\n") * 300 + FINISHED + "\n"},
+        # Output that reaches what a build keeps may have been cut short.
+        {
+            "stdout": (cargo_message("error", "src/main.rs") + "\n")
+            * (BUILD_RETAINED // len(cargo_message("error", "src/main.rs")) + 1)
+            + FINISHED
+            + "\n"
+        },
         {"stdout": cargo_message("error", "src/main.rs") + "\n" + FINISHED},
         {
             "stdout": FINISHED

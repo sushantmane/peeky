@@ -1157,6 +1157,11 @@ class DebugWorker:
                 "state": self.state,
                 "output": output,
                 "output_truncated": truncated,
+                **(
+                    {"exit_code": code}
+                    if type(code := getattr(self.dap, "exit_code", None)) is int
+                    else {}
+                ),
                 "history": [e for e in self.audit if e["operation"] != "report"],
                 "artifact_manifest_id": runtime.manifest_id,
                 "breakpoint_events": list(self.breakpoint_events),
@@ -1272,6 +1277,7 @@ class DebugWorker:
         """Only worker-issued handles leave the process; child handles never permit writes."""
         result = []
         view_variable = getattr(self.runtime, "view_variable", None)
+        display_value = getattr(self.runtime, "display_value", None)
         for variable in variables:
             name, kind = variable.get("name"), variable.get("type")
             if not isinstance(name, str) or (kind is not None and not isinstance(kind, str)):
@@ -1352,6 +1358,8 @@ class DebugWorker:
                 "value": str(variable.get("value", ""))[:2000],
                 "variablesReference": handle,
             }
+            if display_value and (shown := display_value(variable)) is not None:
+                output["value"] = shown
             if self.placeholders() and is_unavailable(output["value"]):
                 # The placeholder text is the debugger's reason, never the value.
                 output["unavailable"] = True

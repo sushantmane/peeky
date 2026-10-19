@@ -35,7 +35,15 @@ class BuildCommandError(RuntimeError):
     def __init__(self, command, result):
         self.command = tuple(command)
         self.result = dict(result)
-        super().__init__(f"Build command failed: {self.command[0]}: {self.result}")
+        # The output stays in ``result``: it can be up to BUILD_RETAINED per stream.
+        outcome = (
+            "timed out"
+            if self.result.get("timed_out")
+            else "output limit exceeded"
+            if self.result.get("output_limit_exceeded")
+            else f"exit code {self.result.get('exit_code')}"
+        )
+        super().__init__(f"Build command failed: {self.command[0]}: {outcome}")
 
 
 @dataclass(frozen=True)
@@ -321,7 +329,7 @@ def _validate(recipe):
 def _run(command, workspace, env, timeout=None):
     # Temporary dependency reuse. Move execute to a shared process module when
     # the build boundary is integrated; never import agent at module scope.
-    from peeky.agent import execute
+    from peeky.agent import BUILD_RETAINED, execute
 
     cwd = _inside(workspace, command.cwd, directory=True)
     if not cwd.is_dir():
@@ -341,7 +349,9 @@ def _run(command, workspace, env, timeout=None):
     executable = Path(executable).resolve(strict=True)
     digest, _ = _digest(executable)
     timeout = command.timeout_s if timeout is None else timeout
-    result = execute([str(executable), *command.argv[1:]], cwd, timeout, env=env)
+    result = execute(
+        [str(executable), *command.argv[1:]], cwd, timeout, env=env, retain=BUILD_RETAINED
+    )
     try:
         unchanged = _digest(executable)[0] == digest
     except (OSError, ValueError) as exc:

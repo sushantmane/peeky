@@ -237,6 +237,25 @@ def test_retry_requires_complete_source_diagnostic():
     assert not compiler_diagnostic(diagnostic(), ("src/other.rs",))
 
 
+def test_many_diagnostics_are_still_a_compile_failure():
+    # Eval 3 follow-up: three errors and some warnings passed 16 KB of JSON, which used
+    # to read as possibly truncated, so a plain type error became an infrastructure
+    # failure.
+    error = {
+        "reason": "compiler-message",
+        "message": {
+            "level": "error",
+            "message": "mismatched types",
+            "rendered": "src/main.rs:3:9: error[E0308]: mismatched types\n",
+            "spans": [{"file_name": "src/main.rs", "is_primary": True, "text": ["x" * 400]}],
+        },
+    }
+    lines = [json.dumps(error)] * 60 + [json.dumps({"reason": "build-finished", "success": False})]
+    result = diagnostic(stdout="\n".join(lines) + "\n")
+    assert len(result["stdout"]) > 16000
+    assert compiler_diagnostic(result, ("src/main.rs",))
+
+
 @pytest.mark.parametrize("ignored,measured", [(1, 0), (0, 1)])
 def test_libtest_ignored_or_measured_tests_are_not_clean_pass(ignored, measured):
     result = {

@@ -147,14 +147,16 @@ peeky queries hits
 ```
 
 ```
-selector  hit  line  value  changed
-best      1    6     0      NULL
-best      2    6     0      0
-best      3    6     0      0
-value     1    6     -3     NULL
-value     2    6     -1     1
-value     3    6     -2     1
+selector  hit  line  value  error  changed
+best      1    6     0      NULL   NULL
+best      2    6     0      NULL   0
+best      3    6     0      NULL   0
+value     1    6     -3     NULL   NULL
+value     2    6     -1     NULL   1
+value     3    6     -2     NULL   1
 ```
+
+A hit where the selector has no value shows NULL with the reason in `error`, and `changed` is NULL next to it: a missing value is never compared as one.
 
 `best` starts at 0 and never drops to a negative value, so the running maximum of all-negative input is wrong.
 
@@ -276,7 +278,7 @@ run_a  run_b  hit   phase     selector  value_a                        value_b  
 1      2      NULL  NULL      (output)  ::ffff:8.8.8.8: private\n      ::ffff:10.0.0.1: private\n   1        output differs
 ```
 
-`diff` keeps only the rows that differ. Real differences come first, in hit order and then in `--capture` order, so the first row is the first divergence. Then come values that only one run's `--set` changed (`intervention only in run b`), then values that differ only in heap or stack addresses (`note: addresses only`, for example a C string's pointer; NULL is never treated as an address), then one row per selector that only one run asked for (`only in run a`), and last, `(status)` and `(output)` rows when the runs' outcomes or outputs differ. The `(output)` row shows each output from just before the first character that differs (`output differs at character 213`), so after a `--set` it shows the intervention's effect. Hits that one run never reached say `missing in run b`. Comparing needs two saved runs; with fewer, the query says so. `queries compare` shows every value side by side with the same notes. Labels are free text, stored as given.
+`diff` keeps only the rows that differ. Real differences come first, in hit order and then in `--capture` order, so the first row is the first divergence. Then come values that only one run's `--set` changed (`intervention only in run b`), then values that differ only in heap or stack addresses (`note: addresses only`, for example a C string's pointer; NULL is never treated as an address), then one row per selector that only one run asked for (`only in run a`), and last, `(status)` and `(output)` rows when the runs' outcomes or outputs differ, an `(edit)` row when one run built a candidate edit, and a `(line)` row when the runs stopped at different lines (their values then differ partly because of where they were read). The `(output)` row shows each output from just before the first character that differs (`output differs at line 4, column 13`, counted from 1), so after a `--set` it shows the intervention's effect. Hits that one run never reached say `missing in run b`. Comparing needs two saved runs; with fewer, the query says so. `queries compare` shows every value side by side with the same notes. Labels are free text, stored as given.
 
 ### 3.2 Inputs, Outcomes and Outputs of the Last Two Runs
 
@@ -419,7 +421,7 @@ operations: 11 (worker requests in this session, including waits; --json lists t
 closed default
 ```
 
-`session get` on a list, dict or struct lists one level of children, each with the selector that reads it. If any selector fails, every row is still printed and the exit status is 1. `session continue` without `--to-exit` runs to the next stop at the session's breakpoint.
+Scope headers are the debugger's own names: `[Locals]` for Python, `[Local]` for Java. `session get` on a list, dict or struct lists one level of children, each with the selector that reads it, and `(children: ...)` on a child that has children of its own. A name that is not there prints only why (`x: <not found; visible: ...>`). If any selector fails, every row is still printed and the exit status is 1. `session continue` without `--to-exit` runs to the next stop at the session's breakpoint.
 
 ### 5.2 Stepping and Running to a Line
 
@@ -554,7 +556,7 @@ candidate: values are from a fresh build with this edit; your files are unchange
 
 run_a  run_b  hit   phase     selector  value_a           value_b               differs  note
 1      2      1     observed  start     6                 3                     1        NULL
-1      2      NULL  NULL      (output)  PAGE:[70, 80]\n  PAGE:[40, 50, 60]\n  1        output differs at character 6
+1      2      NULL  NULL      (output)  PAGE:[70, 80]\n  PAGE:[40, 50, 60]\n  1        output differs at line 1, column 7
 1      2      NULL  NULL      (edit)    none              candidate             1        the runs built different edits (runs.edit has each diff)
 ```
 
@@ -723,7 +725,7 @@ Errors carry a stable `code`, a `hint`, and whether retrying can help (`--json` 
 
 | You see | Meaning | Do this |
 | --- | --- | --- |
-| `NO_STOP` | The line never ran (e.g. `--at 6`, the `raise` that valid input never reaches) | Pick a line the run executes; `describe` lists lines with code, not lines that run |
+| `NO_STOP` | The line never ran (e.g. `--at 6`, the `raise` that valid input never reaches), or the program failed before it (the message gives the exit code when the debugger reports one, and the output says why) | Pick a line the run executes; `describe` lists lines with code, not lines that run. After a failure, check the program's arguments: everything after `--` goes to the program, and the hint names any of Peeky's own options found there |
 | `warning: The debugger moved the breakpoint ...` | The line has no code of its own; values come from the line named in the warning | Use a line from `describe` |
 | `<not found; visible: items, page, ...>` in a row | The name is not visible at that stop, or is not assigned yet (a breakpoint stops before its line) | Use a listed name, or stop one line later |
 | `MUTATION_REJECTED` | Not a literal (`--set start=min(1, 2)`), wrong type or range, or a Rust local held in a register | Use a literal of the right type, or edit the source and `verify` |

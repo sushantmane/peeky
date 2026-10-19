@@ -102,6 +102,19 @@ An hourly thread heartbeat (`continue-peeky-mvp`) checks for available usage and
     - Values are kept only if the build that ran hashes to the edited text, locally and over `--worker`.
     - A build that fails is now `BUILD_FAILED` with the compiler's output, for every probe and session.
     - Evidence schema 3: `runs.edit` holds the diff; the views have `candidate`; `queries runs` marks candidate runs, `values` leaves them out, and `diff` adds an `(edit)` row. Older stores upgrade in place.
+- **Third agent evaluation** ([report](evaluations/2026-10-18-agent-third-round.md)): Rust, C and Java bugs, each fixed and verified on the first `verify`, all three after a candidate probe. The eval-fixes PR fixes the findings:
+  - `queries hits`/`run` keep error text out of `value`;
+  - owned `Vec`s read at a loop head after `vec!` (std macro code counts only on lines that can invoke a macro);
+  - Rust `f64`/`f32` scalars print as Rust does;
+  - failed probes keep their output, and `NO_STOP` gives the exit code and names Peeky options placed after `--`;
+  - `diff` gets a `(line)` row and gives line and column.
+  - From its review rounds:
+    - the macro-line premise is qualified per toolchain (`test_rust_macro_lines.py`);
+    - functions using `debug_assert!` can be proven;
+    - Rust builds with many diagnostics are `BUILD_FAILED` with rustc's errors;
+    - programs using `HashMap` no longer exceed the 2 MiB DWARF cap.
+  - Issues filed: #74 to #79.
+- **#73 (`f8e5efa`):** Rust containers of every scalar element type (`Vec<T>`, `&[T]`, `&mut [T]`, `&Vec<T>` for i8–i64, u8–u64, isize, usize, bool, f32, f64), with floats printed exactly as Rust's `{:?}`.
 - **#71 (`146ab4f`): owned Rust `Vec<i32>`/`String` locals** are read from memory where the build's MIR proves them initialized at the stop line (closes #53).
   - The binary crate is compiled through a rustc wrapper: `-Zmir-opt-level=0`, a `PreCodegen` MIR dump, legacy mangling, and `RUSTC_BOOTSTRAP` for that crate only.
   - `rust_mir` runs a definite-initialization dataflow, checked at every place code of the stop line can be.
@@ -116,6 +129,7 @@ An hourly thread heartbeat (`continue-peeky-mvp`) checks for available usage and
 
 **Open issues:**
 - **#27:** an attached JVM whose `stopped` event is lost (seen once on Venice). The launch case is fixed. 160 targeted stress runs (simple and Venice-like thread churn) did not reproduce it; diagnostics stay in place.
+- **#74 to #79** (third evaluation): uninitialised C/C++ locals, integer `num`, several edits per candidate, `--set` settability up front, Java object previews and lists, Rust scalar type names.
 - **#61:** NVIDIA CUDA debugging, sanitizers and profiling, filed by the owner. [ADR 0007](adr/0007-cuda-gdb-dap.md) proposes driving `cuda-gdb -i=dap`; `scripts/cuda/qualify.py` is the phase 0 qualification, and its DAP sequence is tested against upstream GDB (lane `gdb-dap`). Running it needs a Linux host with an NVIDIA GPU, reachable over Peeky's SSH remote worker; this Mac has none.
 
 **Process notes:**
