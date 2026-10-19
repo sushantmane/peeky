@@ -822,13 +822,80 @@ OWNERS = "\n".join(
 )
 
 
-def test_a_reference_s_owners_are_the_locals_it_points_into():
-    # #110: a reference reads only while what owns its referent is initialized. An index
-    # is not borrowed (`&(*_1)[_4]`); a call's result points only into what it borrows
-    # (`index(move _6, ..)` with `_6 = &_2`), not into an owned value moved into it
-    # (`Box::leak`); a reference argument's referent is outside the frame.
+def test_a_reference_reads_while_used_ahead_or_just_used_on_the_line():
+    # #110: a reference reads only while the code still uses it ahead (its borrow then
+    # keeps the target), or after a use on the stop line with nothing since that can
+    # move, drop or write. A drop is not a use: drop glue keeps no loan alive.
     body = parse_body(OWNERS)
-    assert body.owners(body.local("p")) == set()
-    assert body.owners(body.local("first")) == {2}
-    assert body.owners(body.local("leaked")) == set()
-    assert body.owners(body.local("r")) == {7}
+    p, first, r = body.local("p"), body.local("first"), body.local("r")
+    assert body.used_ahead(p, (0, 0)) is False
+    assert body.used_ahead(first, (0, 0)) is False
+    # Its own assignment comes first: the slot's old value is not a use.
+    assert body.used_ahead(r, (2, 0)) is False
+    body.blocks[2].statements.insert(1, ("_3 = copy _10;", "src/main.rs", 6))
+    assert body.used_ahead(r, (2, 1)) is True
+    body.blocks[2].statements[1] = (
+        "drop(_10) -> [return: bb3, unwind continue];",
+        "src/main.rs",
+        6,
+    )
+    assert body.used_ahead(r, (2, 1)) is False
+    # `_3 = &(*_1)[_4]` uses `_4`; `_6 = &_2` assigns a local nothing borrows.
+    assert body.used_before(4, (0, 2)) is True
+    assert body.used_before(4, (0, 3)) is True
+    # A call in between can free it.
+    assert body.used_before(4, (1, 0)) is False
+    # Writing a borrowed local can change it.
+    body.blocks[0].statements.insert(3, ("_2 = move _9;", "src/main.rs", 3))
+    assert body.used_before(4, (0, 4)) is False
+    assert body._borrowed() == {2}
+
+
+def test_a_breakpoint_stops_only_where_its_line_starts_in_each_scope():
+    # #110: rustc lays out a block after the block first branching to it, so where a line
+    # continues from its own branch (an overflow check) in the same scope, LLDB puts no
+    # breakpoint location: only steps and pauses stop there.
+    body = parse_body(CONTINUED)
+    assert body.stop_positions({0, 1}, 3, "src/main.rs", False, True) == [(0, 2)]
+    every = body.stop_positions({0, 1}, 3, "src/main.rs", False, False)
+    assert every == [(0, 2), (0, 3), (0, 4), (1, 0)]
+    item = body.local("item")
+    assert not body.used_ahead(item, (1, 0))
+    assert all(body.used_ahead(item, at) or body.used_before(item, at) for at in every)
+    # In another scope the continuation is a lexical block of its own: LLDB stops there.
+    body.blocks[1].scopes[0] = 2
+    assert body.stop_positions({0, 1}, 3, "src/main.rs", False, True) == [(0, 2), (1, 0)]
+
+    # A call the line's first code: if inlined (`#[inline(always)]`, `Option::unwrap`),
+    # the line's first address is after it.
+    called = parse_body(OWNERS)
+    assert called.stop_positions({1}, 5, "src/main.rs", False, True) == [(1, 0), (1, 2)]
+    assert called.stop_positions({0}, 3, "src/main.rs", False, True) == [(0, 2)]
+
+
+CONTINUED = "\n".join(
+    [
+        "fn f(_1: &Item, _2: i64) -> i64 {",
+        "    debug item => _1;                    // in scope 0 at src/main.rs:1:6: 1:10",
+        "    debug sum => _2;                     // in scope 0 at src/main.rs:1:19: 1:22",
+        "    let mut _0: i64;                     // return place in scope 0 at src/main.rs:1:30: 1:33",
+        "    let mut _3: i64;                     // in scope 0 at src/main.rs:3:12: 3:22",
+        "    let mut _4: (i64, bool);             // in scope 0 at src/main.rs:3:5: 3:22",
+        "",
+        "    bb0: {",
+        "        _0 = copy _2;                    // scope 1 at src/main.rs:2:5: 2:8",
+        "        StorageLive(_3);                 // scope 1 at src/main.rs:3:12: 3:22",
+        "        _3 = copy ((*_1).0: i64);        // scope 1 at src/main.rs:3:12: 3:22",
+        "        _4 = AddWithOverflow(copy _0, copy _3); // scope 1 at src/main.rs:3:5: 3:22",
+        '        assert(!move (_4.1: bool), "attempt to compute `{} + {}`, which would overflow", copy _0, move _3) -> [success: bb1, unwind continue]; // scope 1 at src/main.rs:3:5: 3:22',
+        "    }",
+        "",
+        "    bb1: {",
+        "        _0 = move (_4.0: i64);           // scope 1 at src/main.rs:3:5: 3:22",
+        "        StorageDead(_3);                 // scope 1 at src/main.rs:3:21: 3:22",
+        "        return;                          // scope 0 at src/main.rs:4:2: 4:2",
+        "    }",
+        "}",
+        "",
+    ]
+)

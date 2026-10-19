@@ -1017,7 +1017,7 @@ fn dangling(q: &Pt) -> i64 {
     let rp: *const Pt = &*b;
     let v = vec![Pt { x: 3, y: 4 }];
     let first = &v[0];
-    let total = r.x + first.y + q.x;
+    let total = r.x + first.y + q.x; // USED_REFS
     std::hint::black_box(total); // LIVE_REFS
     drop(b);
     drop(v);
@@ -1241,13 +1241,22 @@ def test_generic_boxes_are_gated_and_non_owning_values_read(plain, capsys):
     read = [row.get("value") for row in result["rows"] if row["selector"] == "b.x"]
     assert read and all(value in (None, "41") for value in read), result["rows"]
     # #110: a reference or raw pointer into a dropped Box or Vec read freed memory
-    # through the address the Box's own row hid; it reads only while its owner is
-    # proven initialized. A reference parameter's referent is outside the frame.
+    # through the address the Box's own row hid; a reference reads only where the code
+    # still uses it, a raw pointer never. A reference parameter's referent is outside
+    # the frame.
+    at = f"src/main.rs:{line_of(BOX_GENERIC, '// USED_REFS')}"
+    code, result = run(
+        capsys, "probe", str(plain), "--at", at, "--capture", "r.x,first.y,rp", "--quiet"
+    )
+    rows = result["rows"]
+    assert [row.get("value") for row in rows[:2]] == ["1", "4"], rows
+    assert rows[2].get("view") == "unproven", rows
+    # Past their last use with only arithmetic since, their targets still stand.
     at = f"src/main.rs:{line_of(BOX_GENERIC, '// LIVE_REFS')}"
     code, result = run(
-        capsys, "probe", str(plain), "--at", at, "--capture", "r.x,rp.x,first.y", "--quiet"
+        capsys, "probe", str(plain), "--at", at, "--capture", "r.x,first.y", "--quiet"
     )
-    assert [row.get("value") for row in result["rows"]] == ["1", "1", "4"], result["rows"]
+    assert [row.get("value") for row in result["rows"]] == ["1", "4"], result["rows"]
     at = f"src/main.rs:{line_of(BOX_GENERIC, '// DANGLING_REFS')}"
     code, result = run(
         capsys, "probe", str(plain), "--at", at, "--capture", "r,rp,first,q.x", "--quiet"
@@ -1528,6 +1537,43 @@ fn reads(v: &[Pt], label: String, grid: &HashMap<(i64, i64), Pt>, m: &HashMap<St
     cell.x + hit.x + found.x + r.x + named.label.len() as i64 // READS
 }
 
+fn loop_back() -> i64 {
+    let mut v = vec![Pt { x: 1, y: 2 }];
+    let first = &v[0];
+    let k = first.x;
+    let mut t = k;
+    for i in 0..3 {
+        t += churn() + i; // LOOP_BACK
+        v.push(Pt { x: 3, y: 4 });
+    }
+    t
+}
+
+fn tuple_drop() -> i64 {
+    let b = Box::new(Pt { x: 7, y: 8 });
+    let t = (&*b, String::from("label"));
+    let k = t.0.x;
+    drop(b);
+    k + churn() // TUPLE_DROP
+}
+
+fn score(p: &Pt) -> i64 {
+    p.x * 2 // IN_SCORE
+}
+
+fn last_uses(items: &[Pt]) -> i64 {
+    let label = "label";
+    let mut total = label.len() as i64;
+    for item in items {
+        total += item.y;
+        println!("{}", item.x); // PRINTED
+    }
+    for item in items {
+        total += score(item); // SCORED
+    }
+    total + churn() // LITERAL
+}
+
 fn dead_but_fine() -> i64 {
     let b = Box::new(Pt { x: 7, y: 8 });
     let r = &*b;
@@ -1545,6 +1591,9 @@ fn main() {
     println!("{} {} {} {} {}", field_box(), vec_box(), ref_ref(), reassigned(), pushed());
     println!("{} {} {} {} {}", mut_param(&mut v), carried(), in_vec(), text(), tupled());
     println!("{} {}", reads(&v, String::from("x"), &grid, &m, 1), dead_but_fine());
+    println!("{} {}", loop_back(), tuple_drop());
+    let w = vec![Pt { x: 5, y: 6 }];
+    println!("{}", last_uses(&w));
 }
 """
 
@@ -1552,8 +1601,8 @@ fn main() {
 @pytest.mark.timeout(600)
 def test_references_read_only_while_their_target_stands(plain, capsys):
     # #110: a reference or raw pointer into a moved, dropped, reassigned or reallocated
-    # value read freed memory. It now reads while the code still uses it, or while what
-    # owns its target is untouched since it was made; otherwise only its address shows.
+    # value read freed memory. A reference now reads while the code still uses it (at a
+    # breakpoint, on its last line too); otherwise only its address shows.
     (plain / "src/main.rs").write_text(REFERENCES)
     gated = {
         "FIELD_BOX": "r",
@@ -1579,6 +1628,43 @@ def test_references_read_only_while_their_target_stands(plain, capsys):
         capsys, "probe", str(plain), "--at", at, "--capture", "cell.x,hit.x,found.x,r.x", "--quiet"
     )
     assert [row.get("value") for row in result["rows"]] == ["7", "9", "3", "3"], result["rows"]
+    # Past its last use with only arithmetic since, what it points into still stands.
     at = f"src/main.rs:{line_of(REFERENCES, '// DEAD_FINE')}"
     code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "r.x", "--quiet")
     assert result["rows"][0].get("value") == "7", result["rows"]
+    # Verification of #110: a loop's later iteration reallocated the buffer a reference
+    # still pointed into, and drop glue (`t` beside a String) counted as a use.
+    at = f"src/main.rs:{line_of(REFERENCES, '// LOOP_BACK')}"
+    code, result = run(
+        capsys, "probe", str(plain), "--at", at, "--capture", "first", "--hits", "3", "--quiet"
+    )
+    assert all(row.get("view") == "unproven" for row in result["rows"]), result["rows"]
+    at = f"src/main.rs:{line_of(REFERENCES, '// TUPLE_DROP')}"
+    code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "t", "--quiet")
+    assert result["rows"][0].get("view") == "unproven", result["rows"]
+    # A breakpoint stops where its line starts, before the line's own code: a last use
+    # there (an argument, `println!`'s) reads. A literal `&str` always does.
+    for marker in ("PRINTED", "SCORED"):
+        at = f"src/main.rs:{line_of(REFERENCES, '// ' + marker)}"
+        code, result = run(
+            capsys, "probe", str(plain), "--at", at, "--capture", "item.x", "--quiet"
+        )
+        assert result["rows"][0].get("value") == "5", (marker, result["rows"])
+    at = f"src/main.rs:{line_of(REFERENCES, '// LITERAL')}"
+    code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "label", "--quiet")
+    assert result["rows"][0].get("view") != "unproven", result["rows"]
+    # `step --out` stops inside the line, after `score(item)` returned: past the last use.
+    at = f"src/main.rs:{line_of(REFERENCES, '// IN_SCORE')}"
+    assert main(["session", "start", str(plain), "--at", at]) == 0
+    capsys.readouterr()
+    try:
+        assert main(["session", "step", "--out", "--json"]) == 0
+        state = json.loads(capsys.readouterr().out)
+        scored = line_of(REFERENCES, "// SCORED")
+        assert str(state.get("location")).endswith(f"main.rs:{scored}"), state
+        assert main(["session", "inspect", "--json"]) == 0
+        snapshot = json.loads(capsys.readouterr().out)
+    finally:
+        main(["session", "close"])
+    variables = {v["name"]: v for scope in snapshot["scopes"] for v in scope["variables"]}
+    assert variables["item"].get("view") == "unproven", variables["item"]

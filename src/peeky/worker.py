@@ -1327,6 +1327,7 @@ class DebugWorker:
                     frame=frame,
                     top=not ancestry,
                     innermost=not ancestry and frame.get("id") == self.innermost_frame,
+                    stop=self.stop_reason,
                 )
                 if view_variable
                 else None

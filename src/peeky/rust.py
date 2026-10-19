@@ -952,7 +952,9 @@ class RustSession(NativeSession):
                 "probe); otherwise edit the source and run verify"
             )
 
-    def view_variable(self, variable, fetch, read=None, *, frame=None, top=False, innermost=False):
+    def view_variable(
+        self, variable, fetch, read=None, *, frame=None, top=False, innermost=False, stop=None
+    ):
         """Qualified views: containers read from memory, active enum variants; None
         leaves ordinary values unchanged.
 
@@ -1062,10 +1064,17 @@ class RustSession(NativeSession):
             if not gated and provable:
                 # #110: a reference (or raw pointer, `&str`, a tuple holding one) outlives
                 # what it points into in scope, though not in use: it reads while the code
-                # still uses it, or while what owns its target is untouched since. What
-                # cannot be told (a site or local not understood) reads as before.
+                # still uses it ahead. A line breakpoint stops only where the line starts
+                # (`stop`); a step or a pause can stop inside it. What cannot be told (a
+                # site or local not understood) reads as before.
                 gated = (
-                    proofs.reference_valid(hashed[1], variable.get("name"), line, shown_path)
+                    proofs.reference_valid(
+                        hashed[1],
+                        variable.get("name"),
+                        line,
+                        shown_path,
+                        breakpoint=stop == "breakpoint",
+                    )
                     is False
                 )
             if gated:
