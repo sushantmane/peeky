@@ -617,7 +617,7 @@ run_a  run_b  hit   phase     selector  value_a           value_b               
   ```
 
   This reports `set end: 3 -> 10`. `black_box` keeps the new Rust local in memory, where a change reaches the program.
-- **Python:** the edited `--at` file runs from a private copy as if it were your script: `__file__`, `sys.argv[0]` and the import path name the original, so everything it finds by its own path is yours, and the working directory is the target root. The edit reaches that one process: a program that starts another Python process on the script (multiprocessing's `spawn`/`forkserver`, a subprocess or `exec` of `__file__`) stops with an error saying so, since that process would run your unedited file; use `verify` there. A `--run` entry script would import the original module, so it is refused. Attached JVMs refuse candidates.
+- **Python:** like a compiled candidate, it runs from a private copy of the target root with the edit applied (version-control, virtualenv and cache directories are linked, not copied), and that copy is the working directory. Whatever the script reaches through its own path, an import, or another process (multiprocessing, a subprocess of `__file__`) is the copy, so all of it runs the edit. Paths above the target root are not copied: when the script uses them (`..`, `parents[1]`), the result warns, and giving the project directory as the target (`peeky probe proj --at scripts/run.py:14`) includes them. `--run` entry scripts are refused.
 
 ---
 

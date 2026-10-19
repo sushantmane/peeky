@@ -790,7 +790,12 @@ class DebugWorker:
                     **({"optimized": level} if (level := self.optimized()) else {}),
                     **(
                         {"warnings": notes}
-                        if (notes := self.breakpoint_notes(program, args))
+                        if (
+                            notes := [
+                                *self.breakpoint_notes(program, args),
+                                *(getattr(runtime, "warnings", None) or ()),
+                            ]
+                        )
                         else {}
                     ),
                 }

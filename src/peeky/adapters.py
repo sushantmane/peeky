@@ -6,6 +6,7 @@ Python runs directly; compiled runtimes require prepared build provenance.
 
 import ast
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -47,118 +48,110 @@ def validate_python_literal(value):
         raise ValueError(message) from None
 
 
-# Runs the edited copy as `__main__` with the original script's identity: `__file__`,
-# `sys.argv[0]` and `sys.path[0]` name the original, so everything the script finds by
-# its own path is the user's. Compiled under the copy's path, so breakpoints set on the
-# copy bind. Another Python process started on the original file would run the unedited
-# code; those starts fail loudly instead.
-_CANDIDATE_MAIN = """\
-import os
-import sys
-import tokenize
-import types
-
-staged, original = sys.argv[1], sys.argv[2]
-sys.argv = [original, *sys.argv[3:]]
-sys.path[0] = os.path.dirname(original)
-with tokenize.open(staged) as stream:
-    code = compile(stream.read(), staged, "exec")
-REFUSED = (
-    "Peeky candidate probe: this program starts another Python process on "
-    + original
-    + ", which would run the unedited file; the edit reaches this process only. "
-    "Check the edit with `peeky verify`"
+# A Python candidate copies its target root. These directories are linked instead of
+# copied: large, and not the program's own code.
+_LINKED_DIRS = frozenset(
+    {
+        ".git",
+        ".hg",
+        ".svn",
+        "node_modules",
+        ".venv",
+        "venv",
+        ".tox",
+        ".nox",
+        "__pycache__",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".ruff_cache",
+        ".eggs",
+        "site-packages",
+    }
 )
-
-
-def _runs_original(args):
-    if isinstance(args, (str, bytes, os.PathLike)):
-        args = [args]
-    for arg in args or ():
-        text = os.fsdecode(arg) if isinstance(arg, (bytes, os.PathLike)) else str(arg)
-        if os.path.abspath(text) == original or (
-            os.path.isfile(text) and os.path.samefile(text, original)
-        ):
-            return True
-    return False
-
-
-def _guard():
-    import subprocess
-
-    popen = subprocess.Popen.__init__
-
-    def guarded(self, args, *rest, **options):
-        if _runs_original(args):
-            raise RuntimeError(REFUSED)
-        popen(self, args, *rest, **options)
-
-    subprocess.Popen.__init__ = guarded
-    for name in ("execv", "execve", "posix_spawn", "posix_spawnp"):
-        if callable(launch := getattr(os, name, None)):
-
-            def checked(path, args, *rest, _launch=launch, **options):
-                if _runs_original([path, *args]):
-                    raise RuntimeError(REFUSED)
-                return _launch(path, args, *rest, **options)
-
-            setattr(os, name, checked)
-    try:
-        import multiprocessing.spawn as spawn
-    except ImportError:
-        return
-    prepare = spawn.get_preparation_data
-
-    def data(name):
-        found = prepare(name)
-        # spawn and forkserver re-run __main__ by its path in each child (fork does not).
-        if found.get("init_main_from_path"):
-            raise RuntimeError(REFUSED)
-        return found
-
-    spawn.get_preparation_data = data
-
-
-_guard()
-main = types.ModuleType("__main__")
-main.__file__ = original
-main.__builtins__ = __builtins__
-sys.modules["__main__"] = main
-exec(code, main.__dict__)
-"""
+MAX_COPIED_FILES = 20_000
+MAX_COPIED_BYTES = 256 * 1024 * 1024
+# Code that reaches above its own directory: `..`, `os.pardir`, `parents[1]`, `.parent.parent`.
+_ABOVE = re.compile(r"""['"]\.\.['"/\\]|os\.pardir|\.parents\[|\.parent\.parent""")
 
 
 class PythonCandidate:
-    """A Python candidate edit: the edited program file, run from a private directory as
-    if it were the original script (`__file__`, `sys.argv[0]` and the import path are
-    the original's), from the original root. Nothing in the user's tree is linked or
-    written. A start of another Python process on the original file fails loudly."""
+    """A Python candidate edit: a private copy of the target root with the edit applied,
+    run from there, as a compiled candidate runs from a fresh build. Whatever the script
+    reaches through its own path, an import or another process (a subprocess of
+    `__file__`, multiprocessing's spawn) is the copy, so all of it runs the edit. Files
+    above the root are not copied. Nothing in the user's tree is written."""
 
     def __init__(self, adapter, program, root, edit):
         self.adapter = adapter
         self.original = Path(program).resolve(strict=True)
-        relative = self.original.relative_to(Path(root).resolve(strict=True))
+        root = Path(root).resolve(strict=True)
+        relative = self.original.relative_to(root)
         if relative.as_posix() != edit.path:
             raise ValueError("A Python candidate edits the --at file only")
         text = self.original.read_text()
         if not edit.old or edit.old == edit.new or text.count(edit.old) != 1:
             raise ValueError("--old must match the --at file exactly once and --new must change it")
         self.scratch = Path(tempfile.mkdtemp(prefix="peeky-candidate-"))
-        self.staged = self.scratch / "edited" / relative.name
-        self.bootstrap = self.scratch / "peeky_candidate_main.py"
         try:
-            self.staged.parent.mkdir()
-            for path, content in (
-                (self.staged, text.replace(edit.old, edit.new, 1)),
-                (self.bootstrap, _CANDIDATE_MAIN),
-            ):
-                # A fresh file in the private directory only, never through a link.
-                handle = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW)
-                with os.fdopen(handle, "w", encoding="utf-8") as stream:
-                    stream.write(content)
+            self.root = self.scratch / (root.name or "root")
+            self._copy(root, self.root)
+            self.staged = self.root / relative
+            # The edited file replaces its copy, and is never written through a link.
+            for parent in self.staged.parents:
+                if parent == self.root:
+                    break
+                if parent.is_symlink() or not parent.is_dir():
+                    raise ValueError("A Python candidate's --at path leaves the copied root")
+            if os.path.lexists(self.staged):
+                os.unlink(self.staged)
+            handle = os.open(self.staged, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW)
+            with os.fdopen(handle, "w", encoding="utf-8") as stream:
+                stream.write(text.replace(edit.old, edit.new, 1))
         except BaseException:
             shutil.rmtree(self.scratch, ignore_errors=True)
             raise
+        self.warnings = (
+            [
+                "This Python candidate runs from a copy of the target root, and the script "
+                "refers to paths above its directory (`..`, `parents[...]`), which are not "
+                "copied: those resolve outside the copy. Give the directory that holds them as "
+                "the target (`peeky probe <project> --at <path/to/script.py>:<line>`)"
+            ]
+            if relative.parent == Path(".") and _ABOVE.search(text)
+            else []
+        )
+
+    @staticmethod
+    def _copy(source, destination):
+        """Real directories and files; symlinks as symlinks; _LINKED_DIRS linked."""
+        files = size = 0
+        for here, directories, names in os.walk(source):
+            target = destination / Path(here).relative_to(source)
+            target.mkdir()
+            kept = []
+            for name in directories:
+                path = Path(here) / name
+                if name in _LINKED_DIRS and not path.is_symlink():
+                    (target / name).symlink_to(path, target_is_directory=True)
+                elif path.is_symlink():
+                    (target / name).symlink_to(os.readlink(path))
+                else:
+                    kept.append(name)
+            directories[:] = kept
+            for name in names:
+                path = Path(here) / name
+                files += 1
+                if path.is_symlink():
+                    (target / name).symlink_to(os.readlink(path))
+                    continue
+                size += path.lstat().st_size
+                if files > MAX_COPIED_FILES or size > MAX_COPIED_BYTES:
+                    raise ValueError(
+                        "A Python candidate copies the target root, and this one is too large "
+                        f"(over {MAX_COPIED_FILES} files or {MAX_COPIED_BYTES >> 20} MB): give a "
+                        "smaller target directory, or check the edit with `peeky verify`"
+                    )
+                shutil.copy2(path, target / name, follow_symlinks=False)
 
     def __getattr__(self, name):
         return getattr(self.adapter, name)
@@ -168,15 +161,13 @@ class PythonCandidate:
 
     def launch_args(self, program, root, args=()):
         if Path(program).resolve() != self.original:
-            # `--run` imports the --at module by name, from the original directory first.
+            # `--run` would be the user's entry script, outside the copy.
             raise ValueError(
                 "A Python candidate runs the edited --at file itself; with --run, the entry "
                 "script would import the original module. Probe the edited file directly, "
                 "or check the edit with `peeky verify`"
             )
-        return self.adapter.launch_args(
-            self.bootstrap, root, [str(self.staged), str(self.original), *args]
-        )
+        return self.adapter.launch_args(self.staged, self.root, args)
 
     def close(self):
         shutil.rmtree(self.scratch, ignore_errors=True)

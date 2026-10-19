@@ -228,44 +228,98 @@ def test_a_candidate_run_records_the_source_that_ran_and_its_edit(tmp_path):
 
 def test_python_candidates_run_an_edited_copy(tmp_path, capsys, monkeypatch):
     # Eval 5 (Python): `probe --old/--new` was refused, so a fix could not be seen
-    # before `verify`.
+    # before `verify`. Reviews of #109: the candidate must run the edit wherever the
+    # program reaches its own code, and find the user's files beside it.
     from peeky.cli import main
 
     monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
-    (tmp_path / "helper.py").write_text("def double(x):\n    return x * 2\n")
-    (tmp_path / "rates.json").write_text('{"rate": 5}')
-    script = tmp_path / "app.py"
+    package = tmp_path / "sub"
+    package.mkdir()
+    (package / "helper.py").write_text(
+        "from app import RATE\n\ndef double(x):\n    return x * 2 * RATE\n"
+    )
+    (package / "rates.json").write_text('{"bonus": 5}')
+    script = package / "app.py"
     script.write_text(
-        "import json, sys\nfrom pathlib import Path\nimport helper\n"
-        "here = Path(__file__).parent / 'rates.json'\n"
-        "rate = json.loads(here.read_text())['rate'] if here.exists() else 1\n"
-        "acc = 0\nfor x in (1, 2):\n    acc += helper.double(x) * rate\n"
-        "print('ACC:', acc, Path(sys.argv[0]).name, __name__)\n"
-        "if 'again' in sys.argv:\n"
-        "    import subprocess\n"
-        "    subprocess.run([sys.executable, __file__])\n"
+        "import json, subprocess, sys\nfrom pathlib import Path\nRATE = 1\n"
+        "if __name__ == '__main__':\n"
+        "    import helper\n"
+        "    bonus = json.loads((Path(__file__).parent / 'rates.json').read_text())['bonus']\n"
+        "    if sys.argv[1:] == ['child']:\n"
+        "        print(helper.double(1))\n"
+        "        sys.exit(0)\n"
+        "    child = subprocess.run(f'{sys.executable} {__file__} child', shell=True,\n"
+        "                           capture_output=True, text=True).stdout.split()[0]\n"
+        "    acc = helper.double(1) + bonus\n"
+        "    print('ACC:', acc, child, Path(sys.argv[0]).name)\n"
     )
     original = script.read_text()
-    probe = ["probe", str(script), "--at", "8", "--capture", "acc,rate", "--json", "--quiet"]
-    code = main([*probe, "--old", "acc = 0", "--new", "acc = 100"])
+    probe = [
+        "probe",
+        str(tmp_path),
+        "--at",
+        "sub/app.py:13",
+        "--capture",
+        "acc",
+        "--json",
+        "--quiet",
+    ]
+    code = main([*probe, "--old", "RATE = 1", "--new", "RATE = 10"])
     result = json.loads(capsys.readouterr().out)
     assert code == 0, result.get("error")
-    assert [row["value"] for row in result["rows"]] == ["100", "5"]
-    # Review of #109: it runs as the original script would (`__file__`, `argv[0]`, its
-    # directory's modules and data files), so only the edit differs.
-    assert "ACC: 130 app.py __main__" in result["output"] and script.read_text() == original
-    assert "+acc = 100" in result["candidate"]["diff"]
-    assert not list(Path(tempfile.gettempdir()).glob("peeky-candidate-*/edited/app.py"))
-    # Another Python process on the original file would run the unedited code: that
-    # fails loudly rather than reporting the original's values as the edit's.
-    code = main([*probe, "--old", "acc = 0", "--new", "acc = 100", "--", "again"])
-    result = json.loads(capsys.readouterr().out)
-    assert "would run the unedited file" in result["output"] and script.read_text() == original
+    # A nested --at file; an import of the script by name, a data file beside it and a
+    # shell re-run of `__file__` all see the edit (RATE 10 everywhere).
+    assert [row["value"] for row in result["rows"]] == ["25"]
+    assert "ACC: 25 20 app.py" in result["output"] and script.read_text() == original
+    assert "+RATE = 10" in result["candidate"]["diff"]
+    assert not list(Path(tempfile.gettempdir()).glob(f"peeky-candidate-*/{tmp_path.name}"))
     # An entry script would import the original module, so --run is refused.
-    (tmp_path / "run.py").write_text("import app\n")
-    code = main([*probe, "--run", str(tmp_path / "run.py"), "--old", "acc = 0", "--new", "acc = 1"])
+    (tmp_path / "run.py").write_text("import sub.app\n")
+    code = main(
+        [*probe, "--run", str(tmp_path / "run.py"), "--old", "RATE = 1", "--new", "RATE = 2"]
+    )
     error = json.loads(capsys.readouterr().out)["error"]
     assert "with --run, the entry script would import the original module" in error["message"]
+
+
+def test_a_python_candidate_warns_when_the_script_reaches_above_its_root(
+    tmp_path, capsys, monkeypatch
+):
+    from peeky.cli import main
+
+    monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
+    (tmp_path / "conf.json").write_text('{"rate": 5}')
+    (tmp_path / "scripts").mkdir()
+    script = tmp_path / "scripts" / "run.py"
+    script.write_text(
+        "import json\nfrom pathlib import Path\n"
+        "conf = Path(__file__).parents[1] / 'conf.json'\n"
+        "rate = json.loads(conf.read_text())['rate'] if conf.exists() else 1\n"
+        "acc = 0\nprint(acc * rate)\n"
+    )
+    probe = ["probe", str(script), "--at", "6", "--capture", "rate", "--json", "--quiet"]
+    main([*probe, "--old", "acc = 0", "--new", "acc = 1"])
+    result = json.loads(capsys.readouterr().out)
+    assert any("paths above its directory" in warning for warning in result["warnings"])
+    # With the project as the target, the copy holds them.
+    main(
+        [
+            "probe",
+            str(tmp_path),
+            "--at",
+            "scripts/run.py:6",
+            "--capture",
+            "rate",
+            "--json",
+            "--quiet",
+            "--old",
+            "acc = 0",
+            "--new",
+            "acc = 1",
+        ]
+    )
+    result = json.loads(capsys.readouterr().out)
+    assert result["rows"][0]["value"] == "5" and not result.get("warnings")
 
 
 def test_an_edit_needs_both_halves(tmp_path, capsys):
