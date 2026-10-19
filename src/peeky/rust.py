@@ -739,39 +739,51 @@ def _is_pointer(kind):
     """Whether LLDB's C-style type is a pointer at its top level: `Pt *`, `unsigned char
     (*)[8]`, `long (**)()`, `unsigned char (*(*)[2])[2]`; not a generic's argument
     (`Vec<Pt *>`) or an array of pointers (`long (*[2])(long)`, `unsigned char *[2]`)."""
-    text = str(kind or "")
+    # `->` would close a generic's `<` (`W<(u8, fn() -> u8)>`).
+    text = str(kind or "").replace("->", " ")
     while (stripped := re.sub(r"<[^<>]*>", "", text)) != text:
         text = stripped
     if re.search(r"\*\s*(?:const\s*)?$", text):
         return True
     # The innermost `(*…)` group decides: what follows its stars is the declared thing's
     # own suffix (`[2]` array, `(…)` function) or a deeper group; nothing means pointer.
-    while (group := _declarator_group(text)) is not None:
+    group = _declarator_group(text)
+    while group is not None:
         text = re.sub(r"^(?:\s*(?:\*|const\b|volatile\b|restrict\b))*\s*", "", group)
         if not text:
             return True
-        if not re.match(r"\(\s*\*", text):
-            return False
+        group = _group_at(text, 0) if re.match(r"\(\s*\*", text) else None
     return False
 
 
 def _declarator_group(text):
-    """The contents of the first `(*…)` group outside any parentheses or brackets, so a
-    parameter list's `(*)` (`unsigned char (*[2])(unsigned char (*)[4])`) or a tuple's
-    element never counts."""
-    depth = 0
+    """The contents of the declarator's `(*…)` group: the last one outside any parentheses
+    or brackets with a base type before it. A parameter list's `(*)` (`unsigned char
+    (*[2])(unsigned char (*)[4])`) never counts, nor does a tuple base that starts like
+    one (`(*const u8, i64) (*)[2]`)."""
+    depth, last = 0, None
     for at, char in enumerate(text):
         if char in "([":
-            if depth == 0 and char == "(" and text[at + 1 :].lstrip().startswith("*"):
-                level = 0
-                for end in range(at, len(text)):
-                    level += {"(": 1, ")": -1}.get(text[end], 0)
-                    if level == 0:
-                        return text[at + 1 : end]
-                return None
+            if (
+                depth == 0
+                and char == "("
+                and text[at + 1 :].lstrip().startswith("*")
+                and text[:at].strip()
+            ):
+                last = at
             depth += 1
         elif char in ")]":
             depth -= 1
+    return None if last is None else _group_at(text, last)
+
+
+def _group_at(text, at):
+    """The contents of the parenthesized group that opens at ``at``."""
+    level = 0
+    for end in range(at, len(text)):
+        level += {"(": 1, ")": -1}.get(text[end], 0)
+        if level == 0:
+            return text[at + 1 : end]
     return None
 
 

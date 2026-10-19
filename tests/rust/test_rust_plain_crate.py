@@ -777,6 +777,23 @@ fn arrays<T: Debug>(a: T) -> usize {
     reuse.len() // DROPPED_ARRAYS
 }
 
+#[derive(Debug)]
+pub struct W<T> {
+    x: u8,
+    f: T,
+}
+
+fn one() -> u8 {
+    1
+}
+
+fn tuples<T: Debug, U: Debug>(t: T, w: U) -> usize {
+    drop(t);
+    drop(w);
+    let reuse = Box::new([0x309i64; 4]);
+    reuse.len() // DROPPED_TUPLES
+}
+
 fn wide_ref() -> usize {
     let label: Box<str> = Box::from("label");
     let held = &label;
@@ -824,6 +841,9 @@ fn main() {
     let n = wide(Box::<str>::from("FREEDTXT"), Box::<str>::from("SECOND!!")) + grid(Box::new([[1u8; 4]; 2]));
     let ones: [&[u8; 2]; 2] = [&[1, 1], &[1, 1]];
     println!("{} {} {}", n, arrays(Box::new(ones)), wide_ref());
+    let pairs = [(std::ptr::null::<u8>(), 5i64), (std::ptr::null::<u8>(), 6i64)];
+    let ws = [W { x: 5u8, f: (1u8, one as fn() -> u8) }, W { x: 5u8, f: (2u8, one as fn() -> u8) }];
+    println!("{}", tuples(Box::new(pairs), Box::new(ws)));
     println!("{} {} {:?} {} {}", a, b, r, closures(&[1, 2]), exported(&Pt { x: 10, y: 1 }, &[1, 2]));
 }
 """
@@ -860,6 +880,8 @@ def test_generic_boxes_are_gated_and_non_owning_values_read(plain, capsys):
         ("DROPPED_WIDE", "w,s"),
         ("DROPPED_GRID", "g"),
         ("DROPPED_ARRAYS", "a"),
+        # LLDB: `(*const u8, i64) (*)[2]` and `W<(u8, fn() -> u8)> (*)[2]`.
+        ("DROPPED_TUPLES", "t,w"),
     ):
         at = f"src/main.rs:{line_of(BOX_GENERIC, '// ' + marker)}"
         code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", capture, "--quiet")

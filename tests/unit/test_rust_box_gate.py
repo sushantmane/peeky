@@ -23,6 +23,12 @@ from peeky.rust import _NON_OWNING, _is_pointer
         "long *(*)(long)",
         "unsigned char (*(*)[2])[2]",
         "long (*(**)(long))[2]",
+        # A tuple base that starts like a group, and a `->` inside a generic's argument
+        # (verification of #103).
+        "(*const u8, i64) (*)[2]",
+        "(*const u8, i64) *",
+        "vb7a::W<(u8, fn() -> u8)> (*)[2]",
+        "vb7a::W<(u8, fn() -> u8)> *",
     ],
 )
 def test_top_level_pointers(kind):
@@ -47,6 +53,10 @@ def test_top_level_pointers(kind):
         "unsigned char (*[2])(unsigned char (*)[4])",
         "void (*[2])(void (*)(long))",
         "long (*(*[3])(long))[2]",
+        "(*const u8, i64)",
+        "(*const u8, i64)[2]",
+        "vb7a::W<(u8, fn() -> u8)>",
+        "(u8, fn() -> u8) (*[2])(long)",
     ],
 )
 def test_arrays_and_non_pointers(kind):
