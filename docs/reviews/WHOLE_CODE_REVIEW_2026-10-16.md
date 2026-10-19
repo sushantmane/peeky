@@ -779,7 +779,7 @@ The final verification (b3a3002) found nothing wrong.
 - **Older, filed as #102:** a pointer to an array indexes its pointee (`parr[1]` is `(*parr)[1]`, as the cookbook says), not C's rows.
 
 
-## Review of moved or dropped Boxes (#103, 0e3f6b0)
+## Review of moved or dropped Boxes (#103, bc51bed)
 
 Checked and found sound:
 - **Box kinds:** `Box<T>`, `Box<[T]>`, `Box<str>` and `Box<dyn Trait>` `let` locals are gated, and so are shadowed names (`b @ main.rs:N`).
