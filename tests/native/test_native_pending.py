@@ -304,6 +304,13 @@ int main(void) {
         total += y + convert(x) + next();
         x++;
     } while (x < 3);
+    int i2; for (
+        i2 = 10; i2 < 13; i2++) total += i2;
+    int sw; switch (
+        sw = next()) {
+    case 0: total += sw + 1; break;
+    default: break;
+    }
     printf("TOTAL:%lld\\n", total);
     return 0;
 }
@@ -356,6 +363,12 @@ def test_a_line_a_loop_returns_to_and_mid_line_stops_show_the_value(convert, cap
     # loop, so its start is not a first pass (x86-64 does this for `while` tests too).
     rows = _rows(capsys, convert, 15, "y,x", 3)
     assert all("value" in rows[hit, "y"] for hit in (1, 2, 3))
+    # Review of #99: a header over several lines runs its next line's code first (the
+    # loop's `i2 = 10`, the switch's `sw = next()`), then its own line, with the local set.
+    rows = _rows(capsys, convert, 19, "i2", 3)
+    assert [rows[hit, "i2"]["value"] for hit in (1, 2, 3)] == ["10", "11", "12"]
+    rows = _rows(capsys, convert, 21, "sw", 1)
+    assert rows[1, "sw"]["value"] == "0"
     # A return from a call stops mid-line, where the one-line loop's `i` is live.
     main(["session", "start", str(convert), "--at", "6", "--hit", "2"])
     capsys.readouterr()

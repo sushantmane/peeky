@@ -5,6 +5,7 @@ Supported formats are single-architecture Mach-O (UUID) and ELF64 little-endian
 against hostile in-memory patching. SDK/system headers are not hermetic inputs.
 """
 
+import bisect
 import codecs
 import hashlib
 import json
@@ -665,6 +666,12 @@ def local_declarations(info, line_text, workspace, declared):
         ranges = sorted(span for body in entry["bodies"] for span in _code_ranges(dies[body]))
         entries = {min(span)[0] for body in entry["bodies"] if (span := _code_ranges(dies[body]))}
         names, jumps, starts = {}, False, {}
+        # Every row this function runs, by address: what runs just before a line's start.
+        ordered = sorted(
+            (address, source, line)
+            for (source, line), found in addresses.get(root, {}).items()
+            for address in found
+        )
         for body in (*entry["bodies"], root):
             for name, where, scope in _declared(dies, body, files, workspace):
                 if name is None:
@@ -681,6 +688,13 @@ def local_declarations(info, line_text, workspace, declared):
                     if any(low <= address < high for low, high in block)
                 )
                 if not found:
+                    continue
+                index = bisect.bisect_left(ordered, (found[0],)) - 1
+                before = ordered[index] if index >= 0 else None
+                if before is not None and (before[1] != source or before[2] > line):
+                    # Code of a later line runs straight into this one (a header over
+                    # several lines: `for (` then `i = 10; i < 13; i++)`), so control can
+                    # reach the first row with the local already assigned.
                     continue
                 first = {found[0]}
                 if found[0] in entries and (later := [a for a in found if a > found[0]]):
@@ -1628,8 +1642,10 @@ class NativeSession:
 
     def _check_loop_target(self, dap, frame):
         """Record whether the stop's address, when it starts a declaration line, is one a
-        loop branches back to (True), not (False), or unknown (None); once per address."""
+        loop jumps back to (True), not (False), or unknown (None). Each function is
+        disassembled at most once per session."""
         cache = self.__dict__.setdefault("loop_targets", {})
+        jumps = self.__dict__.setdefault("backward_jumps", {})
         pointer, bias = frame.get("instructionPointerReference"), self.load_bias
         declarations = getattr(self, "declarations", None)
         if (
@@ -1655,39 +1671,40 @@ class NativeSession:
         span = next(
             ((low, high) for low, high in function["ranges"] if low <= address < high), None
         )
-        cache[address] = None
-        if span is None or span[1] - span[0] > 8192:
-            return
-        low, high = span[0] + bias, span[1] + bias
+        if span is not None and span not in jumps:
+            jumps[span] = self._backward_jumps(dap, span, bias)
+        targets = jumps.get(span)
+        cache[address] = None if targets is None else address in targets
+
+    def _backward_jumps(self, dap, span, bias):
+        """The unslid addresses in ``span`` that a jump there goes back to, or None."""
+        low, high = span
+        try:
+            kind = architecture(self.binary)
+        except (OSError, struct.error):
+            return None
+        # Enough instructions to pass the function's end: arm64's are 4 bytes each.
+        count = (high - low) // 4 + 8 if kind == "arm64" else high - low + 16
+        if kind is None or count > 8192:
+            return None
         try:
             reply = dap.request(
                 "disassemble",
                 {
-                    "memoryReference": f"0x{low:X}",
+                    "memoryReference": f"0x{low + bias:X}",
                     "instructionOffset": 0,
-                    # At least one instruction per byte, and past the end to show it all.
-                    "instructionCount": span[1] - span[0] + 16,
+                    "instructionCount": count,
                     "resolveSymbols": False,
                 },
                 timeout=3,
             )
             instructions = reply.get("instructions") or []
-            covered = any(int(item["address"], 16) >= high for item in instructions)
-            kind = architecture(self.binary)
-            targets = backward_targets(instructions, low, high, kind) if covered else None
-        except (
-            OSError,
-            RuntimeError,
-            TimeoutError,
-            ValueError,
-            TypeError,
-            KeyError,
-            AttributeError,
-            struct.error,
-        ):
-            targets = None
-        if targets is not None:
-            cache[address] = address + bias in targets
+            if not any(int(item["address"], 16) >= high + bias for item in instructions):
+                return None
+            targets = backward_targets(instructions, low + bias, high + bias, kind)
+        except (RuntimeError, TimeoutError, ValueError, TypeError, KeyError, AttributeError):
+            return None
+        return None if targets is None else {target - bias for target in targets}
 
     def close(self):
         self.prepared.cleanup()
