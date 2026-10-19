@@ -632,6 +632,9 @@ def _composite(die, by_offset):
         raise ValueError("Rust element is not a tuple or struct")
     if any(
         child.tag not in ("DW_TAG_member", "DW_TAG_template_type_parameter")
+        # rustc declares each inherent method the program calls (`fn width(&self)`)
+        # inside its struct; that adds no storage.
+        and not (child.tag == "DW_TAG_subprogram" and "DW_AT_declaration" in child.attributes)
         for child in die.children
     ):
         raise ValueError("Rust element has more than plain fields (an enum's variants)")

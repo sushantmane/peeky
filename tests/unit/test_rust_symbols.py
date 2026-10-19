@@ -1146,7 +1146,15 @@ def test_composite_layouts_take_fields_and_shape_from_the_dwarf():
         "shape": "tuple",
         "shown": "(char, usize)",
     }
-    layouts = container_layouts(*composite_dump(INTERVAL, "&[peeky_pagination::Interval]"))
+    # rustc declares a called inherent method (`fn width(&self)`) inside the struct.
+    method = (
+        "m",
+        "DW_TAG_subprogram",
+        [("DW_AT_name", '"width"'), ("DW_AT_declaration", "true")],
+        [],
+    )
+    with_method = (*INTERVAL[:3], [*INTERVAL[3], method])
+    layouts = container_layouts(*composite_dump(with_method, "&[peeky_pagination::Interval]"))
     layout = layouts["&[peeky_pagination::Interval]"]
     assert (layout["shape"], layout["shown"], layout["element_size"]) == ("struct", "Interval", 24)
 

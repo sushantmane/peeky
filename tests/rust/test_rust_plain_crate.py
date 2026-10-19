@@ -308,6 +308,13 @@ struct Interval {
     open: bool,
 }
 
+// Review of #98: rustc declares a called inherent method inside the struct's DWARF.
+impl Interval {
+    fn width(&self) -> i64 {
+        self.end - self.start
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 struct Point(i32, u8);
 
@@ -329,7 +336,7 @@ struct Named {
 
 fn total(pairs: &[(i32, i32)], spans: &Vec<Interval>, shift: &mut [Point], small: &Vec<Pair<i8>>) -> i64 {
     shift[0].0 += 1;
-    let n = pairs.len() as i64 + spans.len() as i64 + shift.len() as i64 + small.len() as i64;
+    let n = pairs.len() as i64 + spans[0].width() + shift.len() as i64 + small.len() as i64;
     n // PARAMS
 }
 
