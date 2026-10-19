@@ -6,6 +6,7 @@ import os
 import shutil
 import sqlite3
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -743,16 +744,16 @@ def test_a_python_candidate_keeps_other_git_layouts_private(tmp_path, capsys, mo
     # copy's repository lists: never the user's, inside or outside the root.
     git_in(main_repository, "worktree", "add", "-q", str(main_repository / "inner"))
     (main_repository / "repair.py").write_text(
-        "import subprocess\nacc = 1\n"
-        "subprocess.run(['git', 'worktree', 'repair'], capture_output=True)\n"
-        "listed = subprocess.run(['git', 'worktree', 'list'], capture_output=True,"
-        " text=True).stdout\nprint(acc, listed)\n"
+        "import os, subprocess\nacc = 1\nhere = os.path.dirname(os.path.abspath(__file__))\n"
+        "subprocess.run(['git', 'worktree', 'repair'], capture_output=True, cwd=here)\n"
+        "listed = subprocess.run(['git', 'worktree', 'list'], capture_output=True, text=True,"
+        " cwd=here).stdout\nprint(acc, listed)\n"
     )
     pointers = {
         path: path.read_text()
         for path in (tmp_path / "linked-worktree" / ".git", main_repository / "inner" / ".git")
     }
-    candidate(main_repository, at="repair.py", line=5)
+    candidate(main_repository, at="repair.py", line=6)
     assert {path: path.read_text() for path in pointers} == pointers
     assert git_in(tmp_path / "linked-worktree", "status", "--porcelain") == ""
     # A bare repository beside its worktrees (`.git` says `gitdir: ./.bare`): its
@@ -765,9 +766,28 @@ def test_a_python_candidate_keeps_other_git_layouts_private(tmp_path, capsys, mo
     git_in(bare, "worktree", "add", "-q", str(bare / "main"), "main")
     (bare / "main" / "repair.py").write_text((main_repository / "repair.py").read_text())
     before = (bare / "main" / ".git").read_text()
-    candidate(bare, at="main/repair.py", line=5)
+    candidate(bare, at="main/repair.py", line=6)
     assert (bare / "main" / ".git").read_text() == before
     assert git_in(bare / "main", "status", "--porcelain") == "?? repair.py\n"
+    # Verification of #109: worktrees naming a shared git directory with no `.git` file
+    # at the root (`.bare` beside them), and a bare repository as the root itself, with a
+    # worktree outside the root each time.
+    for layout in ("shared", "root"):
+        top = tmp_path / f"{layout}-layout"
+        gitdir = top / ".bare" if layout == "shared" else top
+        git_in(tmp_path, "clone", "-q", "--bare", str(main_repository), str(gitdir))
+        (top / "pyproject.toml").write_text("")
+        bare = ("--git-dir", str(gitdir))  # `safe.bareRepository=explicit` may be set
+        git_in(tmp_path, *bare, "worktree", "add", "-q", str(top / "inside"), "main")
+        outside = tmp_path / f"{layout}-outside"
+        git_in(
+            tmp_path, *bare, "worktree", "add", "-q", "-b", f"{layout}-side", str(outside), "main"
+        )
+        (top / "inside" / "repair.py").write_text((main_repository / "repair.py").read_text())
+        pointers = {path: path.read_text() for path in (top / "inside" / ".git", outside / ".git")}
+        candidate(top, at="inside/repair.py", line=6)
+        assert {path: path.read_text() for path in pointers} == pointers, layout
+        assert git_in(outside, "status", "--porcelain") == "", layout
     # A package inside a repository: the copy has no repository, which the note says.
     package = main_repository / "pkg"
     package.mkdir()
@@ -867,6 +887,44 @@ def test_a_python_candidate_redirects_an_editable_finder(tmp_path, monkeypatch):
         os.path.realpath(tmp_path / "shared"),
         str(root / "lib"),
     ], pythonpath
+    # Verification of #109: a zip on the import path crashed the standard-library check,
+    # and directories without `__init__.py` (`site/`, `json/` data) were called modules.
+    (proj / "vendor").mkdir()
+    (proj / "vendor" / "lib.zip").write_bytes(b"PK")
+    (proj / "flat" / "site").mkdir(parents=True)
+    (proj / "flat" / "json").mkdir()
+    root, pythonpath, warnings = candidate(
+        [str(proj / "vendor" / "lib.zip"), str(proj / "flat")], []
+    )
+    assert pythonpath.split(os.pathsep) == [str(root / "vendor" / "lib.zip"), str(root / "flat")]
+    assert not any("standard library" in w for w in warnings), warnings
+
+
+def test_a_python_candidate_refuses_an_import_hook_into_the_tree(tmp_path, monkeypatch):
+    # Verification of #109: an import hook ahead of the path (meson-python's editable
+    # loader) serves the user's tree whatever `PYTHONPATH` says, and rebuilds in it.
+    from peeky.adapters import PythonAdapter, PythonCandidate
+    from peeky.build import SourceEdit
+
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    (proj / "app.py").write_text("x = 1\n")
+    hooks = tmp_path / "hooks"
+    hooks.mkdir()
+    (hooks / "sitecustomize.py").write_text(
+        "import sys\nclass MesonpyMetaFinder:\n"
+        "    def __init__(self, build):\n        self._build_path = build\n"
+        "    def find_spec(self, name, path=None, target=None):\n        return None\n"
+        f"sys.meta_path.insert(0, MesonpyMetaFinder({str(proj / 'build')!r}))\n"
+    )
+    monkeypatch.setenv("PYTHONPATH", str(hooks))
+    with pytest.raises(ValueError, match="import hook .MesonpyMetaFinder."):
+        PythonCandidate(
+            PythonAdapter(sys.executable),
+            proj / "app.py",
+            proj,
+            SourceEdit("app.py", "x = 1", "x = 2"),
+        )
 
 
 def test_a_hard_linked_name_of_the_edited_file_keeps_its_own_directory(

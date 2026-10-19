@@ -89,6 +89,7 @@ class PythonCandidate:
     def __init__(self, adapter, program, root, edit):
         self.adapter = adapter
         self.original = Path(program).resolve(strict=True)
+        self._typed = Path(os.path.abspath(root))
         root = Path(root).resolve(strict=True)
         relative = self.original.relative_to(root)
         if relative.as_posix() != edit.path:
@@ -190,7 +191,7 @@ class PythonCandidate:
 
         files = size = 0
         staged, self.twins = None, []
-        self._folders, self._notes, self._checkouts, separate = [], [], [], []
+        self._folders, self._notes, self._checkouts = [], [], []
         self._source, self._destination = source, destination
 
         def link(target, original):
@@ -230,6 +231,11 @@ class PythonCandidate:
                 if name in _REPOSITORIES:
                     if self._repository(path, folder / name) and name == ".git":
                         self._checkouts.append((folder, Path(here)))
+                elif _is_git_directory(path) and not path.is_symlink():
+                    # A git directory under another name (a bare repository, `.bare` that
+                    # `gitdir: ./.bare` names, one worktrees name through `commondir`):
+                    # its `worktrees/*/gitdir` name worktrees `git worktree repair` writes.
+                    self._repository(path, folder / name, ".git")
                 elif path.is_symlink():
                     link(folder / name, path)
                 elif name in _LINKED_DIRS:
@@ -259,8 +265,6 @@ class PythonCandidate:
                     copied = os.path.relpath(destination / target.relative_to(source), folder)
                     (folder / name).write_text(f"gitdir: {copied}\n")
                     self._checkouts.append((folder, Path(here)))
-                    if ".git" not in target.relative_to(source).parts and target not in separate:
-                        separate.append(target)
                     status = os.stat(path)
                 elif path.is_symlink():
                     link(folder / name, path)
@@ -284,18 +288,16 @@ class PythonCandidate:
                         staged = folder / name
                     else:
                         self.twins.append(folder / name)
-        # A git directory a `.git` file names outside any `.git` (`gitdir: ./.bare`) was
-        # copied as files; it gets a repository's private copy instead.
-        for target in separate:
-            copy = destination / target.relative_to(source)
-            self._folders = [
-                (folder, status)
-                for folder, status in self._folders
-                if folder != copy and copy not in folder.parents
-            ]
-            _make_removable(copy)
-            shutil.rmtree(copy, ignore_errors=True)
-            self._repository(target, copy, ".git")
+        if _is_git_directory(source):
+            # The root is a (bare) repository itself: copied as files, which cannot be left
+            # out, so its pointers are moved to the copy or the candidate is refused.
+            try:
+                self._own_git(source, destination)
+            except (_NotPrivate, subprocess.SubprocessError) as error:
+                raise ValueError(
+                    f"A Python candidate cannot copy this git repository privately ({error}); "
+                    "check the edit with `peeky verify`"
+                ) from None
         if staged is None and len(self.twins) == 1:
             # The --at path as typed in another spelling: its one copy.
             staged, self.twins = self.twins[0], []
@@ -469,12 +471,34 @@ class PythonCandidate:
             "        if isinstance(table, dict):\n"
             "            mapped += [[k, v] for k, v in table.items()"
             " if isinstance(k, str) and isinstance(v, str)]\n"
-            "print(json.dumps({'path': sys.path[1:], 'mapped': mapped}))\n"
+            "import os\nroots = tuple(sys.argv[1:])\nhooks = []\n"
+            "def mentions(value, depth=0):\n"
+            "    if depth > 4:\n        return False\n"
+            "    if hasattr(value, '__fspath__'):\n        value = os.fspath(value)\n"
+            "    if isinstance(value, str):\n"
+            "        return any(value == r or value.startswith(r + os.sep) for r in roots)\n"
+            "    if isinstance(value, dict):\n"
+            "        return any(mentions(k, depth + 1) or mentions(v, depth + 1)"
+            " for k, v in value.items())\n"
+            "    if isinstance(value, (list, tuple, set, frozenset)):\n"
+            "        return any(mentions(v, depth + 1) for v in value)\n"
+            "    return False\n"
+            "for finder in sys.meta_path:\n"
+            "    module = sys.modules.get(getattr(finder, '__module__', None) or '')\n"
+            "    if any(hasattr(t, '__dict__') and ('MAPPING' in vars(t) or '_redirections' in vars(t))"
+            " for t in (module, finder, type(finder))):\n"
+            "        continue\n"
+            "    tables = [getattr(finder, '__dict__', {})]\n"
+            "    if not isinstance(finder, type):\n"
+            "        tables.append(vars(type(finder)))\n"
+            "    if any(mentions(v) for table in tables for v in table.values()):\n"
+            "        hooks.append(getattr(finder, '__qualname__', type(finder).__qualname__))\n"
+            "print(json.dumps({'path': sys.path[1:], 'mapped': mapped, 'hooks': hooks}))\n"
         )
         try:
             found = json.loads(
                 subprocess.run(
-                    [self.adapter.interpreter, "-c", script],
+                    [self.adapter.interpreter, "-c", script, str(self._source), str(self._typed)],
                     cwd=self.root,
                     capture_output=True,
                     text=True,
@@ -484,6 +508,7 @@ class PythonCandidate:
             )
             entries = [str(entry) for entry in found["path"]]
             mapped = [(str(name), str(path)) for name, path in found["mapped"]]
+            hooks = [str(hook) for hook in found.get("hooks", ())]
         except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
             self._notes.append(
                 "This Python candidate could not list its interpreter's import paths, so if "
@@ -491,6 +516,15 @@ class PythonCandidate:
                 "your unedited modules"
             )
             return None
+
+        if hooks:
+            # An import hook ahead of the path (meson-python's editable loader) serves the
+            # user's tree whatever `PYTHONPATH` says, and may rebuild in it.
+            raise ValueError(
+                f"A Python candidate cannot run this project on a copy: an import hook "
+                f"({', '.join(hooks)}) serves its modules from your tree, ahead of any "
+                "import path. Check the edit with `peeky verify`"
+            )
 
         def inside(entry):
             """The copy of an absolute path inside the root, not in an environment."""
@@ -539,10 +573,7 @@ class PythonCandidate:
                 continue
             redirected.append(moved)
             # On the user's path these come after the standard library; here before it.
-            names = {
-                entry.stem if entry.suffix == ".py" else entry.name
-                for entry in Path(moved).iterdir()
-            } & set(getattr(sys, "stdlib_module_names", ()))
+            names = _module_names(Path(moved)) & set(getattr(sys, "stdlib_module_names", ()))
             if names:
                 self._notes.append(
                     f"This Python candidate puts {moved} ahead of the standard library on "
@@ -664,6 +695,33 @@ def _config_values(git, where):
         for entry in listed.split("\0")
         if entry and entry.split("\n", 1)[0].lower() != "core.worktree"
     ]
+
+
+def _is_git_directory(path):
+    """Whether ``path`` holds a git directory's own files (a bare repository's)."""
+    try:
+        return (
+            (path / "HEAD").is_file() and (path / "objects").is_dir() and (path / "refs").is_dir()
+        )
+    except OSError:
+        return False
+
+
+def _module_names(directory):
+    """The top-level modules a directory on the import path offers: `.py` files,
+    extension modules and packages (a directory without `__init__.py` never wins over a
+    standard-library module, which comes first)."""
+    try:
+        entries = list(directory.iterdir()) if directory.is_dir() else []
+    except OSError:
+        return set()
+    names = set()
+    for entry in entries:
+        if entry.suffix == ".py" or entry.suffix in (".so", ".pyd"):
+            names.add(entry.name.split(".")[0])
+        elif (entry / "__init__.py").is_file():
+            names.add(entry.name)
+    return names
 
 
 def _repository_above(root):
