@@ -101,3 +101,37 @@ def test_multi_megabyte_java_strings_are_bounded_not_fatal(tmp_path):
     assert rows["req.status"]["value"] == "200"
     assert len(rows["text"]["value"]) <= 2000
     assert "5000200" in result["output"]
+
+
+MERGE = 'package demo;\n\nimport java.util.ArrayList;\nimport java.util.List;\n\npublic class Merge {\n    static class Interval {\n        int start;\n        int end;\n        String label;\n        Interval next;\n        Interval(int start, int end) { this.start = start; this.end = end; this.label = "i" + start; }\n    }\n\n    public static void main(String[] args) {\n        List<Interval> merged = new ArrayList<>();\n        merged.add(new Interval(1, 10));\n        merged.add(new Interval(12, 15));\n        Interval current = merged.get(0);\n        Interval none = null;\n        int[] counts = {1, 2, 3};\n        String name = "merge";\n        System.out.println(merged.size() + " " + current.end + " " + counts.length + name + none); // HERE\n    }\n}\n'
+
+
+@pytest.mark.timeout(120)
+def test_java_objects_show_their_fields_and_lists_index_like_arrays(tmp_path):
+    # #78 (eval 3, Java): values read `Merge$Interval@172`, so every field needed its own
+    # selector, and `merged[0]` failed on an ArrayList's raw fields.
+    bundle = os.environ.get("PEEKY_JAVA_ADAPTER")
+    if not bundle:
+        pytest.skip("set PEEKY_JAVA_ADAPTER to a prepared Java adapter bundle")
+    from peeky.java import JavaTarget
+
+    (tmp_path / "demo").mkdir()
+    (tmp_path / "demo/Merge.java").write_text(MERGE)
+    line = next(i for i, text in enumerate(MERGE.splitlines(), 1) if "HERE" in text)
+    target = JavaTarget(bundle=Path(bundle), sources=("demo/Merge.java",), main_class="demo.Merge")
+    capture = ("current", "merged", "counts", "merged[0]", "merged[1].end", "merged[-1]")
+    capture += ("merged[2]", "name", "none")
+    result = run_probe(tmp_path, Probe("demo/Merge.java", line, capture), adapter=target)
+    assert result["status"] == "completed", result.get("error")
+    rows = {row["selector"]: row for row in result["rows"]}
+    value = {name: row.get("value") for name, row in rows.items()}
+    assert value["current"].endswith(' {end=10, label="i1", next=null, start=1}')
+    assert (
+        value["merged"].startswith("ArrayList@") and " size=2 [Merge$Interval@" in value["merged"]
+    )
+    assert value["counts"].endswith(" [1, 2, 3]") and value["counts"].startswith("int[3]@")
+    assert value["merged[0]"] == value["current"]
+    assert value["merged[1].end"] == "15"
+    assert value["merged[-1]"].endswith(' {end=15, label="i12", next=null, start=12}')
+    assert "out of range: the list has 2 elements" in rows["merged[2]"]["error"]
+    assert (value["name"], value["none"]) == ('"merge"', "null")

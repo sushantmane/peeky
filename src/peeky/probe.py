@@ -18,6 +18,7 @@ import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from peeky.java import java_list
 from peeky.names import display_function
 from peeky.worker import (
     DebugWorker,
@@ -477,6 +478,13 @@ def _resolve(worker, stop, snapshot, segments):
             raise ValueError(
                 f"{_shown(segment)} is beyond the bounded inspection window (512 children)"
             )
+        if (
+            found is None
+            and segment.startswith("[")
+            and key is None
+            and (listed := java_list(variable, children))
+        ):
+            found = _list_element(worker, stop, *listed, int(segment[1:-1]), segment)
         if found is None and segment.startswith("[") and key is None:
             length = _declared_length(variable, children)
             if any(child["name"] == "more" for child in children) or (
@@ -669,7 +677,9 @@ def _declared_length(variable, children):
         return None
     if match := _ARRAY.fullmatch(str(variable.get("type") or "").strip()):
         return int(match[1])
-    if match := re.fullmatch(r"\w+\[([0-9]{1,9})\]@[0-9a-fx]+", str(variable.get("value") or "")):
+    # The length is java-debug's; Peeky may append its own element preview (` [1, 2]`).
+    shown = str(variable.get("value") or "")
+    if match := re.fullmatch(r"\w+\[([0-9]{1,9})\]@[0-9a-fx]+(?: \[.*\])?", shown, re.S):
         return int(match[1])
     return None
 
@@ -695,6 +705,10 @@ def _from_end(worker, stop, variable, offset, segment):
             )
         start += 64
     count = len(elements)
+    if not count and (listed := java_list(variable, children)):
+        # An ArrayList states its size; `[-1]` is its last element.
+        backing, size = listed
+        return _list_element(worker, stop, backing, size, size - offset, segment)
     if not count or sorted(elements) != list(range(count)):
         raise ValueError(f"{segment!r}: not an indexed sequence; use a non-negative index")
     length = _declared_length(variable, children)
@@ -711,6 +725,23 @@ def _from_end(worker, stop, variable, offset, segment):
     if offset < 1 or offset > count:
         raise ValueError(f"{segment!r} is out of range for {count} elements")
     return elements[count - offset]
+
+
+def _list_element(worker, stop, backing, size, index, segment):
+    """Element ``index`` of an ArrayList: ``elementData[index]``, within its size."""
+    if not 0 <= index < size:
+        raise ValueError(f"{_shown(segment)} is out of range: the list has {size} elements")
+    if index > 511:
+        raise ValueError(
+            f"{_shown(segment)} is beyond the bounded inspection window (512 children)"
+        )
+    page = worker.dispatch(
+        "expand", {**stop, "handle": backing["variablesReference"], "start": index // 64 * 64}
+    )
+    found = next((child for child in page["variables"] if _names(child, f"[{index}]")), None)
+    if found is None:
+        raise ValueError(f"{_shown(segment)} is not in the list's backing array")
+    return found
 
 
 # Errors a fresh inspection can cure: it restores the expansion node budget.

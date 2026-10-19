@@ -23,6 +23,50 @@ from peeky.digest import sha256_file, tree_fingerprint
 MAX_BUNDLE_FILES = 4096
 MAX_BUNDLE_FILE_BYTES = 256 * 1024 * 1024
 _JAVA_INTEGER_BITS = {"byte": 8, "short": 16, "int": 32, "long": 64}
+# java-debug's values for an object (`Merge$Interval@143`) and an array (`int[3]@144`).
+_JAVA_OBJECT = re.compile(r"[A-Za-z_$][\w$.]*@[0-9]+")
+_JAVA_ARRAY = re.compile(r"[A-Za-z_$][\w$.]*(?:\[\])*\[([0-9]{1,10})\](?:\[\])*@[0-9]+")
+_JAVA_LIST = re.compile(r"(?:java\.util\.)?ArrayList(?:<.*>)?")
+PREVIEW_ITEMS = 8
+
+
+def java_list(variable, fields):
+    """(backing array, size) of a java.util.ArrayList shown by its own fields, else None:
+    its elements are `elementData[0]` to `elementData[size - 1]`, read without calling
+    `toArray` or `get` in the program."""
+    if not _JAVA_LIST.fullmatch(str(variable.get("type"))):
+        return None
+    named = {field.get("name"): field for field in fields}
+    if set(named) != {"elementData", "modCount", "size"} or len(fields) != 3:
+        return None
+    size, backing = named["size"], named["elementData"]
+    if size.get("type") != "int" or not re.fullmatch(r"0|[1-9][0-9]{0,9}", str(size.get("value"))):
+        return None
+    reference = backing.get("variablesReference")
+    if type(reference) is not int or reference <= 0:
+        return None
+    return backing, int(size["value"])
+
+
+def _brief(item):
+    text = str(item.get("value"))
+    return text if len(text) <= 40 else text[:39] + "…"
+
+
+def _elements(children, length):
+    """`[a, b, …]`: the first elements of a length-``length`` sequence, in index order."""
+    found = {}
+    for child in children:
+        # java-debug names array elements `0`, `1`, ...
+        match = re.fullmatch(r"\[?([0-9]+)\]?", str(child.get("name")))
+        if match and int(match[1]) < length:
+            found[int(match[1])] = child
+    shown = [_brief(found[index]) for index in range(min(length, PREVIEW_ITEMS)) if index in found]
+    if len(shown) != min(length, PREVIEW_ITEMS):
+        raise ValueError("Java elements are not all visible")
+    return f"[{', '.join(shown)}{', …' if length > PREVIEW_ITEMS else ''}]"
+
+
 SCALAR = re.compile(r"(?:true|false|[+-]?[0-9]+(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?)\Z")
 CLASS_NAME = re.compile(r"[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*\Z")
 
@@ -374,6 +418,32 @@ class JavaSession:
     def validate_value(self, value):
         if not isinstance(value, str) or not SCALAR.fullmatch(value):
             raise ValueError("Java mutation requires a numeric or boolean scalar literal")
+
+    def preview(self, variable, fetch):
+        """An object's value with its fields inline (`Merge$Interval@143 {end=10,
+        start=1}`), an ArrayList's elements (`ArrayList@142 size=2 [...]`) and an
+        array's (`int[3]@144 [1, 2, 3]`), from the debugger's field reads only: no
+        code runs in the program. None leaves the value as java-debug shows it."""
+        value, reference = variable.get("value"), variable.get("variablesReference")
+        if not isinstance(value, str) or type(reference) is not int or reference <= 0:
+            return None
+        if array := _JAVA_ARRAY.fullmatch(value):
+            length = int(array[1])
+            elements = fetch(reference, min(length, PREVIEW_ITEMS)) if length else []
+            return f"{value} {_elements(elements, length)}"
+        if not _JAVA_OBJECT.fullmatch(value):
+            return None
+        fields = fetch(reference)
+        if listed := java_list(variable, fields):
+            backing, size = listed
+            reference = backing["variablesReference"]
+            elements = fetch(reference, min(size, PREVIEW_ITEMS)) if size else []
+            return f"{value} size={size} {_elements(elements, size)}"
+        named = [field for field in fields if isinstance(field.get("name"), str)]
+        if not named or len(named) != len(fields):
+            return None
+        shown = ", ".join(f"{field['name']}={_brief(field)}" for field in named[:PREVIEW_ITEMS])
+        return f"{value} {{{shown}{', …' if len(named) > PREVIEW_ITEMS else ''}}}"
 
     def settable(self, variable, frame=None):
         """Whether `--set` can change this root local: a scalar of a type it accepts, named

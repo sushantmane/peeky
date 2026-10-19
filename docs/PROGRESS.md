@@ -102,6 +102,10 @@ An hourly thread heartbeat (`continue-peeky-mvp`) checks for available usage and
     - Values are kept only if the build that ran hashes to the edited text, locally and over `--worker`.
     - A build that fails is now `BUILD_FAILED` with the compiler's output, for every probe and session.
     - Evidence schema 3: `runs.edit` holds the diff; the views have `candidate`; `queries runs` marks candidate runs, `values` leaves them out, and `diff` adds an `(edit)` row. Older stores upgrade in place.
+- **Java objects and lists** (#78).
+  - Launched Java programs show an object's first fields inline, an array's first elements and an `ArrayList`'s size and elements. Fields are read through the debugger; no code runs in the program.
+  - `merged[0]` and `merged[-1]` index an `ArrayList` through `size` and `elementData`.
+  - Setting fields is #86.
 - **Settable locals up front** (#77).
   - Probe rows carry `settable` (`[settable]` in text) for root locals, so the observation probe tells which interventions will work.
   - A refused `--set` lists what can be changed at that stop (`settable here: …`).
@@ -148,7 +152,7 @@ An hourly thread heartbeat (`continue-peeky-mvp`) checks for available usage and
 
 **Open issues:**
 - **#27:** an attached JVM whose `stopped` event is lost (seen once on Venice). The launch case is fixed. 160 targeted stress runs (simple and Venice-like thread churn) did not reproduce it; diagnostics stay in place.
-- **#78** (third evaluation): Java object previews and lists.
+- **#86**: Java `--set` on scalar fields (split from #78).
 - **#61:** NVIDIA CUDA debugging, sanitizers and profiling, filed by the owner. [ADR 0007](adr/0007-cuda-gdb-dap.md) proposes driving `cuda-gdb -i=dap`; `scripts/cuda/qualify.py` is the phase 0 qualification, and its DAP sequence is tested against upstream GDB (lane `gdb-dap`). Running it needs a Linux host with an NVIDIA GPU, reachable over Peeky's SSH remote worker; this Mac has none.
 
 **Process notes:**

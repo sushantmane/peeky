@@ -755,3 +755,60 @@ def test_java_settable_locals_are_scalars_a_selector_can_name(variable, settable
     from peeky.java import JavaSession
 
     assert JavaSession.settable(None, variable) is settable
+
+
+def _java_fetch(children):
+    def fetch(reference, indexed=None):
+        values = children[reference]
+        return values[:indexed] if indexed else values
+
+    return fetch
+
+
+@pytest.mark.parametrize(
+    "variable, children, shown",
+    [
+        (
+            {"value": "P@1", "type": "P", "variablesReference": 1},
+            {1: [{"name": "x", "value": "3"}, {"name": "s", "value": '"hi"'}]},
+            'P@1 {x=3, s="hi"}',
+        ),
+        (
+            {"value": "P@1", "type": "P", "variablesReference": 1},
+            {1: [{"name": f"f{n}", "value": str(n)} for n in range(10)]},
+            "P@1 {f0=0, f1=1, f2=2, f3=3, f4=4, f5=5, f6=6, f7=7, …}",
+        ),
+        (
+            {"value": "int[3]@2", "type": "int[]", "variablesReference": 2},
+            {2: [{"name": str(n), "value": str(n * 2)} for n in range(3)]},
+            "int[3]@2 [0, 2, 4]",
+        ),
+        (
+            {"value": "ArrayList@3", "type": "ArrayList", "variablesReference": 3},
+            {
+                3: [
+                    {"name": "elementData", "value": "Object[10]@4", "variablesReference": 4},
+                    {"name": "modCount", "value": "2", "type": "int"},
+                    {"name": "size", "value": "2", "type": "int"},
+                ],
+                4: [{"name": str(n), "value": f"P@{n}"} for n in range(2)]
+                + [{"name": str(n), "value": "null"} for n in range(2, 10)],
+            },
+            "ArrayList@3 size=2 [P@0, P@1]",
+        ),
+        ({"value": '"text"', "type": "String", "variablesReference": 5}, {}, None),
+        ({"value": "null", "type": "null", "variablesReference": 0}, {}, None),
+    ],
+)
+def test_java_values_preview_fields_lists_and_arrays(variable, children, shown):
+    from peeky.java import JavaSession
+
+    assert JavaSession.preview(None, variable, _java_fetch(children)) == shown
+
+
+def test_a_java_preview_that_cannot_show_every_element_says_nothing():
+    from peeky.java import JavaSession
+
+    array = {"value": "int[3]@2", "type": "int[]", "variablesReference": 2}
+    with pytest.raises(ValueError, match="not all visible"):
+        JavaSession.preview(None, array, _java_fetch({2: [{"name": "0", "value": "1"}]}))
