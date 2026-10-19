@@ -5,6 +5,7 @@ Supported formats are single-architecture Mach-O (UUID) and ELF64 little-endian
 against hostile in-memory patching. SDK/system headers are not hermetic inputs.
 """
 
+import bisect
 import codecs
 import hashlib
 import json
@@ -531,13 +532,15 @@ def _function_entries(info, line_text, workspace, declared):
                     owner[index] = (die["depth"], root)
                 if runner[index] is None or die["depth"] > runner[index][0]:
                     runner[index] = (die["depth"], root)
-    lines, runs = {}, {}
+    lines, runs, starts = {}, {}, {}
     for (address, name, number), claimed, ran in zip(rows, owner, runner):
         for found, key, table in ((claimed, number, lines), (ran, (name, number), runs)):
             if found is not None:
                 span = table.setdefault(found[1], {}).setdefault(key, [address, address])
                 span[0], span[1] = min(span[0], address), max(span[1], address)
-    return dies, functions, lines, (inputs, sources), runs
+        if ran is not None:
+            starts.setdefault(ran[1], {}).setdefault((name, number), []).append(address)
+    return dies, functions, lines, (inputs, sources), runs, starts
 
 
 def _source_of(attribute, inputs, workspace, cache):
@@ -567,7 +570,7 @@ def function_scopes(info, line_text, workspace, declared):
     the callee, not its caller. Copies of one function (C1/C2 constructors, inlined and
     out-of-line copies) are merged through the DIE that declares them.
     """
-    dies, functions, lines, _, _ = _function_entries(info, line_text, workspace, declared)
+    dies, functions, lines, _, _, _ = _function_entries(info, line_text, workspace, declared)
     found = {}
     for root, entry in functions.items():
         source = entry["source"]
@@ -606,10 +609,11 @@ _AUTOMATIC = re.compile(r"DW_OP_(?:fbreg|breg[0-9]+)\b")
 
 
 def _declared(dies, offset, files, workspace):
-    """(name, (source, line, automatic)) for each parameter and variable of one function
-    body, including nested blocks but not calls inlined into it. Parameters, statics and
-    anything without a frame location are not automatic. A label is listed as
-    (None, None): `goto` can return above a declaration with the local still live."""
+    """(name, (source, line, automatic), scope) for each parameter and variable of one
+    function body, including nested blocks but not calls inlined into it; ``scope`` is
+    the DIE of the block (or body) declaring it. Parameters, statics and anything
+    without a frame location are not automatic. A label is listed as (None, None,
+    None): `goto` can return above a declaration with the local still live."""
     found, pending = [], list(dies[offset]["children"])
     while pending and len(found) < 4096:
         child = pending.pop()
@@ -618,7 +622,7 @@ def _declared(dies, offset, files, workspace):
             pending.extend(die["children"])
             continue
         if die["tag"] == "DW_TAG_label":
-            found.append((None, None))
+            found.append((None, None, None))
             continue
         if die["tag"] not in ("DW_TAG_formal_parameter", "DW_TAG_variable"):
             continue
@@ -627,14 +631,15 @@ def _declared(dies, offset, files, workspace):
         if not name or name.startswith("$"):
             continue
         if die["tag"] == "DW_TAG_formal_parameter":
-            found.append((name, (None, None, False)))
+            found.append((name, (None, None, False), die["parent"]))
             continue
         inputs, cache = files
         source = _source_of(_first(dies, chain, "DW_AT_decl_file"), inputs, workspace, cache)
         line = _first(dies, chain, "DW_AT_decl_line")
         location = die["attrs"].get("DW_AT_location") or ""
         automatic = bool(_AUTOMATIC.search(location)) and "DW_OP_addr" not in location
-        found.append((name, (source, int(line) if line and line.isdigit() else None, automatic)))
+        where = (source, int(line) if line and line.isdigit() else None, automatic)
+        found.append((name, where, die["parent"]))
     return found
 
 
@@ -643,27 +648,66 @@ def local_declarations(info, line_text, workspace, declared):
     address of its code on each (source, line) it runs, in any declared file and even
     above its declaration (member initializers run where their class is built); for each local
     name, where every local of that name is declared, as (source, line, automatic);
-    and whether it has a label, where `goto` can return above a declaration."""
-    dies, functions, _, files, runs = _function_entries(info, line_text, workspace, declared)
+    and whether it has a label, where `goto` can return above a declaration.
+
+    ``starts``: for each automatic local, (name, source, line) -> the addresses where
+    control enters its declaration line's code in the block declaring it: the line's
+    first row in that block, and on a function's first line also the row after the
+    prologue, where its breakpoint is. ``ranges``: the function's code."""
+    dies, functions, _, files, runs, addresses = _function_entries(
+        info, line_text, workspace, declared
+    )
     workspace = Path(workspace).resolve()
     table = []
     for root, entry in functions.items():
         rows = runs.get(root)
         if not rows:
             continue
-        names, jumps = {}, False
+        ranges = sorted(span for body in entry["bodies"] for span in _code_ranges(dies[body]))
+        entries = {min(span)[0] for body in entry["bodies"] if (span := _code_ranges(dies[body]))}
+        names, jumps, starts = {}, False, {}
+        # Every row this function runs, by address: what runs just before a line's start.
+        ordered = sorted(
+            (address, source, line)
+            for (source, line), found in addresses.get(root, {}).items()
+            for address in found
+        )
         for body in (*entry["bodies"], root):
-            for name, where in _declared(dies, body, files, workspace):
+            for name, where, scope in _declared(dies, body, files, workspace):
                 if name is None:
                     jumps = True
-                else:
-                    names.setdefault(name, set()).add(where)
+                    continue
+                names.setdefault(name, set()).add(where)
+                source, line, automatic = where
+                if not automatic or scope not in dies:
+                    continue
+                block = _code_ranges(dies[scope])
+                found = sorted(
+                    address
+                    for address in addresses.get(root, {}).get((source, line), ())
+                    if any(low <= address < high for low, high in block)
+                )
+                if not found:
+                    continue
+                index = bisect.bisect_left(ordered, (found[0],)) - 1
+                before = ordered[index] if index >= 0 else None
+                if before is not None and (before[1] != source or before[2] > line):
+                    # Code of a later line runs straight into this one (a header over
+                    # several lines: `for (` then `i = 10; i < 13; i++)`), so control can
+                    # reach the first row with the local already assigned.
+                    continue
+                first = {found[0]}
+                if found[0] in entries and (later := [a for a in found if a > found[0]]):
+                    first.add(later[0])
+                starts.setdefault((name, source, line), set()).update(first)
         table.append(
             {
                 "source": entry["source"],
                 "rows": {number: tuple(span) for number, span in rows.items()},
                 "locals": names,
                 "jumps": jumps,
+                "starts": starts,
+                "ranges": tuple(ranges),
             }
         )
     return table
@@ -737,6 +781,145 @@ def declared_below(table, name, source, line):
         if not ((source, at) in rows and rows[here][1] < rows[source, at][0]):
             return None
     return min(where[1] for _, where in candidates)
+
+
+def declared_on_line(table, name, source, line, address):
+    """The stop line, when the C/C++ local shown there is declared on it and the stop is
+    where control enters that line in the block declaring it (``address``, unslid; see
+    local_declarations ``starts``): the declaration has not run on this pass, so the
+    local holds leftovers. Else None.
+
+    Only there: a one-line loop, or a return from a call (`step --out`), stops
+    mid-line, where the local is live. Only when every local of that name in the
+    function is an automatic variable declared on this line, and never in a function
+    with a label. The caller also rules out an address a loop branches back to.
+    """
+    shown = _SHADOWED.fullmatch(name)
+    here = (source, line)
+    owners = [
+        function
+        for function in table
+        if here in function["rows"]
+        and function["rows"][here][0] <= address <= function["rows"][here][1]
+    ]
+    if len(owners) != 1 or owners[0]["jumps"]:
+        return None
+    base = shown[1] if shown else name
+    places = owners[0]["locals"].get(base, ())
+    if shown:
+        places = {where for where in places if where[1] == int(shown[2])}
+    if (
+        places
+        and all(
+            automatic and declared_in == source and at == line
+            for declared_in, at, automatic in places
+        )
+        and address in owners[0].get("starts", {}).get((base, source, line), ())
+    ):
+        return line
+    return None
+
+
+# Jumps (not calls or returns), by the mnemonic LLDB prints.
+_JUMPS = {
+    "arm64": lambda m: m in _ARM64_JUMPS or m.startswith(("b.", "bc.")),
+    "x86_64": lambda m: m.startswith(("j", "loop")),
+}
+_ARM64_JUMPS = {"b", "br", "braa", "brab", "braaz", "brabz", "cbz", "cbnz", "tbz", "tbnz"}
+
+
+def backward_targets(instructions, low, high, architecture):
+    """The addresses in [low, high) that a jump there goes back to (a loop's start), from
+    a DAP disassembly of that range, whose jumps name absolute targets (`b 0x1000…`,
+    `jmp 0x4011…`). An empty set when no jump goes back; None when unknown: another
+    architecture, or a jump whose target is not named in the range (`br x8`, a jump
+    table)."""
+    is_jump = _JUMPS.get(architecture)
+    if is_jump is None:
+        return None
+    targets = set()
+    for instruction in instructions:
+        try:
+            at = int(instruction["address"], 16)
+        except (KeyError, TypeError, ValueError):
+            return None
+        if not low <= at < high:
+            continue
+        # LLDB's trailing comment (`; <+24> at a.c:6`) names no operand.
+        text = str(instruction.get("instruction", "")).split(";")[0].split()
+        if not text or not is_jump(text[0].lower()):
+            continue
+        named = [
+            target
+            for token in re.findall(r"0x[0-9a-fA-F]+", " ".join(text[1:]))
+            if low <= (target := int(token, 16)) < high
+        ]
+        if not named:
+            return None
+        targets.update(target for target in named if target <= at)
+    return targets
+
+
+def architecture(binary):
+    """`arm64` or `x86_64` from a 64-bit Mach-O or ELF header; None for anything else."""
+    with Path(binary).open("rb") as stream:
+        header = stream.read(20)
+    if len(header) >= 8 and struct.unpack_from("<I", header)[0] == 0xFEEDFACF:
+        return {0x0100000C: "arm64", 0x01000007: "x86_64"}.get(
+            struct.unpack_from("<I", header, 4)[0]
+        )
+    if len(header) == 20 and header[:6] == b"\x7fELF\x02\x01":
+        return {183: "arm64", 62: "x86_64"}.get(struct.unpack_from("<H", header, 18)[0])
+    return None
+
+
+def macho_text_address(binary):
+    """Where a 64-bit Mach-O executable's header loads before any slide: its __TEXT
+    segment's address (the segment that maps file offset 0)."""
+    with Path(binary).open("rb") as stream:
+        header = stream.read(32)
+        if len(header) != 32 or struct.unpack_from("<I", header)[0] != 0xFEEDFACF:
+            raise ValueError("Expected a 64-bit little-endian Mach-O executable")
+        count, size = struct.unpack_from("<II", header, 16)
+        if not 0 < count <= 4096 or not 0 < size <= 1 << 20:
+            raise ValueError("Invalid Mach-O load commands")
+        commands = stream.read(size)
+    if len(commands) != size:
+        raise ValueError("Truncated Mach-O load commands")
+    cursor, found = 0, []
+    for _ in range(count):
+        if cursor + 8 > size:
+            raise ValueError("Truncated Mach-O load command")
+        kind, length = struct.unpack_from("<II", commands, cursor)
+        if length < 8 or cursor + length > size:
+            raise ValueError("Invalid Mach-O load command size")
+        if kind == 0x19 and length >= 72:  # LC_SEGMENT_64
+            name = commands[cursor + 8 : cursor + 24].rstrip(b"\0")
+            address, _, offset = struct.unpack_from("<QQQ", commands, cursor + 24)
+            if name == b"__TEXT" and offset == 0:
+                found.append(address)
+        cursor += length
+    if len(found) != 1:
+        raise ValueError("Missing or ambiguous Mach-O __TEXT segment")
+    return found[0]
+
+
+def load_bias(binary, module):
+    """The executable's load slide, from the debugger's module address (where its header
+    loaded: hex from Apple's and LLVM 20's lldb-dap, decimal from LLVM 18's)."""
+    text = module.get("addressRange")
+    if isinstance(text, str) and re.fullmatch(r"0x[0-9a-fA-F]{1,16}", text):
+        loaded = int(text, 16)
+    elif isinstance(text, str) and re.fullmatch(r"[0-9]{1,20}", text):
+        loaded = int(text)
+    else:
+        raise ValueError("Missing or invalid native module load address")
+    header = (
+        macho_text_address(binary) if sys.platform == "darwin" else elf_executable_ranges(binary)[0]
+    )
+    if not header <= loaded < 1 << 64:
+        raise ValueError("Invalid native load bias")
+    return loaded - header
 
 
 def elf_build_id(binary):
@@ -1273,11 +1456,32 @@ class NativeSession:
         if type(line) is not int:
             return None
         below = declared_below(self.declarations, name, source.as_posix(), line)
-        if below is None:
+        if below is not None:
+            return (
+                f"declared at line {below}, below this stop, so not initialized yet: its "
+                f"storage holds leftovers; stop after line {below} to read it"
+            )
+        pointer = (frame or {}).get("instructionPointerReference")
+        bias = getattr(self, "load_bias", None)
+        if (
+            bias is None
+            or self.target.optimization != "O0"
+            or not isinstance(pointer, str)
+            or not re.fullmatch(r"0x[0-9a-fA-F]{1,16}", pointer)
+        ):
+            return None
+        address = int(pointer, 16) - bias
+        if declared_on_line(self.declarations, name, source.as_posix(), line, address) is None:
+            return None
+        # A loop that branches back to this address can bring control here with the
+        # local live (x86-64 puts `while ((x = next()) > 0)`'s test first): only an
+        # address the disassembly shows no loop returns to is withheld.
+        if getattr(self, "loop_targets", {}).get(address) is not False:
             return None
         return (
-            f"declared at line {below}, below this stop, so not initialized yet: its storage "
-            f"holds leftovers; stop after line {below} to read it"
+            f"declared on line {line}, which has not run yet at this stop (its first "
+            "instruction), so not initialized: its storage holds leftovers; step once, or "
+            f"stop after line {line}, to read it"
         )
 
     def validate_mutation_target(self, variable, frame):
@@ -1429,6 +1633,80 @@ class NativeSession:
             raise RuntimeError("Native module identity is not verified") from exc
         if not valid:
             raise RuntimeError("Native module identity or symbols do not match prepared build")
+        try:
+            # Display aid only (a local declared on the stop line): unknown never withholds.
+            self.load_bias = load_bias(self.binary, module)
+        except (OSError, ValueError, struct.error):
+            self.load_bias = None
+        # scripts/probe_rust.py validates with a plain namespace, which records nothing.
+        if check := getattr(self, "_check_loop_target", None):
+            check(dap, frame)
+
+    def _check_loop_target(self, dap, frame):
+        """Record whether the stop's address, when it starts a declaration line, is one a
+        loop jumps back to (True), not (False), or unknown (None). Each function is
+        disassembled at most once per session."""
+        cache = self.__dict__.setdefault("loop_targets", {})
+        jumps = self.__dict__.setdefault("backward_jumps", {})
+        pointer, bias = frame.get("instructionPointerReference"), self.load_bias
+        declarations = getattr(self, "declarations", None)
+        if (
+            bias is None
+            or not declarations
+            or not isinstance(pointer, str)
+            or not re.fullmatch(r"0x[0-9a-fA-F]{1,16}", pointer)
+        ):
+            return
+        address = int(pointer, 16) - bias
+        if address in cache:
+            return
+        function = next(
+            (
+                function
+                for function in declarations
+                if any(address in starts for starts in function.get("starts", {}).values())
+            ),
+            None,
+        )
+        if function is None:
+            return
+        span = next(
+            ((low, high) for low, high in function["ranges"] if low <= address < high), None
+        )
+        if span is not None and span not in jumps:
+            jumps[span] = self._backward_jumps(dap, span, bias)
+        targets = jumps.get(span)
+        cache[address] = None if targets is None else address in targets
+
+    def _backward_jumps(self, dap, span, bias):
+        """The unslid addresses in ``span`` that a jump there goes back to, or None."""
+        low, high = span
+        try:
+            kind = architecture(self.binary)
+        except (OSError, struct.error):
+            return None
+        # Enough instructions to pass the function's end: arm64's are 4 bytes each.
+        count = (high - low) // 4 + 8 if kind == "arm64" else high - low + 16
+        if kind is None or count > 8192:
+            return None
+        try:
+            reply = dap.request(
+                "disassemble",
+                {
+                    "memoryReference": f"0x{low + bias:X}",
+                    "instructionOffset": 0,
+                    "instructionCount": count,
+                    "resolveSymbols": False,
+                },
+                timeout=3,
+            )
+            instructions = reply.get("instructions") or []
+            if not any(int(item["address"], 16) >= high + bias for item in instructions):
+                return None
+            targets = backward_targets(instructions, low + bias, high + bias, kind)
+        except (RuntimeError, TimeoutError, ValueError, TypeError, KeyError, AttributeError):
+            return None
+        return None if targets is None else {target - bias for target in targets}
 
     def close(self):
         self.prepared.cleanup()

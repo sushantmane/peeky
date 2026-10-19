@@ -284,3 +284,100 @@ def test_a_live_for_counter_at_a_step_stop_on_its_header_is_shown(bucket, capsys
     snapshot, shown = session_inspect(capsys, program, 4, 2, hit=2)
     assert snapshot["location"].endswith("for.c:3"), snapshot["location"]
     assert shown["i"]["value"] == "1" and not shown["i"].get("unavailable"), shown["i"]
+
+
+CONVERT = """#include <stdio.h>
+static int left = 3;
+static int next(void) { return left--; }
+static long long convert(int ms) { long long us = ms * 1000; return us; }
+long long spread(int ms) {
+    long long us = ms * 1000;
+    return us;
+}
+int main(void) {
+    long long total = 0;
+    for (int i = 0; i < 3; i++) total += spread(i + 1);
+    for (int j = 0; j < 4; j++) { int sq = j * j; total += sq; }
+    int x = 0;
+    do {
+        int y = x * 2;
+        total += y + convert(x) + next();
+        x++;
+    } while (x < 3);
+    int i2; for (
+        i2 = 10; i2 < 13; i2++) total += i2;
+    int sw; switch (
+        sw = next()) {
+    case 0: total += sw + 1; break;
+    default: break;
+    }
+    printf("TOTAL:%lld\\n", total);
+    return 0;
+}
+"""
+
+
+@pytest.fixture
+def convert(tmp_path, monkeypatch):
+    if not os.environ.get("PEEKY_NATIVE_DAP"):
+        pytest.skip("set PEEKY_NATIVE_DAP and native tool paths to enable native conformance")
+    monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
+    (tmp_path / "convert.c").write_text(CONVERT)
+    return tmp_path / "convert.c"
+
+
+def _rows(capsys, path, line, capture, hits):
+    code, result = probe(capsys, path, "--at", line, "--capture", capture, "--hits", hits)
+    assert code == 0, result.get("error")
+    return {(row["hit"], row["selector"]): row for row in result["rows"]}
+
+
+def _withheld(row, line):
+    return "value" not in row and f"declared on line {line}, which has not run yet" in row["error"]
+
+
+@pytest.mark.timeout(180)
+def test_a_local_declared_on_the_stop_line_is_withheld_where_its_line_starts(convert, capsys):
+    # #92 (eval 4, C): `us` showed the previous call's 1000 at its own declaration line.
+    rows = _rows(capsys, convert, 6, "us,ms", 3)
+    for hit in (1, 2, 3):
+        assert _withheld(rows[hit, "us"], 6) and rows[hit, "us"].get("settable") is False
+        assert rows[hit, "ms"]["value"] == str(hit)
+    code, result = probe(capsys, convert, "--at", "6", "--capture", "ms", "--set", "us=5")
+    assert code == 1 and result["error"]["code"] == "MUTATION_REJECTED"
+    assert "declared on line 6" in result["error"]["message"]
+    # Review of #99: a one-line function stops after its prologue, not at the line's
+    # first row; a braced one-line loop body stops where its own block starts.
+    rows = _rows(capsys, convert, 4, "us,ms", 2)
+    assert all(_withheld(rows[hit, "us"], 4) for hit in (1, 2))
+    rows = _rows(capsys, convert, 12, "sq,j", 5)
+    assert _withheld(rows[1, "j"], 12)
+    for hit in (2, 3, 4, 5):
+        assert _withheld(rows[hit, "sq"], 12)
+        assert rows[hit, "j"]["value"] == str(hit - 2)
+
+
+@pytest.mark.timeout(180)
+def test_a_line_a_loop_returns_to_and_mid_line_stops_show_the_value(convert, capsys):
+    # A do-while branches back to its body's first line: control re-enters it from the
+    # loop, so its start is not a first pass (x86-64 does this for `while` tests too).
+    rows = _rows(capsys, convert, 15, "y,x", 3)
+    assert all("value" in rows[hit, "y"] for hit in (1, 2, 3))
+    # Review of #99: a header over several lines runs its next line's code first (the
+    # loop's `i2 = 10`, the switch's `sw = next()`), then its own line, with the local set.
+    rows = _rows(capsys, convert, 19, "i2", 3)
+    assert [rows[hit, "i2"]["value"] for hit in (1, 2, 3)] == ["10", "11", "12"]
+    rows = _rows(capsys, convert, 21, "sw", 1)
+    assert rows[1, "sw"]["value"] == "0"
+    # A return from a call stops mid-line, where the one-line loop's `i` is live.
+    main(["session", "start", str(convert), "--at", "6", "--hit", "2"])
+    capsys.readouterr()
+    try:
+        assert main(["session", "step", "--out"]) == 0
+        assert ":11 in main" in capsys.readouterr().out
+        assert main(["session", "get", "i", "--json"]) == 0
+        rows = json.loads(capsys.readouterr().out)
+    finally:
+        main(["session", "close"])
+        capsys.readouterr()
+    assert rows[0]["value"] == "1"
