@@ -1026,9 +1026,10 @@ class RustSession(NativeSession):
             kind = variable.get("type")
             wide = _is_wide_box(kind)
             # A Box among a name's bindings counts only for a value that could be one (a
-            # pointer, or a wide Box): another binding of the name in a sibling block, arm
-            # or loop (`v: i64`, `a: [i64; 3]`) is not.
-            could_be_box = kind is None or wide or "*" in _without_generics(kind)
+            # data pointer or an array of them, or a wide Box): another binding of the name
+            # in a sibling block, arm or loop (`v: i64`, `a: [i64; 3]`, a fn pointer, a
+            # tuple holding a raw pointer) is not.
+            could_be_box = kind is None or wide or _holds_data_pointers(kind)
             owning = (
                 could_be_box
                 and any(

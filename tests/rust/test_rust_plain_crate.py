@@ -834,6 +834,20 @@ fn rebound(n: i64) -> i64 {
         let a = [21i64, 22, 23];
         total += a[1]; // REBOUND_ARRAY
     }
+    {
+        let op = Box::new(Pt { x: 9, y: 9 });
+        total += op.x;
+    }
+    {
+        let op: fn() -> Box<dyn Debug> = make;
+        let anchor = 7u8;
+        let t: (*const u8, i64) = (&anchor as *const u8, 73);
+        total += t.1 + std::hint::black_box(op as usize as i64 & 0); // REBOUND_FN
+    }
+    {
+        let t = Box::new(Pt { x: 9, y: 9 });
+        total += t.y;
+    }
     total
 }
 
@@ -974,10 +988,17 @@ def test_generic_boxes_are_gated_and_non_owning_values_read(plain, capsys):
     assert "not shown" not in str(rows[4].get("value")), rows
     # A Box bound to the same name in a sibling block does not hide an integer or an
     # array of integers (verification of #103).
-    for marker, capture, value in (("REBOUND_INT", "v", "5"), ("REBOUND_ARRAY", "a[1]", "22")):
+    for marker, capture, value in (
+        ("REBOUND_INT", "v", "5"),
+        ("REBOUND_ARRAY", "a[1]", "22"),
+        ("REBOUND_FN", "t.__1", "73"),
+    ):
         at = f"src/main.rs:{line_of(BOX_GENERIC, '// ' + marker)}"
         code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", capture, "--quiet")
         assert result["rows"][0].get("value") == value, (marker, result["rows"])
+    at = f"src/main.rs:{line_of(BOX_GENERIC, '// REBOUND_FN')}"
+    code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "op", "--quiet")
+    assert "make" in str(result["rows"][0].get("value")), result["rows"]
     at = f"src/main.rs:{line_of(BOX_GENERIC, '// LIVE_ARRAY')}"
     code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "arr[0].x", "--quiet")
     assert result["rows"][0].get("value") == "1", result["rows"]
