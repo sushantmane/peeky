@@ -5,6 +5,7 @@ Python runs directly; compiled runtimes require prepared build provenance.
 """
 
 import ast
+import os
 import shutil
 import sys
 import tempfile
@@ -46,50 +47,52 @@ def validate_python_literal(value):
         raise ValueError(message) from None
 
 
-# Runs the edited copy as `__main__` with the original script's identity: `__file__`,
-# `sys.argv[0]` and `sys.path[0]` name the original, so files and modules found next to
-# the script are the user's own. Compiled under the copy's path, so breakpoints set on
-# the copy bind.
-_CANDIDATE_MAIN = """\
-import os
-import sys
-import tokenize
-import types
-
-staged, original = sys.argv[1], sys.argv[2]
-sys.argv = [original, *sys.argv[3:]]
-sys.path[0] = os.path.dirname(original)
-with tokenize.open(staged) as stream:
-    code = compile(stream.read(), staged, "exec")
-main = types.ModuleType("__main__")
-main.__file__ = original
-main.__builtins__ = __builtins__
-sys.modules["__main__"] = main
-del os, tokenize, types, staged, original, stream
-exec(code, main.__dict__)
-"""
+# At most this many entries are linked into a candidate's mirror of the target root.
+MAX_MIRRORED = 10_000
 
 
 class PythonCandidate:
-    """A Python candidate edit: the edited program file in a private directory, run as
-    if it were the original script (its `__file__`, `sys.argv[0]` and import path are the
-    original's), from the original root. The program's file is never written."""
+    """A Python candidate edit: the edited program file, run as itself from a private
+    mirror of the target root. Every other entry on the path from the root to the file
+    is a symlink to the user's own, so the data files and modules the script finds next
+    to it (`Path(__file__).parent / "rates.json"`, `import helper`) are the user's, and
+    anything that re-runs the script by its path (multiprocessing's `spawn`, a
+    `subprocess` of `__file__`) runs the edit. The working directory is the original
+    root. The program's file is never written."""
 
     def __init__(self, adapter, program, root, edit):
         self.adapter = adapter
         self.original = Path(program).resolve(strict=True)
-        relative = self.original.relative_to(Path(root).resolve(strict=True))
+        root = Path(root).resolve(strict=True)
+        relative = self.original.relative_to(root)
         if relative.as_posix() != edit.path:
             raise ValueError("A Python candidate edits the --at file only")
         text = self.original.read_text()
         if not edit.old or edit.old == edit.new or text.count(edit.old) != 1:
             raise ValueError("--old must match the --at file exactly once and --new must change it")
         self.scratch = Path(tempfile.mkdtemp(prefix="peeky-candidate-"))
-        self.staged = self.scratch / "edited" / relative
-        self.staged.parent.mkdir(parents=True, exist_ok=True)
-        self.staged.write_text(text.replace(edit.old, edit.new, 1))
-        self.bootstrap = self.scratch / "peeky_candidate_main.py"
-        self.bootstrap.write_text(_CANDIDATE_MAIN)
+        try:
+            source, mirror, linked = root, self.scratch / "root", 0
+            for part in relative.parts:
+                mirror.mkdir()
+                with os.scandir(source) as entries:
+                    for entry in entries:
+                        if entry.name == part:
+                            continue
+                        linked += 1
+                        if linked > MAX_MIRRORED:
+                            raise ValueError(
+                                f"A Python candidate links the files beside the script, and "
+                                f"there are more than {MAX_MIRRORED}; check the edit with "
+                                "`peeky verify`"
+                            )
+                        (mirror / entry.name).symlink_to(entry.path)
+                source, mirror = source / part, mirror / part
+            self.staged = mirror
+            self.staged.write_text(text.replace(edit.old, edit.new, 1))
+        except BaseException:
+            shutil.rmtree(self.scratch, ignore_errors=True)
+            raise
 
     def __getattr__(self, name):
         return getattr(self.adapter, name)
@@ -105,9 +108,7 @@ class PythonCandidate:
                 "script would import the original module. Probe the edited file directly, "
                 "or check the edit with `peeky verify`"
             )
-        return self.adapter.launch_args(
-            self.bootstrap, root, [str(self.staged), str(self.original), *args]
-        )
+        return self.adapter.launch_args(self.staged, root, args)
 
     def close(self):
         shutil.rmtree(self.scratch, ignore_errors=True)
