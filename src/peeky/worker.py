@@ -1385,9 +1385,6 @@ class DebugWorker:
                 output["value"] = None
             if kind is not None:
                 output["type"] = kind
-            here = getattr(self.runtime, "declared_here", None) if not ancestry else None
-            if here and here(variable, frame):
-                output["declared_here"] = True
             if isinstance(variable.get("evaluateName"), str) and variable["evaluateName"]:
                 # Only whether the debugger could name it as an expression; the expression
                 # itself never leaves the worker. debugpy names a dict entry only when its

@@ -454,11 +454,6 @@ _OWNED_RUST = (
     "line (#53). Capture `.len` for the length, probe a line where it is live, or read it "
     "where it is passed as &Vec, &[T], &String or &str."
 )
-_DECLARED_HERE = (
-    "Declared on the stop line: until its declaration has run on this pass (it has not "
-    "at a stop at the start of the line), this is leftover storage, not its value. "
-    "Probe the next line to read it."
-)
 _RUST_CONTAINERS = (
     "alloc::vec::Vec<",
     "alloc::string::String",
@@ -700,8 +695,6 @@ def _capture(worker, stop, selectors, hit, phase, snapshot=None, children=False)
                 row.update(value=variable["value"], type=variable.get("type"))
                 if "view" not in variable and str(variable.get("type")) in _OWNED_RUST_TYPES:
                     row["note"] = _OWNED_RUST
-                if _root_declared_here(snapshot, parse_selector(selector)[0]):
-                    row["note"] = _DECLARED_HERE
             if "view" in variable:
                 row["view"] = variable["view"]
             if children and variable.get("variablesReference"):
@@ -719,16 +712,6 @@ def _capture(worker, stop, selectors, hit, phase, snapshot=None, children=False)
                     row["children_error"] = str(exc)
         rows.append(row)
     return rows
-
-
-def _root_declared_here(snapshot, root):
-    """Whether the selector's root local (the first one listed by that name, as
-    _resolve reads it) is declared on the stop line."""
-    for scope in snapshot["scopes"]:
-        for variable in scope["variables"]:
-            if variable["name"] == root:
-                return bool(variable.get("declared_here"))
-    return False
 
 
 _KEY_NAME = re.compile(_KEY_LITERAL)
@@ -1061,8 +1044,6 @@ def run_probe(root, probe, *, adapter=None, progress=None):
         )
     if any(row.get("note") == _OWNED_RUST for row in rows):
         warnings.append(_OWNED_RUST)
-    if here := sorted({row["selector"] for row in rows if row.get("note") == _DECLARED_HERE}):
-        warnings.append(f"{', '.join(here[:8])}: {_DECLARED_HERE}")
     if changes and probe.limit > 1:
         warnings.append(
             f"Interventions are applied once, at hit {probe.set_hit}; other hits observe "

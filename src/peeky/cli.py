@@ -1063,8 +1063,6 @@ def _variables_text(snapshot, name="default"):
             view = f"  [{variable['view']}]" if variable.get("view") else ""
             if variable.get("settable"):
                 view += "  [settable]"
-            if variable.get("declared_here"):
-                view += "  [declared on this line: leftovers until it runs]"
             lines.append(
                 f"  {variable['name']}: {variable.get('type', '')} = "
                 f"{'<no value>' if variable.get('unavailable') else variable['value']}{view}{more}"

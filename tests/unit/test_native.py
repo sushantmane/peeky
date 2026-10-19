@@ -750,17 +750,6 @@ def test_a_local_is_withheld_only_when_every_candidate_is_declared_below(
     assert declared_below(table, name, "other.c", line) is None
 
 
-def test_a_local_declared_on_the_stop_line_is_flagged_not_withheld(tmp_path):
-    from peeky.native import declared_below, declared_from, local_declarations
-
-    (tmp_path / "bucket.c").write_text("\n" * 20)
-    info, dump = declaration_dumps(tmp_path)
-    table = local_declarations(info, dump, tmp_path, ("bucket.c",))
-    assert declared_from(table, "refill", "bucket.c", 8) == 8
-    assert declared_below(table, "refill", "bucket.c", 8) is None
-    assert declared_from(table, "elapsed", "bucket.c", 8) is None
-
-
 def rows(spans, source="a.cpp"):
     return {(source, line): span for line, span in spans.items()}
 
@@ -837,7 +826,7 @@ def test_nonlocal_jumps_are_found_in_the_executable(tmp_path, contents, found):
 
 
 def test_a_function_running_code_on_another_files_line_is_among_its_owners():
-    from peeky.native import declared_below, declared_from
+    from peeky.native import declared_below
 
     # Review of #81: clang runs a header struct's member initializer (geo.hpp:2) inside
     # main, which declares `x` on main.cpp:5; origin_sum in geo.hpp declares its own `x`
@@ -848,12 +837,11 @@ def test_a_function_running_code_on_another_files_line_is_among_its_owners():
     origin["rows"] = {("geo.hpp", 2): (40, 42), ("geo.hpp", 5): (50, 52)}
     assert declared_below([main, origin], "x", "geo.hpp", 2) is None
     assert declared_below([origin], "x", "geo.hpp", 2) == 5
-    # Declared on a line whose code wraps another line's (a `for` header): no note.
+    # Declared on the stop line itself: never withheld (a `for` counter is live there
+    # at a later pass).
     loop = {"source": "a.c", "jumps": False, "locals": {"i": {("a.c", 3, True)}}}
-    loop["rows"] = {("a.c", 3): (10, 40), ("a.c", 4): (20, 30)}
-    assert declared_from([loop], "i", "a.c", 3) is None
     loop["rows"] = {("a.c", 3): (10, 12), ("a.c", 4): (20, 30)}
-    assert declared_from([loop], "i", "a.c", 3) == 3
+    assert declared_below([loop], "i", "a.c", 3) is None
 
 
 def test_sources_naming_a_nonlocal_jump_are_found(tmp_path):
@@ -864,3 +852,16 @@ def test_sources_naming_a_nonlocal_jump_are_found(tmp_path):
     builtin.write_text("#define TRY if (__builtin_setjmp(buf) == 0)\n")
     assert not mentions_nonlocal_jumps([plain])
     assert mentions_nonlocal_jumps([plain, builtin])
+
+
+def test_an_external_header_hiding_the_builtin_is_found(tmp_path):
+    from peeky.native import mentions_nonlocal_jumps
+
+    # Review of #81: `/usr/local/include/sjlj_try.h` defines TRY with __builtin_setjmp;
+    # the SDK's setjmp.h only names `setjmp`, which the executable check covers.
+    header = tmp_path / "sjlj_try.h"
+    header.write_text("#define TRY if (__builtin_setjmp(sjlj_env) == 0)\n")
+    sdk = tmp_path / "setjmp.h"
+    sdk.write_text("int setjmp(jmp_buf);\n")
+    assert mentions_nonlocal_jumps({str(header): "sha"}, (b"__builtin_setjmp",))
+    assert not mentions_nonlocal_jumps({str(sdk): "sha"}, (b"__builtin_setjmp",))

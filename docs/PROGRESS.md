@@ -104,9 +104,12 @@ An hourly thread heartbeat (`continue-peeky-mvp`) checks for available usage and
     - Evidence schema 3: `runs.edit` holds the diff; the views have `candidate`; `queries runs` marks candidate runs, `values` leaves them out, and `diff` adds an `(edit)` row. Older stores upgrade in place.
 - **C/C++ locals declared below the stop are withheld** (#74).
   - `no value yet: declared at line 18, below this stop`. They are never settable or expanded.
-  - A local declared on the stop line is shown with a note.
-  - The rule comes from DWARF declaration lines, and applies only when every same-named automatic local in the covering functions is declared there; statics and parameters are never withheld.
-  - Line tables now resolve each file once per table, not once per row: an STL-heavy C++ probe went from 1.45 s to 1.31 s.
+  - The rule comes from DWARF declaration lines and the line table. It applies only when:
+    - every same-named automatic local in the functions running code on that line is declared below;
+    - and that code comes before the declaration's.
+  - It never applies with `goto` labels, `setjmp` (in the executable, the sources or a header's `__builtin_setjmp`), statics or parameters.
+  - Four review rounds found ten cases where a live local was withheld, plus a misleading note on the stop line; all are fixed with real-build regressions (the note was dropped).
+  - Line tables now resolve each file once per table: an STL-heavy C++ probe went from 1.45 s to 1.31 s.
 - **Third agent evaluation** ([report](evaluations/2026-10-18-agent-third-round.md)): Rust, C and Java bugs, each fixed and verified on the first `verify`, all three after a candidate probe. The eval-fixes PR fixes the findings:
   - `queries hits`/`run` keep error text out of `value`;
   - owned `Vec`s read at a loop head after `vec!` (std macro code counts only on lines that can invoke a macro);

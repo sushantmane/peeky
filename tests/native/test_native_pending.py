@@ -97,20 +97,6 @@ def test_a_local_declared_below_cannot_be_set(bucket, capsys):
     assert code == 0 and result["interventions"][0]["after"] == "5"
 
 
-@pytest.mark.timeout(120)
-def test_a_local_declared_on_the_stop_line_is_shown_with_a_note(bucket, capsys):
-    # Line 8 declares `refill`: at its breakpoint the declaration has not run, so the
-    # value is leftovers (hit 2: hit 1's). The note says so; `elapsed` gets none.
-    code, result = probe(capsys, bucket, "--at", "8", "--capture", "refill,elapsed", "--hits", "2")
-    assert code == 0, result.get("error")
-    notes = {(row["hit"], row["selector"]): row.get("note") for row in result["rows"]}
-    assert notes[1, "refill"] and "leftover storage" in notes[1, "refill"]
-    assert notes[2, "refill"] and notes[1, "elapsed"] is None
-    assert any(
-        warning.startswith("refill: Declared on the stop line") for warning in result["warnings"]
-    )
-
-
 GOTO = """#include <stdio.h>
 int main(void) {
     int i = 0;
@@ -286,10 +272,10 @@ def test_a_header_structs_initializer_run_in_main_withholds_nothing(bucket, caps
 
 
 @pytest.mark.timeout(120)
-def test_a_live_for_counter_at_a_step_stop_on_its_header_has_no_note(bucket, capsys):
+def test_a_live_for_counter_at_a_step_stop_on_its_header_is_shown(bucket, capsys):
     program = bucket.with_name("for.c")
     program.write_text(FOR)
     # Hit 2 of line 4, then step to line 5 and back onto the header (the increment).
     snapshot, shown = session_inspect(capsys, program, 4, 2, hit=2)
     assert snapshot["location"].endswith("for.c:3"), snapshot["location"]
-    assert shown["i"]["value"] == "1" and not shown["i"].get("declared_here"), shown["i"]
+    assert shown["i"]["value"] == "1" and not shown["i"].get("unavailable"), shown["i"]

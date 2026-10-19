@@ -582,9 +582,13 @@ def local_declarations(info, line_text, workspace, declared):
 _NONLOCAL_JUMPS = (b"setjmp", b"getcontext", b"swapcontext")
 
 
-def mentions_nonlocal_jumps(paths):
-    """Whether any of these source files names a non-local jump."""
-    return any(name in Path(path).read_bytes() for path in paths for name in _NONLOCAL_JUMPS)
+def mentions_nonlocal_jumps(paths, names=_NONLOCAL_JUMPS):
+    """Whether any of these source files names a non-local jump (each read once)."""
+    for path in paths:
+        text = Path(path).read_bytes()
+        if any(name in text for name in names):
+            return True
+    return False
 
 
 def has_nonlocal_jumps(binary):
@@ -603,20 +607,19 @@ def has_nonlocal_jumps(binary):
 _SHADOWED = re.compile(r"(.+) @ [^:]+:([0-9]+)")
 
 
-def declared_from(table, name, source, line):
-    """The first line a C/C++ local shown at ``source:line`` can be declared on, when
-    that is this line or below, else None.
+def declared_below(table, name, source, line):
+    """The line a C/C++ local shown at ``source:line`` is declared on, when control
+    cannot have reached that declaration on this pass, else None.
 
     Only when every local of that name in every function owning code of the line is
-    an automatic variable declared in this source at or below it, and, for one
-    declared below, all of that function's code of this line comes before any code of
-    the declaration's line: control then has not reached the declaration on this pass,
-    and its value is indeterminate (C11 6.2.4). Line numbers alone do not say that:
-    clang runs a struct's default member initializer in its caller on the struct's
-    line, and GCC runs a `cleanup` at its variable's line when the block ends. Never in
-    a function with a label (`goto` can return above a declaration with the local
-    live). lldb-dap names a shadowed local `x @ file:line`, and that line picks among
-    them.
+    an automatic variable declared in this source below it, and all of that
+    function's code of this line comes before any code of the declaration's line:
+    its value is then indeterminate here (C11 6.2.4). Line numbers alone do not say
+    that: clang runs a struct's default member initializer in its caller on the
+    struct's line, and GCC runs a `cleanup` at its variable's line when the block
+    ends. Never in a function with a label (`goto` can return above a declaration
+    with the local live). lldb-dap names a shadowed local `x @ file:line`, and that
+    line picks among them.
     """
     shown = _SHADOWED.fullmatch(name)
     here = (source, line)
@@ -635,31 +638,12 @@ def declared_from(table, name, source, line):
     if not candidates:
         return None
     for function, (declared_in, at, automatic) in candidates:
-        if not automatic or declared_in != source or type(at) is not int or at < line:
+        if not automatic or declared_in != source or type(at) is not int or at <= line:
             return None
         rows = function["rows"]
-        if at > line and not ((source, at) in rows and rows[here][1] < rows[source, at][0]):
-            return None
-        if at == line and not _contiguous(rows, here):
-            # Code of other lines inside this line's (a `for` header around its body):
-            # a stop here may be on a later pass, with the local live.
+        if not ((source, at) in rows and rows[here][1] < rows[source, at][0]):
             return None
     return min(where[1] for _, where in candidates)
-
-
-def _contiguous(rows, key):
-    """Whether no other line's code lies between this line's first and last address."""
-    low, high = rows[key]
-    return not any(
-        other != key and (low < start < high or low < end < high)
-        for other, (start, end) in rows.items()
-    )
-
-
-def declared_below(table, name, source, line):
-    """declared_from, only when that is below the line."""
-    found = declared_from(table, name, source, line)
-    return found if found is not None and found > line else None
 
 
 def elf_build_id(binary):
@@ -972,6 +956,9 @@ class NativeTarget:
                     or mentions_nonlocal_jumps(
                         prepared.workspace / name for name in self.sources + self.headers
                     )
+                    # A header outside the workspace can hide the builtin in a macro;
+                    # the SDK's own setjmp.h names `setjmp`, so only the builtin counts.
+                    or mentions_nonlocal_jumps(external, (b"__builtin_setjmp",))
                     else local_declarations(
                         info, text, prepared.workspace, self.sources + self.headers
                     )
@@ -1179,9 +1166,9 @@ class NativeSession:
             info, dump("--debug-line", MAX_METADATA), workspace, tuple(self.lines)
         )
 
-    def _declared_from(self, variable, frame):
-        """(first declaration line, stop line) of a root local declared at or below the
-        stop, else None."""
+    def not_yet_declared(self, variable, frame):
+        """Why a root local of ``frame`` has no value yet (declared below the stop), or
+        None. Its storage then holds whatever an earlier call or iteration left."""
         name, path = variable.get("name"), ((frame or {}).get("source") or {}).get("path")
         line = (frame or {}).get("line")
         if not self.declarations or not isinstance(name, str) or not isinstance(path, str):
@@ -1192,22 +1179,9 @@ class NativeSession:
             return None
         if type(line) is not int:
             return None
-        found = declared_from(self.declarations, name, source.as_posix(), line)
-        return None if found is None else (found, line)
-
-    def declared_here(self, variable, frame):
-        """A root local declared on the stop line: its value is leftovers until the
-        declaration runs (always at the line's first stop on each pass)."""
-        found = self._declared_from(variable, frame)
-        return found is not None and found[0] == found[1]
-
-    def not_yet_declared(self, variable, frame):
-        """Why a root local of ``frame`` has no value yet (declared below the stop), or
-        None. Its storage then holds whatever an earlier call or iteration left."""
-        found = self._declared_from(variable, frame)
-        if found is None or found[0] == found[1]:
+        below = declared_below(self.declarations, name, source.as_posix(), line)
+        if below is None:
             return None
-        below = found[0]
         return (
             f"declared at line {below}, below this stop, so not initialized yet: its storage "
             f"holds leftovers; stop after line {below} to read it"
