@@ -637,3 +637,231 @@ def test_lambdas_under_an_inlined_only_function_keep_its_name(tmp_path):
 0x0000003a:   NULL
 """
     assert _qualified(_dies(info), 0x30) == "apply_twice::operator()"
+
+
+def declaration_dumps(workspace):
+    """A C unit: `take` (lines 5-12) with a parameter, two automatics, a static and a
+    local in a nested block; the static has an address, not a frame location."""
+    source = workspace / "bucket.c"
+    info = f"""{workspace}/program: file format Mach-O arm64
+
+.debug_info contents:
+0x0000000b: DW_TAG_compile_unit
+              DW_AT_name\t("bucket.c")
+0x00000020:   DW_TAG_subprogram
+                DW_AT_low_pc\t(0x0000000100000400)
+                DW_AT_high_pc\t(0x0000000100000480)
+                DW_AT_name\t("take")
+                DW_AT_decl_file\t("{source}")
+                DW_AT_decl_line\t(5)
+0x00000030:     DW_TAG_formal_parameter
+                  DW_AT_location\t(DW_OP_fbreg -8)
+                  DW_AT_name\t("now")
+                  DW_AT_decl_file\t("{source}")
+                  DW_AT_decl_line\t(5)
+0x00000038:     DW_TAG_variable
+                  DW_AT_location\t(DW_OP_fbreg -16)
+                  DW_AT_name\t("elapsed")
+                  DW_AT_decl_file\t("{source}")
+                  DW_AT_decl_line\t(6)
+0x00000040:     DW_TAG_variable
+                  DW_AT_location\t(DW_OP_breg31 WSP+40)
+                  DW_AT_name\t("refill")
+                  DW_AT_decl_file\t("{source}")
+                  DW_AT_decl_line\t(8)
+0x00000048:     DW_TAG_variable
+                  DW_AT_location\t(DW_OP_addr 0x100008000)
+                  DW_AT_name\t("calls")
+                  DW_AT_decl_file\t("{source}")
+                  DW_AT_decl_line\t(9)
+0x00000050:     DW_TAG_lexical_block
+                  DW_AT_low_pc\t(0x0000000100000440)
+                  DW_AT_high_pc\t(0x0000000100000460)
+0x00000058:       DW_TAG_variable
+                    DW_AT_location\t(DW_OP_fbreg -20)
+                    DW_AT_name\t("now")
+                    DW_AT_decl_file\t("{source}")
+                    DW_AT_decl_line\t(11)
+0x00000060:       NULL
+0x00000061:     NULL
+0x00000062:   NULL
+"""
+    rows = [(0x400, 5), (0x410, 6), (0x420, 7), (0x430, 8), (0x440, 11), (0x460, 12)]
+    line = 'debug_line[0x00000000]\nversion: 4\nfile_names[ 1]:\nname: "bucket.c"\ndir_index: 0\n'
+    line += "Address Line Column File\n"
+    base = 0x100000000
+    line += "".join(
+        f"0x{base + address:016x} {number} 1 1 0 0 is_stmt\n" for address, number in rows
+    )
+    line += f"0x{base + 0x480:016x} 12 1 1 0 0 end_sequence\n"
+    return info, line
+
+
+def test_local_declarations_record_where_and_how_each_local_is_declared(tmp_path):
+    from peeky.native import local_declarations
+
+    (tmp_path / "bucket.c").write_text("\n" * 20)
+    info, line = declaration_dumps(tmp_path)
+    [take] = local_declarations(info, line, tmp_path, ("bucket.c",))
+    base = 0x100000000
+    assert take["source"] == "bucket.c" and take["jumps"] is False
+    assert take["rows"] == {
+        ("bucket.c", number): (base + address, base + address)
+        for address, number in [
+            (0x400, 5),
+            (0x410, 6),
+            (0x420, 7),
+            (0x430, 8),
+            (0x440, 11),
+            (0x460, 12),
+        ]
+    }
+    assert take["locals"] == {
+        "now": {(None, None, False), ("bucket.c", 11, True)},
+        "elapsed": {("bucket.c", 6, True)},
+        "refill": {("bucket.c", 8, True)},
+        "calls": {("bucket.c", 9, False)},
+    }
+
+
+@pytest.mark.parametrize(
+    "name, line, below",
+    [
+        ("refill", 7, 8),  # #74: declared on the next line, so leftovers here
+        ("refill", 8, None),  # its own line: a for-header counter is live there again
+        ("elapsed", 7, None),
+        ("calls", 7, None),  # a static has its value before its declaration
+        ("now", 7, None),  # the parameter or the block's `now`: either may be shown
+        ("now @ bucket.c:11", 7, 11),  # lldb-dap names each shadowed local
+        ("now @ bucket.c:5", 7, None),
+        ("missing", 7, None),
+        ("refill", 13, None),  # outside the function
+    ],
+)
+def test_a_local_is_withheld_only_when_every_candidate_is_declared_below(
+    tmp_path, name, line, below
+):
+    from peeky.native import declared_below, local_declarations
+
+    (tmp_path / "bucket.c").write_text("\n" * 20)
+    info, dump = declaration_dumps(tmp_path)
+    table = local_declarations(info, dump, tmp_path, ("bucket.c",))
+    assert declared_below(table, name, "bucket.c", line) == below
+    assert declared_below(table, name, "other.c", line) is None
+
+
+def rows(spans, source="a.cpp"):
+    return {(source, line): span for line, span in spans.items()}
+
+
+def test_only_functions_owning_the_line_count_and_jumps_disable_withholding():
+    from peeky.native import declared_below
+
+    # Review of #81: a local class's constructor owns its member initializer on line 5,
+    # above its own declaration; `main`, which defines the class, declares `v` on line 12.
+    ctor = {"source": "a.cpp", "rows": rows({5: (50, 50), 7: (70, 70), 8: (80, 80)})}
+    ctor.update(locals={"v": {(None, None, False)}}, jumps=False)
+    main = {"source": "a.cpp", "rows": rows({3: (3, 3), 11: (11, 11), 12: (12, 12)})}
+    main["jumps"] = False
+    main["locals"] = {"v": {("a.cpp", 12, True)}}
+    assert declared_below([ctor, main], "v", "a.cpp", 5) is None
+    assert declared_below([ctor, main], "v", "a.cpp", 11) == 12
+    # A backward goto can return above the declaration with `v` live.
+    assert declared_below([ctor, {**main, "jumps": True}], "v", "a.cpp", 11) is None
+
+
+@pytest.mark.parametrize(
+    "rows, below",
+    [
+        ({7: (10, 12), 8: (20, 24)}, 8),  # line 7's code all comes before line 8's
+        # Review of #81: clang runs a struct's default member initializer in its caller,
+        # on the struct's line, inside the code of a later line.
+        ({7: (30, 32), 8: (20, 24)}, None),
+        # GCC runs a `cleanup` at its variable's line when the block ends: line 7 then
+        # has code after line 8's.
+        ({7: (10, 40), 8: (20, 24)}, None),
+        ({7: (10, 12)}, None),  # a declaration without code proves nothing
+    ],
+)
+def test_a_local_is_withheld_only_when_the_lines_code_comes_before_its_declaration(rows, below):
+    from peeky.native import declared_below
+
+    function = {"source": "a.c", "rows": {("a.c", n): span for n, span in rows.items()}}
+    function.update(locals={"later": {("a.c", 8, True)}}, jumps=False)
+    assert declared_below([function], "later", "a.c", 7) == below
+
+
+def test_a_function_with_a_label_can_jump_back(tmp_path):
+    from peeky.native import local_declarations
+
+    info, line = declaration_dumps(tmp_path)
+    info = info.replace(
+        "0x00000050:     DW_TAG_lexical_block",
+        '0x0000004c:     DW_TAG_label\n                  DW_AT_name\t("again")\n'
+        "0x00000050:     DW_TAG_lexical_block",
+    )
+    (tmp_path / "bucket.c").write_text("\n" * 20)
+    [take] = local_declarations(info, line, tmp_path, ("bucket.c",))
+    assert take["jumps"] is True
+
+
+@pytest.mark.parametrize(
+    "contents, found",
+    [
+        (b"\x00_setjmp\x00", True),
+        (b"\x00___sigsetjmp\x00", True),
+        (b"x" * (1 << 20) + b"swapcontext", True),  # across a read boundary
+        (b"x" * ((1 << 20) - 3) + b"getcontext", True),
+        (b"\x00_printf\x00_malloc\x00", False),
+    ],
+)
+def test_nonlocal_jumps_are_found_in_the_executable(tmp_path, contents, found):
+    from peeky.native import has_nonlocal_jumps
+
+    # Review of #81: `setjmp` behind a TRY macro from a header never appears in the
+    # function's lines, but the executable imports it.
+    binary = tmp_path / "program"
+    binary.write_bytes(contents)
+    assert has_nonlocal_jumps(binary) is found
+
+
+def test_a_function_running_code_on_another_files_line_is_among_its_owners():
+    from peeky.native import declared_below
+
+    # Review of #81: clang runs a header struct's member initializer (geo.hpp:2) inside
+    # main, which declares `x` on main.cpp:5; origin_sum in geo.hpp declares its own `x`
+    # on geo.hpp:5.
+    main = {"source": "main.cpp", "jumps": False, "locals": {"x": {("main.cpp", 5, True)}}}
+    main["rows"] = {("main.cpp", 5): (10, 12), ("geo.hpp", 2): (20, 22), ("main.cpp", 6): (14, 24)}
+    origin = {"source": "geo.hpp", "jumps": False, "locals": {"x": {("geo.hpp", 5, True)}}}
+    origin["rows"] = {("geo.hpp", 2): (40, 42), ("geo.hpp", 5): (50, 52)}
+    assert declared_below([main, origin], "x", "geo.hpp", 2) is None
+    assert declared_below([origin], "x", "geo.hpp", 2) == 5
+    # Declared on the stop line itself: never withheld (a `for` counter is live there
+    # at a later pass).
+    loop = {"source": "a.c", "jumps": False, "locals": {"i": {("a.c", 3, True)}}}
+    loop["rows"] = {("a.c", 3): (10, 12), ("a.c", 4): (20, 30)}
+    assert declared_below([loop], "i", "a.c", 3) is None
+
+
+def test_sources_naming_a_nonlocal_jump_are_found(tmp_path):
+    from peeky.native import mentions_nonlocal_jumps
+
+    plain, builtin = tmp_path / "a.c", tmp_path / "b.h"
+    plain.write_text("int main(void) { return 0; }\n")
+    builtin.write_text("#define TRY if (__builtin_setjmp(buf) == 0)\n")
+    assert not mentions_nonlocal_jumps([plain])
+    assert mentions_nonlocal_jumps([plain, builtin])
+
+
+def test_an_external_header_hiding_the_builtin_is_found(tmp_path):
+    from peeky.native import mentions_nonlocal_jumps
+
+    # Review of #81: `/usr/local/include/sjlj_try.h` defines TRY with __builtin_setjmp;
+    # the SDK's setjmp.h only names `setjmp`, which the executable check covers.
+    header = tmp_path / "sjlj_try.h"
+    header.write_text("#define TRY if (__builtin_setjmp(sjlj_env) == 0)\n")
+    sdk = tmp_path / "setjmp.h"
+    sdk.write_text("int setjmp(jmp_buf);\n")
+    assert mentions_nonlocal_jumps({str(header): "sha"}, (b"__builtin_setjmp",))
+    assert not mentions_nonlocal_jumps({str(sdk): "sha"}, (b"__builtin_setjmp",))

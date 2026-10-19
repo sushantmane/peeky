@@ -367,6 +367,8 @@ def _resolve(worker, stop, snapshot, segments):
     variable = matches[0]
     for segment in segments[1:]:
         handle = variable.get("variablesReference", 0)
+        if not handle and variable.get("unavailable"):
+            raise ValueError(f"{variable['name']!r} has no value here: {variable.get('reason')}")
         if not handle:
             if variable.get("depth_limited"):
                 raise ValueError(
@@ -682,7 +684,9 @@ def _capture(worker, stop, selectors, hit, phase, snapshot=None, children=False)
                     type=variable.get("type"),
                     unavailable=True,
                     error=(
-                        f"no value here: optimized out or not live (debugger: {reason})"
+                        f"no value yet: {reason}"
+                        if variable.get("withheld")
+                        else f"no value here: optimized out or not live (debugger: {reason})"
                         if snapshot.get("optimized")
                         else f"the debugger could not read a value (debugger: {reason})"
                     ),

@@ -125,6 +125,8 @@ def _line_rows(text, workspace, declared, limit=MAX_METADATA):
     inputs = {str((workspace / name).resolve()): name for name in declared}
     counts = {name: len((workspace / name).read_text().splitlines()) for name in declared}
     directories, files, current = {0: str(workspace)}, {}, None
+    # {file id: declared name or None} for this table: one resolve per file, not per row.
+    resolved = {}
     table_count = 0
     version = None
     rows = []
@@ -135,6 +137,7 @@ def _line_rows(text, workspace, declared, limit=MAX_METADATA):
             if table_count > 4096:
                 raise ValueError("Too many native line tables")
             directories, files, current = {0: str(workspace)}, {}, None
+            resolved = {}
             version = None
         elif match := re.fullmatch(r"version:\s+(\d+)", line):
             version = int(match[1])
@@ -164,15 +167,17 @@ def _line_rows(text, workspace, declared, limit=MAX_METADATA):
                 raise ValueError("Malformed native line row")
             try:
                 number, file_id = int(fields[1]), int(fields[3])
-                entry = files[file_id]
-                directory = directories[entry["directory"]]
-                path = (workspace / directory / entry["name"]).resolve()
+                if file_id not in resolved:
+                    entry = files[file_id]
+                    directory = directories[entry["directory"]]
+                    path = (workspace / directory / entry["name"]).resolve()
+                    # SDK/system header instructions are not selectable user source.
+                    resolved[file_id] = inputs.get(str(path))
             except (ValueError, KeyError, TypeError) as exc:
                 raise ValueError("Unresolved native line source") from exc
             if "end_sequence" in fields or number == 0:
                 continue
-            # SDK/system header instructions are not selectable user source.
-            name = inputs.get(str(path))
+            name = resolved[file_id]
             if name is not None:
                 if not 0 < number <= counts[name]:
                     raise ValueError("Native line exceeds declared source length")
@@ -401,14 +406,12 @@ def _code_ranges(die):
     return [(lo, hi) for lo, hi in spans if 0 < lo < hi and lo < _TOMBSTONE]
 
 
-def function_scopes(info, line_text, workspace, declared):
-    """Each function in a declared source: qualified name, source, line span, locals.
-
-    Display only (`describe`). A line-table row belongs to the innermost function or
-    inlined call whose address range covers it, so an inlined callee's lines count for
-    the callee, not its caller. Copies of one function (C1/C2 constructors, inlined and
-    out-of-line copies) are merged through the DIE that declares them.
-    """
+def _function_entries(info, line_text, workspace, declared):
+    """(dies, {root: entry}, {root: {line: span}}, files, {root: {(source, line): span}})
+    for functions in declared sources; see function_scopes. A span is the lowest and
+    highest address of a function's rows on a line. The first mapping keeps rows of the
+    function's own file (describe); the last keeps every row the function runs, in any
+    declared file (clang runs a header struct's member initializers in its caller)."""
     import bisect
 
     workspace = Path(workspace).resolve()
@@ -417,7 +420,8 @@ def function_scopes(info, line_text, workspace, declared):
     addresses = [row[0] for row in rows]
     dies = _dies(info)
     owner = [None] * len(rows)
-    functions = {}
+    runner = [None] * len(rows)
+    functions, sources = {}, {}
     for offset, die in dies.items():
         if die["tag"] not in _CODE:
             continue
@@ -425,8 +429,7 @@ def function_scopes(info, line_text, workspace, declared):
         if not spans:
             continue
         chain = _chain(dies, offset)
-        decl = _text(_first(dies, chain, "DW_AT_decl_file"))
-        source = inputs.get(str((workspace / decl).resolve())) if decl else None
+        source = _source_of(_first(dies, chain, "DW_AT_decl_file"), inputs, workspace, sources)
         if source is None:
             # SDK and std code: never listed, and never claims the caller's rows.
             continue
@@ -443,20 +446,52 @@ def function_scopes(info, line_text, workspace, declared):
                     owner[index] is None or die["depth"] > owner[index][0]
                 ):
                     owner[index] = (die["depth"], root)
-    lines = {}
-    for (_, _, number), claimed in zip(rows, owner):
-        if claimed is not None:
-            lines.setdefault(claimed[1], set()).add(number)
+                if runner[index] is None or die["depth"] > runner[index][0]:
+                    runner[index] = (die["depth"], root)
+    lines, runs = {}, {}
+    for (address, name, number), claimed, ran in zip(rows, owner, runner):
+        for found, key, table in ((claimed, number, lines), (ran, (name, number), runs)):
+            if found is not None:
+                span = table.setdefault(found[1], {}).setdefault(key, [address, address])
+                span[0], span[1] = min(span[0], address), max(span[1], address)
+    return dies, functions, lines, (inputs, sources), runs
+
+
+def _source_of(attribute, inputs, workspace, cache):
+    """The declared source a DW_AT_decl_file names, or None; resolved once per name
+    (an STL-heavy unit names the same few headers thousands of times)."""
+    if attribute not in cache:
+        decl = _text(attribute)
+        cache[attribute] = inputs.get(str((workspace / decl).resolve())) if decl else None
+    return cache[attribute]
+
+
+def _own_lines(dies, entry, numbers):
+    """A function's line numbers from its declaration on, or None if it has none."""
+    if not numbers:
+        return None
+    first_line = _first(dies, entry["chain"], "DW_AT_decl_line")
+    if first_line and first_line.isdigit():
+        numbers = {number for number in numbers if number >= int(first_line)} or numbers
+    return numbers
+
+
+def function_scopes(info, line_text, workspace, declared):
+    """Each function in a declared source: qualified name, source, line span, locals.
+
+    Display only (`describe`). A line-table row belongs to the innermost function or
+    inlined call whose address range covers it, so an inlined callee's lines count for
+    the callee, not its caller. Copies of one function (C1/C2 constructors, inlined and
+    out-of-line copies) are merged through the DIE that declares them.
+    """
+    dies, functions, lines, _, _ = _function_entries(info, line_text, workspace, declared)
     found = {}
     for root, entry in functions.items():
-        chain, source = entry["chain"], entry["source"]
+        source = entry["source"]
         name = _qualified(dies, entry["bodies"][0])
-        numbers = lines.get(root)
+        numbers = _own_lines(dies, entry, lines.get(root))
         if name is None or not numbers:
             continue
-        first_line = _first(dies, chain, "DW_AT_decl_line")
-        if first_line and first_line.isdigit():
-            numbers = {number for number in numbers if number >= int(first_line)} or numbers
         names = set()
         for body in (*entry["bodies"], root):
             names |= _locals(dies, body)
@@ -471,6 +506,144 @@ def function_scopes(info, line_text, workspace, declared):
     if len(scopes) > MAX_SCOPES:
         scopes = [*scopes[:MAX_SCOPES], {"omitted": len(scopes) - MAX_SCOPES}]
     return scopes
+
+
+# A local in the frame: DW_OP_fbreg (frame base) or DW_OP_bregN (a register) offsets.
+_AUTOMATIC = re.compile(r"DW_OP_(?:fbreg|breg[0-9]+)\b")
+
+
+def _declared(dies, offset, files, workspace):
+    """(name, (source, line, automatic)) for each parameter and variable of one function
+    body, including nested blocks but not calls inlined into it. Parameters, statics and
+    anything without a frame location are not automatic. A label is listed as
+    (None, None): `goto` can return above a declaration with the local still live."""
+    found, pending = [], list(dies[offset]["children"])
+    while pending and len(found) < 4096:
+        child = pending.pop()
+        die = dies[child]
+        if die["tag"] == "DW_TAG_lexical_block":
+            pending.extend(die["children"])
+            continue
+        if die["tag"] == "DW_TAG_label":
+            found.append((None, None))
+            continue
+        if die["tag"] not in ("DW_TAG_formal_parameter", "DW_TAG_variable"):
+            continue
+        chain = _chain(dies, child)
+        name = _text(_first(dies, chain, "DW_AT_name"))
+        if not name or name.startswith("$"):
+            continue
+        if die["tag"] == "DW_TAG_formal_parameter":
+            found.append((name, (None, None, False)))
+            continue
+        inputs, cache = files
+        source = _source_of(_first(dies, chain, "DW_AT_decl_file"), inputs, workspace, cache)
+        line = _first(dies, chain, "DW_AT_decl_line")
+        location = die["attrs"].get("DW_AT_location") or ""
+        automatic = bool(_AUTOMATIC.search(location)) and "DW_OP_addr" not in location
+        found.append((name, (source, int(line) if line and line.isdigit() else None, automatic)))
+    return found
+
+
+def local_declarations(info, line_text, workspace, declared):
+    """Each function in a declared source: its source; ``rows``, the lowest and highest
+    address of its code on each (source, line) it runs, in any declared file and even
+    above its declaration (member initializers run where their class is built); for each local
+    name, where every local of that name is declared, as (source, line, automatic);
+    and whether it has a label, where `goto` can return above a declaration."""
+    dies, functions, _, files, runs = _function_entries(info, line_text, workspace, declared)
+    workspace = Path(workspace).resolve()
+    table = []
+    for root, entry in functions.items():
+        rows = runs.get(root)
+        if not rows:
+            continue
+        names, jumps = {}, False
+        for body in (*entry["bodies"], root):
+            for name, where in _declared(dies, body, files, workspace):
+                if name is None:
+                    jumps = True
+                else:
+                    names.setdefault(name, set()).add(where)
+        table.append(
+            {
+                "source": entry["source"],
+                "rows": {number: tuple(span) for number, span in rows.items()},
+                "locals": names,
+                "jumps": jumps,
+            }
+        )
+    return table
+
+
+# Non-local jumps: after one returns, code above a declaration can run again with the
+# local live (C11 7.13.2.1). Searched in the executable (imports, wherever the call is
+# hidden) and in the sources (`__builtin_setjmp` leaves no symbol).
+_NONLOCAL_JUMPS = (b"setjmp", b"getcontext", b"swapcontext")
+
+
+def mentions_nonlocal_jumps(paths, names=_NONLOCAL_JUMPS):
+    """Whether any of these source files names a non-local jump (each read once)."""
+    for path in paths:
+        text = Path(path).read_bytes()
+        if any(name in text for name in names):
+            return True
+    return False
+
+
+def has_nonlocal_jumps(binary):
+    """Whether the executable names setjmp/sigsetjmp or a ucontext switch anywhere
+    (its imports), wherever the call is hidden (a TRY macro in a library header)."""
+    tail = b""
+    with Path(binary).open("rb") as stream:
+        while chunk := stream.read(1 << 20):
+            window = tail + chunk
+            if any(name in window for name in _NONLOCAL_JUMPS):
+                return True
+            tail = chunk[-16:]
+    return False
+
+
+_SHADOWED = re.compile(r"(.+) @ [^:]+:([0-9]+)")
+
+
+def declared_below(table, name, source, line):
+    """The line a C/C++ local shown at ``source:line`` is declared on, when control
+    cannot have reached that declaration on this pass, else None.
+
+    Only when every local of that name in every function owning code of the line is
+    an automatic variable declared in this source below it, and all of that
+    function's code of this line comes before any code of the declaration's line:
+    its value is then indeterminate here (C11 6.2.4). Line numbers alone do not say
+    that: clang runs a struct's default member initializer in its caller on the
+    struct's line, and GCC runs a `cleanup` at its variable's line when the block
+    ends. Never in a function with a label (`goto` can return above a declaration
+    with the local live). lldb-dap names a shadowed local `x @ file:line`, and that
+    line picks among them.
+    """
+    shown = _SHADOWED.fullmatch(name)
+    here = (source, line)
+    # Every function with code on the line, whatever file it is defined in: the one
+    # stopped in is among them.
+    owners = [function for function in table if here in function["rows"]]
+    if any(function["jumps"] for function in owners):
+        return None
+    candidates = [
+        (function, where)
+        for function in owners
+        for where in function["locals"].get(shown[1] if shown else name, ())
+    ]
+    if shown:
+        candidates = [pair for pair in candidates if pair[1][1] == int(shown[2])]
+    if not candidates:
+        return None
+    for function, (declared_in, at, automatic) in candidates:
+        if not automatic or declared_in != source or type(at) is not int or at <= line:
+            return None
+        rows = function["rows"]
+        if not ((source, at) in rows and rows[here][1] < rows[source, at][0]):
+            return None
+    return min(where[1] for _, where in candidates)
 
 
 def elf_build_id(binary):
@@ -768,8 +941,41 @@ class NativeTarget:
                 prepared.workspace,
                 self.sources + self.headers,
             )
+            try:
+                info = _metadata(
+                    dwarfdump,
+                    ["--debug-info", str(symbols)],
+                    prepared.workspace,
+                    env,
+                    max_bytes=MAX_DEBUG_INFO,
+                    timeout=_remaining(deadline),
+                )
+                declarations = (
+                    None
+                    if has_nonlocal_jumps(binary)
+                    or mentions_nonlocal_jumps(
+                        prepared.workspace / name for name in self.sources + self.headers
+                    )
+                    # A header outside the workspace can hide the builtin in a macro;
+                    # the SDK's own setjmp.h names `setjmp`, so only the builtin counts.
+                    or mentions_nonlocal_jumps(external, (b"__builtin_setjmp",))
+                    else local_declarations(
+                        info, text, prepared.workspace, self.sources + self.headers
+                    )
+                )
+            except (RuntimeError, ValueError, OSError):
+                # Display aid only: without it, values show as the debugger reads them.
+                declarations = None
             session = NativeSession(
-                self, prepared, adapter, lines, identity, binary, symbols, external
+                self,
+                prepared,
+                adapter,
+                lines,
+                identity,
+                binary,
+                symbols,
+                external,
+                declarations=declarations,
             )
             session.assert_current()
             return session
@@ -862,8 +1068,21 @@ class NativeSession:
         local may itself be called `this`."""
         return "this" if getattr(self.target, "language", None) == "cpp" else None
 
-    def __init__(self, target, prepared, adapter, lines, identity, binary, symbols, external=None):
+    def __init__(
+        self,
+        target,
+        prepared,
+        adapter,
+        lines,
+        identity,
+        binary,
+        symbols,
+        external=None,
+        declarations=None,
+    ):
         self.target, self.prepared = target, prepared
+        # local_declarations of the build; None (unknown) never withholds a value.
+        self.declarations = declarations
         self.external_inputs = dict(external or {})
         self.binary, self.symbols, self.adapter = binary, symbols, adapter
         self._lines_data, self.module_identity = json.dumps(lines, sort_keys=True), identity
@@ -946,6 +1165,34 @@ class NativeSession:
         return function_scopes(
             info, dump("--debug-line", MAX_METADATA), workspace, tuple(self.lines)
         )
+
+    def not_yet_declared(self, variable, frame):
+        """Why a root local of ``frame`` has no value yet (declared below the stop), or
+        None. Its storage then holds whatever an earlier call or iteration left."""
+        name, path = variable.get("name"), ((frame or {}).get("source") or {}).get("path")
+        line = (frame or {}).get("line")
+        if not self.declarations or not isinstance(name, str) or not isinstance(path, str):
+            return None
+        try:
+            source = Path(path).resolve().relative_to(self.prepared.workspace.resolve())
+        except (OSError, ValueError):
+            return None
+        if type(line) is not int:
+            return None
+        below = declared_below(self.declarations, name, source.as_posix(), line)
+        if below is None:
+            return None
+        return (
+            f"declared at line {below}, below this stop, so not initialized yet: its storage "
+            f"holds leftovers; stop after line {below} to read it"
+        )
+
+    def validate_mutation_target(self, variable, frame):
+        if reason := self.not_yet_declared(variable, frame):
+            raise ValueError(
+                f"{variable.get('name')!r} is {reason}; its declaration would overwrite a "
+                "change made here"
+            )
 
     def source_path(self, original):
         relative = (

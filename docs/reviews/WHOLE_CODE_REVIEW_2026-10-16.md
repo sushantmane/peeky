@@ -484,3 +484,41 @@ The review agent was available again. It checked these and found them sound:
 ### Verification of ba50845
 
 Nothing that copies a `BuildCommandError`'s result or message can still carry unbounded output, and nothing depended on the old message. A pre-existing mislabel was reported and fixed: a compile that hit its per-command timeout printed `reason: checker timed out`, because the build result's `timed_out` overrode the diagnostic. The verify text renderer (`_verify_text`, now a module function) uses the checker label only outside the build stage. Test: `test_a_build_timeout_is_not_reported_as_the_checkers`.
+
+## Review of withheld C/C++ locals (#81, f2c0fe1)
+
+These were checked and found sound: the per-table line cache (reset per table; file ids are fixed before any row), the keys of a withheld output, `_root_declared_here` against `_resolve`, other runtimes, shadowed `x @ file:line` names, lambdas and init-captures, Apple blocks, and declarations in other files or with non-automatic storage.
+
+| # | Finding | Severity | Disposition |
+| --- | --- | --- | --- |
+| 1 | A live constructor parameter was withheld. Candidates came from functions whose line *span* covered the stop line, and that span dropped lines above the function's declaration. A local class's constructor runs its default member initializers there (`int w = helper(3);` on line 5), so `main`, which defines the class and declares another `v` on line 12, was the only candidate: `v` showed "declared at line 12". | High | **Fixed.** Candidates come only from functions that own code on the stop line, using the exact line set from the line table with no declaration filter. Tests: `test_only_functions_owning_the_line_count_and_jumps_disable_withholding`, and the real C++ build `test_a_constructor_parameter_is_never_withheld_for_an_enclosing_functions_local`, which fails on `f2c0fe1`. |
+| 2 | A backward `goto` (the `again:` retry idiom), or a `longjmp` to a `setjmp` above the declaration, re-runs lines above a declaration while the local is still live (C11 6.2.4p6). It was withheld as leftovers. | Medium | **Fixed.** A function with a `DW_TAG_label`, or with `setjmp` in its source lines, never withholds. Tests: `test_a_function_with_a_label_or_setjmp_can_jump_back`, and the real build `test_a_backward_goto_keeps_the_local_live_above_its_declaration` (`x` is 7, then 17), which fails on `f2c0fe1`. |
+
+### Second round (64a9bd3)
+
+Both fixes held. The reviewer ran the pending-local tests on macOS clang and on Linux clang-18 (CI's compiler); the `goto` test also passed with gcc. These were checked and found right: lambdas sharing a line with their parent (the union of their locals only withholds less), same-file inlined callees, switch fallthrough, one-line functions, macro-defined functions, GCC nested functions, VLAs (a location list under clang; GCC's is withheld above the declaration, correctly) and labels kept at `-O1`/`-O2`/`-Og`.
+
+| # | Finding | Severity | Disposition |
+| --- | --- | --- | --- |
+| 3 | Clang runs a struct's default member initializer (`int weight = default_weight();`) in the caller that brace-initializes it, on the struct's line. Once the caller owned that line (fix 1), a stop there withheld all of its live locals (`i`, `total`). | High (regression from fix 1) | **Fixed by a stronger rule.** A local declared below is withheld only when all of that function's code on the stop line comes before any code on the declaration's line, by address in the build's line table. Code borrowed from another entity sits inside a later line's code, so it never qualifies. A declaration without code on its line proves nothing. Tests: `test_a_local_is_withheld_only_when_the_lines_code_comes_before_its_declaration`, and the real C++ build `test_a_member_initializer_run_by_its_caller_withholds_nothing`, which fails on `64a9bd3`. |
+| 4 | GCC runs an `__attribute__((cleanup))` at its variable's declaration line when the block ends, so `session step` lands there with later locals live. | Medium (GCC only; pre-existing) | **Fixed by the same rule.** The declaration line then also has code after the later declarations' code. The unit case reproduces GCC's layout. CI's compiler is clang, so no real-build lane exercises it. |
+| 5 | `setjmp` behind a macro from a header (`#define TRY if (setjmp(env) == 0)`) escaped the per-function text check. After `longjmp`, a volatile local declared below is live. | Medium | **Fixed.** When the executable names `setjmp` (any variant), `getcontext` or `swapcontext`, nothing is withheld. The text check is gone. Tests: `test_nonlocal_jumps_are_found_in_the_executable`, and the real build `test_setjmp_behind_a_macro_withholds_nothing` (40, 41), which fails on `64a9bd3`. |
+
+### Third round (18e6875)
+
+All three earlier fixes held on macOS clang, Linux clang-18 and gcc. These were checked and found right: `for` increments and back-edges, GCC's switch dispatch after the body, range-for, declarations in `if`/`while`, multi-line declarations, statement expressions, macros, lambdas, clang's cleanup attribute and address-taken locals.
+
+| # | Finding | Severity | Disposition |
+| --- | --- | --- | --- |
+| 6 | Clang runs a header struct's member initializers in the caller on the header's line (`geo.hpp:2` in `main`). A function only owned rows of its own file, so `main` was not an owner there, and `origin_sum`'s `x` (declared on `geo.hpp:5`) withheld `main`'s live `x = 41`. | High | **Fixed.** Each row is attributed to the innermost program function running it, in any declared file, keyed by (file, line). `main` is then an owner, and its `x`, declared in `main.cpp`, stops any withholding at `geo.hpp:2`. `describe` keeps its own-file attribution. Tests: `test_a_function_running_code_on_another_files_line_is_among_its_owners`, and the real C++ build `test_a_header_structs_initializer_run_in_main_withholds_nothing` (`step` from `main.cpp:5`), which fails on `18e6875`. |
+| 7 | `__builtin_setjmp`/`__builtin_longjmp` leave no symbol in the executable. | Medium | **Fixed.** Nothing is withheld when a declared source or header names `setjmp`, `getcontext` or `swapcontext`; the executable is still checked too. Test: `test_sources_naming_a_nonlocal_jump_are_found`. |
+| 8 | The "declared on this line" note called a live `for` counter leftovers at a step stop on its header (the increment, `i = 1`). | Medium (note only) | **Fixed.** The note needs the line's code to be contiguous: a `for` header's code wraps its body's, so a stop there may be on a later pass. Tests: the unit case, and the real build `test_a_live_for_counter_at_a_step_stop_on_its_header_has_no_note`, which fails on `18e6875`. |
+
+### Fourth round (4947c18)
+
+All round-3 fixes held on macOS clang, Linux clang-18 and gcc. `describe` output is unchanged against `main` (STL-heavy program and the reproducers). `local_declarations` takes 0.11 s on 10.9 MB of debug info, and a probe takes 1.5 s against 1.6–1.8 s on `main`.
+
+| # | Finding | Severity | Disposition |
+| --- | --- | --- | --- |
+| 9 | A header outside the workspace (`/usr/local/include`) hiding `__builtin_setjmp` in a TRY macro: the declared sources never name it, and it leaves no symbol. | Medium | **Fixed.** The build's external inputs (the compiler's dependency files, already hashed) are searched for `__builtin_setjmp`. Only the builtin is searched for there: the SDK's `setjmp.h` names `setjmp`, and calls to that are found in the executable. Each file is now read once, not once per name. Test: `test_an_external_header_hiding_the_builtin_is_found`. |
+| 10 | The "declared on this line" note called live locals leftovers at mid-line stops: a one-line loop (`for (int i…) { int sq = i * i; … }`, where lldb stops at the body's start on each pass) and `step --out` into `int a = 3, b = twice(a);`. | Medium (note only) | **Removed.** Only the stop's instruction pointer against the line's first address could tell those cases apart, and lldb-dap versions report load addresses in different forms. A local declared on the stop line is now shown as its storage reads, and the docs say that at a breakpoint there its declaration has not run yet. The `for` header regression now checks that the counter is shown (`test_a_live_for_counter_at_a_step_stop_on_its_header_is_shown`). |

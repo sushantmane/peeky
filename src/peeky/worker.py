@@ -1337,6 +1337,24 @@ class DebugWorker:
                 result.append(output)
                 self.inspection_nodes += 1
                 continue
+            pending = getattr(self.runtime, "not_yet_declared", None) if not ancestry else None
+            if pending and (reason := pending(variable, frame)):
+                # Indeterminate here: never shown as a value, expanded or offered for set.
+                output = {
+                    "name": name,
+                    "value": None,
+                    "variablesReference": 0,
+                    "unavailable": True,
+                    "reason": reason[:300],
+                    # Peeky's own reason, not the debugger's.
+                    "withheld": True,
+                    "settable": False,
+                }
+                if kind is not None:
+                    output["type"] = kind
+                result.append(output)
+                self.inspection_nodes += 1
+                continue
             settable = None
             if not ancestry and (check := getattr(self.runtime, "settable", None)):
                 # Root locals `set` can change, so agents need not try and be refused;
