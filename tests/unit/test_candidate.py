@@ -825,6 +825,25 @@ def test_a_python_candidate_imports_the_copy_through_an_import_path(tmp_path, ca
     assert code == 0, result.get("error")
     assert result["rows"][0]["value"] == "150.0", result["rows"]
     assert not (shop / "__pycache__").exists()
+    # Verification of #109: under `PYTHONSAFEPATH`, the import check replaced the first
+    # `PYTHONPATH` entry (the copy's `src`) with the script's directory: a false note.
+    monkeypatch.setenv("PYTHONSAFEPATH", "1")
+    code = main([*probe, "--json", "--quiet", "--old", "TAX = 0.2", "--new", "TAX = 0.6"])
+    result = json.loads(capsys.readouterr().out)
+    assert result["rows"][0]["value"] == "160.0", result["rows"]
+    assert not any("`import shop`" in w for w in result.get("warnings", [])), result
+    monkeypatch.delenv("PYTHONSAFEPATH")
+    # Verification of #109: a root typed in another case on a volume that ignores case
+    # did not match the import path's spelling, so nothing was moved and the user's
+    # module ran (writing its bytecode into the user's tree).
+    typed = Path(str(proj).swapcase())
+    if typed.exists():
+        probe[1] = str(typed)
+        code = main([*probe, "--json", "--quiet", "--old", "TAX = 0.2", "--new", "TAX = 0.7"])
+        result = json.loads(capsys.readouterr().out)
+        assert code == 0, result.get("error")
+        assert result["rows"][0]["value"] == "170.0", result["rows"]
+        assert not (shop / "__pycache__").exists()
 
 
 def test_a_python_candidate_redirects_an_editable_finder(tmp_path, monkeypatch):
@@ -947,6 +966,57 @@ def test_a_python_candidate_notes_an_import_hook_into_the_tree(tmp_path, monkeyp
     assert not any("`import app`" in w or "could not ask" in w for w in warnings), warnings
 
 
+def test_the_import_check_never_runs_project_code(tmp_path, capsys, monkeypatch):
+    # Verification of #109: `pkg.bak/` (a backup with its own `__init__.py`) and an --at
+    # file named `app.v2.py` gave dotted names, and `find_spec("pkg.bak")` imported and
+    # ran `pkg` in the copy before the program did.
+    from peeky.cli import main
+
+    monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
+    proj = tmp_path / "proj"
+    for package in ("pkg", "pkg.bak"):
+        (proj / package).mkdir(parents=True)
+        (proj / package / "__init__.py").write_text("open('runs.log', 'a').write('run\\n')\n")
+    (proj / "pyproject.toml").write_text("")
+    (proj / "app.v2.py").write_text(
+        "import pkg\nacc = 1\nruns = len(open('runs.log').read().splitlines())\nprint(acc, runs)\n"
+    )
+    probe = ["probe", str(proj), "--at", "app.v2.py:4", "--capture", "runs", "--json", "--quiet"]
+    code = main([*probe, "--old", "acc = 1", "--new", "acc = 2"])
+    result = json.loads(capsys.readouterr().out)
+    assert code == 0, result.get("error")
+    assert result["rows"][0]["value"] == "1", result["rows"]
+    assert not (proj / "runs.log").exists()
+
+
+def test_the_import_check_keeps_within_the_launch_budget(tmp_path):
+    # Verification of #109: the interpreter probes took up to 120 s each whatever the
+    # launch's budget (a meson-python rebuild), so the launch always timed out.
+    import time
+
+    from peeky.adapters import PythonAdapter, PythonCandidate
+    from peeky.build import SourceEdit
+
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    (proj / "app.py").write_text("x = 1\n")
+    (proj / "pyproject.toml").write_text("")
+    interpreter = tmp_path / "python"
+    interpreter.write_text("#!/bin/sh\nsleep 30\n")
+    interpreter.chmod(0o755)
+    started = time.monotonic()
+    candidate = PythonCandidate(
+        PythonAdapter(str(interpreter)),
+        proj / "app.py",
+        proj,
+        SourceEdit("app.py", "x = 1", "x = 2"),
+        deadline=time.monotonic() + 16,
+    )
+    candidate.close()
+    assert time.monotonic() - started < 10
+    assert any("could not ask its interpreter" in w for w in candidate.warnings)
+
+
 def test_a_python_candidate_refuses_an_at_file_inside_a_bare_repository(tmp_path):
     # Verification of #109: a bare repository below the root is copied whole as a private
     # repository, never walked, so an --at file inside it was "not in the copied root".
@@ -965,6 +1035,15 @@ def test_a_python_candidate_refuses_an_at_file_inside_a_bare_repository(tmp_path
             tmp_path / "srv",
             SourceEdit("repo.git/hooks/check.py", "x = 1", "x = 2"),
         )
+    # The target the refusal names works, and its note does not send the agent back.
+    candidate = PythonCandidate(
+        PythonAdapter(sys.executable),
+        repository / "hooks" / "check.py",
+        repository,
+        SourceEdit("hooks/check.py", "x = 1", "x = 2"),
+    )
+    candidate.close()
+    assert not any("above it was copied" in w for w in candidate.warnings), candidate.warnings
 
 
 def test_a_hard_linked_name_of_the_edited_file_keeps_its_own_directory(

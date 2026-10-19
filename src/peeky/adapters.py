@@ -14,6 +14,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -86,8 +87,9 @@ class PythonCandidate:
     the copy, except inside an environment directory or through a link that leaves the
     root, which reach the originals."""
 
-    def __init__(self, adapter, program, root, edit):
+    def __init__(self, adapter, program, root, edit, deadline=None):
         self.adapter = adapter
+        self._deadline = deadline
         self.original = Path(program).resolve(strict=True)
         root = Path(root).resolve(strict=True)
         relative = self.original.relative_to(root)
@@ -159,11 +161,16 @@ class PythonCandidate:
         # `HERE.parent`, a helper module's `parents[2]`, git finding a repository above):
         # say so unless the root is a project's own, with its own repository if any.
         self.warnings = self._notes
-        held = any(os.path.lexists(root / marker) for marker in (".git", ".hg"))
+        held = _is_git_directory(root) or any(
+            os.path.lexists(root / marker) for marker in (".git", ".hg")
+        )
         above = None if held else _repository_above(root)
-        if above is not None or not any(
+        # A repository's own directory (a bare one, `.git` given as the target, as the
+        # refusal of an --at file inside one suggests) is its own project.
+        project = _is_git_directory(root) or any(
             os.path.lexists(root / marker) for marker in _PROJECT_MARKERS
-        ):
+        )
+        if above is not None or not project:
             target, at = (above, self.original.relative_to(above)) if above else (None, None)
             self.warnings.append(
                 f"This Python candidate ran from a copy of {root}/ only"
@@ -203,13 +210,17 @@ class PythonCandidate:
         staged, self.twins = None, []
         self._folders, self._notes, self._checkouts = [], [], []
         self._source, self._destination = source, destination
+        self._folded = [_fold(part) for part in source.parts]
+        swapped = Path(str(source).swapcase())
+        try:
+            self._folding = swapped != source and os.path.samefile(source, swapped)
+        except OSError:
+            self._folding = False
 
         def link(target, original):
             real = Path(os.path.realpath(original))
             if self._inside(real):
-                target.symlink_to(
-                    os.path.relpath(destination / real.relative_to(source), target.parent)
-                )
+                target.symlink_to(os.path.relpath(destination / self._within(real), target.parent))
             else:
                 target.symlink_to(real)
 
@@ -272,7 +283,7 @@ class PythonCandidate:
                     if target is None or not self._inside(target):
                         self._leave_out(path, "git", "it names git metadata outside the root")
                         continue
-                    copied = os.path.relpath(destination / target.relative_to(source), folder)
+                    copied = os.path.relpath(destination / self._within(target), folder)
                     (folder / name).write_text(f"gitdir: {copied}\n")
                     self._checkouts.append((folder, Path(here)))
                     status = os.stat(path)
@@ -316,7 +327,23 @@ class PythonCandidate:
         return staged
 
     def _inside(self, real):
-        return real == self._source or self._source in real.parents
+        return self._within(real) is not None
+
+    def _within(self, real):
+        """``real`` relative to the root, or None. On a volume that ignores case and
+        Unicode form (macOS), a path spelled differently (`/tmp/VE/Proj` typed, an
+        editable install's `/tmp/ve/proj` recorded) is inside too."""
+        real = Path(real)
+        try:
+            return real.relative_to(self._source)
+        except ValueError:
+            pass
+        if not self._folding:
+            return None
+        count = len(self._source.parts)
+        if [_fold(part) for part in real.parts[:count]] != self._folded:
+            return None
+        return Path(*real.parts[count:]) if len(real.parts) > count else Path(".")
 
     def _leave_out(self, path, what, reason):
         note = (
@@ -413,7 +440,7 @@ class PythonCandidate:
                 value = pointer.read_text(errors="surrogateescape").strip()
                 target = Path(os.path.realpath(logical / value))
                 if self._inside(target):
-                    moved = self._destination / target.relative_to(self._source)
+                    moved = self._destination / self._within(target)
                 else:
                     moved = self.scratch / "outside-worktrees" / gitdir.name / ".git"
                     note = (
@@ -440,7 +467,7 @@ class PythonCandidate:
             real = Path(os.path.realpath(logical / value))
             if not self._inside(real):
                 raise _NotPrivate("its `core.worktree` is outside the root")
-            moved.append(str(self._destination / real.relative_to(self._source)))
+            moved.append(str(self._destination / self._within(real)))
         _git_config(git, config, "--unset-all", "core.worktree")
         for value in moved:
             _git_config(git, config, "--add", "core.worktree", value)
@@ -555,16 +582,22 @@ class PythonCandidate:
         names = (
             _module_names(self._source) | _module_names(self._source / "src") | {self.original.stem}
         )
+        # Only the copy's directories: names from elsewhere are not the user's tree.
         for entry in redirected:
-            if entry and os.path.isabs(entry):
+            if entry and Path(entry).is_relative_to(self.root):
                 names |= _module_names(Path(entry))
         package = self.original.parent
         while package != self._source and (package / "__init__.py").is_file():
             names.add(package.name)
             package = package.parent
-        names = sorted(names - unmoved)[:200]
+        # Top-level names only: `find_spec("pkg.bak")` would import and run `pkg`.
+        names = sorted(name for name in names - unmoved if name.isidentifier())
         script = (
-            "import importlib.util, json, sys\nsys.path[0] = sys.argv[1]\nfound = {}\n"
+            "import importlib.util, json, sys\n"
+            # As debugpy: the script's directory first, in place of `-c`'s `''` (none
+            # under `PYTHONSAFEPATH`, where the first entry is `PYTHONPATH`'s).
+            "if sys.path and sys.path[0] == '':\n    del sys.path[0]\n"
+            "sys.path.insert(0, sys.argv[1])\nfound = {}\n"
             "for name in sys.argv[2:]:\n"
             "    try:\n        spec = importlib.util.find_spec(name)\n"
             "    except Exception:\n        continue\n"
@@ -598,15 +631,15 @@ class PythonCandidate:
     def _project_copy(self, entry):
         """The copy of an absolute path inside the root and not in an environment or
         site directory (those are links to the user's files either way); else None."""
-        real = Path(os.path.realpath(entry))
-        if not self._inside(real):
+        within = self._within(Path(os.path.realpath(entry)))
+        if within is None:
             return None
-        parts = real.relative_to(self._source).parts
         if any(
-            part in _LINKED_DIRS or part in ("site-packages", "dist-packages") for part in parts
+            part in _LINKED_DIRS or part in ("site-packages", "dist-packages")
+            for part in within.parts
         ):
             return None
-        return str(self.root / real.relative_to(self._source))
+        return str(self.root / within)
 
     def _interpreter(self, script, pythonpath, *args):
         """The JSON ``script`` prints, run by the program's interpreter in the copy with
@@ -614,6 +647,10 @@ class PythonCandidate:
         environment = {key: value for key, value in os.environ.items() if key != "PYTHONPATH"}
         if pythonpath:
             environment["PYTHONPATH"] = pythonpath
+        timeout = 120
+        if self._deadline is not None:
+            # Leave the debugger's launch its share of the budget.
+            timeout = min(timeout, max(1.0, self._deadline - time.monotonic() - 15))
         try:
             return json.loads(
                 subprocess.run(
@@ -622,7 +659,7 @@ class PythonCandidate:
                     env=environment,
                     capture_output=True,
                     text=True,
-                    timeout=120,
+                    timeout=timeout,
                     check=True,
                 ).stdout
             )
@@ -750,6 +787,12 @@ def _config_values(git, where):
     ]
 
 
+def _fold(name):
+    import unicodedata
+
+    return unicodedata.normalize("NFC", name).casefold()
+
+
 def _is_git_directory(path):
     """Whether ``path`` holds a git directory's own files (a bare repository's)."""
     try:
@@ -828,8 +871,13 @@ class PythonAdapter:
     # Candidate probes (`probe --old/--new`) run an edited copy of the program file.
     supports_edits = True
 
-    def prepare(self, program, root, edit=None):
-        return self if edit is None else PythonCandidate(self, program, root, edit)
+    # A candidate asks the interpreter about imports within the launch's budget.
+    supports_deadline = True
+
+    def prepare(self, program, root, edit=None, *, deadline=None):
+        if edit is None:
+            return self
+        return PythonCandidate(self, program, root, edit, deadline)
 
     def source_path(self, original):
         return original
