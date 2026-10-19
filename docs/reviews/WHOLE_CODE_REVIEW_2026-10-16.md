@@ -480,3 +480,7 @@ The review agent was available again. It checked these and found them sound:
 | # | Finding | Severity | Disposition |
 | --- | --- | --- | --- |
 | 6 | Once builds kept up to 1 MiB per stream, that output went unbounded into `verify` results. `BuildCommandError`'s message was the repr of the whole result, and `candidate()` copied it into `diagnostic` (printed in full as `reason:`), next to the raw streams. From there it reached `--json`, the evidence and every later agent prompt. | Medium | **Fixed.** `BuildCommandError` names the command and its outcome only (`Build command failed: /x/cargo: exit code 101`). A compiled candidate's build failure keeps each stream's last 16,000 characters, as before. Its `diagnostic` is the bounded `BUILD_FAILED` message, with rustc's errors first. Test: `test_a_long_build_failure_stays_bounded_with_the_compilers_errors_first`. |
+
+### Verification of ba50845
+
+Nothing that copies a `BuildCommandError`'s result or message can still carry unbounded output, and nothing depended on the old message. A pre-existing mislabel was reported and fixed: a compile that hit its per-command timeout printed `reason: checker timed out`, because the build result's `timed_out` overrode the diagnostic. The verify text renderer (`_verify_text`, now a module function) uses the checker label only outside the build stage. Test: `test_a_build_timeout_is_not_reported_as_the_checkers`.

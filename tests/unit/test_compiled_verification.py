@@ -235,3 +235,22 @@ def test_session_test_hook_cannot_replace_or_bypass_the_checker(
     result = candidate(investigation)
     assert calls == ["tests", "checker"]
     assert result["passed"] is passed and result["tests"]["passed"] is tests
+
+
+@pytest.mark.parametrize(
+    "stage, reason",
+    [("build", "reason: The build failed: clang timed out"), ("verification", "checker timed")],
+)
+def test_a_build_timeout_is_not_reported_as_the_checkers(stage, reason):
+    from peeky.cli import _verify_text
+
+    text = _verify_text(
+        {
+            "passed": False,
+            "stage": stage,
+            "timed_out": True,
+            "diagnostic": "The build failed: clang timed out",
+            "diff": "",
+        }
+    )
+    assert reason in text

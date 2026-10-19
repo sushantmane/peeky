@@ -1795,30 +1795,32 @@ def verify(args):
         for key in ("descriptor", "build_manifest"):
             result.pop(key, None)
 
-    def text(result):
-        lines = [f"passed: {result['passed']}  stage: {result['stage']}"]
-        if tests := result.get("tests"):
-            lines.extend(_tests_text(tests))
-        if not result["passed"]:
-            reason = result.get("diagnostic") or (result.get("checker") or {}).get("error")
-            if result.get("timed_out"):
-                reason = "checker timed out"
-            if reason:
-                lines.append(f"reason: {reason}")
-        lines.append(f"checker exit: {result.get('exit_code')}")
-        output = [(result.get(key) or "")[-2000:] for key in ("stdout", "stderr")]
-        if any(output):
-            lines.extend(("output:", *output))
-        if args.keep:
-            lines.append(
-                f"candidate: {result.get('candidate')} (the edited file, and for compiled "
-                "programs the build evidence beside it; build artifacts are not kept)"
-            )
-        lines.append("diff:\n" + result["diff"])
-        return "\n".join(line for line in lines if line)
-
-    _emit(result, args.json, text)
+    _emit(result, args.json, lambda shown: _verify_text(shown, args.keep))
     return 0 if result["passed"] else 1
+
+
+def _verify_text(result, keep=False):
+    lines = [f"passed: {result['passed']}  stage: {result['stage']}"]
+    if tests := result.get("tests"):
+        lines.extend(_tests_text(tests))
+    if not result["passed"]:
+        reason = result.get("diagnostic") or (result.get("checker") or {}).get("error")
+        # A build's own timeout is in its diagnostic (`The build failed: clang timed out`).
+        if result.get("timed_out") and result.get("stage") != "build":
+            reason = "checker timed out"
+        if reason:
+            lines.append(f"reason: {reason}")
+    lines.append(f"checker exit: {result.get('exit_code')}")
+    output = [(result.get(key) or "")[-2000:] for key in ("stdout", "stderr")]
+    if any(output):
+        lines.extend(("output:", *output))
+    if keep:
+        lines.append(
+            f"candidate: {result.get('candidate')} (the edited file, and for compiled "
+            "programs the build evidence beside it; build artifacts are not kept)"
+        )
+    lines.append("diff:\n" + result["diff"])
+    return "\n".join(line for line in lines if line)
 
 
 def _printable(text):
