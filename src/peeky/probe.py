@@ -707,7 +707,7 @@ def _absence(variable, segment, children, path=None, pointers=False):
             f"(children: {shown or 'none'})"
         )
         length = next((name for name in ("len", "length") if name in names), None)
-        if pointers and names == [f"*{variable['name']}"] and kind.rstrip().endswith("*"):
+        if pointers and names == [f"*{variable['name']}"]:
             # A C/C++ pointer: the debugger knows what it points at, never how many.
             shown_path = path or variable["name"]
             message += (
@@ -1126,10 +1126,11 @@ _KEY_NAME = re.compile(_KEY_LITERAL)
 
 
 def _pointee(variable, children):
-    """The one child a C/C++ scalar pointer shows (`*values`), or None."""
-    kind = str(variable.get("type") or "").rstrip()
+    """The one child a C/C++ scalar pointer shows (`*values`), or None. The child's name
+    is the sign, whatever the type's spelling (`int *const`, `float *__restrict`, a
+    typedef): no C or C++ member can be named `*values`."""
     names = [child["name"] for child in children if child["name"] not in _GROUPS]
-    if kind.endswith("*") and names == [f"*{variable.get('name')}"]:
+    if names == [f"*{variable.get('name')}"]:
         return next(child for child in children if child["name"] == names[0])
     return None
 
