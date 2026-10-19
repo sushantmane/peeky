@@ -887,11 +887,19 @@ class RustSession(NativeSession):
         if container is not None:
             return container
         if hashed and proofs is not None and self.target.opt_level == "0":
-            declared = proofs.binding_type(hashed[1], variable.get("name"))
-            owning = bool(re.match(r"(?:std::boxed::|alloc::boxed::)?Box<", declared or ""))
-            # A pointer whose MIR binding cannot be identified (a name bound twice) may
-            # be a Box too: it fails closed, like an unproven Box.
-            unknown = declared is None and str(variable.get("type") or "").rstrip().endswith("*")
+            declared = proofs.declared_type(hashed[1], variable.get("name"))
+            source = ((frame or {}).get("source") or {}).get("path")
+            types = (
+                [declared]
+                if declared is not None
+                else proofs.binding_types(hashed[1], variable.get("name"), source, line)
+            )
+            owning = any(re.match(r"(?:std::boxed::|alloc::boxed::)?Box<", t or "") for t in types)
+            # A pointer with a binding whose type the MIR does not write out may be a Box
+            # too: it fails closed, like an unproven Box.
+            unknown = (not types or None in types) and str(
+                variable.get("type") or ""
+            ).rstrip().endswith("*")
             if (owning or unknown) and not (
                 innermost
                 and proofs.proven(
@@ -904,10 +912,13 @@ class RustSession(NativeSession):
                 # #101: a moved or dropped Box still holds its pointer, and LLDB would
                 # read the freed allocation as its fields. The pointer is shown; what it
                 # points at is not.
+                # Only the address: LLDB's summary of a `char *` (`Box<u8>`) is read
+                # through the pointer too.
+                address = re.match(r"0x[0-9a-fA-F]+", str(variable.get("value") or ""))
                 return {
                     "name": variable.get("name"),
                     "type": variable.get("type"),
-                    "value": str(variable.get("value") or ""),
+                    "value": address[0] if address else "<not shown: may point at freed memory>",
                     "variablesReference": 0,
                     "rust_view": "unproven",
                 }

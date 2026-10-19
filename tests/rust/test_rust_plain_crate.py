@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 from pathlib import Path
 
 import pytest
@@ -599,3 +600,87 @@ def test_boxes_in_parameters_closures_and_reused_names_are_gated(plain, capsys):
         else:
             assert rows["b"]["view"] == "unproven", (marker, rows["b"])
             assert "value" not in rows["b.x"], (marker, rows["b.x"])
+
+
+BOX_REFS = """use std::future::Future;
+use std::pin::pin;
+use std::task::{Context, Poll, Waker};
+
+#[derive(Debug)]
+struct Item {
+    score: i64,
+}
+
+enum Expr {
+    Num(i64),
+    Add(Box<Expr>, Box<Expr>),
+    Mul(Box<Expr>, Box<Expr>),
+}
+
+fn total(items: &[Item]) -> i64 {
+    let mut sum = 0;
+    for item in items {
+        sum += item.score; // LOOP1
+    }
+    for item in items {
+        sum -= item.score / 2; // LOOP2
+    }
+    if let Some(item) = items.iter().find(|i| i.score > 20) {
+        sum += item.score; // IFLET
+    }
+    sum
+}
+
+fn eval(e: &Expr) -> i64 {
+    match e {
+        Expr::Num(n) => *n,
+        Expr::Add(l, r) => eval(l) + eval(r), // ADD
+        Expr::Mul(l, r) => eval(l) * eval(r),
+    }
+}
+
+async fn work(items: &[Item]) -> i64 {
+    let first = &items[0];
+    first.score + 1 // ASYNC
+}
+
+fn block_on<F: Future>(future: F) -> F::Output {
+    let mut future = pin!(future);
+    let mut cx = Context::from_waker(Waker::noop());
+    loop {
+        if let Poll::Ready(value) = future.as_mut().poll(&mut cx) {
+            return value;
+        }
+    }
+}
+
+fn main() {
+    let items = vec![Item { score: 11 }, Item { score: 21 }];
+    let bu = Box::new(7u8);
+    drop(bu);
+    let again = Box::new(*b"ZYXWVUTS");
+    let e = Expr::Add(Box::new(Expr::Num(2)), Box::new(Expr::Mul(Box::new(Expr::Num(3)), Box::new(Expr::Num(4)))));
+    println!("{} {} {} {:?}", total(&items), eval(&e), block_on(work(&items)), again); // MAIN
+}
+"""
+
+
+@pytest.mark.timeout(300)
+def test_references_stay_readable_and_a_gated_box_shows_only_its_address(plain, capsys):
+    # Verification of #103: references whose name is bound twice (two loops), or in an
+    # async body, were hidden; a dropped Box<u8>'s row kept LLDB's string summary, read
+    # through the freed pointer (a later Box's bytes).
+    (plain / "src/main.rs").write_text(BOX_REFS)
+    expected = {"LOOP1": "11", "LOOP2": "11", "IFLET": "21", "ASYNC": "11"}
+    for marker, value in expected.items():
+        at = f"src/main.rs:{line_of(BOX_REFS, marker)}"
+        selector = "first.score" if marker == "ASYNC" else "item.score"
+        code, result = run(
+            capsys, "probe", str(plain), "--at", at, "--capture", selector, "--quiet"
+        )
+        assert code == 0, result.get("error")
+        assert result["rows"][0].get("value") == value, (marker, result["rows"][0])
+    at = f"src/main.rs:{line_of(BOX_REFS, 'MAIN')}"
+    code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "bu", "--quiet")
+    row = result["rows"][0]
+    assert row["view"] == "unproven" and re.fullmatch(r"0x[0-9a-fA-F]+", row["value"]), row

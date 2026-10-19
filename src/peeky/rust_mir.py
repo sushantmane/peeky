@@ -73,15 +73,13 @@ class Body:
     arguments: frozenset
     file: str | None
     blocks: dict  # {number: Block}
-    bindings: dict  # {name: [(local or None, file, line)]}
+    # {name: [(local or None, file, line, type of a projection or None)]}
+    bindings: dict
     supported: bool = True
     # Lines of every span in the body's own file (its own code, and the definitions of
     # same-file macros it expands).
     lines: frozenset = frozenset()
     types: dict = field(default_factory=dict)  # {local: its type as MIR prints it}
-    # {name: [type]} of bindings through a projection (a closure's capture, an async
-    # local: `debug b => (_1.0: std::boxed::Box<Pt>)`), which have no whole local.
-    projected: dict = field(default_factory=dict)
     _entry: dict | None = None
 
     @property
@@ -347,11 +345,17 @@ def parse_body(text):
             continue
         if debug := _DEBUG.match(line):
             whole = _WHOLE_LOCAL.match(debug[2])
+            # A binding through a projection (a closure's capture, an async local) has no
+            # whole local, but names its type: `(_1.0: std::boxed::Box<Pt>)`.
+            typed = None if whole else _PROJECTED.fullmatch(debug[2])
             body.bindings.setdefault(debug[1], []).append(
-                (int(whole[1]) if whole else None, debug[3], int(debug[4]))
+                (
+                    int(whole[1]) if whole else None,
+                    debug[3],
+                    int(debug[4]),
+                    typed[1] if typed else None,
+                )
             )
-            if not whole and (typed := _PROJECTED.fullmatch(debug[2])):
-                body.projected.setdefault(debug[1], []).append(typed[1])
             spans.append((debug[3], int(debug[4])))
             continue
         if opened := _BLOCK.match(line):
@@ -645,18 +649,30 @@ class OwnedLocals:
         local = self._local(body, variable_name) if body is not None else None
         return None if local is None else body.types.get(local)
 
-    def binding_type(self, hashed, variable_name):
-        """The MIR type of what lldb-dap shows as ``variable_name``: a whole local's, or
-        a single projected binding's (a closure capture, an async local). None when the
-        name is unknown or bound more than once."""
-        if (found := self.declared_type(hashed, variable_name)) is not None:
-            return found
+    def binding_types(self, hashed, variable_name, path=None, line=None):
+        """The MIR type of every binding lldb-dap could be showing as ``variable_name``
+        (None for one whose type is not written out), in the frame's body. An async
+        body is never matched for proofs; its types come from the bodies with a span on
+        the stop line. Empty when no body binds the name."""
+        name, at, declared = str(variable_name).partition(" @ ")
         body = self.body(hashed)
-        name = str(variable_name).partition(" @ ")[0]
-        if body is None or len(body.bindings.get(name, ())) != 1:
-            return None
-        projected = body.projected.get(name, ())
-        return projected[0] if len(projected) == 1 else None
+        shown = str(path or "").replace("\\", "/")
+        bodies = (
+            [body]
+            if body is not None
+            else [
+                candidate
+                for candidate in self.bodies
+                if line in candidate.lines and shown.endswith("/" + str(candidate.file))
+            ]
+        )
+        found = []
+        for candidate in bodies:
+            for local, file, number, projected in candidate.bindings.get(name, ()):
+                if at and f"{Path(file).name}:{number}" != declared:
+                    continue
+                found.append(candidate.types.get(local) if local is not None else projected)
+        return found
 
     def proven(self, hashed, variable_name, line, path):
         """True only if the frame's local ``variable_name`` (an lldb-dap name: `v`, or
