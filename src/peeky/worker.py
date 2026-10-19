@@ -1470,10 +1470,16 @@ class DebugWorker:
             elements = record[1]
             start = args.get("start", 0)
             count = min(args.get("count", 64), 512 - self.inspection_nodes)
-            page = [
-                {**element, "variablesReference": 0, "view": "memory"}
-                for element in elements[start : start + count]
-            ]
+            page = []
+            for element in elements[start : start + count]:
+                handle = 0
+                if element.get("children"):
+                    # A tuple's or struct's decoded fields, like its elements: worker-owned.
+                    self.reference_counter += 1
+                    handle = self.reference_counter
+                    self.children[handle] = ("view", list(element["children"][:512]))
+                shown = {key: value for key, value in element.items() if key != "children"}
+                page.append({**shown, "variablesReference": handle, "view": "memory"})
             self.inspection_nodes += len(page)
             return {
                 "variables": page,

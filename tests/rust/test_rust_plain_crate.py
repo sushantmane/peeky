@@ -48,9 +48,10 @@ fn main() {
     let s: &str = "hello";
     let sl: &[i32] = &v[..];
     let r: &Vec<i32> = &v;
+    let opts: Vec<Option<u8>> = vec![Some(1), None];
     println!("{:?}", [a, nl, quote, back, accent, nul, party, zwj, del, dq, ahom]); // OBSERVE
     println!("{} {} {}", s.len(), sl.len(), r.len());
-    println!("RUNS:{}", runs.len());
+    println!("RUNS:{} {}", runs.len(), opts.len());
 }
 """
 CHECK = """import json
@@ -61,7 +62,7 @@ from pathlib import Path
 spec = json.loads(Path(sys.argv[1]).read_text())
 result = subprocess.run(spec["command"], capture_output=True, text=True, env=spec["environment"])
 assert result.returncode == 0, result.stderr
-assert "RUNS:3" in result.stdout, result.stdout
+assert "RUNS:3 " in result.stdout, result.stdout
 """
 NAMES = ("a", "nl", "quote", "back", "accent", "nul", "party", "zwj", "del", "dq")
 
@@ -93,7 +94,7 @@ def line_of(text, marker="OBSERVE"):
 @pytest.mark.timeout(300)
 def test_a_cargo_new_crate_is_probed_and_chars_print_as_rust_does(plain, capsys):
     at = f"src/main.rs:{line_of(MAIN)}"
-    capture = ",".join((*NAMES, "runs"))
+    capture = ",".join((*NAMES, "opts"))
     code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", capture, "--quiet")
     assert code == 0, result.get("error")
     values = {row["selector"]: row for row in result["rows"]}
@@ -102,11 +103,12 @@ def test_a_cargo_new_crate_is_probed_and_chars_print_as_rust_does(plain, capsys)
     assert printed == "[" + ", ".join(values[name]["value"] for name in NAMES) + ", '𑜞']", printed
     assert all(values[name]["type"] == "char" for name in NAMES)
     # A Vec Peeky does not read says so, never passing its summary off as contents.
-    assert "this value is LLDB's summary" in values["runs"]["note"]
-    code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "runs[0]", "--quiet")
+    assert "this value is LLDB's summary" in values["opts"]["note"]
+    code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "opts[0]", "--quiet")
     error = result["rows"][0]["error"]
-    # The reason is the element type, not a guess about freed memory.
-    assert "does not read alloc::vec::Vec<(char, usize)" in error and "freed" not in error
+    # The reason is the element type (an enum), not a guess about freed memory.
+    assert "does not read alloc::vec::Vec<core::option::Option<u8>" in error
+    assert "freed" not in error
     # Reference locals of element types Peeky reads (as parameters) get no such note.
     capture = "s,sl,r,r[0],ahom"
     code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", capture, "--quiet")
@@ -297,3 +299,119 @@ def test_describe_merges_a_generic_functions_instantiations(plain, capsys):
     assert main_scope["types"]["pick"] == "i32 (*)(&[i32])", main_scope
     # A generic's argument keeps rustc's arrow, which is not an unbalanced bracket.
     assert main_scope["types"]["maybe"] == "core::option::Option<fn(&[i32]) -> i32>"
+
+
+COMPOSITE = """#[derive(Debug, Clone, Copy)]
+struct Interval {
+    start: i64,
+    end: i64,
+    open: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Point(i32, u8);
+
+#[derive(Debug, Clone, Copy)]
+struct Pair<T> {
+    a: T,
+    b: T,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Meters(f64);
+
+#[allow(dead_code)]
+#[derive(Debug)]
+struct Named {
+    name: String,
+    n: i32,
+}
+
+fn total(pairs: &[(i32, i32)], spans: &Vec<Interval>, shift: &mut [Point], small: &Vec<Pair<i8>>) -> i64 {
+    shift[0].0 += 1;
+    let n = pairs.len() as i64 + spans.len() as i64 + shift.len() as i64 + small.len() as i64;
+    n // PARAMS
+}
+
+fn main() {
+    let runs: Vec<(char, usize)> = vec![('a', 3), ('b', 1)];
+    let spans = vec![Interval { start: 1, end: 10, open: false }, Interval { start: 2, end: 5, open: true }];
+    let mut points = vec![Point(1, 2), Point(-3, 255)];
+    let pairs = vec![Pair { a: 1u16, b: 2 }];
+    let singles = vec![(7i8,), (-1,)];
+    let lengths = vec![Meters(1.5), Meters(-0.0)];
+    let named = vec![Named { name: "x".to_string(), n: 1 }];
+    // LLDB names both of these `Pair<char>`, and both of the next `Pair<unsigned long>`.
+    let small = vec![Pair { a: 1i8, b: -2 }];
+    let letters = vec![Pair { a: 'x', b: 'y' }];
+    let wide = vec![Pair { a: u64::MAX, b: 0 }];
+    let sizes = vec![Pair { a: 1usize, b: 2 }];
+    let t = total(&[(1, 2), (3, 4)], &spans, &mut points, &small);
+    println!("{:?} {:?} {:?} {:?} {:?} {:?}", runs, spans, points, pairs, singles, lengths); // OWNED
+    println!("{:?} {:?} {:?} {:?}", small, letters, wide, sizes);
+    println!("{:?} {}", named, t);
+}
+"""
+OWNED = ("runs", "spans", "points", "pairs", "singles", "lengths")
+SAME_NAMES = ("small", "letters", "wide", "sizes")
+
+
+@pytest.mark.timeout(300)
+def test_tuple_and_struct_elements_are_read_as_rust_prints_them(plain, capsys):
+    # #90: Vec and slice elements that are tuples or structs of scalars were never read.
+    (plain / "src/main.rs").write_text(COMPOSITE)
+    if os.environ.get("PEEKY_EXPECT_READ_MEMORY") is None and not _reads(plain, capsys, "runs"):
+        pytest.skip("this lldb-dap has no readMemory")
+    owned = f"src/main.rs:{line_of(COMPOSITE, 'OWNED')}"
+    fields = "spans[1].start,spans[-1].open,runs[0].__0,points[1].__1,lengths[1].__0,pairs[0].b"
+    capture = ",".join((*OWNED, *SAME_NAMES, "named", fields))
+    code, result = run(capsys, "probe", str(plain), "--at", owned, "--capture", capture, "--quiet")
+    assert code == 0, result.get("error")
+    rows = {row["selector"]: row for row in result["rows"]}
+    printed = result["output"].splitlines()
+    assert " ".join(rows[name]["value"] for name in OWNED) == printed[0]
+    # LLDB's names collide (Pair<i8> and Pair<char>); the MIR's types tell them apart.
+    assert " ".join(rows[name]["value"] for name in SAME_NAMES) == printed[1]
+    assert all(rows[name]["view"] == "memory" for name in (*OWNED, *SAME_NAMES))
+    # Each field is selectable, with its Rust type, as LLDB names it (`__0` in a tuple).
+    picked = {name: (rows[name]["value"], rows[name]["type"]) for name in fields.split(",")}
+    assert picked == {
+        "spans[1].start": ("2", "i64"),
+        "spans[-1].open": ("true", "bool"),
+        "runs[0].__0": ("'a'", "char"),
+        "points[1].__1": ("255", "u8"),
+        "lengths[1].__0": ("-0.0", "f64"),
+        "pairs[0].b": ("2", "u16"),
+    }
+    # A struct with a String field is not read, and the note says what would be.
+    assert "view" not in rows["named"]
+    assert "every field is an integer, bool, float or char" in rows["named"]["note"]
+    code, result = run(
+        capsys, "probe", str(plain), "--at", owned, "--capture", "named[0]", "--quiet"
+    )
+    error = result["rows"][0]["error"]
+    assert "every field of the tuple or struct" in error and "freed" not in error
+    # Reference parameters of composites, including &mut in the innermost frame.
+    params = f"src/main.rs:{line_of(COMPOSITE, 'PARAMS')}"
+    capture = "pairs,spans,shift,shift[0].__0,pairs[-1].__1,small"
+    code, result = run(capsys, "probe", str(plain), "--at", params, "--capture", capture, "--quiet")
+    values = {row["selector"]: row["value"] for row in result["rows"]}
+    assert values == {
+        "pairs": "[(1, 2), (3, 4)]",
+        "spans": printed[0].split("] ")[1] + "]",
+        "shift": "[Point(2, 2), Point(-3, 255)]",
+        "shift[0].__0": "2",
+        "pairs[-1].__1": "4",
+        "small": "[Pair { a: 1, b: -2 }]",
+    }
+    # A decoded field is read-only: changes stay with root locals outside Java.
+    code, result = run(
+        capsys, "probe", str(plain), "--at", owned, "--capture", "runs", "--set", "spans[0].start=3"
+    )
+    assert result["error"]["code"] == "MUTATION_REJECTED"
+
+
+def _reads(plain, capsys, name):
+    at = f"src/main.rs:{line_of(COMPOSITE, 'OWNED')}"
+    _, result = run(capsys, "probe", str(plain), "--at", at, "--capture", name, "--quiet")
+    return result["rows"][0].get("view") == "memory"

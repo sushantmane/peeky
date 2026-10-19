@@ -603,7 +603,12 @@ def _describe_text(manifest):
     for source, numbers in manifest["breakpoint_lines"].items():
         lines.append(f"breakpoint lines in {source}: {_ranges(numbers) or 'none'}")
     if views := manifest.get("value_views"):
-        from peeky.rust_symbols import CONTAINER_KINDS, QUALIFIED_CONTAINERS, REFERENCE_PARAMETERS
+        from peeky.rust_symbols import (
+            CONTAINER_KINDS,
+            QUALIFIED_CONTAINERS,
+            REFERENCE_PARAMETERS,
+            composite_container,
+        )
 
         enums = [name for name, kind in views.items() if kind == "option"]
         containers = [
@@ -611,10 +616,17 @@ def _describe_text(manifest):
             for declared, (_, name, _) in REFERENCE_PARAMETERS.items()
             if views.get(name) in CONTAINER_KINDS
         ]
+        composites = [
+            name
+            for name, kind in views.items()
+            if kind != "unqualified" and composite_container(name)
+        ]
         opaque = [
             name
             for name, kind in views.items()
-            if kind == "unqualified" and name not in QUALIFIED_CONTAINERS
+            if kind == "unqualified"
+            and name not in QUALIFIED_CONTAINERS
+            and not composite_container(name)
         ]
         lines.append(f"qualified enum views: {', '.join(enums) or 'none'}")
         if containers:
@@ -622,6 +634,12 @@ def _describe_text(manifest):
                 "read from memory (debuggers with readMemory): reference parameters, and owned "
                 "Vec<T>/String locals where the build's MIR proves them initialized: "
                 + ", ".join(containers)
+            )
+        if composites:
+            lines.append(
+                "tuple and struct elements read the same way: "
+                + ", ".join(composites[:12])
+                + (f", and {len(composites) - 12} more" if len(composites) > 12 else "")
             )
         lines.append(f"other enum types (shown opaque, not decoded): {len(opaque)}")
     if reason := manifest.get("scopes_unavailable"):

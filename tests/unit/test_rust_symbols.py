@@ -1085,3 +1085,247 @@ def test_the_char_table_comes_from_the_pinned_rust():
     assert RUST_VERSION == RustTarget.__dataclass_fields__["rust_version"].default
     assert all(low <= high for low, high in ESCAPED)
     assert all(a[1] < b[0] for a, b in zip(ESCAPED, ESCAPED[1:]))
+
+
+def composite_dump(element, slice_name):
+    """A `&[T]` slice whose data pointer points at ``element`` (a structure DIE)."""
+    tree = (
+        "cu",
+        "DW_TAG_compile_unit",
+        [("DW_AT_name", '"src/main.rs/@/comp"')],
+        [
+            _struct(
+                "slice",
+                slice_name,
+                "0x10",
+                _member("sl_data", "data_ptr", "el_ptr", "0x00"),
+                _member("sl_len", "length", "usize", "0x08"),
+            ),
+            _namespace("comp", "comp", element),
+            _base("char", "char", "0x04", "DW_ATE_UTF"),
+            _base("usize", "usize", "0x08", "DW_ATE_unsigned"),
+            _base("i64", "i64", "0x08", "DW_ATE_signed"),
+            _base("bool", "bool", "0x01", "DW_ATE_boolean"),
+            ("el_ptr", "DW_TAG_pointer_type", [("DW_AT_type", ("ref", "el"))], []),
+            ("u_ptr", "DW_TAG_pointer_type", [("DW_AT_type", ("ref", "usize"))], []),
+        ],
+    )
+    return _tree_dump(tree)
+
+
+TUPLE = _struct(
+    "el",
+    "(char, usize)",
+    "0x10",
+    _member("t0", "__0", "char", "0x08"),
+    _member("t1", "__1", "usize", "0x00"),
+)
+INTERVAL = _struct(
+    "el",
+    "Interval",
+    "0x18",
+    _member("f0", "start", "i64", "0x00"),
+    _member("f1", "end", "i64", "0x08"),
+    _member("f2", "open", "bool", "0x10"),
+)
+
+
+def test_composite_layouts_take_fields_and_shape_from_the_dwarf():
+    from peeky.rust_symbols import container_layouts
+
+    layouts = container_layouts(*composite_dump(TUPLE, "&[(char, usize)]"))
+    assert layouts["&[(char, usize)]"] == {
+        "kind": "slice",
+        "size": 0x10,
+        "data": 0,
+        "length": 8,
+        "element": "(char, usize)",
+        "element_size": 0x10,
+        "alignment": 8,
+        "fields": [["__0", 8, "char"], ["__1", 0, "usize"]],
+        "shape": "tuple",
+        "shown": "(char, usize)",
+    }
+    layouts = container_layouts(*composite_dump(INTERVAL, "&[comp::Interval]"))
+    layout = layouts["&[comp::Interval]"]
+    assert (layout["shape"], layout["shown"], layout["element_size"]) == ("struct", "Interval", 24)
+
+
+@pytest.mark.parametrize(
+    "element, name",
+    [
+        # Two fields at one offset.
+        (
+            _struct(
+                "el",
+                "(char, usize)",
+                "0x10",
+                _member("t0", "__0", "char", "0x00"),
+                _member("t1", "__1", "usize", "0x00"),
+            ),
+            "&[(char, usize)]",
+        ),
+        # A field past the element's end.
+        (
+            _struct(
+                "el",
+                "Interval",
+                "0x08",
+                _member("f0", "start", "i64", "0x00"),
+                _member("f1", "end", "i64", "0x08"),
+            ),
+            "&[comp::Interval]",
+        ),
+        # A field that is not a qualified scalar (a pointer).
+        (_struct("el", "Boxed", "0x08", _member("f0", "p", "u_ptr", "0x00")), "&[comp::Boxed]"),
+        # A tuple whose name does not match its fields.
+        (
+            _struct(
+                "el",
+                "(char, u32)",
+                "0x10",
+                _member("t0", "__0", "char", "0x08"),
+                _member("t1", "__1", "usize", "0x00"),
+            ),
+            "&[(char, u32)]",
+        ),
+        # Packed: a usize at an offset its alignment forbids.
+        (
+            _struct(
+                "el",
+                "Packed",
+                "0x09",
+                _member("f0", "flag", "bool", "0x00"),
+                _member("f1", "n", "usize", "0x01"),
+            ),
+            "&[comp::Packed]",
+        ),
+        # An enum: Rust's enums are structures with a variant part.
+        (
+            (
+                "el",
+                "DW_TAG_structure_type",
+                [("DW_AT_name", '"Choice"'), ("DW_AT_byte_size", "0x08")],
+                [("vp", "DW_TAG_variant_part", [], [])],
+            ),
+            "&[comp::Choice]",
+        ),
+        # No fields.
+        (
+            (
+                "el",
+                "DW_TAG_structure_type",
+                [("DW_AT_name", '"Unit"'), ("DW_AT_byte_size", "0x00")],
+                [],
+            ),
+            "&[comp::Unit]",
+        ),
+    ],
+)
+def test_composite_layouts_refuse_anything_unexpected(element, name):
+    from peeky.rust_symbols import container_layouts
+
+    assert name not in container_layouts(*composite_dump(element, name))
+
+
+def _composite_layout(shape, shown, fields, size, alignment):
+    return {
+        "kind": "slice",
+        "size": 16,
+        "data": 0,
+        "length": 8,
+        "element": shown,
+        "element_size": size,
+        "alignment": alignment,
+        "fields": fields,
+        "shape": shape,
+        "shown": shown,
+    }
+
+
+def test_composite_elements_show_as_derived_debug_with_their_fields():
+    from peeky.rust_symbols import container_view
+
+    layouts = {
+        "&[(char, usize)]": _composite_layout(
+            "tuple", "(char, usize)", [["__0", 8, "char"], ["__1", 0, "usize"]], 16, 8
+        ),
+        "&[comp::Interval]": _composite_layout(
+            "struct",
+            "Interval",
+            [["start", 0, "i64"], ["end", 8, "i64"], ["open", 16, "bool"]],
+            24,
+            8,
+        ),
+        "&[comp::Point]": _composite_layout(
+            "tuple-struct", "Point", [["__0", 0, "i32"], ["__1", 4, "u8"]], 8, 4
+        ),
+        "&[(i8)]": _composite_layout("tuple", "(i8)", [["__0", 0, "i8"]], 1, 1),
+    }
+
+    def shown(kind, raw, count):
+        read = memory({"0x10": words(0x1000, count), "0x1000": raw})
+        variable = {"name": "v", "type": kind, "memoryReference": "0x10"}
+        return container_view(variable, read, layouts, optimized=False, parameter=kind)
+
+    tuples = shown("&[(char, usize)]", words(3) + ord("a").to_bytes(8, "little"), 1)
+    assert tuples["value"] == "[('a', 3)]"
+    element = tuples["children"][-1]
+    assert (element["name"], element["type"], element["value"]) == (
+        "[0]",
+        "(char, usize)",
+        "('a', 3)",
+    )
+    assert element["children"] == [
+        {"name": "__0", "type": "char", "value": "'a'"},
+        {"name": "__1", "type": "usize", "value": "3"},
+    ]
+    interval = words(1) + (-10).to_bytes(8, "little", signed=True) + bytes([1]) + bytes(7)
+    assert shown("&[comp::Interval]", interval, 1)["value"] == (
+        "[Interval { start: 1, end: -10, open: true }]"
+    )
+    point = ints(-3) + bytes([255, 0, 0, 0])
+    assert shown("&[comp::Point]", point, 1)["value"] == "[Point(-3, 255)]"
+    # rustc names a 1-tuple `(i8)`; Rust prints it `(7,)`.
+    assert shown("&[(i8)]", bytes([7, 0xFF]), 2)["value"] == "[(7,), (-1,)]"
+    # An element misaligned for its widest field is not read.
+    read = memory({"0x10": words(0x1004, 1), "0x1004": interval})
+    variable = {"name": "v", "type": "&[comp::Interval]", "memoryReference": "0x10"}
+    assert (
+        container_view(variable, read, layouts, optimized=False, parameter="&[comp::Interval]")[
+            "rust_view"
+        ]
+        == "opaque"
+    )
+
+
+def test_owned_composites_take_their_layout_from_the_mir_type_not_lldbs_name():
+    # LLDB names Vec<Pair<i8>> `Vec<names::Pair<char>, …>`, which is the DWARF name of
+    # Vec<Pair<char>>: the MIR's declared type picks the layout, LLDB's only confirms it.
+    from peeky.rust_symbols import _composite_owned
+
+    vec = "alloc::vec::Vec<{}, alloc::alloc::Global>".format
+    layouts = {
+        vec("names::Pair<i8>"): {},
+        vec("names::Pair<char>"): {},
+        vec("names::inner::Deep<f32>"): {},
+        vec("(i8)"): {},
+        vec("(char, usize)"): {},
+    }
+    shown = vec("names::Pair<char>")
+    assert _composite_owned(shown, "std::vec::Vec<Pair<i8>>", layouts) == vec("names::Pair<i8>")
+    assert _composite_owned(vec("names::Pair<char32_t>"), "std::vec::Vec<Pair<char>>", layouts) == (
+        vec("names::Pair<char>")
+    )
+    assert _composite_owned(
+        vec("names::inner::Deep<float>"), "std::vec::Vec<inner::Deep<f32>>", layouts
+    ) == vec("names::inner::Deep<f32>")
+    assert _composite_owned(vec("(i8)"), "std::vec::Vec<(i8,)>", layouts) == vec("(i8)")
+    assert _composite_owned(vec("(char, usize)"), "std::vec::Vec<(char, usize)>", layouts)
+    # No MIR type, a type the crate has no layout for, or an LLDB name of another shape.
+    assert _composite_owned(shown, None, layouts) is None
+    assert _composite_owned(shown, "std::vec::Vec<Pair<u8>>", layouts) is None
+    assert _composite_owned(vec("names::Other<char>"), "std::vec::Vec<Pair<i8>>", layouts) is None
+    # Two crates' worth of one name is ambiguous.
+    twice = {**layouts, vec("other::Pair<i8>"): {}}
+    assert _composite_owned(shown, "std::vec::Vec<Pair<i8>>", twice) is None
