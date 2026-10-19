@@ -88,6 +88,49 @@ def test_verify_runs_the_independent_checker_on_a_candidate(workspace, capsys):
     assert "page * page_size" in (workspace / "pagination_bug.py").read_text()
 
 
+def test_verify_takes_several_edits_each_quoting_the_original(workspace, capsys):
+    # #76: a general fix often touches two places; each pair is checked against the
+    # original file, and the candidate gets every edit.
+    args = [
+        "verify",
+        workspace / "pagination_bug.py",
+        "--check",
+        workspace / "verify_pagination.py",
+    ]
+    two = [
+        "--old",
+        "start = page * page_size",
+        "--new",
+        "start = (page - 1) * page_size",
+        "--old",
+        "end = start + page_size",
+        "--new",
+        "end = start + page_size  # exclusive",
+    ]
+    code, out = run(capsys, *args, *two, "--json")
+    result = json.loads(out.out)
+    assert code == 0 and result["passed"], result
+    assert "+    start = (page - 1) * page_size" in result["diff"]
+    assert "+    end = start + page_size  # exclusive" in result["diff"]
+    assert "page * page_size" in (workspace / "pagination_bug.py").read_text()
+    code, out = run(capsys, *args, "--old", "start = page", "--new", "x", "--old", "y")
+    assert code == 2 and "got 2 --old and 1 --new" in out.err
+    code, out = run(
+        capsys, *args, "--old", "start = page", "--new", "x", "--old", "page * page", "--new", "y"
+    )
+    assert code == 2 and "overlap" in out.err
+    code, out = run(capsys, *args, "--old", "start", "--new", "x", "--old", "zz", "--new", "y")
+    assert code == 2 and "(edit 1)" in out.err and "matched" in out.err
+    old_files = []
+    for number, (old, new) in enumerate(zip(two[1::4], two[3::4])):
+        for name, text in (("old", old), ("new", new)):
+            path = workspace / f"{name}{number}.txt"
+            path.write_text(text)
+            old_files += [f"--{name}-file", path]
+    code, out = run(capsys, *args, *old_files, "--json")
+    assert code == 0 and json.loads(out.out)["passed"]
+
+
 def _peeky_verify_dirs():
     import tempfile
 
@@ -292,8 +335,8 @@ def test_verify_refuses_when_the_source_changes_before_the_candidate_is_built(
     real = cli._check_edit
     source = workspace / "pagination_bug.py"
 
-    def racing(text, old, new):
-        real(text, old, new)
+    def racing(text, old, new, *which):
+        real(text, old, new, *which)
         source.write_text(source.read_text().replace("end = start + page_size", "end = start"))
 
     monkeypatch.setattr(cli, "_check_edit", racing)

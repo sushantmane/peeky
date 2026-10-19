@@ -539,3 +539,18 @@ Checked and found sound:
 | 1 | Migration copied `num` as is, and NUMERIC turned a REAL that had already lost digits above 2**53 into an INTEGER that looked exact (`9007199254740992` for `value` `9007199254740993`). The same `value` then had two `num`s across old and new runs. | Medium | **Fixed.** The migration recomputes `num` from `value` through `_number`, registered on the migrating connection as `peeky_number`. Test: `test_a_version_3_store_upgrades_num_in_capture_order`. |
 | 2 | With exact integers, `SUM(num)` fails on overflow past 64 bits (a sentinel like `LLONG_MAX` on two hits), and `num / k` truncates. | Medium | **Documented.** These are SQL integer semantics, and exact integers are the point of the change. The schema text, AGENT_GUIDE and COOKBOOK say to use `TOTAL(num)` and `num * 1.0 / k`, and `SUM` is no longer recommended. |
 | 3 | A writable v3 store in a read-only directory said "is unusable … move it aside" on its first read: SQLite cannot create its journal. | Low | **Fixed.** The error says the store needs a one-time upgrade and the directory is not writable. Test: `test_an_upgrade_blocked_by_a_read_only_directory_says_so`. |
+
+## Review of several edits per candidate (#83, 0266426)
+
+No issues. The reviewer checked by argument and by fuzzing:
+- **Uniqueness:** the combined `old` is unique, because it starts with the first edit's unique `old`. Its match is where that edit starts. Over 41k random texts of `a`, `b` and newlines, which give many overlapping matches, combining always equaled applying each edit.
+- **Line mapping:** `candidate_line` mapped about 137k lines through one to three edits in random order correctly. Every refusal was a joined line or a line inside an edit that changes the line count.
+- **Other cases:**
+  - adjacent edits;
+  - a `new` that creates another copy of an `old` (the worker re-checks the original);
+  - an older remote worker given a list (it answers 400, and a single pair is still sent as an object);
+  - Python verify;
+  - malformed `Probe.edit` shapes;
+  - the edit being dropped from echoed probe JSON.
+
+One test was updated for the reworded mixed `--old`/`--old-file` error.

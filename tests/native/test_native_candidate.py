@@ -155,8 +155,41 @@ def test_a_remote_worker_probes_the_candidate(loop, capsys, monkeypatch):
         assert result["candidate"]["sha256"] == sha(
             LOOP.replace("total += i;", "total += 10 * i;").encode()
         )
+        # Several edits over HTTP: the worker gets a list and builds their combined effect.
+        code, result = probe(capsys, loop, "--at", "loop.c:5", *TWO_EDITS, "--worker", url)
+        assert code == 0, result.get("error")
+        assert result["candidate"]["line"] == 6 and "TOTAL:103" in result["output"]
     finally:
         server.worker.close()
         server.shutdown()
         server.server_close()
         thread.join(timeout=3)
+
+
+TWO_EDITS = (
+    "--capture",
+    "total,bonus",
+    "--hits",
+    "3",
+    "--old",
+    "int total = 0;\n",
+    "--new",
+    "int total = 0;\n  int bonus = 100;\n",
+    "--old",
+    'printf("TOTAL:%d\\n", total);',
+    "--new",
+    'printf("TOTAL:%d\\n", total + bonus);',
+)
+
+
+def test_a_candidate_with_several_edits_maps_the_line_through_them(loop, capsys):
+    # #76: one edit adds a declaration above the probed line, another uses it below.
+    source = loop / "loop.c"
+    before = source.read_bytes()
+    code, result = probe(capsys, loop, "--at", "loop.c:5", *TWO_EDITS)
+    assert code == 0, result.get("error")
+    assert result["candidate"]["line"] == 6 and result["candidate"]["original_line"] == 5
+    assert values(result, "total") == ["0", "0", "1"] and values(result, "bonus") == ["100"] * 3
+    assert "TOTAL:103" in result["output"] and source.read_bytes() == before
+    assert "+  int bonus = 100;" in result["candidate"]["diff"]
+    assert '+  printf("TOTAL:%d\\n", total + bonus);' in result["candidate"]["diff"]

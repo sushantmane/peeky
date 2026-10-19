@@ -147,44 +147,105 @@ CANDIDATE_NEEDS_BUILD = (
 )
 
 
-def candidate_line(text, old, new, line):
-    """The line of the edited text that holds original line ``line``.
+MAX_EDITS = 32
 
-    Lines before the edit keep their number and lines after it shift by the lines the
-    edit adds or removes. A line inside the edit maps only when the edit keeps its line
-    count; otherwise there is no faithful answer, so it is refused.
-    """
-    start = text.find(old)
-    if start < 0 or text.count(old) != 1:
-        raise ValueError("--old must match the --at file exactly once")
+
+def edit_pairs(edit):
+    """A candidate edit as a tuple of (old, new) pairs: one pair, or several."""
+    if edit is None:
+        return ()
+    if isinstance(edit, tuple) and len(edit) == 2 and all(isinstance(t, str) for t in edit):
+        return (edit,)
+    return tuple(tuple(pair) for pair in edit)
+
+
+def _edit_spans(text, pairs):
+    """[(start, old, new)] in file order. Each old must match exactly once in the
+    original text, and no two may overlap: every --old quotes the file as it is."""
+    spans = []
+    for number, (old, new) in enumerate(pairs, 1):
+        which = f" (edit {number})" if len(pairs) > 1 else ""
+        if not old or old == new:
+            raise ValueError(f"--old must be nonempty and --new must change it{which}")
+        if text.count(old) != 1:
+            raise ValueError(f"--old must match the --at file exactly once{which}")
+        spans.append((text.index(old), old, new, number))
+    spans.sort()
+    for (start, old, _, first), (after, _, _, second) in zip(spans, spans[1:]):
+        if after < start + len(old):
+            raise ValueError(
+                f"Edits {first} and {second} overlap: each --old must quote its own part of "
+                "the original file"
+            )
+    return spans
+
+
+def combine_edits(text, edit):
+    """One (old, new) with the effect of applying every pair of ``edit`` at once: the
+    original text from the first edit's start to the last one's end, and that text
+    edited. It matches exactly once, since it contains the first, unique, old."""
+    spans = _edit_spans(text, edit_pairs(edit))
+    if len(spans) == 1:
+        return spans[0][1], spans[0][2]
+    first, (last, old_last, _, _) = spans[0][0], spans[-1]
+    pieces, cursor = [], first
+    for start, old, new, _ in spans:
+        pieces += [text[cursor:start], new]
+        cursor = start + len(old)
+    return text[first : last + len(old_last)], "".join(pieces)
+
+
+def _through(text, start, old, new, line, head, which=""):
+    """How one edit at ``start`` moves original line ``line``: None if the line is
+    before it, else the lines it adds or removes. ``head`` is the edited text up to the
+    edit's end. Lines inside an edit that changes the line count are refused."""
     first = text.count("\n", 0, start) + 1
     last = text.count("\n", 0, start + len(old) - 1) + 1
     delta = new.count("\n") - old.count("\n")
     if line < first:
-        return line
+        return None
     if line > last:
-        head = text[:start] + new
         if line == last + 1 and old.endswith("\n") and head and not head.endswith("\n"):
             # --old ends a line but --new does not: this line is joined onto the edit's
             # last line, and a breakpoint there would stop before the edited code runs.
             raise ValueError(
-                f"Line {line} starts right after the edit, and --new does not end with a "
-                f"newline as --old does, so the candidate joins it onto line "
+                f"Line {line} starts right after the edit{which}, and --new does not end "
+                f"with a newline as --old does, so the candidate joins it onto line "
                 f"{head.count(chr(10)) + 1}; end --new with a newline, or probe another line"
             )
-        return line + delta
+        return delta
     if delta == 0:
-        return line
+        return 0
     span = (
         f"line {first}, which becomes" if first == last else f"lines {first}-{last}, which become"
     )
     after = last + delta
     became = f"line {first}" if after <= first else f"lines {first}-{after}"
     raise ValueError(
-        f"Line {line} is inside the edit ({span} {became} of the candidate). An edit that "
-        "changes the number of lines has no matching line inside it: probe a line before or "
-        "after the edit"
+        f"Line {line} is inside the edit{which} ({span} {became} of the candidate). An edit "
+        "that changes the number of lines has no matching line inside it: probe a line "
+        "before or after the edit"
     )
+
+
+def candidate_line(text, edit, line):
+    """The line of the edited text that holds original line ``line``.
+
+    Lines before an edit keep their number and lines after it shift by the lines it
+    adds or removes. A line inside an edit maps only when the edit keeps its line
+    count; otherwise there is no faithful answer, so it is refused.
+    """
+    spans = _edit_spans(text, edit_pairs(edit))
+    shift, cursor, head = 0, 0, ""
+    for start, old, new, number in spans:
+        head += text[cursor:start] + new
+        cursor = start + len(old)
+        which = f" {number}" if len(spans) > 1 else ""
+        moved = _through(text, start, old, new, line, head, which)
+        if moved is None:
+            break
+        shift += moved
+    return line + shift
 
 
 def parse_location(text):
@@ -271,18 +332,30 @@ class Probe:
             )
         if self.entry is not None and (not isinstance(self.entry, str) or not self.entry):
             raise ValueError("Probe entry must be a relative script path")
-        if self.edit is not None and (
-            not isinstance(self.edit, tuple)
-            or len(self.edit) != 2
-            or not all(isinstance(text, str) for text in self.edit)
-            or not self.edit[0]
-            or self.edit[0] == self.edit[1]
-            or any(len(text.encode()) > MAX_EDIT_BYTES for text in self.edit)
-        ):
-            raise ValueError(
-                "A candidate edit is (old, new): old nonempty, new different, each at most "
-                f"{MAX_EDIT_BYTES // (1024 * 1024)} MiB"
+        if self.edit is not None:
+            edit = self.edit
+            single = (
+                isinstance(edit, tuple) and len(edit) == 2 and all(isinstance(t, str) for t in edit)
             )
+            several = isinstance(edit, tuple) and all(isinstance(pair, tuple) for pair in edit)
+            pairs = (edit,) if single else edit if several else ()
+            if (
+                not pairs
+                or len(pairs) > MAX_EDITS
+                or not all(
+                    len(pair) == 2
+                    and all(isinstance(text, str) for text in pair)
+                    and pair[0]
+                    and pair[0] != pair[1]
+                    for pair in pairs
+                )
+                or sum(len(text.encode()) for pair in pairs for text in pair) > MAX_EDIT_BYTES
+            ):
+                raise ValueError(
+                    f"A candidate edit is (old, new), or up to {MAX_EDITS} such pairs: each "
+                    f"old nonempty, each new different, {MAX_EDIT_BYTES // (1024 * 1024)} MiB "
+                    "in all"
+                )
         _check_args(self.args)
         if not isinstance(self.expect_sha256, tuple) or not all(
             isinstance(pair, tuple)
@@ -784,8 +857,10 @@ def run_probe(root, probe, *, adapter=None, progress=None):
     session = None
     try:
         if probe.edit:
-            old, new = probe.edit
-            line = candidate_line(worker.path(probe.program).read_text(), old, new, probe.line)
+            text = worker.path(probe.program).read_text()
+            line = candidate_line(text, probe.edit, probe.line)
+            # The worker builds one edit with the same effect as every pair.
+            old, new = combine_edits(text, probe.edit)
             result["candidate"] = {"line": line, "original_line": probe.line}
         launch = worker.dispatch(
             "launch",
