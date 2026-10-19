@@ -2,6 +2,8 @@
 
 import hashlib
 import json
+import os
+import shutil
 import sqlite3
 import subprocess
 import tempfile
@@ -421,7 +423,21 @@ def test_a_python_candidate_warns_when_the_script_reaches_above_its_root(
         main([*probe[:3], line, *probe[4:], "--old", "acc = 0", "--new", "acc = 1"])
         result = json.loads(capsys.readouterr().out)
         assert any("nothing above it was copied" in w for w in result["warnings"]), locate
-    # With the project as the target, the copy holds them.
+    # Verification of #109: a nested --at file in a root that is not the project's (a
+    # `src/` layout) reaches above it too.
+    (tmp_path / "src" / "pkg").mkdir(parents=True)
+    (tmp_path / "src" / "pkg" / "app.py").write_text(
+        "import json\nfrom pathlib import Path\n"
+        "conf = Path(__file__).resolve().parents[2] / 'conf.json'\n"
+        "rate = json.loads(conf.read_text())['rate'] if conf.exists() else 1\n"
+        "acc = 0\nprint(acc * rate)\n"
+    )
+    nested = ["probe", str(tmp_path / "src"), "--at", "pkg/app.py:6", "--capture", "rate"]
+    main([*nested, "--json", "--quiet", "--old", "acc = 0", "--new", "acc = 1"])
+    result = json.loads(capsys.readouterr().out)
+    assert any("nothing above it was copied" in w for w in result["warnings"]), result
+    # With the project as the target, the copy holds them, and a project root gets no note.
+    (tmp_path / "pyproject.toml").write_text("[project]\nname = 'p'\n")
     main(
         [
             "probe",
@@ -442,6 +458,7 @@ def test_a_python_candidate_warns_when_the_script_reaches_above_its_root(
     assert result["rows"][0]["value"] == "5" and not result.get("warnings")
 
 
+@pytest.mark.skipif(os.geteuid() == 0, reason="root lists any directory")
 def test_a_python_candidate_refuses_a_directory_it_cannot_list(tmp_path, capsys, monkeypatch):
     # Verification of #109: `os.walk` skipped a directory it could not list (`--x`), so
     # the candidate ran without it and its errors read as the edit's effect.
@@ -462,6 +479,120 @@ def test_a_python_candidate_refuses_a_directory_it_cannot_list(tmp_path, capsys,
     finally:
         (proj / "conf").chmod(0o700)
     assert code != 0 and "could not copy the target root" in result["error"]["message"], result
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root enters any directory")
+def test_a_python_candidate_stands_in_for_a_directory_nobody_can_open(
+    tmp_path, capsys, monkeypatch
+):
+    # Verification of #109: refusing every unlistable directory refused candidates beside
+    # another user's `pgdata` or `lost+found`, which the program cannot open either.
+    from peeky.cli import main
+
+    monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
+    proj = tmp_path / "proj"
+    (proj / "pgdata").mkdir(parents=True)
+    (proj / "app.py").write_text(
+        "import os\ntry:\n    os.listdir('pgdata')\n    seen = 'listed'\n"
+        "except PermissionError:\n    seen = 'denied'\nacc = 1\nprint(acc, seen)\n"
+    )
+    (proj / "pgdata").chmod(0o000)
+    try:
+        probe = ["probe", str(proj), "--at", "app.py:8", "--capture", "acc,seen", "--json"]
+        code = main([*probe, "--quiet", "--old", "acc = 1", "--new", "acc = 2"])
+        result = json.loads(capsys.readouterr().out)
+    finally:
+        (proj / "pgdata").chmod(0o700)
+    assert code == 0, result.get("error")
+    assert [row["value"] for row in result["rows"]] == ["2", "'denied'"], result["rows"]
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root writes any directory")
+def test_a_python_candidate_keeps_times_and_directory_modes(tmp_path, capsys, monkeypatch):
+    # Verification of #109: every copied file had the copy's mtime, in walk order, and
+    # every directory was writable, so a freshness check or a read-only output directory
+    # took another branch in the candidate.
+    import time
+
+    from peeky.cli import main
+
+    monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
+    scratch = tmp_path / "tmp"
+    scratch.mkdir()
+    monkeypatch.setenv("TMPDIR", str(scratch))
+    monkeypatch.setattr(tempfile, "tempdir", str(scratch))
+    proj = tmp_path / "proj"
+    (proj / "job").mkdir(parents=True)
+    (proj / "out").mkdir()
+    (proj / "pyproject.toml").write_text("[project]\nname = 'p'\n")
+    for name, age in (("cache.json", 200), ("data.csv", 100)):
+        (proj / "job" / name).write_text(name)
+        os.utime(proj / "job" / name, (time.time() - age, time.time() - age))
+    (proj / "app.py").write_text(
+        "from pathlib import Path\njob = Path('job')\n"
+        "fresh = (job / 'data.csv').stat().st_mtime > (job / 'cache.json').stat().st_mtime + 50\n"
+        "try:\n    Path('out/x').write_text('x')\n    saved = 'saved'\n"
+        "except PermissionError:\n    saved = 'read-only'\nscale = 1\nprint(fresh, saved, scale)\n"
+    )
+    (proj / "out").chmod(0o555)
+    try:
+        probe = ["probe", str(proj), "--at", "app.py:10", "--capture", "fresh,saved,scale"]
+        code = main([*probe, "--json", "--quiet", "--old", "scale = 1", "--new", "scale = 2"])
+        result = json.loads(capsys.readouterr().out)
+    finally:
+        (proj / "out").chmod(0o755)
+    assert code == 0, result.get("error")
+    assert [row["value"] for row in result["rows"]] == ["True", "'read-only'", "2"], result
+    assert not result.get("warnings"), result["warnings"]
+    assert not list(scratch.glob("peeky-candidate-*")), "a read-only directory blocked cleanup"
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
+def test_a_python_candidate_never_writes_the_user_s_repository(tmp_path, capsys, monkeypatch):
+    # Verification of #109: `.git` and `.pytest_cache` were links to the user's, so a
+    # candidate's `git add` staged the edit in the user's repository, `git describe
+    # --dirty` rewrote the user's index and pytest wrote the user's cache.
+    from peeky.cli import main
+
+    monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
+    proj = tmp_path / "proj"
+    (proj / ".pytest_cache").mkdir(parents=True)
+    (proj / ".pytest_cache" / "marker").write_text("user's")
+    (proj / "app.py").write_text(
+        "import subprocess\nfrom pathlib import Path\nacc = 1\n"
+        "def git(*args):\n"
+        "    return subprocess.run(['git', *args], capture_output=True, text=True).stdout.strip()\n"
+        "git('add', '-A')\nstaged = git('diff', '--cached', '--name-only')\n"
+        "described = git('describe', '--always', '--dirty')\n"
+        "Path('.pytest_cache/marker').write_text('candidate')\nprint(acc, staged, described)\n"
+    )
+    environment = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
+
+    def git(*args):
+        return subprocess.run(
+            ["git", "-c", "user.name=t", "-c", "user.email=t@t", *args],
+            cwd=proj,
+            env=environment,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+
+    git("init", "-q")
+    git("add", "app.py")
+    git("commit", "-qm", "base")
+    index = proj / ".git" / "index"
+    before = (hashlib.sha256(index.read_bytes()).hexdigest(), index.stat().st_ino)
+    probe = ["probe", str(proj), "--at", "app.py:10", "--capture", "staged,described"]
+    code = main([*probe, "--json", "--quiet", "--old", "acc = 1", "--new", "acc = 2"])
+    result = json.loads(capsys.readouterr().out)
+    assert code == 0, result.get("error")
+    staged, described = (row["value"] for row in result["rows"])
+    assert "app.py" in staged and described.endswith("-dirty'"), result["rows"]
+    assert (hashlib.sha256(index.read_bytes()).hexdigest(), index.stat().st_ino) == before
+    assert git("status", "--porcelain") == "?? .pytest_cache/\n"
+    assert (proj / ".pytest_cache" / "marker").read_text() == "user's"
+    assert "acc = 1" in (proj / "app.py").read_text()
 
 
 def test_a_hard_linked_name_of_the_edited_file_keeps_its_own_directory(

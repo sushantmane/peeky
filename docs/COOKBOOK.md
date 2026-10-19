@@ -617,7 +617,13 @@ run_a  run_b  hit   phase     selector  value_a           value_b               
   ```
 
   This reports `set end: 3 -> 10`. `black_box` keeps the new Rust local in memory, where a change reaches the program.
-- **Python:** like a compiled candidate, it runs from a private copy of the target root with the edit applied (version-control, virtualenv and cache directories are linked, not copied), and that copy is the working directory. Whatever the script reaches through its own path, an import, or another process (multiprocessing, a subprocess of `__file__`) is the copy, so all of it runs the edit. Nothing above the target root is copied, and no reading of the source can tell whether a program reaches there, so whenever the edited file sits at the top of the root (always, for a script given as the target) the result notes it. If the program reads or imports anything from above, give the directory that holds it as the target (`peeky probe proj --at scripts/run.py:14`). A directory that cannot be listed is refused rather than left out. `--run` entry scripts are refused.
+- **Python:** like a compiled candidate, it runs from a private copy of the target root with the edit applied, and that copy is the working directory. Files keep their bytes, modes and times, and directories their modes. Whatever the script reaches through its own path, an import, or another process (multiprocessing, a subprocess of `__file__`) is the copy, so all of it runs the edit. Nothing the program writes reaches your tree:
+  - A git directory is copied without its object store, which it reads through `alternates`, so `git add`, a rewritten index or new objects stay in the copy.
+  - `.hg`, `.svn`, and a `.git` that points outside the root (a worktree's) are left out, with a note.
+  - Pure caches (`__pycache__`, `.mypy_cache`, `.ruff_cache`) are left out. Environments (`.venv`, `venv`, `.tox`, `.nox`, `node_modules`, `site-packages`, `.eggs`) are linked: the interpreter uses them from either tree.
+  - A directory nobody can open (another user's `pgdata`) is an empty one with its mode. One that can be entered but not listed is refused.
+
+  Nothing above the target root is copied, and no reading of the source can tell whether a program reaches there. So unless the root is a project's (it holds `.git`, `pyproject.toml`, `setup.py` or `setup.cfg`), the result notes it. If the program reads or imports anything from above, give the project directory as the target (`peeky probe proj --at scripts/run.py:14`). `--run` entry scripts are refused.
 
 ---
 
