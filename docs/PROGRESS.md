@@ -154,7 +154,9 @@ An hourly thread heartbeat (`continue-peeky-mvp`) checks for available usage and
 - **Exact integers in the evidence store** (#75): schema 4 makes `captures.num` NUMERIC, so `600` stays `600` and 64-bit integers are exact. The table is rebuilt in capture order, and older stores are upgraded in place.
 - **C/C++ locals declared on the stop line** (#92, found by the fourth evaluation).
   - At a breakpoint on `long long us = ms * 1000;`, `us` showed the previous call's value, `[settable]`. It is now withheld (`declared on line 3, which has not run yet at this stop`) and refused by `--set`, exactly when the stop is at the line's first instruction in its function: the instruction pointer, less the executable's load slide (`__TEXT` on macOS, the header segment on Linux), against the build's line table.
-  - Mid-line stops (a return from a call, a one-line loop's later part) still show the value. Unoptimized builds only; an address the line table does not place on the stop line, or a load address in an unknown form, withholds nothing.
+  - Where control enters the line is found per block: the line's first instruction in the block that declares the local (a braced one-line loop body has its own), and after the prologue on a function's first line, where its breakpoint is.
+  - A line a loop jumps back to is never withheld: Peeky disassembles the function (DAP `disassemble`) and leaves an address alone when a later jump returns to it. That covers x86-64, where `while ((x = next()) > 0)` tests at the line's first instruction with `x` live, and a `do` body's first line, whose last-pass value is shown with the guide's warning.
+  - Mid-line stops (a return from a call) still show the value. Unoptimized arm64 and x86-64 builds only; anything unknown (a load address or jump in an unrecognized form, a jump through a register) withholds nothing.
 - **C/C++ locals declared below the stop are withheld** (#74).
   - `no value yet: declared at line 18, below this stop`. They are never settable or expanded.
   - The rule comes from DWARF declaration lines and the line table. It applies only when:

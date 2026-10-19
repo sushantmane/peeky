@@ -287,17 +287,23 @@ def test_a_live_for_counter_at_a_step_stop_on_its_header_is_shown(bucket, capsys
 
 
 CONVERT = """#include <stdio.h>
-long long convert(int ms) {
+static int left = 3;
+static int next(void) { return left--; }
+static long long convert(int ms) { long long us = ms * 1000; return us; }
+long long spread(int ms) {
     long long us = ms * 1000;
     return us;
 }
 int main(void) {
     long long total = 0;
-    for (int i = 0; i < 3; i++) total += convert(i + 1);
-    for (int j = 0; j < 2; j++) {
-        int sq = j * j;
-        total += sq;
-    }
+    for (int i = 0; i < 3; i++) total += spread(i + 1);
+    for (int j = 0; j < 4; j++) { int sq = j * j; total += sq; }
+    int x = 0;
+    do {
+        int y = x * 2;
+        total += y + convert(x) + next();
+        x++;
+    } while (x < 3);
     printf("TOTAL:%lld\\n", total);
     return 0;
 }
@@ -313,37 +319,49 @@ def convert(tmp_path, monkeypatch):
     return tmp_path / "convert.c"
 
 
-@pytest.mark.timeout(120)
-def test_a_local_declared_on_the_stop_line_is_withheld_at_its_first_instruction(convert, capsys):
-    # #92 (eval 4, C): `us` showed the previous call's 1000 at its own declaration line.
-    code, result = probe(capsys, convert, "--at", "3", "--capture", "us,ms", "--hits", "3")
+def _rows(capsys, path, line, capture, hits):
+    code, result = probe(capsys, path, "--at", line, "--capture", capture, "--hits", hits)
     assert code == 0, result.get("error")
-    for row in result["rows"]:
-        if row["selector"] == "us":
-            assert (
-                "value" not in row and "declared on line 3, which has not run yet" in row["error"]
-            )
-            assert row.get("settable") is False
-        else:
-            assert row["value"] == str(row["hit"])
-    # Each iteration's first stop on a loop body line holds the last iteration's value.
-    code, result = probe(capsys, convert, "--at", "10", "--capture", "sq,j", "--hits", "2")
-    rows = {(row["hit"], row["selector"]): row for row in result["rows"]}
-    assert all("value" not in rows[hit, "sq"] for hit in (1, 2))
-    assert [rows[hit, "j"]["value"] for hit in (1, 2)] == ["0", "1"]
-    code, result = probe(capsys, convert, "--at", "3", "--capture", "ms", "--set", "us=5")
+    return {(row["hit"], row["selector"]): row for row in result["rows"]}
+
+
+def _withheld(row, line):
+    return "value" not in row and f"declared on line {line}, which has not run yet" in row["error"]
+
+
+@pytest.mark.timeout(180)
+def test_a_local_declared_on_the_stop_line_is_withheld_where_its_line_starts(convert, capsys):
+    # #92 (eval 4, C): `us` showed the previous call's 1000 at its own declaration line.
+    rows = _rows(capsys, convert, 6, "us,ms", 3)
+    for hit in (1, 2, 3):
+        assert _withheld(rows[hit, "us"], 6) and rows[hit, "us"].get("settable") is False
+        assert rows[hit, "ms"]["value"] == str(hit)
+    code, result = probe(capsys, convert, "--at", "6", "--capture", "ms", "--set", "us=5")
     assert code == 1 and result["error"]["code"] == "MUTATION_REJECTED"
-    assert "declared on line 3" in result["error"]["message"]
+    assert "declared on line 6" in result["error"]["message"]
+    # Review of #99: a one-line function stops after its prologue, not at the line's
+    # first row; a braced one-line loop body stops where its own block starts.
+    rows = _rows(capsys, convert, 4, "us,ms", 2)
+    assert all(_withheld(rows[hit, "us"], 4) for hit in (1, 2))
+    rows = _rows(capsys, convert, 12, "sq,j", 5)
+    assert _withheld(rows[1, "j"], 12)
+    for hit in (2, 3, 4, 5):
+        assert _withheld(rows[hit, "sq"], 12)
+        assert rows[hit, "j"]["value"] == str(hit - 2)
 
 
-@pytest.mark.timeout(120)
-def test_mid_line_stops_on_a_declaration_line_show_the_value(convert, capsys):
+@pytest.mark.timeout(180)
+def test_a_line_a_loop_returns_to_and_mid_line_stops_show_the_value(convert, capsys):
+    # A do-while branches back to its body's first line: control re-enters it from the
+    # loop, so its start is not a first pass (x86-64 does this for `while` tests too).
+    rows = _rows(capsys, convert, 15, "y,x", 3)
+    assert all("value" in rows[hit, "y"] for hit in (1, 2, 3))
     # A return from a call stops mid-line, where the one-line loop's `i` is live.
-    main(["session", "start", str(convert), "--at", "3", "--hit", "2"])
+    main(["session", "start", str(convert), "--at", "6", "--hit", "2"])
     capsys.readouterr()
     try:
         assert main(["session", "step", "--out"]) == 0
-        assert ":8 in main" in capsys.readouterr().out
+        assert ":11 in main" in capsys.readouterr().out
         assert main(["session", "get", "i", "--json"]) == 0
         rows = json.loads(capsys.readouterr().out)
     finally:

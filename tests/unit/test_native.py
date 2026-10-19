@@ -867,19 +867,28 @@ def test_an_external_header_hiding_the_builtin_is_found(tmp_path):
     assert not mentions_nonlocal_jumps({str(sdk): "sha"}, (b"__builtin_setjmp",))
 
 
-def test_a_local_declared_on_the_stop_line_is_withheld_only_at_its_first_address():
+def test_a_local_declared_on_the_stop_line_is_withheld_only_where_its_line_starts():
     from peeky.native import declared_on_line
 
     # #92: line 8 runs from 0x80 to 0x9f; `i` is declared there, `total` on line 7.
+    # `starts`: where control enters line 8 in the block declaring each local (the
+    # function's block for `i`, a nested `{ int sq = ...; }` block from 0x90 for `sq`).
     main = {
         "source": "a.c",
         "rows": rows({7: (0x70, 0x7F), 8: (0x80, 0x9F)}, "a.c"),
         "jumps": False,
     }
-    main["locals"] = {"i": {("a.c", 8, True)}, "total": {("a.c", 7, True)}}
+    main["locals"] = {
+        "i": {("a.c", 8, True)},
+        "total": {("a.c", 7, True)},
+        "sq": {("a.c", 8, True)},
+    }
+    main["starts"] = {("i", "a.c", 8): {0x80}, ("sq", "a.c", 8): {0x90}}
     assert declared_on_line([main], "i", "a.c", 8, 0x80) == 8
+    assert declared_on_line([main], "sq", "a.c", 8, 0x90) == 8
     # Mid-line (a return from a call, a loop's later part), the local is live.
     assert declared_on_line([main], "i", "a.c", 8, 0x88) is None
+    assert declared_on_line([main], "i", "a.c", 8, 0x90) is None
     assert declared_on_line([main], "total", "a.c", 8, 0x80) is None
     # An address outside the line (a wrong load bias) proves nothing.
     assert declared_on_line([main], "i", "a.c", 8, 0x70) is None
@@ -890,6 +899,78 @@ def test_a_local_declared_on_the_stop_line_is_withheld_only_at_its_first_address
     twice = {**main, "locals": {"i": {("a.c", 8, True), ("a.c", 3, True)}}}
     assert declared_on_line([twice], "i", "a.c", 8, 0x80) is None
     assert declared_on_line([twice], "i @ a.c:8", "a.c", 8, 0x80) == 8
+
+
+def _instructions(*pairs):
+    return [{"address": f"0x{address:X}", "instruction": text} for address, text in pairs]
+
+
+def test_backward_jump_targets_come_from_the_disassembly():
+    from peeky.native import backward_targets
+
+    # Review of #99: x86-64 at -O0 tests `while ((x = next()) > 0)` first, at the line's
+    # lowest address, and jumps back there: control re-enters it with `x` live.
+    x86 = _instructions(
+        (0x1130, "pushq  %rbp"),
+        (0x1136, "callq  0x1120                     ; next at t.c:3"),
+        (0x113B, "movl   %eax, -0x8(%rbp)"),
+        (0x113E, "cmpl   $0x0, %eax"),
+        (0x1141, "jle    0x1152"),
+        (0x1147, "addl   -0x8(%rbp), %ecx"),
+        (0x114D, "jmp    0x1136                     ; <+6> at t.c:5"),
+        (0x1152, "popq   %rbp"),
+        (0x1153, "retq"),
+        (0x1154, "nop"),
+    )
+    assert backward_targets(x86, 0x1130, 0x1154, "x86_64") == {0x1136}
+    intel = _instructions((0x1130, "jmp 0x1130"), (0x1132, "jne 0x1140"), (0x1140, "ret"))
+    assert backward_targets(intel, 0x1130, 0x1141, "x86_64") == {0x1130}
+    arm = _instructions(
+        (0x10000050C, "b       0x100000510               ; <+24> at a.c:6:21"),
+        (0x100000510, "bl      0x1000005b0               ; next at a.c:3"),
+        (0x100000514, "tbz     w8, #0x1f, 0x100000520"),
+        (0x100000518, "b.gt    0x100000510"),
+        (0x10000051C, "cbnz    w9, 0x100000528"),
+        (0x100000520, "add     w8, w8, #0x1"),
+        (0x100000524, "ret"),
+    )
+    assert backward_targets(arm, 0x10000050C, 0x10000052C, "arm64") == {0x100000510}
+    # No jumps: no loop (calls and returns are not jumps).
+    straight = _instructions((0x10, "bl      0x100"), (0x14, "ret"))
+    assert backward_targets(straight, 0x10, 0x18, "arm64") == set()
+    # A jump through a register (a jump table) or out of the function, or another
+    # architecture: unknown, so nothing is withheld.
+    assert backward_targets(_instructions((0x10, "br      x8")), 0x10, 0x14, "arm64") is None
+    assert backward_targets(_instructions((0x10, "jmpq   *%rax")), 0x10, 0x14, "x86_64") is None
+    assert backward_targets(_instructions((0x10, "b       0x900")), 0x10, 0x14, "arm64") is None
+    assert backward_targets(straight, 0x10, 0x18, "riscv64") is None
+    assert backward_targets([{"address": "nope"}], 0x10, 0x18, "arm64") is None
+
+
+def test_architecture_reads_mach_o_and_elf_headers(tmp_path):
+    import struct
+
+    from peeky.native import architecture
+
+    cases = {
+        "arm": struct.pack("<II", 0xFEEDFACF, 0x0100000C) + bytes(12),
+        "intel": struct.pack("<II", 0xFEEDFACF, 0x01000007) + bytes(12),
+        "elf-x86": b"\x7fELF\x02\x01" + bytes(12) + struct.pack("<H", 62),
+        "elf-arm": b"\x7fELF\x02\x01" + bytes(12) + struct.pack("<H", 183),
+        "riscv": b"\x7fELF\x02\x01" + bytes(12) + struct.pack("<H", 243),
+        "text": b"#!/bin/sh\n",
+    }
+    for name, header in cases.items():
+        (tmp_path / name).write_bytes(header)
+    found = {name: architecture(tmp_path / name) for name in cases}
+    assert found == {
+        "arm": "arm64",
+        "intel": "x86_64",
+        "elf-x86": "x86_64",
+        "elf-arm": "arm64",
+        "riscv": None,
+        "text": None,
+    }
 
 
 def test_the_load_bias_reads_each_debuggers_module_address(tmp_path, monkeypatch):

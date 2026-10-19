@@ -531,13 +531,15 @@ def _function_entries(info, line_text, workspace, declared):
                     owner[index] = (die["depth"], root)
                 if runner[index] is None or die["depth"] > runner[index][0]:
                     runner[index] = (die["depth"], root)
-    lines, runs = {}, {}
+    lines, runs, starts = {}, {}, {}
     for (address, name, number), claimed, ran in zip(rows, owner, runner):
         for found, key, table in ((claimed, number, lines), (ran, (name, number), runs)):
             if found is not None:
                 span = table.setdefault(found[1], {}).setdefault(key, [address, address])
                 span[0], span[1] = min(span[0], address), max(span[1], address)
-    return dies, functions, lines, (inputs, sources), runs
+        if ran is not None:
+            starts.setdefault(ran[1], {}).setdefault((name, number), []).append(address)
+    return dies, functions, lines, (inputs, sources), runs, starts
 
 
 def _source_of(attribute, inputs, workspace, cache):
@@ -567,7 +569,7 @@ def function_scopes(info, line_text, workspace, declared):
     the callee, not its caller. Copies of one function (C1/C2 constructors, inlined and
     out-of-line copies) are merged through the DIE that declares them.
     """
-    dies, functions, lines, _, _ = _function_entries(info, line_text, workspace, declared)
+    dies, functions, lines, _, _, _ = _function_entries(info, line_text, workspace, declared)
     found = {}
     for root, entry in functions.items():
         source = entry["source"]
@@ -606,10 +608,11 @@ _AUTOMATIC = re.compile(r"DW_OP_(?:fbreg|breg[0-9]+)\b")
 
 
 def _declared(dies, offset, files, workspace):
-    """(name, (source, line, automatic)) for each parameter and variable of one function
-    body, including nested blocks but not calls inlined into it. Parameters, statics and
-    anything without a frame location are not automatic. A label is listed as
-    (None, None): `goto` can return above a declaration with the local still live."""
+    """(name, (source, line, automatic), scope) for each parameter and variable of one
+    function body, including nested blocks but not calls inlined into it; ``scope`` is
+    the DIE of the block (or body) declaring it. Parameters, statics and anything
+    without a frame location are not automatic. A label is listed as (None, None,
+    None): `goto` can return above a declaration with the local still live."""
     found, pending = [], list(dies[offset]["children"])
     while pending and len(found) < 4096:
         child = pending.pop()
@@ -618,7 +621,7 @@ def _declared(dies, offset, files, workspace):
             pending.extend(die["children"])
             continue
         if die["tag"] == "DW_TAG_label":
-            found.append((None, None))
+            found.append((None, None, None))
             continue
         if die["tag"] not in ("DW_TAG_formal_parameter", "DW_TAG_variable"):
             continue
@@ -627,14 +630,15 @@ def _declared(dies, offset, files, workspace):
         if not name or name.startswith("$"):
             continue
         if die["tag"] == "DW_TAG_formal_parameter":
-            found.append((name, (None, None, False)))
+            found.append((name, (None, None, False), die["parent"]))
             continue
         inputs, cache = files
         source = _source_of(_first(dies, chain, "DW_AT_decl_file"), inputs, workspace, cache)
         line = _first(dies, chain, "DW_AT_decl_line")
         location = die["attrs"].get("DW_AT_location") or ""
         automatic = bool(_AUTOMATIC.search(location)) and "DW_OP_addr" not in location
-        found.append((name, (source, int(line) if line and line.isdigit() else None, automatic)))
+        where = (source, int(line) if line and line.isdigit() else None, automatic)
+        found.append((name, where, die["parent"]))
     return found
 
 
@@ -643,27 +647,53 @@ def local_declarations(info, line_text, workspace, declared):
     address of its code on each (source, line) it runs, in any declared file and even
     above its declaration (member initializers run where their class is built); for each local
     name, where every local of that name is declared, as (source, line, automatic);
-    and whether it has a label, where `goto` can return above a declaration."""
-    dies, functions, _, files, runs = _function_entries(info, line_text, workspace, declared)
+    and whether it has a label, where `goto` can return above a declaration.
+
+    ``starts``: for each automatic local, (name, source, line) -> the addresses where
+    control enters its declaration line's code in the block declaring it: the line's
+    first row in that block, and on a function's first line also the row after the
+    prologue, where its breakpoint is. ``ranges``: the function's code."""
+    dies, functions, _, files, runs, addresses = _function_entries(
+        info, line_text, workspace, declared
+    )
     workspace = Path(workspace).resolve()
     table = []
     for root, entry in functions.items():
         rows = runs.get(root)
         if not rows:
             continue
-        names, jumps = {}, False
+        ranges = sorted(span for body in entry["bodies"] for span in _code_ranges(dies[body]))
+        entries = {min(span)[0] for body in entry["bodies"] if (span := _code_ranges(dies[body]))}
+        names, jumps, starts = {}, False, {}
         for body in (*entry["bodies"], root):
-            for name, where in _declared(dies, body, files, workspace):
+            for name, where, scope in _declared(dies, body, files, workspace):
                 if name is None:
                     jumps = True
-                else:
-                    names.setdefault(name, set()).add(where)
+                    continue
+                names.setdefault(name, set()).add(where)
+                source, line, automatic = where
+                if not automatic or scope not in dies:
+                    continue
+                block = _code_ranges(dies[scope])
+                found = sorted(
+                    address
+                    for address in addresses.get(root, {}).get((source, line), ())
+                    if any(low <= address < high for low, high in block)
+                )
+                if not found:
+                    continue
+                first = {found[0]}
+                if found[0] in entries and (later := [a for a in found if a > found[0]]):
+                    first.add(later[0])
+                starts.setdefault((name, source, line), set()).update(first)
         table.append(
             {
                 "source": entry["source"],
                 "rows": {number: tuple(span) for number, span in rows.items()},
                 "locals": names,
                 "jumps": jumps,
+                "starts": starts,
+                "ranges": tuple(ranges),
             }
         )
     return table
@@ -741,13 +771,14 @@ def declared_below(table, name, source, line):
 
 def declared_on_line(table, name, source, line, address):
     """The stop line, when the C/C++ local shown there is declared on it and the stop is
-    at the line's first instruction in its function (``address``, unslid): the
-    declaration has not run on this pass, so the local holds leftovers. Else None.
+    where control enters that line in the block declaring it (``address``, unslid; see
+    local_declarations ``starts``): the declaration has not run on this pass, so the
+    local holds leftovers. Else None.
 
-    Only at that first address: a one-line loop, or a return from a call (`step
-    --out`), stops mid-line, where the local is live. Only when every local of that
-    name in the function is an automatic variable declared on this line, and never in
-    a function with a label.
+    Only there: a one-line loop, or a return from a call (`step --out`), stops
+    mid-line, where the local is live. Only when every local of that name in the
+    function is an automatic variable declared on this line, and never in a function
+    with a label. The caller also rules out an address a loop branches back to.
     """
     shown = _SHADOWED.fullmatch(name)
     here = (source, line)
@@ -757,15 +788,74 @@ def declared_on_line(table, name, source, line, address):
         if here in function["rows"]
         and function["rows"][here][0] <= address <= function["rows"][here][1]
     ]
-    if len(owners) != 1 or owners[0]["jumps"] or address != owners[0]["rows"][here][0]:
+    if len(owners) != 1 or owners[0]["jumps"]:
         return None
-    places = owners[0]["locals"].get(shown[1] if shown else name, ())
+    base = shown[1] if shown else name
+    places = owners[0]["locals"].get(base, ())
     if shown:
         places = {where for where in places if where[1] == int(shown[2])}
-    if places and all(
-        automatic and declared_in == source and at == line for declared_in, at, automatic in places
+    if (
+        places
+        and all(
+            automatic and declared_in == source and at == line
+            for declared_in, at, automatic in places
+        )
+        and address in owners[0].get("starts", {}).get((base, source, line), ())
     ):
         return line
+    return None
+
+
+# Jumps (not calls or returns), by the mnemonic LLDB prints.
+_JUMPS = {
+    "arm64": lambda m: m in _ARM64_JUMPS or m.startswith(("b.", "bc.")),
+    "x86_64": lambda m: m.startswith(("j", "loop")),
+}
+_ARM64_JUMPS = {"b", "br", "braa", "brab", "braaz", "brabz", "cbz", "cbnz", "tbz", "tbnz"}
+
+
+def backward_targets(instructions, low, high, architecture):
+    """The addresses in [low, high) that a jump there goes back to (a loop's start), from
+    a DAP disassembly of that range, whose jumps name absolute targets (`b 0x1000…`,
+    `jmp 0x4011…`). An empty set when no jump goes back; None when unknown: another
+    architecture, or a jump whose target is not named in the range (`br x8`, a jump
+    table)."""
+    is_jump = _JUMPS.get(architecture)
+    if is_jump is None:
+        return None
+    targets = set()
+    for instruction in instructions:
+        try:
+            at = int(instruction["address"], 16)
+        except (KeyError, TypeError, ValueError):
+            return None
+        if not low <= at < high:
+            continue
+        # LLDB's trailing comment (`; <+24> at a.c:6`) names no operand.
+        text = str(instruction.get("instruction", "")).split(";")[0].split()
+        if not text or not is_jump(text[0].lower()):
+            continue
+        named = [
+            target
+            for token in re.findall(r"0x[0-9a-fA-F]+", " ".join(text[1:]))
+            if low <= (target := int(token, 16)) < high
+        ]
+        if not named:
+            return None
+        targets.update(target for target in named if target <= at)
+    return targets
+
+
+def architecture(binary):
+    """`arm64` or `x86_64` from a 64-bit Mach-O or ELF header; None for anything else."""
+    with Path(binary).open("rb") as stream:
+        header = stream.read(20)
+    if len(header) >= 8 and struct.unpack_from("<I", header)[0] == 0xFEEDFACF:
+        return {0x0100000C: "arm64", 0x01000007: "x86_64"}.get(
+            struct.unpack_from("<I", header, 4)[0]
+        )
+    if len(header) == 20 and header[:6] == b"\x7fELF\x02\x01":
+        return {183: "arm64", 62: "x86_64"}.get(struct.unpack_from("<H", header, 18)[0])
     return None
 
 
@@ -1369,6 +1459,11 @@ class NativeSession:
         address = int(pointer, 16) - bias
         if declared_on_line(self.declarations, name, source.as_posix(), line, address) is None:
             return None
+        # A loop that branches back to this address can bring control here with the
+        # local live (x86-64 puts `while ((x = next()) > 0)`'s test first): only an
+        # address the disassembly shows no loop returns to is withheld.
+        if getattr(self, "loop_targets", {}).get(address) is not False:
+            return None
         return (
             f"declared on line {line}, which has not run yet at this stop (its first "
             "instruction), so not initialized: its storage holds leftovers; step once, or "
@@ -1529,6 +1624,70 @@ class NativeSession:
             self.load_bias = load_bias(self.binary, module)
         except (OSError, ValueError, struct.error):
             self.load_bias = None
+        self._check_loop_target(dap, frame)
+
+    def _check_loop_target(self, dap, frame):
+        """Record whether the stop's address, when it starts a declaration line, is one a
+        loop branches back to (True), not (False), or unknown (None); once per address."""
+        cache = self.__dict__.setdefault("loop_targets", {})
+        pointer, bias = frame.get("instructionPointerReference"), self.load_bias
+        declarations = getattr(self, "declarations", None)
+        if (
+            bias is None
+            or not declarations
+            or not isinstance(pointer, str)
+            or not re.fullmatch(r"0x[0-9a-fA-F]{1,16}", pointer)
+        ):
+            return
+        address = int(pointer, 16) - bias
+        if address in cache:
+            return
+        function = next(
+            (
+                function
+                for function in declarations
+                if any(address in starts for starts in function.get("starts", {}).values())
+            ),
+            None,
+        )
+        if function is None:
+            return
+        span = next(
+            ((low, high) for low, high in function["ranges"] if low <= address < high), None
+        )
+        cache[address] = None
+        if span is None or span[1] - span[0] > 8192:
+            return
+        low, high = span[0] + bias, span[1] + bias
+        try:
+            reply = dap.request(
+                "disassemble",
+                {
+                    "memoryReference": f"0x{low:X}",
+                    "instructionOffset": 0,
+                    # At least one instruction per byte, and past the end to show it all.
+                    "instructionCount": span[1] - span[0] + 16,
+                    "resolveSymbols": False,
+                },
+                timeout=3,
+            )
+            instructions = reply.get("instructions") or []
+            covered = any(int(item["address"], 16) >= high for item in instructions)
+            kind = architecture(self.binary)
+            targets = backward_targets(instructions, low, high, kind) if covered else None
+        except (
+            OSError,
+            RuntimeError,
+            TimeoutError,
+            ValueError,
+            TypeError,
+            KeyError,
+            AttributeError,
+            struct.error,
+        ):
+            targets = None
+        if targets is not None:
+            cache[address] = address + bias in targets
 
     def close(self):
         self.prepared.cleanup()
