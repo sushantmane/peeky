@@ -45,6 +45,7 @@ _BLOCK = re.compile(r"^    bb([0-9]+)(?: \(cleanup\))?: \{$")
 _STATEMENT = re.compile(r"^        (.+;) +// scope ([0-9]+) at (.+)$")
 _SCOPE = re.compile(r"^ +scope ([0-9]+)(?: \(inlined .*\))? \{$")
 _SPAN = re.compile(r"^([^:]+):([0-9]+):[0-9]+")
+_SPAN_END = re.compile(r"^[^:]+:[0-9]+:[0-9]+: ([0-9]+):[0-9]+")
 _WHOLE_LOCAL = re.compile(r"^_([0-9]+)$")
 
 
@@ -440,7 +441,12 @@ def parse_body(text):
         )
         if span:
             spans.append((span[1], int(span[2])))
-            body.line_scopes.setdefault((span[1], int(span[2])), set()).add(int(statement[2]))
+            # Every line the span covers: rustc may put the code on a later one (a method
+            # call's on its name's line, `K\n.get()`, while its span starts at `K`).
+            end = _SPAN_END.match(statement[3])
+            last = int(end[1]) if end and int(end[1]) >= int(span[2]) else int(span[2])
+            for number in range(int(span[2]), last + 1):
+                body.line_scopes.setdefault((span[1], number), set()).add(int(statement[2]))
     if block is not None or not body.blocks or 0 not in body.blocks or body.file is None:
         body.supported = False
     body.lines = frozenset(number for file, number in spans if file == body.file)
@@ -847,8 +853,11 @@ def may_invoke_macro(text, line):
         return True
     # A trailing `// comment` ends no path (`let n = x * 2; // doubled`), unless a quote
     # before it may hold the `//`.
-    code, comment, _ = own.partition("//")
-    if not _PATH_END.search(code if comment and '"' not in code and "'" not in code else own):
+    code, comment, after = own.partition("//")
+    # A quote before it may hold the `//`; a quote or `*/` after it, a string or block
+    # comment that began on an earlier line and closes here.
+    plain = comment and not any(mark in code for mark in "\"'") and '"' not in after
+    if not _PATH_END.search(code if plain and "*/" not in after else own):
         return False
     rest = "\n".join(lines[line:])
     following = rest[_PATH_TAIL.match(rest).end() :][:1]

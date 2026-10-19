@@ -918,6 +918,23 @@ fn macro_sibling(q: &Pt, flag: bool) -> i64 {
     k
 }
 
+#[derive(Clone, Copy)]
+pub struct Wrap(i64);
+
+impl Wrap {
+    fn get(self) -> i64 {
+        self.0
+    }
+}
+
+const KEPT: Wrap = Wrap(5);
+
+fn chain(q: &Pt, flag: bool) -> i64 {
+    let r = if flag { let b = Box::new(Pt { x: 1, y: 2 }); drop(b); churn(); KEPT
+        .get() } else { let b = q; std::hint::black_box(b.x) }; // CHAIN
+    r
+}
+
 fn make() -> Box<dyn Debug> {
     Box::new(1u8)
 }
@@ -993,7 +1010,7 @@ fn main() {
     let args = Args { verbose: true, count: 21 };
     let owned = vec![Box::new(Pt { x: 5, y: 6 })];
     println!("{} {} {} {}", run(&args), shadows(&pts, 1), param(&pts[1]), rebound_box(owned, &pts));
-    println!("{}", macro_sibling(&pts[0], true));
+    println!("{} {}", macro_sibling(&pts[0], true), chain(&pts[0], true));
     println!("{} {}", fat_params(Box::new(takes as fn(*const [u8])), Box::new(tables)), factories());
     println!("{} {} {:?} {} {}", a, b, r, closures(&[1, 2]), exported(&Pt { x: 10, y: 1 }, &[1, 2]));
 }
@@ -1090,6 +1107,11 @@ def test_generic_boxes_are_gated_and_non_owning_values_read(plain, capsys):
     # block, with spans in std's macros.rs, so no statement of this file shows that scope:
     # a line that may invoke a macro keeps every binding.
     at = f"src/main.rs:{line_of(BOX_GENERIC, '// MACRO_SIBLING')}"
+    code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "b", "--quiet")
+    assert result["rows"][0].get("view") == "unproven", result["rows"]
+    # Verification of #103: `.get()` on its own line runs in the dropped Box's block,
+    # while its statement's span starts at `KEPT` on the line before.
+    at = f"src/main.rs:{line_of(BOX_GENERIC, '// CHAIN')}"
     code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "b", "--quiet")
     assert result["rows"][0].get("view") == "unproven", result["rows"]
     at = f"src/main.rs:{line_of(BOX_GENERIC, '// LIVE_ARRAY')}"

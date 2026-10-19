@@ -714,3 +714,39 @@ def test_scope_narrowing_reads_the_stop_s_own_file():
         assert (visible is not None) is narrowed, (line_nine, visible)
         kept = body.in_scopes(body.bindings["b"], visible)
         assert len(kept) == (1 if narrowed else 2), kept
+
+
+@pytest.mark.parametrize(
+    "opening",
+    ['        let s = "x', '        let s = r#"x', "        /* x"],
+)
+def test_a_comment_mark_inside_a_multi_line_string_is_not_a_comment(opening):
+    # Verification of #103: a line that starts inside a string or block comment from the
+    # line before has a `//` that comments nothing out; its path end still counts.
+    closing = '"#' if "r#" in opening else ('"' if '"' in opening else " */")
+    text = f'fn f() {{\n{opening}\n// y{closing}; let b = 1; eprintln\n        !("{{}}", b);\n}}\n'
+    assert may_invoke_macro(text, 3)
+
+
+def test_a_statement_s_scope_counts_on_every_line_of_its_span():
+    # Verification of #103: a method call on its own line (`K\n.get()`) runs there, while
+    # its span starts at the receiver on the line before.
+    body = parse_body(
+        "\n".join(
+            [
+                "fn f() -> () {",
+                "    let mut _0: ();                      // return place in scope 0 at src/main.rs:1:10: 1:12",
+                "    scope 2 {",
+                "    }",
+                "",
+                "    bb0: {",
+                "        _0 = const ();                   // scope 2 at src/main.rs:15:78: 16:15",
+                "        return;                          // scope 0 at src/main.rs:17:2: 17:2",
+                "    }",
+                "}",
+                "",
+            ]
+        )
+    )
+    assert 2 in body.line_scopes[("src/main.rs", 16)]
+    assert 2 in body.line_scopes[("src/main.rs", 15)]
