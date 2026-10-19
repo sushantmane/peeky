@@ -1064,9 +1064,10 @@ class RustSession(NativeSession):
             if not gated and provable:
                 # #110: a reference (or raw pointer, `&str`, a tuple holding one) outlives
                 # what it points into in scope, though not in use: it reads while the code
-                # still uses it ahead. A line breakpoint stops only where the line starts
-                # (`stop`); a step or a pause can stop inside it. What cannot be told (a
-                # site or local not understood) reads as before.
+                # still uses it ahead. A line breakpoint stops only where the line starts in
+                # each lexical block, at the frame's column (`stop`); a step or a pause can
+                # stop anywhere in it. What cannot be told (a site or local not understood)
+                # reads as before.
                 gated = (
                     proofs.reference_valid(
                         hashed[1],
@@ -1074,6 +1075,7 @@ class RustSession(NativeSession):
                         line,
                         shown_path,
                         breakpoint=stop == "breakpoint",
+                        column=(frame or {}).get("column"),
                     )
                     is False
                 )

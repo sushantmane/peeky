@@ -1643,13 +1643,17 @@ def test_references_read_only_while_their_target_stands(plain, capsys):
     code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "t", "--quiet")
     assert result["rows"][0].get("view") == "unproven", result["rows"]
     # A breakpoint stops where its line starts, before the line's own code: a last use
-    # there (an argument, `println!`'s) reads. A literal `&str` always does.
-    for marker in ("PRINTED", "SCORED"):
-        at = f"src/main.rs:{line_of(REFERENCES, '// ' + marker)}"
-        code, result = run(
-            capsys, "probe", str(plain), "--at", at, "--capture", "item.x", "--quiet"
-        )
-        assert result["rows"][0].get("value") == "5", (marker, result["rows"])
+    # there (an argument) reads. A literal `&str` always does.
+    at = f"src/main.rs:{line_of(REFERENCES, '// SCORED')}"
+    code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "item.x", "--quiet")
+    assert result["rows"][0].get("value") == "5", result["rows"]
+    # `println!` declares variables of its own: LLDB stops in each of its lexical blocks,
+    # at one column, and after its first calls the stops cannot be told from the first.
+    at = f"src/main.rs:{line_of(REFERENCES, '// PRINTED')}"
+    code, result = run(
+        capsys, "probe", str(plain), "--at", at, "--capture", "item.x", "--hits", "3", "--quiet"
+    )
+    assert all(row.get("value") in (None, "5") for row in result["rows"]), result["rows"]
     at = f"src/main.rs:{line_of(REFERENCES, '// LITERAL')}"
     code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "label", "--quiet")
     assert result["rows"][0].get("view") != "unproven", result["rows"]
@@ -1668,3 +1672,169 @@ def test_references_read_only_while_their_target_stands(plain, capsys):
         main(["session", "close"])
     variables = {v["name"]: v for scope in snapshot["scopes"] for v in scope["variables"]}
     assert variables["item"].get("view") == "unproven", variables["item"]
+
+
+REVIEWED_REFS = """use std::ptr::NonNull;
+
+#[derive(Debug, Clone, Copy)]
+pub struct Pt {
+    x: i64,
+    y: i64,
+}
+
+#[inline(never)]
+fn churn() -> i64 {
+    Box::leak(Box::new(Pt { x: 777, y: 888 })).x + Box::leak(Box::new([777i64; 4]))[0]
+}
+
+fn consume(b: Box<Pt>) -> i64 {
+    b.y
+}
+
+fn asserted() -> i64 {
+    let b = Box::new(Pt { x: 5, y: 6 });
+    let r = &*b;
+    let k = r.x;
+    assert_eq!(consume(b), 6); // R3_ASSERTED
+    k
+}
+
+#[inline(always)]
+fn grow(v: &mut Vec<Pt>) -> i64 {
+    v.push(Pt { x: 3, y: 4 });
+    v.push(Pt { x: 5, y: 6 });
+    churn()
+}
+
+fn inlined() -> i64 {
+    let mut v = vec![Pt { x: 1, y: 2 }];
+    let first = &v[0];
+    let k = first.x;
+    let n = grow(&mut v) + k; // R3_INLINED
+    n
+}
+
+fn chained() -> usize {
+    let v = vec![Pt { x: 1, y: 2 }];
+    let w = vec![1u8; 3];
+    let r = &v[0];
+    let k = r.x;
+    drop(v);
+    churn();
+    let n = w
+        .len(); // R3_CHAINED
+    n + k as usize
+}
+
+fn shadowed() -> i64 {
+    let mut k = 0;
+    {
+        let a = Box::new(Pt { x: 1, y: 2 });
+        let r = &*a;
+        k += r.x;
+    }
+    let b = Box::new(Pt { x: 3, y: 4 });
+    let r = &*b;
+    k += r.x;
+    drop(b);
+    churn();
+    println!("{}", k); // R3_SHADOWED
+    k
+}
+
+fn swapped_in() -> usize {
+    let owned = String::from("hello world, long enough to be heap");
+    let mut s = "literal";
+    {
+        let p = &mut s;
+        *p = owned.as_str();
+    }
+    let n = s.len();
+    drop(owned);
+    let junk = churn();
+    n + junk as usize // R3_SWAPPED_IN
+}
+
+fn non_null() -> i64 {
+    let b = Box::new(Pt { x: 5, y: 6 });
+    let p = NonNull::from(&*b);
+    let k = unsafe { p.as_ref().x };
+    drop(b);
+    let junk = churn();
+    k + junk // R3_NON_NULL
+}
+
+fn reused() -> i64 {
+    let dummy = Pt { x: 0, y: 0 };
+    let mut r = &dummy;
+    let mut total = r.x;
+    for i in 0..3 {
+        let p = Pt { x: i + 10, y: i };
+        if i == 0 {
+            r = &p;
+            total += r.x;
+        }
+        total += churn() + p.y; // R3_REUSED
+    }
+    total
+}
+
+fn from_argument(items: &[Pt]) -> i64 {
+    let first = &items[0];
+    let base = first.x;
+    let extra = churn();
+    base + extra // R3_FROM_ARGUMENT
+}
+
+fn at_local() -> i64 {
+    let p = Pt { x: 1, y: 2 };
+    let r = &p;
+    let k = r.x;
+    let n = churn();
+    k + n + p.y // R3_AT_LOCAL
+}
+
+fn main() {
+    let v = vec![Pt { x: 3, y: 4 }];
+    println!("{} {} {} {}", asserted(), inlined(), chained(), shadowed());
+    println!("{} {} {}", swapped_in(), non_null(), reused());
+    println!("{} {}", from_argument(&v), at_local());
+}
+"""
+
+
+@pytest.mark.timeout(600)
+def test_references_read_only_where_their_stop_is_told_apart(plain, capsys):
+    # Verification of #110: where a breakpoint stops was guessed from the MIR alone, and
+    # wrong where a line has several lexical blocks (`assert_eq!`'s), an inlined call,
+    # or code on a method's own line; a name bound twice on a macro line, a literal
+    # `&str` written through `&mut`, and `NonNull` read freed memory. The stop's column
+    # and the IR's calls now place it.
+    (plain / "src/main.rs").write_text(REVIEWED_REFS)
+
+    def probe(marker, capture, hits="1"):
+        at = f"src/main.rs:{line_of(REVIEWED_REFS, '// R3_' + marker)}"
+        code, result = run(
+            capsys, "probe", str(plain), "--at", at, "--capture", capture, "--hits", hits, "--quiet"
+        )
+        assert code == 0, (marker, result.get("error"))
+        return result["rows"]
+
+    # Before `consume(b)` the Box stands; inside the macro's own block, after it, not.
+    rows = probe("ASSERTED", "r", "2")
+    assert len(rows) == 2 and rows[1].get("view") == "unproven", rows
+    assert rows[0].get("view") != "unproven", rows
+    assert probe("ASSERTED", "r.x")[0].get("value") == "5"
+    for marker, name, hits in (
+        ("INLINED", "first", "1"),
+        ("CHAINED", "r", "1"),
+        ("SHADOWED", "r", "3"),
+        ("SWAPPED_IN", "s", "1"),
+        ("NON_NULL", "p", "1"),
+        ("REUSED", "r", "3"),
+    ):
+        rows = probe(marker, name, hits)
+        assert rows and all(row.get("view") == "unproven" for row in rows), (marker, rows)
+    # Into a shared argument (frozen by the caller's loan), and at a live local.
+    assert probe("FROM_ARGUMENT", "first.x")[0].get("value") == "3"
+    assert probe("AT_LOCAL", "r.x")[0].get("value") == "1"

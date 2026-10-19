@@ -45,6 +45,7 @@ _BLOCK = re.compile(r"^    bb([0-9]+)(?: \(cleanup\))?: \{$")
 _STATEMENT = re.compile(r"^        (.+;) +// scope ([0-9]+) at (.+)$")
 _SCOPE = re.compile(r"^ +scope ([0-9]+)(?: \(inlined .*\))? \{$")
 _SPAN = re.compile(r"^([^:]+):([0-9]+):[0-9]+")
+_FULL_SPAN = re.compile(r"^([^:]+):([0-9]+):([0-9]+): ([0-9]+):([0-9]+)")
 _SPAN_END = re.compile(r"^[^:]+:[0-9]+:[0-9]+: ([0-9]+):[0-9]+")
 # Statements that emit no code: a block's `()` value spans the whole block, and must not
 # put its scope on the closing `}` (`} else if b.x > 0`, where only the outer one is).
@@ -60,11 +61,13 @@ _NOT_A_USE = re.compile(r"^(?:StorageLive|FakeRead|PlaceMention|AscribeUserType|
 # A local's mention in a statement (`move _11`, `(*_43)`); never part of a number or
 # a name (`0_usize`, `bar_2`).
 _MENTIONED = re.compile(r"(?<![\w])_([0-9]+)\b")
-_RAW_POINTER = re.compile(r"\*const |\*mut ")
+_RAW_POINTER = re.compile(
+    r"\*const |\*mut |(?:(?:std|core)::ptr::)?NonNull<|(?:(?:std|core)::sync::atomic::)?AtomicPtr<"
+)
 _FN_POINTER = re.compile(r"(?:for<[^<>]*> )?(?:unsafe )?(?:extern \S+ )?fn\(")
 # A type that borrows: a reference, a raw pointer, one holding a lifetime, or a closure
 # or coroutine (whose captures may be references).
-_BORROWING = re.compile(r"&|\*const |\*mut |'|\{closure@|\{coroutine@|\{async")
+_BORROWING = re.compile(r"&|\*const |\*mut |NonNull<|AtomicPtr<|'|\{closure@|\{coroutine@|\{async")
 
 
 def _projected_type(text):
@@ -97,8 +100,9 @@ _DROP = re.compile(r"^drop\([(*]*_([0-9]+)\b")
 # Terminators that branch on a value at run time: an instruction at the line's address.
 _BRANCHES = re.compile(r"^(?:assert\(!?(?:move|copy) |switchInt\((?:move|copy) )")
 # A borrow of a local's own storage: no `*` before the local in the place.
+_STRING = re.compile(r'"(?:[^"\\]|\\.)*"')
+_WRITABLE_BORROW = re.compile(r"&(?:mut |raw const |raw mut )\(*_([0-9]+)\b")
 _DIRECT_BORROW = re.compile(r"&(?:mut |raw const |raw mut |fake \w+ )?\(*_([0-9]+)\b")
-_ZERO_SIZED = re.compile(r"^\(\)$|^\{closure@|^\{coroutine@|^fn\(.*\{|PhantomData<|; 0\]$")
 _ANY_LOCAL = re.compile(r"\b_([0-9]+)\b")
 _SUCCESSOR = re.compile(r"\bbb([0-9]+)\b")
 _RETURN_EDGE = re.compile(r"\breturn: bb([0-9]+)\b")
@@ -111,6 +115,9 @@ _UNSUPPORTED = re.compile(r"^(?:yield|coroutine_drop|falseEdge|falseUnwind|tailc
 class Block:
     statements: list = field(default_factory=list)  # (text, file, line)
     scopes: list = field(default_factory=list)  # each statement's MIR scope
+    # each statement's (start column, end line, end column), as the MIR prints them
+    # (characters, 1-based), or None
+    spans: list = field(default_factory=list)
     terminator: str = ""
     successors: tuple = ()
     returns: int | None = None  # a call's return edge, the only edge that sets its result
@@ -132,9 +139,12 @@ class Body:
     scopes: dict = field(default_factory=lambda: {0: None})  # {scope: its parent}
     # {(file, line): the scopes of the statements with a span on that line}
     line_scopes: dict = field(default_factory=dict)
+    inlined_scopes: set = field(default_factory=set)
     _assigned: dict | None = None
     _entry: dict | None = None
     _direct: set | None = None
+    _writable: set | None = None
+    _preds: dict | None = None
 
     @property
     def name(self):
@@ -146,11 +156,24 @@ class Body:
         return parts[-2] if len(parts) > 1 else None
 
     def predecessors(self):
-        found = {}
-        for number, block in self.blocks.items():
-            for target in block.successors:
-                found.setdefault(target, set()).add(number)
-        return found
+        if self._preds is None:
+            found = {}
+            for number, block in self.blocks.items():
+                for target in block.successors:
+                    found.setdefault(target, set()).add(number)
+            self._preds = found
+        return self._preds
+
+    def lexical(self, scope):
+        """The DWARF lexical block of MIR ``scope``: rustc gives one only to a scope that
+        declares a variable (or is inlined); a statement elsewhere is in its parent's.
+        0 is the function's own."""
+        declared = {binding[4] for found in self.bindings.values() for binding in found}
+        for _ in range(4096):
+            if scope in (None, 0) or scope in declared or scope in self.inlined_scopes:
+                return scope or 0
+            scope = self.scopes.get(scope)
+        return 0
 
     def local(self, name, declared=None, visible=None):
         """The MIR local an lldb-dap variable shows: `name`, or `name @ file:line` when
@@ -178,94 +201,208 @@ class Body:
             self._assigned = assigned
         return self._assigned
 
-    def stop_positions(self, blocks, line, file, foreign, breakpoint):
-        """(block, index) where a stop on ``line`` of ``file`` can be in ``blocks``,
-        before that statement runs; None if a block's code of the line is not understood.
-        A statement is the line's when it spans that line (or another file, or none, when
-        the line may invoke a macro: ``foreign``).
+    def stop_positions(self, blocks, line, file, foreign, facts=None, shared=None):
+        """[(block, index)]: where a stop on ``line`` of ``file`` can be in ``blocks``,
+        before that statement runs; None if a block is missing. A statement is the
+        line's when it starts on it (a call: spans it, `w\n.len()`'s is on `.len()`'s
+        line), or spans another file or none when the line may invoke a macro
+        (``foreign``). After a call or drop of the line is its target's start; code of
+        the line that no statement of a block explains (a result store) is anywhere in
+        that block, unless another block codegen merged into the same IR block
+        (``shared``: {block: the blocks of its IR block}) has statements of the line.
 
-        At a breakpoint, LLDB stops only at the lowest address of the line in each
-        lexical block: the line's first code in a block, unless every block branching
-        there ends with the line's own code in the same scope, after code of the line of
-        that scope. rustc appends a block to the function when first branched to, and
-        opt-level 0 keeps that order, so the branching code is at a lower address. A
-        call that may be inlined is passed over: after it is a place too.
-        Anywhere else (a step, a pause) the stop can be before any statement of the line,
-        or at a call's or drop's return (`step --out`)."""
-        predecessors, found = self.predecessors(), []
+        ``facts`` (a ``LineFacts``) says the stop is a line breakpoint's: LLDB stops at
+        the line's lowest address in each DWARF lexical block, and the stop's column is
+        known. Code of the line in a block every predecessor branches to from the line's
+        own code of the same lexical block is never the lowest: rustc appends an IR
+        block when first branched to, and opt-level 0 keeps that order. Only a call or
+        branch the IR shows there, not inlined, counts as such code. Where the column
+        cannot be a statement's (its own, a macro's on the line, or within a call), the
+        stop is not before it."""
+        predecessors, found = self.predecessors(), {}
+        explained = set()
 
-        def on_line(spanned, spanned_line):
-            return spanned_line == line if spanned == file else spanned is None or foreign
-
-        def coded(block):
-            return [
-                index
-                for index, (text, spanned, spanned_line) in enumerate(block.statements)
-                if on_line(spanned, spanned_line) and not _NO_CODE.match(text)
-            ]
-
-        def covers(number, scope):
-            # A block ending in the line's branch or call, with code of the line in
-            # ``scope`` before it (a call to an `#[inline(always)]` function leaves no
-            # call instruction behind).
-            block = self.blocks.get(number)
-            if block is None or not block.statements:
+        def owned(number, index):
+            text, spanned, spanned_line = self.blocks[number].statements[index]
+            if _NO_CODE.match(text):
                 return False
-            text, spanned, spanned_line = block.statements[-1]
-            if not on_line(spanned, spanned_line) or _scope(block, -1) != scope:
-                return False
-            if _BRANCHES.match(text):
+            if spanned != file:
+                return spanned is None or foreign
+            if spanned_line == line:
                 return True
-            return any(
-                on_line(spanned, spanned_line)
-                and _scope(block, index) == scope
-                and _emits_code(text, self.types)
-                for index, (text, spanned, spanned_line) in enumerate(block.statements[:-1])
+            span = _span(self.blocks[number], index)
+            return (
+                _call(self.blocks[number], index)
+                and span is not None
+                and spanned_line < line <= span[1]
             )
 
+        def place(position, number, index):
+            # The statement whose code is at ``position``: its scope and possible columns.
+            if position not in found:
+                found[position] = []
+            if found[position] is not None:
+                found[position].append((number, index))
+
+        lines = {}
         for number in sorted(blocks):
             block = self.blocks.get(number)
             if block is None:
                 return None
-            indexes = coded(block)
-            if not breakpoint:
-                found.extend((number, index) for index in indexes)
-                terminator = len(block.statements) - 1
-                if terminator in indexes and (
-                    block.returns is not None or _DROP.match(block.terminator)
-                ):
-                    found.append((number, len(block.statements)))
-                continue
-            if not indexes:
-                continue
-            first = indexes[0]
-            # Code of another line earlier in this block runs first: the line starts here.
-            later = all(
-                _SPAN_ONLY.match(text) or _NO_CODE.match(text)
-                for text, _, _ in block.statements[:first]
-            )
-            froms = predecessors.get(number, set())
-            if (
-                later
-                and number != 0
-                and froms
-                and all(covers(other, _scope(block, first)) for other in froms)
-            ):
-                continue
-            found.append((number, first))
-            # A call with no code of the line before it in its scope: inlined (an
-            # `#[inline(always)]` callee, `Option::unwrap`, at every opt-level), its code
-            # carries the callee's lines, and the line's first address is after it.
+            indexes = [index for index in range(len(block.statements)) if owned(number, index)]
+            # A predecessor's call of the line returning here stores its result here
+            # (after an `invoke`, or an inlined body).
+            stores = [
+                other
+                for other in sorted(predecessors.get(number, ()))
+                if _target(self.blocks[other]) == number
+                and _call(self.blocks[other], len(self.blocks[other].statements) - 1)
+                and owned(other, len(self.blocks[other].statements) - 1)
+            ]
+            lines[number] = (indexes, stores)
+            if indexes or stores:
+                explained.add(number)
+        for number in sorted(blocks):
+            block = self.blocks[number]
             terminator = len(block.statements) - 1
-            if block.returns is not None and terminator in indexes:
-                scope = _scope(block, terminator)
-                if not any(
-                    _scope(block, index) == scope
-                    and _emits_code(block.statements[index][0], self.types)
-                    for index in indexes[:-1]
-                ):
-                    found.append((number, len(block.statements)))
-        return found
+            indexes, stores = lines[number]
+            if not indexes and not stores:
+                if not (set((shared or {}).get(number, ())) - {number}) & explained:
+                    for index in range(len(block.statements)):
+                        found[(number, index)] = None
+                continue
+            candidates = [((number, index), number, index) for index in indexes]
+            candidates += [
+                ((number, 0), other, len(self.blocks[other].statements) - 1) for other in stores
+            ]
+            for index in indexes:
+                if index == terminator and (_call(block, index) or _DROP.match(block.terminator)):
+                    target = _target(block)
+                    if target is not None and (
+                        facts is None or not self._sure(number, index, line, file, facts)
+                    ):
+                        candidates.append(((target, 0), number, index))
+            for position, owner, index in candidates:
+                if facts is not None and number != 0:
+                    lexical = self.lexical(_scope(self.blocks[owner], index))
+                    froms = predecessors.get(position[0], ())
+                    if (
+                        position[0] == number
+                        and froms
+                        and all(
+                            other in blocks and self._sure_end(other, lexical, line, file, facts)
+                            for other in froms
+                        )
+                    ):
+                        continue
+                place(position, owner, index)
+        if facts is None or facts.column is None:
+            return sorted(found)
+        kept = [
+            position
+            for position, owners in found.items()
+            if owners is None or any(self._could_be(o, i, line, file, facts) for o, i in owners)
+        ]
+        return sorted(kept or found)
+
+    def _sure(self, number, index, line, file, facts):
+        """True if the IR shows code of statement ``index`` (a terminator) of block
+        ``number`` on ``line``, at a column the statement can have: its own call (a
+        call's, a drop's glue), not inlined, or its conditional branch (an assert's, a
+        switch's). Codegen emits the MIR blocks merged into an IR block in order, each
+        call terminator one call there, so the calls are told apart by order, where
+        their number matches (an inlined call leaves none of its own)."""
+        block = self.blocks[number]
+        text, spanned, spanned_line = block.statements[index]
+        if index != len(block.statements) - 1:
+            return False
+        if spanned == file:
+            span = _span(block, index)
+            if spanned_line != line or span is None or span[1] != line:
+                return False
+            low, high = facts.to_bytes(span[0]), facts.to_bytes(span[2])
+        elif facts.known:
+            low = high = None
+        else:
+            return False
+
+        def columns(found):
+            # Its own (within its span), or a macro's on the line it is collapsed onto.
+            return any(c in facts.macros or low is not None and low <= c <= high for c in found)
+
+        chain = self._ir_chain(number, facts.function)
+        if chain is None:
+            return False
+        label, members = chain
+        calls, branches = facts.function.events.get(label, ((), ()))
+        if _call(block, index) or _DROP.match(text):
+            if "intrinsics::" in text or columns(facts.inlined):
+                return False
+            callers = [
+                member
+                for member in members
+                if _call(self.blocks[member], len(self.blocks[member].statements) - 1)
+                or _DROP.match(self.blocks[member].terminator)
+            ]
+            if len(callers) != len(calls):
+                return False
+            found = calls[callers.index(number)]
+        elif _BRANCHES.match(text):
+            if members[-1] != number or len(branches) != 1:
+                return False
+            found = branches[0]
+        else:
+            return False
+        return found[0] == line and columns({found[1]})
+
+    def _ir_chain(self, number, function):
+        """(label, [MIR blocks in it, in order]) of the IR block holding ``number``."""
+        predecessors, labeled = self.predecessors(), function.labeled()
+        head = number
+        for _ in range(4096):
+            if head in labeled:
+                break
+            froms = predecessors.get(head, set())
+            if len(froms) != 1:
+                return None
+            (head,) = froms
+        else:
+            return None
+        members = [head]
+        while (target := _merge_target(self, function, members[-1], predecessors)) is not None:
+            if target in members or len(members) > 4096:
+                return None
+            members.append(target)
+        if number not in members:
+            return None
+        return ("start" if head == 0 else f"bb{head}"), members
+
+    def _sure_end(self, number, lexical, line, file, facts):
+        block = self.blocks.get(number)
+        if block is None or not block.statements:
+            return False
+        index = len(block.statements) - 1
+        return self.lexical(_scope(block, index)) == lexical and self._sure(
+            number, index, line, file, facts
+        )
+
+    def _could_be(self, number, index, line, file, facts):
+        """True if the stop's column can be that of statement ``index``'s code."""
+        block = self.blocks[number]
+        text, spanned, spanned_line = block.statements[index]
+        column = facts.column
+        if column in facts.macros:
+            return True
+        if spanned != file:
+            # Another file's code is collapsed onto a macro's path on the line.
+            return not facts.known
+        span = _span(block, index)
+        if span is None:
+            return True
+        start = facts.to_bytes(span[0]) if spanned_line == line else 1
+        if _call(block, index):
+            return start <= column and (span[1] > line or column <= facts.to_bytes(span[2]))
+        return spanned_line == line and column == start
 
     def used_ahead(self, local, start):
         """True if ``local`` is used on some path from ``start`` ((block, index): before
@@ -335,6 +472,18 @@ class Body:
                 for number in _DIRECT_BORROW.findall(text)
             }
         return self._direct
+
+    def _written_through(self):
+        """Locals borrowed `&mut` or raw somewhere (`&mut _3`, `&raw const _3`): what
+        they hold can change by a write no assignment of their own shows."""
+        if self._writable is None:
+            self._writable = {
+                int(number)
+                for block in self.blocks.values()
+                for text, _, _ in block.statements
+                for number in _WRITABLE_BORROW.findall(_STRING.sub('""', text))
+            }
+        return self._writable
 
     def visible_scopes(self, line, path):
         """The scopes of the statements on ``line`` of the frame's source ``path``, and
@@ -562,6 +711,8 @@ def _max_local(block):
 def _event(text, local):
     """What ``text`` does to ``local``: "use" (reads it), "end" (assigns it whole, or
     ends its storage), or None."""
+    # `const "_3"` names no local.
+    text = _STRING.sub('""', text)
     if text.startswith(f"StorageDead(_{local})"):
         return "end"
     # Drop glue keeps no loan alive (`#[may_dangle]`, a struct without `Drop` holding a
@@ -579,24 +730,66 @@ def _event(text, local):
     return None
 
 
+@dataclass(frozen=True)
+class LineFacts:
+    column: int | None
+    function: object  # the IrFunction
+    inlined: frozenset  # columns of the calls inlined on the line
+    macros: frozenset  # columns where a macro's path starts on the line
+    to_bytes: object  # a column of the line in characters (the MIR's) to bytes (DWARF's)
+    known: bool = True  # the line's text is known: ``macros`` holds all its macros
+
+
+# Where a macro's path starts (`println!(`, `std::vec![`); `if !(x)` too, which only
+# widens what a column can be.
+_MACRO_CALL = re.compile(r"(?<![\w:])((?:\w+::)*\w+)\s*!\s*[(\[{]")
+
+
+def _binding_scopes(body, local):
+    return [b[4] for found in body.bindings.values() for b in found if b[0] == local]
+
+
+def _encloses(body, outer, inner):
+    for _ in range(4096):
+        if inner == outer:
+            return True
+        if inner is None:
+            return False
+        inner = body.scopes.get(inner)
+    return False
+
+
+def _span(block, index):
+    try:
+        return block.spans[index]
+    except IndexError:
+        return None
+
+
+def _call(block, index):
+    """True if statement ``index`` is the block's terminator and a call."""
+    if index != len(block.statements) - 1 or "->" not in block.terminator:
+        return False
+    return not re.match(
+        r"(?:drop|assert|switchInt|goto|falseEdge|falseUnwind|yield)\b", block.terminator
+    )
+
+
+def _target(block):
+    """The block a call or drop returns to, if any. A lone `-> bbN` is a drop's return
+    (in cleanup code) but a diverging call's unwind."""
+    edges = block.terminator.rpartition("->")[2]
+    if found := _RETURN_EDGE.search(edges):
+        return int(found[1])
+    found = re.fullmatch(r" bb([0-9]+);", edges)
+    return int(found[1]) if found and _DROP.match(block.terminator) else None
+
+
 def _scope(block, index):
     try:
         return block.scopes[index]
     except IndexError:
         return None
-
-
-def _emits_code(text, types):
-    """True if the statement surely leaves an instruction at opt-level 0: an assignment
-    of a value that is not zero-sized (`()`, a closure, a fn item, `PhantomData`, a unit
-    struct's literal names no local)."""
-    found = _WHOLE_ASSIGNMENT.match(text) or _PART_ASSIGNMENT.match(text)
-    if not found or "->" in text or _SPAN_ONLY.match(text):
-        return False
-    kind = types.get(int(found[1]))
-    if kind is None or _ZERO_SIZED.search(kind):
-        return False
-    return bool(_MENTIONED.search(found[2]) or re.match(r"const -?[0-9]", found[2]))
 
 
 def _harmless(text, borrowed):
@@ -689,6 +882,8 @@ def parse_body(text):
         if block is None and (scope := _SCOPE.match(line)):
             body.scopes[int(scope[1])] = opened_scopes[-1]
             opened_scopes.append(int(scope[1]))
+            if "(inlined " in line:
+                body.inlined_scopes.add(int(scope[1]))
             continue
         if block is None and len(opened_scopes) > 1 and re.fullmatch(r" +\}", line):
             opened_scopes.pop()
@@ -715,6 +910,8 @@ def parse_body(text):
             (statement[1], span[1] if span else None, int(span[2]) if span else None)
         )
         block.scopes.append(int(statement[2]))
+        full = _FULL_SPAN.match(statement[3])
+        block.spans.append((int(full[3]), int(full[4]), int(full[5])) if full else None)
         if span:
             spans.append((span[1], int(span[2])))
             # Every line the span covers: rustc may put the code on a later one (a method
@@ -779,8 +976,12 @@ _META = re.compile(
 )
 _METAFIELDS = {
     key: re.compile(rf'(?:^|, ){key}: ("(?:[^"\\]|\\.)*"|![0-9]+|[0-9]+)')
-    for key in ("name", "linkageName", "scope", "file", "line", "inlinedAt", "filename")
+    for key in ("name", "linkageName", "scope", "file", "line", "column", "inlinedAt", "filename")
 }
+# An instruction that surely leaves code at its location: a call (not an LLVM intrinsic,
+# which may lower to nothing) or a conditional branch.
+_IR_CALL = re.compile(r"^\s*(?:%\S+ = )?(?:tail |musttail |notail )?(?:call|invoke) (?!.*@llvm\.)")
+_IR_BRANCH = re.compile(r"^\s*(?:br i1 |switch )")
 
 
 @dataclass
@@ -791,14 +992,21 @@ class IrFunction:
     blocks: dict  # {label: {line, ...}} for code of this function (not inlined)
     preds: dict  # {label: [label, ...]}
     line: int | None = None  # the DISubprogram's: where the function is declared
+    # {label: ((line, column) of each own call in order, of each conditional branch)}:
+    # a MIR block's call or branch is its terminator. {line: {column}} of the calls LLVM
+    # inlined (where their code's `inlinedAt` chain leaves this function).
+    events: dict = field(default_factory=dict)
+    inlined: dict = field(default_factory=dict)
 
     def labeled(self):
         """MIR blocks that have an IR block of their own (`start` is bb0)."""
-        return {
-            0 if label == "start" else int(label[2:])
-            for label in self.blocks
-            if label == "start" or re.fullmatch(r"bb[0-9]+", label)
-        }
+        if getattr(self, "_labeled", None) is None:
+            self._labeled = {
+                0 if label == "start" else int(label[2:])
+                for label in self.blocks
+                if label == "start" or re.fullmatch(r"bb[0-9]+", label)
+            }
+        return self._labeled
 
     def lines(self):
         return set().union(*self.blocks.values()) if self.blocks else set()
@@ -836,7 +1044,7 @@ def ir_functions(path, files):
     path = Path(path)
     if path.stat().st_size > 256 * 1024 * 1024:
         return {}
-    raw, meta, current = [], {}, None
+    raw, meta, current, pending = [], {}, None, ""
     with path.open(encoding="utf-8", errors="replace") as stream:
         for line in stream:
             if line.startswith("!"):
@@ -870,8 +1078,13 @@ def ir_functions(path, files):
                 continue
             if "@llvm.dbg." in line or line.lstrip().startswith("#dbg_"):
                 continue
+            kind = "c" if _IR_CALL.match(line) else "b" if _IR_BRANCH.match(line) else ""
             if dbg := _DBG.search(line):
-                current[2].setdefault(current[4][0], []).append(dbg[1])
+                # An `invoke`'s location is on its `to label ...` line.
+                current[2].setdefault(current[4][0], []).append((dbg[1], kind or pending))
+                pending = ""
+            elif kind:
+                pending = kind
     wanted = set(files)
     functions = {}
     for hashed, subprogram, blocks, preds, _ in raw:
@@ -881,17 +1094,29 @@ def ir_functions(path, files):
         file = _file(meta, subprogram)
         if file not in wanted:
             continue
-        lines = {}
+        lines, events, inlined = {}, {}, {}
         for label, refs in blocks.items():
             lines[label] = set()
-            for ref in refs:
+            found_events = ([], [])
+            for ref, instruction in refs:
                 kind, location = meta.get(ref, (None, {}))
-                if kind != "DILocation" or "inlinedAt" in location:
+                if kind != "DILocation":
+                    continue
+                if "inlinedAt" in location:
+                    site = _call_site(meta, location)
+                    if site is not None and _file(meta, site.get("scope")) == file:
+                        found = (int(site.get("line") or 0), int(site.get("column") or 0))
+                        inlined.setdefault(found[0], set()).add(found[1])
                     continue
                 if _file(meta, location.get("scope")) != file or not location.get("line"):
                     continue
-                if (number := int(location["line"])) > 0:
+                number = int(location["line"])
+                if number > 0:
                     lines[label].add(number)
+                slot = {"c": 0, "b": 1}.get(instruction)
+                if slot is not None:
+                    found_events[slot].append((number, int(location.get("column") or 0)))
+            events[label] = (tuple(found_events[0]), tuple(found_events[1]))
         parent = meta.get(fields.get("scope"), (None, {}))[1].get("name")
         functions[hashed] = IrFunction(
             re.sub(r"<.*>$", "", fields.get("name", "")),
@@ -900,8 +1125,23 @@ def ir_functions(path, files):
             lines,
             preds,
             int(fields["line"]) if str(fields.get("line", "")).isdigit() else None,
+            events,
+            inlined,
         )
     return functions
+
+
+def _call_site(meta, location):
+    """The DILocation in the function itself that inlined code at ``location`` was called
+    from: the last of its `inlinedAt` chain."""
+    for _ in range(256):
+        parent = location.get("inlinedAt")
+        if parent is None:
+            return location
+        kind, location = meta.get(parent, (None, {}))
+        if kind != "DILocation":
+            return None
+    return None
 
 
 def _file(meta, scope):
@@ -1072,29 +1312,56 @@ class OwnedLocals:
         local = self._local(site[0], variable_name, line, path)
         return local is not None and self._initialized(site, local, line)
 
-    def reference_valid(self, hashed, variable_name, line, path, breakpoint=False):
+    def reference_valid(self, hashed, variable_name, line, path, breakpoint=False, column=None):
         """For the frame's local ``variable_name`` whose type borrows (a reference, `&str`,
         a tuple, `Vec` or closure holding one, a raw pointer): True if what it points into
         is shown to stand at ``line`` of ``path``, False if not (#110), None if this does
         not apply (another type, the site or the local not understood). ``breakpoint``:
-        the stop is a line breakpoint's, not a step's or a pause's.
+        the stop is a line breakpoint's, at ``column`` (lldb-dap's, in bytes) if known.
 
         True where, from every place the stop can be on the line, the code still uses it
         ahead, or used it last with nothing since that can move, drop or write (no call,
         no drop): the borrow checker keeps what it borrows alive and unchanged until its
         last use. Past a call or drop after its last use, what it pointed into may be
         moved, dropped or reallocated, which no simpler reading of the MIR can rule out
-        (interior mutability, `&mut` aliases, loops), so then it is False. A raw pointer keeps no
-        borrow, so it is False (one inside a tuple reads with the tuple). A fn pointer, a reference argument never reassigned (its
-        target outlives the call) and a local only ever assigned constants (`"text"`, a
-        promoted `&[1, 2]`) are True; a value not yet assigned (its declaration line) is
-        False."""
+        (interior mutability, `&mut` aliases, loops), so then it is False. Also True: a
+        reference only ever made into a shared reference argument (the caller's loan
+        freezes it for the call) or into a variable whose scope encloses its own and
+        that is initialized at the stop (it points at that variable's storage), a fn
+        pointer, a reference argument never reassigned (its target outlives the call),
+        and a local only ever assigned constants (`"text"`, a promoted `&[1, 2]`); a
+        local never borrowed itself, for the last two. A raw pointer keeps no borrow, so
+        it is False (one inside a tuple reads with the tuple). A value not yet assigned
+        (its declaration line) is False. A name bound more than once that the stop
+        cannot tell apart is judged by every binding."""
         site = self._site(hashed, line, path)
         if site is None:
             return None
-        body, function, blocks, shared = site
+        body, function = site[0], site[1]
         local = self._local(body, variable_name, line, path)
-        kind = body.types.get(local) if local is not None else None
+        if local is not None:
+            candidates = [local]
+        else:
+            name, at, declared = str(variable_name).partition(" @ ")
+            bindings = body.bindings.get(name, [])
+            if at:
+                file, _, number = declared.rpartition(":")
+                bindings = [b for b in bindings if Path(b[1]).name == file and str(b[2]) == number]
+            bindings = body.in_scopes(bindings, self._visible(body, line, path))
+            candidates = [b[0] for b in bindings]
+        facts = self._facts(function, line, column) if breakpoint else None
+        verdicts = [self._judge(site, candidate, line, facts) for candidate in candidates]
+        if False in verdicts:
+            return False
+        if verdicts and all(verdict is True for verdict in verdicts):
+            return True
+        return None
+
+    def _judge(self, site, local, line, facts):
+        body, function, blocks, _ = site
+        if local is None:
+            return None
+        kind = body.types.get(local)
         if kind is None or not _BORROWING.search(kind):
             return None
         if _FN_POINTER.match(kind):
@@ -1105,21 +1372,95 @@ class OwnedLocals:
         if _RAW_POINTER.match(kind.lstrip("[")):
             return False
         assigned = body._assignments().get(local, [])
-        if local in body.arguments and kind.startswith("&") and not assigned:
+        # Written through a `&mut` to it (`*p = owned.as_str()`), it holds what no
+        # assignment of its own shows.
+        free = local not in body._written_through()
+        if free and local in body.arguments and kind.startswith("&") and not assigned:
             return True
-        if assigned and all(value.startswith("const ") for value in assigned):
+        if free and assigned and all(value.startswith("const ") for value in assigned):
             return True
         file = function.file
         foreign = may_invoke_macro(self.texts.get(file), line)
-        positions = body.stop_positions(blocks, line, file, foreign, breakpoint)
+        positions = body.stop_positions(blocks, line, file, foreign, facts, site[3])
         if not positions:
             return None
         # Not yet assigned (its declaration line), it holds whatever its slot last held.
         if not self._initialized(site, local, line):
             return False
+        if free and assigned and all(self._frozen(site, local, value, line) for value in assigned):
+            return True
         return all(
             body.used_ahead(local, position) or body.used_before(local, position)
             for position in positions
+        )
+
+    def _frozen(self, site, local, value, line):
+        """True if ``local`` assigned ``value`` points where nothing can move or free
+        while it is in scope: into what a shared reference argument (never reassigned or
+        borrowed) points at, or at a variable (or a field or element of it) declared in a
+        scope enclosing its own and initialized at the stop."""
+        body = site[0]
+        if value.startswith(("&raw ", "&fake ")):
+            return False
+        if found := re.fullmatch(r"(?:copy|move) _([0-9]+)", value):
+            return self._shared_argument(body, int(found[1]))
+        if not value.startswith("&") or " as " in value:
+            return False
+        place = re.sub(r"\[_[0-9]+\]", "", value[1:].removeprefix("mut "))
+        mentioned = {int(n) for n in _MENTIONED.findall(place)}
+        if len(mentioned) != 1:
+            return False
+        (base,) = mentioned
+        if place.count("(*") == 1 and f"(*_{base})" in place:
+            return self._shared_argument(body, base)
+        if "(*" in place:
+            return False
+        kind = body.types.get(base)
+        if kind is None or _BORROWING.search(kind):
+            return False
+        own = _binding_scopes(body, local)
+        theirs = _binding_scopes(body, base)
+        return (
+            len(own) == 1
+            and len(theirs) == 1
+            and _encloses(body, theirs[0], own[0])
+            and self._initialized(site, base, line)
+        )
+
+    @staticmethod
+    def _shared_argument(body, local):
+        kind = body.types.get(local, "")
+        return (
+            local in body.arguments
+            and kind.startswith("&")
+            and not kind.startswith("&mut ")
+            and local not in body._assignments()
+            and local not in body._written_through()
+        )
+
+    def _facts(self, function, line, column):
+        """What the stop's line holds, for ``stop_positions``: the IR's calls, branches
+        and inlined calls on it, its macros' columns, and the stop's column (bytes), when
+        the source text is known."""
+        text = self.texts.get(function.file)
+        lines = text.split("\n") if isinstance(text, str) else []
+        own = lines[line - 1] if 1 <= line <= len(lines) else None
+
+        def to_bytes(character):
+            if own is None:
+                return character
+            return len(own[: max(character - 1, 0)].encode("utf-8")) + 1
+
+        macros = frozenset(
+            to_bytes(found.start(1) + 1) for found in _MACRO_CALL.finditer(own or "")
+        )
+        return LineFacts(
+            column if own is not None and type(column) is int and column > 0 else None,
+            function,
+            frozenset(function.inlined.get(line, ())),
+            macros,
+            to_bytes,
+            own is not None,
         )
 
     def _site(self, hashed, line, path):

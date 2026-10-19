@@ -7,7 +7,9 @@ import pytest
 
 from peeky.rust_mir import (
     IrFunction,
+    LineFacts,
     OwnedLocals,
+    _event,
     _segments,
     frame_shape,
     ir_functions,
@@ -203,6 +205,23 @@ def test_ir_functions_record_the_lines_of_each_block(tmp_path):
     # Line 0, inlined code and debug intrinsics are not code of this function's lines.
     assert function.blocks == {"start": {3}, "bb1": {4}, "panic": {4}, "bb2": {5}}
     assert function.preds["panic"] == ["bb1"] and function.mir_blocks(4) == {1}
+    # #110: each IR block's first own call and conditional branch, and where LLVM
+    # inlined a call (the inlined code's `inlinedAt`): debug intrinsics are no calls.
+    assert function.events == {
+        "start": (((3, 13),), ()),
+        "bb1": ((), ((4, 5),)),
+        "panic": (((4, 5),), ()),
+        "bb2": ((), ()),
+    }
+    assert function.inlined == {4: {5}}
+    # An `invoke` (here through a pointer) has its location on its `to label` line.
+    path.write_text(
+        IR.replace(
+            "  ret void, !dbg !24\n",
+            "  %r = invoke ptr %f(ptr %x)\n          to label %bb2 unwind label %cleanup, !dbg !25\n",
+        ).replace("!24 = ", "!25 = !DILocation(line: 5, column: 9, scope: !10)\n!24 = ")
+    )
+    assert ir_functions(path, ["src/main.rs"])["h0123456789abcdef"].events["bb2"][0] == ((5, 9),)
 
 
 def test_a_function_is_proven_only_against_a_single_matching_body(tmp_path):
@@ -851,26 +870,82 @@ def test_a_reference_reads_while_used_ahead_or_just_used_on_the_line():
     assert body._borrowed() == {2}
 
 
-def test_a_breakpoint_stops_only_where_its_line_starts_in_each_scope():
+def facts(column=None, firsts=None, inlined=(), macros=()):
+    # ``firsts``: {label: (call, branch)}; every MIR block has an IR block of its own.
+    events = {
+        label: (() if call is None else (call,), () if branch is None else (branch,))
+        for label, (call, branch) in (firsts or {}).items()
+    }
+    labels = {"start", *(f"bb{n}" for n in range(1, 20))}
+    function = IrFunction("f", None, "src/main.rs", {label: set() for label in labels}, {})
+    function.events = events
+    return LineFacts(column, function, frozenset(inlined), frozenset(macros), int)
+
+
+def test_a_breakpoint_stops_only_where_its_line_starts_in_each_lexical_block():
     # #110: rustc lays out a block after the block first branching to it, so where a line
-    # continues from its own branch (an overflow check) in the same scope, LLDB puts no
-    # breakpoint location: only steps and pauses stop there.
+    # continues from its own branch (an overflow check the IR shows) in the same lexical
+    # block, LLDB puts no breakpoint location: only steps and pauses stop there.
     body = parse_body(CONTINUED)
-    assert body.stop_positions({0, 1}, 3, "src/main.rs", False, True) == [(0, 2)]
-    every = body.stop_positions({0, 1}, 3, "src/main.rs", False, False)
+    every = body.stop_positions({0, 1}, 3, "src/main.rs", False)
     assert every == [(0, 2), (0, 3), (0, 4), (1, 0)]
+    branch = facts(firsts={"start": (None, (3, 5))})
+    assert body.stop_positions({0, 1}, 3, "src/main.rs", False, branch) == [(0, 2), (0, 3), (0, 4)]
+    # Unconfirmed by the IR (its IR block's first branch elsewhere), the next block may
+    # be first.
+    elsewhere = facts(firsts={"start": (None, (4, 5))})
+    assert (1, 0) in body.stop_positions({0, 1}, 3, "src/main.rs", False, elsewhere)
+    assert (1, 0) in body.stop_positions({0, 1}, 3, "src/main.rs", False, facts())
+    # The stop's column picks the statements whose code it can be.
+    at_load = facts(column=12, firsts={"start": (None, (3, 5))})
+    assert body.stop_positions({0, 1}, 3, "src/main.rs", False, at_load) == [(0, 2)]
+    # A macro's column on the line can be any statement's.
+    in_macro = facts(column=5, firsts={"start": (None, (3, 5))}, macros={5})
+    assert body.stop_positions({0, 1}, 3, "src/main.rs", False, in_macro) == [
+        (0, 2),
+        (0, 3),
+        (0, 4),
+    ]
+    # A column no statement can have tells nothing.
+    nowhere = facts(column=40, firsts={"start": (None, (3, 5))})
+    assert body.stop_positions({0, 1}, 3, "src/main.rs", False, nowhere) == [(0, 2), (0, 3), (0, 4)]
     item = body.local("item")
     assert not body.used_ahead(item, (1, 0))
     assert all(body.used_ahead(item, at) or body.used_before(item, at) for at in every)
-    # In another scope the continuation is a lexical block of its own: LLDB stops there.
-    body.blocks[1].scopes[0] = 2
-    assert body.stop_positions({0, 1}, 3, "src/main.rs", False, True) == [(0, 2), (1, 0)]
 
-    # A call the line's first code: if inlined (`#[inline(always)]`, `Option::unwrap`),
-    # the line's first address is after it.
-    called = parse_body(OWNERS)
-    assert called.stop_positions({1}, 5, "src/main.rs", False, True) == [(1, 0), (1, 2)]
-    assert called.stop_positions({0}, 3, "src/main.rs", False, True) == [(0, 2)]
+
+def test_an_inlined_call_s_result_is_stored_after_its_body():
+    # #110: LLVM inlines `#[inline(always)]` callees even at opt-level 0; the caller's
+    # code after the inlined body is where its line's breakpoint may be.
+    body = parse_body(OWNERS)
+    inlined = facts(column=18, inlined={20})
+    assert body.stop_positions({1}, 5, "src/main.rs", False, inlined) == [(1, 1), (2, 0)]
+    real = facts(column=18, firsts={"bb1": ((5, 18), None)})
+    assert body.stop_positions({1}, 5, "src/main.rs", False, real) == [(1, 1)]
+    # Steps and pauses can stop after any call of the line.
+    assert body.stop_positions({1}, 5, "src/main.rs", False) == [(1, 0), (1, 1), (2, 0)]
+    # A call's result is stored at its target's start (an `invoke`'s).
+    assert body.stop_positions({2}, 5, "src/main.rs", False, real) == [(2, 0)]
+    # Code of the line no statement explains can be anywhere in its block.
+    assert body.stop_positions({0}, 9, "src/main.rs", False, real) == [
+        (0, 0),
+        (0, 1),
+        (0, 2),
+        (0, 3),
+    ]
+
+
+def test_a_statement_s_lexical_block_is_its_nearest_scope_declaring_a_variable():
+    body = parse_body(OWNERS)
+    body.scopes.update({2: 1, 3: 2})
+    assert body.lexical(3) == 1 and body.lexical(1) == 1 and body.lexical(0) == 0
+    body.inlined_scopes.add(2)
+    assert body.lexical(3) == 2
+
+
+def test_string_constants_name_no_local():
+    assert _event('_5 = <String as From<&str>>::from(const "_3") -> bb1;', 3) is None
+    assert _event("_5 = copy _3;", 3) == "use"
 
 
 CONTINUED = "\n".join(
