@@ -10,6 +10,7 @@ source lines between classes remain explicit; breakpoint selection must reject
 ambiguous owners. No nested/anonymous name is guessed from a '$' suffix.
 """
 
+import re
 from pathlib import Path
 
 MAX_CLASS_BYTES = 4 * 1024 * 1024
@@ -17,6 +18,8 @@ MAX_TOTAL_BYTES = 64 * 1024 * 1024
 MAX_ENTRIES = 16384
 MAX_CLASSES = 4096
 MAX_SOURCES = 4096
+# A name a Peeky selector can write (the probe's selector grammar).
+_SELECTABLE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,127}")
 
 
 class _Reader:
@@ -73,8 +76,10 @@ def _modified_utf8(raw):
     return b"".join(units).decode("utf-16-be", errors="surrogatepass")
 
 
-def _class_metadata(data, shared=None):
-    """(binary internal name, SourceFile, sorted executable lines). With ``shared`` (a
+def _class_metadata(data, shared=None, scopes=None):
+    """(binary internal name, SourceFile, sorted executable lines). With ``scopes`` (a
+    list), also appends (method, descriptor, first line, last line, local names) for each
+    method with code, its names from the LocalVariableTable (`javac -g`). With ``shared`` (a
     dict), also records {line: {"stops": method, "never": [methods]}} for lines that
     several methods of the class share (a lambda body on its enclosing method's line, a
     static initializer's lambda, nested lambdas, a field initializer in each
@@ -186,10 +191,22 @@ def _class_metadata(data, shared=None):
                     raise ValueError("Invalid exception-table location")
                 if catch:
                     constant(catch, 7)
-            method_lines = {}
+            method_lines, names, table = {}, [], False
             for nested_name, nested in attrs(body):
                 if nested_name in {"Code", "SourceFile", "SourceDebugExtension"}:
                     raise ValueError("Unsupported nested debug metadata")
+                if nested_name == "LocalVariableTable" and scopes is not None:
+                    table = True
+                    for _ in range(nested.u2()):
+                        start, length = nested.u2(), nested.u2()
+                        name = utf(nested.u2())
+                        utf(nested.u2())
+                        slot = nested.u2()
+                        if start + length > code_length:
+                            raise ValueError("Invalid local variable location")
+                        names.append((slot, start, name))
+                    nested.end()
+                    continue
                 if nested_name != "LineNumberTable":
                     continue
                 for _ in range(nested.u2()):
@@ -204,11 +221,41 @@ def _class_metadata(data, shared=None):
             if not method_lines:
                 raise ValueError("Missing executable line debug information; compile with -g")
             lines.update(method_lines.values())
+            if scopes is not None:
+                # javac -g leaves the table out only where there is no name to list (a
+                # static method without parameters or locals); `this` or a parameter
+                # without it means the class was compiled without local names.
+                if not table and (not flags & 0x0008 or not descriptor.startswith("()")):
+                    raise ValueError(
+                        "the classes have no local variable names (LocalVariableTable); "
+                        "compile with javac -g"
+                    )
+                # The line at pc 0 starts the method. javac copies every field
+                # initializer's line into each constructor, wherever the field is
+                # declared, while a constructor ends at its last instruction (the
+                # `return` at its closing brace): only lines between the two are its own.
+                first = method_lines[min(method_lines)]
+                last = method_lines[max(method_lines)] if method_name == "<init>" else None
+                found = [
+                    line
+                    for line in method_lines.values()
+                    if line >= first and (last is None or line <= last)
+                ]
+                # `this` and the parameters first (the lowest slots), then locals; only
+                # names a selector can write (not `this$0`).
+                ordered = [
+                    name
+                    for name in dict.fromkeys(name for _, _, name in sorted(names))
+                    if _SELECTABLE.fullmatch(name)
+                ]
+                scopes.append((method_name, descriptor, first, max(found), ordered, flags, found))
             for line in sorted(set(method_lines.values())):
                 # Class-file order, which is the order java-debug considers them in.
                 line_methods.setdefault(line, []).append((method_name, descriptor))
         if not flags & (0x0100 | 0x0400) and code_count != 1:
             raise ValueError("Missing Code attribute")
+    if scopes is not None:
+        _own_constructor_lines(scopes)
     source = None
     for name, body in attrs(reader):
         if name == "SourceDebugExtension":
@@ -233,6 +280,52 @@ def _class_metadata(data, shared=None):
     if not source or not source.endswith(".java") or any(c in source for c in "/\\\x00"):
         raise ValueError("Missing or unsupported SourceFile debug information")
     return internal, source, sorted(lines)
+
+
+def _own_constructor_lines(scopes):
+    """A constructor without a body of its own (implicit, or an anonymous class's), and a
+    static initializer, end on their last field initializer: end them before the next
+    method declared after them, so they never span methods between fields. Synthetic
+    methods (a lambda) do not count."""
+    starts = sorted(first for _, _, first, _, _, flags, _ in scopes if not flags & 0x1000)
+    for index, (method, descriptor, first, last, names, flags, found) in enumerate(scopes):
+        following = [start for start in starts if start > first]
+        if method in ("<init>", "<clinit>") and following:
+            own = [line for line in found if line < following[0]]
+            last = max(own) if own else last
+        scopes[index] = (method, descriptor, first, last, names)
+
+
+def java_scopes(mapping, classes_dir, workspace, limit=300):
+    """Each method's line span and the names it can see (`this`, parameters, locals),
+    as `describe` lists them for other languages: from the prepared class files."""
+    workspace = Path(workspace).resolve()
+    found = []
+    for binary, entry in mapping["classes"].items():
+        internal = binary.replace(".", "/")
+        path = Path(entry.get("class_file") or Path(classes_dir) / f"{internal}.class")
+        methods = []
+        _class_metadata(path.read_bytes(), scopes=methods)
+        source = Path(entry["path"]).resolve()
+        source = (
+            source.relative_to(workspace).as_posix()
+            if source.is_relative_to(workspace)
+            else source.name
+        )
+        owner = internal.rsplit("/", 1)[-1]
+        for method, _, first, last, names in methods:
+            found.append(
+                {
+                    "scope": f"{owner}.{method}",
+                    "source": source,
+                    "lines": [first, last],
+                    "names": names,
+                }
+            )
+    found.sort(key=lambda scope: (scope["source"], scope["lines"][0], scope["scope"]))
+    if len(found) > limit:
+        found = found[:limit] + [{"omitted": len(found) - limit}]
+    return found
 
 
 def _regular_inside(path, root):

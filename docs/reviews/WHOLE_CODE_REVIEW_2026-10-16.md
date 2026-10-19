@@ -682,3 +682,21 @@ Checked and found sound:
 The verification (56d6bcd) found nothing wrong.
 - **Pinned toolchain:** with a failing `rustc` first on PATH, the generator and the test still build with the pinned 1.96.0 and produce the same 909 ranges; the fake is never called.
 - **Hygiene and speed:** the test builds only in its own temporary directory, leaves nothing behind (also on timeout), and takes 0.1–0.3 s.
+
+## Review of Java scopes in describe (#96, 8b95834)
+
+Checked and found sound:
+- **Strictness:** the class reader stays strict, and nothing changes when scopes are not asked for.
+- **Failures:** a malformed table makes `scopes_unavailable`, never a failed `describe`.
+- **Sources:** `source` is right for launched and attached targets.
+
+| # | Finding | Severity | Disposition |
+| --- | --- | --- | --- |
+| 1 | Classes compiled without local names (plain `javac` is `-g:source,lines`, as attached Gradle builds may be) listed every method with no names (`-`), while the debugger shows `this` and `arg0`. | Medium | **Fixed:** scopes are unavailable with the reason ("compile with javac -g"). javac -g itself leaves the table out of static methods without parameters or locals (`values()`, a lambda without arguments, `<clinit>`), so only a method with `this` or a parameter and no table counts. Test: `test_classes_without_local_names_say_so`, against real `javac`. |
+| 2 | A constructor's span started at the first field initializer, whose lines javac copies into every constructor, so `X(int)` claimed lines 7–26 and its parameter across unrelated members. | Medium (display) | **Fixed:** a method starts at its line for pc 0 (a constructor's own line). Test: `test_scopes_list_selectable_names_and_constructor_spans` (`X(int)` spans 11–13). |
+| 3 | Names no selector can write (`this$0`, `größe`) were listed. | Low | **Fixed:** only names the selector grammar accepts are listed. |
+| 4 | (verification of 6bbc7fc) Field initializers and initializer blocks declared *below* a constructor still stretched its span (`G(int)` 8–17, ending on a line it never stops at). The verification also found nothing else wrong: no `-g` class is wrongly refused (interface static and default methods, abstract and native methods, enum and record members, bridges, method references, `access$NNN`), and pc 0 starts loops, try/finally and switch correctly. | Medium (display) | **Fixed:** a constructor ends at its last instruction (the `return` at its closing brace), so only lines between its first and last are its own. Test: the same test, with a field and an initializer block below the constructors. |
+| 5 | (verification of de1ff91) The fields-below case is fixed, and explicit constructors are exact or narrower in every case tried: ending in `throw`, try/catch, `this(...)`, try/finally, record compact, enum, local class. But an implicit constructor (no declared constructor, or an anonymous class) still ended on its last field initializer, spanning methods declared between fields. Pre-existing. | Low (display) | **Fixed:** a constructor's span ends before the next non-synthetic method declared after it (a lambda in a constructor is synthetic and does not count). Test: `test_an_implicit_constructor_never_spans_the_methods_between_fields`. |
+| 6 | (verification of 9c694f3) Nothing wrong: comparing the old and new results over nine sets of classes, only implicit constructors changed. Constructors with lambdas, method references, enum and String switches, local and anonymous classes keep their own lines. Optional: a static initializer (`<clinit>`) spanned a method between static fields in the same way. | Low (display) | **Fixed:** the same bound applies to `<clinit>`. Test: the implicit-constructor test, with static fields around `m`. |
+
+The final verification found nothing wrong.

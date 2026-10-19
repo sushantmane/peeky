@@ -121,6 +121,9 @@ def test_attached_session_close_detaches_and_the_jvm_finishes_normally(
     assert main(["describe", str(root), "--config", str(config), "--at", SOURCE, "--json"]) == 0
     manifest = json.loads(capsys.readouterr().out)
     assert line in manifest["breakpoint_lines"][SOURCE]
+    # #91: the attached classes' own LocalVariableTable names each method's locals.
+    main_scope = next(s for s in manifest["scopes"] if s["scope"] == "PaginationBug.main")
+    assert {"args", "page", "pageSize", "items", "start", "end"} <= set(main_scope["names"])
     assert main(["session", "close"]) == 0
     output = process.stdout.read()
     assert process.wait(timeout=30) == 0 and "PAGE:[40, 50, 60]" in output

@@ -396,6 +396,14 @@ class JavaSession:
             result.setdefault(name, set()).update(entry["lines"])
         return {name: sorted(lines) for name, lines in result.items()}
 
+    def function_scopes(self):
+        """Each method's line span and the names it can see, for `describe`."""
+        from peeky.java_metadata import java_scopes
+
+        self.assert_current()
+        workspace = Path(self.prepared.workspace)
+        return java_scopes(self.mapping, workspace / "classes", workspace)
+
     def breakpoint_notes(self, program, breakpoints):
         """Warnings for breakpoint lines that several methods share: java-debug stops in
         the first one only (class-file order), never in the others."""
