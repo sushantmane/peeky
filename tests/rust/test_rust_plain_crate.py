@@ -816,6 +816,27 @@ fn plain_array() -> i64 {
     n + reuse.x // DROPPED_PLAIN_ARRAY
 }
 
+fn rebound(n: i64) -> i64 {
+    let mut total = n;
+    {
+        let v = Box::new(Pt { x: 1, y: 2 });
+        total += v.x;
+    }
+    {
+        let v = 5i64;
+        total += std::hint::black_box(v); // REBOUND_INT
+    }
+    if total > 0 {
+        let a = [Box::new(Pt { x: 1, y: 2 }), Box::new(Pt { x: 3, y: 4 })];
+        total += a[0].x;
+    }
+    if total > 0 {
+        let a = [21i64, 22, 23];
+        total += a[1]; // REBOUND_ARRAY
+    }
+    total
+}
+
 fn make() -> Box<dyn Debug> {
     Box::new(1u8)
 }
@@ -886,7 +907,7 @@ fn main() {
     }
     let tables: [fn(*const str) -> u8; 2] = [named, named];
     let boxes = [Box::new(Pt { x: 1, y: 2 }), Box::new(Pt { x: 3, y: 4 })];
-    println!("{} {}", thin_arrays(boxes), plain_array());
+    println!("{} {} {}", thin_arrays(boxes), plain_array(), rebound(1));
     println!("{} {}", fat_params(Box::new(takes as fn(*const [u8])), Box::new(tables)), factories());
     println!("{} {} {:?} {} {}", a, b, r, closures(&[1, 2]), exported(&Pt { x: 10, y: 1 }, &[1, 2]));
 }
@@ -951,6 +972,12 @@ def test_generic_boxes_are_gated_and_non_owning_values_read(plain, capsys):
     assert not any(row.get("view") for row in rows), rows
     assert "px" in str(rows[3].get("value")), rows
     assert "not shown" not in str(rows[4].get("value")), rows
+    # A Box bound to the same name in a sibling block does not hide an integer or an
+    # array of integers (verification of #103).
+    for marker, capture, value in (("REBOUND_INT", "v", "5"), ("REBOUND_ARRAY", "a[1]", "22")):
+        at = f"src/main.rs:{line_of(BOX_GENERIC, '// ' + marker)}"
+        code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", capture, "--quiet")
+        assert result["rows"][0].get("value") == value, (marker, result["rows"])
     at = f"src/main.rs:{line_of(BOX_GENERIC, '// LIVE_ARRAY')}"
     code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "arr[0].x", "--quiet")
     assert result["rows"][0].get("value") == "1", result["rows"]

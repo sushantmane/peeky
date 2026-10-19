@@ -1023,14 +1023,23 @@ class RustSession(NativeSession):
             plain = bool(types) and all(_NON_OWNING.match((t or "").lstrip("[")) for t in types)
             # LLDB names a wide Box (`Box<str>`, `Box<[T]>`, `Box<dyn Trait>`) itself, even
             # where the MIR says only `T`; a reference to one (`&Box<str>`) is not owning.
-            owning = any(
-                re.match(r"\[*(?:std::boxed::|alloc::boxed::)?Box<", t or "") for t in types
-            ) or (_is_wide_box(variable.get("type")) and not plain)
+            kind = variable.get("type")
+            wide = _is_wide_box(kind)
+            # A Box among a name's bindings counts only for a value that could be one (a
+            # pointer, or a wide Box): another binding of the name in a sibling block, arm
+            # or loop (`v: i64`, `a: [i64; 3]`) is not.
+            could_be_box = kind is None or wide or "*" in _without_generics(kind)
+            owning = (
+                could_be_box
+                and any(
+                    re.match(r"\[*(?:std::boxed::|alloc::boxed::)?Box<", t or "") for t in types
+                )
+            ) or (wide and not plain)
             # What LLDB shows as a data pointer, or an array of them (`Pt *`, `unsigned char
             # (*)[8]`, `long (**)()`, `Pt *[2]`), is read through only when the MIR says
             # every binding is a reference, a raw pointer or a fn pointer (or an array of
             # them): a generic `T`, `Self` or `impl Trait` may be a Box.
-            pointer = _holds_data_pointers(variable.get("type"))
+            pointer = _holds_data_pointers(kind)
             if (owning or (pointer and not plain)) and not (
                 innermost
                 and hashed
