@@ -762,11 +762,11 @@ def test_a_version_3_store_upgrades_num_in_capture_order(store):
         "INSERT INTO runs (run_id, started_at, program, line, status) "
         "VALUES (1, 't', 'a.py', 8, 'completed')"
     )
-    for value in ("600", "1.5", "7"):
+    for value in ("600", "1.5", "7", "9007199254740993", "None"):
         connection.execute(
             "INSERT INTO captures (run_id, hit, phase, selector, value, num, unavailable) "
             "VALUES (1, 1, 'observed', 'x', ?, ?, 0)",
-            (value, float(value)),
+            (value, None if value == "None" else float(value)),
         )
     connection.execute("PRAGMA user_version = 3")
     connection.commit()
@@ -776,6 +776,9 @@ def test_a_version_3_store_upgrades_num_in_capture_order(store):
         ("600", 600, "integer"),
         ("1.5", 1.5, "real"),
         ("7", 7, "integer"),
+        # Review of #82: recomputed from `value`, not carried over from the lossy REAL.
+        ("9007199254740993", 9007199254740993, "integer"),
+        ("None", None, "null"),
     ]
     connection = sqlite3.connect(store)
     assert connection.execute("PRAGMA user_version").fetchone()[0] == evidence.SCHEMA_VERSION
@@ -788,3 +791,18 @@ def test_a_version_3_store_upgrades_num_in_capture_order(store):
         evidence.run_query(store, "hits", {"run": 2, "selector": "start"})["rows"][1]["value"]
         == "6"
     )
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root writes anywhere")
+def test_an_upgrade_blocked_by_a_read_only_directory_says_so(store):
+    evidence.record(store, result())
+    connection = sqlite3.connect(store)
+    connection.execute("PRAGMA user_version = 3")
+    connection.commit()
+    connection.close()
+    store.parent.chmod(0o500)
+    try:
+        with pytest.raises(ValueError, match="needs a one-time upgrade.*not writable"):
+            evidence.query(store, "SELECT 1")
+    finally:
+        store.parent.chmod(0o700)

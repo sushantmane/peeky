@@ -83,8 +83,9 @@ TABLES = {
             "selector": "Selector as requested, e.g. request.page or items[0]",
             "type": "Type as the debugger reports it",
             "value": "Value as the debugger displays it; NULL when there is none",
-            "num": "value as a number when it is one, else NULL (use for >, <, SUM, AVG): an "
-            "exact INTEGER for an integer that fits 64 bits, else REAL",
+            "num": "value as a number when it is one, else NULL (use for >, <, AVG): an exact "
+            "INTEGER for an integer that fits 64 bits, else REAL. Integer division truncates "
+            "(write num * 1.0 / k), and SUM fails past 64 bits (TOTAL(num) does not)",
             "unavailable": "1 when the debugger has no value here (optimized out, not live)",
             "error": "Why there is no value (unknown name, unreadable, ...), else NULL",
             "view": "Qualified value view (e.g. a Rust Option), else NULL",
@@ -165,16 +166,16 @@ _MIGRATIONS = {
         _EVIDENCE_VIEW,
         _LAST_RUN_VIEW,
     ),
-    # Rebuilt in rowid order, which is capture order. NUMERIC stores each integral
-    # REAL as INTEGER; one that already lost precision above 2**53 cannot be restored
-    # (`value` keeps the exact text).
+    # Rebuilt in rowid order, which is capture order; `num` is recomputed from the
+    # exact `value` text (a REAL above 2**53 had already lost digits).
     3: (
         "DROP VIEW IF EXISTS last_run",
         "DROP VIEW IF EXISTS evidence",
         _CAPTURES.format("captures_v4"),
         "INSERT INTO captures_v4 (run_id, hit, phase, line, function, selector, type, value, "
         "num, unavailable, error, view) SELECT run_id, hit, phase, line, function, selector, "
-        "type, value, num, unavailable, error, view FROM captures ORDER BY rowid",
+        "type, value, CASE WHEN num IS NULL THEN NULL ELSE peeky_number(value) END, "
+        "unavailable, error, view FROM captures ORDER BY rowid",
         "DROP TABLE captures",
         "ALTER TABLE captures_v4 RENAME TO captures",
         *_CAPTURE_INDEXES,
@@ -471,6 +472,8 @@ def _ensure(path):
     descriptor = os.open(path, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
     os.close(descriptor)
     connection = _connect(path)
+    # Migrations recompute numbers exactly as a new run would.
+    connection.create_function("peeky_number", 1, _number, deterministic=True)
     try:
         if connection.execute("PRAGMA user_version").fetchone()[0] != SCHEMA_VERSION:
             # Rechecked under the write lock: another process may have just created it.
@@ -494,6 +497,11 @@ def _ensure(path):
             connection.execute("COMMIT")
     except sqlite3.DatabaseError as exc:
         connection.close()
+        if "readonly" in str(exc) and not os.access(path.parent, os.W_OK):
+            raise ValueError(
+                f"Evidence store {path} needs a one-time upgrade, and SQLite writes a journal "
+                f"beside it, but {path.parent} is not writable; make it writable or pass --store"
+            ) from exc
         raise ValueError(
             f"Evidence store {path} is unusable ({exc}); move it aside (a new one is created) "
             "or pass --store"
