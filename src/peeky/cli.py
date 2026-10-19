@@ -1759,7 +1759,7 @@ def _diff(before, after, name):
     return text if len(text) <= 8000 else text[:8000] + "\n... (diff truncated)\n"
 
 
-def _verify_candidate(args, root, program, language, data, source, check, destination):
+def _verify_candidate(args, root, program, language, data, source, check, destination, deadline):
     if language == "python":
         from peeky.agent import digest
         from peeky.agent import verify as run_checker
@@ -1772,7 +1772,10 @@ def _verify_candidate(args, root, program, language, data, source, check, destin
         candidate.parent.mkdir(parents=True, exist_ok=True)
         candidate.write_text(text.replace(args.old, args.new, 1))
         candidate_sha256 = hashlib.sha256(candidate.read_bytes()).hexdigest()
-        result = {**run_checker(check, candidate, root), "candidate": str(candidate)}
+        result = {
+            **run_checker(check, candidate, root, deadline=deadline),
+            "candidate": str(candidate),
+        }
         result["candidate_sha256"] = candidate_sha256
         if digest(source) != original:
             raise RuntimeError("Original source changed during verification")
@@ -1784,11 +1787,18 @@ def _verify_candidate(args, root, program, language, data, source, check, destin
 
     Verification.language = language
     return Verification(adapter_for(language, data), root).candidate(
-        source, check, args.old, args.new, destination
+        source, check, args.old, args.new, destination, deadline=deadline
     )
 
 
+MAX_VERIFY_S = 600
+
+
 def verify(args):
+    started = time.monotonic()
+    if args.timeout is not None and not 0 < args.timeout <= MAX_VERIFY_S:
+        raise ValueError(f"--timeout must be within (0, {MAX_VERIFY_S}] seconds")
+    deadline = None if args.timeout is None else started + args.timeout
     root, program, _, language, data = resolve(args.target, args.at, args.config)
     if language == "java-attach":
         raise ValueError("Attached JVMs cannot verify edits; verify with a fresh build target")
@@ -1799,7 +1809,9 @@ def verify(args):
     args.old, args.new = combine_edits(original, _checked_edit(original, _edit_pairs(args)))
     destination = Path(tempfile.mkdtemp(prefix="peeky-verify-"))
     try:
-        result = _verify_candidate(args, root, program, language, data, source, check, destination)
+        result = _verify_candidate(
+            args, root, program, language, data, source, check, destination, deadline
+        )
         # The reported diff must describe exactly the candidate that was verified.
         expected = original.replace(args.old, args.new, 1).encode()
         if hashlib.sha256(expected).hexdigest() != result.get("candidate_sha256"):
@@ -1811,6 +1823,7 @@ def verify(args):
         if not args.keep:
             shutil.rmtree(destination, ignore_errors=True)
     result.setdefault("stage", "verification")
+    result["seconds"] = round(time.monotonic() - started, 3)
     result["diff"] = _diff(original, original.replace(args.old, args.new, 1), program)
     if args.keep:
         result["kept"] = str(destination)
@@ -1828,7 +1841,10 @@ def verify(args):
 
 
 def _verify_text(result, keep=False):
-    lines = [f"passed: {result['passed']}  stage: {result['stage']}"]
+    lines = [
+        f"passed: {result['passed']}  stage: {result['stage']}"
+        + (f"  seconds: {result['seconds']}" if "seconds" in result else "")
+    ]
     if tests := result.get("tests"):
         lines.extend(_tests_text(tests))
     elif result.get("language") == "rust" and result.get("stage") == "verification":
@@ -1907,7 +1923,15 @@ def _background(argv, command, edits=None):
     job_id = secrets.token_hex(8)
     path = _private_dir("jobs") / job_id
     path.mkdir(mode=0o700)
-    spec = {"id": job_id, "command": command, "argv": argv, "cwd": os.getcwd()}
+    # The job always records JSON, so `job wait` can show it either way (--json or text).
+    spec = {
+        "id": job_id,
+        "command": command,
+        "argv": argv if "--json" in argv else [*argv, "--json"],
+        "json": "--json" in argv,
+        "keep": "--keep" in argv,
+        "cwd": os.getcwd(),
+    }
     if edits:
         # Edit texts are fixed at submission; later changes to --old-file/--new-file
         # cannot change what this job verifies.
@@ -2021,7 +2045,12 @@ def job(args):
             jobs,
             args.json,
             lambda jobs: (
-                "\n".join(f"{j['job']}  {j['command']}  {j['status']}" for j in jobs) or "no jobs"
+                "\n".join(
+                    f"{j['job']}  {j['command']}  {j['status']}"
+                    + (f"  {j['seconds']} s" if "seconds" in j else "")
+                    for j in jobs
+                )
+                or "no jobs"
             ),
         )
         return 0
@@ -2046,11 +2075,33 @@ def job(args):
         return 3
     if state["status"] == "lost":
         raise RuntimeError(f"Job {state['job']} was lost: {state['error']}")
-    # Replay exactly what the foreground command would have printed on each stream.
-    sys.stdout.write((path / "out").read_text())
+    # What the foreground command would have printed on each stream: its JSON with
+    # --json (here or at submission), else its text.
+    spec, out = json.loads((path / "job.json").read_text()), (path / "out").read_text()
+    if args.json or spec.get("json", True):
+        sys.stdout.write(out)
+    else:
+        sys.stdout.write(_job_text(spec, out))
     if (path / "log").is_file():
         sys.stderr.write((path / "log").read_text())
     return state["exit_code"]
+
+
+def _job_text(spec, out):
+    """A finished job's text, rendered from the JSON it recorded."""
+    try:
+        result = json.loads(out)
+    except ValueError:
+        return out
+    if not isinstance(result, dict) or set(result) == {"error"}:
+        # An error printed only to stderr (the log), as in the foreground.
+        return ""
+    text = (
+        _verify_text(result, spec.get("keep", False))
+        if spec["command"] == "verify"
+        else _probe_text(result)
+    )
+    return text + "\n"
 
 
 def main(argv=None, _job=False, _edits=None):
@@ -2280,6 +2331,12 @@ def main(argv=None, _job=False, _edits=None):
         action="store_true",
         help="JSON: include the checker's full descriptor and build manifest",
     )
+    sub.add_argument(
+        "--timeout",
+        type=float,
+        help=f"Fail with TIMEOUT after this many seconds, build included (at most {MAX_VERIFY_S})",
+    )
+    sub.add_argument("--quiet", action="store_true", help="No progress messages (verify has none)")
     background(sub)
     sub = commands.add_parser("job", help="Results of --background probes and verifies")
     actions = sub.add_subparsers(dest="action", required=True)

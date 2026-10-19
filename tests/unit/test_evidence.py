@@ -641,6 +641,7 @@ def test_values_changed_by_an_intervention_rank_after_real_differences(store):
     assert [(r["hit"], r["phase"], r["note"]) for r in rows] == [
         (2, "observed", None),
         (1, "after-set", "intervention only in run b"),
+        (None, None, "the runs made different interventions (--set)"),
     ]
 
 
@@ -834,3 +835,57 @@ def test_java_object_numbers_differ_between_runs_like_addresses(store):
     assert masked == [{"v": "User@1"}]
     masked = evidence.query(store, "SELECT no_addresses('User@1', 'java') AS v")["rows"]
     assert masked == [{"v": "User@…"}]
+
+
+def test_diff_says_when_the_runs_had_different_inputs_or_interventions(store):
+    # Eval 4 (Rust): a candidate compared with a run on other input showed only the edit,
+    # so the input's effect was easy to credit to the edit.
+    evidence.record(store, captured([(1, "observed", "count", "2")], args=["aaabb"]))
+    evidence.record(store, captured([(1, "observed", "count", "1")], args=["aaab"]))
+    rows = evidence.run_query(store, "diff")["rows"]
+    assert [(r["selector"], r["value_a"], r["value_b"]) for r in rows] == [
+        ("count", "2", "1"),
+        ("(args)", '["aaabb"]', '["aaab"]'),
+    ]
+    assert rows[-1]["note"].startswith("the runs had different program arguments")
+    evidence.record(store, result(sets=(("start", "0"),)))
+    evidence.record(store, result())
+    rows = evidence.run_query(store, "diff")["rows"]
+    sets = [r for r in rows if r["selector"] == "(sets)"]
+    assert len(sets) == 1 and sets[0]["value_b"] == "[]" and "start" in sets[0]["value_a"]
+
+
+def test_object_ref_says_which_values_are_the_same_java_object(store):
+    # Eval 4 (Java): whether `best` was the list's worker or a copy took substr/instr SQL.
+    evidence.record(
+        store,
+        captured(
+            [
+                (1, "observed", "best", 'Balance$Worker@56 {load=0, name="a"}'),
+                (1, "observed", "workers[1]", 'Balance$Worker@100 {load=0, name="a"}'),
+                (2, "observed", "best", 'Balance$Worker@100 {load=5, name="a"}'),
+                (2, "observed", "workers[1]", 'Balance$Worker@100 {load=5, name="a"}'),
+                (2, "observed", "kind", "Class (Balance)@7"),
+                (2, "observed", "load", "5"),
+                (2, "observed", "label", '"Worker@3"'),
+            ]
+        ),
+        language="java",
+    )
+    rows = evidence.query(
+        store,
+        "SELECT b.hit, object_ref(b.value) = object_ref(w.value) AS same FROM last_run b "
+        "JOIN last_run w ON w.hit = b.hit AND w.selector = 'workers[1]' "
+        "WHERE b.selector = 'best' ORDER BY b.hit",
+    )["rows"]
+    assert rows == [{"hit": 1, "same": 0}, {"hit": 2, "same": 1}]
+    refs = evidence.query(
+        store, "SELECT selector, object_ref(value) AS ref FROM last_run WHERE hit = 2"
+    )["rows"]
+    assert {r["selector"]: r["ref"] for r in refs} == {
+        "best": "Balance$Worker@100",
+        "workers[1]": "Balance$Worker@100",
+        "kind": "Class (Balance)@7",
+        "load": None,
+        "label": None,
+    }

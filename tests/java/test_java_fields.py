@@ -228,3 +228,51 @@ def test_a_field_a_static_field_hides_is_never_written(tmp_path, monkeypatch, ca
         assert "AFTER 1 100" in json.loads(capsys.readouterr().out)["output"]
     finally:
         main(["session", "close"])
+
+
+@pytest.mark.timeout(180)
+def test_the_cookbook_balance_example_tells_a_copy_from_the_lists_element(
+    tmp_path, monkeypatch, capsys
+):
+    bundle = os.environ.get("PEEKY_JAVA_ADAPTER")
+    if not bundle:
+        pytest.skip("set PEEKY_JAVA_ADAPTER to a setup_java_adapter.py output directory")
+    monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
+    examples = Path(__file__).resolve().parents[2] / "examples" / "java"
+    (tmp_path / "demo").mkdir()
+    source = (examples / "demo/BalanceBug.java").read_text()
+    (tmp_path / "demo" / "BalanceBug.java").write_text(source)
+    config = json.loads((examples / "balance.json").read_text())
+    (tmp_path / "balance.json").write_text(json.dumps({**config, "bundle": bundle}))
+    line = next(i for i, text in enumerate(source.splitlines(), 1) if "best.load += task" in text)
+    at = f"demo/BalanceBug.java:{line}"
+    code, result = probe(
+        capsys,
+        tmp_path,
+        tmp_path / "balance.json",
+        at,
+        "--capture",
+        "best,workers[1]",
+        "--hits",
+        "2",
+    )
+    assert code == 0 and "ORDER:a a a a" in result["output"]
+    store = tmp_path / "state" / "evidence" / "evidence.db"
+    sql = (
+        "SELECT object_ref(b.value) = object_ref(w.value) AS same FROM last_run b JOIN last_run w "
+        "ON w.hit = b.hit AND w.selector = 'workers[1]' WHERE b.selector = 'best' ORDER BY b.hit"
+    )
+    assert main(["sql", sql, "--store", str(store), "--json"]) == 0
+    assert [row["same"] for row in json.loads(capsys.readouterr().out)["rows"]] == [0, 0]
+    code, result = probe(
+        capsys,
+        tmp_path,
+        tmp_path / "balance.json",
+        at,
+        "--set",
+        "workers[1].load=5",
+        "--hits",
+        "4",
+        "--no-save",
+    )
+    assert code == 0 and "ORDER:a b b b" in result["output"]

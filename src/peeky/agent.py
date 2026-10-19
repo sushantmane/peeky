@@ -177,14 +177,20 @@ def execute(
     }
 
 
-def verify(check, candidate, cwd, *, env=None):
+def verify(check, candidate, cwd, *, env=None, deadline=None):
     # Completion is written only after the trusted checker returns normally.
     # This detects premature exit; it is not isolation from hostile candidate code.
+    timeout = 20
+    if deadline is not None:
+        timeout = min(timeout, deadline - time.monotonic())
+        if timeout <= 0:
+            raise TimeoutError("verify ran past its --timeout before the checker")
     with tempfile.TemporaryDirectory(prefix="peeky-check-") as scratch:
         completion = Path(scratch) / "completion.json"
         result = execute(
             [sys.executable, verification_script, str(check), str(candidate), str(completion)],
             cwd,
+            timeout,
             env=env,
         )
         try:

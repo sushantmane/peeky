@@ -207,6 +207,15 @@ def test_background_verify_preserves_exit_codes(target, capsys):
     job = out.out.split()[1]
     code, out = run(capsys, "job", "wait", job, "--timeout", "60")
     assert code == 1 and "passed: False" in out.out
+    # Eval 4: `job wait --json` printed the text a job submitted without --json recorded.
+    code, out = run(capsys, "job", "wait", job, "--json")
+    assert code == 1 and json.loads(out.out)["passed"] is False
+    code, out = run(capsys, *args, "--old", "no such text", "--new", "x", "--background")
+    job = out.out.split()[1]
+    code, out = run(capsys, "job", "wait", job, "--timeout", "60", "--json")
+    assert code == 2 and json.loads(out.out)["error"]["code"] == "INVALID_REQUEST"
+    code, out = run(capsys, "job", "wait", job)
+    assert code == 2 and out.out == "" and "[INVALID_REQUEST]" in out.err
 
 
 def test_a_background_verify_keeps_several_edits_read_from_files(target, capsys):
@@ -332,3 +341,21 @@ def test_background_verify_fixes_edit_files_at_submission(target, capsys):
     code, out = run(capsys, "job", "wait", job, "--timeout", "60")
     result = json.loads(out.out)
     assert code == 0 and result["passed"] and "(page - 1) * page_size" in result["diff"]
+
+
+def test_verify_takes_a_timeout_and_reports_its_duration(target, capsys):
+    # Eval 4 (all three agents): verify had no --timeout or --quiet, and no duration.
+    root = Path(__file__).resolve().parents[2] / "examples"
+    for name in ("pagination_bug.py", "verify_pagination.py"):
+        shutil.copyfile(root / name, target / name)
+    args = ["verify", target / "pagination_bug.py", "--check", target / "verify_pagination.py"]
+    edit = ["--old", "start = page * page_size", "--new", "start = (page - 1) * page_size"]
+    code, out = run(capsys, *args, *edit, "--timeout", "60", "--quiet", "--json")
+    result = json.loads(out.out)
+    assert code == 0 and result["passed"] and 0 < result["seconds"] < 60
+    code, out = run(capsys, *args, *edit)
+    assert code == 0 and out.out.startswith("passed: True  stage: verification  seconds: ")
+    code, out = run(capsys, *args, *edit, "--timeout", "0.000001", "--json")
+    assert code == 2 and json.loads(out.out)["error"]["code"] == "TIMEOUT"
+    code, out = run(capsys, *args, *edit, "--timeout", "601")
+    assert code == 2 and "--timeout must be within" in out.err
