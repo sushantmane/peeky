@@ -811,3 +811,17 @@ def test_a_java_preview_that_cannot_show_every_element_says_nothing():
     array = {"value": "int[3]@2", "type": "int[]", "variablesReference": 2}
     with pytest.raises(ValueError, match="not all visible"):
         java_preview(array, _java_fetch({2: [{"name": "0", "value": "1"}]}))
+
+
+def test_java_preview_strings_are_literals_so_ids_mask_correctly():
+    # Review of #87: java-debug does not escape quotes inside a String, and a cut string
+    # lost its closing quote, so masking paired the wrong quotes.
+    from peeky.evidence import _no_addresses
+    from peeky.java import _brief
+
+    said = _brief({"value": '"he said "x@5" ok"'})
+    assert said == '"he said \\"x@5\\" ok"'
+    assert _no_addresses(f"Q$S@55 {{b=Q$B@62, q={said}}}") == f"Q$S@… {{b=Q$B@…, q={said}}}"
+    long = _brief({"value": '"' + "x" * 60 + '"'})
+    assert long.endswith('…"') and len(long) == 40
+    assert _no_addresses(f"Q$R@54 {{a={long}, b=Q$B@59}}").endswith("b=Q$B@…}")

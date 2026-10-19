@@ -732,6 +732,9 @@ def _expander(worker, stop):
 
     def fetch(handle, count):
         page = worker.dispatch("expand", {**stop, "handle": handle, "start": 0, "count": count})
+        if page.get("truncated") and len(page["variables"]) < count:
+            # Cut short by the shared node budget, not the value's end: read it again.
+            raise ValueError("A preview is beyond the bounded inspection window")
         return page["variables"]
 
     return fetch

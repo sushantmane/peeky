@@ -49,7 +49,14 @@ def java_list(variable, fields):
 
 
 def _brief(item):
+    """A field's value, short. java-debug writes a String's text between quotes without
+    escaping it; here it is a Java literal (`"say \\"hi\\""`), cut inside its quotes,
+    so a preview's strings never run into the fields after them."""
     text = str(item.get("value"))
+    if text.startswith('"'):
+        inner = text[1:-1] if len(text) > 1 and text.endswith('"') else text[1:]
+        inner = inner.replace("\\", "\\\\").replace('"', '\\"')
+        return '"' + (inner if len(inner) <= 38 else inner[:37] + "…") + '"'
     return text if len(text) <= 40 else text[:39] + "…"
 
 

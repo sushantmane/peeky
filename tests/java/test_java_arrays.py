@@ -1,6 +1,7 @@
 """Java arrays through real java-debug: indexed selectors must never fail the session."""
 
 import os
+import re
 from pathlib import Path
 
 import pytest
@@ -183,3 +184,41 @@ def test_java_previews_depend_only_on_the_value_and_lists_read_within_bounds(tmp
         by[1, "many[127]"]["value"].endswith(" {v=127}") and by[1, "many[-1].v"]["value"] == "199"
     )
     assert "backing array holds more than 512 slots" in by[1, "roomy[0]"]["error"]
+
+
+BUDGET = """package demo;
+import java.util.ArrayList;
+import java.util.List;
+public class Bud {
+  static class P { int a = 1, b = 2, c = 3, d = 4, e = 5; }
+  public static void main(String[] args) {
+    int[] arr = new int[506];
+    P p = new P();
+    List<Integer> xs = new ArrayList<>();
+    xs.add(1);
+    xs.add(2);
+    System.out.println(arr.length + p.a + xs.size()); // OBSERVE
+  }
+}
+"""
+
+
+@pytest.mark.timeout(120)
+def test_a_java_preview_after_selectors_that_used_the_budget_is_complete(tmp_path):
+    # Review of #87: an object preview cut short by the node budget showed `{a=1}`.
+    bundle = os.environ.get("PEEKY_JAVA_ADAPTER")
+    if not bundle:
+        pytest.skip("set PEEKY_JAVA_ADAPTER to a prepared Java adapter bundle")
+    from peeky.java import JavaTarget
+
+    (tmp_path / "demo").mkdir()
+    (tmp_path / "demo/Bud.java").write_text(BUDGET)
+    line = next(i for i, text in enumerate(BUDGET.splitlines(), 1) if "OBSERVE" in text)
+    target = JavaTarget(bundle=Path(bundle), sources=("demo/Bud.java",), main_class="demo.Bud")
+    capture = ("arr[460]", "p", "xs")
+    result = run_probe(tmp_path, Probe("demo/Bud.java", line, capture), adapter=target)
+    assert result["status"] == "completed", result.get("error")
+    values = [row["value"] for row in result["rows"]]
+    assert values[1].endswith(" {a=1, b=2, c=3, d=4, e=5}"), values[1]
+    # java-debug shows boxed Integers as objects (`Integer@69`).
+    assert re.fullmatch(r"ArrayList@[0-9]+ size=2 \[Integer@[0-9]+, Integer@[0-9]+\]", values[2])
