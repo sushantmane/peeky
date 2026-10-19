@@ -678,3 +678,7 @@ Checked and found sound:
 | # | Finding | Severity | Disposition |
 | --- | --- | --- | --- |
 | 1 | The table generator ran the pinned `cargo` without `RUSTC`, so it built with whatever `rustc` PATH picked (the rustup default), while stamping the table with cargo's version. A default other than 1.96 would silently produce a wrong table that the version test still accepts. | Medium | **Fixed:** `generate(cargo, rustc)` builds with `RUSTC` set and refuses if cargo's and rustc's versions differ. The Rust lanes now regenerate the table and compare it with the shipped one (`test_the_char_table_is_what_the_pinned_rust_prints`). |
+
+The verification (56d6bcd) found nothing wrong.
+- **Pinned toolchain:** with a failing `rustc` first on PATH, the generator and the test still build with the pinned 1.96.0 and produce the same 909 ranges; the fake is never called.
+- **Hygiene and speed:** the test builds only in its own temporary directory, leaves nothing behind (also on timeout), and takes 0.1–0.3 s.
