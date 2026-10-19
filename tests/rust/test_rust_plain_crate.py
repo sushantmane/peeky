@@ -732,3 +732,87 @@ def test_boxes_in_unmangled_functions_and_closure_types_are_gated(plain, capsys)
         assert code == 0, result.get("error")
         first, second = result["rows"]
         assert first["view"] == "unproven" and "value" not in second, (marker, result["rows"])
+
+
+BOX_GENERIC = """use std::fmt::Debug;
+use std::ops::Deref;
+
+#[derive(Debug)]
+pub struct Pt {
+    x: i64,
+    y: i64,
+}
+
+fn generic<T: Debug>(t: T) -> i64 {
+    println!("{:?}", t);
+    drop(t);
+    let reuse = Box::new(Pt { x: 777, y: 0 });
+    reuse.x // DROPPED_GENERIC
+}
+
+fn derefs<P: Deref<Target = Pt>>(p: P) -> i64 {
+    let v = p.x; // LIVE_DEREF
+    drop(p);
+    let reuse = Box::new(Pt { x: 555, y: 0 });
+    v + reuse.x // DROPPED_DEREF
+}
+
+fn by_ref<T: Debug>(t: T) -> T {
+    println!("{:?}", t); // LIVE_GENERIC
+    t
+}
+
+fn closures(items: &[i64]) -> i64 {
+    let p = Pt { x: 10, y: 1 };
+    let refs = vec![&p, &p];
+    let fs: [fn(i64) -> i64; 2] = [|k| k * 2, |k| k + 1];
+    items.iter().map(|k| k + refs.len() as i64 + fs[0](*k) + p.x).sum() // CAPTURE
+}
+
+#[unsafe(no_mangle)]
+pub fn exported(p: &Pt, items: &[i64]) -> i64 {
+    items.iter().map(|k| k + p.x).sum::<i64>() + p.y // UNMANGLED
+}
+
+fn main() {
+    let a = generic(Box::new(Pt { x: 1, y: 2 }));
+    let b = derefs(Box::new(Pt { x: 3, y: 4 }));
+    let r = by_ref(&Pt { x: 9, y: 9 });
+    println!("{} {} {:?} {} {}", a, b, r, closures(&[1, 2]), exported(&Pt { x: 10, y: 1 }, &[1, 2]));
+}
+"""
+
+
+@pytest.mark.timeout(300)
+def test_generic_boxes_are_gated_and_non_owning_values_read(plain, capsys):
+    # Verification of #103: a dropped Box held in a generic `T` or `P` was not gated
+    # (the MIR says `T`); values captured by reference and arrays of fn pointers, which
+    # LLDB names with a `*` inside, and an unmangled function's `&Pt` beside a closure,
+    # were hidden.
+    (plain / "src/main.rs").write_text(BOX_GENERIC)
+    cases = {
+        "DROPPED_GENERIC": ("t", None),
+        "DROPPED_DEREF": ("p", None),
+        "LIVE_DEREF": ("p", "3"),
+        "LIVE_GENERIC": ("t", "9"),
+        "UNMANGLED": ("p", "10"),
+    }
+    for marker, (name, value) in cases.items():
+        at = f"src/main.rs:{line_of(BOX_GENERIC, '// ' + marker)}"
+        code, result = run(
+            capsys, "probe", str(plain), "--at", at, "--capture", f"{name},{name}.x", "--quiet"
+        )
+        assert code == 0, result.get("error")
+        whole, field = result["rows"]
+        if value is None:
+            assert whole["view"] == "unproven" and "value" not in field, (marker, result["rows"])
+        else:
+            assert field["value"] == value and "view" not in whole, (marker, result["rows"])
+    at = f"src/main.rs:{line_of(BOX_GENERIC, '// CAPTURE')}"
+    code, result = run(
+        capsys, "probe", str(plain), "--at", at, "--capture", "refs.len,fs,p.x", "--quiet"
+    )
+    values = [row.get("value") for row in result["rows"]]
+    assert values[0] == "2" and values[2] == "10" and "view" not in result["rows"][1], result[
+        "rows"
+    ]

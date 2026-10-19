@@ -52,6 +52,11 @@ def _projected_type(text):
     `std::boxed::Box<Pt>`: split at the projection's own `: `, outside its parentheses
     (`(((*_36) as variant#3).0: T)`), since a type can hold `: ` itself
     (`{closure@src/main.rs:27:22: 27:35}`). None for anything else."""
+    if text.startswith("(*(") and text.endswith("))"):
+        # A capture by reference, dereferenced: `(*((*_1).0: &T))` binds a `T`.
+        referent = _projected_type(text[2:-1])
+        found = re.fullmatch(r"&(?:mut )?(.+)", referent or "")
+        return found[1] if found else None
     if not (text.startswith("(") and text.endswith(")")):
         return None
     inner, depth = text[1:-1], 0
@@ -667,7 +672,7 @@ class OwnedLocals:
         local = self._local(body, variable_name) if body is not None else None
         return None if local is None else body.types.get(local)
 
-    def binding_types(self, hashed, variable_name, path=None, line=None):
+    def binding_types(self, hashed, variable_name, path=None, line=None, closure=None):
         """The MIR type of every binding lldb-dap could be showing as ``variable_name``
         (None for one whose type is not written out), in the frame's body. An async
         body is never matched for proofs; its types come from the bodies with a span on
@@ -681,7 +686,11 @@ class OwnedLocals:
             else [
                 candidate
                 for candidate in self.bodies
-                if line in candidate.lines and shown.endswith("/" + str(candidate.file))
+                if line in candidate.lines
+                and shown.endswith("/" + str(candidate.file))
+                # A closure defined on the line is a body of its own, with its own
+                # captures of the frame's names: only bodies of the frame's kind count.
+                and (closure is None or candidate.name.startswith("{closure") == closure)
             ]
         )
         found = []

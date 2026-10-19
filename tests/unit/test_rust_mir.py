@@ -654,5 +654,8 @@ def test_projected_bindings_and_quoted_labels():
     # Verification of #103: a closure's type holds `: ` itself.
     closure = "(_1.0: std::boxed::Box<{closure@src/main.rs:27:22: 27:35}>)"
     assert _projected_type(closure) == "std::boxed::Box<{closure@src/main.rs:27:22: 27:35}>"
+    # A capture by reference, dereferenced, binds the referent's type.
+    assert _projected_type("(*((*_1).0: &std::vec::Vec<&Pt>))") == "std::vec::Vec<&Pt>"
+    assert _projected_type("(*((*_1).1: &mut Pt))") == "Pt"
     label = _LABEL.match('"_ZN5alloc5boxed12Box$LT$T$GT$3new17h01E.exit47":   ; preds = %start')
     assert label[1] == '"_ZN5alloc5boxed12Box$LT$T$GT$3new17h01E.exit47"' and label[2] == "%start"

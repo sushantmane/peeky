@@ -735,6 +735,13 @@ def _frame_hash(frame):
     return re.search(r"::(h[0-9a-f]{16})$", str((frame or {}).get("name") or ""))
 
 
+# A top-level pointer declarator in LLDB's C-style type: `Pt *`, `unsigned char (*)[8]`,
+# `long (**)()`; not `alloc::vec::Vec<Pt *>` or an array of pointers `long (*[2])(long)`.
+_POINTER = re.compile(r"\*\s*$|\(\*+\)\s*(?:\[[0-9]*\]|\(.*\))\s*$")
+# MIR types that do not own what they point at.
+_NON_OWNING = re.compile(r"&|\*const |\*mut |(?:unsafe )?(?:extern \S+ )?fn\(")
+
+
 class RustSession(NativeSession):
     def __init__(
         self,
@@ -895,13 +902,27 @@ class RustSession(NativeSession):
             types = (
                 [declared]
                 if declared is not None
-                else proofs.binding_types(function, variable.get("name"), source, line)
+                else proofs.binding_types(
+                    function,
+                    variable.get("name"),
+                    source,
+                    line,
+                    # lldb-dap shows `{{closure}}` escaped: `_$u7b$$u7b$closure$u7d$$u7d$`.
+                    closure=bool(
+                        re.search(
+                            r"\{\{closure\}\}|\$u7b\$\$u7b\$closure",
+                            str((frame or {}).get("name") or ""),
+                        )
+                    ),
+                )
             )
             owning = any(re.match(r"(?:std::boxed::|alloc::boxed::)?Box<", t or "") for t in types)
-            # A pointer (`Pt *`, `unsigned char (*)[8]`) with a binding whose type the MIR
-            # does not write out may be a Box too: it fails closed, like an unproven Box.
-            unknown = (not types or None in types) and "*" in str(variable.get("type") or "")
-            if (owning or unknown) and not (
+            # What LLDB shows as a pointer (`Pt *`, `unsigned char (*)[8]`, `long (**)()`)
+            # is read through only when the MIR says every binding is a reference, a raw
+            # pointer or a fn pointer: a generic `T`, `Self` or `impl Trait` may be a Box.
+            pointer = bool(_POINTER.search(str(variable.get("type") or "")))
+            plain = bool(types) and all(_NON_OWNING.match(t or "") for t in types)
+            if (owning or (pointer and not plain)) and not (
                 innermost
                 and hashed
                 and proofs.proven(
