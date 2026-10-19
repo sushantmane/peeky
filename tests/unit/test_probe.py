@@ -949,3 +949,54 @@ def test_a_missing_intervention_parent_is_not_found_whatever_the_names(names):
         apply_set(Holder(), {}, "request.limits", "3")
     assert classify(caught.value)["code"] == "NOT_FOUND"
     assert names in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    "selector, code",
+    [
+        ("this.deadline.x", "MUTATION_REJECTED"),
+        ("this.breakpoints[5]", "INVALID_REQUEST"),
+        ("this.breakpoints[-9]", "INVALID_REQUEST"),
+        ("this.provenance[0]", "NOT_FOUND"),
+        ("this.deadline_list[0]", "MUTATION_REJECTED"),
+    ],
+)
+def test_member_refusals_are_classified_by_rule_never_by_the_selectors_words(selector, code):
+    # Review of #86: `deadline` made a refusal TIMEOUT, `breakpoint` INVALID_BREAKPOINT.
+    from peeky.errors import classify
+    from peeky.probe import apply_set
+
+    class Holder(FakeWorker):
+        def dispatch(self, operation, args):
+            if operation == "inspect":
+                this = {"name": "this", "value": "Req@3", "type": "Req", "variablesReference": 5}
+                return {"frames": [{}], "scopes": [{"reference": 1, "variables": [this]}]}
+            if operation == "expand":
+                children = [
+                    {"name": "deadline", "value": "5", "type": "long", "variablesReference": 0},
+                    {"name": "breakpoints", "value": "int[3]@4", "type": "int[]"},
+                    {"name": "provenance", "value": "Holder@6", "type": "Holder"},
+                    {"name": "deadline_list", "value": "ArrayList@7", "type": "ArrayList"},
+                ]
+                children[1]["variablesReference"] = 6
+                children[2]["variablesReference"] = 7
+                children[3]["variablesReference"] = 8
+                return {"variables": children, "truncated": False}
+            if operation == "set_variable":
+                # As the worker answers a name its parent does not list.
+                raise ValueError(f"{args['name']!r} is not a field or element the debugger lists")
+            raise AssertionError(operation)
+
+    with pytest.raises(ValueError) as caught:
+        apply_set(Holder(), {}, selector, "1")
+    assert classify(caught.value)["code"] == code, str(caught.value)
+
+
+def test_a_bundle_without_member_sets_is_a_mutation_refusal():
+    from peeky.errors import classify
+
+    message = (
+        "This Java adapter bundle predates field and element changes, so only locals can be "
+        "changed; rebuild it with scripts/setup_java_adapter.py"
+    )
+    assert classify(ValueError(message))["code"] == "MUTATION_REJECTED"

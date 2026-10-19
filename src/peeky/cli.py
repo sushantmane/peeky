@@ -1179,9 +1179,12 @@ def session(args):
 
         (name, value), stop = _sets([args.assignment])[0], _stop(record)
         if (last := parse_selector(name)[-1]).startswith("[") and last[1:2] in "'\"":
-            raise ValueError(
+            from peeky.errors import Refused
+
+            raise Refused(
+                "MUTATION_REJECTED",
                 f"Intervention target {name!r}: map and dict entries cannot be changed; "
-                "set changes a local, or in Java a field or array element"
+                "set changes a local, or in Java a field or array element",
             )
         changed = apply_set(_Remote(client), stop, name, value)
         _emit(changed, args.json, lambda c: f"set {c['name']}: {c['before']} -> {c['after']}")

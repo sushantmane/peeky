@@ -103,7 +103,7 @@ _RULES = (
         r"|has no readable value here|refused in an optimized build|did not change "
         r"|has no memory location|refused to change|would overwrite a change"
         r"|cannot be changed|can be changed only|changes only the stopped|locals can be changed "
-        r"for this language",
+        r"for this language|predates field and element changes",
         "MUTATION_REJECTED",
         "The message names the rule broken. Root locals, and in Java also fields and array "
         "elements (`current.end`, `xs[0]`; not final or static fields, not list or map "
@@ -241,6 +241,26 @@ def _build_failure(exc):
     }
 
 
+_FIX_ARGUMENTS = "Fix the request arguments; see `peeky <command> --help`."
+
+
+def _refusal(code):
+    """(hint, retryable) for a Refused code, from the rule that describes that refusal."""
+    marker = {"MUTATION_REJECTED": "cannot be changed", "NOT_FOUND": "not a visible local"}
+    return next(
+        ((h, r) for p, c, h, r in _RULES if c == code and marker.get(code, "") in p),
+        (_FIX_ARGUMENTS, False),
+    )
+
+
+class Refused(ValueError):
+    """A refusal whose code is fixed: the selector it quotes never decides it."""
+
+    def __init__(self, code, message):
+        super().__init__(message)
+        self.code = code
+
+
 def classify(exc, *, session_closed=None):
     """Map an exception to the protocol error object."""
     message = str(exc) or type(exc).__name__
@@ -264,6 +284,15 @@ def classify(exc, *, session_closed=None):
             # Fail safe: the worker closes sessions on any OSError.
             "session_closed": bool(closed),
         }
+    if isinstance(exc, Refused):
+        code, (hint, retryable) = exc.code, _refusal(exc.code)
+        return {
+            "code": code,
+            "message": message[:2000],
+            "hint": hint,
+            "retryable": retryable,
+            "session_closed": bool(closed),
+        }
     for pattern, code, hint, retryable in _RULES:
         if re.search(pattern, message):
             if code in ("UNREACHABLE", "TRANSPORT_LOST"):
@@ -281,11 +310,7 @@ def classify(exc, *, session_closed=None):
             )
         elif isinstance(exc, (ValueError, KeyError, TypeError)):
             # Validation errors, and malformed request shapes surfacing as Key/TypeError.
-            code, hint, retryable = (
-                "INVALID_REQUEST",
-                "Fix the request arguments; see `peeky <command> --help`.",
-                False,
-            )
+            code, hint, retryable = "INVALID_REQUEST", _FIX_ARGUMENTS, False
         else:
             message = f"{type(exc).__name__}: {message}"
             code, hint, retryable = (

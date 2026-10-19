@@ -18,6 +18,7 @@ import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from peeky.errors import Refused, classify
 from peeky.java import JAVA_ARRAY, JAVA_LIST, java_list, java_preview
 from peeky.names import display_function
 from peeky.worker import (
@@ -314,9 +315,10 @@ class Probe:
             ):
                 raise ValueError("Interventions are (selector, value) string pairs")
             if (last := parse_selector(change[0])[-1]).startswith("[") and _key(last) is not None:
-                raise ValueError(
+                raise Refused(
+                    "MUTATION_REJECTED",
                     f"Intervention target {change[0]!r}: map and dict entries cannot be changed; "
-                    "--set changes a local, or in Java a field or array element"
+                    "--set changes a local, or in Java a field or array element",
                 )
         if self.hits != "all" and (type(self.hits) is not int or not 1 <= self.hits <= MAX_HITS):
             raise ValueError(f"Probe hits must be 1..{MAX_HITS} or 'all'")
@@ -893,13 +895,14 @@ def apply_set(worker, stop, name, value):
             None,
         )
         if scope is None:
-            raise ValueError(
+            raise Refused(
+                "NOT_FOUND",
                 f"Intervention target {name!r} is not a visible local; "
                 f"visible: {_visible(snapshot)}"
                 + _member_hint(worker, stop, snapshot, name).replace(
                     "select it as", "it can be read as"
                 )
-                + "; only the stopped function's own locals can be changed"
+                + "; only the stopped function's own locals can be changed",
             )
         try:
             return worker.dispatch(
@@ -907,46 +910,67 @@ def apply_set(worker, stop, name, value):
                 {**stop, "reference": scope["reference"], "name": name, "value": value},
             )
         except ValueError as exc:
-            raise ValueError(f"{exc}{_settable_here(snapshot)}") from None
+            # Classified by the debugger's reason, never by the names listed after it.
+            raise Refused(_code(exc), f"{exc}{_settable_here(snapshot)}") from None
     target = f"Intervention target {name!r}"
     try:
         parent = _resolve(worker, stop, snapshot, segments[:-1])
     except ValueError as exc:
         # A fixed phrase classifies it (NOT_FOUND), never the names the error lists.
-        raise ValueError(f"{target} was not found in the inspected values: {exc}") from None
+        raise Refused(
+            "NOT_FOUND", f"{target} was not found in the inspected values: {exc}"
+        ) from None
     last, value_shown = segments[-1], str(parent.get("value"))[:80]
     member = last
     if last.startswith("["):
         index = int(last[1:-1])
         if JAVA_LIST.fullmatch(str(parent.get("type"))):
-            raise ValueError(
+            raise Refused(
+                "MUTATION_REJECTED",
                 f"{target}: an ArrayList's elements are objects (boxed) and cannot be "
-                f"changed; change a field of one ({name}.field), or an array's element"
+                f"changed; change a field of one ({name}.field), or an array's element",
             )
         array = JAVA_ARRAY.fullmatch(str(parent.get("value")))
         if index < 0 and not array:
-            raise ValueError(f"{target}: a negative index can be changed only in a Java array")
+            raise Refused(
+                "MUTATION_REJECTED",
+                f"{target}: a negative index can be changed only in a Java array",
+            )
         if array and not -int(array[1]) <= index < int(array[1]):
-            raise ValueError(f"{target}: {last} is out of range: the array has {array[1]} elements")
+            raise Refused(
+                "INVALID_REQUEST",
+                f"{target}: {last} is out of range: the array has {array[1]} elements",
+            )
         if index < 0:
             index += int(array[1])
         member = str(index)
     if not parent.get("variablesReference"):
         if parent.get("unavailable"):
-            raise ValueError(f"{target}: the value has no value here: {parent.get('reason')}")
-        if parent.get("depth_limited"):
-            raise ValueError(
-                f"{target}: it is below the inspection depth limit (4 levels below a local)"
+            raise Refused(
+                "MUTATION_REJECTED",
+                f"{target}: the value has no value here: {parent.get('reason')}",
             )
-        raise ValueError(f"{target}: the value it is in has no fields or elements ({value_shown})")
+        if parent.get("depth_limited"):
+            raise Refused(
+                "MUTATION_REJECTED",
+                f"{target}: it is below the inspection depth limit (4 levels below a local)",
+            )
+        raise Refused(
+            "MUTATION_REJECTED",
+            f"{target}: the value it is in has no fields or elements ({value_shown})",
+        )
     try:
         changed = worker.dispatch(
             "set_variable",
             {**stop, "handle": parent["variablesReference"], "name": member, "value": value},
         )
     except ValueError as exc:
-        raise ValueError(f"{target}: {exc}") from None
+        raise Refused(_code(exc), f"{target}: {exc}") from None
     return {**changed, "name": name}
+
+
+def _code(exc):
+    return classify(exc)["code"]
 
 
 _KEY_NAME = re.compile(_KEY_LITERAL)
