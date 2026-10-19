@@ -293,13 +293,30 @@ def _output_window(value, other):
     return ("…" if start else "") + window + ("…" if start + 200 < len(value) else "")
 
 
+# java-debug's object identity numbers (`Merge$Interval@143`, `int[3]@144`) follow the
+# order the debugger first touched objects, so like addresses they differ between runs.
+# Only in a value java-debug wrote (it starts with such a token); never inside a string.
+_JAVA_VALUE = re.compile(r"[A-Za-z_$][\w$.]*(?:\[[0-9]*\])*@[0-9]+(?=\s|$)")
+_JAVA_ID = re.compile(r"(?<=[\w$\]])@[0-9]+\b")
+_QUOTED = re.compile(r'("(?:[^"\\]|\\.)*")')
+
+
 def _no_addresses(value):
     """`value` with heap and stack addresses masked, for comparing runs.
 
     Registered as the SQL function no_addresses(text): an address that changes on
-    every run (a C string, a Python object repr) is not a difference in the program.
+    every run (a C string, a Python object repr, a Java object's `@143`) is not a
+    difference in the program.
     """
-    return _ADDRESS.sub("0x…", value) if isinstance(value, str) else value
+    if not isinstance(value, str):
+        return value
+    if _JAVA_VALUE.match(value):
+        # Not inside a String's text (`label="a@5"` is data).
+        value = "".join(
+            part if part.startswith('"') else _JAVA_ID.sub("@…", part)
+            for part in _QUOTED.split(value)
+        )
+    return _ADDRESS.sub("0x…", value)
 
 
 _RUN_PARAM = {"run": "Run id (default: the newest run)"}
@@ -888,8 +905,9 @@ def schema(path):
         },
         "functions": {
             "no_addresses(text)": "The text with heap and stack addresses (0x and at least 9 "
-            "significant hex digits; never NULL, all-ones or shorter values) masked, to compare "
-            "values across runs",
+            "significant hex digits; never NULL, all-ones or shorter values) and Java object "
+            "numbers (`Type@143` in a value java-debug wrote) masked, to compare values across "
+            "runs",
             "first_difference(a, b)": "Offset, from 0, of the first character where two texts "
             "differ",
             "difference_position(a, b)": "Where two texts first differ, as `line L, column C` "

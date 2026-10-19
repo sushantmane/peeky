@@ -18,7 +18,7 @@ import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from peeky.java import java_list
+from peeky.java import java_list, java_preview
 from peeky.names import display_function
 from peeky.worker import (
     DebugWorker,
@@ -727,6 +727,16 @@ def _from_end(worker, stop, variable, offset, segment):
     return elements[count - offset]
 
 
+def _expander(worker, stop):
+    """fetch(handle, count) for java_preview: a value's first children."""
+
+    def fetch(handle, count):
+        page = worker.dispatch("expand", {**stop, "handle": handle, "start": 0, "count": count})
+        return page["variables"]
+
+    return fetch
+
+
 def _list_element(worker, stop, backing, size, index, segment):
     """Element ``index`` of an ArrayList: ``elementData[index]``, within its size."""
     if not 0 <= index < size:
@@ -735,10 +745,22 @@ def _list_element(worker, stop, backing, size, index, segment):
         raise ValueError(
             f"{_shown(segment)} is beyond the bounded inspection window (512 children)"
         )
-    page = worker.dispatch(
-        "expand", {**stop, "handle": backing["variablesReference"], "start": index // 64 * 64}
-    )
+    try:
+        page = worker.dispatch(
+            "expand", {**stop, "handle": backing["variablesReference"], "start": index // 64 * 64}
+        )
+    except ValueError as exc:
+        if "exceeds bounded expansion" not in str(exc):
+            raise
+        # The backing array's capacity, not the list's size, is over the bound.
+        raise ValueError(
+            f"{_shown(segment)} cannot be read: the list's backing array holds more than 512 "
+            "slots, Peeky's inspection bound (read a field of an element you can reach)"
+        ) from None
     found = next((child for child in page["variables"] if _names(child, f"[{index}]")), None)
+    if found is None and (page.get("truncated") or page.get("remaining_nodes", 1) <= 0):
+        # Cut short by the shared node budget: a fresh inspection can read it.
+        raise ValueError(f"{_shown(segment)} is beyond the bounded inspection window")
     if found is None:
         raise ValueError(f"{_shown(segment)} is not in the list's backing array")
     return found
@@ -750,7 +772,7 @@ _BUDGET = re.compile(
 )
 
 
-def _capture(worker, stop, selectors, hit, phase, snapshot=None, children=False):
+def _capture(worker, stop, selectors, hit, phase, snapshot=None, children=False, preview=False):
     """Rows for each selector at one stop.
 
     Selectors share one inspection (its handles stay valid until the next inspect or
@@ -797,6 +819,21 @@ def _capture(worker, stop, selectors, hit, phase, snapshot=None, children=False)
                 )
             else:
                 row.update(value=variable["value"], type=variable.get("type"))
+                if preview:
+                    # Only this value's own expansions, never its siblings', so the same
+                    # value always shows the same way; a preview cut short by the shared
+                    # budget is read again on a fresh inspection, else left out.
+                    try:
+                        try:
+                            shown = java_preview(variable, _expander(worker, stop))
+                        except ValueError:
+                            snapshot = worker.dispatch("inspect", stop)
+                            variable = _resolve(worker, stop, snapshot, parse_selector(selector))
+                            shown = java_preview(variable, _expander(worker, stop))
+                    except ValueError:
+                        shown = None
+                    if shown:
+                        row["value"] = shown
                 if "view" not in variable and str(variable.get("type")) in _OWNED_RUST_TYPES:
                     row["note"] = _OWNED_RUST
             if "view" in variable:
@@ -930,6 +967,10 @@ def run_probe(root, probe, *, adapter=None, progress=None):
             target_identity=launch["target_identity"],
             source_sha256=launch["source_sha256"],
         )
+        # A launched JVM's captured objects show their fields; an attached one (often a
+        # live service) does not, since every read lengthens its pause.
+        identity = launch["target_identity"] if isinstance(launch["target_identity"], dict) else {}
+        previews = identity.get("language") == "java" and identity.get("mode") != "attach"
         if probe.edit:
             result["candidate"]["sha256"] = launch.get("candidate_sha256")
         if "program_args" in launch:
@@ -1007,7 +1048,9 @@ def run_probe(root, probe, *, adapter=None, progress=None):
                 of = f" (all, up to {probe.limit})" if probe.hits == "all" else f"/{probe.limit}"
                 say(f"hit {hits}{of} at {probe.program}:{expected}; capturing")
             # The stop-validation inspection is reused for the first selectors.
-            rows.extend(_capture(worker, stop, probe.capture, hits, "observed", snapshot))
+            rows.extend(
+                _capture(worker, stop, probe.capture, hits, "observed", snapshot, preview=previews)
+            )
             if hits == probe.set_hit and probe.set:
                 for name, value in probe.set:
                     snapshot = worker.dispatch("inspect", stop)
@@ -1042,7 +1085,9 @@ def run_probe(root, probe, *, adapter=None, progress=None):
                         )
                     except ValueError as exc:
                         raise ValueError(f"{exc}{_settable_here(snapshot)}") from None
-                rows.extend(_capture(worker, stop, probe.capture, hits, "after-set"))
+                rows.extend(
+                    _capture(worker, stop, probe.capture, hits, "after-set", preview=previews)
+                )
             if len(rows) > MAX_ROWS:
                 raise ValueError("Probe row budget exceeded")
             if hits >= probe.limit:

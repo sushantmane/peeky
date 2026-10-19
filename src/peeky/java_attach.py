@@ -200,10 +200,6 @@ class JavaAttachTarget:
 
 
 class JavaAttachSession(JavaSession):
-    # An attached JVM is often a live service: every read at a stop lengthens its pause,
-    # so values stay as java-debug shows them (selectors still read fields and lists).
-    preview = None
-
     """Java runtime contract over an attached JVM; reuses JavaSession inspection rules."""
 
     # Attached JVMs report their own death through the closed JDWP connection; the

@@ -103,7 +103,8 @@ An hourly thread heartbeat (`continue-peeky-mvp`) checks for available usage and
     - A build that fails is now `BUILD_FAILED` with the compiler's output, for every probe and session.
     - Evidence schema 3: `runs.edit` holds the diff; the views have `candidate`; `queries runs` marks candidate runs, `values` leaves them out, and `diff` adds an `(edit)` row. Older stores upgrade in place.
 - **Java objects and lists** (#78).
-  - Launched Java programs show an object's first fields inline, an array's first elements and an `ArrayList`'s size and elements. Fields are read through the debugger; no code runs in the program.
+  - In launched Java programs, a captured value shows an object's first fields inline, an array's first elements, or an `ArrayList`'s size and elements. Only that value's own fields are read, through the debugger; no code runs in the program.
+  - Java object numbers count as addresses in `diff`.
   - `merged[0]` and `merged[-1]` index an `ArrayList` through `size` and `elementData`.
   - Setting fields is #86.
 - **Settable locals up front** (#77).

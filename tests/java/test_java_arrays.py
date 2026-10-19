@@ -135,3 +135,51 @@ def test_java_objects_show_their_fields_and_lists_index_like_arrays(tmp_path):
     assert value["merged[-1]"].endswith(' {end=15, label="i12", next=null, start=12}')
     assert "out of range: the list has 2 elements" in rows["merged[2]"]["error"]
     assert (value["name"], value["none"]) == ('"merge"', "null")
+
+
+LISTS = """package demo;
+import java.util.ArrayList;
+import java.util.List;
+public class Lists {
+  static class P { int v; P(int v) { this.v = v; } }
+  public static void main(String[] args) {
+    List<P> many = new ArrayList<>();
+    for (int i = 0; i < 200; i++) many.add(new P(i));
+    List<P> roomy = new ArrayList<>(1000);
+    roomy.add(new P(7));
+    int[] counts = new int[500];
+    Object[] slots = new Object[40];
+    for (int pass = 0; pass < 3; pass++) {
+      if (pass == 1) for (int i = 0; i < 20; i++) slots[i] = new P(i);
+      slots[30] = many.get(5);
+      System.out.println(pass + " " + counts.length); // OBSERVE
+    }
+  }
+}
+"""
+
+
+@pytest.mark.timeout(120)
+def test_java_previews_depend_only_on_the_value_and_lists_read_within_bounds(tmp_path):
+    # Review of #87: a preview depended on the siblings listed before it; a list whose
+    # backing array holds over 512 slots, or a node budget cut short by earlier
+    # selectors, failed list indexing.
+    bundle = os.environ.get("PEEKY_JAVA_ADAPTER")
+    if not bundle:
+        pytest.skip("set PEEKY_JAVA_ADAPTER to a prepared Java adapter bundle")
+    from peeky.java import JavaTarget
+
+    (tmp_path / "demo").mkdir()
+    (tmp_path / "demo/Lists.java").write_text(LISTS)
+    line = next(i for i, text in enumerate(LISTS.splitlines(), 1) if "OBSERVE" in text)
+    target = JavaTarget(bundle=Path(bundle), sources=("demo/Lists.java",), main_class="demo.Lists")
+    capture = ("slots[30]", "counts[400]", "many[127]", "many[-1].v", "roomy[0]")
+    result = run_probe(tmp_path, Probe("demo/Lists.java", line, capture, hits=3), adapter=target)
+    assert result["status"] == "completed", result.get("error")
+    by = {(row["hit"], row["selector"]): row for row in result["rows"]}
+    slot = {by[hit, "slots[30]"]["value"] for hit in (1, 2, 3)}
+    assert len(slot) == 1 and slot.pop().endswith(" {v=5}")
+    assert (
+        by[1, "many[127]"]["value"].endswith(" {v=127}") and by[1, "many[-1].v"]["value"] == "199"
+    )
+    assert "backing array holds more than 512 slots" in by[1, "roomy[0]"]["error"]

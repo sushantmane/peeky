@@ -758,9 +758,8 @@ def test_java_settable_locals_are_scalars_a_selector_can_name(variable, settable
 
 
 def _java_fetch(children):
-    def fetch(reference, indexed=None):
-        values = children[reference]
-        return values[:indexed] if indexed else values
+    def fetch(handle, count):
+        return children[handle][:count]
 
     return fetch
 
@@ -801,14 +800,14 @@ def _java_fetch(children):
     ],
 )
 def test_java_values_preview_fields_lists_and_arrays(variable, children, shown):
-    from peeky.java import JavaSession
+    from peeky.java import java_preview
 
-    assert JavaSession.preview(None, variable, _java_fetch(children)) == shown
+    assert java_preview(variable, _java_fetch(children)) == shown
 
 
 def test_a_java_preview_that_cannot_show_every_element_says_nothing():
-    from peeky.java import JavaSession
+    from peeky.java import java_preview
 
     array = {"value": "int[3]@2", "type": "int[]", "variablesReference": 2}
     with pytest.raises(ValueError, match="not all visible"):
-        JavaSession.preview(None, array, _java_fetch({2: [{"name": "0", "value": "1"}]}))
+        java_preview(array, _java_fetch({2: [{"name": "0", "value": "1"}]}))

@@ -806,3 +806,20 @@ def test_an_upgrade_blocked_by_a_read_only_directory_says_so(store):
             evidence.query(store, "SELECT 1")
     finally:
         store.parent.chmod(0o700)
+
+
+def test_java_object_numbers_differ_between_runs_like_addresses(store):
+    # Review of #87: JDWP numbers objects in the order the debugger first touches them,
+    # so the same object is `@143` in one run and `@144` in the next.
+    a = captured([(1, "observed", "current", 'P@143 {label="a@5", next=P@161}')])
+    b = captured([(1, "observed", "current", 'P@144 {label="a@5", next=P@162}')])
+    c = captured([(1, "observed", "current", 'P@144 {label="a@6", next=P@162}')])
+    for run in (a, b, c):
+        evidence.record(store, run)
+    rows = evidence.run_query(store, "diff", {"a": 1, "b": 2})["rows"]
+    assert [row["note"] for row in rows] == ["addresses only"]
+    # A String field's text is data, never an object number.
+    rows = evidence.run_query(store, "diff", {"a": 2, "b": 3})["rows"]
+    assert [row["note"] for row in rows] == [None]
+    masked = evidence.query(store, "SELECT no_addresses('''User@1''') AS v")["rows"][0]["v"]
+    assert masked == "'User@1'"

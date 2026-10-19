@@ -85,9 +85,6 @@ def _process_alive(pid):
     return True
 
 
-MAX_PREVIEWS = 16
-
-
 class DebugWorker:
     def __init__(self, root, adapter=None):
         self.root = Path(root).resolve()
@@ -109,7 +106,6 @@ class DebugWorker:
         self.children = {}
         self.inspection_nodes = 0
         self.view_fetches = 0
-        self.previews = 0
         self.view_items = 0
         self.view_bytes = 0
         self.view_deadline = 0.0
@@ -891,7 +887,7 @@ class DebugWorker:
             self.stopped(args)
             self.children.clear()
             self.inspection_nodes = 0
-            self.view_fetches = self.view_items = self.view_bytes = self.previews = 0
+            self.view_fetches = self.view_items = self.view_bytes = 0
             self.view_deadline = time.monotonic() + VIEW_SECONDS
             self.view_timed_out = False
             validate_children = getattr(runtime, "validate_children", None)
@@ -1214,13 +1210,11 @@ class DebugWorker:
         references = {self.scope_identity(s): s["variablesReference"] for s in fresh}
         return [references[identity] for identity in original]
 
-    def view_fetch(self, reference, indexed=None):
+    def view_fetch(self, reference):
         """Bounded raw reads used only by a runtime's trusted value-view hook.
 
         Count, time, item and byte budgets are shared by one inspection or expansion;
         exhaustion makes remaining views opaque instead of extending the request.
-        ``indexed`` is how many elements to ask for, as bounded_variables does: java-debug
-        refuses ranges for objects and past an array's end.
         """
         remaining = self.view_deadline - time.monotonic()
         if self.view_fetches >= 128 or remaining <= 0:
@@ -1229,12 +1223,11 @@ class DebugWorker:
         if type(reference) is not int or reference <= 0:
             raise ValueError("Variable is not expandable")
         try:
-            request = {"variablesReference": reference, "start": 0, "count": 65}
-            if type(indexed) is int and 0 < indexed <= 64:
-                request["count"] = indexed
-            elif getattr(self.runtime, "ranges_only_for_indexed", False):
-                request = {"variablesReference": reference}
-            values = self.dap.request("variables", request, timeout=remaining).get("variables", [])
+            values = self.dap.request(
+                "variables",
+                {"variablesReference": reference, "start": 0, "count": 65},
+                timeout=remaining,
+            ).get("variables", [])
         except ResponseTimeout as exc:
             # The read was written completely; only its reply missed the view budget.
             self.view_timed_out = True
@@ -1386,16 +1379,6 @@ class DebugWorker:
             }
             if display_value and (shown := display_value(variable)) is not None:
                 output["value"] = shown
-            preview = getattr(self.runtime, "preview", None)
-            if preview and type(raw) is int and raw > 0 and self.previews < MAX_PREVIEWS:
-                # A few objects per inspection show their fields inline; the budget-bounded
-                # reads never extend the request, and any doubt leaves the value as is.
-                self.previews += 1
-                try:
-                    if (shown := preview(variable, self.view_fetch)) is not None:
-                        output["value"] = str(shown)[:2000]
-                except (ViewBudgetExhausted, ValueError, RequestFailed):
-                    pass
             if self.placeholders() and is_unavailable(output["value"]):
                 # The placeholder text is the debugger's reason, never the value.
                 output["unavailable"] = True
@@ -1520,7 +1503,7 @@ class DebugWorker:
         if validate_children:
             validate_children(variables)
         # Each expansion is its own bounded request with a fresh value-view budget.
-        self.view_fetches = self.view_items = self.view_bytes = self.previews = 0
+        self.view_fetches = self.view_items = self.view_bytes = 0
         self.view_deadline = time.monotonic() + VIEW_SECONDS
         start = args.get("start", 0)
         count = min(args.get("count", 64), 512 - self.inspection_nodes)

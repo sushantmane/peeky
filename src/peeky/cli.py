@@ -1147,7 +1147,14 @@ def session(args):
         _emit(snapshot, args.json, lambda shown: _variables_text(shown, args.name))
     elif args.action == "get":
         rows = _capture(
-            _Remote(client), _stop(record), tuple(args.selectors), 0, "observed", children=True
+            _Remote(client),
+            _stop(record),
+            tuple(args.selectors),
+            0,
+            "observed",
+            children=True,
+            # Launched Java values show their fields (an attached JVM's do not).
+            preview=record.get("language") == "java",
         )
         # A session read is not a probe hit: no hit number to explain.
         rows = [{key: v for key, v in row.items() if key != "hit"} for row in rows]

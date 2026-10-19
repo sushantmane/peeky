@@ -67,6 +67,32 @@ def _elements(children, length):
     return f"[{', '.join(shown)}{', …' if length > PREVIEW_ITEMS else ''}]"
 
 
+def java_preview(variable, fetch):
+    """A captured value with its first fields inline (`Merge$Interval@143 {end=10,
+    start=1}`), an ArrayList's elements (`ArrayList@142 size=2 [...]`) or an array's
+    (`int[3]@144 [1, 2, 3]`), from the debugger's field reads only: no code runs in the
+    program. ``fetch(handle, count)`` lists a value's first children. None leaves the
+    value as java-debug shows it."""
+    value, handle = variable.get("value"), variable.get("variablesReference")
+    if not isinstance(value, str) or type(handle) is not int or handle <= 0:
+        return None
+    if array := _JAVA_ARRAY.fullmatch(value):
+        length = int(array[1])
+        elements = fetch(handle, min(length, PREVIEW_ITEMS)) if length else []
+        return f"{value} {_elements(elements, length)}"
+    if not _JAVA_OBJECT.fullmatch(value):
+        return None
+    fields = fetch(handle, 64)
+    if listed := java_list(variable, fields):
+        backing, size = listed
+        elements = fetch(backing["variablesReference"], min(size, PREVIEW_ITEMS)) if size else []
+        return f"{value} size={size} {_elements(elements, size)}"
+    if not fields or not all(isinstance(field.get("name"), str) for field in fields):
+        return None
+    shown = ", ".join(f"{field['name']}={_brief(field)}" for field in fields[:PREVIEW_ITEMS])
+    return f"{value} {{{shown}{', …' if len(fields) > PREVIEW_ITEMS else ''}}}"
+
+
 SCALAR = re.compile(r"(?:true|false|[+-]?[0-9]+(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?)\Z")
 CLASS_NAME = re.compile(r"[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*\Z")
 
@@ -418,32 +444,6 @@ class JavaSession:
     def validate_value(self, value):
         if not isinstance(value, str) or not SCALAR.fullmatch(value):
             raise ValueError("Java mutation requires a numeric or boolean scalar literal")
-
-    def preview(self, variable, fetch):
-        """An object's value with its fields inline (`Merge$Interval@143 {end=10,
-        start=1}`), an ArrayList's elements (`ArrayList@142 size=2 [...]`) and an
-        array's (`int[3]@144 [1, 2, 3]`), from the debugger's field reads only: no
-        code runs in the program. None leaves the value as java-debug shows it."""
-        value, reference = variable.get("value"), variable.get("variablesReference")
-        if not isinstance(value, str) or type(reference) is not int or reference <= 0:
-            return None
-        if array := _JAVA_ARRAY.fullmatch(value):
-            length = int(array[1])
-            elements = fetch(reference, min(length, PREVIEW_ITEMS)) if length else []
-            return f"{value} {_elements(elements, length)}"
-        if not _JAVA_OBJECT.fullmatch(value):
-            return None
-        fields = fetch(reference)
-        if listed := java_list(variable, fields):
-            backing, size = listed
-            reference = backing["variablesReference"]
-            elements = fetch(reference, min(size, PREVIEW_ITEMS)) if size else []
-            return f"{value} size={size} {_elements(elements, size)}"
-        named = [field for field in fields if isinstance(field.get("name"), str)]
-        if not named or len(named) != len(fields):
-            return None
-        shown = ", ".join(f"{field['name']}={_brief(field)}" for field in named[:PREVIEW_ITEMS])
-        return f"{value} {{{shown}{', …' if len(named) > PREVIEW_ITEMS else ''}}}"
 
     def settable(self, variable, frame=None):
         """Whether `--set` can change this root local: a scalar of a type it accepts, named
