@@ -541,8 +541,9 @@ def _usize(die):
         raise ValueError("Rust container length is not a usize")
 
 
-def _vec_parts(vec, element, by_offset):
-    """(data pointer offset, length offset) of a Vec<T, Global> from its member chain."""
+def _vec_parts(vec, element, by_offset, check=None):
+    """(data pointer offset, length offset) of a Vec<T, Global> from its member chain.
+    ``check(die)`` validates a composite element type instead of a scalar one."""
     name, size, encoding = element
     params = [
         child
@@ -550,7 +551,8 @@ def _vec_parts(vec, element, by_offset):
         if child.tag == "DW_TAG_template_type_parameter"
         and child.attributes.get("DW_AT_name") == '"T")'
     ]
-    if len(params) != 1 or not _sized_base(_target(params[0], by_offset), name, size, encoding):
+    target = _target(params[0], by_offset) if len(params) == 1 else None
+    if not (check(target) if check else _sized_base(target, name, size, encoding)):
         raise ValueError("Rust Vec element type is not the qualified one")
     buf, raw_vec = _member(vec, "buf", by_offset)
     length, length_type = _member(vec, "len", by_offset)
@@ -603,6 +605,151 @@ def _container_layout(struct, qualified, by_offset):
     }
 
 
+def composite_container(name):
+    """(kind, element) for a `Vec<T>` or `&[T]` whose element is not a scalar
+    (`Vec<(char, usize)>`, `&[demo::Interval]`): read only when the DWARF shows T is a
+    tuple or struct of qualified scalars. None for anything else, including a scalar
+    container in LLDB's spelling (`Vec<int>`, `Vec<char32_t>`)."""
+    if not isinstance(name, str) or name in QUALIFIED_CONTAINERS:
+        return None
+    if match := re.fullmatch(r"alloc::vec::Vec<(.+), alloc::alloc::Global>", name):
+        kind, element = "vec", match[1]
+    elif match := re.fullmatch(r"&(?:mut )?\[(.+)\]", name):
+        kind, element = "slice", match[1]
+    else:
+        return None
+    return None if _PRIMITIVE.fullmatch(element) else (kind, element)
+
+
+_FIELD_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def _composite(die, by_offset):
+    """A tuple or struct whose fields are all qualified scalars, from its DWARF: its
+    size, fields (name, offset, scalar) in declaration order, and how Rust's derived
+    `{:?}` shows it (`(a, b)`, `Point(a, b)`, `Interval { start: a, end: b }`)."""
+    if die is None or die.tag != "DW_TAG_structure_type":
+        raise ValueError("Rust element is not a tuple or struct")
+    if any(
+        child.tag not in ("DW_TAG_member", "DW_TAG_template_type_parameter")
+        # rustc declares each inherent method the program calls (`fn width(&self)`)
+        # inside its struct; that adds no storage.
+        and not (child.tag == "DW_TAG_subprogram" and "DW_AT_declaration" in child.attributes)
+        for child in die.children
+    ):
+        raise ValueError("Rust element has more than plain fields (an enum's variants)")
+    name, size = (
+        _string(die.attributes.get("DW_AT_name")),
+        _hex(die.attributes.get("DW_AT_byte_size")),
+    )
+    members = [child for child in die.children if child.tag == "DW_TAG_member"]
+    if not 0 < size <= 256 or not 0 < len(members) <= 16:
+        raise ValueError("Rust element size or field count is out of bounds")
+    fields = []
+    for member in members:
+        target = _target(member, by_offset)
+        scalar = next(
+            (
+                element
+                for element, (width, encoding, _) in ELEMENT_TYPES.items()
+                if _sized_base(target, element, width, encoding)
+            ),
+            None,
+        )
+        if scalar is None:
+            raise ValueError("Rust element field is not a qualified scalar")
+        field = _string(member.attributes.get("DW_AT_name"))
+        fields.append((field, _hex(member.attributes.get("DW_AT_data_member_location")), scalar))
+    spans = sorted((offset, offset + ELEMENT_TYPES[scalar][0]) for _, offset, scalar in fields)
+    if any(a[1] > b[0] for a, b in zip(spans, spans[1:])) or spans[-1][1] > size:
+        raise ValueError("Rust element fields overlap or exceed its size")
+    numbered = all(field == f"__{index}" for index, (field, _, _) in enumerate(fields))
+    if name.startswith("("):
+        # rustc names a 1-tuple `(i8)` here (its MIR and `{:?}` say `(i8,)`).
+        expected = "(" + ", ".join(s for _, _, s in fields) + ")"
+        if not numbered or name != expected:
+            raise ValueError("Rust tuple does not match its fields")
+        shape = "tuple"
+    elif not _FIELD_NAME.fullmatch(name.split("<")[0]):
+        raise ValueError("Rust struct name is not plain")
+    elif numbered:
+        shape = "tuple-struct"
+    elif all(_FIELD_NAME.fullmatch(field) for field, _, _ in fields):
+        shape = "struct"
+    else:
+        raise ValueError("Rust struct field names are not plain")
+    # A plain struct or tuple is aligned as its widest field (each a power of two).
+    alignment = max(ELEMENT_TYPES[scalar][0] for _, _, scalar in fields)
+    if size % alignment or any(offset % ELEMENT_TYPES[s][0] for _, offset, s in fields):
+        raise ValueError("Rust element is not laid out as its fields' alignment requires")
+    return {
+        "element_size": size,
+        "alignment": alignment,
+        "fields": [[field, offset, scalar] for field, offset, scalar in fields],
+        "shape": shape,
+        # Derived Debug prints the struct's own name, without its path or generics.
+        "shown": name.split("<")[0],
+    }
+
+
+# A container of composites whose element is not readable: it stays raw, and a readable
+# container of the same name (another struct with that path, in a function's block or
+# another unit) can then not be told apart from it.
+_UNREAD = {"kind": "unread"}
+
+
+def _composite_layout(struct, kind, element, by_offset):
+    """The layout of a `Vec<T>` or `&[T]` of composites; _UNREAD when T is not a
+    tuple or struct of qualified scalars; None for a declaration without a body."""
+    params = [
+        child
+        for child in struct.children
+        if child.tag == "DW_TAG_template_type_parameter"
+        and child.attributes.get("DW_AT_name") == '"T")'
+    ]
+    target = _target(params[0], by_offset) if len(params) == 1 else None
+    if target is not None and "DW_AT_declaration" in target.attributes:
+        return None
+    try:
+        size = _hex(struct.attributes.get("DW_AT_byte_size"))
+        capacity = None
+        if kind == "vec":
+            params = [
+                child
+                for child in struct.children
+                if child.tag == "DW_TAG_template_type_parameter"
+                and child.attributes.get("DW_AT_name") == '"T")'
+            ]
+            target = _target(params[0], by_offset) if len(params) == 1 else None
+            composite = _composite(target, by_offset)
+            data, length, capacity = _vec_parts(
+                struct,
+                (element, composite["element_size"], None),
+                by_offset,
+                check=lambda die: die is target,
+            )
+        else:
+            data, pointer = _member(struct, "data_ptr", by_offset)
+            pointee = _target(pointer, by_offset) if pointer.tag == "DW_TAG_pointer_type" else None
+            composite = _composite(pointee, by_offset)
+            length, length_type = _member(struct, "length", by_offset)
+            _usize(length_type)
+    except (KeyError, ValueError, IndexError):
+        return _UNREAD
+    fields = sorted((start, start + 8) for start in (data, length, capacity) if start is not None)
+    if any(a[1] > b[0] for a, b in zip(fields, fields[1:])) or fields[-1][1] > size or size > 64:
+        return _UNREAD
+    return {
+        "kind": kind,
+        "size": size,
+        "data": data,
+        "length": length,
+        **({"capacity": capacity} if capacity is not None else {}),
+        "element": element,
+        **composite,
+    }
+
+
 def container_layouts(text, unit):
     """Layouts of the qualified containers (`Vec<i32>`, `&[i32]`, `String`, `&str`) that
     one application unit defines, validated member by member; anything else refuses."""
@@ -612,6 +759,9 @@ def container_layouts(text, unit):
     by_offset = {}
     _walk(root, by_offset, unit)
     layouts = {}
+    # Structs are read only from the crate itself: the standard library's (`Range`,
+    # `Wrapping`) implement their own Debug, which a derived rendering would misstate.
+    crate = unit.name.rpartition("/@/")[2].split(".")[0]
 
     def visit(die, prefix):
         for child in die.children:
@@ -625,6 +775,14 @@ def container_layouts(text, unit):
                     if layouts.get(qualified, layout) != layout:
                         layout = {"kind": "unqualified"}
                     layouts[qualified] = layout
+                elif (composite := composite_container(qualified)) and (
+                    composite[1].startswith("(") or composite[1].startswith(f"{crate}::")
+                ):
+                    layout = _composite_layout(child, *composite, by_offset)
+                    if layout is not None and layouts.get(qualified, layout) != layout:
+                        layout = {"kind": "unqualified"}
+                    if layout is not None:
+                        layouts[qualified] = layout
 
     visit(root, ())
     return layouts
@@ -776,7 +934,8 @@ def active_variant(variable, fetch, layouts):
     """
     kind = variable.get("type")
     layout = layouts.get(kind) if isinstance(kind, str) else None
-    if layout is None or layout["kind"] in CONTAINER_KINDS:
+    # A Vec or slice of composites is never an enum, whatever its layout's state.
+    if layout is None or layout["kind"] in CONTAINER_KINDS or composite_container(kind):
         return None
     view = {"name": variable.get("name"), "type": kind, "variablesReference": 0}
     if layout["kind"] != "option":
@@ -859,6 +1018,8 @@ def _one_layout(names, layouts):
 
 def _decoder(layout):
     """bytes -> the element as Rust's `{:?}` shows it, for the layout's element type."""
+    if "fields" in layout:
+        return _composite_decoder(layout)
     element = layout["element"].split(" or ")[0]
     size, encoding, _ = ELEMENT_TYPES[element]
     if encoding == "DW_ATE_boolean":
@@ -882,6 +1043,37 @@ def _decoder(layout):
         return character
     signed = encoding == "DW_ATE_signed"
     return lambda raw: str(int.from_bytes(raw, "little", signed=signed))
+
+
+def composite_fields(layout):
+    """bytes -> [(field, type, value)] of a tuple or struct element, each field shown as
+    Rust's `{:?}` shows its scalar."""
+    parts = [
+        (field, scalar, offset, ELEMENT_TYPES[scalar][0], _decoder({"element": scalar}))
+        for field, offset, scalar in layout["fields"]
+    ]
+    return lambda raw: [
+        (field, scalar, decode(raw[offset : offset + width]))
+        for field, scalar, offset, width, decode in parts
+    ]
+
+
+def _composite_decoder(layout):
+    """bytes -> a tuple or struct as Rust's derived `{:?}` shows it (whatever Debug the
+    type itself implements)."""
+    fields = composite_fields(layout)
+    shape, shown = layout["shape"], layout["shown"]
+
+    def composite(raw):
+        values = [(field, value) for field, _, value in fields(raw)]
+        if shape == "struct":
+            return f"{shown} {{ " + ", ".join(f"{field}: {value}" for field, value in values) + " }"
+        inner = ", ".join(value for _, value in values)
+        if shape == "tuple":
+            return f"({inner}{',' if len(values) == 1 else ''})"
+        return f"{shown}({inner})"
+
+    return composite
 
 
 _FLOATS = {32: ("<f", "<I", 23), 64: ("<d", "<Q", 52)}
@@ -990,6 +1182,57 @@ def lldb_float_debug(text, kind):
     return None
 
 
+# LLDB spells a generic's primitive arguments the C way (`Pair<unsigned short>`, and
+# `Pair<char>` for Pair<i8>), and a 1-tuple `(i8)`: its names can collide, so they
+# only confirm a type the compiler's own name (IR, MIR) selected, compared with every
+# primitive blanked.
+_PRIMITIVE = re.compile(
+    r"\b(?:(?:unsigned|signed) )?(?:long long|long|short|int|char)\b"
+    r"|\b(?:[iu](?:8|16|32|64|128|size)|f32|f64|bool|char(?:8|16|32)_t|float|double)\b"
+)
+
+
+def _lossy(name):
+    return _PRIMITIVE.sub("#", str(name)).replace(",)", ")")
+
+
+def _composite_parameter(parameter):
+    """(LLDB's type, as a lossy name; container; read through a pointer) for a reference
+    parameter of composites by its IR type: `&[T]` is read as itself, `&Vec<T>` through
+    the pointer LLDB shows (`Vec<T> *`)."""
+    if not isinstance(parameter, str):
+        return None
+    if match := re.fullmatch(r"&(mut )?(\[.+\])", parameter):
+        name = f"&{match[1] or ''}{match[2]}"
+        return (_lossy(name), name, False) if composite_container(name) else None
+    if match := re.fullmatch(r"&(?:mut )?(alloc::vec::Vec<.+, alloc::alloc::Global>)", parameter):
+        return (_lossy(f"{match[1]} *"), match[1], True) if composite_container(match[1]) else None
+    return None
+
+
+def _composite_owned(shown, declared, layouts):
+    """The composite Vec layout of an owned local, by the MIR's declared type
+    (`std::vec::Vec<Pair<i8>>`, crate-relative) and confirmed by LLDB's (lossy) name;
+    None unless exactly one of the crate's layouts is that type."""
+    exact = re.fullmatch(r"std::vec::Vec<(.+)>", str(declared or ""))
+    if not exact or not composite_container(shown):
+        return None
+    # The MIR's 1-tuple `(i8,)` is `(i8)` in the DWARF.
+    element = re.escape(exact[1].replace(",)", ")"))
+    names = [
+        name
+        for name in layouts
+        if (composite := composite_container(name))
+        and composite[0] == "vec"
+        and re.fullmatch(rf"(?:[A-Za-z_][A-Za-z0-9_]*::)?{element}", composite[1])
+        # A tuple's name has no path; a struct's is its crate's.
+        and (composite[1].startswith("(") == exact[1].startswith("("))
+    ]
+    if len(names) != 1 or _lossy(shown) != _lossy(names[0]):
+        return None
+    return names[0]
+
+
 def container_view(
     variable, read, layouts, *, optimized, parameter=None, owned=False, declared=None
 ):
@@ -1005,9 +1248,15 @@ def container_view(
     buffer, is never shown as contents.
     """
     reference_type = REFERENCE_PARAMETERS.get(parameter)
+    composite = None if reference_type else _composite_parameter(parameter)
     if reference_type is not None and variable.get("type") in reference_type[0]:
         _, name, thin = reference_type
         layout = layouts.get(name)
+    elif composite is not None and _lossy(variable.get("type")) == composite[0]:
+        _, name, thin = composite
+        layout = layouts.get(name)
+    elif owned and (name := _composite_owned(variable.get("type"), declared, layouts)):
+        layout, thin = layouts[name], False
     elif owned and variable.get("type") in OWNED_CONTAINERS:
         candidates = [c for c in OWNED_CONTAINERS[variable["type"]] if c in layouts]
         # The MIR's declared type names the one candidate (`std::vec::Vec<usize>`).
@@ -1017,7 +1266,7 @@ def container_view(
         layout, thin = _one_layout(candidates, layouts), False
     else:
         return None
-    if layout is None:
+    if layout is None or layout["kind"] == "unread":
         return None
     view = {"name": variable.get("name"), "type": variable["type"], "variablesReference": 0}
     if layout["kind"] == "unqualified":
@@ -1049,7 +1298,7 @@ def container_view(
             raise ValueError("Rust container length exceeds its capacity")
         if length * width >= 2**63:
             raise ValueError("Rust container is larger than isize::MAX bytes")
-        if length and (data == 0 or data % width):
+        if length and (data == 0 or data % layout.get("alignment", width)):
             raise ValueError("Rust container buffer is null or misaligned")
         sizes = [
             {
@@ -1078,11 +1327,20 @@ def container_view(
         count = min(length, MAX_ELEMENTS)
         payload = read(f"0x{data:X}", count * width) if count else b""
         decode = _decoder(layout)
-        elements = [decode(payload[i * width : (i + 1) * width]) for i in range(count)]
+        raws = [payload[i * width : (i + 1) * width] for i in range(count)]
+        elements = [decode(raw) for raw in raws]
         children = [
             {"name": f"[{index}]", "type": layout["element"], "value": element}
             for index, element in enumerate(elements)
         ]
+        if "fields" in layout:
+            # A tuple's or struct's fields, named as LLDB names them (`__0`, `start`).
+            fields = composite_fields(layout)
+            for child, raw in zip(children, raws):
+                child["children"] = [
+                    {"name": field, "type": scalar, "value": value}
+                    for field, scalar, value in fields(raw)
+                ]
         return {
             **view,
             "value": _shown_list(elements, length),

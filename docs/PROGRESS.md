@@ -117,12 +117,17 @@ An hourly thread heartbeat (`continue-peeky-mvp`) checks for available usage and
   - A probe that times out carries `debugger_events` (the debugger's last events and DAP trace), so a stop the debugger never reported (#27) can be told from a slow program.
 - **Rust char elements** (#90, first part).
   - `Vec<char>`, `&[char]` and `&Vec<char>` are read like the other qualified element types, and print as Rust's `{:?}` does.
-  - `char` rendering is exact: the code points Rust 1.96 escapes come from Rust itself (`scripts/rust_char_table.py` writes `src/peeky/rust_chars.py`), and a test ties the table to the pinned toolchain. Tuples (`Vec<(char, usize)>`) are the second part.
+  - `char` rendering is exact: the code points Rust 1.96 escapes come from Rust itself (`scripts/rust_char_table.py` writes `src/peeky/rust_chars.py`), and a test ties the table to the pinned toolchain.
+- **Rust tuple and struct elements** (#90, second part).
+  - `Vec<T>`, `&[T]` and `&Vec<T>` are read when `T` is a tuple, or a struct the crate defines, of qualified scalars: `[('a', 3), ('b', 1)]`, `[Interval { start: 1, end: 10, open: false }]`, `[Point(1, 2)]`. The build's debug information must show plain, aligned fields within the element's size.
+  - The compiler's own type picks the layout (the MIR's for owned locals, the IR's for parameters). LLDB's names only confirm it, since they collide: LLDB names `Vec<Pair<i8>>` `Vec<Pair<char>>`, the DWARF name of `Vec<Pair<char>>`.
+  - Fields are selectable (`runs[0].__0`, `spans[1].start`), with Rust types; `runs[0].0` gets a hint to write `__0`.
+  - Anything else (an enum, a `String` field, a standard-library struct such as `Range`, which prints as `1..5`) keeps LLDB's summary with a note that says which elements are read. Two structs that share a path (a function's own `Token` and `mod parse`'s) make a container of either opaque.
 - **Plain Cargo crates** (#89, found by the fourth evaluation's dry run).
   - A `cargo new` binary crate works as is: edition 2021 or 2024, Cargo's default targets (`src/main.rs`, `tests/*.rs`), empty `[dependencies]`, package metadata. Before, only a manifest with explicit `[[bin]]` and `[[test]]` targets and every discovery switch off was accepted, with errors such as "Rust sources and tests must be nonempty immutable tuples".
   - A crate without an integration test is verified by its checker alone. Anything else Cargo would build (`src/lib.rs`, `src/bin`, `build.rs`, dependencies, a second test) is refused with the reason.
   - Rust `char` values print as Rust's `{:?}` does (`'b'`, `'\n'`, `'\u{200d}'`), not LLDB's `U+0062 U+0062 U'b'`.
-  - A Vec whose elements Peeky does not read (`Vec<(char, usize)>`) gets a note: its value is LLDB's summary, not the contents.
+  - A Vec whose elements Peeky does not read gets a note: its value is LLDB's summary, not the contents.
 - **Java scopes in `describe`** (#91).
   - `describe` lists each Java method's line span and the names it can see (`this`, parameters, locals), as it does for Python, C, C++ and Rust: `names in BalanceBug.assign (demo/BalanceBug.java:19-32): workers, tasks, order, task, best, w`.
   - The names come from the class files' LocalVariableTable (launched builds use `javac -g`; attached JVMs use their own classes), read by the same bounded class reader. Classes compiled without local names say so (`scopes_unavailable`).

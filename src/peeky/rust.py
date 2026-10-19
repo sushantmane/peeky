@@ -53,6 +53,7 @@ from peeky.rust_symbols import (
     UNVERIFIED,
     active_variant,
     application_symbols,
+    composite_container,
     container_view,
     lldb_byte,
     lldb_char,
@@ -861,7 +862,12 @@ class RustSession(NativeSession):
             hashed
             and innermost
             and proofs is not None
-            and variable.get("type") in OWNED_CONTAINERS
+            and (
+                variable.get("type") in OWNED_CONTAINERS
+                # A Vec of tuples or structs (`Vec<(char, usize)>`); the MIR's declared
+                # type selects its layout.
+                or composite_container(variable.get("type"))
+            )
             and proofs.proven(
                 hashed[1],
                 variable.get("name"),

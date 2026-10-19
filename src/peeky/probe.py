@@ -73,6 +73,12 @@ def parse_selector(text):
                 if "->" in text
                 else ""
             )
+            # LLDB names a Rust tuple's (or tuple struct's) fields `__0`, `__1`.
+            if re.search(r"\.[0-9]", text):
+                arrow += (
+                    "; a tuple's fields are .__0, .__1 in Rust (as LLDB names them) and "
+                    "[0] in Python: " + re.sub(r"[.]([0-9]+)", r".__\1", text)
+                )
             raise ValueError(f"Invalid selector: {text}{_SELECTOR_HELP}{arrow}")
         if step["name"]:
             segments.append(step["name"])
@@ -553,9 +559,30 @@ def _read_rust_types():
 _READ_RUST_TYPES = _read_rust_types()
 
 
+def _rust_composite(kind):
+    """Whether a Rust Vec or slice holds tuples or structs Peeky may read: a tuple of
+    integer, bool, float or char elements, or a struct (only the build's debug info says
+    whether its fields are all such scalars). Nested containers, references, enums and
+    tuples of anything else are never read. `&Vec<T>` is `Vec<T> *`."""
+    from peeky.rust_symbols import ELEMENT_TYPES, composite_container
+
+    composite = composite_container(kind.removesuffix(" *"))
+    if composite is None:
+        return False
+    element = composite[1]
+    if element.startswith("("):
+        parts = element.removeprefix("(").removesuffix(")").removesuffix(",").split(", ")
+        return all(part in ELEMENT_TYPES for part in parts)
+    return not element.startswith(("alloc::", "core::", "std::", "&", "*", "[", "("))
+
+
 def _unread_rust(kind):
     """Whether a Rust container's elements are never read: `&Vec<T>` is `Vec<T> *`."""
-    return kind.startswith(_RUST_CONTAINERS) and kind.removesuffix(" *") not in _READ_RUST_TYPES
+    return (
+        kind.startswith(_RUST_CONTAINERS)
+        and kind.removesuffix(" *") not in _READ_RUST_TYPES
+        and not _rust_composite(kind)
+    )
 
 
 _OWNED_RUST = (
@@ -565,10 +592,19 @@ _OWNED_RUST = (
     "line (#53). Capture `.len` for the length, probe a line where it is live, or read it "
     "where it is passed as &Vec, &[T], &String or &str."
 )
+_COMPOSITE_RUST = (
+    "This Rust container of tuples or structs shows LLDB's summary, not its elements. "
+    "Peeky reads them only when every field is an integer, bool, float or char (the "
+    "build's debug info decides; no nested containers, references or enums), and an owned "
+    "Vec only where the build's MIR proves it initialized at the stop line, in the "
+    "innermost frame (#53). Capture `.len` for the length, probe a line where it is live "
+    "or read it where it is passed as &Vec or &[T], and check contents with `peeky verify`."
+)
 _UNREAD_RUST = (
     "Peeky reads Rust contents only for String, &str and containers of integer, bool, "
-    "float and char elements; this value is LLDB's summary (its type and address), not the "
-    "contents. "
+    "float and char elements (or of tuples of them, and structs of them your crate "
+    "defines); this value is LLDB's "
+    "summary (its type and address), not the contents. "
     "Capture `.len` for the length, and check contents with `peeky verify`."
 )
 _RUST_CONTAINERS = (
@@ -664,15 +700,28 @@ def _absence(variable, segment, children):
         elif _unread_rust(kind):
             message += (
                 f"; Peeky does not read {kind}'s elements: it reads Rust contents only for "
-                "String, &str and containers of integer, bool, float and char elements"
+                "String, &str and containers of integer, bool, float and char elements, "
+                "or of tuples, and structs your crate defines, whose fields are all such "
+                "scalars"
                 + (f". Capture {variable['name']}.{length} for the length" if length else "")
+            )
+        elif _rust_composite(kind):
+            message += (
+                f"; Peeky reads {kind}'s elements only when every field of the tuple or "
+                "struct is an integer, bool, float or char (the build's debug info decides), "
+                "and an owned Vec only where the build's MIR proves it initialized at the stop "
+                "line (innermost frame), with a debugger that supports readMemory"
+                + (f". Capture {variable['name']}.{length} for the length" if length else "")
+                + ", and check contents with `peeky verify`"
             )
         elif kind.startswith(_RUST_CONTAINERS):
             message += (
                 "; Peeky reads Rust contents only for reference parameters (&[T], &str, "
                 "&Vec<T>, &String, or &mut) and for owned Vec<T>/String locals the "
                 "build's MIR proves initialized at the stop line (innermost frame), where "
-                "T is an integer, bool, float or char type, with a "
+                "T is an integer, bool, float or char type (or a tuple, or a struct your "
+                "crate defines, of them), "
+                "with a "
                 "debugger that supports readMemory (lldb-dap from LLVM 20). This one stays "
                 "raw: a moved, dropped or not-yet-assigned local can still point at freed "
                 "memory"
@@ -888,6 +937,8 @@ def _capture(worker, stop, selectors, hit, phase, snapshot=None, children=False,
                     row["note"] = _OWNED_RUST
                 elif "view" not in variable and _unread_rust(str(variable.get("type"))):
                     row["note"] = _UNREAD_RUST
+                elif "view" not in variable and _rust_composite(str(variable.get("type"))):
+                    row["note"] = _COMPOSITE_RUST
             if "view" in variable:
                 row["view"] = variable["view"]
             if type(variable.get("settable")) is bool:
@@ -1400,7 +1451,7 @@ def run_probe(root, probe, *, adapter=None, progress=None):
             + ". --hits and --set-hit count every stop; the function column says which "
             "is which."
         )
-    for note in (_OWNED_RUST, _UNREAD_RUST):
+    for note in (_OWNED_RUST, _UNREAD_RUST, _COMPOSITE_RUST):
         if any(row.get("note") == note for row in rows):
             warnings.append(note)
     if changes and probe.limit > 1:

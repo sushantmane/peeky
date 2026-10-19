@@ -1140,3 +1140,41 @@ def test_a_probe_that_times_out_says_what_the_debugger_last_reported(monkeypatch
     result = probe_module.run_probe("/w", Probe("main.py", 8, ("x",), timeout=0.3))
     assert result["status"] == "timeout" and result["error"]["code"] == "TIMEOUT"
     assert result["debugger_events"]["recent"] == [{"event": "continued"}]
+
+
+@pytest.mark.parametrize(
+    "kind, composite, unread",
+    [
+        ("alloc::vec::Vec<(char, usize), alloc::alloc::Global>", True, False),
+        ("alloc::vec::Vec<(char, usize), alloc::alloc::Global> *", True, False),
+        ("alloc::vec::Vec<(i8), alloc::alloc::Global>", True, False),
+        ("&[demo::Interval]", True, False),
+        ("alloc::vec::Vec<demo::Pair<unsigned short>, alloc::alloc::Global>", True, False),
+        # Never read: a tuple with a non-scalar, nested containers, enums, std structs.
+        ("&[(i32, alloc::string::String)]", False, True),
+        ("&[((i32, i32), i32)]", False, True),
+        (
+            "alloc::vec::Vec<alloc::vec::Vec<int, alloc::alloc::Global>, alloc::alloc::Global>",
+            False,
+            True,
+        ),
+        ("alloc::vec::Vec<core::option::Option<u8>, alloc::alloc::Global>", False, True),
+        (
+            "alloc::vec::Vec<core::ops::range::Range<unsigned long>, alloc::alloc::Global>",
+            False,
+            True,
+        ),
+        # LLDB's spelling of a scalar Vec is not a composite (`Vec<int>` is Vec<i32>).
+        ("alloc::vec::Vec<int, alloc::alloc::Global>", False, False),
+        ("alloc::vec::Vec<char32_t, alloc::alloc::Global> *", False, False),
+    ],
+)
+def test_rust_containers_of_tuples_and_structs_are_told_apart(kind, composite, unread):
+    from peeky.probe import _rust_composite, _unread_rust
+
+    assert (_rust_composite(kind), _unread_rust(kind)) == (composite, unread)
+
+
+def test_a_numbered_field_selector_says_how_rust_names_tuple_fields():
+    with pytest.raises(ValueError, match=r"\.__0, \.__1 in Rust.*: runs\[0\]\.__0$"):
+        parse_selector("runs[0].0")
