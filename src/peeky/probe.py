@@ -468,17 +468,28 @@ def _resolve(worker, stop, snapshot, segments, pointers=False):
 
     for segment in segments[1:]:
         handle = variable.get("variablesReference", 0)
-        pointee = _c_pointee(variable) if pointers else None
-        if pointee is not None and segment.startswith("[") and _key(segment) is None:
-            first = first_page(handle) if handle else {"variables": []}
-            listed = [child for child in first["variables"] if child["name"] not in _GROUPS]
-            if _pointee(variable, first["variables"]) is None:
+        index_segment = pointers and segment.startswith("[") and _key(segment) is None
+        if index_segment and not handle and _null_pointer(variable):
+            raise ValueError(f"{path} is NULL: it points at nothing")
+        if index_segment and handle and not variable.get("unavailable"):
+            pointee = _c_pointee(variable)
+            unresolved = pointee is None and _unresolved_indirection(variable)
+            first = first_page(handle) if pointee is not None or unresolved else None
+            # A single `*p` child is a pointer to one scalar (#100), whatever its type's name.
+            if first is not None and _pointee(variable, first["variables"]) is None:
+                listed = [child for child in first["variables"] if child["name"] not in _GROUPS]
+                if unresolved:
+                    raise ValueError(
+                        f"{_shown(segment)} not read: {path} ({variable.get('type')}) shows as "
+                        "a pointer or a reference under a type name the build's debug "
+                        "information does not resolve, and C indexes the two differently; "
+                        "index the array where it is declared, or select fields with `.`"
+                    )
                 # #102: the debugger lists what a pointer to an array, a container or a
                 # struct points at as the pointer's own children. In C, p[0] is that
                 # pointee and p[1] the one after it, which no pointer's length tells.
-                _readable(variable, path, listed)
-                index = int(segment[1:-1])
-                if index == 0 and segment[1] != "-":
+                _readable(variable, path, pointee, listed)
+                if segment == "[0]":
                     variable = _dereferenced(variable, pointee)
                     path += segment
                     continue
@@ -1177,28 +1188,51 @@ def _c_pointee_type(kind):
     return None
 
 
+_BARE_ADDRESS = re.compile(r"0x([0-9a-fA-F]+)(?:\s|$)")
+
+
 def _c_pointee(variable):
     """What a C/C++ pointer variable points at (its type's name), or None: from its type
     as written, or for a typedef'd pointer from the build's debug information."""
     if (pointee := _c_pointee_type(variable.get("type"))) is not None:
         return pointee
-    found = variable.get("pointee_type")
-    return found if isinstance(found, str) else None
+    if variable.get("typedef_kind") == "pointer":
+        found = variable.get("pointee_type")
+        return found if isinstance(found, str) else ""
+    return None
 
 
-def _readable(variable, path, children):
-    """Refuse a pointer that points nowhere: NULL, or memory the debugger cannot read."""
-    address = re.match(r"0x([0-9a-fA-F]+)", str(variable.get("value") or ""))
+def _unresolved_indirection(variable):
+    """True for a value that shows as a bare address (a pointer or a reference) under a
+    type name with no `*` or `&` that the build's debug information does not resolve
+    (`std::vector<T>::pointer`, a typedef two units define differently)."""
+    kind = str(variable.get("type") or "")
+    return (
+        bool(kind)
+        and not re.search(r"[*&\[(]", kind)
+        and variable.get("typedef_kind") not in ("pointer", "reference", "other")
+        and bool(_BARE_ADDRESS.match(str(variable.get("value") or "")))
+    )
+
+
+def _null_pointer(variable):
+    address = _BARE_ADDRESS.match(str(variable.get("value") or ""))
+    return bool(address) and int(address[1], 16) == 0 and _c_pointee(variable) is not None
+
+
+def _readable(variable, path, pointee, children):
+    """Refuse a pointer that points nowhere: NULL, memory the debugger cannot read, or a
+    value it shows without an address."""
+    address = _BARE_ADDRESS.match(str(variable.get("value") or ""))
     if address and int(address[1], 16) == 0:
         raise ValueError(f"{path} is NULL: it points at nothing")
+    if not address:
+        raise ValueError(f"cannot tell where {path} points: the debugger shows no address")
     if children and all(child.get("unavailable") for child in children):
         reason = children[0].get("reason") or "unreadable"
         raise ValueError(f"cannot read what {path} points at (debugger: {reason})")
-    if not address or not children:
-        if _c_pointee_type(variable.get("type")) in (None, "void") and not variable.get(
-            "pointee_type"
-        ):
-            raise ValueError(f"{path} points at nothing the debugger can show")
+    if not children and re.sub(r"\b(?:const|volatile)\b", "", pointee).strip() in ("", "void"):
+        raise ValueError(f"{path} points at nothing the debugger can show")
 
 
 def _dereferenced(variable, pointee):
@@ -1209,7 +1243,7 @@ def _dereferenced(variable, pointee):
     summary = value[address.end() :].strip() if address else ""
     shown = {
         "name": f"*{variable['name']}",
-        "value": summary or (f"{pointee or 'pointee'} @ {address[0]}" if address else ""),
+        "value": summary or f"{pointee or '*' + variable['name']} @ {address[0]}",
         "type": pointee or None,
         "variablesReference": variable["variablesReference"],
     }
@@ -1229,7 +1263,8 @@ def _beyond_pointee(variable, path, pointee, segment, children):
         f"{what} it points at"
     )
     # Counting from the end needs a length the type states (`int[3]`).
-    if elements and (segment[1] != "-" or re.search(r"\[[0-9]+\]$", pointee or "")):
+    stated = re.search(r"\[[0-9]+\]$", pointee or "")
+    if elements and segment != "[-0]" and (segment[1] != "-" or stated):
         return message + f": read {path}[0]{segment} for its element"
     if elements:
         return message + f": read its elements from {path}[0][0]"

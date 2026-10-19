@@ -377,22 +377,32 @@ def _local_scope(linkage):
     return "::".join(names)
 
 
-def pointer_typedefs(info):
-    """{typedef name: the name of what it points at, or "" when unnamed}: typedefs and
-    C++ aliases (also through qualifiers and other typedefs) that name a pointer. lldb-dap
-    shows a variable of one by the typedef's name alone, as it shows a reference, so
-    `RowPtr rp` cannot be told from `RowRef rr` by its type (#102). A name some typedef
-    gives another type is left out."""
-    dies, found, others = _dies(info), {}, set()
+def typedef_kinds(info):
+    """{type name: ("pointer", the name of what it points at, or "") | ("reference", "")
+    | ("other", "") | ("unknown", "")}: what each typedef (or C++ alias) names, through
+    qualifiers and other typedefs. lldb-dap shows a variable of one by the typedef's name
+    alone, so `RowPtr rp` cannot be told from `RowRef rr` by its type (#102). A name for
+    two kinds (a struct and a pointer typedef, or typedefs in two units) is "unknown".
+    Plain names are taken only for typedefs at file or function scope; a namespace's or
+    class's are known by their qualified names."""
+    dies, found = _dies(info), {}
+
+    def note(name, kind):
+        if name:
+            found[name] = kind if found.get(name, kind) == kind else ("unknown", "")
+
     for offset, die in dies.items():
+        if die["tag"] in _RECORDS or die["tag"] == "DW_TAG_enumeration_type":
+            note(_text(die["attrs"].get("DW_AT_name")), ("other", ""))
+            continue
         if die["tag"] != "DW_TAG_typedef":
             continue
-        names = {_text(die["attrs"].get("DW_AT_name")), _qualified(dies, offset)} - {None}
-        target, pointee = die["attrs"].get("DW_AT_type"), None
+        target, kind = die["attrs"].get("DW_AT_type"), ("other", "")
         for _ in range(16):
             reference = _REFERENCE.fullmatch(target or "")
             inner = dies.get(int(reference[1], 16)) if reference else None
             if inner is None:
+                kind = ("unknown", "")
                 break
             if inner["tag"] in (
                 "DW_TAG_typedef",
@@ -402,15 +412,22 @@ def pointer_typedefs(info):
             ):
                 target = inner["attrs"].get("DW_AT_type")
                 continue
-            if inner["tag"] == "DW_TAG_pointer_type":
-                pointee = _type_name(dies, inner["attrs"].get("DW_AT_type")) or ""
+            if inner["tag"] in ("DW_TAG_reference_type", "DW_TAG_rvalue_reference_type"):
+                kind = ("reference", "")
+            elif inner["tag"] == "DW_TAG_pointer_type":
+                pointee = _REFERENCE.fullmatch(inner["attrs"].get("DW_AT_type") or "")
+                aimed = dies.get(int(pointee[1], 16)) if pointee else None
+                if aimed is not None and aimed["tag"] == "DW_TAG_subroutine_type":
+                    kind = ("other", "")  # a function pointer has no elements
+                else:
+                    kind = ("pointer", _type_name(dies, inner["attrs"].get("DW_AT_type")) or "")
             break
-        for name in names:
-            if pointee is None or name in others or found.get(name, pointee) != pointee:
-                others.add(name)
-                found.pop(name, None)
-            else:
-                found[name] = pointee
+        parent = dies.get(die["parent"], {}).get("tag")
+        if parent in (None, "DW_TAG_compile_unit", "DW_TAG_subprogram", "DW_TAG_lexical_block"):
+            note(_text(die["attrs"].get("DW_AT_name")), kind)
+        qualified = _qualified(dies, offset)
+        if qualified and qualified != _text(die["attrs"].get("DW_AT_name")):
+            note(qualified, kind)
     return found
 
 
@@ -1290,7 +1307,7 @@ class NativeTarget:
                     timeout=_remaining(deadline),
                 )
                 with _reusing_dies():
-                    typedefs = pointer_typedefs(info)
+                    typedefs = typedef_kinds(info)
                     declarations = (
                         None
                         if has_nonlocal_jumps(binary)
@@ -1426,7 +1443,7 @@ class NativeSession:
         self.target, self.prepared = target, prepared
         # local_declarations of the build; None (unknown) never withholds a value.
         self.declarations = declarations
-        # pointer_typedefs of the build: {} (unknown) treats no typedef as a pointer.
+        # typedef_kinds of the build: {} (unknown) resolves no typedef.
         self.typedefs = dict(typedefs or {})
         self.external_inputs = dict(external or {})
         self.binary, self.symbols, self.adapter = binary, symbols, adapter
@@ -1511,10 +1528,13 @@ class NativeSession:
             info, dump("--debug-line", MAX_METADATA), workspace, tuple(self.lines)
         )
 
-    def pointee_type(self, kind):
-        """What a typedef'd pointer type (`RowPtr`) points at (`int[3]`; "" unnamed), or
-        None: lldb-dap shows it by the typedef's name, as it shows a reference."""
-        return self.typedefs.get(kind) if isinstance(kind, str) else None
+    def typedef_kind(self, kind):
+        """(kind, pointee) for a type lldb-dap names by a typedef (`const RowPtr`): see
+        typedef_kinds; None for a name the build's debug information does not give."""
+        if not isinstance(kind, str):
+            return None
+        bare = re.sub(r"^(?:(?:const|volatile)\s+)+|(?:\s+(?:const|volatile))+$", "", kind.strip())
+        return self.typedefs.get(bare)
 
     def not_yet_declared(self, variable, frame):
         """Why a root local of ``frame`` has no value yet (declared below the stop), or

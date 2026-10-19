@@ -1404,10 +1404,13 @@ class DebugWorker:
                 output["value"] = None
             if kind is not None:
                 output["type"] = kind
-            pointee = getattr(self.runtime, "pointee_type", None)
-            if pointee and (target := pointee(kind)) is not None:
-                # A typedef'd C/C++ pointer: selectors index it as C does (#102).
-                output["pointee_type"] = target
+            resolve = getattr(self.runtime, "typedef_kind", None)
+            if resolve and (resolved := resolve(kind)) is not None:
+                # A C/C++ type named by a typedef: a pointer indexes as C does, a reference
+                # as its referent (#102).
+                output["typedef_kind"], pointee = resolved
+                if resolved[0] == "pointer":
+                    output["pointee_type"] = pointee
             shown = getattr(self.runtime, "display_type", None)
             if shown and (rust := shown(variable, frame, top=not ancestry)):
                 # The language's own name; the debugger's stays alongside.

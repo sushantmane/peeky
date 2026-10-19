@@ -848,8 +848,9 @@ def test_a_pointer_to_an_array_or_container_indexes_as_c_does(tmp_path, native_c
         (
             "aliases.cpp",
             ALIASES,
-            18,
-            "rp[0][1],rp[1],rr[1],vr[1],bigp[0][450],bigp[-1],ep[0],np[0],garbage[0]",
+            20,
+            "rp[0][1],rp[1],crp[0][1],rr[1],vr[1],bigp[0][450],bigp[-1],ep[0],np[0],"
+            "garbage[0],tp[1],dp[0],later[0]",
         ),
     ):
         (tmp_path / name).write_text(text)
@@ -877,6 +878,13 @@ def test_a_pointer_to_an_array_or_container_indexes_as_c_does(tmp_path, native_c
             assert rows["ep[0]"]["value"] == "size=0"
             assert "np is NULL" in rows["np[0]"]["error"]
             assert "cannot read what garbage points at" in rows["garbage[0]"]["error"]
+            # Review 2: the typedef behind lldb-dap's `const RowPtr` resolves; a template's
+            # member typedef does not, and is refused rather than indexed either way; a
+            # scalar pointer still reads; a pointer declared below the stop is not read.
+            assert rows["crp[0][1]"]["value"] == "2"
+            assert "does not resolve" in rows["tp[1]"]["error"]
+            assert rows["dp[0]"]["value"] == "7"
+            assert "has no value here" in rows["later[0]"]["error"]
     main(["session", "start", str(tmp_path / "rows.c"), "--at", "8"])
     capsys.readouterr()
     try:
@@ -924,13 +932,18 @@ int main() {
     int rows[2][3] = {{1, 2, 3}, {4, 5, 6}};
     std::vector<int> v{7, 8, 9}, big(500, 4), empty;
     std::vector<int> *bigp = &big, *ep = &empty;
+    std::vector<std::vector<int>> vv{{1, 2}, {3, 4}};
     RowPtr rp = rows;
+    const RowPtr crp = rows;
     RowRef rr = rows[0];
     VecRef vr = v;
+    std::vector<std::vector<int>>::pointer tp = vv.data();
+    std::vector<int>::pointer dp = v.data();
     pt *np = nullptr;
     int (*garbage)[3] = (int (*)[3])0x10;
-    int n = rp[1][0] + rr[1] + vr[1] + (int)bigp->size() + (int)ep->size();
-    n += (np ? 1 : 0) + (garbage ? 1 : 0);
+    int n = rp[1][0] + crp[1][0] + rr[1] + vr[1] + (int)bigp->size() + (int)ep->size();
+    int (*later)[3] = rows;
+    n += tp[1][0] + dp[0] + later[1][0] + (np ? 1 : 0) + (garbage ? 1 : 0);
     std::printf("%d\\n", n);
     return 0;
 }
