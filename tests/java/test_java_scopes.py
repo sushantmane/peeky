@@ -76,3 +76,42 @@ def test_classes_without_local_names_say_so(compiled):
     # Plain javac is -g:source,lines: methods with `this` or parameters have no names.
     with pytest.raises(ValueError, match="no local variable names.*compile with javac -g"):
         scopes(compiled())
+
+
+IMPLICIT = """package demo;
+public class H {
+  int p = 1;
+
+  int m() {
+    return p;
+  }
+
+  int q = 2;
+
+  Object anon() {
+    return new Object() {
+      int h = 3;
+      public String toString() {
+        return "x" + h;
+      }
+      int j = 4;
+    };
+  }
+}
+"""
+
+
+def test_an_implicit_constructor_never_spans_the_methods_between_fields(tmp_path):
+    # Review of #96: a class with no declared constructor ended on its last field.
+    javac = shutil.which("javac")
+    if not javac:
+        pytest.skip("javac is not installed")
+    (tmp_path / "demo").mkdir()
+    (tmp_path / "demo/H.java").write_text(IMPLICIT)
+    subprocess.run(
+        [javac, "-g", "-proc:none", "-d", "out", "demo/H.java"], cwd=tmp_path, check=True
+    )
+    found = scopes(tmp_path / "out")
+    assert found["H.<init>()V"][0] == [2, 3]
+    assert found["H$1.<init>(Ldemo/H;)V"][0] == [12, 13]
+    assert found["H.m()I"][0] == [6, 6]

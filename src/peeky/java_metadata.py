@@ -248,12 +248,14 @@ def _class_metadata(data, shared=None, scopes=None):
                     for name in dict.fromkeys(name for _, _, name in sorted(names))
                     if _SELECTABLE.fullmatch(name)
                 ]
-                scopes.append((method_name, descriptor, first, max(found), ordered))
+                scopes.append((method_name, descriptor, first, max(found), ordered, flags, found))
             for line in sorted(set(method_lines.values())):
                 # Class-file order, which is the order java-debug considers them in.
                 line_methods.setdefault(line, []).append((method_name, descriptor))
         if not flags & (0x0100 | 0x0400) and code_count != 1:
             raise ValueError("Missing Code attribute")
+    if scopes is not None:
+        _own_constructor_lines(scopes)
     source = None
     for name, body in attrs(reader):
         if name == "SourceDebugExtension":
@@ -278,6 +280,19 @@ def _class_metadata(data, shared=None, scopes=None):
     if not source or not source.endswith(".java") or any(c in source for c in "/\\\x00"):
         raise ValueError("Missing or unsupported SourceFile debug information")
     return internal, source, sorted(lines)
+
+
+def _own_constructor_lines(scopes):
+    """A constructor without a body of its own (implicit, or an anonymous class's) ends
+    on its last field initializer: end it before the next method declared after it, so
+    it never spans methods between fields. Synthetic methods (a lambda) do not count."""
+    starts = sorted(first for _, _, first, _, _, flags, _ in scopes if not flags & 0x1000)
+    for index, (method, descriptor, first, last, names, flags, found) in enumerate(scopes):
+        following = [start for start in starts if start > first]
+        if method == "<init>" and following:
+            own = [line for line in found if line < following[0]]
+            last = max(own) if own else last
+        scopes[index] = (method, descriptor, first, last, names)
 
 
 def java_scopes(mapping, classes_dir, workspace, limit=300):
