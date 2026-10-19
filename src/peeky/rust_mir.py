@@ -39,12 +39,45 @@ _LOCAL = re.compile(
     r"^ +let (?:mut )?_([0-9]+): (.*?); +// (?:return place )?in scope [0-9]+ at "
     r"([^:]+):([0-9]+):[0-9]+"
 )
-_DEBUG = re.compile(r"^ +debug (.+?) => (.+?); +// in scope [0-9]+ at ([^:]+):([0-9]+):[0-9]+")
+_DEBUG = re.compile(r"^ +debug (.+?) => (.+?); +// in scope ([0-9]+) at ([^:]+):([0-9]+):[0-9]+")
 _BLOCK = re.compile(r"^    bb([0-9]+)(?: \(cleanup\))?: \{$")
 # Greedy: the span comment is the line's last; a string constant may contain one too.
-_STATEMENT = re.compile(r"^        (.+;) +// scope [0-9]+ at (.+)$")
+_STATEMENT = re.compile(r"^        (.+;) +// scope ([0-9]+) at (.+)$")
+_SCOPE = re.compile(r"^ +scope ([0-9]+)(?: \(inlined .*\))? \{$")
 _SPAN = re.compile(r"^([^:]+):([0-9]+):[0-9]+")
+_SPAN_END = re.compile(r"^[^:]+:[0-9]+:[0-9]+: ([0-9]+):[0-9]+")
+# Statements that emit no code: a block's `()` value spans the whole block, and must not
+# put its scope on the closing `}` (`} else if b.x > 0`, where only the outer one is).
+_SPAN_ONLY = re.compile(
+    r"(?:StorageLive|StorageDead|FakeRead|PlaceMention|AscribeUserType|Retag|Coverage|nop)\b"
+    r"|_[0-9]+ = const \(\);|goto "
+)
 _WHOLE_LOCAL = re.compile(r"^_([0-9]+)$")
+
+
+def _projected_type(text):
+    """The type a binding through a projection names, `(_1.0: std::boxed::Box<Pt>)` ->
+    `std::boxed::Box<Pt>`: split at the projection's own `: `, outside its parentheses
+    (`(((*_36) as variant#3).0: T)`), since a type can hold `: ` itself
+    (`{closure@src/main.rs:27:22: 27:35}`). None for anything else."""
+    if text.startswith("(*(") and text.endswith("))"):
+        # A capture by reference, dereferenced: `(*((*_1).0: &T))` binds a `T`.
+        referent = _projected_type(text[2:-1])
+        found = re.fullmatch(r"&(?:mut )?(.+)", referent or "")
+        return found[1] if found else None
+    if not (text.startswith("(") and text.endswith(")")):
+        return None
+    inner, depth = text[1:-1], 0
+    for index, char in enumerate(inner):
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+        elif depth == 0 and inner.startswith(": ", index):
+            return inner[index + 2 :] or None
+    return None
+
+
 _MOVE = re.compile(r"\bmove\s+[(*]*_([0-9]+)\b")
 _ASSIGN = re.compile(r"^_([0-9]+) = ")
 _STORAGE = re.compile(r"^(?:StorageLive|StorageDead|Deinit)\(_([0-9]+)\);$")
@@ -71,12 +104,16 @@ class Body:
     arguments: frozenset
     file: str | None
     blocks: dict  # {number: Block}
-    bindings: dict  # {name: [(local or None, file, line)]}
+    # {name: [(local or None, file, line, type of a projection or None, scope)]}
+    bindings: dict
     supported: bool = True
     # Lines of every span in the body's own file (its own code, and the definitions of
     # same-file macros it expands).
     lines: frozenset = frozenset()
     types: dict = field(default_factory=dict)  # {local: its type as MIR prints it}
+    scopes: dict = field(default_factory=lambda: {0: None})  # {scope: its parent}
+    # {(file, line): the scopes of the statements with a span on that line}
+    line_scopes: dict = field(default_factory=dict)
     _entry: dict | None = None
 
     @property
@@ -95,16 +132,40 @@ class Body:
                 found.setdefault(target, set()).add(number)
         return found
 
-    def local(self, name, declared=None):
+    def local(self, name, declared=None, visible=None):
         """The MIR local an lldb-dap variable shows: `name`, or `name @ file:line` when
-        several are in scope. None without a single whole-local binding."""
+        several are in scope. Of a name bound more than once, the one binding in the
+        ``visible`` scopes, if there is one. None without a single whole-local binding."""
         bindings = self.bindings.get(name, [])
         if declared is not None:
             file, line = declared
             bindings = [b for b in bindings if Path(b[1]).name == file and b[2] == line]
+        bindings = self.in_scopes(bindings, visible)
         if len(bindings) != 1 or bindings[0][0] is None:
             return None
         return bindings[0][0]
+
+    def visible_scopes(self, line, path):
+        """The scopes of the statements on ``line`` of the frame's source ``path``, and
+        the scopes enclosing them: where a binding lldb-dap shows there is declared
+        (rustc's DWARF lexical blocks are these scopes). None if no statement is on it."""
+        shown = str(path or "").replace("\\", "/")
+        found = set()
+        for (file, number), scopes in self.line_scopes.items():
+            if number != line or not (shown == file or shown.endswith("/" + file)):
+                continue
+            for scope in scopes:
+                while scope is not None and scope not in found:
+                    found.add(scope)
+                    scope = self.scopes.get(scope)
+        return found or None
+
+    @staticmethod
+    def in_scopes(bindings, visible):
+        """The bindings declared in ``visible`` scopes; all of them if none is (or no
+        scope is known): never fewer than lldb-dap could be showing."""
+        kept = [binding for binding in bindings if visible is None or binding[4] in visible]
+        return kept or list(bindings)
 
     def initialized_throughout(self, local, blocks):
         """True if ``local`` is initialized on entry to each block and none of them
@@ -255,6 +316,28 @@ class Body:
         return entry
 
 
+_CLOSURE_SEGMENT = re.compile(r"_?\{+closure(?:#[0-9]+)?\}+")
+
+
+def _shape(segments):
+    """(the nearest named function, how many closures deep) of a path's segments."""
+    depth = 0
+    for segment in reversed(segments):
+        if _CLOSURE_SEGMENT.fullmatch(segment):
+            depth += 1
+            continue
+        return segment, depth
+    return None, depth
+
+
+def frame_shape(name):
+    """The shape of lldb-dap's frame name (`vb::outer::{{closure}}::{{closure}}`, or
+    escaped `_$u7b$$u7b$closure$u7d$$u7d$`, with a legacy hash or not)."""
+    text = str(name or "").replace("$u7b$", "{").replace("$u7d$", "}")
+    text = re.sub(r"::h[0-9a-f]{16}$", "", text)
+    return _shape(_segments(text))
+
+
 def _segments(path):
     """`<impl at src/a.rs:2:1: 2:11>::push` -> ['<impl at ...>', 'push']."""
     parts, depth, current = [], 0, ""
@@ -328,7 +411,7 @@ def parse_body(text):
     for argument in _top_level(header[2]):
         if found := re.fullmatch(r"_([0-9]+): (.+)", argument):
             body.types[int(found[1])] = found[2]
-    block, spans = None, []
+    block, spans, opened_scopes = None, [], [0]
     for line in lines[start + 1 :]:
         if line == "}":
             break
@@ -342,10 +425,26 @@ def parse_body(text):
             continue
         if debug := _DEBUG.match(line):
             whole = _WHOLE_LOCAL.match(debug[2])
+            # A binding through a projection (a closure's capture, an async local) has no
+            # whole local, but names its type: `(_1.0: std::boxed::Box<Pt>)`.
+            typed = None if whole else _projected_type(debug[2])
             body.bindings.setdefault(debug[1], []).append(
-                (int(whole[1]) if whole else None, debug[3], int(debug[4]))
+                (
+                    int(whole[1]) if whole else None,
+                    debug[4],
+                    int(debug[5]),
+                    typed,
+                    int(debug[3]),
+                )
             )
-            spans.append((debug[3], int(debug[4])))
+            spans.append((debug[4], int(debug[5])))
+            continue
+        if block is None and (scope := _SCOPE.match(line)):
+            body.scopes[int(scope[1])] = opened_scopes[-1]
+            opened_scopes.append(int(scope[1]))
+            continue
+        if block is None and len(opened_scopes) > 1 and re.fullmatch(r" +\}", line):
+            opened_scopes.pop()
             continue
         if opened := _BLOCK.match(line):
             block = body.blocks.setdefault(int(opened[1]), Block())
@@ -364,12 +463,20 @@ def parse_body(text):
         if not statement:
             body.supported = False
             continue
-        span = _SPAN.match(statement[2])
+        span = _SPAN.match(statement[3])
         block.statements.append(
             (statement[1], span[1] if span else None, int(span[2]) if span else None)
         )
         if span:
             spans.append((span[1], int(span[2])))
+            # Every line the span covers: rustc may put the code on a later one (a method
+            # call's on its name's line, `K\n.get()`, while its span starts at `K`).
+            end = _SPAN_END.match(statement[3])
+            last = int(span[2])
+            if end and int(end[1]) > last and not _SPAN_ONLY.match(statement[1]):
+                last = int(end[1])
+            for number in range(int(span[2]), last + 1):
+                body.line_scopes.setdefault((span[1], number), set()).add(int(statement[2]))
     if block is not None or not body.blocks or 0 not in body.blocks or body.file is None:
         body.supported = False
     body.lines = frozenset(number for file, number in spans if file == body.file)
@@ -415,7 +522,8 @@ _DEFINE = re.compile(r'^define .*?@("?)([^"(\s]+)\1\(.*!dbg (![0-9]+) \{$')
 _LEGACY_HASH = re.compile(r"17(h[0-9a-f]{16})E$")
 # A block codegen left unreachable (the dead arm of `if cfg!(debug_assertions)` in
 # `debug_assert!`) is labeled `; No predecessors!`.
-_LABEL = re.compile(r"^([-$._A-Za-z0-9]+):(?:\s+; (?:preds = (.*)|No predecessors!))?$")
+# LLVM quotes a label with characters such as `$` (an inlined `Box::new`'s exit block).
+_LABEL = re.compile(r'^([-$._A-Za-z0-9]+|"[^"]+"):(?:\s+; (?:preds = (.*)|No predecessors!))?$')
 _DBG = re.compile(r"!dbg (![0-9]+)")
 _META = re.compile(
     r"^(![0-9]+) = (?:distinct )?!(DILocation|DISubprogram|DILexicalBlock|DILexicalBlockFile"
@@ -504,10 +612,13 @@ def ir_functions(path, files):
                 current = None
                 continue
             if label := _LABEL.match(line.rstrip()):
-                current[4][0] = label[1]
-                current[2].setdefault(label[1], [])
+                name = label[1].strip('"')
+                current[4][0] = name
+                current[2].setdefault(name, [])
                 if label[2]:
-                    current[3][label[1]] = [p.strip().lstrip("%") for p in label[2].split(",")]
+                    current[3][name] = [
+                        p.strip().lstrip("%").strip('"') for p in label[2].split(",")
+                    ]
                 continue
             if "@llvm.dbg." in line or line.lstrip().startswith("#dbg_"):
                 continue
@@ -616,8 +727,22 @@ class OwnedLocals:
         self._matched[hashed] = found
         return found
 
-    @staticmethod
-    def _local(body, variable_name):
+    def _visible(self, body, line, path):
+        """The scopes a binding shown at ``line`` can be in, or None to keep them all.
+        A line that may invoke a macro runs code whose spans are in another file
+        (`eprintln!`'s, collapsed onto the line), in scopes no statement of this file
+        there shows: the stop can be in one of those."""
+        if line is None:
+            return None
+        # The stop's own file: a macro defined in another module, or `include!`d code,
+        # stops in this frame at another file's line.
+        shown = str(path or "").replace("\\", "/")
+        matched = [name for name in self.texts if shown == name or shown.endswith("/" + name)]
+        if len(matched) != 1 or may_invoke_macro(self.texts[matched[0]], line):
+            return None
+        return body.visible_scopes(line, path)
+
+    def _local(self, body, variable_name, line=None, path=None):
         name, at, declared = str(variable_name).partition(" @ ")
         where = None
         if at:
@@ -625,14 +750,66 @@ class OwnedLocals:
             if not number.isdigit():
                 return None
             where = (file, int(number))
-        return body.local(name, where)
+        return body.local(name, where, self._visible(body, line, path))
 
-    def declared_type(self, hashed, variable_name):
+    def declared_type(self, hashed, variable_name, line=None, path=None):
         """The MIR type of the frame's local ``variable_name`` (`std::vec::Vec<usize>`),
-        which LLDB's C-style names cannot tell apart (u64 and usize); else None."""
+        which LLDB's C-style names cannot tell apart (u64 and usize); else None. With the
+        stop's ``line`` and ``path``, a name bound more than once is the binding in scope
+        there, if only one is."""
         body = self.body(hashed)
-        local = self._local(body, variable_name) if body is not None else None
+        local = self._local(body, variable_name, line, path) if body is not None else None
         return None if local is None else body.types.get(local)
+
+    def binding_types(self, hashed, variable_name, path=None, line=None, closure=None, frame=None):
+        """The MIR type of every binding lldb-dap could be showing as ``variable_name``
+        (None for one whose type is not written out), in the frame's body. An async
+        body or an unmangled function is never matched for proofs; its types come from
+        the bodies whose code covers the stop line, of the frame's own shape when one
+        is (``frame``, lldb-dap's name: `outer::{{closure}}::{{closure}}` is the MIR's
+        `outer::{closure#0}::{closure#0}`). Empty when no body binds the name."""
+        name, at, declared = str(variable_name).partition(" @ ")
+        body = self.body(hashed)
+        shown = str(path or "").replace("\\", "/")
+        bodies = [body] if body is not None else []
+        if body is None:
+
+            def covers(candidate):
+                # A span covering the line counts, not only one starting there (`K\n.get()`
+                # has none starting on `.get()`'s line, while a nested item may); and in
+                # the stop's own file, which a `macro_rules!` from another module puts
+                # in a body of this file.
+                if line in candidate.lines and shown.endswith("/" + str(candidate.file)):
+                    return True
+                return any(
+                    number == line and (shown == file or shown.endswith("/" + file))
+                    for file, number in candidate.line_scopes
+                )
+
+            bodies = [
+                candidate
+                for candidate in self.bodies
+                if covers(candidate)
+                # A closure defined on the line is a body of its own, with its own
+                # captures of the frame's names: only bodies of the frame's kind count.
+                and (closure is None or candidate.name.startswith("{closure") == closure)
+            ]
+            # An outer async body's spans cover its nested `async { }` block's lines too
+            # (the coroutine's construction): the frame's own shape picks among them.
+            wanted = frame_shape(frame) if frame else None
+            shaped = [c for c in bodies if wanted and _shape(_segments(c.path)) == wanted]
+            bodies = shaped or bodies
+        found = []
+        for candidate in bodies:
+            # Only the bindings in scope on the stop line: a name `println!` or a sibling
+            # block binds (`args`, `q`) is not the one lldb-dap shows.
+            visible = self._visible(candidate, line, path)
+            bindings = candidate.in_scopes(candidate.bindings.get(name, ()), visible)
+            for local, file, number, projected, _ in bindings:
+                if at and f"{Path(file).name}:{number}" != declared:
+                    continue
+                found.append(candidate.types.get(local) if local is not None else projected)
+        return found
 
     def proven(self, hashed, variable_name, line, path):
         """True only if the frame's local ``variable_name`` (an lldb-dap name: `v`, or
@@ -648,7 +825,7 @@ class OwnedLocals:
         shown = str(path or "").replace("\\", "/")
         if [source for source in self.sources if shown.endswith("/" + source)] != [function.file]:
             return False
-        local = self._local(body, variable_name)
+        local = self._local(body, variable_name, line, path)
         blocks = function.mir_blocks(line)
         if local is None or blocks is None:
             return False
@@ -721,7 +898,13 @@ def may_invoke_macro(text, line):
     own = lines[line - 1]
     if "!" in own or "/*" in own or not own.isascii():
         return True
-    if not _PATH_END.search(own):
+    # A trailing `// comment` ends no path (`let n = x * 2; // doubled`), unless a quote
+    # before it may hold the `//`.
+    code, comment, after = own.partition("//")
+    # A quote before it may hold the `//`; a quote or `*/` after it, a string or block
+    # comment that began on an earlier line and closes here.
+    plain = comment and not any(mark in code for mark in "\"'") and '"' not in after
+    if not _PATH_END.search(code if plain and "*/" not in after else own):
         return False
     rest = "\n".join(lines[line:])
     following = rest[_PATH_TAIL.match(rest).end() :][:1]

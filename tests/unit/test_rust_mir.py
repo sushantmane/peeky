@@ -9,6 +9,7 @@ from peeky.rust_mir import (
     IrFunction,
     OwnedLocals,
     _segments,
+    frame_shape,
     ir_functions,
     may_invoke_macro,
     parse_body,
@@ -641,3 +642,137 @@ def test_arguments_take_their_types_from_the_header():
         3: "fn(u8) -> u8",
         4: "usize",
     }
+
+
+def test_projected_bindings_and_quoted_labels():
+    # Review of #103: a closure's or async body's binding through a projection names
+    # its type; LLVM quotes labels with `$` (an inlined `Box::new`'s exit block).
+    from peeky.rust_mir import _LABEL, _projected_type
+
+    assert _projected_type("(_1.0: std::boxed::Box<Pt>)") == "std::boxed::Box<Pt>"
+    assert _projected_type("(((*_36) as variant#3).0: (i32, char))") == "(i32, char)"
+    assert _projected_type("_3") is None
+    # Verification of #103: a closure's type holds `: ` itself.
+    closure = "(_1.0: std::boxed::Box<{closure@src/main.rs:27:22: 27:35}>)"
+    assert _projected_type(closure) == "std::boxed::Box<{closure@src/main.rs:27:22: 27:35}>"
+    # A capture by reference, dereferenced, binds the referent's type.
+    assert _projected_type("(*((*_1).0: &std::vec::Vec<&Pt>))") == "std::vec::Vec<&Pt>"
+    assert _projected_type("(*((*_1).1: &mut Pt))") == "Pt"
+    label = _LABEL.match('"_ZN5alloc5boxed12Box$LT$T$GT$3new17h01E.exit47":   ; preds = %start')
+    assert label[1] == '"_ZN5alloc5boxed12Box$LT$T$GT$3new17h01E.exit47"' and label[2] == "%start"
+
+
+def test_a_trailing_comment_ends_no_path():
+    # Verification of #103: `// doubled` read as a path that `println!` on the next line
+    # might complete, which turned off the scope narrowing for the line.
+    text = 'fn f() {\n    let n = args.count * 2; // doubled\n    println!("{}", n);\n}\n'
+    assert not may_invoke_macro(text, 2)
+    quoted = 'fn f() {\n    let s = "a // b"; // c\n    println!("{}", s);\n}\n'
+    assert may_invoke_macro(quoted, 2)
+
+
+MACRO_SIBLING = "\n".join(
+    [
+        "fn f(_1: &Pt) -> () {",
+        "    debug q => _1;                       // in scope 0 at src/main.rs:1:6: 1:7",
+        "    let mut _0: ();                      // return place in scope 0 at src/main.rs:1:20: 1:22",
+        "    let _2: std::boxed::Box<Pt>;         // in scope 0 at src/macros.rs:4:17: 4:18",
+        "    let _3: &Pt;                         // in scope 0 at src/macros.rs:9:50: 9:51",
+        "    scope 1 {",
+        "        debug b => _2;                   // in scope 1 at src/macros.rs:4:17: 4:18",
+        "    }",
+        "    scope 2 {",
+        "        debug b => _3;                   // in scope 2 at src/macros.rs:9:50: 9:51",
+        "    }",
+        "",
+        "    bb0: {",
+        "        _3 = copy _1;                    // scope 0 at src/macros.rs:9:54: 9:56",
+        "        _0 = const ();                   // scope 2 at src/macros.rs:9:60: 9:70",
+        "        return;                          // scope 0 at src/main.rs:12:2: 12:2",
+        "    }",
+        "}",
+        "",
+    ]
+)
+
+
+def test_scope_narrowing_reads_the_stop_s_own_file():
+    # Verification of #103: the macro check read the function's file at the stop's line,
+    # though a stop in a `macro_rules!` from another module (or `include!`d code) is at
+    # another file's line, where `eprintln!` may run in the dropped Box's scope.
+    body = parse_body(MACRO_SIBLING)
+    main = "\n" * 8 + "    let k = 1;\n" + "\n" * 4
+    shown = "/w/src/macros.rs"
+    for line_nine, narrowed in (
+        ('        eprintln!("dropped") } else { let b = q; }', False),
+        ("        let x = 1; } else { let b = q; }", True),
+    ):
+        macros = "\n" * 8 + line_nine + "\n" * 4
+        owned = OwnedLocals(
+            [body], {}, SOURCES, texts={"src/main.rs": main, "src/macros.rs": macros}
+        )
+        visible = owned._visible(body, 9, shown)
+        assert (visible is not None) is narrowed, (line_nine, visible)
+        kept = body.in_scopes(body.bindings["b"], visible)
+        assert len(kept) == (1 if narrowed else 2), kept
+
+
+@pytest.mark.parametrize(
+    "opening",
+    ['        let s = "x', '        let s = r#"x', "        /* x"],
+)
+def test_a_comment_mark_inside_a_multi_line_string_is_not_a_comment(opening):
+    # Verification of #103: a line that starts inside a string or block comment from the
+    # line before has a `//` that comments nothing out; its path end still counts.
+    closing = '"#' if "r#" in opening else ('"' if '"' in opening else " */")
+    text = f'fn f() {{\n{opening}\n// y{closing}; let b = 1; eprintln\n        !("{{}}", b);\n}}\n'
+    assert may_invoke_macro(text, 3)
+
+
+def test_a_statement_s_scope_counts_on_every_line_of_its_span():
+    # Verification of #103: a method call on its own line (`K\n.get()`) runs there, while
+    # its span starts at the receiver on the line before. A block's `()` value emits no
+    # code: its span (the whole block) never puts its scope on the closing `}` line.
+    body = parse_body(
+        "\n".join(
+            [
+                "fn f() -> () {",
+                "    let mut _0: ();                      // return place in scope 0 at src/main.rs:1:10: 1:12",
+                "    let _1: i64;                         // in scope 0 at src/main.rs:15:5: 15:6",
+                "    let _2: ();                          // in scope 0 at src/main.rs:20:5: 22:6",
+                "    scope 2 {",
+                "    }",
+                "    scope 3 {",
+                "    }",
+                "",
+                "    bb0: {",
+                "        _2 = const ();                   // scope 3 at src/main.rs:20:28: 22:6",
+                "        _1 = W::get(const K) -> [return: bb1, unwind continue]; // scope 2 at src/main.rs:15:78: 16:15",
+                "    }",
+                "",
+                "    bb1: {",
+                "        return;                          // scope 0 at src/main.rs:30:2: 30:2",
+                "    }",
+                "}",
+                "",
+            ]
+        )
+    )
+    assert 2 in body.line_scopes[("src/main.rs", 16)]
+    assert 2 in body.line_scopes[("src/main.rs", 15)]
+    assert 3 in body.line_scopes[("src/main.rs", 20)]
+    assert ("src/main.rs", 22) not in body.line_scopes
+
+
+@pytest.mark.parametrize(
+    "frame, shape",
+    [
+        ("vb::outer::{{closure}}::{{closure}}", ("outer", 2)),
+        ("outer::_$u7b$$u7b$closure$u7d$$u7d$::h0123456789abcdef", ("outer", 1)),
+        ("exported", ("exported", 0)),
+    ],
+)
+def test_a_frame_s_shape_is_its_function_and_closure_depth(frame, shape):
+    # Verification of #103: a fallback frame (async, unmangled) takes the bodies of its
+    # own shape, not an enclosing body whose spans cover a nested block's lines.
+    assert frame_shape(frame) == shape

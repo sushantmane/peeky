@@ -12,6 +12,7 @@ independent checker. Trusted code; not a sandbox.
 """
 
 import hashlib
+import itertools
 import json
 import re
 import shutil
@@ -45,7 +46,7 @@ from peeky.native import (
 )
 from peeky.rust_ir import ir_locals
 from peeky.rust_manifest import assert_cargo_ancestry_clear, validate_cargo_inputs
-from peeky.rust_mir import OwnedLocals, ir_functions, load_bodies
+from peeky.rust_mir import OwnedLocals, frame_shape, ir_functions, load_bodies
 from peeky.rust_symbols import (
     OWNED_CONTAINERS,
     RUST_METADATA,
@@ -736,6 +737,108 @@ def _frame_hash(frame):
     return re.search(r"::(h[0-9a-f]{16})$", str((frame or {}).get("name") or ""))
 
 
+def _holds_data_pointers(kind):
+    """Whether LLDB's type is a data pointer, or an array of them (`Pt *[2]`, which a
+    `[Box<Pt>; 2]` is too): what a Box may be. A fn pointer (`long (*)(long)`, `long
+    (*[2])(long)`) points at code, never at a Box's allocation."""
+    levels = list(itertools.dropwhile(lambda level: level == "array", _constructors(kind)))
+    return levels[:1] == ["pointer"] and levels[1:2] != ["function"]
+
+
+def _constructors(kind):
+    """What LLDB's C-style type is, outermost first, one of "pointer", "array" or
+    "function" per declarator level: `long (*[2])(long)` is an array of pointers to
+    functions, ["array", "pointer", "function"]; a plain type is []."""
+    text = _without_generics(kind).rstrip()
+    start = _declarator_start(text)
+    if start is None:
+        # No `(*…)` group: trailing stars and array suffixes (`Pt *[2]`, `Pt *const`).
+        tail = re.search(r"((?:\*\s*(?:const\b\s*)?)*)((?:\[\d*\]\s*)*)$", text)
+        return ["array"] * tail[2].count("[") + ["pointer"] * tail[1].count("*")
+    return _declarator(text[start:])
+
+
+def _declarator(text):
+    """A C abstract declarator's levels: `*`s, then an optional `(…)` group holding an
+    inner declarator, then suffixes (`[N]`, `(parameters)`). The inner declarator's
+    levels come first, then the suffixes', then the stars'."""
+    stars = re.match(r"(?:\s|\*|const\b|volatile\b|restrict\b)*", text)
+    rest = text[stars.end() :]
+    inner = []
+    if re.match(r"\(\s*\*", rest):
+        group = _group_at(rest, 0)
+        if group is None:
+            return []
+        inner, rest = _declarator(group), rest[len(group) + 2 :]
+    suffixes = []
+    while rest := rest.lstrip():
+        if rest[0] == "[" and "]" in rest:
+            suffixes.append("array")
+            rest = rest[rest.index("]") + 1 :]
+        elif rest[0] == "(" and (group := _group_at(rest, 0)) is not None:
+            suffixes.append("function")
+            rest = rest[len(group) + 2 :]
+        else:
+            break
+    return inner + suffixes + ["pointer"] * stars[0].count("*")
+
+
+def _without_generics(kind):
+    """LLDB's type name without generic arguments (`Vec<Pt *>` is `Vec`)."""
+    # `->` would close a generic's `<` (`W<(u8, fn() -> u8)>`).
+    text = str(kind or "").replace("->", " ")
+    while (stripped := re.sub(r"<[^<>]*>", "", text)) != text:
+        text = stripped
+    return text
+
+
+def _is_wide_box(kind):
+    """Whether LLDB's type is a wide Box (`alloc::boxed::Box<str>`, which LLDB names
+    itself) or an array of them; not a fn pointer returning one (`alloc::boxed::Box<dyn
+    Shape> (*[2])()`) or an array of references to one (`alloc::boxed::Box<str> *[2]`),
+    which LLDB's C-style names also begin with it."""
+    return bool(
+        re.fullmatch(r"alloc::boxed::Box\s*(?:\[\d+\]\s*)*", _without_generics(kind).strip())
+    )
+
+
+def _declarator_start(text):
+    """Where the declarator's `(*…)` group opens: the last one outside any parentheses or
+    brackets with a base type before it. A parameter list's `(*)` (`unsigned char
+    (*[2])(unsigned char (*)[4])`) never counts, nor does a tuple base that starts like
+    one (`(*const u8, i64) (*)[2]`). A `(` right after `)` opens a parameter list, which
+    can start like one too (`void (**)(*const [u8])`)."""
+    depth, last = 0, None
+    for at, char in enumerate(text):
+        if char in "([":
+            if (
+                depth == 0
+                and char == "("
+                and text[at + 1 :].lstrip().startswith("*")
+                and text[:at].strip()
+                and not text[:at].endswith(")")
+            ):
+                last = at
+            depth += 1
+        elif char in ")]":
+            depth -= 1
+    return last
+
+
+def _group_at(text, at):
+    """The contents of the parenthesized group that opens at ``at``."""
+    level = 0
+    for end in range(at, len(text)):
+        level += {"(": 1, ")": -1}.get(text[end], 0)
+        if level == 0:
+            return text[at + 1 : end]
+    return None
+
+
+# MIR types that do not own what they point at (`for<'a> fn(&'a T)` has a binder).
+_NON_OWNING = re.compile(r"&|\*const |\*mut |(?:for<[^<>]*> )?(?:unsafe )?(?:extern \S+ )?fn\(")
+
+
 class RustSession(NativeSession):
     def __init__(
         self,
@@ -891,6 +994,75 @@ class RustSession(NativeSession):
         )
         if container is not None:
             return container
+        if top and proofs is not None and self.target.opt_level == "0":
+            # An unmangled function (`#[no_mangle]`) has no hash: its bindings come from
+            # the bodies on the stop line, and nothing there is ever proven.
+            function = hashed[1] if hashed else None
+            source = ((frame or {}).get("source") or {}).get("path")
+            declared = (
+                proofs.declared_type(function, variable.get("name"), line, source)
+                if hashed
+                else None
+            )
+            types = (
+                [declared]
+                if declared is not None
+                else proofs.binding_types(
+                    function,
+                    variable.get("name"),
+                    source,
+                    line,
+                    # The frame's own shape: a `fn` nested in a closure or async body
+                    # (`af::{{closure}}::tw`) is not a closure itself.
+                    closure=frame_shape((frame or {}).get("name"))[1] > 0,
+                    frame=(frame or {}).get("name"),
+                )
+            )
+            # An array is judged by its elements (`[&Pt; 2]` is plain, `[Box<Pt>; 2]` owns).
+            plain = bool(types) and all(_NON_OWNING.match((t or "").lstrip("[")) for t in types)
+            # LLDB names a wide Box (`Box<str>`, `Box<[T]>`, `Box<dyn Trait>`) itself, even
+            # where the MIR says only `T`; a reference to one (`&Box<str>`) is not owning.
+            kind = variable.get("type")
+            wide = _is_wide_box(kind)
+            # A Box among a name's bindings counts only for a value that could be one (a
+            # data pointer or an array of them, or a wide Box): another binding of the name
+            # in a sibling block, arm or loop (`v: i64`, `a: [i64; 3]`, a fn pointer, a
+            # tuple holding a raw pointer) is not.
+            could_be_box = kind is None or wide or _holds_data_pointers(kind)
+            owning = (
+                could_be_box
+                and any(
+                    re.match(r"\[*(?:std::boxed::|alloc::boxed::)?Box<", t or "") for t in types
+                )
+            ) or (wide and not plain)
+            # What LLDB shows as a data pointer, or an array of them (`Pt *`, `unsigned char
+            # (*)[8]`, `long (**)()`, `Pt *[2]`), is read through only when the MIR says
+            # every binding is a reference, a raw pointer or a fn pointer (or an array of
+            # them): a generic `T`, `Self` or `impl Trait` may be a Box.
+            pointer = _holds_data_pointers(kind)
+            if (owning or (pointer and not plain)) and not (
+                innermost
+                and hashed
+                and proofs.proven(
+                    hashed[1],
+                    variable.get("name"),
+                    line,
+                    ((frame or {}).get("source") or {}).get("path"),
+                )
+            ):
+                # #101: a moved or dropped Box still holds its pointer, and LLDB would
+                # read the freed allocation as its fields. The pointer is shown; what it
+                # points at is not.
+                # Only the address: LLDB's summary of a `char *` (`Box<u8>`) is read
+                # through the pointer too.
+                address = re.match(r"0x[0-9a-fA-F]+", str(variable.get("value") or ""))
+                return {
+                    "name": variable.get("name"),
+                    "type": variable.get("type"),
+                    "value": address[0] if address else "<not shown: may point at freed memory>",
+                    "variablesReference": 0,
+                    "rust_view": "unproven",
+                }
         view = active_variant(variable, fetch, self.layouts)
         if view and view["rust_view"] == "active-variant" and self.target.opt_level != "0":
             # Optimized code may track an enum's tag and payload separately and LLDB

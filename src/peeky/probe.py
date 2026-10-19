@@ -476,6 +476,8 @@ def _resolve(worker, stop, snapshot, segments, pointers=False):
             shown = (
                 f"; value {value[:80]}" if isinstance(value, str) and "view" not in variable else ""
             )
+            if variable.get("view") == "unproven":
+                raise ValueError(f"cannot expand {variable['name']!r}: {_UNPROVEN_RUST}")
             raise ValueError(
                 f"cannot expand {variable['name']!r} ({variable.get('view', 'leaf')}{shown})"
             )
@@ -611,6 +613,15 @@ _COMPOSITE_RUST = (
     "Vec only where the build's MIR proves it initialized at the stop line, in the "
     "innermost frame (#53). Capture `.len` for the length, probe a line where it is live "
     "or read it where it is passed as &Vec or &[T], and check contents with `peeky verify`."
+)
+_UNPROVEN_RUST = (
+    "this Rust Box (or a pointer the build's MIR does not identify) shows only its pointer: "
+    "Peeky reads what it points at only where the build's MIR proves it initialized at the "
+    "stop line, in the innermost frame. Here it may be moved or dropped, or the MIR cannot "
+    "say (a generic `T`, `Self` or `impl Trait`, an async body, a closure's capture, an "
+    "unmangled `#[no_mangle]` function), so its pointer can reach freed memory (#101). A "
+    "plain function's own local reads on a line "
+    "where it is live; otherwise capture what it holds where it is created"
 )
 _UNREAD_RUST = (
     "Peeky reads Rust contents only for String, &str and containers of integer, bool, "
@@ -965,7 +976,9 @@ def _capture(
                         shown = None
                     if shown:
                         row["value"] = shown
-                if "view" not in variable and str(variable.get("type")) in _OWNED_RUST_TYPES:
+                if variable.get("view") == "unproven":
+                    row["note"] = _UNPROVEN_RUST[0].upper() + _UNPROVEN_RUST[1:] + "."
+                elif "view" not in variable and str(variable.get("type")) in _OWNED_RUST_TYPES:
                     row["note"] = _OWNED_RUST
                 elif "view" not in variable and _unread_rust(str(variable.get("type"))):
                     row["note"] = _UNREAD_RUST
@@ -1515,7 +1528,8 @@ def run_probe(root, probe, *, adapter=None, progress=None):
             + ". --hits and --set-hit count every stop; the function column says which "
             "is which."
         )
-    for note in (_OWNED_RUST, _UNREAD_RUST, _COMPOSITE_RUST):
+    unproven = _UNPROVEN_RUST[0].upper() + _UNPROVEN_RUST[1:] + "."
+    for note in (_OWNED_RUST, _UNREAD_RUST, _COMPOSITE_RUST, unproven):
         if any(row.get("note") == note for row in rows):
             warnings.append(note)
     if changes and probe.limit > 1:

@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 from pathlib import Path
 
 import pytest
@@ -493,6 +494,753 @@ def test_a_rust_reference_is_never_indexed_as_a_pointer(plain, capsys):
     code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "r[0]", "--quiet")
     row = result["rows"][0]
     assert "value" not in row and "carries no length" not in row["error"], row
+
+
+BOXES = """#[derive(Debug)]
+struct Pt {
+    x: i64,
+    y: i64,
+}
+
+fn consume(b: Box<Pt>) -> i64 {
+    b.x + b.y
+}
+
+fn main() {
+    let bp = Box::new(Pt { x: 1, y: 2 });
+    let bi = Box::new(41i32);
+    let live = Box::new(Pt { x: 7, y: 8 });
+    println!("{}", bp.x); // LIVE
+    let total = consume(bp) + *bi as i64;
+    drop(bi);
+    let later = vec![Pt { x: 1000, y: 2000 }, Pt { x: 3000, y: 4000 }];
+    let again = Box::new(555i32);
+    println!("{} {:?} {:?} {}", total, later, live, again); // HERE
+}
+"""
+
+
+@pytest.mark.timeout(300)
+def test_a_moved_or_dropped_box_shows_only_its_pointer(plain, capsys):
+    # #101: after `consume(bp)` and `drop(bi)`, LLDB read the freed allocations as
+    # their contents (`again` reuses `bi`'s, so `bi` would show 555).
+    (plain / "src/main.rs").write_text(BOXES)
+    at = f"src/main.rs:{line_of(BOXES, 'HERE')}"
+    capture = "bp,bp.x,bi,live,live.x"
+    code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", capture, "--quiet")
+    assert code == 0, result.get("error")
+    rows = {row["selector"]: row for row in result["rows"]}
+    for name in ("bp", "bi"):
+        assert rows[name]["view"] == "unproven" and "may be moved or dropped" in rows[name]["note"]
+        assert rows[name]["value"].startswith("0x")
+    assert "value" not in rows["bp.x"] and "freed memory" in rows["bp.x"]["error"]
+    assert rows["live.x"]["value"] == "7" and "view" not in rows["live"]
+    # Where the Box is live, its contents read as before.
+    at = f"src/main.rs:{line_of(BOXES, 'LIVE')}"
+    code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "bp.x", "--quiet")
+    assert result["rows"][0]["value"] == "1"
+
+
+BOX_PLACES = """#[derive(Debug)]
+struct Pt {
+    x: i64,
+    y: i64,
+}
+
+fn param(b: Box<Pt>) -> i64 {
+    let first = b.x;
+    drop(b);
+    let again = Box::new(Pt { x: 777, y: 888 });
+    first + again.x // PARAM
+}
+
+fn fresh() -> i64 {
+    let b = Box::new(Pt { x: 1, y: 2 });
+    println!("{}", b.x); // FRESH
+    b.y
+}
+
+fn twice() -> i64 {
+    let b = Box::new(Pt { x: 1, y: 2 });
+    drop(b);
+    let again = Box::new(Pt { x: 555, y: 0 });
+    let r = again.x; // TWICE
+    {
+        let b = 7i64;
+        r + b
+    }
+}
+
+fn main() {
+    let b = Box::new(Pt { x: 5, y: 6 });
+    let f = move || {
+        let first = b.x;
+        drop(b);
+        let again = Box::new(Pt { x: 999, y: 0 });
+        first + again.x // CLOSURE
+    };
+    println!("{} {} {} {}", param(Box::new(Pt { x: 10, y: 20 })), fresh(), twice(), f());
+}
+"""
+
+
+@pytest.mark.timeout(300)
+def test_boxes_in_parameters_closures_and_reused_names_are_gated(plain, capsys):
+    # Review of #103: a dropped Box parameter (MIR spells it `Box<Pt>`), a closure's
+    # captured Box and a name bound twice read freed memory; a fresh Box right after
+    # `Box::new` was hidden (LLVM quotes the inlined constructor's exit label).
+    (plain / "src/main.rs").write_text(BOX_PLACES)
+    for marker in ("PARAM", "TWICE", "CLOSURE", "FRESH"):
+        at = f"src/main.rs:{line_of(BOX_PLACES, marker)}"
+        code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "b,b.x", "--quiet")
+        assert code == 0, result.get("error")
+        rows = {row["selector"]: row for row in result["rows"]}
+        if marker == "FRESH":
+            assert rows["b.x"]["value"] == "1" and "view" not in rows["b"], rows
+        else:
+            assert rows["b"]["view"] == "unproven", (marker, rows["b"])
+            assert "value" not in rows["b.x"], (marker, rows["b.x"])
+
+
+BOX_REFS = """use std::future::Future;
+use std::pin::pin;
+use std::task::{Context, Poll, Waker};
+
+#[derive(Debug)]
+struct Item {
+    score: i64,
+}
+
+enum Expr {
+    Num(i64),
+    Add(Box<Expr>, Box<Expr>),
+    Mul(Box<Expr>, Box<Expr>),
+}
+
+fn total(items: &[Item]) -> i64 {
+    let mut sum = 0;
+    for item in items {
+        sum += item.score; // LOOP1
+    }
+    for item in items {
+        sum -= item.score / 2; // LOOP2
+    }
+    if let Some(item) = items.iter().find(|i| i.score > 20) {
+        sum += item.score; // IFLET
+    }
+    sum
+}
+
+fn eval(e: &Expr) -> i64 {
+    match e {
+        Expr::Num(n) => *n,
+        Expr::Add(l, r) => eval(l) + eval(r), // ADD
+        Expr::Mul(l, r) => eval(l) * eval(r),
+    }
+}
+
+async fn work(items: &[Item]) -> i64 {
+    let first = &items[0];
+    first.score + 1 // ASYNC
+}
+
+fn block_on<F: Future>(future: F) -> F::Output {
+    let mut future = pin!(future);
+    let mut cx = Context::from_waker(Waker::noop());
+    loop {
+        if let Poll::Ready(value) = future.as_mut().poll(&mut cx) {
+            return value;
+        }
+    }
+}
+
+fn main() {
+    let items = vec![Item { score: 11 }, Item { score: 21 }];
+    let bu = Box::new(7u8);
+    drop(bu);
+    let again = Box::new(*b"ZYXWVUTS");
+    let e = Expr::Add(Box::new(Expr::Num(2)), Box::new(Expr::Mul(Box::new(Expr::Num(3)), Box::new(Expr::Num(4)))));
+    println!("{} {} {} {:?}", total(&items), eval(&e), block_on(work(&items)), again); // MAIN
+}
+"""
+
+
+@pytest.mark.timeout(300)
+def test_references_stay_readable_and_a_gated_box_shows_only_its_address(plain, capsys):
+    # Verification of #103: references whose name is bound twice (two loops), or in an
+    # async body, were hidden; a dropped Box<u8>'s row kept LLDB's string summary, read
+    # through the freed pointer (a later Box's bytes).
+    (plain / "src/main.rs").write_text(BOX_REFS)
+    expected = {"LOOP1": "11", "LOOP2": "11", "IFLET": "21", "ASYNC": "11"}
+    for marker, value in expected.items():
+        at = f"src/main.rs:{line_of(BOX_REFS, marker)}"
+        selector = "first.score" if marker == "ASYNC" else "item.score"
+        code, result = run(
+            capsys, "probe", str(plain), "--at", at, "--capture", selector, "--quiet"
+        )
+        assert code == 0, result.get("error")
+        assert result["rows"][0].get("value") == value, (marker, result["rows"][0])
+    at = f"src/main.rs:{line_of(BOX_REFS, 'MAIN')}"
+    code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "bu", "--quiet")
+    row = result["rows"][0]
+    assert row["view"] == "unproven" and re.fullmatch(r"0x[0-9a-fA-F]+", row["value"]), row
+
+
+BOX_EDGES = """#[derive(Debug)]
+pub struct Pt {
+    x: i64,
+    y: i64,
+}
+
+fn consume(b: Box<Pt>) -> i64 {
+    b.x + b.y
+}
+
+#[unsafe(no_mangle)]
+pub fn exported(b: Box<Pt>) -> i64 {
+    let total = consume(b);
+    let again = Box::new(Pt { x: 777, y: 888 });
+    total + again.x // NOMANGLE
+}
+
+fn closures(n: i64) -> i64 {
+    let f: Box<dyn Fn(i64) -> i64> = Box::new(move |k| k + n);
+    let g = move || {
+        let r = f(1);
+        drop(f);
+        let reuse = Box::new(0x6666i64);
+        r + *reuse // CAPTURED
+    };
+    g()
+}
+
+fn main() {
+    println!("{} {}", exported(Box::new(Pt { x: 1, y: 2 })), closures(3));
+}
+"""
+
+
+@pytest.mark.timeout(300)
+def test_boxes_in_unmangled_functions_and_closure_types_are_gated(plain, capsys):
+    # Verification of #103: a `#[no_mangle]` frame has no hash, which skipped the gate;
+    # a captured `Box<dyn Fn>`'s MIR type holds `: ` (`{closure@src/main.rs:27:22: …}`),
+    # which was misparsed.
+    (plain / "src/main.rs").write_text(BOX_EDGES)
+    for marker, capture in (("NOMANGLE", "b,b.x"), ("CAPTURED", "f,f.pointer")):
+        at = f"src/main.rs:{line_of(BOX_EDGES, marker)}"
+        code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", capture, "--quiet")
+        assert code == 0, result.get("error")
+        first, second = result["rows"]
+        assert first["view"] == "unproven" and "value" not in second, (marker, result["rows"])
+
+
+BOX_MACROS = """macro_rules! touch {
+    () => {
+        crate::churn() // TOUCH
+    };
+}
+
+pub fn peer(b: &crate::Pt) -> i64 {
+    touch!() + b.x
+}
+"""
+
+BOX_GENERIC = """#[macro_use]
+mod macros;
+
+use std::fmt::Debug;
+use std::ops::Deref;
+
+#[derive(Debug)]
+pub struct Pt {
+    x: i64,
+    y: i64,
+}
+
+fn generic<T: Debug>(t: T) -> i64 {
+    println!("{:?}", t);
+    drop(t);
+    let reuse = Box::new(Pt { x: 777, y: 0 });
+    reuse.x // DROPPED_GENERIC
+}
+
+fn derefs<P: Deref<Target = Pt>>(p: P) -> i64 {
+    let v = p.x; // LIVE_DEREF
+    drop(p);
+    let reuse = Box::new(Pt { x: 555, y: 0 });
+    v + reuse.x // DROPPED_DEREF
+}
+
+fn wide<T: Debug>(w: T, s: T) -> usize {
+    println!("{:?} {:?}", w, s);
+    drop(w);
+    drop(s);
+    let reuse = Box::new([7u8; 8]);
+    reuse.len() // DROPPED_WIDE
+}
+
+fn grid<T: Debug>(g: T) -> usize {
+    drop(g);
+    let reuse = Box::new([[81u8; 4]; 2]);
+    reuse.len() // DROPPED_GRID
+}
+
+fn arrays<T: Debug>(a: T) -> usize {
+    drop(a);
+    let reuse = Box::new([&[81u8, 81][..], &[81u8, 81][..]]);
+    reuse.len() // DROPPED_ARRAYS
+}
+
+#[derive(Debug)]
+pub struct W<T> {
+    x: u8,
+    f: T,
+}
+
+fn one() -> u8 {
+    1
+}
+
+fn tuples<T: Debug, U: Debug>(t: T, w: U) -> usize {
+    drop(t);
+    drop(w);
+    let reuse = Box::new([0x309i64; 4]);
+    reuse.len() // DROPPED_TUPLES
+}
+
+fn fat_params<T: Debug, U: Debug>(t: T, u: U) -> usize {
+    drop(t);
+    drop(u);
+    let reuse = Box::new([0x309i64; 6]);
+    reuse.len() // DROPPED_FAT
+}
+
+fn thin_arrays<T: Debug>(t: T) -> usize {
+    drop(t);
+    let reuse = Box::new([0x309i64; 2]);
+    let again = Box::new([0x309i64; 2]);
+    reuse.len() + again.len() // DROPPED_THIN
+}
+
+fn plain_array() -> i64 {
+    let arr: [Box<Pt>; 2] = [Box::new(Pt { x: 1, y: 2 }), Box::new(Pt { x: 3, y: 4 })];
+    let n = arr[0].x; // LIVE_ARRAY
+    drop(arr);
+    let reuse = Box::new(Pt { x: 777, y: 777 });
+    n + reuse.x // DROPPED_PLAIN_ARRAY
+}
+
+fn rebound(n: i64) -> i64 {
+    let mut total = n;
+    {
+        let v = Box::new(Pt { x: 1, y: 2 });
+        total += v.x;
+    }
+    {
+        let v = 5i64;
+        total += std::hint::black_box(v); // REBOUND_INT
+    }
+    if total > 0 {
+        let a = [Box::new(Pt { x: 1, y: 2 }), Box::new(Pt { x: 3, y: 4 })];
+        total += a[0].x;
+    }
+    if total > 0 {
+        let a = [21i64, 22, 23];
+        total += a[1]; // REBOUND_ARRAY
+    }
+    {
+        let op = Box::new(Pt { x: 9, y: 9 });
+        total += op.x;
+    }
+    {
+        let op: fn() -> Box<dyn Debug> = make;
+        let anchor = 7u8;
+        let t: (*const u8, i64) = (&anchor as *const u8, 73);
+        total += t.1 + std::hint::black_box(op as usize as i64 & 0); // REBOUND_FN
+    }
+    {
+        let t = Box::new(Pt { x: 9, y: 9 });
+        total += t.y;
+    }
+    total
+}
+
+pub struct Args {
+    verbose: bool,
+    count: i64,
+}
+
+fn run(args: &Args) -> i64 {
+    let n = args.count * 2; // ARGS
+    if args.verbose {
+        println!("count is {}", n);
+    }
+    n
+}
+
+fn shadows(pts: &[Pt], n: i64) -> i64 {
+    let p = &pts[0];
+    let first = p.x; // BEFORE_SHADOW
+    let p = p.y + n;
+    {
+        let q = 5i64;
+        std::hint::black_box(q);
+    }
+    {
+        let q = &pts[1];
+        std::hint::black_box(q.x); // SIBLING
+    }
+    for r in pts {
+        std::hint::black_box(r.x); // LOOP_REF
+    }
+    let r = Pt { x: 9, y: 9 };
+    first + p + r.x
+}
+
+fn param(p: &Pt) -> i64 {
+    let total = p.x; // PARAM
+    {
+        let p = 9i64;
+        std::hint::black_box(p);
+    }
+    total
+}
+
+fn rebound_box(boxes: Vec<Box<Pt>>, pts: &[Pt]) -> i64 {
+    let mut total = 0;
+    for item in boxes {
+        total += item.x; // LIVE_REBOUND_BOX
+    }
+    for item in pts {
+        total += item.y;
+    }
+    total
+}
+
+fn churn() -> i64 {
+    Box::leak(Box::new(Pt { x: 777, y: 888 })).x
+}
+
+fn macro_sibling(q: &Pt, flag: bool) -> i64 {
+    let k;
+    let r = if flag {
+        let b = Box::new(Pt { x: 1, y: 2 });
+        drop(b);
+        k = churn();
+        eprintln!("dropped") } else { k = churn(); let b = q; std::hint::black_box(b.x); }; // MACRO_SIBLING
+    let _ = r;
+    k
+}
+
+#[derive(Clone, Copy)]
+pub struct Wrap(i64);
+
+impl Wrap {
+    fn get(self) -> i64 {
+        self.0
+    }
+}
+
+const KEPT: Wrap = Wrap(5);
+
+fn chain(q: &Pt, flag: bool) -> i64 {
+    let r = if flag { let b = Box::new(Pt { x: 1, y: 2 }); drop(b); churn(); KEPT
+        .get() } else { let b = q; std::hint::black_box(b.x) }; // CHAIN
+    r
+}
+
+fn iflet_elseif(b: &Pt, maybe: Option<Box<Pt>>) -> i64 {
+    let mut t = 0;
+    if let Some(b) = maybe {
+        t += b.x;
+    } else if b.x > 0 { // ELSE_IF_LET
+        t += 1;
+    }
+    t
+}
+
+#[unsafe(no_mangle)]
+pub fn unmangled_chain(n: i64) -> i64 {
+    let b = Box::new(Pt { x: 1, y: 2 }); drop(b); churn();
+    let r = KEPT
+        .get(); fn helper2(b: &Pt) -> i64 { b.x } // CHAINED_EXPORT
+    r + helper2(&Pt { x: n, y: 0 })
+}
+
+async fn outer_async(items: &[Pt]) -> i64 {
+    let p = Box::new(Pt { x: 1, y: 2 });
+    let inner = async {
+        let p = &items[1];
+        p.x + 1 // NESTED_ASYNC
+    };
+    inner.await + p.x
+}
+
+fn run_async<F: std::future::Future>(future: F) -> F::Output {
+    let mut future = std::pin::pin!(future);
+    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+    loop {
+        if let std::task::Poll::Ready(value) = future.as_mut().poll(&mut cx) {
+            return value;
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub fn nm_cross(n: i64) -> i64 {
+    let b = Box::new(Pt { x: 1, y: 2 });
+    drop(b);
+    churn();
+    let k = touch!();
+    n + k
+}
+
+macro_rules! twin {
+    ($q:expr) => {{
+        fn tw(b: Box<Pt>) -> i64 {
+            drop(b);
+            churn() + 0 } let b = $q; tw(Box::new(Pt { x: 1, y: 2 })) + b.x // TWIN
+    }};
+}
+
+async fn twin_a(q: &Pt) -> i64 {
+    twin!(q)
+}
+
+async fn twin_b(q: &Pt) -> i64 {
+    twin!(q)
+}
+
+fn make() -> Box<dyn Debug> {
+    Box::new(1u8)
+}
+
+fn factories() -> usize {
+    let label: Box<str> = Box::from("label");
+    let refs = [&label, &label];
+    let makers: [fn() -> Box<dyn Debug>; 2] = [make, make];
+    let f = move || {
+        refs.len() + makers.len() // FACTORIES
+    };
+    f()
+}
+
+fn wide_ref() -> usize {
+    let label: Box<str> = Box::from("label");
+    let held = &label;
+    let f = move || {
+        held.len() + 1 // WIDE_REF
+    };
+    f()
+}
+
+fn by_ref<T: Debug>(t: T) -> T {
+    println!("{:?}", t); // LIVE_GENERIC
+    t
+}
+
+fn px(p: &Pt) -> i64 {
+    p.x
+}
+
+fn h0(b: &[u8; 4]) -> u8 {
+    b[0]
+}
+
+fn closures(items: &[i64]) -> i64 {
+    let p = Pt { x: 10, y: 1 };
+    let refs = vec![&p, &p];
+    let fs: [fn(i64) -> i64; 2] = [|k| k * 2, |k| k + 1];
+    let g: fn(&Pt) -> i64 = px;
+    let hs: [fn(&[u8; 4]) -> u8; 2] = [h0, h0];
+    let total: i64 = items.iter().map(|k| k + refs.len() as i64 + fs[0](*k) + p.x).sum(); // CAPTURE
+    let inner = || {
+        g(&p) + hs[1](&[1; 4]) as i64 + refs.len() as i64 // INNER
+    };
+    total + inner()
+}
+
+#[unsafe(no_mangle)]
+pub fn exported(p: &Pt, items: &[i64]) -> i64 {
+    items.iter().map(|k| k + p.x).sum::<i64>() + p.y // UNMANGLED
+}
+
+fn main() {
+    let a = generic(Box::new(Pt { x: 1, y: 2 }));
+    let b = derefs(Box::new(Pt { x: 3, y: 4 }));
+    let r = by_ref(&Pt { x: 9, y: 9 });
+    let n = wide(Box::<str>::from("FREEDTXT"), Box::<str>::from("SECOND!!")) + grid(Box::new([[1u8; 4]; 2]));
+    let ones: [&[u8; 2]; 2] = [&[1, 1], &[1, 1]];
+    println!("{} {} {}", n, arrays(Box::new(ones)), wide_ref());
+    let pairs = [(std::ptr::null::<u8>(), 5i64), (std::ptr::null::<u8>(), 6i64)];
+    let ws = [W { x: 5u8, f: (1u8, one as fn() -> u8) }, W { x: 5u8, f: (2u8, one as fn() -> u8) }];
+    println!("{}", tuples(Box::new(pairs), Box::new(ws)));
+    fn takes(_: *const [u8]) {}
+    fn named(_: *const str) -> u8 {
+        0
+    }
+    let tables: [fn(*const str) -> u8; 2] = [named, named];
+    let boxes = [Box::new(Pt { x: 1, y: 2 }), Box::new(Pt { x: 3, y: 4 })];
+    println!("{} {} {}", thin_arrays(boxes), plain_array(), rebound(1));
+    let pts = [Pt { x: 1, y: 2 }, Pt { x: 3, y: 4 }];
+    let args = Args { verbose: true, count: 21 };
+    let owned = vec![Box::new(Pt { x: 5, y: 6 })];
+    println!("{} {} {} {}", run(&args), shadows(&pts, 1), param(&pts[1]), rebound_box(owned, &pts));
+    println!("{} {}", macro_sibling(&pts[0], true), chain(&pts[0], true));
+    println!("{} {}", iflet_elseif(&pts[1], None), unmangled_chain(4));
+    println!("{}", run_async(outer_async(&pts)));
+    let far = Pt { x: 41, y: 0 };
+    println!("{} {}", nm_cross(1), macros::peer(&pts[0]));
+    println!("{} {}", run_async(twin_a(&far)), run_async(twin_b(&far)));
+    println!("{} {}", fat_params(Box::new(takes as fn(*const [u8])), Box::new(tables)), factories());
+    println!("{} {} {:?} {} {}", a, b, r, closures(&[1, 2]), exported(&Pt { x: 10, y: 1 }, &[1, 2]));
+}
+"""
+
+
+@pytest.mark.timeout(300)
+def test_generic_boxes_are_gated_and_non_owning_values_read(plain, capsys):
+    # Verification of #103: a dropped Box held in a generic `T` or `P` was not gated
+    # (the MIR says `T`); values captured by reference and arrays of fn pointers, which
+    # LLDB names with a `*` inside, and an unmangled function's `&Pt` beside a closure,
+    # were hidden.
+    (plain / "src/macros.rs").write_text(BOX_MACROS)
+    (plain / "src/main.rs").write_text(BOX_GENERIC)
+    cases = {
+        "DROPPED_GENERIC": ("t", None),
+        "DROPPED_DEREF": ("p", None),
+        "LIVE_DEREF": ("p", "3"),
+        "LIVE_GENERIC": ("t", "9"),
+        "UNMANGLED": ("p", "10"),
+    }
+    for marker, (name, value) in cases.items():
+        at = f"src/main.rs:{line_of(BOX_GENERIC, '// ' + marker)}"
+        code, result = run(
+            capsys, "probe", str(plain), "--at", at, "--capture", f"{name},{name}.x", "--quiet"
+        )
+        assert code == 0, result.get("error")
+        whole, field = result["rows"]
+        if value is None:
+            assert whole["view"] == "unproven" and "value" not in field, (marker, result["rows"])
+        else:
+            assert field["value"] == value and "view" not in whole, (marker, result["rows"])
+    # Verification of #103: a wide Box (`Box<str>`, which LLDB names itself) and a 2-D
+    # array Box (`unsigned char (*)[2][4]`) held by a generic `T`.
+    for marker, capture in (
+        ("DROPPED_WIDE", "w,s"),
+        ("DROPPED_GRID", "g"),
+        ("DROPPED_ARRAYS", "a"),
+        # LLDB: `(*const u8, i64) (*)[2]` and `W<(u8, fn() -> u8)> (*)[2]`.
+        ("DROPPED_TUPLES", "t,w"),
+        # LLDB: `void (**)(*const [u8])`, `unsigned char (*(*)[2])(*const str)`.
+        ("DROPPED_FAT", "t,u"),
+        # `[Box<Pt>; 2]`, which LLDB names `Pt *[2]`, held by a generic and by its owner.
+        ("DROPPED_THIN", "t"),
+        ("DROPPED_PLAIN_ARRAY", "arr"),
+    ):
+        at = f"src/main.rs:{line_of(BOX_GENERIC, '// ' + marker)}"
+        code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", capture, "--quiet")
+        assert all(row.get("view") == "unproven" for row in result["rows"]), result["rows"]
+        assert not any("FREEDTXT" in str(row.get("value")) for row in result["rows"])
+    # A reference to a wide Box (LLDB: `alloc::boxed::Box<str> *`) does not own it.
+    at = f"src/main.rs:{line_of(BOX_GENERIC, '// WIDE_REF')}"
+    code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "held", "--quiet")
+    assert result["rows"][0].get("view") != "unproven", result["rows"]
+    at = f"src/main.rs:{line_of(BOX_GENERIC, '// CAPTURE')}"
+    code, result = run(
+        capsys, "probe", str(plain), "--at", at, "--capture", "refs.len,fs,p.x,g,hs", "--quiet"
+    )
+    rows = result["rows"]
+    assert rows[0].get("value") == "2" and rows[2].get("value") == "10", rows
+    # Verification of #103: a captured `fn(&Pt)` (MIR: `for<'a> fn(&'a Pt) -> i64`) and
+    # an array of fn pointers whose parameter LLDB names `unsigned char (*)[4]` read.
+    assert not any(row.get("view") for row in rows), rows
+    assert "px" in str(rows[3].get("value")), rows
+    assert "not shown" not in str(rows[4].get("value")), rows
+    # A Box bound to the same name in a sibling block does not hide an integer or an
+    # array of integers (verification of #103).
+    for marker, capture, value in (
+        ("REBOUND_INT", "v", "5"),
+        ("REBOUND_ARRAY", "a[1]", "22"),
+        ("REBOUND_FN", "t.__1", "73"),
+    ):
+        at = f"src/main.rs:{line_of(BOX_GENERIC, '// ' + marker)}"
+        code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", capture, "--quiet")
+        assert result["rows"][0].get("value") == value, (marker, result["rows"])
+    at = f"src/main.rs:{line_of(BOX_GENERIC, '// REBOUND_FN')}"
+    code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "op", "--quiet")
+    assert "make" in str(result["rows"][0].get("value")), result["rows"]
+    # Verification of #103: a reference was hidden when its name had another binding
+    # anywhere in the function: one `println!` binds (`args`), a later shadowing `let`, a
+    # sibling block, a later `let` after a loop, an inner block's. Only the bindings in
+    # scope on the stop line count; a Box bound twice is proven by the one in scope.
+    for marker, capture, value in (
+        ("ARGS", "args.count", "21"),
+        ("BEFORE_SHADOW", "p.x", "1"),
+        ("SIBLING", "q.x", "3"),
+        ("LOOP_REF", "r.x", "1"),
+        ("PARAM", "p.x", "3"),
+        ("LIVE_REBOUND_BOX", "item.x", "5"),
+    ):
+        at = f"src/main.rs:{line_of(BOX_GENERIC, '// ' + marker)}"
+        code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", capture, "--quiet")
+        assert result["rows"][0].get("value") == value, (marker, result["rows"])
+    # Verification of #103: `eprintln!`'s code runs on its line in the dropped Box's
+    # block, with spans in std's macros.rs, so no statement of this file shows that scope:
+    # a line that may invoke a macro keeps every binding.
+    at = f"src/main.rs:{line_of(BOX_GENERIC, '// MACRO_SIBLING')}"
+    code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "b", "--quiet")
+    assert result["rows"][0].get("view") == "unproven", result["rows"]
+    # Verification of #103: `.get()` on its own line runs in the dropped Box's block,
+    # while its statement's span starts at `KEPT` on the line before.
+    at = f"src/main.rs:{line_of(BOX_GENERIC, '// CHAIN')}"
+    code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "b", "--quiet")
+    assert result["rows"][0].get("view") == "unproven", result["rows"]
+    # Verification of #103: a block's `()` value (the whole `if let` block's span) put
+    # the binding's scope on `} else if b.x > 0`, hiding the parameter; and an unmangled
+    # frame's bodies were picked by spans starting on the line, so `.get()`'s line found
+    # only a nested `fn`'s `&Pt` binding of the name.
+    at = f"src/main.rs:{line_of(BOX_GENERIC, '// ELSE_IF_LET')}"
+    code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "b.x", "--quiet")
+    assert result["rows"][0].get("value") == "3", result["rows"]
+    at = f"src/main.rs:{line_of(BOX_GENERIC, '// CHAINED_EXPORT')}"
+    code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "b", "--quiet")
+    assert result["rows"][0].get("view") == "unproven", result["rows"]
+    # Verification of #103: the outer async body's spans cover the nested `async { }`
+    # block's lines, so its `p: Box<Pt>` hid the inner `p: &Pt`; the frame's own shape
+    # (`outer_async::{{closure}}::{{closure}}`) picks the body.
+    at = f"src/main.rs:{line_of(BOX_GENERIC, '// NESTED_ASYNC')}"
+    code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "p.x", "--quiet")
+    assert result["rows"][0].get("value") == "3", result["rows"]
+    # Verification of #103: an unmangled frame stopped in a macro from another file
+    # found only that file's bodies (a `peer(b: &Pt)`), not its own; and a `fn` nested in
+    # an async body (`twin_a::{{closure}}::tw`) was taken for a closure, so its own body
+    # was skipped for the async bodies' `b: &Pt`.
+    at = f"src/macros.rs:{line_of(BOX_MACROS, '// TOUCH')}"
+    code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "b", "--quiet")
+    assert result["rows"][0].get("view") == "unproven", result["rows"]
+    at = f"src/main.rs:{line_of(BOX_GENERIC, '// TWIN')}"
+    code, result = run(
+        capsys, "probe", str(plain), "--at", at, "--capture", "b,b.x", "--hits", "all", "--quiet"
+    )
+    read = [row.get("value") for row in result["rows"] if row["selector"] == "b.x"]
+    assert read and all(value in (None, "41") for value in read), result["rows"]
+    at = f"src/main.rs:{line_of(BOX_GENERIC, '// LIVE_ARRAY')}"
+    code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "arr[0].x", "--quiet")
+    assert result["rows"][0].get("value") == "1", result["rows"]
+    # Arrays of fn pointers returning a Box, and of references to one, own no Box.
+    at = f"src/main.rs:{line_of(BOX_GENERIC, '// FACTORIES')}"
+    code, result = run(
+        capsys, "probe", str(plain), "--at", at, "--capture", "refs,makers", "--quiet"
+    )
+    assert code == 0 and not any(row.get("view") for row in result["rows"]), result
+    assert not any("not shown" in str(row.get("value")) for row in result["rows"]), result
+    at = f"src/main.rs:{line_of(BOX_GENERIC, '// INNER')}"
+    code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "g,hs", "--quiet")
+    assert code == 0, result.get("error")
+    g, hs = result["rows"]
+    assert "view" not in g and "px" in str(g.get("value")), result["rows"]
+    assert "view" not in hs and "not shown" not in str(hs.get("value")), result["rows"]
 
 
 SPANS = """#[derive(Debug, Clone, Copy, PartialEq)]
