@@ -667,3 +667,14 @@ The verification (3272874) found nothing wrong. All five repros behave:
 - lists of 400 and 1000 slots fall back to their fields, and the session keeps working.
 
 Callers without a deadline keep the old 20 s and 30 s limits.
+
+## Review of Rust char elements (#95, bb49268)
+
+Checked and found sound:
+- **Rendering:** `rust_char_debug` matches real Rust 1.96 `{:?}` for all 1,112,064 scalar values. The surrogate gap splits the table correctly, and `"` prints as `'"'`.
+- **Element types:** none of the tables derived from `ELEMENT_TYPES` changes harmfully. `Vec<i8>` (LLDB's `Vec<char, …>`) and `Vec<char>` (DWARF's) read correctly side by side, including `&mut` forms.
+- **Containers:** `.len`, `.capacity`, `a[-1]` and the `(first k of N)` cut behave as for other elements, and spare capacity is never read.
+
+| # | Finding | Severity | Disposition |
+| --- | --- | --- | --- |
+| 1 | The table generator ran the pinned `cargo` without `RUSTC`, so it built with whatever `rustc` PATH picked (the rustup default), while stamping the table with cargo's version. A default other than 1.96 would silently produce a wrong table that the version test still accepts. | Medium | **Fixed:** `generate(cargo, rustc)` builds with `RUSTC` set and refuses if cargo's and rustc's versions differ. The Rust lanes now regenerate the table and compare it with the shipped one (`test_the_char_table_is_what_the_pinned_rust_prints`). |

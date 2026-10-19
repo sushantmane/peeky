@@ -241,3 +241,24 @@ def _reads_memory(plain, capsys):
     at = f"src/main.rs:{line_of(CHARVEC, 'OWNED')}"
     _, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "word", "--quiet")
     return result["rows"][0].get("view") == "memory"
+
+
+@pytest.mark.timeout(300)
+def test_the_char_table_is_what_the_pinned_rust_prints():
+    # Review of #95: the table must come from the pinned toolchain itself; regenerate
+    # it here and compare (scripts/rust_char_table.py).
+    import importlib.util
+
+    for name in ("CARGO", "RUSTC"):
+        if not os.environ.get("PEEKY_RUST_" + name):
+            pytest.skip("set PEEKY_RUST_* tool paths to enable Rust conformance")
+    script = Path(__file__).resolve().parents[2] / "scripts/rust_char_table.py"
+    spec = importlib.util.spec_from_file_location("rust_char_table", script)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    from peeky.rust_chars import ESCAPED, RUST_VERSION, UNICODE_VERSION
+
+    version, unicode, ranges = module.generate(
+        os.environ["PEEKY_RUST_CARGO"], os.environ["PEEKY_RUST_RUSTC"]
+    )
+    assert (version, unicode, ranges) == (RUST_VERSION, UNICODE_VERSION, ESCAPED)
