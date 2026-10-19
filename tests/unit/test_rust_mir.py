@@ -776,3 +776,59 @@ def test_a_frame_s_shape_is_its_function_and_closure_depth(frame, shape):
     # Verification of #103: a fallback frame (async, unmangled) takes the bodies of its
     # own shape, not an enclosing body whose spans cover a nested block's lines.
     assert frame_shape(frame) == shape
+
+
+OWNERS = "\n".join(
+    [
+        "fn f(_1: &[Pt], _2: Vec<Pt>) -> () {",
+        "    debug pts => _1;                     // in scope 0 at src/main.rs:1:6: 1:9",
+        "    debug v => _2;                       // in scope 0 at src/main.rs:1:20: 1:21",
+        "    let mut _0: ();                      // return place in scope 0 at src/main.rs:1:30: 1:32",
+        "    let _3: &Pt;                         // in scope 0 at src/main.rs:2:9: 2:10",
+        "    let _4: usize;                       // in scope 0 at src/main.rs:2:13: 2:20",
+        "    let _5: &Pt;                         // in scope 0 at src/main.rs:3:9: 3:14",
+        "    let _6: &Vec<Pt>;                    // in scope 0 at src/main.rs:3:17: 3:18",
+        "    let _7: std::boxed::Box<Pt>;         // in scope 0 at src/main.rs:4:9: 4:10",
+        "    let _8: &Pt;                         // in scope 0 at src/main.rs:5:9: 5:15",
+        "    let _9: {closure@src/main.rs:5:30: 5:33}; // in scope 0 at src/main.rs:5:30: 5:33",
+        "    let _10: &Pt;                        // in scope 0 at src/main.rs:6:9: 6:10",
+        "    scope 1 {",
+        "        debug p => _3;                   // in scope 1 at src/main.rs:2:9: 2:10",
+        "        debug first => _5;               // in scope 1 at src/main.rs:3:9: 3:14",
+        "        debug b => _7;                   // in scope 1 at src/main.rs:4:9: 4:10",
+        "        debug leaked => _8;              // in scope 1 at src/main.rs:5:9: 5:15",
+        "        debug r => _10;                  // in scope 1 at src/main.rs:6:9: 6:10",
+        "    }",
+        "",
+        "    bb0: {",
+        "        _4 = const 0_usize;              // scope 0 at src/main.rs:2:17: 2:18",
+        "        _3 = &(*_1)[_4];                 // scope 0 at src/main.rs:2:13: 2:20",
+        "        _6 = &_2;                        // scope 1 at src/main.rs:3:17: 3:18",
+        "        _5 = <Vec<Pt> as Index<usize>>::index(move _6, const 0_usize) -> [return: bb1, unwind continue]; // scope 1 at src/main.rs:3:17: 3:21",
+        "    }",
+        "",
+        "    bb1: {",
+        "        _9 = {closure@src/main.rs:5:30: 5:33}; // scope 1 at src/main.rs:5:30: 5:33",
+        "        _8 = Box::<Pt>::leak(move _7, move _9) -> [return: bb2, unwind continue]; // scope 1 at src/main.rs:5:18: 5:40",
+        "    }",
+        "",
+        "    bb2: {",
+        "        _10 = &(*_7);                    // scope 1 at src/main.rs:6:13: 6:16",
+        "        return;                          // scope 0 at src/main.rs:7:2: 7:2",
+        "    }",
+        "}",
+        "",
+    ]
+)
+
+
+def test_a_reference_s_owners_are_the_locals_it_points_into():
+    # #110: a reference reads only while what owns its referent is initialized. An index
+    # is not borrowed (`&(*_1)[_4]`); a call's result points only into what it borrows
+    # (`index(move _6, ..)` with `_6 = &_2`), not into an owned value moved into it
+    # (`Box::leak`); a reference argument's referent is outside the frame.
+    body = parse_body(OWNERS)
+    assert body.owners(body.local("p")) == set()
+    assert body.owners(body.local("first")) == {2}
+    assert body.owners(body.local("leaked")) == set()
+    assert body.owners(body.local("r")) == {7}

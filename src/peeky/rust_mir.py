@@ -53,6 +53,14 @@ _SPAN_ONLY = re.compile(
     r"|_[0-9]+ = const \(\);|goto "
 )
 _WHOLE_LOCAL = re.compile(r"^_([0-9]+)$")
+_WHOLE_ASSIGNMENT = re.compile(r"^_([0-9]+) = (.+);$")
+# A local's mention in a statement (`move _11`, `(*_43)`); never part of a number or
+# a name (`0_usize`, `bar_2`).
+_MENTIONED = re.compile(r"(?<![\w])_([0-9]+)\b")
+_INDEX = re.compile(r"\[_[0-9]+\]")
+# A type that borrows: a reference, a raw pointer, one holding a lifetime, or a closure
+# or coroutine (whose captures may be references).
+_BORROWING = re.compile(r"&|\*const |\*mut |'|\{closure@|\{coroutine@|\{async")
 
 
 def _projected_type(text):
@@ -114,6 +122,7 @@ class Body:
     scopes: dict = field(default_factory=lambda: {0: None})  # {scope: its parent}
     # {(file, line): the scopes of the statements with a span on that line}
     line_scopes: dict = field(default_factory=dict)
+    _assigned: dict | None = None
     _entry: dict | None = None
 
     @property
@@ -144,6 +153,59 @@ class Body:
         if len(bindings) != 1 or bindings[0][0] is None:
             return None
         return bindings[0][0]
+
+    def owners(self, local, limit=128):
+        """The locals that own what ``local`` (a reference or raw pointer) may point
+        into, followed back through the temps and borrowing locals it was made from
+        (`&(*_43)`, `_43 = copy ((_3.0: Unique<Pt>).0: NonNull<Pt>) as *const Pt`,
+        `Index::index(move _11, ..)` with `_11 = &_2`). A local whose type borrows (`&`,
+        a raw pointer, a lifetime: `Option<&T>`, `Iter<'_, T>`) is followed; any other
+        is an owner. An argument that borrows points outside the frame: nothing to
+        prove. None when not understood (a local assigned only in parts)."""
+        assigned = self._assignments()
+        bindings = {binding[0] for found in self.bindings.values() for binding in found}
+        owners, seen, pending = set(), set(), [local]
+        while pending:
+            current = pending.pop()
+            if current in seen:
+                continue
+            seen.add(current)
+            if len(seen) > limit:
+                return None
+            borrows = bool(_BORROWING.search(self.types.get(current) or ""))
+            if current in self.arguments:
+                if not borrows:
+                    owners.add(current)
+                continue
+            if current != local and not borrows:
+                owners.add(current)
+                continue
+            if current in bindings and current != local and not assigned.get(current):
+                return None
+            texts = assigned.get(current)
+            if not texts:
+                return None
+            for text in texts:
+                # A call's result can point only into what it borrows: an owned value
+                # moved into it is the callee's (`Box::leak`), not the frame's.
+                call = " -> [" in text or text.endswith("-> unwind continue")
+                # An index (`&(*_1)[_7]`) selects within the place, it is not borrowed.
+                for found in _MENTIONED.findall(_INDEX.sub("[]", text)):
+                    mentioned = int(found)
+                    if call and not _BORROWING.search(self.types.get(mentioned) or ""):
+                        continue
+                    pending.append(mentioned)
+        return owners
+
+    def _assignments(self):
+        """{local: [what is assigned to it whole]}: `_5 = &(*_43);` and calls."""
+        if self._assigned is None:
+            self._assigned = {}
+            for block in self.blocks.values():
+                for text, _, _ in block.statements:
+                    if found := _WHOLE_ASSIGNMENT.match(text):
+                        self._assigned.setdefault(int(found[1]), []).append(found[2])
+        return self._assigned
 
     def visible_scopes(self, line, path):
         """The scopes of the statements on ``line`` of the frame's source ``path``, and
@@ -820,19 +882,43 @@ class OwnedLocals:
         The stop must be in the function's own file: a breakpoint in a macro defined in
         another file (or `include!`d code) stops in this frame at another file's line.
         """
+        site = self._site(hashed, line, path)
+        if site is None:
+            return False
+        local = self._local(site[0], variable_name, line, path)
+        return local is not None and self._initialized(site, local, line)
+
+    def owners_proven(self, hashed, variable_name, line, path):
+        """For the frame's reference or raw pointer ``variable_name``: True if every
+        local owning what it may point into is initialized at ``line`` (or it points
+        only outside the frame), False if one may be moved or dropped there (#110), None
+        if that cannot be told (the trace or the site is not understood)."""
+        site = self._site(hashed, line, path)
+        if site is None:
+            return None
+        local = self._local(site[0], variable_name, line, path)
+        owners = site[0].owners(local) if local is not None else None
+        if owners is None:
+            return None
+        return all(self._initialized(site, owner, line) for owner in owners)
+
+    def _site(self, hashed, line, path):
+        """(body, function, the line's blocks, their merges) for a proof at ``line``."""
         body = self.body(hashed)
         function = self.functions.get(hashed)
         if body is None or function is None or type(line) is not int:
-            return False
+            return None
         shown = str(path or "").replace("\\", "/")
         if [source for source in self.sources if shown.endswith("/" + source)] != [function.file]:
-            return False
-        local = self._local(body, variable_name, line, path)
+            return None
         blocks = function.mir_blocks(line)
-        if local is None or blocks is None:
-            return False
+        if blocks is None:
+            return None
         shared = _shared(body, function, blocks)
-        blocks = set(shared)
+        return body, function, set(shared), shared
+
+    def _initialized(self, site, local, line):
+        body, function, blocks, shared = site
         if not self.precise:
             return body.initialized_throughout(local, blocks)
         return body.initialized_at(

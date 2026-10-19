@@ -1011,6 +1011,20 @@ async fn twin_b(q: &Pt) -> i64 {
     twin!(q)
 }
 
+fn dangling(q: &Pt) -> i64 {
+    let b = Box::new(Pt { x: 1, y: 2 });
+    let r = &*b;
+    let rp: *const Pt = &*b;
+    let v = vec![Pt { x: 3, y: 4 }];
+    let first = &v[0];
+    let total = r.x + first.y + q.x;
+    std::hint::black_box(total); // LIVE_REFS
+    drop(b);
+    drop(v);
+    let again = churn();
+    std::hint::black_box(again + q.x + rp as usize as i64 * 0) // DANGLING_REFS
+}
+
 fn make() -> Box<dyn Debug> {
     Box::new(1u8)
 }
@@ -1092,6 +1106,7 @@ fn main() {
     let far = Pt { x: 41, y: 0 };
     println!("{} {}", nm_cross(1), macros::peer(&pts[0]));
     println!("{} {}", run_async(twin_a(&far)), run_async(twin_b(&far)));
+    println!("{}", dangling(&far));
     println!("{} {}", fat_params(Box::new(takes as fn(*const [u8])), Box::new(tables)), factories());
     println!("{} {} {:?} {} {}", a, b, r, closures(&[1, 2]), exported(&Pt { x: 10, y: 1 }, &[1, 2]));
 }
@@ -1225,6 +1240,21 @@ def test_generic_boxes_are_gated_and_non_owning_values_read(plain, capsys):
     )
     read = [row.get("value") for row in result["rows"] if row["selector"] == "b.x"]
     assert read and all(value in (None, "41") for value in read), result["rows"]
+    # #110: a reference or raw pointer into a dropped Box or Vec read freed memory
+    # through the address the Box's own row hid; it reads only while its owner is
+    # proven initialized. A reference parameter's referent is outside the frame.
+    at = f"src/main.rs:{line_of(BOX_GENERIC, '// LIVE_REFS')}"
+    code, result = run(
+        capsys, "probe", str(plain), "--at", at, "--capture", "r.x,rp.x,first.y", "--quiet"
+    )
+    assert [row.get("value") for row in result["rows"]] == ["1", "1", "4"], result["rows"]
+    at = f"src/main.rs:{line_of(BOX_GENERIC, '// DANGLING_REFS')}"
+    code, result = run(
+        capsys, "probe", str(plain), "--at", at, "--capture", "r,rp,first,q.x", "--quiet"
+    )
+    rows = result["rows"]
+    assert [row.get("view") for row in rows[:3]] == ["unproven"] * 3, rows
+    assert rows[3].get("value") == "41", rows
     at = f"src/main.rs:{line_of(BOX_GENERIC, '// LIVE_ARRAY')}"
     code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "arr[0].x", "--quiet")
     assert result["rows"][0].get("value") == "1", result["rows"]

@@ -1054,17 +1054,20 @@ class RustSession(NativeSession):
             # every binding is a reference, a raw pointer or a fn pointer (or an array of
             # them): a generic `T`, `Self` or `impl Trait` may be a Box.
             pointer = _holds_data_pointers(kind)
-            if (owning or (pointer and not plain)) and not (
-                innermost
-                and unoptimized
-                and hashed
-                and proofs.proven(
-                    hashed[1],
-                    variable.get("name"),
-                    line,
-                    ((frame or {}).get("source") or {}).get("path"),
+            provable = innermost and unoptimized and hashed
+            shown_path = ((frame or {}).get("source") or {}).get("path")
+            gated = (owning or (pointer and not plain)) and not (
+                provable and proofs.proven(hashed[1], variable.get("name"), line, shown_path)
+            )
+            if not gated and pointer and plain and provable:
+                # #110: a reference (or raw pointer) into a Box, Vec or other owned
+                # value outlives its owner's move or drop in scope, though not in use;
+                # read only while every owner is proven initialized. An unknown owner
+                # (a reference parameter's, a static's) reads as before.
+                gated = (
+                    proofs.owners_proven(hashed[1], variable.get("name"), line, shown_path) is False
                 )
-            ):
+            if gated:
                 # #101: a moved or dropped Box still holds its pointer, and LLDB would
                 # read the freed allocation as its fields. The pointer is shown; what it
                 # points at is not.
