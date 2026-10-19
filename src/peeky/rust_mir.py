@@ -101,11 +101,16 @@ _DROP = re.compile(r"^drop\([(*]*_([0-9]+)\b")
 _BRANCHES = re.compile(r"^(?:assert\(!?(?:move|copy) |switchInt\((?:move|copy) )")
 # A borrow of a local's own storage: no `*` before the local in the place.
 _STRING = re.compile(r'"(?:[^"\\]|\\.)*"')
+_DROP_PLACE = re.compile(r"^drop\((.+)\) -> ")
+_STORE = re.compile(r"^(\(+\*_[0-9]+\).*?|\(\*_[0-9]+\)) = ")
 _BOX_POINTER = re.compile(
     r"^_([0-9]+) = copy \(+_([0-9]+)\b.*\bUnique<.*\bNonNull<.*\) as \*(?:const|mut) .*\(Transmute\);$"
 )
 # A move or drop through a pointer: `move ((*_23).1: T)`, `drop(((*_23).1: T))`.
 _THROUGH = re.compile(r"(?:\bmove\s+|^drop\()\(*\*_([0-9]+)\b")
+_DERIVED = re.compile(
+    r"^(?:&(?:mut |raw const |raw mut )?\(*\*_([0-9]+)\)|(?:copy|move) _([0-9]+)$)"
+)
 _WRITABLE_BORROW = re.compile(r"&(?:mut |raw const |raw mut )\(*_([0-9]+)\b")
 _DIRECT_BORROW = re.compile(r"&(?:mut |raw const |raw mut |fake \w+ )?\(*_([0-9]+)\b")
 _ANY_LOCAL = re.compile(r"\b_([0-9]+)\b")
@@ -151,6 +156,9 @@ class Body:
     _writable: set | None = None
     _preds: dict | None = None
     _box_temps: dict | None = None
+    _replaced: dict | None = None
+    _alias_cache: dict | None = None
+    _offset: int | None = None
 
     @property
     def name(self):
@@ -658,17 +666,104 @@ class Body:
         return killed
 
     def _transfer(self, text, state):
-        state &= ~_mask(self._kills(text))
+        state = self._terminate(text, state)
         if assigned := _ASSIGN.match(text):
             state |= 1 << int(assigned[1])
+        elif (box := self._replacements()[1].get(text)) is not None:
+            # The store of `bx.data = new` makes the Box whole again only if it was
+            # whole before the drop (no field moved out earlier).
+            pending = 1 << self._pending(box)
+            if state & pending:
+                state |= 1 << box
+            state &= ~pending
         return state
+
+    def _terminate(self, text, state):
+        """``text``'s kills; the drop of a drop-and-replace through a Box remembers (in
+        the Box's pending bit) whether the Box was whole."""
+        if (box := self._replacements()[0].get(text)) is not None:
+            pending = 1 << self._pending(box)
+            state = state | pending if state & (1 << box) else state & ~pending
+        return state & ~_mask(self._kills(text))
+
+    def _pending(self, box):
+        if self._offset is None:
+            self._offset = 1 + max(map(_max_local, self.blocks.values()), default=0)
+        return self._offset + box
+
+    def _replacements(self):
+        """({drop: Box local}, {store: Box local}) for `bx.data = new` or `*bx = new`
+        through a Box: `drop(((*_13).1: T))` then, next in the drop's target, the store
+        to the same place through another pointer of the same Box. The store fills what
+        the drop emptied."""
+        if self._replaced is None:
+            boxes, drops, found = self._boxes(), {}, {}
+            for block in self.blocks.values():
+                dropped = _DROP_PLACE.match(block.terminator)
+                target = _target(block)
+                if not dropped or target is None or target not in self.blocks:
+                    continue
+                place = _through_box(dropped[1], boxes)
+                if place is None:
+                    continue
+                # The next thing it does, past storage markers, new pointers to the Box,
+                # the debug checks on them (`assert(copy _44, "misaligned pointer
+                # dereference...")` and its arithmetic) and `goto`s.
+                number, seen, text = target, set(), None
+                while number in self.blocks and number not in seen and text is None:
+                    seen.add(number)
+                    for statement, _, _ in self.blocks[number].statements:
+                        whole = _WHOLE_ASSIGNMENT.match(statement)
+                        if _NO_CODE.match(statement) or (whole and "->" not in statement):
+                            continue
+                        if goto := re.fullmatch(r"goto -> bb([0-9]+);", statement):
+                            number = int(goto[1])
+                        elif statement.startswith("assert(") and (
+                            success := re.search(r"\bsuccess: bb([0-9]+)", statement)
+                        ):
+                            number = int(success[1])
+                        else:
+                            text = statement
+                        break
+                    else:
+                        break
+                store = _STORE.match(text or "")
+                if store and _through_box(store[1], boxes) == place:
+                    found[text] = place[0]
+                    drops[block.terminator] = place[0]
+            self._replaced = (drops, found)
+        return self._replaced
+
+    def _aliases(self, local):
+        """``local`` and the locals made from it (`&mut (*_1)`, `&((*_1).0: T)`,
+        `copy _1`, `move _1`, and so on): pointers into what it points at."""
+        if self._alias_cache is None:
+            self._alias_cache = {}
+        if local in self._alias_cache:
+            return self._alias_cache[local]
+        found, changed = {local}, True
+        while changed:
+            changed = False
+            for block in self.blocks.values():
+                for text, _, _ in block.statements:
+                    whole = _WHOLE_ASSIGNMENT.match(text)
+                    if not whole or int(whole[1]) in found:
+                        continue
+                    base = _DERIVED.match(whole[2])
+                    if base and int(base[1] or base[2]) in found:
+                        found.add(int(whole[1]))
+                        changed = True
+        self._alias_cache[local] = found
+        return found
 
     def dropped_through(self, local, start):
         """True if some path into ``start`` (block, index) drops what ``local`` points at
         (`drop((*_1))`, the first half of `*v = new`) with no write through it since:
         its target is a dropped value there."""
-        dropped = re.compile(rf"^drop\(\(*\*_{local}\)")
-        written = re.compile(rf"^\(+\*_{local}\)[^=]*= |^_{local} = ")
+        # Drops and stores through a reborrow or a copy of it (`let w = &mut *v;`) count.
+        names = "|".join(str(alias) for alias in sorted(self._aliases(local)))
+        dropped = re.compile(rf"^drop\(\(*\*_(?:{names})\)")
+        written = re.compile(rf"^\(+\*_(?:{names})\)[^=]*= |^_{local} = ")
         predecessors = self.predecessors()
         pending, seen = [start], set()
         while pending:
@@ -705,7 +800,8 @@ class Body:
                 return None
             reachable.add(number)
             pending.extend(self.blocks[number].successors)
-        top = (1 << (1 + max(map(_max_local, self.blocks.values()), default=0))) - 1
+        # Each local's bit, and a pending bit per Box local above them (`_pending`).
+        top = (1 << (2 * (1 + max(map(_max_local, self.blocks.values()), default=0)))) - 1
         entry = {number: top for number in reachable}
         entry[0] = _mask(self.arguments)
         work = sorted(reachable, reverse=True)  # every block is processed at least once
@@ -722,7 +818,7 @@ class Body:
                 state = self._transfer(text, state)
             # The terminator moves and drops on every edge; a call sets its result only
             # on its return edge.
-            state &= ~_mask(self._kills(block.terminator))
+            state = self._terminate(block.terminator, state)
             for target in block.successors:
                 out = state
                 if target == block.returns:
@@ -837,6 +933,16 @@ def _encloses(body, outer, inner):
             return False
         inner = body.scopes.get(inner)
     return False
+
+
+def _through_box(place, boxes):
+    """(Box local, the place with the pointer named by its Box) for a place through a
+    pointer made from a Box (`((*_13).1: String)`), else None."""
+    found = re.search(r"\(\*_([0-9]+)\)", place)
+    if found is None or int(found[1]) not in boxes or not place.lstrip("(").startswith("*"):
+        return None
+    box = boxes[int(found[1])]
+    return box, place[: found.start()] + f"(*B{box})" + place[found.end() :]
 
 
 def _span(block, index):

@@ -64,7 +64,7 @@ from peeky.rust_symbols import (
 
 DEPS = "target/debug/deps"
 MIR_DIR = "target/peeky-mir"
-_COLLAPSE = re.compile(r"#\s*!?\s*\[\s*collapse_debuginfo\b")
+_COLLAPSE = re.compile(r"\bcollapse_debuginfo\b")
 # Cargo runs this for workspace crates only (RUSTC_WORKSPACE_WRAPPER). For the debugged
 # binary crate alone it adds the MIR the owned-local proof reads (rust_mir): no MIR
 # optimizations, so moves stay moves and blocks keep their names in the IR. Unstable
@@ -683,9 +683,11 @@ def owned_locals(workspace, artifacts, crate, ir, sources):
     )
     if not mir or not all(pattern.fullmatch(name) for name in mir):
         raise ValueError("Unexpected Rust MIR artifact")
-    # The attribute itself, not a mention in a comment or string.
+    # Any mention outside a comment line (`#[collapse_debuginfo]`, inside `cfg_attr`).
     collapsed = any(
-        _COLLAPSE.search((Path(workspace) / name).read_text(errors="replace")) for name in sources
+        _COLLAPSE.search(line) and not re.match(r"\s*(?://|/\*|\*)", line)
+        for name in sources
+        for line in (Path(workspace) / name).read_text(errors="replace").splitlines()
     )
     return OwnedLocals(
         load_bodies(Path(workspace) / MIR_DIR, crate),

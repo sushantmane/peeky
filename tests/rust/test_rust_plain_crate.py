@@ -1983,13 +1983,19 @@ def test_references_in_collapsed_and_other_file_macros_and_parameters(plain, cap
     # its code on the invoking line while its statements keep the macro's lines; a stop in
     # a macro from another module is in another file than its function. Both read freed
     # memory. A parameter written through, or holding references by value, was hidden.
-    (plain / "src/main.rs").write_text(COLLAPSED_REFS)
     at = f"src/main.rs:{line_of(COLLAPSED_REFS, '// M4_COLLAPSED')}"
-    code, result = run(
-        capsys, "probe", str(plain), "--at", at, "--capture", "r", "--hits", "3", "--quiet"
+    # Round 6: inside `cfg_attr` too.
+    attributes = (
+        "#[collapse_debuginfo(yes)]",
+        "#[cfg_attr(debug_assertions, collapse_debuginfo(yes))]",
     )
-    rows = result["rows"]
-    assert rows and all(row.get("view") == "unproven" for row in rows), rows
+    for attribute in attributes:
+        (plain / "src/main.rs").write_text(COLLAPSED_REFS.replace(attributes[0], attribute))
+        code, result = run(
+            capsys, "probe", str(plain), "--at", at, "--capture", "r", "--hits", "3", "--quiet"
+        )
+        rows = result["rows"]
+        assert rows and all(row.get("view") == "unproven" for row in rows), (attribute, rows)
     (plain / "src/main.rs").write_text(PARAMETER_REFS)
     (plain / "src/macros.rs").write_text(MACRO_FILE)
     at = f"src/macros.rs:{line_of(MACRO_FILE, '// M4_IN_MACRO')}"
@@ -2059,11 +2065,43 @@ fn replace_vec(v: &mut Vec<Res>, n: i64) -> i64 {
     k + v[0].x
 }
 
+fn reborrowed(v: &mut Vec<Res>, n: i64) -> i64 {
+    let w = &mut *v;
+    *w = vec![Res { x: n }]; // M6_REBORROW
+    v[0].x
+}
+
+struct Named {
+    tag: i64,
+    name: String,
+    data: Box<Pt>,
+}
+
+fn replaced_fields() -> i64 {
+    let mut bx = Box::new(Named { tag: 1, name: String::from("a"), data: Box::new(Pt { x: 5, y: 6 }) });
+    bx.name = String::from("bee");
+    bx.data = Box::new(Pt { x: 8, y: 9 });
+    let z = churn();
+    z + bx.tag // M6_REPLACED
+}
+
+fn moved_then_replaced() -> i64 {
+    let mut bx = Box::new(Named { tag: 1, name: String::from("a"), data: Box::new(Pt { x: 5, y: 6 }) });
+    let d = bx.data;
+    let n = consume(d);
+    bx.name = String::from("bee");
+    let z = churn() + n;
+    z + bx.tag // M6_MOVED_THEN
+}
+
 fn main() {
     let mut v = vec![Res { x: 5 }, Res { x: 7 }];
     println!("{}", replace_vec(&mut v, 9));
-    println!("{}", moved_out());
+    let mut w = vec![Res { x: 3 }];
+    println!("{}", reborrowed(&mut w, 4));
+    println!("{} {} {}", moved_out(), replaced_fields(), moved_then_replaced());
     std::mem::forget(v);
+    std::mem::forget(w);
 }
 """
 
@@ -2096,3 +2134,35 @@ def test_references_into_moved_box_contents_and_mid_replacement_values(plain, ca
         capsys.readouterr()
     variables = {v["name"]: v for scope in snapshot["scopes"] for v in scope["variables"]}
     assert variables["v"].get("view") == "unproven", variables["v"]
+    # Round 6: a drop through a reborrow of it (`let w = &mut *v; *w = new`) too. The
+    # third drop is the reborrowed vector's (`replace_vec` dropped two).
+    reborrow = line_of(DROPPED_INSIDE, "// M6_REBORROW")
+    assert main(["session", "start", str(plain), "--at", at]) == 0
+    capsys.readouterr()
+    try:
+        for _ in range(2):
+            main(["session", "continue"])
+            capsys.readouterr()
+        for _ in range(8):
+            main(["session", "step", "--out", "--json"])
+            state = json.loads(capsys.readouterr().out)
+            if str(state.get("location")).endswith(f"main.rs:{reborrow}"):
+                break
+        assert str(state.get("location")).endswith(f"main.rs:{reborrow}"), state
+        assert main(["session", "inspect", "--json"]) == 0
+        snapshot = json.loads(capsys.readouterr().out)
+    finally:
+        main(["session", "close"])
+        capsys.readouterr()
+    variables = {v["name"]: v for scope in snapshot["scopes"] for v in scope["variables"]}
+    assert variables["v"].get("view") == "unproven", variables["v"]
+    # A field dropped and replaced through the Box leaves it whole; one moved out
+    # before another is replaced does not.
+    at = f"src/main.rs:{line_of(DROPPED_INSIDE, '// M6_REPLACED')}"
+    code, result = run(
+        capsys, "probe", str(plain), "--at", at, "--capture", "bx.tag,bx.data.x", "--quiet"
+    )
+    assert [row.get("value") for row in result["rows"]] == ["1", "8"], result["rows"]
+    at = f"src/main.rs:{line_of(DROPPED_INSIDE, '// M6_MOVED_THEN')}"
+    code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "bx", "--quiet")
+    assert result["rows"][0].get("view") == "unproven", result["rows"]
