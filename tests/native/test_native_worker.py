@@ -806,6 +806,48 @@ def test_describe_leaves_out_types_a_program_cannot_write(tmp_path, native_confi
         ), scopes
 
 
+def test_describe_gives_the_lines_of_locals_declared_in_nested_blocks(
+    tmp_path, native_config, capsys
+):
+    # #107: `describe` listed a `for` loop's `i` among the function's names, though it
+    # is not visible after the loop. A local declared only in nested blocks now carries
+    # the lines of those blocks.
+    from peeky.cli import main
+
+    (tmp_path / "blocks.c").write_text(BLOCKS)
+    assert main(["describe", str(tmp_path / "blocks.c"), "--json"]) == 0
+    scopes = json.loads(capsys.readouterr().out)["scopes"]
+    spans = next(s for s in scopes if s["scope"] == "average")["spans"]
+    assert set(spans) == {"i", "half"}, spans
+    ((first, last),) = spans["i"]
+    assert first == 4 and 5 <= last <= 6, spans
+    ((first, last),) = spans["half"]
+    assert 7 <= first <= 8 and 9 <= last <= 10, spans
+    assert main(["describe", str(tmp_path / "blocks.c")]) == 0
+    text = capsys.readouterr().out
+    assert "i (int, lines 4-" in text and "count (int)," in text
+
+
+BLOCKS = """#include <stdio.h>
+static double average(const int *values, int count) {
+    int total = 0;
+    for (int i = 0; i < count; i++) {
+        total += values[i];
+    }
+    if (count > 0) {
+        int half = count / 2;
+        total += half * 0;
+    }
+    return count ? (double)total / count : 0.0;
+}
+int main(void) {
+    int values[3] = {1, 2, 3};
+    printf("%f\\n", average(values, 3));
+    return 0;
+}
+"""
+
+
 def test_a_pointers_first_element_is_its_pointee(tmp_path, native_config, capsys):
     # Eval 5 dry run: `values[0]` on `const int *values` said only "children: *values".
     from peeky.cli import main

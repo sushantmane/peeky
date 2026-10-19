@@ -477,6 +477,53 @@ def _locals(dies, offset):
     return names
 
 
+def _block_spans(dies, entry, root, addresses, numbers):
+    """{name: [[first, last], ...]}: the lines of the blocks declaring each local that is
+    declared only inside nested blocks (a `for` loop's `i`), so visible only there (#107).
+    A block's lines are those of the function's own rows within its code."""
+    own = [
+        (address, line)
+        for (source, line), found in addresses.items()
+        if source == entry["source"] and line in numbers
+        for address in found
+    ]
+    lines, spans, everywhere = {}, {}, set()
+
+    def span(block):
+        if block not in lines:
+            ranges = _code_ranges(dies[block])
+            covered = [
+                line for address, line in own if any(lo <= address < hi for lo, hi in ranges)
+            ]
+            lines[block] = (min(covered), max(covered)) if covered else None
+        return lines[block]
+
+    for body in (*entry["bodies"], root):
+        pending = [(child, None) for child in dies[body]["children"]]
+        while pending and len(spans) + len(everywhere) < 512:
+            child, block = pending.pop()
+            die = dies[child]
+            if die["tag"] == "DW_TAG_lexical_block":
+                pending.extend((grandchild, child) for grandchild in die["children"])
+                continue
+            if die["tag"] not in ("DW_TAG_formal_parameter", "DW_TAG_variable"):
+                continue
+            name = _text(_first(dies, _chain(dies, child), "DW_AT_name"))
+            if not name or name.startswith("$"):
+                continue
+            found = span(block) if block is not None else None
+            if found is None:
+                # Declared at the function's level, or in a block of unknown lines.
+                everywhere.add(name)
+            else:
+                spans.setdefault(name, set()).add(found)
+    return {
+        name: [list(found) for found in sorted(spans[name])]
+        for name in sorted(spans)
+        if name not in everywhere
+    }
+
+
 def _code_ranges(die):
     attrs = die["attrs"]
     try:
@@ -570,7 +617,9 @@ def function_scopes(info, line_text, workspace, declared):
     the callee, not its caller. Copies of one function (C1/C2 constructors, inlined and
     out-of-line copies) are merged through the DIE that declares them.
     """
-    dies, functions, lines, _, _, _ = _function_entries(info, line_text, workspace, declared)
+    dies, functions, lines, _, _, addresses = _function_entries(
+        info, line_text, workspace, declared
+    )
     found = {}
     for root, entry in functions.items():
         source = entry["source"]
@@ -588,6 +637,8 @@ def function_scopes(info, line_text, workspace, declared):
             "lines": [min(numbers), max(numbers)],
             "names": sorted(names),
         }
+        if spans := _block_spans(dies, entry, root, addresses.get(root, {}), numbers):
+            scope["spans"] = spans
         # Instantiations of one generic function (Rust's names drop the generic
         # arguments) are one scope; their types join (`&[i32] or &[char]`).
         merged = found.setdefault(json.dumps(scope, sort_keys=True), (scope, {}))[1]

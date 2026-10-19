@@ -435,12 +435,14 @@ def test_function_scopes_list_qualified_names_spans_and_locals(tmp_path):
     scopes = function_scopes(info, line, tmp_path, ("app.cpp",))
     assert scopes == [
         # The out-of-line definition takes its name and file from its declaration;
-        # nested blocks contribute locals; `$`-synthesized storage does not.
+        # nested blocks contribute locals, with their blocks' lines (#107);
+        # `$`-synthesized storage does not.
         {
             "scope": "geo::Box::area",
             "source": "app.cpp",
             "lines": [7, 9],
             "names": ["product", "this"],
+            "spans": {"product": [[8, 8]]},
         },
         {"scope": "main", "source": "app.cpp", "lines": [12, 15], "names": ["total"]},
         # A closure is qualified by its function; SDK functions are not listed.
