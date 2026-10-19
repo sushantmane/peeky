@@ -1042,3 +1042,79 @@ def test_a_remote_row_error_keeps_its_code():
     with pytest.raises(Refused) as caught:
         _Remote(Client()).dispatch("expand", {})
     assert caught.value.code == "STALE_HANDLE"
+
+
+def test_a_c_arrow_selector_says_to_use_a_dot():
+    # Eval 4 (C): `stats->total_us` was refused without saying what to write instead.
+    with pytest.raises(ValueError, match=r"follow a pointer with \. \(not ->\): stats\.total_us"):
+        parse_selector("stats->total_us")
+
+
+def test_a_java_lists_children_are_its_elements_with_their_selectors():
+    # Eval 4 (Java): `session get workers` listed elementData, modCount and size.
+    from peeky.probe import _children
+
+    fields = [
+        {
+            "name": "elementData",
+            "type": "Object[]",
+            "value": "Object[10]@5",
+            "variablesReference": 6,
+        },
+        {"name": "modCount", "type": "int", "value": "3", "variablesReference": 0},
+        {"name": "size", "type": "int", "value": "3", "variablesReference": 0},
+    ]
+    slots = [
+        {"name": str(i), "type": "Worker", "value": f"Worker@{9 + i}", "variablesReference": 9 + i}
+        for i in range(10)
+    ]
+
+    class Lists:
+        def dispatch(self, operation, args):
+            assert operation == "expand"
+            page = fields if args["handle"] == 4 else slots[: args.get("count", 64)]
+            return {"variables": page, "truncated": False}
+
+    workers = {
+        "name": "workers",
+        "type": "ArrayList",
+        "value": "ArrayList@4",
+        "variablesReference": 4,
+    }
+    shown = _children(Lists(), {}, "workers", workers)
+    assert [(c["name"], c["selector"], c["value"]) for c in shown["children"]] == [
+        ("[0]", "workers[0]", "Worker@9"),
+        ("[1]", "workers[1]", "Worker@10"),
+        ("[2]", "workers[2]", "Worker@11"),
+    ]
+    assert all(c["expandable"] for c in shown["children"]) and "children_truncated" not in shown
+
+
+def test_a_java_list_whose_backing_array_is_too_big_lists_its_fields():
+    # Review of #94: a list with over 512 slots lost its children (and its size).
+    from peeky.probe import _children
+
+    fields = [
+        {
+            "name": "elementData",
+            "type": "Object[]",
+            "value": "Object[1000]@5",
+            "variablesReference": 6,
+        },
+        {"name": "modCount", "type": "int", "value": "2", "variablesReference": 0},
+        {"name": "size", "type": "int", "value": "2", "variablesReference": 0},
+    ]
+
+    class Big:
+        def dispatch(self, operation, args):
+            if args["handle"] == 4:
+                return {"variables": fields, "truncated": False}
+            raise ValueError("Variable collection exceeds bounded expansion limit")
+
+    big = {"name": "big", "type": "ArrayList", "value": "ArrayList@4", "variablesReference": 4}
+    shown = _children(Big(), {}, "big", big)
+    assert [c["selector"] for c in shown["children"]] == [
+        "big.elementData",
+        "big.modCount",
+        "big.size",
+    ]

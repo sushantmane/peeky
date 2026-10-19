@@ -1,0 +1,6 @@
+{
+  "bundle": "../../work/java-adapter",
+  "sources": ["demo/BalanceBug.java"],
+  "main_class": "demo.BalanceBug",
+  "arguments": ["c,a,b", "5,3,4,2"]
+}

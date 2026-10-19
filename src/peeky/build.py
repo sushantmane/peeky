@@ -453,10 +453,12 @@ def prepare(
 
         for command in recipe.toolchain_probes:
             check()
-            timeout, _ = _budget(command, deadline)
+            timeout, limited = _budget(command, deadline)
             try:
                 tool, result = _run(command, workspace, env, timeout)
             except BuildCommandError as exc:
+                if limited and exc.result.get("timed_out"):
+                    raise TimeoutError("Build preparation exceeded its overall deadline") from exc
                 raise RuntimeError(f"Toolchain probe failed: {command.argv[0]}") from exc
             if tool not in tools:
                 tools.append(tool)

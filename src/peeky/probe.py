@@ -67,7 +67,13 @@ def parse_selector(text):
     while position < len(text):
         step = _STEP.match(text, position)
         if not step:
-            raise ValueError(f"Invalid selector: {text}{_SELECTOR_HELP}")
+            # A C pointer's members are read with `.`, as the debugger shows them.
+            arrow = (
+                f"; follow a pointer with . (not ->): {text.replace('->', '.')}"
+                if "->" in text
+                else ""
+            )
+            raise ValueError(f"Invalid selector: {text}{_SELECTOR_HELP}{arrow}")
         if step["name"]:
             segments.append(step["name"])
         elif step["index"]:
@@ -1047,9 +1053,43 @@ def _child_selector(parent, name):
     return None
 
 
+def _list_children(worker, stop, selector, backing, size):
+    """An ArrayList's first elements (`workers[0]`, ...), not its internal fields."""
+    elements = (
+        worker.dispatch(
+            "expand",
+            {**stop, "handle": backing["variablesReference"], "start": 0, "count": min(size, 64)},
+        )["variables"]
+        if size
+        else []
+    )
+    listed = []
+    for child in elements:
+        match = re.fullmatch(r"\[?([0-9]+)\]?", str(child.get("name")))
+        if not match or int(match[1]) >= size:
+            continue
+        entry = {
+            "name": f"[{int(match[1])}]",
+            "type": child.get("type"),
+            "value": child.get("value"),
+            "selector": f"{selector}[{int(match[1])}]",
+        }
+        if child.get("variablesReference"):
+            entry["expandable"] = True
+        listed.append(entry)
+    return {"children": listed, **({"children_truncated": True} if size > len(listed) else {})}
+
+
 def _children(worker, stop, selector, variable):
     """One page (64) of a value's children, for a person or agent deciding what to read."""
     page = worker.dispatch("expand", {**stop, "handle": variable["variablesReference"], "start": 0})
+    if listed := java_list(variable, page["variables"]):
+        try:
+            return _list_children(worker, stop, selector, *listed)
+        except ValueError as exc:
+            if "exceeds bounded expansion" not in str(exc):
+                raise
+            # A backing array over 512 slots: its fields (size, elementData) instead.
     listed = []
     for child in page["variables"]:
         if child["name"] in _GROUPS:

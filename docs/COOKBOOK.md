@@ -278,7 +278,7 @@ run_a  run_b  hit   phase     selector  value_a                        value_b  
 1      2      NULL  NULL      (output)  ::ffff:8.8.8.8: private\n      ::ffff:10.0.0.1: private\n   1        output differs
 ```
 
-`diff` keeps only the rows that differ. Real differences come first, in hit order and then in `--capture` order, so the first row is the first divergence. Then come values that only one run's `--set` changed (`intervention only in run b`), then values that differ only in heap or stack addresses (`note: addresses only`, for example a C string's pointer; NULL is never treated as an address), then one row per selector that only one run asked for (`only in run a`), and last, `(status)` and `(output)` rows when the runs' outcomes or outputs differ, an `(edit)` row when one run built a candidate edit, and a `(line)` row when the runs stopped at different lines (their values then differ partly because of where they were read). The `(output)` row shows each output from just before the first character that differs (`output differs at line 4, column 13`, counted from 1), so after a `--set` it shows the intervention's effect. Hits that one run never reached say `missing in run b`. Comparing needs two saved runs; with fewer, the query says so. `queries compare` shows every value side by side with the same notes. Labels are free text, stored as given.
+`diff` keeps only the rows that differ. Real differences come first, in hit order and then in `--capture` order, so the first row is the first divergence. Then come values that only one run's `--set` changed (`intervention only in run b`), then values that differ only in heap or stack addresses (`note: addresses only`, for example a C string's pointer; NULL is never treated as an address), then one row per selector that only one run asked for (`only in run a`), and last, `(status)` and `(output)` rows when the runs' outcomes or outputs differ, an `(edit)` row when one run built a candidate edit, a `(line)` row when the runs stopped at different lines (their values then differ partly because of where they were read), an `(args)` row when they ran with different program arguments, and a `(sets)` row when they made different interventions. Check those last rows before crediting an edit with a difference. The `(output)` row shows each output from just before the first character that differs (`output differs at line 4, column 13`, counted from 1), so after a `--set` it shows the intervention's effect. Hits that one run never reached say `missing in run b`. Comparing needs two saved runs; with fewer, the query says so. `queries compare` shows every value side by side with the same notes. Labels are free text, stored as given.
 
 ### 3.2 Inputs, Outcomes and Outputs of the Last Two Runs
 
@@ -373,6 +373,30 @@ sqlite3 -readonly -csv -header ~/.peeky/evidence/evidence.db "SELECT * FROM evid
 ```
 
 Limits: one `SELECT` per call, 200 rows by default (`--limit` up to 10000), 10 s, 16 MB of JSON. The newest 500 runs are kept. Writes, `ATTACH` and settings are refused (`INVALID_QUERY`).
+
+---
+
+### 4.6 Same Object, or a Copy? (Java)
+
+**What it answers:** Is this variable the list's own element, or a copy whose changes go nowhere?
+
+`examples/java/demo/BalanceBug.java` gives each task to the least-loaded worker, but a tie copies the worker, so the load it adds is lost (`ORDER:a a a a`).
+
+```sh
+peeky probe examples/java --config examples/java/balance.json --at demo/BalanceBug.java:29 \
+  --capture 'best,workers[1]' --hits 2
+peeky sql "SELECT b.hit, object_ref(b.value) AS best, object_ref(w.value) AS list_a,
+  object_ref(b.value) = object_ref(w.value) AS same FROM last_run b
+  JOIN last_run w ON w.hit = b.hit AND w.selector = 'workers[1]' WHERE b.selector = 'best'"
+```
+
+```
+hit  best                   list_a                 same
+1    BalanceBug$Worker@56   BalanceBug$Worker@100  0
+2    BalanceBug$Worker@102  BalanceBug$Worker@100  0
+```
+
+`object_ref(value)` is the object a Java value is. Within one run, equal means the same object. Across runs the numbers differ (`queries diff` masks them), so compare objects only inside a run. To test the hypothesis, give the list's worker the load it should have had: `--set 'workers[1].load=5' --set-hit 1` turns `a a a a` into `a b b b`.
 
 ---
 
@@ -537,7 +561,7 @@ Each `--old` quotes the original file and must match it exactly once; the edits 
 
 ### 6.5 Writing a Checker
 
-A checker is a trusted script, run as `python checker.py <candidate-path>`. It exits 0 only when the behavior is right. Test the general rule, not the one input from the bug report (see `examples/verify_pagination.py`). For C, C++ and Rust it gets a build description to run the fresh binary (see [NATIVE_AGENT.md](NATIVE_AGENT.md) and [RUST_AGENT.md](RUST_AGENT.md)); for Rust, the crate's compiled Cargo tests must pass too.
+A checker is a trusted script, run as `python checker.py <candidate-path>`. It exits 0 only when the behavior is right. Test the general rule, not the one input from the bug report (see `examples/verify_pagination.py`). For C, C++, Rust and Java its argument is the path of a JSON descriptor of the fresh build: run each case as `[*spec["command"], *case_arguments]` with `env=spec["environment"]` (`spec["language"]` names the language; see `examples/c/verify_pagination.py` and [NATIVE_AGENT.md](NATIVE_AGENT.md)). For Rust, the crate's integration test, when it has one, must pass too.
 
 ### 6.6 See What a Fix Does Before Making It (C, C++, Rust, Java)
 

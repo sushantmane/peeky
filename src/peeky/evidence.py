@@ -259,7 +259,15 @@ SELECT {_PAIR_COLUMNS} FROM (
     rb.program || ':' || rb.line, 1,
     'the runs stopped at different lines: values also differ by where they were read', 0
     FROM runs ra, runs rb WHERE ra.run_id = {_A} AND rb.run_id = {_B}
-    AND (ra.program, ra.line) IS NOT (rb.program, rb.line))
+    AND (ra.program, ra.line) IS NOT (rb.program, rb.line)
+  UNION ALL SELECT 8, NULL, NULL, '(args)', ra.args, rb.args, 1,
+    'the runs had different program arguments: values also differ by input', 0
+    FROM runs ra, runs rb WHERE ra.run_id = {_A} AND rb.run_id = {_B}
+    AND ra.args IS NOT rb.args
+  UNION ALL SELECT 9, NULL, NULL, '(sets)', COALESCE(ra.sets, '[]'), COALESCE(rb.sets, '[]'), 1,
+    'the runs made different interventions (--set)', 0
+    FROM runs ra, runs rb WHERE ra.run_id = {_A} AND rb.run_id = {_B}
+    AND COALESCE(ra.sets, '[]') IS NOT COALESCE(rb.sets, '[]'))
 ORDER BY rank, hit, phase = 'after-set', pos"""
 # A heap or stack address: 0x, optional leading zeros, then 9-16 significant hex
 # digits that are not all f. NULL, small sentinels, all-ones (-1, MAP_FAILED) and
@@ -324,6 +332,19 @@ def _no_addresses(value, language=None):
     return _ADDRESS.sub("0x…", value)
 
 
+# The identity at the start of a value java-debug wrote: `Merge$Interval@143`,
+# `int[3]@144`, `Class (Foo)@145`, with or without Peeky's preview after it.
+_OBJECT_REF = re.compile(r"(?:[A-Za-z_$][\w$.]*(?:\[[0-9]*\])*|Class \([^()]*\))@[0-9]+(?=\s|$)")
+
+
+def _object_ref(value):
+    """The object a Java value is (`Merge$Interval@143`), else NULL: equal within one run
+    means the same object; across runs the numbers differ (see no_addresses)."""
+    if not isinstance(value, str) or not (match := _OBJECT_REF.match(value)):
+        return None
+    return match[0]
+
+
 _RUN_PARAM = {"run": "Run id (default: the newest run)"}
 _PAIR_PARAMS = {
     "a": "First run id (default: the run before b)",
@@ -370,8 +391,9 @@ WINDOW w AS (PARTITION BY selector ORDER BY hit) ORDER BY selector, hit""",
     "diff": (
         "Only the values that differ between two runs. Real differences come first, in hit and "
         "capture order (the first row is the first divergence); then address-only "
-        "differences; then selectors only one run captured; then (status) and (output) "
-        "rows when the runs' outcomes or outputs differ",
+        "differences; then selectors only one run captured; then (status), (output), "
+        "(edit), (line), (args) and (sets) rows when the runs' outcomes, outputs, edits, "
+        "stop lines, program arguments or interventions differ",
         _DIFF,
         _PAIR_PARAMS,
         (),
@@ -794,6 +816,7 @@ def query(path, sql, params=None, *, limit=DEFAULT_ROWS, seconds=QUERY_SECONDS):
         "first_difference", 2, bounded(_first_difference), deterministic=True
     )
     connection.create_function("output_window", 2, bounded(_output_window), deterministic=True)
+    connection.create_function("object_ref", 1, bounded(_object_ref), deterministic=True)
     connection.create_function(
         "difference_position", 2, bounded(_difference_position), deterministic=True
     )
@@ -920,6 +943,9 @@ def schema(path):
             "(from 1)",
             "output_window(a, b)": "Up to 200 characters of a from just before where it first "
             "differs from b",
+            "object_ref(text)": "The Java object a value is (`Merge$Interval@143`), else NULL: "
+            "two values of one run with the same object_ref are the same object (aliasing); "
+            "the numbers differ between runs",
         },
         "examples": list(EXAMPLES),
         "rules": [

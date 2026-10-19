@@ -108,11 +108,14 @@ An hourly thread heartbeat (`continue-peeky-mvp`) checks for available usage and
   - String and char fields in a preview are Java literals.
   - `merged[0]` and `merged[-1]` index an `ArrayList` through `size` and `elementData`.
   - Setting fields is #86 (done, below).
-- **Plain Cargo crates** (found by the fourth evaluation's dry run).
+- **Plain Cargo crates** (#89, found by the fourth evaluation's dry run).
   - A `cargo new` binary crate works as is: edition 2021 or 2024, Cargo's default targets (`src/main.rs`, `tests/*.rs`), empty `[dependencies]`, package metadata. Before, only a manifest with explicit `[[bin]]` and `[[test]]` targets and every discovery switch off was accepted, with errors such as "Rust sources and tests must be nonempty immutable tuples".
   - A crate without an integration test is verified by its checker alone. Anything else Cargo would build (`src/lib.rs`, `src/bin`, `build.rs`, dependencies, a second test) is refused with the reason.
   - Rust `char` values print as Rust's `{:?}` does (`'b'`, `'\n'`, `'\u{200d}'`), not LLDB's `U+0062 U+0062 U'b'`.
   - A Vec whose elements Peeky does not read (`Vec<(char, usize)>`) gets a note: its value is LLDB's summary, not the contents.
+- **Fourth agent evaluation** ([report](evaluations/2026-10-19-agent-fourth-round.md)): Java aliasing, C integer overflow, a plain Rust crate. All three agents reached a general verified fix on their first `verify` (33, 27 and 29 calls).
+  - Fixed: `object_ref(value)` for Java identity; `(args)`/`(sets)` rows in `diff`; `verify --timeout`, `--quiet` and `seconds`; `job wait --json` for any job; `ArrayList` children are elements; a `->` selector hint; a guide that fits one read; the checker descriptor in the cookbook.
+  - Filed: #90 (Rust char/tuple elements), #91 (Java describe scopes), #92 (C declaration-line stops), #93 (smaller evidence and describe gaps).
 - **Java fields and array elements take `--set`** (#86).
   - `--set current.end=10`, `this.count=0`, `arr[0]=1` and `arr[-1]=9` change scalar fields and array elements reached from the stopped method's locals, in a probe or with `session set`.
   - Final and static fields, Strings, boxed values and an `ArrayList`'s elements are refused (`MUTATION_REJECTED`), and so are map entries in any language. Captured fields and elements carry `settable`.

@@ -76,7 +76,7 @@ class CompiledVerification:
             "artifacts_retained": False,
         }
 
-    def _check(self, runtime, source, check, *, run_baseline=False):
+    def _check(self, runtime, source, check, *, run_baseline=False, deadline=None):
         from peeky.agent import execute, verify
 
         self._assert_originals()
@@ -99,9 +99,15 @@ class CompiledVerification:
         tests = None
         if run_tests := getattr(runtime, "run_tests", None):
             # Trusted session hook (Rust): the compiled test result never replaces the checker.
-            tests = run_tests()
+            tests = run_tests(**({} if deadline is None else {"deadline": deadline}))
             self._assert_originals()
-        result = verify(check, descriptor_path, runtime.prepared.workspace, env=runtime.environment)
+        result = verify(
+            check,
+            descriptor_path,
+            runtime.prepared.workspace,
+            env=runtime.environment,
+            deadline=deadline,
+        )
         runtime.assert_current()
         self._assert_originals()
         try:
@@ -134,7 +140,9 @@ class CompiledVerification:
             runtime.close()
             self._assert_originals()
 
-    def candidate(self, source: Path, check: Path, old: str, new: str, destination: Path):
+    def candidate(
+        self, source: Path, check: Path, old: str, new: str, destination: Path, deadline=None
+    ):
         source, check, relative = self._protect(source, check)
         original = source.read_text()
         if not old or original.count(old) != 1 or old == new:
@@ -148,7 +156,10 @@ class CompiledVerification:
         try:
             try:
                 runtime = self.target.prepare(
-                    source, self.root, edit=SourceEdit(relative, old, new)
+                    source,
+                    self.root,
+                    edit=SourceEdit(relative, old, new),
+                    **({} if deadline is None else {"deadline": deadline}),
                 )
             except BuildCommandError as exc:
                 from peeky.errors import classify
@@ -170,7 +181,7 @@ class CompiledVerification:
             else:
                 if _hash(runtime.source_path(source)) != candidate_hash:
                     raise RuntimeError("Prepared compiled candidate differs from saved candidate")
-                _, result = self._check(runtime, source, check)
+                _, result = self._check(runtime, source, check, deadline=deadline)
             self._assert_originals()
             if _hash(candidate) != candidate_hash:
                 raise RuntimeError("Saved compiled candidate changed during verification")
