@@ -175,3 +175,56 @@ def test_the_cookbook_merge_example_is_fixed_by_setting_current_end(tmp_path, mo
         "2",
     )
     assert code == 0 and "MERGED:[[1,10], [12,14]]" in result["output"]
+
+
+HIDE = """package demo;
+public class Hide {
+  static class Base { int x = 1; }
+  static class Sub extends Base { static int x = 100; }
+  public static void main(String[] args) {
+    Sub s = new Sub();
+    System.out.println("before"); // OBSERVE
+    System.out.println("AFTER " + ((Base) s).x + " " + Sub.x);
+  }
+}
+"""
+
+
+@pytest.mark.timeout(180)
+@pytest.mark.parametrize("value", ["5", "1"])
+def test_a_field_a_static_field_hides_is_never_written(tmp_path, monkeypatch, capsys, value):
+    # Review of #86: java-debug writes through fieldByName, which resolves `x` to the
+    # subclass's hiding static while its listing shows the inherited instance field.
+    bundle = os.environ.get("PEEKY_JAVA_ADAPTER")
+    if not bundle:
+        pytest.skip("set PEEKY_JAVA_ADAPTER to a setup_java_adapter.py output directory")
+    monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
+    (tmp_path / "demo").mkdir()
+    (tmp_path / "demo" / "Hide.java").write_text(HIDE)
+    config = tmp_path / "hide.json"
+    config.write_text(
+        json.dumps(
+            {
+                "bundle": bundle,
+                "sources": ["demo/Hide.java"],
+                "main_class": "demo.Hide",
+                "arguments": [],
+            }
+        )
+    )
+    line = next(i for i, text in enumerate(HIDE.splitlines(), 1) if "OBSERVE" in text)
+    at = f"demo/Hide.java:{line}"
+    code, result = probe(capsys, tmp_path, config, at, "--set", f"s.x={value}", "--no-save")
+    assert code == 1 and result["error"]["code"] == "MUTATION_REJECTED", result["error"]
+    assert "hidden by, or shares its name with, another field" in result["error"]["message"]
+    # Nothing was written: the session goes on and the program prints both fields as they were.
+    try:
+        assert main(["session", "start", str(tmp_path), "--config", str(config), "--at", at]) == 0
+        assert main(["session", "set", f"s.x={value}"]) == 2
+        assert "[MUTATION_REJECTED]" in capsys.readouterr().err
+        assert main(["session", "continue", "--to-exit"]) == 0
+        capsys.readouterr()
+        assert main(["session", "report", "--json"]) == 0
+        assert "AFTER 1 100" in json.loads(capsys.readouterr().out)["output"]
+    finally:
+        main(["session", "close"])

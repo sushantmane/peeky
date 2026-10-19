@@ -378,7 +378,20 @@ class MemberRuntime(Runtime):
 @pytest.fixture
 def member_worker(worker):
     worker.dap, worker.runtime = MemberBackend(), MemberRuntime()
+    worker.capabilities = {"supports_set_variable": True, "supports_member_set": True}
     return worker
+
+
+def test_a_java_bundle_without_the_field_guard_changes_only_locals(member_worker):
+    # Older launchers let java-debug write a hiding static field in place of the listed one.
+    member_worker.capabilities = {"supports_set_variable": True}
+    _, child = inspected(member_worker)
+    listed = call(member_worker, "expand", handle=child)["variables"]
+    assert [v["settable"] for v in listed] == [False, False]
+    _, child = inspected(member_worker)
+    with pytest.raises(ValueError, match="predates field and element changes"):
+        call(member_worker, "set_variable", handle=child, name="page", value="2")
+    assert not any(op == "setVariable" for op, _ in member_worker.dap.calls)
 
 
 def test_a_field_is_set_through_its_parents_handle_and_read_back(member_worker):
@@ -421,6 +434,7 @@ def test_other_languages_change_only_root_locals(worker):
 def test_an_unconfirmed_field_write_closes_the_session(worker):
     # The debugger reports success but the field still reads its old value.
     worker.runtime = MemberRuntime()
+    worker.capabilities = {"supports_set_variable": True, "supports_member_set": True}
     _, child = inspected(worker)
     with pytest.raises(RuntimeError, match="could not be confirmed"):
         call(worker, "set_variable", handle=child, name="page", value="2")

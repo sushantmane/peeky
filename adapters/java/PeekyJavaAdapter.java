@@ -3,7 +3,11 @@ import com.microsoft.java.debug.core.DebugSettings;
 import com.microsoft.java.debug.core.JavaBreakpointLocation;
 import com.microsoft.java.debug.core.adapter.*;
 import com.microsoft.java.debug.core.protocol.Messages;
+import com.microsoft.java.debug.core.adapter.variables.VariableProxy;
 import com.microsoft.java.debug.core.protocol.Types;
+import com.sun.jdi.ArrayReference;
+import com.sun.jdi.ObjectReference;
+import com.sun.jdi.ReferenceType;
 import java.lang.reflect.Proxy;
 import java.net.URI;
 import java.nio.file.*;
@@ -90,12 +94,43 @@ public final class PeekyJavaAdapter extends ProtocolServer {
                 String value=args.get("value").getAsString();
                 if (!value.matches("(?:true|false|[+-]?[0-9]+(?:\\.[0-9]+)?(?:[eE][+-]?[0-9]+)?)"))
                     throw new IllegalArgumentException("only numeric or boolean scalar literals supported");
+                checkFieldTarget(args.get("variablesReference").getAsInt(), args.get("name").getAsString());
             }
             super.dispatchRequest(request);
         } catch (Exception error) {
             sendResponse(new Messages.Response(request.seq, request.command, false,
                 "Peeky experimental Java adapter: " + error.getMessage()));
         }
+    }
+
+    /**
+     * java-debug writes an object's field through fieldByName, which follows Java's hiding
+     * rules, while its listing shows instance fields only: a static field of a subclass
+     * that hides an inherited instance field would be written in place of the listed one.
+     * Allow a field write only when the name means exactly one instance field.
+     */
+    private void checkFieldTarget(int reference, String name) throws ReflectiveOperationException {
+        // `x (Base)` names a field by its class; java-debug resolves those to statics only.
+        if (name.contains("(")) throw new IllegalArgumentException("qualified field names unsupported");
+        Object container=debugContext().getRecyclableIdPool().getObjectById(reference);
+        if (!(container instanceof VariableProxy)) return;
+        Object value=((VariableProxy) container).getProxiedVariable();
+        if (!(value instanceof ObjectReference) || value instanceof ArrayReference) return;
+        ReferenceType type=((ObjectReference) value).referenceType();
+        com.sun.jdi.Field visible=type.fieldByName(name);
+        long instances=type.allFields().stream().filter(f -> f.name().equals(name) && !f.isStatic()).count();
+        if (visible==null || visible.isStatic() || instances!=1)
+            throw new IllegalArgumentException("field " + name + " is hidden by, or shares its name with, "
+                + "another field of " + type.name() + "; it cannot be changed");
+    }
+
+    private IDebugAdapterContext debugContext() throws ReflectiveOperationException {
+        java.lang.reflect.Field adapter=ProtocolServer.class.getDeclaredField("debugAdapter");
+        adapter.setAccessible(true);
+        Object debugAdapter=adapter.get(this);
+        java.lang.reflect.Field context=debugAdapter.getClass().getDeclaredField("debugContext");
+        context.setAccessible(true);
+        return (IDebugAdapterContext) context.get(debugAdapter);
     }
 
     @Override public void sendResponse(Messages.Response response) {
@@ -106,6 +141,8 @@ public final class PeekyJavaAdapter extends ProtocolServer {
             caps.addProperty("supportsSetVariable", true);
             // Peeky's own marker: this launcher allows next/stepIn/stepOut (with fixed filters).
             caps.addProperty("peekySteps", true);
+            // And refuses a field write whose name a hiding or second field shares.
+            caps.addProperty("peekyFieldSet", true);
             response.body=caps;
         }
         super.sendResponse(response);

@@ -463,6 +463,8 @@ class JavaSession:
             "supports_set_variable": raw.get("supportsSetVariable") is True,
             # Launcher bundles built before stepping lack the marker: refuse cleanly.
             "supports_stepping": raw.get("peekySteps") is True,
+            # Bundles whose launcher refuses a field name a hiding static field shares.
+            "supports_member_set": raw.get("peekyFieldSet") is True,
             "supports_conditional_breakpoints": False,
             "supports_hit_conditional_breakpoints": False,
             "supports_logpoints": False,

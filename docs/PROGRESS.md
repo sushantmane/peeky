@@ -112,6 +112,7 @@ An hourly thread heartbeat (`continue-peeky-mvp`) checks for available usage and
   - `--set current.end=10`, `this.count=0`, `arr[0]=1` and `arr[-1]=9` change scalar fields and array elements reached from the stopped method's locals, in a probe or with `session set`.
   - Final and static fields, Strings, boxed values and an `ArrayList`'s elements are refused (`MUTATION_REJECTED`), and so are map entries in any language. Captured fields and elements carry `settable`.
   - The worker locates the parent again from its frame and scope and writes through the parent's own reference. It then reads the value back from the object; if the new value cannot be confirmed, the session closes.
+  - Peeky's Java launcher refuses a field write whose name a hiding static field or a second field shares: java-debug writes by `fieldByName`, which would pick a field other than the one listed. Bundles mark this with `peekyFieldSet`; older bundles change only locals and say to rebuild.
   - Other languages refuse a field or element `--set` at launch, before the program runs.
   - Example: `examples/java/demo/MergeBug.java` (cookbook 7.3).
 - **Settable locals up front** (#77).

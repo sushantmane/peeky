@@ -897,7 +897,7 @@ def apply_set(worker, stop, name, value):
                 f"Intervention target {name!r} is not a visible local; "
                 f"visible: {_visible(snapshot)}"
                 + _member_hint(worker, stop, snapshot, name).replace(
-                    "select it as", "it can be read and, in Java, changed as"
+                    "select it as", "it can be read as"
                 )
                 + "; only the stopped function's own locals can be changed"
             )
@@ -912,7 +912,8 @@ def apply_set(worker, stop, name, value):
     try:
         parent = _resolve(worker, stop, snapshot, segments[:-1])
     except ValueError as exc:
-        raise ValueError(f"{target}: {exc}") from None
+        # A fixed phrase classifies it (NOT_FOUND), never the names the error lists.
+        raise ValueError(f"{target} was not found in the inspected values: {exc}") from None
     last, value_shown = segments[-1], str(parent.get("value"))[:80]
     member = last
     if last.startswith("["):
@@ -1049,8 +1050,13 @@ def run_probe(root, probe, *, adapter=None, progress=None):
             len(parse_selector(name)) > 1 for name, _ in probe.set
         ):
             raise ValueError(
-                "--set changes only the stopped function's own locals here; fields and "
-                "array elements can be changed only in Java"
+                "--set changes only the stopped function's own locals here; "
+                + (
+                    "this Java adapter bundle predates field and element changes (rebuild it "
+                    "with scripts/setup_java_adapter.py)"
+                    if identity.get("language") == "java"
+                    else "fields and array elements can be changed only in Java"
+                )
             )
         if probe.edit:
             result["candidate"]["sha256"] = launch.get("candidate_sha256")

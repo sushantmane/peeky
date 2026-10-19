@@ -930,3 +930,22 @@ def test_an_array_element_from_the_end_is_written_by_its_index():
         "set_variable",
         {"stop_id": "t", "handle": 5, "name": "2", "value": "9"},
     )
+
+
+@pytest.mark.parametrize("names", ["deadline, retries", "breakpoint, provenance"])
+def test_a_missing_intervention_parent_is_not_found_whatever_the_names(names):
+    # Review of #86: the listed names matched the TIMEOUT and INVALID_BREAKPOINT rules.
+    from peeky.errors import classify
+    from peeky.probe import apply_set
+
+    class Holder(FakeWorker):
+        def dispatch(self, operation, args):
+            if operation == "inspect":
+                variables = [{"name": name, "value": "1"} for name in names.split(", ")]
+                return {"frames": [{}], "scopes": [{"reference": 1, "variables": variables}]}
+            raise AssertionError(operation)
+
+    with pytest.raises(ValueError) as caught:
+        apply_set(Holder(), {}, "request.limits", "3")
+    assert classify(caught.value)["code"] == "NOT_FOUND"
+    assert names in str(caught.value)

@@ -780,9 +780,7 @@ class DebugWorker:
                     ),
                     "supports_set_variable": self.capabilities.get("supports_set_variable", False),
                     # Fields and array elements too (Java), not only root locals.
-                    "supports_member_set": self.capabilities.get("supports_set_variable", False)
-                    is True
-                    and hasattr(runtime, "member_settable"),
+                    "supports_member_set": self.member_set(),
                     "supports_expand": True,
                     "protocol": PROTOCOL_VERSION,
                     "artifact_manifest_id": runtime.manifest_id,
@@ -1377,11 +1375,7 @@ class DebugWorker:
                     and bool(check(variable, frame))
                 )
             elif ancestry and (member := getattr(self.runtime, "member_settable", None)):
-                settable = (
-                    self.capabilities.get("supports_set_variable", False) is True
-                    and not self.optimized()
-                    and member(variable) is None
-                )
+                settable = self.member_set() and not self.optimized() and member(variable) is None
             path = (*ancestry, (name, kind))
             handle = 0
             raw = variable.get("variablesReference", 0)
@@ -1505,6 +1499,14 @@ class DebugWorker:
             "remaining_nodes": 512 - self.inspection_nodes,
         }
 
+    def member_set(self):
+        """Whether `set_variable` may change fields and elements here, not only locals."""
+        return (
+            self.capabilities.get("supports_set_variable") is True
+            and self.capabilities.get("supports_member_set") is True
+            and hasattr(self.runtime or self.adapter, "member_settable")
+        )
+
     def set_member(self, args, runtime):
         """Change a field or element of a value an expansion handle names (Java only).
 
@@ -1524,8 +1526,11 @@ class DebugWorker:
                 "Only the stopped function's own locals can be changed for this language "
                 "(fields and elements cannot)"
             )
-        if not self.capabilities.get("supports_set_variable", False):
-            raise ValueError("Adapter does not support variable mutation")
+        if not self.member_set():
+            raise ValueError(
+                "This Java adapter bundle predates field and element changes, so only locals "
+                "can be changed; rebuild it with scripts/setup_java_adapter.py"
+            )
         if record is None or record[0] == "view":
             raise ValueError("Unknown or stale expansion handle; inspect again")
         if level := self.optimized():
