@@ -696,7 +696,13 @@ class OwnedLocals:
         A line that may invoke a macro runs code whose spans are in another file
         (`eprintln!`'s, collapsed onto the line), in scopes no statement of this file
         there shows: the stop can be in one of those."""
-        if line is None or may_invoke_macro(self.texts.get(body.file), line):
+        if line is None:
+            return None
+        # The stop's own file: a macro defined in another module, or `include!`d code,
+        # stops in this frame at another file's line.
+        shown = str(path or "").replace("\\", "/")
+        matched = [name for name in self.texts if shown == name or shown.endswith("/" + name)]
+        if len(matched) != 1 or may_invoke_macro(self.texts[matched[0]], line):
             return None
         return body.visible_scopes(line, path)
 
@@ -839,7 +845,10 @@ def may_invoke_macro(text, line):
     own = lines[line - 1]
     if "!" in own or "/*" in own or not own.isascii():
         return True
-    if not _PATH_END.search(own):
+    # A trailing `// comment` ends no path (`let n = x * 2; // doubled`), unless a quote
+    # before it may hold the `//`.
+    code, comment, _ = own.partition("//")
+    if not _PATH_END.search(code if comment and '"' not in code and "'" not in code else own):
         return False
     rest = "\n".join(lines[line:])
     following = rest[_PATH_TAIL.match(rest).end() :][:1]

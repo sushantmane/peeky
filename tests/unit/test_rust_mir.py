@@ -659,3 +659,58 @@ def test_projected_bindings_and_quoted_labels():
     assert _projected_type("(*((*_1).1: &mut Pt))") == "Pt"
     label = _LABEL.match('"_ZN5alloc5boxed12Box$LT$T$GT$3new17h01E.exit47":   ; preds = %start')
     assert label[1] == '"_ZN5alloc5boxed12Box$LT$T$GT$3new17h01E.exit47"' and label[2] == "%start"
+
+
+def test_a_trailing_comment_ends_no_path():
+    # Verification of #103: `// doubled` read as a path that `println!` on the next line
+    # might complete, which turned off the scope narrowing for the line.
+    text = 'fn f() {\n    let n = args.count * 2; // doubled\n    println!("{}", n);\n}\n'
+    assert not may_invoke_macro(text, 2)
+    quoted = 'fn f() {\n    let s = "a // b"; // c\n    println!("{}", s);\n}\n'
+    assert may_invoke_macro(quoted, 2)
+
+
+MACRO_SIBLING = "\n".join(
+    [
+        "fn f(_1: &Pt) -> () {",
+        "    debug q => _1;                       // in scope 0 at src/main.rs:1:6: 1:7",
+        "    let mut _0: ();                      // return place in scope 0 at src/main.rs:1:20: 1:22",
+        "    let _2: std::boxed::Box<Pt>;         // in scope 0 at src/macros.rs:4:17: 4:18",
+        "    let _3: &Pt;                         // in scope 0 at src/macros.rs:9:50: 9:51",
+        "    scope 1 {",
+        "        debug b => _2;                   // in scope 1 at src/macros.rs:4:17: 4:18",
+        "    }",
+        "    scope 2 {",
+        "        debug b => _3;                   // in scope 2 at src/macros.rs:9:50: 9:51",
+        "    }",
+        "",
+        "    bb0: {",
+        "        _3 = copy _1;                    // scope 0 at src/macros.rs:9:54: 9:56",
+        "        _0 = const ();                   // scope 2 at src/macros.rs:9:60: 9:70",
+        "        return;                          // scope 0 at src/main.rs:12:2: 12:2",
+        "    }",
+        "}",
+        "",
+    ]
+)
+
+
+def test_scope_narrowing_reads_the_stop_s_own_file():
+    # Verification of #103: the macro check read the function's file at the stop's line,
+    # though a stop in a `macro_rules!` from another module (or `include!`d code) is at
+    # another file's line, where `eprintln!` may run in the dropped Box's scope.
+    body = parse_body(MACRO_SIBLING)
+    main = "\n" * 8 + "    let k = 1;\n" + "\n" * 4
+    shown = "/w/src/macros.rs"
+    for line_nine, narrowed in (
+        ('        eprintln!("dropped") } else { let b = q; }', False),
+        ("        let x = 1; } else { let b = q; }", True),
+    ):
+        macros = "\n" * 8 + line_nine + "\n" * 4
+        owned = OwnedLocals(
+            [body], {}, SOURCES, texts={"src/main.rs": main, "src/macros.rs": macros}
+        )
+        visible = owned._visible(body, 9, shown)
+        assert (visible is not None) is narrowed, (line_nine, visible)
+        kept = body.in_scopes(body.bindings["b"], visible)
+        assert len(kept) == (1 if narrowed else 2), kept
