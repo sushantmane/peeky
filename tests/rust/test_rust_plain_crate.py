@@ -794,6 +794,27 @@ fn tuples<T: Debug, U: Debug>(t: T, w: U) -> usize {
     reuse.len() // DROPPED_TUPLES
 }
 
+fn fat_params<T: Debug, U: Debug>(t: T, u: U) -> usize {
+    drop(t);
+    drop(u);
+    let reuse = Box::new([0x309i64; 6]);
+    reuse.len() // DROPPED_FAT
+}
+
+fn make() -> Box<dyn Debug> {
+    Box::new(1u8)
+}
+
+fn factories() -> usize {
+    let label: Box<str> = Box::from("label");
+    let refs = [&label, &label];
+    let makers: [fn() -> Box<dyn Debug>; 2] = [make, make];
+    let f = move || {
+        refs.len() + makers.len() // FACTORIES
+    };
+    f()
+}
+
 fn wide_ref() -> usize {
     let label: Box<str> = Box::from("label");
     let held = &label;
@@ -844,6 +865,12 @@ fn main() {
     let pairs = [(std::ptr::null::<u8>(), 5i64), (std::ptr::null::<u8>(), 6i64)];
     let ws = [W { x: 5u8, f: (1u8, one as fn() -> u8) }, W { x: 5u8, f: (2u8, one as fn() -> u8) }];
     println!("{}", tuples(Box::new(pairs), Box::new(ws)));
+    fn takes(_: *const [u8]) {}
+    fn named(_: *const str) -> u8 {
+        0
+    }
+    let tables: [fn(*const str) -> u8; 2] = [named, named];
+    println!("{} {}", fat_params(Box::new(takes as fn(*const [u8])), Box::new(tables)), factories());
     println!("{} {} {:?} {} {}", a, b, r, closures(&[1, 2]), exported(&Pt { x: 10, y: 1 }, &[1, 2]));
 }
 """
@@ -882,6 +909,8 @@ def test_generic_boxes_are_gated_and_non_owning_values_read(plain, capsys):
         ("DROPPED_ARRAYS", "a"),
         # LLDB: `(*const u8, i64) (*)[2]` and `W<(u8, fn() -> u8)> (*)[2]`.
         ("DROPPED_TUPLES", "t,w"),
+        # LLDB: `void (**)(*const [u8])`, `unsigned char (*(*)[2])(*const str)`.
+        ("DROPPED_FAT", "t,u"),
     ):
         at = f"src/main.rs:{line_of(BOX_GENERIC, '// ' + marker)}"
         code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", capture, "--quiet")
@@ -902,6 +931,13 @@ def test_generic_boxes_are_gated_and_non_owning_values_read(plain, capsys):
     assert not any(row.get("view") for row in rows), rows
     assert "px" in str(rows[3].get("value")), rows
     assert "not shown" not in str(rows[4].get("value")), rows
+    # Arrays of fn pointers returning a Box, and of references to one, own no Box.
+    at = f"src/main.rs:{line_of(BOX_GENERIC, '// FACTORIES')}"
+    code, result = run(
+        capsys, "probe", str(plain), "--at", at, "--capture", "refs,makers", "--quiet"
+    )
+    assert code == 0 and not any(row.get("view") for row in result["rows"]), result
+    assert not any("not shown" in str(row.get("value")) for row in result["rows"]), result
     at = f"src/main.rs:{line_of(BOX_GENERIC, '// INNER')}"
     code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "g,hs", "--quiet")
     assert code == 0, result.get("error")

@@ -2,7 +2,7 @@
 
 import pytest
 
-from peeky.rust import _NON_OWNING, _is_pointer
+from peeky.rust import _NON_OWNING, _is_pointer, _is_wide_box
 
 
 @pytest.mark.parametrize(
@@ -29,6 +29,15 @@ from peeky.rust import _NON_OWNING, _is_pointer
         "(*const u8, i64) *",
         "vb7a::W<(u8, fn() -> u8)> (*)[2]",
         "vb7a::W<(u8, fn() -> u8)> *",
+        # A parameter list that opens with a fat raw pointer (verification of #103).
+        "void (**)(*const [u8])",
+        "unsigned char (*(*)[2])(*const str)",
+        "void (*(*)[2])(*const [u8])",
+        "void (*(**)())(*const [u8])",
+        "void (**)(*const [u8] *)",
+        "void (**)(*mut dyn core::fmt::Debug)",
+        "void (**)(*mut (dyn core::ops::function::Fn<(), Output=()> + core::marker::Send))",
+        "*const [u8] (**)(*const [u8])",
     ],
 )
 def test_top_level_pointers(kind):
@@ -57,6 +66,8 @@ def test_top_level_pointers(kind):
         "(*const u8, i64)[2]",
         "vb7a::W<(u8, fn() -> u8)>",
         "(u8, fn() -> u8) (*[2])(long)",
+        "void (*[2])(*const [u8])",
+        "void (*const [u8])",
     ],
 )
 def test_arrays_and_non_pointers(kind):
@@ -87,3 +98,34 @@ def test_non_owning_mir_types(mir):
 )
 def test_owning_or_unknown_mir_types(mir):
     assert not _NON_OWNING.match(mir)
+
+
+@pytest.mark.parametrize(
+    "kind",
+    [
+        "alloc::boxed::Box<str>",
+        "alloc::boxed::Box<dyn core::fmt::Debug>",
+        "alloc::boxed::Box<[vb::Pt], alloc::alloc::Global>",
+        "alloc::boxed::Box<str>[2]",
+        "alloc::boxed::Box<str>[2][3]",
+    ],
+)
+def test_wide_boxes(kind):
+    assert _is_wide_box(kind)
+
+
+@pytest.mark.parametrize(
+    "kind",
+    [
+        # Verification of #103: arrays of fn pointers returning a Box, and of references
+        # to one, begin with the Box's name too.
+        "alloc::boxed::Box<dyn vb8c::Shape> (*[2])()",
+        "alloc::boxed::Box<str> *[2]",
+        "alloc::boxed::Box<str> *",
+        "alloc::boxed::Box<dyn vb8c::Shape> (*)()",
+        "vb::Pt *",
+        "core::option::Option<alloc::boxed::Box<str> >",
+    ],
+)
+def test_not_wide_boxes(kind):
+    assert not _is_wide_box(kind)

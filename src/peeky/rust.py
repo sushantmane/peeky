@@ -739,10 +739,7 @@ def _is_pointer(kind):
     """Whether LLDB's C-style type is a pointer at its top level: `Pt *`, `unsigned char
     (*)[8]`, `long (**)()`, `unsigned char (*(*)[2])[2]`; not a generic's argument
     (`Vec<Pt *>`) or an array of pointers (`long (*[2])(long)`, `unsigned char *[2]`)."""
-    # `->` would close a generic's `<` (`W<(u8, fn() -> u8)>`).
-    text = str(kind or "").replace("->", " ")
-    while (stripped := re.sub(r"<[^<>]*>", "", text)) != text:
-        text = stripped
+    text = _without_generics(kind)
     if re.search(r"\*\s*(?:const\s*)?$", text):
         return True
     # The innermost `(*…)` group decides: what follows its stars is the declared thing's
@@ -756,11 +753,31 @@ def _is_pointer(kind):
     return False
 
 
+def _without_generics(kind):
+    """LLDB's type name without generic arguments (`Vec<Pt *>` is `Vec`)."""
+    # `->` would close a generic's `<` (`W<(u8, fn() -> u8)>`).
+    text = str(kind or "").replace("->", " ")
+    while (stripped := re.sub(r"<[^<>]*>", "", text)) != text:
+        text = stripped
+    return text
+
+
+def _is_wide_box(kind):
+    """Whether LLDB's type is a wide Box (`alloc::boxed::Box<str>`, which LLDB names
+    itself) or an array of them; not a fn pointer returning one (`alloc::boxed::Box<dyn
+    Shape> (*[2])()`) or an array of references to one (`alloc::boxed::Box<str> *[2]`),
+    which LLDB's C-style names also begin with it."""
+    return bool(
+        re.fullmatch(r"alloc::boxed::Box\s*(?:\[\d+\]\s*)*", _without_generics(kind).strip())
+    )
+
+
 def _declarator_group(text):
     """The contents of the declarator's `(*…)` group: the last one outside any parentheses
     or brackets with a base type before it. A parameter list's `(*)` (`unsigned char
     (*[2])(unsigned char (*)[4])`) never counts, nor does a tuple base that starts like
-    one (`(*const u8, i64) (*)[2]`)."""
+    one (`(*const u8, i64) (*)[2]`). A `(` right after `)` opens a parameter list, which
+    can start like one too (`void (**)(*const [u8])`)."""
     depth, last = 0, None
     for at, char in enumerate(text):
         if char in "([":
@@ -769,6 +786,7 @@ def _declarator_group(text):
                 and char == "("
                 and text[at + 1 :].lstrip().startswith("*")
                 and text[:at].strip()
+                and not text[:at].endswith(")")
             ):
                 last = at
             depth += 1
@@ -970,7 +988,7 @@ class RustSession(NativeSession):
             # where the MIR says only `T`; a reference to one (`&Box<str>`) is not owning.
             owning = any(
                 re.match(r"(?:std::boxed::|alloc::boxed::)?Box<", t or "") for t in types
-            ) or (str(variable.get("type") or "").startswith("alloc::boxed::Box<") and not plain)
+            ) or (_is_wide_box(variable.get("type")) and not plain)
             # What LLDB shows as a pointer (`Pt *`, `unsigned char (*)[8]`, `long (**)()`)
             # is read through only when the MIR says every binding is a reference, a raw
             # pointer or a fn pointer: a generic `T`, `Self` or `impl Trait` may be a Box.
