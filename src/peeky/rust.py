@@ -910,9 +910,12 @@ class RustSession(NativeSession):
             "initCommands": ["settings set target.load-script-from-symbol-file false"],
         }
 
+    def _optimized(self):
+        return getattr(getattr(self, "target", None), "opt_level", "0") != "0"
+
     def settable(self, variable, frame=None):
         """A Rust integer local the program keeps in memory (see validate_mutation_target)."""
-        if self.target.opt_level != "0":
+        if self._optimized():
             return False
         if variable.get("type") not in RUST_INTEGERS or not _writable_integer(variable):
             return False
@@ -930,7 +933,7 @@ class RustSession(NativeSession):
     def validate_mutation_target(self, variable, frame):
         """Only a local the program keeps in memory can be changed with effect."""
         name = variable.get("name")
-        if self.target.opt_level != "0":
+        if self._optimized():
             # Which locals stay in memory is read from an unoptimized build's IR.
             raise ValueError(
                 f"Rust mutation needs an unoptimized build (opt-level 0): {name!r} may be "
