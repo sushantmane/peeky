@@ -45,8 +45,26 @@ _BLOCK = re.compile(r"^    bb([0-9]+)(?: \(cleanup\))?: \{$")
 _STATEMENT = re.compile(r"^        (.+;) +// scope [0-9]+ at (.+)$")
 _SPAN = re.compile(r"^([^:]+):([0-9]+):[0-9]+")
 _WHOLE_LOCAL = re.compile(r"^_([0-9]+)$")
-# A binding through a projection names its type: `(_1.0: std::boxed::Box<Pt>)`.
-_PROJECTED = re.compile(r"\(.+: ((?:[^()]|\([^()]*\))+)\)")
+
+
+def _projected_type(text):
+    """The type a binding through a projection names, `(_1.0: std::boxed::Box<Pt>)` ->
+    `std::boxed::Box<Pt>`: split at the projection's own `: `, outside its parentheses
+    (`(((*_36) as variant#3).0: T)`), since a type can hold `: ` itself
+    (`{closure@src/main.rs:27:22: 27:35}`). None for anything else."""
+    if not (text.startswith("(") and text.endswith(")")):
+        return None
+    inner, depth = text[1:-1], 0
+    for index, char in enumerate(inner):
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+        elif depth == 0 and inner.startswith(": ", index):
+            return inner[index + 2 :] or None
+    return None
+
+
 _MOVE = re.compile(r"\bmove\s+[(*]*_([0-9]+)\b")
 _ASSIGN = re.compile(r"^_([0-9]+) = ")
 _STORAGE = re.compile(r"^(?:StorageLive|StorageDead|Deinit)\(_([0-9]+)\);$")
@@ -347,13 +365,13 @@ def parse_body(text):
             whole = _WHOLE_LOCAL.match(debug[2])
             # A binding through a projection (a closure's capture, an async local) has no
             # whole local, but names its type: `(_1.0: std::boxed::Box<Pt>)`.
-            typed = None if whole else _PROJECTED.fullmatch(debug[2])
+            typed = None if whole else _projected_type(debug[2])
             body.bindings.setdefault(debug[1], []).append(
                 (
                     int(whole[1]) if whole else None,
                     debug[3],
                     int(debug[4]),
-                    typed[1] if typed else None,
+                    typed,
                 )
             )
             spans.append((debug[3], int(debug[4])))

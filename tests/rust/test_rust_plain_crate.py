@@ -684,3 +684,51 @@ def test_references_stay_readable_and_a_gated_box_shows_only_its_address(plain, 
     code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "bu", "--quiet")
     row = result["rows"][0]
     assert row["view"] == "unproven" and re.fullmatch(r"0x[0-9a-fA-F]+", row["value"]), row
+
+
+BOX_EDGES = """#[derive(Debug)]
+pub struct Pt {
+    x: i64,
+    y: i64,
+}
+
+fn consume(b: Box<Pt>) -> i64 {
+    b.x + b.y
+}
+
+#[no_mangle]
+pub fn exported(b: Box<Pt>) -> i64 {
+    let total = consume(b);
+    let again = Box::new(Pt { x: 777, y: 888 });
+    total + again.x // NOMANGLE
+}
+
+fn closures(n: i64) -> i64 {
+    let f: Box<dyn Fn(i64) -> i64> = Box::new(move |k| k + n);
+    let g = move || {
+        let r = f(1);
+        drop(f);
+        let reuse = Box::new(0x6666i64);
+        r + *reuse // CAPTURED
+    };
+    g()
+}
+
+fn main() {
+    println!("{} {}", exported(Box::new(Pt { x: 1, y: 2 })), closures(3));
+}
+"""
+
+
+@pytest.mark.timeout(300)
+def test_boxes_in_unmangled_functions_and_closure_types_are_gated(plain, capsys):
+    # Verification of #103: a `#[no_mangle]` frame has no hash, which skipped the gate;
+    # a captured `Box<dyn Fn>`'s MIR type holds `: ` (`{closure@src/main.rs:27:22: …}`),
+    # which was misparsed.
+    (plain / "src/main.rs").write_text(BOX_EDGES)
+    for marker, capture in (("NOMANGLE", "b,b.x"), ("CAPTURED", "f,f.pointer")):
+        at = f"src/main.rs:{line_of(BOX_EDGES, marker)}"
+        code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", capture, "--quiet")
+        assert code == 0, result.get("error")
+        first, second = result["rows"]
+        assert first["view"] == "unproven" and "value" not in second, (marker, result["rows"])

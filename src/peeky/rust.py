@@ -886,22 +886,24 @@ class RustSession(NativeSession):
         )
         if container is not None:
             return container
-        if hashed and proofs is not None and self.target.opt_level == "0":
-            declared = proofs.declared_type(hashed[1], variable.get("name"))
+        if top and proofs is not None and self.target.opt_level == "0":
+            # An unmangled function (`#[no_mangle]`) has no hash: its bindings come from
+            # the bodies on the stop line, and nothing there is ever proven.
+            function = hashed[1] if hashed else None
+            declared = proofs.declared_type(function, variable.get("name")) if hashed else None
             source = ((frame or {}).get("source") or {}).get("path")
             types = (
                 [declared]
                 if declared is not None
-                else proofs.binding_types(hashed[1], variable.get("name"), source, line)
+                else proofs.binding_types(function, variable.get("name"), source, line)
             )
             owning = any(re.match(r"(?:std::boxed::|alloc::boxed::)?Box<", t or "") for t in types)
-            # A pointer with a binding whose type the MIR does not write out may be a Box
-            # too: it fails closed, like an unproven Box.
-            unknown = (not types or None in types) and str(
-                variable.get("type") or ""
-            ).rstrip().endswith("*")
+            # A pointer (`Pt *`, `unsigned char (*)[8]`) with a binding whose type the MIR
+            # does not write out may be a Box too: it fails closed, like an unproven Box.
+            unknown = (not types or None in types) and "*" in str(variable.get("type") or "")
             if (owning or unknown) and not (
                 innermost
+                and hashed
                 and proofs.proven(
                     hashed[1],
                     variable.get("name"),
