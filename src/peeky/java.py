@@ -23,6 +23,108 @@ from peeky.digest import sha256_file, tree_fingerprint
 MAX_BUNDLE_FILES = 4096
 MAX_BUNDLE_FILE_BYTES = 256 * 1024 * 1024
 _JAVA_INTEGER_BITS = {"byte": 8, "short": 16, "int": 32, "long": 64}
+# java-debug's values for an object (`Merge$Interval@143`) and an array (`int[3]@144`).
+_JAVA_OBJECT = re.compile(r"[A-Za-z_$][\w$.]*@[0-9]+")
+_JAVA_ARRAY = re.compile(r"[A-Za-z_$][\w$.]*(?:\[\])*\[([0-9]{1,10})\](?:\[\])*@[0-9]+")
+_JAVA_LIST = re.compile(r"(?:java\.util\.)?ArrayList(?:<.*>)?")
+_NUMBERED = re.compile(r"(.*?)(@[0-9]+)", re.S)
+PREVIEW_ITEMS = 8
+
+
+def java_list(variable, fields):
+    """(backing array, size) of a java.util.ArrayList shown by its own fields, else None:
+    its elements are `elementData[0]` to `elementData[size - 1]`, read without calling
+    `toArray` or `get` in the program."""
+    if not _JAVA_LIST.fullmatch(str(variable.get("type"))):
+        return None
+    named = {field.get("name"): field for field in fields}
+    if set(named) != {"elementData", "modCount", "size"} or len(fields) != 3:
+        return None
+    size, backing = named["size"], named["elementData"]
+    if size.get("type") != "int" or not re.fullmatch(r"0|[1-9][0-9]{0,9}", str(size.get("value"))):
+        return None
+    reference = backing.get("variablesReference")
+    if type(reference) is not int or reference <= 0:
+        return None
+    return backing, int(size["value"])
+
+
+_ESCAPES = {"\\": "\\\\", "\n": "\\n", "\r": "\\r", "\t": "\\t", "\b": "\\b", "\f": "\\f"}
+
+
+def _escaped(text, quote):
+    return "".join(
+        "\\" + quote
+        if char == quote
+        else _ESCAPES.get(char)
+        or (
+            f"\\u{ord(char):04x}"
+            if ord(char) < 0x20 or 0x7F <= ord(char) < 0xA0 or 0xD800 <= ord(char) <= 0xDFFF
+            else char
+        )
+        for char in text
+    )
+
+
+def _brief(item):
+    """A field's value, short. java-debug writes a String's text between quotes, and a
+    char bare, without escaping either; here both are Java literals (`"say \\"hi\\""`,
+    `'"'`), a String cut inside its quotes, so a preview's quoted text never runs into
+    the fields after it."""
+    text = str(item.get("value"))
+    if item.get("type") == "char" and len(text) == 1:
+        return "'" + _escaped(text, "'") + "'"
+    if text.startswith('"'):
+        inner = text[1:-1] if len(text) > 1 and text.endswith('"') else text[1:]
+        return '"' + _escaped(inner if len(inner) <= 38 else inner[:37] + "…", '"') + '"'
+    if numbered := _NUMBERED.fullmatch(text):
+        # Never cut an object's number: whether a value is cut must not depend on it,
+        # or the same object would differ across runs by more than its number.
+        prefix, number = numbered.groups()
+        return (prefix if len(prefix) <= 39 else prefix[:38] + "…") + number
+    return text if len(text) <= 40 else text[:39] + "…"
+
+
+def _elements(children, length):
+    """`[a, b, …]`: the first elements of a length-``length`` sequence, in index order."""
+    found = {}
+    for child in children:
+        # java-debug names array elements `0`, `1`, ...
+        match = re.fullmatch(r"\[?([0-9]+)\]?", str(child.get("name")))
+        if match and int(match[1]) < length:
+            found[int(match[1])] = child
+    shown = [_brief(found[index]) for index in range(min(length, PREVIEW_ITEMS)) if index in found]
+    if len(shown) != min(length, PREVIEW_ITEMS):
+        raise ValueError("Java elements are not all visible")
+    return f"[{', '.join(shown)}{', …' if length > PREVIEW_ITEMS else ''}]"
+
+
+def java_preview(variable, fetch):
+    """A captured value with its first fields inline (`Merge$Interval@143 {end=10,
+    start=1}`), an ArrayList's elements (`ArrayList@142 size=2 [...]`) or an array's
+    (`int[3]@144 [1, 2, 3]`), from the debugger's field reads only: no code runs in the
+    program. ``fetch(handle, count)`` lists a value's first children. None leaves the
+    value as java-debug shows it."""
+    value, handle = variable.get("value"), variable.get("variablesReference")
+    if not isinstance(value, str) or type(handle) is not int or handle <= 0:
+        return None
+    if array := _JAVA_ARRAY.fullmatch(value):
+        length = int(array[1])
+        elements = fetch(handle, min(length, PREVIEW_ITEMS)) if length else []
+        return f"{value} {_elements(elements, length)}"
+    if not _JAVA_OBJECT.fullmatch(value):
+        return None
+    fields = fetch(handle, 64)
+    if listed := java_list(variable, fields):
+        backing, size = listed
+        elements = fetch(backing["variablesReference"], min(size, PREVIEW_ITEMS)) if size else []
+        return f"{value} size={size} {_elements(elements, size)}"
+    if not fields or not all(isinstance(field.get("name"), str) for field in fields):
+        return None
+    shown = ", ".join(f"{field['name']}={_brief(field)}" for field in fields[:PREVIEW_ITEMS])
+    return f"{value} {{{shown}{', …' if len(fields) > PREVIEW_ITEMS else ''}}}"
+
+
 SCALAR = re.compile(r"(?:true|false|[+-]?[0-9]+(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?)\Z")
 CLASS_NAME = re.compile(r"[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*\Z")
 

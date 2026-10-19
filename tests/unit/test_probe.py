@@ -755,3 +755,113 @@ def test_java_settable_locals_are_scalars_a_selector_can_name(variable, settable
     from peeky.java import JavaSession
 
     assert JavaSession.settable(None, variable) is settable
+
+
+def _java_fetch(children):
+    def fetch(handle, count):
+        return children[handle][:count]
+
+    return fetch
+
+
+@pytest.mark.parametrize(
+    "variable, children, shown",
+    [
+        (
+            {"value": "P@1", "type": "P", "variablesReference": 1},
+            {1: [{"name": "x", "value": "3"}, {"name": "s", "value": '"hi"'}]},
+            'P@1 {x=3, s="hi"}',
+        ),
+        (
+            {"value": "P@1", "type": "P", "variablesReference": 1},
+            {1: [{"name": f"f{n}", "value": str(n)} for n in range(10)]},
+            "P@1 {f0=0, f1=1, f2=2, f3=3, f4=4, f5=5, f6=6, f7=7, …}",
+        ),
+        (
+            {"value": "int[3]@2", "type": "int[]", "variablesReference": 2},
+            {2: [{"name": str(n), "value": str(n * 2)} for n in range(3)]},
+            "int[3]@2 [0, 2, 4]",
+        ),
+        (
+            {"value": "ArrayList@3", "type": "ArrayList", "variablesReference": 3},
+            {
+                3: [
+                    {"name": "elementData", "value": "Object[10]@4", "variablesReference": 4},
+                    {"name": "modCount", "value": "2", "type": "int"},
+                    {"name": "size", "value": "2", "type": "int"},
+                ],
+                4: [{"name": str(n), "value": f"P@{n}"} for n in range(2)]
+                + [{"name": str(n), "value": "null"} for n in range(2, 10)],
+            },
+            "ArrayList@3 size=2 [P@0, P@1]",
+        ),
+        ({"value": '"text"', "type": "String", "variablesReference": 5}, {}, None),
+        ({"value": "null", "type": "null", "variablesReference": 0}, {}, None),
+    ],
+)
+def test_java_values_preview_fields_lists_and_arrays(variable, children, shown):
+    from peeky.java import java_preview
+
+    assert java_preview(variable, _java_fetch(children)) == shown
+
+
+def test_a_java_preview_that_cannot_show_every_element_says_nothing():
+    from peeky.java import java_preview
+
+    array = {"value": "int[3]@2", "type": "int[]", "variablesReference": 2}
+    with pytest.raises(ValueError, match="not all visible"):
+        java_preview(array, _java_fetch({2: [{"name": "0", "value": "1"}]}))
+
+
+def test_java_preview_strings_are_literals_so_ids_mask_correctly():
+    # Review of #87: java-debug does not escape quotes inside a String, and a cut string
+    # lost its closing quote, so masking paired the wrong quotes.
+    from peeky.evidence import _no_addresses
+    from peeky.java import _brief
+
+    said = _brief({"value": '"he said "x@5" ok"', "type": "String"})
+    assert said == '"he said \\"x@5\\" ok"'
+    masked = _no_addresses(f"Q$S@55 {{b=Q$B@62, q={said}}}", "java")
+    assert masked == f"Q$S@… {{b=Q$B@…, q={said}}}"
+    long = _brief({"value": '"' + "x" * 60 + '"', "type": "String"})
+    assert long.endswith('…"') and len(long) == 40
+    assert _no_addresses(f"Q$R@54 {{a={long}, b=Q$B@59}}", "java").endswith("b=Q$B@…}")
+    # Cut before escaping, so an escape is never split.
+    assert _brief({"value": '"' + "\\" * 60 + '"', "type": "String"}) == '"' + "\\\\" * 37 + '…"'
+    assert _brief({"value": '"a\nb"', "type": "String"}) == '"a\\nb"'
+
+
+def test_java_preview_chars_are_literals_never_strings():
+    # Review of #87: java-debug writes a char bare, so `"` read as an empty String.
+    from peeky.evidence import _no_addresses
+    from peeky.java import _brief
+
+    chars = [_brief({"value": value, "type": "char"}) for value in ('"', "'", "\\", "\n", "a")]
+    assert chars == ["'\"'", "'\\''", "'\\\\'", "'\\n'", "'a'"]
+    assert _brief({"value": '""', "type": "String"}) == '""'
+    value = f'P@3 {{c={chars[0]}, d={chars[1]}, s="it\'s @5", n=N@6}}'
+    assert _no_addresses(value, "java") == value.replace("P@3", "P@…").replace("N@6", "N@…")
+
+
+@pytest.mark.parametrize("name", ["OrderBookSnapshotValidator$PriceTier", "Q" * 60])
+def test_a_cut_java_field_keeps_its_object_number_whole(name):
+    # Review of #87: `Long$Name@998` fit in 40 characters and `Long$Name@1003` was cut to
+    # `Long$Name@10…`, so the same field differed across runs by more than its number.
+    from peeky.evidence import _no_addresses
+    from peeky.java import java_preview
+
+    holder = {"value": "Holder@143", "variablesReference": 5, "type": "Holder"}
+
+    def preview(number):
+        field = {
+            "name": "level",
+            "value": f"{name}@{number}",
+            "type": name,
+            "variablesReference": 7,
+        }
+        return java_preview(holder, lambda handle, count: [field])
+
+    a, b = preview(998), preview(1003)
+    assert a.endswith("@998}") and b.endswith("@1003}")
+    assert _no_addresses(a, "java") == _no_addresses(b, "java")
+    assert _no_addresses(a, "java").endswith("@…}")

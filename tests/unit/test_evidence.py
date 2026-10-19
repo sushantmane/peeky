@@ -562,7 +562,7 @@ def test_no_addresses_is_available_to_ad_hoc_sql(store):
     evidence.record(store, captured([(1, "observed", "p", "0x000000016bb97aae")]))
     rows = evidence.query(store, "SELECT no_addresses(value) AS v FROM last_run")["rows"]
     assert rows == [{"v": "0x…"}]
-    assert "no_addresses(text)" in evidence.schema(store)["functions"]
+    assert "no_addresses(text[, language])" in evidence.schema(store)["functions"]
 
 
 def test_runs_show_the_start_of_each_output(store):
@@ -646,7 +646,7 @@ def test_values_changed_by_an_intervention_rank_after_real_differences(store):
 
 def test_the_text_schema_lists_sql_functions(store):
     evidence._ensure(store).close()
-    assert "no_addresses(text)" in evidence.schema_text(evidence.schema(store))
+    assert "no_addresses(text[, language])" in evidence.schema_text(evidence.schema(store))
 
 
 def test_no_addresses_cannot_outrun_the_query_deadline(store):
@@ -806,3 +806,31 @@ def test_an_upgrade_blocked_by_a_read_only_directory_says_so(store):
             evidence.query(store, "SELECT 1")
     finally:
         store.parent.chmod(0o700)
+
+
+def test_java_object_numbers_differ_between_runs_like_addresses(store):
+    # Review of #87: JDWP numbers objects in the order the debugger first touches them,
+    # so the same object is `@143` in one run and `@144` in the next.
+    a = captured([(1, "observed", "current", 'P@143 {label="a@5", next=P@161}')])
+    b = captured([(1, "observed", "current", 'P@144 {label="a@5", next=P@162}')])
+    c = captured([(1, "observed", "current", 'P@144 {label="a@6", next=P@162}')])
+    d = captured([(1, "observed", "kind", "Class (Foo)@12")])
+    e = captured([(1, "observed", "kind", "Class (Foo)@13")])
+    for run in (a, b, c, d, e):
+        evidence.record(store, run, language="java")
+    rows = evidence.run_query(store, "diff", {"a": 1, "b": 2})["rows"]
+    assert [row["note"] for row in rows] == ["addresses only"]
+    # A String field's text is data, never an object number.
+    rows = evidence.run_query(store, "diff", {"a": 2, "b": 3})["rows"]
+    assert [row["note"] for row in rows] == [None]
+    rows = evidence.run_query(store, "diff", {"a": 4, "b": 5})["rows"]
+    assert [row["note"] for row in rows] == ["addresses only"]
+    # Another language's `Type@N` is the program's own text (a Python repr).
+    for value in ("Node@1", "Node@2"):
+        evidence.record(store, captured([(1, "observed", "n", value)]), language="python")
+    rows = evidence.run_query(store, "diff", {"a": 6, "b": 7})["rows"]
+    assert [row["note"] for row in rows] == [None]
+    masked = evidence.query(store, "SELECT no_addresses('User@1') AS v")["rows"]
+    assert masked == [{"v": "User@1"}]
+    masked = evidence.query(store, "SELECT no_addresses('User@1', 'java') AS v")["rows"]
+    assert masked == [{"v": "User@…"}]

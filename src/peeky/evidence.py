@@ -201,6 +201,7 @@ def _shown(alias=""):
 
 # Selectors a run asked for (runs.capture), whether or not it reached a capture.
 _ASKED = "(SELECT value FROM json_each((SELECT capture FROM runs WHERE run_id = {})))"
+_LANGUAGE = "(SELECT language FROM runs WHERE run_id = {})"
 _PAIR = f"""WITH a AS (SELECT hit, phase, selector, {_shown()} AS v, rowid AS pos FROM captures
     WHERE run_id = {_A}),
   b AS (SELECT hit, phase, selector, {_shown()} AS v, rowid AS pos FROM captures
@@ -215,7 +216,8 @@ _PAIR = f"""WITH a AS (SELECT hit, phase, selector, {_shown()} AS v, rowid AS po
       WHEN k.phase = 'after-set' AND a.pos IS NULL THEN 'intervention only in run b'
       WHEN b.pos IS NULL THEN 'missing in run b'
       WHEN a.pos IS NULL THEN 'missing in run a'
-      WHEN a.v IS NOT b.v AND no_addresses(a.v) IS no_addresses(b.v) THEN 'addresses only'
+      WHEN a.v IS NOT b.v AND no_addresses(a.v, {_LANGUAGE.format(_A)})
+        IS no_addresses(b.v, {_LANGUAGE.format(_B)}) THEN 'addresses only'
     END AS note
     FROM k LEFT JOIN a USING (hit, phase, selector) LEFT JOIN b USING (hit, phase, selector))"""
 _PAIR_COLUMNS = (
@@ -293,13 +295,33 @@ def _output_window(value, other):
     return ("…" if start else "") + window + ("…" if start + 200 < len(value) else "")
 
 
-def _no_addresses(value):
+# java-debug's object identity numbers (`Merge$Interval@143`, `int[3]@144`,
+# `Class (Foo)@145`) follow the order the debugger first touched objects, so like
+# addresses they differ between runs. Only in a Java run's values: other languages'
+# text (a Python `Node@1` repr) is the program's own.
+_JAVA_LANGUAGES = ("java", "java-attach")
+# After a name, `]`, `)` or a preview's cut (`…`).
+_JAVA_ID = re.compile(r"(?<=[\w$\])…])@[0-9]+\b")
+# A preview's String and char literals (Peeky escapes both), never masked.
+_QUOTED = re.compile(r"""("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\(?:u[0-9a-f]{4}|.))')""")
+
+
+def _no_addresses(value, language=None):
     """`value` with heap and stack addresses masked, for comparing runs.
 
-    Registered as the SQL function no_addresses(text): an address that changes on
-    every run (a C string, a Python object repr) is not a difference in the program.
+    Registered as the SQL function no_addresses(text[, language]): an address that
+    changes on every run (a C string, a Python object repr) is not a difference in the
+    program. With language java or java-attach, so is a Java object's `@143`.
     """
-    return _ADDRESS.sub("0x…", value) if isinstance(value, str) else value
+    if not isinstance(value, str):
+        return value
+    # A String value is java-debug's unescaped text: data, never an object number.
+    if language in _JAVA_LANGUAGES and not value.startswith('"'):
+        value = "".join(
+            part if part[:1] in ('"', "'") else _JAVA_ID.sub("@…", part)
+            for part in _QUOTED.split(value)
+        )
+    return _ADDRESS.sub("0x…", value)
 
 
 _RUN_PARAM = {"run": "Run id (default: the newest run)"}
@@ -750,14 +772,15 @@ def query(path, sql, params=None, *, limit=DEFAULT_ROWS, seconds=QUERY_SECONDS):
     connection.setlimit(sqlite3.SQLITE_LIMIT_COLUMN, MAX_COLUMNS)
     deadline = time.monotonic() + seconds
 
-    def no_addresses(value):
+    def no_addresses(value, language=None):
         # SQLite checks the deadline only between VM steps, never inside a Python
         # function: a query calling it many times per row checks here too.
         if time.monotonic() > deadline:
             raise sqlite3.OperationalError("interrupted: query deadline")
-        return _no_addresses(value)
+        return _no_addresses(value, language)
 
     connection.create_function("no_addresses", 1, no_addresses, deterministic=True)
+    connection.create_function("no_addresses", 2, no_addresses, deterministic=True)
 
     def bounded(function):
         def call(*values):
@@ -887,9 +910,10 @@ def schema(path):
             for name, (description, _, params, _) in QUERIES.items()
         },
         "functions": {
-            "no_addresses(text)": "The text with heap and stack addresses (0x and at least 9 "
-            "significant hex digits; never NULL, all-ones or shorter values) masked, to compare "
-            "values across runs",
+            "no_addresses(text[, language])": "The text with heap and stack addresses (0x and "
+            "at least 9 significant hex digits; never NULL, all-ones or shorter values) masked, "
+            "to compare values across runs; with the run's language (java or java-attach), Java "
+            "object numbers (`Type@143`) too",
             "first_difference(a, b)": "Offset, from 0, of the first character where two texts "
             "differ",
             "difference_position(a, b)": "Where two texts first differ, as `line L, column C` "
