@@ -27,6 +27,7 @@ _JAVA_INTEGER_BITS = {"byte": 8, "short": 16, "int": 32, "long": 64}
 _JAVA_OBJECT = re.compile(r"[A-Za-z_$][\w$.]*@[0-9]+")
 _JAVA_ARRAY = re.compile(r"[A-Za-z_$][\w$.]*(?:\[\])*\[([0-9]{1,10})\](?:\[\])*@[0-9]+")
 _JAVA_LIST = re.compile(r"(?:java\.util\.)?ArrayList(?:<.*>)?")
+_NUMBERED = re.compile(r"(.*?)(@[0-9]+)", re.S)
 PREVIEW_ITEMS = 8
 
 
@@ -76,6 +77,11 @@ def _brief(item):
     if text.startswith('"'):
         inner = text[1:-1] if len(text) > 1 and text.endswith('"') else text[1:]
         return '"' + _escaped(inner if len(inner) <= 38 else inner[:37] + "…", '"') + '"'
+    if numbered := _NUMBERED.fullmatch(text):
+        # Never cut an object's number: whether a value is cut must not depend on it,
+        # or the same object would differ across runs by more than its number.
+        prefix, number = numbered.groups()
+        return (prefix if len(prefix) <= 39 else prefix[:38] + "…") + number
     return text if len(text) <= 40 else text[:39] + "…"
 
 

@@ -300,7 +300,8 @@ def _output_window(value, other):
 # addresses they differ between runs. Only in a Java run's values: other languages'
 # text (a Python `Node@1` repr) is the program's own.
 _JAVA_LANGUAGES = ("java", "java-attach")
-_JAVA_ID = re.compile(r"(?<=[\w$\])])@[0-9]+\b")
+# After a name, `]`, `)` or a preview's cut (`…`).
+_JAVA_ID = re.compile(r"(?<=[\w$\])…])@[0-9]+\b")
 # A preview's String and char literals (Peeky escapes both), never masked.
 _QUOTED = re.compile(r"""("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\(?:u[0-9a-f]{4}|.))')""")
 

@@ -841,3 +841,27 @@ def test_java_preview_chars_are_literals_never_strings():
     assert _brief({"value": '""', "type": "String"}) == '""'
     value = f'P@3 {{c={chars[0]}, d={chars[1]}, s="it\'s @5", n=N@6}}'
     assert _no_addresses(value, "java") == value.replace("P@3", "P@…").replace("N@6", "N@…")
+
+
+@pytest.mark.parametrize("name", ["OrderBookSnapshotValidator$PriceTier", "Q" * 60])
+def test_a_cut_java_field_keeps_its_object_number_whole(name):
+    # Review of #87: `Long$Name@998` fit in 40 characters and `Long$Name@1003` was cut to
+    # `Long$Name@10…`, so the same field differed across runs by more than its number.
+    from peeky.evidence import _no_addresses
+    from peeky.java import java_preview
+
+    holder = {"value": "Holder@143", "variablesReference": 5, "type": "Holder"}
+
+    def preview(number):
+        field = {
+            "name": "level",
+            "value": f"{name}@{number}",
+            "type": name,
+            "variablesReference": 7,
+        }
+        return java_preview(holder, lambda handle, count: [field])
+
+    a, b = preview(998), preview(1003)
+    assert a.endswith("@998}") and b.endswith("@1003}")
+    assert _no_addresses(a, "java") == _no_addresses(b, "java")
+    assert _no_addresses(a, "java").endswith("@…}")
