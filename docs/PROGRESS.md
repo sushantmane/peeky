@@ -102,6 +102,7 @@ An hourly thread heartbeat (`continue-peeky-mvp`) checks for available usage and
     - Values are kept only if the build that ran hashes to the edited text, locally and over `--worker`.
     - A build that fails is now `BUILD_FAILED` with the compiler's output, for every probe and session.
     - Evidence schema 3: `runs.edit` holds the diff; the views have `candidate`; `queries runs` marks candidate runs, `values` leaves them out, and `diff` adds an `(edit)` row. Older stores upgrade in place.
+- **Exact integers in the evidence store** (#75): schema 4 makes `captures.num` NUMERIC, so `600` stays `600` and 64-bit integers are exact. The table is rebuilt in capture order, and older stores are upgraded in place.
 - **C/C++ locals declared below the stop are withheld** (#74).
   - `no value yet: declared at line 18, below this stop`. They are never settable or expanded.
   - The rule comes from DWARF declaration lines and the line table. It applies only when:
@@ -137,7 +138,7 @@ An hourly thread heartbeat (`continue-peeky-mvp`) checks for available usage and
 
 **Open issues:**
 - **#27:** an attached JVM whose `stopped` event is lost (seen once on Venice). The launch case is fixed. 160 targeted stress runs (simple and Venice-like thread churn) did not reproduce it; diagnostics stay in place.
-- **#75 to #79** (third evaluation): integer `num`, several edits per candidate, `--set` settability up front, Java object previews and lists, Rust scalar type names.
+- **#76 to #79** (third evaluation): several edits per candidate, `--set` settability up front, Java object previews and lists, Rust scalar type names.
 - **#61:** NVIDIA CUDA debugging, sanitizers and profiling, filed by the owner. [ADR 0007](adr/0007-cuda-gdb-dap.md) proposes driving `cuda-gdb -i=dap`; `scripts/cuda/qualify.py` is the phase 0 qualification, and its DAP sequence is tested against upstream GDB (lane `gdb-dap`). Running it needs a Linux host with an NVIDIA GPU, reachable over Peeky's SSH remote worker; this Mac has none.
 
 **Process notes:**

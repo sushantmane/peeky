@@ -730,3 +730,79 @@ def test_diff_says_when_the_runs_stopped_at_different_lines(store):
     assert [(r["value_a"], r["value_b"]) for r in rows if r["selector"] == "(line)"] == [
         ("a.py:22", "b.py:22")
     ]
+
+
+def test_integers_are_exact_in_num(store):
+    # Eval 3 (#75): `num` was REAL, so a long showed as 600.0 and a u64 above 2**53 lost
+    # digits.
+    values = ("600", "9007199254740993", "-9223372036854775808", "18446744073709551615")
+    evidence.record(store, result(starts=(*values, "1.5", "10.0", "inf")))
+    rows = evidence.query(
+        store, "SELECT value, num, typeof(num) AS kind FROM captures WHERE selector = 'start'"
+    )["rows"]
+    shown = [(row["value"], row["num"], row["kind"]) for row in rows]
+    assert shown == [
+        ("600", 600, "integer"),
+        ("9007199254740993", 9007199254740993, "integer"),
+        ("-9223372036854775808", -(2**63), "integer"),
+        # Beyond 64 bits: approximate; `value` keeps the digits.
+        ("18446744073709551615", 1.8446744073709552e19, "real"),
+        ("1.5", 1.5, "real"),
+        ("10.0", 10, "integer"),
+        ("inf", None, "null"),
+    ]
+
+
+def test_a_version_3_store_upgrades_num_in_capture_order(store):
+    store.parent.mkdir(parents=True)
+    connection = sqlite3.connect(store)
+    for statement in evidence._DDL:
+        connection.execute(statement.replace("num NUMERIC", "num REAL"))
+    connection.execute(
+        "INSERT INTO runs (run_id, started_at, program, line, status) "
+        "VALUES (1, 't', 'a.py', 8, 'completed')"
+    )
+    for value in ("600", "1.5", "7", "9007199254740993", "None"):
+        connection.execute(
+            "INSERT INTO captures (run_id, hit, phase, selector, value, num, unavailable) "
+            "VALUES (1, 1, 'observed', 'x', ?, ?, 0)",
+            (value, None if value == "None" else float(value)),
+        )
+    connection.execute("PRAGMA user_version = 3")
+    connection.commit()
+    connection.close()
+    rows = evidence.query(store, "SELECT value, num, typeof(num) AS kind FROM evidence")["rows"]
+    assert [(row["value"], row["num"], row["kind"]) for row in rows] == [
+        ("600", 600, "integer"),
+        ("1.5", 1.5, "real"),
+        ("7", 7, "integer"),
+        # Review of #82: recomputed from `value`, not carried over from the lossy REAL.
+        ("9007199254740993", 9007199254740993, "integer"),
+        ("None", None, "null"),
+    ]
+    connection = sqlite3.connect(store)
+    assert connection.execute("PRAGMA user_version").fetchone()[0] == evidence.SCHEMA_VERSION
+    indexes = {row[0] for row in connection.execute("SELECT name FROM sqlite_master")}
+    assert {"captures_run", "captures_selector", "evidence", "last_run"} <= indexes
+    assert "captures_v4" not in indexes
+    connection.close()
+    evidence.record(store, result())
+    assert (
+        evidence.run_query(store, "hits", {"run": 2, "selector": "start"})["rows"][1]["value"]
+        == "6"
+    )
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root writes anywhere")
+def test_an_upgrade_blocked_by_a_read_only_directory_says_so(store):
+    evidence.record(store, result())
+    connection = sqlite3.connect(store)
+    connection.execute("PRAGMA user_version = 3")
+    connection.commit()
+    connection.close()
+    store.parent.chmod(0o500)
+    try:
+        with pytest.raises(ValueError, match="needs a one-time upgrade.*not writable"):
+            evidence.query(store, "SELECT 1")
+    finally:
+        store.parent.chmod(0o700)

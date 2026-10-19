@@ -522,3 +522,20 @@ All round-3 fixes held on macOS clang, Linux clang-18 and gcc. `describe` output
 | --- | --- | --- | --- |
 | 9 | A header outside the workspace (`/usr/local/include`) hiding `__builtin_setjmp` in a TRY macro: the declared sources never name it, and it leaves no symbol. | Medium | **Fixed.** The build's external inputs (the compiler's dependency files, already hashed) are searched for `__builtin_setjmp`. Only the builtin is searched for there: the SDK's `setjmp.h` names `setjmp`, and calls to that are found in the executable. Each file is now read once, not once per name. Test: `test_an_external_header_hiding_the_builtin_is_found`. |
 | 10 | The "declared on this line" note called live locals leftovers at mid-line stops: a one-line loop (`for (int i…) { int sq = i * i; … }`, where lldb stops at the body's start on each pass) and `step --out` into `int a = 3, b = twice(a);`. | Medium (note only) | **Removed.** Only the stop's instruction pointer against the line's first address could tell those cases apart, and lldb-dap versions report load addresses in different forms. A local declared on the stop line is now shown as its storage reads, and the docs say that at a breakpoint there its declaration has not run yet. The `for` header regression now checks that the counter is shown (`test_a_live_for_counter_at_a_step_stop_on_its_header_is_shown`). |
+
+## Review of exact integers in the evidence store (#82, 7eb08cf)
+
+Checked and found sound:
+- capture order through the rebuild, including gaps left by pruning;
+- a v1 store chaining through 2, 3 and 4;
+- views and indexes across the rename (no view references `captures` at rename time, so neither the SQLite version nor `legacy_alter_table` matters);
+- concurrent upgrades;
+- pruning after the rename;
+- `_number` on `-0`, `+5`, `007`, `1e5`, `0x10`, padding, NaN/inf and values past 64 bits;
+- no canned query depending on `num`'s storage class.
+
+| # | Finding | Severity | Disposition |
+| --- | --- | --- | --- |
+| 1 | Migration copied `num` as is, and NUMERIC turned a REAL that had already lost digits above 2**53 into an INTEGER that looked exact (`9007199254740992` for `value` `9007199254740993`). The same `value` then had two `num`s across old and new runs. | Medium | **Fixed.** The migration recomputes `num` from `value` through `_number`, registered on the migrating connection as `peeky_number`. Test: `test_a_version_3_store_upgrades_num_in_capture_order`. |
+| 2 | With exact integers, `SUM(num)` fails on overflow past 64 bits (a sentinel like `LLONG_MAX` on two hits), and `num / k` truncates. | Medium | **Documented.** These are SQL integer semantics, and exact integers are the point of the change. The schema text, AGENT_GUIDE and COOKBOOK say to use `TOTAL(num)` and `num * 1.0 / k`, and `SUM` is no longer recommended. |
+| 3 | A writable v3 store in a read-only directory said "is unusable … move it aside" on its first read: SQLite cannot create its journal. | Low | **Fixed.** The error says the store needs a one-time upgrade and the directory is not writable. Test: `test_an_upgrade_blocked_by_a_read_only_directory_says_so`. |
