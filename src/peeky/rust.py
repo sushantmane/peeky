@@ -55,6 +55,7 @@ from peeky.rust_symbols import (
     application_symbols,
     container_view,
     lldb_byte,
+    lldb_char,
     lldb_float_debug,
 )
 
@@ -166,18 +167,20 @@ def _executable(names, crate, label):
 
 
 def cargo_artifacts(names, crate, test_crate):
-    """Select the hashed application/test executables and symbols from fresh deps files."""
+    """Select the hashed application/test executables and symbols from fresh deps files;
+    the test is None when the crate has no integration test (``test_crate`` None)."""
     if crate == test_crate:
         raise ValueError("Cargo application and test crates must have distinct names")
     binary = _executable(names, crate, "application")
-    test = _executable(names, test_crate, "integration-test")
-    allowed = {binary, binary + ".d", binary + ".ll", test, test + ".d", test + ".ll"}
+    test = None if test_crate is None else _executable(names, test_crate, "integration-test")
+    executables = (binary,) if test is None else (binary, test)
+    allowed = {name + suffix for name in executables for suffix in ("", ".d", ".ll")}
     # rustc keeps its codegen-unit objects when it also emits LLVM IR.
     units = re.compile(
-        "(?:" + re.escape(binary) + "|" + re.escape(test) + r")\.[A-Za-z0-9_]+\.[0-9a-f]{16}"
+        "(?:" + "|".join(map(re.escape, executables)) + r")\.[A-Za-z0-9_]+\.[0-9a-f]{16}"
         r"-cgu\.[0-9]{1,4}\.rcgu\.o"
     )
-    bundles = (binary + ".dSYM/", test + ".dSYM/")
+    bundles = tuple(name + ".dSYM/" for name in executables)
     for name in names:
         if name in allowed or units.fullmatch(name):
             continue
@@ -345,11 +348,13 @@ class RustTarget:
     def __post_init__(self):
         if self.opt_level not in ("0", "1", "2"):
             raise ValueError("Rust opt_level must be 0, 1 or 2")
-        for field in (self.sources, self.tests):
-            if not isinstance(field, tuple) or not field:
-                raise ValueError("Rust sources and tests must be nonempty immutable tuples")
-            for name in field:
-                _path_name(name, ".rs")
+        if not isinstance(self.sources, tuple) or not self.sources:
+            raise ValueError("Rust sources must be a nonempty immutable tuple")
+        # A crate without an integration test is verified by its checker alone.
+        if not isinstance(self.tests, tuple):
+            raise ValueError("Rust tests must be an immutable tuple")
+        for name in (*self.sources, *self.tests):
+            _path_name(name, ".rs")
         self.validate_arguments(self.arguments)
         if not isinstance(self.rust_version, str) or not re.fullmatch(
             r"[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}", self.rust_version
@@ -492,9 +497,13 @@ class RustTarget:
             timeout_s=120,
         )
         # Compiles only the frozen test target; the application is already fresh.
-        tests = Command(
-            (cargo, "test", "--no-run", "--offline", "--locked", "--test", cargo_inputs.test),
-            timeout_s=120,
+        tests = (
+            Command(
+                (cargo, "test", "--no-run", "--offline", "--locked", "--test", cargo_inputs.test),
+                timeout_s=120,
+            )
+            if cargo_inputs.test
+            else None
         )
         probes = [
             Command((rustc, "-vV")),
@@ -568,7 +577,7 @@ class RustTarget:
             recipe = BuildRecipe(
                 "rust",
                 cargo_inputs.inputs,
-                (build, tests),
+                (build, tests) if tests else (build,),
                 artifacts,
                 tuple(probes),
                 tuple(sorted(environment.items())),
@@ -599,13 +608,17 @@ class RustTarget:
                 if item.path != uplift and not item.path.startswith(MIR_DIR + "/")
             ]
             binary, symbols, test_binary = (
-                prepared.workspace / name
-                for name in cargo_artifacts(names, crate, cargo_inputs.test.replace("-", "_"))
+                None if name is None else prepared.workspace / name
+                for name in cargo_artifacts(
+                    names, crate, cargo_inputs.test and cargo_inputs.test.replace("-", "_")
+                )
             )
             if _digest(binary)[0] != _digest(prepared.workspace / uplift)[0]:
                 raise ValueError("Cargo test target differs from the debugged executable")
             _require_declared_dependencies(
-                (binary, test_binary), prepared.workspace, cargo_inputs.inputs
+                tuple(path for path in (binary, test_binary) if path is not None),
+                prepared.workspace,
+                cargo_inputs.inputs,
             )
             memory, parameters = ir_locals(binary.with_name(binary.name + ".ll"))
             owned = None
@@ -888,10 +901,11 @@ class RustSession(NativeSession):
         return UNIQUE_SCALARS.get(kind)
 
     def display_value(self, variable):
-        """A scalar as Rust's `{:?}` shows it: `f64`/`f32` (`10.0`, not LLDB's `10`), and
-        `u8`/`i8` as integers (`65`, not LLDB's `'A'`)."""
+        """A scalar as Rust's `{:?}` shows it: `f64`/`f32` (`10.0`, not LLDB's `10`),
+        `u8`/`i8` as integers (`65`, not LLDB's `'A'`) and `char` as `'b'` (not LLDB's
+        `U+0062 U+0062 U'b'`)."""
         value, kind = variable.get("value"), variable.get("type")
-        return lldb_float_debug(value, kind) or lldb_byte(value, kind)
+        return lldb_float_debug(value, kind) or lldb_byte(value, kind) or lldb_char(value, kind)
 
     def validate_children(self, variables):
         # `$` cannot start a Rust identifier; such fields are debugger-synthesized storage.
@@ -902,9 +916,12 @@ class RustSession(NativeSession):
             raise ValueError("Raw Rust enum storage is not exposed; its layout is not qualified")
 
     def run_tests(self):
-        """Execute the prepared, hashed integration-test binary; Cargo is not invoked."""
+        """Execute the prepared, hashed integration-test binary; Cargo is not invoked.
+        None when the crate has no integration test: the checker alone decides."""
         from peeky.agent import execute
 
+        if self.test_binary is None:
+            return None
         self.assert_current()
         binary = _digest(self.binary)[0]
         if _digest(self.test_target)[0] != binary:

@@ -535,12 +535,27 @@ def _owned_rust_types():
 
 
 _OWNED_RUST_TYPES = _owned_rust_types()
+
+
+def _read_rust_types():
+    from peeky.rust_symbols import QUALIFIED_CONTAINERS
+
+    return frozenset(QUALIFIED_CONTAINERS) | _OWNED_RUST_TYPES
+
+
+# Containers whose contents Peeky can read somewhere (their element type is qualified).
+_READ_RUST_TYPES = _read_rust_types()
 _OWNED_RUST = (
     "This owned Rust Vec or String shows its raw fields: Peeky reads an owned local's "
     "contents only where the build's MIR proves it initialized at the stop line, in the "
     "innermost frame, and here it may be moved, dropped or not yet assigned around this "
     "line (#53). Capture `.len` for the length, probe a line where it is live, or read it "
     "where it is passed as &Vec, &[T], &String or &str."
+)
+_UNREAD_RUST = (
+    "Peeky reads Rust contents only for String, &str and containers of integer, bool and "
+    "float elements; this value is LLDB's summary (its type and address), not the contents. "
+    "Capture `.len` for the length, and check contents with `peeky verify`."
 )
 _RUST_CONTAINERS = (
     "alloc::vec::Vec<",
@@ -632,6 +647,12 @@ def _absence(variable, segment, children):
         if variable.get("view") == "memory":
             if kind in _RUST_TEXT:
                 message += "; text read from memory is shown whole, not by element"
+        elif kind.startswith(_RUST_CONTAINERS) and kind not in _READ_RUST_TYPES:
+            message += (
+                f"; Peeky does not read {kind}'s elements: it reads Rust contents only for "
+                "String, &str and containers of integer, bool and float elements"
+                + (f". Capture {variable['name']}.{length} for the length" if length else "")
+            )
         elif kind.startswith(_RUST_CONTAINERS):
             message += (
                 "; Peeky reads Rust contents only for reference parameters (&[T], &str, "
@@ -851,6 +872,10 @@ def _capture(worker, stop, selectors, hit, phase, snapshot=None, children=False,
                         row["value"] = shown
                 if "view" not in variable and str(variable.get("type")) in _OWNED_RUST_TYPES:
                     row["note"] = _OWNED_RUST
+                elif "view" not in variable and str(variable.get("type")).startswith(
+                    _RUST_CONTAINERS
+                ):
+                    row["note"] = _UNREAD_RUST
             if "view" in variable:
                 row["view"] = variable["view"]
             if type(variable.get("settable")) is bool:
@@ -1326,8 +1351,9 @@ def run_probe(root, probe, *, adapter=None, progress=None):
             + ". --hits and --set-hit count every stop; the function column says which "
             "is which."
         )
-    if any(row.get("note") == _OWNED_RUST for row in rows):
-        warnings.append(_OWNED_RUST)
+    for note in (_OWNED_RUST, _UNREAD_RUST):
+        if any(row.get("note") == note for row in rows):
+            warnings.append(note)
     if changes and probe.limit > 1:
         warnings.append(
             f"Interventions are applied once, at hit {probe.set_hit}; other hits observe "
