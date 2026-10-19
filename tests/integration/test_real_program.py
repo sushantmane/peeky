@@ -188,7 +188,7 @@ def test_verify_reads_edits_verbatim_from_files(case, capsys, tmp_path):
     )
     assert code == 0 and "passed: True" in out.out
     code, out = run(capsys, *args, "--old", "x", "--old-file", tmp_path / "old.txt", "--new", "y")
-    assert code == 2 and "exactly one of --old or --old-file" in out.err
+    assert code == 2 and "either --old or --old-file, not both" in out.err
 
 
 def test_session_continue_to_exit_runs_the_program_to_completion(case, capsys):
