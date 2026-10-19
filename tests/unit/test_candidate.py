@@ -241,10 +241,9 @@ def test_python_candidates_run_an_edited_copy(tmp_path, capsys, monkeypatch):
         "rate = json.loads(here.read_text())['rate'] if here.exists() else 1\n"
         "acc = 0\nfor x in (1, 2):\n    acc += helper.double(x) * rate\n"
         "print('ACC:', acc, Path(sys.argv[0]).name, __name__)\n"
-        "import subprocess\n"
-        "if len(sys.argv) == 1:\n"
-        "    again = subprocess.run([sys.executable, __file__, 'x'], capture_output=True, text=True)\n"
-        "    print('AGAIN:', again.stdout.split()[1])\n"
+        "if 'again' in sys.argv:\n"
+        "    import subprocess\n"
+        "    subprocess.run([sys.executable, __file__])\n"
     )
     original = script.read_text()
     probe = ["probe", str(script), "--at", "8", "--capture", "acc,rate", "--json", "--quiet"]
@@ -252,13 +251,16 @@ def test_python_candidates_run_an_edited_copy(tmp_path, capsys, monkeypatch):
     result = json.loads(capsys.readouterr().out)
     assert code == 0, result.get("error")
     assert [row["value"] for row in result["rows"]] == ["100", "5"]
-    # Review of #109: data files and modules beside the script are the user's, and a
-    # re-run of the script by its path (multiprocessing's spawn, a subprocess) runs the
-    # edit too, so only the edit differs.
+    # Review of #109: it runs as the original script would (`__file__`, `argv[0]`, its
+    # directory's modules and data files), so only the edit differs.
     assert "ACC: 130 app.py __main__" in result["output"] and script.read_text() == original
-    assert "AGAIN: 130" in result["output"]
     assert "+acc = 100" in result["candidate"]["diff"]
-    assert not list(Path(tempfile.gettempdir()).glob("peeky-candidate-*/root/app.py"))
+    assert not list(Path(tempfile.gettempdir()).glob("peeky-candidate-*/edited/app.py"))
+    # Another Python process on the original file would run the unedited code: that
+    # fails loudly rather than reporting the original's values as the edit's.
+    code = main([*probe, "--old", "acc = 0", "--new", "acc = 100", "--", "again"])
+    result = json.loads(capsys.readouterr().out)
+    assert "would run the unedited file" in result["output"] and script.read_text() == original
     # An entry script would import the original module, so --run is refused.
     (tmp_path / "run.py").write_text("import app\n")
     code = main([*probe, "--run", str(tmp_path / "run.py"), "--old", "acc = 0", "--new", "acc = 1"])
