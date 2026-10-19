@@ -49,16 +49,20 @@ def validate_python_literal(value):
         raise ValueError(message) from None
 
 
-# A Python candidate copies its target root. Environments are linked instead: large, not
-# the program's own code, and the interpreter uses them from either tree.
+# A Python candidate copies its target root. Environments are not copied: large, not the
+# program's own code, and the interpreter uses them from either tree. Each is a directory
+# of links to the original's entries (a link itself would not match `venv/` in an ignore
+# file).
 _LINKED_DIRS = frozenset(
     {"node_modules", ".venv", "venv", ".tox", ".nox", ".eggs", "site-packages"}
 )
 # Caches whose tools rebuild them with the same results are left out (a link would let the
 # program write the user's). `.pytest_cache` changes what pytest runs (`--lf`): copied.
 _SKIPPED_DIRS = frozenset({"__pycache__", ".mypy_cache", ".ruff_cache"})
-# Repository metadata with no private form here (a git directory gets one): left out.
-_UNCOPIED_REPOSITORIES = {".hg": "Mercurial (`hg`)", ".svn": "Subversion (`svn`)"}
+# Repositories are copied whole, following their links, so whatever the program does with
+# them (`git add`, a rewritten index, new objects, even a touched object's mtime) stays in
+# the copy; one that cannot be is left out, with a note.
+_REPOSITORIES = {".git": "git", ".hg": "Mercurial (`hg`)", ".svn": "Subversion (`svn`)"}
 # A root holding one of these is a project's: the candidate does not note what is above it.
 _PROJECT_MARKERS = (".git", ".hg", "pyproject.toml", "setup.py", "setup.cfg")
 MAX_COPIED_FILES = 20_000
@@ -133,54 +137,57 @@ class PythonCandidate:
             raise
         # Whatever the program reaches above the copied root is missing in the copy, and no
         # reading of its source can tell whether it does (`dirname(dirname(__file__))`,
-        # `HERE.parent`, a helper module's `parents[2]`): say so unless the root is a
-        # project's own.
+        # `HERE.parent`, a helper module's `parents[2]`, git finding a repository above):
+        # say so unless the root is a project's own, with its own repository if any.
         self.warnings = self._notes
-        if not any(os.path.lexists(root / marker) for marker in _PROJECT_MARKERS):
+        held = any(os.path.lexists(root / marker) for marker in (".git", ".hg"))
+        above = None if held else _repository_above(root)
+        if above is not None or not any(
+            os.path.lexists(root / marker) for marker in _PROJECT_MARKERS
+        ):
+            target, at = (above, self.original.relative_to(above)) if above else (None, None)
             self.warnings.append(
-                f"This Python candidate ran from a copy of {root}/ only, which is not a "
-                "project root (it holds no .git, pyproject.toml, setup.py or setup.cfg); "
-                "nothing above it was copied, so anything the program reads or imports from "
-                "above it is missing there and its values may differ for that reason, not "
-                "the edit's. If it uses any, give the project directory as the target "
-                "(`peeky probe <project> --at <path/to/file.py>:<line>`)"
+                f"This Python candidate ran from a copy of {root}/ only"
+                + (
+                    f", inside the repository at {above}/"
+                    if above
+                    else ", which is not a "
+                    "project root (it holds no .git, pyproject.toml, setup.py or setup.cfg)"
+                )
+                + ". Nothing above it was copied, so anything the program reads, imports or "
+                "runs from above it (git finding the repository) is missing there, and its "
+                "values may differ for that reason, not the edit's. If it uses any, give "
+                "the directory that holds them as the target (`peeky probe "
+                + (
+                    f"{target} --at {at.as_posix()}"
+                    if above
+                    else "<project> --at <path/to/file.py>"
+                )
+                + ":<line>`)"
             )
 
     def _copy(self, source, destination, relative, program):
         """Copy ``source`` to ``destination``: real directories, and regular files' bytes,
         modes and times (directories' are set by the caller, from ``self._folders``).
         Links point where the originals do (inside the root, into the copy; outside, at
-        the resolved original). _LINKED_DIRS and anything not a regular file (sockets,
-        FIFOs) are links to the originals; an unreadable file is an empty one with its
-        mode, and a directory that can be neither listed nor entered an empty one.
-        _SKIPPED_DIRS are left out, so the copy compiles its own bytecode. A git directory
-        is copied without its object stores, which it reads through `alternates`, so git
-        writes (the index, refs, new objects) stay in the copy; repository metadata that
-        has no such form is left out, with a note in ``self._notes``. Returns the copy of
-        the --at file (``relative``, confirmed by ``program``'s identity) and keeps its
-        other hard-linked names in ``self.twins``."""
+        the resolved original). Anything not a regular file (sockets, FIFOs) is a link to
+        the original, and _LINKED_DIRS are directories of links to theirs; an unreadable
+        file is an empty one with its mode, and a directory that can be neither listed
+        nor entered an empty one. _SKIPPED_DIRS are left out, so the copy compiles its
+        own bytecode. _REPOSITORIES are private whole copies (`_repository`), or left out
+        with a note in ``self._notes``. Returns the copy of the --at file (``relative``,
+        confirmed by ``program``'s identity) and keeps its other hard-linked names in
+        ``self.twins``."""
         import unicodedata
 
         files = size = 0
         staged, self.twins = None, []
         self._folders, self._notes = [], []
-
-        def inside(real):
-            return real == source or source in real.parents
-
-        def leave_out(path, what):
-            note = (
-                f"This Python candidate's copy has no {what} repository metadata "
-                f"({path.relative_to(source)}): it has no private copy, and a link would let "
-                "the program write the user's repository, so a program that runs it in the "
-                "copy finds no repository there"
-            )
-            if note not in self._notes:
-                self._notes.append(note)
+        self._source, self._destination = source, destination
 
         def link(target, original):
             real = Path(os.path.realpath(original))
-            if inside(real):
+            if self._inside(real):
                 target.symlink_to(
                     os.path.relpath(destination / real.relative_to(source), target.parent)
                 )
@@ -195,7 +202,6 @@ class PythonCandidate:
             folder = destination / Path(here).relative_to(source)
             folder.mkdir()
             self._folders.append((folder, os.lstat(here)))
-            git = ".git" in folder.relative_to(destination).parts
             # Names that differ only by case or Unicode form are one name on a volume that
             # ignores the difference (the temporary directory may): never merge them.
             seen = {}
@@ -213,22 +219,12 @@ class PythonCandidate:
                 path = Path(here) / name
                 if name in _SKIPPED_DIRS:
                     continue
-                if git and (Path(here) / "HEAD").is_file() and name in ("objects", "lfs"):
-                    # A git directory's object store is read through `alternates`; new
-                    # objects go to the copy's. Large-file content is left out.
-                    if name == "objects":
-                        (folder / name / "info").mkdir(parents=True)
-                        (folder / name / "info" / "alternates").write_text(
-                            f"{os.path.realpath(path)}\n"
-                        )
-                    continue
-                vcs = name == ".git" or name in _UNCOPIED_REPOSITORIES
-                if path.is_symlink() and not (vcs and not inside(Path(os.path.realpath(path)))):
+                if name in _REPOSITORIES:
+                    self._repository(path, folder / name)
+                elif path.is_symlink():
                     link(folder / name, path)
-                elif vcs and (path.is_symlink() or name != ".git"):
-                    leave_out(path, _UNCOPIED_REPOSITORIES.get(name, "git"))
                 elif name in _LINKED_DIRS:
-                    (folder / name).symlink_to(path, target_is_directory=True)
+                    self._link_entries(path, folder / name)
                 elif not os.access(path, os.R_OK) and not os.access(path, os.X_OK):
                     # The program can neither list nor enter it either (another user's
                     # `pgdata`, `lost+found`): an empty one with its mode stands in.
@@ -243,21 +239,23 @@ class PythonCandidate:
                 if files > MAX_COPIED_FILES:
                     raise ValueError(_TOO_LARGE)
                 status = path.lstat()
-                if path.is_symlink():
-                    link(folder / name, path)
-                    continue
-                if not stat.S_ISREG(status.st_mode):
-                    (folder / name).symlink_to(path)
-                    continue
-                if name == ".git" and not git:
-                    # A worktree's or submodule's `gitdir:` pointer: kept only when it
-                    # names git metadata inside the root, which the copy holds privately.
+                if name == ".git":
+                    # A worktree's or submodule's `gitdir:` pointer (or a link to one):
+                    # kept only when it names git metadata inside the root, which the copy
+                    # holds privately.
                     target = _gitdir(path)
-                    if target is None or not inside(target):
-                        leave_out(path, "git")
+                    if target is None or not self._inside(target):
+                        self._leave_out(path, "git", "it names git metadata outside the root")
                         continue
                     copied = os.path.relpath(destination / target.relative_to(source), folder)
                     (folder / name).write_text(f"gitdir: {copied}\n")
+                    status = os.stat(path)
+                elif path.is_symlink():
+                    link(folder / name, path)
+                    continue
+                elif not stat.S_ISREG(status.st_mode):
+                    (folder / name).symlink_to(path)
+                    continue
                 elif not os.access(path, os.R_OK):
                     # Unreadable here too, and a write (`--w-------`) stays in the copy.
                     os.close(os.open(folder / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))
@@ -281,6 +279,103 @@ class PythonCandidate:
             raise ValueError("A Python candidate's --at file is not in the copied root")
         return staged
 
+    def _inside(self, real):
+        return real == self._source or self._source in real.parents
+
+    def _leave_out(self, path, what, reason):
+        note = (
+            f"This Python candidate's copy has no {what} repository "
+            f"({path.relative_to(self._source)}): {reason}, so it has no private copy, and "
+            "a link would let the program write yours. A program that runs it in the copy "
+            "finds no repository there, and its values may differ for that reason"
+        )
+        if note not in self._notes:
+            self._notes.append(note)
+
+    def _link_entries(self, original, copy):
+        """An environment: a directory whose entries are links to the original's."""
+        try:
+            entries = sorted(os.listdir(original))
+        except OSError:
+            copy.symlink_to(original, target_is_directory=True)
+            return
+        copy.mkdir()
+        self._folders.append((copy, original.lstat()))
+        for name in entries:
+            (copy / name).symlink_to(original / name)
+
+    def _repository(self, original, copy):
+        """A private whole copy of repository metadata, following its links (`git-new-
+        workdir` links `refs` and `config` to another repository's); else left out with a
+        note. Git's `core.worktree` inside the root is moved to the copy's."""
+        name = original.name
+        mark = len(self._folders)
+        try:
+            budget = [MAX_COPIED_FILES, MAX_COPIED_BYTES]
+            self._copy_whole(original, copy, budget, set())
+            if name == ".git":
+                self._own_git(copy)
+            elif name == ".hg" and (copy / "sharedpath").exists():
+                raise _NotPrivate("it shares another repository's store (`sharedpath`)")
+        except (_NotPrivate, OSError) as error:
+            del self._folders[mark:]
+            _make_removable(copy)
+            shutil.rmtree(copy, ignore_errors=True)
+            reason = (
+                str(error) if isinstance(error, _NotPrivate) else f"copying it failed ({error})"
+            )
+            self._leave_out(original, _REPOSITORIES[name], reason)
+
+    def _copy_whole(self, original, copy, budget, ancestors):
+        status = os.stat(original)
+        if (status.st_dev, status.st_ino) in ancestors:
+            raise _NotPrivate("its links form a loop")
+        ancestors = ancestors | {(status.st_dev, status.st_ino)}
+        copy.mkdir()
+        self._folders.append((copy, status))
+        for entry in sorted(os.listdir(original)):
+            path, target = original / entry, copy / entry
+            try:
+                inner = os.stat(path)
+            except FileNotFoundError:
+                continue  # A broken link: missing here too.
+            if stat.S_ISDIR(inner.st_mode):
+                self._copy_whole(path, target, budget, ancestors)
+                continue
+            if not stat.S_ISREG(inner.st_mode):
+                continue  # A socket (`fsmonitor--daemon.ipc`) would reach the user's daemon.
+            budget[0] -= 1
+            budget[1] -= inner.st_size
+            if budget[0] < 0 or budget[1] < 0:
+                raise _NotPrivate(
+                    f"it is over {MAX_COPIED_FILES} files or {MAX_COPIED_BYTES >> 20} MB"
+                )
+            shutil.copyfile(path, target)
+            shutil.copymode(path, target)
+            os.utime(target, ns=(inner.st_atime_ns, inner.st_mtime_ns))
+
+    def _own_git(self, copy):
+        """Refuse a git directory that would still reach another (objects borrowed through
+        `alternates`, a `core.worktree` outside the root), and move a `core.worktree`
+        inside the root to the copy's."""
+        for here, _, names in os.walk(copy):
+            for name in names:
+                path = Path(here) / name
+                if name == "alternates" and path.parent.name == "info" and path.read_text().strip():
+                    raise _NotPrivate("it borrows objects from another repository (`alternates`)")
+                if name not in ("config", "config.worktree"):
+                    continue
+                lines = path.read_text(errors="surrogateescape").splitlines(keepends=True)
+                for number, value in _core_worktrees(lines):
+                    if not os.path.isabs(value):
+                        continue
+                    real = Path(os.path.realpath(value))
+                    if not self._inside(real):
+                        raise _NotPrivate("its `core.worktree` is outside the root")
+                    moved = self._destination / real.relative_to(self._source)
+                    lines[number] = f"\tworktree = {moved}\n"
+                    path.write_text("".join(lines), errors="surrogateescape")
+
     def __getattr__(self, name):
         return getattr(self.adapter, name)
 
@@ -298,14 +393,46 @@ class PythonCandidate:
         return self.adapter.launch_args(self.staged, self.root, args)
 
     def close(self):
-        # Directories keep the originals' modes: make each removable before removing.
-        for here, directories, _ in os.walk(self.scratch):
-            for name in directories:
-                path = os.path.join(here, name)
-                if not os.path.islink(path):
-                    with contextlib.suppress(OSError):
-                        os.chmod(path, 0o700)
+        _make_removable(self.scratch)
         shutil.rmtree(self.scratch, ignore_errors=True)
+
+
+class _NotPrivate(Exception):
+    """Repository metadata the candidate cannot copy privately (the reason)."""
+
+
+def _make_removable(top):
+    # Copied directories keep the originals' modes: make each removable before removing.
+    for here, directories, _ in os.walk(top):
+        for name in directories:
+            path = os.path.join(here, name)
+            if not os.path.islink(path):
+                with contextlib.suppress(OSError):
+                    os.chmod(path, 0o700)
+
+
+def _repository_above(root):
+    """The nearest directory above ``root`` holding a repository, if any."""
+    for parent in root.parents:
+        if any(os.path.lexists(parent / marker) for marker in (".git", ".hg")):
+            return parent
+    return None
+
+
+def _core_worktrees(lines):
+    """(line number, value) of each `worktree` key in a git config's `[core]` sections."""
+    section = None
+    for number, line in enumerate(lines):
+        text = line.strip()
+        if text.startswith("["):
+            section = text[1 : text.find("]")].strip().lower() if "]" in text else None
+            continue
+        key, equals, value = text.partition("=")
+        if section == "core" and equals and key.strip().lower() == "worktree":
+            value = value.split(" #")[0].split(" ;")[0].strip()
+            if len(value) >= 2 and value[0] == value[-1] == '"':
+                value = value[1:-1]
+            yield number, value
 
 
 def _gitdir(path):

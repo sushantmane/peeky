@@ -408,7 +408,7 @@ def test_a_python_candidate_warns_when_the_script_reaches_above_its_root(
     probe = ["probe", str(script), "--at", "6", "--capture", "rate", "--json", "--quiet"]
     main([*probe, "--old", "acc = 0", "--new", "acc = 1"])
     result = json.loads(capsys.readouterr().out)
-    assert any("nothing above it was copied" in warning for warning in result["warnings"])
+    assert any("above it was copied" in warning for warning in result["warnings"])
     # Verification of #109: idioms no reading of the source catches still get the note.
     for locate in (
         "conf = Path(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))) / 'conf.json'",
@@ -422,7 +422,7 @@ def test_a_python_candidate_warns_when_the_script_reaches_above_its_root(
         line = str(script.read_text().splitlines().index("acc = 0") + 2)
         main([*probe[:3], line, *probe[4:], "--old", "acc = 0", "--new", "acc = 1"])
         result = json.loads(capsys.readouterr().out)
-        assert any("nothing above it was copied" in w for w in result["warnings"]), locate
+        assert any("above it was copied" in w for w in result["warnings"]), locate
     # Verification of #109: a nested --at file in a root that is not the project's (a
     # `src/` layout) reaches above it too.
     (tmp_path / "src" / "pkg").mkdir(parents=True)
@@ -435,7 +435,7 @@ def test_a_python_candidate_warns_when_the_script_reaches_above_its_root(
     nested = ["probe", str(tmp_path / "src"), "--at", "pkg/app.py:6", "--capture", "rate"]
     main([*nested, "--json", "--quiet", "--old", "acc = 0", "--new", "acc = 1"])
     result = json.loads(capsys.readouterr().out)
-    assert any("nothing above it was copied" in w for w in result["warnings"]), result
+    assert any("above it was copied" in w for w in result["warnings"]), result
     # With the project as the target, the copy holds them, and a project root gets no note.
     (tmp_path / "pyproject.toml").write_text("[project]\nname = 'p'\n")
     main(
@@ -547,52 +547,165 @@ def test_a_python_candidate_keeps_times_and_directory_modes(tmp_path, capsys, mo
     assert not list(scratch.glob("peeky-candidate-*")), "a read-only directory blocked cleanup"
 
 
+GIT_ENVIRONMENT = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
+
+
+def git_in(where, *args):
+    return subprocess.run(
+        ["git", "-c", "user.name=t", "-c", "user.email=t@t", *args],
+        cwd=where,
+        env=GIT_ENVIRONMENT,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+
+
+def snapshot(top):
+    """Every file and directory under ``top``, links followed: identity, mtime, bytes."""
+    found = {}
+    for here, directories, names in os.walk(top, followlinks=True):
+        for name in [*directories, *names]:
+            path = Path(here) / name
+            status = path.stat()
+            data = path.read_bytes() if path.is_file() else b""
+            found[str(path.relative_to(top))] = (
+                status.st_ino,
+                status.st_mtime_ns,
+                status.st_mode,
+                hashlib.sha256(data).hexdigest(),
+            )
+    return found
+
+
 @pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
 def test_a_python_candidate_never_writes_the_user_s_repository(tmp_path, capsys, monkeypatch):
     # Verification of #109: `.git` and `.pytest_cache` were links to the user's, so a
     # candidate's `git add` staged the edit in the user's repository, `git describe
-    # --dirty` rewrote the user's index and pytest wrote the user's cache.
+    # --dirty` rewrote the user's index and pytest wrote the user's cache. Then objects
+    # read through `alternates` had their mtimes touched by the copy's commits, a remote
+    # branch named `objects/…` was taken for an object store, and a linked `venv` was
+    # untracked though `venv/` is ignored.
     from peeky.cli import main
 
     monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setattr(os, "environ", {**os.environ, **GIT_ENVIRONMENT})
     proj = tmp_path / "proj"
     (proj / ".pytest_cache").mkdir(parents=True)
     (proj / ".pytest_cache" / "marker").write_text("user's")
+    (proj / "venv").mkdir()
+    (proj / "venv" / "pyvenv.cfg").write_text("home = /usr\n")
+    (proj / ".gitignore").write_text("venv/\n.pytest_cache/\n")
     (proj / "app.py").write_text(
         "import subprocess\nfrom pathlib import Path\nacc = 1\n"
         "def git(*args):\n"
-        "    return subprocess.run(['git', *args], capture_output=True, text=True).stdout.strip()\n"
+        "    return subprocess.run(['git', '-c', 'user.name=c', '-c', 'user.email=c@c', *args],"
+        " capture_output=True, text=True).stdout.strip()\n"
+        "status = git('status', '--porcelain')\n"
+        "remotes = git('for-each-ref', '--format=%(refname)', 'refs/remotes')\n"
         "git('add', '-A')\nstaged = git('diff', '--cached', '--name-only')\n"
         "described = git('describe', '--always', '--dirty')\n"
-        "Path('.pytest_cache/marker').write_text('candidate')\nprint(acc, staged, described)\n"
+        "git('commit', '-qm', 'candidate')\ngit('commit', '-q', '--allow-empty', '-m', 'again')\n"
+        "Path('.pytest_cache/marker').write_text('candidate')\n"
+        "print(acc, status, remotes, staged, described)\n"
     )
-    environment = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
-
-    def git(*args):
-        return subprocess.run(
-            ["git", "-c", "user.name=t", "-c", "user.email=t@t", *args],
-            cwd=proj,
-            env=environment,
-            capture_output=True,
-            text=True,
-            check=True,
-        ).stdout
-
-    git("init", "-q")
-    git("add", "app.py")
-    git("commit", "-qm", "base")
-    index = proj / ".git" / "index"
-    before = (hashlib.sha256(index.read_bytes()).hexdigest(), index.stat().st_ino)
-    probe = ["probe", str(proj), "--at", "app.py:10", "--capture", "staged,described"]
-    code = main([*probe, "--json", "--quiet", "--old", "acc = 1", "--new", "acc = 2"])
+    git_in(proj, "init", "-q")
+    git_in(proj, "add", "app.py", ".gitignore")
+    git_in(proj, "commit", "-qm", "base")
+    git_in(proj, "update-ref", "refs/remotes/origin/objects/y", "HEAD")
+    git_in(proj, "update-ref", "refs/remotes/origin/lfs/z", "HEAD")
+    git_in(proj, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/objects/y")
+    before = snapshot(proj / ".git")
+    probe = ["probe", str(proj), "--at", "app.py:14"]
+    capture = ["--capture", "status,remotes,staged,described", "--json", "--quiet"]
+    code = main([*probe, *capture, "--old", "acc = 1", "--new", "acc = 2"])
     result = json.loads(capsys.readouterr().out)
     assert code == 0, result.get("error")
-    staged, described = (row["value"] for row in result["rows"])
+    status, remotes, staged, described = (row["value"] for row in result["rows"])
+    assert status == "'M app.py'", status
+    assert "origin/objects/y" in remotes and "origin/lfs/z" in remotes, remotes
     assert "app.py" in staged and described.endswith("-dirty'"), result["rows"]
-    assert (hashlib.sha256(index.read_bytes()).hexdigest(), index.stat().st_ino) == before
-    assert git("status", "--porcelain") == "?? .pytest_cache/\n"
+    assert not result.get("warnings"), result["warnings"]
+    assert snapshot(proj / ".git") == before
+    assert git_in(proj, "status", "--porcelain") == ""
     assert (proj / ".pytest_cache" / "marker").read_text() == "user's"
     assert "acc = 1" in (proj / "app.py").read_text()
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
+def test_a_python_candidate_keeps_other_git_layouts_private(tmp_path, capsys, monkeypatch):
+    # Verification of #109: an absolute `core.worktree` made the copy's `git stash` revert
+    # the user's uncommitted work; a `git-new-workdir` layout (links into another
+    # repository's `.git`) and a `.git` linked to a worktree's `.git` file committed into
+    # the user's repository; a package inside a repository had no repository and no note.
+    from peeky.cli import main
+
+    monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setattr(os, "environ", {**os.environ, **GIT_ENVIRONMENT})
+    program = (
+        "import subprocess\nacc = 1\n"
+        "def git(*args):\n"
+        "    return subprocess.run(['git', '-c', 'user.name=c', '-c', 'user.email=c@c', *args],"
+        " capture_output=True, text=True).stdout.strip()\n"
+        "git('stash', '-q')\ngit('commit', '-q', '--allow-empty', '-m', 'candidate')\n"
+        "head = git('rev-parse', '--short', 'HEAD')\nprint(acc, head)\n"
+    )
+
+    def repository(path):
+        path.mkdir(parents=True)
+        (path / "app.py").write_text(program)
+        (path / "data.txt").write_text("v1\n")
+        git_in(path, "init", "-q", "-b", "main")
+        git_in(path, "add", "-A")
+        git_in(path, "commit", "-qm", "base")
+        return path
+
+    def candidate(target, at="app.py"):
+        code = main(
+            ["probe", str(target), "--at", f"{at}:8", "--capture", "head", "--json", "--quiet"]
+            + ["--old", "acc = 1", "--new", "acc = 2"]
+        )
+        result = json.loads(capsys.readouterr().out)
+        assert code == 0, result.get("error")
+        return result
+
+    # An absolute `core.worktree` naming the root moves to the copy.
+    worktree = repository(tmp_path / "worktree")
+    git_in(worktree, "config", "core.worktree", str(worktree))
+    (worktree / "data.txt").write_text("v1\nuser's work\n")
+    candidate(worktree)
+    assert (worktree / "data.txt").read_text() == "v1\nuser's work\n"
+    assert git_in(worktree, "stash", "list") == ""
+    # `git-new-workdir`: the root's `.git` links into another repository's.
+    main_repository = repository(tmp_path / "main")
+    workdir = tmp_path / "workdir"
+    (workdir / ".git").mkdir(parents=True)
+    for name in ("config", "refs", "logs", "objects", "info", "hooks", "packed-refs"):
+        if (main_repository / ".git" / name).exists():
+            (workdir / ".git" / name).symlink_to(main_repository / ".git" / name)
+    shutil.copy(main_repository / ".git" / "HEAD", workdir / ".git" / "HEAD")
+    git_in(workdir, "checkout", "-qf")
+    before = snapshot(main_repository / ".git")
+    candidate(workdir)
+    assert snapshot(main_repository / ".git") == before
+    # A `.git` linked to a worktree's `.git` file outside the root: left out, with a note.
+    git_in(main_repository, "worktree", "add", "-q", str(tmp_path / "linked-worktree"))
+    linked = tmp_path / "linked"
+    linked.mkdir()
+    (linked / "app.py").write_text(program)
+    (linked / "pyproject.toml").write_text("")
+    (linked / ".git").symlink_to(tmp_path / "linked-worktree" / ".git")
+    before = snapshot(main_repository / ".git")
+    result = candidate(linked)
+    assert snapshot(main_repository / ".git") == before
+    assert any("names git metadata outside the root" in w for w in result["warnings"])
+    # A package inside a repository: the copy has no repository, which the note says.
+    package = main_repository / "pkg"
+    package.mkdir()
+    (package / "pyproject.toml").write_text("")
+    (package / "app.py").write_text(program)
+    result = candidate(package)
+    assert any(f"inside the repository at {main_repository}" in w for w in result["warnings"])
 
 
 def test_a_hard_linked_name_of_the_edited_file_keeps_its_own_directory(

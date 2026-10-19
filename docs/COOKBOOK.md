@@ -618,12 +618,16 @@ run_a  run_b  hit   phase     selector  value_a           value_b               
 
   This reports `set end: 3 -> 10`. `black_box` keeps the new Rust local in memory, where a change reaches the program.
 - **Python:** like a compiled candidate, it runs from a private copy of the target root with the edit applied, and that copy is the working directory. Files keep their bytes, modes and times, and directories their modes. Whatever the script reaches through its own path, an import, or another process (multiprocessing, a subprocess of `__file__`) is the copy, so all of it runs the edit. Nothing the program writes reaches your tree:
-  - A git directory is copied without its object store, which it reads through `alternates`, so `git add`, a rewritten index or new objects stay in the copy.
-  - `.hg`, `.svn`, and a `.git` that points outside the root (a worktree's) are left out, with a note.
-  - Pure caches (`__pycache__`, `.mypy_cache`, `.ruff_cache`) are left out. Environments (`.venv`, `venv`, `.tox`, `.nox`, `node_modules`, `site-packages`, `.eggs`) are linked: the interpreter uses them from either tree.
+  - A repository (`.git`, `.hg`, `.svn`) is copied whole, following its links, so `git add`, a commit, a rewritten index or a touched object stays in the copy. A `core.worktree` inside the root moves to the copy.
+  - Some repositories are left out, with a note:
+    - one over 20,000 files or 256 MB;
+    - one that borrows objects from another (`alternates`, `--shared` clones);
+    - one whose `core.worktree` is outside the root;
+    - a `.git` file naming metadata outside the root (a linked worktree's).
+  - Pure caches (`__pycache__`, `.mypy_cache`, `.ruff_cache`) are left out. Environments (`.venv`, `venv`, `.tox`, `.nox`, `node_modules`, `site-packages`, `.eggs`) are directories of links to the originals' entries: the interpreter uses them from either tree.
   - A directory nobody can open (another user's `pgdata`) is an empty one with its mode. One that can be entered but not listed is refused.
 
-  Nothing above the target root is copied, and no reading of the source can tell whether a program reaches there. So unless the root is a project's (it holds `.git`, `pyproject.toml`, `setup.py` or `setup.cfg`), the result notes it. If the program reads or imports anything from above, give the project directory as the target (`peeky probe proj --at scripts/run.py:14`). `--run` entry scripts are refused.
+  Nothing above the target root is copied, and no reading of the source can tell whether a program reaches there. So the result notes it unless the root is a project's (it holds `.git`, `pyproject.toml`, `setup.py` or `setup.cfg`) and no repository above it holds it (a monorepo's package). If the program reads or imports anything from above, give the project directory as the target (`peeky probe proj --at scripts/run.py:14`). `--run` entry scripts are refused.
 
 ---
 
