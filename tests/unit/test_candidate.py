@@ -10,7 +10,7 @@ import pytest
 from peeky import evidence
 from peeky.build import BuildCommandError
 from peeky.errors import classify
-from peeky.probe import CANDIDATE_NEEDS_BUILD, Probe, candidate_line
+from peeky.probe import CANDIDATE_NEEDS_BUILD, Probe, candidate_line, combine_edits
 
 TEXT = "a;\nb;\nc;\nd;\n"
 
@@ -28,7 +28,7 @@ TEXT = "a;\nb;\nc;\nd;\n"
     ],
 )
 def test_original_lines_map_into_the_candidate(old, new, line, expected):
-    assert candidate_line(TEXT, old, new, line) == expected
+    assert candidate_line(TEXT, (old, new), line) == expected
 
 
 @pytest.mark.parametrize(
@@ -40,7 +40,7 @@ def test_original_lines_map_into_the_candidate(old, new, line, expected):
 )
 def test_a_line_inside_an_edit_that_changes_the_line_count_is_refused(old, new, line, words):
     with pytest.raises(ValueError, match="inside the edit") as caught:
-        candidate_line(TEXT, old, new, line)
+        candidate_line(TEXT, (old, new), line)
     assert words in str(caught.value) and "before or after the edit" in str(caught.value)
 
 
@@ -48,20 +48,20 @@ def test_a_line_inside_an_edit_that_changes_the_line_count_is_refused(old, new, 
 def test_a_line_joined_onto_the_edit_is_refused(new):
     # --old ends with a newline, --new does not: original line 3 joins the edit's last line.
     with pytest.raises(ValueError, match="joins it onto line") as caught:
-        candidate_line(TEXT, "b;\n", new, 3)
+        candidate_line(TEXT, ("b;\n", new), 3)
     assert "end --new with a newline" in str(caught.value)
-    assert candidate_line(TEXT, "b;\n", new, 4) == 4 + new.count("\n") - 1
+    assert candidate_line(TEXT, ("b;\n", new), 4) == 4 + new.count("\n") - 1
 
 
 def test_an_edit_that_empties_the_start_of_the_file_keeps_the_next_line():
-    assert candidate_line(TEXT, "a;\n", "", 2) == 1
+    assert candidate_line(TEXT, ("a;\n", ""), 2) == 1
 
 
 def test_an_edit_must_match_exactly_once():
     with pytest.raises(ValueError, match="exactly once"):
-        candidate_line("x;\nx;\n", "x;", "y;", 1)
+        candidate_line("x;\nx;\n", ("x;", "y;"), 1)
     with pytest.raises(ValueError, match="exactly once"):
-        candidate_line(TEXT, "zz", "y", 1)
+        candidate_line(TEXT, ("zz", "y"), 1)
 
 
 @pytest.mark.parametrize("edit", [("", "x"), ("a", "a"), ("a",), ["a", "b"], ("a", 1)])
@@ -350,3 +350,57 @@ def test_the_cli_refuses_a_line_the_candidate_joins_onto_the_edit(tmp_path, caps
         and error["code"] == "INVALID_REQUEST"
         and "joins it onto line 2" in error["message"]
     )
+
+
+LONG = "".join(f"l{n};\n" for n in range(1, 11))  # l1; .. l10;
+
+
+def test_several_edits_combine_into_one_with_the_same_effect():
+    # #76: a field added at the top and a function changed further down.
+    edit = (("l2;\n", "l2;\nfield;\n"), ("l8;", "L8;"))
+    old, new = combine_edits(LONG, edit)
+    assert LONG.count(old) == 1 and old.startswith("l2;") and old.endswith("l8;")
+    assert LONG.replace(old, new, 1) == LONG.replace("l2;\n", "l2;\nfield;\n").replace("l8;", "L8;")
+    # Pairs may come in any order; each quotes the original file.
+    assert combine_edits(LONG, edit[::-1]) == (old, new)
+    assert combine_edits(LONG, ("l2;", "x;")) == ("l2;", "x;")
+
+
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        (1, 1),
+        (2, 2),  # inside the first edit, which keeps l2 on its line... and adds one after
+        (5, 6),  # between the edits: shifted by the first one's added line
+        (8, 9),  # inside the second edit, which keeps the line count
+        (10, 11),
+    ],
+)
+def test_lines_map_through_every_edit(line, expected):
+    edit = (("l2;\n", "l2;\nfield;\n"), ("l8;", "L8;"))
+    if line == 2:
+        with pytest.raises(ValueError, match="inside the edit 1"):
+            candidate_line(LONG, edit, line)
+        return
+    assert candidate_line(LONG, edit, line) == expected
+
+
+@pytest.mark.parametrize(
+    ("edit", "message"),
+    [
+        ((("l2;", "x"), ("l2;\nl3", "y")), "Edits 1 and 2 overlap"),
+        ((("l2;", "x"), ("zz", "y")), "exactly once \\(edit 2\\)"),
+        ((("l2;", "x"), ("l3;", "l3;")), "must change it \\(edit 2\\)"),
+    ],
+)
+def test_several_edits_are_refused_when_they_overlap_or_miss(edit, message):
+    with pytest.raises(ValueError, match=message):
+        combine_edits(LONG, edit)
+
+
+def test_a_probe_takes_one_edit_or_several_pairs():
+    assert Probe("x.c", 1, edit=("a", "b")).edit == ("a", "b")
+    assert Probe("x.c", 1, edit=(("a", "b"), ("c", "d"))).edit == (("a", "b"), ("c", "d"))
+    for bad in ((), (("a", "b"), ("c",)), (("a", "a"),), tuple(("a", "b") for _ in range(33))):
+        with pytest.raises(ValueError, match="candidate edit"):
+            Probe("x.c", 1, edit=bad)

@@ -32,11 +32,13 @@ from peeky.client import Client
 from peeky.errors import PROTOCOL_VERSION
 from peeky.probe import (
     CANDIDATE_NEEDS_BUILD,
+    MAX_EDITS,
     MAX_HITS,
     Probe,
     _capture,
     _table,
     candidate_line,
+    combine_edits,
     parse_hits,
     parse_selector,
     run_probe,
@@ -514,7 +516,8 @@ def describe(args):
             "continue [--count N|--to LINE|--to-exit] | "
             "report | close",
             "verify": f"peeky verify {target}{at} --check <checker.py> "
-            "--old <text> --new <text> (or --old-file/--new-file)",
+            "--old <text> --new <text> (or --old-file/--new-file; repeat the pair for several "
+            "edits, each quoting the original file)",
             "background": "add --background to probe or verify, then `peeky job wait <id>` "
             "(exit 3 while running)",
             **(
@@ -730,27 +733,24 @@ def _misplaced_options(args):
 
 
 def _probe_edit(args, root, program, line, language):
-    """(old, new) and the original text for `probe --old/--new`, else (None, None)."""
-    edits = getattr(args, "_edits", None)
-    given = (args.old, args.new, args.old_file, args.new_file)
-    if not edits and all(value is None for value in given):
+    """The edit (one (old, new) pair, or a tuple of them) and the original text for
+    `probe --old/--new`, else (None, None)."""
+    if not getattr(args, "_edits", None) and all(
+        not value for value in (args.old, args.new, args.old_file, args.new_file)
+    ):
         return None, None
     if language in ("python", "java-attach"):
         raise ValueError(CANDIDATE_NEEDS_BUILD)
-    if edits:
-        old, new = edits["old"], edits["new"]
-    else:
-        old = _edit_text(args.old, args.old_file, "old")
-        new = _edit_text(args.new, args.new_file, "new")
+    pairs = _edit_pairs(args)
     original = (root / program).read_text()
-    _check_edit(original, old, new)
-    candidate_line(original, old, new, line)  # refused before anything is built
-    return (old, new), original
+    edit = _checked_edit(original, pairs)
+    candidate_line(original, edit, line)  # refused before anything is built
+    return edit, original
 
 
 def _bind_candidate(result, original, edit, program):
     """Attach the diff, and keep values only if they came from exactly this candidate."""
-    candidate = original.replace(edit[0], edit[1], 1)
+    candidate = original.replace(*combine_edits(original, edit), 1)
     expected = hashlib.sha256(candidate.encode()).hexdigest()
     (result.get("probe") or {}).pop("edit", None)
     info = result.setdefault("candidate", {})
@@ -1672,12 +1672,40 @@ def _until_hit(record, client, hit, timeout):
 
 
 def _submitted_edits(args):
-    if args.command not in ("verify", "probe") or (args.old_file is None and args.new_file is None):
+    """Edits read from files when a background job is submitted (the files may change)."""
+    if args.command not in ("verify", "probe") or not (args.old_file or args.new_file):
         return None
-    return {
-        "old": _edit_text(args.old, args.old_file, "old"),
-        "new": _edit_text(args.new, args.new_file, "new"),
-    }
+    return {"pairs": [list(pair) for pair in _edit_pairs(args)]}
+
+
+def _edit_pairs(args):
+    """[(old, new)] from repeatable --old/--new (or --old-file/--new-file), in order."""
+    if edits := getattr(args, "_edits", None):
+        return [tuple(pair) for pair in edits["pairs"]]
+    texts = {}
+    for name in ("old", "new"):
+        given, files = getattr(args, name) or [], getattr(args, f"{name}_file") or []
+        if given and files:
+            raise ValueError(f"Pass either --{name} or --{name}-file, not both")
+        texts[name] = list(given) or [_edit_text(None, path, name) for path in files]
+    if not texts["old"] or len(texts["old"]) != len(texts["new"]):
+        raise ValueError(
+            "Pass --old and --new (or their -file forms) once per edit, in pairs: "
+            f"got {len(texts['old'])} --old and {len(texts['new'])} --new"
+        )
+    if len(texts["old"]) > MAX_EDITS:
+        raise ValueError(f"At most {MAX_EDITS} edits")
+    return list(zip(texts["old"], texts["new"]))
+
+
+def _checked_edit(original, pairs):
+    """The edit for these pairs (one pair, or a tuple of them), each checked against the
+    original: --old matches exactly once, --new changes it, and no two overlap."""
+    for number, (old, new) in enumerate(pairs, 1):
+        _check_edit(original, old, new, f" (edit {number})" if len(pairs) > 1 else "")
+    edit = pairs[0] if len(pairs) == 1 else tuple(pairs)
+    combine_edits(original, edit)
+    return edit
 
 
 def _edit_text(text, path, name):
@@ -1692,9 +1720,9 @@ def _edit_text(text, path, name):
     return data.decode()
 
 
-def _check_edit(text, old, new):
+def _check_edit(text, old, new, which=""):
     if not old or old == new:
-        raise ValueError("--old must match exactly once and --new must change it")
+        raise ValueError(f"--old must match exactly once and --new must change it{which}")
     count = text.count(old)
     if count == 1:
         return
@@ -1704,14 +1732,15 @@ def _check_edit(text, old, new):
             lines.append(str(text.count("\n", 0, index) + 1))
             start = index + len(old)
         raise ValueError(
-            f"--old must match exactly once and --new must change it; it matched {count} "
-            f"times (lines {', '.join(lines)}); include more surrounding text"
+            f"--old must match exactly once and --new must change it{which}; it matched "
+            f"{count} times (lines {', '.join(lines)}); include more surrounding text"
         )
     advice = "copy the exact text, including indentation"
     if "\\n" in old and "\n" not in old:
         advice = "it contains a literal backslash-n; pass real newlines (bash: $'a\\nb')"
     raise ValueError(
-        f"--old must match exactly once and --new must change it; it matched 0 times: {advice}"
+        f"--old must match exactly once and --new must change it{which}; it matched 0 times: "
+        f"{advice}"
     )
 
 
@@ -1761,14 +1790,8 @@ def verify(args):
     program = _default_program(program, data, "verify")
     source, check = (root / program).resolve(strict=True), Path(args.check).resolve(strict=True)
     original = source.read_text()
-    if edits := getattr(args, "_edits", None):
-        args.old, args.new = edits["old"], edits["new"]
-    else:
-        args.old, args.new = (
-            _edit_text(args.old, args.old_file, "old"),
-            _edit_text(args.new, args.new_file, "new"),
-        )
-    _check_edit(original, args.old, args.new)
+    # Several edits are verified as the one edit with their combined effect.
+    args.old, args.new = combine_edits(original, _checked_edit(original, _edit_pairs(args)))
     destination = Path(tempfile.mkdtemp(prefix="peeky-verify-"))
     try:
         result = _verify_candidate(args, root, program, language, data, source, check, destination)
@@ -2030,6 +2053,17 @@ def main(argv=None, _job=False, _edits=None):
     parser = argparse.ArgumentParser(prog="peeky", description=__doc__.split("\n\n")[0])
     commands = parser.add_subparsers(dest="command", required=True)
 
+    def edit_options(sub):
+        sub.add_argument("--new", action="append", help="Replacement text for the --old before it")
+        sub.add_argument(
+            "--old-file",
+            action="append",
+            help="Read an --old verbatim from a file (keeps newlines)",
+        )
+        sub.add_argument(
+            "--new-file", action="append", help="Read a --new verbatim from a file (keeps newlines)"
+        )
+
     def background(sub):
         sub.add_argument(
             "--background",
@@ -2110,11 +2144,12 @@ def main(argv=None, _job=False, _edits=None):
     )
     candidate = "Probe a candidate fix (C, C++, Rust, Java): build with this edit, never "
     sub.add_argument(
-        "--old", help=candidate + "touching your files. Exact text to replace once in the --at file"
+        "--old",
+        action="append",
+        help=candidate + "touching your files. Exact text to replace once in the --at file; "
+        "repeat --old/--new for several edits",
     )
-    sub.add_argument("--new", help="Replacement text for --old")
-    sub.add_argument("--old-file", help="Read --old verbatim from a file (keeps newlines)")
-    sub.add_argument("--new-file", help="Read --new verbatim from a file (keeps newlines)")
+    edit_options(sub)
     evidence_store(sub)
     background(sub)
     sub = commands.add_parser("sql", help="Read-only SQL over saved probe evidence")
@@ -2206,10 +2241,13 @@ def main(argv=None, _job=False, _edits=None):
     common(sub)
     sub.add_argument("--at", help="Program path (for multi-file targets)")
     sub.add_argument("--check", required=True, help="Trusted checker script")
-    sub.add_argument("--old", help="Exact source text to replace (once)")
-    sub.add_argument("--new", help="Replacement text")
-    sub.add_argument("--old-file", help="Read --old verbatim from a file (keeps newlines)")
-    sub.add_argument("--new-file", help="Read --new verbatim from a file (keeps newlines)")
+    sub.add_argument(
+        "--old",
+        action="append",
+        help="Exact source text to replace (once); repeat --old/--new for several edits, "
+        "each quoting the original file",
+    )
+    edit_options(sub)
     sub.add_argument(
         "--keep",
         action="store_true",

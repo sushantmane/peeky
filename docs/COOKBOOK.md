@@ -522,11 +522,24 @@ peeky verify app/ --at lib/parse.py --check checks/parse_check.py --old-file old
 
 `--old` must match the source exactly once; the error says how many times it matched, and where. Files are read byte for byte, whereas shell `$(cat file)` drops trailing newlines.
 
-### 6.4 Writing a Checker
+### 6.4 Several Edits at Once
+
+A general fix often touches more than one place: a new field and the function that uses it. Repeat the pair, once per edit:
+
+```sh
+peeky verify bucket.c --check check.py \
+  --old 'long tokens;' --new 'long tokens;
+  long milli;' \
+  --old 'long refill = elapsed / 1000 * b->rate;' --new 'long refill = (b->milli + elapsed * b->rate) / 1000;'
+```
+
+Each `--old` quotes the original file and must match it exactly once; the edits must not overlap, and their order does not matter. The `-file` forms repeat the same way (`--old-file a.txt --new-file b.txt --old-file c.txt --new-file d.txt`). Up to 32 edits; an error names the edit by its number (`(edit 2)`). Candidate probes take the same pairs, and `--at` keeps the original's numbering, mapped through every edit.
+
+### 6.5 Writing a Checker
 
 A checker is a trusted script, run as `python checker.py <candidate-path>`. It exits 0 only when the behavior is right. Test the general rule, not the one input from the bug report (see `examples/verify_pagination.py`). For C, C++ and Rust it gets a build description to run the fresh binary (see [NATIVE_AGENT.md](NATIVE_AGENT.md) and [RUST_AGENT.md](RUST_AGENT.md)); for Rust, the crate's compiled Cargo tests must pass too.
 
-### 6.5 See What a Fix Does Before Making It (C, C++, Rust, Java)
+### 6.6 See What a Fix Does Before Making It (C, C++, Rust, Java)
 
 **What it answers:** With this edit, what would the program compute at the same line, and what would it print?
 

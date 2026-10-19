@@ -96,11 +96,15 @@ class Client:
         """One stateless request: stop at `path:line`, capture, optionally set, report.
 
         ``edit=(old, new)`` probes a candidate fix: the worker builds the program with
-        ``old`` replaced once by ``new``; ``at`` is in the original's line numbering.
+        ``old`` replaced once by ``new``; ``at`` is in the original's line numbering. A
+        tuple of such pairs makes several edits, each quoting the original file.
         """
+        from peeky.probe import edit_pairs
+
         options = {"entry": entry} if entry else {}
         if edit:
-            options["edit"] = {"old": edit[0], "new": edit[1]}
+            pairs = [{"old": old, "new": new} for old, new in edit_pairs(edit)]
+            options["edit"] = pairs[0] if len(pairs) == 1 else pairs
         if args:
             options["args"] = list(args)
         if expect_sha256:

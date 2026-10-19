@@ -1652,12 +1652,21 @@ def make_server(root, token, port=8765, *, adapter=None):
         }:
             raise ValueError("Unknown probe field")
         edit = args.get("edit")
+        # One {old, new} object, or a list of them for several edits.
+        edits = edit if isinstance(edit, list) else [edit]
         if edit is not None and (
-            not isinstance(edit, dict)
-            or set(edit) != {"old", "new"}
-            or not all(isinstance(edit[key], str) for key in ("old", "new"))
+            not edits
+            or len(edits) > 32
+            or not all(
+                isinstance(item, dict)
+                and set(item) == {"old", "new"}
+                and all(isinstance(item[key], str) for key in ("old", "new"))
+                for item in edits
+            )
         ):
-            raise ValueError("Probe edit must be an object with string fields old and new")
+            raise ValueError(
+                "Probe edit must be an object with string fields old and new, or a list of them"
+            )
         program, line = parse_location(args.get("at"))
         changes = args.get("set", {})
         if not isinstance(changes, dict) or not isinstance(args.get("capture", []), list):
@@ -1676,7 +1685,11 @@ def make_server(root, token, port=8765, *, adapter=None):
             expect_sha256=tuple(args["expect_sha256"].items())
             if isinstance(args.get("expect_sha256"), dict)
             else (),
-            edit=(edit["old"], edit["new"]) if edit is not None else None,
+            edit=None
+            if edit is None
+            else (edit["old"], edit["new"])
+            if isinstance(edit, dict)
+            else tuple((item["old"], item["new"]) for item in edits),
         )
         if not probes.acquire(blocking=False):
             raise ValueError("Another probe is running; retry later")
@@ -1807,12 +1820,15 @@ def _run_probe_process(root, request, adapter, cap):
         command += ["--set", f"{name}={value}"]
     with tempfile.TemporaryDirectory(prefix="peeky-probe-") as scratch:
         if request.edit:
+            from peeky.probe import edit_pairs
+
             # Files, not arguments: edit texts keep their newlines and stay off `ps`.
-            for flag, text in zip(("--old-file", "--new-file"), request.edit, strict=True):
-                path = Path(scratch) / flag.strip("-")
-                path.write_bytes(text.encode())
-                path.chmod(0o600)
-                command += [flag, str(path)]
+            for number, pair in enumerate(edit_pairs(request.edit)):
+                for flag, text in zip(("--old-file", "--new-file"), pair, strict=True):
+                    path = Path(scratch) / f"{flag.strip('-')}-{number}"
+                    path.write_bytes(text.encode())
+                    path.chmod(0o600)
+                    command += [flag, str(path)]
         if adapter is not None:
             config = Path(scratch) / "target.json"
             config.write_text(json.dumps(dataclasses.asdict(adapter), default=str))

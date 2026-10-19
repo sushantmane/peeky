@@ -209,6 +209,30 @@ def test_background_verify_preserves_exit_codes(target, capsys):
     assert code == 1 and "passed: False" in out.out
 
 
+def test_a_background_verify_keeps_several_edits_read_from_files(target, capsys):
+    root = Path(__file__).resolve().parents[2] / "examples"
+    for name in ("pagination_bug.py", "verify_pagination.py"):
+        shutil.copyfile(root / name, target / name)
+    files = []
+    for number, (old, new) in enumerate(
+        [
+            ("start = page * page_size", "start = (page - 1) * page_size"),
+            ("end = start", "end = 0 + start"),
+        ]
+    ):
+        for name, text in (("old", old), ("new", new)):
+            (target / f"{name}{number}").write_text(text)
+            files += [f"--{name}-file", target / f"{name}{number}"]
+    args = ["verify", target / "pagination_bug.py", "--check", target / "verify_pagination.py"]
+    code, out = run(capsys, *args, *files, "--background", "--json")
+    job = json.loads(out.out)["job"]
+    for name in ("old0", "new0", "old1", "new1"):
+        (target / name).write_text("changed after submitting")
+    code, out = run(capsys, "job", "wait", job, "--timeout", "60", "--json")
+    result = json.loads(out.out)
+    assert code == 0 and result["passed"] and "+    end = 0 + start" in result["diff"]
+
+
 def test_unknown_and_lost_jobs_fail_with_codes(target, capsys):
     code, out = run(capsys, "job", "wait", "../../etc", "--json")
     assert code == 2 and json.loads(out.out)["error"]["code"] == "NOT_FOUND"
