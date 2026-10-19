@@ -617,7 +617,7 @@ run_a  run_b  hit   phase     selector  value_a           value_b               
   ```
 
   This reports `set end: 3 -> 10`. `black_box` keeps the new Rust local in memory, where a change reaches the program.
-- **Python:** the edited `--at` file runs from a private copy, with your directory as its working directory, and its sibling modules import from your originals. A `--run` entry script would import the original module, so it is refused. Attached JVMs refuse candidates.
+- **Python:** the edited `--at` file runs from a private copy as if it were your script: `__file__`, `sys.argv[0]` and the import path name the original, so files and modules next to it are yours, and the working directory is the target root. A `--run` entry script would import the original module, so it is refused. Attached JVMs refuse candidates.
 
 ---
 

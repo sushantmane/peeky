@@ -762,11 +762,8 @@ def _member_sets(sets, language):
     """Refuse a field or element --set before anything is built where only Java has them."""
     from peeky.errors import Refused
 
-    fields = [
-        text.split("=", 1)[0]
-        for text in sets or ()
-        if len(parse_selector(text.split("=", 1)[0])) > 1
-    ]
+    names = [text.split("=", 1)[0].strip() for text in sets or ()]
+    fields = [name for name in names if name and len(parse_selector(name)) > 1]
     if fields and language not in ("java", "java-attach"):
         raise Refused(
             "MUTATION_REJECTED",
@@ -2260,7 +2257,10 @@ def main(argv=None, _job=False, _edits=None):
     sub.add_argument(
         "--no-save", action="store_true", help="Do not record this run in the evidence store"
     )
-    candidate = "Probe a candidate fix (C, C++, Rust, Java): build with this edit, never "
+    candidate = (
+        "Probe a candidate fix (any target but an attached JVM): a fresh build, or for "
+        "Python an edited copy, never "
+    )
     sub.add_argument(
         "--old",
         action="append",

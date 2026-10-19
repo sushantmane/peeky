@@ -272,7 +272,8 @@ SELECT {_PAIR_COLUMNS} FROM (
     rb.target || '/' || rb.program, 1,
     'the runs ran different source text, neither a candidate edit (source_sha256 differs)', 0
     FROM runs ra, runs rb WHERE ra.run_id = {_A} AND rb.run_id = {_B}
-    AND ra.edit IS NULL AND rb.edit IS NULL AND ra.source_sha256 IS NOT rb.source_sha256
+    AND ra.edit IS NULL AND rb.edit IS NULL AND ra.source_sha256 IS NOT NULL
+    AND rb.source_sha256 IS NOT NULL AND ra.source_sha256 != rb.source_sha256
   UNION ALL SELECT 7, NULL, NULL, '(line)', ra.program || ':' || ra.line,
     rb.program || ':' || rb.line, 1,
     'the runs stopped at different lines: values also differ by where they were read', 0

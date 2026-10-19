@@ -948,6 +948,13 @@ def test_diff_notes_a_type_change_and_runs_of_different_source(store):
     assert rows["start"]["note"] == "type unsigned int -> long long"
     assert rows["start"]["hit"] == 1 and rows["start"]["value_b"] == "-2"
     assert "different source text" in rows["(source)"]["note"]
+    # Review of #109: a run that failed before launch has no source hash; that is not
+    # a different source.
+    failed = result(starts=())
+    failed["source_sha256"] = None
+    evidence.record(store, failed, language="c")
+    rows = {r["selector"] for r in evidence.run_query(store, "diff")["rows"]}
+    assert "(source)" not in rows
 
 
 def test_a_run_without_set_has_no_intervention_hit(store):

@@ -233,21 +233,26 @@ def test_python_candidates_run_an_edited_copy(tmp_path, capsys, monkeypatch):
 
     monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
     (tmp_path / "helper.py").write_text("def double(x):\n    return x * 2\n")
+    (tmp_path / "rates.json").write_text('{"rate": 5}')
     script = tmp_path / "app.py"
     script.write_text(
-        "import helper\n\nacc = 0\nfor x in (1, 2):\n    acc += helper.double(x)\n"
-        "print('ACC:', acc)\n"
+        "import json, sys\nfrom pathlib import Path\nimport helper\n"
+        "here = Path(__file__).parent / 'rates.json'\n"
+        "rate = json.loads(here.read_text())['rate'] if here.exists() else 1\n"
+        "acc = 0\nfor x in (1, 2):\n    acc += helper.double(x) * rate\n"
+        "print('ACC:', acc, Path(sys.argv[0]).name, __name__)\n"
     )
     original = script.read_text()
-    probe = ["probe", str(script), "--at", "5", "--capture", "acc", "--json", "--quiet"]
+    probe = ["probe", str(script), "--at", "8", "--capture", "acc,rate", "--json", "--quiet"]
     code = main([*probe, "--old", "acc = 0", "--new", "acc = 100"])
     result = json.loads(capsys.readouterr().out)
     assert code == 0, result.get("error")
-    assert [row["value"] for row in result["rows"]] == ["100"]
-    # Its sibling module imported from the original directory; the file is untouched.
-    assert "ACC: 106" in result["output"] and script.read_text() == original
+    assert [row["value"] for row in result["rows"]] == ["100", "5"]
+    # Review of #109: it runs as the original script would (`__file__`, `argv[0]`, its
+    # directory's modules and data files), so only the edit differs.
+    assert "ACC: 130 app.py __main__" in result["output"] and script.read_text() == original
     assert "+acc = 100" in result["candidate"]["diff"]
-    assert not list(Path(tempfile.gettempdir()).glob("peeky-candidate-*/app.py"))
+    assert not list(Path(tempfile.gettempdir()).glob("peeky-candidate-*/edited/app.py"))
     # An entry script would import the original module, so --run is refused.
     (tmp_path / "run.py").write_text("import app\n")
     code = main([*probe, "--run", str(tmp_path / "run.py"), "--old", "acc = 0", "--new", "acc = 1"])

@@ -5,7 +5,6 @@ Python runs directly; compiled runtimes require prepared build provenance.
 """
 
 import ast
-import os
 import shutil
 import sys
 import tempfile
@@ -47,11 +46,34 @@ def validate_python_literal(value):
         raise ValueError(message) from None
 
 
+# Runs the edited copy as `__main__` with the original script's identity: `__file__`,
+# `sys.argv[0]` and `sys.path[0]` name the original, so files and modules found next to
+# the script are the user's own. Compiled under the copy's path, so breakpoints set on
+# the copy bind.
+_CANDIDATE_MAIN = """\
+import os
+import sys
+import tokenize
+import types
+
+staged, original = sys.argv[1], sys.argv[2]
+sys.argv = [original, *sys.argv[3:]]
+sys.path[0] = os.path.dirname(original)
+with tokenize.open(staged) as stream:
+    code = compile(stream.read(), staged, "exec")
+main = types.ModuleType("__main__")
+main.__file__ = original
+main.__builtins__ = __builtins__
+sys.modules["__main__"] = main
+del os, tokenize, types, staged, original, stream
+exec(code, main.__dict__)
+"""
+
+
 class PythonCandidate:
-    """A Python candidate edit: the edited program file alone, at its own relative path
-    in a private directory. It runs with the original root as its working directory, and
-    its own directory's sibling modules still import from the originals (that directory
-    follows on PYTHONPATH). The program's file is never written."""
+    """A Python candidate edit: the edited program file in a private directory, run as
+    if it were the original script (its `__file__`, `sys.argv[0]` and import path are the
+    original's), from the original root. The program's file is never written."""
 
     def __init__(self, adapter, program, root, edit):
         self.adapter = adapter
@@ -63,9 +85,11 @@ class PythonCandidate:
         if not edit.old or edit.old == edit.new or text.count(edit.old) != 1:
             raise ValueError("--old must match the --at file exactly once and --new must change it")
         self.scratch = Path(tempfile.mkdtemp(prefix="peeky-candidate-"))
-        self.staged = self.scratch / relative
+        self.staged = self.scratch / "edited" / relative
         self.staged.parent.mkdir(parents=True, exist_ok=True)
         self.staged.write_text(text.replace(edit.old, edit.new, 1))
+        self.bootstrap = self.scratch / "peeky_candidate_main.py"
+        self.bootstrap.write_text(_CANDIDATE_MAIN)
 
     def __getattr__(self, name):
         return getattr(self.adapter, name)
@@ -81,10 +105,9 @@ class PythonCandidate:
                 "script would import the original module. Probe the edited file directly, "
                 "or check the edit with `peeky verify`"
             )
-        launch = self.adapter.launch_args(self.staged, root, args)
-        paths = [str(self.original.parent), os.environ.get("PYTHONPATH", "")]
-        launch["env"] = {"PYTHONPATH": os.pathsep.join(path for path in paths if path)}
-        return launch
+        return self.adapter.launch_args(
+            self.bootstrap, root, [str(self.staged), str(self.original), *args]
+        )
 
     def close(self):
         shutil.rmtree(self.scratch, ignore_errors=True)

@@ -34,3 +34,8 @@ def test_field_sets_outside_java_are_refused_before_any_build(tmp_path, capsys):
     assert code == 2 and error["code"] == "MUTATION_REJECTED"
     assert "only Java targets allow" in error["message"] and "COOKBOOK 6.6" in error["message"]
     assert main(["describe", str(tmp_path / "a.c"), "--json", "--quiet"]) in (0, 2)
+    capsys.readouterr()
+    # Review of #109: names are stripped as `--set` itself strips them (`n = 3`).
+    from peeky.cli import _member_sets
+
+    _member_sets(["n = 3", " x=1"], "c")

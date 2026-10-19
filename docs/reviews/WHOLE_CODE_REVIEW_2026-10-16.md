@@ -778,3 +778,18 @@ The final verification (b3a3002) found nothing wrong.
 - **Rust:** stays refused.
 - **Older, filed as #102:** a pointer to an array indexes its pointee (`parr[1]` is `(*parr)[1]`, as the cookbook says), not C's rows.
 
+## Review of the fifth evaluation's fixes (#109, 06eaf0a)
+
+Checked and found sound:
+- **COOKBOOK 6.6:** the recipe, run as written, reports `set end: 3 -> 10` and `MERGED:1-10`.
+- **The guide:** fits its limit.
+- **Cleanup:** the candidate directory is removed after a normal finish, a timeout, a `--background` job, a remote `--worker` probe and the `--run` refusal.
+- **Environment:** debugpy adds the launch `env` to the inherited environment.
+
+| # | Finding | Severity | Disposition |
+| --- | --- | --- | --- |
+| 1 | A Python candidate ran from the temporary copy, so its `__file__` and `sys.argv[0]` pointed there. A program reading `rates.json` next to itself fell back to a default: `rate` 5 became 1, and `queries diff` put that beside the `(edit)` row, crediting a do-nothing edit with the change. | High | **Fixed:** the candidate runs through a bootstrap that compiles the edited copy under its own path (breakpoints bind there) and executes it as `__main__`, with `__file__`, `sys.argv[0]` and `sys.path[0]` naming the original script. Test: `test_python_candidates_run_an_edited_copy` (a data file and a sibling module next to the script). |
+| 2 | The `(source)` row appeared when one run had no source hash (a run that failed before launch), claiming different source text for an unchanged file. | Medium | **Fixed:** both hashes must exist. Test: `test_diff_notes_a_type_change_and_runs_of_different_source`. |
+| 3 | `--set "rate = 3"` (spaces around `=`) was refused with "Invalid selector" by the new up-front check, a regression. | Low | **Fixed:** names are stripped as `--set` strips them. Test: `test_field_sets_outside_java_are_refused_before_any_build`. |
+| 4 | `probe --help` still said candidates are for C, C++, Rust and Java. | Low (docs) | **Fixed.** |
+
