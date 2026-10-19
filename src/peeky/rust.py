@@ -736,13 +736,6 @@ def _frame_hash(frame):
     return re.search(r"::(h[0-9a-f]{16})$", str((frame or {}).get("name") or ""))
 
 
-def _is_pointer(kind):
-    """Whether LLDB's C-style type is a pointer at its top level: `Pt *`, `unsigned char
-    (*)[8]`, `long (**)()`, `unsigned char (*(*)[2])[2]`; not a generic's argument
-    (`Vec<Pt *>`) or an array of pointers (`long (*[2])(long)`, `unsigned char *[2]`)."""
-    return _constructors(kind)[:1] == ["pointer"]
-
-
 def _holds_data_pointers(kind):
     """Whether LLDB's type is a data pointer, or an array of them (`Pt *[2]`, which a
     `[Box<Pt>; 2]` is too): what a Box may be. A fn pointer (`long (*)(long)`, `long
@@ -1000,8 +993,12 @@ class RustSession(NativeSession):
             # An unmangled function (`#[no_mangle]`) has no hash: its bindings come from
             # the bodies on the stop line, and nothing there is ever proven.
             function = hashed[1] if hashed else None
-            declared = proofs.declared_type(function, variable.get("name")) if hashed else None
             source = ((frame or {}).get("source") or {}).get("path")
+            declared = (
+                proofs.declared_type(function, variable.get("name"), line, source)
+                if hashed
+                else None
+            )
             types = (
                 [declared]
                 if declared is not None

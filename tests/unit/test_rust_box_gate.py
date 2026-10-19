@@ -2,7 +2,7 @@
 
 import pytest
 
-from peeky.rust import _NON_OWNING, _holds_data_pointers, _is_pointer, _is_wide_box
+from peeky.rust import _NON_OWNING, _constructors, _holds_data_pointers, _is_wide_box
 
 
 @pytest.mark.parametrize(
@@ -41,7 +41,7 @@ from peeky.rust import _NON_OWNING, _holds_data_pointers, _is_pointer, _is_wide_
     ],
 )
 def test_top_level_pointers(kind):
-    assert _is_pointer(kind)
+    assert _constructors(kind)[:1] == ["pointer"]
 
 
 @pytest.mark.parametrize(
@@ -71,7 +71,7 @@ def test_top_level_pointers(kind):
     ],
 )
 def test_arrays_and_non_pointers(kind):
-    assert not _is_pointer(kind)
+    assert _constructors(kind)[:1] != ["pointer"]
 
 
 @pytest.mark.parametrize(

@@ -851,6 +851,58 @@ fn rebound(n: i64) -> i64 {
     total
 }
 
+pub struct Args {
+    verbose: bool,
+    count: i64,
+}
+
+fn run(args: &Args) -> i64 {
+    let n = args.count * 2; // ARGS
+    if args.verbose {
+        println!("count is {}", n);
+    }
+    n
+}
+
+fn shadows(pts: &[Pt], n: i64) -> i64 {
+    let p = &pts[0];
+    let first = p.x; // BEFORE_SHADOW
+    let p = p.y + n;
+    {
+        let q = 5i64;
+        std::hint::black_box(q);
+    }
+    {
+        let q = &pts[1];
+        std::hint::black_box(q.x); // SIBLING
+    }
+    for r in pts {
+        std::hint::black_box(r.x); // LOOP_REF
+    }
+    let r = Pt { x: 9, y: 9 };
+    first + p + r.x
+}
+
+fn param(p: &Pt) -> i64 {
+    let total = p.x; // PARAM
+    {
+        let p = 9i64;
+        std::hint::black_box(p);
+    }
+    total
+}
+
+fn rebound_box(boxes: Vec<Box<Pt>>, pts: &[Pt]) -> i64 {
+    let mut total = 0;
+    for item in boxes {
+        total += item.x; // LIVE_REBOUND_BOX
+    }
+    for item in pts {
+        total += item.y;
+    }
+    total
+}
+
 fn make() -> Box<dyn Debug> {
     Box::new(1u8)
 }
@@ -922,6 +974,10 @@ fn main() {
     let tables: [fn(*const str) -> u8; 2] = [named, named];
     let boxes = [Box::new(Pt { x: 1, y: 2 }), Box::new(Pt { x: 3, y: 4 })];
     println!("{} {} {}", thin_arrays(boxes), plain_array(), rebound(1));
+    let pts = [Pt { x: 1, y: 2 }, Pt { x: 3, y: 4 }];
+    let args = Args { verbose: true, count: 21 };
+    let owned = vec![Box::new(Pt { x: 5, y: 6 })];
+    println!("{} {} {} {}", run(&args), shadows(&pts, 1), param(&pts[1]), rebound_box(owned, &pts));
     println!("{} {}", fat_params(Box::new(takes as fn(*const [u8])), Box::new(tables)), factories());
     println!("{} {} {:?} {} {}", a, b, r, closures(&[1, 2]), exported(&Pt { x: 10, y: 1 }, &[1, 2]));
 }
@@ -999,6 +1055,21 @@ def test_generic_boxes_are_gated_and_non_owning_values_read(plain, capsys):
     at = f"src/main.rs:{line_of(BOX_GENERIC, '// REBOUND_FN')}"
     code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "op", "--quiet")
     assert "make" in str(result["rows"][0].get("value")), result["rows"]
+    # Verification of #103: a reference was hidden when its name had another binding
+    # anywhere in the function: one `println!` binds (`args`), a later shadowing `let`, a
+    # sibling block, a later `let` after a loop, an inner block's. Only the bindings in
+    # scope on the stop line count; a Box bound twice is proven by the one in scope.
+    for marker, capture, value in (
+        ("ARGS", "args.count", "21"),
+        ("BEFORE_SHADOW", "p.x", "1"),
+        ("SIBLING", "q.x", "3"),
+        ("LOOP_REF", "r.x", "1"),
+        ("PARAM", "p.x", "3"),
+        ("LIVE_REBOUND_BOX", "item.x", "5"),
+    ):
+        at = f"src/main.rs:{line_of(BOX_GENERIC, '// ' + marker)}"
+        code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", capture, "--quiet")
+        assert result["rows"][0].get("value") == value, (marker, result["rows"])
     at = f"src/main.rs:{line_of(BOX_GENERIC, '// LIVE_ARRAY')}"
     code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "arr[0].x", "--quiet")
     assert result["rows"][0].get("value") == "1", result["rows"]
