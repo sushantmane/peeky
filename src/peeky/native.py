@@ -125,6 +125,8 @@ def _line_rows(text, workspace, declared, limit=MAX_METADATA):
     inputs = {str((workspace / name).resolve()): name for name in declared}
     counts = {name: len((workspace / name).read_text().splitlines()) for name in declared}
     directories, files, current = {0: str(workspace)}, {}, None
+    # {file id: declared name or None} for this table: one resolve per file, not per row.
+    resolved = {}
     table_count = 0
     version = None
     rows = []
@@ -135,6 +137,7 @@ def _line_rows(text, workspace, declared, limit=MAX_METADATA):
             if table_count > 4096:
                 raise ValueError("Too many native line tables")
             directories, files, current = {0: str(workspace)}, {}, None
+            resolved = {}
             version = None
         elif match := re.fullmatch(r"version:\s+(\d+)", line):
             version = int(match[1])
@@ -164,15 +167,17 @@ def _line_rows(text, workspace, declared, limit=MAX_METADATA):
                 raise ValueError("Malformed native line row")
             try:
                 number, file_id = int(fields[1]), int(fields[3])
-                entry = files[file_id]
-                directory = directories[entry["directory"]]
-                path = (workspace / directory / entry["name"]).resolve()
+                if file_id not in resolved:
+                    entry = files[file_id]
+                    directory = directories[entry["directory"]]
+                    path = (workspace / directory / entry["name"]).resolve()
+                    # SDK/system header instructions are not selectable user source.
+                    resolved[file_id] = inputs.get(str(path))
             except (ValueError, KeyError, TypeError) as exc:
                 raise ValueError("Unresolved native line source") from exc
             if "end_sequence" in fields or number == 0:
                 continue
-            # SDK/system header instructions are not selectable user source.
-            name = inputs.get(str(path))
+            name = resolved[file_id]
             if name is not None:
                 if not 0 < number <= counts[name]:
                     raise ValueError("Native line exceeds declared source length")
@@ -401,14 +406,9 @@ def _code_ranges(die):
     return [(lo, hi) for lo, hi in spans if 0 < lo < hi and lo < _TOMBSTONE]
 
 
-def function_scopes(info, line_text, workspace, declared):
-    """Each function in a declared source: qualified name, source, line span, locals.
-
-    Display only (`describe`). A line-table row belongs to the innermost function or
-    inlined call whose address range covers it, so an inlined callee's lines count for
-    the callee, not its caller. Copies of one function (C1/C2 constructors, inlined and
-    out-of-line copies) are merged through the DIE that declares them.
-    """
+def _function_entries(info, line_text, workspace, declared):
+    """(dies, {root: entry}, {root: lines}, {path: source}) for functions in declared
+    sources; see function_scopes."""
     import bisect
 
     workspace = Path(workspace).resolve()
@@ -417,7 +417,7 @@ def function_scopes(info, line_text, workspace, declared):
     addresses = [row[0] for row in rows]
     dies = _dies(info)
     owner = [None] * len(rows)
-    functions = {}
+    functions, sources = {}, {}
     for offset, die in dies.items():
         if die["tag"] not in _CODE:
             continue
@@ -425,8 +425,7 @@ def function_scopes(info, line_text, workspace, declared):
         if not spans:
             continue
         chain = _chain(dies, offset)
-        decl = _text(_first(dies, chain, "DW_AT_decl_file"))
-        source = inputs.get(str((workspace / decl).resolve())) if decl else None
+        source = _source_of(_first(dies, chain, "DW_AT_decl_file"), inputs, workspace, sources)
         if source is None:
             # SDK and std code: never listed, and never claims the caller's rows.
             continue
@@ -447,16 +446,44 @@ def function_scopes(info, line_text, workspace, declared):
     for (_, _, number), claimed in zip(rows, owner):
         if claimed is not None:
             lines.setdefault(claimed[1], set()).add(number)
+    return dies, functions, lines, (inputs, sources)
+
+
+def _source_of(attribute, inputs, workspace, cache):
+    """The declared source a DW_AT_decl_file names, or None; resolved once per name
+    (an STL-heavy unit names the same few headers thousands of times)."""
+    if attribute not in cache:
+        decl = _text(attribute)
+        cache[attribute] = inputs.get(str((workspace / decl).resolve())) if decl else None
+    return cache[attribute]
+
+
+def _own_lines(dies, entry, numbers):
+    """A function's line numbers from its declaration on, or None if it has none."""
+    if not numbers:
+        return None
+    first_line = _first(dies, entry["chain"], "DW_AT_decl_line")
+    if first_line and first_line.isdigit():
+        numbers = {number for number in numbers if number >= int(first_line)} or numbers
+    return numbers
+
+
+def function_scopes(info, line_text, workspace, declared):
+    """Each function in a declared source: qualified name, source, line span, locals.
+
+    Display only (`describe`). A line-table row belongs to the innermost function or
+    inlined call whose address range covers it, so an inlined callee's lines count for
+    the callee, not its caller. Copies of one function (C1/C2 constructors, inlined and
+    out-of-line copies) are merged through the DIE that declares them.
+    """
+    dies, functions, lines, _ = _function_entries(info, line_text, workspace, declared)
     found = {}
     for root, entry in functions.items():
-        chain, source = entry["chain"], entry["source"]
+        source = entry["source"]
         name = _qualified(dies, entry["bodies"][0])
-        numbers = lines.get(root)
+        numbers = _own_lines(dies, entry, lines.get(root))
         if name is None or not numbers:
             continue
-        first_line = _first(dies, chain, "DW_AT_decl_line")
-        if first_line and first_line.isdigit():
-            numbers = {number for number in numbers if number >= int(first_line)} or numbers
         names = set()
         for body in (*entry["bodies"], root):
             names |= _locals(dies, body)
@@ -471,6 +498,96 @@ def function_scopes(info, line_text, workspace, declared):
     if len(scopes) > MAX_SCOPES:
         scopes = [*scopes[:MAX_SCOPES], {"omitted": len(scopes) - MAX_SCOPES}]
     return scopes
+
+
+# A local in the frame: DW_OP_fbreg (frame base) or DW_OP_bregN (a register) offsets.
+_AUTOMATIC = re.compile(r"DW_OP_(?:fbreg|breg[0-9]+)\b")
+
+
+def _declared(dies, offset, files, workspace):
+    """(name, (source, line, automatic)) for each parameter and variable of one function
+    body, including nested blocks but not calls inlined into it. Parameters, statics and
+    anything without a frame location are not automatic."""
+    found, pending = [], list(dies[offset]["children"])
+    while pending and len(found) < 4096:
+        child = pending.pop()
+        die = dies[child]
+        if die["tag"] == "DW_TAG_lexical_block":
+            pending.extend(die["children"])
+            continue
+        if die["tag"] not in ("DW_TAG_formal_parameter", "DW_TAG_variable"):
+            continue
+        chain = _chain(dies, child)
+        name = _text(_first(dies, chain, "DW_AT_name"))
+        if not name or name.startswith("$"):
+            continue
+        if die["tag"] == "DW_TAG_formal_parameter":
+            found.append((name, (None, None, False)))
+            continue
+        inputs, cache = files
+        source = _source_of(_first(dies, chain, "DW_AT_decl_file"), inputs, workspace, cache)
+        line = _first(dies, chain, "DW_AT_decl_line")
+        location = die["attrs"].get("DW_AT_location") or ""
+        automatic = bool(_AUTOMATIC.search(location)) and "DW_OP_addr" not in location
+        found.append((name, (source, int(line) if line and line.isdigit() else None, automatic)))
+    return found
+
+
+def local_declarations(info, line_text, workspace, declared):
+    """Each function in a declared source: its source, line span, and for each local
+    name where every local of that name is declared, as (source, line, automatic)."""
+    dies, functions, lines, files = _function_entries(info, line_text, workspace, declared)
+    workspace = Path(workspace).resolve()
+    table = []
+    for root, entry in functions.items():
+        numbers = _own_lines(dies, entry, lines.get(root))
+        if not numbers:
+            continue
+        names = {}
+        for body in (*entry["bodies"], root):
+            for name, where in _declared(dies, body, files, workspace):
+                names.setdefault(name, set()).add(where)
+        table.append(
+            {"source": entry["source"], "lines": (min(numbers), max(numbers)), "locals": names}
+        )
+    return table
+
+
+_SHADOWED = re.compile(r"(.+) @ [^:]+:([0-9]+)")
+
+
+def declared_from(table, name, source, line):
+    """The first line a C/C++ local shown at ``source:line`` can be declared on, when
+    that is this line or below, else None.
+
+    Only when every local of that name in every function covering the line is an
+    automatic variable declared in this source at or below it: the variable the
+    debugger shows is then one of them. Declared below, its value is indeterminate here
+    (C11 6.2.4: on each entry to its block, until its declaration is reached); declared
+    on this line, it is until the declaration runs. lldb-dap names a shadowed local
+    `x @ file:line`, and that line picks among them.
+    """
+    shown = _SHADOWED.fullmatch(name)
+    candidates = [
+        where
+        for function in table
+        if function["source"] == source and function["lines"][0] <= line <= function["lines"][1]
+        for where in function["locals"].get(shown[1] if shown else name, ())
+    ]
+    if shown:
+        candidates = [where for where in candidates if where[1] == int(shown[2])]
+    if not candidates or not all(
+        automatic and declared_in == source and type(at) is int and at >= line
+        for declared_in, at, automatic in candidates
+    ):
+        return None
+    return min(at for _, at, _ in candidates)
+
+
+def declared_below(table, name, source, line):
+    """declared_from, only when that is below the line."""
+    found = declared_from(table, name, source, line)
+    return found if found is not None and found > line else None
 
 
 def elf_build_id(binary):
@@ -768,8 +885,31 @@ class NativeTarget:
                 prepared.workspace,
                 self.sources + self.headers,
             )
+            try:
+                info = _metadata(
+                    dwarfdump,
+                    ["--debug-info", str(symbols)],
+                    prepared.workspace,
+                    env,
+                    max_bytes=MAX_DEBUG_INFO,
+                    timeout=_remaining(deadline),
+                )
+                declarations = local_declarations(
+                    info, text, prepared.workspace, self.sources + self.headers
+                )
+            except (RuntimeError, ValueError, OSError):
+                # Display aid only: without it, values show as the debugger reads them.
+                declarations = None
             session = NativeSession(
-                self, prepared, adapter, lines, identity, binary, symbols, external
+                self,
+                prepared,
+                adapter,
+                lines,
+                identity,
+                binary,
+                symbols,
+                external,
+                declarations=declarations,
             )
             session.assert_current()
             return session
@@ -862,8 +1002,21 @@ class NativeSession:
         local may itself be called `this`."""
         return "this" if getattr(self.target, "language", None) == "cpp" else None
 
-    def __init__(self, target, prepared, adapter, lines, identity, binary, symbols, external=None):
+    def __init__(
+        self,
+        target,
+        prepared,
+        adapter,
+        lines,
+        identity,
+        binary,
+        symbols,
+        external=None,
+        declarations=None,
+    ):
         self.target, self.prepared = target, prepared
+        # local_declarations of the build; None (unknown) never withholds a value.
+        self.declarations = declarations
         self.external_inputs = dict(external or {})
         self.binary, self.symbols, self.adapter = binary, symbols, adapter
         self._lines_data, self.module_identity = json.dumps(lines, sort_keys=True), identity
@@ -946,6 +1099,47 @@ class NativeSession:
         return function_scopes(
             info, dump("--debug-line", MAX_METADATA), workspace, tuple(self.lines)
         )
+
+    def _declared_from(self, variable, frame):
+        """(first declaration line, stop line) of a root local declared at or below the
+        stop, else None."""
+        name, path = variable.get("name"), ((frame or {}).get("source") or {}).get("path")
+        line = (frame or {}).get("line")
+        if not self.declarations or not isinstance(name, str) or not isinstance(path, str):
+            return None
+        try:
+            source = Path(path).resolve().relative_to(self.prepared.workspace.resolve())
+        except (OSError, ValueError):
+            return None
+        if type(line) is not int:
+            return None
+        found = declared_from(self.declarations, name, source.as_posix(), line)
+        return None if found is None else (found, line)
+
+    def declared_here(self, variable, frame):
+        """A root local declared on the stop line: its value is leftovers until the
+        declaration runs (always at the line's first stop on each pass)."""
+        found = self._declared_from(variable, frame)
+        return found is not None and found[0] == found[1]
+
+    def not_yet_declared(self, variable, frame):
+        """Why a root local of ``frame`` has no value yet (declared below the stop), or
+        None. Its storage then holds whatever an earlier call or iteration left."""
+        found = self._declared_from(variable, frame)
+        if found is None or found[0] == found[1]:
+            return None
+        below = found[0]
+        return (
+            f"declared at line {below}, below this stop, so not initialized yet: its storage "
+            f"holds leftovers; stop after line {below} to read it"
+        )
+
+    def validate_mutation_target(self, variable, frame):
+        if reason := self.not_yet_declared(variable, frame):
+            raise ValueError(
+                f"{variable.get('name')!r} is {reason}; its declaration would overwrite a "
+                "change made here"
+            )
 
     def source_path(self, original):
         relative = (

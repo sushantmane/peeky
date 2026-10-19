@@ -637,3 +637,113 @@ def test_lambdas_under_an_inlined_only_function_keep_its_name(tmp_path):
 0x0000003a:   NULL
 """
     assert _qualified(_dies(info), 0x30) == "apply_twice::operator()"
+
+
+def declaration_dumps(workspace):
+    """A C unit: `take` (lines 5-12) with a parameter, two automatics, a static and a
+    local in a nested block; the static has an address, not a frame location."""
+    source = workspace / "bucket.c"
+    info = f"""{workspace}/program: file format Mach-O arm64
+
+.debug_info contents:
+0x0000000b: DW_TAG_compile_unit
+              DW_AT_name\t("bucket.c")
+0x00000020:   DW_TAG_subprogram
+                DW_AT_low_pc\t(0x0000000100000400)
+                DW_AT_high_pc\t(0x0000000100000480)
+                DW_AT_name\t("take")
+                DW_AT_decl_file\t("{source}")
+                DW_AT_decl_line\t(5)
+0x00000030:     DW_TAG_formal_parameter
+                  DW_AT_location\t(DW_OP_fbreg -8)
+                  DW_AT_name\t("now")
+                  DW_AT_decl_file\t("{source}")
+                  DW_AT_decl_line\t(5)
+0x00000038:     DW_TAG_variable
+                  DW_AT_location\t(DW_OP_fbreg -16)
+                  DW_AT_name\t("elapsed")
+                  DW_AT_decl_file\t("{source}")
+                  DW_AT_decl_line\t(6)
+0x00000040:     DW_TAG_variable
+                  DW_AT_location\t(DW_OP_breg31 WSP+40)
+                  DW_AT_name\t("refill")
+                  DW_AT_decl_file\t("{source}")
+                  DW_AT_decl_line\t(8)
+0x00000048:     DW_TAG_variable
+                  DW_AT_location\t(DW_OP_addr 0x100008000)
+                  DW_AT_name\t("calls")
+                  DW_AT_decl_file\t("{source}")
+                  DW_AT_decl_line\t(9)
+0x00000050:     DW_TAG_lexical_block
+                  DW_AT_low_pc\t(0x0000000100000440)
+                  DW_AT_high_pc\t(0x0000000100000460)
+0x00000058:       DW_TAG_variable
+                    DW_AT_location\t(DW_OP_fbreg -20)
+                    DW_AT_name\t("now")
+                    DW_AT_decl_file\t("{source}")
+                    DW_AT_decl_line\t(11)
+0x00000060:       NULL
+0x00000061:     NULL
+0x00000062:   NULL
+"""
+    rows = [(0x400, 5), (0x410, 6), (0x420, 7), (0x430, 8), (0x440, 11), (0x460, 12)]
+    line = 'debug_line[0x00000000]\nversion: 4\nfile_names[ 1]:\nname: "bucket.c"\ndir_index: 0\n'
+    line += "Address Line Column File\n"
+    base = 0x100000000
+    line += "".join(
+        f"0x{base + address:016x} {number} 1 1 0 0 is_stmt\n" for address, number in rows
+    )
+    line += f"0x{base + 0x480:016x} 12 1 1 0 0 end_sequence\n"
+    return info, line
+
+
+def test_local_declarations_record_where_and_how_each_local_is_declared(tmp_path):
+    from peeky.native import local_declarations
+
+    (tmp_path / "bucket.c").write_text("\n" * 20)
+    info, line = declaration_dumps(tmp_path)
+    [take] = local_declarations(info, line, tmp_path, ("bucket.c",))
+    assert take["source"] == "bucket.c" and take["lines"] == (5, 12)
+    assert take["locals"] == {
+        "now": {(None, None, False), ("bucket.c", 11, True)},
+        "elapsed": {("bucket.c", 6, True)},
+        "refill": {("bucket.c", 8, True)},
+        "calls": {("bucket.c", 9, False)},
+    }
+
+
+@pytest.mark.parametrize(
+    "name, line, below",
+    [
+        ("refill", 7, 8),  # #74: declared on the next line, so leftovers here
+        ("refill", 8, None),  # its own line: a for-header counter is live there again
+        ("elapsed", 7, None),
+        ("calls", 7, None),  # a static has its value before its declaration
+        ("now", 7, None),  # the parameter or the block's `now`: either may be shown
+        ("now @ bucket.c:11", 7, 11),  # lldb-dap names each shadowed local
+        ("now @ bucket.c:5", 7, None),
+        ("missing", 7, None),
+        ("refill", 13, None),  # outside the function
+    ],
+)
+def test_a_local_is_withheld_only_when_every_candidate_is_declared_below(
+    tmp_path, name, line, below
+):
+    from peeky.native import declared_below, local_declarations
+
+    (tmp_path / "bucket.c").write_text("\n" * 20)
+    info, dump = declaration_dumps(tmp_path)
+    table = local_declarations(info, dump, tmp_path, ("bucket.c",))
+    assert declared_below(table, name, "bucket.c", line) == below
+    assert declared_below(table, name, "other.c", line) is None
+
+
+def test_a_local_declared_on_the_stop_line_is_flagged_not_withheld(tmp_path):
+    from peeky.native import declared_below, declared_from, local_declarations
+
+    (tmp_path / "bucket.c").write_text("\n" * 20)
+    info, dump = declaration_dumps(tmp_path)
+    table = local_declarations(info, dump, tmp_path, ("bucket.c",))
+    assert declared_from(table, "refill", "bucket.c", 8) == 8
+    assert declared_below(table, "refill", "bucket.c", 8) is None
+    assert declared_from(table, "elapsed", "bucket.c", 8) is None
