@@ -46,6 +46,12 @@ _STATEMENT = re.compile(r"^        (.+;) +// scope ([0-9]+) at (.+)$")
 _SCOPE = re.compile(r"^ +scope ([0-9]+)(?: \(inlined .*\))? \{$")
 _SPAN = re.compile(r"^([^:]+):([0-9]+):[0-9]+")
 _SPAN_END = re.compile(r"^[^:]+:[0-9]+:[0-9]+: ([0-9]+):[0-9]+")
+# Statements that emit no code: a block's `()` value spans the whole block, and must not
+# put its scope on the closing `}` (`} else if b.x > 0`, where only the outer one is).
+_SPAN_ONLY = re.compile(
+    r"(?:StorageLive|StorageDead|FakeRead|PlaceMention|AscribeUserType|Retag|Coverage|nop)\b"
+    r"|_[0-9]+ = const \(\);|goto "
+)
 _WHOLE_LOCAL = re.compile(r"^_([0-9]+)$")
 
 
@@ -444,7 +450,9 @@ def parse_body(text):
             # Every line the span covers: rustc may put the code on a later one (a method
             # call's on its name's line, `K\n.get()`, while its span starts at `K`).
             end = _SPAN_END.match(statement[3])
-            last = int(end[1]) if end and int(end[1]) >= int(span[2]) else int(span[2])
+            last = int(span[2])
+            if end and int(end[1]) > last and not _SPAN_ONLY.match(statement[1]):
+                last = int(end[1])
             for number in range(int(span[2]), last + 1):
                 body.line_scopes.setdefault((span[1], number), set()).add(int(statement[2]))
     if block is not None or not body.blocks or 0 not in body.blocks or body.file is None:
@@ -745,7 +753,9 @@ class OwnedLocals:
             else [
                 candidate
                 for candidate in self.bodies
-                if line in candidate.lines
+                # A span covering the line counts, not only one starting there (`K\n.get()`
+                # has none starting on `.get()`'s line, while a nested item may).
+                if (line in candidate.lines or (candidate.file, line) in candidate.line_scopes)
                 and shown.endswith("/" + str(candidate.file))
                 # A closure defined on the line is a body of its own, with its own
                 # captures of the frame's names: only bodies of the frame's kind count.

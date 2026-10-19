@@ -935,6 +935,24 @@ fn chain(q: &Pt, flag: bool) -> i64 {
     r
 }
 
+fn iflet_elseif(b: &Pt, maybe: Option<Box<Pt>>) -> i64 {
+    let mut t = 0;
+    if let Some(b) = maybe {
+        t += b.x;
+    } else if b.x > 0 { // ELSE_IF_LET
+        t += 1;
+    }
+    t
+}
+
+#[unsafe(no_mangle)]
+pub fn unmangled_chain(n: i64) -> i64 {
+    let b = Box::new(Pt { x: 1, y: 2 }); drop(b); churn();
+    let r = KEPT
+        .get(); fn helper2(b: &Pt) -> i64 { b.x } // CHAINED_EXPORT
+    r + helper2(&Pt { x: n, y: 0 })
+}
+
 fn make() -> Box<dyn Debug> {
     Box::new(1u8)
 }
@@ -1011,6 +1029,7 @@ fn main() {
     let owned = vec![Box::new(Pt { x: 5, y: 6 })];
     println!("{} {} {} {}", run(&args), shadows(&pts, 1), param(&pts[1]), rebound_box(owned, &pts));
     println!("{} {}", macro_sibling(&pts[0], true), chain(&pts[0], true));
+    println!("{} {}", iflet_elseif(&pts[1], None), unmangled_chain(4));
     println!("{} {}", fat_params(Box::new(takes as fn(*const [u8])), Box::new(tables)), factories());
     println!("{} {} {:?} {} {}", a, b, r, closures(&[1, 2]), exported(&Pt { x: 10, y: 1 }, &[1, 2]));
 }
@@ -1112,6 +1131,16 @@ def test_generic_boxes_are_gated_and_non_owning_values_read(plain, capsys):
     # Verification of #103: `.get()` on its own line runs in the dropped Box's block,
     # while its statement's span starts at `KEPT` on the line before.
     at = f"src/main.rs:{line_of(BOX_GENERIC, '// CHAIN')}"
+    code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "b", "--quiet")
+    assert result["rows"][0].get("view") == "unproven", result["rows"]
+    # Verification of #103: a block's `()` value (the whole `if let` block's span) put
+    # the binding's scope on `} else if b.x > 0`, hiding the parameter; and an unmangled
+    # frame's bodies were picked by spans starting on the line, so `.get()`'s line found
+    # only a nested `fn`'s `&Pt` binding of the name.
+    at = f"src/main.rs:{line_of(BOX_GENERIC, '// ELSE_IF_LET')}"
+    code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "b.x", "--quiet")
+    assert result["rows"][0].get("value") == "3", result["rows"]
+    at = f"src/main.rs:{line_of(BOX_GENERIC, '// CHAINED_EXPORT')}"
     code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "b", "--quiet")
     assert result["rows"][0].get("view") == "unproven", result["rows"]
     at = f"src/main.rs:{line_of(BOX_GENERIC, '// LIVE_ARRAY')}"

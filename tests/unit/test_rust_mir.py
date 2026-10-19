@@ -730,18 +730,27 @@ def test_a_comment_mark_inside_a_multi_line_string_is_not_a_comment(opening):
 
 def test_a_statement_s_scope_counts_on_every_line_of_its_span():
     # Verification of #103: a method call on its own line (`K\n.get()`) runs there, while
-    # its span starts at the receiver on the line before.
+    # its span starts at the receiver on the line before. A block's `()` value emits no
+    # code: its span (the whole block) never puts its scope on the closing `}` line.
     body = parse_body(
         "\n".join(
             [
                 "fn f() -> () {",
                 "    let mut _0: ();                      // return place in scope 0 at src/main.rs:1:10: 1:12",
+                "    let _1: i64;                         // in scope 0 at src/main.rs:15:5: 15:6",
+                "    let _2: ();                          // in scope 0 at src/main.rs:20:5: 22:6",
                 "    scope 2 {",
+                "    }",
+                "    scope 3 {",
                 "    }",
                 "",
                 "    bb0: {",
-                "        _0 = const ();                   // scope 2 at src/main.rs:15:78: 16:15",
-                "        return;                          // scope 0 at src/main.rs:17:2: 17:2",
+                "        _2 = const ();                   // scope 3 at src/main.rs:20:28: 22:6",
+                "        _1 = W::get(const K) -> [return: bb1, unwind continue]; // scope 2 at src/main.rs:15:78: 16:15",
+                "    }",
+                "",
+                "    bb1: {",
+                "        return;                          // scope 0 at src/main.rs:30:2: 30:2",
                 "    }",
                 "}",
                 "",
@@ -750,3 +759,5 @@ def test_a_statement_s_scope_counts_on_every_line_of_its_span():
     )
     assert 2 in body.line_scopes[("src/main.rs", 16)]
     assert 2 in body.line_scopes[("src/main.rs", 15)]
+    assert 3 in body.line_scopes[("src/main.rs", 20)]
+    assert ("src/main.rs", 22) not in body.line_scopes
