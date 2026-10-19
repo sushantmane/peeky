@@ -617,8 +617,9 @@ _COMPOSITE_RUST = (
 _UNPROVEN_RUST = (
     "this Rust Box (or a pointer the build's MIR does not identify, or a reference into a "
     "value that may be moved or dropped) shows only its pointer: Peeky reads what it "
-    "points at only where the build's MIR proves it, or the value it points into, "
-    "initialized at the stop line, in the innermost frame of an unoptimized build. Here it "
+    "points at only where the build's MIR proves it initialized (or, for a reference, still "
+    "used, or what it points into untouched since) at the stop line, in the innermost frame "
+    "of an unoptimized build. Here it "
     "may be moved or dropped, or the MIR cannot say (a generic `T`, `Self` or `impl "
     "Trait`, an async body, a closure's capture, an unmangled `#[no_mangle]` function), so "
     "its pointer can reach freed memory (#101, #110). A plain function's own local reads "

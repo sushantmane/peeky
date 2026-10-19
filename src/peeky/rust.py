@@ -1059,13 +1059,14 @@ class RustSession(NativeSession):
             gated = (owning or (pointer and not plain)) and not (
                 provable and proofs.proven(hashed[1], variable.get("name"), line, shown_path)
             )
-            if not gated and pointer and plain and provable:
-                # #110: a reference (or raw pointer) into a Box, Vec or other owned
-                # value outlives its owner's move or drop in scope, though not in use;
-                # read only while every owner is proven initialized. An unknown owner
-                # (a reference parameter's, a static's) reads as before.
+            if not gated and provable:
+                # #110: a reference (or raw pointer, `&str`, a tuple holding one) outlives
+                # what it points into in scope, though not in use: it reads while the code
+                # still uses it, or while what owns its target is untouched since. What
+                # cannot be told (a site or local not understood) reads as before.
                 gated = (
-                    proofs.owners_proven(hashed[1], variable.get("name"), line, shown_path) is False
+                    proofs.reference_valid(hashed[1], variable.get("name"), line, shown_path)
+                    is False
                 )
             if gated:
                 # #101: a moved or dropped Box still holds its pointer, and LLDB would

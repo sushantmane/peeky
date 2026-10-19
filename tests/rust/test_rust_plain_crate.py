@@ -1407,3 +1407,178 @@ def test_an_optimized_build_never_reads_a_box(plain):
     result = run_probe(plain, Probe("src/main.rs", line, ("r2.x",)), adapter=target)
     assert result["rows"][0].get("value") in ("41", None), result["rows"]
     assert "view" not in result["rows"][0], result["rows"]
+
+
+REFERENCES = """use std::collections::HashMap;
+
+#[derive(Debug)]
+pub struct Pt {
+    x: i64,
+    y: i64,
+}
+
+pub struct S {
+    a: i64,
+    b: Box<Pt>,
+}
+
+pub struct Raw {
+    p: *const Pt,
+}
+
+pub struct Named<'a> {
+    pt: &'a Pt,
+    label: String,
+}
+
+#[inline(never)]
+fn churn() -> i64 {
+    Box::leak(Box::new(Pt { x: 777, y: 888 })).x + Box::leak(Box::new([777i64; 4]))[0]
+}
+
+fn field_box() -> i64 {
+    let s = S { a: 1, b: Box::new(Pt { x: 7, y: 8 }) };
+    let r: &Pt = &*s.b;
+    let k = r.x + s.a;
+    drop(s);
+    k + churn() // FIELD_BOX
+}
+
+fn vec_box() -> i64 {
+    let vb = vec![Box::new(Pt { x: 7, y: 8 })];
+    let r: &Pt = &*vb[0];
+    let k = r.x;
+    drop(vb);
+    k + churn() // VEC_BOX
+}
+
+fn ref_ref() -> i64 {
+    let b = Box::new(Pt { x: 7, y: 8 });
+    let bb = &b;
+    let r: &Pt = &**bb;
+    let k = r.x;
+    drop(b);
+    k + churn() // REF_REF
+}
+
+fn reassigned() -> i64 {
+    let mut b = Box::new(Pt { x: 1, y: 2 });
+    let r = &*b;
+    let k = r.x;
+    b = Box::new(Pt { x: 5, y: 6 });
+    k + b.x + churn() // REASSIGNED
+}
+
+fn pushed() -> i64 {
+    let mut v = vec![Pt { x: 1, y: 2 }];
+    let first = &v[0];
+    let k = first.x;
+    v.push(Pt { x: 3, y: 4 });
+    k + churn() // PUSHED
+}
+
+fn mut_param(v: &mut Vec<Pt>) -> i64 {
+    let first = &v[0];
+    let k = first.x;
+    v.push(Pt { x: 3, y: 4 });
+    k + churn() // MUT_PARAM
+}
+
+fn carried() -> i64 {
+    let b = Box::new(Pt { x: 7, y: 8 });
+    let raw = Raw { p: &*b };
+    let p = raw.p;
+    drop(b);
+    churn() + p as usize as i64 * 0 // CARRIED
+}
+
+fn in_vec() -> i64 {
+    let b = Box::new(Pt { x: 7, y: 8 });
+    let mut refs: Vec<&Pt> = Vec::new();
+    refs.push(&*b);
+    let r = refs[0];
+    let k = r.x;
+    drop(refs);
+    drop(b);
+    k + churn() // IN_VEC
+}
+
+fn text() -> usize {
+    let s = String::from("hello there");
+    let t: &str = s.as_str();
+    let n = t.len();
+    drop(s);
+    n + churn() as usize // TEXT
+}
+
+fn tupled() -> i64 {
+    let b = Box::new(Pt { x: 7, y: 8 });
+    let t = (&*b, 5);
+    let k = t.0.x + t.1;
+    drop(b);
+    k + churn() // TUPLED
+}
+
+fn reads(v: &[Pt], label: String, grid: &HashMap<(i64, i64), Pt>, m: &HashMap<String, Pt>, n: i64) -> i64 {
+    let cell = grid.get(&(1, 2)).unwrap();
+    let hit = m.get(&format!("k{}", n)).unwrap();
+    let found = v.iter().find(move |p| p.x == label.len() as i64 + 2).unwrap();
+    let named = Named { pt: &v[0], label: String::from("a") };
+    let r = named.pt;
+    cell.x + hit.x + found.x + r.x + named.label.len() as i64 // READS
+}
+
+fn dead_but_fine() -> i64 {
+    let b = Box::new(Pt { x: 7, y: 8 });
+    let r = &*b;
+    let k = r.x;
+    let m = k * 2;
+    m + b.y // DEAD_FINE
+}
+
+fn main() {
+    let mut v = vec![Pt { x: 3, y: 4 }];
+    let mut grid = HashMap::new();
+    grid.insert((1, 2), Pt { x: 7, y: 0 });
+    let mut m = HashMap::new();
+    m.insert("k1".to_string(), Pt { x: 9, y: 0 });
+    println!("{} {} {} {} {}", field_box(), vec_box(), ref_ref(), reassigned(), pushed());
+    println!("{} {} {} {} {}", mut_param(&mut v), carried(), in_vec(), text(), tupled());
+    println!("{} {}", reads(&v, String::from("x"), &grid, &m, 1), dead_but_fine());
+}
+"""
+
+
+@pytest.mark.timeout(600)
+def test_references_read_only_while_their_target_stands(plain, capsys):
+    # #110: a reference or raw pointer into a moved, dropped, reassigned or reallocated
+    # value read freed memory. It now reads while the code still uses it, or while what
+    # owns its target is untouched since it was made; otherwise only its address shows.
+    (plain / "src/main.rs").write_text(REFERENCES)
+    gated = {
+        "FIELD_BOX": "r",
+        "VEC_BOX": "r",
+        "REF_REF": "r",
+        "REASSIGNED": "r",
+        "PUSHED": "first",
+        "MUT_PARAM": "first",
+        "CARRIED": "p",
+        "IN_VEC": "r",
+        "TEXT": "t",
+        "TUPLED": "t",
+    }
+    for marker, name in gated.items():
+        at = f"src/main.rs:{line_of(REFERENCES, '// ' + marker)}"
+        code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", name, "--quiet")
+        assert code == 0, (marker, result.get("error"))
+        row = result["rows"][0]
+        assert row.get("view") == "unproven", (marker, row)
+        assert "777" not in str(row.get("value")), (marker, row)
+    at = f"src/main.rs:{line_of(REFERENCES, '// READS')}"
+    code, result = run(
+        capsys, "probe", str(plain), "--at", at, "--capture", "cell.x,hit.x,found.x,r.x", "--quiet"
+    )
+    assert [row.get("value") for row in result["rows"]] == ["7", "9", "3", "3"], result["rows"]
+    at = f"src/main.rs:{line_of(REFERENCES, '// DEAD_FINE')}"
+    code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "r.x", "--quiet")
+    assert result["rows"][0].get("value") == "7", result["rows"]

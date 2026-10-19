@@ -54,10 +54,16 @@ _SPAN_ONLY = re.compile(
 )
 _WHOLE_LOCAL = re.compile(r"^_([0-9]+)$")
 _WHOLE_ASSIGNMENT = re.compile(r"^_([0-9]+) = (.+);$")
+_PART_ASSIGNMENT = re.compile(r"^\(+\*?_([0-9]+)[.: )].*? = (.+);$")
+_LENT = re.compile(r"&mut \(?\*?_([0-9]+)\)?")
+# Statements that never use a local, though they name it.
+_NOT_A_USE = re.compile(r"^(?:StorageLive|FakeRead|PlaceMention|AscribeUserType|Retag|Coverage)\b")
 # A local's mention in a statement (`move _11`, `(*_43)`); never part of a number or
 # a name (`0_usize`, `bar_2`).
 _MENTIONED = re.compile(r"(?<![\w])_([0-9]+)\b")
 _INDEX = re.compile(r"\[_[0-9]+\]")
+_RAW_POINTER = re.compile(r"\*const |\*mut ")
+_FN_POINTER = re.compile(r"(?:for<[^<>]*> )?(?:unsafe )?(?:extern \S+ )?fn\(")
 # A type that borrows: a reference, a raw pointer, one holding a lifetime, or a closure
 # or coroutine (whose captures may be references).
 _BORROWING = re.compile(r"&|\*const |\*mut |'|\{closure@|\{coroutine@|\{async")
@@ -154,58 +160,167 @@ class Body:
             return None
         return bindings[0][0]
 
-    def owners(self, local, limit=128):
-        """The locals that own what ``local`` (a reference or raw pointer) may point
-        into, followed back through the temps and borrowing locals it was made from
-        (`&(*_43)`, `_43 = copy ((_3.0: Unique<Pt>).0: NonNull<Pt>) as *const Pt`,
-        `Index::index(move _11, ..)` with `_11 = &_2`). A local whose type borrows (`&`,
-        a raw pointer, a lifetime: `Option<&T>`, `Iter<'_, T>`) is followed; any other
-        is an owner. An argument that borrows points outside the frame: nothing to
-        prove. None when not understood (a local assigned only in parts)."""
+    def owners(self, local):
+        """The locals that may own what ``local`` (a reference, a raw pointer, or a value
+        holding one) points into, followed back through what it was made from: temps,
+        borrowing locals, a Box's pointer field (`_43 = copy ((_3.0: Unique<Pt>).0:
+        NonNull<Pt>) as *const Pt`), a struct carrying a pointer, a call's or an
+        aggregate's borrowing operands (`Index::index(move _11, ..)` with `_11 = &_2`;
+        never an owned value moved into a call, `Box::leak`, nor an index), and what a
+        call given `&mut` to it adds (`refs.push(&*b)`). Every local reached whose type
+        does not borrow is an owner, and is followed too. An argument that borrows points
+        outside the frame; a `&mut` one is an owner, since its target changes through
+        it. None when not understood (a borrowing local never assigned)."""
         assigned = self._assignments()
-        bindings = {binding[0] for found in self.bindings.values() for binding in found}
         owners, seen, pending = set(), set(), [local]
         while pending:
             current = pending.pop()
             if current in seen:
                 continue
             seen.add(current)
-            if len(seen) > limit:
-                return None
             borrows = bool(_BORROWING.search(self.types.get(current) or ""))
             if current in self.arguments:
-                if not borrows:
+                # A `&mut` argument's target outlives the frame, but changes through it
+                # (`v.push(..)`): watched like an owner.
+                if not borrows or (self.types.get(current) or "").startswith("&mut "):
                     owners.add(current)
                 continue
             if current != local and not borrows:
                 owners.add(current)
-                continue
-            if current in bindings and current != local and not assigned.get(current):
-                return None
             texts = assigned.get(current)
             if not texts:
-                return None
+                if borrows:
+                    return None
+                continue
             for text in texts:
-                # A call's result can point only into what it borrows: an owned value
-                # moved into it is the callee's (`Box::leak`), not the frame's.
-                call = " -> [" in text or text.endswith("-> unwind continue")
+                # A whole place (`&_2`, `copy (_1.1: Box<Pt>)`, a cast of one) is followed
+                # entirely; a call or an aggregate only through what it borrows.
+                whole = text.startswith(("&", "copy ", "move "))
                 # An index (`&(*_1)[_7]`) selects within the place, it is not borrowed.
                 for found in _MENTIONED.findall(_INDEX.sub("[]", text)):
                     mentioned = int(found)
-                    if call and not _BORROWING.search(self.types.get(mentioned) or ""):
-                        continue
-                    pending.append(mentioned)
+                    if whole or _BORROWING.search(self.types.get(mentioned) or ""):
+                        pending.append(mentioned)
         return owners
 
     def _assignments(self):
-        """{local: [what is assigned to it whole]}: `_5 = &(*_43);` and calls."""
+        """{local: [what is assigned to it]}: whole (`_5 = &(*_43);`, calls), in parts
+        (`(_3.0: *const Pt) = move _7;`), and a call's other operands for a local it is
+        given `&mut` to (`Vec::push(move _12, move _13)` with `_12 = &mut _4`)."""
         if self._assigned is None:
-            self._assigned = {}
-            for block in self.blocks.values():
-                for text, _, _ in block.statements:
-                    if found := _WHOLE_ASSIGNMENT.match(text):
-                        self._assigned.setdefault(int(found[1]), []).append(found[2])
+            assigned, lent = {}, {}
+            statements = [text for block in self.blocks.values() for text, _, _ in block.statements]
+            for text in statements:
+                if found := _WHOLE_ASSIGNMENT.match(text):
+                    assigned.setdefault(int(found[1]), []).append(found[2])
+                    if lender := _LENT.fullmatch(found[2]):
+                        lent[int(found[1])] = int(lender[1])
+                elif found := _PART_ASSIGNMENT.match(text):
+                    assigned.setdefault(int(found[1]), []).append(found[2])
+            for text in statements:
+                if " -> [" not in text:
+                    continue
+                operands = [int(n) for n in _MENTIONED.findall(text.split(" = ", 1)[-1])]
+                for operand in operands:
+                    if operand in lent:
+                        others = " ".join(f"move _{n}" for n in operands if n != operand)
+                        assigned.setdefault(lent[operand], []).append(f"({others})")
+            self._assigned = assigned
         return self._assigned
+
+    def line_positions(self, blocks, line, file, foreign):
+        """(block, index) of the first statement with code of ``line`` in each of
+        ``blocks``: one spanning that line of ``file`` (or another file, or none, when
+        the line may invoke a macro)."""
+        found = []
+        for number in sorted(blocks):
+            block = self.blocks.get(number)
+            if block is None:
+                continue
+            for index, (text, spanned, spanned_line) in enumerate(block.statements):
+                if _NO_CODE.match(text):
+                    continue
+                if spanned_line == line if spanned == file else spanned is None or foreign:
+                    found.append((number, index))
+                    break
+        return found
+
+    def live_from(self, local, positions):
+        """True if ``local`` is used on every path from each of ``positions`` ((block,
+        index) of the stop line's first code in each of its blocks) before it is
+        assigned again or its storage ends: then the borrow checker keeps what it
+        borrows alive and unchanged there."""
+        if not positions:
+            return False
+        for start in positions:
+            if not self._used_ahead(local, start):
+                return False
+        return True
+
+    def _used_ahead(self, local, start):
+        pending, seen = [start], set()
+        while pending:
+            number, index = pending.pop()
+            if (number, index) in seen or number not in self.blocks:
+                continue
+            seen.add((number, index))
+            block = self.blocks[number]
+            ended = False
+            for text, _, _ in block.statements[index:]:
+                event = _event(text, local)
+                if event == "use":
+                    return True
+                if event == "end":
+                    ended = True
+                    break
+            if not ended:
+                pending.extend((successor, 0) for successor in block.successors)
+        return False
+
+    def used_after_end(self, local, owner):
+        """True if ``local`` is used on some path after ``owner`` is moved, dropped or
+        ends (before ``local`` is assigned again)."""
+        for number, block in self.blocks.items():
+            for index, (text, _, _) in enumerate(block.statements):
+                if owner in _kills(text) and self._used_ahead(local, (number, index + 1)):
+                    return True
+        return False
+
+    def untouched(self, local, owners, positions):
+        """True if no owner is dropped, moved, assigned, borrowed `&mut` or ended on
+        any path from an assignment of ``local`` to the stop ``positions`` that does not
+        assign ``local`` again."""
+        stops = set(positions)
+        starts = [
+            (number, index + 1, False)
+            for number, block in self.blocks.items()
+            for index, (text, _, _) in enumerate(block.statements)
+            if _event(text, local) == "end" and not text.startswith("StorageDead")
+        ]
+        if not starts:
+            return False
+        pending, seen = list(starts), set()
+        while pending:
+            number, index, touched = pending.pop()
+            if (number, index, touched) in seen or number not in self.blocks:
+                continue
+            seen.add((number, index, touched))
+            block = self.blocks[number]
+            renewed = False
+            for offset, (text, _, _) in enumerate(block.statements[index:], index):
+                if (number, offset) in stops:
+                    if touched:
+                        return False
+                    renewed = True  # This path's question is answered.
+                    break
+                if _event(text, local) == "end":
+                    renewed = True
+                    break
+                if any(_touches(text, owner) for owner in owners):
+                    touched = True
+            if not renewed:
+                pending.extend((successor, 0, touched) for successor in block.successors)
+        return True
 
     def visible_scopes(self, line, path):
         """The scopes of the statements on ``line`` of the frame's source ``path``, and
@@ -428,6 +543,39 @@ def _mask(locals_):
 def _max_local(block):
     found = [int(n) for text, _, _ in block.statements for n in _ANY_LOCAL.findall(text)]
     return max(found, default=0)
+
+
+def _event(text, local):
+    """What ``text`` does to ``local``: "use" (reads it), "end" (assigns it whole, or
+    ends its storage), or None."""
+    if text.startswith(f"StorageDead(_{local})"):
+        return "end"
+    if _NOT_A_USE.match(text):
+        return None
+    if found := _WHOLE_ASSIGNMENT.match(text):
+        if local in {int(n) for n in _MENTIONED.findall(found[2])}:
+            return "use"
+        if int(found[1]) == local:
+            return "end"
+        return None
+    if local in {int(n) for n in _MENTIONED.findall(text)}:
+        return "use"
+    return None
+
+
+def _touches(text, owner):
+    """Whether ``text`` may change or free what ``owner`` holds: a drop, a move, an
+    assignment (whole or in part), a `&mut`/`&raw mut` borrow, the end of its storage."""
+    mentioned = {int(n) for n in _MENTIONED.findall(text)}
+    if owner not in mentioned:
+        return False
+    if owner in _kills(text):
+        return True
+    if (found := _ASSIGN.match(text)) and int(found[1]) == owner:
+        return True
+    if (found := _PART_ASSIGNMENT.match(text)) and int(found[1]) == owner:
+        return True
+    return bool(re.search(rf"&(?:mut|raw mut) [(*]*_{owner}\b", text))
 
 
 def _kills(text):
@@ -888,19 +1036,48 @@ class OwnedLocals:
         local = self._local(site[0], variable_name, line, path)
         return local is not None and self._initialized(site, local, line)
 
-    def owners_proven(self, hashed, variable_name, line, path):
-        """For the frame's reference or raw pointer ``variable_name``: True if every
-        local owning what it may point into is initialized at ``line`` (or it points
-        only outside the frame), False if one may be moved or dropped there (#110), None
-        if that cannot be told (the trace or the site is not understood)."""
+    def reference_valid(self, hashed, variable_name, line, path):
+        """For the frame's local ``variable_name`` whose type borrows (a reference, a raw
+        pointer, `&str`, a tuple or closure holding one): True if what it points into is
+        alive and unchanged at ``line`` of ``path``, False if that cannot be shown (#110),
+        None if this does not apply (another type, the site or the local not understood).
+
+        True when the local is still used ahead on every path (the borrow checker then
+        keeps its loans live), or when every local that may own what it points into is
+        found and left untouched between its assignment and the stop. A fn pointer, and
+        an argument never reassigned, point outside the frame."""
         site = self._site(hashed, line, path)
         if site is None:
             return None
-        local = self._local(site[0], variable_name, line, path)
-        owners = site[0].owners(local) if local is not None else None
-        if owners is None:
+        body, function, blocks, shared = site
+        local = self._local(body, variable_name, line, path)
+        kind = body.types.get(local) if local is not None else None
+        if kind is None or not _BORROWING.search(kind):
             return None
-        return all(self._initialized(site, owner, line) for owner in owners)
+        if _FN_POINTER.match(kind):
+            return True
+        if local in body.arguments and local not in body._assignments():
+            return True
+        positions = body.line_positions(
+            blocks, line, function.file, may_invoke_macro(self.texts.get(function.file), line)
+        )
+        if not positions:
+            return None
+        # Not yet assigned (its declaration line), it holds whatever its slot last held.
+        if not self._initialized(site, local, line):
+            return False
+        # A raw pointer has no borrow keeping its target alive, however it is used.
+        if not _RAW_POINTER.search(kind) and body.live_from(local, positions):
+            return True
+        owners = body.owners(local)
+        if owners is None:
+            return False
+        # The borrow checker rejects using a reference after what it points into ends:
+        # a local it is still used after cannot own its target (a call's key temp,
+        # `m.get(&format!(..))`). A raw pointer has no such guarantee.
+        if not _RAW_POINTER.search(kind):
+            owners = {owner for owner in owners if not body.used_after_end(local, owner)}
+        return body.untouched(local, owners, positions)
 
     def _site(self, hashed, line, path):
         """(body, function, the line's blocks, their merges) for a proof at ``line``."""
