@@ -754,3 +754,27 @@ The final verification (2ec7254, 699340f) found nothing wrong. It checked:
 - **Trade-off:** about a third of the stops the earlier commit withheld are now shown, as the documentation allows.
 - **Cost:** pauses after the first stop in a function are unchanged. The first stop in an 8,100-instruction function costs about 0.6 s once.
 
+## Review of pointer pointees (#100, 569f05c)
+
+Checked and found sound:
+- **Null and invalid pointers:** `np[0]`, `bad[0]` and `nullpp[0][0]` come back `unavailable`.
+- **Strings:** `char *` reads its first character.
+- **Not indexed:** `void *`, function pointers, `int &`, `int *&`, `unique_ptr` and `shared_ptr` are not read.
+- **Refusals:** `values[-1]` and `--set 'count[0]=5'` are refused.
+- **Listings:** `session get` lists `p[0]`, `pp[0][0]`, `n.count[0]` and `argv[0][0]`.
+
+| # | Finding | Severity | Disposition |
+| --- | --- | --- | --- |
+| 1 | LLDB shows Rust `&T`, `&mut T`, `*const T` and `Box<T>` as C pointers, each with one child `*name`, so `r[0]` read it in Rust too. After `drop(v)`, `r[0]` showed `901`, an element of a later Vec that reused the memory; on main it was refused. | High | **Fixed:** `p[0]` and the hint apply to C and C++ targets only (the probe's and session's target language). Rust keeps the refusal. Test: `test_a_rust_reference_is_never_indexed_as_a_pointer` (real build, the reviewer's program). Older and separate: a moved `Box<Pt>`'s fields (`bp.x`) also read freed memory on main, filed as #101. |
+| 2 | The hint named the debugger's last step, not the selector, so `n.count[1]` suggested `count[0]`, which read a different variable (a parameter named `count`), and `pp[0][1]` suggested `*pp[0]`, which does not parse. | Medium | **Fixed:** the hint uses the path resolved so far (`n.count[0]`, `pp[0][0]`). Test: `test_a_pointers_first_element_is_its_pointee` (`values`, `n.count`, `pp[0]`). |
+| 3 | The cookbook said higher indexes are read only where the array is declared. A pointer to an array or a container already lists that pointee's elements (`pa[1]` is `(*pa)[1]`). | Low (docs) | **Fixed:** the cookbook says which pointers index their pointee. |
+| 4 | (verification of 6ea203e) A pointer was recognized by its type ending in `*`, so `int *const`, `int *volatile`, `const float *__restrict` and typedef'd pointers (`intp`) kept the old refusal and showed `*in [not selectable]`. The verification also confirmed: the language flag is passed on every path that reads values (probe, candidate, after-set, `session get`, `--worker`); the session record holds `c`, `cpp` or `rust`; `--set 'p[0]=…'` is refused clearly; the hint's path matches what was typed for `.name`, `[N]` and `[-N]` steps; Rust references, Boxes and raw pointers stay refused with no hint. | Medium | **Fixed:** in C and C++, a single child named `*name` is the sign, whatever the type's spelling: no C or C++ member can be named that. Test: the same test (`cp`, `rp`, `tp`). |
+
+The final verification (b3a3002) found nothing wrong.
+- **No false pointers:** no C or C++ value other than a pointer shows a single child named `*name`. Checked: references, one-element arrays, smart pointers, optionals, atomics, iterators, `reference_wrapper`, `std::function`, struct and block pointers, function, member and `void` pointers.
+- **Pointers inside other values:** `up.pointer[0]` and `ap.Value[0]` read.
+- **Qualified and nested pointers:** qualified, typedef'd, union-member and pointer-to-pointer forms read.
+- **Null and bad pointers:** come back `unavailable`.
+- **Rust:** stays refused.
+- **Older, filed as #102:** a pointer to an array indexes its pointee (`parr[1]` is `(*parr)[1]`, as the cookbook says), not C's rows.
+

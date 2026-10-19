@@ -471,3 +471,25 @@ def test_same_named_structs_and_std_structs_are_never_decoded(plain, capsys):
         assert shown[key]["view"] == "opaque", shown[key]
     for key in (("STD", "spans"), ("STD", "w")):
         assert "LLDB's summary" in shown[key]["note"], shown[key]
+
+
+DROPPED = """fn main() {
+    let v = vec![1i32, 2, 3];
+    let r = &v[1];
+    println!("{}", r);
+    drop(v);
+    let w = vec![900i32, 901, 902];
+    println!("{:?}", w); // HERE
+}
+"""
+
+
+@pytest.mark.timeout(300)
+def test_a_rust_reference_is_never_indexed_as_a_pointer(plain, capsys):
+    # Review of #100: LLDB shows `&i32` as `int *`; after `drop(v)` its pointee is
+    # freed memory (here `w`'s 901), so `r[0]` must not read it as C's `*p`.
+    (plain / "src/main.rs").write_text(DROPPED)
+    at = f"src/main.rs:{line_of(DROPPED, 'HERE')}"
+    code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "r[0]", "--quiet")
+    row = result["rows"][0]
+    assert "value" not in row and "carries no length" not in row["error"], row

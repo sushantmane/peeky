@@ -118,6 +118,7 @@ An hourly thread heartbeat (`continue-peeky-mvp`) checks for available usage and
 - **Rust char elements** (#90, first part).
   - `Vec<char>`, `&[char]` and `&Vec<char>` are read like the other qualified element types, and print as Rust's `{:?}` does.
   - `char` rendering is exact: the code points Rust 1.96 escapes come from Rust itself (`scripts/rust_char_table.py` writes `src/peeky/rust_chars.py`), and a test ties the table to the pinned toolchain.
+- **C/C++ pointers: `p[0]` is the pointee** (fifth evaluation's dry run). `values[0]` on `const int *values` said only "children: *values", and the pointee was `[not selectable]`. It now reads `*values`, `session get values` lists it as `values[0]`, and `values[1]` says a pointer carries no length, with where to index the array instead.
 - **Rust tuple and struct elements** (#90, second part).
   - `Vec<T>`, `&[T]` and `&Vec<T>` are read when `T` is a tuple, or a struct the crate defines, of qualified scalars: `[('a', 3), ('b', 1)]`, `[Interval { start: 1, end: 10, open: false }]`, `[Point(1, 2)]`. The build's debug information must show plain, aligned fields within the element's size.
   - The compiler's own type picks the layout (the MIR's for owned locals, the IR's for parameters). LLDB's names only confirm it, since they collide: LLDB names `Vec<Pair<i8>>` `Vec<Pair<char>>`, the DWARF name of `Vec<Pair<char>>`.
