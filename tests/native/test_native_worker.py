@@ -728,8 +728,11 @@ def test_describe_leaves_out_types_a_program_cannot_write(tmp_path, native_confi
         "struct structure { int s; };\n"
         "enum enumeration { ONE };\n"
         "typedef struct { int c; } class_t;\n"
-        "static float dot(const float *restrict a, int *restrict b, int n) {\n"
-        "    float s = 0;\n"
+        "typedef int *ip;\n"
+        "static float dot(const float *restrict a, int *restrict b, int n, ip restrict t,\n"
+        "                 int (*restrict pa)[3], int (**restrict fns)(int)) {\n"
+        "    int (*fs[1])(int) = {0};\n"
+        "    float s = (float)(*t + (*pa)[0] + (fns != 0) + (fs[0] != 0));\n"
         "    for (int i = 0; i < n; i++) s += a[i] * b[i];\n"
         "    return s;\n"
         "}\n"
@@ -746,16 +749,19 @@ def test_describe_leaves_out_types_a_program_cannot_write(tmp_path, native_confi
         "    class_t ct = {5};\n"
         "    float xs[2] = {1, 2};\n"
         "    int ys[2] = {3, 4};\n"
+        "    int three[3] = {0};\n"
         "    int plain = inl.x + un.a + (ptr != 0) + arr[0].z + (cptr != 0) + (vptr != 0) + cst.u\n"
-        "        + named_ptr->s + en + ct.c + (int)dot(xs, ys, 2);\n"
+        "        + named_ptr->s + en + ct.c + (int)dot(xs, ys, 2, ys, &three, 0);\n"
         '    printf("%d\\n", plain);\n'
         "    return 0;\n"
         "}\n"
     )
     (tmp_path / "lam.cpp").write_text(
         "#include <cstdio>\n"
+        "struct { struct In { int z; } in; int q; } wrap;\n"
         "int main() {\n"
-        "    int base = 3;\n"
+        "    decltype(wrap)::In *inner = &wrap.in;\n"
+        "    int base = 3 + inner->z;\n"
         "    auto add = [base](int v) { return v + base; };\n"
         '    std::printf("%d\\n", add(4));\n'
         "    return 0;\n"
@@ -774,8 +780,15 @@ def test_describe_leaves_out_types_a_program_cannot_write(tmp_path, native_confi
     for name, function, typed, untyped in (
         ("anon.c", "main", named, unnamed),
         # dwarfdump prints a restrict pointer as `restrict ` alone.
-        ("anon.c", "dot", {"a": "const float *restrict", "b": "int *restrict", "n": "int"}, ()),
-        ("lam.cpp", "main", {"base": "int"}, ("add",)),
+        (
+            "anon.c",
+            "dot",
+            {"a": "const float *restrict", "b": "int *restrict", "n": "int", "t": "ip restrict"},
+            # restrict inside parentheses, and dwarfdump's cut-short `int (*[1]`.
+            ("pa", "fns", "fs"),
+        ),
+        # A lambda, and a type declared inside an unnamed struct (`structure ::In *`).
+        ("lam.cpp", "main", {"base": "int"}, ("add", "inner")),
     ):
         assert main(["describe", str(tmp_path / name), "--json"]) == 0
         scopes = json.loads(capsys.readouterr().out)["scopes"]
@@ -785,7 +798,9 @@ def test_describe_leaves_out_types_a_program_cannot_write(tmp_path, native_confi
             typed
         ), scope
         # dwarfdump's forms for unnamed types, in any scope (the lambda's own `this`).
-        unwritable = re.compile(r"  |restrict $|(?:structure|union|class|enumeration) (?:$|\[)")
+        unwritable = re.compile(
+            r"  |restrict $|[)\]] restrict|(?:structure|union|class|enumeration) (?:$|\[|::)"
+        )
         assert not any(
             unwritable.search(kind) for s in scopes for kind in s.get("types", {}).values()
         ), scopes

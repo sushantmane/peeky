@@ -409,9 +409,20 @@ def _type_name(dies, value, depth=0):
     offset = int(reference[1], 16)
     if offset not in dies:
         return None if re.search(r"\brestrict\b", name) else name
+    if not _balanced(name):
+        # dwarfdump cuts some names short (`int (*[1]` for an array of function pointers).
+        return None
     if dies[offset]["tag"] == "DW_TAG_restrict_type":
-        pointee = _type_name(dies, dies[offset]["attrs"].get("DW_AT_type"), depth + 1)
-        return f"{pointee}{'' if pointee.endswith('*') else ' '}restrict" if pointee else None
+        inner = dies[offset]["attrs"].get("DW_AT_type")
+        pointee = _type_name(dies, inner, depth + 1)
+        target = _REFERENCE.fullmatch(inner or "")
+        if pointee and pointee.endswith("*"):
+            return f"{pointee}restrict"
+        if pointee and target and dies.get(int(target[1], 16), {}).get("tag") == "DW_TAG_typedef":
+            return f"{pointee} restrict"
+        # A pointer to an array or function (`double (*restrict m)[n]`): its restrict
+        # goes inside the parentheses, which this name cannot say.
+        return None
     for _ in range(16):
         die = dies.get(offset)
         if die is None or die["tag"] not in _TYPE_WRAPPERS:
@@ -423,10 +434,25 @@ def _type_name(dies, value, depth=0):
             # A qualifier on a restrict pointer: dwarfdump has dropped its pointee.
             return None
         offset = int(inner[1], 16)
-    die = dies.get(offset)
-    if die is not None and die["tag"] in _RECORDS and "DW_AT_name" not in die["attrs"]:
-        return None
+    # An unnamed record, or a type declared inside one (`structure ::In *`).
+    for _ in range(16):
+        die = dies.get(offset)
+        if die is None or die["tag"] in ("DW_TAG_compile_unit", "DW_TAG_namespace"):
+            break
+        if die["tag"] in _RECORDS and "DW_AT_name" not in die["attrs"]:
+            return None
+        offset = die["parent"]
     return name
+
+
+def _balanced(name):
+    depth = []
+    for char in name:
+        if char in "([<":
+            depth.append(")]>"["([<".index(char)])
+        elif char in ")]>" and (not depth or depth.pop() != char):
+            return False
+    return not depth
 
 
 def _locals(dies, offset):
