@@ -43,11 +43,7 @@ def test_rows_say_whether_set_can_change_a_local_and_a_refusal_lists_those_it_ca
     if code == 1:
         assert result["error"]["code"] == "MUTATION_REJECTED"
         listed = [name for name, row in rows.items() if row.get("settable")]
-        assert (
-            result["error"]["message"].endswith(
-                "settable here: " + (", ".join(listed) if listed else "none")
-            )
-            or "settable here: " in result["error"]["message"]
-        )
+        expected = "settable here: " + (", ".join(listed) if listed else "none")
+        assert result["error"]["message"].endswith(expected), result["error"]["message"]
     else:
         assert rows["idx"]["settable"] is True
