@@ -706,7 +706,7 @@ def test_local_declarations_record_where_and_how_each_local_is_declared(tmp_path
     base = 0x100000000
     assert take["source"] == "bucket.c" and take["jumps"] is False
     assert take["rows"] == {
-        number: (base + address, base + address)
+        ("bucket.c", number): (base + address, base + address)
         for address, number in [
             (0x400, 5),
             (0x410, 6),
@@ -761,14 +761,19 @@ def test_a_local_declared_on_the_stop_line_is_flagged_not_withheld(tmp_path):
     assert declared_from(table, "elapsed", "bucket.c", 8) is None
 
 
+def rows(spans, source="a.cpp"):
+    return {(source, line): span for line, span in spans.items()}
+
+
 def test_only_functions_owning_the_line_count_and_jumps_disable_withholding():
     from peeky.native import declared_below
 
     # Review of #81: a local class's constructor owns its member initializer on line 5,
     # above its own declaration; `main`, which defines the class, declares `v` on line 12.
-    ctor = {"source": "a.cpp", "rows": {5: (50, 50), 7: (70, 70), 8: (80, 80)}, "jumps": False}
-    ctor["locals"] = {"v": {(None, None, False)}}
-    main = {"source": "a.cpp", "rows": {3: (3, 3), 11: (11, 11), 12: (12, 12)}, "jumps": False}
+    ctor = {"source": "a.cpp", "rows": rows({5: (50, 50), 7: (70, 70), 8: (80, 80)})}
+    ctor.update(locals={"v": {(None, None, False)}}, jumps=False)
+    main = {"source": "a.cpp", "rows": rows({3: (3, 3), 11: (11, 11), 12: (12, 12)})}
+    main["jumps"] = False
     main["locals"] = {"v": {("a.cpp", 12, True)}}
     assert declared_below([ctor, main], "v", "a.cpp", 5) is None
     assert declared_below([ctor, main], "v", "a.cpp", 11) == 12
@@ -792,8 +797,8 @@ def test_only_functions_owning_the_line_count_and_jumps_disable_withholding():
 def test_a_local_is_withheld_only_when_the_lines_code_comes_before_its_declaration(rows, below):
     from peeky.native import declared_below
 
-    function = {"source": "a.c", "rows": rows, "jumps": False}
-    function["locals"] = {"later": {("a.c", 8, True)}}
+    function = {"source": "a.c", "rows": {("a.c", n): span for n, span in rows.items()}}
+    function.update(locals={"later": {("a.c", 8, True)}}, jumps=False)
     assert declared_below([function], "later", "a.c", 7) == below
 
 
@@ -829,3 +834,33 @@ def test_nonlocal_jumps_are_found_in_the_executable(tmp_path, contents, found):
     binary = tmp_path / "program"
     binary.write_bytes(contents)
     assert has_nonlocal_jumps(binary) is found
+
+
+def test_a_function_running_code_on_another_files_line_is_among_its_owners():
+    from peeky.native import declared_below, declared_from
+
+    # Review of #81: clang runs a header struct's member initializer (geo.hpp:2) inside
+    # main, which declares `x` on main.cpp:5; origin_sum in geo.hpp declares its own `x`
+    # on geo.hpp:5.
+    main = {"source": "main.cpp", "jumps": False, "locals": {"x": {("main.cpp", 5, True)}}}
+    main["rows"] = {("main.cpp", 5): (10, 12), ("geo.hpp", 2): (20, 22), ("main.cpp", 6): (14, 24)}
+    origin = {"source": "geo.hpp", "jumps": False, "locals": {"x": {("geo.hpp", 5, True)}}}
+    origin["rows"] = {("geo.hpp", 2): (40, 42), ("geo.hpp", 5): (50, 52)}
+    assert declared_below([main, origin], "x", "geo.hpp", 2) is None
+    assert declared_below([origin], "x", "geo.hpp", 2) == 5
+    # Declared on a line whose code wraps another line's (a `for` header): no note.
+    loop = {"source": "a.c", "jumps": False, "locals": {"i": {("a.c", 3, True)}}}
+    loop["rows"] = {("a.c", 3): (10, 40), ("a.c", 4): (20, 30)}
+    assert declared_from([loop], "i", "a.c", 3) is None
+    loop["rows"] = {("a.c", 3): (10, 12), ("a.c", 4): (20, 30)}
+    assert declared_from([loop], "i", "a.c", 3) == 3
+
+
+def test_sources_naming_a_nonlocal_jump_are_found(tmp_path):
+    from peeky.native import mentions_nonlocal_jumps
+
+    plain, builtin = tmp_path / "a.c", tmp_path / "b.h"
+    plain.write_text("int main(void) { return 0; }\n")
+    builtin.write_text("#define TRY if (__builtin_setjmp(buf) == 0)\n")
+    assert not mentions_nonlocal_jumps([plain])
+    assert mentions_nonlocal_jumps([plain, builtin])

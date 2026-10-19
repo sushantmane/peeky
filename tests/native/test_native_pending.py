@@ -226,3 +226,70 @@ def test_setjmp_behind_a_macro_withholds_nothing(bucket, capsys):
     code, result = probe(capsys, program, "--at", "9", "--capture", "x", "--hits", "2")
     assert code == 0, result.get("error")
     assert [row.get("value") for row in result["rows"]] == ["40", "41"], result["rows"]
+
+
+GEO = """int next_id();
+struct Pt { int a = next_id(); int b = 2; };
+inline int origin_sum() {
+  Pt q{};
+  int x = q.a + q.b;
+  return x;
+}
+"""
+
+GEO_MAIN = """#include "geo.hpp"
+int counter = 0;
+int next_id() { return ++counter; }
+int main() {
+  int x = 41;
+  Pt p{};
+  return x + p.a + origin_sum() > 0 ? 0 : 1;
+}
+"""
+
+FOR = """int main(void) {
+  int total = 0;
+  for (int i = 0; i < 3; i++) {
+    total += i;
+  }
+  return total;
+}
+"""
+
+
+def session_inspect(capsys, program, line, *steps, hit=1):
+    assert main(["session", "start", str(program), "--at", str(line), "--hit", str(hit)]) == 0
+    capsys.readouterr()
+    try:
+        for _ in range(steps[0] if steps else 0):
+            assert main(["session", "step"]) == 0
+        capsys.readouterr()
+        assert main(["session", "inspect", "--json"]) == 0
+        snapshot = json.loads(capsys.readouterr().out)
+    finally:
+        main(["session", "close"])
+        capsys.readouterr()
+    return snapshot, {v["name"]: v for s in snapshot["scopes"] for v in s["variables"]}
+
+
+@pytest.mark.timeout(120)
+def test_a_header_structs_initializer_run_in_main_withholds_nothing(bucket, capsys):
+    # Review of #81: stepping from main.cpp:5 lands on geo.hpp:2 in main (clang runs
+    # the member initializer there); main's live `x` is not geo.hpp's `x` (line 5).
+    directory = bucket.parent.with_name("geo")
+    directory.mkdir()
+    (directory / "geo.hpp").write_text(GEO)
+    (directory / "main.cpp").write_text(GEO_MAIN)
+    snapshot, shown = session_inspect(capsys, directory / "main.cpp", 5, 1)
+    assert snapshot["location"].endswith("geo.hpp:2"), snapshot["location"]
+    assert shown["x"].get("value") == "41", shown["x"]
+
+
+@pytest.mark.timeout(120)
+def test_a_live_for_counter_at_a_step_stop_on_its_header_has_no_note(bucket, capsys):
+    program = bucket.with_name("for.c")
+    program.write_text(FOR)
+    # Hit 2 of line 4, then step to line 5 and back onto the header (the increment).
+    snapshot, shown = session_inspect(capsys, program, 4, 2, hit=2)
+    assert snapshot["location"].endswith("for.c:3"), snapshot["location"]
+    assert shown["i"]["value"] == "1" and not shown["i"].get("declared_here"), shown["i"]

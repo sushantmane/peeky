@@ -407,8 +407,11 @@ def _code_ranges(die):
 
 
 def _function_entries(info, line_text, workspace, declared):
-    """(dies, {root: entry}, {root: lines}, {path: source}) for functions in declared
-    sources; see function_scopes."""
+    """(dies, {root: entry}, {root: {line: span}}, files, {root: {(source, line): span}})
+    for functions in declared sources; see function_scopes. A span is the lowest and
+    highest address of a function's rows on a line. The first mapping keeps rows of the
+    function's own file (describe); the last keeps every row the function runs, in any
+    declared file (clang runs a header struct's member initializers in its caller)."""
     import bisect
 
     workspace = Path(workspace).resolve()
@@ -417,6 +420,7 @@ def _function_entries(info, line_text, workspace, declared):
     addresses = [row[0] for row in rows]
     dies = _dies(info)
     owner = [None] * len(rows)
+    runner = [None] * len(rows)
     functions, sources = {}, {}
     for offset, die in dies.items():
         if die["tag"] not in _CODE:
@@ -442,13 +446,15 @@ def _function_entries(info, line_text, workspace, declared):
                     owner[index] is None or die["depth"] > owner[index][0]
                 ):
                     owner[index] = (die["depth"], root)
-    # {root: {line: [lowest, highest] address of its rows}}: the function's own code.
-    lines = {}
-    for (address, _, number), claimed in zip(rows, owner):
-        if claimed is not None:
-            span = lines.setdefault(claimed[1], {}).setdefault(number, [address, address])
-            span[0], span[1] = min(span[0], address), max(span[1], address)
-    return dies, functions, lines, (inputs, sources)
+                if runner[index] is None or die["depth"] > runner[index][0]:
+                    runner[index] = (die["depth"], root)
+    lines, runs = {}, {}
+    for (address, name, number), claimed, ran in zip(rows, owner, runner):
+        for found, key, table in ((claimed, number, lines), (ran, (name, number), runs)):
+            if found is not None:
+                span = table.setdefault(found[1], {}).setdefault(key, [address, address])
+                span[0], span[1] = min(span[0], address), max(span[1], address)
+    return dies, functions, lines, (inputs, sources), runs
 
 
 def _source_of(attribute, inputs, workspace, cache):
@@ -478,7 +484,7 @@ def function_scopes(info, line_text, workspace, declared):
     the callee, not its caller. Copies of one function (C1/C2 constructors, inlined and
     out-of-line copies) are merged through the DIE that declares them.
     """
-    dies, functions, lines, _ = _function_entries(info, line_text, workspace, declared)
+    dies, functions, lines, _, _ = _function_entries(info, line_text, workspace, declared)
     found = {}
     for root, entry in functions.items():
         source = entry["source"]
@@ -541,15 +547,15 @@ def _declared(dies, offset, files, workspace):
 
 def local_declarations(info, line_text, workspace, declared):
     """Each function in a declared source: its source; ``rows``, the lowest and highest
-    address of its code on each line it owns (even above its declaration: a
-    constructor runs its class's default member initializers there); for each local
+    address of its code on each (source, line) it runs, in any declared file and even
+    above its declaration (member initializers run where their class is built); for each local
     name, where every local of that name is declared, as (source, line, automatic);
     and whether it has a label, where `goto` can return above a declaration."""
-    dies, functions, lines, files = _function_entries(info, line_text, workspace, declared)
+    dies, functions, _, files, runs = _function_entries(info, line_text, workspace, declared)
     workspace = Path(workspace).resolve()
     table = []
     for root, entry in functions.items():
-        rows = lines.get(root)
+        rows = runs.get(root)
         if not rows:
             continue
         names, jumps = {}, False
@@ -570,9 +576,15 @@ def local_declarations(info, line_text, workspace, declared):
     return table
 
 
-# Symbols of non-local jumps: after one returns, code above a declaration can run
-# again with the local live (C11 7.13.2.1).
+# Non-local jumps: after one returns, code above a declaration can run again with the
+# local live (C11 7.13.2.1). Searched in the executable (imports, wherever the call is
+# hidden) and in the sources (`__builtin_setjmp` leaves no symbol).
 _NONLOCAL_JUMPS = (b"setjmp", b"getcontext", b"swapcontext")
+
+
+def mentions_nonlocal_jumps(paths):
+    """Whether any of these source files names a non-local jump."""
+    return any(name in Path(path).read_bytes() for path in paths for name in _NONLOCAL_JUMPS)
 
 
 def has_nonlocal_jumps(binary):
@@ -607,7 +619,10 @@ def declared_from(table, name, source, line):
     them.
     """
     shown = _SHADOWED.fullmatch(name)
-    owners = [f for f in table if f["source"] == source and line in f["rows"]]
+    here = (source, line)
+    # Every function with code on the line, whatever file it is defined in: the one
+    # stopped in is among them.
+    owners = [function for function in table if here in function["rows"]]
     if any(function["jumps"] for function in owners):
         return None
     candidates = [
@@ -622,11 +637,23 @@ def declared_from(table, name, source, line):
     for function, (declared_in, at, automatic) in candidates:
         if not automatic or declared_in != source or type(at) is not int or at < line:
             return None
-        if at > line and not (
-            at in function["rows"] and function["rows"][line][1] < function["rows"][at][0]
-        ):
+        rows = function["rows"]
+        if at > line and not ((source, at) in rows and rows[here][1] < rows[source, at][0]):
+            return None
+        if at == line and not _contiguous(rows, here):
+            # Code of other lines inside this line's (a `for` header around its body):
+            # a stop here may be on a later pass, with the local live.
             return None
     return min(where[1] for _, where in candidates)
+
+
+def _contiguous(rows, key):
+    """Whether no other line's code lies between this line's first and last address."""
+    low, high = rows[key]
+    return not any(
+        other != key and (low < start < high or low < end < high)
+        for other, (start, end) in rows.items()
+    )
 
 
 def declared_below(table, name, source, line):
@@ -942,6 +969,9 @@ class NativeTarget:
                 declarations = (
                     None
                     if has_nonlocal_jumps(binary)
+                    or mentions_nonlocal_jumps(
+                        prepared.workspace / name for name in self.sources + self.headers
+                    )
                     else local_declarations(
                         info, text, prepared.workspace, self.sources + self.headers
                     )
