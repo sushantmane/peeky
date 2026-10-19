@@ -1,0 +1,6 @@
+{
+  "bundle": "../../work/java-adapter",
+  "sources": ["demo/MergeBug.java"],
+  "main_class": "demo.MergeBug",
+  "arguments": []
+}

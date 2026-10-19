@@ -534,8 +534,9 @@ def describe(args):
         },
         "selectors": "dotted paths, indexes and string keys, e.g. request.page, args[0], "
         "order['id']; never expressions",
-        "interventions": "root locals only (the stopped function's own variables, not their "
-        "fields or elements); evidence about one run, never a verified fix",
+        "interventions": "root locals (the stopped function's own variables); in Java also "
+        "scalar fields and array elements (current.end, this.count, xs[0]); evidence about one "
+        "run, never a verified fix",
     }
     if language == "python":
         manifest["breakpoint_lines"] = {program: _python_lines(root / program)}
@@ -569,8 +570,10 @@ def describe(args):
             "them [settable]",
             "cpp": "integer root locals (16 to 64 bits, incl. size_t/int64_t); `inspect` marks "
             "them [settable]",
-            "java": "numeric/boolean root locals",
-            "java-attach": "numeric/boolean root locals (attached JVM; no edit verification)",
+            "java": "numeric/boolean root locals, and numeric/boolean fields (not final or "
+            "static) and array elements (current.end, xs[0]); rows mark them [settable]",
+            "java-attach": "numeric/boolean root locals, fields and array elements (attached "
+            "JVM; no edit verification)",
         }[language]
         from peeky.probe import optimization_level
 
@@ -641,7 +644,7 @@ def _describe_text(manifest):
             "Prefer an unoptimized build for debugging."
         )
     mutable = manifest["mutable_types"]
-    if "root locals" in mutable:
+    if "root locals" in mutable and "fields" not in mutable:
         mutable += " (root locals: the stopped function's own variables, not fields)"
     lines.append(f"mutable: {mutable}")
     lines.extend(f"{name}: {usage}" for name, usage in manifest["commands"].items())
@@ -883,7 +886,10 @@ class _Remote:
             # One selector the worker could not read is that row's error (as in a local
             # probe), not a failure of the whole `get`; session-level errors still raise.
             if exc.error_code in _ROW_ERRORS and not exc.session_closed:
-                raise ValueError(exc.payload.get("message", str(exc))) from exc
+                from peeky.errors import Refused
+
+                # Still a row's error, and still its code (an intervention reports it).
+                raise Refused(exc.error_code, exc.payload.get("message", str(exc))) from exc
             raise
 
 
@@ -1172,26 +1178,18 @@ def session(args):
             # Every row was still printed; the exit status says one selector failed.
             return 1
     elif args.action == "set":
-        (name, value), stop = _sets([args.assignment])[0], _stop(record)
-        parse_selector(name)
-        snapshot = client.call("inspect", **stop)
-        scope = next(
-            (s for s in snapshot["scopes"] if any(v["name"] == name for v in s["variables"])),
-            None,
-        )
-        if scope is None:
-            from peeky.probe import _member_hint, _visible
+        from peeky.probe import apply_set
 
-            hint = _member_hint(_Remote(client), stop, snapshot, name.partition(".")[0])
-            raise ValueError(
-                f"{name!r} is not a visible local; visible: {_visible(snapshot)}"
-                + hint.replace("select it as", "it can be read as")
-                + "; only the stopped function's own locals can be changed (fields and "
-                "elements cannot)"
+        (name, value), stop = _sets([args.assignment])[0], _stop(record)
+        if (last := parse_selector(name)[-1]).startswith("[") and last[1:2] in "'\"":
+            from peeky.errors import Refused
+
+            raise Refused(
+                "MUTATION_REJECTED",
+                f"Intervention target {name!r}: map and dict entries cannot be changed; "
+                "set changes a local, or in Java a field or array element",
             )
-        changed = client.call(
-            "set_variable", **stop, reference=scope["reference"], name=name, value=value
-        )
+        changed = apply_set(_Remote(client), stop, name, value)
         _emit(changed, args.json, lambda c: f"set {c['name']}: {c['before']} -> {c['after']}")
     elif args.action == "continue":
         # Argument errors first, whatever state the program is in.
@@ -2104,7 +2102,13 @@ def main(argv=None, _job=False, _edits=None):
     common(sub)
     sub.add_argument("--at", required=True, help="<line> or <path>:<line>")
     sub.add_argument("--capture", default="", help="Comma-separated selectors, e.g. a,b.c,d[0]")
-    sub.add_argument("--set", action="append", default=[], help="name=value (repeatable)")
+    sub.add_argument(
+        "--set",
+        action="append",
+        default=[],
+        help="name=value: a local; in Java also a field or array element (current.end=10, "
+        "xs[0]=1). Repeatable",
+    )
     sub.add_argument(
         "--hits",
         type=parse_hits,
@@ -2203,7 +2207,11 @@ def main(argv=None, _job=False, _edits=None):
         ("wait", "Wait up to --timeout for the program to stop or exit"),
         ("inspect", "Stack and locals at the current stop"),
         ("get", "Read selectors (a, a.b, a[0], a['key']); lists one level of children"),
-        ("set", "Change one root local to a literal (name=value) at the current stop"),
+        (
+            "set",
+            "Change one root local (in Java also a field or array element) to a literal "
+            "(name=value) at the current stop",
+        ),
         ("continue", "Resume to the next breakpoint stop, --to LINE, or --to-exit"),
         ("step", "Run to the next line (--into a call, --out of the function)"),
         ("report", "State, program output and the session's operation count"),
@@ -2220,7 +2228,9 @@ def main(argv=None, _job=False, _edits=None):
             "running is left running: `session wait` again",
         )
     actions.choices["get"].add_argument("selectors", nargs="+")
-    actions.choices["set"].add_argument("assignment", help="name=value")
+    actions.choices["set"].add_argument(
+        "assignment", help="name=value (Java also current.end=10, xs[0]=1)"
+    )
     actions.choices["close"].add_argument(
         "--forget",
         action="store_true",

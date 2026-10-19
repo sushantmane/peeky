@@ -116,6 +116,7 @@ def test_java_runtime_intervention(bundle, tmp_path, nested):
             "supportsConfigurationDoneRequest": True,
             "supportsSetVariable": True,
             "peekySteps": True,
+            "peekyFieldSet": True,
         }
         # Steps are allowed with a positive integer thread only; step-in targets, step back
         # and goto are not.

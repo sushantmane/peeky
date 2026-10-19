@@ -182,7 +182,7 @@ output:
   PAGE: [10, 20, 30]
 ```
 
-Only root locals can be changed: the stopped function's own variables (`start`), not their fields or elements. Python takes literals, including lists and dicts. C and C++ take integers of 16 to 64 bits (`int`, `long`, `size_t`, `int64_t`, …) within the local's range; Java takes scalars of the local's type. Rust takes integer locals (`i16` to `i64`, `u16` to `u64`, `isize`, `usize`) that the program keeps in memory; any other change is refused, because it would not reach the program. For C, C++ and Rust, `session inspect` marks the locals whose type allows a change with `[settable]`. Every change is read back: one the debugger refuses or cannot store (a computed value, such as a structured binding of a bitfield) is refused and the session kept, and a value stored differently from the one asked for (a type redefined as a float) closes the session. A refusal (`MUTATION_REJECTED`) names the local and the rule.
+Root locals can be changed: the stopped function's own variables (`start`). In Java, so can scalar fields and array elements (see 7.3). Python takes literals, including lists and dicts. C and C++ take integers of 16 to 64 bits (`int`, `long`, `size_t`, `int64_t`, …) within the local's range; Java takes scalars of the target's type. Rust takes integer locals (`i16` to `i64`, `u16` to `u64`, `isize`, `usize`) that the program keeps in memory; any other change is refused, because it would not reach the program. For C, C++ and Rust, `session inspect` marks the locals whose type allows a change with `[settable]`. Every change is read back: one the debugger refuses or cannot store (a computed value, such as a structured binding of a bitfield) is refused and the session kept, and a value stored differently from the one asked for (a type redefined as a float) closes the session. A refusal (`MUTATION_REJECTED`) names the local and the rule.
 
 ### 2.4 Change the Value at a Later Hit
 
@@ -657,15 +657,37 @@ peeky probe examples/java --config examples/java/pagination.json --at demo/Pagin
 
 ```
 hit  phase      line  function                      selector  type   value
-1    observed   13    PaginationBug.main(String[])  start     int    3
-1    observed   13    PaginationBug.main(String[])  pageSize  int    3
-1    observed   13    PaginationBug.main(String[])  items     int[]  int[8]@51
+1    observed   13    PaginationBug.main(String[])  start     int    3  [settable]
+1    observed   13    PaginationBug.main(String[])  pageSize  int    3  [settable]
+1    observed   13    PaginationBug.main(String[])  items     int[]  int[8]@51 [10, 20, 30, 40, 50, 60, 70, 80]
 ...
 set start: 3 -> 0
-status: completed  hits: 1  seconds: 0.558
+status: completed  hits: 1  seconds: 0.54
 output:
   PAGE:[10, 20, 30]
 ```
+
+Fields and array elements can be changed too. `examples/java/demo/MergeBug.java` merges intervals but overwrites `current.end` with a smaller end. To test "if `current.end` kept 10, the merge would be right", change the field at the second hit:
+
+```sh
+peeky probe examples/java --config examples/java/merge.json --at demo/MergeBug.java:26 \
+  --capture current,next --hits 2 --set current.end=10 --set-hit 2
+```
+
+```
+hit  phase      line  function                 selector  type               value
+1    observed   26    MergeBug.main(String[])  current   MergeBug$Interval  MergeBug$Interval@57 {end=10, start=1}
+1    observed   26    MergeBug.main(String[])  next      MergeBug$Interval  MergeBug$Interval@58 {end=5, start=2}
+2    observed   26    MergeBug.main(String[])  current   MergeBug$Interval  MergeBug$Interval@57 {end=5, start=1}
+2    observed   26    MergeBug.main(String[])  next      MergeBug$Interval  MergeBug$Interval@63 {end=14, start=12}
+2    after-set  26    MergeBug.main(String[])  current   MergeBug$Interval  MergeBug$Interval@57 {end=10, start=1}
+2    after-set  26    MergeBug.main(String[])  next      MergeBug$Interval  MergeBug$Interval@63 {end=14, start=12}
+set current.end: 5 -> 10
+output:
+  MERGED:[[1,10], [12,14]]
+```
+
+The output changed from `[[1,5], [12,14]]` to `[[1,10], [12,14]]`: the merge was right except for `end`. `this.count=0`, `arr[0]=1` and `arr[-1]=9` work the same way, and `session set current.end=10` changes a field in a session. Captured fields and elements say `[settable]` when they can be changed. Final and static fields, Strings, boxed values (`Integer`) and an `ArrayList`'s elements cannot (change a field of one: `merged[0].end=10`). The value is read back from the object after the change. A field whose name a subclass's static field hides, or another field shares, is refused (java-debug would write the other field). Field and element changes need an adapter bundle built by this version of `scripts/setup_java_adapter.py`; an older bundle changes only locals and says so.
 
 A value must fit the variable's type exactly. For example, `int` 3000000000 and `010` (octal for `Long.decode`) are refused rather than silently changed. A line that several methods share (a lambda body on its method's line, like `.filter(item -> below(item))`, a static initializer's lambda, nested lambdas) stops in only one of them: java-debug picks the first in the class file. Peeky warns which one stops and which never do (`stops only in needsRestock there, never in lambda$needsRestock$0`). To stop in another, put the breakpoint on a line of its own, or `session step --into` from that line.
 

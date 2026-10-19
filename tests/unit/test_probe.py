@@ -1,3 +1,5 @@
+import re
+
 import pytest
 
 from peeky.probe import Probe, parse_location, parse_selector
@@ -69,7 +71,8 @@ def test_locations_require_relative_path_and_positive_line():
         {"capture": ["a"]},
         {"capture": ("a()",)},
         {"capture": ("a",) * 33},
-        {"set": (("a.b", "1"),)},
+        {"set": (("a['b']", "1"),)},
+        {"set": (("a()", "1"),)},
         {"set": (("a", 1),)},
         {"set": (("a", "1"),) * 9},
         {"hits": 0},
@@ -865,3 +868,177 @@ def test_a_cut_java_field_keeps_its_object_number_whole(name):
     assert a.endswith("@998}") and b.endswith("@1003}")
     assert _no_addresses(a, "java") == _no_addresses(b, "java")
     assert _no_addresses(a, "java").endswith("@…}")
+
+
+def test_a_field_set_where_only_locals_change_fails_before_the_program_runs(monkeypatch):
+    # #86: only Java changes fields and elements; elsewhere say so at launch, not at the hit.
+    import peeky.probe as probe_module
+
+    worker = FakeWorker()
+    monkeypatch.setattr(probe_module, "DebugWorker", lambda *args, **kwargs: worker)
+    result = probe_module.run_probe("/w", Probe("main.py", 8, ("x",), (("p.x", "2"),)))
+    assert result["status"] == "failed" and result["error"]["code"] == "MUTATION_REJECTED"
+    assert "can be changed only in Java" in result["error"]["message"]
+    assert "wait" not in worker.calls and "set_variable" not in worker.calls
+
+
+@pytest.mark.parametrize(
+    "selector, value, message",
+    [
+        ("xs[-1]", "Holder@4", "a negative index can be changed only in a Java array"),
+        ("xs[3]", "int[3]@4", "[3] is out of range: the array has 3 elements"),
+        ("xs[-4]", "int[3]@4", "[-4] is out of range: the array has 3 elements"),
+    ],
+)
+def test_indexes_that_name_no_array_element_are_refused_before_any_write(selector, value, message):
+    from peeky.probe import apply_set
+
+    class Holder(FakeWorker):
+        def dispatch(self, operation, args):
+            self.calls.append(operation)
+            if operation == "inspect":
+                variable = {"name": "xs", "value": value, "type": "int[]", "variablesReference": 5}
+                return {"frames": [{}], "scopes": [{"reference": 1, "variables": [variable]}]}
+            raise AssertionError(operation)
+
+    worker = Holder()
+    with pytest.raises(ValueError, match=re.escape(message)):
+        apply_set(worker, {}, selector, "1")
+    assert worker.calls == ["inspect"]
+
+
+def test_an_array_element_from_the_end_is_written_by_its_index():
+    from peeky.probe import apply_set
+
+    class Holder(FakeWorker):
+        def dispatch(self, operation, args):
+            self.calls.append((operation, args))
+            if operation == "inspect":
+                variable = {
+                    "name": "xs",
+                    "value": "int[3]@4",
+                    "type": "int[]",
+                    "variablesReference": 5,
+                }
+                return {"frames": [{}], "scopes": [{"reference": 1, "variables": [variable]}]}
+            return {"name": args["name"], "before": "3", "after": "9"}
+
+    worker = Holder()
+    changed = apply_set(worker, {"stop_id": "t"}, "xs[-1]", "9")
+    assert changed == {"name": "xs[-1]", "before": "3", "after": "9"}
+    assert worker.calls[-1] == (
+        "set_variable",
+        {"stop_id": "t", "handle": 5, "name": "2", "value": "9"},
+    )
+
+
+@pytest.mark.parametrize("names", ["deadline, retries", "breakpoint, provenance"])
+def test_a_missing_intervention_parent_is_not_found_whatever_the_names(names):
+    # Review of #86: the listed names matched the TIMEOUT and INVALID_BREAKPOINT rules.
+    from peeky.errors import classify
+    from peeky.probe import apply_set
+
+    class Holder(FakeWorker):
+        def dispatch(self, operation, args):
+            if operation == "inspect":
+                variables = [{"name": name, "value": "1"} for name in names.split(", ")]
+                return {"frames": [{}], "scopes": [{"reference": 1, "variables": variables}]}
+            raise AssertionError(operation)
+
+    with pytest.raises(ValueError) as caught:
+        apply_set(Holder(), {}, "request.limits", "3")
+    assert classify(caught.value)["code"] == "NOT_FOUND"
+    assert names in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    "selector, code",
+    [
+        ("this.deadline.x", "MUTATION_REJECTED"),
+        ("this.breakpoints[5]", "INVALID_REQUEST"),
+        ("this.breakpoints[-9]", "INVALID_REQUEST"),
+        ("this.provenance[0]", "NOT_FOUND"),
+        ("this.deadline_list[0]", "MUTATION_REJECTED"),
+    ],
+)
+def test_member_refusals_are_classified_by_rule_never_by_the_selectors_words(selector, code):
+    # Review of #86: `deadline` made a refusal TIMEOUT, `breakpoint` INVALID_BREAKPOINT.
+    from peeky.errors import classify
+    from peeky.probe import apply_set
+
+    class Holder(FakeWorker):
+        def dispatch(self, operation, args):
+            if operation == "inspect":
+                this = {"name": "this", "value": "Req@3", "type": "Req", "variablesReference": 5}
+                return {"frames": [{}], "scopes": [{"reference": 1, "variables": [this]}]}
+            if operation == "expand":
+                children = [
+                    {"name": "deadline", "value": "5", "type": "long", "variablesReference": 0},
+                    {"name": "breakpoints", "value": "int[3]@4", "type": "int[]"},
+                    {"name": "provenance", "value": "Holder@6", "type": "Holder"},
+                    {"name": "deadline_list", "value": "ArrayList@7", "type": "ArrayList"},
+                ]
+                children[1]["variablesReference"] = 6
+                children[2]["variablesReference"] = 7
+                children[3]["variablesReference"] = 8
+                return {"variables": children, "truncated": False}
+            if operation == "set_variable":
+                # As the worker answers a name its parent does not list.
+                raise ValueError(f"{args['name']!r} is not a field or element the debugger lists")
+            raise AssertionError(operation)
+
+    with pytest.raises(ValueError) as caught:
+        apply_set(Holder(), {}, selector, "1")
+    assert classify(caught.value)["code"] == code, str(caught.value)
+
+
+def test_a_bundle_without_member_sets_is_a_mutation_refusal():
+    from peeky.errors import classify
+
+    message = (
+        "This Java adapter bundle predates field and element changes, so only locals can be "
+        "changed; rebuild it with scripts/setup_java_adapter.py"
+    )
+    assert classify(ValueError(message))["code"] == "MUTATION_REJECTED"
+
+
+@pytest.mark.parametrize(
+    "error, code",
+    [
+        ("Variable collection exceeds bounded expansion limit", "BUDGET_EXHAUSTED"),
+        ("Expansion ancestry changed or is ambiguous", "STALE_HANDLE"),
+        ("Adapter does not support variable mutation", "INVALID_REQUEST"),
+    ],
+)
+def test_the_workers_own_errors_keep_their_codes_in_an_intervention(error, code):
+    # Review of #86: a budget or stale-handle failure while reading the parent became
+    # NOT_FOUND, and INVALID_REQUEST took the evidence store's hint.
+    from peeky.errors import classify
+    from peeky.probe import apply_set
+
+    class Holder(FakeWorker):
+        def dispatch(self, operation, args):
+            if operation == "inspect":
+                items = {"name": "items", "value": "Item[600]@3", "variablesReference": 5}
+                return {"frames": [{}], "scopes": [{"reference": 1, "variables": [items]}]}
+            raise ValueError(error)
+
+    with pytest.raises(ValueError) as caught:
+        apply_set(Holder(), {}, "items[0].v", "1")
+    payload = classify(caught.value)
+    assert payload["code"] == code and error in payload["message"]
+    assert "store" not in payload["hint"]
+
+
+def test_a_remote_row_error_keeps_its_code():
+    from peeky.cli import _Remote
+    from peeky.errors import PeekyError, Refused
+
+    class Client:
+        def call(self, operation, **args):
+            payload = {"code": "STALE_HANDLE", "message": "Unknown or stale expansion handle"}
+            raise PeekyError("u", 400, {}, payload)
+
+    with pytest.raises(Refused) as caught:
+        _Remote(Client()).dispatch("expand", {})
+    assert caught.value.code == "STALE_HANDLE"

@@ -25,8 +25,8 @@ MAX_BUNDLE_FILE_BYTES = 256 * 1024 * 1024
 _JAVA_INTEGER_BITS = {"byte": 8, "short": 16, "int": 32, "long": 64}
 # java-debug's values for an object (`Merge$Interval@143`) and an array (`int[3]@144`).
 _JAVA_OBJECT = re.compile(r"[A-Za-z_$][\w$.]*@[0-9]+")
-_JAVA_ARRAY = re.compile(r"[A-Za-z_$][\w$.]*(?:\[\])*\[([0-9]{1,10})\](?:\[\])*@[0-9]+")
-_JAVA_LIST = re.compile(r"(?:java\.util\.)?ArrayList(?:<.*>)?")
+JAVA_ARRAY = re.compile(r"[A-Za-z_$][\w$.]*(?:\[\])*\[([0-9]{1,10})\](?:\[\])*@[0-9]+")
+JAVA_LIST = re.compile(r"(?:java\.util\.)?ArrayList(?:<.*>)?")
 _NUMBERED = re.compile(r"(.*?)(@[0-9]+)", re.S)
 PREVIEW_ITEMS = 8
 
@@ -35,7 +35,7 @@ def java_list(variable, fields):
     """(backing array, size) of a java.util.ArrayList shown by its own fields, else None:
     its elements are `elementData[0]` to `elementData[size - 1]`, read without calling
     `toArray` or `get` in the program."""
-    if not _JAVA_LIST.fullmatch(str(variable.get("type"))):
+    if not JAVA_LIST.fullmatch(str(variable.get("type"))):
         return None
     named = {field.get("name"): field for field in fields}
     if set(named) != {"elementData", "modCount", "size"} or len(fields) != 3:
@@ -108,7 +108,7 @@ def java_preview(variable, fetch):
     value, handle = variable.get("value"), variable.get("variablesReference")
     if not isinstance(value, str) or type(handle) is not int or handle <= 0:
         return None
-    if array := _JAVA_ARRAY.fullmatch(value):
+    if array := JAVA_ARRAY.fullmatch(value):
         length = int(array[1])
         elements = fetch(handle, min(length, PREVIEW_ITEMS)) if length else []
         return f"{value} {_elements(elements, length)}"
@@ -463,6 +463,8 @@ class JavaSession:
             "supports_set_variable": raw.get("supportsSetVariable") is True,
             # Launcher bundles built before stepping lack the marker: refuse cleanly.
             "supports_stepping": raw.get("peekySteps") is True,
+            # Bundles whose launcher refuses a field name a hiding static field shares.
+            "supports_member_set": raw.get("peekyFieldSet") is True,
             "supports_conditional_breakpoints": False,
             "supports_hit_conditional_breakpoints": False,
             "supports_logpoints": False,
@@ -484,6 +486,26 @@ class JavaSession:
             variable.get("type") in (*_JAVA_INTEGER_BITS, "boolean", "float", "double")
             and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", str(variable.get("name")))
         )
+
+    def member_settable(self, variable):
+        """None if `--set` can change this field or array element, else why not: a scalar
+        of a type it accepts, an instance field (not final or static) or an element."""
+        name, kind = str(variable.get("name")), variable.get("type")
+        hint = variable.get("presentationHint")
+        attributes = hint.get("attributes") if isinstance(hint, dict) else None
+        attributes = attributes if isinstance(attributes, list) else []
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*|0|[1-9][0-9]{0,9}", name):
+            return "no selector names it"
+        if "readOnly" in attributes:
+            return "it is final"
+        if "static" in attributes:
+            return "it is static (shared by every instance)"
+        if kind not in (*_JAVA_INTEGER_BITS, "boolean", "float", "double"):
+            return (
+                f"it is {kind}; only byte, short, int, long, boolean, float and double "
+                "values can be changed"
+            )
+        return None
 
     def validate_variable(self, variable, value):
         """The value must fit the local's declared type exactly.
