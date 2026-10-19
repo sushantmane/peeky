@@ -48,15 +48,34 @@ def java_list(variable, fields):
     return backing, int(size["value"])
 
 
+_ESCAPES = {"\\": "\\\\", "\n": "\\n", "\r": "\\r", "\t": "\\t", "\b": "\\b", "\f": "\\f"}
+
+
+def _escaped(text, quote):
+    return "".join(
+        "\\" + quote
+        if char == quote
+        else _ESCAPES.get(char)
+        or (
+            f"\\u{ord(char):04x}"
+            if ord(char) < 0x20 or 0x7F <= ord(char) < 0xA0 or 0xD800 <= ord(char) <= 0xDFFF
+            else char
+        )
+        for char in text
+    )
+
+
 def _brief(item):
-    """A field's value, short. java-debug writes a String's text between quotes without
-    escaping it; here it is a Java literal (`"say \\"hi\\""`), cut inside its quotes,
-    so a preview's strings never run into the fields after them."""
+    """A field's value, short. java-debug writes a String's text between quotes, and a
+    char bare, without escaping either; here both are Java literals (`"say \\"hi\\""`,
+    `'"'`), a String cut inside its quotes, so a preview's quoted text never runs into
+    the fields after it."""
     text = str(item.get("value"))
+    if item.get("type") == "char" and len(text) == 1:
+        return "'" + _escaped(text, "'") + "'"
     if text.startswith('"'):
         inner = text[1:-1] if len(text) > 1 and text.endswith('"') else text[1:]
-        inner = inner.replace("\\", "\\\\").replace('"', '\\"')
-        return '"' + (inner if len(inner) <= 38 else inner[:37] + "…") + '"'
+        return '"' + _escaped(inner if len(inner) <= 38 else inner[:37] + "…", '"') + '"'
     return text if len(text) <= 40 else text[:39] + "…"
 
 

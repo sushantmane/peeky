@@ -190,7 +190,7 @@ BUDGET = """package demo;
 import java.util.ArrayList;
 import java.util.List;
 public class Bud {
-  static class P { int a = 1, b = 2, c = 3, d = 4, e = 5; }
+  static class P { int a = 1, b = 2, c = 3, d = 4, e = 5; char q = '"'; String s = "say \\"hi\\" @3"; }
   public static void main(String[] args) {
     int[] arr = new int[506];
     P p = new P();
@@ -219,6 +219,8 @@ def test_a_java_preview_after_selectors_that_used_the_budget_is_complete(tmp_pat
     result = run_probe(tmp_path, Probe("demo/Bud.java", line, capture), adapter=target)
     assert result["status"] == "completed", result.get("error")
     values = [row["value"] for row in result["rows"]]
-    assert values[1].endswith(" {a=1, b=2, c=3, d=4, e=5}"), values[1]
+    # A char and a String are Java literals (java-debug writes both unescaped).
+    expected = ' {a=1, b=2, c=3, d=4, e=5, q=\'"\', s="say \\"hi\\" @3"}'
+    assert values[1].endswith(expected), values[1]
     # java-debug shows boxed Integers as objects (`Integer@69`).
     assert re.fullmatch(r"ArrayList@[0-9]+ size=2 \[Integer@[0-9]+, Integer@[0-9]+\]", values[2])

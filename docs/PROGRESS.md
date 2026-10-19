@@ -104,7 +104,8 @@ An hourly thread heartbeat (`continue-peeky-mvp`) checks for available usage and
     - Evidence schema 3: `runs.edit` holds the diff; the views have `candidate`; `queries runs` marks candidate runs, `values` leaves them out, and `diff` adds an `(edit)` row. Older stores upgrade in place.
 - **Java objects and lists** (#78).
   - In launched Java programs, a captured value shows an object's first fields inline, an array's first elements, or an `ArrayList`'s size and elements. Only that value's own fields are read, through the debugger; no code runs in the program.
-  - Java object numbers count as addresses in `diff`.
+  - Java object numbers count as addresses in `diff` for Java runs; `no_addresses(value, language)` masks them in your own SQL.
+  - String and char fields in a preview are Java literals.
   - `merged[0]` and `merged[-1]` index an `ArrayList` through `size` and `elementData`.
   - Setting fields is #86.
 - **Settable locals up front** (#77).

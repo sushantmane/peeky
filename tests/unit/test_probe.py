@@ -819,9 +819,25 @@ def test_java_preview_strings_are_literals_so_ids_mask_correctly():
     from peeky.evidence import _no_addresses
     from peeky.java import _brief
 
-    said = _brief({"value": '"he said "x@5" ok"'})
+    said = _brief({"value": '"he said "x@5" ok"', "type": "String"})
     assert said == '"he said \\"x@5\\" ok"'
-    assert _no_addresses(f"Q$S@55 {{b=Q$B@62, q={said}}}") == f"Q$S@… {{b=Q$B@…, q={said}}}"
-    long = _brief({"value": '"' + "x" * 60 + '"'})
+    masked = _no_addresses(f"Q$S@55 {{b=Q$B@62, q={said}}}", "java")
+    assert masked == f"Q$S@… {{b=Q$B@…, q={said}}}"
+    long = _brief({"value": '"' + "x" * 60 + '"', "type": "String"})
     assert long.endswith('…"') and len(long) == 40
-    assert _no_addresses(f"Q$R@54 {{a={long}, b=Q$B@59}}").endswith("b=Q$B@…}")
+    assert _no_addresses(f"Q$R@54 {{a={long}, b=Q$B@59}}", "java").endswith("b=Q$B@…}")
+    # Cut before escaping, so an escape is never split.
+    assert _brief({"value": '"' + "\\" * 60 + '"', "type": "String"}) == '"' + "\\\\" * 37 + '…"'
+    assert _brief({"value": '"a\nb"', "type": "String"}) == '"a\\nb"'
+
+
+def test_java_preview_chars_are_literals_never_strings():
+    # Review of #87: java-debug writes a char bare, so `"` read as an empty String.
+    from peeky.evidence import _no_addresses
+    from peeky.java import _brief
+
+    chars = [_brief({"value": value, "type": "char"}) for value in ('"', "'", "\\", "\n", "a")]
+    assert chars == ["'\"'", "'\\''", "'\\\\'", "'\\n'", "'a'"]
+    assert _brief({"value": '""', "type": "String"}) == '""'
+    value = f'P@3 {{c={chars[0]}, d={chars[1]}, s="it\'s @5", n=N@6}}'
+    assert _no_addresses(value, "java") == value.replace("P@3", "P@…").replace("N@6", "N@…")
