@@ -480,16 +480,17 @@ def _resolve(worker, stop, snapshot, segments, pointers=False):
                 listed = [child for child in first["variables"] if child["name"] not in _GROUPS]
                 if unresolved:
                     raise ValueError(
-                        f"{_shown(segment)} not read: {path} ({variable.get('type')}) shows as "
-                        "a pointer or a reference under a type name the build's debug "
-                        "information does not resolve, and C indexes the two differently; "
-                        "index the array where it is declared, or select fields with `.`"
+                        f"{_shown(segment)} not read: {path} ({variable.get('type')}) shows "
+                        "only an address, under a type name the build's debug information "
+                        "does not resolve to a pointer or a reference, which C indexes "
+                        "differently; index the array where it is declared, or select "
+                        "fields with `.`"
                     )
                 # #102: the debugger lists what a pointer to an array, a container or a
                 # struct points at as the pointer's own children. In C, p[0] is that
                 # pointee and p[1] the one after it, which no pointer's length tells.
                 _readable(variable, path, pointee, listed)
-                if segment == "[0]":
+                if segment[1] != "-" and int(segment[1:-1]) == 0:
                     variable = _dereferenced(variable, pointee)
                     path += segment
                     continue
@@ -1206,10 +1207,13 @@ def _unresolved_indirection(variable):
     """True for a value that shows as a bare address (a pointer or a reference) under a
     type name with no `*` or `&` that the build's debug information does not resolve
     (`std::vector<T>::pointer`, a typedef two units define differently)."""
+    from peeky.native import _without_templates
+
     kind = str(variable.get("type") or "")
     return (
         bool(kind)
-        and not re.search(r"[*&\[(]", kind)
+        # The outermost declarator: `X<int *>::pointer` names no `*` of its own.
+        and not re.search(r"[*&\[(]", _without_templates(kind))
         and variable.get("typedef_kind") not in ("pointer", "reference", "other")
         and bool(_BARE_ADDRESS.match(str(variable.get("value") or "")))
     )
@@ -1346,6 +1350,16 @@ def _children(worker, stop, selector, variable, pointers=False):
         path = _child_selector(selector, child["name"])
         if pointers and path is None and _pointee(variable, page["variables"]) is child:
             path = f"{selector}[0]"
+        elif (
+            pointers
+            and path is not None
+            and _INDEX.fullmatch(child["name"])
+            and _c_pointee(variable) is None
+            and _unresolved_indirection(variable)
+            and _pointee(variable, page["variables"]) is None
+        ):
+            # Neither p[N] (a pointer's) nor r[N] (a reference's) can be told (#102).
+            path = None
         elif (
             pointers
             and path is not None

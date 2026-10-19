@@ -391,9 +391,19 @@ def typedef_kinds(info):
         if name:
             found[name] = kind if found.get(name, kind) == kind else ("unknown", "")
 
+    def note_member(name, kind):
+        # A class's member typedef by its last name (`::reference`): lldb-dap and the
+        # debug information spell its class differently (`std::vector<std::vector<int> >`
+        # against `std::__1::vector<..., std::__1::allocator<...> >`).
+        key, (sort, _) = f"::{name}", kind
+        if name:
+            known = found.get(key)
+            found[key] = (sort, "") if known in (None, (sort, "")) else ("unknown", "")
+
     for offset, die in dies.items():
         if die["tag"] in _RECORDS or die["tag"] == "DW_TAG_enumeration_type":
             note(_text(die["attrs"].get("DW_AT_name")), ("other", ""))
+            note(_qualified(dies, offset), ("other", ""))
             continue
         if die["tag"] != "DW_TAG_typedef":
             continue
@@ -422,13 +432,35 @@ def typedef_kinds(info):
                 else:
                     kind = ("pointer", _type_name(dies, inner["attrs"].get("DW_AT_type")) or "")
             break
-        parent = dies.get(die["parent"], {}).get("tag")
-        if parent in (None, "DW_TAG_compile_unit", "DW_TAG_subprogram", "DW_TAG_lexical_block"):
-            note(_text(die["attrs"].get("DW_AT_name")), kind)
+        parent = dies.get(die["parent"], {})
+        name = _text(die["attrs"].get("DW_AT_name"))
+        # An unnamed namespace's names show unqualified, as the file's own do.
+        if parent.get("tag") in (
+            None,
+            "DW_TAG_compile_unit",
+            "DW_TAG_subprogram",
+            "DW_TAG_lexical_block",
+        ) or (parent.get("tag") == "DW_TAG_namespace" and "DW_AT_name" not in parent["attrs"]):
+            note(name, kind)
+        if parent.get("tag") in _RECORDS:
+            note_member(name, kind)
         qualified = _qualified(dies, offset)
-        if qualified and qualified != _text(die["attrs"].get("DW_AT_name")):
+        if qualified and qualified != name:
             note(qualified, kind)
     return found
+
+
+def _without_templates(name):
+    """``name`` with every balanced `<...>` removed (`X<int *>::P` is `X::P`)."""
+    out, depth = [], 0
+    for char in name.replace("->", ""):
+        if char == "<":
+            depth += 1
+        elif char == ">" and depth:
+            depth -= 1
+        elif not depth:
+            out.append(char)
+    return "".join(out)
 
 
 def _qualified(dies, offset, depth=0):
@@ -1534,7 +1566,13 @@ class NativeSession:
         if not isinstance(kind, str):
             return None
         bare = re.sub(r"^(?:(?:const|volatile)\s+)+|(?:\s+(?:const|volatile))+$", "", kind.strip())
-        return self.typedefs.get(bare)
+        if (found := self.typedefs.get(bare)) is not None:
+            return found
+        # A class's member typedef (`X<...>::reference`) by its last name.
+        outer = _without_templates(bare)
+        if "::" in outer:
+            return self.typedefs.get("::" + outer.rpartition("::")[2])
+        return None
 
     def not_yet_declared(self, variable, frame):
         """Why a root local of ``frame`` has no value yet (declared below the stop), or
