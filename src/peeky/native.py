@@ -1638,7 +1638,9 @@ class NativeSession:
             self.load_bias = load_bias(self.binary, module)
         except (OSError, ValueError, struct.error):
             self.load_bias = None
-        self._check_loop_target(dap, frame)
+        # scripts/probe_rust.py validates with a plain namespace, which records nothing.
+        if check := getattr(self, "_check_loop_target", None):
+            check(dap, frame)
 
     def _check_loop_target(self, dap, frame):
         """Record whether the stop's address, when it starts a declaration line, is one a
