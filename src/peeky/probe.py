@@ -540,11 +540,18 @@ _OWNED_RUST_TYPES = _owned_rust_types()
 def _read_rust_types():
     from peeky.rust_symbols import QUALIFIED_CONTAINERS
 
-    return frozenset(QUALIFIED_CONTAINERS) | _OWNED_RUST_TYPES
+    return frozenset(QUALIFIED_CONTAINERS) | _OWNED_RUST_TYPES | _RUST_TEXT
 
 
 # Containers whose contents Peeky can read somewhere (their element type is qualified).
 _READ_RUST_TYPES = _read_rust_types()
+
+
+def _unread_rust(kind):
+    """Whether a Rust container's elements are never read: `&Vec<T>` is `Vec<T> *`."""
+    return kind.startswith(_RUST_CONTAINERS) and kind.removesuffix(" *") not in _READ_RUST_TYPES
+
+
 _OWNED_RUST = (
     "This owned Rust Vec or String shows its raw fields: Peeky reads an owned local's "
     "contents only where the build's MIR proves it initialized at the stop line, in the "
@@ -647,7 +654,7 @@ def _absence(variable, segment, children):
         if variable.get("view") == "memory":
             if kind in _RUST_TEXT:
                 message += "; text read from memory is shown whole, not by element"
-        elif kind.startswith(_RUST_CONTAINERS) and kind not in _READ_RUST_TYPES:
+        elif _unread_rust(kind):
             message += (
                 f"; Peeky does not read {kind}'s elements: it reads Rust contents only for "
                 "String, &str and containers of integer, bool and float elements"
@@ -872,9 +879,7 @@ def _capture(worker, stop, selectors, hit, phase, snapshot=None, children=False,
                         row["value"] = shown
                 if "view" not in variable and str(variable.get("type")) in _OWNED_RUST_TYPES:
                     row["note"] = _OWNED_RUST
-                elif "view" not in variable and str(variable.get("type")).startswith(
-                    _RUST_CONTAINERS
-                ):
+                elif "view" not in variable and _unread_rust(str(variable.get("type"))):
                     row["note"] = _UNREAD_RUST
             if "view" in variable:
                 row["view"] = variable["view"]

@@ -157,6 +157,9 @@ def cargo_layout(root):
     if "autotests" not in package and (root / "tests").is_dir():
         for path in sorted((root / "tests").iterdir()):
             relative = f"tests/{path.name}"
+            if path.name.startswith("."):
+                # Cargo's discovery skips hidden entries (`._a.rs`, Emacs's `.#a.rs`).
+                continue
             if path.is_dir() and _exists(path, "main.rs"):
                 raise ValueError(
                     f"Integration tests in a directory ({relative}/main.rs) are not supported. "
@@ -200,6 +203,17 @@ def validate_cargo_inputs(root, *, sources, tests):
         raise ValueError("Rust support is qualified for editions 2021 and 2024")
     if "bin" in manifest:
         binary, entrypoint = _target(manifest, "bin", sources)
+        if (
+            "autobins" not in package
+            and _exists(root, "src/main.rs")
+            and entrypoint != "src/main.rs"
+            and binary != name
+        ):
+            # Cargo would also build src/main.rs, as a second binary named the package.
+            raise ValueError(
+                f"src/main.rs would be a second binary ({name}) beside [[bin]] {binary}: "
+                f"set autobins = false, or point [[bin]] at src/main.rs. {_SHAPE}"
+            )
     elif "autobins" in package:
         raise ValueError(f"Declare the binary in a [[bin]] table (autobins = false). {_SHAPE}")
     else:

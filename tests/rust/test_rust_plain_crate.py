@@ -42,8 +42,14 @@ fn main() {
     let zwj = '\\u{200d}';
     let del = '\\u{7f}';
     let dq = '"';
+    let ahom = '\\u{1171e}';
     let runs = shout("ab");
-    println!("{:?}", [a, nl, quote, back, accent, nul, party, zwj, del, dq]); // OBSERVE
+    let v = vec![1, 2, 3];
+    let s: &str = "hello";
+    let sl: &[i32] = &v[..];
+    let r: &Vec<i32> = &v;
+    println!("{:?}", [a, nl, quote, back, accent, nul, party, zwj, del, dq, ahom]); // OBSERVE
+    println!("{} {} {}", s.len(), sl.len(), r.len());
     println!("RUNS:{}", runs.len());
 }
 """
@@ -93,7 +99,7 @@ def test_a_cargo_new_crate_is_probed_and_chars_print_as_rust_does(plain, capsys)
     values = {row["selector"]: row for row in result["rows"]}
     # The program's own `{:?}` of the same chars, element by element.
     printed = result["output"].splitlines()[0]
-    assert printed == "[" + ", ".join(values[name]["value"] for name in NAMES) + "]", printed
+    assert printed == "[" + ", ".join(values[name]["value"] for name in NAMES) + ", '𑜞']", printed
     assert all(values[name]["type"] == "char" for name in NAMES)
     # A Vec Peeky does not read says so, never passing its summary off as contents.
     assert "this value is LLDB's summary" in values["runs"]["note"]
@@ -101,6 +107,15 @@ def test_a_cargo_new_crate_is_probed_and_chars_print_as_rust_does(plain, capsys)
     error = result["rows"][0]["error"]
     # The reason is the element type, not a guess about freed memory.
     assert "does not read alloc::vec::Vec<(char, usize)" in error and "freed" not in error
+    # Reference locals of element types Peeky reads (as parameters) get no such note.
+    capture = "s,sl,r,r[0],ahom"
+    code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", capture, "--quiet")
+    rows = {row["selector"]: row for row in result["rows"]}
+    assert not any("note" in rows[name] for name in ("s", "sl", "r")), rows
+    assert "does not read" not in rows["r[0]"]["error"], rows["r[0]"]["error"]
+    assert not any("LLDB's summary" in w for w in result.get("warnings", []))
+    # Python's Unicode tables call U+1171E a combining mark; Rust's (17.0) do not.
+    assert rows["ahom"]["value"] != "'\\u{1171e}'"
 
 
 @pytest.mark.timeout(300)

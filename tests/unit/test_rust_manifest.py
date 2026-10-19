@@ -299,3 +299,49 @@ def test_test_target_sharing_the_binary_crate_name_is_refused_with_the_fix(proje
     with pytest.raises(ValueError, match=r'must not share the \[\[bin\]\] name.*_test"') as error:
         validate(project)
     assert 'name = "peeky_pagination_test"' in str(error.value)
+
+
+PLAIN = """[package]
+name = "plain"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+"""
+PLAIN_LOCK = 'version = 4\n[[package]]\nname = "plain"\nversion = "0.1.0"\n'
+
+
+@pytest.fixture
+def plain(tmp_path):
+    root = tmp_path / "plain"
+    for name, text in (
+        ("Cargo.toml", PLAIN),
+        ("Cargo.lock", PLAIN_LOCK),
+        ("src/main.rs", "fn main() {}"),
+        ("tests/real.rs", "#[test] fn t() {}"),
+    ):
+        (root / name).parent.mkdir(parents=True, exist_ok=True)
+        (root / name).write_text(text)
+    return root
+
+
+def test_hidden_files_in_tests_are_not_test_targets(plain):
+    # Review of #89: Cargo skips `._real.rs` (macOS) and `.#real.rs` (Emacs locks).
+    from peeky.rust_manifest import cargo_layout
+
+    (plain / "tests/._real.rs").write_text("")
+    (plain / "tests/.#real.rs").symlink_to("nowhere")
+    assert cargo_layout(plain) == ("src/main.rs", ("tests/real.rs",))
+    spec = validate_cargo_inputs(plain, sources=("src/main.rs",), tests=("tests/real.rs",))
+    assert (spec.binary, spec.test, spec.test_entrypoint) == ("plain", "real", "tests/real.rs")
+
+
+def test_a_bin_elsewhere_beside_src_main_rs_is_refused_up_front(plain):
+    # Review of #89: Cargo would infer src/main.rs as a second binary.
+    (plain / "src/app.rs").write_text("fn main() {}")
+    (plain / "Cargo.toml").write_text(PLAIN + '\n[[bin]]\nname = "foo"\npath = "src/app.rs"\n')
+    sources = ("src/app.rs", "src/main.rs")
+    with pytest.raises(ValueError, match=r"src/main.rs would be a second binary \(plain\)"):
+        validate_cargo_inputs(plain, sources=sources, tests=("tests/real.rs",))
+    (plain / "Cargo.toml").write_text(PLAIN + '\n[[bin]]\nname = "plain"\npath = "src/app.rs"\n')
+    assert validate_cargo_inputs(plain, sources=sources, tests=("tests/real.rs",)).binary == "plain"

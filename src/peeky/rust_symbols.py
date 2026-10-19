@@ -409,21 +409,27 @@ def lldb_byte(text, kind):
 _CHAR_ESCAPES = {0: "\\0", 9: "\\t", 10: "\\n", 13: "\\r", 39: "\\'", 92: "\\\\"}
 # Halfwidth katakana sound marks: letters (Lm) that Rust still escapes (Grapheme_Extend).
 _EXTENDING_LETTERS = frozenset({0xFF9E, 0xFF9F})
+# Categories Python's Unicode tables give otherwise than Rust 1.96's (Unicode 17): all
+# 1,112,064 scalar values were compared with Rust's own `{:?}` (Python 3.11 and 3.13).
+_UNICODE_CHANGED = frozenset({0x1171E})
 
 
 def lldb_char(text, kind):
-    """LLDB's `U+0062 U+0062 U'b'` for a Rust char (`char32_t`) as Rust's `{:?}` prints
+    """LLDB's `U+0062 U+0062 U'b'` (Apple) or `U+0x00000062 U+0x00000062 U'b'` (LLVM)
+    for a Rust char (`char32_t`) as Rust's `{:?}` prints
     it (`'b'`, `'\\n'`, `'\\u{200d}'`), else None: decided by the code point, and only
     where Rust's rules are certain (the Unicode categories it always prints or escapes)."""
     if kind != "char32_t" or not isinstance(text, str):
         return None
-    match = re.fullmatch(r"U\+([0-9A-F]{4,6}) U\+\1 U'.*'", text, re.S)
-    if not match or (point := int(match[1], 16)) > 0x10FFFF:
+    match = re.fullmatch(r"U\+((?:0x)?[0-9A-Fa-f]{4,8}) U\+\1 U'.*'", text, re.S)
+    if not match or (point := int(match[1].removeprefix("0x"), 16)) > 0x10FFFF:
         return None
     if point in _CHAR_ESCAPES:
         return f"'{_CHAR_ESCAPES[point]}'"
     if point < 0x80:
         return f"'{chr(point)}'" if 0x20 <= point < 0x7F else f"'\\u{{{point:x}}}'"
+    if point in _UNICODE_CHANGED:
+        return None
     category = unicodedata.category(chr(point))
     if category[0] in "LNPS" and point not in _EXTENDING_LETTERS:
         return f"'{chr(point)}'"

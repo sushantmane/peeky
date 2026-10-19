@@ -1047,3 +1047,25 @@ def test_describe_lists_the_reference_parameters_it_reads_from_memory():
     [line] = [line for line in text.splitlines() if line.startswith("read from memory")]
     assert line.endswith(f": &[i32], &{VEC_NAME}, &mut {VEC_NAME}")
     assert "reference parameters, and owned" in line and "MIR proves" in line
+
+
+@pytest.mark.parametrize(
+    "text, shown",
+    [
+        ("U+0062 U+0062 U'b'", "'b'"),
+        ("U+0x00000062 U+0x00000062 U'b'", "'b'"),
+        ("U+0x0000000a U+0x0000000a U'\\n'", "'\\n'"),
+        ("U+0x0001f389 U+0x0001f389 U'🎉'", "'🎉'"),
+        ("U+0x0000200d U+0x0000200d U'\u200d'", "'\\u{200d}'"),
+        ("U+0027 U+0027 U'''", "'\\''"),
+        ("U+0022 U+0022 U'\\\"'", "'\"'"),
+        ("U+0903 U+0903 U'x'", None),
+        ("U+0062 U+0063 U'b'", None),
+        ("U+0x00110000 U+0x00110000 U'?'", None),
+    ],
+)
+def test_rust_chars_print_as_rusts_debug_does_on_either_lldb(text, shown):
+    from peeky.rust_symbols import lldb_char
+
+    assert lldb_char(text, "char32_t") == shown
+    assert lldb_char(text, "unsigned int") is None
