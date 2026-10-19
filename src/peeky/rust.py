@@ -46,7 +46,7 @@ from peeky.native import (
 )
 from peeky.rust_ir import ir_locals
 from peeky.rust_manifest import assert_cargo_ancestry_clear, validate_cargo_inputs
-from peeky.rust_mir import OwnedLocals, ir_functions, load_bodies
+from peeky.rust_mir import OwnedLocals, frame_shape, ir_functions, load_bodies
 from peeky.rust_symbols import (
     OWNED_CONTAINERS,
     RUST_SCALARS,
@@ -1007,13 +1007,9 @@ class RustSession(NativeSession):
                     variable.get("name"),
                     source,
                     line,
-                    # lldb-dap shows `{{closure}}` escaped: `_$u7b$$u7b$closure$u7d$$u7d$`.
-                    closure=bool(
-                        re.search(
-                            r"\{\{closure\}\}|\$u7b\$\$u7b\$closure",
-                            str((frame or {}).get("name") or ""),
-                        )
-                    ),
+                    # The frame's own shape: a `fn` nested in a closure or async body
+                    # (`af::{{closure}}::tw`) is not a closure itself.
+                    closure=frame_shape((frame or {}).get("name"))[1] > 0,
                     frame=(frame or {}).get("name"),
                 )
             )

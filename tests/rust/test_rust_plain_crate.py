@@ -734,7 +734,21 @@ def test_boxes_in_unmangled_functions_and_closure_types_are_gated(plain, capsys)
         assert first["view"] == "unproven" and "value" not in second, (marker, result["rows"])
 
 
-BOX_GENERIC = """use std::fmt::Debug;
+BOX_MACROS = """macro_rules! touch {
+    () => {
+        crate::churn() // TOUCH
+    };
+}
+
+pub fn peer(b: &crate::Pt) -> i64 {
+    touch!() + b.x
+}
+"""
+
+BOX_GENERIC = """#[macro_use]
+mod macros;
+
+use std::fmt::Debug;
 use std::ops::Deref;
 
 #[derive(Debug)]
@@ -972,6 +986,31 @@ fn run_async<F: std::future::Future>(future: F) -> F::Output {
     }
 }
 
+#[unsafe(no_mangle)]
+pub fn nm_cross(n: i64) -> i64 {
+    let b = Box::new(Pt { x: 1, y: 2 });
+    drop(b);
+    churn();
+    let k = touch!();
+    n + k
+}
+
+macro_rules! twin {
+    ($q:expr) => {{
+        fn tw(b: Box<Pt>) -> i64 {
+            drop(b);
+            churn() + 0 } let b = $q; tw(Box::new(Pt { x: 1, y: 2 })) + b.x // TWIN
+    }};
+}
+
+async fn twin_a(q: &Pt) -> i64 {
+    twin!(q)
+}
+
+async fn twin_b(q: &Pt) -> i64 {
+    twin!(q)
+}
+
 fn make() -> Box<dyn Debug> {
     Box::new(1u8)
 }
@@ -1050,6 +1089,9 @@ fn main() {
     println!("{} {}", macro_sibling(&pts[0], true), chain(&pts[0], true));
     println!("{} {}", iflet_elseif(&pts[1], None), unmangled_chain(4));
     println!("{}", run_async(outer_async(&pts)));
+    let far = Pt { x: 41, y: 0 };
+    println!("{} {}", nm_cross(1), macros::peer(&pts[0]));
+    println!("{} {}", run_async(twin_a(&far)), run_async(twin_b(&far)));
     println!("{} {}", fat_params(Box::new(takes as fn(*const [u8])), Box::new(tables)), factories());
     println!("{} {} {:?} {} {}", a, b, r, closures(&[1, 2]), exported(&Pt { x: 10, y: 1 }, &[1, 2]));
 }
@@ -1062,6 +1104,7 @@ def test_generic_boxes_are_gated_and_non_owning_values_read(plain, capsys):
     # (the MIR says `T`); values captured by reference and arrays of fn pointers, which
     # LLDB names with a `*` inside, and an unmangled function's `&Pt` beside a closure,
     # were hidden.
+    (plain / "src/macros.rs").write_text(BOX_MACROS)
     (plain / "src/main.rs").write_text(BOX_GENERIC)
     cases = {
         "DROPPED_GENERIC": ("t", None),
@@ -1169,6 +1212,19 @@ def test_generic_boxes_are_gated_and_non_owning_values_read(plain, capsys):
     at = f"src/main.rs:{line_of(BOX_GENERIC, '// NESTED_ASYNC')}"
     code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "p.x", "--quiet")
     assert result["rows"][0].get("value") == "3", result["rows"]
+    # Verification of #103: an unmangled frame stopped in a macro from another file
+    # found only that file's bodies (a `peer(b: &Pt)`), not its own; and a `fn` nested in
+    # an async body (`twin_a::{{closure}}::tw`) was taken for a closure, so its own body
+    # was skipped for the async bodies' `b: &Pt`.
+    at = f"src/macros.rs:{line_of(BOX_MACROS, '// TOUCH')}"
+    code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "b", "--quiet")
+    assert result["rows"][0].get("view") == "unproven", result["rows"]
+    at = f"src/main.rs:{line_of(BOX_GENERIC, '// TWIN')}"
+    code, result = run(
+        capsys, "probe", str(plain), "--at", at, "--capture", "b,b.x", "--hits", "all", "--quiet"
+    )
+    read = [row.get("value") for row in result["rows"] if row["selector"] == "b.x"]
+    assert read and all(value in (None, "41") for value in read), result["rows"]
     at = f"src/main.rs:{line_of(BOX_GENERIC, '// LIVE_ARRAY')}"
     code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "arr[0].x", "--quiet")
     assert result["rows"][0].get("value") == "1", result["rows"]

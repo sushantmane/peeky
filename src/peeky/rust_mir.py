@@ -773,13 +773,23 @@ class OwnedLocals:
         shown = str(path or "").replace("\\", "/")
         bodies = [body] if body is not None else []
         if body is None:
+
+            def covers(candidate):
+                # A span covering the line counts, not only one starting there (`K\n.get()`
+                # has none starting on `.get()`'s line, while a nested item may); and in
+                # the stop's own file, which a `macro_rules!` from another module puts
+                # in a body of this file.
+                if line in candidate.lines and shown.endswith("/" + str(candidate.file)):
+                    return True
+                return any(
+                    number == line and (shown == file or shown.endswith("/" + file))
+                    for file, number in candidate.line_scopes
+                )
+
             bodies = [
                 candidate
                 for candidate in self.bodies
-                # A span covering the line counts, not only one starting there (`K\n.get()`
-                # has none starting on `.get()`'s line, while a nested item may).
-                if (line in candidate.lines or (candidate.file, line) in candidate.line_scopes)
-                and shown.endswith("/" + str(candidate.file))
+                if covers(candidate)
                 # A closure defined on the line is a body of its own, with its own
                 # captures of the frame's names: only bodies of the frame's kind count.
                 and (closure is None or candidate.name.startswith("{closure") == closure)
