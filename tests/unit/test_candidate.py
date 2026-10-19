@@ -406,7 +406,21 @@ def test_a_python_candidate_warns_when_the_script_reaches_above_its_root(
     probe = ["probe", str(script), "--at", "6", "--capture", "rate", "--json", "--quiet"]
     main([*probe, "--old", "acc = 0", "--new", "acc = 1"])
     result = json.loads(capsys.readouterr().out)
-    assert any("paths above its directory" in warning for warning in result["warnings"])
+    assert any("nothing above it was copied" in warning for warning in result["warnings"])
+    # Verification of #109: idioms no reading of the source catches still get the note.
+    for locate in (
+        "conf = Path(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))) / 'conf.json'",
+        "HERE = Path(__file__).resolve().parent\nconf = HERE.parent / 'conf.json'",
+    ):
+        script.write_text(
+            f"import json, os\nfrom pathlib import Path\n{locate}\n"
+            "rate = json.loads(conf.read_text())['rate'] if conf.exists() else 1\n"
+            "acc = 0\nprint(acc * rate)\n"
+        )
+        line = str(script.read_text().splitlines().index("acc = 0") + 2)
+        main([*probe[:3], line, *probe[4:], "--old", "acc = 0", "--new", "acc = 1"])
+        result = json.loads(capsys.readouterr().out)
+        assert any("nothing above it was copied" in w for w in result["warnings"]), locate
     # With the project as the target, the copy holds them.
     main(
         [
@@ -426,6 +440,60 @@ def test_a_python_candidate_warns_when_the_script_reaches_above_its_root(
     )
     result = json.loads(capsys.readouterr().out)
     assert result["rows"][0]["value"] == "5" and not result.get("warnings")
+
+
+def test_a_python_candidate_refuses_a_directory_it_cannot_list(tmp_path, capsys, monkeypatch):
+    # Verification of #109: `os.walk` skipped a directory it could not list (`--x`), so
+    # the candidate ran without it and its errors read as the edit's effect.
+    from peeky.cli import main
+
+    monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
+    proj = tmp_path / "proj"
+    (proj / "conf").mkdir(parents=True)
+    (proj / "conf" / "rates.json").write_text('{"rate": 5}')
+    (proj / "app.py").write_text(
+        "import json\nrate = json.load(open('conf/rates.json'))['rate']\nacc = 0\nprint(acc)\n"
+    )
+    (proj / "conf").chmod(0o100)
+    try:
+        probe = ["probe", str(proj), "--at", "app.py:4", "--capture", "rate", "--json"]
+        code = main([*probe, "--quiet", "--old", "acc = 0", "--new", "acc = 1"])
+        result = json.loads(capsys.readouterr().out)
+    finally:
+        (proj / "conf").chmod(0o700)
+    assert code != 0 and "could not copy the target root" in result["error"]["message"], result
+
+
+def test_a_hard_linked_name_of_the_edited_file_keeps_its_own_directory(
+    tmp_path, capsys, monkeypatch
+):
+    # Verification of #109: a hard-linked twin became a symlink to the edited copy, so
+    # `python backup/app.py` resolved to the --at file's directory and imported the root's
+    # `helper.py` instead of its own.
+    import os
+
+    from peeky.cli import main
+
+    monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
+    (tmp_path / "backup").mkdir()
+    script = tmp_path / "app.py"
+    script.write_text(
+        "import subprocess, sys\nimport helper\nRATE = 1\n"
+        "if sys.argv[1:] == ['child']:\n    print('CHILD', helper.value(), RATE)\n"
+        "else:\n"
+        "    out = subprocess.run([sys.executable, 'backup/app.py', 'child'],"
+        " capture_output=True, text=True).stdout.strip()\n"
+        "    print('OUT', out)\n"
+    )
+    os.link(script, tmp_path / "backup" / "app.py")
+    (tmp_path / "helper.py").write_text("def value():\n    return 10\n")
+    (tmp_path / "backup" / "helper.py").write_text("def value():\n    return 99\n")
+    probe = ["probe", str(tmp_path), "--at", "app.py:8", "--capture", "out", "--json", "--quiet"]
+    code = main([*probe, "--old", "RATE = 1", "--new", "RATE = 7"])
+    result = json.loads(capsys.readouterr().out)
+    assert code == 0, result.get("error")
+    assert result["rows"][0]["value"] == "'CHILD 99 7'", result["rows"]
+    assert "RATE = 1" in script.read_text()
 
 
 def test_an_edit_needs_both_halves(tmp_path, capsys):

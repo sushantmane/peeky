@@ -6,7 +6,6 @@ Python runs directly; compiled runtimes require prepared build provenance.
 
 import ast
 import os
-import re
 import shutil
 import stat
 import sys
@@ -75,8 +74,6 @@ _TOO_LARGE = (
     f"{MAX_COPIED_FILES} files or {MAX_COPIED_BYTES >> 20} MB): give a smaller target "
     "directory, or check the edit with `peeky verify`"
 )
-# Code that reaches above its own directory: `..`, `os.pardir`, `parents[1]`, `.parent.parent`.
-_ABOVE = re.compile(r"""['"]\.\.['"/\\]|os\.pardir|\.parents\[|\.parent\.parent""")
 
 
 class PythonCandidate:
@@ -116,23 +113,38 @@ class PythonCandidate:
                     raise ValueError("A Python candidate's --at path leaves the copied root")
             os.unlink(self.staged)
             handle = os.open(self.staged, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW)
+            os.fchmod(handle, stat.S_IMODE(os.stat(self.original).st_mode))
             with os.fdopen(handle, "w", encoding="utf-8") as stream:
                 stream.write(text.replace(edit.old, edit.new, 1))
-            # Other names of the same file (hard links) are the edited file too.
+            # Other names of the same file (hard links) are the edited file too, and stay
+            # hard links: a symlink would give a script run by that name (`python
+            # backup/app.py`) the --at file's directory as `sys.path[0]` and `__file__`.
             for twin in self.twins:
                 os.unlink(twin)
-                twin.symlink_to(os.path.relpath(self.staged, twin.parent))
+                try:
+                    os.link(self.staged, twin)
+                except OSError as error:
+                    raise ValueError(
+                        f"A Python candidate could not link {twin.name} to the edited file "
+                        f"({error}); check the edit with `peeky verify`"
+                    ) from None
         except BaseException:
             shutil.rmtree(self.scratch, ignore_errors=True)
             raise
+        # Whatever the program reaches above the copied root is missing in the copy, and no
+        # reading of its source can tell whether it does (`dirname(dirname(__file__))`,
+        # `HERE.parent`, a helper module's `parents[2]`): say so whenever the --at file's
+        # own directory is the root, as it is for a script given as the target.
         self.warnings = (
             [
-                "This Python candidate runs from a copy of the target root, and the script "
-                "refers to paths above its directory (`..`, `parents[...]`), which are not "
-                "copied: those resolve outside the copy. Give the directory that holds them as "
-                "the target (`peeky probe <project> --at <path/to/script.py>:<line>`)"
+                f"This Python candidate ran from a copy of {root.name or root}/, the --at "
+                "file's own directory; nothing above it was copied, so anything the program "
+                "reads or imports from above it is missing there and its values may differ "
+                "for that reason, not the edit's. If it uses any, give the directory that "
+                "holds them as the target (`peeky probe <project> --at "
+                "<path/to/script.py>:<line>`)"
             ]
-            if relative.parent == Path(".") and _ABOVE.search(text)
+            if relative.parent == Path(".")
             else []
         )
 
@@ -157,7 +169,11 @@ class PythonCandidate:
             else:
                 target.symlink_to(real)
 
-        for here, directories, names in os.walk(source):
+        def unlistable(error):
+            # A directory that cannot be listed would be missing from the copy.
+            raise error
+
+        for here, directories, names in os.walk(source, onerror=unlistable):
             folder = destination / Path(here).relative_to(source)
             folder.mkdir()
             # Names that differ only by case or Unicode form are one name on a volume that

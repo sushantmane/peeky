@@ -617,7 +617,7 @@ run_a  run_b  hit   phase     selector  value_a           value_b               
   ```
 
   This reports `set end: 3 -> 10`. `black_box` keeps the new Rust local in memory, where a change reaches the program.
-- **Python:** like a compiled candidate, it runs from a private copy of the target root with the edit applied (version-control, virtualenv and cache directories are linked, not copied), and that copy is the working directory. Whatever the script reaches through its own path, an import, or another process (multiprocessing, a subprocess of `__file__`) is the copy, so all of it runs the edit. Paths above the target root are not copied: when the script uses them (`..`, `parents[1]`), the result warns, and giving the project directory as the target (`peeky probe proj --at scripts/run.py:14`) includes them. `--run` entry scripts are refused.
+- **Python:** like a compiled candidate, it runs from a private copy of the target root with the edit applied (version-control, virtualenv and cache directories are linked, not copied), and that copy is the working directory. Whatever the script reaches through its own path, an import, or another process (multiprocessing, a subprocess of `__file__`) is the copy, so all of it runs the edit. Nothing above the target root is copied, and no reading of the source can tell whether a program reaches there, so whenever the edited file sits at the top of the root (always, for a script given as the target) the result notes it. If the program reads or imports anything from above, give the directory that holds it as the target (`peeky probe proj --at scripts/run.py:14`). A directory that cannot be listed is refused rather than left out. `--run` entry scripts are refused.
 
 ---
 
