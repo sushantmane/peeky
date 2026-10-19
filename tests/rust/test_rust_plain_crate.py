@@ -757,6 +757,20 @@ fn derefs<P: Deref<Target = Pt>>(p: P) -> i64 {
     v + reuse.x // DROPPED_DEREF
 }
 
+fn wide<T: Debug>(w: T, s: T) -> usize {
+    println!("{:?} {:?}", w, s);
+    drop(w);
+    drop(s);
+    let reuse = Box::new([7u8; 8]);
+    reuse.len() // DROPPED_WIDE
+}
+
+fn grid<T: Debug>(g: T) -> usize {
+    drop(g);
+    let reuse = Box::new([[81u8; 4]; 2]);
+    reuse.len() // DROPPED_GRID
+}
+
 fn by_ref<T: Debug>(t: T) -> T {
     println!("{:?}", t); // LIVE_GENERIC
     t
@@ -778,6 +792,8 @@ fn main() {
     let a = generic(Box::new(Pt { x: 1, y: 2 }));
     let b = derefs(Box::new(Pt { x: 3, y: 4 }));
     let r = by_ref(&Pt { x: 9, y: 9 });
+    let n = wide(Box::<str>::from("FREEDTXT"), Box::<str>::from("SECOND!!")) + grid(Box::new([[1u8; 4]; 2]));
+    println!("{}", n);
     println!("{} {} {:?} {} {}", a, b, r, closures(&[1, 2]), exported(&Pt { x: 10, y: 1 }, &[1, 2]));
 }
 """
@@ -808,6 +824,13 @@ def test_generic_boxes_are_gated_and_non_owning_values_read(plain, capsys):
             assert whole["view"] == "unproven" and "value" not in field, (marker, result["rows"])
         else:
             assert field["value"] == value and "view" not in whole, (marker, result["rows"])
+    # Verification of #103: a wide Box (`Box<str>`, which LLDB names itself) and a 2-D
+    # array Box (`unsigned char (*)[2][4]`) held by a generic `T`.
+    for marker, capture in (("DROPPED_WIDE", "w,s"), ("DROPPED_GRID", "g")):
+        at = f"src/main.rs:{line_of(BOX_GENERIC, '// ' + marker)}"
+        code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", capture, "--quiet")
+        assert all(row.get("view") == "unproven" for row in result["rows"]), result["rows"]
+        assert not any("FREEDTXT" in str(row.get("value")) for row in result["rows"])
     at = f"src/main.rs:{line_of(BOX_GENERIC, '// CAPTURE')}"
     code, result = run(
         capsys, "probe", str(plain), "--at", at, "--capture", "refs.len,fs,p.x", "--quiet"

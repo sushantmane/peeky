@@ -737,7 +737,7 @@ def _frame_hash(frame):
 
 # A top-level pointer declarator in LLDB's C-style type: `Pt *`, `unsigned char (*)[8]`,
 # `long (**)()`; not `alloc::vec::Vec<Pt *>` or an array of pointers `long (*[2])(long)`.
-_POINTER = re.compile(r"\*\s*$|\(\*+\)\s*(?:\[[0-9]*\]|\(.*\))\s*$")
+_POINTER = re.compile(r"\*\s*$|\(\*+\)\s*(?:(?:\[[0-9]*\])+|\(.*\))\s*$")
 # MIR types that do not own what they point at.
 _NON_OWNING = re.compile(r"&|\*const |\*mut |(?:unsafe )?(?:extern \S+ )?fn\(")
 
@@ -916,7 +916,11 @@ class RustSession(NativeSession):
                     ),
                 )
             )
-            owning = any(re.match(r"(?:std::boxed::|alloc::boxed::)?Box<", t or "") for t in types)
+            # LLDB names a wide Box (`Box<str>`, `Box<[T]>`, `Box<dyn Trait>`) itself, even
+            # where the MIR says only `T`.
+            owning = str(variable.get("type") or "").startswith("alloc::boxed::Box<") or any(
+                re.match(r"(?:std::boxed::|alloc::boxed::)?Box<", t or "") for t in types
+            )
             # What LLDB shows as a pointer (`Pt *`, `unsigned char (*)[8]`, `long (**)()`)
             # is read through only when the MIR says every binding is a reference, a raw
             # pointer or a fn pointer: a generic `T`, `Self` or `impl Trait` may be a Box.
