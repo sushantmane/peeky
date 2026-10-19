@@ -635,3 +635,11 @@ Checked and found sound: no accepted crate makes Cargo build or run anything unh
 | 3 | `lldb_char` decides by Python's Unicode tables (14.0 or 15.1), but Rust 1.96 uses Unicode 17.0. U+1171E is `Mn` for Python and `Mc` (not Grapheme_Extend) for Rust, so Peeky escaped a character Rust prints as is. The reviewer compared all 1,112,064 scalar values against Rust's `{:?}` with Python 3.11 and 3.13; this was the only mismatch. | Medium (one code point) | **Fixed:** U+1171E stays raw (`_UNICODE_CHANGED`). Test: the real build prints `'\u{1171e}'` through the program and Peeky's value is not the escaped form. |
 | 4 | Test discovery counted hidden files, which Cargo skips: macOS `._real.rs` and Emacs lock symlinks `.#real.rs`. | Medium (fails closed) | **Fixed:** hidden entries are skipped, as Cargo does. Test: `test_hidden_files_in_tests_are_not_test_targets`. |
 | 5 | (Linux lanes) LLVM's lldb-dap writes a char as `U+0x00000062 U+0x00000062 U'b'`, while Apple's writes `U+0062 …`. The new `Vec<String>` refusal reason also replaced the freed-memory wording an older test asserted. | Medium | **Fixed:** both forms are parsed (`test_rust_chars_print_as_rusts_debug_does_on_either_lldb`). The test now asserts the accurate reason: String elements are never read. |
+
+The verification (3a4fde1) found nothing wrong.
+- **Fixes on real builds:** all four hold.
+  - `cargo metadata` confirms that a `[[bin]]` named after the package, at another path, stops Cargo inferring `src/main.rs`, and Peeky accepts it. A `[[bin]]` with another name is refused, and so is `my-app` against a bin named `my_app`.
+  - `lldb_char` matches Rust 1.96's `{:?}` for all 1,112,064 scalar values under Python 3.11 and 3.13, in both LLDB forms.
+  - Cargo and Peeky agree on hidden test entries.
+- **Notes:** no qualified type lost a note it should have.
+- **Linux lanes:** `rust` and `rust-llvm20` (lldb-dap 18 and 20) pass the char test with LLVM's `U+0x…` form.
