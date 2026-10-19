@@ -25,8 +25,11 @@ def display_function(name):
     """A debugger frame name for display. Rust frames (`…::h<16 hex>`) lose their hash
     and legacy escapes, so `top::f::_$u7b$$u7b$closure$u7d$$u7d$::h0123…` reads
     `top::f::{{closure}}`, as `describe` shows it. Other languages are unchanged (Java's
-    `lambda$run$0` keeps its `$`)."""
+    `lambda$run$0` keeps its `$`). lldb-dap on macOS marks an optimized frame
+    `… [opt]`; Linux's never does, so the mark is dropped."""
     name = str(name or "")
+    if name.endswith(" [opt]") and _RUST_FRAME.search(name[: -len(" [opt]")]):
+        name = name[: -len(" [opt]")]
     if not _RUST_FRAME.search(name):
         return name
     parts = []
