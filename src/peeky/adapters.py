@@ -153,6 +153,25 @@ class PythonCandidate:
             for folder, status in reversed(self._folders):
                 os.utime(folder, ns=(status.st_atime_ns, status.st_mtime_ns))
                 os.chmod(folder, stat.S_IMODE(status.st_mode))
+            # The copy is the prober's, with the originals' mode bits: access that comes
+            # from elsewhere (another owner, an ACL, a locked flag) is not copied.
+            differ = [
+                original
+                for original, copy in self._pairs
+                if any(
+                    os.access(original, mode) != os.access(copy, mode)
+                    for mode in (os.R_OK, os.W_OK, os.X_OK)
+                )
+            ]
+            if differ:
+                named = ", ".join(str(path.relative_to(root)) for path in differ[:3])
+                more = f" and {len(differ) - 3} more" if len(differ) > 3 else ""
+                self._notes.append(
+                    f"This Python candidate's copy of {named}{more} can be read, written or "
+                    "entered where yours cannot, or the other way round (another owner, an "
+                    "ACL or a locked flag is not copied), so a program that uses them may "
+                    "take another branch there, not because of the edit"
+                )
         except BaseException:
             self.close()
             raise
@@ -208,7 +227,7 @@ class PythonCandidate:
 
         files = size = 0
         staged, self.twins = None, []
-        self._folders, self._notes, self._checkouts = [], [], []
+        self._folders, self._notes, self._checkouts, self._pairs = [], [], [], []
         self._source, self._destination = source, destination
         status = os.stat(source)
         self._identity = (status.st_dev, status.st_ino)
@@ -228,6 +247,7 @@ class PythonCandidate:
             folder = destination / Path(here).relative_to(source)
             folder.mkdir()
             self._folders.append((folder, os.lstat(here)))
+            self._pairs.append((Path(here), folder))
             # Names that differ only by case or Unicode form are one name on a volume that
             # ignores the difference (the temporary directory may): never merge them.
             seen = {}
@@ -262,6 +282,7 @@ class PythonCandidate:
                     # `pgdata`, `lost+found`): an empty one with its mode stands in.
                     (folder / name).mkdir()
                     self._folders.append((folder / name, path.lstat()))
+                    self._pairs.append((path, folder / name))
                 else:
                     kept.append(name)
             directories[:] = kept
@@ -300,6 +321,7 @@ class PythonCandidate:
                     shutil.copyfile(path, folder / name, follow_symlinks=False)
                 shutil.copymode(path, folder / name, follow_symlinks=False)
                 os.utime(folder / name, ns=(status.st_atime_ns, status.st_mtime_ns))
+                self._pairs.append((path, folder / name))
                 if (status.st_dev, status.st_ino) == (program.st_dev, program.st_ino):
                     if path.relative_to(source) == relative:
                         staged = folder / name
@@ -500,9 +522,10 @@ class PythonCandidate:
         and an editable install's `.pth` path or finder (`pip install -e`, `uv sync`).
         Without it, `import pkg` would load the user's unedited module. Environment and
         site directories are links to the user's files either way: never moved. Then
-        whatever the root offers is imported by name as the program would find it, and
-        a note names each one still served from the user's tree (an import hook ahead of
-        every path, as meson-python's editable loader is)."""
+        whatever the root offers is looked up by name (`find_spec`, never imported) as
+        the program would find it, and a note names each one still served from the
+        user's tree (an import hook ahead of every path, as meson-python's editable
+        loader is)."""
         script = (
             "import json, sys\nmapped = []\nfor finder in sys.meta_path:\n"
             "    try:\n"
@@ -822,22 +845,6 @@ def _repository_above(root):
     return None
 
 
-def _core_worktrees(lines):
-    """(line number, value) of each `worktree` key in a git config's `[core]` sections."""
-    section = None
-    for number, line in enumerate(lines):
-        text = line.strip()
-        if text.startswith("["):
-            section = text[1 : text.find("]")].strip().lower() if "]" in text else None
-            continue
-        key, equals, value = text.partition("=")
-        if section == "core" and equals and key.strip().lower() == "worktree":
-            value = value.split(" #")[0].split(" ;")[0].strip()
-            if len(value) >= 2 and value[0] == value[-1] == '"':
-                value = value[1:-1]
-            yield number, value
-
-
 def _gitdir(path):
     """Where a `.git` file's `gitdir:` line points, resolved; None if it has none."""
     try:
@@ -862,7 +869,7 @@ class PythonAdapter:
     manifest_id = None
     source_manifest = None
     target_identity = None
-    # Candidate probes (`probe --old/--new`) run an edited copy of the program file.
+    # Candidate probes (`probe --old/--new`) run an edited copy of the target root.
     supports_edits = True
 
     # A candidate asks the interpreter about imports within the launch's budget.

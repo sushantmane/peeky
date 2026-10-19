@@ -879,8 +879,10 @@ def _probe_text(result):
     text = _table(result)
     if candidate := result.get("candidate"):
         ran = result.get("hits") or result.get("rows") or result.get("output")
+        python = str((result.get("probe") or {}).get("program") or "").endswith(".py")
+        source = "a copy of your tree" if python else "a fresh build"
         text += (
-            "\ncandidate: values are from a fresh build with this edit"
+            f"\ncandidate: values are from {source} with this edit"
             if ran
             else "\ncandidate: this edit"
         ) + "; your files are unchanged"

@@ -995,6 +995,38 @@ def test_a_path_that_spells_the_root_otherwise_is_inside(tmp_path, monkeypatch):
         candidate.close()
 
 
+@pytest.mark.skipif(
+    not hasattr(os, "chflags") or os.geteuid() == 0, reason="needs BSD flags, not root"
+)
+def test_a_python_candidate_notes_access_the_copy_does_not_keep(tmp_path, monkeypatch):
+    # Verification of #109: the copy is the prober's with the originals' mode bits, so a
+    # locked file (or another owner's, or one an ACL denies) became writable there.
+    import stat as stat_module
+
+    from peeky.adapters import PythonAdapter, PythonCandidate
+    from peeky.build import SourceEdit
+
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    (proj / "pyproject.toml").write_text("")
+    (proj / "app.py").write_text("x = 1\n")
+    (proj / "state.txt").write_text("kept\n")
+    os.chflags(proj / "state.txt", stat_module.UF_IMMUTABLE)
+    try:
+        candidate = PythonCandidate(
+            PythonAdapter(sys.executable),
+            proj / "app.py",
+            proj,
+            SourceEdit("app.py", "x = 1", "x = 2"),
+        )
+        candidate.close()
+    finally:
+        os.chflags(proj / "state.txt", 0)
+    assert any("state.txt can be read, written or entered" in w for w in candidate.warnings), (
+        candidate.warnings
+    )
+
+
 def test_the_import_check_never_runs_project_code(tmp_path, capsys, monkeypatch):
     # Verification of #109: `pkg.bak/` (a backup with its own `__init__.py`) and an --at
     # file named `app.v2.py` gave dotted names, and `find_spec("pkg.bak")` imported and

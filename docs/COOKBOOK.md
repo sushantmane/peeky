@@ -600,7 +600,7 @@ run_a  run_b  hit   phase     selector  value_a           value_b               
 - **Lines:** `--at` uses the original file's numbering, so the same command works before and after. A line after an edit that adds or removes lines is moved to match (`line 25 is line 27 of the candidate`). Some lines have no faithful match and are refused before anything is built:
   - a line inside such an edit;
   - the line right after an edit whose `--old` ends with a newline but whose `--new` does not, because the candidate joins that line onto the edit.
-- **Build errors:** an edit that does not compile fails with `BUILD_FAILED` and the compiler's message.
+- **Build errors:** an edit that does not compile fails with `BUILD_FAILED` and the compiler's message. A Python edit with a syntax error fails with `NO_STOP`, with the `SyntaxError` in the output.
 - **Evidence:**
   - The run's `edit` column holds the diff, and its `source_sha256` is the edited text's.
   - `queries runs` marks the run `(candidate)`, and the `evidence` and `last_run` views have a `candidate` column. Captured `line`s are in the candidate's own numbering.
