@@ -105,9 +105,10 @@ _RULES = (
         "MUTATION_REJECTED",
         "The message names the rule broken. Root locals only, literal values only (Python: "
         "literals incl. containers; C, C++: integers of 16 to 64 bits; Java: scalars of the "
-        "local's type; Rust: i16 to i64, u16 to u64, isize and usize kept in memory; for C, "
-        "C++ and Rust `session inspect` marks them [settable]). Observe instead, or edit the "
-        "source and run verify.",
+        "local's type; Rust: i16 to i64, u16 to u64, isize and usize kept in memory). Probe "
+        "rows and `session inspect` mark the locals that can be changed ([settable]), and "
+        "the message lists them for that stop. Observe instead, or edit the source and run "
+        "verify.",
         False,
     ),
     (

@@ -1360,7 +1360,8 @@ class DebugWorker:
                 # Root locals `set` can change, so agents need not try and be refused;
                 # optimized builds refuse every change.
                 settable = (
-                    not self.optimized()
+                    self.capabilities.get("supports_set_variable", False) is True
+                    and not self.optimized()
                     and self.has_memory_location(variable)
                     and bool(check(variable, frame))
                 )
