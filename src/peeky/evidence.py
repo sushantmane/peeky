@@ -17,7 +17,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import quote
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 MAX_RUNS = 500
 DEFAULT_ROWS = 200
 MAX_ROWS = 10000
@@ -31,6 +31,7 @@ MAX_COLUMNS = 100
 _NUMBER = re.compile(r"[-+]?(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][-+]?[0-9]+)?")
 _PARAM = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,31}")
 _INTEGER = re.compile(r"-?[0-9]{1,18}")
+_WHOLE = re.compile(r"[-+]?[0-9]{1,20}")
 
 TABLES = {
     "runs": (
@@ -82,7 +83,8 @@ TABLES = {
             "selector": "Selector as requested, e.g. request.page or items[0]",
             "type": "Type as the debugger reports it",
             "value": "Value as the debugger displays it; NULL when there is none",
-            "num": "value as a number when it is one, else NULL (use for >, <, SUM, AVG)",
+            "num": "value as a number when it is one, else NULL (use for >, <, SUM, AVG): an "
+            "exact INTEGER for an integer that fits 64 bits, else REAL",
             "unavailable": "1 when the debugger has no value here (optimized out, not live)",
             "error": "Why there is no value (unknown name, unreadable, ...), else NULL",
             "view": "Qualified value view (e.g. a Rust Option), else NULL",
@@ -121,6 +123,16 @@ _EVIDENCE_VIEW = """CREATE VIEW evidence AS SELECT c.run_id, r.started_at, r.lab
 _LAST_RUN_VIEW = (
     "CREATE VIEW last_run AS SELECT * FROM evidence WHERE run_id = (SELECT MAX(run_id) FROM runs)"
 )
+# NUMERIC keeps an integer exact (a u64 counter, a pointer-sized length); REAL would
+# turn 600 into 600.0 and lose integers above 2**53.
+_CAPTURES = """CREATE TABLE {} (
+        run_id INTEGER NOT NULL, hit INTEGER, phase TEXT, line INTEGER, function TEXT,
+        selector TEXT, type TEXT, value TEXT, num NUMERIC, unavailable INTEGER NOT NULL,
+        error TEXT, view TEXT)"""
+_CAPTURE_INDEXES = (
+    "CREATE INDEX captures_run ON captures (run_id, hit)",
+    "CREATE INDEX captures_selector ON captures (selector)",
+)
 _DDL = (
     """CREATE TABLE runs (
         run_id INTEGER PRIMARY KEY AUTOINCREMENT, started_at TEXT NOT NULL, label TEXT,
@@ -130,15 +142,11 @@ _DDL = (
         max_pause_ms REAL, optimized TEXT, output TEXT, output_truncated INTEGER,
         output_complete INTEGER, warnings TEXT, artifact_manifest_id TEXT,
         source_sha256 TEXT, target_identity TEXT, edit TEXT)""",
-    """CREATE TABLE captures (
-        run_id INTEGER NOT NULL, hit INTEGER, phase TEXT, line INTEGER, function TEXT,
-        selector TEXT, type TEXT, value TEXT, num REAL, unavailable INTEGER NOT NULL,
-        error TEXT, view TEXT)""",
+    _CAPTURES.format("captures"),
     "CREATE TABLE interventions (run_id INTEGER NOT NULL, hit INTEGER, name TEXT, "
     "before TEXT, after TEXT)",
     "CREATE TABLE pauses (run_id INTEGER NOT NULL, hit INTEGER, ms REAL)",
-    "CREATE INDEX captures_run ON captures (run_id, hit)",
-    "CREATE INDEX captures_selector ON captures (selector)",
+    *_CAPTURE_INDEXES,
     "CREATE INDEX interventions_run ON interventions (run_id)",
     "CREATE INDEX pauses_run ON pauses (run_id)",
     _EVIDENCE_VIEW,
@@ -148,12 +156,28 @@ _DDL = (
 # Older schemas upgraded in place: {version: statements to the next version}. A writer
 # upgrades before saving; a reader upgrades a writable store before opening it read-only.
 # Version 2 added runs.edit; version 3 rebuilt the views with `candidate` (an early
-# version 2 had the column but the old views).
+# version 2 had the column but the old views); version 4 made captures.num NUMERIC.
 _MIGRATIONS = {
     1: ("ALTER TABLE runs ADD COLUMN edit TEXT",),
     2: (
         "DROP VIEW IF EXISTS last_run",
         "DROP VIEW IF EXISTS evidence",
+        _EVIDENCE_VIEW,
+        _LAST_RUN_VIEW,
+    ),
+    # Rebuilt in rowid order, which is capture order. NUMERIC stores each integral
+    # REAL as INTEGER; one that already lost precision above 2**53 cannot be restored
+    # (`value` keeps the exact text).
+    3: (
+        "DROP VIEW IF EXISTS last_run",
+        "DROP VIEW IF EXISTS evidence",
+        _CAPTURES.format("captures_v4"),
+        "INSERT INTO captures_v4 (run_id, hit, phase, line, function, selector, type, value, "
+        "num, unavailable, error, view) SELECT run_id, hit, phase, line, function, selector, "
+        "type, value, num, unavailable, error, view FROM captures ORDER BY rowid",
+        "DROP TABLE captures",
+        "ALTER TABLE captures_v4 RENAME TO captures",
+        *_CAPTURE_INDEXES,
         _EVIDENCE_VIEW,
         _LAST_RUN_VIEW,
     ),
@@ -386,10 +410,13 @@ EXAMPLES = (
 
 
 def _number(value):
-    if isinstance(value, str) and _NUMBER.fullmatch(value.strip()):
-        number = float(value)
-        return number if math.isfinite(number) else None
-    return None
+    """A numeric value: an exact int when it is an integer that fits 64 bits."""
+    if not isinstance(value, str) or not _NUMBER.fullmatch(text := value.strip()):
+        return None
+    if _WHOLE.fullmatch(text) and -(2**63) <= (whole := int(text)) < 2**63:
+        return whole
+    number = float(text)
+    return number if math.isfinite(number) else None
 
 
 def _text(value):
