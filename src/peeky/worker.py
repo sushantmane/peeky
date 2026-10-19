@@ -1385,6 +1385,10 @@ class DebugWorker:
                 output["value"] = None
             if kind is not None:
                 output["type"] = kind
+            shown = getattr(self.runtime, "display_type", None)
+            if shown and (rust := shown(variable, frame, top=not ancestry)):
+                # The language's own name; the debugger's stays alongside.
+                output.update(type=rust, debugger_type=kind)
             if isinstance(variable.get("evaluateName"), str) and variable["evaluateName"]:
                 # Only whether the debugger could name it as an expression; the expression
                 # itself never leaves the worker. debugpy names a dict entry only when its

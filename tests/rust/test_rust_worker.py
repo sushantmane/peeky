@@ -87,7 +87,12 @@ def test_rust_http_inspection_active_variants_and_scalar_intervention(rust_worke
     assert variables["none"]["value"] == "None"
     assert variables["some"]["variablesReference"] == 0 == variables["none"]["variablesReference"]
     assert variables["mode"]["value"] == "First"
-    assert variables["start"] == {**variables["start"], "type": "int", "value": "3"}
+    assert variables["start"] == {
+        **variables["start"],
+        "type": "i32",
+        "debugger_type": "int",
+        "value": "3",
+    }
     request = client.call(
         "expand",
         **session,

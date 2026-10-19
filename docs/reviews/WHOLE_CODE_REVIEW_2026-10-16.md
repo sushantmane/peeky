@@ -554,3 +554,17 @@ No issues. The reviewer checked by argument and by fuzzing:
   - the edit being dropped from echoed probe JSON.
 
 One test was updated for the reworded mixed `--old`/`--old-file` error.
+
+## Review of Rust scalar type names (#84, b3e1b6a)
+
+No local got a wrong type. These were checked on real builds:
+- shadowed `x @ main.rs:N`, each resolving to its own binding;
+- closure upvars and generic `T` locals, which keep LLDB's name;
+- type aliases, `i128`, `char` and `bool`;
+- inlined frames;
+- every consumer of the `type` field (`settable`, `validate_variable`, `set`, `INTEGER_RANGES` and container views all use the raw LLDB variable).
+
+| # | Finding | Severity | Disposition |
+| --- | --- | --- | --- |
+| 1 | `u8`/`i8` locals were relabeled while their values stayed C character literals (`level: i8 = '\xfd'`, which is -3). `num` was then NULL for them, and elements read from memory print numbers. | Medium | **Fixed.** In a Rust program, LLDB's `unsigned char`, `char` and `signed char` can only be `u8`/`i8`, so their literals print as Rust integers (`65`, `-3`). The parser accepts exactly LLDB's forms (`'A'`, `'\0'`, `'\xHH'`, `'\e'`, the named escapes, octal); anything else stays raw. Tests: `test_lldb_byte_literals_show_as_rust_integers` (all 256 values, both signs), and real builds checking `t_i8 = -1` and `letter: u8 = 65`. |
+| 2 | Parameters never got Rust types: MIR types arguments only in the function header, so a frame showed `scale: unsigned long` next to `total: usize`. | Medium | **Fixed.** `parse_body` reads argument types from the header, split at top-level commas (generics and tuples kept whole, `->` closing nothing). Struct fields, and anything else MIR does not type, take the one primitive their LLDB name can be (`double` is `f64`); only `long`/`unsigned long` stay ambiguous. Tests: `test_arguments_take_their_types_from_the_header`, and the real build `test_scalar_parameters_show_their_rust_types_and_bytes_their_values`. |

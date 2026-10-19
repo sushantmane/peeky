@@ -621,3 +621,23 @@ def test_a_block_codegen_left_without_predecessors_keeps_its_own_label(tmp_path)
     function = ir_functions(path, ["src/main.rs"])["h0123456789abcdef"]
     assert function.blocks["bb2"] == {5} and function.blocks["bb3"] == {5}
     assert 3 in function.labeled() and "bb3" not in function.preds
+
+
+def test_arguments_take_their_types_from_the_header():
+    # Review of #84: MIR declares arguments in `fn f(_1: ...)` only, never as `let`.
+    body = parse_body(
+        "fn sum(_1: &[u8], _2: std::collections::HashMap<K, V>, _3: fn(u8) -> u8, _4: usize)"
+        " -> usize {\n"
+        "    let mut _0: usize;  // return place in scope 0 at src/main.rs:1:10: 1:15\n"
+        "    bb0: {\n"
+        "        return;  // scope 0 at src/main.rs:2:2: 2:2\n"
+        "    }\n"
+        "}\n"
+    )
+    assert body.types == {
+        0: "usize",
+        1: "&[u8]",
+        2: "std::collections::HashMap<K, V>",
+        3: "fn(u8) -> u8",
+        4: "usize",
+    }
