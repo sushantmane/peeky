@@ -101,7 +101,13 @@ class PythonCandidate:
             self.root = self.scratch / (root.name or "root")
             # The copy of the --at file, under the name it has on disk (`--at APP.py`
             # names `app.py` on a case-insensitive volume; imports use the stored name).
-            self.staged = self._copy(root, self.root, os.stat(self.original))
+            try:
+                self.staged = self._copy(root, self.root, relative, os.stat(self.original))
+            except OSError as error:
+                raise ValueError(
+                    f"A Python candidate could not copy the target root ({error}); check the "
+                    "edit with `peeky verify`"
+                ) from None
             # The edited file replaces its copy, and is never written through a link.
             for parent in self.staged.parents:
                 if parent == self.root:
@@ -112,6 +118,10 @@ class PythonCandidate:
             handle = os.open(self.staged, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW)
             with os.fdopen(handle, "w", encoding="utf-8") as stream:
                 stream.write(text.replace(edit.old, edit.new, 1))
+            # Other names of the same file (hard links) are the edited file too.
+            for twin in self.twins:
+                os.unlink(twin)
+                twin.symlink_to(os.path.relpath(self.staged, twin.parent))
         except BaseException:
             shutil.rmtree(self.scratch, ignore_errors=True)
             raise
@@ -126,16 +136,18 @@ class PythonCandidate:
             else []
         )
 
-    @staticmethod
-    def _copy(source, destination, program):
+    def _copy(self, source, destination, relative, program):
         """Copy ``source`` to ``destination``: real directories, and regular files' bytes
         and modes. Links point where the originals do (inside the root, into the copy;
-        outside, at the resolved original). _LINKED_DIRS, anything not a regular file
-        (sockets, FIFOs) and unreadable files are links to the originals. `__pycache__`
-        is left out, so the copy compiles its own. Returns the copy of ``program`` (an
-        os.stat_result), by identity, under its stored name."""
+        outside, at the resolved original). _LINKED_DIRS and anything not a regular file
+        (sockets, FIFOs) are links to the originals; an unreadable file is an empty one
+        with its mode. `__pycache__` is left out, so the copy compiles its own. Returns
+        the copy of the --at file (``relative``, confirmed by ``program``'s identity) and
+        keeps its other hard-linked names in ``self.twins``."""
+        import unicodedata
+
         files = size = 0
-        staged = None
+        staged, self.twins = None, []
 
         def link(target, original):
             real = Path(os.path.realpath(original))
@@ -148,6 +160,18 @@ class PythonCandidate:
         for here, directories, names in os.walk(source):
             folder = destination / Path(here).relative_to(source)
             folder.mkdir()
+            # Names that differ only by case or Unicode form are one name on a volume that
+            # ignores the difference (the temporary directory may): never merge them.
+            seen = {}
+            for name in (*directories, *names):
+                key = unicodedata.normalize("NFC", name).casefold()
+                if key in seen:
+                    raise ValueError(
+                        f"A Python candidate cannot copy {Path(here) / name}: {seen[key]!r} "
+                        "beside it differs only by case or Unicode form; check the edit with "
+                        "`peeky verify`"
+                    )
+                seen[key] = name
             kept = []
             for name in directories:
                 path = Path(here) / name
@@ -169,8 +193,13 @@ class PythonCandidate:
                 if path.is_symlink():
                     link(folder / name, path)
                     continue
-                if not stat.S_ISREG(status.st_mode) or not os.access(path, os.R_OK):
+                if not stat.S_ISREG(status.st_mode):
                     (folder / name).symlink_to(path)
+                    continue
+                if not os.access(path, os.R_OK):
+                    # Unreadable here too, and a write (`--w-------`) stays in the copy.
+                    os.close(os.open(folder / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))
+                    shutil.copymode(path, folder / name, follow_symlinks=False)
                     continue
                 size += status.st_size
                 if size > MAX_COPIED_BYTES:
@@ -179,7 +208,13 @@ class PythonCandidate:
                 shutil.copyfile(path, folder / name, follow_symlinks=False)
                 shutil.copymode(path, folder / name, follow_symlinks=False)
                 if (status.st_dev, status.st_ino) == (program.st_dev, program.st_ino):
-                    staged = folder / name
+                    if path.relative_to(source) == relative:
+                        staged = folder / name
+                    else:
+                        self.twins.append(folder / name)
+        if staged is None and len(self.twins) == 1:
+            # The --at path as typed in another spelling: its one copy.
+            staged, self.twins = self.twins[0], []
         if staged is None:
             raise ValueError("A Python candidate's --at file is not in the copied root")
         return staged

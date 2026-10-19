@@ -334,6 +334,60 @@ def test_a_python_candidates_copy_keeps_links_specials_and_the_users_bytecode(
     assert "RATE = 1" in script.read_text()
 
 
+def test_a_python_candidate_edits_the_named_file_and_its_hard_links(tmp_path, capsys, monkeypatch):
+    # Review of #109: with a hard link below the root (`backup/app.py`), the walk's last
+    # name got the edit and ran with the wrong neighbours; a write-only file was linked,
+    # so the candidate wrote the user's file.
+    import os
+
+    from peeky.cli import main
+
+    monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
+    (tmp_path / "backup").mkdir()
+    script = tmp_path / "app.py"
+    script.write_text(
+        "RATE = 1\nimport alias\nif __name__ == '__main__':\n    import helper\n"
+        "    open('audit.log', 'a').write('candidate')\n"
+        "    a = helper.value()\n    print('OUT', a, RATE, alias.RATE)\n"
+    )
+    os.link(script, tmp_path / "alias.py")
+    os.link(script, tmp_path / "backup" / "app.py")
+    (tmp_path / "helper.py").write_text("def value():\n    return 10\n")
+    (tmp_path / "backup" / "helper.py").write_text("def value():\n    return 99\n")
+    audit = tmp_path / "audit.log"
+    audit.write_text("x")
+    audit.chmod(0o200)
+    probe = ["probe", str(tmp_path), "--at", "app.py:7", "--capture", "a", "--json", "--quiet"]
+    code = main([*probe, "--old", "RATE = 1", "--new", "RATE = 7"])
+    result = json.loads(capsys.readouterr().out)
+    assert code == 0, result.get("error")
+    assert result["rows"][0]["value"] == "10" and "OUT 10 7 7" in result["output"]
+    audit.chmod(0o600)
+    assert audit.read_text() == "x" and "RATE = 1" in script.read_text()
+
+
+def test_a_python_candidate_refuses_names_that_differ_only_by_case(tmp_path, monkeypatch):
+    # Review of #109: on a case-sensitive volume `Helper.py` and `helper.py` collapse
+    # into one name in a case-insensitive temporary directory.
+    import os
+
+    from peeky.adapters import PythonAdapter, PythonCandidate
+    from peeky.build import SourceEdit
+
+    (tmp_path / "app.py").write_text("x = 1\n")
+    real_walk = os.walk
+
+    def walk(top, *args, **kwargs):
+        for here, directories, names in real_walk(top, *args, **kwargs):
+            yield here, directories, [*names, "Helper.py", "helper.py"]
+
+    monkeypatch.setattr(os, "walk", walk)
+    with pytest.raises(ValueError, match="differs only by case or Unicode form"):
+        PythonCandidate(
+            PythonAdapter(), tmp_path / "app.py", tmp_path, SourceEdit("app.py", "x = 1", "x = 2")
+        )
+
+
 def test_a_python_candidate_warns_when_the_script_reaches_above_its_root(
     tmp_path, capsys, monkeypatch
 ):
