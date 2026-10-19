@@ -658,3 +658,12 @@ Checked and found sound:
 | 2 | When `--timeout` ran out while the checker was running, a correct fix was reported as `passed: False` ("checker timed out"), which is how a hanging candidate looks. | Medium | **Fixed:** a checker cut short by the deadline (not by its own 20 s) raises `TIMEOUT`. So does a toolchain probe cut short by it, which was `DEBUGGER_ERROR`. Test: `test_a_timeout_during_the_checker_is_timeout_not_a_failed_fix`. |
 | 3 | `--timeout` did not bound the Rust Cargo test run (always 30 s): `--timeout 8` took 21 s. | Medium | **Fixed:** `run_tests` takes the deadline and raises `TIMEOUT` when it is what stopped the tests. Test: the real build `test_verify_timeout_bounds_the_cargo_tests_too` (a 60 s test, `--timeout 15`, done in 15 s). |
 | 4 | `session get` on an `ArrayList` whose backing array has over 512 slots (any list of 367 or more elements, or `new ArrayList<>(1000)`) showed only an error and lost its `size`. | Low–Medium (regression) | **Fixed:** such a list lists its fields, as before. Test: `test_a_java_list_whose_backing_array_is_too_big_lists_its_fields`. |
+
+The verification (3272874) found nothing wrong. All five repros behave:
+- the `--` background verify passes, with `--json` at either end;
+- a checker cut short by `--timeout` is `TIMEOUT`;
+- Java `--timeout` from 0.02 to 2 s is `TIMEOUT` at every cut point (toolchain checks, build, preparation, checker), and a wrong fix still fails normally;
+- a 20 s Rust test stops at `--timeout 8` after 8.0 s, with no scratch directories left behind;
+- lists of 400 and 1000 slots fall back to their fields, and the session keeps working.
+
+Callers without a deadline keep the old 20 s and 30 s limits.
