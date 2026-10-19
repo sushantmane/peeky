@@ -1084,7 +1084,12 @@ def _children(worker, stop, selector, variable):
     """One page (64) of a value's children, for a person or agent deciding what to read."""
     page = worker.dispatch("expand", {**stop, "handle": variable["variablesReference"], "start": 0})
     if listed := java_list(variable, page["variables"]):
-        return _list_children(worker, stop, selector, *listed)
+        try:
+            return _list_children(worker, stop, selector, *listed)
+        except ValueError as exc:
+            if "exceeds bounded expansion" not in str(exc):
+                raise
+            # A backing array over 512 slots: its fields (size, elementData) instead.
     listed = []
     for child in page["variables"]:
         if child["name"] in _GROUPS:

@@ -915,7 +915,7 @@ class RustSession(NativeSession):
         ):
             raise ValueError("Raw Rust enum storage is not exposed; its layout is not qualified")
 
-    def run_tests(self):
+    def run_tests(self, deadline=None):
         """Execute the prepared, hashed integration-test binary; Cargo is not invoked.
         None when the crate has no integration test: the checker alone decides."""
         from peeky.agent import execute
@@ -927,17 +927,25 @@ class RustSession(NativeSession):
         if _digest(self.test_target)[0] != binary:
             raise RuntimeError("Cargo test target differs from the debugged executable")
         command = [str(self.test_binary), "--test-threads=1", "--color", "never"]
+        timeout, limited = TEST_TIMEOUT_S, False
+        if deadline is not None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("verify ran past its --timeout before the Cargo tests")
+            timeout, limited = min(timeout, remaining), remaining < timeout
         # Any output beyond the retained capture is an explicit failure, never truncation.
         result = execute(
             command,
             self.prepared.workspace,
-            TEST_TIMEOUT_S,
+            timeout,
             env=self.environment,
             output_limit=16000,
         )
         self.assert_current()
         if _digest(self.test_target)[0] != binary:
             raise RuntimeError("Cargo test target changed during test execution")
+        if limited and result.get("timed_out"):
+            raise TimeoutError("verify ran past its --timeout while the Cargo tests ran")
         return {
             **result,
             **libtest_summary(result),

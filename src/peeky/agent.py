@@ -180,11 +180,12 @@ def execute(
 def verify(check, candidate, cwd, *, env=None, deadline=None):
     # Completion is written only after the trusted checker returns normally.
     # This detects premature exit; it is not isolation from hostile candidate code.
-    timeout = 20
+    timeout, limited = 20, False
     if deadline is not None:
-        timeout = min(timeout, deadline - time.monotonic())
-        if timeout <= 0:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
             raise TimeoutError("verify ran past its --timeout before the checker")
+        timeout, limited = min(timeout, remaining), remaining < timeout
     with tempfile.TemporaryDirectory(prefix="peeky-check-") as scratch:
         completion = Path(scratch) / "completion.json"
         result = execute(
@@ -198,6 +199,9 @@ def verify(check, candidate, cwd, *, env=None, deadline=None):
         except (OSError, ValueError):
             envelope = {"completed": False, "error": "Checker did not complete"}
         result["checker"] = envelope
+        if limited and result.get("timed_out"):
+            # The --timeout cut the checker short: that says nothing about the candidate.
+            raise TimeoutError("verify ran past its --timeout while the checker was running")
         result["passed"] = result["exit_code"] == 0 and envelope.get("completed") is True
         return result
 

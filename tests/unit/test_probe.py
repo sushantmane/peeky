@@ -1088,3 +1088,33 @@ def test_a_java_lists_children_are_its_elements_with_their_selectors():
         ("[2]", "workers[2]", "Worker@11"),
     ]
     assert all(c["expandable"] for c in shown["children"]) and "children_truncated" not in shown
+
+
+def test_a_java_list_whose_backing_array_is_too_big_lists_its_fields():
+    # Review of #94: a list with over 512 slots lost its children (and its size).
+    from peeky.probe import _children
+
+    fields = [
+        {
+            "name": "elementData",
+            "type": "Object[]",
+            "value": "Object[1000]@5",
+            "variablesReference": 6,
+        },
+        {"name": "modCount", "type": "int", "value": "2", "variablesReference": 0},
+        {"name": "size", "type": "int", "value": "2", "variablesReference": 0},
+    ]
+
+    class Big:
+        def dispatch(self, operation, args):
+            if args["handle"] == 4:
+                return {"variables": fields, "truncated": False}
+            raise ValueError("Variable collection exceeds bounded expansion limit")
+
+    big = {"name": "big", "type": "ArrayList", "value": "ArrayList@4", "variablesReference": 4}
+    shown = _children(Big(), {}, "big", big)
+    assert [c["selector"] for c in shown["children"]] == [
+        "big.elementData",
+        "big.modCount",
+        "big.size",
+    ]

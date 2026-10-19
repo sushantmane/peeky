@@ -180,3 +180,19 @@ def test_a_missing_lockfile_says_how_to_create_it(plain, capsys):
 def test_the_shape_is_documented_where_agents_read():
     guide = (Path(__file__).resolve().parents[2] / "docs/AGENT_GUIDE.md").read_text()
     assert "cargo new" in guide
+
+
+@pytest.mark.timeout(300)
+def test_verify_timeout_bounds_the_cargo_tests_too(plain, capsys):
+    # Review of #94: the compiled tests always had 30 s, past any --timeout.
+    import time
+
+    (plain / "tests").mkdir()
+    (plain / "tests/slow.rs").write_text(
+        "#[test]\nfn slow() { std::thread::sleep(std::time::Duration::from_secs(60)); }\n"
+    )
+    common = ["verify", str(plain), "--check", str(plain / "check.py"), "--timeout", "15"]
+    started = time.monotonic()
+    code, result = run(capsys, *common, "--old", 'shout("ab")', "--new", 'shout("abc")')
+    assert code == 2 and result["error"]["code"] == "TIMEOUT", result
+    assert time.monotonic() - started < 25

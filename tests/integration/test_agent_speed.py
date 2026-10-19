@@ -359,3 +359,28 @@ def test_verify_takes_a_timeout_and_reports_its_duration(target, capsys):
     assert code == 2 and json.loads(out.out)["error"]["code"] == "TIMEOUT"
     code, out = run(capsys, *args, *edit, "--timeout", "601")
     assert code == 2 and "--timeout must be within" in out.err
+
+
+def test_a_background_verify_with_its_target_after_a_double_dash(target, capsys):
+    # Review of #94: the job's added --json landed after `--`, a second target.
+    root = Path(__file__).resolve().parents[2] / "examples"
+    for name in ("pagination_bug.py", "verify_pagination.py"):
+        shutil.copyfile(root / name, target / name)
+    args = ["verify", "--check", target / "verify_pagination.py"]
+    edit = ["--old", "start = page * page_size", "--new", "start = (page - 1) * page_size"]
+    code, out = run(capsys, *args, *edit, "--background", "--", target / "pagination_bug.py")
+    job = out.out.split()[1]
+    code, out = run(capsys, "job", "wait", job, "--timeout", "60")
+    assert code == 0 and out.out.startswith("passed: True"), out
+
+
+def test_a_timeout_during_the_checker_is_timeout_not_a_failed_fix(target, capsys):
+    # Review of #94: a correct fix whose checker the deadline cut short read as failed.
+    root = Path(__file__).resolve().parents[2] / "examples"
+    shutil.copyfile(root / "pagination_bug.py", target / "pagination_bug.py")
+    checker = (root / "verify_pagination.py").read_text()
+    (target / "slow_check.py").write_text("import time\ntime.sleep(5)\n" + checker)
+    args = ["verify", target / "pagination_bug.py", "--check", target / "slow_check.py"]
+    edit = ["--old", "start = page * page_size", "--new", "start = (page - 1) * page_size"]
+    code, out = run(capsys, *args, *edit, "--timeout", "1", "--json")
+    assert code == 2 and json.loads(out.out)["error"]["code"] == "TIMEOUT", out.out

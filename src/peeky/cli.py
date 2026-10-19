@@ -1927,7 +1927,8 @@ def _background(argv, command, edits=None):
     spec = {
         "id": job_id,
         "command": command,
-        "argv": argv if "--json" in argv else [*argv, "--json"],
+        # Right after the subcommand: never after a bare `--` (verify ... -- target).
+        "argv": argv if "--json" in argv else [argv[0], "--json", *argv[1:]],
         "json": "--json" in argv,
         "keep": "--keep" in argv,
         "cwd": os.getcwd(),

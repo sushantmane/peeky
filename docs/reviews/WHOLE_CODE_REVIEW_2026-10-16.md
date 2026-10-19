@@ -643,3 +643,18 @@ The verification (3a4fde1) found nothing wrong.
   - Cargo and Peeky agree on hidden test entries.
 - **Notes:** no qualified type lost a note it should have.
 - **Linux lanes:** `rust` and `rust-llvm20` (lldb-dap 18 and 20) pass the char test with LLVM's `U+0x…` form.
+
+## Review of the fourth evaluation's fixes (#94, 32f20f7)
+
+Checked and found sound:
+- **Jobs:** a background probe's text, stderr and exit code match the foreground exactly, including with `--` arguments; older jobs replay what they recorded.
+- **`object_ref`:** has no false positive on quoted strings, numbers or non-Java text.
+- **`(args)`/`(sets)` rows:** NULL arguments compare as expected.
+- **Real Java test:** the `BalanceBug` test passes against real java-debug.
+
+| # | Finding | Severity | Disposition |
+| --- | --- | --- | --- |
+| 1 | A background job's added `--json` went at the end of argv. For `verify ... -- target`, that is after the bare `--`, so it read as a second target, and the job failed in argument parsing where `main` succeeded. | Medium (regression) | **Fixed:** `--json` goes right after the subcommand. Test: `test_a_background_verify_with_its_target_after_a_double_dash`. |
+| 2 | When `--timeout` ran out while the checker was running, a correct fix was reported as `passed: False` ("checker timed out"), which is how a hanging candidate looks. | Medium | **Fixed:** a checker cut short by the deadline (not by its own 20 s) raises `TIMEOUT`. So does a toolchain probe cut short by it, which was `DEBUGGER_ERROR`. Test: `test_a_timeout_during_the_checker_is_timeout_not_a_failed_fix`. |
+| 3 | `--timeout` did not bound the Rust Cargo test run (always 30 s): `--timeout 8` took 21 s. | Medium | **Fixed:** `run_tests` takes the deadline and raises `TIMEOUT` when it is what stopped the tests. Test: the real build `test_verify_timeout_bounds_the_cargo_tests_too` (a 60 s test, `--timeout 15`, done in 15 s). |
+| 4 | `session get` on an `ArrayList` whose backing array has over 512 slots (any list of 367 or more elements, or `new ArrayList<>(1000)`) showed only an error and lost its `size`. | Low–Medium (regression) | **Fixed:** such a list lists its fields, as before. Test: `test_a_java_list_whose_backing_array_is_too_big_lists_its_fields`. |

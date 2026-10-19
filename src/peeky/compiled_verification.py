@@ -99,7 +99,7 @@ class CompiledVerification:
         tests = None
         if run_tests := getattr(runtime, "run_tests", None):
             # Trusted session hook (Rust): the compiled test result never replaces the checker.
-            tests = run_tests()
+            tests = run_tests(**({} if deadline is None else {"deadline": deadline}))
             self._assert_originals()
         result = verify(
             check,
