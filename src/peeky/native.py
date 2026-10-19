@@ -485,8 +485,9 @@ def _block_spans(dies, entry, root, addresses, numbers):
     the declarations were too many to read all: the lines of the blocks declaring each
     local, for the locals declared only inside nested blocks (a `for` loop's `i`), so
     visible only there (#107). A block's lines are those of the function's own rows
-    within its code; one that also runs another file's code (an `#include` inside it)
-    or other lines gives no span."""
+    within its code (a local macro's definition lines, where its expansions run, are not
+    counted); one that also runs another file's code (an `#include` inside it) gives
+    no span."""
     rows = sorted(
         (address, source, line) for (source, line), found in addresses.items() for address in found
     )
@@ -500,10 +501,11 @@ def _block_spans(dies, entry, root, addresses, numbers):
                 for _, source, line in rows[
                     bisect.bisect_left(keys, low) : bisect.bisect_left(keys, high)
                 ]:
-                    if source == entry["source"] and line in numbers:
-                        covered.append(line)
-                    else:
+                    if source != entry["source"]:
                         other = True
+                    elif line in numbers:
+                        covered.append(line)
+                    # The file's other lines are a local macro's definition, expanded here.
             lines[block] = (min(covered), max(covered)) if covered and not other else None
         return lines[block]
 

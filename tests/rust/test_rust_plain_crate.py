@@ -1379,7 +1379,14 @@ def test_an_optimized_build_never_reads_a_box(plain):
     assert "view" not in result["rows"][0], result["rows"]
 
 
-GENERIC_SPANS = """trait Big {
+GENERIC_SPANS = """macro_rules! square {
+    ($x:expr) => {{
+        let v = $x;
+        v * v
+    }};
+}
+
+trait Big {
     const BIG: bool;
 }
 impl Big for u8 {
@@ -1400,10 +1407,19 @@ fn h<T: Big>(_v: T) -> usize {
     n
 }
 
+fn with_macro(n: usize) -> usize {
+    let mut total = 0;
+    for i in 0..n {
+        let s = square!(i);
+        total += s;
+    }
+    total
+}
+
 fn main() {
     let a = h(3u8);
     let b = h(4u64);
-    println!("{} {}", a, b);
+    println!("{} {} {}", a, b, with_macro(3));
 }
 """
 
@@ -1417,5 +1433,10 @@ def test_a_generic_function_is_one_scope_with_its_blocks_lines(plain, capsys):
     scopes = [s for s in result["scopes"] if str(s.get("scope")).endswith("::h")]
     assert len(scopes) == 1, scopes
     ((first, last),) = scopes[0]["spans"]["i"]
-    assert first <= 14 and last >= 16, scopes
+    assert first <= line_of(GENERIC_SPANS, "n += i;"), scopes
+    assert last >= line_of(GENERIC_SPANS, "n += 100;"), scopes
     assert "_v" not in scopes[0]["spans"], scopes
+    # Review 2: a local macro's expansion runs on its definition's lines, which take no
+    # span from the blocks around it.
+    scope = next(s for s in result["scopes"] if str(s.get("scope")).endswith("::with_macro"))
+    assert {"i", "s", "total"} <= set(scope.get("spans", {})), scope
