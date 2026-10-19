@@ -195,7 +195,11 @@ class Body:
             assigned = {}
             for block in self.blocks.values():
                 for text, _, _ in block.statements:
-                    found = _WHOLE_ASSIGNMENT.match(text) or _PART_ASSIGNMENT.match(text)
+                    # A write through it (`((*_1).0: i64) = ...`) changes what it points
+                    # at, not where.
+                    found = _WHOLE_ASSIGNMENT.match(text) or (
+                        None if re.match(r"\(+\*_", text) else _PART_ASSIGNMENT.match(text)
+                    )
                     if found:
                         assigned.setdefault(int(found[1]), []).append(found[2])
             self._assigned = assigned
@@ -304,6 +308,20 @@ class Body:
             if owners is None or any(self._could_be(o, i, line, file, facts) for o, i in owners)
         ]
         return sorted(kept or found)
+
+    def anywhere(self, blocks):
+        """Every place in ``blocks``, and after each call or drop ending one."""
+        found = set()
+        for number in blocks:
+            block = self.blocks.get(number)
+            if block is None:
+                return None
+            found.update((number, index) for index in range(len(block.statements)))
+            terminator = len(block.statements) - 1
+            if _call(block, terminator) or _DROP.match(block.terminator):
+                if (target := _target(block)) is not None:
+                    found.add((target, 0))
+        return sorted(found)
 
     def _sure(self, number, index, line, file, facts):
         """True if the IR shows code of statement ``index`` (a terminator) of block
@@ -742,7 +760,7 @@ class LineFacts:
 
 # Where a macro's path starts (`println!(`, `std::vec![`); `if !(x)` too, which only
 # widens what a column can be.
-_MACRO_CALL = re.compile(r"(?<![\w:])((?:\w+::)*\w+)\s*!\s*[(\[{]")
+_MACRO_CALL = re.compile(r"(?<![\w:])((?:::)?(?:\w+::)*\w+)\s*!\s*[(\[{]")
 
 
 def _binding_scopes(body, local):
@@ -1336,7 +1354,7 @@ class OwnedLocals:
         cannot tell apart is judged by every binding."""
         site = self._site(hashed, line, path)
         if site is None:
-            return None
+            return self._elsewhere(hashed, variable_name, path)
         body, function = site[0], site[1]
         local = self._local(body, variable_name, line, path)
         if local is not None:
@@ -1357,6 +1375,25 @@ class OwnedLocals:
             return True
         return None
 
+    def _elsewhere(self, hashed, variable_name, path):
+        """False where the stop is in another of the crate's files than its function's
+        (a `macro_rules!` from another module, `include!`d code) and the name's bindings
+        may borrow: no line of the function's own can place the stop; else None."""
+        body, function = self.body(hashed), self.functions.get(hashed)
+        if body is None or function is None:
+            return None
+        shown = str(path or "").replace("\\", "/")
+        sources = [source for source in self.sources if shown.endswith("/" + source)]
+        if not sources or sources == [function.file]:
+            return None
+        name = str(variable_name).partition(" @ ")[0]
+        kinds = [
+            body.types.get(b[0]) if b[0] is not None else b[3] for b in body.bindings.get(name, ())
+        ]
+        if any(k and _BORROWING.search(k) and not _FN_POINTER.match(k) for k in kinds):
+            return False
+        return None
+
     def _judge(self, site, local, line, facts):
         body, function, blocks, _ = site
         if local is None:
@@ -1375,18 +1412,29 @@ class OwnedLocals:
         # Written through a `&mut` to it (`*p = owned.as_str()`), it holds what no
         # assignment of its own shows.
         free = local not in body._written_through()
-        if free and local in body.arguments and kind.startswith("&") and not assigned:
+        # A parameter's references point at what the caller lent for the whole call.
+        argument = (
+            free and local in body.arguments and not assigned and not _RAW_POINTER.search(kind)
+        )
+        if argument and kind.startswith("&"):
             return True
         if free and assigned and all(value.startswith("const ") for value in assigned):
             return True
         file = function.file
-        foreign = may_invoke_macro(self.texts.get(file), line)
-        positions = body.stop_positions(blocks, line, file, foreign, facts, site[3])
+        if self.precise:
+            foreign = may_invoke_macro(self.texts.get(file), line)
+            positions = body.stop_positions(blocks, line, file, foreign, facts, site[3])
+        else:
+            # `#[collapse_debuginfo]` puts a local macro's code on the line invoking it,
+            # while its statements keep the macro's lines: any statement can be the stop.
+            positions = body.anywhere(blocks)
         if not positions:
             return None
         # Not yet assigned (its declaration line), it holds whatever its slot last held.
         if not self._initialized(site, local, line):
             return False
+        if argument:
+            return True
         if free and assigned and all(self._frozen(site, local, value, line) for value in assigned):
             return True
         return all(

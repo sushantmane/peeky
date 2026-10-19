@@ -1838,3 +1838,150 @@ def test_references_read_only_where_their_stop_is_told_apart(plain, capsys):
     # Into a shared argument (frozen by the caller's loan), and at a live local.
     assert probe("FROM_ARGUMENT", "first.x")[0].get("value") == "3"
     assert probe("AT_LOCAL", "r.x")[0].get("value") == "1"
+
+
+COLLAPSED_REFS = """#[derive(Debug, Clone, Copy)]
+pub struct Pt {
+    x: i64,
+    y: i64,
+}
+
+#[inline(never)]
+fn churn() -> i64 {
+    Box::leak(Box::new(Pt { x: 777, y: 888 })).x + Box::leak(Box::new([777i64; 4]))[0]
+}
+
+#[inline(never)]
+extern "C" fn consume_c(b: Box<Pt>) -> i64 {
+    b.y
+}
+
+#[inline(never)]
+extern "C" fn churn_c(n: i64) -> i64 {
+    churn() + n
+}
+
+#[collapse_debuginfo(yes)]
+macro_rules! eat {
+    ($b:expr) => {{
+        let n = consume_c($b);
+        let t = churn_c(n);
+        t
+    }};
+}
+
+fn collapsed() -> i64 {
+    let b = Box::new(Pt { x: 5, y: 6 });
+    let r: &Pt = &*b;
+    let z = churn();
+    let k = r.x;
+    let t = eat!(b); // M4_COLLAPSED
+    k + t + z
+}
+
+fn main() {
+    println!("{}", collapsed());
+}
+"""
+
+MACRO_FILE = """macro_rules! eat {
+    ($b:expr) => {{
+        let n = crate::consume($b);
+        let t = crate::churn(); // M4_IN_MACRO
+        n + t
+    }};
+}
+"""
+
+PARAMETER_REFS = """#[macro_use]
+mod macros;
+
+#[derive(Debug, Clone, Copy)]
+pub struct Pt {
+    x: i64,
+    y: i64,
+}
+
+#[inline(never)]
+pub fn churn() -> i64 {
+    Box::leak(Box::new(Pt { x: 777, y: 888 })).x + Box::leak(Box::new([777i64; 4]))[0]
+}
+
+#[inline(never)]
+pub fn consume(b: Box<Pt>) -> i64 {
+    b.y
+}
+
+fn other_file() -> i64 {
+    let b = Box::new(Pt { x: 5, y: 6 });
+    let r: &Pt = &*b;
+    let k = r.x;
+    let t = eat!(b);
+    k + t
+}
+
+struct Counter {
+    count: i64,
+}
+
+impl Counter {
+    fn tick(&mut self, n: i64) -> i64 {
+        self.count += n;
+        let z = churn();
+        z // M4_TICK
+    }
+}
+
+fn bump(p: &mut Pt, n: i64) -> i64 {
+    p.x += n;
+    let z = churn();
+    z // M4_BUMP
+}
+
+struct View<'a> {
+    p: &'a Pt,
+}
+
+fn view(v: View<'_>, pair: (&Pt, i64)) -> i64 {
+    let k = v.p.x + pair.0.y;
+    let z = churn();
+    z + k // M4_VIEW
+}
+
+fn main() {
+    let mut c = Counter { count: 1 };
+    let mut p = Pt { x: 5, y: 6 };
+    let q = Pt { x: 7, y: 8 };
+    println!("{} {} {}", c.tick(2), bump(&mut p, 3), view(View { p: &q }, (&q, 1)));
+    println!("{}", other_file());
+}
+"""
+
+
+@pytest.mark.timeout(600)
+def test_references_in_collapsed_and_other_file_macros_and_parameters(plain, capsys):
+    # Verification of #110 (round 4): a same-file macro with `#[collapse_debuginfo]` puts
+    # its code on the invoking line while its statements keep the macro's lines; a stop in
+    # a macro from another module is in another file than its function. Both read freed
+    # memory. A parameter written through, or holding references by value, was hidden.
+    (plain / "src/main.rs").write_text(COLLAPSED_REFS)
+    at = f"src/main.rs:{line_of(COLLAPSED_REFS, '// M4_COLLAPSED')}"
+    code, result = run(
+        capsys, "probe", str(plain), "--at", at, "--capture", "r", "--hits", "3", "--quiet"
+    )
+    rows = result["rows"]
+    assert rows and all(row.get("view") == "unproven" for row in rows), rows
+    (plain / "src/main.rs").write_text(PARAMETER_REFS)
+    (plain / "src/macros.rs").write_text(MACRO_FILE)
+    at = f"src/macros.rs:{line_of(MACRO_FILE, '// M4_IN_MACRO')}"
+    code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "r", "--quiet")
+    assert result["rows"][0].get("view") == "unproven", result["rows"]
+    for marker, capture, value in (
+        ("M4_TICK", "self.count", "3"),
+        ("M4_BUMP", "p.x", "8"),
+        ("M4_VIEW", "v.p.x", "7"),
+        ("M4_VIEW", "pair.__0.y", "8"),
+    ):
+        at = f"src/main.rs:{line_of(PARAMETER_REFS, '// ' + marker)}"
+        code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", capture, "--quiet")
+        assert result["rows"][0].get("value") == value, (marker, result["rows"])
