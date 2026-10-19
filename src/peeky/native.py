@@ -447,7 +447,8 @@ def _type_name(dies, value, depth=0):
 
 def _balanced(name):
     depth = []
-    for char in name:
+    # Rust's `fn(i32) -> i32` returns with an arrow, not a closing bracket.
+    for char in name.replace("->", ""):
         if char in "([<":
             depth.append(")]>"["([<".index(char)])
         elif char in ")]>" and (not depth or depth.pop() != char):
