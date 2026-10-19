@@ -101,21 +101,25 @@ _RULES = (
         r"Only writable|mutation requires|mutation is outside|Only .*locals support|"
         r"numeric or boolean scalar|scalar literal|bounded decimal integer|must be a literal"
         r"|has no readable value here|refused in an optimized build|did not change "
-        r"|has no memory location|refused to change|would overwrite a change",
+        r"|has no memory location|refused to change|would overwrite a change"
+        r"|cannot be changed|can be changed only|changes only the stopped|locals can be changed "
+        r"for this language",
         "MUTATION_REJECTED",
-        "The message names the rule broken. Root locals only, literal values only (Python: "
-        "literals incl. containers; C, C++: integers of 16 to 64 bits; Java: scalars of the "
-        "local's type; Rust: i16 to i64, u16 to u64, isize and usize kept in memory). Probe "
-        "rows and `session inspect` mark the locals that can be changed ([settable]), and "
-        "the message lists them for that stop. Observe instead, or edit the source and run "
-        "verify.",
+        "The message names the rule broken. Root locals, and in Java also fields and array "
+        "elements (`current.end`, `xs[0]`; not final or static fields, not list or map "
+        "entries); literal values only (Python: literals incl. containers; C, C++: integers "
+        "of 16 to 64 bits; Java: scalars of the target's type; Rust: i16 to i64, u16 to u64, "
+        "isize and usize kept in memory). Probe rows and `session inspect` mark the values "
+        "that can be changed ([settable]), and the message lists the locals for that stop. "
+        "Observe instead, or edit the source and run verify.",
         False,
     ),
     (
-        r"not a visible local|Expected exactly one existing local|not found in the inspected",
+        r"not a visible local|Expected exactly one existing local|not found in the inspected"
+        r"|not a field or element the debugger lists",
         "NOT_FOUND",
         "Inspect to list visible names. Reads take dotted paths (a.b, this.x); changes take "
-        "only the stopped function's own locals.",
+        "the stopped function's own locals, and in Java their fields and array elements.",
         False,
     ),
     (

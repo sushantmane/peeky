@@ -355,3 +355,79 @@ def test_only_whether_a_child_is_evaluable_leaves_the_worker(tmp_path):
         [{"name": "'a'", "type": "str", "value": "'x'"}], {}, ("Locals",), (("d", "dict"),)
     )
     assert "evaluable" not in shown
+
+
+class MemberBackend(Backend):
+    """Applies setVariable to the listed child, as a debugger writing the field would."""
+
+    def request(self, operation, args):
+        if operation == "setVariable":
+            self.calls.append((operation, deepcopy(args)))
+            for child in self.children[args["variablesReference"]]:
+                if child["name"] == args["name"]:
+                    child["value"] = args["value"]
+            return {"value": args["value"]}
+        return super().request(operation, args)
+
+
+class MemberRuntime(Runtime):
+    def member_settable(self, variable):
+        return "it is final" if variable["name"] == "nested" else None
+
+
+@pytest.fixture
+def member_worker(worker):
+    worker.dap, worker.runtime = MemberBackend(), MemberRuntime()
+    return worker
+
+
+def test_a_field_is_set_through_its_parents_handle_and_read_back(member_worker):
+    _, child = inspected(member_worker)
+    changed = call(member_worker, "set_variable", handle=child, name="page", value="2")
+    assert changed == {"name": "page", "before": "1", "after": "2"}
+    writes = [args for op, args in member_worker.dap.calls if op == "setVariable"]
+    # The parent's own adapter reference, found again from the frame, never the handle.
+    assert writes == [{"variablesReference": 100, "name": "page", "value": "2"}]
+    # A change invalidates every handle.
+    with pytest.raises(ValueError, match="stale"):
+        call(member_worker, "expand", handle=child)
+
+
+def test_field_rows_say_whether_set_can_change_them(member_worker):
+    _, child = inspected(member_worker)
+    listed = call(member_worker, "expand", handle=child)["variables"]
+    assert {v["name"]: v["settable"] for v in listed} == {"page": True, "nested": False}
+
+
+def test_members_the_runtime_refuses_are_never_written(member_worker):
+    _, child = inspected(member_worker)
+    with pytest.raises(ValueError, match="'nested' cannot be changed: it is final"):
+        call(member_worker, "set_variable", handle=child, name="nested", value="2")
+    _, child = inspected(member_worker)
+    with pytest.raises(ValueError, match="'nope' is not a field or element"):
+        call(member_worker, "set_variable", handle=child, name="nope", value="2")
+    with pytest.raises(ValueError, match="stale expansion handle"):
+        call(member_worker, "set_variable", handle=child, name="page", value="2")
+    assert not any(op == "setVariable" for op, _ in member_worker.dap.calls)
+
+
+def test_other_languages_change_only_root_locals(worker):
+    _, child = inspected(worker)
+    with pytest.raises(ValueError, match="own locals can be changed for this language"):
+        call(worker, "set_variable", handle=child, name="page", value="2")
+    assert not any(op == "setVariable" for op, _ in worker.dap.calls)
+
+
+def test_an_unconfirmed_field_write_closes_the_session(worker):
+    # The debugger reports success but the field still reads its old value.
+    worker.runtime = MemberRuntime()
+    _, child = inspected(worker)
+    with pytest.raises(RuntimeError, match="could not be confirmed"):
+        call(worker, "set_variable", handle=child, name="page", value="2")
+    assert worker.dap is None
+
+
+@pytest.mark.parametrize("args", [{}, {"reference": 1, "handle": 1}, {"handle": "1"}])
+def test_set_variable_takes_a_reference_or_a_handle(member_worker, args):
+    with pytest.raises(ValueError):
+        call(member_worker, "set_variable", name="page", value="2", **args)

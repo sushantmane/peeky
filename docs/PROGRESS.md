@@ -107,7 +107,13 @@ An hourly thread heartbeat (`continue-peeky-mvp`) checks for available usage and
   - Java object numbers count as addresses in `diff` for Java runs; `no_addresses(value, language)` masks them in your own SQL.
   - String and char fields in a preview are Java literals.
   - `merged[0]` and `merged[-1]` index an `ArrayList` through `size` and `elementData`.
-  - Setting fields is #86.
+  - Setting fields is #86 (done, below).
+- **Java fields and array elements take `--set`** (#86).
+  - `--set current.end=10`, `this.count=0`, `arr[0]=1` and `arr[-1]=9` change scalar fields and array elements reached from the stopped method's locals, in a probe or with `session set`.
+  - Final and static fields, Strings, boxed values and an `ArrayList`'s elements are refused (`MUTATION_REJECTED`), and so are map entries in any language. Captured fields and elements carry `settable`.
+  - The worker locates the parent again from its frame and scope and writes through the parent's own reference. It then reads the value back from the object; if the new value cannot be confirmed, the session closes.
+  - Other languages refuse a field or element `--set` at launch, before the program runs.
+  - Example: `examples/java/demo/MergeBug.java` (cookbook 7.3).
 - **Settable locals up front** (#77).
   - Probe rows carry `settable` (`[settable]` in text) for root locals, so the observation probe tells which interventions will work.
   - A refused `--set` lists what can be changed at that stop (`settable here: …`).
@@ -150,11 +156,10 @@ An hourly thread heartbeat (`continue-peeky-mvp`) checks for available usage and
   - The new `gdb-dap` lane keeps that order tested against GDB 15.1; 14.2 and 16.3 were run by hand.
 - **Dependabot:** #1, #3, #4 and #5 were merged. #2 (`upload-artifact` v7) was validated by dispatching `artifact.yml`, then fast-forwarded over SSH as `7308955`, because the API token lacks the `workflow` scope.
 
-**Closed issues:** #6, #7, #8, #9, #10, #11, #12, #13, #48, #49, #53, #55, #56, #57, #58, #59.
+**Closed issues:** #6, #7, #8, #9, #10, #11, #12, #13, #48, #49, #53, #55, #56, #57, #58, #59, #74, #75, #76, #77, #78, #79, #86.
 
 **Open issues:**
 - **#27:** an attached JVM whose `stopped` event is lost (seen once on Venice). The launch case is fixed. 160 targeted stress runs (simple and Venice-like thread churn) did not reproduce it; diagnostics stay in place.
-- **#86**: Java `--set` on scalar fields (split from #78).
 - **#61:** NVIDIA CUDA debugging, sanitizers and profiling, filed by the owner. [ADR 0007](adr/0007-cuda-gdb-dap.md) proposes driving `cuda-gdb -i=dap`; `scripts/cuda/qualify.py` is the phase 0 qualification, and its DAP sequence is tested against upstream GDB (lane `gdb-dap`). Running it needs a Linux host with an NVIDIA GPU, reachable over Peeky's SSH remote worker; this Mac has none.
 
 **Process notes:**

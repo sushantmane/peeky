@@ -1,3 +1,5 @@
+import re
+
 import pytest
 
 from peeky.probe import Probe, parse_location, parse_selector
@@ -69,7 +71,8 @@ def test_locations_require_relative_path_and_positive_line():
         {"capture": ["a"]},
         {"capture": ("a()",)},
         {"capture": ("a",) * 33},
-        {"set": (("a.b", "1"),)},
+        {"set": (("a['b']", "1"),)},
+        {"set": (("a()", "1"),)},
         {"set": (("a", 1),)},
         {"set": (("a", "1"),) * 9},
         {"hits": 0},
@@ -865,3 +868,65 @@ def test_a_cut_java_field_keeps_its_object_number_whole(name):
     assert a.endswith("@998}") and b.endswith("@1003}")
     assert _no_addresses(a, "java") == _no_addresses(b, "java")
     assert _no_addresses(a, "java").endswith("@…}")
+
+
+def test_a_field_set_where_only_locals_change_fails_before_the_program_runs(monkeypatch):
+    # #86: only Java changes fields and elements; elsewhere say so at launch, not at the hit.
+    import peeky.probe as probe_module
+
+    worker = FakeWorker()
+    monkeypatch.setattr(probe_module, "DebugWorker", lambda *args, **kwargs: worker)
+    result = probe_module.run_probe("/w", Probe("main.py", 8, ("x",), (("p.x", "2"),)))
+    assert result["status"] == "failed" and result["error"]["code"] == "MUTATION_REJECTED"
+    assert "can be changed only in Java" in result["error"]["message"]
+    assert "wait" not in worker.calls and "set_variable" not in worker.calls
+
+
+@pytest.mark.parametrize(
+    "selector, value, message",
+    [
+        ("xs[-1]", "Holder@4", "a negative index can be changed only in a Java array"),
+        ("xs[3]", "int[3]@4", "[3] is out of range: the array has 3 elements"),
+        ("xs[-4]", "int[3]@4", "[-4] is out of range: the array has 3 elements"),
+    ],
+)
+def test_indexes_that_name_no_array_element_are_refused_before_any_write(selector, value, message):
+    from peeky.probe import apply_set
+
+    class Holder(FakeWorker):
+        def dispatch(self, operation, args):
+            self.calls.append(operation)
+            if operation == "inspect":
+                variable = {"name": "xs", "value": value, "type": "int[]", "variablesReference": 5}
+                return {"frames": [{}], "scopes": [{"reference": 1, "variables": [variable]}]}
+            raise AssertionError(operation)
+
+    worker = Holder()
+    with pytest.raises(ValueError, match=re.escape(message)):
+        apply_set(worker, {}, selector, "1")
+    assert worker.calls == ["inspect"]
+
+
+def test_an_array_element_from_the_end_is_written_by_its_index():
+    from peeky.probe import apply_set
+
+    class Holder(FakeWorker):
+        def dispatch(self, operation, args):
+            self.calls.append((operation, args))
+            if operation == "inspect":
+                variable = {
+                    "name": "xs",
+                    "value": "int[3]@4",
+                    "type": "int[]",
+                    "variablesReference": 5,
+                }
+                return {"frames": [{}], "scopes": [{"reference": 1, "variables": [variable]}]}
+            return {"name": args["name"], "before": "3", "after": "9"}
+
+    worker = Holder()
+    changed = apply_set(worker, {"stop_id": "t"}, "xs[-1]", "9")
+    assert changed == {"name": "xs[-1]", "before": "3", "after": "9"}
+    assert worker.calls[-1] == (
+        "set_variable",
+        {"stop_id": "t", "handle": 5, "name": "2", "value": "9"},
+    )

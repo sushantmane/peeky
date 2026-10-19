@@ -76,6 +76,24 @@ def test_attached_probe_observes_intervenes_and_detaches_without_killing(attache
 
 
 @pytest.mark.timeout(120)
+def test_an_attached_jvms_array_element_takes_set(attached):
+    # #86: fields and elements change in an attached JVM too.
+    root, target, process, line = attached
+    probe = Probe(SOURCE, line, ("items[3]",), (("items[3]", "99"),))
+    result = run_probe(root, probe, adapter=target)
+    assert result["status"] == "completed", result.get("error")
+    assert [(c["name"], c["before"], c["after"]) for c in result["interventions"]] == [
+        ("items[3]", "40", "99")
+    ]
+    assert {r["phase"]: r["settable"] for r in result["rows"]} == {
+        "observed": True,
+        "after-set": True,
+    }
+    output = process.stdout.read()
+    assert process.wait(timeout=30) == 0 and "PAGE:[99, 50, 60]" in output
+
+
+@pytest.mark.timeout(120)
 def test_attached_session_close_detaches_and_the_jvm_finishes_normally(
     attached, tmp_path, monkeypatch, capsys
 ):

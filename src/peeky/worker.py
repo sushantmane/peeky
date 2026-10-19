@@ -619,7 +619,10 @@ class DebugWorker:
                 if type(value) is not int or value < low or (high is not None and value > high):
                     raise ValueError(f"Invalid expansion {key}")
         if operation == "set_variable":
-            if type(args.get("reference")) is not int:
+            # A root local by its scope's reference, or a member by its parent's handle.
+            if ("reference" in args) == ("handle" in args):
+                raise ValueError("set_variable takes a reference or a handle")
+            if type(args.get("reference", args.get("handle"))) is not int:
                 raise ValueError("reference must be an integer")
             if not isinstance(args.get("name"), str) or not isinstance(args.get("value"), str):
                 raise ValueError("name and value must be strings")
@@ -776,6 +779,10 @@ class DebugWorker:
                         else {}
                     ),
                     "supports_set_variable": self.capabilities.get("supports_set_variable", False),
+                    # Fields and array elements too (Java), not only root locals.
+                    "supports_member_set": self.capabilities.get("supports_set_variable", False)
+                    is True
+                    and hasattr(runtime, "member_settable"),
                     "supports_expand": True,
                     "protocol": PROTOCOL_VERSION,
                     "artifact_manifest_id": runtime.manifest_id,
@@ -994,6 +1001,8 @@ class DebugWorker:
             return self.expand(args, runtime)
         if operation == "set_variable":
             self.stopped(args)
+            if "handle" in args:
+                return self.set_member(args, runtime)
             self.children.clear()
             if not self.capabilities.get("supports_set_variable", False):
                 raise ValueError("Adapter does not support variable mutation")
@@ -1274,7 +1283,9 @@ class DebugWorker:
         return data
 
     def expose_variables(self, variables, frame, scope, ancestry):
-        """Only worker-issued handles leave the process; child handles never permit writes."""
+        """Only worker-issued handles leave the process. A child handle permits a write only
+        to a member the runtime allows (Java fields and array elements), checked again
+        when the write is made."""
         result = []
         view_variable = getattr(self.runtime, "view_variable", None)
         display_value = getattr(self.runtime, "display_value", None)
@@ -1364,6 +1375,12 @@ class DebugWorker:
                     and not self.optimized()
                     and self.has_memory_location(variable)
                     and bool(check(variable, frame))
+                )
+            elif ancestry and (member := getattr(self.runtime, "member_settable", None)):
+                settable = (
+                    self.capabilities.get("supports_set_variable", False) is True
+                    and not self.optimized()
+                    and member(variable) is None
                 )
             path = (*ancestry, (name, kind))
             handle = 0
@@ -1468,6 +1485,101 @@ class DebugWorker:
                 "truncated": start + len(page) < len(elements),
                 "remaining_nodes": 512 - self.inspection_nodes,
             }
+        frame, scope_identity, ancestry, reference, indexed = self.walk(record, runtime)
+        variables = self.bounded_variables(reference, indexed)
+        if validate_children := getattr(runtime, "validate_children", None):
+            validate_children(variables)
+        # Each expansion is its own bounded request with a fresh value-view budget.
+        self.view_fetches = self.view_items = self.view_bytes = 0
+        self.view_deadline = time.monotonic() + VIEW_SECONDS
+        start = args.get("start", 0)
+        count = min(args.get("count", 64), 512 - self.inspection_nodes)
+        result = self.expose_variables(
+            variables[start : start + count], frame, scope_identity, ancestry
+        )
+        runtime.assert_current()
+        return {
+            "variables": result,
+            "start": start,
+            "truncated": start + len(result) < len(variables),
+            "remaining_nodes": 512 - self.inspection_nodes,
+        }
+
+    def set_member(self, args, runtime):
+        """Change a field or element of a value an expansion handle names (Java only).
+
+        The handle only locates the parent: it is walked again from its frame and scope,
+        the member must be listed exactly once, and the runtime decides what may change.
+        The new value is read back from the parent, not taken from the debugger's echo.
+        """
+        record = self.children.get(args["handle"])
+        # A change invalidates every handle: the next read or change inspects again.
+        self.children.clear()
+        self.references.clear()
+        self.reference_frames.clear()
+        self.reference_adapter.clear()
+        check = getattr(runtime, "member_settable", None)
+        if check is None:
+            raise ValueError(
+                "Only the stopped function's own locals can be changed for this language "
+                "(fields and elements cannot)"
+            )
+        if not self.capabilities.get("supports_set_variable", False):
+            raise ValueError("Adapter does not support variable mutation")
+        if record is None or record[0] == "view":
+            raise ValueError("Unknown or stale expansion handle; inspect again")
+        if level := self.optimized():
+            raise ValueError(
+                f"Changing values is refused in an optimized build ({level}); use an "
+                "unoptimized build"
+            )
+        name, value = args["name"], args["value"]
+        runtime.validate_value(value)
+        frame, _, _, reference, indexed = self.walk(record, runtime)
+
+        def member():
+            variables = self.bounded_variables(reference, indexed)
+            if validate_children := getattr(runtime, "validate_children", None):
+                validate_children(variables)
+            return [v for v in variables if v.get("name") == name]
+
+        matches = member()
+        if len(matches) != 1:
+            raise ValueError(f"{name!r} is not a field or element the debugger lists there")
+        variable = matches[0]
+        if reason := check(variable):
+            raise ValueError(f"{name!r} cannot be changed: {reason}")
+        runtime.validate_variable(variable, value)
+        before = variable.get("value")
+        literal = getattr(runtime, "mutation_literal", None)
+        try:
+            changed = self.dap.request(
+                "setVariable",
+                {
+                    "variablesReference": reference,
+                    "name": name,
+                    "value": literal(value) if literal else value,
+                },
+            )
+        except RequestFailed as exc:
+            raise ValueError(
+                f"The debugger refused to change {name!r} ({str(exc)[:200]}); it is unchanged"
+            ) from None
+        runtime.assert_current()
+        after = changed.get("value")
+        reread = member()
+        if len(reread) != 1 or reread[0].get("value") != after:
+            # The write happened but cannot be confirmed: the run's state is unknown.
+            raise RuntimeError(
+                f"The change to {name!r} could not be confirmed: the debugger reported "
+                f"{str(after)[:80]}, and the value now reads "
+                f"{str(reread[0].get('value'))[:80] if len(reread) == 1 else 'nothing'}"
+            )
+        return {"name": name, "before": before, "after": after}
+
+    def walk(self, record, runtime):
+        """The value an expansion handle names, found again from its frame and scope by
+        each step's name and type: (frame, scope identity, path, reference, indexed)."""
         original_frame, scope_identity, ancestry = record
         frames = self.dap.request("stackTrace", {"threadId": self.thread_id, "levels": 10}).get(
             "stackFrames", []
@@ -1499,24 +1611,7 @@ class DebugWorker:
                 raise ValueError("Expansion ancestry changed or is ambiguous")
             reference = matches[0].get("variablesReference")
             indexed = matches[0].get("indexedVariables")
-        variables = self.bounded_variables(reference, indexed)
-        if validate_children:
-            validate_children(variables)
-        # Each expansion is its own bounded request with a fresh value-view budget.
-        self.view_fetches = self.view_items = self.view_bytes = 0
-        self.view_deadline = time.monotonic() + VIEW_SECONDS
-        start = args.get("start", 0)
-        count = min(args.get("count", 64), 512 - self.inspection_nodes)
-        result = self.expose_variables(
-            variables[start : start + count], frame, scope_identity, ancestry
-        )
-        runtime.assert_current()
-        return {
-            "variables": result,
-            "start": start,
-            "truncated": start + len(result) < len(variables),
-            "remaining_nodes": 512 - self.inspection_nodes,
-        }
+        return frame, scope_identity, ancestry, reference, indexed
 
     def close(self):
         adapter, self.dap = self.dap, None

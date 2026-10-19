@@ -18,7 +18,7 @@ import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from peeky.java import java_list, java_preview
+from peeky.java import JAVA_ARRAY, JAVA_LIST, java_list, java_preview
 from peeky.names import display_function
 from peeky.worker import (
     DebugWorker,
@@ -311,9 +311,13 @@ class Probe:
                 not isinstance(change, tuple)
                 or len(change) != 2
                 or not all(isinstance(part, str) for part in change)
-                or len(parse_selector(change[0])) != 1
             ):
-                raise ValueError("Interventions are (local-name, value) string pairs")
+                raise ValueError("Interventions are (selector, value) string pairs")
+            if (last := parse_selector(change[0])[-1]).startswith("[") and _key(last) is not None:
+                raise ValueError(
+                    f"Intervention target {change[0]!r}: map and dict entries cannot be changed; "
+                    "--set changes a local, or in Java a field or array element"
+                )
         if self.hits != "all" and (type(self.hits) is not int or not 1 <= self.hits <= MAX_HITS):
             raise ValueError(f"Probe hits must be 1..{MAX_HITS} or 'all'")
         if type(self.timeout) not in (int, float) or not 0 < self.timeout <= MAX_SECONDS:
@@ -841,8 +845,9 @@ def _capture(worker, stop, selectors, hit, phase, snapshot=None, children=False,
                     row["note"] = _OWNED_RUST
             if "view" in variable:
                 row["view"] = variable["view"]
-            if type(variable.get("settable")) is bool and len(parse_selector(selector)) == 1:
-                # Whether --set can change this local here (C, C++, Rust, Java).
+            if type(variable.get("settable")) is bool:
+                # Whether --set can change this value here: a local (C, C++, Rust, Java),
+                # or a Java field or array element.
                 row["settable"] = variable["settable"]
             if variable.get("debugger_type"):
                 row["debugger_type"] = variable["debugger_type"]
@@ -875,6 +880,72 @@ def _settable_here(snapshot):
         return ""
     names = [variable["name"] for variable in known if variable["settable"]]
     return f"; settable here: {', '.join(names[:20]) if names else 'none'}"
+
+
+def apply_set(worker, stop, name, value):
+    """Apply one `--set name=value` at this stop: a root local, or in Java a field or
+    array element a selector names (`current.end`, `this.count`, `xs[0]`, `xs[-1]`)."""
+    snapshot = worker.dispatch("inspect", stop)
+    segments = parse_selector(name)
+    if len(segments) == 1:
+        scope = next(
+            (s for s in snapshot["scopes"] if any(v["name"] == name for v in s["variables"])),
+            None,
+        )
+        if scope is None:
+            raise ValueError(
+                f"Intervention target {name!r} is not a visible local; "
+                f"visible: {_visible(snapshot)}"
+                + _member_hint(worker, stop, snapshot, name).replace(
+                    "select it as", "it can be read and, in Java, changed as"
+                )
+                + "; only the stopped function's own locals can be changed"
+            )
+        try:
+            return worker.dispatch(
+                "set_variable",
+                {**stop, "reference": scope["reference"], "name": name, "value": value},
+            )
+        except ValueError as exc:
+            raise ValueError(f"{exc}{_settable_here(snapshot)}") from None
+    target = f"Intervention target {name!r}"
+    try:
+        parent = _resolve(worker, stop, snapshot, segments[:-1])
+    except ValueError as exc:
+        raise ValueError(f"{target}: {exc}") from None
+    last, value_shown = segments[-1], str(parent.get("value"))[:80]
+    member = last
+    if last.startswith("["):
+        index = int(last[1:-1])
+        if JAVA_LIST.fullmatch(str(parent.get("type"))):
+            raise ValueError(
+                f"{target}: an ArrayList's elements are objects (boxed) and cannot be "
+                f"changed; change a field of one ({name}.field), or an array's element"
+            )
+        array = JAVA_ARRAY.fullmatch(str(parent.get("value")))
+        if index < 0 and not array:
+            raise ValueError(f"{target}: a negative index can be changed only in a Java array")
+        if array and not -int(array[1]) <= index < int(array[1]):
+            raise ValueError(f"{target}: {last} is out of range: the array has {array[1]} elements")
+        if index < 0:
+            index += int(array[1])
+        member = str(index)
+    if not parent.get("variablesReference"):
+        if parent.get("unavailable"):
+            raise ValueError(f"{target}: the value has no value here: {parent.get('reason')}")
+        if parent.get("depth_limited"):
+            raise ValueError(
+                f"{target}: it is below the inspection depth limit (4 levels below a local)"
+            )
+        raise ValueError(f"{target}: the value it is in has no fields or elements ({value_shown})")
+    try:
+        changed = worker.dispatch(
+            "set_variable",
+            {**stop, "handle": parent["variablesReference"], "name": member, "value": value},
+        )
+    except ValueError as exc:
+        raise ValueError(f"{target}: {exc}") from None
+    return {**changed, "name": name}
 
 
 _KEY_NAME = re.compile(_KEY_LITERAL)
@@ -974,6 +1045,13 @@ def run_probe(root, probe, *, adapter=None, progress=None):
         # live service) does not, since every read lengthens its pause.
         identity = launch["target_identity"] if isinstance(launch["target_identity"], dict) else {}
         previews = identity.get("language") == "java" and identity.get("mode") != "attach"
+        if not launch.get("supports_member_set") and any(
+            len(parse_selector(name)) > 1 for name, _ in probe.set
+        ):
+            raise ValueError(
+                "--set changes only the stopped function's own locals here; fields and "
+                "array elements can be changed only in Java"
+            )
         if probe.edit:
             result["candidate"]["sha256"] = launch.get("candidate_sha256")
         if "program_args" in launch:
@@ -1056,38 +1134,7 @@ def run_probe(root, probe, *, adapter=None, progress=None):
             )
             if hits == probe.set_hit and probe.set:
                 for name, value in probe.set:
-                    snapshot = worker.dispatch("inspect", stop)
-                    scope = next(
-                        (
-                            s
-                            for s in snapshot["scopes"]
-                            if any(v["name"] == name for v in s["variables"])
-                        ),
-                        None,
-                    )
-                    if scope is None:
-                        raise ValueError(
-                            f"Intervention target {name!r} is not a visible local; "
-                            f"visible: {_visible(snapshot)}"
-                            + _member_hint(worker, stop, snapshot, name).replace(
-                                "select it as", "it can be read as"
-                            )
-                            + "; only the stopped function's own locals can be changed"
-                        )
-                    try:
-                        changes.append(
-                            worker.dispatch(
-                                "set_variable",
-                                {
-                                    **stop,
-                                    "reference": scope["reference"],
-                                    "name": name,
-                                    "value": value,
-                                },
-                            )
-                        )
-                    except ValueError as exc:
-                        raise ValueError(f"{exc}{_settable_here(snapshot)}") from None
+                    changes.append(apply_set(worker, stop, name, value))
                 rows.extend(
                     _capture(worker, stop, probe.capture, hits, "after-set", preview=previews)
                 )
@@ -1327,7 +1374,10 @@ def main(argv=None):
     parser.add_argument("--at", required=True, help="Probe location <path>:<line>")
     parser.add_argument("--capture", default="", help="Comma-separated selectors, e.g. a,b.c")
     parser.add_argument(
-        "--set", action="append", default=[], help="Local intervention name=value (repeatable)"
+        "--set",
+        action="append",
+        default=[],
+        help="Intervention name=value: a local, or a Java field or array element (repeatable)",
     )
     parser.add_argument(
         "--hits", type=parse_hits, default=1, help="Stops to capture, or 'all' (default 1)"
