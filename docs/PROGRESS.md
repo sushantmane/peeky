@@ -109,7 +109,8 @@ An hourly thread heartbeat (`continue-peeky-mvp`) checks for available usage and
   - `merged[0]` and `merged[-1]` index an `ArrayList` through `size` and `elementData`.
   - Setting fields is #86 (done, below).
 - **Smaller evidence and describe gaps** (#93, from the fourth evaluation).
-  - The `evidence` and `last_run` views have each run's `language` and `output` (schema 5; older stores upgrade in place), so values and output compare without a join, and `no_addresses(value, language)` works on the view.
+  - The `evidence` and `last_run` views have each run's `language` (schema 5; older stores upgrade in place), so `no_addresses(value, language)` works on the view. The program's output stays in `runs.output`: on every row it made `SELECT * FROM last_run` repeat up to 256 KB per row and hit the result cap. An ambiguous column after a JOIN says the views already carry the run's columns.
+  - `describe` merges a generic Rust function's instantiations into one scope (`list (&[char] or &[i32])`) and leaves out unnamed struct, union, class and enum types.
   - `describe` gives C, C++ and Rust locals' types (`ms (int), us (long long)`).
   - `session inspect` names the hit (`…:3 in <module>, hit 3`), as `start` and `continue` do.
   - Kept: paths print resolved (`/private/tmp` on macOS); tests and outputs rely on one form.

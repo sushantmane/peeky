@@ -700,3 +700,17 @@ Checked and found sound:
 | 6 | (verification of 9c694f3) Nothing wrong: comparing the old and new results over nine sets of classes, only implicit constructors changed. Constructors with lambdas, method references, enum and String switches, local and anonymous classes keep their own lines. Optional: a static initializer (`<clinit>`) spanned a method between static fields in the same way. | Low (display) | **Fixed:** the same bound applies to `<clinit>`. Test: the implicit-constructor test, with static fields around `m`. |
 
 The final verification found nothing wrong.
+
+## Review of evidence gaps (#97, 378fcf8)
+
+Checked and found sound:
+- **Migration:** the reader's upgrade is safe under `BEGIN IMMEDIATE` and rechecks the version once it holds the lock. Fresh and migrated views are identical. An older Peeky refuses a version-5 store, for reads and writes, with a clear message.
+- **Types:** arrays, function pointers, typedefs, const and volatile, references, templates, and types that live on the abstract origin all come out right.
+- **`inspect`:** no hit is shown after a step or a `--to` stop, and `start` shows the same number.
+- **Timeouts:** `debugger_events` holds only event and command names, reasons and thread ids, never values or program output. It is not stored, and it is bounded at 80 entries.
+
+| # | Finding | Severity | Disposition |
+| --- | --- | --- | --- |
+| 1 | The views carried `r.output` on every capture row, so `SELECT * FROM last_run`, which Peeky's own `sql` help suggests, repeated up to 256 KB of output per row. It stopped at the 16 MB result cap with 159 of 200 rows, and `--json` grew from 118 KB to 16 MB. SQL that joined `evidence` with `runs` and named `language` or `output` without a prefix also became ambiguous. | Medium | **Fixed:** the views keep `language` (small, and needed for `no_addresses(value, language)`), but not `output`, which stays in `runs.output`, one `JOIN runs r USING (run_id)` away. An ambiguous column now says that the views already carry their run's columns and lists them. Test: `test_the_evidence_view_has_language_and_output_stays_one_join_away` (200 rows of a 200 KB-output run, untruncated). |
+| 2 | Scopes were deduplicated with their types, and Rust's names drop the generic arguments, so each instantiation of a generic function became its own `describe` scope, which also counted toward `MAX_SCOPES`. | Low | **Fixed:** scopes merge on name, source, lines and names; their types join (`&[char] or &[i32]`). Test: `test_describe_merges_a_generic_functions_instantiations` (real cargo build). |
+| 3 | Unnamed types showed as dwarfdump's tag words: `structure `, `union `, `class ` (a lambda), `const class  *`. | Low | **Fixed:** such types are left out, and the names stay listed. Test: `test_describe_leaves_out_types_a_program_cannot_write` (real C and C++ builds). |

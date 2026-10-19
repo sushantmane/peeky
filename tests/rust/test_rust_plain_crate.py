@@ -262,3 +262,32 @@ def test_the_char_table_is_what_the_pinned_rust_prints():
         os.environ["PEEKY_RUST_CARGO"], os.environ["PEEKY_RUST_RUSTC"]
     )
     assert (version, unicode, ranges) == (RUST_VERSION, UNICODE_VERSION, ESCAPED)
+
+
+GENERIC = """fn largest<T: PartialOrd + Copy>(list: &[T]) -> T {
+    let mut largest = list[0];
+    for &item in list {
+        if item > largest {
+            largest = item;
+        }
+    }
+    largest
+}
+
+fn main() {
+    println!("{} {}", largest(&[3, 9, 2]), largest(&['a', 'z']));
+}
+"""
+
+
+@pytest.mark.timeout(300)
+def test_describe_merges_a_generic_functions_instantiations(plain, capsys):
+    # Review of #97: each instantiation was its own scope once types were listed.
+    (plain / "src/main.rs").write_text(GENERIC)
+    assert main(["describe", str(plain), "--json"]) == 0
+    scopes = [
+        s for s in json.loads(capsys.readouterr().out)["scopes"] if s["scope"] == "chars::largest"
+    ]
+    assert len(scopes) == 1, scopes
+    assert scopes[0]["types"]["list"] == "&[char] or &[i32]"
+    assert scopes[0]["types"]["item"] == "char or i32"

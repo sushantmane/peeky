@@ -326,7 +326,7 @@ peeky queries               # canned questions: runs, run, hits, compare, diff, 
 | `runs` | probe run: inputs, interventions, status, output, build identity |
 | `captures` | selector × hit × phase; `num` holds the value as a number |
 | `interventions`, `pauses` | applied `--set`, pause per hit |
-| `evidence` (view) | captures joined with their run (with its `language` and `output`): no JOIN needed |
+| `evidence` (view) | captures joined with their run (with its `language`): no JOIN needed; output is `runs.output` |
 | `last_run` (view) | the evidence rows of the newest run |
 
 ### 4.2 The Newest Run

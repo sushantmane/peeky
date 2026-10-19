@@ -376,6 +376,11 @@ def _qualified(dies, offset, depth=0):
     return "::".join(reversed(parts))
 
 
+_ANONYMOUS = re.compile(
+    r"(?:(?:const|volatile) +)*(?:structure|union|class|enumeration) *(?:(?:const|volatile)? *[*&] *)*"
+)
+
+
 def _locals(dies, offset):
     """{name: {types}} for the parameters and variables of one function body, including
     nested blocks but not the bodies of calls inlined into it. A type is the name
@@ -391,6 +396,10 @@ def _locals(dies, offset):
             if name and not name.startswith("$"):
                 reference = _REFERENCE.fullmatch(_first(dies, chain, "DW_AT_type") or "")
                 kind = _text(f'"{reference[2]}"') if reference and reference[2] else None
+                if kind and _ANONYMOUS.fullmatch(kind):
+                    # dwarfdump names an unnamed struct, union, class (a lambda) or enum
+                    # by its tag alone (`structure `): no type a program could write.
+                    kind = None
                 names.setdefault(name, set()).update({kind} if kind else set())
         elif die["tag"] == "DW_TAG_lexical_block":
             pending.extend(die["children"])
@@ -500,17 +509,23 @@ def function_scopes(info, line_text, workspace, declared):
         for body in (*entry["bodies"], root):
             for local, kinds in _locals(dies, body).items():
                 names.setdefault(local, set()).update(kinds)
-        # Two blocks may declare one name with different types (`int or long`).
-        types = {local: " or ".join(sorted(kinds)) for local, kinds in names.items() if kinds}
         scope = {
             "scope": name,
             "source": source,
             "lines": [min(numbers), max(numbers)],
             "names": sorted(names),
-            **({"types": dict(sorted(types.items()))} if types else {}),
         }
-        found[json.dumps(scope, sort_keys=True)] = scope
-    scopes = sorted(found.values(), key=lambda s: (s["source"], s["lines"][0], s["scope"]))
+        # Instantiations of one generic function (Rust's names drop the generic
+        # arguments) are one scope; their types join (`&[i32] or &[char]`).
+        merged = found.setdefault(json.dumps(scope, sort_keys=True), (scope, {}))[1]
+        for local, kinds in names.items():
+            merged.setdefault(local, set()).update(kinds)
+    scopes = []
+    for scope, kinds in found.values():
+        # Two blocks may declare one name with different types (`int or long`).
+        types = {local: " or ".join(sorted(k)) for local, k in sorted(kinds.items()) if k}
+        scopes.append({**scope, **({"types": types} if types else {})})
+    scopes.sort(key=lambda s: (s["source"], s["lines"][0], s["scope"]))
     if len(scopes) > MAX_SCOPES:
         scopes = [*scopes[:MAX_SCOPES], {"omitted": len(scopes) - MAX_SCOPES}]
     return scopes

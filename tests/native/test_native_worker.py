@@ -716,3 +716,44 @@ def test_a_step_interrupted_by_another_threads_hit_can_still_step(
         output = capsys.readouterr().out
         assert "A10" in output and "B20" in output
         assert main(["session", "close"]) == 0
+
+
+def test_describe_leaves_out_types_a_program_cannot_write(tmp_path, native_config, capsys):
+    # Review of #97: dwarfdump names unnamed types by their tag (`structure `).
+    from peeky.cli import main
+
+    (tmp_path / "anon.c").write_text(
+        "#include <stdio.h>\n"
+        "int main(void) {\n"
+        "    struct { int x; } inl = {1};\n"
+        "    union { int a; float b; } un = {2};\n"
+        "    struct { int y; } *ptr = 0;\n"
+        "    int plain = inl.x + un.a + (ptr != 0);\n"
+        '    printf("%d\\n", plain);\n'
+        "    return 0;\n"
+        "}\n"
+    )
+    (tmp_path / "lam.cpp").write_text(
+        "#include <cstdio>\n"
+        "int main() {\n"
+        "    int base = 3;\n"
+        "    auto add = [base](int v) { return v + base; };\n"
+        '    std::printf("%d\\n", add(4));\n'
+        "    return 0;\n"
+        "}\n"
+    )
+    for name, typed, untyped in (
+        ("anon.c", {"plain": "int"}, ("inl", "un", "ptr")),
+        ("lam.cpp", {"base": "int"}, ("add",)),
+    ):
+        assert main(["describe", str(tmp_path / name), "--json"]) == 0
+        scopes = json.loads(capsys.readouterr().out)["scopes"]
+        scope = next(s for s in scopes if s["scope"] == "main")
+        assert set(untyped) <= set(scope["names"])
+        assert scope.get("types", {}) == typed, scope
+        assert not any(
+            word in kind
+            for s in scopes
+            for kind in s.get("types", {}).values()
+            for word in ("structure", "union ", "class ")
+        ), scopes
