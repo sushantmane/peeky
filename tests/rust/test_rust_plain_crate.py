@@ -791,11 +791,25 @@ fn by_ref<T: Debug>(t: T) -> T {
     t
 }
 
+fn px(p: &Pt) -> i64 {
+    p.x
+}
+
+fn h0(b: &[u8; 4]) -> u8 {
+    b[0]
+}
+
 fn closures(items: &[i64]) -> i64 {
     let p = Pt { x: 10, y: 1 };
     let refs = vec![&p, &p];
     let fs: [fn(i64) -> i64; 2] = [|k| k * 2, |k| k + 1];
-    items.iter().map(|k| k + refs.len() as i64 + fs[0](*k) + p.x).sum() // CAPTURE
+    let g: fn(&Pt) -> i64 = px;
+    let hs: [fn(&[u8; 4]) -> u8; 2] = [h0, h0];
+    let total: i64 = items.iter().map(|k| k + refs.len() as i64 + fs[0](*k) + p.x).sum(); // CAPTURE
+    let inner = || {
+        g(&p) + hs[1](&[1; 4]) as i64 + refs.len() as i64 // INNER
+    };
+    total + inner()
 }
 
 #[unsafe(no_mangle)]
@@ -857,9 +871,18 @@ def test_generic_boxes_are_gated_and_non_owning_values_read(plain, capsys):
     assert result["rows"][0].get("view") != "unproven", result["rows"]
     at = f"src/main.rs:{line_of(BOX_GENERIC, '// CAPTURE')}"
     code, result = run(
-        capsys, "probe", str(plain), "--at", at, "--capture", "refs.len,fs,p.x", "--quiet"
+        capsys, "probe", str(plain), "--at", at, "--capture", "refs.len,fs,p.x,g,hs", "--quiet"
     )
-    values = [row.get("value") for row in result["rows"]]
-    assert values[0] == "2" and values[2] == "10" and "view" not in result["rows"][1], result[
-        "rows"
-    ]
+    rows = result["rows"]
+    assert rows[0].get("value") == "2" and rows[2].get("value") == "10", rows
+    # Verification of #103: a captured `fn(&Pt)` (MIR: `for<'a> fn(&'a Pt) -> i64`) and
+    # an array of fn pointers whose parameter LLDB names `unsigned char (*)[4]` read.
+    assert not any(row.get("view") for row in rows), rows
+    assert "px" in str(rows[3].get("value")), rows
+    assert "not shown" not in str(rows[4].get("value")), rows
+    at = f"src/main.rs:{line_of(BOX_GENERIC, '// INNER')}"
+    code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "g,hs", "--quiet")
+    assert code == 0, result.get("error")
+    g, hs = result["rows"]
+    assert "view" not in g and "px" in str(g.get("value")), result["rows"]
+    assert "view" not in hs and "not shown" not in str(hs.get("value")), result["rows"]

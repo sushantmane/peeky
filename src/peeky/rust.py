@@ -742,11 +742,41 @@ def _is_pointer(kind):
     text = str(kind or "")
     while (stripped := re.sub(r"<[^<>]*>", "", text)) != text:
         text = stripped
-    return bool(re.search(r"\*\s*$|\(\*+\)", text))
+    if re.search(r"\*\s*(?:const\s*)?$", text):
+        return True
+    # The innermost `(*…)` group decides: what follows its stars is the declared thing's
+    # own suffix (`[2]` array, `(…)` function) or a deeper group; nothing means pointer.
+    while (group := _declarator_group(text)) is not None:
+        text = re.sub(r"^(?:\s*(?:\*|const\b|volatile\b|restrict\b))*\s*", "", group)
+        if not text:
+            return True
+        if not re.match(r"\(\s*\*", text):
+            return False
+    return False
 
 
-# MIR types that do not own what they point at.
-_NON_OWNING = re.compile(r"&|\*const |\*mut |(?:unsafe )?(?:extern \S+ )?fn\(")
+def _declarator_group(text):
+    """The contents of the first `(*…)` group outside any parentheses or brackets, so a
+    parameter list's `(*)` (`unsigned char (*[2])(unsigned char (*)[4])`) or a tuple's
+    element never counts."""
+    depth = 0
+    for at, char in enumerate(text):
+        if char in "([":
+            if depth == 0 and char == "(" and text[at + 1 :].lstrip().startswith("*"):
+                level = 0
+                for end in range(at, len(text)):
+                    level += {"(": 1, ")": -1}.get(text[end], 0)
+                    if level == 0:
+                        return text[at + 1 : end]
+                return None
+            depth += 1
+        elif char in ")]":
+            depth -= 1
+    return None
+
+
+# MIR types that do not own what they point at (`for<'a> fn(&'a T)` has a binder).
+_NON_OWNING = re.compile(r"&|\*const |\*mut |(?:for<[^<>]*> )?(?:unsafe )?(?:extern \S+ )?fn\(")
 
 
 class RustSession(NativeSession):
