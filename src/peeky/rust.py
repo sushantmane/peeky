@@ -887,8 +887,12 @@ class RustSession(NativeSession):
         if container is not None:
             return container
         if hashed and proofs is not None and self.target.opt_level == "0":
-            declared = proofs.declared_type(hashed[1], variable.get("name")) or ""
-            if declared.startswith("std::boxed::Box<") and not (
+            declared = proofs.binding_type(hashed[1], variable.get("name"))
+            owning = bool(re.match(r"(?:std::boxed::|alloc::boxed::)?Box<", declared or ""))
+            # A pointer whose MIR binding cannot be identified (a name bound twice) may
+            # be a Box too: it fails closed, like an unproven Box.
+            unknown = declared is None and str(variable.get("type") or "").rstrip().endswith("*")
+            if (owning or unknown) and not (
                 innermost
                 and proofs.proven(
                     hashed[1],

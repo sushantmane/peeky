@@ -641,3 +641,15 @@ def test_arguments_take_their_types_from_the_header():
         3: "fn(u8) -> u8",
         4: "usize",
     }
+
+
+def test_projected_bindings_and_quoted_labels():
+    # Review of #103: a closure's or async body's binding through a projection names
+    # its type; LLVM quotes labels with `$` (an inlined `Box::new`'s exit block).
+    from peeky.rust_mir import _LABEL, _PROJECTED
+
+    assert _PROJECTED.fullmatch("(_1.0: std::boxed::Box<Pt>)")[1] == "std::boxed::Box<Pt>"
+    assert _PROJECTED.fullmatch("(((*_36) as variant#3).0: (i32, char))")[1] == "(i32, char)"
+    assert _PROJECTED.fullmatch("_3") is None
+    label = _LABEL.match('"_ZN5alloc5boxed12Box$LT$T$GT$3new17h01E.exit47":   ; preds = %start')
+    assert label[1] == '"_ZN5alloc5boxed12Box$LT$T$GT$3new17h01E.exit47"' and label[2] == "%start"

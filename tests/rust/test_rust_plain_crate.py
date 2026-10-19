@@ -538,3 +538,64 @@ def test_a_moved_or_dropped_box_shows_only_its_pointer(plain, capsys):
     at = f"src/main.rs:{line_of(BOXES, 'LIVE')}"
     code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "bp.x", "--quiet")
     assert result["rows"][0]["value"] == "1"
+
+
+BOX_PLACES = """#[derive(Debug)]
+struct Pt {
+    x: i64,
+    y: i64,
+}
+
+fn param(b: Box<Pt>) -> i64 {
+    let first = b.x;
+    drop(b);
+    let again = Box::new(Pt { x: 777, y: 888 });
+    first + again.x // PARAM
+}
+
+fn fresh() -> i64 {
+    let b = Box::new(Pt { x: 1, y: 2 });
+    println!("{}", b.x); // FRESH
+    b.y
+}
+
+fn twice() -> i64 {
+    let b = Box::new(Pt { x: 1, y: 2 });
+    drop(b);
+    let again = Box::new(Pt { x: 555, y: 0 });
+    let r = again.x; // TWICE
+    {
+        let b = 7i64;
+        r + b
+    }
+}
+
+fn main() {
+    let b = Box::new(Pt { x: 5, y: 6 });
+    let f = move || {
+        let first = b.x;
+        drop(b);
+        let again = Box::new(Pt { x: 999, y: 0 });
+        first + again.x // CLOSURE
+    };
+    println!("{} {} {} {}", param(Box::new(Pt { x: 10, y: 20 })), fresh(), twice(), f());
+}
+"""
+
+
+@pytest.mark.timeout(300)
+def test_boxes_in_parameters_closures_and_reused_names_are_gated(plain, capsys):
+    # Review of #103: a dropped Box parameter (MIR spells it `Box<Pt>`), a closure's
+    # captured Box and a name bound twice read freed memory; a fresh Box right after
+    # `Box::new` was hidden (LLVM quotes the inlined constructor's exit label).
+    (plain / "src/main.rs").write_text(BOX_PLACES)
+    for marker in ("PARAM", "TWICE", "CLOSURE", "FRESH"):
+        at = f"src/main.rs:{line_of(BOX_PLACES, marker)}"
+        code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "b,b.x", "--quiet")
+        assert code == 0, result.get("error")
+        rows = {row["selector"]: row for row in result["rows"]}
+        if marker == "FRESH":
+            assert rows["b.x"]["value"] == "1" and "view" not in rows["b"], rows
+        else:
+            assert rows["b"]["view"] == "unproven", (marker, rows["b"])
+            assert "value" not in rows["b.x"], (marker, rows["b.x"])

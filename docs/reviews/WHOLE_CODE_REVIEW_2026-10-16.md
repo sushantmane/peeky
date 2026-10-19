@@ -778,3 +778,18 @@ The final verification (b3a3002) found nothing wrong.
 - **Rust:** stays refused.
 - **Older, filed as #102:** a pointer to an array indexes its pointee (`parr[1]` is `(*parr)[1]`, as the cookbook says), not C's rows.
 
+
+## Review of moved or dropped Boxes (#103, 0e3f6b0)
+
+Checked and found sound:
+- **Box kinds:** `Box<T>`, `Box<[T]>`, `Box<str>` and `Box<dyn Trait>` `let` locals are gated, and so are shadowed names (`b @ main.rs:N`).
+- **`--set`:** refused on a Box and on its fields.
+- **Other owners:** `Option<Box<T>>` stays opaque, and `Rc` contents stop at the depth limit.
+- **Frames:** outer frames and a move on the stop line are gated, as for `Vec`.
+
+| # | Finding | Severity | Disposition |
+| --- | --- | --- | --- |
+| 1 | A Box parameter was never gated: the MIR header spells it `Box<Pt>`, not `std::boxed::Box<Pt>`. After `drop(b)` in the callee, `b.x` read a later Box's `777`. | High | **Fixed:** both spellings (and `alloc::boxed::`) count. Test: `test_boxes_in_parameters_closures_and_reused_names_are_gated` (`PARAM`). |
+| 2 | The gate failed open when the MIR binding could not be identified: a closure's captured Box (`debug b => (_1.0: std::boxed::Box<Pt>)`), an async body's, a name bound twice. Each read a later Box's values. | High | **Fixed:** a binding through a projection gives its type (`binding_type`), and a pointer whose binding is unknown fails closed, showing only its pointer. Test: the same test (`CLOSURE`, `TWICE`). |
+| 3 | A live Box was hidden on the line after `let b = Box::new(..)`. LLVM quotes the inlined constructor's exit label (`"…Box$LT$T$GT$3new….exit47":`), which the IR reader did not parse, so the MIR proof was missing. The note then said it "may be moved or dropped". | Medium | **Fixed:** quoted labels and predecessors are parsed. Tests: the same test (`FRESH` reads `b.x` = 1), and `test_projected_bindings_and_quoted_labels`. |
+| 4 | Older, separate: a moved struct's Box field (`h.b.x` after `drop(h)`) reads freed memory. | High | Filed as #108. |

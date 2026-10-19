@@ -616,10 +616,10 @@ _COMPOSITE_RUST = (
     "or read it where it is passed as &Vec or &[T], and check contents with `peeky verify`."
 )
 _UNPROVEN_RUST = (
-    "this Rust Box shows only its pointer: Peeky reads a Box's contents only where the "
-    "build's MIR proves it initialized at the stop line, in the innermost frame, and here "
-    "it may be moved or dropped, so its pointer can reach freed memory (#101). Probe a line "
-    "where it is live"
+    "this Rust Box (or a pointer the build's MIR does not identify) shows only its pointer: "
+    "Peeky reads what it points at only where the build's MIR proves it initialized at the "
+    "stop line, in the innermost frame, and here it may be moved or dropped, so its pointer "
+    "can reach freed memory (#101). Probe a line where it is live"
 )
 _UNREAD_RUST = (
     "Peeky reads Rust contents only for String, &str and containers of integer, bool, "

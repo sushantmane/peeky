@@ -45,6 +45,8 @@ _BLOCK = re.compile(r"^    bb([0-9]+)(?: \(cleanup\))?: \{$")
 _STATEMENT = re.compile(r"^        (.+;) +// scope [0-9]+ at (.+)$")
 _SPAN = re.compile(r"^([^:]+):([0-9]+):[0-9]+")
 _WHOLE_LOCAL = re.compile(r"^_([0-9]+)$")
+# A binding through a projection names its type: `(_1.0: std::boxed::Box<Pt>)`.
+_PROJECTED = re.compile(r"\(.+: ((?:[^()]|\([^()]*\))+)\)")
 _MOVE = re.compile(r"\bmove\s+[(*]*_([0-9]+)\b")
 _ASSIGN = re.compile(r"^_([0-9]+) = ")
 _STORAGE = re.compile(r"^(?:StorageLive|StorageDead|Deinit)\(_([0-9]+)\);$")
@@ -77,6 +79,9 @@ class Body:
     # same-file macros it expands).
     lines: frozenset = frozenset()
     types: dict = field(default_factory=dict)  # {local: its type as MIR prints it}
+    # {name: [type]} of bindings through a projection (a closure's capture, an async
+    # local: `debug b => (_1.0: std::boxed::Box<Pt>)`), which have no whole local.
+    projected: dict = field(default_factory=dict)
     _entry: dict | None = None
 
     @property
@@ -345,6 +350,8 @@ def parse_body(text):
             body.bindings.setdefault(debug[1], []).append(
                 (int(whole[1]) if whole else None, debug[3], int(debug[4]))
             )
+            if not whole and (typed := _PROJECTED.fullmatch(debug[2])):
+                body.projected.setdefault(debug[1], []).append(typed[1])
             spans.append((debug[3], int(debug[4])))
             continue
         if opened := _BLOCK.match(line):
@@ -415,7 +422,8 @@ _DEFINE = re.compile(r'^define .*?@("?)([^"(\s]+)\1\(.*!dbg (![0-9]+) \{$')
 _LEGACY_HASH = re.compile(r"17(h[0-9a-f]{16})E$")
 # A block codegen left unreachable (the dead arm of `if cfg!(debug_assertions)` in
 # `debug_assert!`) is labeled `; No predecessors!`.
-_LABEL = re.compile(r"^([-$._A-Za-z0-9]+):(?:\s+; (?:preds = (.*)|No predecessors!))?$")
+# LLVM quotes a label with characters such as `$` (an inlined `Box::new`'s exit block).
+_LABEL = re.compile(r'^([-$._A-Za-z0-9]+|"[^"]+"):(?:\s+; (?:preds = (.*)|No predecessors!))?$')
 _DBG = re.compile(r"!dbg (![0-9]+)")
 _META = re.compile(
     r"^(![0-9]+) = (?:distinct )?!(DILocation|DISubprogram|DILexicalBlock|DILexicalBlockFile"
@@ -504,10 +512,13 @@ def ir_functions(path, files):
                 current = None
                 continue
             if label := _LABEL.match(line.rstrip()):
-                current[4][0] = label[1]
-                current[2].setdefault(label[1], [])
+                name = label[1].strip('"')
+                current[4][0] = name
+                current[2].setdefault(name, [])
                 if label[2]:
-                    current[3][label[1]] = [p.strip().lstrip("%") for p in label[2].split(",")]
+                    current[3][name] = [
+                        p.strip().lstrip("%").strip('"') for p in label[2].split(",")
+                    ]
                 continue
             if "@llvm.dbg." in line or line.lstrip().startswith("#dbg_"):
                 continue
@@ -633,6 +644,19 @@ class OwnedLocals:
         body = self.body(hashed)
         local = self._local(body, variable_name) if body is not None else None
         return None if local is None else body.types.get(local)
+
+    def binding_type(self, hashed, variable_name):
+        """The MIR type of what lldb-dap shows as ``variable_name``: a whole local's, or
+        a single projected binding's (a closure capture, an async local). None when the
+        name is unknown or bound more than once."""
+        if (found := self.declared_type(hashed, variable_name)) is not None:
+            return found
+        body = self.body(hashed)
+        name = str(variable_name).partition(" @ ")[0]
+        if body is None or len(body.bindings.get(name, ())) != 1:
+            return None
+        projected = body.projected.get(name, ())
+        return projected[0] if len(projected) == 1 else None
 
     def proven(self, hashed, variable_name, line, path):
         """True only if the frame's local ``variable_name`` (an lldb-dap name: `v`, or
