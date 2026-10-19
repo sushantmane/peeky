@@ -284,3 +284,69 @@ def test_a_live_for_counter_at_a_step_stop_on_its_header_is_shown(bucket, capsys
     snapshot, shown = session_inspect(capsys, program, 4, 2, hit=2)
     assert snapshot["location"].endswith("for.c:3"), snapshot["location"]
     assert shown["i"]["value"] == "1" and not shown["i"].get("unavailable"), shown["i"]
+
+
+CONVERT = """#include <stdio.h>
+long long convert(int ms) {
+    long long us = ms * 1000;
+    return us;
+}
+int main(void) {
+    long long total = 0;
+    for (int i = 0; i < 3; i++) total += convert(i + 1);
+    for (int j = 0; j < 2; j++) {
+        int sq = j * j;
+        total += sq;
+    }
+    printf("TOTAL:%lld\\n", total);
+    return 0;
+}
+"""
+
+
+@pytest.fixture
+def convert(tmp_path, monkeypatch):
+    if not os.environ.get("PEEKY_NATIVE_DAP"):
+        pytest.skip("set PEEKY_NATIVE_DAP and native tool paths to enable native conformance")
+    monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
+    (tmp_path / "convert.c").write_text(CONVERT)
+    return tmp_path / "convert.c"
+
+
+@pytest.mark.timeout(120)
+def test_a_local_declared_on_the_stop_line_is_withheld_at_its_first_instruction(convert, capsys):
+    # #92 (eval 4, C): `us` showed the previous call's 1000 at its own declaration line.
+    code, result = probe(capsys, convert, "--at", "3", "--capture", "us,ms", "--hits", "3")
+    assert code == 0, result.get("error")
+    for row in result["rows"]:
+        if row["selector"] == "us":
+            assert (
+                "value" not in row and "declared on line 3, which has not run yet" in row["error"]
+            )
+            assert row.get("settable") is False
+        else:
+            assert row["value"] == str(row["hit"])
+    # Each iteration's first stop on a loop body line holds the last iteration's value.
+    code, result = probe(capsys, convert, "--at", "10", "--capture", "sq,j", "--hits", "2")
+    rows = {(row["hit"], row["selector"]): row for row in result["rows"]}
+    assert all("value" not in rows[hit, "sq"] for hit in (1, 2))
+    assert [rows[hit, "j"]["value"] for hit in (1, 2)] == ["0", "1"]
+    code, result = probe(capsys, convert, "--at", "3", "--capture", "ms", "--set", "us=5")
+    assert code == 1 and result["error"]["code"] == "MUTATION_REJECTED"
+    assert "declared on line 3" in result["error"]["message"]
+
+
+@pytest.mark.timeout(120)
+def test_mid_line_stops_on_a_declaration_line_show_the_value(convert, capsys):
+    # A return from a call stops mid-line, where the one-line loop's `i` is live.
+    main(["session", "start", str(convert), "--at", "3", "--hit", "2"])
+    capsys.readouterr()
+    try:
+        assert main(["session", "step", "--out"]) == 0
+        assert ":8 in main" in capsys.readouterr().out
+        assert main(["session", "get", "i", "--json"]) == 0
+        rows = json.loads(capsys.readouterr().out)
+    finally:
+        main(["session", "close"])
+        capsys.readouterr()
+    assert rows[0]["value"] == "1"

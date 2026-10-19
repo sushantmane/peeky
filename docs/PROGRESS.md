@@ -152,6 +152,9 @@ An hourly thread heartbeat (`continue-peeky-mvp`) checks for available usage and
   - LLDB's name is kept as `debugger_type`.
 - **Several edits per candidate** (#76): `verify` and candidate probes take repeated `--old`/`--new` (or `-file`) pairs, each quoting the original file, up to 32 and never overlapping. They are built as one edit with their combined effect, so workers, hashes and diffs are unchanged; a candidate probe maps `--at` through every edit. The HTTP probe's `edit` takes a list.
 - **Exact integers in the evidence store** (#75): schema 4 makes `captures.num` NUMERIC, so `600` stays `600` and 64-bit integers are exact. The table is rebuilt in capture order, and older stores are upgraded in place.
+- **C/C++ locals declared on the stop line** (#92, found by the fourth evaluation).
+  - At a breakpoint on `long long us = ms * 1000;`, `us` showed the previous call's value, `[settable]`. It is now withheld (`declared on line 3, which has not run yet at this stop`) and refused by `--set`, exactly when the stop is at the line's first instruction in its function: the instruction pointer, less the executable's load slide (`__TEXT` on macOS, the header segment on Linux), against the build's line table.
+  - Mid-line stops (a return from a call, a one-line loop's later part) still show the value. Unoptimized builds only; an address the line table does not place on the stop line, or a load address in an unknown form, withholds nothing.
 - **C/C++ locals declared below the stop are withheld** (#74).
   - `no value yet: declared at line 18, below this stop`. They are never settable or expanded.
   - The rule comes from DWARF declaration lines and the line table. It applies only when:

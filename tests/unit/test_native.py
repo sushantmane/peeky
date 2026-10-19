@@ -865,3 +865,63 @@ def test_an_external_header_hiding_the_builtin_is_found(tmp_path):
     sdk.write_text("int setjmp(jmp_buf);\n")
     assert mentions_nonlocal_jumps({str(header): "sha"}, (b"__builtin_setjmp",))
     assert not mentions_nonlocal_jumps({str(sdk): "sha"}, (b"__builtin_setjmp",))
+
+
+def test_a_local_declared_on_the_stop_line_is_withheld_only_at_its_first_address():
+    from peeky.native import declared_on_line
+
+    # #92: line 8 runs from 0x80 to 0x9f; `i` is declared there, `total` on line 7.
+    main = {
+        "source": "a.c",
+        "rows": rows({7: (0x70, 0x7F), 8: (0x80, 0x9F)}, "a.c"),
+        "jumps": False,
+    }
+    main["locals"] = {"i": {("a.c", 8, True)}, "total": {("a.c", 7, True)}}
+    assert declared_on_line([main], "i", "a.c", 8, 0x80) == 8
+    # Mid-line (a return from a call, a loop's later part), the local is live.
+    assert declared_on_line([main], "i", "a.c", 8, 0x88) is None
+    assert declared_on_line([main], "total", "a.c", 8, 0x80) is None
+    # An address outside the line (a wrong load bias) proves nothing.
+    assert declared_on_line([main], "i", "a.c", 8, 0x70) is None
+    assert declared_on_line([{**main, "jumps": True}], "i", "a.c", 8, 0x80) is None
+    # A same-named static, or another `i` declared elsewhere in the function.
+    static = {**main, "locals": {"i": {("a.c", 8, False)}}}
+    assert declared_on_line([static], "i", "a.c", 8, 0x80) is None
+    twice = {**main, "locals": {"i": {("a.c", 8, True), ("a.c", 3, True)}}}
+    assert declared_on_line([twice], "i", "a.c", 8, 0x80) is None
+    assert declared_on_line([twice], "i @ a.c:8", "a.c", 8, 0x80) == 8
+
+
+def test_the_load_bias_reads_each_debuggers_module_address(tmp_path, monkeypatch):
+    import peeky.native as native
+
+    monkeypatch.setattr(native, "macho_text_address", lambda binary: 0x100000000)
+    monkeypatch.setattr(native, "elf_executable_ranges", lambda binary: (0, ()))
+    monkeypatch.setattr(native.sys, "platform", "darwin")
+    # Apple's lldb-dap: hex.
+    assert native.load_bias("p", {"addressRange": "0x10457c000"}) == 0x457C000
+    monkeypatch.setattr(native.sys, "platform", "linux")
+    # LLVM 18: decimal; LLVM 20: hex.
+    assert native.load_bias("p", {"addressRange": "93824992231424"}) == 93824992231424
+    assert native.load_bias("p", {"addressRange": "0x555555554000"}) == 0x555555554000
+    for bad in (None, "", "0x", "12ab", "-5"):
+        with pytest.raises(ValueError):
+            native.load_bias("p", {"addressRange": bad})
+
+
+def test_macho_text_address_reads_the_header_segment(tmp_path):
+    import struct
+
+    from peeky.native import macho_text_address
+
+    def segment(name, address, offset):
+        body = struct.pack("<16sQQQQiiII", name, address, 0x4000, offset, 0x4000, 5, 5, 0, 0)
+        return struct.pack("<II", 0x19, 8 + len(body)) + body
+
+    commands = segment(b"__PAGEZERO", 0, 0) + segment(b"__TEXT", 0x100000000, 0)
+    header = struct.pack("<IiiIIIII", 0xFEEDFACF, 0, 0, 2, 2, len(commands), 0, 0)
+    (tmp_path / "p").write_bytes(header + commands)
+    assert macho_text_address(tmp_path / "p") == 0x100000000
+    (tmp_path / "q").write_bytes(header[:4] + b"\0" * 28)
+    with pytest.raises(ValueError):
+        macho_text_address(tmp_path / "q")

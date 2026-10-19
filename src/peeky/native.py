@@ -739,6 +739,85 @@ def declared_below(table, name, source, line):
     return min(where[1] for _, where in candidates)
 
 
+def declared_on_line(table, name, source, line, address):
+    """The stop line, when the C/C++ local shown there is declared on it and the stop is
+    at the line's first instruction in its function (``address``, unslid): the
+    declaration has not run on this pass, so the local holds leftovers. Else None.
+
+    Only at that first address: a one-line loop, or a return from a call (`step
+    --out`), stops mid-line, where the local is live. Only when every local of that
+    name in the function is an automatic variable declared on this line, and never in
+    a function with a label.
+    """
+    shown = _SHADOWED.fullmatch(name)
+    here = (source, line)
+    owners = [
+        function
+        for function in table
+        if here in function["rows"]
+        and function["rows"][here][0] <= address <= function["rows"][here][1]
+    ]
+    if len(owners) != 1 or owners[0]["jumps"] or address != owners[0]["rows"][here][0]:
+        return None
+    places = owners[0]["locals"].get(shown[1] if shown else name, ())
+    if shown:
+        places = {where for where in places if where[1] == int(shown[2])}
+    if places and all(
+        automatic and declared_in == source and at == line for declared_in, at, automatic in places
+    ):
+        return line
+    return None
+
+
+def macho_text_address(binary):
+    """Where a 64-bit Mach-O executable's header loads before any slide: its __TEXT
+    segment's address (the segment that maps file offset 0)."""
+    with Path(binary).open("rb") as stream:
+        header = stream.read(32)
+        if len(header) != 32 or struct.unpack_from("<I", header)[0] != 0xFEEDFACF:
+            raise ValueError("Expected a 64-bit little-endian Mach-O executable")
+        count, size = struct.unpack_from("<II", header, 16)
+        if not 0 < count <= 4096 or not 0 < size <= 1 << 20:
+            raise ValueError("Invalid Mach-O load commands")
+        commands = stream.read(size)
+    if len(commands) != size:
+        raise ValueError("Truncated Mach-O load commands")
+    cursor, found = 0, []
+    for _ in range(count):
+        if cursor + 8 > size:
+            raise ValueError("Truncated Mach-O load command")
+        kind, length = struct.unpack_from("<II", commands, cursor)
+        if length < 8 or cursor + length > size:
+            raise ValueError("Invalid Mach-O load command size")
+        if kind == 0x19 and length >= 72:  # LC_SEGMENT_64
+            name = commands[cursor + 8 : cursor + 24].rstrip(b"\0")
+            address, _, offset = struct.unpack_from("<QQQ", commands, cursor + 24)
+            if name == b"__TEXT" and offset == 0:
+                found.append(address)
+        cursor += length
+    if len(found) != 1:
+        raise ValueError("Missing or ambiguous Mach-O __TEXT segment")
+    return found[0]
+
+
+def load_bias(binary, module):
+    """The executable's load slide, from the debugger's module address (where its header
+    loaded: hex from Apple's and LLVM 20's lldb-dap, decimal from LLVM 18's)."""
+    text = module.get("addressRange")
+    if isinstance(text, str) and re.fullmatch(r"0x[0-9a-fA-F]{1,16}", text):
+        loaded = int(text, 16)
+    elif isinstance(text, str) and re.fullmatch(r"[0-9]{1,20}", text):
+        loaded = int(text)
+    else:
+        raise ValueError("Missing or invalid native module load address")
+    header = (
+        macho_text_address(binary) if sys.platform == "darwin" else elf_executable_ranges(binary)[0]
+    )
+    if not header <= loaded < 1 << 64:
+        raise ValueError("Invalid native load bias")
+    return loaded - header
+
+
 def elf_build_id(binary):
     """Read bounded ELF64 program-note records; no dependency on shell tools."""
     with Path(binary).open("rb") as stream:
@@ -1273,11 +1352,27 @@ class NativeSession:
         if type(line) is not int:
             return None
         below = declared_below(self.declarations, name, source.as_posix(), line)
-        if below is None:
+        if below is not None:
+            return (
+                f"declared at line {below}, below this stop, so not initialized yet: its "
+                f"storage holds leftovers; stop after line {below} to read it"
+            )
+        pointer = (frame or {}).get("instructionPointerReference")
+        bias = getattr(self, "load_bias", None)
+        if (
+            bias is None
+            or self.target.optimization != "O0"
+            or not isinstance(pointer, str)
+            or not re.fullmatch(r"0x[0-9a-fA-F]{1,16}", pointer)
+        ):
+            return None
+        address = int(pointer, 16) - bias
+        if declared_on_line(self.declarations, name, source.as_posix(), line, address) is None:
             return None
         return (
-            f"declared at line {below}, below this stop, so not initialized yet: its storage "
-            f"holds leftovers; stop after line {below} to read it"
+            f"declared on line {line}, which has not run yet at this stop (its first "
+            "instruction), so not initialized: its storage holds leftovers; step once, or "
+            f"stop after line {line}, to read it"
         )
 
     def validate_mutation_target(self, variable, frame):
@@ -1429,6 +1524,11 @@ class NativeSession:
             raise RuntimeError("Native module identity is not verified") from exc
         if not valid:
             raise RuntimeError("Native module identity or symbols do not match prepared build")
+        try:
+            # Display aid only (a local declared on the stop line): unknown never withholds.
+            self.load_bias = load_bias(self.binary, module)
+        except (OSError, ValueError, struct.error):
+            self.load_bias = None
 
     def close(self):
         self.prepared.cleanup()
