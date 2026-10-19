@@ -568,3 +568,16 @@ No local got a wrong type. These were checked on real builds:
 | --- | --- | --- | --- |
 | 1 | `u8`/`i8` locals were relabeled while their values stayed C character literals (`level: i8 = '\xfd'`, which is -3). `num` was then NULL for them, and elements read from memory print numbers. | Medium | **Fixed.** In a Rust program, LLDB's `unsigned char`, `char` and `signed char` can only be `u8`/`i8`, so their literals print as Rust integers (`65`, `-3`). The parser accepts exactly LLDB's forms (`'A'`, `'\0'`, `'\xHH'`, `'\e'`, the named escapes, octal); anything else stays raw. Tests: `test_lldb_byte_literals_show_as_rust_integers` (all 256 values, both signs), and real builds checking `t_i8 = -1` and `letter: u8 = 65`. |
 | 2 | Parameters never got Rust types: MIR types arguments only in the function header, so a frame showed `scale: unsigned long` next to `total: usize`. | Medium | **Fixed.** `parse_body` reads argument types from the header, split at top-level commas (generics and tuples kept whole, `->` closing nothing). Struct fields, and anything else MIR does not type, take the one primitive their LLDB name can be (`double` is `f64`); only `long`/`unsigned long` stay ambiguous. Tests: `test_arguments_take_their_types_from_the_header`, and the real build `test_scalar_parameters_show_their_rust_types_and_bytes_their_values`. |
+
+## Review of settable locals up front (#85, c95284f)
+
+Checked and found sound:
+- shadowed names (all duplicates are named `x @ file:line`, and a non-identifier name is never marked settable);
+- duplicate names across scopes (`_resolve` and the `--set` scope search take the same first match);
+- re-raised refusals keeping their codes (pointer, struct, out-of-range value, declared below);
+- the snapshot being re-read for each name.
+
+| # | Finding | Severity | Disposition |
+| --- | --- | --- | --- |
+| 1 | The guide said Java rows carry `settable`, but Java had no `settable()`, so its rows never did and its refusals listed nothing. | Medium | **Fixed by implementing it.** `JavaSession.settable` mirrors `validate_variable`: a root local of type byte, short, int, long, boolean, float or double. The worker now also requires the adapter's `supportsSetVariable`, so nothing is marked settable on an adapter that cannot write. The MUTATION_REJECTED hint points to the markers and the list. Test: the real Java build `test_rows_say_which_java_locals_set_can_change` (`counter`/`args` not settable and `settable here: none`; `i`/`times` settable). |
+| 2 | (verification of 2654eb4) Java marked names no selector can reach as `[settable]`, including java-debug's method return-value entry after a step (`->compute()`, or `⎯►compute()` on macOS) and identifiers with `$` or non-ASCII letters, which every set path then refuses. | Medium | **Fixed.** `JavaSession.settable` also requires a selector name, as `_writable_integer` does for native targets. Test: `test_java_settable_locals_are_scalars_a_selector_can_name`. java-attach, `char`, `this`, boxed types, lambda frames and lower frames were checked and are consistent, and the capability requirement changes nothing for C, C++, Rust or Python. |

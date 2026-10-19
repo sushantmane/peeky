@@ -375,6 +375,14 @@ class JavaSession:
         if not isinstance(value, str) or not SCALAR.fullmatch(value):
             raise ValueError("Java mutation requires a numeric or boolean scalar literal")
 
+    def settable(self, variable, frame=None):
+        """Whether `--set` can change this root local: a scalar of a type it accepts, named
+        as a selector can name it (not java-debug's `->compute()` return value entry)."""
+        return bool(
+            variable.get("type") in (*_JAVA_INTEGER_BITS, "boolean", "float", "double")
+            and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", str(variable.get("name")))
+        )
+
     def validate_variable(self, variable, value):
         """The value must fit the local's declared type exactly.
 

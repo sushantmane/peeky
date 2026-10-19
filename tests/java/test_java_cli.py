@@ -197,3 +197,28 @@ def test_a_shared_line_warns_which_method_stops_and_which_never_does(counter, ca
         assert "warning: Line 9 runs in several methods" in capsys.readouterr().out
     finally:
         main(["session", "close"])
+
+
+@pytest.mark.timeout(120)
+def test_rows_say_which_java_locals_set_can_change(counter, capsys):
+    # #77 (eval 3, Java): which locals take --set was only in the docs.
+    root, config = counter
+    common = ["probe", str(root), "--config", str(config), "--at", "demo/Counter.java:17"]
+    code = main([*common, "--capture", "counter,args", "--json", "--no-save", "--quiet"])
+    result = json.loads(capsys.readouterr().out)
+    assert code == 0, result.get("error")
+    assert {row["selector"]: row["settable"] for row in result["rows"]} == {
+        "counter": False,
+        "args": False,
+    }
+    code = main([*common, "--set", "args=1", "--json", "--no-save", "--quiet"])
+    result = json.loads(capsys.readouterr().out)
+    assert code == 1 and result["error"]["code"] == "MUTATION_REJECTED"
+    assert result["error"]["message"].endswith("settable here: none")
+    at = ["probe", str(root), "--config", str(config), "--at", "demo/Counter.java:11"]
+    code = main([*at, "--capture", "i,times", "--json", "--no-save", "--quiet"])
+    result = json.loads(capsys.readouterr().out)
+    assert {row["selector"]: row["settable"] for row in result["rows"]} == {
+        "i": True,
+        "times": True,
+    }

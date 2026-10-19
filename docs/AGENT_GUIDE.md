@@ -62,6 +62,7 @@ Every probe is saved, and the result's `evidence.run_id` names it. **SQL is opti
 
 ### Verifying an edit
 
+- Probe rows say whether `--set` can change each captured root local (`settable` in JSON, `[settable]` in text; C, C++, Rust and Java), so an observation probe tells you which interventions will work. A refused `--set` ends with the locals that can be changed at that stop (`settable here: total, i`, or `none`).
 - `--old` must match the source exactly once; with several pairs, each must, and an error names the edit by number (`(edit 2)`). For multi-line edits, prefer `--old-file`/`--new-file`: they are read byte for byte, whereas shell `$(cat file)` silently strips trailing newlines. Pass real newlines for multi-line text (bash: `--old $'a\n    b'`). If it fails, the error gives the match count and the lines where it matched.
 - The result includes `stage` (`build` or `verification`), the unified `diff` that was applied, and on failure a `reason` (the checker's exception or the build diagnostic).
 - The scratch copy is deleted afterwards. Pass `--keep` to keep the edited file for inspection (build artifacts are not kept). Failed Cargo tests are listed by name with their assertion. `--json` is compact: the checker's descriptor and build manifest are identified by `descriptor_sha256` and `artifact_manifest_id`; `--details` includes them in full.

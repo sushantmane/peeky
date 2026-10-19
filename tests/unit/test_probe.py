@@ -737,3 +737,21 @@ def test_nameless_debugger_slots_are_not_listed_as_visible():
 
     shown = _visible(snapshot({"name": "<null>"}, {"name": "score"}))
     assert shown == "score"
+
+
+@pytest.mark.parametrize(
+    "variable, settable",
+    [
+        ({"name": "count", "type": "int"}, True),
+        ({"name": "ratio", "type": "double"}, True),
+        ({"name": "->compute()", "type": "int"}, False),  # java-debug's return value
+        ({"name": "\u23af\u25bacompute()", "type": "int"}, False),
+        ({"name": "count$", "type": "int"}, False),  # no selector can name it
+        ({"name": "items", "type": "int[]"}, False),
+        ({"name": "letter", "type": "char"}, False),
+    ],
+)
+def test_java_settable_locals_are_scalars_a_selector_can_name(variable, settable):
+    from peeky.java import JavaSession
+
+    assert JavaSession.settable(None, variable) is settable
