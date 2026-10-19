@@ -696,7 +696,7 @@ fn consume(b: Box<Pt>) -> i64 {
     b.x + b.y
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub fn exported(b: Box<Pt>) -> i64 {
     let total = consume(b);
     let again = Box::new(Pt { x: 777, y: 888 });
