@@ -1377,3 +1377,45 @@ def test_an_optimized_build_never_reads_a_box(plain):
     result = run_probe(plain, Probe("src/main.rs", line, ("r2.x",)), adapter=target)
     assert result["rows"][0].get("value") in ("41", None), result["rows"]
     assert "view" not in result["rows"][0], result["rows"]
+
+
+GENERIC_SPANS = """trait Big {
+    const BIG: bool;
+}
+impl Big for u8 {
+    const BIG: bool = false;
+}
+impl Big for u64 {
+    const BIG: bool = true;
+}
+
+fn h<T: Big>(_v: T) -> usize {
+    let mut n = 0;
+    for i in 0..2 {
+        n += i;
+        if T::BIG {
+            n += 100;
+        }
+    }
+    n
+}
+
+fn main() {
+    let a = h(3u8);
+    let b = h(4u64);
+    println!("{} {}", a, b);
+}
+"""
+
+
+@pytest.mark.timeout(300)
+def test_a_generic_function_is_one_scope_with_its_blocks_lines(plain, capsys):
+    # Review of #107: instantiations whose code differs (a per-type constant condition)
+    # gave different block lines and were listed once each.
+    (plain / "src/main.rs").write_text(GENERIC_SPANS)
+    code, result = run(capsys, "describe", str(plain))
+    scopes = [s for s in result["scopes"] if str(s.get("scope")).endswith("::h")]
+    assert len(scopes) == 1, scopes
+    ((first, last),) = scopes[0]["spans"]["i"]
+    assert first <= 14 and last >= 16, scopes
+    assert "_v" not in scopes[0]["spans"], scopes

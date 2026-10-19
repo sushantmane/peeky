@@ -477,39 +477,55 @@ def _locals(dies, offset):
     return names
 
 
+_MAX_SPANS = 8
+
+
 def _block_spans(dies, entry, root, addresses, numbers):
-    """{name: [[first, last], ...]}: the lines of the blocks declaring each local that is
-    declared only inside nested blocks (a `for` loop's `i`), so visible only there (#107).
-    A block's lines are those of the function's own rows within its code."""
-    own = [
-        (address, line)
-        for (source, line), found in addresses.items()
-        if source == entry["source"] and line in numbers
-        for address in found
-    ]
+    """({name: {(first, last)}}, {names visible in the whole function}), or None when
+    the declarations were too many to read all: the lines of the blocks declaring each
+    local, for the locals declared only inside nested blocks (a `for` loop's `i`), so
+    visible only there (#107). A block's lines are those of the function's own rows
+    within its code; one that also runs another file's code (an `#include` inside it)
+    or other lines gives no span."""
+    rows = sorted(
+        (address, source, line) for (source, line), found in addresses.items() for address in found
+    )
+    keys = [row[0] for row in rows]
     lines, spans, everywhere = {}, {}, set()
 
     def span(block):
         if block not in lines:
-            ranges = _code_ranges(dies[block])
-            covered = [
-                line for address, line in own if any(lo <= address < hi for lo, hi in ranges)
-            ]
-            lines[block] = (min(covered), max(covered)) if covered else None
+            covered, other = [], False
+            for low, high in _code_ranges(dies[block]):
+                for _, source, line in rows[
+                    bisect.bisect_left(keys, low) : bisect.bisect_left(keys, high)
+                ]:
+                    if source == entry["source"] and line in numbers:
+                        covered.append(line)
+                    else:
+                        other = True
+            lines[block] = (min(covered), max(covered)) if covered and not other else None
         return lines[block]
 
-    for body in (*entry["bodies"], root):
+    def name_of(child):
+        die = dies[child]
+        if die["tag"] not in ("DW_TAG_formal_parameter", "DW_TAG_variable"):
+            return None
+        name = _text(_first(dies, _chain(dies, child), "DW_AT_name"))
+        return None if not name or name.startswith("$") else name
+
+    # The concrete copies carry the code; an abstract or declaring DIE only says which
+    # names are the function's own.
+    for body in dict.fromkeys(entry["bodies"]):
         pending = [(child, None) for child in dies[body]["children"]]
-        while pending and len(spans) + len(everywhere) < 512:
+        while pending:
+            if len(spans) + len(everywhere) >= 512:
+                return None
             child, block = pending.pop()
-            die = dies[child]
-            if die["tag"] == "DW_TAG_lexical_block":
-                pending.extend((grandchild, child) for grandchild in die["children"])
+            if dies[child]["tag"] == "DW_TAG_lexical_block":
+                pending.extend((grandchild, child) for grandchild in dies[child]["children"])
                 continue
-            if die["tag"] not in ("DW_TAG_formal_parameter", "DW_TAG_variable"):
-                continue
-            name = _text(_first(dies, _chain(dies, child), "DW_AT_name"))
-            if not name or name.startswith("$"):
+            if (name := name_of(child)) is None:
                 continue
             found = span(block) if block is not None else None
             if found is None:
@@ -517,11 +533,23 @@ def _block_spans(dies, entry, root, addresses, numbers):
                 everywhere.add(name)
             else:
                 spans.setdefault(name, set()).add(found)
-    return {
-        name: [list(found) for found in sorted(spans[name])]
-        for name in sorted(spans)
-        if name not in everywhere
-    }
+    if root not in entry["bodies"]:
+        everywhere.update(name for child in dies[root]["children"] if (name := name_of(child)))
+    return spans, everywhere
+
+
+def _tidy_spans(found):
+    """Sorted spans, overlapping ones joined (shadowed bindings); past ``_MAX_SPANS``,
+    one span over them all."""
+    joined = []
+    for first, last in sorted(found):
+        if joined and first <= joined[-1][1]:
+            joined[-1][1] = max(joined[-1][1], last)
+        else:
+            joined.append([first, last])
+    if len(joined) > _MAX_SPANS:
+        return [[joined[0][0], max(last for _, last in joined)]]
+    return joined
 
 
 def _code_ranges(die):
@@ -637,18 +665,31 @@ def function_scopes(info, line_text, workspace, declared):
             "lines": [min(numbers), max(numbers)],
             "names": sorted(names),
         }
-        if spans := _block_spans(dies, entry, root, addresses.get(root, {}), numbers):
-            scope["spans"] = spans
         # Instantiations of one generic function (Rust's names drop the generic
-        # arguments) are one scope; their types join (`&[i32] or &[char]`).
-        merged = found.setdefault(json.dumps(scope, sort_keys=True), (scope, {}))[1]
+        # arguments) are one scope; their types join (`&[i32] or &[char]`), and so do
+        # their blocks' lines (code a constant condition removes differs between them).
+        merged = found.setdefault(json.dumps(scope, sort_keys=True), (scope, {}, {}, set()))
         for local, kinds in names.items():
-            merged.setdefault(local, set()).update(kinds)
+            merged[1].setdefault(local, set()).update(kinds)
+        blocks = _block_spans(dies, entry, root, addresses.get(root, {}), numbers)
+        if blocks is None:
+            merged[3].add(None)
+            continue
+        for local, spans in blocks[0].items():
+            merged[2].setdefault(local, set()).update(spans)
+        merged[3].update(blocks[1])
     scopes = []
-    for scope, kinds in found.values():
+    for scope, kinds, spans, everywhere in found.values():
         # Two blocks may declare one name with different types (`int or long`).
         types = {local: " or ".join(sorted(k)) for local, k in sorted(kinds.items()) if k}
-        scopes.append({**scope, **({"types": types} if types else {})})
+        spans = {
+            local: _tidy_spans(found_spans)
+            for local, found_spans in sorted(spans.items())
+            if local not in everywhere and None not in everywhere
+        }
+        scopes.append(
+            {**scope, **({"types": types} if types else {}), **({"spans": spans} if spans else {})}
+        )
     scopes.sort(key=lambda s: (s["source"], s["lines"][0], s["scope"]))
     if len(scopes) > MAX_SCOPES:
         scopes = [*scopes[:MAX_SCOPES], {"omitted": len(scopes) - MAX_SCOPES}]

@@ -861,3 +861,21 @@ Checked and found sound:
 |---|---|---|---|
 | 1 | lldb-dap names optimized frames `... [opt]` (macOS), which neither `_frame_hash` nor `frame_shape` expected. A closure or async frame then had depth 0, so its bindings came from the enclosing function: a dropped Box there read freed memory when that function bound the name to a reference, and a closure's reference was hidden. The PR's `unoptimized` guards were dead code for the same reason. | High | **Fixed:**<br>• Both parsers strip ` [opt]`.<br>• With hashes now parsed in optimized builds, the reference-parameter proof and Rust `--set` (`settable`, `validate_mutation_target`, which read an unoptimized build's IR) require opt-level 0. `--set` says so plainly.<br>Test: `test_an_optimized_build_never_reads_a_box` (`CLOSURE_BOX`, `CLOSURE_REF`). |
 | 2 | (verification of 496c718) No issues. Checked:<br>• Gating at opt-level 1 and 2: closures (nested and by-move), inlined callees, generics, unmangled functions, async bodies and blocks.<br>• References read.<br>• Hashes now parse: body matches are always right, `display_type` gives MIR types, and the worker refuses changes in optimized builds first.<br>• Linux lldb-dap 18 and 20 never add ` [opt]`.<br>Also found by the lanes: a bare test session has no `target`, so the opt level is read defensively (`_optimized`). | — | **Closed.** |
+
+## Review of describe's block spans (#118, ff2bf1b)
+
+Checked and found sound:
+- Apple clang; GCC 13 and clang-18 (Linux); C/C++ at -O0 and -O2; Rust at opt-levels 0, 1 and 2.
+- C/C++ blocks: `for`, `if (int x = f())`, switch-case blocks, goto labels, `static` locals in blocks, C++ range-for, lambdas, templates, constructors, header methods.
+- Rust: shadowing, `match` arms and guards, `if let`, `while let` with labels, closures, `async fn`, generics.
+- Against LLDB: a script stepped through every function, and no span left out a line where LLDB showed the name.
+
+| # | Finding | Severity | Disposition |
+|---|---|---|---|
+| 1 | The scope dict, spans included, was still the key that merges a generic function's instantiations. Code a per-type constant condition removes gave them different spans, so `plain::h` was listed once per type. | Medium | **Fixed:** the key leaves spans out, and the merged copies' spans join. A name any copy declares at the function's level gets none. Test: `test_a_generic_function_is_one_scope_with_its_blocks_lines`. |
+| 2 | Each block's span checked every row of the function: a 4,000-case switch took 10.4 s (0.66 s on main). | Medium-low | **Fixed:** the rows are sorted by address once and each range is found by bisection: 0.62 s. |
+| 3 | Past 512 names the walk stopped, last blocks first, so a function-level `x` was never seen and a block's `x` got a span. | Low | **Fixed:** a cut-short walk gives no spans. |
+| 4 | Code `#include`d inside a block counted only its own file's rows, so the span left out the header's lines where the name is visible. | Low | **Fixed:** a block whose code also runs another file's or another function's lines gives no span. Test: `INCLUDED`. |
+| 5 | Inlined functions (`always_inline`, `#[inline(always)]`, -O2) never got spans: their abstract root's blocks have no code. | Low | **Fixed:** spans come from the concrete copies; the abstract or declaring DIE contributes only function-level names. Test: `INCLUDED`'s `twice`. |
+| 6 | Spans were unbounded (24.8 KB of text for 4,000 blocks), and shadowed Rust bindings gave overlapping spans. | Cosmetic | **Fixed:** overlapping spans join, and past eight one span covers them all. |
+| 7 | COOKBOOK said a Rust local shows the lines "from its `let` on"; they start after it. | Docs | **Fixed.** |

@@ -826,6 +826,15 @@ def test_describe_gives_the_lines_of_locals_declared_in_nested_blocks(
     assert main(["describe", str(tmp_path / "blocks.c")]) == 0
     text = capsys.readouterr().out
     assert "i (int, lines 4-" in text and "count (int)," in text
+    # Review of #107: a block that runs an `#include`d file's code gives no span (its
+    # names are visible on that file's lines too); an always-inline function's blocks
+    # are read from its inlined copies.
+    (tmp_path / "step.h").write_text("extra += k;\n")
+    (tmp_path / "included.c").write_text(INCLUDED)
+    assert main(["describe", str(tmp_path / "included.c"), "--json"]) == 0
+    scopes = {s["scope"]: s for s in json.loads(capsys.readouterr().out)["scopes"]}
+    assert "extra" not in scopes["main"].get("spans", {}), scopes["main"]
+    assert "j" in scopes["twice"]["spans"], scopes["twice"]
 
 
 BLOCKS = """#include <stdio.h>
@@ -843,6 +852,26 @@ static double average(const int *values, int count) {
 int main(void) {
     int values[3] = {1, 2, 3};
     printf("%f\\n", average(values, 3));
+    return 0;
+}
+"""
+
+INCLUDED = """#include <stdio.h>
+static inline __attribute__((always_inline)) int twice(int v) {
+    int out = 0;
+    for (int j = 0; j < 2; j++) {
+        out += v;
+    }
+    return out;
+}
+int main(void) {
+    int total = 0;
+    for (int k = 0; k < 2; k++) {
+        int extra = 0;
+#include "step.h"
+        total += extra + twice(k);
+    }
+    printf("%d\\n", total);
     return 0;
 }
 """
