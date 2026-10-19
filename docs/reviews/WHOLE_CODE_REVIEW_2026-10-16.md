@@ -846,3 +846,17 @@ Checked and found sound:
 | 20 | (verification of d91c928) Two:<br>• Root's `os.access` ignores owners, so as root over another user's checkout (a container's bind mount, `sudo`) the copy became root's with no note. Git refused the user's repository (`safe.directory`) but not the copy, and the only note blamed a conditional include.<br>• Both import probes run `python -c` with the copy's root first on the path, so their own `import json` ran a root `json.py` in the copy before the program, which debugpy never does.<br>The verification found no false access notes across modes, sticky and setgid directories, umasks, staged and twin files, as root and not, and the check's cost (23% of the copy's) acceptable. | Medium | **Fixed:**<br>• A note names originals another user owns.<br>• `_finish_git` runs `git rev-parse --git-dir` in both trees: git refusing the user's repository but not the copy gets its own note, and the configuration comparison runs only when git works in both.<br>• Both probes import `sys` first and drop `-c`'s `''` before anything else, and the second inserts the script's directory after its own imports.<br>Tests: `test_a_python_candidate_notes_another_owner_and_a_refused_repository`, and a root `json.py` in `test_the_import_check_never_runs_project_code`. |
 | 21 | (verification of eda07c8) No issues. Checked:<br>• The owner note: as root and not, group-only differences, symlinks, a `noowners` volume.<br>• The git refusal under a real `safe.directory` in Docker: the whole tree, `.git` only, `safe.directory` set, a worktree and a submodule.<br>• `sitecustomize` under `-c`.<br>• The docs, and 1334 tests.<br>One observation with no effect: the first probe still prints `sys.path[1:]`, which now skips a real entry since `''` is deleted first, while `PYTHONPATH`'s entries come from the environment either way. | — | **Left as is:** it changes no result. |
 
+
+## Review of optimized builds' Box gate (#112, 2b2b857)
+
+Checked and found sound:
+- Plain-function Boxes at opt-level 1 and 2 stay gated: in a loop, in arrays, `Box<str>`, an inlined callee's Box parameter, and a shadowed async parameter.
+- References read as on main.
+- Owned containers stay opaque.
+- #13's stale value still reproduces.
+- The MIR dumps cost about 2% of build time and 17 MB.
+- `mir_wrapper_sha256` is only compared between identities computed by the same code.
+
+| # | Finding | Severity | Disposition |
+|---|---|---|---|
+| 1 | lldb-dap names optimized frames `... [opt]` (macOS), which neither `_frame_hash` nor `frame_shape` expected. A closure or async frame then had depth 0, so its bindings came from the enclosing function: a dropped Box there read freed memory when that function bound the name to a reference, and a closure's reference was hidden. The PR's `unoptimized` guards were dead code for the same reason. | High | **Fixed:**<br>• Both parsers strip ` [opt]`.<br>• With hashes now parsed in optimized builds, the reference-parameter proof and Rust `--set` (`settable`, `validate_mutation_target`, which read an unoptimized build's IR) require opt-level 0. `--set` says so plainly.<br>Test: `test_an_optimized_build_never_reads_a_box` (`CLOSURE_BOX`, `CLOSURE_REF`). |

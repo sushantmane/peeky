@@ -334,6 +334,8 @@ def frame_shape(name):
     """The shape of lldb-dap's frame name (`vb::outer::{{closure}}::{{closure}}`, or
     escaped `_$u7b$$u7b$closure$u7d$$u7d$`, with a legacy hash or not)."""
     text = str(name or "").replace("$u7b$", "{").replace("$u7d$", "}")
+    # lldb-dap marks an optimized frame's name ` [opt]` (macOS).
+    text = re.sub(r"\s*\[opt\]$", "", text)
     text = re.sub(r"::h[0-9a-f]{16}$", "", text)
     return _shape(_segments(text))
 

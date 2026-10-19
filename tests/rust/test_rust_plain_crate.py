@@ -1320,6 +1320,20 @@ fn work(q: &Pt) -> i64 {
 fn main() {
     let q = Pt { x: 41, y: 0 };
     println!("{}", work(&q));
+    let b = std::hint::black_box(&q);
+    let k0 = b.x;
+    let c = move || {
+        let b = Box::new(Pt { x: 5, y: 6 });
+        let s = std::hint::black_box(&b).x;
+        drop(b);
+        let k = churn();
+        std::hint::black_box(s + k) // CLOSURE_BOX
+    };
+    let d = |r: &Pt| {
+        let r2 = std::hint::black_box(r);
+        r2.x + 1 // CLOSURE_REF
+    };
+    println!("{}", std::hint::black_box(c)() + k0 + d(&q));
 }
 """
 
@@ -1352,3 +1366,14 @@ def test_an_optimized_build_never_reads_a_box(plain):
     assert "777" not in str(rows["b.x"].get("value")), rows
     assert rows["b"].get("view") == "unproven" or rows["b"].get("unavailable"), rows
     assert rows["r.x"].get("value") in ("41", None), rows
+    # lldb-dap names optimized frames `... [opt]` (macOS), which hid a closure's shape:
+    # its Box was judged by `main`'s `b: &Pt` and read, and its reference was hidden.
+    line = line_of(OPTIMIZED_BOX, "// CLOSURE_BOX")
+    result = run_probe(plain, Probe("src/main.rs", line, ("b", "b.x")), adapter=target)
+    rows = {row["selector"]: row for row in result["rows"]}
+    assert rows["b"].get("view") == "unproven" or rows["b"].get("unavailable"), rows
+    assert "value" not in rows["b.x"], rows
+    line = line_of(OPTIMIZED_BOX, "// CLOSURE_REF")
+    result = run_probe(plain, Probe("src/main.rs", line, ("r2.x",)), adapter=target)
+    assert result["rows"][0].get("value") in ("41", None), result["rows"]
+    assert "view" not in result["rows"][0], result["rows"]

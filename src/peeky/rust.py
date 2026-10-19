@@ -730,7 +730,9 @@ RUST_INTEGERS = frozenset(
 
 
 def _frame_hash(frame):
-    return re.search(r"::(h[0-9a-f]{16})$", str((frame or {}).get("name") or ""))
+    # lldb-dap marks an optimized frame's name ` [opt]` (macOS).
+    name = re.sub(r"\s*\[opt\]$", "", str((frame or {}).get("name") or ""))
+    return re.search(r"::(h[0-9a-f]{16})$", name)
 
 
 def _holds_data_pointers(kind):
@@ -910,6 +912,8 @@ class RustSession(NativeSession):
 
     def settable(self, variable, frame=None):
         """A Rust integer local the program keeps in memory (see validate_mutation_target)."""
+        if self.target.opt_level != "0":
+            return False
         if variable.get("type") not in RUST_INTEGERS or not _writable_integer(variable):
             return False
         hashed = _frame_hash(frame)
@@ -926,6 +930,13 @@ class RustSession(NativeSession):
     def validate_mutation_target(self, variable, frame):
         """Only a local the program keeps in memory can be changed with effect."""
         name = variable.get("name")
+        if self.target.opt_level != "0":
+            # Which locals stay in memory is read from an unoptimized build's IR.
+            raise ValueError(
+                f"Rust mutation needs an unoptimized build (opt-level 0): {name!r} may be "
+                "kept in a register there, and changing what the debugger shows would not "
+                "affect the program"
+            )
         hashed = _frame_hash(frame)
         if not hashed or self.memory.get((hashed[1], name)) is not True:
             where = display_function((frame or {}).get("name")) or "this frame"
@@ -956,6 +967,7 @@ class RustSession(NativeSession):
         line = (frame or {}).get("line")
         if (
             proof
+            and self.target.opt_level == "0"
             and type(line) is int
             and line > proof["line"]
             and (innermost or not proof["type"].startswith("&mut "))
