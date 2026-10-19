@@ -703,8 +703,19 @@ def test_local_declarations_record_where_and_how_each_local_is_declared(tmp_path
     (tmp_path / "bucket.c").write_text("\n" * 20)
     info, line = declaration_dumps(tmp_path)
     [take] = local_declarations(info, line, tmp_path, ("bucket.c",))
-    assert take["source"] == "bucket.c" and take["lines"] == {5, 6, 7, 8, 11, 12}
-    assert take["jumps"] is False
+    base = 0x100000000
+    assert take["source"] == "bucket.c" and take["jumps"] is False
+    assert take["rows"] == {
+        number: (base + address, base + address)
+        for address, number in [
+            (0x400, 5),
+            (0x410, 6),
+            (0x420, 7),
+            (0x430, 8),
+            (0x440, 11),
+            (0x460, 12),
+        ]
+    }
     assert take["locals"] == {
         "now": {(None, None, False), ("bucket.c", 11, True)},
         "elapsed": {("bucket.c", 6, True)},
@@ -755,30 +766,66 @@ def test_only_functions_owning_the_line_count_and_jumps_disable_withholding():
 
     # Review of #81: a local class's constructor owns its member initializer on line 5,
     # above its own declaration; `main`, which defines the class, declares `v` on line 12.
-    ctor = {"source": "a.cpp", "lines": frozenset({5, 7, 8}), "jumps": False}
+    ctor = {"source": "a.cpp", "rows": {5: (50, 50), 7: (70, 70), 8: (80, 80)}, "jumps": False}
     ctor["locals"] = {"v": {(None, None, False)}}
-    main = {"source": "a.cpp", "lines": frozenset({3, 11, 12, 13}), "jumps": False}
+    main = {"source": "a.cpp", "rows": {3: (3, 3), 11: (11, 11), 12: (12, 12)}, "jumps": False}
     main["locals"] = {"v": {("a.cpp", 12, True)}}
     assert declared_below([ctor, main], "v", "a.cpp", 5) is None
     assert declared_below([ctor, main], "v", "a.cpp", 11) == 12
-    # A backward goto (or setjmp) can return above the declaration with `v` live.
+    # A backward goto can return above the declaration with `v` live.
     assert declared_below([ctor, {**main, "jumps": True}], "v", "a.cpp", 11) is None
 
 
-@pytest.mark.parametrize("jump", ["label", "setjmp"])
-def test_a_function_with_a_label_or_setjmp_can_jump_back(tmp_path, jump):
+@pytest.mark.parametrize(
+    "rows, below",
+    [
+        ({7: (10, 12), 8: (20, 24)}, 8),  # line 7's code all comes before line 8's
+        # Review of #81: clang runs a struct's default member initializer in its caller,
+        # on the struct's line, inside the code of a later line.
+        ({7: (30, 32), 8: (20, 24)}, None),
+        # GCC runs a `cleanup` at its variable's line when the block ends: line 7 then
+        # has code after line 8's.
+        ({7: (10, 40), 8: (20, 24)}, None),
+        ({7: (10, 12)}, None),  # a declaration without code proves nothing
+    ],
+)
+def test_a_local_is_withheld_only_when_the_lines_code_comes_before_its_declaration(rows, below):
+    from peeky.native import declared_below
+
+    function = {"source": "a.c", "rows": rows, "jumps": False}
+    function["locals"] = {"later": {("a.c", 8, True)}}
+    assert declared_below([function], "later", "a.c", 7) == below
+
+
+def test_a_function_with_a_label_can_jump_back(tmp_path):
     from peeky.native import local_declarations
 
     info, line = declaration_dumps(tmp_path)
-    text = ["\n"] * 20
-    if jump == "label":
-        info = info.replace(
-            "0x00000050:     DW_TAG_lexical_block",
-            '0x0000004c:     DW_TAG_label\n                  DW_AT_name\t("again")\n'
-            "0x00000050:     DW_TAG_lexical_block",
-        )
-    else:
-        text[6] = "    if (setjmp(env)) return 0;\n"
-    (tmp_path / "bucket.c").write_text("".join(text))
+    info = info.replace(
+        "0x00000050:     DW_TAG_lexical_block",
+        '0x0000004c:     DW_TAG_label\n                  DW_AT_name\t("again")\n'
+        "0x00000050:     DW_TAG_lexical_block",
+    )
+    (tmp_path / "bucket.c").write_text("\n" * 20)
     [take] = local_declarations(info, line, tmp_path, ("bucket.c",))
     assert take["jumps"] is True
+
+
+@pytest.mark.parametrize(
+    "contents, found",
+    [
+        (b"\x00_setjmp\x00", True),
+        (b"\x00___sigsetjmp\x00", True),
+        (b"x" * (1 << 20) + b"swapcontext", True),  # across a read boundary
+        (b"x" * ((1 << 20) - 3) + b"getcontext", True),
+        (b"\x00_printf\x00_malloc\x00", False),
+    ],
+)
+def test_nonlocal_jumps_are_found_in_the_executable(tmp_path, contents, found):
+    from peeky.native import has_nonlocal_jumps
+
+    # Review of #81: `setjmp` behind a TRY macro from a header never appears in the
+    # function's lines, but the executable imports it.
+    binary = tmp_path / "program"
+    binary.write_bytes(contents)
+    assert has_nonlocal_jumps(binary) is found

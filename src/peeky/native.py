@@ -442,10 +442,12 @@ def _function_entries(info, line_text, workspace, declared):
                     owner[index] is None or die["depth"] > owner[index][0]
                 ):
                     owner[index] = (die["depth"], root)
+    # {root: {line: [lowest, highest] address of its rows}}: the function's own code.
     lines = {}
-    for (_, _, number), claimed in zip(rows, owner):
+    for (address, _, number), claimed in zip(rows, owner):
         if claimed is not None:
-            lines.setdefault(claimed[1], set()).add(number)
+            span = lines.setdefault(claimed[1], {}).setdefault(number, [address, address])
+            span[0], span[1] = min(span[0], address), max(span[1], address)
     return dies, functions, lines, (inputs, sources)
 
 
@@ -538,19 +540,17 @@ def _declared(dies, offset, files, workspace):
 
 
 def local_declarations(info, line_text, workspace, declared):
-    """Each function in a declared source: its source, the lines it owns, for each
-    local name where every local of that name is declared, as (source, line,
-    automatic), and whether control can jump back above a declaration (a label, or a
-    `setjmp` call in its lines)."""
+    """Each function in a declared source: its source; ``rows``, the lowest and highest
+    address of its code on each line it owns (even above its declaration: a
+    constructor runs its class's default member initializers there); for each local
+    name, where every local of that name is declared, as (source, line, automatic);
+    and whether it has a label, where `goto` can return above a declaration."""
     dies, functions, lines, files = _function_entries(info, line_text, workspace, declared)
     workspace = Path(workspace).resolve()
-    texts = {name: (workspace / name).read_text(errors="replace").split("\n") for name in declared}
     table = []
     for root, entry in functions.items():
-        # Every line it owns, even above its declaration: a constructor runs its class's
-        # default member initializers there.
-        numbers = lines.get(root)
-        if not numbers:
+        rows = lines.get(root)
+        if not rows:
             continue
         names, jumps = {}, False
         for body in (*entry["bodies"], root):
@@ -559,21 +559,33 @@ def local_declarations(info, line_text, workspace, declared):
                     jumps = True
                 else:
                     names.setdefault(name, set()).add(where)
-        text = texts.get(entry["source"], [])
-        jumps = jumps or any(
-            "setjmp" in text[number - 1]
-            for number in range(min(numbers), max(numbers) + 1)
-            if 0 < number <= len(text)
-        )
         table.append(
             {
                 "source": entry["source"],
-                "lines": frozenset(numbers),
+                "rows": {number: tuple(span) for number, span in rows.items()},
                 "locals": names,
                 "jumps": jumps,
             }
         )
     return table
+
+
+# Symbols of non-local jumps: after one returns, code above a declaration can run
+# again with the local live (C11 7.13.2.1).
+_NONLOCAL_JUMPS = (b"setjmp", b"getcontext", b"swapcontext")
+
+
+def has_nonlocal_jumps(binary):
+    """Whether the executable names setjmp/sigsetjmp or a ucontext switch anywhere
+    (its imports), wherever the call is hidden (a TRY macro in a library header)."""
+    tail = b""
+    with Path(binary).open("rb") as stream:
+        while chunk := stream.read(1 << 20):
+            window = tail + chunk
+            if any(name in window for name in _NONLOCAL_JUMPS):
+                return True
+            tail = chunk[-16:]
+    return False
 
 
 _SHADOWED = re.compile(r"(.+) @ [^:]+:([0-9]+)")
@@ -584,30 +596,37 @@ def declared_from(table, name, source, line):
     that is this line or below, else None.
 
     Only when every local of that name in every function owning code of the line is
-    an automatic variable declared in this source at or below it: the variable the
-    debugger shows is then one of them. Declared below, its value is indeterminate here
-    (C11 6.2.4: on each entry to its block, until its declaration is reached); declared
-    on this line, it is until the declaration runs. Never in a function that can jump
-    back above a declaration (`goto`, `setjmp`): there the local can still be live.
-    lldb-dap names a shadowed local `x @ file:line`, and that line picks among them.
+    an automatic variable declared in this source at or below it, and, for one
+    declared below, all of that function's code of this line comes before any code of
+    the declaration's line: control then has not reached the declaration on this pass,
+    and its value is indeterminate (C11 6.2.4). Line numbers alone do not say that:
+    clang runs a struct's default member initializer in its caller on the struct's
+    line, and GCC runs a `cleanup` at its variable's line when the block ends. Never in
+    a function with a label (`goto` can return above a declaration with the local
+    live). lldb-dap names a shadowed local `x @ file:line`, and that line picks among
+    them.
     """
     shown = _SHADOWED.fullmatch(name)
-    owners = [f for f in table if f["source"] == source and line in f["lines"]]
+    owners = [f for f in table if f["source"] == source and line in f["rows"]]
     if any(function["jumps"] for function in owners):
         return None
     candidates = [
-        where
+        (function, where)
         for function in owners
         for where in function["locals"].get(shown[1] if shown else name, ())
     ]
     if shown:
-        candidates = [where for where in candidates if where[1] == int(shown[2])]
-    if not candidates or not all(
-        automatic and declared_in == source and type(at) is int and at >= line
-        for declared_in, at, automatic in candidates
-    ):
+        candidates = [pair for pair in candidates if pair[1][1] == int(shown[2])]
+    if not candidates:
         return None
-    return min(at for _, at, _ in candidates)
+    for function, (declared_in, at, automatic) in candidates:
+        if not automatic or declared_in != source or type(at) is not int or at < line:
+            return None
+        if at > line and not (
+            at in function["rows"] and function["rows"][line][1] < function["rows"][at][0]
+        ):
+            return None
+    return min(where[1] for _, where in candidates)
 
 
 def declared_below(table, name, source, line):
@@ -920,8 +939,12 @@ class NativeTarget:
                     max_bytes=MAX_DEBUG_INFO,
                     timeout=_remaining(deadline),
                 )
-                declarations = local_declarations(
-                    info, text, prepared.workspace, self.sources + self.headers
+                declarations = (
+                    None
+                    if has_nonlocal_jumps(binary)
+                    else local_declarations(
+                        info, text, prepared.workspace, self.sources + self.headers
+                    )
                 )
             except (RuntimeError, ValueError, OSError):
                 # Display aid only: without it, values show as the debugger reads them.

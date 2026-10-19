@@ -163,3 +163,66 @@ def test_a_constructor_parameter_is_never_withheld_for_an_enclosing_functions_lo
     code, result = probe(capsys, program, "--at", "5", "--capture", "v")
     assert code == 0, result.get("error")
     assert result["rows"][0].get("value") == "7", result["rows"]
+
+
+ITEMS = """#include <cstdio>
+static int default_weight() { return 10; }
+struct Item {
+    int id;
+    int weight = default_weight();
+};
+int main() {
+    long total = 0;
+    for (int i = 0; i < 3; i++) {
+        Item it{i};
+        total += it.id + it.weight;
+    }
+    std::printf("%ld\\n", total);
+    return 0;
+}
+"""
+
+TRY = """#include <setjmp.h>
+#include <stdio.h>
+static jmp_buf env;
+#define TRY if (setjmp(env) == 0)
+int main(void) {
+    volatile int tries = 0;
+    TRY { printf("first\\n"); }
+    else {
+        printf("again\\n");
+    }
+    volatile int x = 40 + tries;
+    tries++;
+    if (tries < 3) longjmp(env, 1);
+    printf("%d\\n", x);
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(120)
+def test_a_member_initializer_run_by_its_caller_withholds_nothing(bucket, capsys):
+    # Review of #81: clang runs `weight = default_weight()` in main on line 5, inside
+    # the code of line 10; main's locals are live there.
+    directory = bucket.parent.with_name("items")
+    directory.mkdir()
+    program = directory / "items.cpp"
+    program.write_text(ITEMS)
+    code, result = probe(capsys, program, "--at", "5", "--capture", "i,total", "--hits", "3")
+    assert code == 0, result.get("error")
+    values = [(row["selector"], row.get("value")) for row in result["rows"]]
+    assert values == [("i", "0"), ("total", "0"), ("i", "1"), ("total", "10")] + [
+        ("i", "2"),
+        ("total", "21"),
+    ], result["rows"]
+
+
+@pytest.mark.timeout(120)
+def test_setjmp_behind_a_macro_withholds_nothing(bucket, capsys):
+    # Review of #81: after longjmp, the volatile `x` declared below is live (40, 41).
+    program = bucket.with_name("try.c")
+    program.write_text(TRY)
+    code, result = probe(capsys, program, "--at", "9", "--capture", "x", "--hits", "2")
+    assert code == 0, result.get("error")
+    assert [row.get("value") for row in result["rows"]] == ["40", "41"], result["rows"]
