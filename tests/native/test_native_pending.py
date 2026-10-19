@@ -109,3 +109,57 @@ def test_a_local_declared_on_the_stop_line_is_shown_with_a_note(bucket, capsys):
     assert any(
         warning.startswith("refill: Declared on the stop line") for warning in result["warnings"]
     )
+
+
+GOTO = """#include <stdio.h>
+int main(void) {
+    int i = 0;
+again:
+    printf("i=%d\\n", i);
+    int x = i * 10 + 7;
+    i++;
+    if (i < 3) goto again;
+    printf("x=%d\\n", x);
+    return 0;
+}
+"""
+
+LOCAL_CTOR = """#include <cstdio>
+int helper(int a) { return a * 2; }
+int main() {
+    struct Box {
+        int w = helper(3);
+        int h;
+        Box(int v) : h(v) {
+            std::printf("%d\\n", w + h);
+        }
+    };
+    Box b(7);
+    int v = b.w + b.h;
+    std::printf("%d\\n", v);
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(120)
+def test_a_backward_goto_keeps_the_local_live_above_its_declaration(bucket, capsys):
+    # Review of #81: on later passes `x` holds its value from the previous pass.
+    program = bucket.with_name("goto.c")
+    program.write_text(GOTO)
+    code, result = probe(capsys, program, "--at", "5", "--capture", "x", "--hits", "3")
+    assert code == 0, result.get("error")
+    assert [row.get("value") for row in result["rows"]][1:] == ["7", "17"]
+
+
+@pytest.mark.timeout(120)
+def test_a_constructor_parameter_is_never_withheld_for_an_enclosing_functions_local(bucket, capsys):
+    # Review of #81: the constructor runs `w = helper(3)` on line 5, above its own
+    # declaration; `main` declares another `v` on line 12.
+    directory = bucket.parent.with_name("ctor")
+    directory.mkdir()
+    program = directory / "box.cpp"
+    program.write_text(LOCAL_CTOR)
+    code, result = probe(capsys, program, "--at", "5", "--capture", "v")
+    assert code == 0, result.get("error")
+    assert result["rows"][0].get("value") == "7", result["rows"]

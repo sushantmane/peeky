@@ -507,13 +507,17 @@ _AUTOMATIC = re.compile(r"DW_OP_(?:fbreg|breg[0-9]+)\b")
 def _declared(dies, offset, files, workspace):
     """(name, (source, line, automatic)) for each parameter and variable of one function
     body, including nested blocks but not calls inlined into it. Parameters, statics and
-    anything without a frame location are not automatic."""
+    anything without a frame location are not automatic. A label is listed as
+    (None, None): `goto` can return above a declaration with the local still live."""
     found, pending = [], list(dies[offset]["children"])
     while pending and len(found) < 4096:
         child = pending.pop()
         die = dies[child]
         if die["tag"] == "DW_TAG_lexical_block":
             pending.extend(die["children"])
+            continue
+        if die["tag"] == "DW_TAG_label":
+            found.append((None, None))
             continue
         if die["tag"] not in ("DW_TAG_formal_parameter", "DW_TAG_variable"):
             continue
@@ -534,21 +538,40 @@ def _declared(dies, offset, files, workspace):
 
 
 def local_declarations(info, line_text, workspace, declared):
-    """Each function in a declared source: its source, line span, and for each local
-    name where every local of that name is declared, as (source, line, automatic)."""
+    """Each function in a declared source: its source, the lines it owns, for each
+    local name where every local of that name is declared, as (source, line,
+    automatic), and whether control can jump back above a declaration (a label, or a
+    `setjmp` call in its lines)."""
     dies, functions, lines, files = _function_entries(info, line_text, workspace, declared)
     workspace = Path(workspace).resolve()
+    texts = {name: (workspace / name).read_text(errors="replace").split("\n") for name in declared}
     table = []
     for root, entry in functions.items():
-        numbers = _own_lines(dies, entry, lines.get(root))
+        # Every line it owns, even above its declaration: a constructor runs its class's
+        # default member initializers there.
+        numbers = lines.get(root)
         if not numbers:
             continue
-        names = {}
+        names, jumps = {}, False
         for body in (*entry["bodies"], root):
             for name, where in _declared(dies, body, files, workspace):
-                names.setdefault(name, set()).add(where)
+                if name is None:
+                    jumps = True
+                else:
+                    names.setdefault(name, set()).add(where)
+        text = texts.get(entry["source"], [])
+        jumps = jumps or any(
+            "setjmp" in text[number - 1]
+            for number in range(min(numbers), max(numbers) + 1)
+            if 0 < number <= len(text)
+        )
         table.append(
-            {"source": entry["source"], "lines": (min(numbers), max(numbers)), "locals": names}
+            {
+                "source": entry["source"],
+                "lines": frozenset(numbers),
+                "locals": names,
+                "jumps": jumps,
+            }
         )
     return table
 
@@ -560,18 +583,21 @@ def declared_from(table, name, source, line):
     """The first line a C/C++ local shown at ``source:line`` can be declared on, when
     that is this line or below, else None.
 
-    Only when every local of that name in every function covering the line is an
-    automatic variable declared in this source at or below it: the variable the
+    Only when every local of that name in every function owning code of the line is
+    an automatic variable declared in this source at or below it: the variable the
     debugger shows is then one of them. Declared below, its value is indeterminate here
     (C11 6.2.4: on each entry to its block, until its declaration is reached); declared
-    on this line, it is until the declaration runs. lldb-dap names a shadowed local
-    `x @ file:line`, and that line picks among them.
+    on this line, it is until the declaration runs. Never in a function that can jump
+    back above a declaration (`goto`, `setjmp`): there the local can still be live.
+    lldb-dap names a shadowed local `x @ file:line`, and that line picks among them.
     """
     shown = _SHADOWED.fullmatch(name)
+    owners = [f for f in table if f["source"] == source and line in f["lines"]]
+    if any(function["jumps"] for function in owners):
+        return None
     candidates = [
         where
-        for function in table
-        if function["source"] == source and function["lines"][0] <= line <= function["lines"][1]
+        for function in owners
         for where in function["locals"].get(shown[1] if shown else name, ())
     ]
     if shown:

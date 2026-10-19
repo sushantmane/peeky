@@ -484,3 +484,12 @@ The review agent was available again. It checked these and found them sound:
 ### Verification of ba50845
 
 Nothing that copies a `BuildCommandError`'s result or message can still carry unbounded output, and nothing depended on the old message. A pre-existing mislabel was reported and fixed: a compile that hit its per-command timeout printed `reason: checker timed out`, because the build result's `timed_out` overrode the diagnostic. The verify text renderer (`_verify_text`, now a module function) uses the checker label only outside the build stage. Test: `test_a_build_timeout_is_not_reported_as_the_checkers`.
+
+## Review of withheld C/C++ locals (#81, f2c0fe1)
+
+These were checked and found sound: the per-table line cache (reset per table; file ids are fixed before any row), the keys of a withheld output, `_root_declared_here` against `_resolve`, other runtimes, shadowed `x @ file:line` names, lambdas and init-captures, Apple blocks, and declarations in other files or with non-automatic storage.
+
+| # | Finding | Severity | Disposition |
+| --- | --- | --- | --- |
+| 1 | A live constructor parameter was withheld. Candidates came from functions whose line *span* covered the stop line, and that span dropped lines above the function's declaration. A local class's constructor runs its default member initializers there (`int w = helper(3);` on line 5), so `main`, which defines the class and declares another `v` on line 12, was the only candidate: `v` showed "declared at line 12". | High | **Fixed.** Candidates come only from functions that own code on the stop line, using the exact line set from the line table with no declaration filter. Tests: `test_only_functions_owning_the_line_count_and_jumps_disable_withholding`, and the real C++ build `test_a_constructor_parameter_is_never_withheld_for_an_enclosing_functions_local`, which fails on `f2c0fe1`. |
+| 2 | A backward `goto` (the `again:` retry idiom), or a `longjmp` to a `setjmp` above the declaration, re-runs lines above a declaration while the local is still live (C11 6.2.4p6). It was withheld as leftovers. | Medium | **Fixed.** A function with a `DW_TAG_label`, or with `setjmp` in its source lines, never withholds. Tests: `test_a_function_with_a_label_or_setjmp_can_jump_back`, and the real build `test_a_backward_goto_keeps_the_local_live_above_its_declaration` (`x` is 7, then 17), which fails on `f2c0fe1`. |

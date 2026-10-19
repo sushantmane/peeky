@@ -703,7 +703,8 @@ def test_local_declarations_record_where_and_how_each_local_is_declared(tmp_path
     (tmp_path / "bucket.c").write_text("\n" * 20)
     info, line = declaration_dumps(tmp_path)
     [take] = local_declarations(info, line, tmp_path, ("bucket.c",))
-    assert take["source"] == "bucket.c" and take["lines"] == (5, 12)
+    assert take["source"] == "bucket.c" and take["lines"] == {5, 6, 7, 8, 11, 12}
+    assert take["jumps"] is False
     assert take["locals"] == {
         "now": {(None, None, False), ("bucket.c", 11, True)},
         "elapsed": {("bucket.c", 6, True)},
@@ -747,3 +748,37 @@ def test_a_local_declared_on_the_stop_line_is_flagged_not_withheld(tmp_path):
     assert declared_from(table, "refill", "bucket.c", 8) == 8
     assert declared_below(table, "refill", "bucket.c", 8) is None
     assert declared_from(table, "elapsed", "bucket.c", 8) is None
+
+
+def test_only_functions_owning_the_line_count_and_jumps_disable_withholding():
+    from peeky.native import declared_below
+
+    # Review of #81: a local class's constructor owns its member initializer on line 5,
+    # above its own declaration; `main`, which defines the class, declares `v` on line 12.
+    ctor = {"source": "a.cpp", "lines": frozenset({5, 7, 8}), "jumps": False}
+    ctor["locals"] = {"v": {(None, None, False)}}
+    main = {"source": "a.cpp", "lines": frozenset({3, 11, 12, 13}), "jumps": False}
+    main["locals"] = {"v": {("a.cpp", 12, True)}}
+    assert declared_below([ctor, main], "v", "a.cpp", 5) is None
+    assert declared_below([ctor, main], "v", "a.cpp", 11) == 12
+    # A backward goto (or setjmp) can return above the declaration with `v` live.
+    assert declared_below([ctor, {**main, "jumps": True}], "v", "a.cpp", 11) is None
+
+
+@pytest.mark.parametrize("jump", ["label", "setjmp"])
+def test_a_function_with_a_label_or_setjmp_can_jump_back(tmp_path, jump):
+    from peeky.native import local_declarations
+
+    info, line = declaration_dumps(tmp_path)
+    text = ["\n"] * 20
+    if jump == "label":
+        info = info.replace(
+            "0x00000050:     DW_TAG_lexical_block",
+            '0x0000004c:     DW_TAG_label\n                  DW_AT_name\t("again")\n'
+            "0x00000050:     DW_TAG_lexical_block",
+        )
+    else:
+        text[6] = "    if (setjmp(env)) return 0;\n"
+    (tmp_path / "bucket.c").write_text("".join(text))
+    [take] = local_declarations(info, line, tmp_path, ("bucket.c",))
+    assert take["jumps"] is True
