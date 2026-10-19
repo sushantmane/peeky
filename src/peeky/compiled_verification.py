@@ -151,12 +151,19 @@ class CompiledVerification:
                     source, self.root, edit=SourceEdit(relative, old, new)
                 )
             except BuildCommandError as exc:
+                from peeky.errors import classify
+
                 result = {
                     **exc.result,
+                    # Bounded as before builds kept their whole output; the compiler's
+                    # errors lead the diagnostic.
+                    **{
+                        key: str(exc.result.get(key) or "")[-16000:] for key in ("stdout", "stderr")
+                    },
                     "passed": False,
                     "stage": "build",
                     "language": self.language,
-                    "diagnostic": str(exc),
+                    "diagnostic": classify(exc)["message"],
                     "artifacts_retained": False,
                     "checker_identity": {"path": str(check), "sha256": self._checks[check]},
                 }

@@ -35,7 +35,15 @@ class BuildCommandError(RuntimeError):
     def __init__(self, command, result):
         self.command = tuple(command)
         self.result = dict(result)
-        super().__init__(f"Build command failed: {self.command[0]}: {self.result}")
+        # The output stays in ``result``: it can be up to BUILD_RETAINED per stream.
+        outcome = (
+            "timed out"
+            if self.result.get("timed_out")
+            else "output limit exceeded"
+            if self.result.get("output_limit_exceeded")
+            else f"exit code {self.result.get('exit_code')}"
+        )
+        super().__init__(f"Build command failed: {self.command[0]}: {outcome}")
 
 
 @dataclass(frozen=True)
