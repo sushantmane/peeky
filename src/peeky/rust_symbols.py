@@ -14,6 +14,7 @@ Only explicitly qualified layouts are interpreted; every other data-carrying enu
 is opaque. This is trusted-code evidence, not a sandbox or formatter.
 """
 
+import bisect
 import codecs
 import decimal
 import json
@@ -21,13 +22,13 @@ import math
 import re
 import struct
 import time
-import unicodedata
 from dataclasses import dataclass
 from fractions import Fraction
 from pathlib import Path
 
 from peeky.adapters import ViewBudgetExhausted
 from peeky.native import _metadata, parse_lines
+from peeky.rust_chars import ESCAPED
 
 # An application unit's own DWARF: a program using std's collections has megabytes of
 # monomorphized types (4.4 MB for one using HashMap); dumping and parsing it takes
@@ -357,6 +358,7 @@ ELEMENT_TYPES = {
     "bool": (1, "DW_ATE_boolean", ("bool",)),
     "f32": (4, "DW_ATE_float", ("float",)),
     "f64": (8, "DW_ATE_float", ("double",)),
+    "char": (4, "DW_ATE_UTF", ("char32_t",)),
 }
 
 
@@ -364,7 +366,6 @@ ELEMENT_TYPES = {
 # DWARF base types by encoding and size), for showing a local by its Rust type.
 RUST_SCALARS = {
     **{name: names for name, (_, _, names) in ELEMENT_TYPES.items()},
-    "char": ("char32_t",),
     "i128": ("__int128",),
     "u128": ("unsigned __int128",),
 }
@@ -407,39 +408,29 @@ def lldb_byte(text, kind):
 
 
 _CHAR_ESCAPES = {0: "\\0", 9: "\\t", 10: "\\n", 13: "\\r", 39: "\\'", 92: "\\\\"}
-# Halfwidth katakana sound marks: letters (Lm) that Rust still escapes (Grapheme_Extend).
-_EXTENDING_LETTERS = frozenset({0xFF9E, 0xFF9F})
-# Categories Python's Unicode tables give otherwise than Rust 1.96's (Unicode 17): all
-# 1,112,064 scalar values were compared with Rust's own `{:?}` (Python 3.11 and 3.13).
-_UNICODE_CHANGED = frozenset({0x1171E})
+_ESCAPED_STARTS = tuple(low for low, _ in ESCAPED)
+
+
+def rust_char_debug(point):
+    """A Unicode scalar value as Rust's `{:?}` prints it (`'b'`, `'\\n'`, `'\\u{200d}'`),
+    from the pinned Rust's own table (rust_chars); None for a value that is no char."""
+    if not 0 <= point <= 0x10FFFF or 0xD800 <= point <= 0xDFFF:
+        return None
+    if point in _CHAR_ESCAPES:
+        return f"'{_CHAR_ESCAPES[point]}'"
+    index = bisect.bisect_right(_ESCAPED_STARTS, point) - 1
+    if index >= 0 and point <= ESCAPED[index][1]:
+        return f"'\\u{{{point:x}}}'"
+    return f"'{chr(point)}'"
 
 
 def lldb_char(text, kind):
     """LLDB's `U+0062 U+0062 U'b'` (Apple) or `U+0x00000062 U+0x00000062 U'b'` (LLVM)
-    for a Rust char (`char32_t`) as Rust's `{:?}` prints
-    it (`'b'`, `'\\n'`, `'\\u{200d}'`), else None: decided by the code point, and only
-    where Rust's rules are certain (the Unicode categories it always prints or escapes)."""
+    for a Rust char (`char32_t`) as Rust's `{:?}` prints it, else None."""
     if kind != "char32_t" or not isinstance(text, str):
         return None
     match = re.fullmatch(r"U\+((?:0x)?[0-9A-Fa-f]{4,8}) U\+\1 U'.*'", text, re.S)
-    if not match or (point := int(match[1].removeprefix("0x"), 16)) > 0x10FFFF:
-        return None
-    if point in _CHAR_ESCAPES:
-        return f"'{_CHAR_ESCAPES[point]}'"
-    if point < 0x80:
-        return f"'{chr(point)}'" if 0x20 <= point < 0x7F else f"'\\u{{{point:x}}}'"
-    if point in _UNICODE_CHANGED:
-        return None
-    category = unicodedata.category(chr(point))
-    if category[0] in "LNPS" and point not in _EXTENDING_LETTERS:
-        return f"'{chr(point)}'"
-    if category in ("Cc", "Cf", "Cs", "Co", "Zl", "Zp", "Zs", "Mn", "Me") or point in (
-        _EXTENDING_LETTERS
-    ):
-        # Not printable, or combining (Grapheme_Extend): Rust escapes these.
-        return f"'\\u{{{point:x}}}'"
-    # Spacing marks and code points this Python does not know: Rust's tables decide.
-    return None
+    return rust_char_debug(int(match[1].removeprefix("0x"), 16)) if match else None
 
 
 def _vec_name(element):
@@ -881,6 +872,14 @@ def _decoder(layout):
     if encoding == "DW_ATE_float":
         pack = "<f" if size == 4 else "<d"
         return lambda raw: rust_float_debug(struct.unpack(pack, raw)[0], size * 8)
+    if encoding == "DW_ATE_UTF":
+
+        def character(raw):
+            if (shown := rust_char_debug(int.from_bytes(raw, "little"))) is None:
+                raise ValueError("Rust char is not a Unicode scalar value")
+            return shown
+
+        return character
     signed = encoding == "DW_ATE_signed"
     return lambda raw: str(int.from_bytes(raw, "little", signed=signed))
 

@@ -1059,7 +1059,12 @@ def test_describe_lists_the_reference_parameters_it_reads_from_memory():
         ("U+0x0000200d U+0x0000200d U'\u200d'", "'\\u{200d}'"),
         ("U+0027 U+0027 U'''", "'\\''"),
         ("U+0022 U+0022 U'\\\"'", "'\"'"),
-        ("U+0903 U+0903 U'x'", None),
+        # Exact from Rust 1.96's own table: a spacing mark is printed, a combining
+        # one escaped, U+1171E (Mn for Python, Mc for Unicode 17) printed.
+        ("U+0903 U+0903 U'x'", "'\u0903'"),
+        ("U+0301 U+0301 U'x'", "'\\u{301}'"),
+        ("U+1171E U+1171E U'x'", "'\U0001171e'"),
+        ("U+0x0000d800 U+0x0000d800 U'?'", None),
         ("U+0062 U+0063 U'b'", None),
         ("U+0x00110000 U+0x00110000 U'?'", None),
     ],
@@ -1069,3 +1074,14 @@ def test_rust_chars_print_as_rusts_debug_does_on_either_lldb(text, shown):
 
     assert lldb_char(text, "char32_t") == shown
     assert lldb_char(text, "unsigned int") is None
+
+
+def test_the_char_table_comes_from_the_pinned_rust():
+    # The table is Rust's own `{:?}` output for every scalar value; it must be
+    # regenerated (scripts/rust_char_table.py) whenever the pinned toolchain changes.
+    from peeky.rust import RustTarget
+    from peeky.rust_chars import ESCAPED, RUST_VERSION
+
+    assert RUST_VERSION == RustTarget.__dataclass_fields__["rust_version"].default
+    assert all(low <= high for low, high in ESCAPED)
+    assert all(a[1] < b[0] for a, b in zip(ESCAPED, ESCAPED[1:]))

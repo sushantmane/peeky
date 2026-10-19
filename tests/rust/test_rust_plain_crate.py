@@ -196,3 +196,48 @@ def test_verify_timeout_bounds_the_cargo_tests_too(plain, capsys):
     code, result = run(capsys, *common, "--old", 'shout("ab")', "--new", 'shout("abc")')
     assert code == 2 and result["error"]["code"] == "TIMEOUT", result
     assert time.monotonic() - started < 25
+
+
+CHARVEC = """fn count(letters: &[char], all: &Vec<char>) -> usize {
+    let n = letters.len() + all.len();
+    n // PARAMS
+}
+
+fn main() {
+    let word: Vec<char> = "hé\\n'🎉\\u{301}\\u{1171e}".chars().collect();
+    let total = count(&word[1..], &word);
+    println!("{:?}", word); // OWNED
+    println!("{:?} {total}", &word[1..]);
+}
+"""
+
+
+@pytest.mark.timeout(300)
+def test_char_containers_are_read_and_print_as_rust_does(plain, capsys):
+    # #90: Vec<char> and &[char] contents were never read.
+    (plain / "src/main.rs").write_text(CHARVEC)
+    if os.environ.get("PEEKY_EXPECT_READ_MEMORY") is None and not _reads_memory(plain, capsys):
+        pytest.skip("this lldb-dap has no readMemory")
+    params = f"src/main.rs:{line_of(CHARVEC, 'PARAMS')}"
+    code, result = run(
+        capsys, "probe", str(plain), "--at", params, "--capture", "letters,all", "--quiet"
+    )
+    assert code == 0, result.get("error")
+    printed = result["output"].splitlines()
+    values = {row["selector"]: row for row in result["rows"]}
+    assert values["all"]["value"] == printed[0] and values["all"]["view"] == "memory"
+    assert values["letters"]["value"] == printed[1].rsplit(" ", 1)[0]
+    owned = f"src/main.rs:{line_of(CHARVEC, 'OWNED')}"
+    code, result = run(
+        capsys, "probe", str(plain), "--at", owned, "--capture", "word,word[5],word[-1]", "--quiet"
+    )
+    values = {row["selector"]: row["value"] for row in result["rows"]}
+    assert values["word"] == printed[0]
+    assert (values["word[5]"], values["word[-1]"]) == ("'\\u{301}'", "'𑜞'")
+
+
+def _reads_memory(plain, capsys):
+    """Whether this debugger reads Rust contents (lldb-dap from LLVM 20 or Apple's)."""
+    at = f"src/main.rs:{line_of(CHARVEC, 'OWNED')}"
+    _, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "word", "--quiet")
+    return result["rows"][0].get("view") == "memory"

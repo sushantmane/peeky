@@ -566,8 +566,9 @@ _OWNED_RUST = (
     "where it is passed as &Vec, &[T], &String or &str."
 )
 _UNREAD_RUST = (
-    "Peeky reads Rust contents only for String, &str and containers of integer, bool and "
-    "float elements; this value is LLDB's summary (its type and address), not the contents. "
+    "Peeky reads Rust contents only for String, &str and containers of integer, bool, "
+    "float and char elements; this value is LLDB's summary (its type and address), not the "
+    "contents. "
     "Capture `.len` for the length, and check contents with `peeky verify`."
 )
 _RUST_CONTAINERS = (
@@ -663,7 +664,7 @@ def _absence(variable, segment, children):
         elif _unread_rust(kind):
             message += (
                 f"; Peeky does not read {kind}'s elements: it reads Rust contents only for "
-                "String, &str and containers of integer, bool and float elements"
+                "String, &str and containers of integer, bool, float and char elements"
                 + (f". Capture {variable['name']}.{length} for the length" if length else "")
             )
         elif kind.startswith(_RUST_CONTAINERS):
@@ -671,7 +672,7 @@ def _absence(variable, segment, children):
                 "; Peeky reads Rust contents only for reference parameters (&[T], &str, "
                 "&Vec<T>, &String, or &mut) and for owned Vec<T>/String locals the "
                 "build's MIR proves initialized at the stop line (innermost frame), where "
-                "T is an integer, bool or float type, with a "
+                "T is an integer, bool, float or char type, with a "
                 "debugger that supports readMemory (lldb-dap from LLVM 20). This one stays "
                 "raw: a moved, dropped or not-yet-assigned local can still point at freed "
                 "memory"

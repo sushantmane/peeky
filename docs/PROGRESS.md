@@ -108,6 +108,9 @@ An hourly thread heartbeat (`continue-peeky-mvp`) checks for available usage and
   - String and char fields in a preview are Java literals.
   - `merged[0]` and `merged[-1]` index an `ArrayList` through `size` and `elementData`.
   - Setting fields is #86 (done, below).
+- **Rust char elements** (#90, first part).
+  - `Vec<char>`, `&[char]` and `&Vec<char>` are read like the other qualified element types, and print as Rust's `{:?}` does.
+  - `char` rendering is exact: the code points Rust 1.96 escapes come from Rust itself (`scripts/rust_char_table.py` writes `src/peeky/rust_chars.py`), and a test ties the table to the pinned toolchain. Tuples (`Vec<(char, usize)>`) are the second part.
 - **Plain Cargo crates** (#89, found by the fourth evaluation's dry run).
   - A `cargo new` binary crate works as is: edition 2021 or 2024, Cargo's default targets (`src/main.rs`, `tests/*.rs`), empty `[dependencies]`, package metadata. Before, only a manifest with explicit `[[bin]]` and `[[test]]` targets and every discovery switch off was accepted, with errors such as "Rust sources and tests must be nonempty immutable tuples".
   - A crate without an integration test is verified by its checker alone. Anything else Cargo would build (`src/lib.rs`, `src/bin`, `build.rs`, dependencies, a second test) is refused with the reason.
