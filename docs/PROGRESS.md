@@ -118,7 +118,7 @@ An hourly thread heartbeat (`continue-peeky-mvp`) checks for available usage and
   - A Vec whose elements Peeky does not read (`Vec<(char, usize)>`) gets a note: its value is LLDB's summary, not the contents.
 - **Java scopes in `describe`** (#91).
   - `describe` lists each Java method's line span and the names it can see (`this`, parameters, locals), as it does for Python, C, C++ and Rust: `names in BalanceBug.assign (demo/BalanceBug.java:19-32): workers, tasks, order, task, best, w`.
-  - The names come from the class files' LocalVariableTable (launched builds use `javac -g`; attached JVMs use their own classes), read by the same bounded class reader.
+  - The names come from the class files' LocalVariableTable (launched builds use `javac -g`; attached JVMs use their own classes), read by the same bounded class reader. Classes compiled without local names say so (`scopes_unavailable`).
 - **Fourth agent evaluation** ([report](evaluations/2026-10-19-agent-fourth-round.md)): Java aliasing, C integer overflow, a plain Rust crate. All three agents reached a general verified fix on their first `verify` (33, 27 and 29 calls).
   - Fixed: `object_ref(value)` for Java identity; `(args)`/`(sets)` rows in `diff`; `verify --timeout`, `--quiet` and `seconds`; `job wait --json` for any job; `ArrayList` children are elements; a `->` selector hint; a guide that fits one read; the checker descriptor in the cookbook.
   - Filed: #90 (Rust char/tuple elements), #91 (Java describe scopes), #92 (C declaration-line stops), #93 (smaller evidence and describe gaps).

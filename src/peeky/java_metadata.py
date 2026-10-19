@@ -10,6 +10,7 @@ source lines between classes remain explicit; breakpoint selection must reject
 ambiguous owners. No nested/anonymous name is guessed from a '$' suffix.
 """
 
+import re
 from pathlib import Path
 
 MAX_CLASS_BYTES = 4 * 1024 * 1024
@@ -17,6 +18,8 @@ MAX_TOTAL_BYTES = 64 * 1024 * 1024
 MAX_ENTRIES = 16384
 MAX_CLASSES = 4096
 MAX_SOURCES = 4096
+# A name a Peeky selector can write (the probe's selector grammar).
+_SELECTABLE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,127}")
 
 
 class _Reader:
@@ -188,11 +191,12 @@ def _class_metadata(data, shared=None, scopes=None):
                     raise ValueError("Invalid exception-table location")
                 if catch:
                     constant(catch, 7)
-            method_lines, names = {}, []
+            method_lines, names, table = {}, [], False
             for nested_name, nested in attrs(body):
                 if nested_name in {"Code", "SourceFile", "SourceDebugExtension"}:
                     raise ValueError("Unsupported nested debug metadata")
                 if nested_name == "LocalVariableTable" and scopes is not None:
+                    table = True
                     for _ in range(nested.u2()):
                         start, length = nested.u2(), nested.u2()
                         name = utf(nested.u2())
@@ -218,10 +222,26 @@ def _class_metadata(data, shared=None, scopes=None):
                 raise ValueError("Missing executable line debug information; compile with -g")
             lines.update(method_lines.values())
             if scopes is not None:
-                found = method_lines.values()
-                # `this` and the parameters first (the lowest slots), then locals.
-                ordered = list(dict.fromkeys(name for _, _, name in sorted(names)))
-                scopes.append((method_name, descriptor, min(found), max(found), ordered))
+                # javac -g leaves the table out only where there is no name to list (a
+                # static method without parameters or locals); `this` or a parameter
+                # without it means the class was compiled without local names.
+                if not table and (not flags & 0x0008 or not descriptor.startswith("()")):
+                    raise ValueError(
+                        "the classes have no local variable names (LocalVariableTable); "
+                        "compile with javac -g"
+                    )
+                # The line at pc 0 starts the method: javac copies field initializers'
+                # lines into every constructor, above the constructor itself.
+                first = method_lines[min(method_lines)]
+                found = [line for line in method_lines.values() if line >= first]
+                # `this` and the parameters first (the lowest slots), then locals; only
+                # names a selector can write (not `this$0`).
+                ordered = [
+                    name
+                    for name in dict.fromkeys(name for _, _, name in sorted(names))
+                    if _SELECTABLE.fullmatch(name)
+                ]
+                scopes.append((method_name, descriptor, first, max(found), ordered))
             for line in sorted(set(method_lines.values())):
                 # Class-file order, which is the order java-debug considers them in.
                 line_methods.setdefault(line, []).append((method_name, descriptor))

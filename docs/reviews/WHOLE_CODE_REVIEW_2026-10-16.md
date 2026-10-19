@@ -682,3 +682,16 @@ Checked and found sound:
 The verification (56d6bcd) found nothing wrong.
 - **Pinned toolchain:** with a failing `rustc` first on PATH, the generator and the test still build with the pinned 1.96.0 and produce the same 909 ranges; the fake is never called.
 - **Hygiene and speed:** the test builds only in its own temporary directory, leaves nothing behind (also on timeout), and takes 0.1–0.3 s.
+
+## Review of Java scopes in describe (#96, 8b95834)
+
+Checked and found sound:
+- **Strictness:** the class reader stays strict, and nothing changes when scopes are not asked for.
+- **Failures:** a malformed table makes `scopes_unavailable`, never a failed `describe`.
+- **Sources:** `source` is right for launched and attached targets.
+
+| # | Finding | Severity | Disposition |
+| --- | --- | --- | --- |
+| 1 | Classes compiled without local names (plain `javac` is `-g:source,lines`, as attached Gradle builds may be) listed every method with no names (`-`), while the debugger shows `this` and `arg0`. | Medium | **Fixed:** scopes are unavailable with the reason ("compile with javac -g"). javac -g itself leaves the table out of static methods without parameters or locals (`values()`, a lambda without arguments, `<clinit>`), so only a method with `this` or a parameter and no table counts. Test: `test_classes_without_local_names_say_so`, against real `javac`. |
+| 2 | A constructor's span started at the first field initializer, whose lines javac copies into every constructor, so `X(int)` claimed lines 7–26 and its parameter across unrelated members. | Medium (display) | **Fixed:** a method starts at its line for pc 0 (a constructor's own line). Test: `test_scopes_list_selectable_names_and_constructor_spans` (`X(int)` spans 11–13). |
+| 3 | Names no selector can write (`this$0`, `größe`) were listed. | Low | **Fixed:** only names the selector grammar accepts are listed. |
