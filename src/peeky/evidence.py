@@ -46,7 +46,7 @@ TABLES = {
             "line": "Requested breakpoint line",
             "capture": "JSON list of requested selectors",
             "sets": "JSON list of requested [name, value] interventions",
-            "set_hit": "Hit at which the interventions were applied",
+            "set_hit": "Hit at which the interventions were applied; NULL without --set",
             "hits_requested": "The probe's --hits: a number, or 'all'",
             "args": "JSON list of the arguments the program received (--arg, else the "
             "configured ones); NULL for an attached JVM, whose arguments are unknown",
@@ -212,10 +212,10 @@ def _shown(alias=""):
 # Selectors a run asked for (runs.capture), whether or not it reached a capture.
 _ASKED = "(SELECT value FROM json_each((SELECT capture FROM runs WHERE run_id = {})))"
 _LANGUAGE = "(SELECT language FROM runs WHERE run_id = {})"
-_PAIR = f"""WITH a AS (SELECT hit, phase, selector, {_shown()} AS v, rowid AS pos FROM captures
-    WHERE run_id = {_A}),
-  b AS (SELECT hit, phase, selector, {_shown()} AS v, rowid AS pos FROM captures
-    WHERE run_id = {_B}),
+_PAIR = f"""WITH a AS (SELECT hit, phase, selector, {_shown()} AS v, type AS t, rowid AS pos
+    FROM captures WHERE run_id = {_A}),
+  b AS (SELECT hit, phase, selector, {_shown()} AS v, type AS t, rowid AS pos
+    FROM captures WHERE run_id = {_B}),
   k AS (SELECT hit, phase, selector FROM a UNION SELECT hit, phase, selector FROM b),
   pair AS (SELECT k.hit, k.phase, k.selector, a.v AS value_a, b.v AS value_b,
     a.v IS NOT b.v AS differs, COALESCE(a.pos, b.pos) AS pos,
@@ -226,6 +226,8 @@ _PAIR = f"""WITH a AS (SELECT hit, phase, selector, {_shown()} AS v, rowid AS po
       WHEN k.phase = 'after-set' AND a.pos IS NULL THEN 'intervention only in run b'
       WHEN b.pos IS NULL THEN 'missing in run b'
       WHEN a.pos IS NULL THEN 'missing in run a'
+      WHEN a.v IS NOT b.v AND a.t IS NOT NULL AND b.t IS NOT NULL AND a.t IS NOT b.t
+        THEN 'type ' || a.t || ' -> ' || b.t
       WHEN a.v IS NOT b.v AND no_addresses(a.v, {_LANGUAGE.format(_A)})
         IS no_addresses(b.v, {_LANGUAGE.format(_B)}) THEN 'addresses only'
     END AS note
@@ -244,12 +246,13 @@ _PAIR_ORDER = " ORDER BY hit, phase = 'after-set', pos"
 _DIFF = f"""{_PAIR}
 SELECT {_PAIR_COLUMNS} FROM (
   SELECT 0 AS rank, hit, phase, selector, value_a, value_b, differs, note, pos FROM pair
-    WHERE differs AND (note IS NULL OR note LIKE 'missing%')
+    WHERE differs AND (note IS NULL OR note LIKE 'missing%' OR note LIKE 'type %')
   UNION ALL SELECT 1, hit, phase, selector, value_a, value_b, differs, note, pos FROM pair
     WHERE note LIKE 'intervention only%'
   UNION ALL SELECT 2, hit, phase, selector, value_a, value_b, differs, note, pos FROM pair
     WHERE note = 'addresses only'
-  UNION ALL SELECT 3, NULL, NULL, selector, NULL, NULL, 1, note, MIN(pos) FROM pair
+  UNION ALL SELECT 3, hit, phase, selector, value_a, value_b, 1,
+    note || ' (one row per selector: its first hit)', MIN(pos) FROM pair
     WHERE note LIKE 'only in%' GROUP BY selector, note
   UNION ALL SELECT 4, NULL, NULL, '(status)', ra.status, rb.status, 1, 'outcome differs', 0
     FROM runs ra, runs rb WHERE ra.run_id = {_A} AND rb.run_id = {_B}
@@ -265,6 +268,12 @@ SELECT {_PAIR_COLUMNS} FROM (
     'the runs built different edits (runs.edit has each diff)', 0
     FROM runs ra, runs rb WHERE ra.run_id = {_A} AND rb.run_id = {_B}
     AND ra.edit IS NOT rb.edit
+  UNION ALL SELECT 6, NULL, NULL, '(source)', ra.target || '/' || ra.program,
+    rb.target || '/' || rb.program, 1,
+    'the runs ran different source text, neither a candidate edit (source_sha256 differs)', 0
+    FROM runs ra, runs rb WHERE ra.run_id = {_A} AND rb.run_id = {_B}
+    AND ra.edit IS NULL AND rb.edit IS NULL AND ra.source_sha256 IS NOT NULL
+    AND rb.source_sha256 IS NOT NULL AND ra.source_sha256 != rb.source_sha256
   UNION ALL SELECT 7, NULL, NULL, '(line)', ra.program || ':' || ra.line,
     rb.program || ':' || rb.line, 1,
     'the runs stopped at different lines: values also differ by where they were read', 0
@@ -590,7 +599,8 @@ def record(path, result, *, language=None, target=None, label=None, worker=None)
         "line": probe.get("line"),
         "capture": json.dumps(list(probe.get("capture") or [])),
         "sets": json.dumps([list(change) for change in probe.get("set") or []]),
-        "set_hit": probe.get("set_hit"),
+        # Eval 5: a run without --set has no intervention hit (the probe's default is 1).
+        "set_hit": probe.get("set_hit") if probe.get("set") else None,
         "hits_requested": probe.get("hits"),
         "args": _program_args(result, probe, language),
         "entry": probe.get("entry"),
