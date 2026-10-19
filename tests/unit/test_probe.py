@@ -1000,3 +1000,45 @@ def test_a_bundle_without_member_sets_is_a_mutation_refusal():
         "changed; rebuild it with scripts/setup_java_adapter.py"
     )
     assert classify(ValueError(message))["code"] == "MUTATION_REJECTED"
+
+
+@pytest.mark.parametrize(
+    "error, code",
+    [
+        ("Variable collection exceeds bounded expansion limit", "BUDGET_EXHAUSTED"),
+        ("Expansion ancestry changed or is ambiguous", "STALE_HANDLE"),
+        ("Adapter does not support variable mutation", "INVALID_REQUEST"),
+    ],
+)
+def test_the_workers_own_errors_keep_their_codes_in_an_intervention(error, code):
+    # Review of #86: a budget or stale-handle failure while reading the parent became
+    # NOT_FOUND, and INVALID_REQUEST took the evidence store's hint.
+    from peeky.errors import classify
+    from peeky.probe import apply_set
+
+    class Holder(FakeWorker):
+        def dispatch(self, operation, args):
+            if operation == "inspect":
+                items = {"name": "items", "value": "Item[600]@3", "variablesReference": 5}
+                return {"frames": [{}], "scopes": [{"reference": 1, "variables": [items]}]}
+            raise ValueError(error)
+
+    with pytest.raises(ValueError) as caught:
+        apply_set(Holder(), {}, "items[0].v", "1")
+    payload = classify(caught.value)
+    assert payload["code"] == code and error in payload["message"]
+    assert "store" not in payload["hint"]
+
+
+def test_a_remote_row_error_keeps_its_code():
+    from peeky.cli import _Remote
+    from peeky.errors import PeekyError, Refused
+
+    class Client:
+        def call(self, operation, **args):
+            payload = {"code": "STALE_HANDLE", "message": "Unknown or stale expansion handle"}
+            raise PeekyError("u", 400, {}, payload)
+
+    with pytest.raises(Refused) as caught:
+        _Remote(Client()).dispatch("expand", {})
+    assert caught.value.code == "STALE_HANDLE"

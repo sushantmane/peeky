@@ -886,7 +886,10 @@ class _Remote:
             # One selector the worker could not read is that row's error (as in a local
             # probe), not a failure of the whole `get`; session-level errors still raise.
             if exc.error_code in _ROW_ERRORS and not exc.session_closed:
-                raise ValueError(exc.payload.get("message", str(exc))) from exc
+                from peeky.errors import Refused
+
+                # Still a row's error, and still its code (an intervention reports it).
+                raise Refused(exc.error_code, exc.payload.get("message", str(exc))) from exc
             raise
 
 

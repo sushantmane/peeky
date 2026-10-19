@@ -246,6 +246,8 @@ _FIX_ARGUMENTS = "Fix the request arguments; see `peeky <command> --help`."
 
 def _refusal(code):
     """(hint, retryable) for a Refused code, from the rule that describes that refusal."""
+    if code == "INVALID_REQUEST":
+        return _FIX_ARGUMENTS, False
     marker = {"MUTATION_REJECTED": "cannot be changed", "NOT_FOUND": "not a visible local"}
     return next(
         ((h, r) for p, c, h, r in _RULES if c == code and marker.get(code, "") in p),

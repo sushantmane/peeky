@@ -481,8 +481,9 @@ def _resolve(worker, stop, snapshot, segments):
                 break
             start += 64
         if found is None and incomplete:
-            raise ValueError(
-                f"{_shown(segment)} is beyond the bounded inspection window (512 children)"
+            raise Refused(
+                "BUDGET_EXHAUSTED",
+                f"{_shown(segment)} is beyond the bounded inspection window (512 children)",
             )
         if (
             found is None
@@ -705,9 +706,10 @@ def _from_end(worker, stop, variable, offset, segment):
         if not page["truncated"]:
             break
         if start + 64 > 511 or page.get("remaining_nodes", 1) <= 0:
-            raise ValueError(
+            raise Refused(
+                "BUDGET_EXHAUSTED",
                 f"{segment!r} needs the sequence length, but it has more elements than the "
-                "bounded inspection window (512); use a non-negative index"
+                "bounded inspection window (512); use a non-negative index",
             )
         start += 64
     count = len(elements)
@@ -751,8 +753,9 @@ def _list_element(worker, stop, backing, size, index, segment):
     if not 0 <= index < size:
         raise ValueError(f"{_shown(segment)} is out of range: the list has {size} elements")
     if index > 511:
-        raise ValueError(
-            f"{_shown(segment)} is beyond the bounded inspection window (512 children)"
+        raise Refused(
+            "BUDGET_EXHAUSTED",
+            f"{_shown(segment)} is beyond the bounded inspection window (512 children)",
         )
     try:
         page = worker.dispatch(
@@ -762,14 +765,17 @@ def _list_element(worker, stop, backing, size, index, segment):
         if "exceeds bounded expansion" not in str(exc):
             raise
         # The backing array's capacity, not the list's size, is over the bound.
-        raise ValueError(
+        raise Refused(
+            "BUDGET_EXHAUSTED",
             f"{_shown(segment)} cannot be read: the list's backing array holds more than 512 "
-            "slots, Peeky's inspection bound (read a field of an element you can reach)"
+            "slots, Peeky's inspection bound (read a field of an element you can reach)",
         ) from None
     found = next((child for child in page["variables"] if _names(child, f"[{index}]")), None)
     if found is None and (page.get("truncated") or page.get("remaining_nodes", 1) <= 0):
         # Cut short by the shared node budget: a fresh inspection can read it.
-        raise ValueError(f"{_shown(segment)} is beyond the bounded inspection window")
+        raise Refused(
+            "BUDGET_EXHAUSTED", f"{_shown(segment)} is beyond the bounded inspection window"
+        )
     if found is None:
         raise ValueError(f"{_shown(segment)} is not in the list's backing array")
     return found
@@ -884,9 +890,26 @@ def _settable_here(snapshot):
     return f"; settable here: {', '.join(names[:20]) if names else 'none'}"
 
 
+class _Coded:
+    """The worker's own errors, given their codes from the worker's message alone: a
+    selector or the names an error lists are added later and never decide the code."""
+
+    def __init__(self, worker):
+        self.worker = worker
+
+    def dispatch(self, operation, args):
+        try:
+            return self.worker.dispatch(operation, args)
+        except Refused:
+            raise
+        except ValueError as exc:
+            raise Refused(_code(exc), str(exc)) from None
+
+
 def apply_set(worker, stop, name, value):
     """Apply one `--set name=value` at this stop: a root local, or in Java a field or
     array element a selector names (`current.end`, `this.count`, `xs[0]`, `xs[-1]`)."""
+    worker = _Coded(worker)
     snapshot = worker.dispatch("inspect", stop)
     segments = parse_selector(name)
     if len(segments) == 1:
@@ -909,14 +932,17 @@ def apply_set(worker, stop, name, value):
                 "set_variable",
                 {**stop, "reference": scope["reference"], "name": name, "value": value},
             )
-        except ValueError as exc:
+        except Refused as exc:
             # Classified by the debugger's reason, never by the names listed after it.
-            raise Refused(_code(exc), f"{exc}{_settable_here(snapshot)}") from None
+            raise Refused(exc.code, f"{exc}{_settable_here(snapshot)}") from None
     target = f"Intervention target {name!r}"
     try:
         parent = _resolve(worker, stop, snapshot, segments[:-1])
+    except Refused as exc:
+        # The worker's own error (a node budget, a stale handle) keeps its code.
+        raise Refused(exc.code, f"{target}: {exc}") from None
     except ValueError as exc:
-        # A fixed phrase classifies it (NOT_FOUND), never the names the error lists.
+        # The path names nothing here; the names the error lists never decide its code.
         raise Refused(
             "NOT_FOUND", f"{target} was not found in the inspected values: {exc}"
         ) from None
@@ -964,8 +990,8 @@ def apply_set(worker, stop, name, value):
             "set_variable",
             {**stop, "handle": parent["variablesReference"], "name": member, "value": value},
         )
-    except ValueError as exc:
-        raise Refused(_code(exc), f"{target}: {exc}") from None
+    except Refused as exc:
+        raise Refused(exc.code, f"{target}: {exc}") from None
     return {**changed, "name": name}
 
 
