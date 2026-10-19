@@ -515,10 +515,18 @@ def test_diff_puts_the_first_real_divergence_first(store):
         (3, "text", "missing in run b"),
         (1, "text", "addresses only"),
         (2, "text", "addresses only"),
-        (None, "totals", "only in run a"),
-        (None, "zeta", "only in run b"),
+        # Eval 5 (C): these rows showed NULL values, which read as "no value"; each
+        # now shows its selector's first hit.
+        (1, "totals", "only in run a (one row per selector: its first hit)"),
+        (1, "zeta", "only in run b (one row per selector: its first hit)"),
     ]
     assert all(r["differs"] == 1 for r in rows)
+    only = {
+        r["selector"]: (r["value_a"], r["value_b"])
+        for r in rows
+        if r["selector"] in ("totals", "zeta")
+    }
+    assert only["zeta"] == (None, "9") and only["totals"][1] is None and only["totals"][0]
     compared = evidence.run_query(store, "compare")["rows"]
     # Every row of both runs, in capture order within each hit.
     assert [r["selector"] for r in compared if r["hit"] == 1] == [
@@ -924,3 +932,27 @@ def test_a_schema_4_store_gains_the_new_view_columns(store):
     connection.close()
     rows = evidence.query(store, "SELECT language FROM last_run")["rows"]
     assert rows[0] == {"language": "python"}
+
+
+def test_diff_notes_a_type_change_and_runs_of_different_source(store):
+    # Eval 5 (C): the fix changed `total` from unsigned int to long long, and the diff
+    # did not say so. Eval 5 (Python): runs of two different files compared silently.
+    first = result(starts=("4294967294",))
+    first["rows"][0]["type"] = "unsigned int"
+    evidence.record(store, first, language="c")
+    second = result(starts=("-2",))
+    second["rows"][0]["type"] = "long long"
+    second["source_sha256"] = "other"
+    evidence.record(store, second, language="c")
+    rows = {r["selector"]: r for r in evidence.run_query(store, "diff")["rows"]}
+    assert rows["start"]["note"] == "type unsigned int -> long long"
+    assert rows["start"]["hit"] == 1 and rows["start"]["value_b"] == "-2"
+    assert "different source text" in rows["(source)"]["note"]
+
+
+def test_a_run_without_set_has_no_intervention_hit(store):
+    # Eval 5 (Python): runs.set_hit said 1 for runs without --set.
+    evidence.record(store, result())
+    evidence.record(store, result(sets=(("start", "0"),)))
+    rows = evidence.query(store, "SELECT sets, set_hit FROM runs ORDER BY run_id")["rows"]
+    assert rows[0]["set_hit"] is None and rows[1]["set_hit"] == 1

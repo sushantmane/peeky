@@ -4,13 +4,15 @@ import hashlib
 import json
 import sqlite3
 import subprocess
+import tempfile
+from pathlib import Path
 
 import pytest
 
 from peeky import evidence
 from peeky.build import BuildCommandError
 from peeky.errors import classify
-from peeky.probe import CANDIDATE_NEEDS_BUILD, Probe, candidate_line, combine_edits
+from peeky.probe import Probe, candidate_line, combine_edits
 
 TEXT = "a;\nb;\nc;\nd;\n"
 
@@ -224,15 +226,33 @@ def test_a_candidate_run_records_the_source_that_ran_and_its_edit(tmp_path):
     ]
 
 
-def test_python_targets_refuse_a_candidate_before_running_anything(tmp_path, capsys):
+def test_python_candidates_run_an_edited_copy(tmp_path, capsys, monkeypatch):
+    # Eval 5 (Python): `probe --old/--new` was refused, so a fix could not be seen
+    # before `verify`.
     from peeky.cli import main
 
+    monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
+    (tmp_path / "helper.py").write_text("def double(x):\n    return x * 2\n")
     script = tmp_path / "app.py"
-    script.write_text("x = 1\nprint(x)\n")
-    code = main(["probe", str(script), "--at", "1", "--old", "x = 1", "--new", "x = 2", "--json"])
+    script.write_text(
+        "import helper\n\nacc = 0\nfor x in (1, 2):\n    acc += helper.double(x)\n"
+        "print('ACC:', acc)\n"
+    )
+    original = script.read_text()
+    probe = ["probe", str(script), "--at", "5", "--capture", "acc", "--json", "--quiet"]
+    code = main([*probe, "--old", "acc = 0", "--new", "acc = 100"])
+    result = json.loads(capsys.readouterr().out)
+    assert code == 0, result.get("error")
+    assert [row["value"] for row in result["rows"]] == ["100"]
+    # Its sibling module imported from the original directory; the file is untouched.
+    assert "ACC: 106" in result["output"] and script.read_text() == original
+    assert "+acc = 100" in result["candidate"]["diff"]
+    assert not list(Path(tempfile.gettempdir()).glob("peeky-candidate-*/app.py"))
+    # An entry script would import the original module, so --run is refused.
+    (tmp_path / "run.py").write_text("import app\n")
+    code = main([*probe, "--run", str(tmp_path / "run.py"), "--old", "acc = 0", "--new", "acc = 1"])
     error = json.loads(capsys.readouterr().out)["error"]
-    assert code == 2 and error["code"] == "INVALID_REQUEST"
-    assert error["message"] == CANDIDATE_NEEDS_BUILD and script.read_text() == "x = 1\nprint(x)\n"
+    assert "with --run, the entry script would import the original module" in error["message"]
 
 
 def test_an_edit_needs_both_halves(tmp_path, capsys):
@@ -272,11 +292,15 @@ def test_values_from_any_other_build_than_the_candidate_are_discarded():
 
 
 def test_the_worker_refuses_edits_it_cannot_build(tmp_path):
+    from peeky.adapters import PythonAdapter
     from peeky.worker import DebugWorker
 
+    class Attached(PythonAdapter):
+        supports_edits = False
+
     (tmp_path / "app.py").write_text("x = 1\n")
-    worker = DebugWorker(tmp_path)
-    with pytest.raises(ValueError, match="needs a target Peeky builds"):
+    worker = DebugWorker(tmp_path, adapter=Attached())
+    with pytest.raises(ValueError, match="needs a fresh launch"):
         worker.dispatch("launch", {"program": "app.py", "edit": {"old": "x", "new": "y"}})
     assert worker.dap is None
 

@@ -706,6 +706,7 @@ def probe(args):
     if line is None:
         raise ValueError("probe requires --at <path>:<line>")
     edit, original = _probe_edit(args, root, program, line, language)
+    _member_sets(args.set, language)
     request = Probe(
         program,
         line,
@@ -757,6 +758,25 @@ def _misplaced_options(args):
     )
 
 
+def _member_sets(sets, language):
+    """Refuse a field or element --set before anything is built where only Java has them."""
+    from peeky.errors import Refused
+
+    fields = [
+        text.split("=", 1)[0]
+        for text in sets or ()
+        if len(parse_selector(text.split("=", 1)[0])) > 1
+    ]
+    if fields and language not in ("java", "java-attach"):
+        raise Refused(
+            "MUTATION_REJECTED",
+            f"--set {fields[0]} changes a field or element, which only Java targets allow; in "
+            f"{language} only the stopped function's own locals change. To test a value there, "
+            "add a local with a candidate edit and set it in the same probe (COOKBOOK 6.6: "
+            "`--old/--new` with `--set`), or edit the source and run verify",
+        )
+
+
 def _probe_edit(args, root, program, line, language):
     """The edit (one (old, new) pair, or a tuple of them) and the original text for
     `probe --old/--new`, else (None, None)."""
@@ -764,7 +784,7 @@ def _probe_edit(args, root, program, line, language):
         not value for value in (args.old, args.new, args.old_file, args.new_file)
     ):
         return None, None
-    if language in ("python", "java-attach"):
+    if language == "java-attach":
         raise ValueError(CANDIDATE_NEEDS_BUILD)
     pairs = _edit_pairs(args)
     original = (root / program).read_text()
@@ -1090,6 +1110,9 @@ def _variables_text(snapshot, name="default"):
             )
             if variable.get("unavailable"):
                 more = f" (no readable value: {variable.get('reason')})"
+            elif not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*( @ .+)?", variable["name"]):
+                # LLDB's `(Return Value)` after `step --out`, debugpy's `special variables`.
+                more = " [not selectable]"
             view = f"  [{variable['view']}]" if variable.get("view") else ""
             if variable.get("settable"):
                 view += "  [settable]"
@@ -2179,6 +2202,8 @@ def main(argv=None, _job=False, _edits=None):
     sub = commands.add_parser("describe", help="Manifest: language, breakpoint lines, views")
     common(sub)
     sub.add_argument("--at", help="Program path (for multi-file targets)")
+    # Accepted everywhere: describe prints no progress, so it changes nothing here.
+    sub.add_argument("--quiet", action="store_true", help=argparse.SUPPRESS)
     sub = commands.add_parser("probe", help="One stateless question: stop, capture, set, report")
     probe_parser = sub
     common(sub)

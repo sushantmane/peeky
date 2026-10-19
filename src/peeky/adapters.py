@@ -5,8 +5,12 @@ Python runs directly; compiled runtimes require prepared build provenance.
 """
 
 import ast
+import os
+import shutil
 import sys
+import tempfile
 from dataclasses import dataclass
+from pathlib import Path
 
 PYTHON_LITERAL_NODES = (
     ast.Expression,
@@ -43,6 +47,49 @@ def validate_python_literal(value):
         raise ValueError(message) from None
 
 
+class PythonCandidate:
+    """A Python candidate edit: the edited program file alone, at its own relative path
+    in a private directory. It runs with the original root as its working directory, and
+    its own directory's sibling modules still import from the originals (that directory
+    follows on PYTHONPATH). The program's file is never written."""
+
+    def __init__(self, adapter, program, root, edit):
+        self.adapter = adapter
+        self.original = Path(program).resolve(strict=True)
+        relative = self.original.relative_to(Path(root).resolve(strict=True))
+        if relative.as_posix() != edit.path:
+            raise ValueError("A Python candidate edits the --at file only")
+        text = self.original.read_text()
+        if not edit.old or edit.old == edit.new or text.count(edit.old) != 1:
+            raise ValueError("--old must match the --at file exactly once and --new must change it")
+        self.scratch = Path(tempfile.mkdtemp(prefix="peeky-candidate-"))
+        self.staged = self.scratch / relative
+        self.staged.parent.mkdir(parents=True, exist_ok=True)
+        self.staged.write_text(text.replace(edit.old, edit.new, 1))
+
+    def __getattr__(self, name):
+        return getattr(self.adapter, name)
+
+    def source_path(self, original):
+        return self.staged if Path(original).resolve() == self.original else original
+
+    def launch_args(self, program, root, args=()):
+        if Path(program).resolve() != self.original:
+            # `--run` imports the --at module by name, from the original directory first.
+            raise ValueError(
+                "A Python candidate runs the edited --at file itself; with --run, the entry "
+                "script would import the original module. Probe the edited file directly, "
+                "or check the edit with `peeky verify`"
+            )
+        launch = self.adapter.launch_args(self.staged, root, args)
+        paths = [str(self.original.parent), os.environ.get("PYTHONPATH", "")]
+        launch["env"] = {"PYTHONPATH": os.pathsep.join(path for path in paths if path)}
+        return launch
+
+    def close(self):
+        shutil.rmtree(self.scratch, ignore_errors=True)
+
+
 class ViewBudgetExhausted(ValueError):
     """A bounded value view stopped early; distinct from an invalid debugger shape."""
 
@@ -55,9 +102,11 @@ class PythonAdapter:
     manifest_id = None
     source_manifest = None
     target_identity = None
+    # Candidate probes (`probe --old/--new`) run an edited copy of the program file.
+    supports_edits = True
 
-    def prepare(self, program, root):
-        return self
+    def prepare(self, program, root, edit=None):
+        return self if edit is None else PythonCandidate(self, program, root, edit)
 
     def source_path(self, original):
         return original

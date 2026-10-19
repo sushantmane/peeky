@@ -135,7 +135,7 @@ hit  phase     line  function  selector   type  value
 1    observed  8     get_page  items      list  [10, 20, 30, 40, 50, 60]
 ```
 
-Selectors are dotted paths, indexes and string keys (`request.page`, `args[0]`, `items[-1]`, `order['id']`), never expressions: Peeky never evaluates code in your program. Python dict entries are read by key; `order.id` fails with a message that names `order['id']` and lists the keys. A selector that is not there lists what is. Quote selectors that contain `[...]`: zsh, the macOS default shell, would otherwise treat them as filename patterns. In C and C++, follow a pointer with `.` (`stats.total_us`, not `->`); a pointer to a scalar carries no length, so `values[0]` reads what it points at and higher indexes are read where the array is declared, while a pointer to an array or a container lists that pointee's elements, as the debugger does (`pa[1]` is `(*pa)[1]`). Rust references and Boxes are never indexed this way.
+Selectors are dotted paths, indexes and string keys (`request.page`, `args[0]`, `items[-1]`, `order['id']`), never expressions: Peeky never evaluates code in your program. Python dict entries are read by key; `order.id` fails with a message that names `order['id']` and lists the keys. A selector that is not there lists what is. Quote selectors that contain `[...]`: zsh, the macOS default shell, would otherwise treat them as filename patterns. In C and C++, follow a pointer with `.` (`stats.total_us`, not `->`); a pointer to a scalar carries no length, so `values[0]` reads what it points at; for other elements, read the array itself where it is declared (in the caller), while a pointer to an array or a container lists that pointee's elements, as the debugger does (`pa[1]` is `(*pa)[1]`). Rust references and Boxes are never indexed this way.
 
 ### 2.2 Every Iteration of a Loop
 
@@ -182,7 +182,7 @@ output:
   PAGE: [10, 20, 30]
 ```
 
-Root locals can be changed: the stopped function's own variables (`start`). In Java, so can scalar fields and array elements (see 7.3). Python takes literals, including lists and dicts. C and C++ take integers of 16 to 64 bits (`int`, `long`, `size_t`, `int64_t`, …) within the local's range; Java takes scalars of the target's type. Rust takes integer locals (`i16` to `i64`, `u16` to `u64`, `isize`, `usize`) that the program keeps in memory; any other change is refused, because it would not reach the program. For C, C++ and Rust, `session inspect` marks the locals whose type allows a change with `[settable]`. Every change is read back: one the debugger refuses or cannot store (a computed value, such as a structured binding of a bitfield) is refused and the session kept, and a value stored differently from the one asked for (a type redefined as a float) closes the session. A refusal (`MUTATION_REJECTED`) names the local and the rule.
+Root locals can be changed: the stopped function's own variables (`start`). In Python a change rebinds the name in that frame: `--set 'seen=[]'` gives this call a new list, while the shared object it named (a default argument, a module global) keeps its contents, and the next call sees it again. In Java, so can scalar fields and array elements (see 7.3). Python takes literals, including lists and dicts. C and C++ take integers of 16 to 64 bits (`int`, `long`, `size_t`, `int64_t`, …) within the local's range; Java takes scalars of the target's type. Rust takes integer locals (`i16` to `i64`, `u16` to `u64`, `isize`, `usize`) that the program keeps in memory; any other change is refused, because it would not reach the program. For C, C++ and Rust, `session inspect` marks the locals whose type allows a change with `[settable]`. Every change is read back: one the debugger refuses or cannot store (a computed value, such as a structured binding of a bitfield) is refused and the session kept, and a value stored differently from the one asked for (a type redefined as a float) closes the session. A refusal (`MUTATION_REJECTED`) names the local and the rule.
 
 ### 2.4 Change the Value at a Later Hit
 
@@ -278,7 +278,7 @@ run_a  run_b  hit   phase     selector  value_a                        value_b  
 1      2      NULL  NULL      (output)  ::ffff:8.8.8.8: private\n      ::ffff:10.0.0.1: private\n   1        output differs
 ```
 
-`diff` keeps only the rows that differ. Real differences come first, in hit order and then in `--capture` order, so the first row is the first divergence. Then come values that only one run's `--set` changed (`intervention only in run b`), then values that differ only in heap or stack addresses (`note: addresses only`, for example a C string's pointer; NULL is never treated as an address), then one row per selector that only one run asked for (`only in run a`), and last, `(status)` and `(output)` rows when the runs' outcomes or outputs differ, an `(edit)` row when one run built a candidate edit, a `(line)` row when the runs stopped at different lines (their values then differ partly because of where they were read), an `(args)` row when they ran with different program arguments, and a `(sets)` row when they made different interventions. Check those last rows before crediting an edit with a difference. The `(output)` row shows each output from just before the first character that differs (`output differs at line 4, column 13`, counted from 1), so after a `--set` it shows the intervention's effect. Hits that one run never reached say `missing in run b`. Comparing needs two saved runs; with fewer, the query says so. `queries compare` shows every value side by side with the same notes. Labels are free text, stored as given.
+`diff` keeps only the rows that differ. Real differences come first, in hit order and then in `--capture` order, so the first row is the first divergence. Then come values that only one run's `--set` changed (`intervention only in run b`), then values that differ only in heap or stack addresses (`note: addresses only`, for example a C string's pointer; NULL is never treated as an address), then one row per selector that only one run asked for (`only in run a`, with its first hit's value), and last, `(status)` and `(output)` rows when the runs' outcomes or outputs differ, an `(edit)` row when one run built a candidate edit, a `(source)` row when two runs that are not candidates ran different source text (another copy of the file), a `(line)` row when the runs stopped at different lines (their values then differ partly because of where they were read), an `(args)` row when they ran with different program arguments, and a `(sets)` row when they made different interventions. Check those last rows before crediting an edit with a difference. The `(output)` row shows each output from just before the first character that differs (`output differs at line 4, column 13`, counted from 1), so after a `--set` it shows the intervention's effect. Hits that one run never reached say `missing in run b`. A value whose type changed (an edit to `long long`) says `type unsigned int -> long long`. `diff` compares the last two runs unless you name them: `--param a=1 --param b=5`. Comparing needs two saved runs; with fewer, the query says so. `queries compare` shows every value side by side with the same notes. Labels are free text, stored as given.
 
 ### 3.2 Inputs, Outcomes and Outputs of the Last Two Runs
 
@@ -523,7 +523,7 @@ diff:
 +    start = (page - 1) * page_size
 ```
 
-Your files are not changed. The edit is applied to a scratch copy; `--keep` keeps the edited file (build artifacts are always removed). For a Cargo crate, its compiled tests run too, and a failure names each failed test with how it failed (`compiled tests: failed (1 failed)`, then `first_page_starts_at_zero: thread … panicked at tests/pagination.rs:10:5: assertion `left == right` failed …`). `--json` identifies the checker's descriptor and build by hash (`descriptor_sha256`, `artifact_manifest_id`); `--details` adds both in full.
+Your files are not changed. The edit is applied to a scratch copy; `--keep` keeps the edited file (build artifacts are always removed) in the system's temporary directory, at the `kept:` path the result prints; delete it when you are done. To see what an edit does before verifying, a candidate probe (6.6) is simpler. For a Cargo crate, its compiled tests run too, and a failure names each failed test with how it failed (`compiled tests: failed (1 failed)`, then `first_page_starts_at_zero: thread … panicked at tests/pagination.rs:10:5: assertion `left == right` failed …`). `--json` identifies the checker's descriptor and build by hash (`descriptor_sha256`, `artifact_manifest_id`); `--details` adds both in full.
 
 ### 6.2 An Overfit Fix Is Rejected
 
@@ -563,7 +563,7 @@ Each `--old` quotes the original file and must match it exactly once; the edits 
 
 A checker is a trusted script, run as `python checker.py <candidate-path>`. It exits 0 only when the behavior is right. Test the general rule, not the one input from the bug report (see `examples/verify_pagination.py`). For C, C++, Rust and Java its argument is the path of a JSON descriptor of the fresh build: run each case as `[*spec["command"], *case_arguments]` with `env=spec["environment"]` (`spec["language"]` names the language; see `examples/c/verify_pagination.py` and [NATIVE_AGENT.md](NATIVE_AGENT.md)). For Rust, the crate's integration test, when it has one, must pass too.
 
-### 6.6 See What a Fix Does Before Making It (C, C++, Rust, Java)
+### 6.6 See What a Fix Does Before Making It
 
 **What it answers:** With this edit, what would the program compute at the same line, and what would it print?
 
@@ -607,7 +607,17 @@ run_a  run_b  hit   phase     selector  value_a           value_b               
   - `queries values` leaves candidate runs out, so they never mix with values the real program produced.
   - `queries diff` pairs values by hit and selector, so a candidate whose lines moved still compares.
 - **Not a verification:** this is evidence about one run. Only `peeky verify` checks a fix.
-- **Python:** there is no build step, so edit the file and probe again (or use `verify`). Attached JVMs refuse it.
+- **Intervening where no local can be set:** `--set` works in the same probe as `--old`/`--new`. Where the value you want to change is a field (Rust, C, C++, Python), add a local holding it with the edit, on an earlier line (a local is visible only after its declaration), and set that local. In Rust, at the line `last.end = s.end;` that follows `if s.start <= last.end {`:
+
+  ```sh
+  peeky probe spans --at src/main.rs:23 --capture end,last.end --arg 1-10,2-3 \
+    --old 'if s.start <= last.end {' \
+    --new 'let mut end = s.end; std::hint::black_box(&mut end); if s.start <= last.end {' \
+    --old 'last.end = s.end;' --new 'last.end = end;' --set end=10
+  ```
+
+  This reports `set end: 3 -> 10`. `black_box` keeps the new Rust local in memory, where a change reaches the program.
+- **Python:** the edited `--at` file runs from a private copy, with your directory as its working directory, and its sibling modules import from your originals. A `--run` entry script would import the original module, so it is refused. Attached JVMs refuse candidates.
 
 ---
 
@@ -812,7 +822,7 @@ All codes are listed in [ERRORS.md](ERRORS.md). If you suspect a filesystem with
 | `condition 1 x > 5` | `--hits N`, then `peeky sql "... WHERE num > 5"` | Conditions would run code in the program |
 | `info locals`, `print *obj` | `peeky session inspect`, `peeky session get obj` | `get` lists one level of children with their selectors |
 | `bt` | `peeky session inspect --json \| jq '.frames'` | The stack at the stop; values come from the top frame |
-| `next`, `step`, `finish` | `peeky session step`, `step --into`, `step --out` | Java `--into`/`--out` skip JDK code |
+| `next`, `step`, `finish` | `peeky session step`, `step --into`, `step --out` | Java `--into`/`--out` skip JDK code. After `step --out`, C, C++ and Rust `session inspect` lists the returned value as `(Return Value)`, marked `[not selectable]`: read it there |
 | `until 42`, `advance 42` | `peeky session continue --to 42` | One-shot; the session's own breakpoint stays |
 | `continue` | `peeky session continue [--to-exit]` | Runs to the next stop or to exit |
 | "rerun with another input and compare by eye" | `--arg ... --label A`, then `peeky queries diff` | The first diff row is the first divergence |

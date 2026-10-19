@@ -155,9 +155,8 @@ def _check_args(args):
 
 MAX_EDIT_BYTES = 1024 * 1024
 CANDIDATE_NEEDS_BUILD = (
-    "A candidate edit (--old/--new) needs a target Peeky builds (C, C++, Rust or Java). Python "
-    "runs its files as they are: edit the file and probe again, or check the edit with "
-    "`peeky verify`. An attached JVM is already running"
+    "A candidate edit (--old/--new) needs a fresh launch, and an attached JVM is already "
+    "running: check the edit with `peeky verify` on a launched target"
 )
 
 
