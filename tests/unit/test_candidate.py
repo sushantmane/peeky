@@ -1027,6 +1027,42 @@ def test_a_python_candidate_notes_access_the_copy_does_not_keep(tmp_path, monkey
     )
 
 
+@pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
+def test_a_python_candidate_notes_another_owner_and_a_refused_repository(tmp_path, monkeypatch):
+    # Verification of #109: as root over another user's checkout, access is the same
+    # in both trees but the copy is root's: git refuses the user's repository
+    # (`safe.directory`) and not the copy, and the note blamed a conditional include.
+    from peeky import adapters
+    from peeky.adapters import PythonAdapter, PythonCandidate
+    from peeky.build import SourceEdit
+
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    (proj / "app.py").write_text("x = 1\n")
+    git_in(proj, "init", "-q")
+    git_in(proj, "add", "app.py")
+    git_in(proj, "commit", "-qm", "base")
+    real_git = adapters._git
+
+    def refusing(git, where, *args):
+        if Path(where) == proj and args[:1] == ("rev-parse",):
+            return None
+        return real_git(git, where, *args)
+
+    monkeypatch.setattr(adapters, "_git", refusing)
+    owner = os.geteuid()
+    monkeypatch.setattr(os, "geteuid", lambda: owner + 1)
+    candidate = PythonCandidate(
+        PythonAdapter(sys.executable), proj / "app.py", proj, SourceEdit("app.py", "x = 1", "x = 2")
+    )
+    candidate.close()
+    assert any("Git refuses your repository" in w for w in candidate.warnings), candidate.warnings
+    assert not any("includeIf" in w for w in candidate.warnings), candidate.warnings
+    assert any("belong to another user" in w for w in candidate.warnings), candidate.warnings
+
+
 def test_the_import_check_never_runs_project_code(tmp_path, capsys, monkeypatch):
     # Verification of #109: `pkg.bak/` (a backup with its own `__init__.py`) and an --at
     # file named `app.v2.py` gave dotted names, and `find_spec("pkg.bak")` imported and
@@ -1039,6 +1075,9 @@ def test_the_import_check_never_runs_project_code(tmp_path, capsys, monkeypatch)
         (proj / package).mkdir(parents=True)
         (proj / package / "__init__.py").write_text("open('runs.log', 'a').write('run\\n')\n")
     (proj / "pyproject.toml").write_text("")
+    # A root module named like the standard library's ran in the probes' `-c`, whose
+    # path starts with the copy's root (verification of #109).
+    (proj / "json.py").write_text("open('runs.log', 'a').write('json\\n')\n")
     (proj / "app.v2.py").write_text(
         "import pkg\nacc = 1\nruns = len(open('runs.log').read().splitlines())\nprint(acc, runs)\n"
     )

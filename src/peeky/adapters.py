@@ -163,6 +163,18 @@ class PythonCandidate:
                     for mode in (os.R_OK, os.W_OK, os.X_OK)
                 )
             ]
+            # Root's access ignores owners; a change of owner shows elsewhere (git's
+            # `safe.directory`, a program that checks `st_uid`).
+            me = os.geteuid()
+            foreign = [original for original, _ in self._pairs if os.lstat(original).st_uid != me]
+            if foreign:
+                named = ", ".join(str(path.relative_to(root)) or "." for path in foreign[:3])
+                more = f" and {len(foreign) - 3} more" if len(foreign) > 3 else ""
+                self._notes.append(
+                    f"This Python candidate's copy is yours, but {named}{more} in your tree "
+                    "belong to another user, so a program that checks who owns them (git's "
+                    "`safe.directory`) may take another branch there, not because of the edit"
+                )
             if differ:
                 named = ", ".join(str(path.relative_to(root)) for path in differ[:3])
                 more = f" and {len(differ) - 3} more" if len(differ) > 3 else ""
@@ -503,6 +515,20 @@ class PythonCandidate:
         if git is None:
             return
         for copy, original in self._checkouts:
+            # Git may refuse the user's repository (`safe.directory`: another user owns
+            # it) but not the copy, which is the prober's.
+            if _git(git, original, "rev-parse", "--git-dir") is None:
+                if _git(git, copy, "rev-parse", "--git-dir") is not None:
+                    note = (
+                        "Git refuses your repository here (another user owns it, which "
+                        "`safe.directory` checks) but not this Python candidate's copy, "
+                        "which is yours, so a program that runs git gets results it does "
+                        "not get in your tree"
+                    )
+                    if note not in self._notes:
+                        self._notes.append(note)
+                _git(git, copy, "-c", "core.fsmonitor=false", "update-index", "-q", "--refresh")
+                continue
             theirs, ours = _config_values(git, original), _config_values(git, copy)
             if theirs is not None and ours is not None and theirs != ours:
                 note = (
@@ -527,7 +553,10 @@ class PythonCandidate:
         user's tree (an import hook ahead of every path, as meson-python's editable
         loader is)."""
         script = (
-            "import json, sys\nmapped = []\nfor finder in sys.meta_path:\n"
+            # `sys` first: `-c` puts the copy's root first on the path, where a module
+            # named like the standard library's (`json.py`) would run before the program.
+            "import sys\nif sys.path and sys.path[0] == '':\n    del sys.path[0]\n"
+            "import json\nmapped = []\nfor finder in sys.meta_path:\n"
             "    try:\n"
             "        module = sys.modules.get(getattr(finder, '__module__', None) or '')\n"
             "        for table in (getattr(module, 'MAPPING', None),"
@@ -616,10 +645,11 @@ class PythonCandidate:
         # Top-level names only: `find_spec("pkg.bak")` would import and run `pkg`.
         names = sorted(name for name in names - unmoved if name.isidentifier())
         script = (
-            "import importlib.util, json, sys\n"
             # As debugpy: the script's directory first, in place of `-c`'s `''` (none
-            # under `PYTHONSAFEPATH`, where the first entry is `PYTHONPATH`'s).
-            "if sys.path and sys.path[0] == '':\n    del sys.path[0]\n"
+            # under `PYTHONSAFEPATH`, where the first entry is `PYTHONPATH`'s), and only
+            # after the probe's own imports, which must not find the copy's modules.
+            "import sys\nif sys.path and sys.path[0] == '':\n    del sys.path[0]\n"
+            "import importlib.util, json\n"
             "sys.path.insert(0, sys.argv[1])\nfound = {}\n"
             "for name in sys.argv[2:]:\n"
             "    try:\n        spec = importlib.util.find_spec(name)\n"
