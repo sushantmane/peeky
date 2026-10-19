@@ -589,7 +589,8 @@ def test_a_python_candidate_never_writes_the_user_s_repository(tmp_path, capsys,
     from peeky.cli import main
 
     monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
-    monkeypatch.setattr(os, "environ", {**os.environ, **GIT_ENVIRONMENT})
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
     proj = tmp_path / "proj"
     (proj / ".pytest_cache").mkdir(parents=True)
     (proj / ".pytest_cache" / "marker").write_text("user's")
@@ -601,13 +602,14 @@ def test_a_python_candidate_never_writes_the_user_s_repository(tmp_path, capsys,
         "def git(*args):\n"
         "    return subprocess.run(['git', '-c', 'user.name=c', '-c', 'user.email=c@c', *args],"
         " capture_output=True, text=True).stdout.strip()\n"
+        "changed = git('diff-files', '--name-only')\nmarker = git('config', 'work.marker')\n"
         "status = git('status', '--porcelain')\n"
         "remotes = git('for-each-ref', '--format=%(refname)', 'refs/remotes')\n"
         "git('add', '-A')\nstaged = git('diff', '--cached', '--name-only')\n"
         "described = git('describe', '--always', '--dirty')\n"
         "git('commit', '-qm', 'candidate')\ngit('commit', '-q', '--allow-empty', '-m', 'again')\n"
         "Path('.pytest_cache/marker').write_text('candidate')\n"
-        "print(acc, status, remotes, staged, described)\n"
+        "print(acc, changed, marker, status, remotes, staged, described)\n"
     )
     git_in(proj, "init", "-q")
     git_in(proj, "add", "app.py", ".gitignore")
@@ -615,13 +617,22 @@ def test_a_python_candidate_never_writes_the_user_s_repository(tmp_path, capsys,
     git_in(proj, "update-ref", "refs/remotes/origin/objects/y", "HEAD")
     git_in(proj, "update-ref", "refs/remotes/origin/lfs/z", "HEAD")
     git_in(proj, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/objects/y")
+    # Configuration the user's repository gets from a conditional include on its path.
+    (tmp_path / "work.gitconfig").write_text("[work]\n\tmarker = yes\n")
+    (tmp_path / "global.gitconfig").write_text(
+        f'[includeIf "gitdir:{proj.resolve()}/"]\n\tpath = {tmp_path / "work.gitconfig"}\n'
+    )
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(tmp_path / "global.gitconfig"))
     before = snapshot(proj / ".git")
-    probe = ["probe", str(proj), "--at", "app.py:14"]
-    capture = ["--capture", "status,remotes,staged,described", "--json", "--quiet"]
+    probe = ["probe", str(proj), "--at", "app.py:16"]
+    capture = ["--capture", "changed,marker,status,remotes,staged,described", "--json", "--quiet"]
     code = main([*probe, *capture, "--old", "acc = 1", "--new", "acc = 2"])
     result = json.loads(capsys.readouterr().out)
     assert code == 0, result.get("error")
-    status, remotes, staged, described = (row["value"] for row in result["rows"])
+    changed, marker, status, remotes, staged, described = (row["value"] for row in result["rows"])
+    # Verification of #109: the copy's index had the user's files' identities, so `git
+    # diff-files` called every file changed; an `includeIf "gitdir:"` stopped matching.
+    assert changed == "'app.py'" and marker == "'yes'", result["rows"]
     assert status == "'M app.py'", status
     assert "origin/objects/y" in remotes and "origin/lfs/z" in remotes, remotes
     assert "app.py" in staged and described.endswith("-dirty'"), result["rows"]
@@ -641,7 +652,8 @@ def test_a_python_candidate_keeps_other_git_layouts_private(tmp_path, capsys, mo
     from peeky.cli import main
 
     monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
-    monkeypatch.setattr(os, "environ", {**os.environ, **GIT_ENVIRONMENT})
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
     program = (
         "import subprocess\nacc = 1\n"
         "def git(*args):\n"
@@ -660,22 +672,43 @@ def test_a_python_candidate_keeps_other_git_layouts_private(tmp_path, capsys, mo
         git_in(path, "commit", "-qm", "base")
         return path
 
-    def candidate(target, at="app.py"):
+    def candidate(target, at="app.py", line=8):
+        capture = "listed" if at == "repair.py" else "head"
         code = main(
-            ["probe", str(target), "--at", f"{at}:8", "--capture", "head", "--json", "--quiet"]
+            [
+                "probe",
+                str(target),
+                "--at",
+                f"{at}:{line}",
+                "--capture",
+                capture,
+                "--json",
+                "--quiet",
+            ]
             + ["--old", "acc = 1", "--new", "acc = 2"]
         )
         result = json.loads(capsys.readouterr().out)
         assert code == 0, result.get("error")
         return result
 
-    # An absolute `core.worktree` naming the root moves to the copy.
-    worktree = repository(tmp_path / "worktree")
-    git_in(worktree, "config", "core.worktree", str(worktree))
-    (worktree / "data.txt").write_text("v1\nuser's work\n")
-    candidate(worktree)
-    assert (worktree / "data.txt").read_text() == "v1\nuser's work\n"
-    assert git_in(worktree, "stash", "list") == ""
+    # An absolute `core.worktree` naming the root moves to the copy: as git writes it
+    # (quoted when the path holds ` #`), on the section's line, or quoted before a comment.
+    for name, config in (
+        ("worktree", None),
+        ("proj #2", None),
+        ("one-line", "[core] worktree = {}\n"),
+        ("commented", '[core]\n\tworktree = "{}"\t# the checkout\n'),
+    ):
+        worktree = repository(tmp_path / name)
+        if config is None:
+            git_in(worktree, "config", "core.worktree", str(worktree))
+        else:
+            with open(worktree / ".git" / "config", "a") as stream:
+                stream.write(config.format(worktree))
+        (worktree / "data.txt").write_text("v1\nuser's work\n")
+        candidate(worktree)
+        assert (worktree / "data.txt").read_text() == "v1\nuser's work\n", name
+        assert git_in(worktree, "stash", "list") == "", name
     # `git-new-workdir`: the root's `.git` links into another repository's.
     main_repository = repository(tmp_path / "main")
     workdir = tmp_path / "workdir"
@@ -699,6 +732,22 @@ def test_a_python_candidate_keeps_other_git_layouts_private(tmp_path, capsys, mo
     result = candidate(linked)
     assert snapshot(main_repository / ".git") == before
     assert any("names git metadata outside the root" in w for w in result["warnings"])
+    # `git worktree repair` in the copy rewrites the `.git` files of the worktrees the
+    # copy's repository lists: never the user's, inside or outside the root.
+    git_in(main_repository, "worktree", "add", "-q", str(main_repository / "inner"))
+    (main_repository / "repair.py").write_text(
+        "import subprocess\nacc = 1\n"
+        "subprocess.run(['git', 'worktree', 'repair'], capture_output=True)\n"
+        "listed = subprocess.run(['git', 'worktree', 'list'], capture_output=True,"
+        " text=True).stdout\nprint(acc, listed)\n"
+    )
+    pointers = {
+        path: path.read_text()
+        for path in (tmp_path / "linked-worktree" / ".git", main_repository / "inner" / ".git")
+    }
+    candidate(main_repository, at="repair.py", line=5)
+    assert {path: path.read_text() for path in pointers} == pointers
+    assert git_in(tmp_path / "linked-worktree", "status", "--porcelain") == ""
     # A package inside a repository: the copy has no repository, which the note says.
     package = main_repository / "pkg"
     package.mkdir()
@@ -706,6 +755,66 @@ def test_a_python_candidate_keeps_other_git_layouts_private(tmp_path, capsys, mo
     (package / "app.py").write_text(program)
     result = candidate(package)
     assert any(f"inside the repository at {main_repository}" in w for w in result["warnings"])
+
+
+def test_a_python_candidate_imports_the_copy_through_an_import_path(tmp_path, capsys, monkeypatch):
+    # Verification of #109: with the project's `src` on the import path (an editable
+    # install's `.pth`, or `PYTHONPATH`), `import shop` loaded the user's unedited module
+    # (and wrote its bytecode into the user's tree).
+    from peeky.cli import main
+
+    monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
+    proj = tmp_path / "proj"
+    shop = proj / "src" / "shop"
+    shop.mkdir(parents=True)
+    (proj / "pyproject.toml").write_text("[project]\nname = 'shop'\n")
+    (shop / "__init__.py").write_text("")
+    (shop / "report.py").write_text(
+        "from shop import core\ndef render(x):\n    return core.price(x)\n"
+    )
+    (shop / "core.py").write_text(
+        "TAX = 0.2\ndef price(x):\n    return x * (1 + TAX)\n"
+        "if __name__ == '__main__':\n    from shop import report\n"
+        "    total = report.render(100)\n    print(total)\n"
+    )
+    given = os.environ.get("PYTHONPATH", "")
+    monkeypatch.setenv("PYTHONPATH", os.pathsep.join(filter(None, [str(proj / "src"), given])))
+    probe = ["probe", str(proj), "--at", "src/shop/core.py:7", "--capture", "total"]
+    code = main([*probe, "--json", "--quiet", "--old", "TAX = 0.2", "--new", "TAX = 0.5"])
+    result = json.loads(capsys.readouterr().out)
+    assert code == 0, result.get("error")
+    assert result["rows"][0]["value"] == "150.0", result["rows"]
+    assert not (shop / "__pycache__").exists()
+
+
+def test_a_python_candidate_redirects_an_editable_finder(tmp_path, monkeypatch):
+    # An editable install's finder maps a package name to its directory in the user's
+    # tree (setuptools); the copy's parent of that directory comes first on the path.
+    from peeky.adapters import PythonAdapter, PythonCandidate
+    from peeky.build import SourceEdit
+
+    proj = tmp_path / "proj"
+    (proj / "pkg").mkdir(parents=True)
+    (proj / "pkg" / "__init__.py").write_text("")
+    (proj / "pyproject.toml").write_text("")
+    (proj / "tools").mkdir()
+    (proj / "tools" / "run.py").write_text("x = 1\n")
+    interpreter = tmp_path / "python"
+    reply = json.dumps({"path": ["/usr/lib/python3"], "mapped": [str(proj / "pkg")]})
+    interpreter.write_text(f"#!/bin/sh\necho '{reply}'\n")
+    interpreter.chmod(0o755)
+    monkeypatch.delenv("PYTHONPATH", raising=False)
+    candidate = PythonCandidate(
+        PythonAdapter(str(interpreter)),
+        proj / "tools" / "run.py",
+        proj,
+        SourceEdit("tools/run.py", "x = 1", "x = 2"),
+    )
+    try:
+        launch = candidate.launch_args(proj / "tools" / "run.py", proj)
+        assert launch["env"]["PYTHONPATH"] == str(candidate.root), launch
+    finally:
+        candidate.close()
 
 
 def test_a_hard_linked_name_of_the_edited_file_keeps_its_own_directory(

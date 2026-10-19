@@ -6,9 +6,12 @@ Python runs directly; compiled runtimes require prepared build provenance.
 
 import ast
 import contextlib
+import json
 import os
+import re
 import shutil
 import stat
+import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass
@@ -78,8 +81,10 @@ class PythonCandidate:
     """A Python candidate edit: a private copy of the target root with the edit applied,
     run from there, as a compiled candidate runs from a fresh build. Whatever the script
     reaches through its own path, an import or another process (a subprocess of
-    `__file__`, multiprocessing's spawn) is the copy, so all of it runs the edit. Files
-    above the root are not copied. Nothing in the user's tree is written."""
+    `__file__`, multiprocessing's spawn, an editable install's path) is the copy, so all
+    of it runs the edit. Files above the root are not copied. The program's writes stay in
+    the copy, except inside an environment directory or through a link that leaves the
+    root, which reach the originals."""
 
     def __init__(self, adapter, program, root, edit):
         self.adapter = adapter
@@ -103,6 +108,9 @@ class PythonCandidate:
                     f"A Python candidate could not copy the target root ({error}); check the "
                     "edit with `peeky verify`"
                 ) from None
+            # Before the edit, so the copied repositories see the copy as unchanged.
+            self._finish_git()
+            self._pythonpath = self._redirect_imports()
             # The edited file replaces its copy, and is never written through a link.
             for parent in self.staged.parents:
                 if parent == self.root:
@@ -182,7 +190,7 @@ class PythonCandidate:
 
         files = size = 0
         staged, self.twins = None, []
-        self._folders, self._notes = [], []
+        self._folders, self._notes, self._checkouts = [], [], []
         self._source, self._destination = source, destination
 
         def link(target, original):
@@ -220,7 +228,8 @@ class PythonCandidate:
                 if name in _SKIPPED_DIRS:
                     continue
                 if name in _REPOSITORIES:
-                    self._repository(path, folder / name)
+                    if self._repository(path, folder / name) and name == ".git":
+                        self._checkouts.append((folder, Path(here)))
                 elif path.is_symlink():
                     link(folder / name, path)
                 elif name in _LINKED_DIRS:
@@ -249,6 +258,7 @@ class PythonCandidate:
                         continue
                     copied = os.path.relpath(destination / target.relative_to(source), folder)
                     (folder / name).write_text(f"gitdir: {copied}\n")
+                    self._checkouts.append((folder, Path(here)))
                     status = os.stat(path)
                 elif path.is_symlink():
                     link(folder / name, path)
@@ -314,10 +324,11 @@ class PythonCandidate:
             budget = [MAX_COPIED_FILES, MAX_COPIED_BYTES]
             self._copy_whole(original, copy, budget, set())
             if name == ".git":
-                self._own_git(copy)
+                self._own_git(original, copy)
             elif name == ".hg" and (copy / "sharedpath").exists():
                 raise _NotPrivate("it shares another repository's store (`sharedpath`)")
-        except (_NotPrivate, OSError) as error:
+            return True
+        except (_NotPrivate, OSError, subprocess.SubprocessError) as error:
             del self._folders[mark:]
             _make_removable(copy)
             shutil.rmtree(copy, ignore_errors=True)
@@ -325,6 +336,7 @@ class PythonCandidate:
                 str(error) if isinstance(error, _NotPrivate) else f"copying it failed ({error})"
             )
             self._leave_out(original, _REPOSITORIES[name], reason)
+            return False
 
     def _copy_whole(self, original, copy, budget, ancestors):
         status = os.stat(original)
@@ -354,27 +366,151 @@ class PythonCandidate:
             shutil.copymode(path, target)
             os.utime(target, ns=(inner.st_atime_ns, inner.st_mtime_ns))
 
-    def _own_git(self, copy):
+    def _own_git(self, original, copy):
         """Refuse a git directory that would still reach another (objects borrowed through
-        `alternates`, a `core.worktree` outside the root), and move a `core.worktree`
-        inside the root to the copy's."""
-        for here, _, names in os.walk(copy):
-            for name in names:
-                path = Path(here) / name
-                if name == "alternates" and path.parent.name == "info" and path.read_text().strip():
-                    raise _NotPrivate("it borrows objects from another repository (`alternates`)")
-                if name not in ("config", "config.worktree"):
-                    continue
-                lines = path.read_text(errors="surrogateescape").splitlines(keepends=True)
-                for number, value in _core_worktrees(lines):
-                    if not os.path.isabs(value):
-                        continue
-                    real = Path(os.path.realpath(value))
-                    if not self._inside(real):
-                        raise _NotPrivate("its `core.worktree` is outside the root")
-                    moved = self._destination / real.relative_to(self._source)
-                    lines[number] = f"\tworktree = {moved}\n"
-                    path.write_text("".join(lines), errors="surrogateescape")
+        `alternates`, a `core.worktree` outside the root), and move what names places
+        inside the root to the copy: each `core.worktree`, and each linked worktree's
+        `gitdir` (`git worktree repair` writes the worktree it names). A linked worktree
+        outside the root is named by a path that does not exist, with a note."""
+        git = shutil.which("git")
+        for gitdir in _git_directories(copy):
+            # Where this git directory is in the user's tree, links not yet followed.
+            logical = original / gitdir.relative_to(copy)
+            alternates = gitdir / "objects" / "info" / "alternates"
+            if alternates.is_file() and alternates.read_text(errors="replace").strip():
+                raise _NotPrivate("it borrows objects from another repository (`alternates`)")
+            for config in (gitdir / "config", gitdir / "config.worktree"):
+                if config.is_file():
+                    self._move_core_worktree(git, config, logical)
+            pointer = gitdir / "gitdir"
+            if gitdir.parent.name == "worktrees" and pointer.is_file():
+                value = pointer.read_text(errors="surrogateescape").strip()
+                target = Path(os.path.realpath(logical / value))
+                if self._inside(target):
+                    moved = self._destination / target.relative_to(self._source)
+                else:
+                    moved = self.scratch / "outside-worktrees" / gitdir.name / ".git"
+                    note = (
+                        "This Python candidate's copy of a git repository lists its linked "
+                        "worktrees outside the root at paths that do not exist there (`git "
+                        "worktree list` marks them prunable), so a program that reads them "
+                        "sees that, not yours"
+                    )
+                    if note not in self._notes:
+                        self._notes.append(note)
+                pointer.write_text(f"{moved}\n", errors="surrogateescape")
+
+    def _move_core_worktree(self, git, config, logical):
+        if git is None:
+            # Only git reads git's config reliably (quoting, `[core] worktree = ...`).
+            if re.search(r"(?i)worktree", config.read_text(errors="replace")):
+                raise _NotPrivate("its config may set `core.worktree`, and git is not installed")
+            return
+        values = _git_config(git, config, "--null", "--get-all", "core.worktree")
+        if not values:
+            return
+        moved = []
+        for value in values:
+            real = Path(os.path.realpath(logical / value))
+            if not self._inside(real):
+                raise _NotPrivate("its `core.worktree` is outside the root")
+            moved.append(str(self._destination / real.relative_to(self._source)))
+        _git_config(git, config, "--unset-all", "core.worktree")
+        for value in moved:
+            _git_config(git, config, "--add", "core.worktree", value)
+
+    def _finish_git(self):
+        """For each checkout with a private git repository: the copy's index records the
+        copied files' new identities (`git diff-index` would call every file changed),
+        and configuration the user's repository gets from a conditional include on its
+        path (`includeIf "gitdir:..."`) is included in the copy's."""
+        git = shutil.which("git")
+        if git is None:
+            return
+        scratch = Path(os.path.realpath(self.scratch))
+        for copy, original in self._checkouts:
+            theirs, ours = _config_origins(git, original), _config_origins(git, copy)
+            if theirs is not None and ours is not None:
+                missing = [
+                    origin
+                    for origin in theirs
+                    if origin not in ours and not self._inside(Path(origin))
+                ]
+                extra = [
+                    origin
+                    for origin in ours
+                    if origin not in theirs and scratch not in Path(origin).parents
+                ]
+                if missing:
+                    gitdir = _git(git, copy, "rev-parse", "--absolute-git-dir")
+                    config = Path(gitdir.strip()) / "config" if gitdir else None
+                    if config is not None and config.is_file():
+                        includes = "".join(
+                            '[include]\n\tpath = "'
+                            + origin.replace("\\", "\\\\").replace('"', '\\"')
+                            + '"\n'
+                            for origin in missing
+                        )
+                        text = config.read_text(errors="surrogateescape")
+                        config.write_text(includes + text, errors="surrogateescape")
+                if extra:
+                    note = (
+                        "This Python candidate's copy of a git repository gets configuration "
+                        "yours does not (a conditional include matching the copy's path: "
+                        f"{', '.join(extra)}), so a program that reads git's configuration "
+                        "may see different values"
+                    )
+                    if note not in self._notes:
+                        self._notes.append(note)
+            _git(git, copy, "-c", "core.fsmonitor=false", "update-index", "-q", "--refresh")
+
+    def _redirect_imports(self):
+        """The `PYTHONPATH` that puts the copy first wherever the interpreter would import
+        from inside the root by another way than the script's directory: `PYTHONPATH`
+        entries, and an editable install's `.pth` path or finder mapping (`pip install
+        -e`, `uv sync`). Without it, `import pkg` would load the user's unedited module."""
+        script = (
+            "import json, sys\nmapped = []\nfor finder in sys.meta_path:\n"
+            "    module = sys.modules.get(getattr(finder, '__module__', None) or '')\n"
+            "    mapping = getattr(module, 'MAPPING', None)\n"
+            "    if isinstance(mapping, dict):\n"
+            "        mapped += [v for v in mapping.values() if isinstance(v, str)]\n"
+            "print(json.dumps({'path': sys.path[1:], 'mapped': mapped}))\n"
+        )
+        try:
+            found = json.loads(
+                subprocess.run(
+                    [self.adapter.interpreter, "-c", script],
+                    cwd=self.root,
+                    capture_output=True,
+                    text=True,
+                    timeout=60,
+                    check=True,
+                ).stdout
+            )
+            entries = [str(entry) for entry in found["path"]]
+            entries += [str(Path(mapped).parent) for mapped in found["mapped"]]
+        except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
+            self._notes.append(
+                "This Python candidate could not list its interpreter's import paths, so if "
+                "the project is installed in editable mode, `import` by package name may load "
+                "your unedited modules"
+            )
+            return None
+
+        def copied(entry):
+            if not os.path.isabs(entry):
+                return entry
+            real = Path(os.path.realpath(entry))
+            return str(self.root / real.relative_to(self._source)) if self._inside(real) else entry
+
+        given = [entry for entry in os.environ.get("PYTHONPATH", "").split(os.pathsep) if entry]
+        redirected = [copied(entry) for entry in given]
+        for entry in entries:
+            if os.path.isabs(entry) and (moved := copied(entry)) != entry:
+                if moved not in redirected:
+                    redirected.append(moved)
+        return os.pathsep.join(redirected) if redirected != given else None
 
     def __getattr__(self, name):
         return getattr(self.adapter, name)
@@ -390,7 +526,10 @@ class PythonCandidate:
                 "script would import the original module. Probe the edited file directly, "
                 "or check the edit with `peeky verify`"
             )
-        return self.adapter.launch_args(self.staged, self.root, args)
+        launch = self.adapter.launch_args(self.staged, self.root, args)
+        if self._pythonpath is not None:
+            launch["env"] = {**launch.get("env", {}), "PYTHONPATH": self._pythonpath}
+        return launch
 
     def close(self):
         _make_removable(self.scratch)
@@ -409,6 +548,83 @@ def _make_removable(top):
             if not os.path.islink(path):
                 with contextlib.suppress(OSError):
                     os.chmod(path, 0o700)
+
+
+_GIT_DATA = frozenset({"refs", "logs", "objects", "hooks", "info", "lfs", "rr-cache"})
+
+
+def _git_directories(top):
+    """The git directories in a copied `.git`: itself, `modules/...` and `worktrees/...`
+    (each holds `HEAD`), never a ref directory (`refs/remotes/origin/` holds `HEAD` too)."""
+    found = []
+
+    def visit(directory, inside_git):
+        gitdir = (directory / "HEAD").is_file() and not inside_git
+        if gitdir:
+            found.append(directory)
+        for entry in sorted(directory.iterdir()):
+            if entry.is_dir() and not entry.is_symlink():
+                visit(entry, gitdir and entry.name in _GIT_DATA or inside_git and not gitdir)
+
+    visit(top, False)
+    return found
+
+
+def _git_environment():
+    # Git variables that would point git at another repository than the one asked for.
+    return {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith("GIT_")
+        or key in ("GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_NOSYSTEM")
+    }
+
+
+def _git(git, where, *args):
+    """Git's output in ``where``, or None if it fails."""
+    try:
+        done = subprocess.run(
+            [git, "-C", str(where), *args],
+            capture_output=True,
+            env=_git_environment(),
+            timeout=60,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return os.fsdecode(done.stdout) if done.returncode == 0 else None
+
+
+def _git_config(git, config, *args):
+    """`git config --file` on one file; ``--get-all`` gives its values ([] if none)."""
+    done = subprocess.run(
+        [git, "config", "--file", str(config), *args],
+        capture_output=True,
+        env=_git_environment(),
+        timeout=60,
+    )
+    if "--get-all" in args:
+        if done.returncode == 1:
+            return []
+        if done.returncode != 0:
+            raise _NotPrivate("git could not read its config")
+        return [os.fsdecode(value) for value in done.stdout.split(b"\0")[:-1]]
+    if done.returncode not in (0, 5):
+        raise _NotPrivate("git could not rewrite its config")
+    return None
+
+
+def _config_origins(git, where):
+    """The files git's configuration comes from in ``where``, resolved, or None."""
+    listed = _git(git, where, "config", "--list", "--show-origin", "-z")
+    if listed is None:
+        return None
+    origins = []
+    for origin in listed.split("\0")[0::2]:
+        if origin.startswith("file:"):
+            path = os.path.realpath(os.path.join(where, origin[5:]))
+            if path not in origins:
+                origins.append(path)
+    return origins
 
 
 def _repository_above(root):
