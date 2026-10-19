@@ -900,9 +900,12 @@ def test_a_python_candidate_redirects_an_editable_finder(tmp_path, monkeypatch):
     assert not any("standard library" in w for w in warnings), warnings
 
 
-def test_a_python_candidate_refuses_an_import_hook_into_the_tree(tmp_path, monkeypatch):
+def test_a_python_candidate_notes_an_import_hook_into_the_tree(tmp_path, monkeypatch):
     # Verification of #109: an import hook ahead of the path (meson-python's editable
-    # loader) serves the user's tree whatever `PYTHONPATH` says, and rebuilds in it.
+    # loader) serves the user's tree whatever `PYTHONPATH` says. What each name the root
+    # offers imports as is checked the way the program finds it: a hook that serves the
+    # user's file is named. One that only records environment paths (scikit-build-core,
+    # a `.venv` inside the root) or whose attributes raise (six's lazy modules) is not.
     from peeky.adapters import PythonAdapter, PythonCandidate
     from peeky.build import SourceEdit
 
@@ -911,19 +914,56 @@ def test_a_python_candidate_refuses_an_import_hook_into_the_tree(tmp_path, monke
     (proj / "app.py").write_text("x = 1\n")
     hooks = tmp_path / "hooks"
     hooks.mkdir()
-    (hooks / "sitecustomize.py").write_text(
-        "import sys\nclass MesonpyMetaFinder:\n"
-        "    def __init__(self, build):\n        self._build_path = build\n"
-        "    def find_spec(self, name, path=None, target=None):\n        return None\n"
-        f"sys.meta_path.insert(0, MesonpyMetaFinder({str(proj / 'build')!r}))\n"
-    )
-    monkeypatch.setenv("PYTHONPATH", str(hooks))
-    with pytest.raises(ValueError, match="import hook .MesonpyMetaFinder."):
-        PythonCandidate(
+
+    def candidate(serves):
+        (hooks / "sitecustomize.py").write_text(
+            "import importlib.util, sys\n"
+            "class Lazy:\n"
+            "    def __getattr__(self, name):\n        raise ModuleNotFoundError(name)\n"
+            "    def find_spec(self, name, path=None, target=None):\n        return None\n"
+            "class MesonpyMetaFinder:\n"
+            "    def __init__(self, root):\n"
+            "        self._build_cmd = [root + '/.venv/bin/ninja']\n        self._root = root\n"
+            "    def find_spec(self, name, path=None, target=None):\n"
+            f"        if {serves!r} and name == 'app':\n"
+            "            return importlib.util.spec_from_file_location(name, self._root + '/app.py')\n"
+            "        return None\n"
+            f"sys.meta_path.insert(0, MesonpyMetaFinder({str(proj)!r}))\n"
+            "sys.meta_path.insert(0, Lazy())\n"
+        )
+        monkeypatch.setenv("PYTHONPATH", str(hooks))
+        made = PythonCandidate(
             PythonAdapter(sys.executable),
             proj / "app.py",
             proj,
             SourceEdit("app.py", "x = 1", "x = 2"),
+        )
+        made.close()
+        return made.warnings
+
+    warnings = candidate(serves=True)
+    assert any("`import app` loads" in w and str(proj / "app.py") in w for w in warnings), warnings
+    warnings = candidate(serves=False)
+    assert not any("`import app`" in w or "could not ask" in w for w in warnings), warnings
+
+
+def test_a_python_candidate_refuses_an_at_file_inside_a_bare_repository(tmp_path):
+    # Verification of #109: a bare repository below the root is copied whole as a private
+    # repository, never walked, so an --at file inside it was "not in the copied root".
+    from peeky.adapters import PythonAdapter, PythonCandidate
+    from peeky.build import SourceEdit
+
+    repository = tmp_path / "srv" / "repo.git"
+    for name in ("objects", "refs", "hooks"):
+        (repository / name).mkdir(parents=True)
+    (repository / "HEAD").write_text("ref: refs/heads/main\n")
+    (repository / "hooks" / "check.py").write_text("x = 1\n")
+    with pytest.raises(ValueError, match="inside a git repository's own directory .repo.git."):
+        PythonCandidate(
+            PythonAdapter(sys.executable),
+            repository / "hooks" / "check.py",
+            tmp_path / "srv",
+            SourceEdit("repo.git/hooks/check.py", "x = 1", "x = 2"),
         )
 
 

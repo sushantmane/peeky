@@ -89,9 +89,19 @@ class PythonCandidate:
     def __init__(self, adapter, program, root, edit):
         self.adapter = adapter
         self.original = Path(program).resolve(strict=True)
-        self._typed = Path(os.path.abspath(root))
         root = Path(root).resolve(strict=True)
         relative = self.original.relative_to(root)
+        for parent in self.original.parents:
+            if parent == root:
+                break
+            if _is_git_directory(parent):
+                # Copied whole as a private repository, never walked as files.
+                raise ValueError(
+                    "A Python candidate's --at file is inside a git repository's own "
+                    f"directory ({parent.relative_to(root)}); give that directory as the "
+                    f"target (`peeky probe {parent} --at "
+                    f"{self.original.relative_to(parent).as_posix()}:<line>`)"
+                )
         if relative.as_posix() != edit.path:
             raise ValueError("A Python candidate edits the --at file only")
         text = self.original.read_text()
@@ -462,87 +472,37 @@ class PythonCandidate:
         entries (relative ones mean the user's root, the program's working directory),
         and an editable install's `.pth` path or finder (`pip install -e`, `uv sync`).
         Without it, `import pkg` would load the user's unedited module. Environment and
-        site directories are links to the user's files either way: never moved."""
+        site directories are links to the user's files either way: never moved. Then
+        whatever the root offers is imported by name as the program would find it, and
+        a note names each one still served from the user's tree (an import hook ahead of
+        every path, as meson-python's editable loader is)."""
         script = (
             "import json, sys\nmapped = []\nfor finder in sys.meta_path:\n"
-            "    module = sys.modules.get(getattr(finder, '__module__', None) or '')\n"
-            "    for table in (getattr(module, 'MAPPING', None),"
+            "    try:\n"
+            "        module = sys.modules.get(getattr(finder, '__module__', None) or '')\n"
+            "        for table in (getattr(module, 'MAPPING', None),"
             " getattr(finder, '_redirections', None)):\n"
-            "        if isinstance(table, dict):\n"
-            "            mapped += [[k, v] for k, v in table.items()"
+            "            if isinstance(table, dict):\n"
+            "                mapped += [[k, v] for k, v in table.items()"
             " if isinstance(k, str) and isinstance(v, str)]\n"
-            "import os\nroots = tuple(sys.argv[1:])\nhooks = []\n"
-            "def mentions(value, depth=0):\n"
-            "    if depth > 4:\n        return False\n"
-            "    if hasattr(value, '__fspath__'):\n        value = os.fspath(value)\n"
-            "    if isinstance(value, str):\n"
-            "        return any(value == r or value.startswith(r + os.sep) for r in roots)\n"
-            "    if isinstance(value, dict):\n"
-            "        return any(mentions(k, depth + 1) or mentions(v, depth + 1)"
-            " for k, v in value.items())\n"
-            "    if isinstance(value, (list, tuple, set, frozenset)):\n"
-            "        return any(mentions(v, depth + 1) for v in value)\n"
-            "    return False\n"
-            "for finder in sys.meta_path:\n"
-            "    module = sys.modules.get(getattr(finder, '__module__', None) or '')\n"
-            "    if any(hasattr(t, '__dict__') and ('MAPPING' in vars(t) or '_redirections' in vars(t))"
-            " for t in (module, finder, type(finder))):\n"
-            "        continue\n"
-            "    tables = [getattr(finder, '__dict__', {})]\n"
-            "    if not isinstance(finder, type):\n"
-            "        tables.append(vars(type(finder)))\n"
-            "    if any(mentions(v) for table in tables for v in table.values()):\n"
-            "        hooks.append(getattr(finder, '__qualname__', type(finder).__qualname__))\n"
-            "print(json.dumps({'path': sys.path[1:], 'mapped': mapped, 'hooks': hooks}))\n"
+            "    except Exception:\n"
+            "        pass\n"
+            "print(json.dumps({'path': sys.path[1:], 'mapped': mapped}))\n"
         )
+        found = self._interpreter(script, os.environ.get("PYTHONPATH"))
+        if found is None:
+            return None
         try:
-            found = json.loads(
-                subprocess.run(
-                    [self.adapter.interpreter, "-c", script, str(self._source), str(self._typed)],
-                    cwd=self.root,
-                    capture_output=True,
-                    text=True,
-                    timeout=60,
-                    check=True,
-                ).stdout
-            )
             entries = [str(entry) for entry in found["path"]]
             mapped = [(str(name), str(path)) for name, path in found["mapped"]]
-            hooks = [str(hook) for hook in found.get("hooks", ())]
-        except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
-            self._notes.append(
-                "This Python candidate could not list its interpreter's import paths, so if "
-                "the project is installed in editable mode, `import` by package name may load "
-                "your unedited modules"
-            )
+        except (KeyError, TypeError, ValueError):
             return None
-
-        if hooks:
-            # An import hook ahead of the path (meson-python's editable loader) serves the
-            # user's tree whatever `PYTHONPATH` says, and may rebuild in it.
-            raise ValueError(
-                f"A Python candidate cannot run this project on a copy: an import hook "
-                f"({', '.join(hooks)}) serves its modules from your tree, ahead of any "
-                "import path. Check the edit with `peeky verify`"
-            )
-
-        def inside(entry):
-            """The copy of an absolute path inside the root, not in an environment."""
-            real = Path(os.path.realpath(entry))
-            if not self._inside(real):
-                return None
-            parts = real.relative_to(self._source).parts
-            if any(
-                part in _LINKED_DIRS or part in ("site-packages", "dist-packages") for part in parts
-            ):
-                return None
-            return str(self.root / real.relative_to(self._source))
 
         def given_entry(entry):
             if not entry:
                 return entry  # The working directory: the copy's root, as the user's root.
             absolute = entry if os.path.isabs(entry) else os.path.join(self._source, entry)
-            moved = inside(absolute)
+            moved = self._project_copy(absolute)
             if moved is not None:
                 return moved
             return entry if os.path.isabs(entry) else os.path.realpath(absolute)
@@ -550,17 +510,18 @@ class PythonCandidate:
         raw = os.environ.get("PYTHONPATH", "")
         given = raw.split(os.pathsep) if raw else []
         redirected = [given_entry(entry) for entry in given]
-        later = []
+        later, unmoved = [], set()
         for entry in entries:
-            if os.path.isabs(entry) and (moved := inside(entry)) is not None:
+            if os.path.isabs(entry) and (moved := self._project_copy(entry)) is not None:
                 later.append(moved)
         for name, path in mapped:
             module = Path(path).parent if Path(path).name == "__init__.py" else Path(path)
             real = Path(os.path.realpath(module))
             if not self._inside(real):
                 continue
-            moved = inside(real.parent) if name in (real.name, real.stem) else None
+            moved = self._project_copy(real.parent) if name in (real.name, real.stem) else None
             if moved is None:
+                unmoved.add(name)
                 self._notes.append(
                     f"This Python candidate cannot move an editable install's `{name}` (it "
                     f"maps to {module}) to the copy, so `import {name}` loads your unedited "
@@ -581,7 +542,99 @@ class PythonCandidate:
                     "which the standard library has too: an import of those may load another "
                     "module than in your run"
                 )
-        return os.pathsep.join(redirected) if redirected != given else None
+        pythonpath = os.pathsep.join(redirected) if redirected != given else None
+        self._check_imports(
+            pythonpath if pythonpath is not None else raw or None, redirected, unmoved
+        )
+        return pythonpath
+
+    def _check_imports(self, pythonpath, redirected, unmoved):
+        """Find what each top-level name the root offers imports as, the way the program
+        will (its script's directory first, its `PYTHONPATH`), and note each one served
+        from the user's tree."""
+        names = (
+            _module_names(self._source) | _module_names(self._source / "src") | {self.original.stem}
+        )
+        for entry in redirected:
+            if entry and os.path.isabs(entry):
+                names |= _module_names(Path(entry))
+        package = self.original.parent
+        while package != self._source and (package / "__init__.py").is_file():
+            names.add(package.name)
+            package = package.parent
+        names = sorted(names - unmoved)[:200]
+        script = (
+            "import importlib.util, json, sys\nsys.path[0] = sys.argv[1]\nfound = {}\n"
+            "for name in sys.argv[2:]:\n"
+            "    try:\n        spec = importlib.util.find_spec(name)\n"
+            "    except Exception:\n        continue\n"
+            "    if spec is None:\n        continue\n"
+            "    places = [spec.origin] if isinstance(spec.origin, str) else []\n"
+            "    places += [p for p in (spec.submodule_search_locations or [])"
+            " if isinstance(p, str)]\n"
+            "    found[name] = places\n"
+            "print(json.dumps(found))\n"
+        )
+        found = self._interpreter(script, pythonpath, str(self.staged.parent), *names)
+        for name, places in (found or {}).items():
+            served = next(
+                (
+                    place
+                    for place in places
+                    if isinstance(place, str)
+                    and os.path.isabs(place)
+                    and self._project_copy(place) is not None
+                ),
+                None,
+            )
+            if served is not None:
+                self._notes.append(
+                    f"This Python candidate's `import {name}` loads {served} from your tree, "
+                    "not the copy (an import hook or install serves it ahead of every import "
+                    "path, as meson-python's editable loader does, and may rebuild there), so "
+                    "values from it are not the edit's; check the edit with `peeky verify`"
+                )
+
+    def _project_copy(self, entry):
+        """The copy of an absolute path inside the root and not in an environment or
+        site directory (those are links to the user's files either way); else None."""
+        real = Path(os.path.realpath(entry))
+        if not self._inside(real):
+            return None
+        parts = real.relative_to(self._source).parts
+        if any(
+            part in _LINKED_DIRS or part in ("site-packages", "dist-packages") for part in parts
+        ):
+            return None
+        return str(self.root / real.relative_to(self._source))
+
+    def _interpreter(self, script, pythonpath, *args):
+        """The JSON ``script`` prints, run by the program's interpreter in the copy with
+        ``pythonpath``; None (with a note) if it cannot run."""
+        environment = {key: value for key, value in os.environ.items() if key != "PYTHONPATH"}
+        if pythonpath:
+            environment["PYTHONPATH"] = pythonpath
+        try:
+            return json.loads(
+                subprocess.run(
+                    [self.adapter.interpreter, "-c", script, *args],
+                    cwd=self.root,
+                    env=environment,
+                    capture_output=True,
+                    text=True,
+                    timeout=120,
+                    check=True,
+                ).stdout
+            )
+        except (OSError, ValueError, subprocess.SubprocessError):
+            note = (
+                "This Python candidate could not ask its interpreter where imports come from, "
+                "so if the project is installed in editable mode, `import` by package name may "
+                "load your unedited modules"
+            )
+            if note not in self._notes:
+                self._notes.append(note)
+            return None
 
     def __getattr__(self, name):
         return getattr(self.adapter, name)
@@ -719,7 +772,7 @@ def _module_names(directory):
     for entry in entries:
         if entry.suffix == ".py" or entry.suffix in (".so", ".pyd"):
             names.add(entry.name.split(".")[0])
-        elif (entry / "__init__.py").is_file():
+        elif os.path.isfile(entry / "__init__.py"):
             names.add(entry.name)
     return names
 
