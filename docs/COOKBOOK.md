@@ -135,7 +135,7 @@ hit  phase     line  function  selector   type  value
 1    observed  8     get_page  items      list  [10, 20, 30, 40, 50, 60]
 ```
 
-Selectors are dotted paths, indexes and string keys (`request.page`, `args[0]`, `items[-1]`, `order['id']`), never expressions: Peeky never evaluates code in your program. Python dict entries are read by key; `order.id` fails with a message that names `order['id']` and lists the keys. A selector that is not there lists what is. Quote selectors that contain `[...]`: zsh, the macOS default shell, would otherwise treat them as filename patterns. In C and C++, follow a pointer with `.` (`stats.total_us`, not `->`); a pointer carries no length, so `values[0]` reads what it points at, and higher indexes are read where the array is declared.
+Selectors are dotted paths, indexes and string keys (`request.page`, `args[0]`, `items[-1]`, `order['id']`), never expressions: Peeky never evaluates code in your program. Python dict entries are read by key; `order.id` fails with a message that names `order['id']` and lists the keys. A selector that is not there lists what is. Quote selectors that contain `[...]`: zsh, the macOS default shell, would otherwise treat them as filename patterns. In C and C++, follow a pointer with `.` (`stats.total_us`, not `->`); a pointer to a scalar carries no length, so `values[0]` reads what it points at and higher indexes are read where the array is declared, while a pointer to an array or a container lists that pointee's elements, as the debugger does (`pa[1]` is `(*pa)[1]`). Rust references and Boxes are never indexed this way.
 
 ### 2.2 Every Iteration of a Loop
 

@@ -1185,6 +1185,8 @@ def session(args):
             children=True,
             # Launched Java values show their fields (an attached JVM's do not).
             preview=record.get("language") == "java",
+            # C and C++ only: LLDB shows Rust references and Boxes as pointers too.
+            pointers=record.get("language") in ("c", "cpp"),
         )
         # A session read is not a probe hit: no hit number to explain.
         rows = [{key: v for key, v in row.items() if key != "hit"} for row in rows]

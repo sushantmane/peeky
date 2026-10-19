@@ -444,7 +444,10 @@ def _member_hint(worker, stop, snapshot, name):
     return ""
 
 
-def _resolve(worker, stop, snapshot, segments):
+def _resolve(worker, stop, snapshot, segments, pointers=False):
+    """The variable a parsed selector names. ``pointers``: a C/C++ target, where `p[0]`
+    reads a scalar pointer's pointee (not Rust, whose references and Boxes LLDB also
+    shows as pointers, and whose target may have been freed)."""
     matches = [
         variable
         for scope in snapshot["scopes"]
@@ -456,7 +459,7 @@ def _resolve(worker, stop, snapshot, segments):
             f"not found; visible: {_visible(snapshot)}"
             + _member_hint(worker, stop, snapshot, segments[0])
         )
-    variable = matches[0]
+    variable, path = matches[0], segments[0]
     for segment in segments[1:]:
         handle = variable.get("variablesReference", 0)
         if not handle and variable.get("unavailable"):
@@ -479,6 +482,7 @@ def _resolve(worker, stop, snapshot, segments):
             )
         if segment.startswith("[-"):
             variable = _from_end(worker, stop, variable, int(segment[2:-1]), segment)
+            path += segment
             continue
         key = _key(segment)
         found, start, incomplete, children = None, 0, False, []
@@ -504,7 +508,12 @@ def _resolve(worker, stop, snapshot, segments):
             and (listed := java_list(variable, children))
         ):
             found = _list_element(worker, stop, *listed, int(segment[1:-1]), segment)
-        if found is None and segment == "[0]" and (pointee := _pointee(variable, children)):
+        if (
+            pointers
+            and found is None
+            and segment == "[0]"
+            and (pointee := _pointee(variable, children))
+        ):
             # C and C++: p[0] is *p, the one element a pointer shows.
             found = pointee
         if found is None and segment.startswith("[") and key is None:
@@ -525,7 +534,7 @@ def _resolve(worker, stop, snapshot, segments):
                 f"{variable['name']!r} (it shows only part of a large mapping)"
             )
         if found is None:
-            raise ValueError(_not_found(variable, segment, children))
+            raise ValueError(_not_found(variable, segment, children, path, pointers))
         if segment.startswith("[") and not _genuine(found, children, key is not None):
             # Keys and indexes are matched by the entry's displayed name, which is its key's
             # repr. debugpy marks an entry evaluable only when that repr evaluates back to
@@ -536,6 +545,7 @@ def _resolve(worker, stop, snapshot, segments):
                 "key is not that plain value (an object whose repr looks like it)"
             )
         variable = found
+        path += segment if segment.startswith("[") else f".{segment}"
     return variable
 
 
@@ -663,7 +673,7 @@ def _partial(children):
     return False
 
 
-def _not_found(variable, segment, children):
+def _not_found(variable, segment, children, path=None, pointers=False):
     """Why `segment` is absent, with the selectors that would work."""
     grouped = sorted({child["name"] for child in children} & _VALUE_GROUPS)
     reach = (
@@ -672,10 +682,10 @@ def _not_found(variable, segment, children):
         if grouped
         else ""
     )
-    return _absence(variable, segment, children) + reach
+    return _absence(variable, segment, children, path, pointers) + reach
 
 
-def _absence(variable, segment, children):
+def _absence(variable, segment, children, path=None, pointers=False):
     names = [child["name"] for child in children if child["name"] not in _GROUPS]
     shown = ", ".join(names[:20]) + (f", ... ({len(names)} total)" if len(names) > 20 else "")
     kind = variable.get("type") or ""
@@ -697,12 +707,13 @@ def _absence(variable, segment, children):
             f"(children: {shown or 'none'})"
         )
         length = next((name for name in ("len", "length") if name in names), None)
-        if names == [f"*{variable['name']}"] and kind.rstrip().endswith("*"):
+        if pointers and names == [f"*{variable['name']}"] and kind.rstrip().endswith("*"):
             # A C/C++ pointer: the debugger knows what it points at, never how many.
+            shown_path = path or variable["name"]
             message += (
-                f"; {variable['name']} is a pointer, which carries no length: "
-                f"{variable['name']}[0] reads what it points at; index the array where it "
-                "is declared (in the caller: `peeky session step --out`, or a probe there)"
+                f"; {shown_path} is a pointer, which carries no length: {shown_path}[0] "
+                "reads what it points at; index the array where it is declared (in the "
+                "caller: `peeky session step --out`, or a probe there)"
             )
         elif variable.get("view") == "memory":
             if kind in _RUST_TEXT:
@@ -881,7 +892,17 @@ _BUDGET = re.compile(
 )
 
 
-def _capture(worker, stop, selectors, hit, phase, snapshot=None, children=False, preview=False):
+def _capture(
+    worker,
+    stop,
+    selectors,
+    hit,
+    phase,
+    snapshot=None,
+    children=False,
+    preview=False,
+    pointers=False,
+):
     """Rows for each selector at one stop.
 
     Selectors share one inspection (its handles stay valid until the next inspect or
@@ -903,12 +924,12 @@ def _capture(worker, stop, selectors, hit, phase, snapshot=None, children=False,
             row["function"] = frame["name"]
         try:
             try:
-                variable = _resolve(worker, stop, snapshot, parse_selector(selector))
+                variable = _resolve(worker, stop, snapshot, parse_selector(selector), pointers)
             except ValueError as exc:
                 if fresh or not _BUDGET.search(str(exc)):
                     raise
                 snapshot = worker.dispatch("inspect", stop)
-                variable = _resolve(worker, stop, snapshot, parse_selector(selector))
+                variable = _resolve(worker, stop, snapshot, parse_selector(selector), pointers)
         except ValueError as exc:
             row["error"] = str(exc)
         else:
@@ -937,7 +958,9 @@ def _capture(worker, stop, selectors, hit, phase, snapshot=None, children=False,
                             shown = java_preview(variable, _expander(worker, stop))
                         except ValueError:
                             snapshot = worker.dispatch("inspect", stop)
-                            variable = _resolve(worker, stop, snapshot, parse_selector(selector))
+                            variable = _resolve(
+                                worker, stop, snapshot, parse_selector(selector), pointers
+                            )
                             shown = java_preview(variable, _expander(worker, stop))
                     except ValueError:
                         shown = None
@@ -960,14 +983,16 @@ def _capture(worker, stop, selectors, hit, phase, snapshot=None, children=False,
             if children and variable.get("variablesReference"):
                 try:
                     try:
-                        row.update(_children(worker, stop, selector, variable))
+                        row.update(_children(worker, stop, selector, variable, pointers))
                     except ValueError as exc:
                         if not _BUDGET.search(str(exc)):
                             raise
                         # As for values: a fresh inspection restores the node budget.
                         snapshot = worker.dispatch("inspect", stop)
-                        variable = _resolve(worker, stop, snapshot, parse_selector(selector))
-                        row.update(_children(worker, stop, selector, variable))
+                        variable = _resolve(
+                            worker, stop, snapshot, parse_selector(selector), pointers
+                        )
+                        row.update(_children(worker, stop, selector, variable, pointers))
                 except ValueError as exc:
                     row["children_error"] = str(exc)
         rows.append(row)
@@ -1151,7 +1176,7 @@ def _list_children(worker, stop, selector, backing, size):
     return {"children": listed, **({"children_truncated": True} if size > len(listed) else {})}
 
 
-def _children(worker, stop, selector, variable):
+def _children(worker, stop, selector, variable, pointers=False):
     """One page (64) of a value's children, for a person or agent deciding what to read."""
     page = worker.dispatch("expand", {**stop, "handle": variable["variablesReference"], "start": 0})
     if listed := java_list(variable, page["variables"]):
@@ -1169,7 +1194,7 @@ def _children(worker, stop, selector, variable):
         if child.get("unavailable"):
             entry.update(unavailable=True, reason=child.get("reason"))
         path = _child_selector(selector, child["name"])
-        if path is None and _pointee(variable, page["variables"]) is child:
+        if pointers and path is None and _pointee(variable, page["variables"]) is child:
             path = f"{selector}[0]"
         if path and (
             not path.endswith("]") or _genuine(child, page["variables"], path[-2] in "'\"")
@@ -1239,6 +1264,7 @@ def run_probe(root, probe, *, adapter=None, progress=None):
         # live service) does not, since every read lengthens its pause.
         identity = launch["target_identity"] if isinstance(launch["target_identity"], dict) else {}
         previews = identity.get("language") == "java" and identity.get("mode") != "attach"
+        pointers = identity.get("language") in ("c", "cpp")
         if not launch.get("supports_member_set") and any(
             len(parse_selector(name)) > 1 for name, _ in probe.set
         ):
@@ -1329,13 +1355,30 @@ def run_probe(root, probe, *, adapter=None, progress=None):
                 say(f"hit {hits}{of} at {probe.program}:{expected}; capturing")
             # The stop-validation inspection is reused for the first selectors.
             rows.extend(
-                _capture(worker, stop, probe.capture, hits, "observed", snapshot, preview=previews)
+                _capture(
+                    worker,
+                    stop,
+                    probe.capture,
+                    hits,
+                    "observed",
+                    snapshot,
+                    preview=previews,
+                    pointers=pointers,
+                )
             )
             if hits == probe.set_hit and probe.set:
                 for name, value in probe.set:
                     changes.append(apply_set(worker, stop, name, value))
                 rows.extend(
-                    _capture(worker, stop, probe.capture, hits, "after-set", preview=previews)
+                    _capture(
+                        worker,
+                        stop,
+                        probe.capture,
+                        hits,
+                        "after-set",
+                        preview=previews,
+                        pointers=pointers,
+                    )
                 )
             if len(rows) > MAX_ROWS:
                 raise ValueError("Probe row budget exceeded")

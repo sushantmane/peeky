@@ -810,29 +810,40 @@ def test_a_pointers_first_element_is_its_pointee(tmp_path, native_config, capsys
     # Eval 5 dry run: `values[0]` on `const int *values` said only "children: *values".
     from peeky.cli import main
 
-    (tmp_path / "avg.c").write_text(
-        "#include <stdio.h>\n"
-        "static int sum(const int *values, int count) {\n"
-        "    int total = 0;\n"
-        "    for (int i = 0; i < count; i++) total += values[i];\n"
-        "    return total;\n"
-        "}\n"
-        "int main(void) {\n"
-        "    int values[3] = {-3, 1, 7};\n"
-        '    printf("%d\\n", sum(values, 3));\n'
-        "    return 0;\n"
-        "}\n"
-    )
+    (tmp_path / "avg.c").write_text(AVG)
     probe = ["probe", str(tmp_path / "avg.c"), "--at", "5", "--json", "--no-save", "--quiet"]
-    assert main([*probe, "--capture", "values[0],values[1],count"]) == 0
+    capture = "values[0],values[1],count[0],n.count[0],n.count[1],pp[0][0],pp[0][1]"
+    assert main([*probe, "--capture", capture]) == 0
     rows = {row["selector"]: row for row in json.loads(capsys.readouterr().out)["rows"]}
-    assert rows["values[0]"]["value"] == "-3" and rows["count"]["value"] == "3"
-    assert "values is a pointer, which carries no length" in rows["values[1]"]["error"]
+    values = {name: row.get("value") for name, row in rows.items()}
+    assert values["values[0]"] == "-3" and values["count[0]"] == "100"
+    assert values["n.count[0]"] == values["pp[0][0]"] == "1"
+    # Review of #100: the hint names the whole path, never another variable's.
+    for name, path in (("values[1]", "values"), ("n.count[1]", "n.count"), ("pp[0][1]", "pp[0]")):
+        assert f"; {path} is a pointer, which carries no length: {path}[0]" in rows[name]["error"]
     main(["session", "start", str(tmp_path / "avg.c"), "--at", "5"])
     capsys.readouterr()
     try:
-        assert main(["session", "get", "values"]) == 0
-        assert "values[0]: const int = -3" in capsys.readouterr().out
+        assert main(["session", "get", "values", "pp[0]"]) == 0
+        shown = capsys.readouterr().out
+        assert "values[0]: const int = -3" in shown and "pp[0][0]: int = 1" in shown
     finally:
         main(["session", "close"])
         capsys.readouterr()
+
+
+AVG = """#include <stdio.h>
+struct node { int *count; };
+static int sum(const int *values, int *count, struct node n, int **pp) {
+    int total = values[0] + *count + *n.count + **pp;
+    return total;
+}
+int main(void) {
+    int values[3] = {-3, 1, 7};
+    int c = 100, d = 1;
+    int *p = &d;
+    struct node n = {&d};
+    printf("%d\\n", sum(values, &c, n, &p));
+    return 0;
+}
+"""
