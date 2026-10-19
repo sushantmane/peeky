@@ -49,6 +49,7 @@ from peeky.rust_manifest import assert_cargo_ancestry_clear, validate_cargo_inpu
 from peeky.rust_mir import OwnedLocals, frame_shape, ir_functions, load_bodies
 from peeky.rust_symbols import (
     OWNED_CONTAINERS,
+    RUST_METADATA,
     RUST_SCALARS,
     UNIQUE_SCALARS,
     UNVERIFIED,
@@ -895,6 +896,9 @@ class RustSession(NativeSession):
                     [f"--debug-info=0x{unit.die:08x}", "--show-children", symbols],
                     workspace,
                     env,
+                    # A unit holds every std generic the crate instantiates (`sort_by_key`,
+                    # iterators): megabytes for a small crate, as `prepare` allows.
+                    max_bytes=RUST_METADATA,
                 )
             )
         if not infos:
@@ -933,8 +937,9 @@ class RustSession(NativeSession):
                 f"Rust mutation requires a local the program keeps in memory; {name!r} in "
                 f"{where} is kept in a register and the debugger only shows a copy of it, "
                 "so changing it would not affect the program. Locals the code borrows or "
-                "reassigns "
-                "live in memory; otherwise edit the source and run verify"
+                "reassigns live in memory: a candidate edit can add one "
+                "(`std::hint::black_box(&mut x);` after its `let`, with `--set x=…` in the same "
+                "probe); otherwise edit the source and run verify"
             )
 
     def view_variable(self, variable, fetch, read=None, *, frame=None, top=False, innermost=False):

@@ -1241,3 +1241,56 @@ def test_generic_boxes_are_gated_and_non_owning_values_read(plain, capsys):
     g, hs = result["rows"]
     assert "view" not in g and "px" in str(g.get("value")), result["rows"]
     assert "view" not in hs and "not shown" not in str(hs.get("value")), result["rows"]
+
+
+SPANS = """#[derive(Debug, Clone, Copy, PartialEq)]
+struct Span {
+    start: u32,
+    end: u32,
+}
+
+fn parse(text: &str) -> Vec<Span> {
+    text.split(',')
+        .map(|part| {
+            let (a, b) = part.split_once('-').expect("start-end");
+            Span { start: a.trim().parse().unwrap(), end: b.trim().parse().unwrap() }
+        })
+        .collect()
+}
+
+fn merge(spans: &[Span]) -> Vec<Span> {
+    let mut sorted = spans.to_vec();
+    sorted.sort_by_key(|s| s.start);
+    let mut out: Vec<Span> = Vec::new();
+    for s in sorted {
+        if let Some(last) = out.last_mut() {
+            if s.start <= last.end {
+                last.end = s.end;
+                continue;
+            }
+        }
+        out.push(s);
+    }
+    out
+}
+
+fn main() {
+    let text = std::env::args().nth(1).unwrap_or_else(|| "1-3,2-6,8-10".to_string());
+    let merged = merge(&parse(&text));
+    let shown: Vec<String> = merged.iter().map(|s| format!("{}-{}", s.start, s.end)).collect();
+    println!("MERGED:{}", shown.join(","));
+}
+"""
+
+
+@pytest.mark.timeout(300)
+def test_describe_reads_a_unit_full_of_std_generics(plain, capsys):
+    # Eval 5 (Rust): `describe` on this 37-line crate said "function names: unavailable
+    # (Native symbol metadata exceeds limit)": its unit holds every std generic it uses.
+    (plain / "src/main.rs").write_text(SPANS)
+    assert main(["describe", str(plain), "--json"]) == 0
+    manifest = json.loads(capsys.readouterr().out)
+    assert "scopes_unavailable" not in manifest, manifest.get("scopes_unavailable")
+    merge = next(s for s in manifest["scopes"] if s["scope"] == "chars::merge")
+    assert {"out", "s", "sorted", "spans"} <= set(merge["names"])
+    assert merge["types"]["spans"] == "&[chars::Span]"

@@ -189,7 +189,37 @@ def resolve(target, at=None, config=None):
         else:
             program = text
     root, program, line, language, data = _resolve(path, program, line, config)
-    return root, _confined(root, program), line, language, data
+    program = _confined(root, program)
+    if language == "python" and program:
+        # A Python candidate runs a copy whose files keep their stored names, and the
+        # debugger reports those: `APP.py` typed for `app.py` must not stop elsewhere.
+        program = _stored_name(root, program)
+    return root, program, line, language, data
+
+
+def _stored_name(root, program):
+    """``program`` (relative to ``root``) as the file system stores it, where it was
+    typed in another case or Unicode form on a volume that ignores the difference."""
+    import unicodedata
+
+    def key(name):
+        return unicodedata.normalize("NFC", name).casefold()
+
+    current, parts = Path(root), []
+    for part in Path(program).parts:
+        try:
+            names = [name for name in os.listdir(current) if key(name) == key(part)]
+        except OSError:
+            return program
+        if (
+            part not in names
+            and len(names) == 1
+            and os.path.samefile(current / names[0], current / part)
+        ):
+            part = names[0]
+        parts.append(part)
+        current = current / part
+    return Path(*parts).as_posix()
 
 
 def _resolve(path, program, line, config):
@@ -706,6 +736,7 @@ def probe(args):
     if line is None:
         raise ValueError("probe requires --at <path>:<line>")
     edit, original = _probe_edit(args, root, program, line, language)
+    _member_sets(args.set, language)
     request = Probe(
         program,
         line,
@@ -757,6 +788,22 @@ def _misplaced_options(args):
     )
 
 
+def _member_sets(sets, language):
+    """Refuse a field or element --set before anything is built where only Java has them."""
+    from peeky.errors import Refused
+
+    names = [text.split("=", 1)[0].strip() for text in sets or ()]
+    fields = [name for name in names if name and len(parse_selector(name)) > 1]
+    if fields and language not in ("java", "java-attach"):
+        raise Refused(
+            "MUTATION_REJECTED",
+            f"--set {fields[0]} changes a field or element, which only Java targets allow; in "
+            f"{language} only the stopped function's own locals change. To test a value there, "
+            "add a local with a candidate edit and set it in the same probe (COOKBOOK 6.6: "
+            "`--old/--new` with `--set`), or edit the source and run verify",
+        )
+
+
 def _probe_edit(args, root, program, line, language):
     """The edit (one (old, new) pair, or a tuple of them) and the original text for
     `probe --old/--new`, else (None, None)."""
@@ -764,7 +811,7 @@ def _probe_edit(args, root, program, line, language):
         not value for value in (args.old, args.new, args.old_file, args.new_file)
     ):
         return None, None
-    if language in ("python", "java-attach"):
+    if language == "java-attach":
         raise ValueError(CANDIDATE_NEEDS_BUILD)
     pairs = _edit_pairs(args)
     original = (root / program).read_text()
@@ -832,8 +879,10 @@ def _probe_text(result):
     text = _table(result)
     if candidate := result.get("candidate"):
         ran = result.get("hits") or result.get("rows") or result.get("output")
+        python = str((result.get("probe") or {}).get("program") or "").endswith(".py")
+        source = "a copy of your tree" if python else "a fresh build"
         text += (
-            "\ncandidate: values are from a fresh build with this edit"
+            f"\ncandidate: values are from {source} with this edit"
             if ran
             else "\ncandidate: this edit"
         ) + "; your files are unchanged"
@@ -1090,6 +1139,9 @@ def _variables_text(snapshot, name="default"):
             )
             if variable.get("unavailable"):
                 more = f" (no readable value: {variable.get('reason')})"
+            elif not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*( @ .+)?", variable["name"]):
+                # LLDB's `(Return Value)` after `step --out`, debugpy's `special variables`.
+                more = " [not selectable]"
             view = f"  [{variable['view']}]" if variable.get("view") else ""
             if variable.get("settable"):
                 view += "  [settable]"
@@ -2179,6 +2231,8 @@ def main(argv=None, _job=False, _edits=None):
     sub = commands.add_parser("describe", help="Manifest: language, breakpoint lines, views")
     common(sub)
     sub.add_argument("--at", help="Program path (for multi-file targets)")
+    # Accepted everywhere: describe prints no progress, so it changes nothing here.
+    sub.add_argument("--quiet", action="store_true", help=argparse.SUPPRESS)
     sub = commands.add_parser("probe", help="One stateless question: stop, capture, set, report")
     probe_parser = sub
     common(sub)
@@ -2235,7 +2289,10 @@ def main(argv=None, _job=False, _edits=None):
     sub.add_argument(
         "--no-save", action="store_true", help="Do not record this run in the evidence store"
     )
-    candidate = "Probe a candidate fix (C, C++, Rust, Java): build with this edit, never "
+    candidate = (
+        "Probe a candidate fix (any target but an attached JVM): a fresh build, or for "
+        "Python an edited copy, never "
+    )
     sub.add_argument(
         "--old",
         action="append",
