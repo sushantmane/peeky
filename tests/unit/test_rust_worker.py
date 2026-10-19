@@ -87,7 +87,8 @@ def test_rust_target_accepts_explicit_sysroot_toolchain(tmp_path):
         {"rustc": "relative/rustc"},
         {"sources": ["src/main.rs"]},
         {"sources": ("src/main.c",)},
-        {"tests": ()},
+        # No integration test is fine (the checker alone verifies); a list is not.
+        {"tests": ["tests/pagination.rs"]},
         {"sources": ("../main.rs",)},
         {"arguments": ("a\x00b",)},
         {"rust_version": "stable"},

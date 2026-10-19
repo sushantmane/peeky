@@ -620,3 +620,26 @@ Checked and found sound: stale, view and non-Java handles never reach `setVariab
 The last verification (f91cd34) found nothing wrong.
 - **Real java-debug:** `Item[600]` gives `BUDGET_EXHAUSTED` through a probe and through `session set` (with the session kept); an out-of-range index gives `INVALID_REQUEST` with the generic hint; the earlier cases are unchanged.
 - **Unchanged reads:** capture rows, `_BUDGET` retries and `session get` rows are identical to `1c3ce11`'s, checked with arrays and lists of 600, negative indexes and missing names.
+
+## Review of plain Cargo crates (#89, 4040162)
+
+Checked and found sound: no accepted crate makes Cargo build or run anything unhashed.
+- **Refused before any build:** auto-discovered examples and benches are never built by `--bin`/`--test`; `build.rs`, `src/lib.rs` and `src/bin` are refused as files, directories or symlinks; tables such as `[lib]`, `[[example]]`, `[features]`, `[profile]`, `[patch]`, `[lints]` and `[target.*]` are refused.
+- **Re-checked on the staged copy:** `validate_workspace` validates the staged copy again, so files added after preflight are caught.
+- **Without a test:** the artifact allowlist, uplift digest and dependency checks hold.
+
+| # | Finding | Severity | Disposition |
+| --- | --- | --- | --- |
+| 1 | The "LLDB's summary, not the contents" note was attached to every Rust container without a view, including reference locals of types Peeky reads as parameters (`&str`, `&[i32]`, `&Vec<i32>` shown as `Vec<int> *`). Indexing `&Vec<i32>` said integer Vecs are never read. | Medium (regression) | **Fixed:** the note and the element-type refusal apply only when the referent type (without ` *`) is never read. Test: the real build `test_a_cargo_new_crate_is_probed_and_chars_print_as_rust_does` (`s`, `sl`, `r` have no note; `r[0]` keeps the parameter/owned-local reason). |
+| 2 | A `[[bin]]` at another path beside `src/main.rs`, with `autobins` left out, made Cargo infer `src/main.rs` as a second binary. Validation accepted it, and the build failed with "Unexpected Cargo build artifact". | Medium (fails closed) | **Fixed:** refused before the build, naming the second binary and the two fixes. Test: `test_a_bin_elsewhere_beside_src_main_rs_is_refused_up_front`. |
+| 3 | `lldb_char` decides by Python's Unicode tables (14.0 or 15.1), but Rust 1.96 uses Unicode 17.0. U+1171E is `Mn` for Python and `Mc` (not Grapheme_Extend) for Rust, so Peeky escaped a character Rust prints as is. The reviewer compared all 1,112,064 scalar values against Rust's `{:?}` with Python 3.11 and 3.13; this was the only mismatch. | Medium (one code point) | **Fixed:** U+1171E stays raw (`_UNICODE_CHANGED`). Test: the real build prints `'\u{1171e}'` through the program and Peeky's value is not the escaped form. |
+| 4 | Test discovery counted hidden files, which Cargo skips: macOS `._real.rs` and Emacs lock symlinks `.#real.rs`. | Medium (fails closed) | **Fixed:** hidden entries are skipped, as Cargo does. Test: `test_hidden_files_in_tests_are_not_test_targets`. |
+| 5 | (Linux lanes) LLVM's lldb-dap writes a char as `U+0x00000062 U+0x00000062 U'b'`, while Apple's writes `U+0062 …`. The new `Vec<String>` refusal reason also replaced the freed-memory wording an older test asserted. | Medium | **Fixed:** both forms are parsed (`test_rust_chars_print_as_rusts_debug_does_on_either_lldb`). The test now asserts the accurate reason: String elements are never read. |
+
+The verification (3a4fde1) found nothing wrong.
+- **Fixes on real builds:** all four hold.
+  - `cargo metadata` confirms that a `[[bin]]` named after the package, at another path, stops Cargo inferring `src/main.rs`, and Peeky accepts it. A `[[bin]]` with another name is refused, and so is `my-app` against a bin named `my_app`.
+  - `lldb_char` matches Rust 1.96's `{:?}` for all 1,112,064 scalar values under Python 3.11 and 3.13, in both LLDB forms.
+  - Cargo and Peeky agree on hidden test entries.
+- **Notes:** no qualified type lost a note it should have.
+- **Linux lanes:** `rust` and `rust-llvm20` (lldb-dap 18 and 20) pass the char test with LLVM's `U+0x…` form.

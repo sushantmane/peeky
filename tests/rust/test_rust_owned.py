@@ -188,7 +188,7 @@ def test_a_shadowed_string_is_read_only_through_its_live_binding(crate, capsys):
         assert variables[second]["value"] == '"first-second"'
 
 
-FFI_FREED = """extern "C" {
+FFI_FREED = """unsafe extern "C" {
     fn getpid() -> i32;
 }
 
@@ -207,7 +207,7 @@ fn main() {
 }
 """
 
-FFI_MOVED = """extern "C" {
+FFI_MOVED = """unsafe extern "C" {
     fn getpid() -> i32;
 }
 

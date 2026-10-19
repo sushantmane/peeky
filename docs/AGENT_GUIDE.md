@@ -6,7 +6,7 @@ You debug programs with **peeky**, a standalone tool. You decide what to do; pee
 
 1. **Observe before changing.** Stop at a line and read real values before hypothesizing.
 2. **Interventions are experiments, not fixes.** `--set` or `session set` changes one live value in one run. It tells you whether a hypothesis explains the behavior. It never proves a source fix.
-3. **Only `peeky verify` verifies a fix.** It rebuilds your candidate edit from scratch and runs the independent checker (and the compiled Cargo test for Rust). Report `passed: True` only from `verify`.
+3. **Only `peeky verify` verifies a fix.** It rebuilds your candidate edit from scratch and runs the independent checker (and the crate's integration test for Rust, when it has one). Report `passed: True` only from `verify`.
 4. **Never guess lines or names.** Run `peeky describe` first; use its breakpoint lines and the variable names you actually inspected.
 5. **Respect opaque values.** `<unqualified Rust enum layout>`, `<unverified ...>` or `budget-exhausted` mean peeky refused to guess. Do not invent their contents.
 
@@ -77,7 +77,7 @@ Every probe is saved, and the result's `evidence.run_id` names it. **SQL is opti
 
 **Remote targets:** if a worker runs on another host behind an SSH tunnel, add `--worker http://127.0.0.1:<port>` to `probe` or `session start`, with the token in `$PEEKY_WORKER_TOKEN`. Your local copy of the source must match the worker's, or the results are discarded. See [REMOTE.md](REMOTE.md).
 
-Targets: a `.py` file, a `.c`/`.cpp` file (or a directory holding one C/C++ program), a Cargo crate directory with its `Cargo.lock`, or any target with `--config <trusted.json>` (required for Java; `describe`'s commands repeat it). A Java attach config (`port`, `sources`, `class_roots`) attaches to a running `--debug-jvm` JVM; attached targets cannot be verified, and closing detaches without killing the JVM. Selectors are dotted paths, indexes and string keys (`request.page`, `args[0]`, `order['id']`); expressions are rejected. Quote selectors that contain `[...]` in zsh.
+Targets: a `.py` file, a `.c`/`.cpp` file (or a directory holding one C/C++ program), a Cargo crate directory with its `Cargo.lock` (a plain `cargo new` binary crate works: edition 2021 or 2024, no dependencies, no `src/lib.rs`, `src/bin` or `build.rs`, and at most one integration test in `tests/`; run `cargo generate-lockfile` once if `Cargo.lock` is missing), or any target with `--config <trusted.json>` (required for Java; `describe`'s commands repeat it). A Java attach config (`port`, `sources`, `class_roots`) attaches to a running `--debug-jvm` JVM; attached targets cannot be verified, and closing detaches without killing the JVM. Selectors are dotted paths, indexes and string keys (`request.page`, `args[0]`, `order['id']`); expressions are rejected. Quote selectors that contain `[...]` in zsh.
 
 ## Workflow
 

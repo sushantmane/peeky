@@ -24,7 +24,6 @@ import subprocess
 import sys
 import tempfile
 import time
-import tomllib
 from dataclasses import asdict
 from pathlib import Path
 
@@ -228,9 +227,10 @@ def _resolve(path, program, line, config):
         or (path.is_dir() and program and program.endswith(".rs"))
     )
     if rust_intent and (crate := _cargo_root(path if path.is_dir() else path.parent)):
-        manifest = tomllib.loads((crate / "Cargo.toml").read_text())
-        binary = manifest.get("bin", [{}])[0].get("path", "src/main.rs")
-        tests = tuple(item["path"] for item in manifest.get("test", []) if "path" in item)
+        from peeky.rust_manifest import cargo_layout
+
+        # The targets Cargo builds: a [[bin]] or src/main.rs, a [[test]] or tests/*.rs.
+        binary, tests = cargo_layout(crate)
         sources = tuple(
             sorted(p.relative_to(crate).as_posix() for p in (crate / "src").rglob("*.rs"))
         )
@@ -1831,6 +1831,10 @@ def _verify_text(result, keep=False):
     lines = [f"passed: {result['passed']}  stage: {result['stage']}"]
     if tests := result.get("tests"):
         lines.extend(_tests_text(tests))
+    elif result.get("language") == "rust" and result.get("stage") == "verification":
+        lines.append(
+            "compiled tests: none (the crate has no integration test; the checker decides)"
+        )
     if not result["passed"]:
         reason = result.get("diagnostic") or (result.get("checker") or {}).get("error")
         # A build's own timeout is in its diagnostic (`The build failed: clang timed out`).
