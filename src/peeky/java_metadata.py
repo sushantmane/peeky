@@ -73,8 +73,10 @@ def _modified_utf8(raw):
     return b"".join(units).decode("utf-16-be", errors="surrogatepass")
 
 
-def _class_metadata(data, shared=None):
-    """(binary internal name, SourceFile, sorted executable lines). With ``shared`` (a
+def _class_metadata(data, shared=None, scopes=None):
+    """(binary internal name, SourceFile, sorted executable lines). With ``scopes`` (a
+    list), also appends (method, descriptor, first line, last line, local names) for each
+    method with code, its names from the LocalVariableTable (`javac -g`). With ``shared`` (a
     dict), also records {line: {"stops": method, "never": [methods]}} for lines that
     several methods of the class share (a lambda body on its enclosing method's line, a
     static initializer's lambda, nested lambdas, a field initializer in each
@@ -186,10 +188,21 @@ def _class_metadata(data, shared=None):
                     raise ValueError("Invalid exception-table location")
                 if catch:
                     constant(catch, 7)
-            method_lines = {}
+            method_lines, names = {}, []
             for nested_name, nested in attrs(body):
                 if nested_name in {"Code", "SourceFile", "SourceDebugExtension"}:
                     raise ValueError("Unsupported nested debug metadata")
+                if nested_name == "LocalVariableTable" and scopes is not None:
+                    for _ in range(nested.u2()):
+                        start, length = nested.u2(), nested.u2()
+                        name = utf(nested.u2())
+                        utf(nested.u2())
+                        slot = nested.u2()
+                        if start + length > code_length:
+                            raise ValueError("Invalid local variable location")
+                        names.append((slot, start, name))
+                    nested.end()
+                    continue
                 if nested_name != "LineNumberTable":
                     continue
                 for _ in range(nested.u2()):
@@ -204,6 +217,11 @@ def _class_metadata(data, shared=None):
             if not method_lines:
                 raise ValueError("Missing executable line debug information; compile with -g")
             lines.update(method_lines.values())
+            if scopes is not None:
+                found = method_lines.values()
+                # `this` and the parameters first (the lowest slots), then locals.
+                ordered = list(dict.fromkeys(name for _, _, name in sorted(names)))
+                scopes.append((method_name, descriptor, min(found), max(found), ordered))
             for line in sorted(set(method_lines.values())):
                 # Class-file order, which is the order java-debug considers them in.
                 line_methods.setdefault(line, []).append((method_name, descriptor))
@@ -233,6 +251,38 @@ def _class_metadata(data, shared=None):
     if not source or not source.endswith(".java") or any(c in source for c in "/\\\x00"):
         raise ValueError("Missing or unsupported SourceFile debug information")
     return internal, source, sorted(lines)
+
+
+def java_scopes(mapping, classes_dir, workspace, limit=300):
+    """Each method's line span and the names it can see (`this`, parameters, locals),
+    as `describe` lists them for other languages: from the prepared class files."""
+    workspace = Path(workspace).resolve()
+    found = []
+    for binary, entry in mapping["classes"].items():
+        internal = binary.replace(".", "/")
+        path = Path(entry.get("class_file") or Path(classes_dir) / f"{internal}.class")
+        methods = []
+        _class_metadata(path.read_bytes(), scopes=methods)
+        source = Path(entry["path"]).resolve()
+        source = (
+            source.relative_to(workspace).as_posix()
+            if source.is_relative_to(workspace)
+            else source.name
+        )
+        owner = internal.rsplit("/", 1)[-1]
+        for method, _, first, last, names in methods:
+            found.append(
+                {
+                    "scope": f"{owner}.{method}",
+                    "source": source,
+                    "lines": [first, last],
+                    "names": names,
+                }
+            )
+    found.sort(key=lambda scope: (scope["source"], scope["lines"][0], scope["scope"]))
+    if len(found) > limit:
+        found = found[:limit] + [{"omitted": len(found) - limit}]
+    return found
 
 
 def _regular_inside(path, root):

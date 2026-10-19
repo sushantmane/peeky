@@ -259,6 +259,13 @@ class JavaAttachSession(JavaSession):
     def source_manifest(self):
         return {name: _hash(self.root / name) for name in self.target.sources}
 
+    def function_scopes(self):
+        """As for a launched JVM, from the attached classes' own files (`class_file`)."""
+        from peeky.java_metadata import java_scopes
+
+        self.assert_current()
+        return java_scopes(self.mapping, self.root, self.root)
+
     @property
     def environment(self):
         return None

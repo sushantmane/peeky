@@ -61,6 +61,17 @@ def test_java_fields_are_read_through_this_and_commands_keep_the_config(counter,
     assert main(["describe", *common, "--json"]) == 0
     commands = json.loads(capsys.readouterr().out)["commands"]
     assert f"--config {config}" in commands["probe"] and f"--config {config}" in commands["session"]
+    # #91 (eval 4): Java lists each method's lines and the names it sees, as C and Rust do.
+    assert main(["describe", *common, "--json"]) == 0
+    scopes = {s["scope"]: s for s in json.loads(capsys.readouterr().out)["scopes"]}
+    assert scopes["Counter.add"]["names"] == ["this", "times", "i"]
+    assert scopes["Counter.add"]["source"] == "demo/Counter.java"
+    assert scopes["Counter.add"]["lines"] == [10, 13]
+    assert scopes["Counter.main"]["names"] == ["args", "counter"]
+    assert main(["describe", *common]) == 0
+    assert (
+        "names in Counter.add (demo/Counter.java:10-13): this, times, i" in capsys.readouterr().out
+    )
     code = main(
         [
             "probe",
