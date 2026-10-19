@@ -23,6 +23,8 @@ public class X {
   }
   void run() { Runnable r = () -> System.out.println("x"); r.run(); }
   public static void main(String[] args) { new X().run(); }
+  int below = 5;
+  { below++; }
 }
 """
 
@@ -57,8 +59,8 @@ def compiled(tmp_path):
 
 def test_scopes_list_selectable_names_and_constructor_spans(compiled):
     found = scopes(compiled("-g"))
-    # A constructor starts at its own line, not at the field initializers javac
-    # copies into it (review of #96).
+    # A constructor spans its own lines, not the field initializers (above or below
+    # it) javac copies into it (review of #96).
     assert found["X.<init>()V"] == ([10, 10], ["this"])
     assert found["X.<init>(I)V"] == ([11, 13], ["this", "start"])
     # `this$0` is no selector; the inner class's own names are.

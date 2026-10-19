@@ -230,10 +230,17 @@ def _class_metadata(data, shared=None, scopes=None):
                         "the classes have no local variable names (LocalVariableTable); "
                         "compile with javac -g"
                     )
-                # The line at pc 0 starts the method: javac copies field initializers'
-                # lines into every constructor, above the constructor itself.
+                # The line at pc 0 starts the method. javac copies every field
+                # initializer's line into each constructor, wherever the field is
+                # declared, while a constructor ends at its last instruction (the
+                # `return` at its closing brace): only lines between the two are its own.
                 first = method_lines[min(method_lines)]
-                found = [line for line in method_lines.values() if line >= first]
+                last = method_lines[max(method_lines)] if method_name == "<init>" else None
+                found = [
+                    line
+                    for line in method_lines.values()
+                    if line >= first and (last is None or line <= last)
+                ]
                 # `this` and the parameters first (the lowest slots), then locals; only
                 # names a selector can write (not `this$0`).
                 ordered = [
