@@ -461,6 +461,26 @@ def _resolve(worker, stop, snapshot, segments, pointers=False):
     variable, path = matches[0], segments[0]
     for segment in segments[1:]:
         handle = variable.get("variablesReference", 0)
+        first = None
+        if (
+            pointers
+            and handle
+            and segment.startswith("[")
+            and _key(segment) is None
+            and (pointee := _c_pointee_type(variable.get("type"))) is not None
+        ):
+            first = worker.dispatch("expand", {**stop, "handle": handle, "start": 0})
+            listed = [child for child in first["variables"] if child["name"] not in _GROUPS]
+            if listed and _pointee(variable, first["variables"]) is None:
+                # #102: the debugger lists what a pointer to an array, a container or a
+                # struct points at as the pointer's own children. In C, p[0] is that
+                # pointee and p[1] the one after it, which no pointer's length tells.
+                index = int(segment[1:-1])
+                if index == 0:
+                    variable = _dereferenced(variable, pointee)
+                    path += segment
+                    continue
+                raise ValueError(_beyond_pointee(variable, path, pointee, segment, listed))
         if not handle and variable.get("unavailable"):
             raise ValueError(f"{variable['name']!r} has no value here: {variable.get('reason')}")
         if not handle:
@@ -488,7 +508,11 @@ def _resolve(worker, stop, snapshot, segments, pointers=False):
         key = _key(segment)
         found, start, incomplete, children = None, 0, False, []
         while found is None:
-            page = worker.dispatch("expand", {**stop, "handle": handle, "start": start})
+            page = (
+                first
+                if start == 0 and first is not None
+                else worker.dispatch("expand", {**stop, "handle": handle, "start": start})
+            )
             children.extend(page["variables"])
             found = next((v for v in page["variables"] if _names(v, segment)), None)
             if found is not None or not page["truncated"]:
@@ -1137,6 +1161,54 @@ def _code(exc):
 _KEY_NAME = re.compile(_KEY_LITERAL)
 
 
+_C_QUALIFIERS = r"(?:\s*\b(?:const|volatile|restrict|__restrict|__restrict__)\b)*"
+
+
+def _c_pointee_type(kind):
+    """What a C/C++ pointer type points at (`int (*)[3]` is `int[3]`, `Point *const` is
+    `Point`), or None for another type (an array of pointers, a function pointer)."""
+    kind = str(kind or "").strip()
+    if found := re.fullmatch(rf"(.+?)\s*\(\*{_C_QUALIFIERS}\s*\)\s*(\[.*\])", kind):
+        return f"{found[1]}{found[2]}"
+    if found := re.fullmatch(rf"(.+?)\s*\*{_C_QUALIFIERS}\s*", kind):
+        return found[1]
+    return None
+
+
+def _dereferenced(variable, pointee):
+    """`*p` for a C/C++ pointer whose children the debugger lists from its pointee."""
+    value = str(variable.get("value") or "")
+    address = re.match(r"0x[0-9a-fA-F]+", value)
+    # The debugger's summary of the pointee follows the address (`0x… size=3`).
+    summary = value[address.end() :].strip() if address else ""
+    shown = {
+        "name": f"*{variable['name']}",
+        "value": summary or (f"{pointee} @ {address[0]}" if address else ""),
+        "type": pointee,
+        "variablesReference": variable["variablesReference"],
+    }
+    for key in ("indexedVariables", "namedVariables"):
+        if type(variable.get(key)) is int:
+            shown[key] = variable[key]
+    return shown
+
+
+def _beyond_pointee(variable, path, pointee, segment, children):
+    elements = any(_INDEX.fullmatch(child["name"]) for child in children)
+    label = f"{path} ({variable.get('type')})"
+    message = (
+        f"{_shown(segment)} not read: {label} points at one {pointee}, and in C and C++ "
+        f"{path}{segment} is not inside it; a pointer carries no length. {path}[0] is the "
+        f"{pointee} it points at"
+    )
+    if elements:
+        return message + f": read {path}[0]{segment} for its element"
+    return message + (
+        "; index the array where it is declared (in the caller: `peeky session step --out`, "
+        "or a probe there)"
+    )
+
+
 def _pointee(variable, children):
     """The one child a C/C++ scalar pointer shows (`*values`), or None. The child's name
     is the sign, whatever the type's spelling (`int *const`, `float *__restrict`, a
@@ -1209,6 +1281,16 @@ def _children(worker, stop, selector, variable, pointers=False):
         path = _child_selector(selector, child["name"])
         if pointers and path is None and _pointee(variable, page["variables"]) is child:
             path = f"{selector}[0]"
+        elif (
+            pointers
+            and path is not None
+            and _INDEX.fullmatch(child["name"])
+            and _c_pointee_type(variable.get("type")) is not None
+            and _pointee(variable, page["variables"]) is None
+        ):
+            # A pointer to an array or container lists its pointee's elements: in C,
+            # element N is p[0][N] (#102).
+            path = _child_selector(f"{selector}[0]", child["name"])
         if path and (
             not path.endswith("]") or _genuine(child, page["variables"], path[-2] in "'\"")
         ):

@@ -836,6 +836,67 @@ def test_a_pointers_first_element_is_its_pointee(tmp_path, native_config, capsys
         capsys.readouterr()
 
 
+def test_a_pointer_to_an_array_or_container_indexes_as_c_does(tmp_path, native_config, capsys):
+    # #102: the debugger lists a pointer's pointee elements as its own children, so
+    # `parr[1]` read `(*parr)[1]`, where C means the next row. Now p[0] is the pointee and
+    # p[1] is refused with the selector that reads the element.
+    from peeky.cli import main
+
+    for name, text, line, capture in (
+        ("rows.c", ROWS, 8, "parr[0],parr[0][1],parr[1],parr[-1],pp[0].y,pp.y,pp[1]"),
+        ("rows.cpp", VECTOR, 7, "vp[0],vp[0][1],vp[1]"),
+    ):
+        (tmp_path / name).write_text(text)
+        probe = ["probe", str(tmp_path / name), "--at", str(line), "--json", "--no-save"]
+        assert main([*probe, "--quiet", "--capture", capture]) == 0
+        rows = {row["selector"]: row for row in json.loads(capsys.readouterr().out)["rows"]}
+        if name == "rows.c":
+            assert rows["parr[0]"]["type"] == "int[3]" and rows["parr[0][1]"]["value"] == "2"
+            assert rows["pp[0].y"]["value"] == rows["pp.y"]["value"] == "2"
+            assert "read parr[0][1] for its element" in rows["parr[1]"]["error"]
+            assert "read parr[0][-1]" in rows["parr[-1]"]["error"]
+            assert "index the array where it is declared" in rows["pp[1]"]["error"]
+        else:
+            assert rows["vp[0]"]["value"] == "size=3" and rows["vp[0][1]"]["value"] == "8"
+            assert "read vp[0][1] for its element" in rows["vp[1]"]["error"]
+    main(["session", "start", str(tmp_path / "rows.c"), "--at", "8"])
+    capsys.readouterr()
+    try:
+        assert main(["session", "get", "parr", "--json"]) == 0
+        listed = json.loads(capsys.readouterr().out)
+        rows = listed["rows"] if isinstance(listed, dict) else listed
+        selectors = [child.get("selector") for child in rows[0]["children"]]
+        assert selectors == ["parr[0][0]", "parr[0][1]", "parr[0][2]"], rows
+    finally:
+        main(["session", "close"])
+        capsys.readouterr()
+
+
+ROWS = """#include <stdio.h>
+struct pt { int x, y; };
+int main(void) {
+    int rows[2][3] = {{1, 2, 3}, {4, 5, 6}};
+    int (*parr)[3] = rows;
+    struct pt pts[2] = {{1, 2}, {3, 4}};
+    struct pt *pp = pts;
+    int n = parr[1][2] + pp[1].y;
+    printf("%d\\n", n);
+    return 0;
+}
+"""
+
+VECTOR = """#include <cstdio>
+#include <vector>
+int main() {
+    std::vector<int> v{7, 8, 9};
+    std::vector<int> *vp = &v;
+    int n = (*vp)[1];
+    std::printf("%d\\n", n);
+    return 0;
+}
+"""
+
+
 AVG = """#include <stdio.h>
 struct node { int *count; };
 typedef int *intp;
