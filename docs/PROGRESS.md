@@ -108,6 +108,12 @@ An hourly thread heartbeat (`continue-peeky-mvp`) checks for available usage and
   - String and char fields in a preview are Java literals.
   - `merged[0]` and `merged[-1]` index an `ArrayList` through `size` and `elementData`.
   - Setting fields is #86 (done, below).
+- **Smaller evidence and describe gaps** (#93, from the fourth evaluation).
+  - The `evidence` and `last_run` views have each run's `language` and `output` (schema 5; older stores upgrade in place), so values and output compare without a join, and `no_addresses(value, language)` works on the view.
+  - `describe` gives C, C++ and Rust locals' types (`ms (int), us (long long)`).
+  - `session inspect` names the hit (`…:3 in <module>, hit 3`), as `start` and `continue` do.
+  - Kept: paths print resolved (`/private/tmp` on macOS); tests and outputs rely on one form.
+  - A probe that times out carries `debugger_events` (the debugger's last events and DAP trace), so a stop the debugger never reported (#27) can be told from a slow program.
 - **Rust char elements** (#90, first part).
   - `Vec<char>`, `&[char]` and `&Vec<char>` are read like the other qualified element types, and print as Rust's `{:?}` does.
   - `char` rendering is exact: the code points Rust 1.96 escapes come from Rust itself (`scripts/rust_char_table.py` writes `src/peeky/rust_chars.py`), and a test ties the table to the pinned toolchain. Tuples (`Vec<(char, usize)>`) are the second part.

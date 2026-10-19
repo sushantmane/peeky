@@ -889,3 +889,24 @@ def test_object_ref_says_which_values_are_the_same_java_object(store):
         "load": None,
         "label": None,
     }
+
+
+def test_the_evidence_view_has_language_and_output(store):
+    # #93 (eval 4, Rust): comparing values with output needed a join, where `label`
+    # was then ambiguous; Java masking needed runs.language.
+    evidence.record(store, result(output="RLE:3a\n"), language="rust")
+    rows = evidence.query(store, "SELECT selector, language, output FROM last_run")["rows"]
+    assert rows[0] == {"selector": "start", "language": "rust", "output": "RLE:3a\n"}
+
+
+def test_a_schema_4_store_gains_the_new_view_columns(store):
+    evidence.record(store, result(), language="python")
+    connection = sqlite3.connect(store)
+    connection.executescript(
+        "DROP VIEW last_run; DROP VIEW evidence; "
+        "CREATE VIEW evidence AS SELECT c.run_id, c.selector FROM captures c; "
+        "CREATE VIEW last_run AS SELECT * FROM evidence; PRAGMA user_version = 4;"
+    )
+    connection.close()
+    rows = evidence.query(store, "SELECT language FROM last_run")["rows"]
+    assert rows[0] == {"language": "python"}

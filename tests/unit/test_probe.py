@@ -1118,3 +1118,25 @@ def test_a_java_list_whose_backing_array_is_too_big_lists_its_fields():
         "big.modCount",
         "big.size",
     ]
+
+
+def test_a_probe_that_times_out_says_what_the_debugger_last_reported(monkeypatch):
+    # #27: a stop the debugger never reported looked like a slow program; the events
+    # and the DAP trace show it.
+    import peeky.probe as probe_module
+
+    class Silent(FakeWorker):
+        def dispatch(self, operation, args):
+            self.calls.append(operation)
+            if operation == "wait":
+                return {"state": "running"}
+            if operation == "report":
+                events = {"recent": [{"event": "continued"}], "ignored": {}, "trace": ["->"]}
+                return {"output": "", "output_truncated": False, "debugger_events": events}
+            return super().dispatch(operation, args)
+
+    worker = Silent()
+    monkeypatch.setattr(probe_module, "DebugWorker", lambda *args, **kwargs: worker)
+    result = probe_module.run_probe("/w", Probe("main.py", 8, ("x",), timeout=0.3))
+    assert result["status"] == "timeout" and result["error"]["code"] == "TIMEOUT"
+    assert result["debugger_events"]["recent"] == [{"event": "continued"}]

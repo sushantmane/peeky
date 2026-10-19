@@ -526,13 +526,18 @@ def test_describe_lists_each_functions_span_and_locals(tmp_path, native_config, 
         manifest = json.loads(capsys.readouterr().out)
         scope = next(s for s in manifest["scopes"] if s["scope"] == function)
         assert scope["source"] == program and local in scope["names"]
+        # #93 (eval 4, C): each local's type, as the debug information names it.
+        if program.endswith(".c"):
+            assert scope["types"]["start"] == "int"
         first, last = scope["lines"]
         lines = manifest["breakpoint_lines"][program]
         assert first in lines and last in lines and first < last
         # Only the program's own functions: nothing from the SDK or the C++ library.
         assert {s["source"] for s in manifest["scopes"]} <= set(manifest["breakpoint_lines"])
         assert main(["describe", str(tmp_path / path)]) == 0
-        assert f"names in {function} ({program}:{first}-{last}):" in capsys.readouterr().out
+        text = capsys.readouterr().out
+        assert f"names in {function} ({program}:{first}-{last}):" in text
+        assert program != "pagination_bug.c" or "start (int)" in text
 
 
 def test_native_sessions_step_and_report_leaving_the_program(

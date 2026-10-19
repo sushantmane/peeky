@@ -981,6 +981,8 @@ class DebugWorker:
                     else {}
                 ),
                 "function": str(selected_frame.get("name") or "")[:300],
+                # Which stop at the session's breakpoint this is, as state lines say.
+                **({"hit": self.stop_hit} if self.stop_hit else {}),
                 "frames": frames,
                 "scopes": result,
                 # The object whose members selectors may name without it (C++, Java).

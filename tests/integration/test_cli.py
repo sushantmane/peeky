@@ -775,6 +775,9 @@ def test_sessions_number_their_hits_and_run_on_to_the_nth(tmp_path, monkeypatch,
         code, out = run(capsys, "session", "start", script, "--at", "3", "--hit", "3")
         assert code == 0 and ", hit 3 (paused" in out.out, out
         assert run(capsys, "session", "get", "i")[1].out.strip() == "i: int = 2"
+        # #93 (eval 4): inspect names the hit too, as start and continue do.
+        code, out = run(capsys, "session", "inspect")
+        assert code == 0 and "loop.py:3 in <module>, hit 3" in out.out.splitlines()[0], out
         code, out = run(capsys, "session", "continue", "--count", "2")
         assert code == 0 and ", hit 5 (paused" in out.out, out
         # A one-shot --to line is not a hit, and has no hit number.
