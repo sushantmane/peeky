@@ -17,7 +17,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import quote
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 MAX_RUNS = 500
 DEFAULT_ROWS = 200
 MAX_ROWS = 10000
@@ -109,17 +109,20 @@ TABLES = {
 _EVIDENCE_COLUMNS = (
     "run_id, started_at, label, program, line, status, hit, phase, function, selector, type, "
     "value, num, unavailable, error, view, args, sets, artifact_manifest_id, source_sha256, "
-    "candidate"
+    "candidate, language"
 )
 VIEWS = {
     "evidence": f"captures joined with their run, so no join is needed: {_EVIDENCE_COLUMNS} "
-    "(candidate is 1 for a run that built an edit with probe --old/--new)",
+    "(candidate is 1 for a run that built an edit with probe --old/--new; language is the "
+    "run's, for no_addresses(value, language)). The run's program output is runs.output, "
+    "kept out of the view so SELECT * stays small: JOIN runs r USING (run_id) and name "
+    "r.output",
     "last_run": "The evidence rows of the newest run",
 }
 _EVIDENCE_VIEW = """CREATE VIEW evidence AS SELECT c.run_id, r.started_at, r.label, r.program,
         c.line, r.status, c.hit, c.phase, c.function, c.selector, c.type, c.value, c.num,
         c.unavailable, c.error, c.view, r.args, r.sets, r.artifact_manifest_id,
-        r.source_sha256, r.edit IS NOT NULL AS candidate
+        r.source_sha256, r.edit IS NOT NULL AS candidate, r.language
         FROM captures c JOIN runs r ON r.run_id = c.run_id"""
 _LAST_RUN_VIEW = (
     "CREATE VIEW last_run AS SELECT * FROM evidence WHERE run_id = (SELECT MAX(run_id) FROM runs)"
@@ -157,7 +160,8 @@ _DDL = (
 # Older schemas upgraded in place: {version: statements to the next version}. A writer
 # upgrades before saving; a reader upgrades a writable store before opening it read-only.
 # Version 2 added runs.edit; version 3 rebuilt the views with `candidate` (an early
-# version 2 had the column but the old views); version 4 made captures.num NUMERIC.
+# version 2 had the column but the old views); version 4 made captures.num NUMERIC;
+# version 5 added language to the views.
 _MIGRATIONS = {
     1: ("ALTER TABLE runs ADD COLUMN edit TEXT",),
     2: (
@@ -179,6 +183,12 @@ _MIGRATIONS = {
         "DROP TABLE captures",
         "ALTER TABLE captures_v4 RENAME TO captures",
         *_CAPTURE_INDEXES,
+        _EVIDENCE_VIEW,
+        _LAST_RUN_VIEW,
+    ),
+    4: (
+        "DROP VIEW IF EXISTS last_run",
+        "DROP VIEW IF EXISTS evidence",
         _EVIDENCE_VIEW,
         _LAST_RUN_VIEW,
     ),
@@ -858,6 +868,12 @@ def query(path, sql, params=None, *, limit=DEFAULT_ROWS, seconds=QUERY_SECONDS):
         message = str(exc)
         if "not authorized" in message or "denied" in message:
             message += " (queries are read-only: one SELECT; no writes, ATTACH or settings)"
+        elif "ambiguous column name" in message:
+            message += (
+                " (the evidence and last_run views already carry their run's columns: "
+                f"{_EVIDENCE_COLUMNS}; drop the JOIN, or prefix the column with its table, "
+                "e.g. r.output)"
+            )
         raise ValueError(f"Evidence query failed: {message}") from exc
     finally:
         connection.close()

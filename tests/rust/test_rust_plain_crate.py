@@ -262,3 +262,38 @@ def test_the_char_table_is_what_the_pinned_rust_prints():
         os.environ["PEEKY_RUST_CARGO"], os.environ["PEEKY_RUST_RUSTC"]
     )
     assert (version, unicode, ranges) == (RUST_VERSION, UNICODE_VERSION, ESCAPED)
+
+
+GENERIC = """fn largest<T: PartialOrd + Copy>(list: &[T]) -> T {
+    let mut largest = list[0];
+    for &item in list {
+        if item > largest {
+            largest = item;
+        }
+    }
+    largest
+}
+
+fn main() {
+    let pick: fn(&[i32]) -> i32 = largest;
+    let maybe: Option<fn(&[i32]) -> i32> = Some(pick);
+    println!("{} {} {}", pick(&[3, 9, 2]), largest(&['a', 'z']), maybe.is_some());
+}
+"""
+
+
+@pytest.mark.timeout(300)
+def test_describe_merges_a_generic_functions_instantiations(plain, capsys):
+    # Review of #97: each instantiation was its own scope once types were listed.
+    (plain / "src/main.rs").write_text(GENERIC)
+    assert main(["describe", str(plain), "--json"]) == 0
+    every = json.loads(capsys.readouterr().out)["scopes"]
+    scopes = [s for s in every if s["scope"] == "chars::largest"]
+    assert len(scopes) == 1, scopes
+    assert scopes[0]["types"]["list"] == "&[char] or &[i32]"
+    assert scopes[0]["types"]["item"] == "char or i32"
+    # A function pointer keeps its type (dwarfdump spells it the C way).
+    main_scope = next(s for s in every if s["scope"] == "chars::main")
+    assert main_scope["types"]["pick"] == "i32 (*)(&[i32])", main_scope
+    # A generic's argument keeps rustc's arrow, which is not an unbalanced bracket.
+    assert main_scope["types"]["maybe"] == "core::option::Option<fn(&[i32]) -> i32>"

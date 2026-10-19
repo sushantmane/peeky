@@ -635,7 +635,9 @@ def _describe_text(manifest):
             where = f" ({scope['source']}:{span})"
         else:
             where = f" (lines {span})" if span else ""
-        lines.append(f"names in {scope['scope']}{where}: {', '.join(scope['names']) or '-'}")
+        types = scope.get("types", {})
+        shown = [f"{name} ({types[name]})" if name in types else name for name in scope["names"]]
+        lines.append(f"names in {scope['scope']}{where}: {', '.join(shown) or '-'}")
     from peeky.probe import optimization_level
 
     if level := optimization_level(manifest.get("target_identity")):
@@ -1053,6 +1055,8 @@ def _variables_text(snapshot, name="default"):
         from peeky.names import display_function
 
         where += f" in {display_function(function)}"
+    if type(snapshot.get("hit")) is int:
+        where += f", hit {snapshot['hit']}"
     lines = [f"stopped at {where}" + _pause_text(snapshot)]
     for scope in snapshot["scopes"]:
         lines.append(f"[{scope['name']}]")

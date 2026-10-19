@@ -66,7 +66,7 @@ def test_attached_probe_observes_intervenes_and_detaches_without_killing(attache
     result = run_probe(
         root, Probe(SOURCE, line, ("start", "pageSize"), (("start", "0"),)), adapter=target
     )
-    assert result["status"] == "completed", result.get("error")
+    assert result["status"] == "completed", (result.get("error"), result.get("debugger_events"))
     rows = {(r["phase"], r["selector"]): r["value"] for r in result["rows"]}
     assert rows["observed", "start"] == "3" and rows["observed", "pageSize"] == "3"
     assert rows["after-set", "start"] == "0"
@@ -81,7 +81,7 @@ def test_an_attached_jvms_array_element_takes_set(attached):
     root, target, process, line = attached
     probe = Probe(SOURCE, line, ("items[3]",), (("items[3]", "99"),))
     result = run_probe(root, probe, adapter=target)
-    assert result["status"] == "completed", result.get("error")
+    assert result["status"] == "completed", (result.get("error"), result.get("debugger_events"))
     assert [(c["name"], c["before"], c["after"]) for c in result["interventions"]] == [
         ("items[3]", "40", "99")
     ]

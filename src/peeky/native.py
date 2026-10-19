@@ -376,18 +376,101 @@ def _qualified(dies, offset, depth=0):
     return "::".join(reversed(parts))
 
 
+# Types that wrap another (`T *`, `const T`, `T[3]`): an unnamed struct, union, class
+# or enum inside one is still unnamed.
+_TYPE_WRAPPERS = {
+    "DW_TAG_pointer_type",
+    "DW_TAG_const_type",
+    "DW_TAG_volatile_type",
+    "DW_TAG_restrict_type",
+    "DW_TAG_atomic_type",
+    "DW_TAG_reference_type",
+    "DW_TAG_rvalue_reference_type",
+    "DW_TAG_array_type",
+}
+_RECORDS = {
+    "DW_TAG_structure_type",
+    "DW_TAG_union_type",
+    "DW_TAG_class_type",
+    "DW_TAG_enumeration_type",
+}
+
+
+def _type_name(dies, value, depth=0):
+    """The name dwarfdump gives a DW_AT_type reference (`long long`, `Stats *`), or None
+    for one no program could write: dwarfdump names an unnamed struct, union, class (a
+    lambda) or enum by its tag word (`structure `, `const class  &`, `structure [3]`).
+    It prints a restrict pointer as `restrict ` alone, so that is named from its
+    pointee (`const float *restrict`)."""
+    reference = _REFERENCE.fullmatch(value or "")
+    name = _text(f'"{reference[2]}"') if reference and reference[2] else None
+    if name is None or depth > 16:
+        return None
+    offset = int(reference[1], 16)
+    if offset not in dies:
+        return None if re.search(r"\brestrict\b", name) else name
+    if not _balanced(name):
+        # dwarfdump cuts some names short (`int (*[1]` for an array of function pointers).
+        return None
+    if dies[offset]["tag"] == "DW_TAG_restrict_type":
+        inner = dies[offset]["attrs"].get("DW_AT_type")
+        pointee = _type_name(dies, inner, depth + 1)
+        target = _REFERENCE.fullmatch(inner or "")
+        if pointee and pointee.endswith("*"):
+            return f"{pointee}restrict"
+        if pointee and target and dies.get(int(target[1], 16), {}).get("tag") == "DW_TAG_typedef":
+            return f"{pointee} restrict"
+        # A pointer to an array or function (`double (*restrict m)[n]`): its restrict
+        # goes inside the parentheses, which this name cannot say.
+        return None
+    for _ in range(16):
+        die = dies.get(offset)
+        if die is None or die["tag"] not in _TYPE_WRAPPERS:
+            break
+        inner = _REFERENCE.fullmatch(die["attrs"].get("DW_AT_type") or "")
+        if inner is None:
+            break
+        if die["tag"] == "DW_TAG_restrict_type":
+            # A qualifier on a restrict pointer: dwarfdump has dropped its pointee.
+            return None
+        offset = int(inner[1], 16)
+    # An unnamed record, or a type declared inside one (`structure ::In *`).
+    for _ in range(16):
+        die = dies.get(offset)
+        if die is None or die["tag"] in ("DW_TAG_compile_unit", "DW_TAG_namespace"):
+            break
+        if die["tag"] in _RECORDS and "DW_AT_name" not in die["attrs"]:
+            return None
+        offset = die["parent"]
+    return name
+
+
+def _balanced(name):
+    depth = []
+    # Rust's `fn(i32) -> i32` returns with an arrow, not a closing bracket.
+    for char in name.replace("->", ""):
+        if char in "([<":
+            depth.append(")]>"["([<".index(char)])
+        elif char in ")]>" and (not depth or depth.pop() != char):
+            return False
+    return not depth
+
+
 def _locals(dies, offset):
-    """Parameters and variables of one function body, including nested blocks but not
-    the bodies of calls inlined into it."""
-    names, pending = set(), list(dies[offset]["children"])
+    """{name: {types}} for the parameters and variables of one function body, including
+    nested blocks but not the bodies of calls inlined into it. A type is the name
+    dwarfdump gives the DIE's DW_AT_type (`long long`, `Stats *`)."""
+    names, pending = {}, list(dies[offset]["children"])
     while pending and len(names) < 512:
         child = pending.pop()
         die = dies[child]
         if die["tag"] in ("DW_TAG_formal_parameter", "DW_TAG_variable"):
-            name = _text(_first(dies, _chain(dies, child), "DW_AT_name"))
+            chain = _chain(dies, child)
+            name = _text(_first(dies, chain, "DW_AT_name"))
             # `$`-prefixed names are debugger-synthesized storage, not program locals.
             if name and not name.startswith("$"):
-                names.add(name)
+                kind = _type_name(dies, _first(dies, chain, "DW_AT_type"))
+                names.setdefault(name, set()).update({kind} if kind else set())
         elif die["tag"] == "DW_TAG_lexical_block":
             pending.extend(die["children"])
     return names
@@ -492,17 +575,27 @@ def function_scopes(info, line_text, workspace, declared):
         numbers = _own_lines(dies, entry, lines.get(root))
         if name is None or not numbers:
             continue
-        names = set()
+        names = {}
         for body in (*entry["bodies"], root):
-            names |= _locals(dies, body)
+            for local, kinds in _locals(dies, body).items():
+                names.setdefault(local, set()).update(kinds)
         scope = {
             "scope": name,
             "source": source,
             "lines": [min(numbers), max(numbers)],
             "names": sorted(names),
         }
-        found[json.dumps(scope, sort_keys=True)] = scope
-    scopes = sorted(found.values(), key=lambda s: (s["source"], s["lines"][0], s["scope"]))
+        # Instantiations of one generic function (Rust's names drop the generic
+        # arguments) are one scope; their types join (`&[i32] or &[char]`).
+        merged = found.setdefault(json.dumps(scope, sort_keys=True), (scope, {}))[1]
+        for local, kinds in names.items():
+            merged.setdefault(local, set()).update(kinds)
+    scopes = []
+    for scope, kinds in found.values():
+        # Two blocks may declare one name with different types (`int or long`).
+        types = {local: " or ".join(sorted(k)) for local, k in sorted(kinds.items()) if k}
+        scopes.append({**scope, **({"types": types} if types else {})})
+    scopes.sort(key=lambda s: (s["source"], s["lines"][0], s["scope"]))
     if len(scopes) > MAX_SCOPES:
         scopes = [*scopes[:MAX_SCOPES], {"omitted": len(scopes) - MAX_SCOPES}]
     return scopes

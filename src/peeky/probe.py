@@ -1306,6 +1306,9 @@ def run_probe(root, probe, *, adapter=None, progress=None):
             result["error"] = classify(
                 TimeoutError(f"Probe exceeded its {probe.timeout} s timeout"), session_closed=True
             )
+            if events := report.get("debugger_events"):
+                # What the debugger last said: a stop it never reported shows here (#27).
+                result["debugger_events"] = events
         if status == "no-stop":
             code = result.get("exit_code")
             where = f"{probe.program}:{line}" + (

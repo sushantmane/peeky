@@ -889,3 +889,38 @@ def test_object_ref_says_which_values_are_the_same_java_object(store):
         "load": None,
         "label": None,
     }
+
+
+def test_the_evidence_view_has_language_and_output_stays_one_join_away(store):
+    # #93 (eval 4, Rust): comparing values with output needed a join, where `label`
+    # was then ambiguous; Java masking needed runs.language.
+    evidence.record(store, result(output="RLE:3a\n"), language="rust")
+    rows = evidence.query(store, "SELECT selector, language FROM last_run")["rows"]
+    assert rows[0] == {"selector": "start", "language": "rust"}
+    # Review of #97: output on every row made SELECT * repeat it per capture and hit the
+    # result cap; it stays in runs, and an ambiguous join column says why.
+    loud = result(starts=tuple(map(str, range(100))), output="x" * 200_000)
+    evidence.record(store, loud, language="python")
+    everything = evidence.query(store, "SELECT * FROM last_run", limit=10000)
+    assert everything["row_count"] == 200 and not everything["truncated"]
+    assert "output" not in everything["columns"]
+    joined = evidence.query(
+        store,
+        "SELECT e.selector, length(r.output) AS n FROM last_run e JOIN runs r USING (run_id)",
+    )
+    assert joined["rows"][0] == {"selector": "start", "n": 200_000}
+    with pytest.raises(ValueError, match="ambiguous column name: label.*already carry.*r.output"):
+        evidence.query(store, "SELECT label FROM evidence JOIN runs USING (run_id)")
+
+
+def test_a_schema_4_store_gains_the_new_view_columns(store):
+    evidence.record(store, result(), language="python")
+    connection = sqlite3.connect(store)
+    connection.executescript(
+        "DROP VIEW last_run; DROP VIEW evidence; "
+        "CREATE VIEW evidence AS SELECT c.run_id, c.selector FROM captures c; "
+        "CREATE VIEW last_run AS SELECT * FROM evidence; PRAGMA user_version = 4;"
+    )
+    connection.close()
+    rows = evidence.query(store, "SELECT language FROM last_run")["rows"]
+    assert rows[0] == {"language": "python"}
