@@ -804,3 +804,35 @@ def test_describe_leaves_out_types_a_program_cannot_write(tmp_path, native_confi
         assert not any(
             unwritable.search(kind) for s in scopes for kind in s.get("types", {}).values()
         ), scopes
+
+
+def test_a_pointers_first_element_is_its_pointee(tmp_path, native_config, capsys):
+    # Eval 5 dry run: `values[0]` on `const int *values` said only "children: *values".
+    from peeky.cli import main
+
+    (tmp_path / "avg.c").write_text(
+        "#include <stdio.h>\n"
+        "static int sum(const int *values, int count) {\n"
+        "    int total = 0;\n"
+        "    for (int i = 0; i < count; i++) total += values[i];\n"
+        "    return total;\n"
+        "}\n"
+        "int main(void) {\n"
+        "    int values[3] = {-3, 1, 7};\n"
+        '    printf("%d\\n", sum(values, 3));\n'
+        "    return 0;\n"
+        "}\n"
+    )
+    probe = ["probe", str(tmp_path / "avg.c"), "--at", "5", "--json", "--no-save", "--quiet"]
+    assert main([*probe, "--capture", "values[0],values[1],count"]) == 0
+    rows = {row["selector"]: row for row in json.loads(capsys.readouterr().out)["rows"]}
+    assert rows["values[0]"]["value"] == "-3" and rows["count"]["value"] == "3"
+    assert "values is a pointer, which carries no length" in rows["values[1]"]["error"]
+    main(["session", "start", str(tmp_path / "avg.c"), "--at", "5"])
+    capsys.readouterr()
+    try:
+        assert main(["session", "get", "values"]) == 0
+        assert "values[0]: const int = -3" in capsys.readouterr().out
+    finally:
+        main(["session", "close"])
+        capsys.readouterr()

@@ -504,6 +504,9 @@ def _resolve(worker, stop, snapshot, segments):
             and (listed := java_list(variable, children))
         ):
             found = _list_element(worker, stop, *listed, int(segment[1:-1]), segment)
+        if found is None and segment == "[0]" and (pointee := _pointee(variable, children)):
+            # C and C++: p[0] is *p, the one element a pointer shows.
+            found = pointee
         if found is None and segment.startswith("[") and key is None:
             length = _declared_length(variable, children)
             if any(child["name"] == "more" for child in children) or (
@@ -694,7 +697,14 @@ def _absence(variable, segment, children):
             f"(children: {shown or 'none'})"
         )
         length = next((name for name in ("len", "length") if name in names), None)
-        if variable.get("view") == "memory":
+        if names == [f"*{variable['name']}"] and kind.rstrip().endswith("*"):
+            # A C/C++ pointer: the debugger knows what it points at, never how many.
+            message += (
+                f"; {variable['name']} is a pointer, which carries no length: "
+                f"{variable['name']}[0] reads what it points at; index the array where it "
+                "is declared (in the caller: `peeky session step --out`, or a probe there)"
+            )
+        elif variable.get("view") == "memory":
             if kind in _RUST_TEXT:
                 message += "; text read from memory is shown whole, not by element"
         elif _unread_rust(kind):
@@ -1090,6 +1100,15 @@ def _code(exc):
 _KEY_NAME = re.compile(_KEY_LITERAL)
 
 
+def _pointee(variable, children):
+    """The one child a C/C++ scalar pointer shows (`*values`), or None."""
+    kind = str(variable.get("type") or "").rstrip()
+    names = [child["name"] for child in children if child["name"] not in _GROUPS]
+    if kind.endswith("*") and names == [f"*{variable.get('name')}"]:
+        return next(child for child in children if child["name"] == names[0])
+    return None
+
+
 def _child_selector(parent, name):
     """The selector that reads child `name` of `parent`, or None if no path names it."""
     if _KEY_NAME.fullmatch(name):
@@ -1150,6 +1169,8 @@ def _children(worker, stop, selector, variable):
         if child.get("unavailable"):
             entry.update(unavailable=True, reason=child.get("reason"))
         path = _child_selector(selector, child["name"])
+        if path is None and _pointee(variable, page["variables"]) is child:
+            path = f"{selector}[0]"
         if path and (
             not path.endswith("]") or _genuine(child, page["variables"], path[-2] in "'\"")
         ):
