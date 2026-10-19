@@ -190,7 +190,7 @@ class PythonCandidate:
 
         files = size = 0
         staged, self.twins = None, []
-        self._folders, self._notes, self._checkouts = [], [], []
+        self._folders, self._notes, self._checkouts, separate = [], [], [], []
         self._source, self._destination = source, destination
 
         def link(target, original):
@@ -259,6 +259,8 @@ class PythonCandidate:
                     copied = os.path.relpath(destination / target.relative_to(source), folder)
                     (folder / name).write_text(f"gitdir: {copied}\n")
                     self._checkouts.append((folder, Path(here)))
+                    if ".git" not in target.relative_to(source).parts and target not in separate:
+                        separate.append(target)
                     status = os.stat(path)
                 elif path.is_symlink():
                     link(folder / name, path)
@@ -282,6 +284,18 @@ class PythonCandidate:
                         staged = folder / name
                     else:
                         self.twins.append(folder / name)
+        # A git directory a `.git` file names outside any `.git` (`gitdir: ./.bare`) was
+        # copied as files; it gets a repository's private copy instead.
+        for target in separate:
+            copy = destination / target.relative_to(source)
+            self._folders = [
+                (folder, status)
+                for folder, status in self._folders
+                if folder != copy and copy not in folder.parents
+            ]
+            _make_removable(copy)
+            shutil.rmtree(copy, ignore_errors=True)
+            self._repository(target, copy, ".git")
         if staged is None and len(self.twins) == 1:
             # The --at path as typed in another spelling: its one copy.
             staged, self.twins = self.twins[0], []
@@ -314,11 +328,11 @@ class PythonCandidate:
         for name in entries:
             (copy / name).symlink_to(original / name)
 
-    def _repository(self, original, copy):
+    def _repository(self, original, copy, kind=None):
         """A private whole copy of repository metadata, following its links (`git-new-
         workdir` links `refs` and `config` to another repository's); else left out with a
         note. Git's `core.worktree` inside the root is moved to the copy's."""
-        name = original.name
+        name = kind or original.name
         mark = len(self._folders)
         try:
             budget = [MAX_COPIED_FILES, MAX_COPIED_BYTES]
@@ -422,59 +436,39 @@ class PythonCandidate:
     def _finish_git(self):
         """For each checkout with a private git repository: the copy's index records the
         copied files' new identities (`git diff-index` would call every file changed),
-        and configuration the user's repository gets from a conditional include on its
-        path (`includeIf "gitdir:..."`) is included in the copy's."""
+        and a note says when its configuration differs from the user's (a conditional
+        include on the repository's path, `includeIf "gitdir:..."`)."""
         git = shutil.which("git")
         if git is None:
             return
-        scratch = Path(os.path.realpath(self.scratch))
         for copy, original in self._checkouts:
-            theirs, ours = _config_origins(git, original), _config_origins(git, copy)
-            if theirs is not None and ours is not None:
-                missing = [
-                    origin
-                    for origin in theirs
-                    if origin not in ours and not self._inside(Path(origin))
-                ]
-                extra = [
-                    origin
-                    for origin in ours
-                    if origin not in theirs and scratch not in Path(origin).parents
-                ]
-                if missing:
-                    gitdir = _git(git, copy, "rev-parse", "--absolute-git-dir")
-                    config = Path(gitdir.strip()) / "config" if gitdir else None
-                    if config is not None and config.is_file():
-                        includes = "".join(
-                            '[include]\n\tpath = "'
-                            + origin.replace("\\", "\\\\").replace('"', '\\"')
-                            + '"\n'
-                            for origin in missing
-                        )
-                        text = config.read_text(errors="surrogateescape")
-                        config.write_text(includes + text, errors="surrogateescape")
-                if extra:
-                    note = (
-                        "This Python candidate's copy of a git repository gets configuration "
-                        "yours does not (a conditional include matching the copy's path: "
-                        f"{', '.join(extra)}), so a program that reads git's configuration "
-                        "may see different values"
-                    )
-                    if note not in self._notes:
-                        self._notes.append(note)
+            theirs, ours = _config_values(git, original), _config_values(git, copy)
+            if theirs is not None and ours is not None and theirs != ours:
+                note = (
+                    "This Python candidate's copy of a git repository reads different git "
+                    "configuration than yours (a conditional include on the repository's "
+                    'path, `includeIf "gitdir:..."`, does not match the copy), so a program '
+                    "that reads git's configuration may see different values"
+                )
+                if note not in self._notes:
+                    self._notes.append(note)
             _git(git, copy, "-c", "core.fsmonitor=false", "update-index", "-q", "--refresh")
 
     def _redirect_imports(self):
         """The `PYTHONPATH` that puts the copy first wherever the interpreter would import
         from inside the root by another way than the script's directory: `PYTHONPATH`
-        entries, and an editable install's `.pth` path or finder mapping (`pip install
-        -e`, `uv sync`). Without it, `import pkg` would load the user's unedited module."""
+        entries (relative ones mean the user's root, the program's working directory),
+        and an editable install's `.pth` path or finder (`pip install -e`, `uv sync`).
+        Without it, `import pkg` would load the user's unedited module. Environment and
+        site directories are links to the user's files either way: never moved."""
         script = (
             "import json, sys\nmapped = []\nfor finder in sys.meta_path:\n"
             "    module = sys.modules.get(getattr(finder, '__module__', None) or '')\n"
-            "    mapping = getattr(module, 'MAPPING', None)\n"
-            "    if isinstance(mapping, dict):\n"
-            "        mapped += [v for v in mapping.values() if isinstance(v, str)]\n"
+            "    for table in (getattr(module, 'MAPPING', None),"
+            " getattr(finder, '_redirections', None)):\n"
+            "        if isinstance(table, dict):\n"
+            "            mapped += [[k, v] for k, v in table.items()"
+            " if isinstance(k, str) and isinstance(v, str)]\n"
             "print(json.dumps({'path': sys.path[1:], 'mapped': mapped}))\n"
         )
         try:
@@ -489,7 +483,7 @@ class PythonCandidate:
                 ).stdout
             )
             entries = [str(entry) for entry in found["path"]]
-            entries += [str(Path(mapped).parent) for mapped in found["mapped"]]
+            mapped = [(str(name), str(path)) for name, path in found["mapped"]]
         except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
             self._notes.append(
                 "This Python candidate could not list its interpreter's import paths, so if "
@@ -498,18 +492,64 @@ class PythonCandidate:
             )
             return None
 
-        def copied(entry):
-            if not os.path.isabs(entry):
-                return entry
+        def inside(entry):
+            """The copy of an absolute path inside the root, not in an environment."""
             real = Path(os.path.realpath(entry))
-            return str(self.root / real.relative_to(self._source)) if self._inside(real) else entry
+            if not self._inside(real):
+                return None
+            parts = real.relative_to(self._source).parts
+            if any(
+                part in _LINKED_DIRS or part in ("site-packages", "dist-packages") for part in parts
+            ):
+                return None
+            return str(self.root / real.relative_to(self._source))
 
-        given = [entry for entry in os.environ.get("PYTHONPATH", "").split(os.pathsep) if entry]
-        redirected = [copied(entry) for entry in given]
+        def given_entry(entry):
+            if not entry:
+                return entry  # The working directory: the copy's root, as the user's root.
+            absolute = entry if os.path.isabs(entry) else os.path.join(self._source, entry)
+            moved = inside(absolute)
+            if moved is not None:
+                return moved
+            return entry if os.path.isabs(entry) else os.path.realpath(absolute)
+
+        raw = os.environ.get("PYTHONPATH", "")
+        given = raw.split(os.pathsep) if raw else []
+        redirected = [given_entry(entry) for entry in given]
+        later = []
         for entry in entries:
-            if os.path.isabs(entry) and (moved := copied(entry)) != entry:
-                if moved not in redirected:
-                    redirected.append(moved)
+            if os.path.isabs(entry) and (moved := inside(entry)) is not None:
+                later.append(moved)
+        for name, path in mapped:
+            module = Path(path).parent if Path(path).name == "__init__.py" else Path(path)
+            real = Path(os.path.realpath(module))
+            if not self._inside(real):
+                continue
+            moved = inside(real.parent) if name in (real.name, real.stem) else None
+            if moved is None:
+                self._notes.append(
+                    f"This Python candidate cannot move an editable install's `{name}` (it "
+                    f"maps to {module}) to the copy, so `import {name}` loads your unedited "
+                    "module; check the edit with `peeky verify`"
+                )
+                continue
+            later.append(moved)
+        for moved in later:
+            if moved in redirected:
+                continue
+            redirected.append(moved)
+            # On the user's path these come after the standard library; here before it.
+            names = {
+                entry.stem if entry.suffix == ".py" else entry.name
+                for entry in Path(moved).iterdir()
+            } & set(getattr(sys, "stdlib_module_names", ()))
+            if names:
+                self._notes.append(
+                    f"This Python candidate puts {moved} ahead of the standard library on "
+                    f"the import path (yours has it later), and it holds {', '.join(sorted(names))}, "
+                    "which the standard library has too: an import of those may load another "
+                    "module than in your run"
+                )
         return os.pathsep.join(redirected) if redirected != given else None
 
     def __getattr__(self, name):
@@ -613,18 +653,17 @@ def _git_config(git, config, *args):
     return None
 
 
-def _config_origins(git, where):
-    """The files git's configuration comes from in ``where``, resolved, or None."""
-    listed = _git(git, where, "config", "--list", "--show-origin", "-z")
+def _config_values(git, where):
+    """Git's configuration entries in ``where``, but `core.worktree` (the copy's is moved),
+    or None."""
+    listed = _git(git, where, "config", "--list", "-z")
     if listed is None:
         return None
-    origins = []
-    for origin in listed.split("\0")[0::2]:
-        if origin.startswith("file:"):
-            path = os.path.realpath(os.path.join(where, origin[5:]))
-            if path not in origins:
-                origins.append(path)
-    return origins
+    return [
+        entry
+        for entry in listed.split("\0")
+        if entry and entry.split("\n", 1)[0].lower() != "core.worktree"
+    ]
 
 
 def _repository_above(root):

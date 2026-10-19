@@ -631,12 +631,19 @@ def test_a_python_candidate_never_writes_the_user_s_repository(tmp_path, capsys,
     assert code == 0, result.get("error")
     changed, marker, status, remotes, staged, described = (row["value"] for row in result["rows"])
     # Verification of #109: the copy's index had the user's files' identities, so `git
-    # diff-files` called every file changed; an `includeIf "gitdir:"` stopped matching.
-    assert changed == "'app.py'" and marker == "'yes'", result["rows"]
+    # diff-files` called every file changed. An `includeIf "gitdir:"` cannot match the
+    # copy's path: the note says the configuration differs.
+    assert changed == "'app.py'" and marker == "''", result["rows"]
     assert status == "'M app.py'", status
     assert "origin/objects/y" in remotes and "origin/lfs/z" in remotes, remotes
     assert "app.py" in staged and described.endswith("-dirty'"), result["rows"]
-    assert not result.get("warnings"), result["warnings"]
+    assert len(result["warnings"]) == 1 and "includeIf" in result["warnings"][0], result
+
+    # Without the conditional include, nothing differs and nothing is noted.
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+    code = main([*probe, *capture, "--old", "acc = 1", "--new", "acc = 3"])
+    result = json.loads(capsys.readouterr().out)
+    assert code == 0 and not result.get("warnings"), result
     assert snapshot(proj / ".git") == before
     assert git_in(proj, "status", "--porcelain") == ""
     assert (proj / ".pytest_cache" / "marker").read_text() == "user's"
@@ -748,6 +755,19 @@ def test_a_python_candidate_keeps_other_git_layouts_private(tmp_path, capsys, mo
     candidate(main_repository, at="repair.py", line=5)
     assert {path: path.read_text() for path in pointers} == pointers
     assert git_in(tmp_path / "linked-worktree", "status", "--porcelain") == ""
+    # A bare repository beside its worktrees (`.git` says `gitdir: ./.bare`): its
+    # `worktrees/*/gitdir` named the user's worktrees too.
+    bare = tmp_path / "bare-layout"
+    bare.mkdir()
+    git_in(main_repository, "clone", "-q", "--bare", str(main_repository), str(bare / ".bare"))
+    (bare / ".git").write_text("gitdir: ./.bare\n")
+    (bare / "pyproject.toml").write_text("")
+    git_in(bare, "worktree", "add", "-q", str(bare / "main"), "main")
+    (bare / "main" / "repair.py").write_text((main_repository / "repair.py").read_text())
+    before = (bare / "main" / ".git").read_text()
+    candidate(bare, at="main/repair.py", line=5)
+    assert (bare / "main" / ".git").read_text() == before
+    assert git_in(bare / "main", "status", "--porcelain") == "?? repair.py\n"
     # A package inside a repository: the copy has no repository, which the note says.
     package = main_repository / "pkg"
     package.mkdir()
@@ -799,22 +819,54 @@ def test_a_python_candidate_redirects_an_editable_finder(tmp_path, monkeypatch):
     (proj / "pyproject.toml").write_text("")
     (proj / "tools").mkdir()
     (proj / "tools" / "run.py").write_text("x = 1\n")
+    (proj / "lib").mkdir()
+    (proj / ".venv" / "lib" / "site-packages").mkdir(parents=True)
+    (proj / "shadow").mkdir()
+    (proj / "shadow" / "json.py").write_text("")
     interpreter = tmp_path / "python"
-    reply = json.dumps({"path": ["/usr/lib/python3"], "mapped": [str(proj / "pkg")]})
-    interpreter.write_text(f"#!/bin/sh\necho '{reply}'\n")
-    interpreter.chmod(0o755)
-    monkeypatch.delenv("PYTHONPATH", raising=False)
-    candidate = PythonCandidate(
-        PythonAdapter(str(interpreter)),
-        proj / "tools" / "run.py",
-        proj,
-        SourceEdit("tools/run.py", "x = 1", "x = 2"),
-    )
-    try:
-        launch = candidate.launch_args(proj / "tools" / "run.py", proj)
-        assert launch["env"]["PYTHONPATH"] == str(candidate.root), launch
-    finally:
-        candidate.close()
+
+    def candidate(path, mapped, pythonpath=None):
+        reply = json.dumps({"path": path, "mapped": mapped})
+        interpreter.write_text(f"#!/bin/sh\ncat <<'EOF'\n{reply}\nEOF\n")
+        interpreter.chmod(0o755)
+        if pythonpath is None:
+            monkeypatch.delenv("PYTHONPATH", raising=False)
+        else:
+            monkeypatch.setenv("PYTHONPATH", pythonpath)
+        made = PythonCandidate(
+            PythonAdapter(str(interpreter)),
+            proj / "tools" / "run.py",
+            proj,
+            SourceEdit("tools/run.py", "x = 1", "x = 2"),
+        )
+        try:
+            launch = made.launch_args(proj / "tools" / "run.py", proj)
+            return made.root, launch.get("env", {}).get("PYTHONPATH"), made.warnings
+        finally:
+            made.close()
+
+    # setuptools' finder (`MAPPING`) and hatchling's exact mode (`_redirections`).
+    for mapped in ([["pkg", str(proj / "pkg")]], [["pkg", str(proj / "pkg" / "__init__.py")]]):
+        root, pythonpath, _ = candidate(["/usr/lib/python3"], mapped)
+        assert pythonpath == str(root), (mapped, pythonpath)
+    # Verification of #109: a package mapped to a directory of another name (`package-dir
+    # = {pkga = "lib"}`) cannot be moved by its parent: a note, not a wrong redirect.
+    root, pythonpath, warnings = candidate([], [["pkga", str(proj / "lib")]])
+    assert pythonpath is None and any("`pkga`" in w for w in warnings), warnings
+    # An environment inside the root is never moved ahead of the standard library.
+    root, pythonpath, _ = candidate([str(proj / ".venv" / "lib" / "site-packages")], [])
+    assert pythonpath is None, pythonpath
+    # A moved directory holding a standard library name is noted.
+    root, pythonpath, warnings = candidate([str(proj / "shadow")], [])
+    assert pythonpath == str(root / "shadow") and any("json" in w for w in warnings), warnings
+    # Relative entries mean the user's root (the program's working directory), and an
+    # empty one the working directory itself.
+    root, pythonpath, _ = candidate([], [], pythonpath=f":../shared:{proj / 'lib'}")
+    assert pythonpath.split(os.pathsep) == [
+        "",
+        os.path.realpath(tmp_path / "shared"),
+        str(root / "lib"),
+    ], pythonpath
 
 
 def test_a_hard_linked_name_of_the_edited_file_keeps_its_own_directory(
