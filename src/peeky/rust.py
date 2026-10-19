@@ -413,11 +413,7 @@ class RustTarget:
             "rust_version": self.rust_version,
             "rustflags": self.rustflags,
             "profile": self.profile,
-            **(
-                {"mir_wrapper_sha256": hashlib.sha256(MIR_WRAPPER.encode()).hexdigest()}
-                if self.opt_level == "0"
-                else {}
-            ),
+            "mir_wrapper_sha256": hashlib.sha256(MIR_WRAPPER.encode()).hexdigest(),
         }
 
     @property
@@ -567,16 +563,16 @@ class RustTarget:
         parent = Path(tempfile.mkdtemp(prefix="peeky-rust-")).resolve()
         try:
             assert_cargo_ancestry_clear(parent)
-            if self.opt_level == "0":
-                # Outside the workspace, in Peeky's own directory; checked before every
-                # command (validate_workspace).
-                wrapper, wrapper_text = mir_wrapper(parent)
-                environment = {
-                    **environment,
-                    "RUSTC_WORKSPACE_WRAPPER": str(wrapper),
-                    "PEEKY_MIR_CRATE": crate,
-                }
-                artifacts += (ArtifactSpec(MIR_DIR, "directory", "rust-mir"),)
+            # Outside the workspace, in Peeky's own directory; checked before every
+            # command (validate_workspace). Optimized builds have it too: their bindings'
+            # types decide what a Box is (#111), though nothing there is ever proven.
+            wrapper, wrapper_text = mir_wrapper(parent)
+            environment = {
+                **environment,
+                "RUSTC_WORKSPACE_WRAPPER": str(wrapper),
+                "PEEKY_MIR_CRATE": crate,
+            }
+            artifacts += (ArtifactSpec(MIR_DIR, "directory", "rust-mir"),)
             recipe = BuildRecipe(
                 "rust",
                 cargo_inputs.inputs,
@@ -734,7 +730,9 @@ RUST_INTEGERS = frozenset(
 
 
 def _frame_hash(frame):
-    return re.search(r"::(h[0-9a-f]{16})$", str((frame or {}).get("name") or ""))
+    # lldb-dap marks an optimized frame's name ` [opt]` (macOS).
+    name = re.sub(r"\s*\[opt\]$", "", str((frame or {}).get("name") or ""))
+    return re.search(r"::(h[0-9a-f]{16})$", name)
 
 
 def _holds_data_pointers(kind):
@@ -912,8 +910,13 @@ class RustSession(NativeSession):
             "initCommands": ["settings set target.load-script-from-symbol-file false"],
         }
 
+    def _optimized(self):
+        return getattr(getattr(self, "target", None), "opt_level", "0") != "0"
+
     def settable(self, variable, frame=None):
         """A Rust integer local the program keeps in memory (see validate_mutation_target)."""
+        if self._optimized():
+            return False
         if variable.get("type") not in RUST_INTEGERS or not _writable_integer(variable):
             return False
         hashed = _frame_hash(frame)
@@ -930,6 +933,13 @@ class RustSession(NativeSession):
     def validate_mutation_target(self, variable, frame):
         """Only a local the program keeps in memory can be changed with effect."""
         name = variable.get("name")
+        if self._optimized():
+            # Which locals stay in memory is read from an unoptimized build's IR.
+            raise ValueError(
+                f"Rust mutation needs an unoptimized build (opt-level 0): {name!r} may be "
+                "kept in a register there, and changing what the debugger shows would not "
+                "affect the program"
+            )
         hashed = _frame_hash(frame)
         if not hashed or self.memory.get((hashed[1], name)) is not True:
             where = display_function((frame or {}).get("name")) or "this frame"
@@ -960,15 +970,19 @@ class RustSession(NativeSession):
         line = (frame or {}).get("line")
         if (
             proof
+            and self.target.opt_level == "0"
             and type(line) is int
             and line > proof["line"]
             and (innermost or not proof["type"].startswith("&mut "))
         ):
             parameter = proof["type"]
         proofs = getattr(self, "owned", None)
+        # An optimized build's line table cannot place a proof (#13): nothing is proven.
+        unoptimized = self.target.opt_level == "0"
         owned = bool(
             hashed
             and innermost
+            and unoptimized
             and proofs is not None
             and (
                 variable.get("type") in OWNED_CONTAINERS
@@ -994,7 +1008,7 @@ class RustSession(NativeSession):
         )
         if container is not None:
             return container
-        if top and proofs is not None and self.target.opt_level == "0":
+        if top and proofs is not None:
             # An unmangled function (`#[no_mangle]`) has no hash: its bindings come from
             # the bodies on the stop line, and nothing there is ever proven.
             function = hashed[1] if hashed else None
@@ -1042,6 +1056,7 @@ class RustSession(NativeSession):
             pointer = _holds_data_pointers(kind)
             if (owning or (pointer and not plain)) and not (
                 innermost
+                and unoptimized
                 and hashed
                 and proofs.proven(
                     hashed[1],

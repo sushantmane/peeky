@@ -1294,3 +1294,86 @@ def test_describe_reads_a_unit_full_of_std_generics(plain, capsys):
     merge = next(s for s in manifest["scopes"] if s["scope"] == "chars::merge")
     assert {"out", "s", "sorted", "spans"} <= set(merge["names"])
     assert merge["types"]["spans"] == "&[chars::Span]"
+
+
+OPTIMIZED_BOX = """#[derive(Debug)]
+pub struct Pt {
+    x: i64,
+    y: i64,
+}
+
+#[inline(never)]
+fn churn() -> i64 {
+    Box::leak(Box::new(Pt { x: 777, y: 888 })).x
+}
+
+#[inline(never)]
+fn work(q: &Pt) -> i64 {
+    let b = Box::new(Pt { x: 1, y: 2 });
+    let keep = std::hint::black_box(&b).x;
+    drop(b);
+    let r = std::hint::black_box(q);
+    let k = churn();
+    std::hint::black_box(keep + k + r.x) // OPTIMIZED
+}
+
+fn main() {
+    let q = Pt { x: 41, y: 0 };
+    println!("{}", work(&q));
+    let b = std::hint::black_box(&q);
+    let k0 = b.x;
+    let c = move || {
+        let b = Box::new(Pt { x: 5, y: 6 });
+        let s = std::hint::black_box(&b).x;
+        drop(b);
+        let k = churn();
+        std::hint::black_box(s + k) // CLOSURE_BOX
+    };
+    let d = |r: &Pt| {
+        let r2 = std::hint::black_box(r);
+        r2.x + 1 // CLOSURE_REF
+    };
+    println!("{}", std::hint::black_box(c)() + k0 + d(&q));
+}
+"""
+
+
+@pytest.mark.timeout(300)
+def test_an_optimized_build_never_reads_a_box(plain):
+    # #111: optimized builds skipped the Box gate, so a dropped Box read freed memory
+    # (`b.x` 777). Their MIR now says what each binding is; nothing is ever proven
+    # there, so a Box shows only its pointer and a reference reads.
+    from peeky.probe import Probe, run_probe
+    from peeky.rust import RustTarget
+
+    (plain / "src/main.rs").write_text(OPTIMIZED_BOX)
+    target = RustTarget(
+        sources=("src/main.rs",),
+        tests=(),
+        cargo=os.environ["PEEKY_RUST_CARGO"],
+        rustc=os.environ["PEEKY_RUST_RUSTC"],
+        adapter=os.environ["PEEKY_RUST_DAP"],
+        dwarfdump=os.environ["PEEKY_RUST_DWARFDUMP"],
+        linker=os.environ["PEEKY_RUST_LINKER"],
+        dsymutil=os.environ.get("PEEKY_RUST_DSYMUTIL"),
+        sysroot=os.environ.get("PEEKY_RUST_SYSROOT"),
+        opt_level="1",
+    )
+    line = line_of(OPTIMIZED_BOX, "// OPTIMIZED")
+    result = run_probe(plain, Probe("src/main.rs", line, ("b", "b.x", "r.x")), adapter=target)
+    assert result["status"] == "completed", result.get("error")
+    rows = {row["selector"]: row for row in result["rows"]}
+    assert "777" not in str(rows["b.x"].get("value")), rows
+    assert rows["b"].get("view") == "unproven" or rows["b"].get("unavailable"), rows
+    assert rows["r.x"].get("value") in ("41", None), rows
+    # lldb-dap names optimized frames `... [opt]` (macOS), which hid a closure's shape:
+    # its Box was judged by `main`'s `b: &Pt` and read, and its reference was hidden.
+    line = line_of(OPTIMIZED_BOX, "// CLOSURE_BOX")
+    result = run_probe(plain, Probe("src/main.rs", line, ("b", "b.x")), adapter=target)
+    rows = {row["selector"]: row for row in result["rows"]}
+    assert rows["b"].get("view") == "unproven" or rows["b"].get("unavailable"), rows
+    assert "value" not in rows["b.x"], rows
+    line = line_of(OPTIMIZED_BOX, "// CLOSURE_REF")
+    result = run_probe(plain, Probe("src/main.rs", line, ("r2.x",)), adapter=target)
+    assert result["rows"][0].get("value") in ("41", None), result["rows"]
+    assert "view" not in result["rows"][0], result["rows"]
