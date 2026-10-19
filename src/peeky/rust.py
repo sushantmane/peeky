@@ -1014,6 +1014,7 @@ class RustSession(NativeSession):
                             str((frame or {}).get("name") or ""),
                         )
                     ),
+                    frame=(frame or {}).get("name"),
                 )
             )
             # An array is judged by its elements (`[&Pt; 2]` is plain, `[Box<Pt>; 2]` owns).

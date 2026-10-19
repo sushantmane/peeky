@@ -619,8 +619,9 @@ _UNPROVEN_RUST = (
     "this Rust Box (or a pointer the build's MIR does not identify) shows only its pointer: "
     "Peeky reads what it points at only where the build's MIR proves it initialized at the "
     "stop line, in the innermost frame. Here it may be moved or dropped, or the MIR cannot "
-    "say (a generic `T`, `Self` or `impl Trait`, an async body, a closure's capture), so its "
-    "pointer can reach freed memory (#101). A plain function's own local reads on a line "
+    "say (a generic `T`, `Self` or `impl Trait`, an async body, a closure's capture, an "
+    "unmangled `#[no_mangle]` function), so its pointer can reach freed memory (#101). A "
+    "plain function's own local reads on a line "
     "where it is live; otherwise capture what it holds where it is created"
 )
 _UNREAD_RUST = (

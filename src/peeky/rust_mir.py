@@ -316,6 +316,28 @@ class Body:
         return entry
 
 
+_CLOSURE_SEGMENT = re.compile(r"_?\{+closure(?:#[0-9]+)?\}+")
+
+
+def _shape(segments):
+    """(the nearest named function, how many closures deep) of a path's segments."""
+    depth = 0
+    for segment in reversed(segments):
+        if _CLOSURE_SEGMENT.fullmatch(segment):
+            depth += 1
+            continue
+        return segment, depth
+    return None, depth
+
+
+def frame_shape(name):
+    """The shape of lldb-dap's frame name (`vb::outer::{{closure}}::{{closure}}`, or
+    escaped `_$u7b$$u7b$closure$u7d$$u7d$`, with a legacy hash or not)."""
+    text = str(name or "").replace("$u7b$", "{").replace("$u7d$", "}")
+    text = re.sub(r"::h[0-9a-f]{16}$", "", text)
+    return _shape(_segments(text))
+
+
 def _segments(path):
     """`<impl at src/a.rs:2:1: 2:11>::push` -> ['<impl at ...>', 'push']."""
     parts, depth, current = [], 0, ""
@@ -739,18 +761,19 @@ class OwnedLocals:
         local = self._local(body, variable_name, line, path) if body is not None else None
         return None if local is None else body.types.get(local)
 
-    def binding_types(self, hashed, variable_name, path=None, line=None, closure=None):
+    def binding_types(self, hashed, variable_name, path=None, line=None, closure=None, frame=None):
         """The MIR type of every binding lldb-dap could be showing as ``variable_name``
         (None for one whose type is not written out), in the frame's body. An async
-        body is never matched for proofs; its types come from the bodies with a span on
-        the stop line. Empty when no body binds the name."""
+        body or an unmangled function is never matched for proofs; its types come from
+        the bodies whose code covers the stop line, of the frame's own shape when one
+        is (``frame``, lldb-dap's name: `outer::{{closure}}::{{closure}}` is the MIR's
+        `outer::{closure#0}::{closure#0}`). Empty when no body binds the name."""
         name, at, declared = str(variable_name).partition(" @ ")
         body = self.body(hashed)
         shown = str(path or "").replace("\\", "/")
-        bodies = (
-            [body]
-            if body is not None
-            else [
+        bodies = [body] if body is not None else []
+        if body is None:
+            bodies = [
                 candidate
                 for candidate in self.bodies
                 # A span covering the line counts, not only one starting there (`K\n.get()`
@@ -761,7 +784,11 @@ class OwnedLocals:
                 # captures of the frame's names: only bodies of the frame's kind count.
                 and (closure is None or candidate.name.startswith("{closure") == closure)
             ]
-        )
+            # An outer async body's spans cover its nested `async { }` block's lines too
+            # (the coroutine's construction): the frame's own shape picks among them.
+            wanted = frame_shape(frame) if frame else None
+            shaped = [c for c in bodies if wanted and _shape(_segments(c.path)) == wanted]
+            bodies = shaped or bodies
         found = []
         for candidate in bodies:
             # Only the bindings in scope on the stop line: a name `println!` or a sibling

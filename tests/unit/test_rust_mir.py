@@ -9,6 +9,7 @@ from peeky.rust_mir import (
     IrFunction,
     OwnedLocals,
     _segments,
+    frame_shape,
     ir_functions,
     may_invoke_macro,
     parse_body,
@@ -761,3 +762,17 @@ def test_a_statement_s_scope_counts_on_every_line_of_its_span():
     assert 2 in body.line_scopes[("src/main.rs", 15)]
     assert 3 in body.line_scopes[("src/main.rs", 20)]
     assert ("src/main.rs", 22) not in body.line_scopes
+
+
+@pytest.mark.parametrize(
+    "frame, shape",
+    [
+        ("vb::outer::{{closure}}::{{closure}}", ("outer", 2)),
+        ("outer::_$u7b$$u7b$closure$u7d$$u7d$::h0123456789abcdef", ("outer", 1)),
+        ("exported", ("exported", 0)),
+    ],
+)
+def test_a_frame_s_shape_is_its_function_and_closure_depth(frame, shape):
+    # Verification of #103: a fallback frame (async, unmangled) takes the bodies of its
+    # own shape, not an enclosing body whose spans cover a nested block's lines.
+    assert frame_shape(frame) == shape

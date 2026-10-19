@@ -953,6 +953,25 @@ pub fn unmangled_chain(n: i64) -> i64 {
     r + helper2(&Pt { x: n, y: 0 })
 }
 
+async fn outer_async(items: &[Pt]) -> i64 {
+    let p = Box::new(Pt { x: 1, y: 2 });
+    let inner = async {
+        let p = &items[1];
+        p.x + 1 // NESTED_ASYNC
+    };
+    inner.await + p.x
+}
+
+fn run_async<F: std::future::Future>(future: F) -> F::Output {
+    let mut future = std::pin::pin!(future);
+    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+    loop {
+        if let std::task::Poll::Ready(value) = future.as_mut().poll(&mut cx) {
+            return value;
+        }
+    }
+}
+
 fn make() -> Box<dyn Debug> {
     Box::new(1u8)
 }
@@ -1030,6 +1049,7 @@ fn main() {
     println!("{} {} {} {}", run(&args), shadows(&pts, 1), param(&pts[1]), rebound_box(owned, &pts));
     println!("{} {}", macro_sibling(&pts[0], true), chain(&pts[0], true));
     println!("{} {}", iflet_elseif(&pts[1], None), unmangled_chain(4));
+    println!("{}", run_async(outer_async(&pts)));
     println!("{} {}", fat_params(Box::new(takes as fn(*const [u8])), Box::new(tables)), factories());
     println!("{} {} {:?} {} {}", a, b, r, closures(&[1, 2]), exported(&Pt { x: 10, y: 1 }, &[1, 2]));
 }
@@ -1143,6 +1163,12 @@ def test_generic_boxes_are_gated_and_non_owning_values_read(plain, capsys):
     at = f"src/main.rs:{line_of(BOX_GENERIC, '// CHAINED_EXPORT')}"
     code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "b", "--quiet")
     assert result["rows"][0].get("view") == "unproven", result["rows"]
+    # Verification of #103: the outer async body's spans cover the nested `async { }`
+    # block's lines, so its `p: Box<Pt>` hid the inner `p: &Pt`; the frame's own shape
+    # (`outer_async::{{closure}}::{{closure}}`) picks the body.
+    at = f"src/main.rs:{line_of(BOX_GENERIC, '// NESTED_ASYNC')}"
+    code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "p.x", "--quiet")
+    assert result["rows"][0].get("value") == "3", result["rows"]
     at = f"src/main.rs:{line_of(BOX_GENERIC, '// LIVE_ARRAY')}"
     code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "arr[0].x", "--quiet")
     assert result["rows"][0].get("value") == "1", result["rows"]
