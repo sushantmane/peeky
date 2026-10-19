@@ -283,13 +283,14 @@ def _class_metadata(data, shared=None, scopes=None):
 
 
 def _own_constructor_lines(scopes):
-    """A constructor without a body of its own (implicit, or an anonymous class's) ends
-    on its last field initializer: end it before the next method declared after it, so
-    it never spans methods between fields. Synthetic methods (a lambda) do not count."""
+    """A constructor without a body of its own (implicit, or an anonymous class's), and a
+    static initializer, end on their last field initializer: end them before the next
+    method declared after them, so they never span methods between fields. Synthetic
+    methods (a lambda) do not count."""
     starts = sorted(first for _, _, first, _, _, flags, _ in scopes if not flags & 0x1000)
     for index, (method, descriptor, first, last, names, flags, found) in enumerate(scopes):
         following = [start for start in starts if start > first]
-        if method == "<init>" and following:
+        if method in ("<init>", "<clinit>") and following:
             own = [line for line in found if line < following[0]]
             last = max(own) if own else last
         scopes[index] = (method, descriptor, first, last, names)

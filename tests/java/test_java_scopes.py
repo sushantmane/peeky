@@ -81,12 +81,14 @@ def test_classes_without_local_names_say_so(compiled):
 IMPLICIT = """package demo;
 public class H {
   int p = 1;
+  static int s = 7;
 
   int m() {
     return p;
   }
 
   int q = 2;
+  static int t = 8;
 
   Object anon() {
     return new Object() {
@@ -113,5 +115,7 @@ def test_an_implicit_constructor_never_spans_the_methods_between_fields(tmp_path
     )
     found = scopes(tmp_path / "out")
     assert found["H.<init>()V"][0] == [2, 3]
-    assert found["H$1.<init>(Ldemo/H;)V"][0] == [12, 13]
-    assert found["H.m()I"][0] == [6, 6]
+    # A static initializer too, between its static fields (review of #96).
+    assert found["H.<clinit>()V"][0] == [4, 4]
+    assert found["H$1.<init>(Ldemo/H;)V"][0] == [14, 15]
+    assert found["H.m()I"][0] == [7, 7]
