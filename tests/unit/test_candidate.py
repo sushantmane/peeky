@@ -966,6 +966,35 @@ def test_a_python_candidate_notes_an_import_hook_into_the_tree(tmp_path, monkeyp
     assert not any("`import app`" in w or "could not ask" in w for w in warnings), warnings
 
 
+def test_a_path_that_spells_the_root_otherwise_is_inside(tmp_path, monkeypatch):
+    # Verification of #109: one flag for "this volume ignores case" missed a
+    # case-sensitive volume mounted under a case-insensitive path (`/Volumes/ve24CS`
+    # named `/Volumes/ve24cs`). The root is now found among a path's directories by its
+    # identity, whatever spells it (here a second name for the same directory).
+    from peeky.adapters import PythonAdapter, PythonCandidate
+    from peeky.build import SourceEdit
+
+    proj = tmp_path / "proj"
+    (proj / "src").mkdir(parents=True)
+    (proj / "src" / "x.py").write_text("x = 1\n")
+    (proj / "pyproject.toml").write_text("")
+    other = tmp_path / "other-name"
+    other.symlink_to(proj, target_is_directory=True)
+    candidate = PythonCandidate(
+        PythonAdapter(sys.executable),
+        proj / "src" / "x.py",
+        proj,
+        SourceEdit("src/x.py", "x = 1", "x = 2"),
+    )
+    try:
+        assert candidate._within(other / "src" / "x.py") == Path("src/x.py")
+        assert candidate._within(other / "gone" / ".git") == Path("gone/.git")
+        assert candidate._within(other) == Path(".")
+        assert candidate._within(tmp_path / "elsewhere" / "x.py") is None
+    finally:
+        candidate.close()
+
+
 def test_the_import_check_never_runs_project_code(tmp_path, capsys, monkeypatch):
     # Verification of #109: `pkg.bak/` (a backup with its own `__init__.py`) and an --at
     # file named `app.v2.py` gave dotted names, and `find_spec("pkg.bak")` imported and

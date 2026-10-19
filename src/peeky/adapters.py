@@ -210,12 +210,8 @@ class PythonCandidate:
         staged, self.twins = None, []
         self._folders, self._notes, self._checkouts = [], [], []
         self._source, self._destination = source, destination
-        self._folded = [_fold(part) for part in source.parts]
-        swapped = Path(str(source).swapcase())
-        try:
-            self._folding = swapped != source and os.path.samefile(source, swapped)
-        except OSError:
-            self._folding = False
+        status = os.stat(source)
+        self._identity = (status.st_dev, status.st_ino)
 
         def link(target, original):
             real = Path(os.path.realpath(original))
@@ -330,20 +326,24 @@ class PythonCandidate:
         return self._within(real) is not None
 
     def _within(self, real):
-        """``real`` relative to the root, or None. On a volume that ignores case and
-        Unicode form (macOS), a path spelled differently (`/tmp/VE/Proj` typed, an
-        editable install's `/tmp/ve/proj` recorded) is inside too."""
+        """``real`` relative to the root, or None. A path that spells the root otherwise
+        is inside too when one of its directories is the root itself (by device and
+        inode): a volume that ignores case or Unicode form (macOS, `/tmp/VE/Proj` typed,
+        an editable install's `/tmp/ve/proj` recorded), or a case-sensitive volume
+        mounted under such a path (`/Volumes/Dev` named `/Volumes/dev`)."""
         real = Path(real)
         try:
             return real.relative_to(self._source)
         except ValueError:
             pass
-        if not self._folding:
-            return None
-        count = len(self._source.parts)
-        if [_fold(part) for part in real.parts[:count]] != self._folded:
-            return None
-        return Path(*real.parts[count:]) if len(real.parts) > count else Path(".")
+        for depth, ancestor in enumerate((real, *real.parents)):
+            try:
+                status = os.stat(ancestor)
+            except OSError:
+                continue  # `worktrees/*/gitdir` may name a path that no longer exists.
+            if (status.st_dev, status.st_ino) == self._identity:
+                return Path(*real.parts[len(real.parts) - depth :]) if depth else Path(".")
+        return None
 
     def _leave_out(self, path, what, reason):
         note = (
@@ -785,12 +785,6 @@ def _config_values(git, where):
         for entry in listed.split("\0")
         if entry and entry.split("\n", 1)[0].lower() != "core.worktree"
     ]
-
-
-def _fold(name):
-    import unicodedata
-
-    return unicodedata.normalize("NFC", name).casefold()
 
 
 def _is_git_directory(path):
