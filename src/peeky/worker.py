@@ -1993,15 +1993,20 @@ class DebugWorker:
                 self.inspection_nodes += 1
                 continue
             pending = getattr(self.runtime, "not_yet_declared", None) if not ancestry else None
-            if pending and (
-                reason := pending(
+            reason = (
+                pending(
                     variable,
                     frame,
                     innermost=frame.get("id") == self.innermost_frame,
                     stack=getattr(self, "listed_frames", None),
                     deeper=self.deeper_stack,
                 )
-            ):
+                if pending
+                else None
+            )
+            # A value shown though the runtime cannot vouch for it: a note on its row.
+            note = getattr(reason, "note", None)
+            if reason and note is None:
                 # Indeterminate here: never shown as a value, expanded or offered for set.
                 output = {
                     "name": name,
@@ -2031,6 +2036,7 @@ class DebugWorker:
                     and not self.optimized()
                     and self.has_memory_location(variable)
                     and bool(check(variable, frame))
+                    and not getattr(reason, "refuses", False)
                     and not (mid and mid(variable, frame, self.stop_reason))
                 )
             elif ancestry and (member := getattr(self.runtime, "member_settable", None)):
@@ -2082,6 +2088,8 @@ class DebugWorker:
                 output["unavailable"] = True
                 output["reason"] = output["value"][1:-1][:300]
                 output["value"] = None
+            elif isinstance(note, str):
+                output["note"] = note[:500]
             if kind is not None:
                 output["type"] = kind
             resolve = getattr(self.runtime, "typedef_kind", None)
