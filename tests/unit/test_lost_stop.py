@@ -609,3 +609,58 @@ def test_session_states_name_an_unreported_stop():
     assert "never reported" not in _state_text(state)
     text = _state_text({**state, "unreported_stop": unreported})
     assert "thread 'main' was seen paused at src/Demo.java:5" in text
+
+
+def guard(worker):
+    """One pause-guard tick, as if the poll interval passed since the last poll."""
+    worker.lost_stop_polled = 0.0
+    if worker.candidate:
+        worker.candidate["since"] -= worker_module.LOST_STOP_POLL_S
+    worker.guard_pause()
+
+
+def test_an_unattended_session_verifies_a_pending_breakpoint_and_fails_on_its_lost_stop(source):
+    # Review round 4: attaching to a suspend=y JVM, the breakpoint is pending at launch
+    # and verified only by a `breakpoint` event. With no client waiting, nothing took
+    # that event, so the guard never polled and the lost stop held the JVM.
+    worker = paused_worker(source, {7: at(source, 5)}, verified=False)
+    worker.max_pause = 3
+    dap = worker.dap
+    dap.add("breakpoint", reason="changed", breakpoint={"id": 1, "verified": True, "line": 5})
+    for _ in range(2):
+        guard(worker)
+        assert worker.state == "running" and worker.failed is None
+    assert worker.cursor == 1 and worker.breakpoint_events[0]["reason"] == "changed"
+    guard(worker)
+    assert worker.failed["error"] is LostStop and dap.closed == {"terminate": False}
+    with pytest.raises(LostStop):
+        worker.dispatch("wait", {"session_id": "session", "timeout": 1})
+
+
+@pytest.mark.parametrize("then", ["stopped", "terminated"])
+def test_draining_takes_only_the_breakpoint_events_before_a_stop_or_exit(source, then):
+    worker = paused_worker(source, {7: at(source, 5)}, verified=False)
+    dap = worker.dap
+    dap.add("breakpoint", reason="changed", breakpoint={"id": 1, "verified": True, "line": 5})
+    dap.add(then, **({"reason": "breakpoint", "threadId": 7} if then == "stopped" else {}))
+    dap.add("breakpoint", reason="changed", breakpoint={"id": 1, "verified": True, "line": 5})
+    worker.drain_breakpoint_events()
+    assert worker.cursor == 1 and worker.placed[str(source.resolve())][0]["verified"]
+    # The stop or exit is still the client's, and it still sees the update.
+    state = worker.dispatch("wait", {"session_id": "session", "timeout": 0.1})
+    assert state["state"] == then and worker.cursor == 2
+    assert state["breakpoint_events"] == [worker.breakpoint_events[0]]
+    if then == "stopped":
+        assert state["hit"] == 1
+
+
+def test_the_guard_leaves_a_reported_stop_and_what_follows_it_to_the_client(source):
+    worker = paused_worker(source, {7: at(source, 5)})
+    worker.max_pause = 10
+    worker.dap.add("stopped", reason="breakpoint", threadId=7)
+    worker.dap.add(
+        "breakpoint", reason="changed", breakpoint={"id": 1, "verified": True, "line": 5}
+    )
+    guard(worker)
+    assert worker.cursor == 0 and worker.state == "running" and not worker.breakpoint_events
+    assert worker.dispatch("wait", {"session_id": "session", "timeout": 0.1})["hit"] == 1

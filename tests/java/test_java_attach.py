@@ -654,3 +654,107 @@ def test_an_unpatched_adapters_dead_event_hub_ends_the_session_at_once(churning,
     # Detached: the JVM runs on, its breakpoint gone.
     output = process.stdout.read()
     assert process.wait(timeout=30) == 0 and "HIT:42" in output
+
+
+@pytest.mark.timeout(120)
+def test_an_unattended_session_fails_fast_on_a_lost_stop_at_a_breakpoint_pending_at_launch(
+    attached_loop, monkeypatch
+):
+    # Review round 4: attaching to a suspend=y JVM (Gradle's --debug-jvm), the breakpoint
+    # is pending until its class loads and is verified by a `breakpoint` event. With no
+    # client waiting, only the pause guard runs: it must still see the lost stop.
+    from peeky.worker import DebugWorker, LostStop
+
+    root, target, process, line = attached_loop
+    lost = lose_stops(monkeypatch, lambda body: True)
+    worker = DebugWorker(root, adapter=target)
+    try:
+        launch = {"program": LOOP_SOURCE, "breakpoints": [{"line": line}], "max_pause": 3}
+        started = worker.dispatch("launch", launch)
+        assert [point["verified"] for point in started["breakpoints"]] == [False]
+        began = time.monotonic()
+        while worker.failed is None and time.monotonic() - began < 20:
+            worker.guard_pause()
+            time.sleep(0.25)
+        assert worker.failed and worker.failed["error"] is LostStop and len(lost) == 1
+        assert time.monotonic() - began < 10
+        with pytest.raises(LostStop):
+            worker.dispatch("wait", {"session_id": started["session_id"], "timeout": 1})
+    finally:
+        worker.close()
+    # Detached: the JVM ran on.
+    output = process.stdout.read()
+    assert process.wait(timeout=30) == 0 and "TOTAL:12" in output
+
+
+@pytest.mark.timeout(120)
+def test_the_pause_guard_never_takes_a_stop_or_breakpoint_update_from_a_waiting_client(
+    attached_loop,
+):
+    # The guard drains `breakpoint` events and polls between a client's waits; the
+    # worker lock serializes them. Every stop still reaches the client, numbered.
+    import threading
+
+    from peeky.worker import DebugWorker
+
+    root, target, process, line = attached_loop
+    worker = DebugWorker(root, adapter=target)
+    stop = threading.Event()
+
+    def guard():
+        while not stop.is_set():
+            worker.guard_pause()
+            time.sleep(0.01)
+
+    try:
+        launch = {"program": LOOP_SOURCE, "breakpoints": [{"line": line}], "max_pause": 30}
+        session = {"session_id": worker.dispatch("launch", launch)["session_id"]}
+        ticking = threading.Thread(target=guard, daemon=True)
+        ticking.start()
+        hits, verified = [], False
+        while True:
+            state = wait_for(worker, session)
+            verified |= any(
+                update.get("breakpoint", {}).get("verified") is True
+                for update in state.get("breakpoint_events", [])
+            )
+            if state["state"] == "terminated":
+                break
+            hits.append((state["reason"], state["hit"]))
+            worker.dispatch("continue", {**session, "stop_id": state["stop_id"]})
+        assert hits == [("breakpoint", 1), ("breakpoint", 2), ("breakpoint", 3)] and verified
+        assert worker.failed is None and not worker.auto_resumed
+    finally:
+        stop.set()
+        worker.close()
+    output = process.stdout.read()
+    assert process.wait(timeout=30) == 0 and "TOTAL:12" in output
+
+
+@pytest.mark.timeout(120)
+def test_the_pause_guard_alone_ends_a_session_whose_event_thread_died(churning, monkeypatch):
+    # Review round 4: nothing noticed the dead event thread with no client waiting.
+    unpatched = os.environ.get("PEEKY_JAVA_ADAPTER_UNPATCHED")
+    if not unpatched:
+        pytest.skip("set PEEKY_JAVA_ADAPTER_UNPATCHED to a bundle built without the patch")
+    from dataclasses import replace
+
+    import peeky.java
+    from peeky.worker import DebugWorker, SessionFailed
+
+    monkeypatch.setattr(peeky.java, "JAVA_DEBUG_PATCHES", {})
+    root, target, process, line = churning
+    worker = DebugWorker(root, adapter=replace(target, bundle=Path(unpatched)))
+    launch = {"program": CHURN_SOURCE, "breakpoints": [{"line": line}], "max_pause": 3}
+    session = {"session_id": worker.dispatch("launch", launch)["session_id"]}
+    began = time.monotonic()
+    while worker.failed is None and time.monotonic() - began < 20:
+        worker.guard_pause()
+        time.sleep(0.25)
+    assert worker.failed and worker.failed["error"] is SessionFailed
+    assert time.monotonic() - began < 5 and worker.dap is None
+    with pytest.raises(SessionFailed, match="event thread died"):
+        worker.dispatch("wait", {**session, "timeout": 1})
+    assert worker.dispatch("report", session)["history"][-1]["operation"] == "adapter_failed"
+    output = process.stdout.read()
+    assert process.wait(timeout=30) == 0 and "HIT:42" in output

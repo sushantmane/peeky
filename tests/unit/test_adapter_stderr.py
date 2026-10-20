@@ -318,3 +318,27 @@ def test_close_never_leaves_a_reader_on_a_descriptor_a_descendant_still_holds():
         for pair in [*held, (read_end, write_end)]:
             for end in pair:
                 os.close(end)
+
+
+@pytest.mark.parametrize("max_pause", [None, 3])
+def test_the_pause_guard_closes_a_session_whose_event_thread_died(tmp_path, monkeypatch, max_pause):
+    # Review round 4: with no client waiting, nothing noticed the dead event thread.
+    closes = []
+    real = DAP.close
+    monkeypatch.setattr(
+        DAP, "close", lambda dap, terminate=True: closes.append(terminate) or real(dap, terminate)
+    )
+    (tmp_path / "Main.py").write_text("pass\n")
+    worker = DebugWorker(tmp_path, adapter=fake_java("attach"))
+    launch = {"program": "Main.py", "breakpoints": [{"line": 1}], "max_pause": max_pause}
+    session = {"session_id": worker.dispatch("launch", launch)["session_id"]}
+    began = time.monotonic()
+    while worker.failed is None and time.monotonic() - began < 5:
+        worker.guard_pause()
+        time.sleep(0.05)
+    assert time.monotonic() - began < 2 and closes == [False] and worker.dap is None
+    assert worker.failed["message"] == HUB_DIED
+    with pytest.raises(SessionFailed, match="event thread died"):
+        worker.dispatch("wait", {**session, "timeout": 1})
+    report = worker.dispatch("report", session)
+    assert report["state"] == "closed" and "EventHub.java:71" in report["debugger_events"]["stderr"]

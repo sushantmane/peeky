@@ -206,6 +206,9 @@ An hourly thread heartbeat (`continue-peeky-mvp`) checks for available usage and
     - **Patch check.** The patch is proven from the compiled class; a forged `adapter.json` record no longer passes.
     - **Stderr kept on failure.** The tail survives the event-thread error, in the probe result and the session's report.
     - **Scanning.** The pattern is found in overlong lines, split writes, a last line without a newline, and from an adapter that exits right after it.
+  - **Review round 4** (one older Medium, fixed). With no client waiting, the pause guard saw neither a lost stop nor a dead event thread when the breakpoint was pending at launch (a `suspend=y` attach, as with Gradle's `--debug-jvm`). Only `wait` took the `breakpoint` event that verifies such a breakpoint, and the guard never looked at `dap.fatal`.
+    - The guard now closes a session whose adapter is fatal first, with or without a pause budget. With no stop pending, it takes the `breakpoint` events that come before any stop or exit, never the stop or exit itself, before polling.
+    - Real-JDK tests: the review's repro now fails fast in about 7 s (it held the JVM for 15 s); the dead event thread ends the session in 0.5 s with the guard alone; a guard ticking every 10 ms beside a waiting client never takes its stops (hits 1, 2 and 3).
   - The first version (`7d3ad07`) served such a stop as recovered. Its adversarial review found wrong results (repros in the workspace's `work/vr27/`, outside the repository):
     - java-debug's class-load requests suspend every thread, so a breakpoint line that never ran (a thread blocked entering `synchronized`) was served as a hit;
     - its late-report bookkeeping turned lost step reports into hits, served stale stops, and could leave a thread suspended past `--max-pause`.

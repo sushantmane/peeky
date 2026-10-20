@@ -321,6 +321,31 @@ class DebugWorker:
                     point.get("verified") is True if "verified" in point else entry["verified"]
                 )
 
+    def take_breakpoint_event(self, event):
+        """Consume one DAP `breakpoint` event: kept for clients (`breakpoint_events`),
+        a moved own breakpoint's new line, and the placed breakpoint's verification."""
+        self.cursor = event["cursor"]
+        self.breakpoint_events.append(event.get("body", {}))
+        self.breakpoint_events = self.breakpoint_events[-100:]
+        moved = event.get("body", {}).get("breakpoint") or {}
+        if moved.get("id") in self.own_ids and type(moved.get("line")) is int:
+            self.own_lines.add(moved["line"])
+        self.note_breakpoint_update(event.get("body") or {})
+
+    def drain_breakpoint_events(self):
+        """Consume the `breakpoint` events that come before any stop or exit, and only
+        those: with no client waiting (the pause guard), a breakpoint that was pending
+        at launch is verified only by such an event. A stop or exit stays for `wait`;
+        the worker lock keeps this and a client's `wait` apart."""
+        while True:
+            try:
+                event = self.dap.wait_event({"stopped", "terminated", "breakpoint"}, self.cursor, 0)
+            except TimeoutError:
+                return
+            if event["event"] != "breakpoint":
+                return
+            self.take_breakpoint_event(event)
+
     def placed_breakpoint(self, frame):
         """The session's verified breakpoint (resolved source path, line) that a frame is
         exactly at, else None."""
@@ -609,14 +634,23 @@ class DebugWorker:
         closing the session (detaching an attached JVM) rather than leaving it paused.
         """
         with self.lock:
-            if not self.dap or not self.max_pause:
+            if not self.dap:
                 return
             try:
+                if fatal := getattr(self.dap, "fatal", None):
+                    # The adapter said it cannot go on (java-debug's event thread died,
+                    # #27): close now, keeping the failed session (abandon), whoever waits.
+                    raise RuntimeError(fatal)
+                if not self.max_pause:
+                    return
                 if self.state == "running":
                     pending = self.dap.pending_stop(self.cursor)
                     if pending is None:
                         # No reported stop; one whose report was lost (#27) is found by
                         # the same bounded poll `wait` uses, and then budgeted like any.
+                        # The poll needs a verified breakpoint, and a pending one is only
+                        # verified by a `breakpoint` event no client may be there to take.
+                        self.drain_breakpoint_events()
                         if not self.lost_stop_due():
                             return
                     elif pending[1] not in RESUMABLE_STOPS:
@@ -1223,13 +1257,8 @@ class DebugWorker:
                 self.cursor = event["cursor"]
                 if event["event"] != "breakpoint":
                     break
-                self.breakpoint_events.append(event.get("body", {}))
-                self.breakpoint_events = self.breakpoint_events[-100:]
+                self.take_breakpoint_event(event)
                 updates["breakpoint_events"] = list(self.breakpoint_events)
-                moved = event.get("body", {}).get("breakpoint") or {}
-                if moved.get("id") in self.own_ids and type(moved.get("line")) is int:
-                    self.own_lines.add(moved["line"])
-                self.note_breakpoint_update(event.get("body") or {})
                 if time.monotonic() >= deadline:
                     return {"state": self.state, "timed_out": True, **updates}
             # Rebuilt classes or edited sources while running invalidate the evidence.
