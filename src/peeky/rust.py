@@ -742,6 +742,28 @@ def _frame_hash(frame):
     return re.search(r"::(h[0-9a-f]{16})$", name)
 
 
+def _same_lent_rows(copies, variable, siblings, read):
+    """True if every row shown under the variable's name holds the same bytes, where
+    the MIR says they are an async body's parameter and its copies (``copies``: bytes,
+    rows; see OwnedLocals.lent_copies, #116): then each shows what the caller lent."""
+    if not copies:
+        return False
+    width, count = copies
+    rows = [row for row in siblings if row.get("name") == variable.get("name")]
+    if len(rows) != count or not any(row is variable for row in rows):
+        return False
+    shown = [str(row.get("value") or "") for row in rows]
+    if width == 8 and all(re.fullmatch(r"0x[0-9a-fA-F]{1,16}", value) for value in shown):
+        # A thin reference shows the pointer it holds, all of its bytes: so lldb-dap 18,
+        # which cannot read memory, can be told too.
+        return len({int(value, 16) for value in shown}) == 1
+    try:
+        held = {bytes(read(row.get("memoryReference"), width)) for row in rows}
+    except Exception:
+        return False
+    return len(held) == 1
+
+
 def _holds_data_pointers(kind):
     """Whether LLDB's type is a data pointer, or an array of them (`Pt *[2]`, which a
     `[Box<Pt>; 2]` is too): what a Box may be. A fn pointer (`long (*)(long)`, `long
@@ -960,7 +982,16 @@ class RustSession(NativeSession):
             )
 
     def view_variable(
-        self, variable, fetch, read=None, *, frame=None, top=False, innermost=False, stop=None
+        self,
+        variable,
+        fetch,
+        read=None,
+        *,
+        frame=None,
+        top=False,
+        innermost=False,
+        stop=None,
+        siblings=None,
     ):
         """Qualified views: containers read from memory, active enum variants; None
         leaves ordinary values unchanged.
@@ -1108,6 +1139,20 @@ class RustSession(NativeSession):
                 # stop anywhere in it. What cannot be told (a site or local not understood)
                 # reads as before.
                 gated = reference_valid() is False
+                if gated and siblings:
+                    gated = not _same_lent_rows(
+                        proofs.lent_copies(
+                            hashed[1],
+                            variable.get("name"),
+                            line,
+                            shown_path,
+                            breakpoint=stop == "breakpoint",
+                            column=(frame or {}).get("column"),
+                        ),
+                        variable,
+                        siblings,
+                        read,
+                    )
             if gated:
                 # #101: a moved or dropped Box still holds its pointer, and LLDB would
                 # read the freed allocation as its fields. The pointer is shown; what it

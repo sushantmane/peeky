@@ -2662,6 +2662,242 @@ def test_references_in_macro_twins_and_parameters_dropped_through_in_other_files
         assert variables[name].get("view") == "unproven", (marker, variables[name])
 
 
+UNMATCHED = """use std::future::Future;
+use std::pin::{Pin, pin};
+use std::task::{Context, Poll, Waker};
+
+#[derive(Debug, Clone, Copy)]
+pub struct Pt {
+    x: i64,
+    y: i64,
+}
+
+#[derive(Debug)]
+pub struct Res {
+    x: i64,
+}
+
+impl Drop for Res {
+    fn drop(&mut self) {
+        churn(); // M12_IN_DROP
+    }
+}
+
+#[inline(never)]
+fn churn() -> i64 {
+    Box::leak(Box::new(Pt { x: 777, y: 888 })).x + Box::leak(Box::new([777i64; 4]))[0]
+}
+
+#[inline(always)]
+fn grow(v: &mut Vec<Pt>) -> i64 {
+    let first = &v[0];
+    let k = first.x;
+    v.push(Pt { x: 3, y: 4 });
+    k + churn() // M12_INLINE
+}
+
+#[inline(always)]
+fn peek(v: &Vec<Pt>) -> i64 {
+    let first = &v[0];
+    let k = first.x;
+    k + churn() + first.y // M12_INLINE_LIVE
+}
+
+macro_rules! bump {
+    ($t:ident) => {
+        impl $t {
+            #[inline(always)]
+            fn bump(&self, v: &mut Vec<Pt>) -> i64 {
+                let first = &v[0];
+                let k = first.x;
+                v.push(Pt { x: 3, y: 4 });
+                k + churn() // M12_INLINE_TWIN
+            }
+        }
+    };
+}
+
+struct A;
+struct B;
+bump!(A);
+bump!(B);
+
+struct Yield(bool);
+
+impl Future for Yield {
+    type Output = ();
+    fn poll(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<()> {
+        if self.0 {
+            Poll::Ready(())
+        } else {
+            self.0 = true;
+            Poll::Pending
+        }
+    }
+}
+
+async fn plain(v: &mut Vec<Pt>) -> i64 {
+    let first = &v[0];
+    let k = first.x;
+    v.push(Pt { x: 3, y: 4 });
+    k + churn() // M12_ASYNC
+}
+
+async fn across(v: &mut Vec<Pt>) -> i64 {
+    let first = &v[0];
+    let k = first.x;
+    Yield(false).await;
+    v.push(Pt { x: 3, y: 4 });
+    k + churn() // M12_ACROSS
+}
+
+async fn kept(v: &mut Vec<Pt>) -> i64 {
+    let first = &v[0];
+    Yield(false).await;
+    let k = first.x;
+    v.push(Pt { x: 3, y: 4 });
+    k + churn() // M12_KEPT
+}
+
+async fn live(v: &Vec<Pt>) -> i64 {
+    let first = &v[0];
+    Yield(false).await;
+    let k = first.x;
+    k + churn() + first.y // M12_LIVE
+}
+
+async fn reset(v: &mut Vec<Res>, n: i64) -> i64 {
+    let k = v[0].x;
+    Yield(false).await;
+    *v = vec![Res { x: n }]; // M12_RESET
+    k
+}
+
+fn block_on<F: Future>(future: F) -> F::Output {
+    let mut future = pin!(future);
+    let mut cx = Context::from_waker(Waker::noop());
+    loop {
+        if let Poll::Ready(value) = future.as_mut().poll(&mut cx) {
+            return value;
+        }
+    }
+}
+
+fn main() {
+    let mut v = vec![Pt { x: 1, y: 2 }];
+    println!("{}", grow(&mut v));
+    println!("{}", peek(&v));
+    let mut w = vec![Pt { x: 1, y: 2 }];
+    println!("{}", A.bump(&mut w));
+    let mut u = vec![Pt { x: 1, y: 2 }];
+    println!("{}", B.bump(&mut u));
+    let mut a = vec![Pt { x: 1, y: 2 }];
+    println!("{}", block_on(plain(&mut a)));
+    let mut b = vec![Pt { x: 1, y: 2 }];
+    println!("{}", block_on(across(&mut b)));
+    let mut c = vec![Pt { x: 1, y: 2 }];
+    println!("{}", block_on(kept(&mut c)));
+    println!("{}", block_on(live(&c)));
+    let mut d = vec![Pt { x: 1, y: 2 }];
+    let n = block_on(async {
+        let first = &d[0];
+        let k = first.x;
+        d.push(Pt { x: 3, y: 4 });
+        k + churn() // M12_BLOCK
+    });
+    let grown = async |e: &mut Vec<Pt>| {
+        let first = &e[0];
+        Yield(false).await;
+        let k = first.x;
+        e.push(Pt { x: 3, y: 4 });
+        k + churn() // M12_CLOSURE
+    };
+    let mut f = vec![Pt { x: 1, y: 2 }];
+    println!("{} {}", n, block_on(grown(&mut f)));
+    let mut r = vec![Res { x: 5 }];
+    println!("{}", block_on(reset(&mut r, 9)));
+    std::mem::forget(r);
+}
+"""
+
+
+@pytest.mark.timeout(600)
+def test_references_in_inlined_frames_and_async_bodies(plain, capsys):
+    # #116: frames the proof did not match read references as before, freed memory too:
+    # an `#[inline(always)]` function's (no IR function of its own) and an async body's
+    # (a coroutine: debug info names it `{async_fn#0}`, its MIR `{closure#0}`).
+    (plain / "src/main.rs").write_text(UNMATCHED)
+    for marker, hits in (
+        ("M12_INLINE", 1),
+        # Methods a macro generates, inlined: not told apart, so their references are
+        # gated.
+        ("M12_INLINE_TWIN", 2),
+        ("M12_ASYNC", 1),
+        # Not kept across the `.await`: a later poll's frame holds whatever it held.
+        ("M12_ACROSS", 1),
+        # Kept in the coroutine's state, past its last use and a reallocating push.
+        ("M12_KEPT", 1),
+        ("M12_BLOCK", 1),
+        ("M12_CLOSURE", 1),
+    ):
+        at = f"src/main.rs:{line_of(UNMATCHED, '// ' + marker)}"
+        code, result = run(
+            capsys,
+            "probe",
+            str(plain),
+            "--at",
+            at,
+            "--capture",
+            "first",
+            "--hits",
+            str(hits),
+            "--quiet",
+        )
+        rows = result["rows"]
+        assert len(rows) == hits and all(row.get("view") == "unproven" for row in rows), (
+            marker,
+            rows,
+        )
+    # Still read: references used ahead, in an inlined frame and kept across an
+    # `.await`, and an inlined function's reference parameter.
+    for marker, capture, values in (
+        ("M12_INLINE_LIVE", "first.y,v.len", ["2", "2"]),
+        ("M12_LIVE", "first.y", ["2"]),
+    ):
+        at = f"src/main.rs:{line_of(UNMATCHED, '// ' + marker)}"
+        code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", capture, "--quiet")
+        assert [row.get("value") for row in result["rows"]] == values, (marker, result["rows"])
+    # An async fn's parameter shows twice (its state's field and the poll's copy, which
+    # a later poll never assigns): where both hold the same pointer, both read (as here,
+    # where each poll's frame is laid out alike), else neither.
+    at = f"src/main.rs:{line_of(UNMATCHED, '// M12_LIVE')}"
+    assert main(["session", "start", str(plain), "--at", at]) == 0
+    capsys.readouterr()
+    try:
+        assert main(["session", "inspect", "--json"]) == 0
+        snapshot = json.loads(capsys.readouterr().out)
+    finally:
+        main(["session", "close"])
+        capsys.readouterr()
+    rows = [v for scope in snapshot["scopes"] for v in scope["variables"]]
+    shown = [row for row in rows if row["name"].startswith("v @ ")]
+    views = {row.get("view") for row in shown}
+    same = len({row["value"] for row in shown}) == 1
+    assert len(shown) == 2 and views == ({None} if same else {"unproven"}), rows
+    # Between the drop and the store of `*v = new` after an `.await`, `v` (both rows)
+    # points at a dropped value.
+    variables = _stepped_out_to(
+        plain,
+        capsys,
+        f"src/main.rs:{line_of(UNMATCHED, '// M12_IN_DROP')}",
+        0,
+        line_of(UNMATCHED, "// M12_RESET"),
+    )
+    name = f"v @ main.rs:{line_of(UNMATCHED, 'async fn reset(')}"
+    assert variables[name].get("view") == "unproven", variables
+    assert variables[f"n @ main.rs:{line_of(UNMATCHED, 'async fn reset(')}"]["value"] == "9"
+
+
 GENERIC_SPANS = """macro_rules! square {
     ($x:expr) => {{
         let v = $x;

@@ -1479,6 +1479,8 @@ class DebugWorker:
                     top=not ancestry,
                     innermost=not ancestry and frame.get("id") == self.innermost_frame,
                     stop=self.stop_reason,
+                    # The scope's other variables: rows a debugger shows under one name.
+                    siblings=None if ancestry else variables,
                 )
                 if view_variable
                 else None
