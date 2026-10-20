@@ -21,9 +21,16 @@ assignments statement by statement from the block's entry state, which a must da
 over the whole CFG (unwind edges included) gives. A block whose code of the line no
 statement explains (other than a checked caller's result store at its start) must keep
 the local throughout. Anything not understood gives no proof: an unparsed statement or
-terminator, a coroutine, a debug binding through a projection, a name bound twice, a
-body that cannot be identified positively, an IR block of unknown origin, a stop in
-another file. Unsafe code that duplicates ownership (`ptr::read`) is outside the proof.
+terminator, a coroutine whose state is not understood, a debug binding through a
+projection, a name bound twice, a body that cannot be identified positively, an IR
+block of unknown origin, a stop in another file. Unsafe code that duplicates ownership
+(`ptr::read`) is outside the proof.
+
+A coroutine (an async body) is a body like any other once each local its state keeps
+across a suspension is renamed a local of its own, and each suspension flows into the
+block resuming it (#116). A function LLVM inlined everywhere (`#[inline(always)]`) has
+no IR of its own: its MIR body is found by the lines of its inlined copies, and every
+statement of the stop line is a place the stop can be.
 """
 
 import re
@@ -171,6 +178,16 @@ class Body:
     # {(file, line): the scopes of the statements with a span on that line}
     line_scopes: dict = field(default_factory=dict)
     inlined_scopes: set = field(default_factory=set)
+    # A coroutine's (#116): the local pointing at its state (`_34 = copy (_1.0: &mut
+    # {async fn body of f()})`; -1 if not found), the locals standing for what its state
+    # saves across a suspension (`(((*_34) as variant#3).0: &Pt)`), and {suspending
+    # block: the block resuming it}, which the dispatch at bb0 jumps to on a later poll.
+    coroutine: int | None = None
+    saved: frozenset = frozenset()
+    resumes: dict = field(default_factory=dict)
+    _lent_cache: frozenset | None = None
+    _written_fields: frozenset = frozenset()
+    _into: dict | None = None
     _assigned: dict | None = None
     _entry: dict | None = None
     _direct: set | None = None
@@ -361,6 +378,46 @@ class Body:
                     found.add((target, 0))
         return sorted(found)
 
+    def covering(self, line, file, foreign):
+        """The blocks holding code of ``line`` that no IR places (#116): with a statement
+        that emits code there (one starting on it, or a call spanning it: a method call's
+        code is on its name's line), or that spans another file where the line may
+        invoke a macro (``foreign``)."""
+        found = set()
+        for number, block in self.blocks.items():
+            for index, (text, spanned, spanned_line) in enumerate(block.statements):
+                if _NO_CODE.match(text) or spanned is None:
+                    continue
+                if spanned != file:
+                    if not foreign:
+                        continue
+                elif spanned_line != line:
+                    span = _span(block, index)
+                    if not (_call(block, index) and span and spanned_line < line <= span[1]):
+                        continue
+                found.add(number)
+                break
+        return found
+
+    def initialized_before(self, local, positions):
+        """True if ``local`` is initialized at each of ``positions`` ((block, index):
+        before that statement), following the dataflow into each block."""
+        if not self.supported or not positions:
+            return False
+        entry = self._dataflow()
+        if entry is None:
+            return False
+        bit = 1 << local
+        for number, index in positions:
+            state = entry.get(number)
+            if state is None or number not in self.blocks:
+                return False
+            for text, _, _ in self.blocks[number].statements[:index]:
+                state = self._transfer(text, state)
+            if not state & bit:
+                return False
+        return True
+
     def _sure(self, number, index, line, file, facts):
         """True if the IR shows code of statement ``index`` (a terminator) of block
         ``number`` on ``line``, at a column the statement can have: its own call (a
@@ -481,7 +538,9 @@ class Body:
                     ended = True
                     break
             if not ended:
-                pending.extend((successor, 0) for successor in block.successors)
+                # Through a suspension too: what it borrows stays borrowed while it is.
+                resumed = (self.resumes[number],) if number in self.resumes else ()
+                pending.extend((successor, 0) for successor in (*block.successors, *resumed))
         return False
 
     def used_before(self, local, start):
@@ -889,9 +948,76 @@ class Body:
             if not ended:
                 pending.extend(
                     (other, len(self.blocks[other].statements))
-                    for other in predecessors.get(number, ())
+                    for other in {*predecessors.get(number, ()), *self._flows_into(number)}
                 )
         return False
+
+    def _flows(self, number):
+        """The blocks control flows to from ``number``: a suspending block's flows to the
+        block resuming it, which the dispatch at bb0 jumps to only on a later poll."""
+        if number in self.resumes:
+            return (self.resumes[number],)
+        successors = self.blocks[number].successors
+        if number == 0 and self.resumes:
+            resumed = set(self.resumes.values())
+            return tuple(target for target in successors if target not in resumed)
+        return successors
+
+    def _flows_into(self, number):
+        """The blocks control flows into ``number`` from (``_flows``, reversed)."""
+        if self._into is None:
+            found = {}
+            for other in self.blocks:
+                for target in self._flows(other):
+                    found.setdefault(target, set()).add(other)
+            self._into = found
+        return self._into.get(number, ())
+
+    def _lent(self):
+        """A coroutine's locals that only ever hold what its caller lent it: an `async
+        fn`'s parameters, which its state keeps from the call (`_3 = move ((*_34).0:
+        &mut Vec<Pt>)`), and the poll's `&mut Context`."""
+        if self._lent_cache is None:
+            found = set()
+            if self.coroutine is not None:
+                state = self.coroutine
+                # A field written in the body (`((*_34).0: &Pt) = &b`, `&mut` to it) may
+                # hold what the body made, not what the caller lent.
+                assigned = re.compile(rf"^\(*\(\(\*_{state}\)\.([0-9]+): .* = ")
+                borrowed = re.compile(
+                    rf"&(?:mut |raw const |raw mut )\(*\(\(\*_{state}\)\.([0-9]+): "
+                )
+                written = set()
+                for block in self.blocks.values():
+                    for text, _, _ in block.statements:
+                        text = _STRING.sub('""', text)
+                        written.update(int(number) for number in borrowed.findall(text))
+                        if field := assigned.match(text):
+                            written.add(int(field[1]))
+                kept = re.compile(rf"(?:move|copy) \(\(\*_{state}\)\.([0-9]+): .+\)")
+                found = {
+                    local
+                    for local, values in self._assignments().items()
+                    if local != 2
+                    and all(
+                        (held := kept.fullmatch(value)) and int(held[1]) not in written
+                        for value in values
+                    )
+                }
+                # The poll's context: on resuming, rustc moves it out and back
+                # (`_32 = move _2; _2 = move _32;`), which leaves the same pointer.
+                assigned = self._assignments()
+                if re.fullmatch(
+                    r"&mut (?:(?:std|core)::task::)?Context<'_>", self.types.get(2, "")
+                ) and all(
+                    (back := re.fullmatch(r"move _([0-9]+)", value))
+                    and assigned.get(int(back[1])) == ["move _2"]
+                    for value in assigned.get(2, [])
+                ):
+                    found.add(2)
+                self._written_fields = frozenset(written)
+            self._lent_cache = frozenset(found)
+        return self._lent_cache
 
     def _dataflow(self):
         """{block: initialized-locals bitset on entry} for blocks reachable from bb0, by
@@ -907,11 +1033,13 @@ class Body:
                 self._entry = {}
                 return None
             reachable.add(number)
-            pending.extend(self.blocks[number].successors)
+            pending.extend(self._flows(number))
         # Each local's bit, and a pending bit per Box local above them (`_pending`).
         top = (1 << (2 * (1 + max(map(_max_local, self.blocks.values()), default=0)))) - 1
         entry = {number: top for number in reachable}
         entry[0] = _mask(self.arguments)
+        # Across a suspension, only what the state saves (and the next poll's arguments).
+        kept = _mask(self.saved | self.arguments)
         work = sorted(reachable, reverse=True)  # every block is processed at least once
         queued, steps = set(work), 0
         limit = max(MAX_ITERATIONS, STEPS_PER_BLOCK * len(reachable))
@@ -929,8 +1057,8 @@ class Body:
             # The terminator moves and drops on every edge; a call sets its result only
             # on its return edge.
             state = self._terminate(block.terminator, state)
-            for target in block.successors:
-                out = state
+            for target in self._flows(number):
+                out = state if number not in self.resumes else state & kept
                 if target == block.returns:
                     out |= 1 << int(_ASSIGN.match(block.terminator)[1])
                 merged = entry[target] & out
@@ -944,6 +1072,18 @@ class Body:
 
 
 _CLOSURE_SEGMENT = re.compile(r"_?\{+closure(?:#[0-9]+)?\}+")
+# What rustc's debug info names a coroutine by its kind; its MIR path says `{closure#N}`
+# with the same disambiguator (#116).
+_COROUTINE_NAME = re.compile(
+    r"\{(?:async_fn|async_block|async_closure|coroutine|gen_fn|gen_block|gen_closure"
+    r"|async_gen_fn|async_gen_block|async_gen_closure)#([0-9]+)\}"
+)
+
+
+def _mir_name(name):
+    """The MIR's name for an IR function named ``name``: `{async_fn#0}` -> `{closure#0}`."""
+    found = _COROUTINE_NAME.fullmatch(name)
+    return f"{{closure#{found[1]}}}" if found else name
 
 
 def _shape(segments):
@@ -1144,6 +1284,7 @@ def parse_body(text):
         return None
     arguments = frozenset(int(n) for n in _ARGUMENT.findall(header[2]))
     body = Body(header[1], arguments, None, {}, {})
+    lines, saved = _saved_locals(body, lines, start)
     # Arguments are typed in the header only (`fn f(_1: &[u8], _2: usize)`).
     for argument in _top_level(header[2]):
         if found := re.fullmatch(r"_([0-9]+): (.+)", argument):
@@ -1224,7 +1365,98 @@ def parse_body(text):
     if block is not None or not body.blocks or 0 not in body.blocks or body.file is None:
         body.supported = False
     body.lines = frozenset(number for file, number in spans if file == body.file)
+    if body.coroutine is not None and body.coroutine >= 0:
+        body.types.update(saved)
+        body.saved = frozenset(saved)
+        _suspensions(body)
     return body
+
+
+# `_34 = copy (_1.0: &mut {async fn body of f()})`: bb0 of a coroutine's body takes the
+# pointer to its state from its pinned `self`.
+_STATE = re.compile(r"^        _([0-9]+) = copy \(_1\.0: &mut \{.+\}\); +// ")
+
+
+def _saved_locals(body, lines, start):
+    """A coroutine's body (an `async fn`'s or block's, #116) keeps the locals it holds
+    across a suspension in its state, as fields of the suspension's variant (`(((*_34)
+    as variant#3).0: &Pt)`), which the debug info binds and the code reads and writes as
+    it would the local. Each is renamed a local of its own, numbered past the body's,
+    so that it is judged as one: (the lines renamed, {local: its type})."""
+    if not re.match(r"_1: (?:(?:std|core)::pin::)?Pin<&mut \{", _HEADER.match(lines[start])[2]):
+        return lines, {}
+    opened = next((i for i in range(start, len(lines)) if lines[i] == "    bb0: {"), None)
+    state = (
+        _STATE.match(lines[opened + 1]) if opened is not None and opened + 1 < len(lines) else None
+    )
+    if state is None:
+        # A coroutine whose state is not found: what it keeps is not followed.
+        body.coroutine, body.supported = -1, False
+        return lines, {}
+    body.coroutine = number = int(state[1])
+    place = re.compile(rf"\(\(\(\*_{number}\) as variant#([0-9]+)\)\.([0-9]+): ")
+    last = max((int(n) for line in lines[start:] for n in _MENTIONED.findall(line)), default=0)
+    named, saved, renamed = {}, {}, list(lines[: start + 1])
+    for line in lines[start + 1 :]:
+        for found in reversed(list(place.finditer(line))):
+            depth, end = 0, None
+            for index in range(found.start(), len(line)):
+                depth += {"(": 1, ")": -1}.get(line[index], 0)
+                if depth == 0:
+                    end = index
+                    break
+            if end is None:
+                body.supported = False
+                break
+            kind = line[found.end() : end]
+            key = (int(found[1]), int(found[2]))
+            if key not in named:
+                last += 1
+                named[key] = last
+            local = named[key]
+            if saved.setdefault(local, kind) != kind:
+                body.supported = False
+            line = f"{line[: found.start()]}_{local}{line[end + 1 :]}"
+        # Any other place in a variant of the state is not understood.
+        if f"(*_{number}) as variant#" in line:
+            body.supported = False
+        renamed.append(line)
+    return renamed, saved
+
+
+def _suspensions(body):
+    """Each block that suspends the coroutine (sets its state's variant to a suspension,
+    3 or more, and returns), with the block its dispatch resumes it at."""
+    entry = body.blocks.get(0)
+    state = body.coroutine
+    dispatch = re.fullmatch(
+        r"switchInt\(move _([0-9]+)\) -> \[(.*)\];", entry.terminator if entry else ""
+    )
+    texts = [text for text, _, _ in entry.statements] if entry else []
+    if (
+        dispatch is None
+        or len(texts) != 3
+        or texts[1] != f"_{dispatch[1]} = discriminant((*_{state}));"
+    ):
+        body.supported = False
+        return
+    targets = {
+        int(value): int(target)
+        for value, target in re.findall(r"\b([0-9]+): bb([0-9]+)", dispatch[2])
+    }
+    for number, block in body.blocks.items():
+        if block.terminator != "return;":
+            continue
+        texts = [text for text, _, _ in block.statements[:-1] if not _NO_CODE.match(text)]
+        found = re.fullmatch(
+            rf"discriminant\(\(\*_{state}\)\) = ([0-9]+);", texts[-1] if texts else ""
+        )
+        if found is None or int(found[1]) < 3:
+            continue
+        if int(found[1]) not in targets:
+            body.supported = False
+            return
+        body.resumes[number] = targets[int(found[1])]
 
 
 def _finish(block):
@@ -1296,6 +1528,14 @@ class IrFunction:
     # inlined (where their code's `inlinedAt` chain leaves this function).
     events: dict = field(default_factory=dict)
     inlined: dict = field(default_factory=dict)
+    # Lines LLVM inlined code of this function into other functions on (#116): a frame
+    # with this hash may be such a copy (`#[inline(always)]`), whose layout ``blocks``
+    # does not describe. ``inline_only``: it has no IR function of its own at all.
+    copies: frozenset = frozenset()
+    inline_only: bool = False
+    # The names of the namespaces it is in, outermost first (its crate's, then its
+    # modules', functions', closures'): `parent` is the last.
+    ancestors: tuple = ()
 
     def labeled(self):
         """MIR blocks that have an IR block of their own (`start` is bb0)."""
@@ -1385,6 +1625,23 @@ def ir_functions(path, files):
             elif kind:
                 pending = kind
     wanted = set(files)
+    # {subprogram: lines} of code LLVM inlined from each function into another, in the
+    # inlined function's own file (#116).
+    copies = {}
+    for _, _, blocks, _, _ in raw:
+        for refs in blocks.values():
+            for ref, _ in refs:
+                kind, location = meta.get(ref, (None, {}))
+                if kind != "DILocation" or "inlinedAt" not in location:
+                    continue
+                subprogram = _subprogram(meta, location.get("scope"))
+                number = int(location.get("line") or 0)
+                if (
+                    subprogram is not None
+                    and number > 0
+                    and _file(meta, location.get("scope")) == _file(meta, subprogram)
+                ):
+                    copies.setdefault(subprogram, set()).add(number)
     functions = {}
     for hashed, subprogram, blocks, preds, _ in raw:
         kind, fields = meta.get(subprogram, (None, {}))
@@ -1426,8 +1683,56 @@ def ir_functions(path, files):
             int(fields["line"]) if str(fields.get("line", "")).isdigit() else None,
             events,
             inlined,
+            frozenset(copies.get(subprogram, ())),
+            ancestors=_namespaces(meta, fields.get("scope")),
+        )
+    # A function LLVM inlined everywhere (`#[inline(always)]`, even at opt-level 0) has
+    # no IR function, yet its frames carry its own hash; its MIR body is the one before
+    # inlining.
+    for subprogram, lines in copies.items():
+        kind, fields = meta.get(subprogram, (None, {}))
+        hashed = _LEGACY_HASH.search(fields.get("linkageName") or "")
+        if kind != "DISubprogram" or hashed is None or hashed[1] in functions:
+            continue
+        file = _file(meta, subprogram)
+        if file not in wanted:
+            continue
+        functions[hashed[1]] = IrFunction(
+            re.sub(r"<.*>$", "", fields.get("name", "")),
+            meta.get(fields.get("scope"), (None, {}))[1].get("name"),
+            file,
+            {},
+            {},
+            int(fields["line"]) if str(fields.get("line", "")).isdigit() else None,
+            copies=frozenset(lines),
+            inline_only=True,
+            ancestors=_namespaces(meta, fields.get("scope")),
         )
     return functions
+
+
+def _namespaces(meta, scope):
+    """The names of the namespaces ``scope`` is in, outermost first."""
+    found = []
+    for _ in range(256):
+        kind, fields = meta.get(scope, (None, {}))
+        if kind not in ("DINamespace", "DICompositeType") or "name" not in fields:
+            break
+        found.append(fields["name"])
+        scope = fields.get("scope")
+    return tuple(reversed(found))
+
+
+def _subprogram(meta, scope):
+    """The DISubprogram a scope (a lexical block in it) belongs to, if any."""
+    for _ in range(256):
+        kind, fields = meta.get(scope, (None, {}))
+        if kind == "DISubprogram":
+            return scope
+        if kind not in ("DILexicalBlock", "DILexicalBlockFile"):
+            return None
+        scope = fields.get("scope")
+    return None
 
 
 def _call_site(meta, location):
@@ -1480,7 +1785,12 @@ class OwnedLocals:
             return self._matched[hashed]
         function = self.functions.get(hashed)
         found = None
-        if function is not None and function.lines():
+        # A function inlined everywhere has only the lines of its inlined copies (#116).
+        lines = (function.copies if function.inline_only else function.lines()) if function else ()
+        if lines:
+            # A coroutine's debug info names its kind (`{async_fn#0}`, `{async_block#1}`);
+            # its MIR names it as a closure, by the same disambiguator (#116).
+            name = _mir_name(function.name)
             # Positive identification, never by elimination: exactly one body of this
             # name and file (and parent) has a span on the line the function is declared
             # on. Twins a local macro generates share that line (the `fn` is in the
@@ -1489,12 +1799,8 @@ class OwnedLocals:
                 body
                 for body in self.bodies
                 if body.file == function.file
-                and body.name == function.name
-                and (
-                    body.parent is None
-                    or body.parent.startswith("<")
-                    or body.parent == function.parent
-                )
+                and body.name == name
+                and _same_path(body, function)
                 and function.line in body.lines
             ]
             if len(candidates) == 1:
@@ -1504,7 +1810,7 @@ class OwnedLocals:
                 # (macro-generated, one with cleanup on that line, one without).
                 foreign = any(
                     chosen not in owners
-                    for number in function.lines()
+                    for number in lines
                     if (owners := self._owners.get((function.file, number)))
                 )
                 if foreign or not function.labeled() <= set(candidates[0].blocks):
@@ -1513,13 +1819,24 @@ class OwnedLocals:
                         *candidates,
                         *(
                             self.bodies[index]
-                            for number in function.lines()
+                            for number in lines
                             for index in sorted(self._owners.get((function.file, number), ()))
-                            if self.bodies[index].name == function.name
+                            if self.bodies[index].name == name
                         ),
                     ]
+            elif not candidates and function.inline_only:
+                # Not identified, and no IR describes its code either: its borrowing
+                # bindings are those of the bodies it may be (#116).
+                self._unanalyzed[hashed] = [
+                    body for body in self.bodies if body.file == function.file and body.name == name
+                ]
             found = candidates[0] if len(candidates) == 1 else None
-            if found is not None and not _covered(found, function):
+            if found is not None and not (
+                found.supported and found._dataflow() is not None
+                if function.inline_only
+                # A coroutine whose state is not understood can hold anything (#116).
+                else (found.supported or found.coroutine is None) and _covered(found, function)
+            ):
                 # Identified, but its layout or dataflow is not understood.
                 self._unanalyzed[hashed] = [found]
                 found = None
@@ -1565,11 +1882,11 @@ class OwnedLocals:
 
     def binding_types(self, hashed, variable_name, path=None, line=None, closure=None, frame=None):
         """The MIR type of every binding lldb-dap could be showing as ``variable_name``
-        (None for one whose type is not written out), in the frame's body. An async
-        body or an unmangled function is never matched for proofs; its types come from
-        the bodies whose code covers the stop line, of the frame's own shape when one
-        is (``frame``, lldb-dap's name: `outer::{{closure}}::{{closure}}` is the MIR's
-        `outer::{closure#0}::{closure#0}`). Empty when no body binds the name."""
+        (None for one whose type is not written out), in the frame's body. A frame
+        whose body is not matched for proofs (an unmangled function) takes its types
+        from the bodies whose code covers the stop line, of the frame's own shape when
+        one is (``frame``, lldb-dap's name: `outer::{{closure}}::{{closure}}` is the
+        MIR's `outer::{closure#0}::{closure#0}`). Empty when no body binds the name."""
         name, at, declared = str(variable_name).partition(" @ ")
         body = self.body(hashed)
         shown = str(path or "").replace("\\", "/")
@@ -1665,14 +1982,24 @@ class OwnedLocals:
             bindings = body.in_scopes(bindings, self._visible(body, line, path))
             candidates = [b[0] for b in bindings]
             # A capture (`(*((*_1).0: &mut Holder))`) has no local of its own: what it
-            # points at is dropped through the environment it is reached by.
+            # points at is dropped through the environment it is reached by. A value a
+            # coroutine's state holds itself (`((*_34).1: i64)`, an `async fn`'s
+            # parameter) points nowhere unless its type borrows (#116).
             captures = [
                 int(root[1])
                 for b in bindings
                 if b[0] is None
-                and (root := _ANY_LOCAL.search(body.places.get((name, b[1], b[2], b[4]), "")))
+                and (place := body.places.get((name, b[1], b[2], b[4]), ""))
+                and (
+                    body.coroutine is None
+                    or place.startswith("(*(")
+                    or _BORROWING.search(b[3] or "&")
+                )
+                and (root := _ANY_LOCAL.search(place))
             ]
-        facts = self._facts(function, line, column) if breakpoint else None
+        # A breakpoint's place in the line comes from the IR function's layout, which an
+        # inlined copy of it (#116) need not share: then any place of the line counts.
+        facts = self._facts(function, line, column) if breakpoint and not function.copies else None
         if captures:
             positions = self._positions(site, line, facts)
             if any(
@@ -1685,6 +2012,53 @@ class OwnedLocals:
         if verdicts and all(verdict is True for verdict in verdicts):
             return True
         return None
+
+    def lent_copies(self, hashed, variable_name, line, path, breakpoint=False, column=None):
+        """For a name an `async fn`'s body binds twice to one parameter (#116): the
+        field its state keeps it in (`debug v => ((*_34).0: &Pt)`), which holds what the
+        caller lent for as long as the future lives, and the poll's own copy of it (`_3 =
+        copy ((*_34).0: &Pt)`), which a later poll leaves unassigned. lldb-dap shows both
+        under one name, and ``reference_valid`` is False when the copy is not proven. Then
+        (bytes each holds, how many bindings): where every row of the name holds the same
+        bytes, each shows what the caller lent. None where they are not just that."""
+        site = self._site(hashed, line, path)
+        if site is None or site[0].coroutine is None:
+            return None
+        body, function = site[0], site[1]
+        name, at, declared = str(variable_name).partition(" @ ")
+        bindings = body.bindings.get(name, [])
+        if at:
+            file, _, number = declared.rpartition(":")
+            bindings = [b for b in bindings if Path(b[1]).name == file and str(b[2]) == number]
+        bindings = body.in_scopes(bindings, self._visible(body, line, path))
+        fields = [b for b in bindings if b[0] is None]
+        copies = [b[0] for b in bindings if b[0] is not None]
+        if len(fields) != 1 or not copies:
+            return None
+        place = body.places.get((name, *fields[0][1:3], fields[0][4]), "")
+        found = re.fullmatch(rf"\(\(\*_{body.coroutine}\)\.([0-9]+): (&.+)\)", place)
+        lent = body._lent()
+        if found is None or int(found[1]) in body._written_fields or _RAW_POINTER.search(found[2]):
+            return None
+        facts = self._facts(function, line, column) if breakpoint and not function.copies else None
+        positions = self._positions(site, line, facts)
+        if not positions or any(
+            body.dropped_through(local, position)
+            for local in (body.coroutine, *copies)
+            for position in positions
+        ):
+            return None
+        for local in copies:
+            values = body._assignments().get(local, [])
+            if (
+                local not in lent
+                or body.types.get(local) != found[2]
+                or local in body._written_through()
+                or any(value not in (f"copy {place}", f"move {place}") for value in values)
+            ):
+                return None
+        wide = re.match(r"&(?:mut )?(?:\[|str$|dyn )", found[2])
+        return (16 if wide else 8), len(bindings)
 
     def _elsewhere(self, hashed, variable_name, path):
         """For a stop no line of the function's own can place: in another of the crate's
@@ -1722,6 +2096,21 @@ class OwnedLocals:
     def _positions(self, site, line, facts):
         """Where in the line's blocks the stop can be."""
         body, function, blocks, shared = site
+        if function.inline_only:
+            # Before any statement of the line, after any call or drop of it: more
+            # places only make a proof stricter. The prologue is the declaration line's.
+            text = self.texts.get(function.file)
+            if self.precise or not may_invoke_macro(text, line):
+                found = body.stop_positions(
+                    blocks, line, function.file, may_invoke_macro(text, line)
+                )
+            else:
+                found = body.anywhere(blocks)
+            reachable = body._dataflow() or {}
+            found = {position for position in found or () if position[0] in reachable}
+            if line == function.line:
+                found.add((0, 0))
+            return sorted(found)
         text = self.texts.get(function.file)
         if self.precise or not may_invoke_macro(text, line):
             foreign = may_invoke_macro(text, line)
@@ -1748,9 +2137,14 @@ class OwnedLocals:
         # Written through a `&mut` to it (`*p = owned.as_str()`), it holds what no
         # assignment of its own shows.
         free = local not in body._written_through()
-        # A parameter's references point at what the caller lent for the whole call.
+        # A parameter's references point at what the caller lent for the whole call; an
+        # `async fn`'s, for as long as its future lives (#116), though a copy of one in
+        # a local of the body's own frame is gone at a later poll.
+        lent = local in body._lent()
         argument = (
-            free and local in body.arguments and not assigned and not _RAW_POINTER.search(kind)
+            free
+            and not _RAW_POINTER.search(kind)
+            and (lent or local in body.arguments and not assigned)
         )
         positions = self._positions(site, line, facts)
         if not positions:
@@ -1758,7 +2152,11 @@ class OwnedLocals:
         # Between `drop((*v))` and the store of `*v = new`, it points at a dropped value.
         if any(body.dropped_through(local, position) for position in positions):
             return False
-        if argument and kind.startswith("&"):
+        if (
+            argument
+            and kind.startswith("&")
+            and (not lent or local in body.arguments or self._initialized(site, local, line))
+        ):
             return True
         if free and assigned and all(value.startswith("const ") for value in assigned):
             return True
@@ -1811,10 +2209,9 @@ class OwnedLocals:
     def _shared_argument(body, local):
         kind = body.types.get(local, "")
         return (
-            local in body.arguments
+            (local in body._lent() or local in body.arguments and local not in body._assignments())
             and kind.startswith("&")
             and not kind.startswith("&mut ")
-            and local not in body._assignments()
             and local not in body._written_through()
         )
 
@@ -1852,6 +2249,16 @@ class OwnedLocals:
         shown = str(path or "").replace("\\", "/")
         if [source for source in self.sources if shown.endswith("/" + source)] != [function.file]:
             return None
+        if function.inline_only:
+            # No IR shows where its inlined copies' code is (#116): every block with a
+            # statement of the line, or with code another file's macro may put on it,
+            # and with `#[collapse_debuginfo]` any block, on a line that may invoke one.
+            foreign = may_invoke_macro(self.texts.get(function.file), line)
+            if foreign and not self.precise:
+                blocks = set(body._dataflow() or ())
+            else:
+                blocks = body.covering(line, function.file, foreign)
+            return (body, function, blocks, None) if blocks or line == function.line else None
         blocks = function.mir_blocks(line)
         if blocks is None:
             return None
@@ -1860,6 +2267,8 @@ class OwnedLocals:
 
     def _initialized(self, site, local, line):
         body, function, blocks, shared = site
+        if function.inline_only:
+            return body.initialized_before(local, self._positions(site, line, None))
         if not self.precise:
             return body.initialized_throughout(local, blocks)
         return body.initialized_at(
@@ -1871,6 +2280,19 @@ class OwnedLocals:
             shared,
             foreign=may_invoke_macro(self.texts.get(function.file), line),
         )
+
+
+def _same_path(body, function):
+    """True if the body's path ends as the function's namespaces do, up to an impl (the
+    MIR's `<impl at src/a.rs:2:1: 2:11>`, the debug info's `{impl#0}`): a closure in an
+    async block (`serve::{closure#0}::{closure#0}::{closure#0}`) is not the block."""
+    ancestors = function.ancestors or ((function.parent,) if function.parent else ())
+    for mine, theirs in zip(reversed(_segments(body.path)[:-1]), reversed(ancestors)):
+        if mine.startswith("<"):
+            return True
+        if mine != _mir_name(theirs):
+            return False
+    return True
 
 
 def _merge_target(body, function, number, predecessors):
