@@ -118,6 +118,14 @@ _BOX_COPY = re.compile(
 )
 # A drop through a pointer: `drop((*_1))`, `drop(((*_8).1: T))`.
 _DROP_THROUGH = re.compile(r"^drop\(\(*\*\(*_([0-9]+)\b")
+# A mutable borrow of a local's place (`&mut _3`, `&raw mut ((*_3).0: T)`): what is
+# written through it lands in that local.
+_MUT_BORROW = re.compile(r"&(?:mut |raw mut )\(*\*?\(*_([0-9]+)\b")
+# A call's arguments (`f(move _7, copy _8) -> [return: ...]`).
+_CALL_ARGUMENTS = re.compile(r"^(?:.*? = )?[^ (][^(]*?\((.*)\) -> ")
+_NOT_A_CALL = re.compile(
+    r"(?:drop|assert|switchInt|goto|falseEdge|falseUnwind|yield|return|resume|unreachable)\b"
+)
 # Types whose values hold no pointer, so are never an alias.
 _POINTERLESS = re.compile(
     r"[iu](?:8|16|32|64|128|size)|f32|f64|bool|char|\(\)|(?:std|alloc)::string::String"
@@ -800,13 +808,38 @@ class Body:
             # part: a reborrow, a copy, a struct holding it (`Ctx { v: move _5 }`), a
             # call's result; not a value that cannot hold a pointer (`v.len()`).
             edges = {}
+
+            def holds(local):
+                return not _POINTERLESS.fullmatch(self.types.get(local, ""))
+
             for block in self.blocks.values():
                 for text, _, _ in block.statements:
+                    text = _STRING.sub('""', text)
                     assigned = _WHOLE_ASSIGNMENT.match(text) or _PART_ASSIGNMENT.match(text)
-                    if not assigned or _POINTERLESS.fullmatch(self.types.get(int(assigned[1]), "")):
-                        continue
-                    for used in _MENTIONED.findall(_STRING.sub('""', assigned[2])):
-                        edges.setdefault(int(used), set()).add(int(assigned[1]))
+                    if assigned and holds(target := int(assigned[1])):
+                        for used in _MENTIONED.findall(assigned[2]):
+                            edges.setdefault(int(used), set()).add(target)
+                        # What is stored through a mutable borrow lands in its place
+                        # (`let sr = &mut slot; *sr = &mut *v;`).
+                        for borrowed in _MUT_BORROW.findall(assigned[2]):
+                            if holds(int(borrowed)):
+                                edges.setdefault(target, set()).add(int(borrowed))
+                    # A call may store any argument through a mutable one
+                    # (`mem::swap(&mut slot, &mut w)`).
+                    if " -> " in text and not _NOT_A_CALL.match(text):
+                        arguments = _CALL_ARGUMENTS.match(text)
+                        used = (
+                            {int(n) for n in _MENTIONED.findall(arguments[1])}
+                            if arguments
+                            else set()
+                        )
+                        writable = {
+                            n
+                            for n in used
+                            if re.search(r"&mut |\*mut |NonNull<", self.types.get(n, ""))
+                        }
+                        for n in used:
+                            edges.setdefault(n, set()).update(writable - {n})
             self._alias_edges = edges
         found, pending = {local}, [local]
         while pending:

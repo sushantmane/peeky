@@ -2415,6 +2415,32 @@ fn same_file_cell(c: &RefCell<Vec<Res>>, n: i64) -> i64 {
     k
 }
 
+fn via_swap(v: &mut Vec<Res>, other: &mut Vec<Res>, n: i64) -> i64 {
+    let k = v[0].x;
+    let mut slot: &mut Vec<Res> = other;
+    let mut w: &mut Vec<Res> = &mut *v;
+    std::mem::swap(&mut slot, &mut w);
+    *slot = vec![Res { x: n }]; // M9_VIA_SWAP
+    k
+}
+
+fn via_slot(v: &mut Vec<Res>, other: &mut Vec<Res>, n: i64) -> i64 {
+    let k = v[0].x;
+    let mut slot: &mut Vec<Res> = other;
+    {
+        let sr = &mut slot;
+        *sr = &mut *v;
+    }
+    *slot = vec![Res { x: n }]; // M9_VIA_SLOT
+    k
+}
+
+fn other_file_swap(h: &mut Holder, other: &mut Holder, n: i64) -> i64 {
+    let k = h.data.x;
+    swap_reset!(h, other, n);
+    k
+}
+
 fn main() {
     let mut h = Holder { tag: 1, data: Box::new(Res { x: 5 }) };
     let a = RefCell::new(vec![Res { x: 5 }]);
@@ -2422,10 +2448,14 @@ fn main() {
     println!("{}", other_file_reset(&mut h, 9));
     println!("{}", other_file_cell(&a, 9));
     println!("{}", same_file_cell(&b, 9));
+    let (mut c, mut d) = (vec![Res { x: 5 }], Vec::new());
+    println!("{}", via_swap(&mut c, &mut d, 9));
+    let (mut e, mut f) = (vec![Res { x: 5 }], Vec::new());
+    println!("{}", via_slot(&mut e, &mut f, 9));
+    let mut g = Holder { tag: 2, data: Box::new(Res { x: 1 }) };
+    println!("{}", other_file_swap(&mut h, &mut g, 9));
     println!("{} {}", A.get(), B.get());
-    std::mem::forget(h);
-    std::mem::forget(a);
-    std::mem::forget(b);
+    std::mem::forget((h, a, b, c, d, e, f, g));
 }
 """
 
@@ -2439,6 +2469,15 @@ macro_rules! swap_in {
     ($c:expr, $n:expr) => {
         *$c.borrow_mut() = vec![crate::Res { x: $n }] // M8_SWAP
     };
+}
+
+macro_rules! swap_reset {
+    ($h:expr, $other:expr, $n:expr) => {{
+        let mut slot: &mut crate::Holder = $other;
+        let mut w: &mut crate::Holder = &mut *$h;
+        std::mem::swap(&mut slot, &mut w);
+        *slot = crate::Holder { tag: $n, data: Box::new(crate::Res { x: $n }) } // M9_SWAP_RESET
+    }};
 }
 """
 
@@ -2462,6 +2501,11 @@ def test_references_in_macro_twins_and_parameters_dropped_through_in_other_files
         (0, ("macros.rs", "M8_RESET"), "h"),
         (1, ("macros.rs", "M8_SWAP"), "c"),
         (2, ("main.rs", "M8_SAME_CELL"), "c"),
+        # Round 9: a pointer stored into a slot through `&mut` (by `mem::swap`, or
+        # through a reference to the slot) makes the slot an alias.
+        (3, ("main.rs", "M9_VIA_SWAP"), "v"),
+        (4, ("main.rs", "M9_VIA_SLOT"), "v"),
+        (5, ("macros.rs", "M9_SWAP_RESET"), "h"),
     ):
         text = CELL_MACROS if file == "macros.rs" else TWINS_AND_CELLS
         variables = _stepped_out_to(
