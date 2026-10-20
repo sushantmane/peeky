@@ -836,6 +836,252 @@ def test_a_pointers_first_element_is_its_pointee(tmp_path, native_config, capsys
         capsys.readouterr()
 
 
+def test_a_pointer_to_an_array_or_container_indexes_as_c_does(tmp_path, native_config, capsys):
+    # #102: the debugger lists a pointer's pointee elements as its own children, so
+    # `parr[1]` read `(*parr)[1]`, where C means the next row. Now p[0] is the pointee and
+    # p[1] is refused with the selector that reads the element.
+    from peeky.cli import main
+
+    for name, text, line, capture in (
+        ("rows.c", ROWS, 8, "parr[0],parr[00],parr[0][1],parr[1],parr[-1],pp[0].y,pp.y,pp[1]"),
+        ("rows.cpp", VECTOR, 7, "vp[0],vp[0][1],vp[1]"),
+        (
+            "aliases.cpp",
+            ALIASES,
+            25,
+            "rp[0][1],rp[1],crp[0][1],rr[1],vr[1],bigp[0][450],bigp[-1],ep[0],np[0],"
+            "garbage[0],tp[1],dp[0],later[0],pc[1],vref[0],avp[0][1]",
+        ),
+        ("names.cpp", SAME_NAMES, 23, "r[1],r[0][1],rf[0],rf[1],v[0],v[1],h.r[0],g.v[0][1],g.v[1]"),
+        ("inline.cpp", INLINE_NAMES, 20, "rf[0],rf[1],r[1],r[0][1]"),
+        ("local.cpp", LOCAL_CLASS, 10, "l[0],l[1],g.l[0][1],g.l[1]"),
+        ("anon.cpp", TYPEDEF_NAMED, 13, "a.p[1],a.p[0][1],b.p[1],b.p[0][1],pr[0],pr[1]"),
+    ):
+        (tmp_path / name).write_text(text)
+        probe = ["probe", str(tmp_path / name), "--at", str(line), "--json", "--no-save"]
+        assert main([*probe, "--quiet", "--capture", capture]) == 0
+        rows = {row["selector"]: row for row in json.loads(capsys.readouterr().out)["rows"]}
+        if name == "rows.c":
+            assert rows["parr[0]"]["type"] == rows["parr[00]"]["type"] == "int[3]"
+            assert rows["parr[0][1]"]["value"] == "2"
+            assert rows["pp[0].y"]["value"] == rows["pp.y"]["value"] == "2"
+            assert "read parr[0][1] for its element" in rows["parr[1]"]["error"]
+            assert "read parr[0][-1]" in rows["parr[-1]"]["error"]
+            assert "index the array where it is declared" in rows["pp[1]"]["error"]
+        elif name == "rows.cpp":
+            assert rows["vp[0]"]["value"] == "size=3" and rows["vp[0][1]"]["value"] == "8"
+            assert "read vp[0][1] for its element" in rows["vp[1]"]["error"]
+        elif name == "names.cpp":
+            # Review 4: a member typedef's last name (`Table::Rows`, `Graph::vector`)
+            # resolved `lib::Rows` (lldb-dap leaves out the inline namespace) and plain
+            # `std::vector<int>`.
+            # Round 5: `lib::v1::Rows` is known by the name lldb-dap shows, `lib::Rows`.
+            assert "not read" in rows["r[1]"]["error"], rows
+            assert rows["r[0][1]"].get("value") in (None, "2"), rows["r[0][1]"]
+            assert rows["rf[0]"].get("value") in (None, "7"), rows["rf[0]"]
+            assert rows["rf[1]"].get("value") in (None, "8"), rows["rf[1]"]
+            assert rows["v[0]"]["value"] == "7" and rows["v[1]"]["value"] == "8", rows
+            assert rows["h.r[0]"]["value"] == "size=3" and rows["g.v[0][1]"]["value"] == "2"
+            assert "read g.v[0][1]" in rows["g.v[1]"]["error"]
+        elif name == "anon.cpp":
+            # Review 6: an unnamed struct a typedef names shows by that name (`Anon::P`),
+            # so its member typedef took another `Anon::P`'s kind, or none.
+            # Review 7: one named twice (`} Anon, Other;`) shows by the first name.
+            for base in ("a.p", "b.p"):
+                assert "not read" in rows[f"{base}[1]"]["error"], rows
+                assert rows[f"{base}[0][1]"].get("value") in (None, "2"), rows
+            assert rows["pr[0]"].get("value") in (None, "7"), rows
+            assert rows["pr[1]"].get("value") in (None, "8"), rows
+        elif name in ("inline.cpp", "local.cpp"):
+            # Review 5: lldb-dap leaves out inline namespaces and a local class's
+            # function (`Ref`, `Node::Link`), so another entity shown alike (a function's
+            # own `Ref`, the file's `Node`) gave its kind to these.
+            expected = {"rf[0]": "7", "rf[1]": "8", "r[0][1]": "2", "l[0]": "7", "l[1]": "8"}
+            expected["g.l[0][1]"] = "2"
+            for selector, row in rows.items():
+                assert row.get("value") in (None, expected.get(selector)), row
+        else:
+            # Review of #117: a typedef'd pointer shows by the typedef's name alone, as a
+            # typedef'd reference does; the build's debug information tells them apart.
+            assert rows["rp[0][1]"]["value"] == "2" and "read rp[0][1]" in rows["rp[1]"]["error"]
+            assert rows["rr[1]"]["value"] == "2" and rows["vr[1]"]["value"] == "8"
+            # One fetch of the pointee's first page serves both segments.
+            assert rows["bigp[0][450]"]["value"] == "4"
+            # A vector's own length is not one its type states.
+            assert "read its elements from bigp[0][0]" in rows["bigp[-1]"]["error"]
+            assert rows["ep[0]"]["value"] == "size=0"
+            assert "np is NULL" in rows["np[0]"]["error"]
+            assert "cannot read what garbage points at" in rows["garbage[0]"]["error"]
+            # Review 2: the typedef behind lldb-dap's `const RowPtr` resolves; a template's
+            # member typedef does not, and is refused rather than indexed either way; a
+            # scalar pointer still reads; a pointer declared below the stop is not read.
+            assert rows["crp[0][1]"]["value"] == "2"
+            assert "not read" in rows["tp[1]"]["error"]
+            assert rows["dp[0]"]["value"] == "7"
+            assert "has no value here" in rows["later[0]"]["error"]
+            # Review 3: a `*` inside template arguments is not the type's own; a class's
+            # member typedef resolves by its last name where all agree (or is refused);
+            # an unnamed namespace's typedef by its plain name.
+            assert "not read" in rows["pc[1]"]["error"]
+            assert rows["vref[0]"].get("value") in (None, "3"), rows["vref[0]"]
+            assert rows["avp[0][1]"]["value"] == "8"
+    main(["session", "start", str(tmp_path / "rows.c"), "--at", "8"])
+    capsys.readouterr()
+    try:
+        assert main(["session", "get", "parr", "--json"]) == 0
+        listed = json.loads(capsys.readouterr().out)
+        rows = listed["rows"] if isinstance(listed, dict) else listed
+        selectors = [child.get("selector") for child in rows[0]["children"]]
+        assert selectors == ["parr[0][0]", "parr[0][1]", "parr[0][2]"], rows
+    finally:
+        main(["session", "close"])
+        capsys.readouterr()
+
+
+TYPEDEF_NAMED = """#include <cstdio>
+#include <vector>
+typedef std::vector<int> &P;
+typedef struct { typedef int (*P)[3]; P p; } Anon, Other;
+namespace x { struct Anon { typedef int P; P n; }; struct Other { typedef int P; }; }
+int main() {
+    int rows[2][3] = {{1, 2, 3}, {4, 5, 6}};
+    std::vector<int> v{7, 8, 9};
+    Anon a{rows};
+    Other b{rows};
+    x::Anon xa{4};
+    P pr = v;
+    int n = a.p[1][0] + b.p[1][0] + xa.n + pr[1];
+    std::printf("%d\\n", n);
+    return 0;
+}
+"""
+
+INLINE_NAMES = """#include <cstdio>
+#include <vector>
+inline namespace v1 {
+    using Ref = std::vector<int> &;
+    typedef int (*Rows)[3];
+}
+static int helper(std::vector<int> *vs, int (*rows)[3]) {
+    typedef std::vector<int> *Ref;
+    typedef int Rows;
+    Ref p = vs;
+    Rows k = rows[0][0];
+    return (*p)[0] + k;
+}
+int main() {
+    int rows[2][3] = {{1, 2, 3}, {4, 5, 6}};
+    std::vector<int> v{7, 8, 9};
+    std::vector<int> vs[2] = {v, v};
+    Ref rf = v;
+    Rows r = rows;
+    int n = rf[1] + r[1][0] + helper(vs, rows);
+    std::printf("%d\\n", n);
+    return 0;
+}
+"""
+
+LOCAL_CLASS = """#include <cstdio>
+#include <vector>
+struct Node { typedef int (*Link)[3]; Link l; };
+int main() {
+    int rows[2][3] = {{1, 2, 3}, {4, 5, 6}};
+    std::vector<int> v{7, 8, 9};
+    Node g{rows};
+    struct Node { using Link = std::vector<int> &; };
+    Node::Link l = v;
+    int n = g.l[1][0] + l[1];
+    std::printf("%d\\n", n);
+    return 0;
+}
+"""
+
+SAME_NAMES = """#include <cstdio>
+#include <vector>
+#include <map>
+namespace lib { inline namespace v1 {
+    typedef int (*Rows)[3];
+    using Ref = std::vector<int> &;
+    typedef std::vector<int> *VecP;
+} }
+struct Table { typedef int Rows; Rows n; };
+struct Holder { using Ref = std::vector<int> *; Ref r; };
+struct Graph { typedef int (*vector)[3]; typedef std::map<int, int> *VecP; vector v; VecP m; };
+int main() {
+    int rows[2][3] = {{1, 2, 3}, {4, 5, 6}};
+    std::vector<int> v{7, 8, 9};
+    std::vector<int> vs[2] = {v, v};
+    std::map<int, int> mm{{1, 10}};
+    lib::Rows r = rows;
+    lib::Ref rf = v;
+    lib::VecP vp = vs;
+    Table t{3};
+    Holder h{&v};
+    Graph g{rows, &mm};
+    int k = r[1][0] + rf[1] + (*vp)[0] + t.n + (*h.r)[0] + g.v[0][0] + (int)g.m->size() + v[1];
+    std::printf("%d\\n", k);
+    return 0;
+}
+"""
+
+ROWS = """#include <stdio.h>
+struct pt { int x, y; };
+int main(void) {
+    int rows[2][3] = {{1, 2, 3}, {4, 5, 6}};
+    int (*parr)[3] = rows;
+    struct pt pts[2] = {{1, 2}, {3, 4}};
+    struct pt *pp = pts;
+    int n = parr[1][2] + pp[1].y;
+    printf("%d\\n", n);
+    return 0;
+}
+"""
+
+VECTOR = """#include <cstdio>
+#include <vector>
+int main() {
+    std::vector<int> v{7, 8, 9};
+    std::vector<int> *vp = &v;
+    int n = (*vp)[1];
+    std::printf("%d\\n", n);
+    return 0;
+}
+"""
+
+ALIASES = """#include <cstdio>
+#include <vector>
+typedef int (*RowPtr)[3];
+typedef int (&RowRef)[3];
+using VecRef = std::vector<int> &;
+struct pt { int x, y; };
+namespace { typedef std::vector<int> *AVP; }
+int main() {
+    int rows[2][3] = {{1, 2, 3}, {4, 5, 6}};
+    std::vector<int> v{7, 8, 9}, big(500, 4), empty;
+    std::vector<int> *bigp = &big, *ep = &empty;
+    std::vector<std::vector<int>> vv{{1, 2}, {3, 4}};
+    RowPtr rp = rows;
+    const RowPtr crp = rows;
+    RowRef rr = rows[0];
+    VecRef vr = v;
+    std::vector<std::vector<int>>::pointer tp = vv.data();
+    std::vector<int>::pointer dp = v.data();
+    std::vector<std::vector<const char *>> vcs{{"a", "b"}, {"c", "d"}};
+    std::vector<std::vector<const char *>>::pointer pc = vcs.data();
+    std::vector<std::vector<int>>::reference vref = vv[1];
+    AVP avp = &v;
+    pt *np = nullptr;
+    int (*garbage)[3] = (int (*)[3])0x10;
+    int n = rp[1][0] + crp[1][0] + rr[1] + vr[1] + (int)bigp->size() + (int)ep->size();
+    int (*later)[3] = rows;
+    n += tp[1][0] + dp[0] + later[1][0] + (np ? 1 : 0) + (garbage ? 1 : 0);
+    n += (int)pc[1].size() + vref[0] + (*avp)[0];
+    std::printf("%d\\n", n);
+    return 0;
+}
+"""
+
+
 AVG = """#include <stdio.h>
 struct node { int *count; };
 typedef int *intp;
