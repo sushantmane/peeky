@@ -21,7 +21,7 @@ from peeky.errors import Refused, classify
             "initialized here",
             "stop after its",
         ),
-        ("'s' in a caller's frame, whose values cannot be changed", "--hit N"),
+        ("'s' in a caller's frame, whose values cannot be changed", "--set-hit N"),
         ("Changing values is refused in an optimized build (-O1)", "unoptimized build"),
         ("`f.ch` cannot be changed: `f.ch` is a character (char)", "candidate edit"),
     ],

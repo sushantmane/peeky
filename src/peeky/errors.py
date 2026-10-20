@@ -277,12 +277,12 @@ _MUTATION_HINTS = (
     (
         r"in a caller's frame",
         "Change it in its own frame, before the call under way: `probe --at <its line> "
-        "--set-hit N`, or `session start --at <its line> --hit N`.",
+        "--hits N --set-hit N`, N counting that line's stops (`--capture <x> --hits all`).",
     ),
     (
         r"is a (?:pointer|reference)\b(?!;)",
-        "Change it in the caller before this call: `probe --at <call line> --set-hit N`, "
-        "or `session start --at <call line> --hit N`; a stop inside the call is too late.",
+        "Change the value where it is owned, before the call: `probe --at <call line> --hits "
+        "N --set-hit N`, N counting that line's stops (`--capture <arg> --hits all` there).",
     ),
     (
         r"kept in a register",

@@ -808,8 +808,8 @@ def test_rust_a_refused_change_through_a_reference_advises_what_works(crate, cap
         assert json.loads(capsys.readouterr().out)[0]["value"] == "10"
         code, result = change(capsys, "w.start=10")
         error = result["error"]
-        assert code == 2 and "cannot change what the call already received" in error["message"]
-        assert "--at <call line> --hit N" in error["hint"] and "too late" in error["hint"]
+        assert code == 2 and "does not write through a pointer" in error["message"]
+        assert "--at <call line> --hits N --set-hit N" in error["hint"], error["hint"]
     finally:
         main(["session", "close"])
     # As advised: a stop on the call's line before this call (hit 3, `now=10`).
@@ -825,3 +825,72 @@ def test_rust_a_refused_change_through_a_reference_advises_what_works(crate, cap
         assert "ACCEPTED:0,1,10,11" in finish(capsys)
     finally:
         main(["session", "close"])
+
+
+TWO_CALLS = """#[derive(Debug, Clone, Copy)]
+struct Window {
+    start: u64,
+    count: u32,
+}
+
+fn allow(w: &mut Window, now: u64) -> bool {
+    if now - w.start > 5 { // TWO_ALLOW
+        w.start = now;
+        w.count = 0;
+    }
+    w.count += 1;
+    w.count <= 2
+}
+
+fn main() {
+    let mut w = Window { start: 0, count: 0 };
+    let mut other = Window { start: 0, count: 0 };
+    let mut seen = Vec::new();
+    for now in [0u64, 1, 10, 11] {
+        let _ = allow(&mut other, now); // TWO_OTHER
+        seen.push(allow(&mut w, now)); // TWO_CALL
+    }
+    println!("SEEN:{:?}", seen);
+}
+"""
+
+
+@pytest.mark.timeout(400)
+def test_rust_the_advice_reaches_the_examined_call_of_a_function_called_from_two_lines(
+    crate, capsys
+):
+    # Review 3 of the sixth evaluation's PR: `--set-hit N` counts the call line's own
+    # stops, not the called function's. Stopped in `allow` at its hit 4 (the call on
+    # `w`, `now=1`), `--set-hit 4` at the call line changed the call where `now=11`.
+    (crate / "src/main.rs").write_text(TWO_CALLS)
+    allow, call = (
+        next(i for i, line in enumerate(TWO_CALLS.splitlines(), 1) if marker in line)
+        for marker in ("// TWO_ALLOW", "// TWO_CALL")
+    )
+    assert main(["session", "start", str(crate), "--at", f"src/main.rs:{allow}", "--hit", "4"]) == 0
+    capsys.readouterr()
+    try:
+        assert main(["session", "get", "now", "--json"]) == 0
+        assert json.loads(capsys.readouterr().out)[0]["value"] == "1"
+        code, result = change(capsys, "w.count=5")
+        error = result["error"]
+        assert code == 2 and "counts that line's own stops" in error["message"], error
+        assert "--capture <argument> --hits all" in error["message"], error
+        assert "does not write through a pointer" in error["message"], error
+    finally:
+        main(["session", "close"])
+        capsys.readouterr()
+    # As advised: N is the call line's own stop where `now` is the examined call's.
+    at = f"src/main.rs:{call}"
+    code = main(["probe", str(crate), "--at", at, "--capture", "now", "--hits", "all", "--json"])
+    rows = json.loads(capsys.readouterr().out)["rows"]
+    assert code == 0, rows
+    hit = next(row["hit"] for row in rows if row["value"] == "1")
+    assert hit == 2, rows
+    command = ["probe", str(crate), "--at", at, "--capture", "now", "--set", "w.count=5"]
+    code = main([*command, "--hits", str(hit), "--set-hit", str(hit), "--json"])
+    result = json.loads(capsys.readouterr().out)
+    assert code == 0, result.get("error")
+    assert [row["value"] for row in result["rows"] if row["hit"] == hit] == ["1", "1"], result
+    # The call at `now=1` saw the change (count 6 > 2), and no other call did.
+    assert "SEEN:[true, false, true, true]" in result["output"], result["output"]
