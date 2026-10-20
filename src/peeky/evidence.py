@@ -405,6 +405,12 @@ def _no_addresses(value, language=None):
 _OBJECT_REF = re.compile(r"(?:[A-Za-z_$][\w$.]*(?:\[[0-9]*\])*|Class \([^()]*\))@[0-9]+(?=\s|$)")
 
 
+def _short_function(value):
+    from peeky.names import short_function
+
+    return short_function(value) if isinstance(value, str) else None
+
+
 def _object_ref(value):
     """The object a Java value is (`Merge$Interval@143`), else NULL: equal within one run
     means the same object; across runs the numbers differ (see no_addresses)."""
@@ -891,6 +897,7 @@ def query(path, sql, params=None, *, limit=DEFAULT_ROWS, seconds=QUERY_SECONDS):
         "first_difference", 2, bounded(_first_difference), deterministic=True
     )
     connection.create_function("output_window", 2, bounded(_output_window), deterministic=True)
+    connection.create_function("short_function", 1, bounded(_short_function), deterministic=True)
     connection.create_function("object_ref", 1, bounded(_object_ref), deterministic=True)
     connection.create_function(
         "difference_position", 2, bounded(_difference_position), deterministic=True
@@ -1024,6 +1031,11 @@ def schema(path):
             "(from 1)",
             "output_window(a, b)": "Up to 200 characters of a from just before where it first "
             "differs from b",
+            "short_function(function)": "A frame name without a C++ signature's parameters, "
+            "qualifiers and return type (`trim_left`) or a Rust symbol hash; NULL for NULL. "
+            "Overloads share it (`operator+`, `G::get` for `get() &` and `get() &&`), so "
+            "GROUP BY or a join on it combines them; a table shows it, except that "
+            "overloads in one table keep their parameters there",
             "object_ref(text)": "The Java object a value is (`Merge$Interval@143`), else NULL: "
             "two values of one run with the same object_ref are the same object (aliasing); "
             "the numbers differ between runs. Python values carry theirs in "
@@ -1050,19 +1062,33 @@ def schema(path):
 
 
 def table(result, width=120):
-    """A plain-text table of a query result."""
+    """A plain-text table of a query result. A `function` column shows each frame's
+    short name (see ``names.function_labels``), with a note: the result keeps it whole."""
+    from peeky.names import function_labels, shortened_note
 
     def text(value):
         value = "NULL" if value is None else str(value).replace("\n", "\\n")
         return value if len(value) <= width else value[: width - 3] + "..."
 
     columns = result["columns"]
-    cells = [[text(row[column]) for column in columns] for row in result["rows"]]
+    shortened = {}
+    if "function" in columns:
+        labels = function_labels(row["function"] for row in result["rows"])
+        shortened = {name: label for name, label in labels.items() if label != name}
+    cells = [
+        [
+            text(shortened.get(row[column], row[column]) if column == "function" else row[column])
+            for column in columns
+        ]
+        for row in result["rows"]
+    ]
     widths = [max(len(item[i]) for item in [columns, *cells]) for i in range(len(columns))]
     lines = [
         "  ".join(c.ljust(w) for c, w in zip(item, widths)).rstrip() for item in [columns, *cells]
     ]
     count = result["row_count"]
+    if note := shortened_note(shortened):
+        lines.append(note)
     lines.append(
         f"({count} row{'s' if count != 1 else ''}"
         + (

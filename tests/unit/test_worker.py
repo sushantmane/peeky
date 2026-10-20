@@ -741,3 +741,40 @@ def test_a_string_the_runtime_shows_keeps_its_handle_and_never_overrides_no_valu
         (),
     )
     assert calls[-1][1] == worker.view_read
+
+
+def test_a_string_shown_as_its_text_lists_no_members(tmp_path):
+    # Eval 6, finding 15: `session get name` listed libc++'s `(anonymous struct)` (and
+    # libstdc++'s `_M_dataplus`) under a std::string. A value the runtime marks "text"
+    # gets no handle, and is never "at the depth limit".
+    from types import SimpleNamespace
+
+    from peeky.worker import DebugWorker
+
+    def string_value(variable, fetch, read):
+        return {"text": True} if variable["name"] == "s" else None
+
+    runtime = SimpleNamespace(
+        assert_current=lambda: None, reports_unavailable_as_text=True, string_value=string_value
+    )
+    worker = DebugWorker(tmp_path)
+    worker.runtime, worker.state, worker.stop_id = runtime, "stopped", "stop1"
+    text, other = worker.expose_variables(
+        [
+            {"name": "s", "type": "std::string", "value": '"a"', "variablesReference": 7},
+            {"name": "r", "type": "Rec", "value": "Rec @ 0x1", "variablesReference": 8},
+        ],
+        {"id": 1},
+        ("Locals",),
+        (),
+    )
+    assert text["variablesReference"] == 0 and text["text"] is True and text["value"] == '"a"'
+    assert other["variablesReference"] and "text" not in other
+    assert list(worker.children) == [other["variablesReference"]]
+    (deep,) = worker.expose_variables(
+        [{"name": "s", "type": "std::string", "value": '"a"', "variablesReference": 9}],
+        {"id": 1},
+        ("Locals",),
+        (("a", "A"), ("b", "B"), ("c", "C"), ("d", "D")),
+    )
+    assert deep["variablesReference"] == 0 and "depth_limited" not in deep

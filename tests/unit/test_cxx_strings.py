@@ -176,10 +176,12 @@ def test_libcxx_builds_keep_lldbs_strings():
     native = NativeSession.__new__(NativeSession)
     native.target = SimpleNamespace(language="cpp")
     native.typedefs = {"namespace::__1": ("other", "")}
-    assert native.string_value(variable('"a"'), lambda reference: libstdcxx(3), None) is None
+    # Its text, as LLDB shows it (members never read): only marked as text (eval 6).
+    fetch = lambda reference: pytest.fail("libc++'s members read")  # noqa: E731
+    assert native.string_value(variable('"a"'), fetch, None) == {"text": True}
     native.typedefs = {"namespace::__cxx11": ("other", "")}
     shown = native.string_value(variable('"a"'), lambda reference: libstdcxx(3), None)
-    assert shown == {"value": '"a" (shown up to a NUL at byte 1 of 3)'}
+    assert shown == {"value": '"a" (shown up to a NUL at byte 1 of 3)', "text": True}
 
 
 # Review of #128 (PR #131): typedef'd names, the C reading of an escape, long text.
@@ -324,6 +326,34 @@ def test_peekys_own_text_is_spelled_once():
     assert native.string_value(variable('"\\xffa"'), whole, None) == {
         "string_length": 2,
         "value": '"\\377a"',
+        "text": True,
     }
     native.target = SimpleNamespace(language="rust")
     assert native.string_value(variable('"a\\064"', "&str"), whole, None) is None
+
+
+def test_a_string_shown_as_its_text_is_marked_so():
+    # Eval 6, finding 15: its members are the library's, never listed.
+    from peeky.cxx_strings import shows_text
+    from peeky.native import NativeSession
+
+    assert shows_text('"apple"', (1, "", ""))
+    assert shows_text('0x00007ff0 "apple"', (1, "", "&"))
+    assert shows_text('L"w"', (4, "L", ""))
+    assert not shows_text('"apple"', (1, "", "*"))
+    assert not shows_text("std::u16string @ 0x1000", (2, "u", ""))
+    assert not shows_text("0x0000000000000000", (1, "", "*"))
+    native = NativeSession.__new__(NativeSession)
+    native.target = SimpleNamespace(language="cpp")
+    native.typedefs = {"namespace::__1": ("other", ""), "Name": ("other", "std::string")}
+    none = lambda reference: []  # noqa: E731
+    assert native.string_value(variable('"apple"', "std::string"), none, None) == {"text": True}
+    assert native.string_value(variable('"typed"', "Name"), none, None) == {"text": True}
+    assert native.string_value(variable("Rec @ 0x1", "Rec"), none, None) is None
+    # libstdc++: each string the runtime checked.
+    native.typedefs = {"namespace::__cxx11": ("other", "")}
+    shown = native.string_value(variable('"abc"'), lambda reference: libstdcxx(3), None)
+    assert shown == {"string_length": 3, "text": True}
+    # Rust's strings are its own (views), and C has no string class.
+    native.target = SimpleNamespace(language="rust")
+    assert native.string_value(variable('"abc"', "&str"), none, None) is None
