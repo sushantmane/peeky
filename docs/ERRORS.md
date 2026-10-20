@@ -22,10 +22,10 @@ Every Peeky failure, from the HTTP worker, the SDK (`peeky.errors.PeekyError`) o
 | `BUILD_FAILED` | The program did not compile, or its build timed out (with `--old/--new`: the edit does not build); the message has the compiler's output | Fix what the compiler reports and run again; your files were not changed |
 | `PROVENANCE_CHANGED` | Sources, build outputs or tools changed | New session on a fresh build |
 | `TIMEOUT` | A time bound was hit; session discarded | Start again; never blindly retry a mutation |
-| `DEBUGGER_ERROR` | Adapter/debugger failure, including a broken protocol stream (for example a reply over 4 MiB); session discarded | Start again; capture narrower selectors if values are huge |
+| `DEBUGGER_ERROR` | Adapter/debugger failure: a broken protocol stream (for example a reply over 4 MiB), java-debug's event thread dying, or an attached JVM's stop the debugger never reported (`Lost stop:`); session discarded | Start again; capture narrower selectors if values are huge; for Java, keep `debugger_events` (#27) |
 | `SESSION_ACTIVE` / `NO_SESSION` | Session lifecycle misuse | Close / start a session |
 | `BUSY` | Another probe is running on this worker | Retry later |
-| `UNSUPPORTED` | Operation or capability not offered | Call `version` |
+| `UNSUPPORTED` | Operation or capability not offered, or a Java adapter bundle built before a required java-debug patch | Call `version`; rebuild the Java adapter with `scripts/setup_java_adapter.py` |
 | `UNAUTHORIZED` | Missing or wrong bearer token | Use the worker's `DEBUG_TOKEN` |
 | `INVALID_REQUEST` | Malformed arguments (such as a `--frame` past the stack, whose message says how many frames there are), or an evidence store that cannot be used | Fix the request; for a store, move it aside or pass `--store` |
 | `INVALID_QUERY` | `peeky sql`/`peeky queries`: bad SQL, a write, a missing `--param`, or a query over its time bound | Fix the query; `peeky sql --schema` lists tables, columns and canned queries |
@@ -33,5 +33,9 @@ Every Peeky failure, from the HTTP worker, the SDK (`peeky.errors.PeekyError`) o
 | `UNREACHABLE` | No connection reached the worker (tunnel or worker down); nothing was applied | Restore the tunnel/worker and retry; the session is kept |
 | `TRANSPORT_LOST` | The connection broke mid-request; outcome unknown | Reconnect, then `inspect`/`wait`; never repeat a mutation blindly |
 | `JOB_LOST` | A `--background` job's process died before finishing | Rerun the command |
+
+Two Java debugger failures (#27) end with `DEBUGGER_ERROR` at once instead of a timeout; see [JAVA_ATTACH.md](JAVA_ATTACH.md#lost-stop-events-27):
+- **`java-debug's event thread died (…)`.** The adapter's stderr showed its event thread failing, so nothing more can be reported. Peeky detaches or ends the program, as on any debugger failure, and keeps the session as a failed one. Later requests repeat the error. `report` returns its final state (`state: closed`, `adapter_failure`, history `adapter_failed`), and `close` ends it. Its `debugger_events.stderr` keeps the adapter's last 16 KiB of log; a failed probe carries `debugger_events` too.
+- **`Lost stop: …`.** An attached JVM's stop that the debugger never reported. The message names the suspended thread, its location, the session's breakpoint and how long the stop has gone unreported. Nothing is served from that stop, and Peeky detaches, so the JVM runs on. Later requests on the session repeat the error. `report` still returns the session as it was (`state: detached`, `lost_stop`, `history`, `debugger_events`), and `close` ends it. A failed probe carries `debugger_events` too; keep it for #27.
 
 `POST /version` returns the protocol version, supported operations and the error codes. Every HTTP response carries `X-Peeky-Protocol: 1`.

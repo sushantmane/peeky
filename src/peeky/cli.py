@@ -1107,6 +1107,12 @@ def _state_text(state):
         text += f"\n{_OPTIMIZED_NOTE.format(state['optimized'])}"
     if state.get("exit_inferred"):
         text += "\nnote: the debugger never reported the exit; Peeky inferred it (no threads left)"
+    if unreported := state.get("unreported_stop"):
+        text += (
+            f"\nnote: thread {unreported.get('thread_name')!r} was seen paused at "
+            f"{unreported.get('breakpoint')}, but the debugger never reported that stop "
+            "(java-debug, issue #27); `peeky session report --json` has its debugger_events"
+        )
     if state.get("note"):
         text += f"\nnote: {state['note']}"
     for warning in state.get("warnings", []):

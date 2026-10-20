@@ -155,3 +155,24 @@ def test_concurrent_wait_and_close_do_not_deadlock(worker):
 def test_classification_is_stable(exception, code, closed):
     payload = classify(exception)
     assert payload["code"] == code and payload["session_closed"] is closed and payload["hint"]
+
+
+def test_a_crashed_adapter_reaches_the_client_as_debugger_error_with_a_pause_budget(worker):
+    # Review round 5: the pause guard met the dead transport first, closed the session,
+    # and the client got NO_SESSION ("Missing or stale session_id") instead.
+    import os
+    import signal
+
+    root, client, server = worker
+    (root / "sleepy.py").write_text(
+        "import time\nfor i in range(30):\n    time.sleep(1)\n    if i > 1000:\n        print(i)\n"
+    )
+    launch = client.call("launch", program="sleepy.py", breakpoints=[{"line": 5}], max_pause=5)
+    session = {"session_id": launch["session_id"]}
+    time.sleep(1)
+    os.kill(server.worker.dap.process.pid, signal.SIGKILL)
+    for _ in range(8):
+        server.worker.guard_pause()
+        time.sleep(0.25)
+    failure = error(lambda: client.call("wait", **session, timeout=2))
+    assert failure.error_code == "DEBUGGER_ERROR" and "Debugger adapter closed" in str(failure)

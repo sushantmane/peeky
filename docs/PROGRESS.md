@@ -205,6 +205,29 @@ An hourly thread heartbeat (`continue-peeky-mvp`) checks for available usage and
   - `rust_mir` runs a definite-initialization dataflow, checked at every place code of the stop line can be.
   - Five review rounds found five false proofs (merged codegen blocks, matching by elimination, a stop in another file, two kinds of macro twins), each fixed with a real-build regression.
 - **#70 (`ea6c728`):** the Java adapter test infers a dropped exit the way the worker does (#27, observation 3).
+- **#27 root cause found and patched; lost events fail fast** (branch `fix/java-lost-stop`, PR #123). java-debug sometimes never reported a stop on an attached JVM (Venice; twice in the attach tests under heavy load), and the probe or session waited out its timeout. See [JAVA_ATTACH.md](JAVA_ATTACH.md#lost-stop-events-27).
+  - **Root cause** (found by the second review round, which reproduced it naturally): java-debug's "Event Hub" thread built `logger.fine("JDI Event: " + event)` for every JDI event even with FINE off. Naming a short-lived thread the JVM had already collected threw `ObjectCollectedException`, which killed the thread, and no JVM event was processed again (stops, steps, threads, exits; probably #29's lost exits too).
+  - **Patch:** `scripts/setup_java_adapter.py` patches the pinned `EventHub.java` (`eventhub-log-guard`: log only when FINE is on, catch `RuntimeException` around it). The patch is idempotent, fails loudly if its target moved, and is listed in `adapter.json`. Peeky proves it from the compiled `EventHub.class` (it calls `Logger.isLoggable`) and refuses unpatched bundles (`UNSUPPORTED`), so rebuild local and Venice bundles. The CI lanes build fresh bundles, so they need no change. The review's churn runs: 18 of 18 completed with the patch.
+  - **Dead event thread → `DEBUGGER_ERROR` at once:** the adapter's stderr is kept (last 16 KiB, `debugger_events.stderr`). `Exception in thread "Event Hub"` there ends any wait immediately (launched and attached JVMs). The session is closed and kept as a failed one: it repeats its error and its `report` keeps the stderr tail.
+  - **Review round 3** (no High or Medium). Its lows are fixed:
+    - **Stderr reader.** It owns its descriptor and stops on request. Before, on Linux, a descendant holding the pipe made `close()` wait 3 s and leave a reader that stole a later file's bytes; now close takes 0.1 s on that repro.
+    - **Patch check.** The patch is proven from the compiled class; a forged `adapter.json` record no longer passes.
+    - **Stderr kept on failure.** The tail survives the event-thread error, in the probe result and the session's report.
+    - **Scanning.** The pattern is found in overlong lines, split writes, a last line without a newline, and from an adapter that exits right after it.
+  - **Review round 4** (one older Medium, fixed). With no client waiting, the pause guard saw neither a lost stop nor a dead event thread when the breakpoint was pending at launch (a `suspend=y` attach, as with Gradle's `--debug-jvm`). Only `wait` took the `breakpoint` event that verifies such a breakpoint, and the guard never looked at `dap.fatal`.
+    - The guard now closes a session whose adapter is fatal first, with or without a pause budget. With no stop pending, it takes the `breakpoint` events that come before any stop or exit, never the stop or exit itself, before polling.
+    - Real-JDK tests: the review's repro now fails fast in about 7 s (it held the JVM for 15 s); the dead event thread ends the session in 0.5 s with the guard alone; beside a guard ticking every 10 ms, a waiting client receives every stop exactly once (hits 1, 2 and 3, each `stop_id` once).
+  - **Review round 5** (no High or Medium):
+    - **Regression fixed.** With `--max-pause`, any session's adapter crash reached the client as `NO_SESSION` instead of `DEBUGGER_ERROR`, because the guard's drain met the dead connection and closed the session. The guard now drains only for attached JVMs, leaves a failed connection to the client's next request, and keeps a failed session for any failure it meets itself.
+    - **Docs.** They now say that the guard's own `wait` may take a stop that the client's next `wait` then reports once.
+  - The first version (`7d3ad07`) served such a stop as recovered. Its adversarial review found wrong results (repros in the workspace's `work/vr27/`, outside the repository):
+    - java-debug's class-load requests suspend every thread, so a breakpoint line that never ran (a thread blocked entering `synchronized`) was served as a hit;
+    - its late-report bookkeeping turned lost step reports into hits, served stale stops, and could leave a thread suspended past `--max-pause`.
+  - Now a stop is never served. While waiting, the worker polls `threads` and one-frame `stackTrace`. Evidence is exactly one suspended thread with no step in flight, at a verified session breakpoint's exact source and line, while every other thread checked runs. The checks cover the JVM's own threads before and after the rest, a window of up to 256 threads, and two rechecks of the suspect, each followed by the JVM's own threads. The same sighting must hold in 3 consecutive polls spanning 4 s, with no report in between.
+  - On that evidence, the wait ends with `DEBUGGER_ERROR` (`Lost stop: …`) naming the thread, location, breakpoint and unreported time. Peeky records the diagnosis (history `lost_stop`, `debugger_events`) and detaches, so the JVM runs on.
+  - The failed session repeats the error, reports its final state and closes cleanly. Polls start 2 s after a resume, run at most every 2 s within 1 s each (40–90 ms with 300 threads), and stay out of the DAP trace. Launched JVMs are not polled.
+  - Real-JDK tests: a probe fails in about 6.6 s and the JVM completes unchanged; a session fails after a served hit; a lost step report on a breakpoint line never errs; and the review's class-load storm (the waiter seen at the breakpoint line in every poll) ends normally with 0 hits. The churn scenario reports its stop with the patched adapter; with `PEEKY_JAVA_ADAPTER_UNPATCHED`, the old adapter's dead event thread ends the session in under 5 s.
+  - Round-2 lows: a sighting followed by the program's exit is reported as a stop never reported (`unreported_stop`; a probe fails with `DEBUGGER_ERROR`), never `NO_STOP`. The JVM-thread checks are Reference Handler, Finalizer and Common-Cleaner (Signal Dispatcher has no Java frames), and a lost stop holds its thread about 4–8 s regardless of `--max-pause`.
 - **#67 (`0a1fad7`): CUDA phase 0** for #61. [ADR 0007](adr/0007-cuda-gdb-dap.md) (proposed) drives `cuda-gdb -i=dap`. `scripts/cuda/qualify.py` is the qualification to run on a GPU host.
   - Found by experiment: upstream GDB 14.2, 15.1 and 16.3 start the program at different DAP requests. One order works on all three (breakpoints, `launch`, then `configurationDone`).
   - The new `gdb-dap` lane keeps that order tested against GDB 15.1; 14.2 and 16.3 were run by hand.
@@ -213,7 +236,7 @@ An hourly thread heartbeat (`continue-peeky-mvp`) checks for available usage and
 **Closed issues:** #6, #7, #8, #9, #10, #11, #12, #13, #48, #49, #53, #55, #56, #57, #58, #59, #74, #75, #76, #77, #78, #79, #86.
 
 **Open issues:**
-- **#27:** an attached JVM whose `stopped` event is lost (seen once on Venice). The launch case is fixed. 160 targeted stress runs (simple and Venice-like thread churn) did not reproduce it; diagnostics stay in place.
+- **#27:** lost `stopped` (and exit) events from java-debug. Root cause found: java-debug's event thread died on a collected thread's name. Branch `fix/java-lost-stop` (PR #123) patches the adapter, and fails fast with a diagnosis if the event thread dies or a stop goes unreported anyway. Consider reporting the bug upstream (microsoft/java-debug).
 - **#61:** NVIDIA CUDA debugging, sanitizers and profiling, filed by the owner. [ADR 0007](adr/0007-cuda-gdb-dap.md) proposes driving `cuda-gdb -i=dap`; `scripts/cuda/qualify.py` is the phase 0 qualification, and its DAP sequence is tested against upstream GDB (lane `gdb-dap`). Running it needs a Linux host with an NVIDIA GPU, reachable over Peeky's SSH remote worker; this Mac has none.
 
 **Process notes:**
@@ -227,7 +250,7 @@ An hourly thread heartbeat (`continue-peeky-mvp`) checks for available usage and
   - every Linux CI lane in Docker (`scripts/ci_linux`, see CONTRIBUTING.md), with the evidence in each PR. Fixing billing is the owner's decision.
 - **Docker under OrbStack:** containers that hang on a bind mount cannot be killed. Feed trees with `git archive HEAD | docker run -i …`; if it hangs anyway, `orb stop && orb start`.
 
-**Local Java adapter bundle:** `outputs/peeky/work/java-adapter-step` (String cap and stepping). `~/.peeky/venice/attach-*.json` point to it. Rebuild with `scripts/setup_java_adapter.py --output <absolute path>`.
+**Local Java adapter bundle:** `outputs/peeky/work/java-adapter-step` (String cap and stepping). `~/.peeky/venice/attach-*.json` point to it. Rebuild with `scripts/setup_java_adapter.py --output <absolute path>`. After PR #123 merges, bundles without the `eventhub-log-guard` patch are refused: rebuild them.
 
 ## Previous slices
 
@@ -277,7 +300,7 @@ Known local-only limitation (pre-existing on main): test_native_adapter_death_re
 The original slices are delivered: #6–#13 are closed. Remaining:
 1. **Hosted CI:** restore it (billing). Then rerun CI on `main` to confirm the Docker-verified merges on x86_64.
 2. **Hosted LLVM 20 Rust job:** mirror the Docker `rust-llvm20` lane in `ci.yml` once Actions runs again. It needs a workflow-scope push over SSH.
-3. **#27:** if the lost `stopped` event on an attached JVM recurs, capture the DAP trace and fix it from that evidence. It recurred twice under full-suite load in the launch-only adapter test; details are on the issue.
+3. **#27:** merge `fix/java-lost-stop` (PR #123: the java-debug Event Hub patch, plus fail-fast detectors). Then rebuild the local Java bundles (`work/java-adapter-*`, and the bundle `~/.peeky/venice/attach-*.json` points to) with `scripts/setup_java_adapter.py`: older bundles are refused. If `Lost stop:` or `event thread died` errors still occur, capture `debugger_events` (trace and stderr).
 4. **ADR 0004, step 5:** a prepared-build cache, only if measured probe latency requires it. Step 4 shipped in #35; the SQL-shaped probe form was deliberately not implemented.
 5. Implement the bounded evidence correlation design (code, logs, metrics).
 6. A live-model evaluation on Venice, using the cookbook.
