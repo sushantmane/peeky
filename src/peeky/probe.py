@@ -852,7 +852,8 @@ _UNPROVEN_RUST = (
     "parameter's target or a live enclosing variable; a raw pointer: never) in the "
     "innermost frame of an unoptimized build. Here it "
     "may be moved or dropped, or the MIR cannot say (a generic `T`, `Self` or `impl "
-    "Trait`, an async body, a closure's capture, an unmangled `#[no_mangle]` function), so "
+    "Trait`, an `async fn`'s parameter, a closure's capture, an unmangled `#[no_mangle]` "
+    "function), so "
     "its pointer can reach freed memory (#101, #110). A plain function's own local reads "
     "on a line where it is live; otherwise capture what it holds where it is created"
 )
