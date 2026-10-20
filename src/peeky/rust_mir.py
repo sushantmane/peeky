@@ -111,6 +111,11 @@ _BRANCHES = re.compile(r"^(?:assert\(!?(?:move|copy) |switchInt\((?:move|copy) )
 # A borrow of a local's own storage: no `*` before the local in the place.
 _STRING = re.compile(r'"(?:[^"\\]|\\.)*"')
 _DROP_PLACE = re.compile(r"^drop\((.+)\) -> ")
+# A place of a local's own, no deref in it: a field (`(_1.1: Box<Pt>)`, `((_1.0: S).2:
+# T)`) or an element (`_1[_5]`) of the local `_1` itself (#108).
+_DIRECT_PLACE = re.compile(r"^\(*_([0-9]+)[.\[]")
+# A constant stored in a local (`_20 = const false;`, a drop flag).
+_CONSTANT_STORE = re.compile(r"^_([0-9]+) = const [^;]*;$")
 _STORE = re.compile(r"^(\(+\*_[0-9]+\).*?|\(\*_[0-9]+\)) = ")
 # `_23 = copy ((BOX.0: Unique<T>).0: NonNull<T>) as *const T (Transmute)`: BOX is a Box
 # place (`_1`, `(_1.2: Box<T>)`, `((*_13).1: Box<Inner>)`).
@@ -790,22 +795,27 @@ class Body:
         state = self._terminate(text, state)
         if assigned := _ASSIGN.match(text):
             state |= 1 << int(assigned[1])
-        elif (box := self._replacements()[1].get(text)) is not None:
-            # The store of `bx.data = new` makes the Box whole again only if it was
-            # whole before the drop (no field moved out earlier).
-            pending = 1 << self._pending(box)
+        elif (local := self._replacements()[1].get(text)) is not None:
+            # The store of `bx.data = new` (or `h.b = new`) makes the Box (the local)
+            # whole again only if it was whole before the drop (no field moved out
+            # earlier, nor since).
+            pending = 1 << self._pending(local)
             if state & pending:
-                state |= 1 << box
+                state |= 1 << local
             state &= ~pending
         return state
 
     def _terminate(self, text, state):
-        """``text``'s kills; the drop of a drop-and-replace through a Box remembers (in
-        the Box's pending bit) whether the Box was whole."""
-        if (box := self._replacements()[0].get(text)) is not None:
-            pending = 1 << self._pending(box)
-            state = state | pending if state & (1 << box) else state & ~pending
-        return state & ~_mask(self._kills(text))
+        """``text``'s kills; the drop of a drop-and-replace remembers (in the local's
+        pending bit) whether the local was whole. Any other move or drop of the local
+        forgets it: the store then leaves it partly moved."""
+        killed = self._kills(text)
+        box = self._replacements()[0].get(text)
+        whole = box is not None and state & (1 << box)
+        state &= ~_mask(killed) & ~_mask(self._pending(local) for local in killed)
+        if whole:
+            state |= 1 << self._pending(box)
+        return state
 
     def _pending(self, box):
         if self._offset is None:
@@ -813,10 +823,12 @@ class Body:
         return self._offset + box
 
     def _replacements(self):
-        """({drop: Box local}, {store: Box local}) for `bx.data = new` or `*bx = new`
-        through a Box: `drop(((*_13).1: T))` then, next in the drop's target, the store
-        to the same place through another pointer of the same Box. The store fills what
-        the drop emptied."""
+        """({drop: local}, {store: local}) for a drop-and-replace: `bx.data = new` or
+        `*bx = new` through a Box (`drop(((*_13).1: T))`, then the store to the same
+        place through another pointer of the same Box), and `h.b = new` on a local's
+        own field or element (`drop((_1.1: Box<Pt>))`, then `(_1.1: Box<Pt>) = move
+        _4;` with nothing but storage markers and drop flags between, #108). The store
+        fills what the drop emptied."""
         if self._replaced is None:
             boxes, drops, found = self._boxes(), {}, {}
             for block in self.blocks.values():
@@ -825,35 +837,57 @@ class Body:
                 if not dropped or target is None or target not in self.blocks:
                     continue
                 place = _through_box(dropped[1], boxes, self._box_paths)
-                if place is None:
+                direct = _DIRECT_PLACE.match(dropped[1])
+                if place is None and direct is None:
                     continue
-                # The next thing it does, past storage markers, new pointers to the Box,
-                # the debug checks on them (`assert(copy _44, "misaligned pointer
-                # dereference...")` and its arithmetic) and `goto`s.
-                number, seen, text = target, set(), None
-                while number in self.blocks and number not in seen and text is None:
-                    seen.add(number)
-                    for statement, _, _ in self.blocks[number].statements:
-                        whole = _WHOLE_ASSIGNMENT.match(statement)
-                        if _NO_CODE.match(statement) or (whole and "->" not in statement):
-                            continue
-                        if goto := re.fullmatch(r"goto -> bb([0-9]+);", statement):
-                            number = int(goto[1])
-                        elif statement.startswith("assert(") and (
-                            success := re.search(r"\bsuccess: bb([0-9]+)", statement)
-                        ):
-                            number = int(success[1])
-                        else:
-                            text = statement
-                        break
-                    else:
-                        break
-                store = _STORE.match(text or "")
-                if store and _through_box(store[1], boxes, self._box_paths) == place:
-                    found[text] = place[0]
-                    drops[block.terminator] = place[0]
+                text, passed = self._next_code(target)
+                if place is not None:
+                    store = _STORE.match(text or "")
+                    if store and _through_box(store[1], boxes, self._box_paths) == place:
+                        found[text] = place[0]
+                        drops[block.terminator] = place[0]
+                    continue
+                named = {int(n) for n in _MENTIONED.findall(_STRING.sub('""', dropped[1]))}
+                if (text or "").startswith(dropped[1] + " = ") and all(
+                    (flag := _CONSTANT_STORE.match(statement)) and int(flag[1]) not in named
+                    for statement in passed
+                ):
+                    # The very place, with nothing between that could change what it
+                    # names (an index local) or move out of the local: at most drop
+                    # flags set (`arr[i] = new`).
+                    found[text] = int(direct[1])
+                    drops[block.terminator] = int(direct[1])
             self._replaced = (drops, found)
         return self._replaced
+
+    def _next_code(self, number):
+        """(the next statement from block ``number`` that is not passed over, the code
+        passed over to reach it): storage markers and `goto`s are passed over, and so
+        are other assignments (new pointers to a Box, drop flags) and the debug checks
+        on them (`assert(copy _44, "misaligned pointer dereference...")`), which run."""
+        seen, text, passed = set(), None, []
+        while number in self.blocks and number not in seen and text is None:
+            seen.add(number)
+            for statement, _, _ in self.blocks[number].statements:
+                whole = _WHOLE_ASSIGNMENT.match(statement)
+                if _NO_CODE.match(statement):
+                    continue
+                if whole and "->" not in statement:
+                    passed.append(statement)
+                    continue
+                if goto := re.fullmatch(r"goto -> bb([0-9]+);", statement):
+                    number = int(goto[1])
+                elif statement.startswith("assert(") and (
+                    success := re.search(r"\bsuccess: bb([0-9]+)", statement)
+                ):
+                    passed.append(statement)
+                    number = int(success[1])
+                else:
+                    text = statement
+                break
+            else:
+                break
+        return text, passed
 
     def _aliases(self, local):
         """``local`` and the locals made from it (`&mut (*_1)`, `&((*_1).0: T)`,

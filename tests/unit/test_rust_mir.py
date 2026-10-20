@@ -1484,3 +1484,82 @@ def test_rust_comments_and_literals_are_found_by_one_lexer(text, spans, complete
     assert (blanked is None) is not complete
     if blanked is not None:
         assert len(blanked) == len(text) and blanked.count("\n") == text.count("\n")
+
+
+BOXED = "std::boxed::Box<Pt>"
+
+
+def replaced(between=(), store=f"(_1.1: {BOXED}) = move _4;", dropped=f"(_1.1: {BOXED})"):
+    """`h.b = new` on a local: its drop, then (past ``between``) a store."""
+    return mir(
+        {
+            0: ["_1 = make() -> [return: bb1, unwind continue];"],
+            1: [f"drop({dropped}) -> [return: bb2, unwind: bb4];"],
+            2: ["StorageDead(_5);", *between, store, "goto -> bb3;"],
+            3: ["_6 = const ();", "return;"],
+            4: [store, "resume;"],
+        },
+        bindings=V,
+    )
+
+
+def test_a_field_dropped_and_replaced_in_place_leaves_its_local_whole():
+    # Review of #108: the drop of `h.b = new` ended `h`, and the store of the new Box
+    # into the same place never made it whole again.
+    body = replaced()
+    drops, stores = body._replacements()
+    assert set(drops.values()) == {1} and stores == {f"(_1.1: {BOXED}) = move _4;": 1}
+    assert body.initialized_throughout(1, {3})
+    assert not body.initialized_throughout(1, {2})  # between the drop and the store
+    # A nested field, and an element (`arr[i] = new`).
+    nested = f"((_1.0: Inner).2: {BOXED})"
+    assert replaced(store=f"{nested} = move _4;", dropped=nested).initialized_throughout(1, {3})
+    assert replaced(store="_1[_7] = move _4;", dropped="_1[_7]").initialized_throughout(1, {3})
+    # Past the drop flags an element's store sets (`_20 = const false;`).
+    flagged = replaced(("_20 = const false;",), "_1[_7] = move _4;", "_1[_7]")
+    assert flagged.initialized_throughout(1, {3})
+
+
+@pytest.mark.parametrize(
+    "between, store, dropped",
+    [
+        # The store goes to another field, or another element.
+        ((), "(_1.0: i64) = const 2_i64;", None),
+        ((), "_1[_8] = move _4;", "_1[_7]"),
+        # Something runs between them (an index changes; a move out of the local).
+        (("_7 = const 1_usize;",), "_1[_7] = move _4;", "_1[_7]"),
+        ((f"_9 = move (_1.0: {BOXED});",), None, None),
+        # Not the local's own place: through a pointer it holds.
+        ((), f"((*_1).1: {BOXED}) = move _4;", f"((*_1).1: {BOXED})"),
+    ],
+)
+def test_a_drop_whose_store_is_not_to_the_same_place_is_never_paired(between, store, dropped):
+    body = replaced(
+        between,
+        store or f"(_1.1: {BOXED}) = move _4;",
+        dropped or f"(_1.1: {BOXED})",
+    )
+    assert body._replacements() == ({}, {})
+    assert not body.initialized_throughout(1, {3})
+
+
+def test_a_replaced_field_leaves_a_partly_moved_local_partly_moved():
+    # `let d = h.b; h.v = new;`: the store fills `h.v`, not `h.b`.
+    body = mir(
+        {
+            0: ["_1 = make() -> [return: bb1, unwind continue];"],
+            1: [
+                f"_2 = move (_1.1: {BOXED});",
+                "drop((_1.0: Vec<i64>)) -> [return: bb2, unwind continue];",
+            ],
+            2: ["(_1.0: Vec<i64>) = move _4;", "goto -> bb3;"],
+            3: ["return;"],
+        },
+        bindings=V,
+    )
+    assert set(body._replacements()[0].values()) == {1}
+    assert not body.initialized_throughout(1, {3})
+    # The store moving out of the local itself (`h.b = h.c`) leaves it partly moved.
+    body = replaced(store=f"(_1.1: {BOXED}) = move (_1.2: {BOXED});")
+    assert set(body._replacements()[1].values()) == {1}
+    assert not body.initialized_throughout(1, {3})

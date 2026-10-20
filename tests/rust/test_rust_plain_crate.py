@@ -3145,9 +3145,33 @@ fn live() -> i64 {
     z + k + h.b.x + t.0.y + arr[1].b.x + w.n + w.label.len() as i64 // AG_LIVE
 }
 
+fn reassigned() -> i64 {
+    let mut h = holder(5);
+    h.b = Box::new(Pt { x: 8, y: 9 });
+    h.n = 2;
+    let mut w = texts_of(3);
+    w.s = String::from("changed");
+    w.v = vec![9];
+    w.label = "relabelled".into();
+    let mut arr = [holder(5), holder(7)];
+    arr[1] = holder(8);
+    let z = churn();
+    z + h.b.x + w.n + arr[1].b.x // AG_REASSIGNED
+}
+
+fn partly_replaced() -> i64 {
+    let mut h = holder(5);
+    let d = h.b;
+    drop(d);
+    h.v = vec![9];
+    let z = churn();
+    z + h.n // AG_PARTLY_REPLACED
+}
+
 fn main() {
     let a = dropped() + moved_call() + moved_let() + partial();
     println!("{} {} {} {}", a, others(), texts(), live());
+    println!("{} {}", reassigned(), partly_replaced());
 }
 """
 
@@ -3263,3 +3287,32 @@ def test_session_listings_of_moved_aggregates_and_callers_aggregates(plain, caps
     finally:
         main(["session", "close"])
         capsys.readouterr()
+
+
+@pytest.mark.timeout(600)
+def test_a_field_reassigned_in_place_leaves_its_struct_whole(plain, capsys):
+    # Review of #108: `h.b = new` drops the old Box in place (`drop((_1.1: Box<Pt>))`),
+    # then stores the new one there; the drop alone left `h` stale after the store.
+    (plain / "src/main.rs").write_text(AGGREGATES)
+    capture = (
+        "h,h.b.x,h.b.y,h.n,w,w.n,w.v.len,w.s.vec.len,w.label.length,arr[0].b.x,arr[1].b.x,arr[1].n"
+    )
+    rows = _rows_at(plain, capsys, "AG_REASSIGNED", capture)
+    expected = {
+        "h.b.x": "8",
+        "h.b.y": "9",
+        "h.n": "2",
+        "w.n": "3",
+        "w.v.len": "1",
+        "w.s.vec.len": "7",
+        "w.label.length": "10",
+        "arr[0].b.x": "5",
+        "arr[1].b.x": "8",
+        "arr[1].n": "12",
+    }
+    assert {name: rows[name].get("value") for name in expected} == expected, rows
+    assert not any(row.get("stale") or row.get("view") for row in rows.values()), rows
+    # A field moved out first: replacing another leaves the struct partly moved.
+    rows = _rows_at(plain, capsys, "AG_PARTLY_REPLACED", "h,h.b,h.b.x,h.n,h.v.len")
+    assert _hidden(rows["h.b.x"]) and rows["h.b"]["view"] == "unproven", rows
+    assert _stale(rows["h"]) and _stale(rows["h.n"]) and rows["h.v.len"].get("stale"), rows
