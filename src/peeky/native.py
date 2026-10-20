@@ -710,15 +710,18 @@ def _balanced(name):
     return not depth
 
 
-def _locals(dies, offset):
+def _locals(dies, offset, hidden=None):
     """{name: {types}} for the parameters and variables of one function body, including
     nested blocks but not the bodies of calls inlined into it. A type is the name
-    dwarfdump gives the DIE's DW_AT_type (`long long`, `Stats *`)."""
+    dwarfdump gives the DIE's DW_AT_type (`long long`, `Stats *`). ``hidden(offset)``:
+    a binding left out (a macro's own, see function_scopes)."""
     names, pending = {}, list(dies[offset]["children"])
     while pending and len(names) < 512:
         child = pending.pop()
         die = dies[child]
         if die["tag"] in ("DW_TAG_formal_parameter", "DW_TAG_variable"):
+            if hidden and hidden(child):
+                continue
             chain = _chain(dies, child)
             name = _text(_first(dies, chain, "DW_AT_name"))
             # `$`-prefixed names are debugger-synthesized storage, not program locals.
@@ -730,10 +733,24 @@ def _locals(dies, offset):
     return names
 
 
+def _bindings(dies, offset):
+    """The parameter and variable DIEs of one function body, nested blocks included, the
+    bodies of calls inlined into it not (as _locals walks them; at most 512)."""
+    found, pending = [], list(dies[offset]["children"])
+    while pending and len(found) < 512:
+        child = pending.pop()
+        tag = dies[child]["tag"]
+        if tag in ("DW_TAG_formal_parameter", "DW_TAG_variable"):
+            found.append(child)
+        elif tag == "DW_TAG_lexical_block":
+            pending.extend(dies[child]["children"])
+    return found
+
+
 _MAX_SPANS = 8
 
 
-def _block_spans(dies, entry, root, addresses, numbers, source_of):
+def _block_spans(dies, entry, root, addresses, numbers, source_of, hidden=None):
     """({name: {(first, last)}}, {names visible in the whole function}), or None when
     the declarations were too many to read all: the lines of the blocks declaring each
     local, for the locals declared only inside nested blocks (a `for` loop's `i`), so
@@ -787,6 +804,8 @@ def _block_spans(dies, entry, root, addresses, numbers, source_of):
     def name_of(child):
         die = dies[child]
         if die["tag"] not in ("DW_TAG_formal_parameter", "DW_TAG_variable"):
+            return None
+        if hidden and hidden(child):
             return None
         name = _text(_first(dies, _chain(dies, child), "DW_AT_name"))
         return None if not name or name.startswith("$") else name
@@ -975,13 +994,18 @@ def _macro_rules_lines(text):
     return lines
 
 
-def function_scopes(info, line_text, workspace, declared):
+def function_scopes(info, line_text, workspace, declared, hidden=None):
     """Each function in a declared source: qualified name, source, line span, locals.
 
     Display only (`describe`). A line-table row belongs to the innermost function or
     inlined call whose address range covers it, so an inlined callee's lines count for
     the callee, not its caller. Copies of one function (C1/C2 constructors, inlined and
     out-of-line copies) are merged through the DIE that declares them.
+
+    ``hidden(linkages, declared)``: for one function, given its copies' linkage names
+    and the (source, name, line) of every parameter and variable its debug information
+    declares (source None for another file), a test (source, name, line) of which are
+    left out as a macro's own bindings (Rust: `println!`'s `args`), or None.
     """
     replaced = set()
     dies, functions, lines, (inputs, sources), _, addresses = _function_entries(
@@ -991,6 +1015,27 @@ def function_scopes(info, line_text, workspace, declared):
 
     def source_of(attribute):
         return _source_of(attribute, inputs, workspace, sources)
+
+    def position(offset):
+        chain = _chain(dies, offset)
+        line = _first(dies, chain, "DW_AT_decl_line")
+        return (
+            source_of(_first(dies, chain, "DW_AT_decl_file")),
+            _text(_first(dies, chain, "DW_AT_name")),
+            int(line) if line and line.isdigit() else None,
+        )
+
+    def skipped(entry, root):
+        """The test of which of this function's bindings are left out (see hidden)."""
+        if hidden is None:
+            return None
+        copies = (*entry["bodies"], root)
+        linkages = {
+            _text(_first(dies, _chain(dies, body), "DW_AT_linkage_name")) for body in copies
+        }
+        declared_here = {position(offset) for body in copies for offset in _bindings(dies, body)}
+        test = hidden(linkages, declared_here)
+        return None if test is None else (lambda offset: test(*position(offset)))
 
     found, macros = {}, {}
     for root, entry in functions.items():
@@ -1005,9 +1050,9 @@ def function_scopes(info, line_text, workspace, declared):
         numbers = _own_lines(dies, entry, lines.get(root), macros[source] or frozenset())
         if name is None or not numbers:
             continue
-        names = {}
+        names, skip = {}, skipped(entry, root)
         for body in (*entry["bodies"], root):
-            for local, kinds in _locals(dies, body).items():
+            for local, kinds in _locals(dies, body, skip).items():
                 names.setdefault(local, set()).update(kinds)
         scope = {
             "scope": name,
@@ -1033,7 +1078,7 @@ def function_scopes(info, line_text, workspace, declared):
             declared_at and declared_at.isdigit() and int(declared_at) in (macros[source] or ())
         )
         blocks = (
-            _block_spans(dies, entry, root, ran, numbers, source_of)
+            _block_spans(dies, entry, root, ran, numbers, source_of, skip)
             if macros[source] is not None and not in_macro
             else None
         )
@@ -2244,6 +2289,13 @@ def _writable_integer(variable):
     )
 
 
+class Everywhere(str):
+    """A reason no stop of this run allows a change (mid_statement): no other stop, line
+    or step helps, so no advice to stop elsewhere goes with it."""
+
+    everywhere = True
+
+
 class ValueNote(str):
     """What ``not_yet_declared`` gives for a local it shows, though it cannot vouch for
     the value: the row carries ``note``. As a string, why a change there is refused,
@@ -3109,6 +3161,25 @@ class NativeSession:
         text = _UNJUDGED[kind].format(detail)
         return ValueNote(text, text, refuses=False)
 
+    def _unread_statements(self):
+        """Why Peeky reads no function's statements for this run, so that no stop allows a
+        change (an ``Everywhere`` reason), or None: the build's declarations were not
+        read (a program using setjmp has none, as _root_type says; or its debug
+        information could not be read)."""
+        kind, detail, _ = getattr(self, "unjudged", None) or (None, None, None)
+        if kind == "setjmp":
+            return Everywhere(
+                "the program uses setjmp/longjmp (or a context switch), and Peeky reads no "
+                "statements or declarations of a program using setjmp, so no value can be "
+                "changed in this program"
+            )
+        if kind == "unreadable":
+            return Everywhere(
+                f"Peeky could not read the build's debug information ({detail}), so no "
+                "value can be changed in this program"
+            )
+        return None
+
     def validate_mutation_target(self, variable, frame):
         if (reason := self.not_yet_declared(variable, frame)) and getattr(reason, "refuses", True):
             raise ValueError(
@@ -3139,6 +3210,9 @@ class NativeSession:
         the statement's own lowest row (`t = inl(&p) + p.y;`). Anything else, or anything
         Peeky cannot tell, is refused. ``stop``: the stop's reason (unused: the address
         says it)."""
+        if not getattr(self, "declarations", None) and (unread := self._unread_statements()):
+            # No stop of this run is placed: no other stop would allow a change.
+            return unread
         place, function, address = self._place(frame), self._function_at(frame), None
         if function is not None:
             address = self._unslid(frame)
@@ -3266,7 +3340,8 @@ class NativeSession:
         function = self._function_at(frame) if self.fields is not None else None
         if function is None or function.get("types") is None:
             raise Unsettable(
-                "Peeky cannot match this frame to the build's debug information (it reads "
+                self._unread_statements()
+                or "Peeky cannot match this frame to the build's debug information (it reads "
                 "it when the session starts; a program using setjmp has none)"
             )
         return (*self._declared_type(function["types"], root.get("name")), self.fields)

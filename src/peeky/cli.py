@@ -548,7 +548,8 @@ def describe(args):
             "report | close",
             "verify": f"peeky verify {target}{at} --check <checker.py> "
             "--old <text> --new <text> (or --old-file/--new-file; repeat the pair for several "
-            "edits, each quoting the original file)",
+            "edits, each quoting the original file); --baseline instead checks the unedited "
+            "program, which the checker should fail",
             "background": "add --background to probe or verify, then `peeky job wait <id>` "
             "(exit 3 while running)",
             **(
@@ -601,14 +602,14 @@ def describe(args):
             "rust": "integer root locals (i16 to i64, u16 to u64, isize, usize) the program "
             "keeps in memory; `inspect` marks them [settable]. Also such integer fields and "
             "elements (s.end, t.__0, xs[2]) of a struct, tuple or array local the MIR proves "
-            "initialized, never through a reference, Box or enum (unmarked)",
+            "initialized, never through a reference, Box or enum; rows mark them [settable] too",
             "c": "integer root locals (16 to 64 bits, incl. size_t/int64_t); `inspect` marks "
             "them [settable]. Also such integer fields and elements (s.end, s.in.lo, xs[2]) "
-            "of a struct or array local, never through a pointer (unmarked)",
+            "of a struct or array local, never through a pointer; rows mark them [settable] too",
             "cpp": "integer root locals (16 to 64 bits, incl. size_t/int64_t); `inspect` marks "
             "them [settable]. Also such integer fields and elements (s.end, xs[2]) of a "
             "struct, class or array local, never through a pointer or reference, nor in std "
-            "types (unmarked)",
+            "types; rows mark them [settable] too",
             "java": "numeric/boolean root locals, and numeric/boolean fields (not final or "
             "static) and array elements (current.end, xs[0]); rows mark them [settable]",
             "java-attach": "numeric/boolean root locals, fields and array elements (attached "
@@ -1215,6 +1216,16 @@ def _variables_text(snapshot, name="default"):
         lines.append(_OPTIMIZED_NOTE.format(snapshot["optimized"]))
     if snapshot.get("mutation_blocked"):
         lines.append(f"note: {snapshot['mutation_blocked']}")
+    if snapshot.get("unsettable"):
+        lines.append(
+            f"note: nothing here is [settable]: {snapshot['unsettable']}"
+            + (
+                ""
+                if snapshot.get("unsettable_everywhere")
+                else ". Values change at a statement's first instruction: `session continue "
+                "--to LINE`, or a `session step` that lands on a statement's first line"
+            )
+        )
     return "\n".join(lines)
 
 
@@ -1250,6 +1261,7 @@ def _get_lines(row):
             + (f"  [id {row['identity']}]" if row.get("identity") else "")
             + ("  [module global]" if row.get("scope") == "globals" else "")
             + ("  [stale]" if row.get("stale") else "")
+            + ("  [settable]" if row.get("settable") else "")
         ]
     for child in row.get("children", []):
         name = child.get("selector") or f"{child['name']} [not selectable]"
@@ -1269,6 +1281,8 @@ def _get_lines(row):
             shown += "  [unproven]"
         if child.get("stale"):
             shown += "  [stale]"
+        if child.get("settable"):
+            shown += "  [settable]"
         lines.append(f"  {name}: {child.get('type') or ''} = {value}{shown}{more}")
     if row.get("children_truncated"):
         lines.append("  ... more children; select one by name or index")
@@ -1438,10 +1452,9 @@ def session(args):
         _emit(
             report,
             args.json,
-            lambda r: (
-                f"state: {r['state']}\noutput:\n{r['output']}operations: {len(r['history'])} "
-                "(worker requests in this session, including waits; --json lists them)"
-            ),
+            # The worker's request history (`history`, several per command) is JSON only:
+            # a bare count of it read as the commands run (sixth evaluation, finding 14).
+            lambda r: f"state: {r['state']}\noutput:\n{r['output'].rstrip(chr(10)) or '(none)'}",
         )
     elif args.action == "close":
         from peeky.client import TransportLost, WorkerUnreachable
@@ -1891,6 +1904,11 @@ def _edit_pairs(args):
         if given and files:
             raise ValueError(f"Pass either --{name} or --{name}-file, not both")
         texts[name] = list(given) or [_edit_text(None, path, name) for path in files]
+    if args.command == "verify" and not texts["old"] and not texts["new"]:
+        raise ValueError(
+            "verify needs an edit: --old and --new (or --old-file/--new-file), or --baseline "
+            "to check the unedited program"
+        )
     if not texts["old"] or len(texts["old"]) != len(texts["new"]):
         raise ValueError(
             "Pass --old and --new (or their -file forms) once per edit, in pairs: "
@@ -1924,27 +1942,33 @@ def _edit_text(text, path, name):
 
 
 def _check_edit(text, old, new, which=""):
-    if not old or old == new:
-        raise ValueError(f"--old must match exactly once and --new must change it{which}")
+    """Refuse an edit whose --old is not in the original exactly once, or whose --new
+    changes nothing, saying which condition failed."""
+    if not old:
+        raise ValueError(f"--old is empty{which}: it must quote text of the file exactly once")
     count = text.count(old)
+    same = (
+        f"--new equals --old{which}, so the edit changes nothing (to run the unedited "
+        "program, leave out --old/--new; to check it, `verify --baseline`)"
+    )
+    if count == 1 and old == new:
+        raise ValueError(same)
     if count == 1:
         return
+    also = "; also, --new equals --old" if old == new else ""
     if count:
         lines, start = [], 0
         while (index := text.find(old, start)) >= 0 and len(lines) < 10:
             lines.append(str(text.count("\n", 0, index) + 1))
             start = index + len(old)
         raise ValueError(
-            f"--old must match exactly once and --new must change it{which}; it matched "
-            f"{count} times (lines {', '.join(lines)}); include more surrounding text"
+            f"--old matched {count} times{which} (lines {', '.join(lines)}); it must match "
+            f"exactly once: include more surrounding text{also}"
         )
     advice = "copy the exact text, including indentation"
     if "\\n" in old and "\n" not in old:
         advice = "it contains a literal backslash-n; pass real newlines (bash: $'a\\nb')"
-    raise ValueError(
-        f"--old must match exactly once and --new must change it{which}; it matched 0 times: "
-        f"{advice}"
-    )
+    raise ValueError(f"--old matched 0 times{which}; it must match exactly once: {advice}{also}")
 
 
 def _diff(before, after, name):
@@ -1964,11 +1988,12 @@ def _verify_candidate(args, root, program, language, data, source, check, destin
 
         original = digest(source)
         text = source.read_text()
-        if text.count(args.old) != 1 or args.old == args.new:
+        if args.old is not None and (text.count(args.old) != 1 or args.old == args.new):
             raise ValueError("--old must match exactly once and --new must change it")
         candidate = destination / "candidate" / program
         candidate.parent.mkdir(parents=True, exist_ok=True)
-        candidate.write_text(text.replace(args.old, args.new, 1))
+        # --baseline: the unedited program, checked as a candidate is.
+        candidate.write_text(text if args.old is None else text.replace(args.old, args.new, 1))
         candidate_sha256 = hashlib.sha256(candidate.read_bytes()).hexdigest()
         result = {
             **run_checker(check, candidate, root, deadline=deadline),
@@ -2003,15 +2028,24 @@ def verify(args):
     program = _default_program(program, data, "verify")
     source, check = (root / program).resolve(strict=True), Path(args.check).resolve(strict=True)
     original = source.read_text()
-    # Several edits are verified as the one edit with their combined effect.
-    args.old, args.new = combine_edits(original, _checked_edit(original, _edit_pairs(args)))
+    if args.baseline:
+        if any(getattr(args, name) for name in ("old", "new", "old_file", "new_file")):
+            raise ValueError(
+                "--baseline checks the unedited program: leave out --old/--new (and their "
+                "-file forms)"
+            )
+        args.old = args.new = None
+    else:
+        # Several edits are verified as the one edit with their combined effect.
+        args.old, args.new = combine_edits(original, _checked_edit(original, _edit_pairs(args)))
+    edited = original if args.baseline else original.replace(args.old, args.new, 1)
     destination = Path(tempfile.mkdtemp(prefix="peeky-verify-"))
     try:
         result = _verify_candidate(
             args, root, program, language, data, source, check, destination, deadline
         )
         # The reported diff must describe exactly the candidate that was verified.
-        expected = original.replace(args.old, args.new, 1).encode()
+        expected = edited.encode()
         if hashlib.sha256(expected).hexdigest() != result.get("candidate_sha256"):
             raise RuntimeError(
                 "Original source changed during verification; the verified candidate does "
@@ -2022,7 +2056,10 @@ def verify(args):
             shutil.rmtree(destination, ignore_errors=True)
     result.setdefault("stage", "verification")
     result["seconds"] = round(time.monotonic() - started, 3)
-    result["diff"] = _diff(original, original.replace(args.old, args.new, 1), program)
+    result["diff"] = _diff(original, edited, program)
+    if args.baseline:
+        # The checker's verdict on the program as it is: it should fail on the bug.
+        result["baseline"] = True
     if args.keep:
         result["kept"] = str(destination)
     else:
@@ -2065,8 +2102,34 @@ def _verify_text(result, keep=False):
             f"candidate: {result.get('candidate')} (the edited file, and for compiled "
             "programs the build evidence beside it; build artifacts are not kept)"
         )
-    lines.append("diff:\n" + result["diff"])
+    if result.get("baseline"):
+        lines.append(
+            "baseline: the unedited program, no edit"
+            + (
+                " (the checker rejects it, as it should reject the bug)"
+                if _rejected(result)
+                else ""
+            )
+        )
+    else:
+        lines.append("diff:\n" + result["diff"])
     return "\n".join(line for line in lines if line)
+
+
+def _rejected(result):
+    """Whether the checker ran to its own verdict and rejected the program: an assertion
+    failed, or it exited with a nonzero status. Not a crash of the checker (any other
+    exception), a timeout, nor a build that failed before it ran."""
+    error = str((result.get("checker") or {}).get("error") or "")
+    return (
+        result.get("stage") == "verification"
+        and not result.get("timed_out")
+        and result.get("exit_code") not in (0, None)
+        and (
+            error.startswith("AssertionError")
+            or re.fullmatch(r"SystemExit: (?!0$|None$)\S.*", error) is not None
+        )
+    )
 
 
 def _printable(text):
@@ -2477,7 +2540,7 @@ def main(argv=None, _job=False, _edits=None):
         ),
         ("continue", "Resume to the next breakpoint stop, --to LINE, or --to-exit"),
         ("step", "Run to the next line (--into a call, --out of the function)"),
-        ("report", "State, program output and the session's operation count"),
+        ("report", "State and program output (--json also lists the worker's requests)"),
         ("close", "End the session and stop its local worker"),
     ):
         common(actions.add_parser(name, help=about), target=False)
@@ -2535,17 +2598,33 @@ def main(argv=None, _job=False, _edits=None):
     stepping = actions.choices["step"].add_mutually_exclusive_group()
     stepping.add_argument("--into", action="store_true", help="Step into the call on this line")
     stepping.add_argument("--out", action="store_true", help="Run until this function returns")
-    sub = commands.add_parser("verify", help="Fresh build + independent checker for one edit")
+    sub = commands.add_parser(
+        "verify",
+        help="Fresh build + independent checker for one edit (--baseline: the unedited program)",
+        usage="%(prog)s target --check CHECK (--old OLD --new NEW [--old OLD --new NEW ...] | "
+        "--baseline)\n                    [--at AT] [--config CONFIG] [--json] [--keep] "
+        "[--details] [--timeout TIMEOUT]\n                    [--quiet] [--background]",
+        description="Build the program fresh with the edit and run the trusted checker on it. "
+        "--old and --new (or --old-file/--new-file) are required, once per edit, unless "
+        "--baseline, which checks the unedited program instead: the checker should fail there "
+        "before a fix's `passed: True` means anything.",
+    )
     common(sub)
     sub.add_argument("--at", help="Program path (for multi-file targets)")
     sub.add_argument("--check", required=True, help="Trusted checker script")
     sub.add_argument(
         "--old",
         action="append",
-        help="Exact source text to replace (once); repeat --old/--new for several edits, "
-        "each quoting the original file",
+        help="Required unless --baseline: exact source text to replace (once); repeat "
+        "--old/--new for several edits, each quoting the original file",
     )
     edit_options(sub)
+    sub.add_argument(
+        "--baseline",
+        action="store_true",
+        help="Instead of an edit, build and check the unedited program (no --old/--new): "
+        "`passed: False` shows the checker catches the bug",
+    )
     sub.add_argument(
         "--keep",
         action="store_true",
