@@ -3538,3 +3538,154 @@ def _preview_rows(plain, capsys, marker, capture):
     for row in rows.values():
         row["output"] = result["output"]
     return rows
+
+
+GENERIC_PREVIEWS = """#![allow(non_camel_case_types)]
+#[derive(Debug, Clone, Copy)]
+pub struct Pair<T> {
+    a: T,
+    b: T,
+}
+
+#[derive(Debug)]
+pub struct Pt {
+    x: i64,
+    y: i64,
+}
+
+#[derive(Debug)]
+pub struct Holder {
+    b: Box<Pt>,
+    n: i64,
+}
+
+#[inline(never)]
+fn churn() -> i64 {
+    Box::leak(Box::new(Pt { x: 777, y: 888 })).x
+}
+
+// Type parameters named like primitives: the MIR of the generic body says `Pair<i8>`.
+fn show<i8: std::fmt::Debug + Copy>(p: Pair<i8>, t: (i8, i8)) -> String {
+    let v: Vec<Pair<i8>> = vec![p];
+    let n = v.len(); // GP_SHOW
+    format!("{:?} {:?} {:?} {}", p, t, v, n)
+}
+
+fn label<u64: std::fmt::Debug + Copy>(x: u64) -> String {
+    format!("{:?}", x) // GP_LABEL
+}
+
+fn keep<i64: std::fmt::Debug>(h: i64) -> usize {
+    drop(h);
+    churn() as usize // GP_KEEP
+}
+
+fn main() {
+    let x = show(Pair { a: 1i8, b: 2i8 }, (3i8, 4i8));
+    let y = show(Pair { a: 'A', b: 'B' }, ('C', 'D'));
+    let z = label(7usize);
+    let k = keep(Holder { b: Box::new(Pt { x: 5, y: 6 }), n: 9 });
+    println!("{x} | {y} | {z} | {k}");
+}
+"""
+
+
+@pytest.mark.timeout(600)
+def test_a_generic_bodys_types_are_never_taken_for_the_frames(plain, capsys):
+    # Review of #106: the MIR of a generic body declares `Pair<i8>` where `i8` is a type
+    # parameter; called with chars, `p` showed `Pair { a: 65, b: 0 }` from `Pair<i8>`'s
+    # layout, `t` `(67, 0)`, and the Vec `v` its elements likewise.
+    (plain / "src/main.rs").write_text(GENERIC_PREVIEWS)
+    at = f"src/main.rs:{line_of(GENERIC_PREVIEWS, '// GP_SHOW')}"
+    code, result = run(
+        capsys,
+        "probe",
+        str(plain),
+        "--at",
+        at,
+        "--capture",
+        "p,t,v,p.a,t.__0",
+        "--hits",
+        "2",
+        "--quiet",
+    )
+    assert code == 0, result.get("error")
+    first, second = (
+        {row["selector"]: row for row in result["rows"] if row["hit"] == hit} for hit in (1, 2)
+    )
+    # Two instantiations, one MIR body.
+    assert first["p"]["function"] != second["p"]["function"], result["rows"]
+    for name in ("p", "t", "v"):
+        assert second[name].get("view") != "memory", second[name]
+    # The debugger's own fields: the chars the program holds.
+    assert second["p.a"]["value"] == "'A'" and second["t.__0"]["value"] == "'C'", second
+    assert "65" not in str(second) and "67" not in str(second), second
+    # A scalar's Rust type: not the MIR's `u64` (a type parameter, here a usize).
+    at = f"src/main.rs:{line_of(GENERIC_PREVIEWS, '// GP_LABEL')}"
+    code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "x", "--quiet")
+    row = result["rows"][0]
+    assert row["value"] == "7" and row["type"] != "u64", row
+    # #108: a type parameter named `i64` holding a struct that owns a Box, dropped: it
+    # read the freed Box (`h.b.x` showed 777).
+    at = f"src/main.rs:{line_of(GENERIC_PREVIEWS, '// GP_KEEP')}"
+    code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "h,h.b.x", "--quiet")
+    whole, field = result["rows"]
+    assert whole.get("stale") and "value" not in field and "777" not in str(field), result["rows"]
+
+
+ODD_STRUCTS = """#[derive(Debug, Clone, Copy)]
+pub struct Num {
+    __0: u32,
+    __1: u32,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct Two(u32, u32);
+
+#[derive(Debug, Clone, Copy)]
+#[repr(packed)]
+pub struct Pk {
+    a: u32,
+    b: u32,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct Span {
+    start: usize,
+    end: usize,
+}
+
+fn main() {
+    let num = Num { __0: 1, __1: 2 };
+    let nums = vec![num];
+    let two = Two(3, 4);
+    let pk = Pk { a: 5, b: 6 };
+    let s = Span { start: 7, end: 8 };
+    println!("{:?} {:?} {:?} {:?} {:?}", num, nums, two, { pk }, s); // ODD
+}
+"""
+
+
+@pytest.mark.timeout(600)
+def test_numbered_fields_and_packed_structs_are_never_previewed(plain, capsys):
+    # Review of #106: a struct whose fields are named `__0`, `__1` previewed as a tuple
+    # struct (`Num(1, 2)`; it prints `Num { __0: 1, __1: 2 }`): the DWARF names a tuple
+    # struct's fields so too. A source naming such a field leaves every tuple struct
+    # raw. A packed struct is never read, even where its fields fall aligned.
+    (plain / "src/main.rs").write_text(ODD_STRUCTS)
+    at = f"src/main.rs:{line_of(ODD_STRUCTS, '// ODD')}"
+    capture = "num,nums,two,pk,s,num.__0,two.__1,pk.b"
+    code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", capture, "--quiet")
+    assert code == 0, result.get("error")
+    rows = {row["selector"]: row for row in result["rows"]}
+    for name in ("num", "nums", "two", "pk"):
+        assert rows[name].get("view") != "memory", rows[name]
+    assert "Num(" not in str(rows) and "Two(" not in str(rows), rows
+    assert (rows["num.__0"]["value"], rows["two.__1"]["value"], rows["pk.b"]["value"]) == (
+        "1",
+        "4",
+        "6",
+    )
+    # A struct with named fields still previews.
+    if os.environ.get("PEEKY_EXPECT_READ_MEMORY") or rows["s"].get("view") == "memory":
+        assert rows["s"]["value"] == "Span { start: 7, end: 8 }", rows["s"]

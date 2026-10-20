@@ -1563,3 +1563,79 @@ def test_a_replaced_field_leaves_a_partly_moved_local_partly_moved():
     body = replaced(store=f"(_1.1: {BOXED}) = move (_1.2: {BOXED});")
     assert set(body._replacements()[1].values()) == {1}
     assert not body.initialized_throughout(1, {3})
+
+
+GENERIC_IR = """define internal void @_ZN3app4show17h1111111111111111E() !dbg !10 {
+start:
+  ret void, !dbg !20
+}
+
+define internal void @_ZN3app4show17h2222222222222222E() !dbg !11 {
+start:
+  ret void, !dbg !21
+}
+
+define internal void @_ZN3app4main17h3333333333333333E() !dbg !12 {
+start:
+  ret void, !dbg !22
+}
+
+define internal void @_ZN3app5fixed17h4444444444444444E() !dbg !13 {
+start:
+  ret void, !dbg !23
+}
+
+!2 = !DIFile(filename: "src/main.rs", directory: "/w")
+!9 = !DINamespace(name: "app", scope: null)
+!10 = distinct !DISubprogram(name: "show<i8>", linkageName: "_ZN3app4show17h1111111111111111E", scope: !9, file: !2, line: 1, unit: !1, templateParams: !30)
+!11 = distinct !DISubprogram(name: "show<char>", linkageName: "_ZN3app4show17h2222222222222222E", scope: !9, file: !2, line: 1, unit: !1, templateParams: !32)
+!12 = distinct !DISubprogram(name: "main", linkageName: "_ZN3app4main17h3333333333333333E", scope: !9, file: !2, line: 5, unit: !1, templateParams: !34)
+!13 = distinct !DISubprogram(name: "fixed<3>", linkageName: "_ZN3app5fixed17h4444444444444444E", scope: !9, file: !2, line: 7, unit: !1, templateParams: !34)
+!20 = !DILocation(line: 2, scope: !10)
+!21 = !DILocation(line: 2, scope: !11)
+!22 = !DILocation(line: 6, scope: !12)
+!23 = !DILocation(line: 8, scope: !13)
+!30 = !{!31}
+!31 = !DITemplateTypeParameter(name: "i8", type: !40)
+!32 = !{!33}
+!33 = !DITemplateTypeParameter(name: "i8", type: !41)
+!34 = !{}
+"""
+
+
+def test_a_generic_instantiation_names_its_type_parameters(tmp_path):
+    # Review of #106: a generic body's MIR types may name a type parameter, whatever its
+    # name (`fn show<i8>(p: Pair<i8>)` called with chars).
+    from peeky.rust_mir import mentions
+
+    path = tmp_path / "app.ll"
+    path.write_text(GENERIC_IR)
+    functions = ir_functions(path, ["src/main.rs"])
+    generics = {hashed[-1]: function.generics for hashed, function in functions.items()}
+    # A const generic (`fixed<3>`, no type parameter listed) is not understood.
+    assert generics == {"1": ("i8",), "2": ("i8",), "3": (), "4": None}
+    assert mentions("Pair<i8>", ("i8",)) and mentions("(i8, i8)", ("i8",))
+    assert mentions("std::vec::Vec<Pair<T>>", ("T",))
+    assert not mentions("chars::i8::Span", ("i8",)) and not mentions("Thing", ("T",))
+    assert not mentions("std::vec::Vec<usize>", ("i8",))
+
+
+def test_a_generic_bodys_primitive_named_types_may_hold_pointers():
+    # `fn hold<u64>(w: u64)`: the `u64` may be a `&mut Vec`, so values made from it alias.
+    body = mir(
+        {
+            0: ["_2 = copy _1;", "_3 = &mut _2;", "return;"],
+        },
+        header="fn main(_1: u64) -> () {",
+    )
+    body.types.update({1: "u64", 2: "u64", 3: "&mut u64"})
+    assert body._aliases(1) == {1}
+    body = mir(
+        {
+            0: ["_2 = copy _1;", "_3 = &mut _2;", "return;"],
+        },
+        header="fn main(_1: u64) -> () {",
+    )
+    body.types.update({1: "u64", 2: "u64", 3: "&mut u64"})
+    body.generics = ("u64",)
+    assert body._aliases(1) == {1, 2, 3}

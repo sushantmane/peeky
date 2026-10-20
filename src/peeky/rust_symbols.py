@@ -29,6 +29,7 @@ from pathlib import Path
 from peeky.adapters import ViewBudgetExhausted
 from peeky.native import _metadata, parse_lines
 from peeky.rust_chars import ESCAPED
+from peeky.rust_lexer import code_only
 
 # An application unit's own DWARF: a program using std's collections has megabytes of
 # monomorphized types (4.4 MB for one using HashMap); dumping and parsing it takes
@@ -682,6 +683,10 @@ def _composite(die, by_offset):
     alignment = max(ELEMENT_TYPES[scalar][0] for _, _, scalar in fields)
     if size % alignment or any(offset % ELEMENT_TYPES[s][0] for _, offset, s in fields):
         raise ValueError("Rust element is not laid out as its fields' alignment requires")
+    declared = re.fullmatch(r"([0-9]+)\)", die.attributes.get("DW_AT_alignment") or "")
+    if declared and int(declared[1]) < alignment:
+        # `#[repr(packed)]`, even where its fields happen to fall aligned.
+        raise ValueError("Rust struct is packed")
     return {
         "element_size": size,
         "alignment": alignment,
@@ -1271,6 +1276,45 @@ def _composite_owned(shown, declared, layouts):
     return names[0]
 
 
+_RUST_PRIMITIVE = re.compile(r"(?<![\w:])(?:[iu](?:8|16|32|64|128|size)|f32|f64|bool|char)(?![\w])")
+
+
+def _spelled(name, shown):
+    """Whether LLDB's type name ``shown`` can be the type the DWARF names ``name`` (or a
+    pointer to it, ``name *``): LLDB names a tuple as the DWARF does (`(char, char)`),
+    and a generic's primitive arguments the C way (`Pair<char>` is Pair<i8> and
+    `Pair<char32_t>` Pair<char>), each of which can be only some Rust primitives."""
+    pointer = name.endswith(" *")
+    base = name.removesuffix(" *")
+    if base.startswith("("):
+        return shown == name
+    parts, at = [], 0
+    for found in _RUST_PRIMITIVE.finditer(base):
+        lldb = RUST_SCALARS.get(found[0])
+        if lldb is None:
+            return False
+        parts += [re.escape(base[at : found.start()]), "(?:" + "|".join(map(re.escape, lldb)) + ")"]
+        at = found.end()
+    parts.append(re.escape(base[at:]))
+    return bool(re.fullmatch("".join(parts) + (r" \*" if pointer else ""), str(shown)))
+
+
+# A field named like a tuple's (`struct Num { __0: u32 }`), declared or written.
+_NUMBERED_FIELD = re.compile(r"(?<![\w:])__[0-9]+\s*:(?!:)")
+
+
+def without_numbered_structs(layouts, texts):
+    """``layouts`` with every tuple struct unread when a source names a field `__0`
+    (`struct Num { __0: u32 }`): the DWARF names a tuple struct's fields so too, and
+    such a struct prints `Num { __0: 1 }`, not `Num(1)`. ``texts``: the sources'."""
+    if not any(_NUMBERED_FIELD.search(code_only(text) or text) for text in texts):
+        return layouts
+    return {
+        name: _UNREAD if layout.get("shape") == "tuple-struct" else layout
+        for name, layout in layouts.items()
+    }
+
+
 def struct_name(declared, shown, layouts):
     """The tuple or struct an owned local is, by the MIR's declared type (`Span`,
     `Pair<i8>`, `(i64, char)`: crate-relative), confirmed by LLDB's (lossy) name; None
@@ -1289,7 +1333,7 @@ def struct_name(declared, shown, layouts):
         # A tuple's name has no path; a struct's is its crate's.
         and name.startswith("(") == plain.startswith("(")
     ]
-    if len(names) != 1 or _lossy(shown) != _lossy(names[0]):
+    if len(names) != 1 or not _spelled(names[0], shown):
         return None
     return names[0]
 
@@ -1308,7 +1352,7 @@ def struct_view(variable, read, layouts, *, parameter=None, owned=False, declare
     """
     name = thin = None
     if match := re.fullmatch(r"&(?:mut )?(.+)", str(parameter or "")):
-        if _lossy(variable.get("type")) == _lossy(f"{match[1]} *"):
+        if _spelled(f"{match[1]} *", variable.get("type")):
             name, thin = match[1], True
     elif owned:
         name, thin = struct_name(declared, variable.get("type"), layouts), False

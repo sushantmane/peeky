@@ -188,6 +188,9 @@ class Body:
     # saves across a suspension (`(((*_34) as variant#3).0: &Pt)`), and {suspending
     # block: the block resuming it}, which the dispatch at bb0 jumps to on a later poll.
     coroutine: int | None = None
+    # The type parameters of a generic body (IrFunction.generics, set when an IR function
+    # is matched to it): a type named like a primitive (`i8`) may be one of them.
+    generics: tuple | None = ()
     saved: frozenset = frozenset()
     resumes: dict = field(default_factory=dict)
     _lent_cache: frozenset | None = None
@@ -907,7 +910,11 @@ class Body:
 
             def link(a, b):
                 if a != b and all(
-                    not _POINTERLESS.fullmatch(self.types.get(n, "")) for n in (a, b)
+                    not _POINTERLESS.fullmatch(kind := self.types.get(n, ""))
+                    # `i64` in a generic body may be a type parameter holding a pointer.
+                    or self.generics is None
+                    or mentions(kind, self.generics)
+                    for n in (a, b)
                 ):
                     edges.setdefault(a, set()).add(b)
                     edges.setdefault(b, set()).add(a)
@@ -1537,12 +1544,25 @@ _LABEL = re.compile(r'^([-$._A-Za-z0-9]+|"[^"]+"):(?:\s+; (?:preds = (.*)|No pre
 _DBG = re.compile(r"!dbg (![0-9]+)")
 _META = re.compile(
     r"^(![0-9]+) = (?:distinct )?!(DILocation|DISubprogram|DILexicalBlock|DILexicalBlockFile"
-    r"|DIFile|DINamespace|DICompositeType)\((.*)\)\s*$"
+    r"|DIFile|DINamespace|DICompositeType|DITemplateTypeParameter|DITemplateValueParameter)"
+    r"\((.*)\)\s*$"
 )
 _METAFIELDS = {
     key: re.compile(rf'(?:^|, ){key}: ("(?:[^"\\]|\\.)*"|![0-9]+|[0-9]+)')
-    for key in ("name", "linkageName", "scope", "file", "line", "column", "inlinedAt", "filename")
+    for key in (
+        "name",
+        "linkageName",
+        "scope",
+        "file",
+        "line",
+        "column",
+        "inlinedAt",
+        "filename",
+        "templateParams",
+    )
 }
+# A short metadata list (`!2313 = !{!2314}`): a subprogram's template parameters.
+_META_LIST = re.compile(r"^(![0-9]+) = (?:distinct )?!\{((?:![0-9]+(?:, )?){0,64})\}\s*$")
 # An instruction that surely leaves code at its location: a call (not an LLVM intrinsic,
 # which may lower to nothing) or a conditional branch.
 _IR_CALL = re.compile(r"^\s*(?:%\S+ = )?(?:tail |musttail |notail )?(?:call|invoke) (?!.*@llvm\.)")
@@ -1570,6 +1590,11 @@ class IrFunction:
     # The names of the namespaces it is in, outermost first (its crate's, then its
     # modules', functions', closures'): `parent` is the last.
     ancestors: tuple = ()
+    # The names of the type parameters this instantiation fills (a generic function's,
+    # its impl's or its enclosing function's, for a closure): () for none, None when it
+    # is generic in a way not understood (a const parameter). Its MIR body is generic,
+    # so any type it declares may name one of them, whatever the name (`i8`).
+    generics: tuple | None = ()
 
     def labeled(self):
         """MIR blocks that have an IR block of their own (`start` is bb0)."""
@@ -1621,7 +1646,9 @@ def ir_functions(path, files):
     with path.open(encoding="utf-8", errors="replace") as stream:
         for line in stream:
             if line.startswith("!"):
-                if found := _META.match(line):
+                if found := _META_LIST.match(line):
+                    meta[found[1]] = ("list", {"items": found[2].split(", ") if found[2] else []})
+                elif found := _META.match(line):
                     meta[found[1]] = (
                         found[2],
                         {
@@ -1719,6 +1746,7 @@ def ir_functions(path, files):
             inlined,
             frozenset(copies.get(subprogram, ())),
             ancestors=_namespaces(meta, fields.get("scope")),
+            generics=_generics(meta, fields),
         )
     # A function LLVM inlined everywhere (`#[inline(always)]`, even at opt-level 0) has
     # no IR function, yet its frames carry its own hash; its MIR body is the one before
@@ -1741,8 +1769,35 @@ def ir_functions(path, files):
             copies=frozenset(lines),
             inline_only=True,
             ancestors=_namespaces(meta, fields.get("scope")),
+            generics=_generics(meta, fields),
         )
     return functions
+
+
+def _generics(meta, fields):
+    """A DISubprogram's type parameters, by name (see IrFunction.generics)."""
+    kind, listed = meta.get(fields.get("templateParams"), (None, {}))
+    items = listed.get("items", []) if kind == "list" else None
+    named = fields.get("name", "")
+    if items is None:
+        # No list read: generic only if its name says so (`show<u64>`).
+        return None if named.endswith(">") else ()
+    names = []
+    for item in items:
+        kind, parameter = meta.get(item, (None, {}))
+        if kind != "DITemplateTypeParameter" or not parameter.get("name"):
+            return None
+        names.append(parameter["name"])
+    if not names and named.endswith(">"):
+        return None
+    return tuple(names)
+
+
+def mentions(kind, names):
+    """Whether the MIR type ``kind`` names any of ``names`` (type parameters) as a type."""
+    return any(
+        re.search(rf"(?<![\w:]){re.escape(name)}(?![\w])", str(kind or "")) for name in names
+    )
 
 
 def _namespaces(meta, scope):
@@ -1877,6 +1932,8 @@ class OwnedLocals:
             elif len(candidates) > 1:
                 # Twins (a macro's methods): one of them, not told apart.
                 self._unanalyzed[hashed] = list({id(body): body for body in candidates}.values())
+        if found is not None:
+            found.generics = function.generics
         self._matched[hashed] = found
         return found
 
@@ -1912,7 +1969,17 @@ class OwnedLocals:
         there, if only one is."""
         body = self.body(hashed)
         local = self._local(body, variable_name, line, path) if body is not None else None
-        return None if local is None else body.types.get(local)
+        kind = None if local is None else body.types.get(local)
+        # In a generic body any type may name a type parameter, whatever its name
+        # (`fn show<i8>(p: Pair<i8>)` called with chars): only the others are this frame's.
+        generics = self.type_parameters(hashed)
+        return None if generics is None or mentions(kind, generics) else kind
+
+    def type_parameters(self, hashed):
+        """The type parameters of the frame's function (see IrFunction.generics): () for
+        a function that has none, None if unknown."""
+        function = self.functions.get(hashed)
+        return None if function is None else function.generics
 
     def binding_types(self, hashed, variable_name, path=None, line=None, closure=None, frame=None):
         """The MIR type of every binding lldb-dap could be showing as ``variable_name``

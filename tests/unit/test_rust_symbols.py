@@ -1654,3 +1654,61 @@ def test_a_preview_needs_a_proof_a_plain_layout_and_agreeing_addresses():
     variable = {"name": "f", "type": "peeky_pagination::Flag", "memoryReference": "0x10"}
     read = memory({"0x10": bytes([2])})
     assert struct_view(variable, read, flags, owned=True, declared="Flag") is None
+
+
+@pytest.mark.parametrize(
+    "name, shown, spelled",
+    [
+        ("chars::Pair<i8>", "chars::Pair<char>", True),
+        ("chars::Pair<i8>", "chars::Pair<char32_t>", False),
+        ("chars::Pair<char>", "chars::Pair<char32_t>", True),
+        ("chars::Pair<char>", "chars::Pair<char>", False),
+        ("chars::Pair<i64>", "chars::Pair<unsigned long>", False),
+        ("chars::Pair<u16> *", "chars::Pair<unsigned short> *", True),
+        ("(i8, i8)", "(i8, i8)", True),
+        ("(i8, i8)", "(char, char)", False),
+        ("(i64, char) *", "(i64, char) *", True),
+        ("chars::Span", "chars::Span *", False),
+    ],
+)
+def test_lldbs_name_must_spell_the_layouts_type(name, shown, spelled):
+    # Review of #106: LLDB names a generic's primitive arguments the C way, and a tuple
+    # as the DWARF does; `_lossy` let `Pair<char32_t>` pass for `Pair<i8>`.
+    from peeky.rust_symbols import _spelled
+
+    assert _spelled(name, shown) is spelled
+
+
+def test_tuple_structs_are_unread_where_a_source_names_a_field_like_theirs():
+    # Review of #106: `struct Num { __0: u32 }` has the DWARF of `struct Num(u32)`.
+    from peeky.rust_symbols import without_numbered_structs
+
+    layouts = {
+        "struct:peeky_pagination::Num": {"kind": "composite", "shape": "tuple-struct"},
+        "struct:peeky_pagination::Span": {"kind": "composite", "shape": "struct"},
+        "&[peeky_pagination::Num]": {"kind": "slice", "shape": "tuple-struct"},
+    }
+    plain = 'struct Two(u32, u32);\n// __0: a comment\nlet s = "__1: text";\n'
+    assert without_numbered_structs(layouts, [plain]) == layouts
+    declared = "struct Num {\n    __0: u32,\n}\n"
+    assert without_numbered_structs(layouts, [plain, declared]) == {
+        "struct:peeky_pagination::Num": {"kind": "unread"},
+        "struct:peeky_pagination::Span": layouts["struct:peeky_pagination::Span"],
+        "&[peeky_pagination::Num]": {"kind": "unread"},
+    }
+
+
+def test_a_packed_struct_is_never_previewed_even_when_aligned():
+    # Review of #106: `#[repr(packed)] struct Pk { a: u32, b: u32 }` has aligned fields.
+    from peeky.rust_symbols import STRUCT_PREFIX
+
+    packed = (
+        "pk",
+        "DW_TAG_structure_type",
+        [("DW_AT_name", '"Interval"'), ("DW_AT_byte_size", "0x10"), ("DW_AT_alignment", "1")],
+        [_member("k0", "start", "i64", "0x00"), _member("k1", "end", "i64", "0x08")],
+    )
+    key = STRUCT_PREFIX + "peeky_pagination::Interval"
+    assert struct_dump(packed)[key] == {"kind": "unread"}
+    aligned = (*packed[:2], [*packed[2][:2], ("DW_AT_alignment", "8")], packed[3])
+    assert struct_dump(aligned)[key]["kind"] == "composite"
