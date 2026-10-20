@@ -162,6 +162,16 @@ def _member(root, name):
 
 
 _BUNDLES = {}
+# Patches scripts/setup_java_adapter.py applies to java-debug and records in the bundle
+# manifest. eventhub-log-guard (#27): without it java-debug's event thread can die on a
+# finished thread's name, and the adapter reports no stop, step or exit ever again.
+JAVA_DEBUG_PATCHES = frozenset({"eventhub-log-guard"})
+STALE_BUNDLE = (
+    "The Java adapter bundle at {bundle} predates Peeky's java-debug fixes (missing: "
+    "{missing}; without eventhub-log-guard java-debug can stop reporting every stop and "
+    "exit, issue #27). Rebuild it: python scripts/setup_java_adapter.py --output <a new "
+    "directory>, then point the target's bundle (or PEEKY_JAVA_ADAPTER) at it"
+)
 
 
 def _bundle(bundle, java):
@@ -189,6 +199,9 @@ def _verify_bundle(bundle, java):
     manifest = json.loads(manifest_path.read_text())
     if manifest.get("schema") != 1:
         raise ValueError("Unsupported adapter manifest schema")
+    patches = manifest.get("patches")
+    if missing := sorted(JAVA_DEBUG_PATCHES - set(patches if isinstance(patches, dict) else ())):
+        raise ValueError(STALE_BUNDLE.format(bundle=bundle, missing=", ".join(missing)))
     command = manifest.get("command")
     expected_classpath = f"{bundle}/classes{os.pathsep}{bundle}/lib/*"
     if (

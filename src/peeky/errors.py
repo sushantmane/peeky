@@ -163,6 +163,13 @@ _RULES = (
         False,
     ),
     (
+        r"adapter bundle at .* predates Peeky's java-debug fixes",
+        "UNSUPPORTED",
+        "Rebuild the Java adapter with scripts/setup_java_adapter.py (it applies Peeky's "
+        "java-debug patches), then point the target's bundle or PEEKY_JAVA_ADAPTER at it.",
+        False,
+    ),
+    (
         r"Stepping is not supported",
         "UNSUPPORTED",
         "Use `peeky session continue --to LINE` to stop at another line.",

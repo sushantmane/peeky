@@ -49,3 +49,61 @@ def test_setup_accepts_an_output_whose_parent_does_not_exist_yet(bootstrap, tmp_
     with pytest.raises(ValueError, match="JDK required"):
         bootstrap.setup(tmp_path / "work" / "java-adapter")
     assert (tmp_path / "work").is_dir()
+
+
+UPSTREAM_EVENT_HUB = """\
+                for (Event event : set) {
+                        try {
+                            logger.fine("\\nJDI Event: " + event + "\\n");
+                        } catch (VMDisconnectedException e) {
+                            // do nothing
+                        }
+                        DebugEvent dbgEvent = new DebugEvent();
+"""
+
+
+def test_the_event_hub_patch_applies_once_and_is_idempotent(bootstrap, tmp_path):
+    # #27: java-debug's event thread died building a log line nobody reads.
+    path = tmp_path / bootstrap.EVENT_HUB
+    path.parent.mkdir(parents=True)
+    path.write_text(UPSTREAM_EVENT_HUB)
+    first = bootstrap.apply_patches(tmp_path)
+    patched = path.read_text()
+    assert "logger.isLoggable(java.util.logging.Level.FINE)" in patched
+    assert "catch (RuntimeException e)" in patched and "VMDisconnectedException e" not in patched
+    assert bootstrap.apply_patches(tmp_path) == first and path.read_text() == patched
+    assert first["eventhub-log-guard"]["file"] == bootstrap.EVENT_HUB
+
+
+@pytest.mark.parametrize(
+    "text", ["", UPSTREAM_EVENT_HUB * 2, UPSTREAM_EVENT_HUB.replace("fine", "info")]
+)
+def test_the_event_hub_patch_fails_loudly_when_the_source_moved(bootstrap, tmp_path, text):
+    path = tmp_path / bootstrap.EVENT_HUB
+    path.parent.mkdir(parents=True)
+    path.write_text(text)
+    with pytest.raises(ValueError, match="eventhub-log-guard does not apply"):
+        bootstrap.apply_patches(tmp_path)
+
+
+def test_the_runtime_requires_every_patch_setup_applies(bootstrap):
+    from peeky.java import JAVA_DEBUG_PATCHES
+
+    assert set(bootstrap.PATCHES) == JAVA_DEBUG_PATCHES
+
+
+@pytest.mark.parametrize("patches", [None, {}, ["eventhub-log-guard"], {"other": {}}])
+def test_a_bundle_built_without_the_patches_is_refused(tmp_path, patches):
+    import json
+
+    from peeky.errors import classify
+    from peeky.java import _verify_bundle
+
+    manifest = {"schema": 1, **({} if patches is None else {"patches": patches})}
+    (tmp_path / "adapter.json").write_text(json.dumps(manifest))
+    with pytest.raises(ValueError, match="predates Peeky's java-debug fixes") as refused:
+        _verify_bundle(tmp_path, "/usr/bin/java")
+    assert "eventhub-log-guard" in str(refused.value) and "setup_java_adapter.py" in str(
+        refused.value
+    )
+    assert classify(refused.value)["code"] == "UNSUPPORTED"

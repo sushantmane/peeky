@@ -20,6 +20,54 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 MAX_DOWNLOAD = 25 * 1024 * 1024
 
+# Source patches to the pinned java-debug, applied before compiling and recorded in
+# adapter.json (`patches`); peeky.java refuses a bundle without them.
+#
+# eventhub-log-guard (#27): the "Event Hub" thread, which turns every JDI event into
+# DAP stops, steps, thread and exit events, built a FINE log line for each event even
+# with FINE off. The line names the event's thread; for a short-lived thread already
+# collected that throws ObjectCollectedException, which nothing caught, so the thread
+# died and no JVM event was ever processed again (lost stops and exits).
+EVENT_HUB = (
+    "com.microsoft.java.debug.core/src/main/java/com/microsoft/java/debug/core/EventHub.java"
+)
+EVENT_HUB_ORIGINAL = """\
+                        try {
+                            logger.fine("\\nJDI Event: " + event + "\\n");
+                        } catch (VMDisconnectedException e) {
+                            // do nothing
+                        }
+"""
+EVENT_HUB_PATCHED = """\
+                        if (logger.isLoggable(java.util.logging.Level.FINE)) {
+                            try {
+                                logger.fine("\\nJDI Event: " + event + "\\n");
+                            } catch (RuntimeException e) {
+                                // ObjectCollectedException (a finished thread), VMDisconnectedException
+                            }
+                        }
+"""
+PATCHES = {"eventhub-log-guard": (EVENT_HUB, EVENT_HUB_ORIGINAL, EVENT_HUB_PATCHED)}
+
+
+def apply_patches(upstream: Path) -> dict:
+    """Patch the extracted java-debug tree in place; idempotent, and loud when the text
+    to patch is not exactly where it was (the pinned source changed)."""
+    applied = {}
+    for name, (relative, original, patched) in PATCHES.items():
+        path = upstream / relative
+        text = path.read_text()
+        if text.count(original) == 1 and patched not in text:
+            text = text.replace(original, patched)
+            path.write_text(text)
+        elif not (text.count(patched) == 1 and original not in text):
+            raise ValueError(
+                f"java-debug patch {name} does not apply to {relative}: the code it changes "
+                "was not found exactly once; review the patch against the pinned source"
+            )
+        applied[name] = {"file": relative, "sha256": hashlib.sha256(text.encode()).hexdigest()}
+    return applied
+
 
 def digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
@@ -108,6 +156,7 @@ def setup(output: Path) -> dict:
                 else:
                     raise ValueError("unsupported source archive entry")
         upstream = next(source.iterdir())
+        patches = apply_patches(upstream)
         bundle = stage / "bundle"
         lib, classes = bundle / "lib", bundle / "classes"
         lib.mkdir(parents=True)
@@ -160,6 +209,7 @@ def setup(output: Path) -> dict:
             ],
             "source_map_argument": "append absolute prepared source-map JSON path",
             "source_commit": lock["source"]["commit"],
+            "patches": patches,
             "dependency_lock_sha256": digest(lock_path),
             "launcher_sha256": digest(launcher),
             "java_version": java_version,
