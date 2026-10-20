@@ -198,8 +198,12 @@ def test_float_scalars_and_fields_show_as_the_program_prints_them(crate, capsys)
     # Rust types where LLDB has C names: from the build's MIR for a local, and for a
     # field from the one primitive LLDB's name can be.
     assert (rows["f_a"]["type"], rows["f_a"]["debugger_type"]) == ("f64", "double")
-    # `pt` previews (#106): its fields are read with their DWARF types.
-    assert (rows["pt.y"]["type"], rows["pt.y"].get("view")) == ("f32", "memory")
+    # Where memory reads qualify, `pt` previews (#106) and its fields are read with
+    # their DWARF types; otherwise (lldb-dap 18) LLDB reads the field.
+    if os.environ.get("PEEKY_EXPECT_READ_MEMORY") or rows["pt.y"].get("view") == "memory":
+        assert (rows["pt.y"]["type"], rows["pt.y"].get("view")) == ("f32", "memory")
+    else:
+        assert (rows["pt.y"]["type"], rows["pt.y"]["debugger_type"]) == ("f32", "float")
 
 
 @pytest.mark.timeout(300)
