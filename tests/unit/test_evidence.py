@@ -214,7 +214,13 @@ def test_canned_queries_answer_comparisons(store):
     evidence._ensure(store).close()
     for name in evidence.QUERIES:
         params = {"selector": "start"} if name == "values" else {}
-        if name in ("compare", "diff", "outputs"):
+        params = {"key": "start"} if name == "join" else params
+        if name == "wide":
+            # Its columns come from a run: with none, it says so.
+            with pytest.raises(ValueError, match="no saved run;"):
+                evidence.run_query(store, name, params)
+            continue
+        if name in ("compare", "diff", "outputs", "join"):
             # Nothing to compare: said plainly, never an empty or one-sided comparison.
             with pytest.raises(ValueError, match="comparing needs two saved runs"):
                 evidence.run_query(store, name, params)
@@ -1128,3 +1134,132 @@ def test_the_notes_example_matches_overloads_as_sql_does(store):
     assert "twice(int)" in text and "short_function(function) = 'twice'" in text, text
     sql = "SELECT count(*) AS n FROM captures WHERE short_function(function) = 'twice'"
     assert evidence.query(store, sql)["rows"] == [{"n": 4}]
+
+
+def test_wide_gives_one_row_per_hit_with_a_column_per_selector(store):
+    # #139 (sixth evaluation): one row per hit took three-way self-joins on captures.
+    selectors = ("now", "w.start", "bins[3].hi", 'ages["al"]', "d['k']", "line")
+    rows = []
+    for hit, now in enumerate(("0", "1", "10"), 1):
+        rows += [(hit, "observed", selector, f"{now}{i}") for i, selector in enumerate(selectors)]
+    rows.append((2, "after-set", "now", "7"))
+    recorded = captured(rows, set=[["now", "7"]])
+    # No value at hit 2 (withheld: never shown as one); none captured at hit 3; stale.
+    recorded["rows"][7] = dict(hit=2, phase="observed", line=8, selector="w.start", error="gone")
+    del recorded["rows"][14]
+    recorded["rows"][2]["view"] = "stale"
+    recorded["rows"][1]["view"] = "memory"
+    evidence.record(store, recorded)
+    evidence.record(store, captured([(1, "observed", "x", "1")]))
+    wide = evidence.run_query(store, "wide", {"run": 1})
+    assert wide["columns"] == [
+        "hit",
+        "phase",
+        "line",
+        *selectors[:-1],
+        "line (selector)",
+        "no_value",
+        "views",
+    ]
+    shown = [
+        (row["hit"], row["phase"], row["now"], row["w.start"], row["bins[3].hi"], row["no_value"])
+        for row in wide["rows"]
+    ]
+    assert shown == [
+        (1, "observed", "00", "01", "02", None),
+        (2, "observed", "10", None, "12", "w.start: gone"),
+        (2, "after-set", "7", None, None, None),
+        (3, "observed", "100", "101", None, None),
+    ]
+    assert [row["views"] for row in wide["rows"]] == ["bins[3].hi: stale", None, None, None]
+    assert wide["rows"][0]['ages["al"]'] == "03" and wide["rows"][0]["d['k']"] == "04"
+    assert wide["rows"][0]["line (selector)"] == "05" and wide["rows"][0]["line"] == 8
+    # The SQL it ran, to refine with peeky sql: the same rows.
+    assert evidence.query(store, wide["sql"])["rows"] == wide["rows"]
+    observed = evidence.run_query(store, "wide", {"run": 1, "phase": "observed"})["rows"]
+    assert [row["phase"] for row in observed] == ["observed"] * 3
+    # The newest run by default.
+    assert evidence.run_query(store, "wide")["columns"][3] == "x"
+    with pytest.raises(ValueError, match="no saved run 9"):
+        evidence.run_query(store, "wide", {"run": 9})
+    with pytest.raises(ValueError, match="phase is observed or after-set"):
+        evidence.run_query(store, "wide", {"phase": "later"})
+    # A cell holds one value: a selector read twice at a hit must have read the same.
+    evidence.record(store, captured([(1, "observed", "v", "1"), (1, "observed", "v", "1")]))
+    assert [row["v"] for row in evidence.run_query(store, "wide")["rows"]] == ["1"]
+    evidence.record(store, captured([(1, "observed", "v", "1"), (1, "observed", "v", "2")]))
+    with pytest.raises(ValueError, match="'v' more than once at hit 1 .*different values"):
+        evidence.run_query(store, "wide")
+    # 95 selectors fit in 100 columns; more are refused, never cut short.
+    many = [(1, "observed", f"s{i}", str(i)) for i in range(96)]
+    evidence.record(store, captured(many[:95]))
+    assert len(evidence.run_query(store, "wide")["columns"]) == 100
+    evidence.record(store, captured(many))
+    with pytest.raises(ValueError, match="wide would have 101 columns, more than 100"):
+        evidence.run_query(store, "wide")
+
+
+def test_join_links_two_runs_by_a_selectors_value(store):
+    # #139: linking run 3 to run 4 by `v` took a correlated subquery; diff pairs by hit.
+    first = captured(
+        [
+            (1, "observed", "v", "7"),
+            (1, "observed", "bin", "3"),
+            (2, "observed", "v", "2"),
+            (2, "observed", "bin", "1"),
+            (3, "observed", "v", "5"),
+            (3, "observed", "bin", "2"),
+            (4, "observed", "v", "9"),
+            (4, "observed", "bin", "4"),
+        ]
+    )
+    first["rows"][6] = dict(hit=4, phase="observed", line=8, selector="v", error="gone")
+    evidence.record(store, first)
+    second = captured(
+        [
+            (1, "observed", "v", "2"),
+            (1, "observed", "tests", "1"),
+            (2, "observed", "v", "7"),
+            (2, "observed", "tests", "4"),
+            (3, "observed", "v", "7"),
+            (3, "observed", "tests", "5"),
+            (4, "observed", "v", "8"),
+            (4, "observed", "tests", "2"),
+        ]
+    )
+    evidence.record(store, second)
+    joined = evidence.run_query(store, "join", {"key": "v"})
+    assert joined["columns"] == [
+        "v",
+        "hit_a",
+        "hit_b",
+        "a:bin",
+        "b:tests",
+        "no_value_a",
+        "no_value_b",
+        "views_a",
+        "views_b",
+        "matched",
+    ]
+    shown = [
+        (row["v"], row["hit_a"], row["hit_b"], row["a:bin"], row["b:tests"], row["matched"])
+        for row in joined["rows"]
+    ]
+    # A value at several hits pairs each of them; then each run's unpaired hits, a hit
+    # whose key has no value among them (no_value_a says why).
+    assert shown == [
+        ("7", 1, 2, "3", "4", "both"),
+        ("7", 1, 3, "3", "5", "both"),
+        ("2", 2, 1, "1", "1", "both"),
+        ("5", 3, None, "2", None, "only in run a"),
+        (None, 4, None, "4", None, "only in run a"),
+        ("8", None, 4, None, "2", "only in run b"),
+    ]
+    assert joined["rows"][4]["no_value_a"] == "v: gone"
+    assert evidence.query(store, joined["sql"])["rows"] == joined["rows"]
+    with pytest.raises(ValueError, match="join needs --param key=<value>"):
+        evidence.run_query(store, "join", {"a": 1, "b": 2})
+    with pytest.raises(ValueError, match="run 2 captured no 'bin'"):
+        evidence.run_query(store, "join", {"a": 1, "b": 2, "key": "bin"})
+    with pytest.raises(ValueError, match="comparing needs two saved runs"):
+        evidence.run_query(store, "join", {"a": 1, "b": 7, "key": "v"})

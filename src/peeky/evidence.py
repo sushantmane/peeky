@@ -502,6 +502,33 @@ WHERE o.run_id = {_RUN} AND o.phase = 'observed' ORDER BY o.hit, o.rowid""",
         {"selector": "Selector, e.g. request.page (required)"},
         ("selector",),
     ),
+    "wide": (
+        "One row per hit (and phase) of one run, a column per selector in capture order, "
+        "each cell the value as stored; a cell with no value (unavailable, withheld, an "
+        "error) is NULL and named in no_value with why; a selector not captured at that "
+        "hit is NULL and not named; views names cells whose value a view qualifies "
+        "(stale, unproven, opaque, budget-exhausted). --json gives the generated SQL too "
+        "(`sql`), to refine with peeky sql",
+        lambda path, params: _wide(path, params),
+        {**_RUN_PARAM, "phase": "observed or after-set (default: both, after-set after)"},
+        (),
+    ),
+    "join": (
+        "Two runs joined by one selector's value instead of by hit: each pair of hits, one "
+        "per run, where key has the same value (as stored text; a value at several hits "
+        "pairs every hit of a with every hit of b), with each run's other selectors "
+        "(columns a:<selector>, b:<selector>); then the hits of each run whose key value "
+        "the other run never had, or that have none (matched: only in run a / b). "
+        "no_value_a/b and views_a/b are wide's, per run. --json gives the generated SQL "
+        "too (`sql`)",
+        lambda path, params: _join(path, params),
+        {
+            **_PAIR_PARAMS,
+            "key": "Selector whose value links the runs, e.g. v (required)",
+            "phase": "observed (default) or after-set",
+        },
+        ("key",),
+    ),
     "unreadable": (
         "Selectors of one run that have no value, and why",
         f"SELECT hit, phase, selector, type, unavailable, error FROM captures "
@@ -525,6 +552,8 @@ EXAMPLES = (
     'peeky sql "SELECT selector, COUNT(DISTINCT value) AS distinct_values FROM last_run '
     'GROUP BY selector"',
     "peeky queries diff --param a=3 --param b=4",
+    "peeky queries wide --param run=3",
+    "peeky queries join --param a=3 --param b=4 --param key=v",
 )
 
 
@@ -981,6 +1010,190 @@ def _require_runs(path, params):
     )
 
 
+def _literal(text):
+    """A string as an SQL literal (the generated SQL is shown, to run with peeky sql)."""
+    return "'" + str(text).replace("'", "''") + "'"
+
+
+def _identifier(name):
+    return '"' + str(name).replace('"', '""') + '"'
+
+
+_PHASES = ("observed", "after-set")
+# A cell with no value, named with why: `selector: reason`, joined with `; `.
+_NO_VALUE = (
+    "group_concat(CASE WHEN value IS NULL THEN selector || ': ' || COALESCE(error, "
+    "'no value') END, '; ')"
+)
+# A cell whose value a view qualifies (`stale`, `unproven`, `opaque`, `budget-exhausted`),
+# named with it, so it is never read as a plain value. `memory` (read from the program's
+# memory) and `active-variant` (a decoded enum) say how a value was read, not a caveat.
+_VIEWS = (
+    "group_concat(CASE WHEN value IS NOT NULL AND view IS NOT NULL AND view NOT IN "
+    "('memory', 'active-variant') THEN selector || ': ' || view END, '; ')"
+)
+
+
+def _phase(params, default=None):
+    phase = params.get("phase", default)
+    if phase is not None and phase not in _PHASES:
+        raise ValueError(f"Evidence query failed: phase is observed or after-set, not {phase!r}")
+    return phase
+
+
+def _run_id(path, run):
+    """The run ``run`` names (default: the newest), which must exist."""
+    found = query(
+        path,
+        f"SELECT {_RUN} AS run_id, (SELECT COUNT(*) FROM runs WHERE run_id = {_RUN}) AS n",
+        {"run": run},
+    )["rows"][0]
+    if found["run_id"] is None or not found["n"]:
+        raise ValueError(
+            f"Evidence query failed: no saved run {run if run is not None else ''}".rstrip()
+            + "; `peeky queries runs` lists them, and --param run=<run> picks one"
+        )
+    return found["run_id"]
+
+
+def _captured(path, run, phase):
+    """The selectors run ``run`` captured (in ``phase``, or either), in capture order.
+    A selector captured twice at one hit (`--capture v,v`) must have read the same both
+    times, as a cell holds one value."""
+    bound = {"run": run, "phase": phase}
+    where = "run_id = :run AND (:phase IS NULL OR phase = :phase)"
+    rows = query(
+        path,
+        f"SELECT selector FROM captures WHERE {where} GROUP BY selector ORDER BY MIN(rowid)",
+        bound,
+        limit=MAX_ROWS,
+    )["rows"]
+    differing = query(
+        path,
+        f"SELECT hit, phase, selector FROM captures WHERE {where} GROUP BY hit, phase, "
+        "selector HAVING COUNT(DISTINCT value) > 1 OR MIN(value IS NULL) != MAX(value IS NULL) "
+        "LIMIT 1",
+        bound,
+    )["rows"]
+    if differing:
+        first = differing[0]
+        raise ValueError(
+            f"Evidence query failed: run {run} captured {first['selector']!r} more than once "
+            f"at hit {first['hit']} ({first['phase']}), with different values; use `peeky "
+            "queries run`"
+        )
+    return [row["selector"] for row in rows]
+
+
+def _columns(selectors, reserved, prefix=""):
+    """A result column name for each selector: the selector itself (after ``prefix``),
+    or `<selector> (selector)` where that is one of the query's own columns."""
+    names = []
+    for selector in selectors:
+        name = f"{prefix}{selector}"
+        names.append(f"{name} (selector)" if name.lower() in reserved else name)
+    return names
+
+
+def _too_wide(count, run, name):
+    if count > MAX_COLUMNS:
+        raise ValueError(
+            f"Evidence query failed: {name} would have {count} columns, more than "
+            f"{MAX_COLUMNS} (run {run} captured too many selectors); use `peeky queries run`, "
+            "or peeky sql with the selectors you need"
+        )
+
+
+def _wide(path, params):
+    """(SQL, params) of `queries wide`: one row per hit and phase of a run, a column per
+    selector in capture order. Generated per run, as SQL cannot pivot on its own."""
+    run, phase = _run_id(path, params.get("run")), _phase(params)
+    selectors = _captured(path, run, phase)
+    names = _columns(selectors, {"hit", "phase", "line", "no_value", "views"})
+    _too_wide(len(names) + 5, run, "wide")
+    cells = "".join(
+        f"\n  MAX(CASE WHEN selector = {_literal(selector)} THEN value END) AS {_identifier(name)},"
+        for selector, name in zip(selectors, names)
+    )
+    where = f"run_id = {run}" + (f" AND phase = {_literal(phase)}" if phase else "")
+    sql = (
+        f"SELECT hit, phase, MIN(line) AS line,{cells}\n  {_NO_VALUE} AS no_value,\n"
+        f"  {_VIEWS} AS views\n"
+        f"FROM captures WHERE {where}\nGROUP BY hit, phase ORDER BY hit, phase = 'after-set'"
+    )
+    return sql, {}
+
+
+def _join(path, params):
+    """(SQL, params) of `queries join`: two runs' hits paired where ``key`` has the same
+    value (stored text), every pair where it repeats; then each run's unpaired hits."""
+    _require_runs(path, params)
+    found = query(
+        path, f"SELECT {_A} AS a, {_B} AS b", {"a": params.get("a"), "b": params.get("b")}
+    )
+    a, b = found["rows"][0]["a"], found["rows"][0]["b"]
+    key, phase = params["key"], _phase(params, "observed")
+    sides = {}
+    for name, run in (("a", a), ("b", b)):
+        captured = _captured(path, run, phase)
+        if key not in captured:
+            raise ValueError(
+                f"Evidence query failed: run {run} captured no {key!r} ({phase}); it "
+                f"captured: {', '.join(captured[:20]) or 'nothing'}"
+            )
+        others = [selector for selector in captured if selector != key]
+        sides[name] = (run, others, _columns(others, set(), f"{name}:"))
+    reserved = {"hit_a", "hit_b", "no_value_a", "no_value_b", "views_a", "views_b", "matched"}
+    (key_name,) = _columns([key], reserved)
+    _too_wide(8 + len(sides["a"][1]) + len(sides["b"][1]), f"{a} and {b}", "join")
+
+    def side(name):
+        run, others, names = sides[name]
+        cells = "".join(
+            f"\n    MAX(CASE WHEN selector = {_literal(selector)} THEN value END) AS "
+            f"{_identifier(column)},"
+            for selector, column in zip(others, names)
+        )
+        return (
+            f"{name} AS (SELECT hit, MAX(CASE WHEN selector = {_literal(key)} THEN value END) "
+            f"AS k,{cells}\n    {_NO_VALUE} AS no_value,\n    {_VIEWS} AS views\n"
+            f"  FROM captures WHERE run_id = {run} "
+            f"AND phase = {_literal(phase)} GROUP BY hit)"
+        )
+
+    def picked(name, present):
+        return ", ".join(
+            f"{name}.{_identifier(column)}" if present else f"NULL AS {_identifier(column)}"
+            for column in sides[name][2]
+        )
+
+    def row(present_a, present_b, matched):
+        parts = [
+            f"{'a' if present_a else 'b'}.k AS {_identifier(key_name)}",
+            "a.hit AS hit_a" if present_a else "NULL AS hit_a",
+            "b.hit AS hit_b" if present_b else "NULL AS hit_b",
+            picked("a", present_a),
+            picked("b", present_b),
+            "a.no_value AS no_value_a" if present_a else "NULL AS no_value_a",
+            "b.no_value AS no_value_b" if present_b else "NULL AS no_value_b",
+            "a.views AS views_a" if present_a else "NULL AS views_a",
+            "b.views AS views_b" if present_b else "NULL AS views_b",
+            f"{_literal(matched)} AS matched",
+        ]
+        return "SELECT " + ", ".join(part for part in parts if part)
+
+    sql = (
+        f"WITH {side('a')},\n{side('b')}\nSELECT * FROM (\n"
+        f"{row(True, True, 'both')} FROM a JOIN b ON a.k = b.k\nUNION ALL\n"
+        f"{row(True, False, 'only in run a')} FROM a "
+        "WHERE NOT EXISTS (SELECT 1 FROM b WHERE b.k = a.k)\nUNION ALL\n"
+        f"{row(False, True, 'only in run b')} FROM b "
+        "WHERE NOT EXISTS (SELECT 1 FROM a WHERE a.k = b.k))\n"
+        "ORDER BY matched != 'both', hit_a IS NULL, hit_a, hit_b"
+    )
+    return sql, {}
+
+
 def run_query(path, name, params=None, *, limit=DEFAULT_ROWS):
     """Run a canned query by name with optional parameters."""
     if name not in QUERIES:
@@ -1001,6 +1214,10 @@ def run_query(path, name, params=None, *, limit=DEFAULT_ROWS):
             f"Evidence query failed: {name} needs "
             + " ".join(f"--param {param}=<value>" for param in missing)
         )
+    if callable(sql):
+        # Built for the runs named (a column per selector): shown, to refine with peeky sql.
+        built, bound = sql(path, params)
+        return {**query(path, built, bound, limit=limit), "sql": built}
     return query(path, sql, {**dict.fromkeys(accepted), **params}, limit=limit)
 
 

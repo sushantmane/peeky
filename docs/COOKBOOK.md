@@ -328,7 +328,58 @@ hit  selector  observed  after_set  interventions
 1    start     3         0          start: 3 -> 0
 ```
 
-Pass `--param a=<run> --param b=<run>` to `diff`, `compare` and `outputs` to pick specific runs.
+Pass `--param a=<run> --param b=<run>` to `diff`, `compare`, `outputs` and `join` to pick specific runs.
+
+### 3.4 One Row per Hit
+
+**What it answers:** What were all the captured values at each hit, side by side?
+
+`bins.c` loops over its arguments, and line 9 reads `total += v * bins[v % 4].hi;`:
+
+```sh
+peeky probe bins --at bins.c:9 --capture 'v,total,bins[3].hi' --hits all -- 2 7 7 8
+peeky queries wide                  # the newest run; --param run=3 for another
+```
+
+```
+hit  phase     line  v  total  bins[3].hi  no_value  views
+1    observed  9     2  0      4           NULL      NULL
+2    observed  9     7  6      4           NULL      NULL
+3    observed  9     7  34     4           NULL      NULL
+4    observed  9     8  62     4           NULL      NULL
+```
+
+- **Columns:** one per selector, named exactly as captured, in `--capture` order. A selector named like a fixed column (`line`) becomes `line (selector)`. In your own SQL, quote such names with double quotes: `"bins[3].hi"`.
+- **Cells** are the values exactly as stored (text; use `num` in `captures` to compare numbers).
+- **NULL is never a value.** A cell with no value (optimized out, withheld, an error) is NULL and named in `no_value` with why (`w.start: no value yet: …`). A selector not captured at that hit is NULL and not named.
+- **`views`** names cells whose value a view qualifies: `stale`, `unproven`, `opaque` or `budget-exhausted` (`h.b: unproven`). Read such a cell with that caveat (`peeky sql --schema` explains `view`), never as a plain value.
+- **Phases:** a run with `--set` has an `after-set` row after its hit's `observed` row. `--param phase=observed` (or `after-set`) keeps one.
+- **`--json`** also gives the SQL it ran (`sql`): refine it with `peeky sql`, e.g. `SELECT * FROM (<sql>) WHERE "v" = '7'`. Up to 95 selectors fit (100 columns at most); a wider run is refused.
+
+### 3.5 Joining Two Runs by a Value
+
+**What it answers:** For the same value of `v`, what did each run see? `diff` pairs runs by hit number, which says little when the inputs come in a different order.
+
+```sh
+peeky probe bins --at bins.c:9 --capture 'v,total,bins[3].hi' --hits all -- 7 2 5
+peeky probe bins --at bins.c:9 --capture 'v,total,bins[3].hi' --hits all -- 2 7 7 8
+peeky queries join --param key=v    # the last two runs; --param a=3 --param b=4 for others
+```
+
+```
+v  hit_a  hit_b  a:total  a:bins[3].hi  b:total  b:bins[3].hi  no_value_a  no_value_b  views_a  views_b  matched
+7  1      2      0        4             6        4             NULL        NULL        NULL     NULL     both
+7  1      3      0        4             34       4             NULL        NULL        NULL     NULL     both
+2  2      1      28       4             0        4             NULL        NULL        NULL     NULL     both
+5  3      NULL   34       4             NULL     NULL          NULL        NULL        NULL     NULL     only in run a
+8  NULL   4      NULL     NULL          62       4             NULL        NULL        NULL     NULL     only in run b
+```
+
+- **Matching** is by the key's stored text, exactly (addresses included). It joins the `observed` rows unless you pass `--param phase=after-set`.
+- **A repeated key pairs every hit:** a value at 2 hits of run a and 3 of run b gives 6 rows, in run a's hit order and then run b's. Here run b saw `7` twice, so run a's hit 1 appears twice.
+- **Unmatched hits** come last, one row each: `only in run a` (or `b`) when the other run never had that key value, or when the hit has no key value (the key cell is NULL, and `no_value_a` says why).
+- **Columns:** the key, each run's hit, then each run's other selectors as `a:<selector>` and `b:<selector>`, and `no_value`/`views` per run as in `wide`. Both runs must have captured the key.
+- **`--json`** gives the SQL too (`sql`).
 
 ---
 
@@ -340,7 +391,7 @@ The store is SQLite. Queries are read-only and bounded, and they need no rerun.
 
 ```sh
 peeky sql --schema          # tables, columns, views, canned queries, examples
-peeky queries               # canned questions: runs, run, hits, compare, diff, outputs, set_effect, values, unreadable, failures
+peeky queries               # canned questions: runs, run, hits, compare, diff, outputs, set_effect, values, wide, join, unreadable, failures
 ```
 
 | Table or view | One row per |
