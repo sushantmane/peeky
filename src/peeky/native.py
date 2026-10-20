@@ -384,23 +384,30 @@ def typedef_kinds(info):
     alone, so `RowPtr rp` cannot be told from `RowRef rr` by its type (#102). A name for
     two kinds (a struct and a pointer typedef, or typedefs in two units) is "unknown".
     Plain names are taken only for typedefs at file or function scope; a namespace's or
-    class's are known by their qualified names."""
+    class's are known by their qualified names. A class's member typedef is also kept
+    under `::Class::member` (the class's own name, without template arguments), and
+    each namespace's name under `namespace::Name`, for ``typedef_kind``'s fallback."""
     dies, found = _dies(info), {}
 
     def note(name, kind):
         if name:
             found[name] = kind if found.get(name, kind) == kind else ("unknown", "")
 
-    def note_member(name, kind):
-        # A class's member typedef by its last name (`::reference`): lldb-dap and the
-        # debug information spell its class differently (`std::vector<std::vector<int> >`
-        # against `std::__1::vector<..., std::__1::allocator<...> >`).
-        key, (sort, _) = f"::{name}", kind
-        if name:
+    def note_member(record, name, kind):
+        # A class's member typedef by its class's own name (`::vector::reference`):
+        # lldb-dap and the debug information spell the class's scope and template
+        # arguments differently (`std::vector<std::vector<int> >` against
+        # `std::__1::vector<..., std::__1::allocator<...> >`).
+        owner = _without_templates(_text(record["attrs"].get("DW_AT_name")) or "")
+        key, (sort, _) = f"::{owner}::{name}", kind
+        if owner and name:
             known = found.get(key)
             found[key] = (sort, "") if known in (None, (sort, "")) else ("unknown", "")
 
     for offset, die in dies.items():
+        if die["tag"] == "DW_TAG_namespace" and (name := _text(die["attrs"].get("DW_AT_name"))):
+            found[f"namespace::{name}"] = ("other", "")
+            continue
         if die["tag"] in _RECORDS or die["tag"] == "DW_TAG_enumeration_type":
             note(_text(die["attrs"].get("DW_AT_name")), ("other", ""))
             note(_qualified(dies, offset), ("other", ""))
@@ -443,7 +450,7 @@ def typedef_kinds(info):
         ) or (parent.get("tag") == "DW_TAG_namespace" and "DW_AT_name" not in parent["attrs"]):
             note(name, kind)
         if parent.get("tag") in _RECORDS:
-            note_member(name, kind)
+            note_member(parent, name, kind)
         qualified = _qualified(dies, offset)
         if qualified and qualified != name:
             note(qualified, kind)
@@ -1568,11 +1575,13 @@ class NativeSession:
         bare = re.sub(r"^(?:(?:const|volatile)\s+)+|(?:\s+(?:const|volatile))+$", "", kind.strip())
         if (found := self.typedefs.get(bare)) is not None:
             return found
-        # A class's member typedef (`X<...>::reference`) by its last name.
-        outer = _without_templates(bare)
-        if "::" in outer:
-            return self.typedefs.get("::" + outer.rpartition("::")[2])
-        return None
+        # A class's member typedef (`std::vector<...>::reference`) by its class's own
+        # name and its own: never a name whose qualifier is a namespace (lldb-dap leaves
+        # out inline namespaces, `lib::Rows` for `lib::v1::Rows`), nor a class's name.
+        parts = _without_templates(bare).split("::")
+        if len(parts) < 2 or not all(parts[-2:]) or f"namespace::{parts[-2]}" in self.typedefs:
+            return None
+        return self.typedefs.get(f"::{parts[-2]}::{parts[-1]}")
 
     def not_yet_declared(self, variable, frame):
         """Why a root local of ``frame`` has no value yet (declared below the stop), or

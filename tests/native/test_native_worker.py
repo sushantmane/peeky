@@ -852,6 +852,7 @@ def test_a_pointer_to_an_array_or_container_indexes_as_c_does(tmp_path, native_c
             "rp[0][1],rp[1],crp[0][1],rr[1],vr[1],bigp[0][450],bigp[-1],ep[0],np[0],"
             "garbage[0],tp[1],dp[0],later[0],pc[1],vref[0],avp[0][1]",
         ),
+        ("names.cpp", SAME_NAMES, 23, "r[1],r[0],rf[0],rf[1],v[0],v[1],h.r[0],g.v[0][1],g.v[1]"),
     ):
         (tmp_path / name).write_text(text)
         probe = ["probe", str(tmp_path / name), "--at", str(line), "--json", "--no-save"]
@@ -867,6 +868,16 @@ def test_a_pointer_to_an_array_or_container_indexes_as_c_does(tmp_path, native_c
         elif name == "rows.cpp":
             assert rows["vp[0]"]["value"] == "size=3" and rows["vp[0][1]"]["value"] == "8"
             assert "read vp[0][1] for its element" in rows["vp[1]"]["error"]
+        elif name == "names.cpp":
+            # Review 4: a member typedef's last name (`Table::Rows`, `Graph::vector`)
+            # resolved `lib::Rows` (lldb-dap leaves out the inline namespace) and plain
+            # `std::vector<int>`.
+            assert all("not read" in rows[s]["error"] for s in ("r[1]", "r[0]")), rows
+            assert rows["rf[0]"].get("value") in (None, "7"), rows["rf[0]"]
+            assert rows["rf[1]"].get("value") in (None, "8"), rows["rf[1]"]
+            assert rows["v[0]"]["value"] == "7" and rows["v[1]"]["value"] == "8", rows
+            assert rows["h.r[0]"]["value"] == "size=3" and rows["g.v[0][1]"]["value"] == "2"
+            assert "read g.v[0][1]" in rows["g.v[1]"]["error"]
         else:
             # Review of #117: a typedef'd pointer shows by the typedef's name alone, as a
             # typedef'd reference does; the build's debug information tells them apart.
@@ -904,6 +915,34 @@ def test_a_pointer_to_an_array_or_container_indexes_as_c_does(tmp_path, native_c
         main(["session", "close"])
         capsys.readouterr()
 
+
+SAME_NAMES = """#include <cstdio>
+#include <vector>
+#include <map>
+namespace lib { inline namespace v1 {
+    typedef int (*Rows)[3];
+    using Ref = std::vector<int> &;
+    typedef std::vector<int> *VecP;
+} }
+struct Table { typedef int Rows; Rows n; };
+struct Holder { using Ref = std::vector<int> *; Ref r; };
+struct Graph { typedef int (*vector)[3]; typedef std::map<int, int> *VecP; vector v; VecP m; };
+int main() {
+    int rows[2][3] = {{1, 2, 3}, {4, 5, 6}};
+    std::vector<int> v{7, 8, 9};
+    std::vector<int> vs[2] = {v, v};
+    std::map<int, int> mm{{1, 10}};
+    lib::Rows r = rows;
+    lib::Ref rf = v;
+    lib::VecP vp = vs;
+    Table t{3};
+    Holder h{&v};
+    Graph g{rows, &mm};
+    int k = r[1][0] + rf[1] + (*vp)[0] + t.n + (*h.r)[0] + g.v[0][0] + (int)g.m->size() + v[1];
+    std::printf("%d\\n", k);
+    return 0;
+}
+"""
 
 ROWS = """#include <stdio.h>
 struct pt { int x, y; };
