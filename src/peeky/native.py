@@ -36,6 +36,7 @@ from peeky.build import (
     real_tool,
 )
 from peeky.c_source import Statements, macro_hazards
+from peeky.cxx_strings import libstdcxx_string, string_class, text_like, tidy
 from peeky.digest import sha256_file
 from peeky.names import unicode_escape
 
@@ -2240,10 +2241,53 @@ class NativeSession:
     def whole_string_summaries(self):
         """Whether LLDB's summary of this build's std::string values shows every byte.
         LLDB reads a libc++ string's size and prints a NUL as `\\0`; its libstdc++ summary
-        is the `_M_dataplus._M_p` C string, which ends at the first NUL (#119). Told by the
-        standard library's namespaces in the debug information: libc++'s `std::__1`,
-        libstdc++'s `std::__cxx11`."""
-        return "namespace::__1" in self.typedefs and "namespace::__cxx11" not in self.typedefs
+        is the `_M_dataplus._M_p` C string, which ends at the first NUL (#119), so the
+        worker shows those itself (``string_value``). Told by the standard library's
+        namespaces in the debug information: libc++'s `std::__1`, libstdc++'s
+        `std::__cxx11`."""
+        typedefs = getattr(self, "typedefs", {})
+        return "namespace::__1" in typedefs and "namespace::__cxx11" not in typedefs
+
+    def string_value(self, variable, fetch, read):
+        """How to show a C or C++ value's text (see ``cxx_strings``). A libstdc++
+        `std::basic_string` (#128), by its type's name, the class a typedef of it names
+        (`Bytes`, `const Name &`, `Bytes *`), or, under a name Peeky cannot resolve, its
+        members: its bytes read from memory where the debugger's summary ends at a NUL
+        or fails, else that summary with a note. libc++'s LLDB shows whole. Any string
+        literal is then spelled as C reads it, within the worker's bound, and LLDB's
+        `error: summary string parsing error` is never a value. None leaves the value."""
+        shown = None
+        language = getattr(getattr(self, "target", None), "language", None)
+        if not self.whole_string_summaries and language == "cpp":
+            found = self._string_class(variable.get("type"))
+            if found is not None or text_like(variable):
+                shown = libstdcxx_string(variable, fetch, read, found)
+        if shown and ("value" in shown or shown.get("unavailable")):
+            # Peeky's own text (read from memory, or noted): spelled and bounded already.
+            return shown
+        text = variable.get("value")
+        tidied = tidy(text, language in ("c", "cpp")) if isinstance(text, str) else None
+        if tidied is None:
+            return shown
+        return {**(shown or {}), **tidied}
+
+    def _string_class(self, kind):
+        """``cxx_strings.string_class`` of a type, also through a typedef the build's
+        debug information resolves (a reference's or pointer's too), or None."""
+        if not isinstance(kind, str) or (found := string_class(kind)) is not None:
+            return found
+        bare = re.sub(r"(?:\s*&{1,2}|\s+(?:const|volatile))+$", "", kind.strip())
+        indirect = "&" if bare != kind.strip() else ""
+        resolved = self.typedef_kind(bare) or ("", "")
+        if resolved[0] == "reference":
+            indirect = "&"
+        if (aliased := self.aliased_type(kind)) and (found := string_class(aliased)):
+            return found[0], found[1], indirect or found[2]
+        pointee = resolved[1] if resolved[0] == "pointer" else None
+        for target in (self.pointee_aliased_type(kind, pointee), pointee):
+            if target and (found := string_class(target)) and not found[2]:
+                return found[0], found[1], "*"
+        return None
 
     def aliased_type(self, kind):
         """The class a typedef'd value's type names (`Index`, `const Index &` for

@@ -1899,6 +1899,7 @@ class DebugWorker:
         view_variable = getattr(self.runtime, "view_variable", None)
         aggregate_taint = getattr(self.runtime, "aggregate_taint", None)
         display_value = getattr(self.runtime, "display_value", None)
+        string_value = getattr(self.runtime, "string_value", None)
         identify = getattr(self.runtime, "object_identity", None)
         groups = getattr(self.runtime, "variable_groups", frozenset())
         for variable in variables:
@@ -2037,6 +2038,14 @@ class DebugWorker:
             }
             if display_value and (shown := display_value(variable)) is not None:
                 output["value"] = shown
+            if string_value and not (self.placeholders() and is_unavailable(output["value"])):
+                # A string the debugger shows only up to a NUL byte (#128); never one it
+                # has no value for (optimized out).
+                reads = self.view_read if self.capabilities.get("supports_read_memory") else None
+                if (shown := string_value(variable, self.view_fetch, reads)) is not None:
+                    for key in ("value", "unavailable", "reason", "view", "string_length"):
+                        if key in shown:
+                            output[key] = shown[key]
             if self.placeholders() and is_unavailable(output["value"]):
                 # The placeholder text is the debugger's reason, never the value.
                 output["unavailable"] = True
