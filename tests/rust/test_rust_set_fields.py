@@ -566,15 +566,21 @@ def test_rust_a_field_of_a_struct_or_tuple_preview_changes_and_reads_back(crate,
         code, result = change(capsys, assignment)
         assert code == 0, (assignment, result)
         assert (result["before"], result["after"]) == (before, after), (assignment, result)
-    refused(capsys, "v[0]=1", "inside a value Peeky decodes itself")
+    if previews:
+        refused(capsys, "v[0]=1", "inside a value Peeky decodes itself")
+    else:
+        # Without memory reads (lldb-dap 18), LLDB's raw Vec lists no element `[0]`.
+        code, result = change(capsys, "v[0]=1")
+        assert code == 2 and result["error"]["code"] == "NOT_FOUND", result
     # Read back as shown: the fields and the previews hold the new values.
     assert main(["session", "get", "s.end", "p.__0", "t.__1", "--json"]) == 0
     got = {row["selector"]: row for row in json.loads(capsys.readouterr().out)}
     assert [got[s]["value"] for s in ("s.end", "p.__0", "t.__1")] == ["20", "30", "60"], got
     shown = rows(capsys)
-    assert shown["s"]["value"].endswith("Span { start: 1, end: 20 }"), shown["s"]
     if previews:
+        # Read again from memory, as `inspect` and `get` show them.
         assert got["s.end"].get("view") == "memory", got
+        assert shown["s"]["value"] == "Span { start: 1, end: 20 }", shown["s"]
         assert shown["p"]["value"] == "Pair(30, 4)" and shown["t"]["value"] == "(5, 60)", shown
     assert main(["session", "continue", "--to-exit"]) == 0
     capsys.readouterr()
