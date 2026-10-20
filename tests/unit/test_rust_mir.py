@@ -1075,6 +1075,7 @@ def test_aliases_follow_values_that_can_hold_a_pointer_and_find_drops_through_th
     )
     body = parse_body(text)
     assert body.supported
+    body.generics = ()  # matched to a function that has no type parameters
     assert body._aliases(1) == {1, 4, 5, 6}  # not the length or the String made from it
     assert body.drops_through(1) and not body.drops_through(2)
 
@@ -1564,6 +1565,91 @@ def test_a_replaced_field_leaves_a_partly_moved_local_partly_moved():
     body = replaced(store=f"(_1.1: {BOXED}) = move (_1.2: {BOXED});")
     assert set(body._replacements()[1].values()) == {1}
     assert not body.initialized_throughout(1, {3})
+
+
+GENERIC_IR = """define internal void @_ZN3app4show17h1111111111111111E() !dbg !10 {
+start:
+  ret void, !dbg !20
+}
+
+define internal void @_ZN3app4show17h2222222222222222E() !dbg !11 {
+start:
+  ret void, !dbg !21
+}
+
+define internal void @_ZN3app4main17h3333333333333333E() !dbg !12 {
+start:
+  ret void, !dbg !22
+}
+
+define internal void @_ZN3app5fixed17h4444444444444444E() !dbg !13 {
+start:
+  ret void, !dbg !23
+}
+
+define internal void @_ZN3app3odd17h5555555555555555E() !dbg !14 {
+start:
+  ret void, !dbg !24
+}
+
+!2 = !DIFile(filename: "src/main.rs", directory: "/w")
+!9 = !DINamespace(name: "app", scope: null)
+!10 = distinct !DISubprogram(name: "show<i8>", linkageName: "_ZN3app4show17h1111111111111111E", scope: !9, file: !2, line: 1, unit: !1, templateParams: !30)
+!11 = distinct !DISubprogram(name: "show<char>", linkageName: "_ZN3app4show17h2222222222222222E", scope: !9, file: !2, line: 1, unit: !1, templateParams: !32)
+!12 = distinct !DISubprogram(name: "main", linkageName: "_ZN3app4main17h3333333333333333E", scope: !9, file: !2, line: 5, unit: !1, templateParams: !34)
+!13 = distinct !DISubprogram(name: "fixed<3>", linkageName: "_ZN3app5fixed17h4444444444444444E", scope: !9, file: !2, line: 7, unit: !1, templateParams: !34)
+!14 = distinct !DISubprogram(name: "odd<u8>", linkageName: "_ZN3app3odd17h5555555555555555E", scope: !9, file: !2, line: 9, unit: !1, templateParams: !34)
+!20 = !DILocation(line: 2, scope: !10)
+!21 = !DILocation(line: 2, scope: !11)
+!22 = !DILocation(line: 6, scope: !12)
+!23 = !DILocation(line: 8, scope: !13)
+!24 = !DILocation(line: 10, scope: !14)
+!30 = !{!31}
+!31 = !DITemplateTypeParameter(name: "i8", type: !40)
+!32 = !{!33}
+!33 = !DITemplateTypeParameter(name: "i8", type: !41)
+!34 = !{}
+"""
+
+
+def test_a_generic_instantiation_names_its_type_parameters(tmp_path):
+    # Review of #106: a generic body's MIR types may name a type parameter, whatever its
+    # name (`fn show<i8>(p: Pair<i8>)` called with chars).
+    from peeky.rust_mir import mentions
+
+    path = tmp_path / "app.ll"
+    path.write_text(GENERIC_IR)
+    functions = ir_functions(path, ["src/main.rs"])
+    generics = {hashed[-1]: function.generics for hashed, function in functions.items()}
+    # rustc lists no const parameter (`fixed<3>`): its argument is a value, no type. A
+    # name's type argument with no parameter listed for it is not understood.
+    assert generics == {"1": ("i8",), "2": ("i8",), "3": (), "4": (), "5": None}
+    assert mentions("Pair<i8>", ("i8",)) and mentions("(i8, i8)", ("i8",))
+    assert mentions("std::vec::Vec<Pair<T>>", ("T",))
+    assert not mentions("chars::i8::Span", ("i8",)) and not mentions("Thing", ("T",))
+    assert not mentions("std::vec::Vec<usize>", ("i8",))
+
+
+def test_a_generic_bodys_primitive_named_types_may_hold_pointers():
+    # `fn hold<u64>(w: u64)`: the `u64` may be a `&mut Vec`, so values made from it alias.
+    body = mir(
+        {
+            0: ["_2 = copy _1;", "_3 = &mut _2;", "return;"],
+        },
+        header="fn main(_1: u64) -> () {",
+    )
+    body.types.update({1: "u64", 2: "u64", 3: "&mut u64"})
+    body.generics = ()
+    assert body._aliases(1) == {1}
+    body = mir(
+        {
+            0: ["_2 = copy _1;", "_3 = &mut _2;", "return;"],
+        },
+        header="fn main(_1: u64) -> () {",
+    )
+    body.types.update({1: "u64", 2: "u64", 3: "&mut u64"})
+    body.generics = ("u64",)
+    assert body._aliases(1) == {1, 2, 3}
 
 
 # #132: `async fn work(n: u32)` with a local the future does not keep across its `.await`
@@ -2115,6 +2201,43 @@ def test_a_macro_s_own_stops_judge_the_references_of_their_block(tmp_path):
     # The macro's own `args` of the stop's block, set there.
     assert judged("args", True, 0xE50) is True
     assert judged("v", True, 0xE60) is True
+
+
+def test_a_body_no_function_was_matched_to_may_have_any_type_parameter():
+    # Review of #106: a macro's twins are never matched, so their type parameters are
+    # unknown: a `usize` there may hold a pointer too.
+    body = mir(
+        {0: ["_2 = copy _1;", "_3 = &mut _2;", "return;"]}, header="fn main(_1: u64) -> () {"
+    )
+    body.types.update({1: "u64", 2: "u64", 3: "&mut u64"})
+    assert body.generics is None and body._aliases(1) == {1, 2, 3}
+
+
+def test_a_generic_name_rustc_cannot_be_read_from_is_not_understood():
+    # Review 3 of #106: with no parameter list read, a name whose arguments cannot be
+    # read was taken for a non-generic function's.
+    from peeky.rust_mir import _generics
+
+    meta = {"!1": ("list", {"items": []})}
+    assert _generics({}, {"name": "f>"}) is None and _generics({}, {"name": "main"}) == ()
+    assert _generics({}, {"name": "show<u8>"}) is None
+    # A char const is named by a hash (`ch::<'a'>`, rustc 1.96): a value, never a type.
+    assert _generics(meta, {"name": "ch<{CONST#27d96aba666aa2f7}>", "templateParams": "!1"}) == ()
+    assert _generics(meta, {"name": "ng<-3>", "templateParams": "!1"}) == ()
+
+
+def test_an_alias_graph_is_built_again_when_the_type_parameters_become_known():
+    # Review 3 of #106: built while they were unknown (an `#[inline(always)]` body not yet
+    # matched), it kept every link once they were known.
+    body = mir(
+        {0: ["_2 = copy _1;", "_3 = &mut _2;", "return;"]}, header="fn main(_1: u64) -> () {"
+    )
+    body.types.update({1: "u64", 2: "u64", 3: "&mut u64"})
+    assert body._aliases(1) == {1, 2, 3}
+    body.generics = ()
+    assert body._aliases(1) == {1}
+    body.generics = ("u64",)
+    assert body._aliases(1) == {1, 2, 3}
 
 
 def test_an_unassigned_local_is_judged_where_its_stop_block_and_rows_put_the_pc(tmp_path):

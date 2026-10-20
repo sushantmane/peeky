@@ -1139,7 +1139,9 @@ def test_generic_boxes_are_gated_and_non_owning_values_read(plain, capsys):
         if value is None:
             assert whole["view"] == "unproven" and "value" not in field, (marker, result["rows"])
         else:
-            assert field["value"] == value and "view" not in whole, (marker, result["rows"])
+            # Read, not gated: a `&Pt` held by `T` (a reference parameter) previews (#106).
+            assert field["value"] == value, (marker, result["rows"])
+            assert whole.get("view") in (None, "memory"), (marker, result["rows"])
     # Verification of #103: a wide Box (`Box<str>`, which LLDB names itself) and a 2-D
     # array Box (`unsigned char (*)[2][4]`) held by a generic `T`.
     for marker, capture in (
@@ -1169,8 +1171,9 @@ def test_generic_boxes_are_gated_and_non_owning_values_read(plain, capsys):
     rows = result["rows"]
     assert rows[0].get("value") == "2" and rows[2].get("value") == "10", rows
     # Verification of #103: a captured `fn(&Pt)` (MIR: `for<'a> fn(&'a Pt) -> i64`) and
-    # an array of fn pointers whose parameter LLDB names `unsigned char (*)[4]` read.
-    assert not any(row.get("view") for row in rows), rows
+    # an array of fn pointers whose parameter LLDB names `unsigned char (*)[4]` read
+    # (`p`, a `Pt`, previews: #106).
+    assert all(row.get("view") in (None, "memory") for row in rows), rows
     assert "px" in str(rows[3].get("value")), rows
     assert "not shown" not in str(rows[4].get("value")), rows
     # A Box bound to the same name in a sibling block does not hide an integer or an
@@ -3469,6 +3472,891 @@ def test_a_field_reassigned_in_place_leaves_its_struct_whole(plain, capsys):
     rows = _rows_at(plain, capsys, "AG_PARTLY_REPLACED", "h,h.b,h.b.x,h.n,h.v.len")
     assert _hidden(rows["h.b.x"]) and rows["h.b"]["view"] == "unproven", rows
     assert _stale(rows["h"]) and _stale(rows["h.n"]) and rows["h.v.len"].get("stale"), rows
+
+
+PREVIEWS = """#[derive(Debug, Clone, Copy)]
+pub struct Span {
+    start: usize,
+    end: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct Point(i32, u8);
+
+#[derive(Debug, Clone, Copy)]
+pub struct Pair<T> {
+    a: T,
+    b: T,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct Marker;
+
+#[derive(Debug, Clone, Copy)]
+pub struct Mixed {
+    c: char,
+    f: f32,
+    on: bool,
+    u: u8,
+    i: i8,
+    d: f64,
+}
+
+#[derive(Debug)]
+pub struct Named {
+    name: String,
+    n: i32,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct Rect {
+    a: Span,
+    b: Span,
+}
+
+#[derive(Debug, Clone, Copy)]
+#[repr(C, packed)]
+pub struct Packed {
+    a: u8,
+    b: u32,
+}
+
+#[derive(Debug)]
+pub struct Owned {
+    v: i64,
+}
+
+mod parse {
+    #[derive(Debug, Clone, Copy)]
+    pub struct Token {
+        pub start: u32,
+        pub end: u32,
+    }
+}
+
+fn parse(text: &str) -> usize {
+    // Shares its path, `parse::Token`, with the module's.
+    #[derive(Debug)]
+    struct Token {
+        text: String,
+        line: u32,
+    }
+    let t = Token { text: text.to_string(), line: 7 };
+    t.text.len() + t.line as usize
+}
+
+#[inline(never)]
+fn consume(o: Owned) -> i64 {
+    o.v
+}
+
+fn widen(s: &Span, m: &mut Span, p: Span, t: &(i64, char)) -> usize {
+    m.end += 1;
+    s.end - s.start + m.end + p.start + t.0 as usize // PV_PARAMS
+}
+
+#[inline(never)]
+fn inner(k: usize) -> usize {
+    k + 1 // PV_INNER
+}
+
+fn outer(s: &Span, m: &mut Span) -> usize {
+    m.start += 1;
+    inner(s.start) + m.end
+}
+
+fn main() {
+    let s = Span { start: 2, end: 3 };
+    let p = Point(1, 2);
+    let small = Pair { a: 1i8, b: -2 };
+    let letters = Pair { a: 'x', b: 'y' };
+    let pair = Pair { a: 1u16, b: 2 };
+    let mark = Marker;
+    let mixed = Mixed { c: 'é', f: 0.1, on: true, u: 255, i: -3, d: 1e16 };
+    let single = (7i8,);
+    let t = (1i64, 'a');
+    let named = Named { name: "x".to_string(), n: 1 };
+    let rect = Rect { a: s, b: Span { start: 4, end: 9 } };
+    let packed = Packed { a: 1, b: 2 };
+    let tok = parse::Token { start: 0, end: 3 };
+    let o = Owned { v: 5 };
+    let later: Span;
+    let mut m = Span { start: 5, end: 6 };
+    let k = consume(o);
+    later = Span { start: 8, end: 9 }; // PV_LATER
+    let w = widen(&s, &mut m, s, &t) + parse("ab") + outer(&s, &mut m);
+    println!("{:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?}", s, p, small, letters, pair, mark, mixed, single, t, later); // PV_LOCALS
+    println!("{:?} {:?} {:?} {:?} {} {} {:?}", named, rect, { packed }, tok, k, w, m);
+}
+"""
+PREVIEWED = ("s", "p", "small", "letters", "pair", "mark", "mixed", "single", "t", "later")
+
+
+@pytest.mark.timeout(600)
+def test_struct_and_tuple_locals_preview_as_rust_prints_them(plain, capsys):
+    # #106: a struct local showed `chars::Span @ 0x…` (a reference parameter its
+    # address) while a Vec of them read `[Span { start: 1, end: 10 }]`.
+    (plain / "src/main.rs").write_text(PREVIEWS)
+    if not _reads_memory_here(plain, capsys):
+        pytest.skip("this lldb-dap has no readMemory")
+    fields = "s.start,p.__1,t.__1,mixed.c,mixed.f,mixed.u,small.b,rect.a.end,tok.end,named.n"
+    rows = _preview_rows(
+        plain, capsys, "PV_LOCALS", ",".join((*PREVIEWED, "rect,packed,tok,named,o,m", fields))
+    )
+    for name in PREVIEWED:
+        assert rows[name]["view"] == "memory", rows[name]
+    # As Rust's derived Debug prints them: names collide in LLDB (`Pair<char>` for
+    # Pair<i8>); the MIR's type picks the layout.
+    printed = rows["s"]["output"].splitlines()[0]
+    assert " ".join(rows[name]["value"] for name in PREVIEWED) == printed
+    # Nested, packed, same-named (a function's own `Token`) or with a String: raw, as
+    # before, and their fields still read.
+    for name in ("rect", "packed", "tok", "named"):
+        assert "view" not in rows[name] and " @ 0x" in rows[name]["value"], rows[name]
+    # Moved (`consume(o)`): never previewed, and marked (#108).
+    assert "view" not in rows["o"] and rows["o"].get("stale"), rows["o"]
+    picked = {name: (rows[name]["value"], rows[name]["type"]) for name in fields.split(",")}
+    assert picked == {
+        "s.start": ("2", "usize"),
+        "p.__1": ("2", "u8"),
+        "t.__1": ("'a'", "char"),
+        "mixed.c": ("'é'", "char"),
+        "mixed.f": ("0.1", "f32"),
+        "mixed.u": ("255", "u8"),
+        "small.b": ("-2", "i8"),
+        "rect.a.end": ("3", "unsigned long"),
+        "tok.end": ("3", "u32"),
+        "named.n": ("1", "i32"),
+    }
+    # A raw field keeps LLDB's name beside the Rust one; a previewed one has its DWARF type.
+    assert rows["named.n"]["debugger_type"] == "int" and "debugger_type" not in rows["s.start"]
+    # Not yet assigned (`later` on its assignment's line): no preview.
+    rows = _preview_rows(plain, capsys, "PV_LATER", "later,s")
+    assert "view" not in rows["later"] and rows["s"]["view"] == "memory", rows
+
+
+@pytest.mark.timeout(600)
+def test_reference_parameters_preview_and_callers_locals_do_not(plain, capsys):
+    (plain / "src/main.rs").write_text(PREVIEWS)
+    if not _reads_memory_here(plain, capsys):
+        pytest.skip("this lldb-dap has no readMemory")
+    rows = _preview_rows(plain, capsys, "PV_PARAMS", "s,m,p,t,s.end,t.__0")
+    values = {name: (row["value"], row.get("view")) for name, row in rows.items()}
+    assert values == {
+        "s": ("Span { start: 2, end: 3 }", "memory"),
+        "m": ("Span { start: 5, end: 7 }", "memory"),
+        "p": ("Span { start: 2, end: 3 }", "memory"),
+        "t": ("(1, 'a')", "memory"),
+        "s.end": ("3", "memory"),
+        "t.__0": ("1", "memory"),
+    }
+    # A caller's frame: a shared reference parameter (the caller's loan freezes it) still
+    # previews; a `&mut` one (a callee may be changing it) and owned locals do not.
+    at = f"src/main.rs:{line_of(PREVIEWS, '// PV_INNER')}"
+    assert main(["session", "start", str(plain), "--at", at]) == 0
+    capsys.readouterr()
+    try:
+        code, rows = run(capsys, "session", "get", "--frame", "1", "s", "m", "s.start")
+        found = {row["selector"]: row for row in rows}
+        assert "::outer" in found["s"]["function"], found
+        assert found["s"]["value"] == "Span { start: 2, end: 3 }", found["s"]
+        assert "view" not in found["m"] and found["m"]["value"].startswith("0x"), found["m"]
+        assert found["s.start"]["value"] == "2", found
+        code, rows = run(capsys, "session", "get", "--frame", "2", "s", "t", "s.end")
+        found = {row["selector"]: row for row in rows}
+        assert "::main" in found["s"]["function"], found
+        assert "view" not in found["s"] and "view" not in found["t"], found
+        assert found["s.end"]["value"] == "3", found
+        # The innermost frame's inspection lists previews with their marker.
+        assert main(["session", "inspect", "--frame", "1"]) == 0
+        text = capsys.readouterr().out
+        assert "s: chars::Span * = Span { start: 2, end: 3 }  [memory]" in text, text
+    finally:
+        main(["session", "close"])
+        capsys.readouterr()
+
+
+def _reads_memory_here(plain, capsys):
+    if os.environ.get("PEEKY_EXPECT_READ_MEMORY") is not None:
+        return True
+    rows = _preview_rows(plain, capsys, "PV_LOCALS", "s")
+    return rows["s"].get("view") == "memory"
+
+
+def _preview_rows(plain, capsys, marker, capture):
+    at = f"src/main.rs:{line_of(PREVIEWS, '// ' + marker)}"
+    code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", capture, "--quiet")
+    assert code == 0, result.get("error")
+    rows = {row["selector"]: row for row in result["rows"]}
+    for row in rows.values():
+        row["output"] = result["output"]
+    return rows
+
+
+GENERIC_PREVIEWS = """#![allow(non_camel_case_types)]
+#[derive(Debug, Clone, Copy)]
+pub struct Pair<T> {
+    a: T,
+    b: T,
+}
+
+#[derive(Debug)]
+pub struct Pt {
+    x: i64,
+    y: i64,
+}
+
+#[derive(Debug)]
+pub struct Holder {
+    b: Box<Pt>,
+    n: i64,
+}
+
+#[inline(never)]
+fn churn() -> i64 {
+    Box::leak(Box::new(Pt { x: 777, y: 888 })).x
+}
+
+// Type parameters named like primitives: the MIR of the generic body says `Pair<i8>`.
+fn show<i8: std::fmt::Debug + Copy>(p: Pair<i8>, t: (i8, i8)) -> String {
+    let v: Vec<Pair<i8>> = vec![p];
+    let n = v.len(); // GP_SHOW
+    format!("{:?} {:?} {:?} {}", p, t, v, n)
+}
+
+fn label<u64: std::fmt::Debug + Copy>(x: u64) -> String {
+    format!("{:?}", x) // GP_LABEL
+}
+
+fn keep<i64: std::fmt::Debug>(h: i64) -> usize {
+    drop(h);
+    churn() as usize // GP_KEEP
+}
+
+fn main() {
+    let x = show(Pair { a: 1i8, b: 2i8 }, (3i8, 4i8));
+    let y = show(Pair { a: 'A', b: 'B' }, ('C', 'D'));
+    let z = label(7usize);
+    let k = keep(Holder { b: Box::new(Pt { x: 5, y: 6 }), n: 9 });
+    println!("{x} | {y} | {z} | {k}");
+}
+"""
+
+
+@pytest.mark.timeout(600)
+def test_a_generic_bodys_types_are_never_taken_for_the_frames(plain, capsys):
+    # Review of #106: the MIR of a generic body declares `Pair<i8>` where `i8` is a type
+    # parameter; called with chars, `p` showed `Pair { a: 65, b: 0 }` from `Pair<i8>`'s
+    # layout, `t` `(67, 0)`, and the Vec `v` its elements likewise.
+    (plain / "src/main.rs").write_text(GENERIC_PREVIEWS)
+    at = f"src/main.rs:{line_of(GENERIC_PREVIEWS, '// GP_SHOW')}"
+    code, result = run(
+        capsys,
+        "probe",
+        str(plain),
+        "--at",
+        at,
+        "--capture",
+        "p,t,v,p.a,t.__0",
+        "--hits",
+        "2",
+        "--quiet",
+    )
+    assert code == 0, result.get("error")
+    first, second = (
+        {row["selector"]: row for row in result["rows"] if row["hit"] == hit} for hit in (1, 2)
+    )
+    # Two instantiations, one MIR body.
+    assert first["p"]["function"] != second["p"]["function"], result["rows"]
+    for name in ("p", "t", "v"):
+        assert second[name].get("view") != "memory", second[name]
+    # The debugger's own fields: the chars the program holds.
+    assert second["p.a"]["value"] == "'A'" and second["t.__0"]["value"] == "'C'", second
+    # Never the bytes of `Pair<i8>`'s layout (addresses and hashes may hold the digits).
+    shown = " ".join(str(row.get("value")) for row in second.values())
+    assert "Pair { a: 65" not in shown and "(67, " not in shown, second
+    # A scalar's Rust type: not the MIR's `u64` (a type parameter, here a usize).
+    at = f"src/main.rs:{line_of(GENERIC_PREVIEWS, '// GP_LABEL')}"
+    code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "x", "--quiet")
+    row = result["rows"][0]
+    assert row["value"] == "7" and row["type"] != "u64", row
+    # #108: a type parameter named `i64` holding a struct that owns a Box, dropped: it
+    # read the freed Box (`h.b.x` showed 777).
+    at = f"src/main.rs:{line_of(GENERIC_PREVIEWS, '// GP_KEEP')}"
+    code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "h,h.b.x", "--quiet")
+    whole, field = result["rows"]
+    assert whole.get("stale") and "value" not in field and "777" not in str(field), result["rows"]
+
+
+ODD_STRUCTS = """#[derive(Debug, Clone, Copy)]
+pub struct Num {
+    __0: u32,
+    __1: u32,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct Two(u32, u32);
+
+#[derive(Debug, Clone, Copy)]
+#[repr(packed)]
+pub struct Pk {
+    a: u32,
+    b: u32,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct Span {
+    start: usize,
+    end: usize,
+}
+
+fn main() {
+    let num = Num { __0: 1, __1: 2 };
+    let nums = vec![num];
+    let two = Two(3, 4);
+    let pk = Pk { a: 5, b: 6 };
+    let s = Span { start: 7, end: 8 };
+    println!("{:?} {:?} {:?} {:?} {:?}", num, nums, two, { pk }, s); // ODD
+}
+"""
+
+
+@pytest.mark.timeout(600)
+def test_numbered_fields_and_packed_structs_are_never_previewed(plain, capsys):
+    # Review of #106: a struct whose fields are named `__0`, `__1` previewed as a tuple
+    # struct (`Num(1, 2)`; it prints `Num { __0: 1, __1: 2 }`): the DWARF names a tuple
+    # struct's fields so too. A source naming such a field leaves every tuple struct
+    # raw. A packed struct is never read, even where its fields fall aligned.
+    (plain / "src/main.rs").write_text(ODD_STRUCTS)
+    at = f"src/main.rs:{line_of(ODD_STRUCTS, '// ODD')}"
+    capture = "num,nums,two,pk,s,num.__0,two.__1,pk.b"
+    code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", capture, "--quiet")
+    assert code == 0, result.get("error")
+    rows = {row["selector"]: row for row in result["rows"]}
+    for name in ("num", "nums", "two", "pk"):
+        assert rows[name].get("view") != "memory", rows[name]
+    assert "Num(" not in str(rows) and "Two(" not in str(rows), rows
+    assert (rows["num.__0"]["value"], rows["two.__1"]["value"], rows["pk.b"]["value"]) == (
+        "1",
+        "4",
+        "6",
+    )
+    # A struct with named fields still previews.
+    if os.environ.get("PEEKY_EXPECT_READ_MEMORY") or rows["s"].get("view") == "memory":
+        assert rows["s"]["value"] == "Span { start: 7, end: 8 }", rows["s"]
+
+
+MACRO_NUMBERED = """macro_rules! fields {
+    ($name:ident, $a:ident, $b:ident) => {
+        #[derive(Debug, Clone, Copy)]
+        pub struct $name {
+            $a: u32,
+            $b: u32,
+        }
+        impl $name {
+            fn new(x: u32, y: u32) -> Self {
+                Self { $a: x, $b: y }
+            }
+        }
+    };
+}
+
+fields!(Num, __0, __1);
+
+fn main() {
+    let n = Num::new(1, 2);
+    let v = vec![n];
+    println!("{:?} {:?}", n, v); // MN_STOP
+}
+"""
+
+
+@pytest.mark.timeout(300)
+def test_fields_a_macro_names_like_a_tuples_are_never_previewed(plain, capsys):
+    # Review 2 of #106: `fields!(Num, __0, __1)` declares `Num { __0: u32, __1: u32 }`,
+    # which previewed as `Num(1, 2)`: the source had no `__0:`, only the token.
+    (plain / "src/main.rs").write_text(MACRO_NUMBERED)
+    at = f"src/main.rs:{line_of(MACRO_NUMBERED, '// MN_STOP')}"
+    code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "n,v,n.__1", "--quiet")
+    assert code == 0, result.get("error")
+    rows = {row["selector"]: row for row in result["rows"]}
+    assert "Num { __0: 1, __1: 2 }" in result["output"]
+    for name in ("n", "v"):
+        assert rows[name].get("view") != "memory" and "Num(" not in rows[name]["value"], rows
+    assert rows["n.__1"]["value"] == "2", rows
+
+
+CONST_GENERICS = """#[derive(Debug, Clone, Copy)]
+pub struct Span {
+    start: usize,
+    end: usize,
+}
+
+pub struct Grid<const N: usize> {
+    cells: [u32; N],
+}
+
+impl<const N: usize> Grid<N> {
+    fn width(&self, s: Span) -> usize {
+        let w = s;
+        let f = |k: usize| {
+            let inner = w;
+            k + N + inner.end // CG_CLOSURE
+        };
+        f(self.cells.len()) // CG_METHOD
+    }
+}
+
+fn sum<const N: usize>(arr: [u32; N], s: Span) -> usize {
+    let n: usize = arr.len();
+    let w = s;
+    n + w.end // CG_SUM
+}
+
+fn main() {
+    let s = Span { start: 1, end: 2 };
+    let g = Grid { cells: [1u32; 4] };
+    println!("{} {}", sum([1, 2, 3], s), g.width(s));
+}
+"""
+
+
+@pytest.mark.timeout(600)
+def test_const_generic_functions_keep_their_previews_and_rust_types(plain, capsys):
+    # Review 2 of #106: rustc names a const generic's instantiation `sum<3>` but lists no
+    # template parameter for it, which was taken for a generic not understood: `n` lost
+    # its `usize` and `s`, `w` their previews. A const argument is a value, never a type.
+    (plain / "src/main.rs").write_text(CONST_GENERICS)
+    reads = os.environ.get("PEEKY_EXPECT_READ_MEMORY") is not None
+    for marker, capture in (
+        ("CG_SUM", "n,s,w"),
+        ("CG_METHOD", "s,w"),
+        ("CG_CLOSURE", "k,inner"),
+    ):
+        at = f"src/main.rs:{line_of(CONST_GENERICS, '// ' + marker)}"
+        code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", capture, "--quiet")
+        assert code == 0, result.get("error")
+        rows = {row["selector"]: row for row in result["rows"]}
+        for name in capture.split(","):
+            row = rows[name]
+            if name in ("n", "k"):
+                assert row["type"] == "usize", (marker, row)
+            elif reads or row.get("view") == "memory":
+                assert row["value"] == "Span { start: 1, end: 2 }", (marker, row)
+
+
+GENERIC_TWINS = """#![allow(non_camel_case_types)]
+#[derive(Debug, Clone, Copy)]
+pub struct Pt {
+    x: i64,
+    y: i64,
+}
+
+#[derive(Debug)]
+pub struct Res {
+    x: i64,
+}
+
+impl Drop for Res {
+    fn drop(&mut self) {
+        churn(); // GT_IN_DROP
+    }
+}
+
+#[inline(never)]
+fn churn() -> i64 {
+    Box::leak(Box::new(Pt { x: 777, y: 888 })).x + Box::leak(Box::new([777i64; 4]))[0]
+}
+
+fn ident<'a>(v: &'a mut Vec<Res>) -> &'a mut Vec<Res> {
+    v
+}
+
+// Twins: methods a macro generates, which the MIR cannot tell apart. Their type
+// parameter `u64` is a `&mut Vec<Res>` pointing where `v` does.
+macro_rules! twin {
+    ($t:ident) => {
+        impl $t {
+            fn reset<'a, u64: std::ops::DerefMut<Target = Vec<Res>> + 'a>(
+                &self,
+                v: &'a mut Vec<Res>,
+                make: fn(&'a mut Vec<Res>) -> u64,
+                n: i64,
+            ) -> i64 {
+                let k = v[0].x;
+                let mut w = make(v);
+                *w = vec![Res { x: n }]; // GT_TWIN
+                k + w[0].x
+            }
+        }
+    };
+}
+
+struct A;
+struct B;
+twin!(A);
+twin!(B);
+
+fn main() {
+    let mut v = vec![Res { x: 5 }];
+    let mut u = vec![Res { x: 6 }];
+    println!("{} {}", A.reset(&mut v, ident, 9), B.reset(&mut u, ident, 10));
+    std::mem::forget(v);
+    std::mem::forget(u);
+}
+"""
+
+
+@pytest.mark.timeout(600)
+def test_a_twins_primitive_named_type_parameter_may_alias_a_reference(plain, capsys):
+    # Review 2 of #106: a macro's twins are matched to no function, so their type
+    # parameters are unknown; their `u64` was taken for a pointerless integer, so the
+    # drop through `w` (made from `v`) of `*w = new` was not seen as one through `v`, which
+    # then read the dropped Vec between the drop and the store.
+    (plain / "src/main.rs").write_text(GENERIC_TWINS)
+    at = f"src/main.rs:{line_of(GENERIC_TWINS, '// GT_IN_DROP')}"
+    line = line_of(GENERIC_TWINS, "// GT_TWIN")
+    variables = _stepped_out_to(plain, capsys, at, 0, line)
+    assert variables["v"].get("view") == "unproven", variables["v"]
+
+
+CONCAT_NUMBERED = """#![feature(macro_metavar_expr_concat)]
+macro_rules! fields {
+    ($name:ident) => {
+        #[derive(Debug, Clone, Copy)]
+        pub struct $name {
+            ${concat(__, "0")}: u32,
+            ${concat(__, "1")}: u32,
+        }
+        impl $name {
+            fn new(x: u32, y: u32) -> Self {
+                Self { ${concat(__, "0")}: x, ${concat(__, "1")}: y }
+            }
+        }
+    };
+}
+
+fields!(Num);
+
+#[derive(Debug, Clone, Copy)]
+pub struct Two(u32, u32);
+
+fn main() {
+    let n = Num::new(1, 2);
+    let v = vec![n];
+    let two = Two(3, 4);
+    println!("{:?} {:?} {:?}", n, v, two); // CN_STOP
+}
+"""
+
+
+@pytest.mark.timeout(300)
+def test_a_nightly_feature_leaves_every_tuple_struct_unread(plain, capsys):
+    # Review 3 of #106: a macro concatenating `__` and `0` declares `Num { __0: u32, … }`
+    # with no `__0` token in the source, and it previewed as `Num(1, 2)`. Review 5: only
+    # a nightly feature does that (Peeky's builds allow them), so a crate enabling any
+    # reads no tuple struct, `Two` neither (the MIR's aggregates, which had proved it,
+    # name types by too short a path to be matched).
+    (plain / "src/main.rs").write_text(CONCAT_NUMBERED)
+    at = f"src/main.rs:{line_of(CONCAT_NUMBERED, '// CN_STOP')}"
+    code, result = run(
+        capsys, "probe", str(plain), "--at", at, "--capture", "n,v,two,n.__1", "--quiet"
+    )
+    assert code == 0, result.get("error")
+    rows = {row["selector"]: row for row in result["rows"]}
+    assert "Num { __0: 1, __1: 2 }" in result["output"]
+    for name in ("n", "v"):
+        assert rows[name].get("view") != "memory" and "Num(" not in rows[name]["value"], rows
+    assert rows["n.__1"]["value"] == "2", rows
+    assert "Two(3, 4)" in result["output"] and rows["two"].get("view") != "memory", rows
+    assert "Two(" not in rows["two"]["value"], rows["two"]
+
+
+CHAR_CONST = """#[derive(Debug, Clone, Copy)]
+pub struct Span {
+    start: usize,
+    end: usize,
+}
+
+fn ch<const C: char>(s: Span) -> usize {
+    let n: usize = C as usize;
+    let w = s;
+    n + w.end // CC_STOP
+}
+
+fn main() {
+    let s = Span { start: 1, end: 2 };
+    println!("{}", ch::<'a'>(s));
+}
+"""
+
+
+@pytest.mark.timeout(300)
+def test_a_char_const_generic_keeps_its_previews_and_rust_types(plain, capsys):
+    # Review 3 of #106: rustc 1.96 names `ch::<'a'>` `ch<{CONST#27d96aba666aa2f7}>`, which
+    # was taken for a generic not understood.
+    (plain / "src/main.rs").write_text(CHAR_CONST)
+    at = f"src/main.rs:{line_of(CHAR_CONST, '// CC_STOP')}"
+    code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "n,w", "--quiet")
+    assert code == 0, result.get("error")
+    rows = {row["selector"]: row for row in result["rows"]}
+    assert rows["n"]["type"] == "usize" and rows["n"]["value"] == "97", rows
+    if os.environ.get("PEEKY_EXPECT_READ_MEMORY") or rows["w"].get("view") == "memory":
+        assert rows["w"]["value"] == "Span { start: 1, end: 2 }", rows["w"]
+
+
+MODULE_TUPLES = """mod m {
+    #[derive(Debug, Clone, Copy)]
+    pub struct Wrapping(pub u32);
+    #[derive(Debug, Clone, Copy)]
+    pub struct Point(pub i32, pub i32);
+    #[derive(Debug, Clone, Copy)]
+    pub struct Duration(pub u64);
+    #[derive(Debug, Clone, Copy)]
+    pub struct Wrap<T>(pub T);
+}
+
+mod n {
+    #[derive(Debug, Clone, Copy)]
+    pub struct Point {
+        pub x: i32,
+    }
+}
+
+fn main() {
+    let v = vec![m::Wrapping(1), m::Wrapping(2)];
+    let p = vec![m::Point(3, 4)];
+    let q = n::Point { x: 5 };
+    let d = m::Duration(6);
+    let w = m::Wrap::<u8>(7);
+    let pt = m::Point(8, 9);
+    println!("{:?} {:?} {:?} {:?} {:?} {:?}", v, p, q, d, w, pt); // MT_STOP
+}
+"""
+
+
+@pytest.mark.timeout(300)
+def test_tuple_structs_the_mir_names_by_their_path_are_read(plain, capsys):
+    # Review 4 of #106: the MIR prints `m::Point(…)` where `Point` is not unique (`n`'s)
+    # and `m::Wrapping(…)` beside std's; the proof matched names alone, so these stayed
+    # raw, `v` and `p` too, which main read.
+    (plain / "src/main.rs").write_text(MODULE_TUPLES)
+    at = f"src/main.rs:{line_of(MODULE_TUPLES, '// MT_STOP')}"
+    names = ("v", "p", "q", "d", "w", "pt")
+    code, result = run(
+        capsys, "probe", str(plain), "--at", at, "--capture", ",".join(names), "--quiet"
+    )
+    assert code == 0, result.get("error")
+    rows = {row["selector"]: row for row in result["rows"]}
+    if not (os.environ.get("PEEKY_EXPECT_READ_MEMORY") or rows["q"].get("view") == "memory"):
+        pytest.skip("this lldb-dap has no readMemory")
+    assert " ".join(rows[name]["value"] for name in names) == result["output"].splitlines()[0]
+    assert all(rows[name].get("view") == "memory" for name in names), rows
+
+
+ROOT_AND_MODULE_NUM = """#![feature(macro_metavar_expr_concat)]
+#[derive(Debug, Clone, Copy)]
+pub struct Num(u32, u32);
+
+mod b {
+    macro_rules! fields {
+        ($name:ident) => {
+            #[derive(Debug, Clone, Copy)]
+            pub struct $name {
+                ${concat(__, "0")}: u32,
+                ${concat(__, "1")}: u32,
+            }
+            impl $name {
+                pub fn new(x: u32, y: u32) -> Self {
+                    Self { ${concat(__, "0")}: x, ${concat(__, "1")}: y }
+                }
+            }
+        };
+    }
+    fields!(Num);
+}
+
+fn main() {
+    let t = Num(3, 4);
+    let n = b::Num::new(1, 2);
+    println!("{:?} {:?}", t, n); // RM_STOP
+}
+"""
+
+
+@pytest.mark.timeout(300)
+def test_a_root_tuple_struct_proves_nothing_for_a_same_named_one_elsewhere(plain, capsys):
+    # Review 4 of #106: the root `Num(3, 4)` proved the name `Num`, and `b::Num { __0: … }`
+    # (named fields, which the DWARF cannot tell from a tuple struct's) was not counted,
+    # so `n` previewed as `Num(1, 2)`; the program prints `Num { __0: 1, __1: 2 }`. Since
+    # review 5 the crate's nightly feature leaves both unread.
+    (plain / "src/main.rs").write_text(ROOT_AND_MODULE_NUM)
+    at = f"src/main.rs:{line_of(ROOT_AND_MODULE_NUM, '// RM_STOP')}"
+    code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "t,n,n.__0", "--quiet")
+    assert code == 0, result.get("error")
+    rows = {row["selector"]: row for row in result["rows"]}
+    assert "Num(3, 4) Num { __0: 1, __1: 2 }" in result["output"]
+    assert rows["n"].get("view") != "memory" and "Num(" not in rows["n"]["value"], rows
+    assert rows["n.__0"]["value"] == "1", rows
+    # A nightly feature: no tuple struct is read (review 5).
+    assert rows["t"].get("view") != "memory" and "Num(" not in rows["t"]["value"], rows
+
+
+SHORT_PATHS = """mod geo {
+    pub mod shapes {
+        #[derive(Debug, Clone, Copy)]
+        pub struct Point(pub i32, pub i32);
+    }
+}
+
+mod other {
+    #[derive(Debug, Clone, Copy)]
+    pub struct Point(pub u8);
+}
+
+mod r#match {
+    #[derive(Debug, Clone, Copy)]
+    pub struct Kw(pub u8);
+}
+
+#[allow(non_camel_case_types)]
+#[derive(Debug, Clone, Copy)]
+struct r#type(u16);
+
+fn main() {
+    let g = vec![geo::shapes::Point(6, 7)];
+    let o = other::Point(8);
+    let k = r#match::Kw(9);
+    let t = r#type(10);
+    let s = geo::shapes::Point(11, 12);
+    println!("{:?} {:?} {:?} {:?} {:?}", g, o, k, t, s); // SP_STOP
+}
+"""
+
+
+@pytest.mark.timeout(300)
+def test_tuple_structs_read_whatever_path_the_mir_prints(plain, capsys):
+    # Review 5 of #106: the MIR prints a type from its nearest uniquely named ancestor
+    # (`shapes::Point` for `geo::shapes::Point` beside `other::Point`) and raw identifiers
+    # with `r#`, which the construction proof never matched: `g` was raw (main read it).
+    # The locals' MIR types are printed so too.
+    (plain / "src/main.rs").write_text(SHORT_PATHS)
+    at = f"src/main.rs:{line_of(SHORT_PATHS, '// SP_STOP')}"
+    names = ("g", "o", "k", "t", "s")
+    code, result = run(
+        capsys, "probe", str(plain), "--at", at, "--capture", ",".join(names), "--quiet"
+    )
+    assert code == 0, result.get("error")
+    rows = {row["selector"]: row for row in result["rows"]}
+    if not (os.environ.get("PEEKY_EXPECT_READ_MEMORY") or rows["o"].get("view") == "memory"):
+        pytest.skip("this lldb-dap has no readMemory")
+    assert " ".join(rows[name]["value"] for name in names) == result["output"].splitlines()[0]
+    assert all(rows[name].get("view") == "memory" for name in names), rows
+
+
+VARIANT_PATH = """#![feature(macro_metavar_expr_concat)]
+mod a {
+    #[derive(Debug, Clone, Copy)]
+    pub enum Color {
+        Red(u32, u32),
+    }
+}
+
+macro_rules! fields {
+    ($name:ident) => {
+        #[derive(Debug, Clone, Copy)]
+        pub struct $name {
+            ${concat(__, "0")}: u32,
+            ${concat(__, "1")}: u32,
+        }
+    };
+}
+
+#[allow(non_snake_case)]
+fn Color() -> u32 {
+    fields!(Red);
+    let r: Red = unsafe { std::mem::transmute([7u32, 8u32]) };
+    let c = a::Color::Red(1, 2);
+    println!("{:?} {:?}", r, c); // VP_STOP
+    3
+}
+
+fn main() {
+    println!("{}", Color());
+}
+"""
+
+
+@pytest.mark.timeout(300)
+def test_an_enum_variant_never_proves_a_struct_of_its_path(plain, capsys):
+    # Review 5 of #106: the MIR prints `a::Color::Red(1, 2)` as `Color::Red(…)`, the
+    # DWARF path of `fn Color`'s own `Red { __0, __1 }` (built with `${concat}`, never by
+    # an aggregate), so `r` previewed `Red(7, 8)`; the program prints
+    # `Red { __0: 7, __1: 8 }`. The crate's nightly feature now leaves it unread.
+    (plain / "src/main.rs").write_text(VARIANT_PATH)
+    at = f"src/main.rs:{line_of(VARIANT_PATH, '// VP_STOP')}"
+    code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "r,r.__1", "--quiet")
+    assert code == 0, result.get("error")
+    rows = {row["selector"]: row for row in result["rows"]}
+    assert "Red { __0: 7, __1: 8 } Red(1, 2)" in result["output"]
+    assert rows["r"].get("view") != "memory" and "Red(" not in rows["r"]["value"], rows
+    assert rows["r.__1"]["value"] == "8", rows
+
+
+INCLUDED_MANIFEST = """#[doc = ""] fields!(__0, __1); ignore! {
+[package]
+name = "chars"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+#}
+"""
+
+INCLUDES_MANIFEST = """macro_rules! fields {
+    ($a:ident, $b:ident) => {
+        #[derive(Debug, Clone, Copy)]
+        pub struct Num {
+            $a: u32,
+            $b: u32,
+        }
+        impl Num {
+            fn new(x: u32, y: u32) -> Self {
+                Self { $a: x, $b: y }
+            }
+        }
+    };
+}
+
+macro_rules! ignore {
+    ($($t:tt)*) => {};
+}
+
+include!("../Cargo.toml");
+
+fn main() {
+    let n = Num::new(1, 2);
+    let v = vec![n];
+    println!("{:?} {:?}", n, v); // IM_STOP
+}
+"""
+
+
+@pytest.mark.timeout(300)
+def test_fields_named_in_the_manifest_the_crate_includes_are_never_previewed(plain, capsys):
+    # Review 6 of #106: Cargo.toml is an input the compiler may read, and a TOML comment
+    # is Rust: `include!("../Cargo.toml")` declared `Num { __0, __1 }` with no `__0` in a
+    # scanned source, and `n` previewed `Num(1, 2)`, `v` `[Num(1, 2)]`.
+    (plain / "Cargo.toml").write_text(INCLUDED_MANIFEST)
+    (plain / "src/main.rs").write_text(INCLUDES_MANIFEST)
+    at = f"src/main.rs:{line_of(INCLUDES_MANIFEST, '// IM_STOP')}"
+    code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "n,v,n.__1", "--quiet")
+    assert code == 0, result.get("error")
+    rows = {row["selector"]: row for row in result["rows"]}
+    assert "Num { __0: 1, __1: 2 } [Num { __0: 1, __1: 2 }]" in result["output"]
+    for name in ("n", "v"):
+        assert rows[name].get("view") != "memory" and "Num(" not in rows[name]["value"], rows
+    assert rows["n.__1"]["value"] == "2", rows
 
 
 ASYNC_SCALARS = """use std::future::Future;
