@@ -653,13 +653,16 @@ _COMPOSITE_RUST = (
     "or read it where it is passed as &Vec or &[T], and check contents with `peeky verify`."
 )
 _UNPROVEN_RUST = (
-    "this Rust Box (or a pointer the build's MIR does not identify) shows only its pointer: "
-    "Peeky reads what it points at only where the build's MIR proves it initialized at the "
-    "stop line, in the innermost frame of an unoptimized build. Here it may be moved or dropped, or the MIR cannot "
-    "say (a generic `T`, `Self` or `impl Trait`, an async body, a closure's capture, an "
-    "unmangled `#[no_mangle]` function), so its pointer can reach freed memory (#101). A "
-    "plain function's own local reads on a line "
-    "where it is live; otherwise capture what it holds where it is created"
+    "this Rust Box (or a pointer the build's MIR does not identify, or a reference into a "
+    "value that may be moved or dropped) shows only its pointer: Peeky reads what it "
+    "points at only where the build's MIR proves it initialized (a reference: still used "
+    "at or after the stop, or no call or drop since its last use, or into a shared "
+    "parameter's target or a live enclosing variable; a raw pointer: never) in the "
+    "innermost frame of an unoptimized build. Here it "
+    "may be moved or dropped, or the MIR cannot say (a generic `T`, `Self` or `impl "
+    "Trait`, an async body, a closure's capture, an unmangled `#[no_mangle]` function), so "
+    "its pointer can reach freed memory (#101, #110). A plain function's own local reads "
+    "on a line where it is live; otherwise capture what it holds where it is created"
 )
 _UNREAD_RUST = (
     "Peeky reads Rust contents only for String, &str and containers of integer, bool, "
