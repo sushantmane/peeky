@@ -35,7 +35,7 @@ Every Peeky failure, from the HTTP worker, the SDK (`peeky.errors.PeekyError`) o
 | `JOB_LOST` | A `--background` job's process died before finishing | Rerun the command |
 
 Two Java debugger failures (#27) end with `DEBUGGER_ERROR` at once instead of a timeout; see [JAVA_ATTACH.md](JAVA_ATTACH.md#lost-stop-events-27):
-- **`java-debug's event thread died (…)`.** The adapter's stderr showed its event thread failing, so nothing more can be reported. The session is closed as on any debugger failure. While a session lives, and on a probe timeout, `debugger_events.stderr` keeps the adapter's last 16 KiB of log.
+- **`java-debug's event thread died (…)`.** The adapter's stderr showed its event thread failing, so nothing more can be reported. Peeky detaches or ends the program, as on any debugger failure, and keeps the session as a failed one. Later requests repeat the error. `report` returns its final state (`state: closed`, `adapter_failure`, history `adapter_failed`), and `close` ends it. Its `debugger_events.stderr` keeps the adapter's last 16 KiB of log; a failed probe carries `debugger_events` too.
 - **`Lost stop: …`.** An attached JVM's stop that the debugger never reported. The message names the suspended thread, its location, the session's breakpoint and how long the stop has gone unreported. Nothing is served from that stop, and Peeky detaches, so the JVM runs on. Later requests on the session repeat the error. `report` still returns the session as it was (`state: detached`, `lost_stop`, `history`, `debugger_events`), and `close` ends it. A failed probe carries `debugger_events` too; keep it for #27.
 
 `POST /version` returns the protocol version, supported operations and the error codes. Every HTTP response carries `X-Peeky-Protocol: 1`.

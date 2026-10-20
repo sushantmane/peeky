@@ -113,11 +113,19 @@ The second adversarial review of PR #123 reproduced it naturally and found the c
 - Under sustained churn, events backed up past 10,000, threads blocked in the JDWP agent, and a pending suspend-all class-load event froze the whole JVM.
 - Two threads starting short-lived threads in a 32 MB heap with constant garbage reproduce it within half a second (`tests/java/test_java_attach.py`, `CHURN`).
 
-**The fix.** `scripts/setup_java_adapter.py` patches the pinned `EventHub.java` before compiling (`eventhub-log-guard`): it logs only when FINE is loggable, and catches any `RuntimeException` around the log call. The patch fails loudly if the code it changes is not found exactly once. It is recorded in `adapter.json` (`patches`), and Peeky refuses a bundle without it (`UNSUPPORTED`, with the rebuild command). With the patch, the review's churn runs completed 18 of 18 times, with stops reported in 16–812 ms. The CI lanes build a fresh bundle with the script, so they use the patched adapter.
+**The fix.** `scripts/setup_java_adapter.py` patches the pinned `EventHub.java` before compiling (`eventhub-log-guard`): it logs only when FINE is loggable, and catches any `RuntimeException` around the log call. The patch fails loudly if the code it changes is not found exactly once. Peeky checks the compiled bundle itself: the patched `EventHub.class` calls `Logger.isLoggable`, the old one does not. It refuses a bundle without it (`UNSUPPORTED`, with the rebuild command), whatever the bundle's `adapter.json` lists under `patches` (kept as documentation). With the patch, the review's churn runs completed 18 of 18 times, with stops reported in 16–812 ms. The CI lanes build a fresh bundle with the script, so they use the patched adapter.
 
 ### Two detectors fail fast if it happens anyway
 
-**A dead event thread.** Peeky keeps the adapter's stderr (the last 16 KiB, in `debugger_events.stderr`). When it shows `Exception in thread "Event Hub"`, from an unpatched bundle or an exception escaping one of java-debug's event handlers, any wait ends at once with `DEBUGGER_ERROR`: `java-debug's event thread died (<the line> at <java-debug's own frame>); it reports no more stops, steps or exits, so the session cannot continue: close it and retry`. The session closes as on any debugger failure, so an attached JVM is detached and a launched one ended. This applies to launched and attached JVMs. It also covers what the poll below cannot: several threads stopped at once, or threads blocked in the JDWP agent.
+**A dead event thread.** This applies to launched and attached JVMs.
+- **Detection.** Peeky keeps the adapter's stderr (the last 16 KiB, in `debugger_events.stderr`). When it shows `Exception in thread "Event Hub"`, from an unpatched bundle or an exception escaping one of java-debug's event handlers, any wait ends at once with `DEBUGGER_ERROR`: `java-debug's event thread died (<the line> at <java-debug's own frame>); it reports no more stops, steps or exits, so the session cannot continue: close it and retry`.
+- **Scanning.** The line is found anywhere in the stream: deep in an overlong line, split across writes, or as a last line without a newline. Stack frames are collected until stderr is quiet for 0.2 s (1 s at most). If the adapter exits right after printing the line, that diagnosis is the error, not "adapter closed".
+- **What happens next.** Peeky detaches an attached JVM or ends a launched one, and keeps the session as a failed one, as for a lost stop:
+  - the history gets `adapter_failed`;
+  - later requests repeat the error;
+  - `report` returns the final state (`state: closed`, `adapter_failure`, `debugger_events` with the stderr tail), and `close` ends it;
+  - a probe carries those `debugger_events`.
+- **Coverage.** It also covers what the poll below cannot: several threads stopped at once, or threads blocked in the JDWP agent.
 
 **A stop left unreported** (attached JVMs). Peeky detects a stop java-debug made but never reported and **fails fast with `DEBUGGER_ERROR`**, naming the evidence. It never serves such a stop: a stop the debugger did not report cannot be trusted, and serving it led to wrong hits in the first review.
 
@@ -163,5 +171,8 @@ The lost-stop tests drop the `stopped` event at Peeky's DAP client (`tests/java/
 
 The event-thread tests (`tests/unit/test_adapter_stderr.py`, `tests/java/test_java_attach.py`):
 - a fake java-debug that prints the death ends a waiting session in under 2 s, attached (detached) or launched (terminated);
+- the failed session repeats its error and reports the stderr tail, and a probe carries it;
+- the death is found after 6000 bytes of one line, written byte by byte, without a final newline, and when the adapter exits right after it;
+- `close()` stops the stderr reader even while a descendant holds the pipe, and a later file reusing its descriptor keeps its own data (also checked on Linux).
 - the churn scenario against the real, patched adapter reports the stop normally;
 - with `PEEKY_JAVA_ADAPTER_UNPATCHED` set to a bundle built before the patch, the same scenario fails with the event-thread error in under 5 s, and the JVM runs on after the detach.
