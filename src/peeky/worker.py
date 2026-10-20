@@ -61,7 +61,11 @@ LOST_STOP_SPAN_S = 4.0
 JVM_THREADS = frozenset({"Reference Handler", "Finalizer", "Common-Cleaner"})
 
 
-class LostStop(RuntimeError):
+class SessionFailed(RuntimeError):
+    """The session failed for good and was closed; it keeps only its final report."""
+
+
+class LostStop(SessionFailed):
     """The debugger made a stop it never reported (#27); the session was detached."""
 
 
@@ -497,8 +501,43 @@ class DebugWorker:
         report.update(state="detached", lost_stop=diagnosis)
         session = self.session
         self.close()
-        self.failed = {"session": session, "message": message, "report": report}
+        self.failed = {"session": session, "message": message, "report": report, "error": LostStop}
         raise LostStop(message)
+
+    def abandon(self, exc):
+        """Close the session after a debugger failure; returns the error to raise.
+
+        When the adapter itself said why it cannot go on (``DAP.fatal``: java-debug's
+        event thread died, #27), the session is kept as a failed one, as for a lost
+        stop: its diagnosis goes to the history, later requests repeat the error, and
+        `report` returns its final state with the adapter's stderr tail.
+        """
+        fatal = getattr(self.dap, "fatal", None)
+        if not fatal or not self.session or isinstance(exc, SessionFailed):
+            self.close()
+            return exc
+        self.record(
+            {
+                "time": time.time(),
+                "operation": "adapter_failed",
+                "arguments": {},
+                "result": {"message": fatal},
+            }
+        )
+        try:
+            report = self.report(self.runtime)
+            report.update(state="closed", adapter_failure=fatal)
+        except Exception:
+            report = {"session_id": self.session, "state": "closed", "adapter_failure": fatal}
+        session = self.session
+        self.close()
+        self.failed = {
+            "session": session,
+            "message": fatal,
+            "report": report,
+            "error": SessionFailed,
+        }
+        return SessionFailed(fatal)
 
     def untraced(self):
         """Keep lost-stop poll traffic out of the bounded DAP trace (its diagnostics)."""
@@ -603,32 +642,33 @@ class DebugWorker:
                         "result": {**entry, "max_pause": self.max_pause},
                     }
                 )
-            except LostStop as exc:
-                # Already detached; requests on the session get the same error.
+            except Exception as exc:
                 import sys
 
-                print(f"peeky: {exc}", file=sys.stderr)
-            except Exception:
-                import sys
-                import traceback
+                failure = self.abandon(exc)
+                if isinstance(failure, SessionFailed):
+                    # Closed; requests on the session get the same error.
+                    print(f"peeky: {failure}", file=sys.stderr)
+                else:
+                    import traceback
 
-                print("peeky: pause guard failed; closing the session", file=sys.stderr)
-                traceback.print_exc()
-                self.close()
+                    print("peeky: pause guard failed; closing the session", file=sys.stderr)
+                    traceback.print_exc()
 
     def dispatch(self, operation, args):
         self.validate(operation, args)
         with self.lock:
             failed = self.failed
             if operation != "launch" and failed and args.get("session_id") == failed["session"]:
-                # A session that failed on a lost stop (#27) is already detached: it only
-                # reports what it knew, closes, or repeats its error. Nothing is served.
+                # A session that failed for good (#27: a lost stop, a dead adapter event
+                # thread) is already closed: it only reports what it knew, closes, or
+                # repeats its error. Nothing is served.
                 if operation == "close":
                     self.failed = None
                     return {"state": "idle"}
                 if operation == "report":
                     return failed["report"]
-                raise LostStop(failed["message"])
+                raise failed["error"](failed["message"])
             if operation != "launch":
                 if not self.dap or args.get("session_id") != self.session:
                     raise ValueError("Missing or stale session_id")
@@ -639,9 +679,11 @@ class DebugWorker:
                 self.failed = None
             try:
                 result = self._dispatch(operation, args)
-            except (TimeoutError, RuntimeError, OSError):
-                self.close()
-                raise
+            except (TimeoutError, RuntimeError, OSError) as exc:
+                failure = self.abandon(exc)
+                if failure is exc:
+                    raise
+                raise failure from exc
             finally:
                 self.last_used = time.monotonic()
             if operation != "report":

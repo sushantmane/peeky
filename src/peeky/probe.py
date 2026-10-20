@@ -1691,8 +1691,9 @@ def run_probe(root, probe, *, adapter=None, progress=None):
                     output_truncated=report.get("output_truncated", False),
                     output_complete=report.get("state") == "terminated",
                 )
-            if report.get("lost_stop") and (events := report.get("debugger_events")):
-                # The evidence for #27: the last DAP messages and the polls that saw it.
+            failed_for_good = report.get("lost_stop") or report.get("adapter_failure")
+            if failed_for_good and (events := report.get("debugger_events")):
+                # The evidence for #27: the last DAP messages, the polls, the adapter's log.
                 result["debugger_events"] = events
     finally:
         worker.close()

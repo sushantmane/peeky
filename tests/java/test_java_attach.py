@@ -633,7 +633,7 @@ def test_an_unpatched_adapters_dead_event_hub_ends_the_session_at_once(churning,
     from peeky.errors import classify
     from peeky.worker import DebugWorker
 
-    monkeypatch.setattr(peeky.java, "JAVA_DEBUG_PATCHES", frozenset())
+    monkeypatch.setattr(peeky.java, "JAVA_DEBUG_PATCHES", {})
     root, target, process, line = churning
     worker = DebugWorker(root, adapter=replace(target, bundle=Path(unpatched)))
     began = time.monotonic()

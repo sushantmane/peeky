@@ -29,6 +29,9 @@ MAX_CONTROL_EVENTS = 2000
 # of at most STDERR_LINE bytes.
 STDERR_TAIL = 16 * 1024
 STDERR_LINE = 4096
+# Fatal patterns are scanned across reads with this much of the previous bytes, so a
+# match split between reads, or deep in an overlong line, is still found.
+STDERR_OVERLAP = 1024
 LIFECYCLE_EVENTS = frozenset(
     {"initialized", "stopped", "continued", "terminated", "exited", "breakpoint", "process"}
 )
@@ -36,13 +39,6 @@ LIFECYCLE_EVENTS = frozenset(
 # event after every stackTrace.
 _UNTRACED_EVENTS = frozenset({"output", "thread", "telemetry"})
 _JDK_FRAMES = ("at java.", "at jdk.", "at sun.", "at com.sun.")
-
-
-def selectors_ready(fd, timeout):
-    """Whether ``fd`` has data (or EOF) within ``timeout`` seconds."""
-    with selectors.DefaultSelector() as selector:
-        selector.register(fd, selectors.EVENT_READ)
-        return bool(selector.select(timeout))
 
 
 def read_message(stream):
@@ -140,6 +136,12 @@ class DAP:
         self.stderr_tail = collections.deque()
         self.stderr_bytes = 0
         self.stderr_truncated = False
+        # The adapter's own diagnosis of why it cannot go on (a fatal stderr pattern).
+        self.fatal = None
+        # close() asks the stderr reader to stop; it sets `stderr_quiet` once it has
+        # stopped or reported a fatal line.
+        self.stderr_stop = threading.Event()
+        self.stderr_quiet = threading.Event()
         self.reader = threading.Thread(target=self._read, daemon=True)
         self.reader.start()
         self.stderr_reader = threading.Thread(target=self._read_stderr, daemon=True)
@@ -244,6 +246,10 @@ class DAP:
             while True:
                 self._accept(read_message(self.process.stdout))
         except Exception as exc:
+            if isinstance(exc, EOFError) and getattr(self, "fatal_stderr", None):
+                # An adapter that exits right after saying why on stderr: read that first,
+                # so its diagnosis is the transport's error, not "adapter closed".
+                self.stderr_quiet.wait(0.5)
             self._fail(exc)
 
     def _keep_stderr(self, text):
@@ -254,48 +260,87 @@ class DAP:
                 self.stderr_bytes -= len(self.stderr_tail.popleft()) + 1
                 self.stderr_truncated = True
 
+    def _keep_lines(self, data):
+        """Keep complete lines (cut to STDERR_LINE) in the tail; return the remainder."""
+        *lines, rest = data.split(b"\n")
+        if len(rest) > STDERR_LINE:
+            lines.append(rest)
+            rest = b""
+        for raw in lines:
+            self._keep_stderr(raw[:STDERR_LINE].decode("utf-8", "replace").rstrip("\r"))
+        return rest
+
     def _read_stderr(self):
-        """Drain the adapter's stderr, keep a bounded tail, and fail the transport at
-        once on a fatal line (after its stack frames, 0.3 s at most)."""
-        fd, pending, fatal, deadline = self.process.stderr.fileno(), b"", None, 0.0
+        """Own and drain the adapter's stderr: keep a bounded tail of lines, and fail the
+        transport on a fatal pattern, after the stack frames that follow it (once stderr
+        is quiet for 0.2 s, 1 s at most). Patterns are scanned across reads, so neither an overlong line nor a
+        split write hides one, and a last line without a newline still counts.
+
+        close() asks this reader to stop rather than closing the descriptor under it:
+        a descendant outside the adapter's group may keep the pipe open, and a read
+        after the number was reused would take another file's data. The reader closes
+        the descriptor itself as it stops.
+        """
+        stream = self.process.stderr
+        pending, overlap, fatal, deadline, cap = b"", b"", None, 0.0, 0.0
         try:
-            while True:
-                if fatal is not None:
-                    remaining = deadline - time.monotonic()
-                    if remaining <= 0 or not selectors_ready(fd, remaining):
+            with selectors.DefaultSelector() as selector:
+                selector.register(stream.fileno(), selectors.EVENT_READ)
+                while not self.stderr_stop.is_set():
+                    if fatal is not None and time.monotonic() >= deadline:
                         self._fail_fatal(*fatal)
                         fatal = None
+                    wait = 0.1 if fatal is None else min(0.1, deadline - time.monotonic())
+                    if not selector.select(max(0.0, wait)):
                         continue
-                chunk = os.read(fd, 65536)
-                if not chunk:
-                    break
-                *lines, pending = (pending + chunk).split(b"\n")
-                if len(pending) > STDERR_LINE:
-                    lines.append(pending)
-                    pending = b""
-                for raw in lines:
-                    text = raw[:STDERR_LINE].decode("utf-8", "replace").rstrip("\r")
-                    self._keep_stderr(text)
+                    chunk = os.read(stream.fileno(), 65536)
+                    if not chunk:
+                        break
+                    pending = self._keep_lines(pending + chunk)
                     if fatal is not None:
-                        frame = text.strip()
-                        if frame.startswith(("at ", "Caused by")) and len(fatal[1]) < 40:
-                            fatal[1].append(frame)
+                        fatal[1].append(chunk.decode("utf-8", "replace"))
+                        deadline = min(cap, time.monotonic() + 0.2)
+                        if sum(map(len, fatal[1])) > STDERR_TAIL:
+                            deadline = 0.0
                         continue
+                    window = overlap + chunk
+                    overlap = window[-STDERR_OVERLAP:]
+                    if not self.fatal_stderr or self.fatal:
+                        continue
+                    text = window.decode("utf-8", "replace")
                     for pattern, message in self.fatal_stderr:
-                        if pattern.search(text) and not self.error:
-                            fatal, deadline = (message, [text.strip()]), time.monotonic() + 0.3
+                        if found := pattern.search(text):
+                            fatal = (message, [text[found.start() :]])
+                            cap = time.monotonic() + 1.0
+                            deadline = time.monotonic() + 0.2
                             break
         except (OSError, ValueError):
             pass
-        if fatal is not None:
-            self._fail_fatal(*fatal)
+        finally:
+            if pending:
+                self._keep_stderr(pending[:STDERR_LINE].decode("utf-8", "replace").rstrip("\r"))
+            if fatal is not None:
+                self._fail_fatal(*fatal, ended=True)
+            try:
+                stream.close()
+            except OSError:
+                pass
+            self.stderr_quiet.set()
 
-    def _fail_fatal(self, message, lines):
-        """The fatal line and its first stack frame outside the JDK (the adapter's own
-        code, where it failed); the whole trace stays in the stderr tail."""
-        own = [line for line in lines[1:] if not line.startswith(_JDK_FRAMES)]
-        excerpt = " ".join([lines[0], *(own or lines[1:])[:1]])[:600]
-        self._fail(RuntimeError(message.format(excerpt=excerpt)))
+    def _fail_fatal(self, message, pieces, ended=False):
+        """Fail with the fatal line (from the pattern on) and its first stack frame
+        outside the JDK (the adapter's own code, where it failed); the whole trace
+        stays in the stderr tail. A last line still being written is not a frame,
+        unless the stream ``ended`` there."""
+        lines = [line.strip() for line in "".join(pieces).split("\n")]
+        complete = lines if ended or len(lines) == 1 else lines[:-1]
+        frames = [line for line in complete[1:41] if line.startswith(("at ", "Caused by"))]
+        own = [line for line in frames if not line.startswith(_JDK_FRAMES)]
+        excerpt = " ".join([lines[0][:600], *(own or frames)[:1]])[:600]
+        with self.condition:
+            self.fatal = self.fatal or message.format(excerpt=excerpt)
+        self._fail(RuntimeError(self.fatal))
+        self.stderr_quiet.set()
 
     def _fail(self, exc):
         with self.condition:
@@ -517,6 +562,9 @@ class DAP:
                 except Exception:
                     pass
             leftover = self._leftover_debuggee() if terminate else None
+            if stop := getattr(self, "stderr_stop", None):
+                # The stderr reader stops and closes its descriptor itself (_read_stderr).
+                stop.set()
             # Always reap the owned group, including children surviving adapter exit.
             try:
                 os.killpg(self.process.pid, signal.SIGKILL)
@@ -533,8 +581,6 @@ class DAP:
             self.process.wait(timeout=3)
             self.reader.join(timeout=3)
             if stderr_reader := getattr(self, "stderr_reader", None):
-                stderr_reader.join(timeout=3)
+                stderr_reader.join(timeout=1)
             self.process.stdin.close()
             self.process.stdout.close()
-            if self.process.stderr:
-                self.process.stderr.close()
