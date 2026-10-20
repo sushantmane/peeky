@@ -1262,3 +1262,47 @@ def test_constructors_and_lambdas_are_told_from_their_debug_information():
         assert _CONSTRUCTOR_NAME.search(name), name
     for name in ("Widget::size() const", "run(long)::$_0::operator()() const", "Box(int)"):
         assert not _CONSTRUCTOR_NAME.search(name), name
+
+
+# Review of #126 (round 1).
+
+
+def test_a_local_declared_on_the_line_a_call_returns_to_is_withheld_part_way():
+    from peeky.native import declared_mid_line
+
+    # `long r = twice(3) + twice(4);` on line 17: rows 100-130, line 18 from 130.
+    run = {"source": "a.c", "jumps": False, "ranges": [(0, 1000)]}
+    run["rows"] = rows({17: (100, 124), 18: (130, 140)}, "a.c")
+    run["locals"] = {"r": {("a.c", 17, True)}, "i": {("a.c", 17, True)}}
+
+    def header(source, line, name):
+        return name == "i"
+
+    assert declared_mid_line([run], "r", "a.c", 17, 112, header) == 17
+    # Its last row runs to line 18's code.
+    assert declared_mid_line([run], "r", "a.c", 17, 126, header) == 17
+    # At the line's start (other rules), or once its code has run.
+    assert declared_mid_line([run], "r", "a.c", 17, 100, header) is None
+    assert declared_mid_line([run], "r", "a.c", 18, 132, header) is None
+    # A header's variable (a one-line loop's counter) is live mid-line.
+    assert declared_mid_line([run], "i", "a.c", 17, 112, header) is None
+    assert declared_mid_line([run], "r", "a.c", 17, None, header) is None
+
+
+def test_a_local_whose_file_may_include_code_after_it_is_withheld_there():
+    from peeky.native import declared_running
+
+    run = _aggregate_run()
+    run["rows"][("cases.h", 3)] = (114, 116)
+    through = _through({("a.c", 16): 16})
+
+    def included(source, at, name):
+        return True
+
+    assert declared_running([run], "head", "cases.h", 3, 115, through) is None
+    assert declared_running([run], "head", "cases.h", 3, 115, through, included) == (
+        16,
+        None,
+        "a.c",
+    )
+    assert declared_running([run], "head", "cases.h", 3, 115, through, lambda *_: False) is None

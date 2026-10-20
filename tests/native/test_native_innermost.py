@@ -80,11 +80,14 @@ def line_of(source, marker):
     return next(n for n, text in enumerate(source.splitlines(), 1) if marker in text)
 
 
-def shown_at(capsys, path, line, *selectors, hit=1, steps=0, frame=0):
-    """The rows `session get` gives for ``selectors`` at ``path:line``."""
+def shown_at(capsys, path, line, *selectors, hit=1, steps=0, frame=0, out=False):
+    """The rows `session get` gives for ``selectors`` at ``path:line`` (after a `step
+    --out` with ``out``, then ``steps`` steps)."""
     assert main(["session", "start", str(path), "--at", str(line), "--hit", str(hit)]) == 0
     capsys.readouterr()
     try:
+        if out:
+            assert main(["session", "step", "--out"]) == 0
         for _ in range(steps):
             assert main(["session", "step"]) == 0
         capsys.readouterr()
@@ -268,3 +271,299 @@ def test_a_local_a_jump_can_skip_is_withheld_past_the_label(directory, capsys, s
     assert rows["before"]["value"] == "2"
     rows = shown_at(capsys, path, line_of(source, "// after again"), "after", "before")
     assert [rows["after"]["value"], rows["before"]["value"]] == ["3", "2"]
+
+
+# Review of #126 (round 1).
+
+STEP_OUT = (
+    """#include <stdio.h>
+
+struct pair { long x, y; };
+"""
+    + HELPERS
+    + """
+__attribute__((noinline)) static long run(long seed) {
+    struct pair p = { twice(1), twice(2) };  // p
+    long r = twice(3) + twice(4);  // r
+    long q = r + p.y;
+    return q + seed;
+}
+
+int main(void) {
+    scribble();
+    printf("%ld\\n", run(1));
+    return 0;
+}
+"""
+)
+
+
+@pytest.mark.timeout(300)
+def test_a_local_declared_on_the_line_a_call_returns_to_is_withheld(directory, capsys):
+    # Review of #126: back from `twice` (`step --out`), `p` showed leftovers and `r`
+    # showed `20911 [settable]`, part-way through their own lines.
+    path = directory / "stepout.c"
+    path.write_text(STEP_OUT)
+    twice = line_of(STEP_OUT, "return w;")
+    rows = shown_at(capsys, path, twice, "p", "p.y", out=True)
+    assert rows["p"]["line"] == line_of(STEP_OUT, "// p"), rows["p"]
+    assert withheld(rows["p"], "this stop is part-way through that line")
+    rows = shown_at(capsys, path, twice, "r", "p.y", hit=3, out=True)
+    assert rows["r"]["line"] == line_of(STEP_OUT, "// r"), rows["r"]
+    assert withheld(rows["r"], "part-way through") and rows["r"]["settable"] is False
+    assert rows["p.y"]["value"] == "4"
+
+
+SWITCH_INCLUDED = (
+    """#include <stdio.h>
+
+struct pair { long x, y; };
+"""
+    + HELPERS
+    + """
+__attribute__((noinline)) static long run(int k) {
+    long out = 0;
+    switch (k) {
+    case 0:;
+        struct pair p = { 7, 8 };
+        out = p.x;
+#include "cases.h"
+    }
+    return out;
+}
+
+int main(void) {
+    scribble();
+    printf("%ld\\n", run(1));
+    return 0;
+}
+"""
+)
+CASES = "    case 1:\n        out = twice(p.x);\n        out += p.y;  // read\n        break;\n"
+
+
+@pytest.mark.timeout(300)
+def test_a_local_read_in_an_included_case_is_withheld(directory, capsys):
+    # Review of #126: `case 1:` in `cases.h` skips `p`'s initializer in `sw.c`, and
+    # `get p` there showed the stack's contents.
+    (directory / "cases.h").write_text(CASES)
+    path = directory / "sw.c"
+    path.write_text(SWITCH_INCLUDED)
+    # Back from `twice` on the case's first line, then a step to the next.
+    rows = shown_at(
+        capsys, path, line_of(SWITCH_INCLUDED, "return w;"), "p", "k", out=True, steps=1
+    )
+    assert rows["p"]["line"] == line_of(CASES, "// read"), rows["p"]
+    assert withheld(rows["p"], "declared on line", "of sw.c", "an `#include` after it")
+    assert rows["k"]["value"] == "1"
+
+
+MEMBERS = """#include <cstdio>
+
+__attribute__((noinline)) static long twice(long v) {
+    long w = v * 2;
+    return w;
+}
+
+__attribute__((noinline)) static void scribble() {
+    volatile long junk[96];
+    for (int i = 0; i < 96; i++) junk[i] = 0x5150 + i;
+}
+
+struct Cfg {
+    long a = twice(1);
+    long b = twice(2);  // member b
+};
+
+__attribute__((noinline)) static long run() {
+    long seed = twice(3);
+    Cfg cfg{};
+    long e = cfg.b + seed;  // after
+    return e;
+}
+
+int main() {
+    scribble();
+    std::printf("%ld\\n", run());
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(300)
+def test_an_object_a_default_member_initializer_builds_is_withheld(directory, capsys):
+    # Review of #126: breaking on `Cfg`'s member line stops in `run()`, which showed
+    # `cfg.b = 20907`; so did `run()` as frame 1 of `twice`.
+    path = directory / "members.cpp"
+    path.write_text(MEMBERS)
+    member = line_of(MEMBERS, "// member b")
+    rows = shown_at(capsys, path, member, "cfg", "cfg.b", "seed")
+    assert rows["cfg"]["function"] == "run()" and rows["seed"]["value"] == "6"
+    assert withheld(rows["cfg"], f"this frame runs members.cpp:{member}, outside its function's")
+    assert withheld(rows["cfg.b"], "'cfg' has no value here")
+    rows = shown_at(capsys, path, line_of(MEMBERS, "return w;"), "cfg", "seed", hit=3, frame=1)
+    assert (
+        withheld(rows["cfg"], "outside its function's own lines") and rows["seed"]["value"] == "6"
+    )
+    rows = shown_at(capsys, path, line_of(MEMBERS, "// after"), "cfg.b")
+    assert rows["cfg.b"]["value"] == "4"
+
+
+BACK_INTO = (
+    """#include <stdio.h>
+
+struct pair { long x, y; };
+"""
+    + HELPERS
+    + """
+__attribute__((noinline)) static long back_into(int k) {
+    long out = 0;
+    int pass = 0;
+    {
+        struct pair p = { twice(k + pass), 8 };
+        out += p.x;
+    again:
+        out += p.y;  // again
+        if (pass > 1)
+            return out;
+    }
+    pass++;
+    if (pass < 3)
+        goto again;
+    return out;
+}
+
+int main(void) {
+    scribble();
+    printf("%ld\\n", back_into(1));
+    return 0;
+}
+"""
+)
+
+
+@pytest.mark.timeout(300)
+def test_a_backward_goto_into_a_block_from_after_it_withholds_its_local(directory, capsys):
+    # Review of #126: `goto again` re-enters the block from after it, so `p` is
+    # indeterminate on the second and third passes (C11 6.2.4).
+    path = directory / "back.c"
+    path.write_text(BACK_INTO)
+    label = line_of(BACK_INTO, "    again:")
+    for hit in (2, 3):
+        rows = shown_at(capsys, path, line_of(BACK_INTO, "// again"), "p", "pass", hit=hit)
+        assert withheld(rows["p"], f"can reach the label on line {label}"), rows["p"]
+        assert rows["pass"]["value"] == str(hit - 1)
+
+
+ORDINARY = {
+    # Review of #126: one `"huh??!"` withheld every local above the stop (C reads the
+    # trigraph as `|`; C++17 has none).
+    "tri.c": (
+        """#include <stdio.h>
+static long run(int n) {
+    long total = 0;
+    for (int i = 0; i < n; i++) {
+        total += i;  // stop
+    }
+    printf("%ld huh??!\\n", total);
+    return total;
+}
+int main(void) { return (int)(run(3) & 1); }
+""",
+        ("total", "i", "n"),
+    ),
+    "tri.cpp": (
+        """#include <cstdio>
+static long run(int n) {
+    long total = 0;
+    const char *what = "huh??!";
+    for (int i = 0; i < n; i++) {
+        total += i;  // stop
+    }
+    std::printf("%ld %s\\n", total, what);
+    return total;
+}
+int main() { return (int)(run(3) & 1); }
+""",
+        ("total", "i", "n"),
+    ),
+    # Review of #126: a statement expression's `;` kept `m` withheld for the rest of
+    # the function.
+    "stmtexpr.c": (
+        """#include <stdio.h>
+#define max(a, b) ({ __typeof__(a) _a = (a); __typeof__(b) _b = (b); _a > _b ? _a : _b; })
+static long run(int n) {
+    long best = 0;
+    int m = max(n, 3);
+    long scaled = m * 10L;
+    for (int i = 0; i < m; i++) {
+        best = max(best, (long)i * scaled);  // stop
+    }
+    printf("%ld\\n", best);
+    return best;
+}
+int main(void) { return (int)(run(5) & 1); }
+""",
+        ("m", "scaled", "best"),
+    ),
+}
+
+
+@pytest.mark.timeout(300)
+@pytest.mark.parametrize("name", sorted(ORDINARY))
+def test_ordinary_code_reads_every_local_above_the_stop(directory, capsys, name):
+    source, names = ORDINARY[name]
+    path = directory / name
+    path.write_text(source)
+    rows = shown_at(capsys, path, line_of(source, "// stop"), *names, hit=2)
+    assert all("value" in rows[local] for local in names), rows
+
+
+DEEP = """#include <cstdio>
+#include <functional>
+
+__attribute__((noinline)) static long twice(long v) {
+    long w = v * 2;
+    return w;
+}
+
+__attribute__((noinline)) static long dispatch(const std::function<long(long)> &f, int depth) {
+    if (depth == 0)
+        return f(depth + 1);
+    return dispatch(f, depth - 1);
+}
+
+static long run() {
+    long total = 0;
+    auto cb = [&](long v) {
+        total += v;  // in the lambda
+        long doubled = twice(v);
+        return doubled;
+    };
+    std::function<long(long)> f = cb;
+    long a = dispatch(f, 1);
+    long b = dispatch(f, 8);
+    long c = dispatch(f, 80);
+    return a + b + c + total;
+}
+
+int main() {
+    std::printf("%ld\\n", run());
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(300)
+def test_a_lambda_called_below_the_listed_frames_is_judged_from_more_of_them(directory, capsys):
+    # Review of #126: through `std::function`, `run` (where `cb` is defined) is more than
+    # ten frames below the lambda, so its `this` was withheld; up to 64 are read now.
+    path = directory / "deep.cpp"
+    path.write_text(DEEP)
+    line = line_of(DEEP, "// in the lambda")
+    for hit in (1, 2):
+        rows = shown_at(capsys, path, line, "this", hit=hit)
+        assert "value" in rows["this"], rows
+    # Past 64 frames nothing below is known: withheld.
+    rows = shown_at(capsys, path, line, "this", hit=3)
+    assert withheld(rows["this"], "Peeky cannot list every frame below this one")

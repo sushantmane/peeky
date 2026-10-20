@@ -86,11 +86,19 @@ def test_a_line_splice_gives_no_end():
     assert end(macro, 3, "t") == 4
 
 
-def test_a_trigraph_anywhere_in_the_file_gives_no_end():
-    # `??/` is a backslash: the comment goes on over `};`, which the compiler skips.
+def test_trigraphs_are_read_as_c_reads_them_and_not_in_cpp():
+    # In C (`-std=c11`), `??/` is a backslash: the comment goes on over `};`, which the
+    # compiler skips (a splice in the declaration: no end). C++17 has no trigraphs.
     source = "struct trio t = { seed, // first ??/\n    };\n    { twice(3),\n      twice(4) } };\n"
-    assert end(source, 1, "t") is None
-    assert end('long a = f(\n    1);\nconst char *q = "what??!";\n', 1, "a") is None
+    assert Statements(source, raw_strings=False).end(1, "t") is None
+    assert Statements(source, raw_strings=False).blanked.split("\n")[1].strip() == ""
+    assert Statements(source).end(1, "t") == 2
+    # #126 review: one `"huh??!"` no longer hides the whole file.
+    elsewhere = 'long a = f(\n    1);\nconst char *q = "what??!";\n'
+    assert Statements(elsewhere, raw_strings=False).end(1, "a") == 2
+    assert Statements("int x = a ??( 1 ??) ;\n", raw_strings=False).end(1, "x") == 1
+    assert Statements("long y = a ??< 2 ;\n", raw_strings=False).end(1, "y") is None
+    assert Statements("long y = a ??< 2 ;\n").end(1, "y") == 1
 
 
 def test_a_directive_from_the_declaration_to_its_end_gives_no_end():
@@ -142,8 +150,9 @@ def test_a_macro_hiding_a_bracket_or_a_semicolon_gives_no_end():
     assert Statements(source).end(1, "u") == 1
     assert Statements(source, macros=unsafe).end(1, "u") is None
     assert Statements("long k = FINE(\n    2);\n", macros=unsafe).end(1, "k") == 2
-    # A source with a trigraph: all of its macros.
-    assert unsafe_macros(["#define Q(x) ??<x??>\n#define K 1\n"]) == {"Q", "K"}
+    # Trigraphs as C reads them; C++17 has none.
+    assert unsafe_macros(["#define Q(x) ??<x\n#define K 1\n"], raw_strings=False) == {"Q"}
+    assert unsafe_macros(["#define Q(x) ??<x\n#define K 1\n"]) == set()
 
 
 def test_c_has_no_raw_strings():
@@ -324,3 +333,74 @@ def test_macro_hazards_name_what_each_expansion_hides():
     hazards = macro_hazards([header])
     assert hazards["brackets"] == {"OPEN", "SEMI"} and hazards["blocks"] == {"OPEN"}
     assert hazards["labels"] == {"LBL", "CASE", "WRAP"} and hazards["gotos"] == {"JUMP"}
+
+
+# Review of #126 (round 1).
+
+
+def test_a_goto_back_into_a_block_from_after_it_reaches_its_label():
+    source = """long back(int pass) {
+  long out = 0;
+  {
+    struct pair p = { pass, 8 };
+  again:
+    out += p.y;
+    if (pass > 1) return out;
+  }
+  if (++pass < 3) goto again;
+  for (int i = 0; i < 2; i++) {
+  inner:
+    out += i;
+  }
+  if (out < 0) goto inner;
+  return out;
+}
+"""
+    statements = Statements(source)
+    # C11 6.2.4: re-entering the block starts `p`'s lifetime anew, unset.
+    assert statements.jumped_past(4, "p", 6) == 5
+    # A `goto` inside the same block, after the declaration, keeps it.
+    kept = source.replace("  if (++pass < 3) goto again;\n", "").replace(
+        "    if (pass > 1) return out;", "    if (pass++ < 2) goto again;"
+    )
+    assert Statements(kept).jumped_past(4, "p", 6) is False
+    # A header's variable: any `goto` to a label in its loop.
+    assert statements.jumped_past(10, "i", 12) == 11
+
+
+def test_an_include_after_a_declaration_in_its_block_is_found():
+    source = 'long run(int k) {\n  long out = 0;\n  switch (k) {\n  case 0:;\n    struct pair p = { 7, 8 };\n#include "cases.h"\n  }\n  return out;\n}\nlong other(void) {\n  long z = 1;\n  return z;\n}\n'
+    statements = Statements(source)
+    assert statements.included_after(5, "p") is True
+    assert statements.included_after(2, "out") is True
+    assert statements.included_after(11, "z") is False
+    assert statements.included_after(11, "nope") is None
+
+
+def test_a_header_declaration_stays_one_when_its_body_on_the_line_uses_it():
+    source = """int main(void) {
+  for (int i = 0; i < 3; i++) total += spread(i + 1);
+  for (int j = 0; j < 4; j++) { int sq = j * j; f(a, j); x = y * j; }
+  for (int k = 0; k < 3; k++) { int a = 1, k = 2; }
+  for (int m = 0; m < 3; m++) { T *m = p; }
+  long r = twice(3) + twice(4);
+}
+"""
+    statements = Statements(source)
+    assert statements.declaration(2, "i")[2] is True
+    assert statements.declaration(3, "j")[2] is True
+    # Maybe declared again in the body on the line: read whole, to the next `;`.
+    assert statements.declaration(4, "k")[2] is False and statements.declared_through(4, "k") == 6
+    assert statements.declaration(5, "m")[2] is False
+    assert statements.declaration(6, "r")[2] is False
+
+
+def test_a_statement_expression_macro_keeps_its_semicolons_inside():
+    header = (
+        "#define max(a, b) ({ __typeof__(a) _a = (a); __typeof__(b) _b = (b); _a > _b ? _a : _b; })\n"
+        "#define END ;\n#define PAIR {1, 2}\n"
+    )
+    assert unsafe_macros([header]) == {"END"}
+    hazards = macro_hazards([header])
+    source = "int m = max(n,\n    3);\nlong s = m;\n"
+    assert Statements(source, hazards=hazards).declared_through(1, "m") == 2

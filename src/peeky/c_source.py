@@ -6,10 +6,11 @@ declaration is still running and the local may hold leftovers, whatever code its
 line has. The statement's end is its first `;` outside parentheses, brackets and braces
 (digraphs too), once comments and string and character literals are blanked.
 
-Lines are counted as the compilers count them (`normalized`). Nothing is guessed: an
+Lines are counted as the compilers count them (`normalized`), and C's trigraphs are
+read as C reads them (`-std=c11`; C++17, Peeky's C++, has none). Nothing is guessed: an
 end that cannot be found is None, and so is one where the text the scan reads may differ
-from what the compiler reads. That is anywhere in a file with a trigraph, a `#line`, a
-line splice inside a token or before `\n\r`; and, from the declaration's line
+from what the compiler reads. That is anywhere in a file with a `#line`, a line splice
+inside a token or before `\n\r`; and, from the declaration's line
 to its end, a directive (an `#include` can hold the rows), a line splice, a `<::`, or
 a macro whose expansion may hold an unclosed bracket or a `;` (`unsafe_macros`).
 """
@@ -62,8 +63,10 @@ _LEADING = frozenset(("else", "do", "try"))
 _LABEL = re.compile(r"(?:^|[;{}])\s*[A-Za-z_]\w*\s*:(?![:>])")
 _INCLUDE = re.compile(r"[ \t\f\v]*(?:#|%:)[ \t\f\v]*(?:include|include_next|import)\b")
 _NONBLANK = re.compile(r"\S")
-# `??/` is a backslash and `??<` a brace where trigraphs are on (C before C23).
-_TRIGRAPH = re.compile(r"\?\?[=(/)'<!>-]")
+# `??/` is a backslash and `??<` a brace where trigraphs are on (C before C23, as
+# `-std=c11` builds it; C++17 has none).
+_TRIGRAPH = re.compile(r"\?\?([=(/)'<!>-])")
+_TRIGRAPHS = dict(zip("=(/)'<!>-", "#[\\]^{|}~"))
 # A directive's line (`%:` is `#`).
 _DIRECTIVE = re.compile(r"[ \t\f\v]*(?:#|%:)")
 # `#line 7` and a line marker (`# 7 "x.c"`) renumber the lines after them.
@@ -74,6 +77,16 @@ _DEFINE = re.compile(r"^[ \t\f\v]*(?:#|%:)[ \t\f\v]*define[ \t\f\v]+([A-Za-z_]\w
 def normalized(text):
     r"""``text`` with each line break, as the compilers count them, written `\n`."""
     return _BREAK.sub("\n", text) if "\r" in text else text
+
+
+def translated(text, trigraphs):
+    r"""``text`` `normalized`, and with each trigraph replaced as C's first translation
+    phase does (also inside literals and comments) when ``trigraphs``; lines keep their
+    numbers."""
+    text = normalized(text)
+    if trigraphs and "??" in text:
+        text = _TRIGRAPH.sub(lambda found: _TRIGRAPHS[found[1]], text)
+    return text
 
 
 def blank(text, raw_strings=True):
@@ -135,26 +148,28 @@ def _digit_separator(text, i):
     return start < i and text[start].isdigit()
 
 
-def unsafe_macros(texts, raw_strings=True):
+def unsafe_macros(texts, raw_strings=True, trigraphs=None):
     r"""The names of the macros ``texts`` define that a statement scan cannot see
-    through: an expansion that may hold a bracket it does not close, a `;`, a `<::`, or
-    a pasted token (`<` ## `%` is a brace), or that names such a macro. Every macro a
-    source with a trigraph, or a splice before `\n\r`, defines counts."""
-    return macro_hazards(texts, raw_strings)["brackets"]
+    through: an expansion that may hold a bracket it does not close, a `;` outside its
+    brackets, a `<::`, or a pasted token (`<` ## `%` is a brace), or that names such a
+    macro. Every macro a source with a splice before `\n\r` defines counts.
+    ``trigraphs``: C's (by default, without ``raw_strings``: C)."""
+    return macro_hazards(texts, raw_strings, trigraphs)["brackets"]
 
 
-def macro_hazards(texts, raw_strings=True):
+def macro_hazards(texts, raw_strings=True, trigraphs=None):
     r"""The macros ``texts`` define, by what their expansion may hide from a scan of the
     text: ``brackets`` (`unsafe_macros`), ``blocks`` (the same but for a `;`: a bracket
     it does not close), ``labels`` (a `case`, `default` or label a jump can reach, `x:`)
     and ``gotos`` (a `goto`). A macro naming such a macro counts too, and every macro of
-    a source with a trigraph, or a splice before `\n\r`, counts for all of them."""
+    a source with a splice before `\n\r` counts for all of them."""
+    trigraphs = not raw_strings if trigraphs is None else trigraphs
     uses = {}
     found = {"brackets": set(), "blocks": set(), "labels": set(), "gotos": set()}
     for text in texts:
         # Spliced as the compiler splices lines, before comments and literals.
-        code = blank(_SPLICE.sub("", normalized(text)), raw_strings)
-        trigraphs = _TRIGRAPH.search(text) is not None or _SPLICED_PAIR.search(text)
+        code = blank(_SPLICE.sub("", translated(text, trigraphs)), raw_strings)
+        unknown = _SPLICED_PAIR.search(text) is not None
         for define in _DEFINE.finditer(code):
             name, body = define[1], define[3]
             if define[2]:
@@ -166,13 +181,13 @@ def macro_hazards(texts, raw_strings=True):
                 body = body[close + 1 :]
             words = {word[0] for word in _IDENTIFIER.finditer(body)}
             uses.setdefault(name, set()).update(words)
-            if trigraphs or not _balanced(body):
+            if unknown or not _balanced(body):
                 found["brackets"].add(name)
-            if trigraphs or not _balanced(body.replace(";", " ")):
+            if unknown or not _balanced(body.replace(";", " ")):
                 found["blocks"].add(name)
-            if trigraphs or words & {"case", "default"} or _LABEL.search(body):
+            if unknown or words & {"case", "default"} or _LABEL.search(body):
                 found["labels"].add(name)
-            if trigraphs or "goto" in words:
+            if unknown or "goto" in words:
                 found["gotos"].add(name)
     for names in found.values():
         while more := {name for name, used in uses.items() if name not in names and used & names}:
@@ -181,8 +196,9 @@ def macro_hazards(texts, raw_strings=True):
 
 
 def _balanced(body):
-    """Whether a macro's blanked body closes each bracket it opens and holds no `;`,
-    `<::` or token paste."""
+    """Whether a macro's blanked body closes each bracket it opens and holds no `;`
+    outside them (a statement expression's `({ a; b; })` is fine), `<::` or token
+    paste."""
     depth = 0
     for token in _TOKENS.finditer(body):
         if token[0] in _OPEN:
@@ -191,7 +207,7 @@ def _balanced(body):
             depth -= 1
             if depth < 0:
                 return False
-        elif token[0] in (";", "<::", "%:%:"):
+        elif token[0] in ("<::", "%:%:") or (token[0] == ";" and depth == 0):
             return False
     return depth == 0 and "##" not in body
 
@@ -201,8 +217,9 @@ class Statements:
     names `unsafe_macros` gives for the build's sources and headers; ``hazards``: what
     `macro_hazards` gives for them (its ``brackets`` replace ``macros``)."""
 
-    def __init__(self, text, raw_strings=True, macros=frozenset(), hazards=None):
-        self.text = normalized(text)
+    def __init__(self, text, raw_strings=True, macros=frozenset(), hazards=None, trigraphs=None):
+        # C (`-std=c11`) has trigraphs and no raw strings; C++17 the other way round.
+        self.text = translated(text, not raw_strings if trigraphs is None else trigraphs)
         self.blanked = blank(self.text, raw_strings)
         self.starts = [0] + [mark.end() for mark in re.finditer("\n", self.blanked)]
         hazards = hazards or {"brackets": macros}
@@ -212,8 +229,7 @@ class Statements:
         self.gotos = frozenset(hazards.get("gotos", ()))
         # Where the compiler may read any line differently from the scan.
         self.unreadable = bool(
-            _TRIGRAPH.search(text)
-            or _SPLICED_PAIR.search(text)
+            _SPLICED_PAIR.search(text)
             or _SPLIT.search(self.text)
             or _RENUMBER.search(_SPLICE.sub("", self.blanked))
         )
@@ -289,10 +305,11 @@ class Statements:
         return None if found is None else bisect.bisect_right(self.starts, found[0])
 
     def declaration(self, line, name):
-        """``(position, depth)``: where the declaration of ``name`` on ``line`` ends
-        (the `;` or `)` after it) and how many brackets of its statement are open there,
-        or None if unknown. Of the statements starting on the line, the last naming
-        ``name`` counts: a later end only withholds more."""
+        """``(position, depth, header)``: where the declaration of ``name`` on ``line``
+        ends (the `;` or `)` after it), how many brackets of its statement are open there,
+        and whether a statement's header declares it (`for (int i = 0; ...)`); None if
+        unknown. Of the statements starting on the line, the last naming ``name``
+        counts: a later end only withholds more."""
         key = ("declaration", line, name)
         if key not in self._ends:
             self._ends[key] = self._declaration(line, name)
@@ -340,11 +357,11 @@ class Statements:
                             # Maybe declared again after the header: read it whole.
                             pass
                         elif semicolon is not None and self._names(opening.end(), semicolon, name):
-                            found = (semicolon, 1)
+                            found = (semicolon, 1, True)
                             position = closing + 1
                             continue
                         else:
-                            found = (closing, 0)
+                            found = (closing, 0, True)
                             position = closing + 1
                             continue
                     else:
@@ -355,8 +372,9 @@ class Statements:
             if end is None:
                 return None
             last = max(last, end)
-            if self._names(start, end, name):
-                found = (end, 0)
+            # After a header declaring it, its body on the line only uses it.
+            if self._names(start, end, name) and not (found is not None and found[2]):
+                found = (end, 0, False)
             position = end + 1
         if found is None or not self._readable(line, first, max(last, found[0])):
             return None
@@ -400,13 +418,38 @@ class Statements:
         return None
 
     def _declares(self, start, end, name):
-        """Whether ``name`` may be declared between ``start`` and ``end``: it follows a
-        name other than a keyword that only uses it (`int i`, `return i`), or `*`, `&`
-        or `>` (`T *i`, `vector<int> i`)."""
+        """Whether ``name`` may be declared between ``start`` and ``end``: not inside an
+        expression (after `=`, `?`, or within parentheses or brackets), and following a
+        name other than a keyword that only uses it (`int i`, not `return i`), or `*`,
+        `&` or `>` (`T *i`, `vector<int> i`), or a `,` of a declarator list."""
         blanked = self.blanked
         for word in _IDENTIFIER.finditer(blanked, start, end):
             if word[0] != name:
                 continue
+            at, depth, used, listed = word.start() - 1, 0, False, False
+            while at >= start:
+                char = blanked[at]
+                if char in ")]":
+                    depth += 1
+                elif char in "([":
+                    if depth == 0:
+                        # An argument or a subscript.
+                        used = True
+                        break
+                    depth -= 1
+                elif depth == 0 and char == ",":
+                    listed = True
+                elif depth == 0 and char in "=?" and not listed:
+                    used = True
+                    break
+                elif depth == 0 and char in ";{}:":
+                    break
+                at -= 1
+            if used:
+                continue
+            if listed:
+                # A declarator list's (or, over-cautiously, a comma operator's).
+                return True
             at = word.start() - 1
             while at >= start and blanked[at].isspace():
                 at -= 1
@@ -444,7 +487,7 @@ class Statements:
         starts = self.starts
         if found is None or type(stop) is not int or not line < stop <= len(starts):
             return None
-        position, depth = found
+        position, depth, header = found
         blanked = self.blanked
         limit = starts[stop] if stop < len(starts) else len(blanked)
         for number in range(line, stop + 1):
@@ -470,21 +513,68 @@ class Statements:
                 # A switch whose body opens before the declaration ends holds it.
                 if body is None or body < position:
                     return bisect.bisect_right(starts, mark.start())
-            elif _WORD.fullmatch(word) and after == ":" and self._jumped_to(word, position):
+            elif _WORD.fullmatch(word) and after == ":" and self._jumped_to(word, position, header):
                 return bisect.bisect_right(starts, mark.start())
         return False
 
-    def _jumped_to(self, label, before):
-        """Whether a `goto` before ``before`` may jump to ``label``."""
+    def included_after(self, line, name):
+        """Whether an `#include` may bring code between the declaration of ``name`` on
+        ``line`` and the end of its block (a `case` there can skip it): True, False, or
+        None if the declaration's end is unknown. Unknown braces reach the file's end."""
+        found = self.declaration(line, name)
+        if found is None:
+            return None
+        blanked, starts = self.blanked, self.starts
+        block, _ = self._enclosing(found[0])
+        end = block[1] if block is not None else len(blanked)
+        for number in range(line, bisect.bisect_right(starts, end) + 1):
+            if _INCLUDE.match(blanked, starts[number - 1]):
+                return True
+        return False
+
+    def _enclosing(self, position):
+        """((open, close) of the innermost brace pair around ``position``, (open, close)
+        of the outermost), or (None, None) if there is none or the braces do not
+        balance."""
+        if "braces" not in self.__dict__:
+            self.braces = self._braces()
+        if self.braces is None:
+            return None, None
+        opens, closes, parents, _ = self.braces
+        index = bisect.bisect_right(opens, position) - 1
+        while index >= 0 and closes[index] < position:
+            index = parents[index]
+        if index < 0:
+            return None, None
+        outer = index
+        while parents[outer] >= 0:
+            outer = parents[outer]
+        return (opens[index], closes[index]), (opens[outer], closes[outer])
+
+    def _jumped_to(self, label, position, header=False):
+        """Whether a `goto` can reach ``label`` (after a declaration ending at
+        ``position``) without running the declaration: one before its end, or one
+        outside its block in the same function, since a jump back into a block starts the
+        local's lifetime anew (C11 6.2.4); for a header's variable, or with the braces
+        unknown, any. Also a macro that may `goto` named there, or a computed `goto`."""
         blanked = self.blanked
         if "computed" not in self.__dict__:
             self.computed = re.search(r"(?<!\w)goto\s*\*", blanked) is not None
         if self.computed:
             return True
-        if re.compile(rf"(?<!\w)goto\s+{re.escape(label)}(?!\w)").search(blanked, 0, before):
+        block, function = self._enclosing(position)
+        low, high = function if function is not None else (0, len(blanked))
+
+        def counts(at):
+            return block is None or header or at < position or not block[0] <= at <= block[1]
+
+        target = re.compile(rf"(?<!\w)goto\s+{re.escape(label)}(?!\w)")
+        if any(counts(found.start()) for found in target.finditer(blanked, low, high + 1)):
             return True
         return bool(self.gotos) and any(
-            word[0] in self.gotos for word in _IDENTIFIER.finditer(blanked, 0, before)
+            counts(word.start())
+            for word in _IDENTIFIER.finditer(blanked, low, high + 1)
+            if word[0] in self.gotos
         )
 
     def _switch_body(self, position):
