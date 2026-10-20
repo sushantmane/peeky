@@ -33,6 +33,8 @@ no IR of its own: its MIR body is found by the lines of its inlined copies, and 
 statement of the stop line is a place the stop can be.
 """
 
+import bisect
+import functools
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -218,7 +220,17 @@ class Body:
     _alias_generics: tuple | None = ()
     _dropped: set | None = None
     _offset: int | None = None
+    _assigned_flows: dict | None = None
+    # Per-body caches of what parsing fixes: ``lexical``'s and ``scope_chain``'s answers,
+    # each block's assignment events (``_assign_events``), which blocks hold code of a
+    # line (``line_code``).
+    _lexicals: tuple | None = None
+    _chains: dict | None = None
+    _assign_cache: dict | None = None
+    _line_blocks: dict | None = None
     _copies: dict | None = None
+    _live: tuple | None = None
+    _copy_reads: tuple | None = None
 
     @property
     def name(self):
@@ -242,12 +254,20 @@ class Body:
         """The DWARF lexical block of MIR ``scope``: rustc gives one only to a scope that
         declares a variable (or is inlined); a statement elsewhere is in its parent's.
         0 is the function's own."""
-        declared = {binding[4] for found in self.bindings.values() for binding in found}
-        for _ in range(4096):
-            if scope in (None, 0) or scope in declared or scope in self.inlined_scopes:
-                return scope or 0
-            scope = self.scopes.get(scope)
-        return 0
+        shape = (len(self.bindings), len(self.scopes), len(self.inlined_scopes))
+        if self._lexicals is None or self._lexicals[0] != shape:
+            declared = {binding[4] for found in self.bindings.values() for binding in found}
+            self._lexicals, self._chains = (shape, declared, {}), None
+        _, declared, found = self._lexicals
+        if scope not in found:
+            at, answer = scope, 0
+            for _ in range(4096):
+                if at in (None, 0) or at in declared or at in self.inlined_scopes:
+                    answer = at or 0
+                    break
+                at = self.scopes.get(at)
+            found[scope] = answer
+        return found[scope]
 
     def local(self, name, declared=None, visible=None):
         """The MIR local an lldb-dap variable shows: `name`, or `name @ file:line` when
@@ -282,15 +302,20 @@ class Body:
     def scope_chain(self, scope):
         """The names of the variables each DWARF lexical block declares, sorted, from the
         block of MIR ``scope`` (see ``lexical``) out to the function's own (#115)."""
-        declared = self._declared()
-        chain, scope = [], self.lexical(scope)
-        for _ in range(4096):
-            if scope in (None, 0):
-                break
-            chain.append(declared.get(scope, ()))
-            scope = self.lexical(self.scopes.get(scope))
-        chain.append(declared.get(0, ()))
-        return tuple(chain)
+        self.lexical(0)
+        if self._chains is None:
+            self._chains = {}
+        if scope not in self._chains:
+            declared = self._declared()
+            chain, at = [], self.lexical(scope)
+            for _ in range(4096):
+                if at in (None, 0):
+                    break
+                chain.append(declared.get(at, ()))
+                at = self.lexical(self.scopes.get(at))
+            chain.append(declared.get(0, ()))
+            self._chains[scope] = tuple(chain)
+        return self._chains[scope]
 
     def _declared(self):
         """{scope: the names of the variables it declares, sorted}."""
@@ -745,6 +770,71 @@ class Body:
                 pending.extend((successor, 0) for successor in (*block.successors, *resumed))
         return False
 
+    def live_ahead(self, start):
+        """A bitset of the locals ``used_ahead`` finds used on some path from ``start``,
+        all at once (#105 judges every copy of a local at every place of a line): each
+        statement is read once, and which locals each block's successors use is a
+        backward dataflow over the body; a place replays its block from there."""
+        number, index = start
+        if number not in self.blocks:
+            return 0
+        out, effects = self._liveness()
+        state = out[number]
+        for uses, ends in reversed(effects[number][index:]):
+            state = uses | state & ~ends
+        return state
+
+    def _liveness(self):
+        """({block: the locals some path from its end uses ahead}, {block: [(the locals
+        each statement uses, those it ends)]}) for ``live_ahead``, per ``_event``."""
+        if self._live is None:
+            effects = {}
+            for number, block in self.blocks.items():
+                found = []
+                for text, _, _ in block.statements:
+                    uses = ends = 0
+                    for local in {int(n) for n in _ANY_LOCAL.findall(_STRING.sub('""', text))}:
+                        event = _event(text, local)
+                        if event == "use":
+                            uses |= 1 << local
+                        elif event == "end":
+                            ends |= 1 << local
+                    found.append((uses, ends))
+                effects[number] = found
+
+            def through(number, state):
+                for uses, ends in reversed(effects[number]):
+                    state = uses | state & ~ends
+                return state
+
+            successors, predecessors = {}, {}
+            for number, block in self.blocks.items():
+                # Through a suspension too, as ``used_ahead`` goes.
+                resumed = (self.resumes[number],) if number in self.resumes else ()
+                successors[number] = [n for n in (*block.successors, *resumed) if n in self.blocks]
+                for target in successors[number]:
+                    predecessors.setdefault(target, set()).add(number)
+            out = dict.fromkeys(self.blocks, 0)
+            entry = {number: through(number, 0) for number in self.blocks}
+            work = list(self.blocks)
+            queued = set(work)
+            while work:
+                number = work.pop()
+                queued.discard(number)
+                state = 0
+                for target in successors[number]:
+                    state |= entry[target]
+                out[number] = state
+                found = through(number, state)
+                if found != entry[number]:
+                    entry[number] = found
+                    for other in predecessors.get(number, ()):
+                        if other not in queued:
+                            queued.add(other)
+                            work.append(other)
+            self._live = (out, effects)
+        return self._live
+
     def copies_of(self, local, formatting=True):
         """The temporaries (locals no variable names, other than the return place) that
         may hold a value read from ``local``'s storage, which a later change to it does
@@ -759,56 +849,87 @@ class Body:
             self._copies = {}
         if (local, formatting) in self._copies:
             return self._copies[local, formatting]
-        named = {
-            binding[0]
-            for bindings in self.bindings.values()
-            for binding in bindings
-            if binding[0] is not None
-        }
-        assignments = []
-        for block in self.blocks.values():
-            for text, _, _ in block.statements:
-                text = _STRING.sub('""', text)
-                found = _WHOLE_ASSIGNMENT.match(text) or (
-                    None if re.match(r"\(+\*_", text) else _PART_ASSIGNMENT.match(text)
-                )
-                if found and int(found[1]) not in named and int(found[1]) not in (0, local):
-                    assignments.append((int(found[1]), found[2]))
+        parts, mentions, seeds = self._copy_parts()
+        # From what holds or points with no local given, then along what mentions each
+        # temporary found: the least fixpoint, as passes over every assignment reach.
         holds, points = set(), set()
-        for _ in range(len(assignments) + 1):
-            changed = False
-            for target, value in assignments:
-                mentioned = {int(n) for n in _MENTIONED.findall(value)}
-                through = bool(re.search(r"\(\*[(_]", value))
-                pointing = any(
-                    n in points
-                    or (n in named and n != local and _BORROWING.search(self.types.get(n, "&")))
-                    for n in mentioned
-                )
-                if re.match(r"&(?:mut |raw const |raw mut |fake \w+ )?", value):
-                    hold = bool(mentioned & holds)
-                    point = local in mentioned or through or pointing
-                else:
-                    call = "->" in value and not _NOT_A_CALL.match(value)
-                    hold = local in mentioned or through or bool(mentioned & holds)
-                    # `format_args!`'s constructors keep the pointers they are given.
-                    keeps = (
-                        formatting
-                        and _FORMAT_CALL.match(value)
-                        and _FORMAT_TYPE.fullmatch(self.types.get(target, ""))
-                    )
-                    hold = hold or (call and pointing and not keeps)
-                    point = pointing
-                if hold and target not in holds:
-                    holds.add(target)
-                    changed = True
-                if point and target not in points:
-                    points.add(target)
-                    changed = True
-            if not changed:
-                break
+        work = [*seeds, *mentions.get(local, ())]
+        queued = set(work)
+        while work:
+            index = work.pop()
+            queued.discard(index)
+            target, mentioned, through, borrow, call, formats, pointers = parts[index]
+            if target == local:
+                continue
+            pointing = bool(mentioned & points) or any(n != local for n in pointers)
+            if borrow:
+                hold = bool(mentioned & holds)
+                point = local in mentioned or through or pointing
+            else:
+                hold = local in mentioned or through or bool(mentioned & holds)
+                # `format_args!`'s constructors keep the pointers they are given.
+                hold = hold or (call and pointing and not (formatting and formats))
+                point = pointing
+            for found, into in ((hold, holds), (point, points)):
+                if found and target not in into:
+                    into.add(target)
+                    for other in mentions.get(target, ()):
+                        if other not in queued:
+                            queued.add(other)
+                            work.append(other)
         self._copies[local, formatting] = frozenset(holds)
         return self._copies[local, formatting]
+
+    def _copy_parts(self):
+        """``copies_of``'s reading of each assignment to a temporary, once per body:
+        ([(its target, the locals its value mentions, whether it reads through a
+        pointer, is a borrow, is a call, is `format_args!`'s constructor, the reference
+        variables it mentions)], {local: the indexes of those mentioning it}, the
+        indexes of those that may hold or point whatever local is judged)."""
+        if self._copy_reads is None:
+            named = {
+                binding[0]
+                for bindings in self.bindings.values()
+                for binding in bindings
+                if binding[0] is not None
+            }
+            parts, mentions, seeds = [], {}, []
+            for block in self.blocks.values():
+                for text, _, _ in block.statements:
+                    text = _STRING.sub('""', text)
+                    found = _WHOLE_ASSIGNMENT.match(text) or (
+                        None if re.match(r"\(+\*_", text) else _PART_ASSIGNMENT.match(text)
+                    )
+                    if not found or int(found[1]) in named or int(found[1]) == 0:
+                        continue
+                    target, value = int(found[1]), found[2]
+                    mentioned = frozenset(int(n) for n in _MENTIONED.findall(value))
+                    pointers = frozenset(
+                        n
+                        for n in mentioned
+                        if n in named and _BORROWING.search(self.types.get(n, "&"))
+                    )
+                    through = bool(re.search(r"\(\*[(_]", value))
+                    parts.append(
+                        (
+                            target,
+                            mentioned,
+                            through,
+                            bool(re.match(r"&(?:mut |raw const |raw mut |fake \w+ )?", value)),
+                            "->" in value and not _NOT_A_CALL.match(value),
+                            bool(
+                                _FORMAT_CALL.match(value)
+                                and _FORMAT_TYPE.fullmatch(self.types.get(target, ""))
+                            ),
+                            pointers,
+                        )
+                    )
+                    for n in mentioned:
+                        mentions.setdefault(n, []).append(len(parts) - 1)
+                    if through or pointers:
+                        seeds.append(len(parts) - 1)
+            self._copy_reads = (parts, mentions, seeds)
+        return self._copy_reads
 
     def used_before(self, local, start):
         """True if every path into ``start`` passes a use of ``local`` (or its assignment)
@@ -1338,7 +1459,7 @@ class Body:
             reachable.add(number)
             pending.extend(self._flows(number))
         # Each local's bit, and a pending bit per Box local above them (`_pending`).
-        top = (1 << (2 * (1 + max(map(_max_local, self.blocks.values()), default=0)))) - 1
+        top = (1 << (2 * self._pending(0))) - 1
         entry = {number: top for number in reachable}
         entry[0] = _mask(self.arguments)
         # Across a suspension, only what the state saves (and the next poll's arguments).
@@ -1372,6 +1493,259 @@ class Body:
                         work.append(target)
         self._entry = entry
         return entry
+
+    def _assigned_flow(self, resumed=True):
+        """{block: bitset of the locals assigned on entry, on every path from bb0} for the
+        blocks reachable from bb0 (#132); None past its budget. A local is assigned from
+        a whole assignment (a call's result on its return edge) until its storage begins
+        again (`StorageLive`: a loop's next pass, a poll resuming the body), not until a
+        move or drop: those leave a value's bytes, which #108's views judge, and at
+        opt-level 0 a slot keeps what was last stored in it past `StorageDead` (rustc
+        emits no lifetime markers, so no other local shares it). Across a suspension,
+        only what the coroutine's state saves is kept. ``resumed=False``: the first
+        poll's paths only, none through a suspension."""
+        if self._assigned_flows is None:
+            self._assigned_flows = {}
+        if resumed in self._assigned_flows:
+            return self._assigned_flows[resumed]
+
+        def flows(number):
+            return () if not resumed and number in self.resumes else self._flows(number)
+
+        self._assigned_flows[resumed] = None
+        reachable, pending = set(), [0]
+        while pending:
+            number = pending.pop()
+            if number in reachable:
+                continue
+            if number not in self.blocks:
+                return None
+            reachable.add(number)
+            pending.extend(flows(number))
+        top = (1 << self._pending(0)) - 1
+        entry = {number: top for number in reachable}
+        entry[0] = _mask(self.arguments)
+        kept = _mask(self.saved | self.arguments)
+        events = self._assign_events()
+        work = sorted(reachable, reverse=True)
+        queued, steps = set(work), 0
+        limit = max(MAX_ITERATIONS, STEPS_PER_BLOCK * len(reachable))
+        while work:
+            steps += 1
+            if steps > limit:
+                return None
+            number = work.pop()
+            queued.discard(number)
+            block = self.blocks[number]
+            _, killed, assigned = events[number]
+            state = entry[number] & ~killed | assigned
+            for target in flows(number):
+                out = state & kept if number in self.resumes else state
+                if target == block.returns:
+                    out |= 1 << int(_ASSIGN.match(block.terminator)[1])
+                merged = entry[target] & out
+                if merged != entry[target]:
+                    entry[target] = merged
+                    if target not in queued:
+                        queued.add(target)
+                        work.append(target)
+        self._assigned_flows[resumed] = entry
+        return entry
+
+    def _assign_events(self):
+        """{block: ({local: [(index, assigned)]}, the locals its statements leave
+        unassigned, those they leave assigned)}: what each statement before the
+        terminator does to a local for ``_assigned_flow`` (a whole assignment assigns
+        it; `StorageLive` or `Deinit` begins its storage anew), read once. The dataflow
+        then takes a block at a time, and a place's state is its block's entry with
+        each local's last event before it."""
+        if self._assign_cache is None:
+            found = {}
+            for number, block in self.blocks.items():
+                events, killed, assigned = {}, 0, 0
+                for index, (text, _, _) in enumerate(block.statements[:-1]):
+                    if begun := _STORAGE_BEGINS.match(text):
+                        local, made = int(begun[1]), False
+                    elif made := _ASSIGN.match(text):
+                        local, made = int(made[1]), True
+                    else:
+                        continue
+                    events.setdefault(local, []).append((index, made))
+                    bit = 1 << local
+                    if made:
+                        assigned |= bit
+                    else:
+                        killed |= bit
+                        assigned &= ~bit
+                found[number] = (events, killed, assigned)
+            self._assign_cache = found
+        return self._assign_cache
+
+    def has_line_code(self, number, line, file, foreign):
+        """True if some statement of block ``number`` emits code of ``line``
+        (``line_code``)."""
+        if self._line_blocks is None:
+            self._line_blocks = {}
+        key = (number, line, file, foreign)
+        if key not in self._line_blocks:
+            self._line_blocks[key] = any(
+                self.line_code(number, at, line, file, foreign)
+                for at in range(len(self.blocks[number].statements))
+            )
+        return self._line_blocks[key]
+
+    def line_code(self, number, index, line, file, foreign):
+        """True if statement ``index`` of block ``number`` emits code of ``line`` of
+        ``file``, as ``stop_positions`` counts it (``foreign``: the line may invoke a
+        macro, whose statements span another file or none)."""
+        block = self.blocks[number]
+        text, spanned, spanned_line = block.statements[index]
+        if _NO_CODE.match(text):
+            return False
+        if spanned != file:
+            return spanned is None or foreign
+        span = _span(block, index)
+        return spanned_line == line or (
+            _call(block, index) and span is not None and spanned_line < line <= span[1]
+        )
+
+    def scopes_at(self, position, line, file, foreign=True, blocks=None):
+        """The MIR scopes whose DWARF lexical blocks hold the pc with the stop at
+        ``position`` ((block, index)) on ``line`` of ``file``: those enclosing the scope
+        of the code there (the statement about to run, or a call or drop returning into
+        the block). None where it can be any: one of the line's ``blocks`` with no
+        statement of the line (code none explains) can stop anywhere. lldb-dap lists a
+        variable only where the pc is in its scope's block."""
+        number, index = position
+        block = self.blocks.get(number)
+        if block is None:
+            return None
+        if (blocks is None or number in blocks) and not self.has_line_code(
+            number, line, file, foreign
+        ):
+            return None
+        owners = [(number, index)] if index < len(block.statements) else []
+        if index == 0:
+            owners += [
+                (other, len(self.blocks[other].statements) - 1)
+                for other in self.predecessors().get(number, ())
+                if _target(self.blocks[other]) == number
+            ]
+        found = set()
+        for owner, at in owners:
+            scope = _scope(self.blocks[owner], at)
+            if scope is None:
+                return None
+            for _ in range(4096):
+                if scope is None or scope in found:
+                    break
+                found.add(scope)
+                scope = self.scopes.get(scope)
+        return found
+
+    def could_show(self, position, scope, line, file, foreign=True, blocks=None):
+        """False only if lldb-dap cannot show a binding of MIR ``scope`` with the stop at
+        ``position`` (see ``scopes_at``)."""
+        found = self.scopes_at(position, line, file, foreign, blocks)
+        return found is None or scope in found
+
+    def returned_into(self, number, line, file, foreign, blocks):
+        """The blocks whose call or drop of ``line`` returns into block ``number``, where
+        the stop can be at its start only after one of them (``stop_positions``' place
+        after a call): the block's first statement is not code of the line, and the
+        block is not one of the line's ``blocks`` with none (anywhere in it). None
+        otherwise. A join's other edges (a cleanup block entered from an earlier
+        unwind) do not reach that place."""
+        block = self.blocks.get(number)
+        if block is None or not block.statements:
+            return None
+        if self.line_code(number, 0, line, file, foreign):
+            return None
+        if number in blocks and not self.has_line_code(number, line, file, foreign):
+            return None
+        found = [
+            other
+            for other in self.predecessors().get(number, ())
+            if _target(self.blocks[other]) == number
+            and (
+                _call(self.blocks[other], last := len(self.blocks[other].statements) - 1)
+                or _DROP.match(self.blocks[other].terminator)
+            )
+            and self.line_code(other, last, line, file, foreign)
+        ]
+        return found or None
+
+    def unassigned_after(self, local, number, callers, resumed=True):
+        """``unassigned_at`` at the start of block ``number`` when entered from one of the
+        ``callers`` returning into it: True if one leaves ``local`` unassigned (a call's
+        return edge assigns its result), None if none is reached."""
+        verdicts = []
+        for other in callers:
+            block = self.blocks[other]
+            verdict = self.unassigned_at(local, (other, len(block.statements) - 1), resumed)
+            if verdict and block.returns == number:
+                verdict = int(_ASSIGN.match(block.terminator)[1]) != local
+            verdicts.append(verdict)
+        if True in verdicts:
+            return True
+        return False if False in verdicts else None
+
+    def reassigned_before(self, local, place, positions):
+        """True if a write to ``local`` other than its copy of ``place`` (a whole or
+        partial assignment, a `&mut` or raw borrow of it) can run before one of
+        ``positions``, through a suspension and a later poll too; or if the body writes
+        the state's field ``place`` (see _lent)."""
+        self._lent()
+        if int(re.search(r"\.([0-9]+): ", place)[1]) in self._written_fields:
+            return True
+        sources = []
+        for number, block in self.blocks.items():
+            for index, (text, _, _) in enumerate(block.statements):
+                text = _STRING.sub('""', text)
+                found = _WHOLE_ASSIGNMENT.match(text) or _PART_ASSIGNMENT.match(text)
+                if (
+                    found
+                    and int(found[1]) == local
+                    and found[2].partition(" -> ")[0] not in (f"copy {place}", f"move {place}")
+                ) or local in {int(n) for n in _WRITABLE_BORROW.findall(text)}:
+                    sources.append((number, index))
+
+        def after(number):
+            # A suspension flows to its resume, and the next poll starts at bb0, whose
+            # dispatch goes on only to a resume (never to the first poll's code).
+            if number == 0 and self.resumes:
+                return ()
+            return (*self._flows(number), *((0,) if number in self.resumes else ()))
+
+        pending, seen = [], set()
+        for number, index in sources:
+            if any(other == number and index < at for other, at in positions):
+                return True
+            pending.extend(after(number))
+        targets = {number for number, _ in positions}
+        while pending:
+            number = pending.pop()
+            if number in seen:
+                continue
+            if number in targets:
+                return True
+            seen.add(number)
+            pending.extend(after(number) if number in self.blocks else ())
+        return False
+
+    def unassigned_at(self, local, position, resumed=True):
+        """True if a path from bb0 reaches ``position`` ((block, index): before that
+        statement) with ``local`` not assigned since its storage began (see
+        ``_assigned_flow``), False if every path assigns it; None if no path reaches the
+        position or the analysis gave up."""
+        entry = self._assigned_flow(resumed)
+        number, index = position
+        if entry is None or number not in entry:
+            return None
+        events = self._assign_events()[number][0].get(local)
+        if events and (last := bisect.bisect_left(events, (index,))):
+            return not events[last - 1][1]
+        return not entry[number] >> local & 1
 
 
 _CLOSURE_SEGMENT = re.compile(r"_?\{+closure(?:#[0-9]+)?\}+")
@@ -1608,6 +1982,10 @@ def _transfer(text, state):
     if assigned := _ASSIGN.match(text):
         state |= 1 << int(assigned[1])
     return state
+
+
+# Where a local's storage begins anew, its bytes are what the slot last held (#132).
+_STORAGE_BEGINS = re.compile(r"^(?:StorageLive|Deinit)\(_([0-9]+)\);$")
 
 
 def _top_level(text):
@@ -2351,6 +2729,12 @@ class OwnedLocals:
         self.texts = dict(texts or {})
         self._matched = {}
         self._unanalyzed = {}
+        # What each stop's rows share (its places, its lexical block's scopes), by what
+        # determines it: every row of a frame asks for the same (see ``_memo``).
+        self._memos = {}
+        # {a StopBlock's contents: its number}, never renumbered (a memo's key holds one),
+        # and {id(StopBlock): (it, its number)}.
+        self._block_tokens, self._block_ids = {}, {}
         # {(file, line): {body index}}: which bodies have a span on each line.
         self._owners = {}
         for index, body in enumerate(self.bodies):
@@ -2448,6 +2832,11 @@ class OwnedLocals:
     def _block_scopes(self, site, line, block):
         if site is None:
             return None
+        return self._memo(
+            "scopes", site, line, None, block, lambda: self._scopes_of(site, line, block)
+        )
+
+    def _scopes_of(self, site, line, block):
         body, function, blocks, shared = site
         named = body.chain_scopes(block, function)
         if named is None:
@@ -2608,8 +2997,8 @@ class OwnedLocals:
             return None
         if breakpoint and not function.inline_only:
             positions = _first_places(body, function, positions)
-        held = body.copies_of(local, formatting=self._formatting())
-        return any(body.used_ahead(temp, position) for temp in held for position in positions)
+        held = _mask(body.copies_of(local, formatting=self._formatting()))
+        return any(body.live_ahead(position) & held for position in positions)
 
     def _formatting(self):
         """Whether a call that reads like `format_args!`'s constructors (and returns
@@ -2759,6 +3148,155 @@ class OwnedLocals:
         wide = re.match(r"&(?:mut )?(?:\[|str$|dyn )", found[2])
         return (16 if wide else 8), len(bindings)
 
+    def unassigned(
+        self,
+        hashed,
+        variable_name,
+        line,
+        path,
+        breakpoint=False,
+        column=None,
+        caller=False,
+        block=None,
+        shown=None,
+    ):
+        """#132: which of the rows lldb-dap shows as the frame's ``variable_name`` hold
+        no value of their own at ``line`` of ``path``: (how many rows the name has,
+        {row: why}), rows in lldb-dap's order, or None where none is told (or nothing
+        can be: the site, the binding or the body not understood). For a type that does
+        not borrow: a reference's are #110's (an unassigned one is not read through).
+
+        A row is the frame's own local where some path to a place the stop can be on
+        the line (``breakpoint``, ``column``, ``block``: see reference_valid), of those
+        where lldb-dap can show it and every row of the frame (``shown``: their names;
+        see ``Body.scopes_at``), leaves it unassigned since its
+        storage began (``Body._assigned_flow``), as rustc's own initialization check
+        would say there. A caller frame (``caller``) is inside a call or drop of the
+        line: the places before those count (every place of the line must, where none
+        is told). ``why`` is "suspended" where only a poll resuming the body after a
+        suspension (an `.await`) leaves it so, since the state keeps no copy of it (the
+        body does not use it again), else "unassigned" (a `let` without a value, a
+        loop's next pass before its `let`).
+
+        An `async fn`'s parameter is bound twice (#116): the state's field, in the
+        function's own scope, whose variables lldb-dap lists before any lexical
+        block's, and the poll's own copy (`_3 = copy ((*_29).0: u32)`) in a scope
+        within it, row 1 where both are shown. The field (row 0) is "passed" where a
+        reassignment of the copy (`mut n`) can have run before the stop: it holds what
+        the caller passed, not the parameter's value since."""
+        site = self._site(hashed, line, path)
+        if site is None or not site[0].supported or site[0]._assigned_flow() is None:
+            return None
+        body, function = site[0], site[1]
+        name, at, declared = str(variable_name).partition(" @ ")
+        bindings = body.bindings.get(name, [])
+        if at:
+            file, _, number = declared.rpartition(":")
+            bindings = [b for b in bindings if Path(b[1]).name == file and str(b[2]) == number]
+        bindings = body.in_scopes(bindings, self._visible(body, line, path, block, site, bindings))
+        pair = self._parameter_copy(body, name, bindings)
+        if pair is not None:
+            place, (local, *_, scope) = pair
+            row = 1 if len(bindings) == 2 else None
+        elif len(bindings) == 1 and bindings[0][0] is not None:
+            row, (local, *_, scope) = 0, bindings[0]
+        else:
+            return None
+        if _BORROWING.search(body.types.get(local) or "&"):
+            return None
+        facts = self._facts(function, line, column) if breakpoint and not function.copies else None
+        foreign = may_invoke_macro(self.texts.get(function.file), line)
+        positions = self._positions(site, line, facts, block) or ()
+        found = {}
+        if pair is not None and body.reassigned_before(local, place, positions):
+            found[0] = "passed"
+
+        def placeable():
+            # Every row lldb-dap shows has the pc in its binding's lexical block: in one of
+            # the scopes each shown name is bound in (``shown``: the frame's row names).
+            within = []
+            for other in set(shown or ()):
+                bound, near, where = str(other).partition(" @ ")
+                scopes = {
+                    b[4]
+                    for b in body.bindings.get(bound, ())
+                    if not near or f"{Path(b[1]).name}:{b[2]}" == where
+                }
+                if scopes:
+                    within.append(scopes)
+            found = {}
+            for position in positions:
+                scopes = body.scopes_at(position, line, function.file, foreign, site[2])
+                if scopes is None or all(s & scopes for s in within):
+                    callers = body.returned_into(position[0], line, function.file, foreign, site[2])
+                    found[position] = (scopes, callers if position[1] == 0 else None)
+            return found
+
+        # What every row of the frame shares: the places the rows put the pc in.
+        places = self._memo(("places", frozenset(shown or ())), site, line, facts, block, placeable)
+
+        def judge(position, resumed=True):
+            callers = places[position][1]
+            if callers:
+                return body.unassigned_after(local, position[0], callers, resumed)
+            return body.unassigned_at(local, position, resumed)
+
+        verdicts = {
+            position: verdict
+            for position, (scopes, _) in (places.items() if row is not None else ())
+            if (scopes is None or scope in scopes) and (verdict := judge(position)) is not None
+        }
+        if caller:
+            # Inside one of the line's calls (or drops): before it, if they are told.
+            calls = {
+                (number, index): verdict
+                for (number, index), verdict in verdicts.items()
+                if index == len(body.blocks[number].statements) - 1
+                and (
+                    _call(body.blocks[number], index) or _DROP.match(body.blocks[number].terminator)
+                )
+                and body.line_code(number, index, line, function.file, foreign)
+            }
+            # Else every place of the line must leave it unassigned.
+            verdicts = calls or (verdicts if all(verdicts.values()) else {})
+        unassigned = [position for position, verdict in verdicts.items() if verdict]
+        if unassigned:
+            first = body.resumes and body._assigned_flow(resumed=False) is not None
+            # On the first poll's paths every one of these places has it assigned (or
+            # none reaches them): only a resumed poll leaves it so.
+            found[row] = (
+                "suspended"
+                if first and all(judge(position, False) is not True for position in unassigned)
+                else "unassigned"
+            )
+        return (len(bindings), found) if found else None
+
+    @staticmethod
+    def _parameter_copy(body, name, bindings):
+        """(the field's place, the copy's binding) where ``bindings`` (of ``name``, as
+        the stop shows it) are an `async fn`'s parameter: the state's field (`debug n =>
+        ((*_29).0: u32)`) in the function's own scope, and, if shown, the one whole local
+        declared with it in a scope within it, which the body sets from the field: the
+        poll's own copy."""
+        fields = [b for b in bindings if b[0] is None]
+        if body.coroutine is None or len(fields) != 1 or len(bindings) > 2 or fields[0][4] != 0:
+            return None
+        field = fields[0]
+        place = body.places.get((name, *field[1:3], field[4]), "")
+        if not re.fullmatch(rf"\(\(\*_{body.coroutine}\)\.[0-9]+: .+\)", place):
+            return None
+        copies = [
+            b
+            for b in body.bindings.get(name, [])
+            if b[0] is not None and b[1:3] == field[1:3] and b[4] != 0
+        ]
+        if len(copies) != 1 or any(b is not field and b != copies[0] for b in bindings):
+            return None
+        values = body._assignments().get(copies[0][0], [])
+        return (
+            (place, copies[0]) if f"copy {place}" in values or f"move {place}" in values else None
+        )
+
     def _elsewhere(self, hashed, variable_name, path):
         """For a stop no line of the function's own can place: in another of the crate's
         files than its function's (a `macro_rules!` from another module, `include!`d
@@ -2792,9 +3330,38 @@ class OwnedLocals:
                 return False
         return None
 
+    def _memo(self, kind, site, line, facts, block, compute):
+        """``compute()``, once per stop: ``site`` is ``_site``'s for the function and
+        ``line`` (its body and function live as long as this), and ``facts`` the
+        breakpoint's (``_facts``, from them and its column) or None for any other stop:
+        a breakpoint's facts without a column still differ from none."""
+        column = None if facts is None else facts.column
+        key = (kind, id(site[0]), id(site[1]), line, facts is not None, column)
+        if block is not None:
+            # A frame's rows pass one StopBlock: its contents are read (and numbered,
+            # equal ones alike) once.
+            known = self._block_ids.get(id(block))
+            if known is None or known[0] is not block:
+                content = (block.chain, tuple(sorted(block.chains.items())))
+                known = (block, self._block_tokens.setdefault(content, len(self._block_tokens)))
+                if len(self._block_ids) >= 1024:
+                    self._block_ids.clear()
+                self._block_ids[id(block)] = known
+            key += (known[1],)
+        if key not in self._memos:
+            if len(self._memos) >= 4096:
+                self._memos.clear()
+            self._memos[key] = compute()
+        return self._memos[key]
+
     def _positions(self, site, line, facts, block=None):
         """Where in the line's blocks the stop can be; in the DWARF lexical block the
         stop's pc is in, where ``block`` tells it apart (#115)."""
+        return self._memo(
+            "positions", site, line, facts, block, lambda: self._places(site, line, facts, block)
+        )
+
+    def _places(self, site, line, facts, block):
         body, function, blocks, shared = site
         if function.inline_only:
             # Before any statement of the line, after any call or drop of it: more
@@ -2927,7 +3494,7 @@ class OwnedLocals:
         and inlined calls on it, its macros' columns, and the stop's column (bytes), when
         the source text is known."""
         text = self.texts.get(function.file)
-        lines = text.split("\n") if isinstance(text, str) else []
+        lines = _source_lines(text) if isinstance(text, str) else ()
         own = lines[line - 1] if 1 <= line <= len(lines) else None
 
         def to_bytes(character):
@@ -3060,6 +3627,12 @@ _PATH_END = re.compile(r"[A-Za-z0-9_#:]\s*(?://.*)?$")
 _PATH_TAIL = re.compile(r"(?:\s+|//[^\n]*|::|[A-Za-z0-9_#])*")
 
 
+@functools.lru_cache(maxsize=16)
+def _source_lines(text):
+    """``text``'s lines, split once per source text: a frame's every row asks."""
+    return tuple(text.split("\n"))
+
+
 def may_invoke_macro(text, line):
     """False only if source ``line`` cannot start a macro invocation.
 
@@ -3071,7 +3644,7 @@ def may_invoke_macro(text, line):
 
     ``text`` must be split into lines as rustc does, on `\n` alone (never a lone `\r`).
     """
-    lines = text.split("\n") if isinstance(text, str) else []
+    lines = _source_lines(text) if isinstance(text, str) else ()
     if not 1 <= line <= len(lines):
         return True
     own = lines[line - 1]

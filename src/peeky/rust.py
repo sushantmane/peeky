@@ -1117,6 +1117,11 @@ class RustSession(NativeSession):
                 "kept in a register there, and changing what the debugger shows would not "
                 "affect the program"
             )
+        if reason := self.not_yet_declared(variable, frame):
+            raise ValueError(
+                f"{name!r} has no value here: {reason}. The program assigns it before any "
+                "read, so a change made here would have no effect"
+            )
         hashed = _frame_hash(frame)
         if not hashed or self.memory.get((hashed[1], _plain(name))) is not True:
             where = display_function((frame or {}).get("name")) or "this frame"
@@ -1128,6 +1133,76 @@ class RustSession(NativeSession):
                 "(`std::hint::black_box(&mut x);` after its `let`, with `--set x=…` in the same "
                 "probe); otherwise edit the source and run verify"
             )
+
+    def _stop_block(self, hashed, frame):
+        """#115: the lexical block the frame's pc is in (``stop_block``), once per function
+        and pc: a frame's every row asks."""
+        pc = self._unslid(frame)
+        found = self.__dict__.setdefault("_stop_blocks", {})
+        if (hashed, pc) not in found:
+            if len(found) >= 1024:
+                found.clear()
+            found[(hashed, pc)] = stop_block(self.code_blocks.get(hashed), pc)
+        return found[(hashed, pc)]
+
+    def not_yet_declared(
+        self, variable, frame, innermost=True, stack=None, deeper=None, siblings=None, stop=None
+    ):
+        """#132: why a top-level local of ``frame`` (an unoptimized build's) holds no value
+        of its own at the stop, or None (see OwnedLocals.unassigned): one a poll resuming
+        an async body after an `.await` never assigned, since the future keeps no copy of
+        it (a parameter's copy, a local not used after it), or one some path to the stop
+        has not assigned yet. Its slot holds what an earlier call, poll or pass left.
+        ``siblings``: the frame's rows, which tell apart rows lldb-dap shows under one
+        name; ``stop``: the stop's reason (a line breakpoint's places are fewer)."""
+        proofs, hashed = getattr(self, "owned", None), _frame_hash(frame)
+        name = variable.get("name")
+        if proofs is None or not hashed or self._optimized() or not isinstance(name, str):
+            return None
+        found = proofs.unassigned(
+            hashed[1],
+            name,
+            (frame or {}).get("line"),
+            ((frame or {}).get("source") or {}).get("path"),
+            breakpoint=innermost and stop == "breakpoint",
+            column=(frame or {}).get("column"),
+            caller=not innermost,
+            # #115: the lexical block the innermost frame's pc is in, which tells a
+            # line's stops in a macro's own blocks apart.
+            block=self._stop_block(hashed[1], frame) if innermost else None,
+            shown=[row.get("name") for row in siblings or ()],
+        )
+        if found is None:
+            return None
+        count, why = found
+        rows = [row for row in (siblings or [variable]) if row.get("name") == name]
+        index = next((at for at, row in enumerate(rows) if row is variable), None)
+        if len(rows) != count or index not in why:
+            return None
+        if why[index] == "passed":
+            return (
+                "the value the caller passed, which the future keeps: the body may have "
+                "reassigned the parameter since"
+                + (f", in its own copy (the other `{name}` row)" if count == 2 else "")
+            )
+        if why[index] == "unassigned":
+            return (
+                "not assigned on every path to here (a `let` without a value, or a loop's "
+                "next pass before its `let`): its slot may hold what an earlier call or pass "
+                "left; read it once it is assigned"
+            )
+        if count == 2:
+            return (
+                "this poll's copy of the parameter, never assigned by a poll resuming after an "
+                "`.await` (the future keeps none: the body does not use it after), so it may "
+                f"hold leftovers; the future's field, the other `{name}` row"
+                + (" (withheld too)," if 0 in why else ",")
+                + " holds the value passed in"
+            )
+        return (
+            "never assigned by a poll resuming after an `.await` (the future keeps no copy: "
+            "the body does not use it after), so it may hold leftovers"
+        )
 
     def mid_statement(self, variable, frame, stop=None):
         """Why a change to the root local ``variable`` of the stopped ``frame`` may not
@@ -1161,7 +1236,7 @@ class RustSession(NativeSession):
                 (place.get("source") or {}).get("path"),
                 breakpoint=True,
                 column=place.get("column"),
-                block=stop_block(self.code_blocks.get(hashed[1]), self._unslid(frame)),
+                block=self._stop_block(hashed[1], frame),
             )
         if verdict is False:
             return None
@@ -1370,7 +1445,7 @@ class RustSession(NativeSession):
             # apart a line's stops in a macro's own blocks (`println!`'s `args`).
             if not innermost or not hashed:
                 return None
-            return stop_block(self.code_blocks.get(hashed[1]), self._unslid(frame))
+            return self._stop_block(hashed[1], frame)
 
         def reference_valid():
             # #110, once per variable: True, False or None (see OwnedLocals).
