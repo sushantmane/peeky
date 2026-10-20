@@ -3,6 +3,7 @@ and proves initialized, read back and seen by the program; everything else refus
 
 import json
 import os
+import re
 
 import pytest
 
@@ -612,8 +613,12 @@ def test_rust_fields_and_elements_are_marked_where_set_changes_them(crate, capsy
         # `session get` lists them so too, a preview's fields (`s`) and a tuple's.
         assert main(["session", "get", "s", "t", "o"]) == 0
         text = capsys.readouterr().out
-        assert "  s.end: i64 = 2  [settable]" in text and "  t.__1: u32 = 20  [settable]" in text
-        assert "  o.small: u8 = 7\n" in text, text
+        # The type is LLDB's where no preview reads the value (lldb-dap 18: `long`).
+        for name, value in (("s.end", 2), ("t.__1", 20)):
+            assert re.search(rf"^  {re.escape(name)}: \S+ = {value}  \[settable\]$", text, re.M), (
+                text
+            )
+        assert re.search(r"^  o\.small: \S+ = 7$", text, re.M), text
         assert main(["session", "continue", "--to", str(line_of("// WIDTH"))]) == 0
         capsys.readouterr()
         # Through a reference parameter, and a caller's: never marked.
@@ -644,5 +649,55 @@ def test_rust_inspect_says_why_nothing_is_settable_part_way_through_a_statement(
         ), text
         listed = [row for row in text.splitlines() if not row.startswith("note:")]
         assert not any("[settable]" in row for row in listed), text
+    finally:
+        main(["session", "close"])
+
+
+STD_INSIDE = """struct Holder {
+    v: Vec<i64>,
+    n: i64,
+}
+
+fn main() {
+    let h = Holder { v: vec![1, 2], n: 3 };
+    let t = (4i64, String::from("x"));
+    let b = Box::new(5i64);
+    let total = h.n + t.0 + *b + h.v.len() as i64; // STD_INSIDE
+    println!("{} {} {}", total, t.1, h.v.len());
+}
+"""
+
+
+@pytest.mark.timeout(400)
+def test_rust_a_standard_library_types_internals_are_never_marked(crate, capsys):
+    # Review of the sixth evaluation's PR: a Vec or String held in a struct or tuple is
+    # never decoded, so its internals (`h.v.len`, a String's `vec.len`) are raw fields on
+    # every debugger, as a whole Vec's are on lldb-dap 18. They say `settable: false`,
+    # and `set` refuses them (a standard-library type on the path); so does a Box's.
+    (crate / "src/main.rs").write_text(STD_INSIDE)
+    at = f"src/main.rs:{next(i for i, line in enumerate(STD_INSIDE.splitlines(), 1) if '// STD_INSIDE' in line)}"
+    marked = {
+        "h.n": True,
+        "t.__0": True,
+        "h.v.len": False,
+        "h.v.buf": False,
+        "t.__1.vec.len": False,
+        "t.__1.vec": False,
+    }
+    code = main(["probe", str(crate), "--at", at, "--capture", ",".join(marked), "--json"])
+    rows = {row["selector"]: row for row in json.loads(capsys.readouterr().out)["rows"]}
+    assert code == 0 and {name: rows[name].get("settable") for name in marked} == marked, rows
+    assert main(["session", "start", str(crate), "--at", at]) == 0
+    capsys.readouterr()
+    try:
+        assert main(["session", "get", "b", "--json"]) == 0
+        [row] = json.loads(capsys.readouterr().out)
+        assert row["settable"] is False and row["children"], row
+        assert all(child.get("settable") is not True for child in row["children"]), row
+        for name, settable in marked.items():
+            if not settable and name.endswith(".len"):
+                refused(capsys, f"{name}=0", "is a standard-library type")
+        code, result = change(capsys, "h.n=9")
+        assert code == 0 and result["after"] == "9", result
     finally:
         main(["session", "close"])

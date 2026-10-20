@@ -38,7 +38,11 @@ def test_rows_say_whether_set_can_change_a_local_and_a_refusal_lists_those_it_ca
     assert code == 0, result.get("error")
     rows = {row["selector"]: row for row in result["rows"]}
     assert all(type(rows[name].get("settable")) is bool for name in ("idx", "buckets", "x"))
-    assert "settable" not in rows["counts.len"]  # a field, not a root local
+    # A field of a std type, raw (lldb-dap 18) or decoded from memory: never changed, and
+    # said so (sixth evaluation's PR, review: fields carry `settable` too).
+    assert rows["counts.len"]["settable"] is False, rows["counts.len"]
+    code, refused = probe(capsys, crate, "--capture", "idx", "--set", "counts.len=1")
+    assert code == 1 and refused["error"]["code"] == "MUTATION_REJECTED", refused
     code, result = probe(capsys, crate, "--capture", "idx", "--set", "idx=0")
     if code == 1:
         assert result["error"]["code"] == "MUTATION_REJECTED"

@@ -2305,12 +2305,19 @@ class DebugWorker:
     def preview_settable(self, record, runtime, elements):
         """For the fields of a value shown as a preview read from memory (#106): a check
         name -> whether `set` would change that field, judged on the debugger's own
-        listing of it, walked again from the frame (one walk per listing); None where
-        the preview keeps no such source (a container's elements, an enum's payload)."""
-        source = record[2] if len(record) > 2 else None
-        if source is None or not elements or getattr(runtime, "validate_member", None) is None:
+        listing of it, walked again from the frame (one walk per listing). What a view
+        decodes without such a source (a container's elements and length, an enum's
+        payload) is never changed: `set` refuses it, so it says no. None where the
+        runtime judges no member (Python, Java)."""
+        if not elements or getattr(runtime, "validate_member", None) is None:
             return None
-        if source[0].get("id") != self.innermost_frame or not self.member_set() or self.optimized():
+        source = record[2] if len(record) > 2 else None
+        if (
+            source is None
+            or source[0].get("id") != self.innermost_frame
+            or not self.member_set()
+            or self.optimized()
+        ):
             return lambda name: False
         trail = []
         try:
