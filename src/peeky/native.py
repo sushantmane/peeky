@@ -401,13 +401,12 @@ def typedef_kinds(info):
         # arguments differently (`std::vector<std::vector<int> >` against
         # `std::__1::vector<..., std::__1::allocator<...> >`).
         record = dies[record_offset]
-        owner = _without_templates(
-            _text(record["attrs"].get("DW_AT_name")) or named.get(record_offset) or ""
-        )
-        key, (sort, _) = f"::{owner}::{name}", kind
-        if owner and name:
-            known = found.get(key)
-            found[key] = (sort, "") if known in (None, (sort, "")) else ("unknown", "")
+        own = _text(record["attrs"].get("DW_AT_name"))
+        for owner in [_without_templates(own)] if own else named.get(record_offset, []):
+            key, (sort, _) = f"::{owner}::{name}", kind
+            if owner and name:
+                known = found.get(key)
+                found[key] = (sort, "") if known in (None, (sort, "")) else ("unknown", "")
 
     for offset, die in dies.items():
         if die["tag"] == "DW_TAG_namespace" and (name := _text(die["attrs"].get("DW_AT_name"))):
@@ -508,7 +507,7 @@ def _displayed(dies, offset, named=None):
     or the function declaring it (`Node::Link` for `main`'s local `Node`). An unnamed
     class a typedef names (``named``: {offset: name}) shows by that name
     (`typedef struct {...} Anon;`)."""
-    named = named or {}
+    named = {offset: names[0] for offset, names in (named or {}).items()}
     name = _text(dies[offset]["attrs"].get("DW_AT_name")) or named.get(offset)
     if name is None:
         return None
@@ -528,8 +527,9 @@ def _displayed(dies, offset, named=None):
 
 
 def _typedef_named(dies):
-    """{offset: name} for each unnamed class or union a typedef in its own scope names
-    (`typedef struct { ... } Anon;`): lldb-dap shows it, and its members, by that name."""
+    """{offset: [names]} for each unnamed class or union typedefs in its own scope name
+    (`typedef struct { ... } A, B;`), in declaration order: lldb-dap shows it, and its
+    members, by the first (`A::P` for `B`'s member too)."""
     named = {}
     for die in dies.values():
         if die["tag"] != "DW_TAG_typedef":
@@ -544,8 +544,8 @@ def _typedef_named(dies):
             and record["parent"] == die["parent"]
             and (name := _text(die["attrs"].get("DW_AT_name")))
         ):
-            named[target] = name if named.get(target, name) == name else None
-    return {offset: name for offset, name in named.items() if name}
+            named.setdefault(target, []).append(name)
+    return named
 
 
 # Types that wrap another (`T *`, `const T`, `T[3]`): an unnamed struct, union, class
