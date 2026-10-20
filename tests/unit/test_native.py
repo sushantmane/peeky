@@ -868,6 +868,26 @@ def test_a_caller_frame_inside_a_locals_declaration_statement_withholds_it():
     assert unknown == (21, "statement", None)
 
 
+def test_a_caller_frame_in_another_file_than_a_locals_declaration_withholds_it():
+    from peeky.native import declared_unfinished
+
+    # Review of #104 (round 4): `struct pair ps[2] = {` on inc.c:18 takes its rows from
+    # `#include "table.h"`; the frame is at table.h:2. A declaration in an included file
+    # with the frame in the including file is the same.
+    run = {"source": "inc.c", "jumps": False, "ranges": [(0, 1000)]}
+    run["rows"] = {("inc.c", 18): (100, 104), ("table.h", 2): (110, 140), ("inc.c", 20): (140, 150)}
+    run["locals"] = {
+        "ps": {("inc.c", 18, True)},
+        "q": {("decl.h", 1, True)},
+        "r": {(None, 3, True)},
+    }
+    assert declared_unfinished([run], "ps", "table.h", 2, 120) == (18, "file", "inc.c")
+    assert declared_unfinished([run], "q", "inc.c", 20, 144) == (1, "file", "decl.h")
+    # Declared outside the program's sources.
+    assert declared_unfinished([run], "r", "inc.c", 20, 144) == (3, "file", None)
+    assert declared_unfinished([run], "ps", "inc.c", 20, 144) is None
+
+
 def test_sources_naming_a_nonlocal_jump_are_found(tmp_path):
     from peeky.native import mentions_nonlocal_jumps
 

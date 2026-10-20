@@ -351,6 +351,201 @@ def test_a_callers_declaration_still_running_on_its_line_is_withheld(bucket, cap
     assert rows[5]["t.p.y"]["value"] == "8" and rows[5]["ptrs"]["unavailable"]
 
 
+HELPERS = """#include <stdio.h>
+
+struct pair { long x, y; };
+struct trio { long x; struct pair p; };
+
+__attribute__((noinline)) static long twice(long v) {
+    long w = v * 2;
+    return w;
+}
+
+__attribute__((noinline)) static void scribble(void) {
+    volatile long junk[96];
+    for (int i = 0; i < 96; i++) junk[i] = 0x5150 + i;
+}
+"""
+
+INCLUDED = {
+    "rows": (
+        """
+__attribute__((noinline)) static long run(long seed) {
+    long head = seed;
+    struct pair ps[2] = {
+#include "table.h"
+    };
+    printf("%ld %ld\\n", ps[1].y, head);
+    return ps[0].x;
+}
+""",
+        "table.h",
+        "        { twice(1), twice(2) },\n        { twice(3), twice(4) },\n",
+    ),
+    "declaration": (
+        """
+__attribute__((noinline)) static long run(long seed) {
+    long head = seed;
+#include "decl.h"
+        { twice(1), twice(2) },
+        { twice(3), twice(4) },
+    };
+    printf("%ld %ld\\n", ps[1].y, head);
+    return ps[0].x;
+}
+""",
+        "decl.h",
+        "    struct pair ps[2] = {\n",
+    ),
+}
+MAIN = """
+int main(void) {
+    scribble();
+    return (int)(run(5) & 1);
+}
+"""
+
+
+def _frame_one(capsys, path, line, hit, *selectors):
+    assert main(["session", "start", str(path), "--at", str(line), "--hit", str(hit)]) == 0
+    capsys.readouterr()
+    try:
+        main(["session", "get", "--frame", "1", *selectors, "--json"])
+        return {row["selector"]: row for row in json.loads(capsys.readouterr().out)}
+    finally:
+        main(["session", "close"])
+        capsys.readouterr()
+
+
+@pytest.mark.timeout(240)
+@pytest.mark.parametrize("kind", sorted(INCLUDED))
+def test_a_callers_local_declared_in_another_file_than_its_line_is_withheld(bucket, capsys, kind):
+    # Review of #104 (round 4): with an initializer's rows in an `#include`d file,
+    # `--frame 1` (at table.h:2) showed `ps[1].x = 429835611285028900`; so does a
+    # declaration in an included file, with the frame in the including file.
+    body, header, fragment = INCLUDED[kind]
+    directory = bucket.parent.with_name(f"inc-{kind}")
+    directory.mkdir()
+    (directory / header).write_text(fragment)
+    (directory / "inc.c").write_text(HELPERS + body + MAIN)
+    rows = _frame_one(capsys, directory / "inc.c", 8, 3, "ps[1]", "ps[1].x", "seed")
+    declared, line, frame = (
+        ("inc.c", 18, "table.h:2") if kind == "rows" else ("decl.h", 1, "inc.c:20")
+    )
+    assert rows["ps[1].x"]["location"].endswith(frame), rows["ps[1].x"]
+    for selector in ("ps[1]", "ps[1].x"):
+        assert "value" not in rows[selector], rows[selector]
+        assert (
+            f"declared on line {line} of {declared}, while this caller frame is at {frame}"
+            in rows[selector]["error"]
+        ), rows[selector]
+    assert rows["seed"]["value"] == "5"
+
+
+DIRECTIVES = (
+    HELPERS
+    + """
+__attribute__((noinline)) static long run(long seed) {
+    struct trio t = { seed,
+%:if 0
+        };
+%:endif
+        { twice(3),
+          twice(4) } };
+    struct trio u = { seed,
+#\\
+if 0
+        };
+#endif
+        { twice(5),
+          twice(6) } };
+    return t.p.y + u.p.y;
+}
+
+int main(void) {
+    scribble();
+    printf("%ld\\n", run(1));
+    return 0;
+}
+"""
+)
+
+DIGRAPHS = """#include <cstdio>
+
+struct Pair { long x, y; };
+struct Trio { long x; Pair p; };
+
+__attribute__((noinline)) static long twice(long v) {
+    long w = v * 2;
+    return w;
+}
+
+__attribute__((noinline)) static void scribble() {
+    volatile long junk[96];
+    for (int i = 0; i < 96; i++) junk[i] = 0x5150 + i;
+}
+
+#define INIT_BEGIN {
+#define INIT_END }
+#define LAMBDA_BEGIN [&]() {
+#define LAMBDA_END }()
+
+__attribute__((noinline)) static long run_digraph(long seed) {
+    Trio t <% [&]() <% long a = twice(10); return a + seed; %>(),
+        <% twice(11),
+           twice(12) %> %>;
+    return t.p.y;
+}
+
+__attribute__((noinline)) static long run_macro(long seed) {
+    Trio u = INIT_BEGIN LAMBDA_BEGIN long a = twice(20); return a + seed; LAMBDA_END,
+        { twice(21),
+          twice(22) } INIT_END;
+    return u.p.y;
+}
+
+int main() {
+    scribble();
+    long r = run_digraph(1);
+    scribble();
+    r += run_macro(2);
+    std::printf("%ld\\n", r);
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(300)
+@pytest.mark.parametrize(
+    "program, cases",
+    [
+        # `%:if 0` and `#\` + `if 0` hide `};` from the compiler, not from a text scan.
+        ("dirs.c", ((1, "t", 17, None), (3, "u", 23, None))),
+        # `<%` `%>` are braces; INIT_BEGIN and LAMBDA_BEGIN open them out of sight.
+        ("dig.cpp", ((2, "t", 22, 24), (5, "u", 29, None), (6, "u", 29, None))),
+    ],
+)
+def test_a_declaration_the_compiler_reads_differently_from_its_text_is_withheld(
+    bucket, capsys, program, cases
+):
+    # Review of #104 (round 4): the statement scan found an end too early, so
+    # `get t.p --frame 1` showed leftovers.
+    directory = bucket.parent.with_name(program.replace(".", "-"))
+    directory.mkdir()
+    path = directory / program
+    path.write_text(DIRECTIVES if program == "dirs.c" else DIGRAPHS)
+    for hit, name, declared, end in cases:
+        rows = _frame_one(capsys, path, 8, hit, f"{name}.p", f"{name}.p.y")
+        for row in rows.values():
+            assert "value" not in row, (hit, row)
+            assert f"declared on line {declared}, and " in row["error"], (hit, row)
+            assert (
+                f"(lines {declared}-{end}) is still running"
+                if end
+                else "cannot tell from the source where its declaration ends"
+            ) in row["error"], (hit, row)
+
+
 GOTO = """#include <stdio.h>
 int main(void) {
     int i = 0;

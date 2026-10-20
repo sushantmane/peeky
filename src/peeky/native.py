@@ -35,7 +35,7 @@ from peeky.build import (
     prepare,
     real_tool,
 )
-from peeky.c_source import Statements
+from peeky.c_source import Statements, unsafe_macros
 from peeky.digest import sha256_file
 from peeky.names import unicode_escape
 
@@ -1167,10 +1167,15 @@ def declared_below(table, name, source, line):
 
 def declared_unfinished(table, name, source, line, address, ends=None):
     """For a caller frame at ``source:line``, inside a call that returns to ``address``
-    (unslid; None if unknown): ``(line, why, end)`` for a C/C++ local of that name whose
-    declaration may not have run yet, else None. ``why`` is `no code`, `statement` (the
-    frame's line is within the declaration statement, lines ``line``-``end``; ``end`` None
-    when ``ends(line, name)`` cannot find it) or `unfinished`.
+    (unslid; None if unknown): ``(line, why, detail)`` for a C/C++ local of that name
+    whose declaration may not have run yet, else None. ``why`` is `file` (``detail``: the
+    file declaring it, None outside the program's sources), `no code`, `statement` (the
+    frame's line is within the declaration statement, lines ``line``-``detail``;
+    ``detail`` None when ``ends(line, name)`` cannot find it) or `unfinished`.
+
+    Declared in another file than the frame's line: an initializer can `#include` its
+    rows (the frame is then in the included file), or be in an included file itself, so
+    no line of either file places the frame within or after the declaration.
 
     Declared at or above the frame's line: the frame's own line always counts, and so
     does a line the function still has code of at or after ``address`` (`long r =` /
@@ -1199,10 +1204,12 @@ def declared_unfinished(table, name, source, line, address, ends=None):
         owners = owners or [function for function in table if base in function["locals"]]
     for function in owners:
         for declared_in, at, automatic in function["locals"].get(base, ()):
-            if not automatic or declared_in != source or type(at) is not int:
+            if not automatic or type(at) is not int:
                 continue
             if shown and at != int(shown[2]):
                 continue
+            if declared_in != source:
+                return at, "file", declared_in
             span = function["rows"].get((source, at))
             if span is None:
                 return at, "no code", None
@@ -1920,15 +1927,27 @@ class NativeSession:
                 ends=lambda at, local: self._statement_end(source, at, local),
             )
         ):
-            at, why, end = unfinished
+            at, why, detail = unfinished
+            if why == "file":
+                return (
+                    f"declared on line {at} of "
+                    + (detail or "a file outside the program's sources")
+                    + f", while this caller frame is at {source.as_posix()}:{line}, in "
+                    "another file, inside a call it makes: an initializer can `#include` "
+                    "its rows, or be included itself, so Peeky cannot place the frame "
+                    "within or after the declaration, and it may not be initialized yet: "
+                    "its storage may hold leftovers; read it after the call returns"
+                )
             if why == "statement":
                 return (
                     (
-                        f"declared on line {at}, and its declaration (lines {at}-{end}) is "
-                        "still running in this caller frame"
-                        if end is not None
-                        else f"declared on line {at}, and Peeky cannot find in the source "
-                        "where its declaration ends, so this caller frame may be inside it"
+                        f"declared on line {at}, and its declaration (lines {at}-{detail}) "
+                        "is still running in this caller frame"
+                        if detail is not None
+                        else f"declared on line {at}, and Peeky cannot tell from the source "
+                        "where its declaration ends (or the compiler may read that text "
+                        "differently: a directive, a macro, a line splice or a trigraph), "
+                        "so this caller frame may be inside it"
                     )
                     + " (inside a call it makes): it may not be initialized yet, and its "
                     "storage may hold leftovers; read it after the call returns"
@@ -1971,18 +1990,33 @@ class NativeSession:
 
     def _statement_end(self, source, line, name):
         """Where the declaration of ``name`` on ``line`` of the prepared ``source`` ends
-        (c_source.Statements), or None."""
+        (c_source.Statements), or None, also when a source or header cannot be read."""
         cache = self.__dict__.setdefault("statements", {})
         key = str(source)
         if key not in cache:
-            try:
-                path = self.prepared.workspace / source
-                data = path.read_bytes() if path.stat().st_size <= MAX_STATEMENT_SOURCE else None
-            except OSError:
-                data = None
-            cache[key] = None if data is None else Statements(data.decode("utf-8", "replace"))
+            raw_strings = getattr(self.target, "language", None) == "cpp"
+            if "macro_hazards" not in self.__dict__:
+                # The program's own sources and headers (not the SDK's or the system's).
+                inputs = [self._source_text(each) for each in self.target.verification_inputs]
+                self.macro_hazards = None if None in inputs else unsafe_macros(inputs, raw_strings)
+            text = self._source_text(source)
+            cache[key] = (
+                None
+                if text is None or self.macro_hazards is None
+                else Statements(text, raw_strings, self.macro_hazards)
+            )
         statements = cache[key]
         return None if statements is None else statements.end(line, name)
+
+    def _source_text(self, source):
+        """A prepared source's text, or None if it is unreadable or too large."""
+        try:
+            path = self.prepared.workspace / source
+            if path.stat().st_size > MAX_STATEMENT_SOURCE:
+                return None
+            return path.read_bytes().decode("utf-8", "replace")
+        except OSError:
+            return None
 
     def _unslid(self, frame):
         """The frame's instruction address in the executable's own numbering, or None."""
