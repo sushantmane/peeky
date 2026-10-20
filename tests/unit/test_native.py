@@ -1159,6 +1159,190 @@ def test_of_the_rows_at_one_address_the_last_is_the_one_that_runs(tmp_path):
     assert sorted({row[2] for row in _line_rows(text, tmp_path, ("main.c",))}) == [5, 7, 8]
 
 
+# #121: the frame stopped in.
+
+
+def _aggregate_run():
+    """`long head` (16); `struct outer o = {` (17, no code) to `};` (22); a local `q` of
+    a block (lines 3-4) the stop is not in; code of lines 16, 19, 20 and 23."""
+    run = {"source": "a.c", "jumps": False, "ranges": [(0, 1000)]}
+    run["rows"] = rows({16: (90, 96), 19: (100, 110), 20: (110, 120), 23: (130, 140)}, "a.c")
+    run["locals"] = {
+        "o": {("a.c", 17, True)},
+        "head": {("a.c", 16, True)},
+        "q": {("a.c", 3, True)},
+        "seed": {(None, None, False)},
+    }
+    run["scopes"] = {("q", "a.c", 3): {(500, 600)}, ("o", "a.c", 17): {(0, 1000)}}
+    return run
+
+
+def _through(ends):
+    def through(source, at, name):
+        return ends.get((source, at))
+
+    return through
+
+
+def test_a_stop_inside_a_declaration_statement_withholds_its_local():
+    from peeky.native import declared_running
+
+    run = _aggregate_run()
+    through = _through({("a.c", 17): 22, ("a.c", 16): 16})
+    assert declared_running([run], "o", "a.c", 20, 112, through) == (17, 22, "a.c", None)
+    assert declared_running([run], "o", "a.c", 23, 132, through) is None
+    assert declared_running([run], "head", "a.c", 20, 112, through) is None
+    assert declared_running([run], "seed", "a.c", 20, 112, through) is None
+    # An end the source does not give withholds it, but only for a block holding the stop.
+    unknown = _through({("a.c", 16): 16})
+    assert declared_running([run], "o", "a.c", 23, 132, unknown) == (17, None, "a.c", None)
+    assert declared_running([run], "q", "a.c", 23, 132, unknown) is None
+    assert declared_running([run], "q", "a.c", 23, None, unknown) == (3, None, "a.c", None)
+    # Declared in another file: its `#include` in the stop's file stands for it
+    # (review of #126, round 2); none found, or an end the source does not give, withholds.
+    run["rows"][("t.c", 9)] = (114, 116)
+
+    def site(source, declared_in):
+        return 5
+
+    assert declared_running([run], "o", "t.c", 9, 115, through) == (17, None, "a.c", None)
+    assert declared_running([run], "o", "t.c", 9, 115, through, site=site) is None
+    assert declared_running([run], "o", "t.c", 9, 115, unknown, site=site) == (17, None, "a.c", 5)
+    # The `#include` at or below the stop: declared below it.
+    assert declared_running([run], "o", "t.c", 5, 115, through, site=site) == (17, None, "a.c", 5)
+
+
+def test_a_local_a_jump_can_skip_is_withheld_below_the_label():
+    from peeky.native import declared_skipped
+
+    run = _aggregate_run()
+    labels = {17: 21, 16: False}
+
+    def skipped(source, at, name, line, span):
+        return labels.get(at)
+
+    assert declared_skipped([run], "o", "a.c", 23, 132, skipped) == (17, 21)
+    assert declared_skipped([run], "head", "a.c", 23, 132, skipped) is None
+    # Unknown: withheld.
+    assert declared_skipped([run], "o", "a.c", 23, 132, lambda *_: None) == (17, None)
+    # Declared below the stop, or on its line: other rules.
+    assert declared_skipped([run], "o", "a.c", 17, 99, skipped) is None
+
+
+def test_a_declaration_line_without_code_is_placed_by_its_statements_code():
+    from peeky.native import declared_below
+
+    # #121: `struct pair ps[2] = {` (25) has no code; its elements' lines (26, 27) do.
+    run = {"source": "a.c", "jumps": False}
+    run["rows"] = rows({20: (100, 110), 26: (120, 130), 27: (130, 140), 15: (140, 150)}, "a.c")
+    run["locals"] = {"ps": {("a.c", 25, True)}}
+    through = _through({("a.c", 25): 28})
+    assert declared_below([run], "ps", "a.c", 20) is None
+    assert declared_below([run], "ps", "a.c", 20, through=through) == 25
+    # Code of the stop's line after the statement's (a member initializer run there).
+    assert declared_below([run], "ps", "a.c", 15, through=through) is None
+    # Its end unknown: below.
+    assert declared_below([run], "ps", "a.c", 20, through=_through({})) == 25
+
+
+def test_constructors_and_lambdas_are_told_from_their_debug_information():
+    from peeky.native import _CONSTRUCTOR_NAME, _class_role
+
+    def die(tag, parent, **attrs):
+        return {"tag": tag, "parent": parent, "attrs": attrs, "children": []}
+
+    dies = {
+        1: die("DW_TAG_compile_unit", None),
+        2: die("DW_TAG_structure_type", 1, DW_AT_name='"Box<int>"'),
+        3: die("DW_TAG_subprogram", 2, DW_AT_name='"Box"'),
+        4: die("DW_TAG_subprogram", 1, DW_AT_specification='0x00000003 "Box"'),
+        5: die("DW_TAG_subprogram", 2, DW_AT_name='"size"'),
+        6: die("DW_TAG_subprogram", 1, DW_AT_name='"run"'),
+        7: die("DW_TAG_class_type", 6, DW_AT_decl_line="22"),
+        8: die("DW_TAG_subprogram", 7, DW_AT_name='"operator()"'),
+        9: die("DW_TAG_subprogram", 1, DW_AT_specification='0x00000008 "operator()"'),
+    }
+    assert _class_role(dies, [4, 3]) == (True, None, None, False)
+    assert _class_role(dies, [5]) == (False, None, None, False)
+    assert _class_role(dies, [6]) == (False, None, None, False)
+    assert _class_role(dies, [9, 8]) == (False, 6, 22, False)
+    for name in ("Widget::Widget(long)", "ns::Box<int>::Box(int)", "A::B::B<int>(int)"):
+        assert _CONSTRUCTOR_NAME.search(name), name
+    for name in ("Widget::size() const", "run(long)::$_0::operator()() const", "Box(int)"):
+        assert not _CONSTRUCTOR_NAME.search(name), name
+
+
+# Review of #126 (round 1).
+
+
+def test_a_local_declared_on_the_line_a_call_returns_to_is_withheld_part_way():
+    from peeky.native import declared_mid_line
+
+    # `long r = twice(3) + twice(4);` on line 17: rows 100-130, line 18 from 130.
+    run = {"source": "a.c", "jumps": False, "ranges": [(0, 1000)]}
+    run["rows"] = rows({17: (100, 124), 18: (130, 140)}, "a.c")
+    run["locals"] = {"r": {("a.c", 17, True)}, "i": {("a.c", 17, True)}}
+
+    def header(source, line, name):
+        return name == "i"
+
+    assert declared_mid_line([run], "r", "a.c", 17, 112, header) == 17
+    # Its last row runs to line 18's code.
+    assert declared_mid_line([run], "r", "a.c", 17, 126, header) == 17
+    # At the line's start (other rules), or once its code has run.
+    assert declared_mid_line([run], "r", "a.c", 17, 100, header) is None
+    assert declared_mid_line([run], "r", "a.c", 18, 132, header) is None
+    # A header's variable (a one-line loop's counter) is live mid-line.
+    assert declared_mid_line([run], "i", "a.c", 17, 112, header) is None
+    assert declared_mid_line([run], "r", "a.c", 17, None, header) is None
+
+
+def test_a_local_whose_file_may_include_code_after_it_is_withheld_there():
+    from peeky.native import declared_running
+
+    run = _aggregate_run()
+    run["rows"][("cases.h", 3)] = (114, 116)
+    through = _through({("a.c", 16): 16})
+
+    def included(source, at, name):
+        return True
+
+    def site(source, declared_in):
+        return 2
+
+    assert declared_running([run], "head", "cases.h", 3, 115, through, site=site) is None
+    assert declared_running([run], "head", "cases.h", 3, 115, through, included, site) == (
+        16,
+        None,
+        "a.c",
+        2,
+    )
+    assert (
+        declared_running([run], "head", "cases.h", 3, 115, through, lambda *_: False, site) is None
+    )
+
+
+def test_local_classes_and_closures_are_told_from_the_debug_information():
+    from peeky.native import _local_classes
+
+    def die(tag, parent, children=(), **attrs):
+        return {"tag": tag, "parent": parent, "attrs": attrs, "children": list(children)}
+
+    dies = {
+        1: die("DW_TAG_compile_unit", None),
+        2: die("DW_TAG_subprogram", 1, DW_AT_name='"run"'),
+        3: die("DW_TAG_lexical_block", 2),
+        4: die("DW_TAG_structure_type", 3, DW_AT_name='"Local"', DW_AT_decl_line="19"),
+        5: die("DW_TAG_class_type", 2, [6], DW_AT_decl_line="30"),
+        6: die("DW_TAG_subprogram", 5, DW_AT_name='"operator()"'),
+        7: die("DW_TAG_class_type", 2, [8], DW_AT_name='"<lambda()>"', DW_AT_decl_line="31"),
+        8: die("DW_TAG_subprogram", 7, DW_AT_name='"operator()"'),
+        9: die("DW_TAG_structure_type", 2, DW_AT_name='"Fwd"', DW_AT_declaration="(true)"),
+        10: die("DW_TAG_structure_type", 1, DW_AT_name='"Cfg"', DW_AT_decl_line="13"),
+    }
+    assert _local_classes(dies) == {2: ((19, False), (30, True), (31, True))}
+
+
 TYPEDEFS = """
 0x0000000b: DW_TAG_compile_unit
               DW_AT_name\t("a.cpp")
@@ -1307,3 +1491,42 @@ def test_a_class_member_typedef_keeps_the_class_every_instance_names():
     assert _merged_class("std::map<int, int>", "std::unordered_map<int, int>") == "?"
     assert _merged_class("Point", "Line") == ""
     assert _merged_class("?", "") == "?"
+
+
+def test_unnamed_constructors_and_member_initializer_lambdas_are_told_apart():
+    from peeky.native import _CONSTRUCTOR_NAME, _class_role
+
+    # Review of #126 (round 4).
+    def die(tag, parent, **attrs):
+        return {"tag": tag, "parent": parent, "attrs": attrs, "children": []}
+
+    dies = {
+        1: die("DW_TAG_compile_unit", None),
+        2: die("DW_TAG_subprogram", 1, DW_AT_name='"nested"'),
+        # `struct { long s = twice(13); } anon;`: Clang's implicit constructor.
+        3: die("DW_TAG_structure_type", 2, DW_AT_decl_line="55"),
+        4: die(
+            "DW_TAG_subprogram",
+            3,
+            DW_AT_name='"(unnamed struct at f.cpp:55:5)"',
+            DW_AT_artificial="(true)",
+        ),
+        5: die("DW_TAG_subprogram", 1, DW_AT_specification='0x00000004 "(unnamed struct)"'),
+        6: die("DW_TAG_subprogram", 3, DW_AT_name='"get"', DW_AT_type='0x00000009 "long"'),
+        # `struct Agg { long b = [this] { ... }(); };`: its closure is in `Agg`.
+        7: die("DW_TAG_structure_type", 1, DW_AT_name='"Agg"', DW_AT_decl_line="13"),
+        8: die("DW_TAG_class_type", 7, DW_AT_decl_line="15"),
+        9: die("DW_TAG_subprogram", 8, DW_AT_name='"operator()"', DW_AT_type='0x0 "long"'),
+        10: die("DW_TAG_subprogram", 1, DW_AT_specification='0x00000009 "operator()"'),
+    }
+    assert _class_role(dies, [5, 4]) == (True, 2, 55, False)
+    assert _class_role(dies, [6]) == (False, 2, 55, False)
+    assert _class_role(dies, [10, 9]) == (False, None, 15, True)
+    for name in (
+        "nested(long)::$_0::$_0()",
+        "nested(long)::(anonymous struct)::(anonymous struct)()",
+        "f()::(unnamed struct at a.cpp:5:3)::(unnamed struct at a.cpp:5:3)()",
+        "nested(long)::{unnamed type#1}::{unnamed type#1}()",
+    ):
+        assert _CONSTRUCTOR_NAME.search(name), name
+    assert not _CONSTRUCTOR_NAME.search("nested(long)::$_0::get() const")
