@@ -1,5 +1,7 @@
 """Where a C or C++ declaration statement ends, from its source (#104 review, round 3)."""
 
+import pytest
+
 from peeky.c_source import Statements, blank, unsafe_macros
 
 TRIO = """long run(long seed) {
@@ -149,3 +151,42 @@ def test_c_has_no_raw_strings():
     assert end(source, 1, "s") == 2
     # As `-std=c11` reads it: `R`, `"(a"`, `;`, `"b)"`.
     assert Statements(source, raw_strings=False).end(1, "s") == 1
+
+
+# Review of #104 (round 5): lines are counted as Clang's line table (so DWARF) and GCC count
+# them: `\r\n`, a lone `\r`, or `\n`.
+
+
+def test_a_lone_carriage_return_breaks_a_line():
+    assert end("struct trio t = { a,\n    { g(1),\r      g(2) } };\n", 1, "t") == 3
+    hidden = "  struct trio t = { a,\r#if 0\n };\n#endif\n { g(1),\n g(2) } };\n"
+    assert end(hidden, 1, "t") is None
+    # It ends a `//` comment too.
+    assert end("long t = f(1, // ;\r    2);\n", 1, "t") == 2
+
+
+@pytest.mark.parametrize(
+    "breaks",
+    [
+        # `\r\n` counts once, a lone `\r` beside it still counts.
+        ("\r\n", "\r", "\r\n"),
+        # `\r\r\n` is a lone `\r` and a pair.
+        ("\r\r\n", "\n", "\n"),
+        # `\n\r` is two breaks (Clang 9 and later, GCC), not a pair.
+        ("\n\r", "\n", "\n"),
+    ],
+)
+def test_line_break_pairs_count_as_the_compilers_count_them(breaks):
+    first, second, last = breaks
+    source = f"struct trio t = {{ a,{first}    {{ g(1),{second}      g(2) }} }};{last}"
+    assert end(source, 1, "t") == (3 if first == "\r\n" else 4)
+
+
+def test_a_splice_before_newline_and_carriage_return_is_unreadable():
+    assert blank("a;\r\nb;\rc;\n\rd;\r\r\ne;") == "a;\nb;\nc;\n\nd;\n\ne;"
+    # Clang's lexer takes `\n\r` after a backslash as one newline, joining the line after
+    # the `\r`; GCC does not.
+    assert end("long t = f(\n    1);\nlong u = x\\\n\ry;\n", 1, "t") is None
+    assert unsafe_macros(["#define M(x) x\\\n\r\n#define N 1\n"]) == {"M", "N"}
+    # Each `#define` ends at its line's break.
+    assert unsafe_macros(["#define N 1\r#define O {\r\n#define P 2\n\r"]) == {"O"}

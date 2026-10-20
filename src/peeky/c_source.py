@@ -1,4 +1,4 @@
-"""Where a C or C++ declaration statement ends, from the source text alone (#104).
+r"""Where a C or C++ declaration statement ends, from the source text alone (#104).
 
 A caller frame is inside a call made from its line. When that line is within a local's
 declaration (`struct trio t = { seed,` / `{ twice(3),` / `twice(4) } };`), the
@@ -6,9 +6,10 @@ declaration is still running and the local may hold leftovers, whatever code its
 line has. The statement's end is its first `;` outside parentheses, brackets and braces
 (digraphs too), once comments and string and character literals are blanked.
 
-Nothing is guessed: an end that cannot be found is None, and so is one where the text
-the scan reads may differ from what the compiler reads. That is anywhere in a file with
-a trigraph, a `#line` or a line splice inside a token; and, from the declaration's line
+Lines are counted as the compilers count them (`normalized`). Nothing is guessed: an
+end that cannot be found is None, and so is one where the text the scan reads may differ
+from what the compiler reads. That is anywhere in a file with a trigraph, a `#line`, a
+line splice inside a token or before `\n\r`; and, from the declaration's line
 to its end, a directive (an `#include` can hold the rows), a line splice, a `<::`, or
 a macro whose expansion may hold an unclosed bracket or a `;` (`unsafe_macros`).
 """
@@ -22,13 +23,19 @@ _IDENTIFIER = re.compile(r"(?<!\w)[A-Za-z_]\w*")
 _OPENING = re.compile(r"""//|/\*|["']|(?:u8|u|U|L)?R\"""")
 # A raw string's prefix and delimiter: `R"x(`, `u8R"(`.
 _RAW = re.compile(r'(?:u8|u|U|L)?R"([^ ()\\\t\v\f\n]{0,16})\(')
+# A line break as Clang (its line table, so DWARF, since Clang 9) and GCC count them:
+# `\r\n`, a lone `\r`, or `\n`; `\n\r` is two.
+_BREAK = re.compile(r"\r\n|\r|\n")
+# A splice before `\n\r`: Clang's lexer takes the pair as one newline, joining the line
+# after the `\r`, and GCC does not.
+_SPLICED_PAIR = re.compile(r"\\[ \t\f\v]*\n\r")
 # A line splice: a backslash, the spaces GCC and Clang also allow, and a newline.
-_SPLICE = re.compile(r"\\[ \t\f\v\r]*\n")
+_SPLICE = re.compile(r"\\[ \t\f\v]*\n")
 # A splice inside a token (`/\` then `*` is a comment): a file the scan cannot read.
-_SPLIT = re.compile(r"(?<=\S)\\[ \t\f\v\r]*\n(?=\S)")
+_SPLIT = re.compile(r"(?<=\S)\\[ \t\f\v]*\n(?=\S)")
 _LITERAL = {
-    '"': re.compile(r'"(?:[^"\\\n]|\\[ \t\f\v\r]*\n|\\[\s\S])*"?'),
-    "'": re.compile(r"'(?:[^'\\\n]|\\[ \t\f\v\r]*\n|\\[\s\S])*'?"),
+    '"': re.compile(r'"(?:[^"\\\n]|\\[ \t\f\v]*\n|\\[\s\S])*"?'),
+    "'": re.compile(r"'(?:[^'\\\n]|\\[ \t\f\v]*\n|\\[\s\S])*'?"),
 }
 _VISIBLE = re.compile(r"[^\n]")
 # Punctuators as the compiler reads them, longest first (`<<:` is `<<` and `:`), so that
@@ -48,12 +55,18 @@ _RENUMBER = re.compile(r"^[ \t\f\v]*(?:#|%:)[ \t\f\v]*(?:line\b|[0-9])", re.M)
 _DEFINE = re.compile(r"^[ \t\f\v]*(?:#|%:)[ \t\f\v]*define[ \t\f\v]+([A-Za-z_]\w*)(\(?)(.*)$", re.M)
 
 
+def normalized(text):
+    r"""``text`` with each line break, as the compilers count them, written `\n`."""
+    return _BREAK.sub("\n", text) if "\r" in text else text
+
+
 def blank(text, raw_strings=True):
-    """``text`` with comments and the insides of string and character literals (their
-    quotes too) replaced by spaces; newlines stay, so lines and columns are unchanged.
-    An unterminated comment blanks to the end; an unterminated literal to its line's.
-    C (``raw_strings`` false, as `-std=c11` reads it) has no raw strings: `R"x(` is a
-    name and a string."""
+    """``text`` (`normalized`) with comments and the insides of string and character
+    literals (their quotes too) replaced by spaces; line breaks stay, so lines and
+    columns are unchanged. An unterminated comment blanks to the end; an unterminated
+    literal to its line's. C (``raw_strings`` false, as `-std=c11` reads it) has no raw
+    strings: `R"x(` is a name and a string."""
+    text = normalized(text)
     pieces, done, size = [], 0, len(text)
     position = 0
     while (found := _OPENING.search(text, position)) is not None:
@@ -88,7 +101,7 @@ def _continued(text, newline):
     """Whether a backslash, maybe then spaces, before the newline at ``newline`` splices
     the next line onto it."""
     at = newline - 1
-    while at >= 0 and text[at] in " \t\f\v\r":
+    while at >= 0 and text[at] in " \t\f\v":
         at -= 1
     return at >= 0 and text[at] == "\\"
 
@@ -107,15 +120,15 @@ def _digit_separator(text, i):
 
 
 def unsafe_macros(texts, raw_strings=True):
-    """The names of the macros ``texts`` define that a statement scan cannot see
+    r"""The names of the macros ``texts`` define that a statement scan cannot see
     through: an expansion that may hold a bracket it does not close, a `;`, a `<::`, or
     a pasted token (`<` ## `%` is a brace), or that names such a macro. Every macro a
-    source with a trigraph defines counts."""
+    source with a trigraph, or a splice before `\n\r`, defines counts."""
     uses, unsafe = {}, set()
     for text in texts:
         # Spliced as the compiler splices lines, before comments and literals.
-        code = blank(_SPLICE.sub("", text), raw_strings)
-        trigraphs = _TRIGRAPH.search(text) is not None
+        code = blank(_SPLICE.sub("", normalized(text)), raw_strings)
+        trigraphs = _TRIGRAPH.search(text) is not None or _SPLICED_PAIR.search(text)
         for define in _DEFINE.finditer(code):
             name, body = define[1], define[3]
             if define[2]:
@@ -153,14 +166,15 @@ class Statements:
     names `unsafe_macros` gives for the build's sources and headers."""
 
     def __init__(self, text, raw_strings=True, macros=frozenset()):
-        self.text = text
-        self.blanked = blank(text, raw_strings)
+        self.text = normalized(text)
+        self.blanked = blank(self.text, raw_strings)
         self.starts = [0] + [mark.end() for mark in re.finditer("\n", self.blanked)]
         self.macros = frozenset(macros)
         # Where the compiler may read any line differently from the scan.
         self.unreadable = bool(
             _TRIGRAPH.search(text)
-            or _SPLIT.search(text)
+            or _SPLICED_PAIR.search(text)
+            or _SPLIT.search(self.text)
             or _RENUMBER.search(_SPLICE.sub("", self.blanked))
         )
         self._ends = {}
@@ -218,7 +232,7 @@ class Statements:
         for number in range(max(line - 1, 1), bisect.bisect_right(starts, last) + 1):
             begin = starts[number - 1]
             finish = starts[number] - 1 if number < len(starts) else len(text)
-            if text[begin:finish].rstrip(" \t\f\v\r").endswith("\\"):
+            if text[begin:finish].rstrip(" \t\f\v").endswith("\\"):
                 return False
             if number >= line and _DIRECTIVE.match(self.blanked, begin):
                 return False

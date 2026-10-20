@@ -546,6 +546,33 @@ def test_a_declaration_the_compiler_reads_differently_from_its_text_is_withheld(
             ) in row["error"], (hit, row)
 
 
+@pytest.mark.timeout(240)
+def test_a_lone_carriage_return_breaks_a_line_as_the_compiler_counts_it(bucket, capsys):
+    # Review of #104 (round 5): with a lone `\r` between `{ twice(3),` and
+    # `twice(4) } };`, the scan ended `t` on line 22, so frame 1 at line 23 (hit 4)
+    # showed `t.p.y = 20906`. The frame's line and DWARF's declaration lines count it too.
+    directory = bucket.parent.with_name("cr")
+    directory.mkdir()
+    path = directory / "cr.c"
+    source = TRIO.replace("{ twice(3),\n", "{ twice(3),\r")
+    assert source.count("\r") == 1
+    path.write_bytes(source.encode())
+    for hit, line in ((3, 22), (4, 23)):
+        rows = _frame_one(capsys, path, 8, hit, "t", "t.p.y")
+        assert rows["t"]["location"].endswith(f"cr.c:{line}"), rows["t"]
+        for row in rows.values():
+            assert "value" not in row, (hit, row)
+            assert "its declaration (lines 21-23) is still running" in row["error"], (hit, row)
+    rows = _frame_one(capsys, path, 8, 5, "t.p.y", "ptrs")
+    assert rows["t.p.y"]["value"] == "8" and rows["ptrs"]["location"].endswith("cr.c:25")
+    assert "declared on line 24" in rows["ptrs"]["error"], rows["ptrs"]
+    # `\n\r` is two breaks to Clang's line table (since Clang 9), not one pair.
+    path.write_bytes(TRIO.replace("{ twice(3),\n", "{ twice(3),\n\r").encode())
+    rows = _frame_one(capsys, path, 8, 4, "t")
+    assert rows["t"]["location"].endswith("cr.c:24"), rows["t"]
+    assert "its declaration (lines 21-24) is still running" in rows["t"]["error"], rows["t"]
+
+
 GOTO = """#include <stdio.h>
 int main(void) {
     int i = 0;
