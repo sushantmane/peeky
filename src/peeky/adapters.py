@@ -891,6 +891,24 @@ class ViewBudgetExhausted(ValueError):
     """A bounded value view stopped early; distinct from an invalid debugger shape."""
 
 
+# debugpy's grouping nodes (pydevd's DAPGrouper, typed ""): members of the listing they
+# sit in, filed by kind, never values of the program.
+PYDEVD_GROUPS = frozenset(
+    {"special variables", "function variables", "class variables", "protected variables"}
+)
+# pydevd's paging nodes for long sequences (`more`, `[100:1100]`), made per listing.
+_PYDEVD_PAGES = frozenset({"MoreItems", "MoreItemsRange"})
+
+
+def locals_only(scopes):
+    """The scopes holding the stopped function's own variables."""
+    return [
+        scope
+        for scope in scopes
+        if not scope.get("expensive") and scope.get("presentationHint") == "locals"
+    ]
+
+
 @dataclass(frozen=True)
 class PythonAdapter:
     interpreter: str = sys.executable
@@ -949,12 +967,51 @@ class PythonAdapter:
             "subProcess": False,
         }
 
+    # Listing nodes the worker walks through without counting them as a level of depth.
+    variable_groups = PYDEVD_GROUPS
+
     def local_scopes(self, scopes):
-        return [
-            scope
-            for scope in scopes
-            if not scope.get("expensive") and scope.get("presentationHint") == "locals"
-        ]
+        """The frame's Locals, then debugpy's Globals: the module's globals, read-only."""
+        return locals_only(scopes) + [scope for scope in scopes if self.global_scope(scope)]
+
+    @staticmethod
+    def global_scope(scope):
+        return (
+            scope.get("name") == "Globals"
+            and not scope.get("presentationHint")
+            and not scope.get("expensive")
+        )
+
+    @staticmethod
+    def object_identity(variable):
+        """`list@7`: which object a value is. pydevd numbers each object by `id(value)`
+        (one variablesReference per id, never reused for another id while debugpy runs),
+        and keeps every object it lists alive while the program is stopped. So within one
+        stop, equal identities are the same object; across stops, an equal identity may
+        also be a new object at a freed one's address. Scalars (reference 0) have none,
+        nor do debugpy's own grouping and paging nodes."""
+        reference, kind = variable.get("variablesReference"), variable.get("type")
+        if type(reference) is not int or reference <= 0 or not isinstance(kind, str) or not kind:
+            return None
+        if kind in _PYDEVD_PAGES or variable.get("name") in PYDEVD_GROUPS:
+            return None
+        return f"{kind}@{reference}"
+
+    @staticmethod
+    def globals_proof(frame, listed, loaded_by=None):
+        """Whether a name missing from this frame's locals may be read from its globals:
+        `{"shadowed": [...]}` lists the names that may not, `{"unproven": reason}` says
+        why none may. ``loaded_by``: when the program started (a source changed since
+        may not be the code running)."""
+        from peeky.python_scopes import shadowed_names
+
+        path, line = (frame.get("source") or {}).get("path"), frame.get("line")
+        if not isinstance(path, str) or not path or type(line) is not int:
+            return {"unproven": "the debugger gave no source line for this frame"}
+        names, reason = shadowed_names(
+            path, str(frame.get("name") or ""), line, listed, loaded_by=loaded_by
+        )
+        return {"unproven": reason} if names is None else {"shadowed": names}
 
     def normalize_capabilities(self, raw):
         # Advertise the intersection of backend support and the worker operations.

@@ -378,7 +378,7 @@ Limits: one `SELECT` per call, 200 rows by default (`--limit` up to 10000), 10 s
 
 ---
 
-### 4.6 Same Object, or a Copy? (Java)
+### 4.6 Same Object, or a Copy? (Java, Python)
 
 **What it answers:** Is this variable the list's own element, or a copy whose changes go nowhere?
 
@@ -400,6 +400,24 @@ hit  best                   list_a                 same
 
 `object_ref(value)` is the object a Java value is. Within one run, equal means the same object. Across runs the numbers differ (`queries diff` masks them), so compare objects only inside a run. To test the hypothesis, give the list's worker the load it should have had: `--set 'workers[1].load=5' --set-hit 1` turns `a a a a` into `a b b b`.
 
+**Python** values carry their object in the `identity` column instead (`list@6`, debugpy's number for the object, not an address). Is `tags`, a mutable default, the same list on every call?
+
+```sh
+peeky probe examples/corpus/mutable_default/program.py --at 3 \
+  --capture 'tags,add_tag.__defaults__[0]' --hits 2
+peeky sql "SELECT hit, selector, value, identity FROM last_run"
+```
+
+```
+hit  selector                 value       identity
+1    tags                     ['a']       list@6
+1    add_tag.__defaults__[0]  ['a']       list@6
+2    tags                     ['a', 'b']  list@6
+2    add_tag.__defaults__[0]  ['a', 'b']  list@6
+```
+
+At one hit, equal identities are the same object: `tags` is the function's default list, not a copy. Across hits, a different identity always means a different object, but an equal one means the same object or a new one that took a freed object's place; here the default lives as long as the function, and its contents grow. Numbers, strings and `None` have no identity (NULL). Never compare identities across runs.
+
 ---
 
 ## 5. Step-by-Step Sessions
@@ -420,17 +438,20 @@ peeky session close
 ```
 
 ```
-session default (python): state: stopped at .../pagination_bug.py:8 in get_page (paused 0.0 s)
-stopped at .../pagination_bug.py:8 in get_page (paused 0.05 s)
+session default (python): state: stopped at .../pagination_bug.py:8 in get_page, hit 1 (paused 0.0 s)
+stopped at .../pagination_bug.py:8 in get_page, hit 1 (paused 0.06 s)
 [Locals]
-  items: list = [10, 20, 30, 40, 50, 60] (children: peeky session get items)
+  items: list = [10, 20, 30, 40, 50, 60]  [id list@6] (children: peeky session get items)
   page: int = 1
   page_size: int = 3
   start: int = 3
+[Globals] (module globals, read-only)
+  (special variables: debugpy's group; select its members by name)
+  (function variables: debugpy's group; select its members by name)
 start: int = 3
 items[0]: int = 10
 page: int = 1
-items: list = [10, 20, 30, 40, 50, 60]
+items: list = [10, 20, 30, 40, 50, 60]  [id list@6]
   items[0]: int = 10
   items[1]: int = 20
   items[2]: int = 30
@@ -447,7 +468,33 @@ operations: 11 (worker requests in this session, including waits; --json lists t
 closed default
 ```
 
-Scope headers are the debugger's own names: `[Locals]` for Python, `[Local]` for Java. `session get` on a list, dict or struct lists one level of children, each with the selector that reads it, and `(children: ...)` on a child that has children of its own. A name that is not there prints only why (`x: <not found; visible: ...>`). If any selector fails, every row is still printed and the exit status is 1. `session continue` without `--to-exit` runs to the next stop at the session's breakpoint.
+Scope headers are the debugger's own names: `[Locals]` for Python, `[Local]` for Java. Python also lists the module's `[Globals]`, read-only (at module level they are the locals, listed once); a scope cut at 50 names says how many more it has. `session get` on a list, dict or struct lists one level of children, each with the selector that reads it, and `(children: ...)` on a child that has children of its own. A name that is not there prints only why (`x: <not found; visible: ...>`). If any selector fails, every row is still printed and the exit status is 1. `session continue` without `--to-exit` runs to the next stop at the session's breakpoint.
+
+A Python name missing from the locals is read from the globals (`[module global]`) only when Peeky proves, from the function's own scoping in its source (`symtable`), that the function reads that name from its globals; a source it cannot parse, or edited since the program started, proves nothing, and the error says the name may be such a global. In `def shadow(): print(LIMIT); LIMIT = 1`, stopped at the `print`, `get LIMIT` says `LIMIT` has no value there yet (Python raises `UnboundLocalError`), not the module's `LIMIT`. debugpy files functions, classes and `__dunder__` names under groups; their members are selected by name (`add_tag.__defaults__`). `[id list@6]` is the object's identity (see 4.6).
+
+**Caller frames.** `--frame N` reads frame N of the stack, as `session inspect --json` lists `frames` (0, the default, is where the program stopped; 1 its caller; at most 10):
+
+```sh
+peeky session start examples/corpus/mutable_default/program.py --at 3
+peeky session inspect --frame 1
+peeky session get --frame 1 add_tag.__defaults__
+peeky session inspect --frame 2
+```
+
+```
+stopped at .../program.py:3 in add_tag, hit 1 (paused 0.1 s)
+frame 1: <module> (.../program.py:7)
+[Locals]
+  (special variables: debugpy's group; select its members by name)
+  (function variables: debugpy's group; select its members by name)
+frame 1: <module> (.../program.py:7)
+add_tag.__defaults__: tuple = (['a'],)  [id tuple@29]
+  add_tag.__defaults__[0]: list = ['a']  [id list@6] (children: peeky session get 'add_tag.__defaults__[0]' --frame 1)
+  len() [not selectable]: int = 1
+peeky: [INVALID_REQUEST] Frame 2 is out of range: this stop lists 2 frame(s), 0 to 1 (0 is the innermost; at most 10 are listed)
+```
+
+At module level the locals are the module's globals, so there is no separate `[Globals]`. A frame past the stack is `INVALID_REQUEST`, naming how many frames there are. Rust's owned-local and Box proofs hold only in the innermost frame, so a caller's `Vec` keeps its raw fields with a note. In C and C++, a caller's local declared on the line it is calling from is withheld: in `long result = twice(seed);`, `result` is stored only after `twice` returns. `session set` changes the stopped frame's locals, so caller listings never say `[settable]`.
 
 ### 5.2 Stepping and Running to a Line
 
@@ -834,6 +881,7 @@ All codes are listed in [ERRORS.md](ERRORS.md). If you suspect a filesystem with
 | `condition 1 x > 5` | `--hits N`, then `peeky sql "... WHERE num > 5"` | Conditions would run code in the program |
 | `info locals`, `print *obj` | `peeky session inspect`, `peeky session get obj` | `get` lists one level of children with their selectors |
 | `bt` | `peeky session inspect --json \| jq '.frames'` | The stack at the stop; values come from the top frame |
+| `frame 1`, `up` | `peeky session inspect --frame 1`, `peeky session get --frame 1 x` | Reads a caller's locals (frame N as `frames` lists them) |
 | `next`, `step`, `finish` | `peeky session step`, `step --into`, `step --out` | Java `--into`/`--out` skip JDK code. After `step --out`, C, C++ and Rust `session inspect` lists the returned value as `(Return Value)`, marked `[not selectable]`: read it there |
 | `until 42`, `advance 42` | `peeky session continue --to 42` | One-shot; the session's own breakpoint stays |
 | `continue` | `peeky session continue [--to-exit]` | Runs to the next stop or to exit |

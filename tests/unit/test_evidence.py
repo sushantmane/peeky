@@ -963,3 +963,39 @@ def test_a_run_without_set_has_no_intervention_hit(store):
     evidence.record(store, result(sets=(("start", "0"),)))
     rows = evidence.query(store, "SELECT sets, set_hit FROM runs ORDER BY run_id")["rows"]
     assert rows[0]["set_hit"] is None and rows[1]["set_hit"] == 1
+
+
+def test_python_identities_are_stored_and_a_schema_5_store_gains_the_column(store):
+    # #104: whether `seen` is the same list on every call needs Python object identity.
+    run = captured(
+        [
+            (1, "observed", "seen", "['a']"),
+            (1, "observed", "key", "'a'"),
+            (2, "observed", "seen", "['a', 'b']"),
+        ]
+    )
+    for row, identity in zip(run["rows"], ("list@7", None, "list@7")):
+        if identity:
+            row["identity"] = identity
+    evidence.record(store, run, language="python")
+    connection = sqlite3.connect(store)
+    connection.executescript(
+        "DROP VIEW last_run; DROP VIEW evidence; ALTER TABLE captures DROP COLUMN identity; "
+        "CREATE VIEW evidence AS SELECT c.run_id, c.selector FROM captures c; "
+        "CREATE VIEW last_run AS SELECT * FROM evidence; PRAGMA user_version = 5;"
+    )
+    connection.close()
+    rows = evidence.query(store, "SELECT selector, identity FROM last_run")["rows"]
+    assert rows == [{"selector": s, "identity": None} for s in ("seen", "key", "seen")]
+    evidence.record(store, run, language="python")
+    rows = evidence.query(
+        store,
+        "SELECT hit, identity FROM last_run WHERE selector = 'seen' ORDER BY hit",
+    )["rows"]
+    assert rows == [{"hit": 1, "identity": "list@7"}, {"hit": 2, "identity": "list@7"}]
+    described = evidence.schema(store)
+    assert (
+        "Within one hit, equal means the same object"
+        in (described["tables"]["captures"]["columns"]["identity"])
+    )
+    assert "captures.identity" in described["functions"]["object_ref(text)"]

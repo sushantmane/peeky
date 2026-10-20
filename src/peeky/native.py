@@ -22,7 +22,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from peeky.adapters import PythonAdapter
+from peeky.adapters import PythonAdapter, locals_only
 from peeky.build import (
     ArtifactSpec,
     BuildCommandError,
@@ -1162,6 +1162,19 @@ def declared_below(table, name, source, line):
     return min(where[1] for _, where in candidates)
 
 
+def declared_at(table, name, source, line):
+    """Whether a C/C++ local shown at ``source:line`` may be declared on that very line,
+    in any function with code there."""
+    shown = _SHADOWED.fullmatch(name)
+    base = shown[1] if shown else name
+    return any(
+        declared_in == source and at == line and (not shown or at == int(shown[2]))
+        for function in table
+        if (source, line) in function["rows"]
+        for declared_in, at, _ in function["locals"].get(base, ())
+    )
+
+
 def declared_on_line(table, name, source, line, address):
     """The stop line, when the C/C++ local shown there is declared on it and the stop is
     where control enters that line in the block declaring it (``address``, unslid; see
@@ -1844,7 +1857,7 @@ class NativeSession:
             return None
         return self.typedefs.get(f"::{parts[-2]}::{parts[-1]}")
 
-    def not_yet_declared(self, variable, frame):
+    def not_yet_declared(self, variable, frame, innermost=True):
         """Why a root local of ``frame`` has no value yet (declared below the stop), or
         None. Its storage then holds whatever an earlier call or iteration left."""
         name, path = variable.get("name"), ((frame or {}).get("source") or {}).get("path")
@@ -1857,6 +1870,14 @@ class NativeSession:
             return None
         if type(line) is not int:
             return None
+        if not innermost and declared_at(self.declarations, name, source.as_posix(), line):
+            # A caller is inside a call made from its line: `long r = f(x);` has not
+            # stored `r` yet, and which declarations on the line have run is not known.
+            return (
+                f"declared on line {line}, where this caller frame is still inside a call, "
+                "so it may not be initialized yet (its initializer may be that call): its "
+                "storage may hold leftovers; read it after the call returns"
+            )
         below = declared_below(self.declarations, name, source.as_posix(), line)
         if below is not None:
             return (
@@ -1886,8 +1907,8 @@ class NativeSession:
             f"stop after line {line}, to read it"
         )
 
-    def validate_mutation_target(self, variable, frame):
-        if reason := self.not_yet_declared(variable, frame):
+    def validate_mutation_target(self, variable, frame, innermost=True):
+        if reason := self.not_yet_declared(variable, frame, innermost):
             raise ValueError(
                 f"{variable.get('name')!r} is {reason}; its declaration would overwrite a "
                 "change made here"
@@ -1902,7 +1923,7 @@ class NativeSession:
         return self.prepared.workspace / relative
 
     def local_scopes(self, scopes):
-        return PythonAdapter().local_scopes(scopes)
+        return locals_only(scopes)
 
     def normalize_capabilities(self, raw):
         return {

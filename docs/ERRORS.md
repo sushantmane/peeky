@@ -14,7 +14,7 @@ Every Peeky failure, from the HTTP worker, the SDK (`peeky.errors.PeekyError`) o
 | `STALE_STOP` | The program moved on; `stop_id` is old, or the stop was auto-resumed by `--max-pause` | `wait` until stopped, then `inspect`; on timed programs prefer a probe |
 | `INSPECT_REQUIRED` | Mutation without a fresh scope, or a value-view read still pending | `inspect` again, use the new reference |
 | `STALE_HANDLE` | Expansion handle revoked or frame/scope changed | `inspect` again |
-| `NOT_FOUND` | Name/selector not visible | Use a name from the message's `visible:` or `children:` list (or `inspect`, `session get <value>`); dict entries are `d['key']`; C++/Java members are `this.x` |
+| `NOT_FOUND` | Name/selector not visible, or (Python) a name missing from the locals that Peeky could not prove is a global there | Use a name from the message's `visible:` or `children:` list (or `inspect`, `session get <value>`); dict entries are `d['key']`; C++/Java members are `this.x`; a caller's locals need `--frame N` |
 | `MUTATION_REJECTED` | Not a root local (Java: nor a scalar field or array element that is not final or static), or the value is not a literal (Python) / scalar (compiled) | Use a literal, observe instead, or edit and `verify` |
 | `BUDGET_EXHAUSTED` | A bounded read limit was reached | Narrow the request |
 | `INVALID_BREAKPOINT` | Line not executable or unsupported breakpoint field | Use `peeky describe` lines |
@@ -27,7 +27,7 @@ Every Peeky failure, from the HTTP worker, the SDK (`peeky.errors.PeekyError`) o
 | `BUSY` | Another probe is running on this worker | Retry later |
 | `UNSUPPORTED` | Operation or capability not offered | Call `version` |
 | `UNAUTHORIZED` | Missing or wrong bearer token | Use the worker's `DEBUG_TOKEN` |
-| `INVALID_REQUEST` | Malformed arguments, or an evidence store that cannot be used | Fix the request; for a store, move it aside or pass `--store` |
+| `INVALID_REQUEST` | Malformed arguments (such as a `--frame` past the stack, whose message says how many frames there are), or an evidence store that cannot be used | Fix the request; for a store, move it aside or pass `--store` |
 | `INVALID_QUERY` | `peeky sql`/`peeky queries`: bad SQL, a write, a missing `--param`, or a query over its time bound | Fix the query; `peeky sql --schema` lists tables, columns and canned queries |
 | `INTERNAL_ERROR` | A Peeky bug (unexpected exception type) | Report it with the message; do not retry or change your request |
 | `UNREACHABLE` | No connection reached the worker (tunnel or worker down); nothing was applied | Restore the tunnel/worker and retry; the session is kept |

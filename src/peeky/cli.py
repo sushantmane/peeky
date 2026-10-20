@@ -27,6 +27,7 @@ import time
 from dataclasses import asdict
 from pathlib import Path
 
+from peeky.adapters import PYDEVD_GROUPS
 from peeky.client import Client
 from peeky.errors import PROTOCOL_VERSION
 from peeky.probe import (
@@ -1125,37 +1126,68 @@ def _stop(record):
     return {"session_id": record["session_id"], "stop_id": record["stop_id"]}
 
 
-def _variables_text(snapshot, name="default"):
-    frame = snapshot["frames"][0] if snapshot["frames"] else {}
-    where = snapshot.get("location") or f"{frame.get('source', {}).get('path')}:{frame.get('line')}"
-    if function := snapshot.get("function"):
-        from peeky.names import display_function
+def _frame_text(snapshot):
+    """`frame 1: tags (app.py:12)`: the caller frame a read came from."""
+    from peeky.names import display_function
 
+    index = snapshot.get("frame", 0)
+    frame = snapshot["frames"][index] if len(snapshot["frames"]) > index else {}
+    where = snapshot.get("location") or f"{frame.get('source', {}).get('path')}:{frame.get('line')}"
+    return f"frame {index}: {display_function(snapshot.get('function'))} ({where})"
+
+
+def _variables_text(snapshot, name="default"):
+    from peeky.names import display_function
+
+    index = snapshot.get("frame", 0)
+    frame = snapshot["frames"][0] if snapshot["frames"] else {}
+    # Where the program stopped; a caller frame's own location is on the next line.
+    stopped = snapshot.get("innermost") or {"function": frame.get("name")} if index else snapshot
+    where = stopped.get("location") or f"{frame.get('source', {}).get('path')}:{frame.get('line')}"
+    if function := stopped.get("function"):
         where += f" in {display_function(function)}"
     if type(snapshot.get("hit")) is int:
         where += f", hit {snapshot['hit']}"
     lines = [f"stopped at {where}" + _pause_text(snapshot)]
+    if index:
+        lines.append(_frame_text(snapshot))
+    # Selectors read the frame that was inspected: say so in the commands shown.
+    reads = (f" --name {name}" if name != "default" else "") + (
+        f" --frame {index}" if index else ""
+    )
     for scope in snapshot["scopes"]:
-        lines.append(f"[{scope['name']}]")
+        lines.append(
+            f"[{scope['name']}]" + (" (module globals, read-only)" if scope.get("globals") else "")
+        )
         for variable in scope["variables"]:
             more = (
-                f" (children: peeky session get {variable['name']}"
-                + (f" --name {name})" if name != "default" else ")")
+                f" (children: peeky session get {variable['name']}{reads})"
                 if variable.get("variablesReference")
                 and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", variable["name"])
                 else ""
             )
             if variable.get("unavailable"):
                 more = f" (no readable value: {variable.get('reason')})"
+            elif variable["name"] in PYDEVD_GROUPS and not variable.get("type"):
+                lines.append(f"  ({variable['name']}: debugpy's group; select its members by name)")
+                continue
             elif not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*( @ .+)?", variable["name"]):
                 # LLDB's `(Return Value)` after `step --out`, debugpy's `special variables`.
                 more = " [not selectable]"
             view = f"  [{variable['view']}]" if variable.get("view") else ""
-            if variable.get("settable"):
+            if variable.get("settable") and not index:
+                # `session set` changes the stopped frame's locals, not a caller's.
                 view += "  [settable]"
+            if variable.get("identity"):
+                view += f"  [id {variable['identity']}]"
             lines.append(
                 f"  {variable['name']}: {variable.get('type', '')} = "
                 f"{'<no value>' if variable.get('unavailable') else variable['value']}{view}{more}"
+            )
+        if scope.get("truncated"):
+            lines.append(
+                f"  ... and {scope['total'] - len(scope['variables'])} more, not listed or "
+                "readable: Peeky reads at most the first 50 names of a scope"
             )
     if snapshot.get("optimized"):
         lines.append(_OPTIMIZED_NOTE.format(snapshot["optimized"]))
@@ -1175,6 +1207,15 @@ def _require_stepping(record, client):
         )
 
 
+def _read_frame(row):
+    """`frame 1: tags (app.py:12)`: which caller frame `get --frame` read."""
+    from peeky.names import display_function
+
+    return (
+        f"frame {row.get('frame')}: {display_function(row.get('function'))} ({row.get('location')})"
+    )
+
+
 def _get_lines(row):
     """`session get` text: the value, then one level of children with their selectors."""
     if "value" not in row and not row.get("unavailable"):
@@ -1182,11 +1223,16 @@ def _get_lines(row):
         lines = [f"{row['selector']}: <{row.get('error', '')}>"]
     else:
         value = row.get("value", "<" + row.get("error", "") + ">")
-        lines = [f"{row['selector']}: {row.get('type') or ''} = {value}"]
+        lines = [
+            f"{row['selector']}: {row.get('type') or ''} = {value}"
+            + (f"  [id {row['identity']}]" if row.get("identity") else "")
+            + ("  [module global]" if row.get("scope") == "globals" else "")
+        ]
     for child in row.get("children", []):
         name = child.get("selector") or f"{child['name']} [not selectable]"
         more = (
-            f" (children: peeky session get {shlex.quote(child['selector'])})"
+            f" (children: peeky session get {shlex.quote(child['selector'])}"
+            + (f" --frame {row['frame']})" if row.get("frame") else ")")
             if child.get("expandable") and child.get("selector")
             else ""
         )
@@ -1195,9 +1241,15 @@ def _get_lines(row):
             if child.get("unavailable")
             else child.get("value")
         )
-        lines.append(f"  {name}: {child.get('type') or ''} = {value}{more}")
+        shown = f"  [id {child['identity']}]" if child.get("identity") else ""
+        lines.append(f"  {name}: {child.get('type') or ''} = {value}{shown}{more}")
     if row.get("children_truncated"):
         lines.append("  ... more children; select one by name or index")
+    if row.get("children_grouped"):
+        lines.append(
+            f"  (debugpy groups more members under {', '.join(row['children_grouped'])}: "
+            f"select one by name, as {row['selector']}.__class__)"
+        )
     if row.get("children_error"):
         lines.append(f"  <children: {row['children_error']}>")
     if row.get("note"):
@@ -1233,7 +1285,15 @@ def session(args):
         state = _wait(record, client, args.timeout)
         _emit(state, args.json, _state_text)
     elif args.action == "inspect":
-        snapshot = client.call("inspect", **_stop(record))
+        snapshot = client.call(
+            "inspect", **_stop(record), **({"frame": args.frame} if args.frame else {})
+        )
+        if snapshot.get("frame", 0) != args.frame:
+            # A worker that predates `frame` ignores it and shows the innermost frame.
+            raise ValueError(
+                "This worker cannot read a caller's frame (it predates --frame); update "
+                "Peeky on the worker host"
+            )
         _emit(snapshot, args.json, lambda shown: _variables_text(shown, args.name))
     elif args.action == "get":
         rows = _capture(
@@ -1247,6 +1307,7 @@ def session(args):
             preview=record.get("language") == "java",
             # C and C++ only: LLDB shows Rust references and Boxes as pointers too.
             pointers=record.get("language") in ("c", "cpp"),
+            frame=args.frame,
         )
         # A session read is not a probe hit: no hit number to explain.
         rows = [{key: v for key, v in row.items() if key != "hit"} for row in rows]
@@ -1256,7 +1317,8 @@ def session(args):
             rows,
             args.json,
             lambda rows: "\n".join(
-                [line for row in rows for line in _get_lines(row)]
+                [_read_frame(rows[0])] * bool(args.frame and rows)
+                + [line for row in rows for line in _get_lines(row)]
                 + ([_OPTIMIZED_NOTE.format(record["optimized"])] if record.get("optimized") else [])
             ),
         )
@@ -1700,6 +1762,13 @@ def _start_local(args, root, program, line, language, data, max_pause):
 def _positive_count(text):
     if not re.fullmatch(r"[1-9][0-9]{0,3}", text):
         raise argparse.ArgumentTypeError("expected a whole number from 1 to 9999")
+    return int(text)
+
+
+def _frame_index(text):
+    # The worker refuses an index past the stack it lists, naming how many frames it has.
+    if not re.fullmatch(r"[0-9]{1,4}", text):
+        raise argparse.ArgumentTypeError("expected a frame index: 0 (innermost), 1, 2, ...")
     return int(text)
 
 
@@ -2375,6 +2444,15 @@ def main(argv=None, _job=False, _edits=None):
             "running is left running: `session wait` again",
         )
     actions.choices["get"].add_argument("selectors", nargs="+")
+    for action in ("inspect", "get"):
+        actions.choices[action].add_argument(
+            "--frame",
+            type=_frame_index,
+            default=0,
+            metavar="N",
+            help="Read stack frame N: 0 is where the program stopped (default), 1 its caller, "
+            "... as `session inspect --json` lists `frames` (at most 10)",
+        )
     actions.choices["set"].add_argument(
         "assignment", help="name=value (Java also current.end=10, xs[0]=1)"
     )

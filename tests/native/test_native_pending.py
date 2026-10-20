@@ -102,6 +102,47 @@ def test_a_local_declared_below_cannot_be_set(bucket, capsys):
     assert code == 0 and result["interventions"][0]["after"] == "5"
 
 
+TWICE = """#include <stdio.h>
+
+static long twice(long v) {
+    long doubled = v * 2;
+    return doubled;
+}
+
+int main(void) {
+    long seed = 21;
+    long result = twice(seed);
+    printf("%ld\\n", result);
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(120)
+def test_a_callers_local_declared_on_its_calling_line_is_withheld(bucket, capsys):
+    # #104: in `long result = twice(seed);`, main stores `result` only after twice
+    # returns, so `--frame 1` showed its leftovers (6712212928) as its value.
+    path = bucket.parent / "twice.c"
+    path.write_text(TWICE)
+    bucket.unlink()
+    assert main(["session", "start", str(path), "--at", "4"]) == 0
+    capsys.readouterr()
+    try:
+        main(["session", "get", "--frame", "1", "result", "seed", "--json"])
+        rows = {row["selector"]: row for row in json.loads(capsys.readouterr().out)}
+        assert rows["seed"]["value"] == "21" and rows["seed"]["frame"] == 1
+        result = rows["result"]
+        assert "value" not in result and result["unavailable"], result
+        assert (
+            "declared on line 10, where this caller frame is still inside a call"
+            in (result["error"])
+        )
+        main(["session", "get", "v", "--json"])
+        assert json.loads(capsys.readouterr().out)[0]["value"] == "21"
+    finally:
+        main(["session", "close"])
+
+
 GOTO = """#include <stdio.h>
 int main(void) {
     int i = 0;

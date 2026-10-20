@@ -29,6 +29,9 @@ def test_scope_selection_is_python_specific():
         {"name": "Expensive", "presentationHint": "locals", "expensive": True},
     ]
     assert PythonAdapter().local_scopes(scopes) == [scopes[0]]
+    # debugpy's own Globals scope (no presentation hint) is listed after the locals (#104).
+    debugpy = [*scopes, {"name": "Globals", "variablesReference": 3}]
+    assert PythonAdapter().local_scopes(debugpy) == [scopes[0], debugpy[-1]]
 
 
 def test_capability_normalization_does_not_overclaim_operations():

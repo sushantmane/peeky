@@ -937,7 +937,7 @@ class RustSession(NativeSession):
             )
         super().validate_variable(variable, value)
 
-    def validate_mutation_target(self, variable, frame):
+    def validate_mutation_target(self, variable, frame, innermost=True):
         """Only a local the program keeps in memory can be changed with effect."""
         name = variable.get("name")
         if self._optimized():
