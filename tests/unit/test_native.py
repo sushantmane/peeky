@@ -1157,3 +1157,69 @@ def test_of_the_rows_at_one_address_the_last_is_the_one_that_runs(tmp_path):
         f"0x{0x400000 + address:016x} {number} 1 1 0 0 is_stmt\n" for address, number, _ in rows
     )
     assert sorted({row[2] for row in _line_rows(text, tmp_path, ("main.c",))}) == [5, 7, 8]
+
+
+TYPEDEFS = """
+0x0000000b: DW_TAG_compile_unit
+              DW_AT_name\t("a.cpp")
+0x00000010:   DW_TAG_namespace
+                DW_AT_name\t("std")
+0x00000014:     DW_TAG_namespace
+                  DW_AT_name\t("__1")
+                  DW_AT_export_symbols\t(true)
+0x00000020:       DW_TAG_class_type
+                    DW_AT_name\t("map<int, int, std::__1::less<int>, std::__1::allocator<std::__1::pair<const int, int> > >")
+0x00000028:       DW_TAG_class_type
+                    DW_AT_name\t("vector<int, std::__1::allocator<int> >")
+0x00000030:       NULL
+0x00000031:     NULL
+0x00000040:   DW_TAG_typedef
+                DW_AT_type\t(0x00000020 "std::__1::map<int, int>")
+                DW_AT_name\t("Index")
+0x00000048:   DW_TAG_typedef
+                DW_AT_type\t(0x00000050 "const Index &")
+                DW_AT_name\t("IndexRef")
+0x00000050:   DW_TAG_reference_type
+                DW_AT_type\t(0x00000058 "const Index")
+0x00000058:   DW_TAG_const_type
+                DW_AT_type\t(0x00000040 "Index")
+0x00000060:   DW_TAG_typedef
+                DW_AT_type\t(0x00000020 "std::__1::map<int, int>")
+                DW_AT_name\t("Twice")
+0x00000068:   DW_TAG_typedef
+                DW_AT_type\t(0x00000028 "std::__1::vector<int>")
+                DW_AT_name\t("Twice")
+0x00000070:   DW_TAG_typedef
+                DW_AT_type\t(0x00000078 "int")
+                DW_AT_name\t("Id")
+0x00000078:   DW_TAG_base_type
+                DW_AT_name\t("int")
+0x00000080:   NULL
+"""
+
+
+def test_a_typedef_names_the_class_behind_it():
+    # #119: `Index m` (`using Index = std::map<int, int>`) shows only as `Index`; its
+    # class says `m[1]` is key 1, not the second entry.
+    from peeky.native import typedef_kinds
+
+    kinds = typedef_kinds(TYPEDEFS)
+    shown = "std::map<int, int, std::__1::less<int>, std::__1::allocator<std::__1::pair<const int, int> > >"
+    assert kinds["Index"] == ("other", shown)
+    assert kinds["IndexRef"] == ("reference", shown)
+    # Two typedefs of one name for two classes name neither; still not a pointer.
+    assert kinds["Twice"] == ("other", "")
+    assert kinds["Id"] == ("other", "")
+    native = session()
+    native.typedefs = kinds
+    for written in ("Index", "const Index &", "Index const&", "IndexRef"):
+        assert native.aliased_type(written) == shown, written
+    assert native.aliased_type("Index *") is None
+    assert native.aliased_type("Twice") is None
+    # What a pointer points at: `Index *`, or a typedef'd pointer's pointee.
+    for written in ("Index *", "const Index *", "Index *const"):
+        assert native.pointee_aliased_type(written) == shown, written
+    assert native.pointee_aliased_type("IndexPtr", "Index") == shown
+    assert native.pointee_aliased_type("Index **") is None
+    assert native.pointee_aliased_type("Index") is None
+    assert native.typedef_kind("const Index") == ("other", shown)

@@ -407,11 +407,13 @@ def _local_scope(linkage):
 
 
 def typedef_kinds(info):
-    """{type name: ("pointer", the name of what it points at, or "") | ("reference", "")
-    | ("other", "") | ("unknown", "")}: what each typedef (or C++ alias) names, through
-    qualifiers and other typedefs. lldb-dap shows a variable of one by the typedef's name
-    alone, so `RowPtr rp` cannot be told from `RowRef rr` by its type (#102). A name for
-    two kinds (a struct and a pointer typedef, or typedefs in two units) is "unknown".
+    """{type name: ("pointer", the name of what it points at, or "") | ("reference", the
+    class it refers to, or "") | ("other", the class it names, or "") | ("unknown", "")}:
+    what each typedef (or C++ alias) names, through qualifiers and other typedefs.
+    lldb-dap shows a variable of one by the typedef's name alone, so `RowPtr rp` cannot
+    be told from `RowRef rr` by its type (#102), nor `Index m` (`std::map<int, int>`)
+    from a vector (#119). A name for two kinds (a struct and a pointer typedef, or
+    typedefs in two units) is "unknown"; for two classes, it names none.
     Plain names are taken only for typedefs at file or function scope; a namespace's or
     class's are known by their qualified names, and every typedef and record also by
     the name lldb-dap shows (``_displayed``), so two entities shown alike are "unknown". A class's member typedef is also kept
@@ -421,8 +423,30 @@ def typedef_kinds(info):
     named = _typedef_named(dies)
 
     def note(name, kind):
-        if name:
-            found[name] = kind if found.get(name, kind) == kind else ("unknown", "")
+        if not name:
+            return
+        known = found.get(name, kind)
+        if known == kind:
+            found[name] = kind
+        elif known[0] == kind[0] and kind[0] in ("other", "reference"):
+            found[name] = (kind[0], "")
+        else:
+            found[name] = ("unknown", "")
+
+    def class_named(target):
+        """The name lldb-dap shows for the class a DW_AT_type reference names, through
+        qualifiers and typedefs, or ""."""
+        for _ in range(16):
+            reference = _REFERENCE.fullmatch(target or "")
+            inner = dies.get(int(reference[1], 16)) if reference else None
+            if inner is None:
+                return ""
+            if inner["tag"] in _RECORDS and inner["tag"] != "DW_TAG_enumeration_type":
+                return _displayed(dies, int(reference[1], 16), named) or ""
+            if inner["tag"] not in ("DW_TAG_typedef", "DW_TAG_const_type", "DW_TAG_volatile_type"):
+                return ""
+            target = inner["attrs"].get("DW_AT_type")
+        return ""
 
     def note_member(record_offset, name, kind):
         # A class's member typedef by its class's own name (`::vector::reference`):
@@ -464,7 +488,9 @@ def typedef_kinds(info):
                 target = inner["attrs"].get("DW_AT_type")
                 continue
             if inner["tag"] in ("DW_TAG_reference_type", "DW_TAG_rvalue_reference_type"):
-                kind = ("reference", "")
+                kind = ("reference", class_named(inner["attrs"].get("DW_AT_type")))
+            elif inner["tag"] in _RECORDS:
+                kind = ("other", class_named(target))
             elif inner["tag"] == "DW_TAG_pointer_type":
                 pointee = _REFERENCE.fullmatch(inner["attrs"].get("DW_AT_type") or "")
                 aimed = dies.get(int(pointee[1], 16)) if pointee else None
@@ -1903,6 +1929,27 @@ class NativeSession:
         if len(parts) < 2 or not all(parts[-2:]) or f"namespace::{parts[-2]}" in self.typedefs:
             return None
         return self.typedefs.get(f"::{parts[-2]}::{parts[-1]}")
+
+    def aliased_type(self, kind):
+        """The class a typedef'd value's type names (`Index`, `const Index &` for
+        `using Index = std::map<int, int>`), as lldb-dap would show it, or None: a map or
+        set by another name still reads by key (#119)."""
+        if not isinstance(kind, str):
+            return None
+        bare = re.sub(r"(?:\s*&{1,2}|\s+(?:const|volatile))+$", "", kind.strip())
+        found = self.typedef_kind(bare)
+        if found is not None and found[0] in ("other", "reference") and found[1]:
+            return found[1]
+        return None
+
+    def pointee_aliased_type(self, kind, pointee=None):
+        """``aliased_type`` of what a pointer points at (`IntSet *`), or of a typedef'd
+        pointer's ``pointee`` as the debug information names it; None for a value that is
+        no pointer."""
+        if pointee is None and isinstance(kind, str):
+            found = re.fullmatch(r"(.+?)\s*\*\s*(?:const\s*)?", kind.strip())
+            pointee = found[1] if found else None
+        return self.aliased_type(pointee) if pointee else None
 
     def not_yet_declared(self, variable, frame, innermost=True):
         """Why a root local of ``frame`` has no value yet (declared below the stop), or
