@@ -8,6 +8,7 @@ Every Peeky failure, from the HTTP worker, the SDK (`peeky.errors.PeekyError`) o
 | `hint` | What to do next. |
 | `retryable` | Whether repeating the same request can succeed after the hinted step. |
 | `session_closed` | The worker discarded the session (provenance, debugger or time failures). Start a new one. |
+| `cleanup` | Present when the error ended a session: what became of the processes it started. `terminated pid N` (or `pids N, M`: the program and what it started), `nothing was left running`, `detached; the attached program keeps running` (Peeky never ends a program it attached to), `pid N did not exit after SIGKILL …`, or why Peeky could not tell. |
 
 | Code | Typical cause | Agent action |
 | --- | --- | --- |
@@ -21,7 +22,7 @@ Every Peeky failure, from the HTTP worker, the SDK (`peeky.errors.PeekyError`) o
 | `NO_STOP` (probe result) | Program ended without reaching the line: the line never runs, or the program failed first (`exit_code` when the debugger reports it) | Pick an executed line; after a failure, read the output and check the program's arguments |
 | `BUILD_FAILED` | The program did not compile, or its build timed out (with `--old/--new`: the edit does not build); the message has the compiler's output | Fix what the compiler reports and run again; your files were not changed |
 | `PROVENANCE_CHANGED` | Sources, build outputs or tools changed | New session on a fresh build |
-| `TIMEOUT` | A time bound was hit; session discarded | Start again; never blindly retry a mutation |
+| `TIMEOUT` | A time bound was hit; session discarded. `The debuggee did not start` means the program never reached the debugger during the launch | Start again; never blindly retry a mutation. For a debuggee that did not start, check that it can read its own path and every directory above it (a hung file system or a pending macOS privacy prompt blocks it), then retry |
 | `DEBUGGER_ERROR` | Adapter/debugger failure: a broken protocol stream (for example a reply over 4 MiB), java-debug's event thread dying, or an attached JVM's stop the debugger never reported (`Lost stop:`); session discarded | Start again; capture narrower selectors if values are huge; for Java, keep `debugger_events` (#27) |
 | `SESSION_ACTIVE` / `NO_SESSION` | Session lifecycle misuse | Close / start a session |
 | `BUSY` | Another probe is running on this worker | Retry later |
@@ -37,5 +38,7 @@ Every Peeky failure, from the HTTP worker, the SDK (`peeky.errors.PeekyError`) o
 Two Java debugger failures (#27) end with `DEBUGGER_ERROR` at once instead of a timeout; see [JAVA_ATTACH.md](JAVA_ATTACH.md#lost-stop-events-27):
 - **`java-debug's event thread died (…)`.** The adapter's stderr showed its event thread failing, so nothing more can be reported. Peeky detaches or ends the program, as on any debugger failure, and keeps the session as a failed one. Later requests repeat the error. `report` returns its final state (`state: closed`, `adapter_failure`, history `adapter_failed`), and `close` ends it. Its `debugger_events.stderr` keeps the adapter's last 16 KiB of log; a failed probe carries `debugger_events` too.
 - **`Lost stop: …`.** An attached JVM's stop that the debugger never reported. The message names the suspended thread, its location, the session's breakpoint and how long the stop has gone unreported. Nothing is served from that stop, and Peeky detaches, so the JVM runs on. Later requests on the session repeat the error. `report` still returns the session as it was (`state: detached`, `lost_stop`, `history`, `debugger_events`), and `close` ends it. A failed probe carries `debugger_events` too; keep it for #27.
+
+When a session ends, on an error or not, Peeky ends every process it started (#143). It asks the debugger first (`disconnect` with `terminateDebuggee`). It then ends what is still running among the processes it read before that request: the adapter's descendants, and the program the adapter announced (DAP `process`, java-debug `processid`) if it is still the same process (same start time). Each gets SIGTERM, which goes to its whole process group when it leads one, then SIGKILL after 1 s. This reaches a program in a process group of its own (debugpy's launcher puts it there), one that never reached the debugger, and one whose adapter died. A failed or timed-out launch, a failed request, `close`, an idle worker and a probe's end all go through it. The error's `cleanup`, the `close` result and `peeky session close` say what happened. An attached program is only detached, never ended.
 
 `POST /version` returns the protocol version, supported operations and the error codes. Every HTTP response carries `X-Peeky-Protocol: 1`.

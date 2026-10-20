@@ -1,6 +1,8 @@
 """Protocol v1 error codes and lifecycle conformance against real debugpy (issue #6)."""
 
 import json
+import os
+import signal
 import subprocess
 import threading
 import time
@@ -176,3 +178,46 @@ def test_a_crashed_adapter_reaches_the_client_as_debugger_error_with_a_pause_bud
         time.sleep(0.25)
     failure = error(lambda: client.call("wait", **session, timeout=2))
     assert failure.error_code == "DEBUGGER_ERROR" and "Debugger adapter closed" in str(failure)
+
+
+# Loaded by every Python process given its directory on PYTHONPATH: the debuggee
+# (`debugpy --connect …`) records its pid and hangs before pydevd can send `initialized`,
+# as a pydevd blocked listing a directory above the program does (#143).
+HANG_BEFORE_INITIALIZED = """
+import os, sys, time
+if os.environ.get("PEEKY_TEST_HANG") and "--connect" in sys.argv:
+    with open(os.environ["PEEKY_TEST_HANG"], "a") as record:
+        record.write(f"{os.getpid()}\\n")
+    time.sleep(600)
+"""
+
+
+def test_a_python_program_that_never_starts_is_not_left_running(worker, monkeypatch):
+    from peeky import processes
+
+    root, client, server = worker
+    site, record = root / "site", root / "debuggee.pid"
+    site.mkdir()
+    (site / "sitecustomize.py").write_text(HANG_BEFORE_INITIALIZED)
+    (root / "main.py").write_text("print('never runs')\n")
+    monkeypatch.setenv("PYTHONPATH", str(site))
+    monkeypatch.setenv("PEEKY_TEST_HANG", str(record))
+    server.worker.launch_deadline_s = 8
+    pids = []
+    try:
+        failure = error(lambda: client.call("launch", program="main.py", breakpoints=[{"line": 1}]))
+        pids = [int(pid) for pid in record.read_text().split()]
+        table = processes.table()
+        # debugpy's launcher started it in a process group of its own: ending the
+        # adapter's group never reached it, and it was left to PID 1 before #143.
+        assert len(pids) == 1 and not processes.alive(table.get(pids[0]))
+        assert failure.error_code == "TIMEOUT" and failure.payload["session_closed"] is True
+        assert failure.payload["message"].startswith("The debuggee did not start")
+        assert "check that it can read its own path" in failure.hint
+        assert failure.payload["cleanup"] == f"terminated pid {pids[0]}"
+    finally:
+        for pid in pids:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except OSError:
+                pass

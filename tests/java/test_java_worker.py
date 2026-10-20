@@ -216,7 +216,10 @@ def test_java_adapter_death_reaps_target(java_worker):
     adapter = worker.dap.process
     adapter.kill()
     adapter.wait(timeout=3)
-    assert_http_error(500, client, "inspect", **context)
+    with pytest.raises(HTTPError) as caught:
+        client.call("inspect", **context)
+    # The error says what became of the JVM the adapter launched and announced (#143).
+    assert json.load(caught.value)["error"]["cleanup"] == f"terminated pid {pid}"
     assert worker.session is None
     assert not prepared.workspace.exists()
     assert_process_gone(pid)

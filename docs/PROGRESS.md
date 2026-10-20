@@ -274,6 +274,16 @@ An hourly thread heartbeat (`continue-peeky-mvp`) checks for available usage and
   - The failed session repeats the error, reports its final state and closes cleanly. Polls start 2 s after a resume, run at most every 2 s within 1 s each (40–90 ms with 300 threads), and stay out of the DAP trace. Launched JVMs are not polled.
   - Real-JDK tests: a probe fails in about 6.6 s and the JVM completes unchanged; a session fails after a served hit; a lost step report on a breakpoint line never errs; and the review's class-load storm (the waiter seen at the breakpoint line in every poll) ends normally with 0 hits. The churn scenario reports its stop with the patched adapter; with `PEEKY_JAVA_ADAPTER_UNPATCHED`, the old adapter's dead event thread ends the session in under 5 s.
   - Round-2 lows: a sighting followed by the program's exit is reported as a stop never reported (`unreported_stop`; a probe fails with `DEBUGGER_ERROR`), never `NO_STOP`. The JVM-thread checks are Reference Handler, Finalizer and Common-Cleaner (Signal Dispatcher has no Java frames), and a lost stop holds its thread about 4–8 s regardless of `--max-pause`.
+- **#143: a failed or timed-out launch no longer leaves the program running** (branch `fix/launch-timeout-orphans`). On a macOS host where listing `~/Documents` blocked in the kernel, pydevd hung before `initialized` in every Python launch. Peeky timed out correctly but left each debuggee (`debugpy --connect …`) running under PID 1, and dozens piled up. debugpy's launcher starts the program in a process group of its own and announces its pid only after the launch, so ending the adapter's group never reached it.
+  - **Every session end now ends what the session started** (`peeky/processes.py`, `DAP.close`): failed or timed-out launches, failed requests, `close`, idle workers and probes. Before `disconnect`, Peeky reads the adapter's descendants and the program the adapter announced (`process`, java-debug `processid`), the latter kept only while its start time matches. After `disconnect`, whatever of those still runs gets SIGTERM (to its whole group when it leads one), then SIGKILL after 1 s. An attached program is detached, never ended.
+  - **Reported:** errors that end a session carry `cleanup` (`terminated pid N`, `nothing was left running`, `detached; the attached program keeps running`, or why not), and so do `close` results and `peeky session close`. A launch whose program never reaches the debugger fails with `TIMEOUT: The debuggee did not start …`, and its hint says to check that the program can read its own path.
+  - **Tests,** each failing on main:
+    - fake adapters: a program that never initializes, its child, one that ignores SIGTERM, one whose adapter died after announcing it, a reused pid, a failed attach, and the HTTP payload;
+    - real debugpy, hung before `initialized`;
+    - lldb-dap hung after the program started;
+    - C and Rust programs stopped when lldb-dap dies;
+    - a launched JVM whose adapter dies, and a failed real attach that leaves the JVM running to its normal end.
+  - `test_native_adapter_death_reaps_stopped_target` now passes with Apple LLDB too. Before, the stopped program outlived its debugger; now it is ended, and on macOS launchd leaves it a zombie, which the test counts as exited.
 - **#67 (`0a1fad7`): CUDA phase 0** for #61. [ADR 0007](adr/0007-cuda-gdb-dap.md) (proposed) drives `cuda-gdb -i=dap`. `scripts/cuda/qualify.py` is the qualification to run on a GPU host.
   - Found by experiment: upstream GDB 14.2, 15.1 and 16.3 start the program at different DAP requests. One order works on all three (breakpoints, `launch`, then `configurationDone`).
   - The new `gdb-dap` lane keeps that order tested against GDB 15.1; 14.2 and 16.3 were run by hand.
@@ -339,7 +349,7 @@ Stacked on `feat/java-attach` (2026-10-15):
   - SSH separate host (#8; needs a second host);
   - a user-selected non-synthetic program.
 
-Known local-only limitation (pre-existing on main): test_native_adapter_death_reaps_stopped_target fails with Apple LLDB on macOS and passes on hosted Linux.
+Known local-only limitation (pre-existing on main, fixed by #143): test_native_adapter_death_reaps_stopped_target failed with Apple LLDB on macOS (the stopped program outlived lldb-dap) and passed on hosted Linux.
 
 ## Next slices
 

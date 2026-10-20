@@ -6,6 +6,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -138,11 +139,13 @@ def fail_http(code, client, operation, **args):
 
 
 def gone(pid):
+    from peeky import processes
+
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline:
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
+        # Exited, whether reaped yet or not: on macOS, launchd never reaps a program
+        # whose debugserver died, and leaves it a zombie.
+        if not processes.alive((processes.table() or {pid: (0, 0, "", "R")}).get(pid)):
             return
         time.sleep(0.05)
     pytest.fail(f"native target {pid} survived close")
@@ -312,11 +315,67 @@ def test_native_adapter_death_reaps_stopped_target(native_worker):
     adapter = worker.dap.process
     adapter.kill()
     adapter.wait(timeout=3)
-    fail_http(500, client, "inspect", **context)
+    with pytest.raises(HTTPError) as caught:
+        client.call("inspect", **context)
+    # Apple's debugserver outlives lldb-dap and keeps the program stopped: Peeky ends it by
+    # the pid lldb-dap announced (#143). Linux's lldb-server ends its tracee itself.
+    assert json.load(caught.value)["error"]["cleanup"] in (
+        f"terminated pid {pid}",
+        "nothing was left running",
+    )
     assert worker.session is None
     assert not runtime.prepared.workspace.exists()
     gone(pid)
     fail_http(400, client, "report", **session)
+
+
+BLOCKED = """#include <stdio.h>
+#include <unistd.h>
+
+int main(void) {
+    int value = 7;
+    sleep(600);
+    printf("after %d\\n", value); /* BREAK */
+    return 0;
+}
+"""
+
+
+def test_a_launch_whose_debugger_hangs_ends_the_running_program(
+    native_worker, tmp_path, monkeypatch
+):
+    from peeky.dap import DAP
+
+    start, _, _, _ = native_worker
+    (tmp_path / "blocked.c").write_text(BLOCKED)
+    line = next(i for i, text in enumerate(BLOCKED.splitlines(), 1) if "BREAK" in text)
+    client, worker = start(sources=("blocked.c",))
+    real, hung = DAP.request, []
+
+    def hang_once_running(dap, command, arguments=None, **options):
+        result = real(dap, command, arguments, **options)
+        if command == "configurationDone":
+            deadline = time.monotonic() + 10
+            while not dap.process_pid and time.monotonic() < deadline:
+                time.sleep(0.05)
+            time.sleep(0.3)
+            # The program now blocks before its breakpoint, and lldb-dap stops
+            # answering: the launch's next request times out.
+            os.kill(dap.process.pid, signal.SIGSTOP)
+            hung.append(dap.process_pid)
+            real(dap, "threads", timeout=1)
+        return result
+
+    monkeypatch.setattr(DAP, "request", hang_once_running)
+    with pytest.raises(HTTPError) as caught:
+        client.call("launch", program="blocked.c", breakpoints=[{"line": line}])
+    error = json.load(caught.value)["error"]
+    assert error["code"] == "TIMEOUT" and error["session_closed"] is True
+    # lldb-dap never answered `disconnect`: Peeky ended the program it had announced.
+    assert hung and str(hung[0]) in error["cleanup"]
+    assert error["cleanup"].startswith("terminated pid")
+    assert worker.session is None
+    gone(hung[0])
 
 
 def test_native_arguments_are_literal_and_keep_empty_values(native_worker):

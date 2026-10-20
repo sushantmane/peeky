@@ -190,6 +190,8 @@ class DebugWorker:
         self.reset_lost_stops()
         # A session that failed on a lost stop (#27): its id, error and final report.
         self.failed = None
+        # What closing the last session did to the processes it started (#143).
+        self.last_cleanup = None
         # The single absolute launch budget, below Client.call's 45 s HTTP timeout.
         # Preparation (supports_deadline adapters: builds, symbols, module identity)
         # and every DAP launch phase receive only the remaining time, so a launch
@@ -590,7 +592,8 @@ class DebugWorker:
         except Exception:
             report = {"session_id": self.session, "state": "closed", "failure": message, **extra}
         session = self.session
-        self.close()
+        if cleanup := self.close():
+            report["cleanup"] = cleanup
         self.failed = {
             "session": session,
             "message": message,
@@ -748,13 +751,20 @@ class DebugWorker:
             self.last_used = time.monotonic()
             if operation == "launch":
                 self.failed = None
+            self.last_cleanup = None
             try:
-                result = self._dispatch(operation, args)
-            except (TimeoutError, RuntimeError, OSError) as exc:
-                failure = self.abandon(exc)
-                if failure is exc:
-                    raise
-                raise failure from exc
+                try:
+                    result = self._dispatch(operation, args)
+                except (TimeoutError, RuntimeError, OSError) as exc:
+                    failure = self.abandon(exc)
+                    if failure is exc:
+                        raise
+                    raise failure from exc
+            except Exception as exc:
+                if self.last_cleanup and not self.dap:
+                    # The error says what became of the processes the session started.
+                    exc.cleanup = self.last_cleanup
+                raise
             finally:
                 self.last_used = time.monotonic()
             if operation != "report":
@@ -1162,7 +1172,18 @@ class DebugWorker:
                     ),
                     timeout=left(5),
                 )
-                self.dap.wait_event({"initialized"}, failed_request=launch, timeout=left())
+                budget = left()
+                try:
+                    self.dap.wait_event({"initialized"}, failed_request=launch, timeout=budget)
+                except TimeoutError as exc:
+                    if getattr(runtime, "dap_request", "launch") != "launch":
+                        raise
+                    # Its launcher ran, but the program never reached the debugger (#143:
+                    # pydevd blocked listing a directory above it).
+                    raise TimeoutError(
+                        "The debuggee did not start: the debugger never initialized it "
+                        f"within the launch's {round(budget, 1)} s"
+                    ) from exc
                 if check_lines := getattr(runtime, "check_breakpoint_lines", None):
                     check_lines(program, args.get("breakpoints", []))
                 points = self.dap.request(
@@ -1768,8 +1789,8 @@ class DebugWorker:
         if operation == "report":
             return self.report(runtime)
         if operation == "close":
-            self.close()
-            return {"state": self.state}
+            cleanup = self.close()
+            return {"state": self.state, **({"cleanup": cleanup} if cleanup else {})}
         raise ValueError("Unknown operation")
 
     def report(self, runtime):
@@ -2757,6 +2778,7 @@ class DebugWorker:
         return frame, scope_identity, ancestry, reference, indexed
 
     def close(self):
+        """End the session; returns what became of the processes it started, if any."""
         adapter, self.dap = self.dap, None
         runtime, self.runtime = self.runtime, None
         self.state = "idle"
@@ -2779,15 +2801,19 @@ class DebugWorker:
         self.reference_adapter.clear()
         self.children.clear()
         self.taints.clear()
+        cleanup = None
         try:
             if adapter:
                 if runtime is not None and getattr(runtime, "terminate_debuggee", True) is False:
-                    adapter.close(terminate=False)
+                    cleanup = adapter.close(terminate=False)
                 else:
-                    adapter.close()
+                    cleanup = adapter.close()
+                # What ending the session did to the processes it started (#143).
+                self.last_cleanup = cleanup if isinstance(cleanup, str) else None
         finally:
             if runtime:
                 runtime.close()
+        return self.last_cleanup if adapter else None
 
 
 _CALLER_SET = (
