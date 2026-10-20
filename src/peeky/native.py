@@ -1138,7 +1138,7 @@ def local_declarations(info, line_text, workspace, declared):
                 if found[0] in entries and (later := [a for a in found if a > found[0]]):
                     first.add(later[0])
                 starts.setdefault((name, source, line), set()).update(first)
-        constructor, enclosing, defined = _class_role(dies, entry["chain"])
+        constructor, enclosing, defined, initializer = _class_role(dies, entry["chain"])
         first_line = _first(dies, entry["chain"], "DW_AT_decl_line")
         first = int(first_line) if first_line and first_line.isdigit() else None
         own = [
@@ -1157,6 +1157,7 @@ def local_declarations(info, line_text, workspace, declared):
                 "constructor": constructor,
                 "enclosing": enclosing,
                 "defined": defined,
+                "initializer": initializer,
                 # Its own lines: from its declaration to its last row there (its `}`).
                 "span": (first, max(own)) if first is not None and own else None,
                 # Every row it runs, by address: (address, source, line).
@@ -1204,10 +1205,13 @@ def _local_classes(dies):
 
 
 def _class_role(dies, chain):
-    """(constructor, enclosing, defined) for a function's DIE chain: whether it is a
-    constructor of its class (`C::C`, its name the class's without template arguments);
-    and for a member of a class defined inside a function (a lambda's `operator()`, a
-    local class's method), that function's root DIE and the class's line, else None."""
+    """(constructor, enclosing, defined, initializer) for a function's DIE chain:
+    whether it is a constructor of its class (`C::C`, its name the class's without
+    template arguments; of an unnamed class, an artificial member, or one named as the
+    class, with no return type: `$_0::$_0()`); for a member of a class defined inside
+    a function (a lambda's `operator()`, a local class's method), that function's root
+    DIE and the class's line, else None; and whether it is a lambda's `operator()`
+    whose closure a class's scope holds (a default member initializer's)."""
     for offset in chain:
         parent = dies.get(dies[offset]["parent"])
         if parent is None or parent["tag"] not in _CLASSES:
@@ -1215,6 +1219,13 @@ def _class_role(dies, chain):
         name = _text(_first(dies, chain, "DW_AT_name"))
         owner = _text(parent["attrs"].get("DW_AT_name"))
         constructor = bool(name and owner and name == re.sub(r"<.*>$", "", owner))
+        unnamed = not owner or not re.fullmatch(r"[A-Za-z_]\w*(?:<.*>)?", owner)
+        if unnamed and not constructor and _first(dies, chain, "DW_AT_type") is None:
+            # Clang names an unnamed struct's constructor `(unnamed struct at f.cpp:55:5)`.
+            artificial = any("DW_AT_artificial" in dies[at]["attrs"] for at in chain)
+            constructor = (artificial or name == owner) and not (name or "").startswith("~")
+        closure = unnamed and name == "operator()"
+        initializer = closure and dies.get(parent["parent"], {}).get("tag") in _CLASSES
         enclosing, outer = None, parent
         for _ in range(16):
             above = outer["parent"]
@@ -1227,8 +1238,9 @@ def _class_role(dies, chain):
             if outer["tag"] not in _CLASSES:
                 break
         line = parent["attrs"].get("DW_AT_decl_line")
-        return constructor, enclosing, int(line) if line and line.isdigit() else None
-    return False, None, None
+        defined = int(line) if line and line.isdigit() else None
+        return constructor, enclosing, defined, initializer
+    return False, None, None, False
 
 
 # Non-local jumps: after one returns, code above a declaration can run again with the
@@ -1271,7 +1283,12 @@ def _is_object(variable):
 
 
 # A C++ constructor's frame name: `Widget::Widget(long)`, `ns::Box<int>::Box(int)`.
-_CONSTRUCTOR_NAME = re.compile(r"(?:^|::|\s)([A-Za-z_]\w*)(?:<[^()]*>)?::\1(?:<[^()]*>)?\(")
+# An unnamed class is `$_0` (Clang), `(anonymous struct)`, `(unnamed struct at f:5:3)`
+# (LLDB) or `{unnamed type#1}` (GCC).
+_CONSTRUCTOR_NAME = re.compile(
+    r"(?:^|::|\s)([A-Za-z_]\w*|\$_\d+|\((?:anonymous|unnamed) (?:struct|class|union)[^()]*\)"
+    r"|\{unnamed type#\d+\})(?:<[^()]*>)?::\1(?:<[^()]*>)?\("
+)
 # A source whose statements are scanned (c_source) to place a caller's declaration.
 MAX_STATEMENT_SOURCE = 8_000_000
 
@@ -2617,6 +2634,12 @@ class NativeSession:
         )
         if self._constructs(frame):
             return f"the object this constructor ({frame.get('name')}) is building: {unread}"
+        if (self._function_at(frame) or {}).get("initializer"):
+            # A class with no constructor runs its member initializers where it is built.
+            return (
+                "this lambda is defined in a class's default member initializer, so the "
+                f"object it captures may be the one being built: {unread}"
+            )
         callers = frames[index + 1 :] if index is not None else []
         # The worker lists ten frames: past them, what runs below is not yet known.
         complete = index is not None and len(frames) < 10

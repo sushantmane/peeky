@@ -1262,10 +1262,10 @@ def test_constructors_and_lambdas_are_told_from_their_debug_information():
         8: die("DW_TAG_subprogram", 7, DW_AT_name='"operator()"'),
         9: die("DW_TAG_subprogram", 1, DW_AT_specification='0x00000008 "operator()"'),
     }
-    assert _class_role(dies, [4, 3]) == (True, None, None)
-    assert _class_role(dies, [5]) == (False, None, None)
-    assert _class_role(dies, [6]) == (False, None, None)
-    assert _class_role(dies, [9, 8]) == (False, 6, 22)
+    assert _class_role(dies, [4, 3]) == (True, None, None, False)
+    assert _class_role(dies, [5]) == (False, None, None, False)
+    assert _class_role(dies, [6]) == (False, None, None, False)
+    assert _class_role(dies, [9, 8]) == (False, 6, 22, False)
     for name in ("Widget::Widget(long)", "ns::Box<int>::Box(int)", "A::B::B<int>(int)"):
         assert _CONSTRUCTOR_NAME.search(name), name
     for name in ("Widget::size() const", "run(long)::$_0::operator()() const", "Box(int)"):
@@ -1491,3 +1491,42 @@ def test_a_class_member_typedef_keeps_the_class_every_instance_names():
     assert _merged_class("std::map<int, int>", "std::unordered_map<int, int>") == "?"
     assert _merged_class("Point", "Line") == ""
     assert _merged_class("?", "") == "?"
+
+
+def test_unnamed_constructors_and_member_initializer_lambdas_are_told_apart():
+    from peeky.native import _CONSTRUCTOR_NAME, _class_role
+
+    # Review of #126 (round 4).
+    def die(tag, parent, **attrs):
+        return {"tag": tag, "parent": parent, "attrs": attrs, "children": []}
+
+    dies = {
+        1: die("DW_TAG_compile_unit", None),
+        2: die("DW_TAG_subprogram", 1, DW_AT_name='"nested"'),
+        # `struct { long s = twice(13); } anon;`: Clang's implicit constructor.
+        3: die("DW_TAG_structure_type", 2, DW_AT_decl_line="55"),
+        4: die(
+            "DW_TAG_subprogram",
+            3,
+            DW_AT_name='"(unnamed struct at f.cpp:55:5)"',
+            DW_AT_artificial="(true)",
+        ),
+        5: die("DW_TAG_subprogram", 1, DW_AT_specification='0x00000004 "(unnamed struct)"'),
+        6: die("DW_TAG_subprogram", 3, DW_AT_name='"get"', DW_AT_type='0x00000009 "long"'),
+        # `struct Agg { long b = [this] { ... }(); };`: its closure is in `Agg`.
+        7: die("DW_TAG_structure_type", 1, DW_AT_name='"Agg"', DW_AT_decl_line="13"),
+        8: die("DW_TAG_class_type", 7, DW_AT_decl_line="15"),
+        9: die("DW_TAG_subprogram", 8, DW_AT_name='"operator()"', DW_AT_type='0x0 "long"'),
+        10: die("DW_TAG_subprogram", 1, DW_AT_specification='0x00000009 "operator()"'),
+    }
+    assert _class_role(dies, [5, 4]) == (True, 2, 55, False)
+    assert _class_role(dies, [6]) == (False, 2, 55, False)
+    assert _class_role(dies, [10, 9]) == (False, None, 15, True)
+    for name in (
+        "nested(long)::$_0::$_0()",
+        "nested(long)::(anonymous struct)::(anonymous struct)()",
+        "f()::(unnamed struct at a.cpp:5:3)::(unnamed struct at a.cpp:5:3)()",
+        "nested(long)::{unnamed type#1}::{unnamed type#1}()",
+    ):
+        assert _CONSTRUCTOR_NAME.search(name), name
+    assert not _CONSTRUCTOR_NAME.search("nested(long)::$_0::get() const")

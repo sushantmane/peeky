@@ -849,3 +849,76 @@ def test_a_local_classes_member_initializer_is_not_its_functions_own_line(direct
         capsys, path, line_of(LOCAL_CLASS, "return w;"), "loc", "after", "before", hit=2, frame=1
     )
     assert withheld(rows["loc"]) and withheld(rows["after"]) and rows["before"]["value"] == "1"
+
+
+# Review of #126 (round 4).
+
+UNNAMED = """#include <cstdio>
+
+__attribute__((noinline)) long twice(long v) {
+    long w = v * 2;
+    return w;
+}
+
+__attribute__((noinline)) static void scribble() {
+    volatile long junk[128];
+    for (int i = 0; i < 128; i++) junk[i] = 0x5150 + i;
+}
+
+struct Agg {
+    long a = twice(1);
+    long b = [this] {
+        long got = twice(a + 1);  // lambda
+        return got;
+    }();
+};
+
+__attribute__((noinline)) static long nested(long seed) {
+    struct {
+        long s = twice(13);
+        long t = twice(14);
+    } anon;
+    return anon.t + seed;
+}
+
+__attribute__((noinline)) static long run() {
+    long before = 1;
+    Agg agg{};
+    long after = agg.b + before + nested(3);
+    return after;  // end
+}
+
+int main() {
+    scribble();
+    std::printf("%ld\\n", run());
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(300)
+def test_a_member_initializer_lambda_capturing_this_withholds_it(directory, capsys):
+    # Review of #126 (round 4): `Agg` has no constructor, so its initializers run in
+    # `run()`, and its lambda's `this.this.b` showed leftovers, stopped and as frame 1.
+    path = directory / "unnamed.cpp"
+    path.write_text(UNNAMED)
+    rows = shown_at(capsys, path, line_of(UNNAMED, "// lambda"), "this", "this.this.b")
+    assert withheld(rows["this"], "defined in a class's default member initializer")
+    assert withheld(rows["this.this.b"], "'this' has no value here")
+    rows = shown_at(capsys, path, line_of(UNNAMED, "return w;"), "this", hit=2, frame=1)
+    assert withheld(rows["this"], "default member initializer")
+    rows = shown_at(capsys, path, line_of(UNNAMED, "// end"), "agg.b", "after")
+    assert [rows["agg.b"]["value"], rows["after"]["value"]] == ["6", "38"]
+
+
+@pytest.mark.timeout(300)
+def test_an_unnamed_structs_constructor_withholds_this(directory, capsys):
+    # Review of #126 (round 4): frame 1 `nested(long)::$_0::$_0()` showed `this.t = 2`
+    # (a leftover), and frame 2, the other constructor, showed `this` too.
+    path = directory / "unnamed.cpp"
+    path.write_text(UNNAMED)
+    twice = line_of(UNNAMED, "return w;")
+    for frame in (1, 2):
+        rows = shown_at(capsys, path, twice, "this", hit=4, frame=frame)
+        assert rows["this"]["function"].endswith("::$_0::$_0()"), rows["this"]
+        assert withheld(rows["this"], "the object this constructor"), rows["this"]
