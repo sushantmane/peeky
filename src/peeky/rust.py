@@ -1062,6 +1062,17 @@ class RustSession(NativeSession):
                 "probe); otherwise edit the source and run verify"
             )
 
+    def _stop_block(self, hashed, frame):
+        """#115: the lexical block the frame's pc is in (``stop_block``), once per function
+        and pc: a frame's every row asks."""
+        pc = self._unslid(frame)
+        found = self.__dict__.setdefault("_stop_blocks", {})
+        if (hashed, pc) not in found:
+            if len(found) >= 1024:
+                found.clear()
+            found[(hashed, pc)] = stop_block(self.code_blocks.get(hashed), pc)
+        return found[(hashed, pc)]
+
     def not_yet_declared(
         self, variable, frame, innermost=True, stack=None, deeper=None, siblings=None, stop=None
     ):
@@ -1086,9 +1097,7 @@ class RustSession(NativeSession):
             caller=not innermost,
             # #115: the lexical block the innermost frame's pc is in, which tells a
             # line's stops in a macro's own blocks apart.
-            block=stop_block(self.code_blocks.get(hashed[1]), self._unslid(frame))
-            if innermost
-            else None,
+            block=self._stop_block(hashed[1], frame) if innermost else None,
             shown=[row.get("name") for row in siblings or ()],
         )
         if found is None:
@@ -1178,7 +1187,7 @@ class RustSession(NativeSession):
             # apart a line's stops in a macro's own blocks (`println!`'s `args`).
             if not innermost or not hashed:
                 return None
-            return stop_block(self.code_blocks.get(hashed[1]), self._unslid(frame))
+            return self._stop_block(hashed[1], frame)
 
         def reference_valid():
             # #110, once per variable: True, False or None (see OwnedLocals).

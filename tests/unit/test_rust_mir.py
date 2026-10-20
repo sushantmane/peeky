@@ -2271,3 +2271,56 @@ def test_an_unassigned_local_is_judged_where_its_stop_block_and_rows_put_the_pc(
     assert outer.unassigned("h", "k", 19, MAIN, True, 5, shown=rows) == (1, {0: "unassigned"})
     assert outer.unassigned("h", "k", 19, MAIN, True, 5, shown=[*rows, "args"]) is None
     assert outer.unassigned("h", "k", 19, MAIN, False, shown=[*rows, "args", "args"]) is None
+
+
+def test_a_places_assigned_state_is_its_blocks_entry_and_each_locals_last_event():
+    # #132's dataflow takes a block at a time (each block's events read once): every
+    # place of a body reads as replaying its block statement by statement does.
+    import re
+
+    begins = re.compile(r"^(?:StorageLive|Deinit)\(_([0-9]+)\);$")
+    assigns = re.compile(r"^_([0-9]+) = ")
+
+    def replayed(body, resumed):
+        # The flow statement by statement, to its fixpoint.
+        def flows(number):
+            return () if not resumed and number in body.resumes else body._flows(number)
+
+        entry, work = {0: sum(1 << n for n in body.arguments)}, [0]
+        kept = sum(1 << n for n in body.saved | body.arguments)
+        while work:
+            number = work.pop()
+            block, state = body.blocks[number], entry[number]
+            for text, _, _ in block.statements[:-1]:
+                if found := begins.match(text):
+                    state &= ~(1 << int(found[1]))
+                elif found := assigns.match(text):
+                    state |= 1 << int(found[1])
+            for target in flows(number):
+                out = state & kept if number in body.resumes else state
+                if target == block.returns:
+                    out |= 1 << int(assigns.match(block.terminator)[1])
+                merged = out if target not in entry else entry[target] & out
+                if entry.get(target) != merged:
+                    entry[target] = merged
+                    work.append(target)
+        return entry
+
+    for body in (parse_body(SCALARS), parse_body(PRINTED), parse_body(COROUTINE)):
+        locals_ = range(1 + max(body.types, default=0))
+        for resumed in (True, False):
+            entry = body._assigned_flow(resumed)
+            assert entry == replayed(body, resumed)
+            for number, state in entry.items():
+                statements = body.blocks[number].statements
+                for index in range(len(statements)):
+                    for local in locals_:
+                        assert body.unassigned_at(local, (number, index), resumed) == (
+                            not state >> local & 1
+                        ), (number, index, local)
+                    text = statements[index][0]
+                    if index < len(statements) - 1:
+                        if found := begins.match(text):
+                            state &= ~(1 << int(found[1]))
+                        elif found := assigns.match(text):
+                            state |= 1 << int(found[1])

@@ -33,6 +33,8 @@ no IR of its own: its MIR body is found by the lines of its inlined copies, and 
 statement of the stop line is a place the stop can be.
 """
 
+import bisect
+import functools
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -213,6 +215,13 @@ class Body:
     _dropped: set | None = None
     _offset: int | None = None
     _assigned_flows: dict | None = None
+    # Per-body caches of what parsing fixes: ``lexical``'s and ``scope_chain``'s answers,
+    # each block's assignment events (``_assign_events``), which blocks hold code of a
+    # line (``line_code``).
+    _lexicals: tuple | None = None
+    _chains: dict | None = None
+    _assign_cache: dict | None = None
+    _line_blocks: dict | None = None
 
     @property
     def name(self):
@@ -236,12 +245,20 @@ class Body:
         """The DWARF lexical block of MIR ``scope``: rustc gives one only to a scope that
         declares a variable (or is inlined); a statement elsewhere is in its parent's.
         0 is the function's own."""
-        declared = {binding[4] for found in self.bindings.values() for binding in found}
-        for _ in range(4096):
-            if scope in (None, 0) or scope in declared or scope in self.inlined_scopes:
-                return scope or 0
-            scope = self.scopes.get(scope)
-        return 0
+        shape = (len(self.bindings), len(self.scopes), len(self.inlined_scopes))
+        if self._lexicals is None or self._lexicals[0] != shape:
+            declared = {binding[4] for found in self.bindings.values() for binding in found}
+            self._lexicals, self._chains = (shape, declared, {}), None
+        _, declared, found = self._lexicals
+        if scope not in found:
+            at, answer = scope, 0
+            for _ in range(4096):
+                if at in (None, 0) or at in declared or at in self.inlined_scopes:
+                    answer = at or 0
+                    break
+                at = self.scopes.get(at)
+            found[scope] = answer
+        return found[scope]
 
     def local(self, name, declared=None, visible=None):
         """The MIR local an lldb-dap variable shows: `name`, or `name @ file:line` when
@@ -276,15 +293,20 @@ class Body:
     def scope_chain(self, scope):
         """The names of the variables each DWARF lexical block declares, sorted, from the
         block of MIR ``scope`` (see ``lexical``) out to the function's own (#115)."""
-        declared = self._declared()
-        chain, scope = [], self.lexical(scope)
-        for _ in range(4096):
-            if scope in (None, 0):
-                break
-            chain.append(declared.get(scope, ()))
-            scope = self.lexical(self.scopes.get(scope))
-        chain.append(declared.get(0, ()))
-        return tuple(chain)
+        self.lexical(0)
+        if self._chains is None:
+            self._chains = {}
+        if scope not in self._chains:
+            declared = self._declared()
+            chain, at = [], self.lexical(scope)
+            for _ in range(4096):
+                if at in (None, 0):
+                    break
+                chain.append(declared.get(at, ()))
+                at = self.lexical(self.scopes.get(at))
+            chain.append(declared.get(0, ()))
+            self._chains[scope] = tuple(chain)
+        return self._chains[scope]
 
     def _declared(self):
         """{scope: the names of the variables it declares, sorted}."""
@@ -1267,7 +1289,7 @@ class Body:
             reachable.add(number)
             pending.extend(self._flows(number))
         # Each local's bit, and a pending bit per Box local above them (`_pending`).
-        top = (1 << (2 * (1 + max(map(_max_local, self.blocks.values()), default=0)))) - 1
+        top = (1 << (2 * self._pending(0))) - 1
         entry = {number: top for number in reachable}
         entry[0] = _mask(self.arguments)
         # Across a suspension, only what the state saves (and the next poll's arguments).
@@ -1330,10 +1352,11 @@ class Body:
                 return None
             reachable.add(number)
             pending.extend(flows(number))
-        top = (1 << (1 + max(map(_max_local, self.blocks.values()), default=0))) - 1
+        top = (1 << self._pending(0)) - 1
         entry = {number: top for number in reachable}
         entry[0] = _mask(self.arguments)
         kept = _mask(self.saved | self.arguments)
+        events = self._assign_events()
         work = sorted(reachable, reverse=True)
         queued, steps = set(work), 0
         limit = max(MAX_ITERATIONS, STEPS_PER_BLOCK * len(reachable))
@@ -1344,9 +1367,8 @@ class Body:
             number = work.pop()
             queued.discard(number)
             block = self.blocks[number]
-            state = entry[number]
-            for text, _, _ in block.statements[:-1]:
-                state = _assigns(text, state)
+            _, killed, assigned = events[number]
+            state = entry[number] & ~killed | assigned
             for target in flows(number):
                 out = state & kept if number in self.resumes else state
                 if target == block.returns:
@@ -1359,6 +1381,48 @@ class Body:
                         work.append(target)
         self._assigned_flows[resumed] = entry
         return entry
+
+    def _assign_events(self):
+        """{block: ({local: [(index, assigned)]}, the locals its statements leave
+        unassigned, those they leave assigned)}: what each statement before the
+        terminator does to a local for ``_assigned_flow`` (a whole assignment assigns
+        it; `StorageLive` or `Deinit` begins its storage anew), read once. The dataflow
+        then takes a block at a time, and a place's state is its block's entry with
+        each local's last event before it."""
+        if self._assign_cache is None:
+            found = {}
+            for number, block in self.blocks.items():
+                events, killed, assigned = {}, 0, 0
+                for index, (text, _, _) in enumerate(block.statements[:-1]):
+                    if begun := _STORAGE_BEGINS.match(text):
+                        local, made = int(begun[1]), False
+                    elif made := _ASSIGN.match(text):
+                        local, made = int(made[1]), True
+                    else:
+                        continue
+                    events.setdefault(local, []).append((index, made))
+                    bit = 1 << local
+                    if made:
+                        assigned |= bit
+                    else:
+                        killed |= bit
+                        assigned &= ~bit
+                found[number] = (events, killed, assigned)
+            self._assign_cache = found
+        return self._assign_cache
+
+    def has_line_code(self, number, line, file, foreign):
+        """True if some statement of block ``number`` emits code of ``line``
+        (``line_code``)."""
+        if self._line_blocks is None:
+            self._line_blocks = {}
+        key = (number, line, file, foreign)
+        if key not in self._line_blocks:
+            self._line_blocks[key] = any(
+                self.line_code(number, at, line, file, foreign)
+                for at in range(len(self.blocks[number].statements))
+            )
+        return self._line_blocks[key]
 
     def line_code(self, number, index, line, file, foreign):
         """True if statement ``index`` of block ``number`` emits code of ``line`` of
@@ -1386,8 +1450,8 @@ class Body:
         block = self.blocks.get(number)
         if block is None:
             return None
-        if (blocks is None or number in blocks) and not any(
-            self.line_code(number, at, line, file, foreign) for at in range(len(block.statements))
+        if (blocks is None or number in blocks) and not self.has_line_code(
+            number, line, file, foreign
         ):
             return None
         owners = [(number, index)] if index < len(block.statements) else []
@@ -1427,9 +1491,7 @@ class Body:
             return None
         if self.line_code(number, 0, line, file, foreign):
             return None
-        if number in blocks and not any(
-            self.line_code(number, at, line, file, foreign) for at in range(len(block.statements))
-        ):
+        if number in blocks and not self.has_line_code(number, line, file, foreign):
             return None
         found = [
             other
@@ -1461,8 +1523,8 @@ class Body:
     def reassigned_before(self, local, place, positions):
         """True if a write to ``local`` other than its copy of ``place`` (a whole or
         partial assignment, a `&mut` or raw borrow of it) can run before one of
-        ``positions``, through a suspension and a later poll too; or if the body writes the state's field
-        ``place`` (see _lent)."""
+        ``positions``, through a suspension and a later poll too; or if the body writes
+        the state's field ``place`` (see _lent)."""
         self._lent()
         if int(re.search(r"\.([0-9]+): ", place)[1]) in self._written_fields:
             return True
@@ -1510,10 +1572,10 @@ class Body:
         number, index = position
         if entry is None or number not in entry:
             return None
-        state = entry[number]
-        for text, _, _ in self.blocks[number].statements[:index]:
-            state = _assigns(text, state)
-        return not state & (1 << local)
+        events = self._assign_events()[number][0].get(local)
+        if events and (last := bisect.bisect_left(events, (index,))):
+            return not events[last - 1][1]
+        return not entry[number] >> local & 1
 
 
 _CLOSURE_SEGMENT = re.compile(r"_?\{+closure(?:#[0-9]+)?\}+")
@@ -1754,15 +1816,6 @@ def _transfer(text, state):
 
 # Where a local's storage begins anew, its bytes are what the slot last held (#132).
 _STORAGE_BEGINS = re.compile(r"^(?:StorageLive|Deinit)\(_([0-9]+)\);$")
-
-
-def _assigns(text, state):
-    """``state`` (see Body._assigned_flow) after statement ``text``."""
-    if begun := _STORAGE_BEGINS.match(text):
-        return state & ~(1 << int(begun[1]))
-    if assigned := _ASSIGN.match(text):
-        return state | (1 << int(assigned[1]))
-    return state
 
 
 def _top_level(text):
@@ -2506,6 +2559,9 @@ class OwnedLocals:
         self.texts = dict(texts or {})
         self._matched = {}
         self._unanalyzed = {}
+        # What each stop's rows share (its places, its lexical block's scopes), by what
+        # determines it: every row of a frame asks for the same (see ``_memo``).
+        self._memos = {}
         # {(file, line): {body index}}: which bodies have a span on each line.
         self._owners = {}
         for index, body in enumerate(self.bodies):
@@ -2603,6 +2659,11 @@ class OwnedLocals:
     def _block_scopes(self, site, line, block):
         if site is None:
             return None
+        return self._memo(
+            "scopes", site, line, None, block, lambda: self._scopes_of(site, line, block)
+        )
+
+    def _scopes_of(self, site, line, block):
         body, function, blocks, shared = site
         named = body.chain_scopes(block, function)
         if named is None:
@@ -2918,33 +2979,40 @@ class OwnedLocals:
         if pair is not None and body.reassigned_before(local, place, positions):
             found[0] = "passed"
 
+        def placeable():
+            # Every row lldb-dap shows has the pc in its binding's lexical block: in one of
+            # the scopes each shown name is bound in (``shown``: the frame's row names).
+            within = []
+            for other in set(shown or ()):
+                bound, near, where = str(other).partition(" @ ")
+                scopes = {
+                    b[4]
+                    for b in body.bindings.get(bound, ())
+                    if not near or f"{Path(b[1]).name}:{b[2]}" == where
+                }
+                if scopes:
+                    within.append(scopes)
+            found = {}
+            for position in positions:
+                scopes = body.scopes_at(position, line, function.file, foreign, site[2])
+                if scopes is None or all(s & scopes for s in within):
+                    callers = body.returned_into(position[0], line, function.file, foreign, site[2])
+                    found[position] = (scopes, callers if position[1] == 0 else None)
+            return found
+
+        # What every row of the frame shares: the places the rows put the pc in.
+        places = self._memo(("places", frozenset(shown or ())), site, line, facts, block, placeable)
+
         def judge(position, resumed=True):
-            callers = body.returned_into(position[0], line, function.file, foreign, site[2])
-            if position[1] == 0 and callers:
+            callers = places[position][1]
+            if callers:
                 return body.unassigned_after(local, position[0], callers, resumed)
             return body.unassigned_at(local, position, resumed)
 
-        # Every row lldb-dap shows has the pc in its binding's lexical block: in one of
-        # the scopes each shown name is bound in (``shown``: the frame's row names).
-        within = []
-        for other in set(shown or ()):
-            bound, near, where = str(other).partition(" @ ")
-            scopes = {
-                b[4]
-                for b in body.bindings.get(bound, ())
-                if not near or f"{Path(b[1]).name}:{b[2]}" == where
-            }
-            if scopes:
-                within.append(scopes)
-
-        def possible(position):
-            found = body.scopes_at(position, line, function.file, foreign, site[2])
-            return found is None or (scope in found and all(s & found for s in within))
-
         verdicts = {
             position: verdict
-            for position in (positions if row is not None else ())
-            if possible(position) and (verdict := judge(position)) is not None
+            for position, (scopes, _) in (places.items() if row is not None else ())
+            if (scopes is None or scope in scopes) and (verdict := judge(position)) is not None
         }
         if caller:
             # Inside one of the line's calls (or drops): before it, if they are told.
@@ -3030,9 +3098,35 @@ class OwnedLocals:
                 return False
         return None
 
+    def _memo(self, kind, site, line, facts, block, compute):
+        """``compute()``, once per stop: ``site`` is ``_site``'s for the function and
+        ``line`` (its body and function live as long as this), and ``facts`` the
+        breakpoint's (``_facts``, from them and its column)."""
+        key = (kind, id(site[0]), id(site[1]), line, None if facts is None else facts.column)
+        if block is not None:
+            # A frame's rows pass one StopBlock: its contents are read (and numbered,
+            # equal ones alike) once.
+            known = self._memos.get(("block", id(block)))
+            if known is None or known[0] is not block:
+                tokens = self._memos.setdefault(("blocks",), {})
+                content = (block.chain, tuple(sorted(block.chains.items())))
+                known = (block, tokens.setdefault(content, len(tokens)))
+                self._memos[("block", id(block))] = known
+            key += (known[1],)
+        if key not in self._memos:
+            if len(self._memos) >= 4096:
+                self._memos.clear()
+            self._memos[key] = compute()
+        return self._memos[key]
+
     def _positions(self, site, line, facts, block=None):
         """Where in the line's blocks the stop can be; in the DWARF lexical block the
         stop's pc is in, where ``block`` tells it apart (#115)."""
+        return self._memo(
+            "positions", site, line, facts, block, lambda: self._places(site, line, facts, block)
+        )
+
+    def _places(self, site, line, facts, block):
         body, function, blocks, shared = site
         if function.inline_only:
             # Before any statement of the line, after any call or drop of it: more
@@ -3165,7 +3259,7 @@ class OwnedLocals:
         and inlined calls on it, its macros' columns, and the stop's column (bytes), when
         the source text is known."""
         text = self.texts.get(function.file)
-        lines = text.split("\n") if isinstance(text, str) else []
+        lines = _source_lines(text) if isinstance(text, str) else ()
         own = lines[line - 1] if 1 <= line <= len(lines) else None
 
         def to_bytes(character):
@@ -3277,6 +3371,12 @@ _PATH_END = re.compile(r"[A-Za-z0-9_#:]\s*(?://.*)?$")
 _PATH_TAIL = re.compile(r"(?:\s+|//[^\n]*|::|[A-Za-z0-9_#])*")
 
 
+@functools.lru_cache(maxsize=16)
+def _source_lines(text):
+    """``text``'s lines, split once per source text: a frame's every row asks."""
+    return tuple(text.split("\n"))
+
+
 def may_invoke_macro(text, line):
     """False only if source ``line`` cannot start a macro invocation.
 
@@ -3288,7 +3388,7 @@ def may_invoke_macro(text, line):
 
     ``text`` must be split into lines as rustc does, on `\n` alone (never a lone `\r`).
     """
-    lines = text.split("\n") if isinstance(text, str) else []
+    lines = _source_lines(text) if isinstance(text, str) else ()
     if not 1 <= line <= len(lines):
         return True
     own = lines[line - 1]
