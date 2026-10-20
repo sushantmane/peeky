@@ -649,13 +649,16 @@ class RustTarget:
                 if deadline is None
                 else min(SYMBOL_BUDGET_S, deadline - time.monotonic()),
             )
+            rust = (*self.sources, *self.tests)
+            texts = {
+                # Every file the build may read (_require_declared_dependencies).
+                name: (prepared.workspace / name).read_bytes().decode("utf-8", errors="replace")
+                for name in cargo_inputs.inputs
+            }
             layouts = without_numbered_structs(
                 layouts,
-                [
-                    # Every file the build read (_require_declared_dependencies).
-                    (prepared.workspace / name).read_bytes().decode("utf-8", errors="replace")
-                    for name in (*self.sources, *self.tests)
-                ],
+                [texts[name] for name in rust],
+                [text for name, text in texts.items() if name not in rust],
             )
             identity = module_identity(
                 dwarfdump, binary, symbols, prepared.workspace, env, deadline=deadline

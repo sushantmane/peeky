@@ -1423,11 +1423,14 @@ _NUMBERED_FIELD = re.compile(r"(?<![\w])__[0-9]+(?![\w])")
 _FEATURE = re.compile(r"(?<![\w])feature\s*\(")
 
 
-def without_numbered_structs(layouts, texts):
+def without_numbered_structs(layouts, texts, others=()):
     """``layouts`` with every tuple struct unread where the crate could declare a struct
     with named fields `__0`, `__1`: the DWARF names a tuple struct's fields so too, and
-    such a struct prints `Num { __0: 1 }`, not `Num(1)`. ``texts``: every file the build
-    read (rustc's dependency files list no other: _require_declared_dependencies).
+    such a struct prints `Num { __0: 1 }`, not `Num(1)`. ``texts``: the crate's Rust
+    sources' and tests'; ``others``: every other file the build may read (rustc reads no
+    undeclared one: _require_declared_dependencies), Cargo.toml and Cargo.lock, which
+    `include!("../Cargo.toml")` reads as Rust: searched as plain text, as they need not
+    lex as Rust.
 
     On stable Rust no identifier is made without its token in the crate's source:
     `macro_rules!` cannot join identifiers (`concat_idents!` is gone, rustc 1.96), and a
@@ -1436,13 +1439,17 @@ def without_numbered_structs(layouts, texts):
     configuration or RUSTFLAGS of the crate's; the sysroot's crates need
     `rustc_private`). Peeky's MIR builds set RUSTC_BOOTSTRAP, so a crate may enable
     nightly features (`${concat(__, "0")}`). So an identifier `__0` (`fields!(Num, __0,
-    __1)`), a feature gate, or a source not lexed leaves every tuple struct unread."""
+    __1)`), a feature gate, or a source not lexed leaves every tuple struct unread. A
+    feature gate is only ever the crate root's, a declared Rust source: an `include!`d
+    file may hold no inner attribute, and a `#[path]` module's `#![feature]` is ignored."""
 
     def refused(text):
         code = code_only(text)
         return code is None or _NUMBERED_FIELD.search(code) or _FEATURE.search(code)
 
-    if not any(refused(text) for text in texts):
+    if not any(refused(text) for text in texts) and not any(
+        _NUMBERED_FIELD.search(text) for text in others
+    ):
         return layouts
     return {
         name: _UNREAD if layout.get("shape") == "tuple-struct" else layout

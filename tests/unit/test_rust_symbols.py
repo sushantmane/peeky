@@ -1737,6 +1737,17 @@ def test_tuple_structs_are_unread_where_a_source_names_a_field_like_theirs():
         "fn main() { /* not closed\n",
     ):
         assert without_numbered_structs(layouts, [plain, gate]) == unread, gate
+    # Review 6: Cargo.toml and Cargo.lock, which `include!` reads as Rust, are searched as
+    # plain text: they need not lex as Rust, and a `__0` in their strings counts too.
+    manifest = '[package]\nname = "demo" # don\'t\nversion = "0.1.0"\n'
+    assert without_numbered_structs(layouts, [plain], [manifest]) == layouts
+    for trick in (
+        '#[doc = ""] fields!(__0, __1); ignore! {\n' + manifest + "#}\n",
+        manifest + 'description = "__0"\n',
+    ):
+        assert without_numbered_structs(layouts, [plain], [manifest, trick]) == unread, trick
+    # A feature gate is the crate root's alone, never an included file's.
+    assert without_numbered_structs(layouts, [plain], ["# feature(x)\n"]) == layouts
 
 
 def test_a_packed_struct_is_never_previewed_even_when_aligned():

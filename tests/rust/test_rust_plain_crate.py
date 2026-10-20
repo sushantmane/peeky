@@ -4301,3 +4301,59 @@ def test_an_enum_variant_never_proves_a_struct_of_its_path(plain, capsys):
     assert "Red { __0: 7, __1: 8 } Red(1, 2)" in result["output"]
     assert rows["r"].get("view") != "memory" and "Red(" not in rows["r"]["value"], rows
     assert rows["r.__1"]["value"] == "8", rows
+
+
+INCLUDED_MANIFEST = """#[doc = ""] fields!(__0, __1); ignore! {
+[package]
+name = "chars"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+#}
+"""
+
+INCLUDES_MANIFEST = """macro_rules! fields {
+    ($a:ident, $b:ident) => {
+        #[derive(Debug, Clone, Copy)]
+        pub struct Num {
+            $a: u32,
+            $b: u32,
+        }
+        impl Num {
+            fn new(x: u32, y: u32) -> Self {
+                Self { $a: x, $b: y }
+            }
+        }
+    };
+}
+
+macro_rules! ignore {
+    ($($t:tt)*) => {};
+}
+
+include!("../Cargo.toml");
+
+fn main() {
+    let n = Num::new(1, 2);
+    let v = vec![n];
+    println!("{:?} {:?}", n, v); // IM_STOP
+}
+"""
+
+
+@pytest.mark.timeout(300)
+def test_fields_named_in_the_manifest_the_crate_includes_are_never_previewed(plain, capsys):
+    # Review 6 of #106: Cargo.toml is an input the compiler may read, and a TOML comment
+    # is Rust: `include!("../Cargo.toml")` declared `Num { __0, __1 }` with no `__0` in a
+    # scanned source, and `n` previewed `Num(1, 2)`, `v` `[Num(1, 2)]`.
+    (plain / "Cargo.toml").write_text(INCLUDED_MANIFEST)
+    (plain / "src/main.rs").write_text(INCLUDES_MANIFEST)
+    at = f"src/main.rs:{line_of(INCLUDES_MANIFEST, '// IM_STOP')}"
+    code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "n,v,n.__1", "--quiet")
+    assert code == 0, result.get("error")
+    rows = {row["selector"]: row for row in result["rows"]}
+    assert "Num { __0: 1, __1: 2 } [Num { __0: 1, __1: 2 }]" in result["output"]
+    for name in ("n", "v"):
+        assert rows[name].get("view") != "memory" and "Num(" not in rows[name]["value"], rows
+    assert rows["n.__1"]["value"] == "2", rows
