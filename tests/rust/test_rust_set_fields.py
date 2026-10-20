@@ -137,7 +137,8 @@ def test_rust_fields_elements_and_tuple_fields_change_and_the_program_sees_them(
     refused(capsys, "r.end=3", "`r` is a pointer")  # a reference: LLDB's pointer
     # Moved into drop(), or not yet assigned: the MIR does not prove it initialized.
     refused(capsys, "gone.n=3", "does not prove `gone` initialized")
-    refused(capsys, "later.end=3", "does not prove `later` initialized")
+    # #132 withholds a local not yet assigned, so nothing in it is offered for a change.
+    refused(capsys, "later.end=3", "'later' has no value here (not assigned on every path")
     refused(capsys, "o.flag=0", "is a boolean (bool)")
     refused(capsys, "o.ch=3", "is a character (char)")
     refused(capsys, "o.ratio=3", "is a floating-point value (f64)")

@@ -1307,6 +1307,9 @@ def _capture(
                 variable = _resolve(worker, stop, snapshot, parse_selector(selector), pointers)
         except ValueError as exc:
             row["error"] = str(exc)
+            if _in_withheld(snapshot, selector):
+                # Inside a local withheld here (no value yet): `--set` refuses it too.
+                row["settable"] = False
         else:
             if variable.get("unavailable"):
                 # A placeholder such as "<error: variable not available>" is not a value.
@@ -1419,6 +1422,25 @@ def _roots(selectors):
         if first.isidentifier() and first not in roots:
             roots.append(first)
     return roots[:32]
+
+
+def _in_withheld(snapshot, selector):
+    """True if ``selector`` reads inside a local of the snapshot's own scopes that every
+    row of its name withholds (``withheld``: no value yet)."""
+    try:
+        segments = parse_selector(selector)
+    except ValueError:
+        return False
+    if len(segments) < 2:
+        return False
+    rows = [
+        row
+        for scope in snapshot.get("scopes", ())
+        if not scope.get("globals")
+        for row in scope.get("variables", ())
+        if row.get("name") == segments[0]
+    ]
+    return bool(rows) and all(row.get("withheld") for row in rows)
 
 
 def _settable_here(snapshot):
