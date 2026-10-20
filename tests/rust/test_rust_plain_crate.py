@@ -3039,3 +3039,280 @@ def test_a_generic_function_is_one_scope_with_its_blocks_lines(plain, capsys):
     ((first, _),) = scopes["inside"]["spans"]["i"]
     assert first <= line_of(GENERIC_SPANS, "// TWICE_BODY"), scopes["inside"]
     assert "spans" not in scopes["triple"], scopes["triple"]
+
+
+AGGREGATES = """#[derive(Debug)]
+pub struct Pt {
+    x: i64,
+    y: i64,
+}
+
+#[derive(Debug)]
+pub struct Holder {
+    b: Box<Pt>,
+    v: Vec<i64>,
+    n: i64,
+}
+
+pub struct Texts {
+    v: Vec<i64>,
+    s: String,
+    label: Box<str>,
+    n: i64,
+}
+
+#[inline(never)]
+fn churn() -> i64 {
+    let fresh = Box::leak(Box::new(Pt { x: 777, y: 888 }));
+    let text = Box::leak(String::from("FREED-AND-REUSED").into_boxed_str());
+    fresh.x + fresh.y + text.len() as i64 // AG_CHURN
+}
+
+fn holder(x: i64) -> Holder {
+    Holder { b: Box::new(Pt { x, y: x + 1 }), v: vec![1, 2, 3], n: x + 4 }
+}
+
+fn texts_of(n: i64) -> Texts {
+    Texts { v: vec![10, 20, 30], s: String::from("hello world"), label: "a label!".into(), n }
+}
+
+#[inline(never)]
+fn consume(h: Holder) -> i64 {
+    h.b.x + h.n
+}
+
+#[inline(never)]
+fn bump(h: &mut Holder) -> i64 {
+    h.n += 1;
+    churn() + h.n
+}
+
+fn dropped() -> i64 {
+    let h = holder(5);
+    drop(h);
+    let z = churn();
+    z + 1 // AG_DROPPED
+}
+
+fn moved_call() -> i64 {
+    let h = holder(5);
+    let k = consume(h);
+    let z = churn();
+    z + k // AG_CALL
+}
+
+fn moved_let() -> i64 {
+    let h = holder(5);
+    let g = h;
+    drop(g);
+    let z = churn();
+    z + 1 // AG_LET
+}
+
+fn partial() -> i64 {
+    let h = holder(5);
+    let d = h.b;
+    drop(d);
+    let z = churn();
+    z + h.n // AG_PARTIAL
+}
+
+fn others() -> i64 {
+    let t = (Box::new(Pt { x: 5, y: 6 }), 4i64);
+    let o: Option<Box<Pt>> = Some(Box::new(Pt { x: 5, y: 6 }));
+    let arr = [holder(5), holder(7)];
+    drop(t);
+    drop(o);
+    drop(arr);
+    let z = churn();
+    z + 1 // AG_OTHERS
+}
+
+fn texts() -> i64 {
+    let w = texts_of(3);
+    drop(w);
+    let z = churn();
+    z + 1 // AG_TEXTS
+}
+
+fn live() -> i64 {
+    let mut h = holder(5);
+    let t = (Box::new(Pt { x: 5, y: 6 }), 4i64);
+    let arr = [holder(5), holder(7)];
+    let w = texts_of(3);
+    let k = bump(&mut h);
+    let z = churn();
+    z + k + h.b.x + t.0.y + arr[1].b.x + w.n + w.label.len() as i64 // AG_LIVE
+}
+
+fn reassigned() -> i64 {
+    let mut h = holder(5);
+    h.b = Box::new(Pt { x: 8, y: 9 });
+    h.n = 2;
+    let mut w = texts_of(3);
+    w.s = String::from("changed");
+    w.v = vec![9];
+    w.label = "relabelled".into();
+    let mut arr = [holder(5), holder(7)];
+    arr[1] = holder(8);
+    let z = churn();
+    z + h.b.x + w.n + arr[1].b.x // AG_REASSIGNED
+}
+
+fn partly_replaced() -> i64 {
+    let mut h = holder(5);
+    let d = h.b;
+    drop(d);
+    h.v = vec![9];
+    let z = churn();
+    z + h.n // AG_PARTLY_REPLACED
+}
+
+fn main() {
+    let a = dropped() + moved_call() + moved_let() + partial();
+    println!("{} {} {} {}", a, others(), texts(), live());
+    println!("{} {}", reassigned(), partly_replaced());
+}
+"""
+
+
+def _rows_at(plain, capsys, marker, capture):
+    at = f"src/main.rs:{line_of(AGGREGATES, '// ' + marker)}"
+    code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", capture, "--quiet")
+    assert code == 0, result.get("error")
+    return {row["selector"]: row for row in result["rows"]}
+
+
+def _stale(row):
+    return row.get("stale") is True and "(#108)" in row.get("note", "") and "value" in row
+
+
+def _hidden(row):
+    """Nothing read through the pointer: an error naming why, never a value."""
+    return "value" not in row and "freed memory" in row.get("error", "") and "777" not in str(row)
+
+
+@pytest.mark.timeout(600)
+def test_a_moved_or_dropped_aggregate_reads_nothing_through_its_pointers(plain, capsys):
+    # #108: a struct, tuple or array that owns a Box was read through its pointers after
+    # a move or drop (`h.b.x` showed the 777 `churn` allocated in the freed block).
+    (plain / "src/main.rs").write_text(AGGREGATES)
+    for marker in ("AG_DROPPED", "AG_CALL", "AG_LET", "AG_PARTIAL"):
+        rows = _rows_at(plain, capsys, marker, "h,h.b,h.b.x,h.b.y,h.n,h.v.len")
+        assert _hidden(rows["h.b.x"]) and _hidden(rows["h.b.y"]), (marker, rows)
+        assert rows["h.b"]["view"] == "unproven", (marker, rows["h.b"])
+        assert re.fullmatch(r"0x[0-9a-fA-F]+", rows["h.b"]["value"]), (marker, rows["h.b"])
+        # Its own fields are the bytes the move or drop left: shown, and marked.
+        assert _stale(rows["h"]) and _stale(rows["h.n"]), (marker, rows)
+        assert rows["h.n"]["value"] == "9" and rows["h.v.len"].get("stale"), (marker, rows)
+    rows = _rows_at(
+        plain,
+        capsys,
+        "AG_OTHERS",
+        "t,t.__0,t.__0.x,t.__1,o,o.__0,arr[0].b.x,arr[1].b,arr[1].b.x,arr[1].n",
+    )
+    assert _hidden(rows["t.__0.x"]) and rows["t.__0"]["view"] == "unproven", rows
+    assert _stale(rows["t"]) and _stale(rows["t.__1"]) and rows["t.__1"]["value"] == "4", rows
+    # A data-carrying enum (not `Option<i32>`) is opaque, as before.
+    assert rows["o"]["view"] == "opaque" and "value" not in rows["o.__0"], rows
+    assert _hidden(rows["arr[0].b.x"]) and _hidden(rows["arr[1].b.x"]), rows
+    assert rows["arr[1].b"]["view"] == "unproven", rows
+    assert _stale(rows["arr[1].n"]) and rows["arr[1].n"]["value"] == "11", rows
+    rows = _rows_at(plain, capsys, "AG_TEXTS", "w,w.label,w.label.data_ptr,w.n,w.v.len,w.s")
+    # A `Box<str>` field's text was read through its freed pointer.
+    assert rows["w.label"]["view"] == "unproven", rows
+    assert re.fullmatch(r"0x[0-9a-fA-F]+|<not shown: [^>]*>", rows["w.label"]["value"]), rows
+    assert "value" not in rows["w.label.data_ptr"], rows
+    assert _stale(rows["w"]) and _stale(rows["w.n"]) and rows["w.n"]["value"] == "3", rows
+    assert rows["w.v.len"].get("stale") and rows["w.s"].get("stale"), rows
+    # Live and initialized, all of it reads, unmarked.
+    rows = _rows_at(
+        plain, capsys, "AG_LIVE", "h,h.b.x,h.n,t.__0.x,t.__1,arr[1].b.x,w.n,w.label.length"
+    )
+    expected = {"h.b.x": "5", "h.n": "10", "t.__0.x": "5", "t.__1": "4", "arr[1].b.x": "7"}
+    assert {name: rows[name].get("value") for name in expected} == expected, rows
+    assert rows["w.n"]["value"] == "3" and rows["w.label.length"]["value"] == "8", rows
+    assert not any(row.get("stale") or row.get("view") for row in rows.values()), rows
+
+
+@pytest.mark.timeout(600)
+def test_session_listings_of_moved_aggregates_and_callers_aggregates(plain, capsys):
+    # #108: `session get h` listed `h.b` as expandable into freed memory, in the stopped
+    # frame and in its callers' (`--frame N`).
+    (plain / "src/main.rs").write_text(AGGREGATES)
+    at = f"src/main.rs:{line_of(AGGREGATES, '// AG_DROPPED')}"
+    assert main(["session", "start", str(plain), "--at", at]) == 0
+    capsys.readouterr()
+    try:
+        code, (row,) = run(capsys, "session", "get", "h")
+        children = {child["name"]: child for child in row["children"]}
+        assert row.get("stale") and "(#108)" in row["note"], row
+        assert children["b"].get("view") == "unproven" and not children["b"].get("expandable")
+        assert children["n"]["value"] == "9" and children["n"].get("stale"), children
+        assert children["v"].get("stale"), children
+        assert main(["session", "get", "h"]) == 0
+        text = capsys.readouterr().out
+        assert "h.b: " in text and "[unproven]" in text and "[stale]" in text, text
+        assert "session get h.b" not in text, text
+    finally:
+        main(["session", "close"])
+        capsys.readouterr()
+    at = f"src/main.rs:{line_of(AGGREGATES, '// AG_CHURN')}"
+    assert main(["session", "start", str(plain), "--at", at]) == 0
+    capsys.readouterr()
+    try:
+        # Hit 2: `moved_call` moved `h` into `consume`, which dropped it.
+        main(["session", "continue"])
+        capsys.readouterr()
+        code, rows = run(capsys, "session", "get", "--frame", "1", "h", "h.b.x", "h.n")
+        found = {row["selector"]: row for row in rows}
+        assert "::moved_call" in found["h"]["function"], found
+        assert _hidden(found["h.b.x"]) and _stale(found["h.n"]), found
+        children = {child["name"]: child for child in found["h"]["children"]}
+        assert children["b"].get("view") == "unproven", children
+        # Hit 7: `live` lent `h` to `bump`; its fields read, unmarked (the MIR proves it
+        # initialized on the call's line), but not what its Box points at: a callee may
+        # be midway through replacing it.
+        for _ in range(5):
+            main(["session", "continue"])
+            capsys.readouterr()
+        code, rows = run(capsys, "session", "get", "--frame", "2", "h", "h.n", "h.b.x", "t.__1")
+        found = {row["selector"]: row for row in rows}
+        assert "::live" in found["h"]["function"], found
+        assert found["h.n"]["value"] == "10" and not found["h.n"].get("stale"), found
+        assert found["t.__1"]["value"] == "4" and not found["t.__1"].get("stale"), found
+        assert "value" not in found["h.b.x"], found
+        children = {child["name"]: child for child in found["h"]["children"]}
+        assert children["b"].get("view") == "unproven" and "#108" in found["h"]["note"], found
+    finally:
+        main(["session", "close"])
+        capsys.readouterr()
+
+
+@pytest.mark.timeout(600)
+def test_a_field_reassigned_in_place_leaves_its_struct_whole(plain, capsys):
+    # Review of #108: `h.b = new` drops the old Box in place (`drop((_1.1: Box<Pt>))`),
+    # then stores the new one there; the drop alone left `h` stale after the store.
+    (plain / "src/main.rs").write_text(AGGREGATES)
+    capture = (
+        "h,h.b.x,h.b.y,h.n,w,w.n,w.v.len,w.s.vec.len,w.label.length,arr[0].b.x,arr[1].b.x,arr[1].n"
+    )
+    rows = _rows_at(plain, capsys, "AG_REASSIGNED", capture)
+    expected = {
+        "h.b.x": "8",
+        "h.b.y": "9",
+        "h.n": "2",
+        "w.n": "3",
+        "w.v.len": "1",
+        "w.s.vec.len": "7",
+        "w.label.length": "10",
+        "arr[0].b.x": "5",
+        "arr[1].b.x": "8",
+        "arr[1].n": "12",
+    }
+    assert {name: rows[name].get("value") for name in expected} == expected, rows
+    assert not any(row.get("stale") or row.get("view") for row in rows.values()), rows
+    # A field moved out first: replacing another leaves the struct partly moved.
+    rows = _rows_at(plain, capsys, "AG_PARTLY_REPLACED", "h,h.b,h.b.x,h.n,h.v.len")
+    assert _hidden(rows["h.b.x"]) and rows["h.b"]["view"] == "unproven", rows
+    assert _stale(rows["h"]) and _stale(rows["h.n"]) and rows["h.v.len"].get("stale"), rows
