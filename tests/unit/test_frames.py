@@ -83,7 +83,16 @@ class Runtime(PythonAdapter):
         object.__setattr__(self, "innermost", [])
 
     def view_variable(
-        self, variable, fetch, read=None, *, frame=None, top=False, innermost=False, stop=None
+        self,
+        variable,
+        fetch,
+        read=None,
+        *,
+        frame=None,
+        top=False,
+        innermost=False,
+        stop=None,
+        siblings=None,
     ):
         if top:
             self.innermost.append((frame["id"], variable["name"], innermost))
