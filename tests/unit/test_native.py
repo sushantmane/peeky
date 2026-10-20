@@ -1048,3 +1048,29 @@ def test_a_rust_sources_macro_definitions_are_told_by_their_brackets(text, lines
     from peeky.native import _macro_rules_lines
 
     assert _macro_rules_lines(text) == lines
+
+
+def test_a_statement_row_another_row_replaces_is_kept_for_breakpoints_but_noted(tmp_path):
+    # Review 4 of #107: LLDB keeps the later row at an address, so a statement row the
+    # next row replaces runs no code; its line stays a breakpoint line.
+    from peeky.native import _line_rows
+
+    (tmp_path / "main.c").write_text("a\nb\nc\nd\n")
+    rows = (
+        (0x1000, 1, 1),
+        (0x1000, 2, 1),  # replaces line 1
+        (0x1004, 3, 1),
+        (0x1004, 3, 1),  # the same line again: nothing replaced
+        (0x100C, 4, 1),
+        (0x100C, 7, 9),  # an undeclared header's row replaces line 4
+    )
+    header = 'dir_index: 0\nfile_names[ 9]:\nname: "/usr/include/stdio.h"\ndir_index: 0\n'
+    dump = line_dump().split("0x0000000000401000")[0].replace("dir_index: 0\n", header, 1)
+    text = dump + "".join(
+        f"0x{0x400000 + address:016x} {number} 1 {file} 0 0 is_stmt\n"
+        for address, number, file in rows
+    )
+    replaced = set()
+    found = _line_rows(text, tmp_path, ("main.c",), replaced=replaced)
+    assert [row[2] for row in found] == [1, 2, 3, 3, 4]
+    assert replaced == {(0x401000, "main.c", 1), (0x40100C, "main.c", 4)}

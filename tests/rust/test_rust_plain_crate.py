@@ -1440,10 +1440,51 @@ macro_rules! half {
 }
 use half;
 
+fn inside(n: usize) -> usize {
+    let mut total = 0;
+    macro_rules! twice {
+        ($x:expr) => {
+            $x + $x // TWICE_BODY
+        };
+    }
+    for i in 0..n {
+        let s = twice!(i);
+        total += s;
+    }
+    total
+}
+
+macro_rules! make_fn {
+    ($name:ident, $step:expr) => {
+        fn $name(n: usize) -> usize {
+            let mut t = 0;
+            for i in 0..n {
+                let d = $step + i;
+                t += d;
+            }
+            t
+        }
+    };
+}
+
+fn between(v: usize) -> usize {
+    let mut acc = 0;
+    for k in 0..v {
+        acc += k;
+    }
+    acc
+}
+
+make_fn!(triple, {
+    let y = 3;
+    y
+});
+
 fn main() {
     let a = h(3u8);
     let b = h(4u64);
     println!("{} {} {} {} {}", a, b, with_macro(3), below(3), after(3));
+    println!("{} {} {}", inside(3), between(2), triple(3));
 }
 """
 
@@ -1473,3 +1514,9 @@ def test_a_generic_function_is_one_scope_with_its_blocks_lines(plain, capsys):
         last < end for spans in scopes["below"].get("spans", {}).values() for _, last in spans
     ), scopes["below"]
     assert scopes["after"]["lines"][1] < line_of(GENERIC_SPANS, "macro_rules! half"), scopes
+    # Review 4: a macro defined inside the function keeps its lines (its expansion
+    # stops there in this frame); a function a macro declares runs its argument's code
+    # on the invoking line, past other functions, so its blocks give no span.
+    ((first, _),) = scopes["inside"]["spans"]["i"]
+    assert first <= line_of(GENERIC_SPANS, "// TWICE_BODY"), scopes["inside"]
+    assert "spans" not in scopes["triple"], scopes["triple"]

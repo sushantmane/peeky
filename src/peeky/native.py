@@ -114,13 +114,15 @@ def _metadata(tool, arguments, workspace, env, *, max_bytes=MAX_METADATA, timeou
         return output.read_text(encoding="utf-8")
 
 
-def _line_rows(text, workspace, declared, limit=MAX_METADATA):
+def _line_rows(text, workspace, declared, limit=MAX_METADATA, replaced=None):
     """Rows of the LLVM DWARF4 line-table dump for declared sources: (address, name, line).
 
     Unrecognized rows fail closed. Rows outside the declared sources (SDK and system
     headers) and end-of-sequence rows are skipped, and so is a row that is not a
     statement when the next row starts at its address (GCC -O2): it runs no code, and
-    LLDB keeps the later row there.
+    LLDB keeps the later row there. A statement row the next row replaces that way (of
+    another line or file) is kept, since a breakpoint can be set on its line, and
+    added to ``replaced`` when given: it runs no code either.
     """
     if len(text.encode()) > limit:
         raise ValueError("Native line metadata exceeds limit")
@@ -133,8 +135,8 @@ def _line_rows(text, workspace, declared, limit=MAX_METADATA):
     table_count = 0
     version = None
     rows = []
-    # The address of the last row kept, if it is not a statement.
-    replaceable = None
+    # The last row kept and whether it is a statement, until the next row.
+    last = None
     for raw in text.splitlines():
         line = raw.strip()
         if line.startswith("debug_line["):
@@ -144,7 +146,7 @@ def _line_rows(text, workspace, declared, limit=MAX_METADATA):
             directories, files, current = {0: str(workspace)}, {}, None
             resolved = {}
             version = None
-            replaceable = None
+            last = None
         elif match := re.fullmatch(r"version:\s+(\d+)", line):
             version = int(match[1])
             if version != 4:
@@ -181,19 +183,21 @@ def _line_rows(text, workspace, declared, limit=MAX_METADATA):
                     resolved[file_id] = inputs.get(str(path))
             except (ValueError, KeyError, TypeError) as exc:
                 raise ValueError("Unresolved native line source") from exc
-            address = int(fields[0], 16)
-            if replaceable == address:
-                rows.pop()
-            replaceable = None
-            if "end_sequence" in fields or number == 0:
+            address, name = int(fields[0], 16), resolved[file_id]
+            ending = "end_sequence" in fields or number == 0
+            if last is not None and last[0][0] == address:
+                if not last[1]:
+                    rows.pop()
+                elif replaced is not None and (ending or last[0][1:] != (name, number)):
+                    replaced.add(last[0])
+            last = None
+            if ending:
                 continue
-            name = resolved[file_id]
             if name is not None:
                 if not 0 < number <= counts[name]:
                     raise ValueError("Native line exceeds declared source length")
                 rows.append((address, name, number))
-                if "is_stmt" not in fields:
-                    replaceable = address
+                last = (rows[-1], "is_stmt" in fields)
     if not table_count:
         raise ValueError("Missing executable native debug symbol line information")
     return rows
@@ -491,19 +495,22 @@ def _locals(dies, offset):
 _MAX_SPANS = 8
 
 
-def _block_spans(dies, entry, root, addresses, numbers):
+def _block_spans(dies, entry, root, addresses, numbers, source_of):
     """({name: {(first, last)}}, {names visible in the whole function}), or None when
     the declarations were too many to read all: the lines of the blocks declaring each
     local, for the locals declared only inside nested blocks (a `for` loop's `i`), so
     visible only there (#107). A block's lines are those of the function's own rows
     within its code (a local macro's definition lines, where its expansions run, are not
-    counted); one that also runs another file's code (an `#include` inside it) gives
-    no span."""
+    counted), and the call lines of what is inlined into it (LLDB stops there, at the
+    callee's entry, in this frame); one that also runs another file's code (an
+    `#include` inside it) gives no span. ``source_of`` names the declared source of a
+    DW_AT_call_file."""
     rows = sorted(
         (address, source, line) for (source, line), found in addresses.items() for address in found
     )
     keys = [row[0] for row in rows]
     lines, spans, everywhere = {}, {}, set()
+    lowest, highest = min(numbers), max(numbers)
 
     def span(block):
         if block not in lines:
@@ -517,6 +524,20 @@ def _block_spans(dies, entry, root, addresses, numbers):
                     elif line in numbers:
                         covered.append(line)
                     # The file's other lines are a local macro's definition, expanded here.
+            pending = list(dies[block]["children"])
+            while pending:
+                die = dies[pending.pop()]
+                if die["tag"] == "DW_TAG_lexical_block":
+                    pending.extend(die["children"])
+                elif die["tag"] == "DW_TAG_inlined_subroutine":
+                    called = die["attrs"].get("DW_AT_call_line", "")
+                    # Its rows are the callee's, so the line may be none of the function's.
+                    if (
+                        called.isdigit()
+                        and lowest <= int(called) <= highest
+                        and source_of(die["attrs"].get("DW_AT_call_file")) == entry["source"]
+                    ):
+                        covered.append(int(called))
             lines[block] = (min(covered), max(covered)) if covered and not other else None
         return lines[block]
 
@@ -578,9 +599,10 @@ def _code_ranges(die):
     return [(lo, hi) for lo, hi in spans if 0 < lo < hi and lo < _TOMBSTONE]
 
 
-def _function_entries(info, line_text, workspace, declared):
+def _function_entries(info, line_text, workspace, declared, replaced=None):
     """(dies, {root: entry}, {root: {line: span}}, files, {root: {(source, line): span}})
-    for functions in declared sources; see function_scopes. A span is the lowest and
+    for functions in declared sources; see function_scopes. ``replaced``: see
+    _line_rows. A span is the lowest and
     highest address of a function's rows on a line. The first mapping keeps rows of the
     function's own file (describe); the last keeps every row the function runs, in any
     declared file (clang runs a header struct's member initializers in its caller)."""
@@ -588,7 +610,7 @@ def _function_entries(info, line_text, workspace, declared):
 
     workspace = Path(workspace).resolve()
     inputs = {str((workspace / name).resolve()): name for name in declared}
-    rows = sorted(_line_rows(line_text, workspace, declared))
+    rows = sorted(_line_rows(line_text, workspace, declared, replaced=replaced))
     addresses = [row[0] for row in rows]
     dies = _dies(info)
     owner = [None] * len(rows)
@@ -651,7 +673,11 @@ def _own_lines(dies, entry, numbers, macro_lines=frozenset()):
     if first is not None:
         numbers = {number for number in numbers if number >= first} or numbers
     if first not in macro_lines:
-        numbers = {number for number in numbers if number not in macro_lines} or numbers
+        # A macro defined inside the function (between its other lines) keeps them.
+        outside = {number for number in numbers if number not in macro_lines}
+        if outside:
+            low, high = min(outside), max(outside)
+            numbers = {number for number in numbers if number in outside or low < number < high}
     return numbers
 
 
@@ -740,9 +766,15 @@ def function_scopes(info, line_text, workspace, declared):
     the callee, not its caller. Copies of one function (C1/C2 constructors, inlined and
     out-of-line copies) are merged through the DIE that declares them.
     """
-    dies, functions, lines, _, _, addresses = _function_entries(
-        info, line_text, workspace, declared
+    replaced = set()
+    dies, functions, lines, (inputs, sources), _, addresses = _function_entries(
+        info, line_text, workspace, declared, replaced
     )
+    workspace = Path(workspace).resolve()
+
+    def source_of(attribute):
+        return _source_of(attribute, inputs, workspace, sources)
+
     found, macros = {}, {}
     for root, entry in functions.items():
         source = entry["source"]
@@ -772,9 +804,20 @@ def function_scopes(info, line_text, workspace, declared):
         merged = found.setdefault(json.dumps(scope, sort_keys=True), (scope, {}, {}, set()))
         for local, kinds in names.items():
             merged[1].setdefault(local, set()).update(kinds)
+        # Rows a later row at their address replaces run no code.
+        ran = {
+            key: [address for address in found if (address, *key) not in replaced]
+            for key, found in addresses.get(root, {}).items()
+        }
+        declared_at = _first(dies, entry["chain"], "DW_AT_decl_line")
+        # A function a macro declares runs its arguments' code on the invoking line,
+        # past other functions: its blocks' lines are not one span.
+        in_macro = (
+            declared_at and declared_at.isdigit() and int(declared_at) in (macros[source] or ())
+        )
         blocks = (
-            _block_spans(dies, entry, root, addresses.get(root, {}), numbers)
-            if macros[source] is not None
+            _block_spans(dies, entry, root, ran, numbers, source_of)
+            if macros[source] is not None and not in_macro
             else None
         )
         if blocks is None:

@@ -849,24 +849,38 @@ def test_a_gcc_optimized_block_span_skips_rows_another_row_replaces(
         pytest.skip("needs GCC")
     from peeky.cli import main
 
-    (tmp_path / "o2.c").write_text(OPTIMIZED_BLOCKS)
-    config = {
-        "language": "c",
-        "sources": ["o2.c"],
-        "headers": [],
-        "compiler": gcc,
-        "adapter": native_config["adapter"],
-        "dwarfdump": native_config["dwarfdump"],
-        "optimization": "O2",
-    }
-    (tmp_path / "o2.json").write_text(json.dumps(config))
-    assert (
-        main(["describe", str(tmp_path / "o2.c"), "--config", str(tmp_path / "o2.json"), "--json"])
-        == 0
-    )
-    scopes = json.loads(capsys.readouterr().out)["scopes"]
-    spans = next(s for s in scopes if s["scope"] == "accumulate").get("spans", {})
+    def line_of(text, marker):
+        return next(i for i, line in enumerate(text.splitlines(), 1) if marker in line)
+
+    def described(name, text, level):
+        (tmp_path / name).write_text(text)
+        config = {
+            "language": "c",
+            "sources": [name],
+            "headers": [],
+            "compiler": gcc,
+            "adapter": native_config["adapter"],
+            "dwarfdump": native_config["dwarfdump"],
+            "optimization": level,
+        }
+        (tmp_path / f"{level}.json").write_text(json.dumps(config))
+        arguments = ["describe", str(tmp_path / name), "--config", str(tmp_path / f"{level}.json")]
+        assert main([*arguments, "--json"]) == 0
+        return {
+            s["scope"]: s.get("spans", {}) for s in json.loads(capsys.readouterr().out)["scopes"]
+        }
+
+    spans = described("o2.c", OPTIMIZED_BLOCKS, "O2")["accumulate"]
     assert all(first >= 14 for first, _ in spans.get("tail", [])), spans
+    # Review 4: a statement row a later row at its address replaces (an inlined
+    # `printf`'s) runs no code either; an inlined call's line is its block's (LLDB stops
+    # there, at the callee's entry, in this frame).
+    words = line_of(RICH, "int words = count_words(buf);")
+    spans = described("rich.c", RICH, "O2")["main"]
+    assert spans["words"] and all(first >= words for first, _ in spans["words"]), spans
+    neg = line_of(RICH, "return clamp(neg, -50, 0);")
+    spans = described("rich.c", RICH, "Og")["classify"]
+    assert any(first <= neg <= last for first, last in spans["neg"]), spans
 
 
 OPTIMIZED_BLOCKS = """#include <stdio.h>
@@ -895,6 +909,90 @@ int main(int argc, char **argv) {
     int c = accumulate(argc + 8);
     printf("%d %d %d\\n", a, b, c);
     return 0;
+}
+"""
+
+RICH = """#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+struct stats { int count; long sum; int max; };
+
+static inline int clamp(int v, int lo, int hi) {
+    if (v < lo) return lo;
+    if (v > hi) return hi;
+    return v;
+}
+
+static void add(struct stats *s, int v) {
+    s->count++;
+    s->sum += v;
+    if (v > s->max) {
+        int old = s->max;
+        s->max = v;
+        if (old < 0) printf("first max %d\\n", v);
+    }
+}
+
+static int count_words(const char *text) {
+    int words = 0, in_word = 0;
+    for (const char *p = text; *p; p++) {
+        int space = (*p == ' ' || *p == '\\n');
+        if (!space && !in_word) {
+            words++;
+        }
+        in_word = !space;
+    }
+    return words;
+}
+
+static int classify(int v) {
+    switch (v % 4) {
+    case 0: {
+        int doubled = v * 2;
+        return clamp(doubled, 0, 100);
+    }
+    case 1: {
+        int neg = -v;
+        return clamp(neg, -50, 0);
+    }
+    case 2:
+        return v;
+    default: {
+        int sq = v * v;
+        for (int k = 0; k < 3; k++) {
+            sq ^= rand() & k;
+        }
+        return sq;
+    }
+    }
+}
+
+static int fib(int n) {
+    if (n < 2) return n;
+    int a = fib(n - 1);
+    int b = fib(n - 2);
+    return a + b;
+}
+
+int main(int argc, char **argv) {
+    struct stats s = {0, 0, -1};
+    char buf[64];
+    snprintf(buf, sizeof buf, "the quick %s fox", argc > 1 ? argv[1] : "brown");
+    for (int i = 0; i < 6 + argc; i++) {
+        int c = classify(i + rand() % 3);
+        add(&s, c);
+        if (c > 10) {
+            int words = count_words(buf);
+            printf("words %d\\n", words);
+        }
+    }
+    int f = fib(8 + argc);
+    {
+        long avg = s.count ? s.sum / s.count : 0;
+        printf("%d %ld %d %ld %d\\n", s.count, s.sum, s.max, avg, f);
+    }
+    return (int)strlen(buf) & 1;
 }
 """
 
