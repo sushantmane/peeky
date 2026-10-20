@@ -960,4 +960,119 @@ def test_a_cheap_read_finds_declarators_after_braces_enumerators_and_functions()
     assert storage_named("{ enum { q = 7 }; }", "q")
     assert storage_named("{ long use2(long); }", "use2")
     assert storage_named("{ typedef long q; }", "q")
+    assert storage_named("{ struct q { long v; }; }", "q")
     assert not storage_named("{ long r = 1; use(r); }", "q")
+
+
+# Review of PR #144 (round 2): what Peeky reads is the translation unit as the compiler
+# preprocessed it; Clang's output for a function, with a system header, a fragment
+# included in a block and a `_Pragma` splitting a line.
+PREPROCESSED = b"""# 1 "dir/a.c"
+# 1 "<built-in>" 1
+# 1 "<built-in>" 3
+# 1 "<command line>" 1
+# 1 "<built-in>" 2
+# 1 "dir/a.c" 2
+# 1 "/usr/include/stdio.h" 1 3 4
+extern int printf(const char *, ...);
+
+# 2 "dir/a.c" 2
+long f(long q) {
+    long total = 1;
+# 3 "dir/a.c"
+#pragma clang diagnostic push
+# 3 "dir/a.c"
+                     total += 2;
+    {
+        enum { q = 7 };
+# 1 "dir/./frag.inc" 1
+total += 9;
+# 7 "dir/a.c" 2
+        total += q;
+    }
+# 20 "dir/a.c"
+    return total;
+}
+"""
+
+
+def test_a_preprocessed_unit_is_read_back_onto_its_sources():
+    from peeky.c_source import Preprocessed
+
+    own = {"dir/a.c", "dir/frag.inc"}
+    pre = Preprocessed(
+        PREPROCESSED.splitlines(keepends=True),
+        lambda path: path.replace("/./", "/") if path.replace("/./", "/") in own else None,
+    )
+    lines = pre.text.splitlines()
+    # A system header's run is one `#include` line; the `_Pragma`'s pieces are one line.
+    assert lines[pre.line("dir/a.c", 2) - 2] == "#include <another file>"
+    assert " ".join(lines[pre.line("dir/a.c", 3) - 1].split()) == "long total = 1; total += 2;"
+    assert pre.line("dir/frag.inc", 1) == pre.line("dir/a.c", 5) + 1
+    assert lines[pre.line("dir/a.c", 7) - 1].strip() == "total += q;"
+    assert lines[pre.line("dir/a.c", 20) - 1].strip() == "return total;"
+    assert pre.line("dir/a.c", 12) is None and pre.files == own
+    assert pre.origins[pre.line("dir/a.c", 5) - 1] == ("dir/a.c", 5)
+    statements = Statements(pre.text, raw_strings=False, trigraphs=False)
+    found = statements.block_storage(pre.line("dir/a.c", 7), "q", None, True)
+    assert pre.origins[found[1] - 1] == ("dir/a.c", 5) and found[0] == "enumerator"
+    # A system header's text inside a block: Peeky cannot tell what it declares.
+    inside = PREPROCESSED.replace(b"total += 9;", b'# 1 "/usr/include/x.h" 1 3\nint x;')
+    pre = Preprocessed(
+        inside.splitlines(keepends=True), lambda path: path if "usr" not in path else None
+    )
+    statements = Statements(pre.text, raw_strings=False, trigraphs=False)
+    assert statements.block_storage(pre.line("dir/a.c", 7), "q", None, True) is None
+    # A file the output gives twice: its lines are not singled out.
+    twice = PREPROCESSED + b'# 1 "dir/./frag.inc" 1\ntotal += 9;\n'
+    pre = Preprocessed(twice.splitlines(keepends=True), lambda path: path.replace("/./", "/"))
+    assert pre.line("dir/frag.inc", 1) == 0
+
+
+NESTED_ENUMS = """long run(void) {
+    long q = 1, r = 2, total = 0;
+    {
+        struct S { enum { q = 3 } kind; long v; } s = { 0, 2 };
+        total += q;
+    }
+    {
+        total += (enum { r = 4 })0 + r;
+    }
+    {
+        struct T { long v; } t = { 1 };
+        struct q { long v; } u = { 2 };
+        total += q;
+    }
+    {
+        struct q;
+        total += q;
+    }
+    return total;
+}
+"""
+
+
+def test_c_gives_enumerators_anywhere_in_a_block_its_scope_and_cpp_a_class_name():
+    # Review of PR #144 (round 2): in C an enum nested in a struct's body (or a cast)
+    # declares its enumerators in the block; in C++ they are the class's. A C++ class a
+    # block declares hides the outer local; a C struct's tag does not.
+    c = Statements(NESTED_ENUMS, raw_strings=False, trigraphs=False)
+    cpp = Statements(NESTED_ENUMS, raw_strings=True)
+    assert c.block_storage(5, "q", 2) == ("enumerator", 4)
+    assert cpp.block_storage(5, "q", 2) is False
+    assert c.block_storage(8, "r", 2) == ("enumerator", 8)
+    assert c.block_storage(13, "q", 2) is False
+    assert cpp.block_storage(13, "q", 2) == ("class", 12)
+    assert cpp.block_storage(17, "q", 2) == ("class", 16)
+    # In the local's own block, a class of its name leaves the variable named.
+    own = "long run() {\n    long q = 1;\n    struct q { long v; };\n    return q;\n}\n"
+    assert Statements(own, raw_strings=True).block_storage(4, "q", 2) is False
+    attributed = "long run() {\n    long q = 1;\n    {\n        struct [[maybe_unused]] q;\n"
+    attributed += "        enum class alignas(8) E { a };\n        return 0;\n    }\n}\n"
+    assert Statements(attributed, raw_strings=True).block_storage(6, "q", 2) == ("class", 4)
+    # A function returning a struct it defines: its body does not hide the declaration.
+    returning = "long run(void) {\n    long use2 = 1;\n    {\n"
+    returning += "        struct S { long v; } use2(long);\n        return 0;\n    }\n}\n"
+    for raw_strings in (False, True):
+        found = Statements(returning, raw_strings=raw_strings).block_storage(5, "use2", 2)
+        assert found == ("function", 4)

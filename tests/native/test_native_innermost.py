@@ -1212,7 +1212,7 @@ static long run(int n) {
     long before = twice(3);
     volatile int tries = 0;
     long total = 0;  // TOP
-    if (setjmp(env) != 0) {
+    if (setjmp(env) != 0) {  // CALL
         total += 100;
     }
     long later = twice(tries);  // AFTER
@@ -1290,6 +1290,11 @@ def test_locals_of_a_program_using_setjmp_carry_a_note(directory, capsys):
     result, rows = probed(capsys, path, line_of(JUMPED, "// TOP"), "total,later,before", 1)
     assert withheld(rows[1, "total"], "declared on line") and "note" not in rows[1, "before"]
     assert withheld(rows[1, "later"], "below this stop"), rows
+    # On the call's own line too (review of PR #144, round 2): a `longjmp` returns past
+    # the call, never to the line's first instruction, where this stop is.
+    result, rows = probed(capsys, path, line_of(JUMPED, "// CALL"), "later,total", 1)
+    assert withheld(rows[1, "later"], "below this stop") and "note" not in rows[1, "later"], rows
+    assert rows[1, "total"]["value"] == "0", rows
     # A function that makes no setjmp call: judged as usual.
     result, rows = probed(capsys, path, line_of(JUMPED, "// HELPER"), "w,v", 1)
     assert withheld(rows[1, "w"], "declared on line") and "note" not in rows[1, "v"], rows
@@ -1479,7 +1484,8 @@ int main() {
     [
         ("shadow.c", "EXTERN", "gcount", "names the block's `extern` `gcount`"),
         ("shadow.c", "STATIC", "q", "names the block's `static` `q`"),
-        ("shadow.c", "MACRO", "r", "a macro or a directive there may"),
+        # A macro's static: read as the compiler preprocessed the source (PR #144, round 2).
+        ("shadow.c", "MACRO", "r", "names the block's `static` `r`"),
         ("shadow.cpp", "USING", "level", "the block's `using` declaration (line"),
     ],
 )
@@ -1634,6 +1640,104 @@ int main() {
     return 0;
 }
 """,
+    # Review of PR #144 (round 2): what a macro or a conditional makes of a block, and an
+    # enum nested in a struct's body (C gives its enumerators the block's scope).
+    "made.c": """#include <stdio.h>
+
+#define MAKE_ENUM enum { q = 7 }
+#define DECL_ENUM(n) enum { n = 8 }
+#define PROTO(n) long n(long)
+#define HAVE_STATIC 1
+__attribute__((noinline)) long use(long v) { return v + 1; }
+
+__attribute__((noinline)) long nested(void) {
+    long q = 1;
+    long total = 0;
+    {
+        struct S { enum { q = 3 } kind; long v; } s = { 0, 2 };
+        total += use(q) + s.v;  // NESTED
+    }
+    return total;
+}
+__attribute__((noinline)) long made(void) {
+    long q = 1;
+    long total = 0;
+    {
+        MAKE_ENUM;
+        total += use(q);  // MADE
+    }
+    return total;
+}
+__attribute__((noinline)) long given(void) {
+    long q = 1;
+    long total = 0;
+    {
+        DECL_ENUM(q);
+        total += use(q);  // GIVEN
+    }
+    return total;
+}
+__attribute__((noinline)) long proto(void) {
+    long use3 = 1;
+    long total = 0;
+    {
+        PROTO(use3);
+        total += (use3 != 0);  // PROTO
+    }
+    return total;
+}
+__attribute__((noinline)) long defined(void) {
+    long q = 1;
+    long total = 0;
+    {
+#ifdef HAVE_STATIC
+        static long q = 2;
+#endif
+        total += use(q);  // DEFINED
+    }
+    return total;
+}
+__attribute__((noinline)) long tag(void) {
+    long q = 1;
+    long total = 0;
+    {
+        struct q { long v; } t = { 4 };
+        total += use(q) + t.v;  // TAG
+    }
+    return total;
+}
+
+int main(void) {
+    printf("%ld %ld %ld %ld %ld %ld\\n", nested(), made(), given(), proto(), defined(), tag());
+    return 0;
+}
+long use3(long v) { return v; }
+""",
+    # A C++ class a block declares hides the outer local; a class's own enumerator does
+    # not.
+    "made.cpp": """#include <cstdio>
+
+__attribute__((noinline)) long use(long v) { return v + 1; }
+
+__attribute__((noinline)) long classes() {
+    long q = 1;
+    long total = 0;
+    {
+        struct q { long v = 5; };
+        total += sizeof(q) + q{}.v;  // CLASS
+    }
+    {
+        struct S { enum { q = 4 }; long v = 2; } s;
+        total += use(q) + s.v + S::q;  // MEMBER
+    }
+    return total;
+}
+
+int main() {
+    std::printf("%ld\\n", classes());
+    return 0;
+}
+""",
     "multi.c": """#include <stdio.h>
 
 __attribute__((noinline)) long use(long v) { return v + 1; }
@@ -1668,8 +1772,15 @@ int main(void) {
         ("hide.c", "ANON", "q", "names the block's `static` `q`"),
         ("hide.c", "ENUM", "q", "names the block's enumerator `q`"),
         ("hide.c", "FDECL", "use2", "names the function `use2` the block declares"),
-        # Under a conditional Peeky cannot evaluate: not claimed, withheld all the same.
-        ("hide.c", "IFDEF", "q", "may not be what the code reads"),
+        # Read as the compiler preprocessed it: an enum in a struct's body (C), a
+        # macro's, a function a macro declares, a static a defined `#ifdef` keeps; a
+        # C++ class.
+        ("made.c", "NESTED", "q", "names the block's enumerator `q` (line 13)"),
+        ("made.c", "MADE", "q", "names the block's enumerator `q` (line 22)"),
+        ("made.c", "GIVEN", "q", "names the block's enumerator `q` (line 31)"),
+        ("made.c", "PROTO", "use3", "names the function `use3` the block declares (line 40)"),
+        ("made.c", "DEFINED", "q", "names the block's `static` `q` (line 50)"),
+        ("made.cpp", "CLASS", "q", "names the type `q` the block declares (line 9)"),
         # A thread's own static is listed, apart: the row says where.
         ("hide.cpp", "TLS", "q @ hide.cpp:6", "listed separately as `q @ hide.cpp:9`"),
     ],
@@ -1693,20 +1804,74 @@ def test_a_name_a_block_declares_otherwise_hides_the_outer_local(
         capsys.readouterr()
 
 
+HEADER_HIDING = """#define MAKE_ENUM enum { q = 7 }
+__attribute__((noinline)) static long inhead(void) {
+    long q = 1;
+    long total = 0;
+    {
+        MAKE_ENUM;
+        total += q;  // INHEAD
+    }
+    return total + q;  // AFTER
+}
+"""
+HEADER_HIDING_MAIN = """#include <stdio.h>
+#include "hiding.h"
+
+int main(void) {
+    long q = 2;
+    printf("%ld %ld\\n", inhead(), q);  // CALL
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(300)
+def test_a_header_functions_block_is_read_from_the_unit_including_it(directory, capsys):
+    # Review of PR #144 (round 2): a function in a header is read in the translation
+    # unit that includes it, as the compiler preprocessed it there.
+    (directory / "hiding.h").write_text(HEADER_HIDING)
+    path = directory / "main.c"
+    path.write_text(HEADER_HIDING_MAIN)
+    line = line_of(HEADER_HIDING_MAIN, "// CALL")
+    assert main(["session", "start", str(path), "--at", str(line)]) == 0
+    capsys.readouterr()
+    try:
+        for _ in range(3):
+            assert main(["session", "step", "--into"]) == 0
+        assert f"hiding.h:{line_of(HEADER_HIDING, '// INHEAD')} " in capsys.readouterr().out
+        main(["session", "get", "q", "total", "--json"])
+        rows = {row["selector"]: row for row in json.loads(capsys.readouterr().out)}
+        assert withheld(rows["q"], "names the block's enumerator `q` (line 6)"), rows
+        assert rows["total"]["value"] == "0", rows
+        assert main(["session", "set", "q=9", "--json"]) == 2
+        assert json.loads(capsys.readouterr().out)["error"]["code"] == "MUTATION_REJECTED"
+        assert main(["session", "step"]) == 0
+        capsys.readouterr()
+        main(["session", "get", "q", "--json"])
+        assert json.loads(capsys.readouterr().out)[0]["value"] == "1"
+    finally:
+        main(["session", "close"])
+        capsys.readouterr()
+
+
 @pytest.mark.timeout(300)
 @pytest.mark.parametrize(
-    "marker, local, value",
+    "name, marker, local, value",
     [
-        ("IFZERO", "q", "1"),  # an `#if 0` leaves the static out
-        ("PROTO", "q", "4"),  # a prototype's parameter declares nothing here
-        ("ONCE", "q", "2"),  # a macro declaring a static that does not name `q`
+        ("hide.c", "IFZERO", "q", "1"),  # an `#if 0` leaves the static out
+        ("hide.c", "IFDEF", "q", "1"),  # so does an `#ifdef` of what is not defined
+        ("hide.c", "PROTO", "q", "4"),  # a prototype's parameter declares nothing here
+        ("hide.c", "ONCE", "q", "2"),  # a macro declaring a static that does not name `q`
+        ("made.c", "TAG", "q", "1"),  # a C struct's tag is no variable's name
+        ("made.cpp", "MEMBER", "q", "1"),  # a class's enumerator is the class's
     ],
 )
 def test_a_name_a_block_does_not_declare_leaves_the_outer_local_read(
-    directory, capsys, marker, local, value
+    directory, capsys, name, marker, local, value
 ):
-    source = HIDING["hide.c"]
-    path = directory / "hide.c"
+    source = HIDING[name]
+    path = directory / name
     path.write_text(source)
     rows = shown_at(capsys, path, line_of(source, f"// {marker}"), local)
     assert rows[local].get("value") == value, rows[local]

@@ -11,6 +11,7 @@ import contextlib
 import hashlib
 import json
 import os
+import posixpath
 import re
 import shutil
 import struct
@@ -35,7 +36,7 @@ from peeky.build import (
     prepare,
     real_tool,
 )
-from peeky.c_source import Statements, macro_hazards, returning_twice, storage_named
+from peeky.c_source import Preprocessed, Statements, macro_hazards, returning_twice
 from peeky.cxx_strings import libstdcxx_string, shows_text, string_class, text_like, tidy
 from peeky.digest import sha256_file
 from peeky.names import unicode_escape
@@ -69,9 +70,12 @@ def _path_name(name, suffix):
         raise ValueError("Expected a plain relative native input path")
 
 
-def _metadata(tool, arguments, workspace, env, *, max_bytes=MAX_METADATA, timeout=15):
-    """Bound metadata capture; larger engineering probes do not change parser limits."""
-    if type(max_bytes) is not int or not 0 < max_bytes <= 16 * 1024 * 1024:
+def _metadata(tool, arguments, workspace, env, *, max_bytes=MAX_METADATA, timeout=15, read=None):
+    """Bound metadata capture; larger engineering probes do not change parser limits.
+    ``read(path)`` reads a larger output (up to 64 MiB) as it streams, instead of the
+    whole text being returned."""
+    limit = (64 if read else 16) * 1024 * 1024
+    if type(max_bytes) is not int or not 0 < max_bytes <= limit:
         raise ValueError("Invalid native metadata capture limit")
     if type(timeout) not in (int, float) or not 0 < timeout <= 15:
         raise ValueError("Invalid native metadata time limit")
@@ -115,7 +119,7 @@ def _metadata(tool, arguments, workspace, env, *, max_bytes=MAX_METADATA, timeou
             )
         if output.stat().st_size > max_bytes or errors.stat().st_size > 16000:
             raise ValueError("Native symbol metadata exceeds limit")
-        return output.read_text(encoding="utf-8")
+        return read(output) if read else output.read_text(encoding="utf-8")
 
 
 def _line_rows(text, workspace, declared, limit=MAX_METADATA, replaced=None):
@@ -2044,6 +2048,29 @@ class NativeTarget:
     # Candidate probes stage an edit into a fresh build (the worker's launch `edit`).
     supports_edits = True
 
+    def _compile_flags(self):
+        """(driver, every flag a source is compiled with, the sysroot, its resolved SDK)."""
+        # The compiler path is resolved (clang++ is a symlink to clang), and clang picks
+        # its language from the name it runs as; keep C++ mode so libc++ is linked.
+        driver = ("--driver-mode=g++",) if self.language == "cpp" else ()
+        flags = [*driver, *self.compiler_options]
+        # Without an explicit sysroot, use the SDK the /usr/bin xcrun stub would have
+        # supplied; it is part of the recorded build commands either way.
+        sysroot = self.sysroot if self.sysroot is not None else default_sdk()
+        sdk = None
+        if sysroot is not None:
+            sdk = Path(sysroot).resolve(strict=True)
+            if not sdk.is_dir():
+                raise ValueError("Native sysroot must be a directory")
+            flags.extend(("-isysroot", str(sdk)))
+        return driver, flags, sysroot, sdk
+
+    def preprocess_argv(self, source):
+        """The build's own compile of ``source``, preprocessing only (`-E`, keeping its
+        line markers): the text the compiler parsed (#144)."""
+        _, flags, _, _ = self._compile_flags()
+        return _tool(self.compiler), [*flags, "-E", source]
+
     def prepare(self, program, root, *, edit=None, deadline=None):
         root = Path(root).resolve(strict=True)
         relative = Path(program).resolve(strict=True).relative_to(root).as_posix()
@@ -2056,18 +2083,7 @@ class NativeTarget:
                 else "Native candidate edits require a declared C++ source"
             )
         compiler, adapter, dwarfdump = map(_tool, (self.compiler, self.adapter, self.dwarfdump))
-        # The compiler path is resolved (clang++ is a symlink to clang), and clang picks
-        # its language from the name it runs as; keep C++ mode so libc++ is linked.
-        driver = ("--driver-mode=g++",) if self.language == "cpp" else ()
-        flags = [*driver, *self.compiler_options]
-        # Without an explicit sysroot, use the SDK the /usr/bin xcrun stub would have
-        # supplied; it is part of the recorded build commands either way.
-        sysroot = self.sysroot if self.sysroot is not None else default_sdk()
-        if sysroot is not None:
-            sdk = Path(sysroot).resolve(strict=True)
-            if not sdk.is_dir():
-                raise ValueError("Native sysroot must be a directory")
-            flags.extend(("-isysroot", str(sdk)))
+        driver, flags, sysroot, sdk = self._compile_flags()
         # Keep objects until dsymutil finishes; single-step clang removes its
         # temporary objects and a subsequent dsymutil can erase valid symbols.
         objects = tuple(f"peeky-object-{index}.o" for index in range(len(self.sources)))
@@ -2592,7 +2608,7 @@ class NativeSession:
                     "frame is back in its own lines"
                 )
             here, line = place
-        if shadowed := self._block_storage(name, frame, here, line):
+        if shadowed := self._block_storage(name, frame, here, line, (stopped, raw_line)):
             return shadowed
         if not innermost and (
             unfinished := declared_unfinished(
@@ -3160,54 +3176,80 @@ class NativeSession:
             return None
         return int(pointer, 16) - bias
 
-    def _block_storage(self, name, frame, source, line):
+    def _block_storage(self, name, frame, source, line, stop=None):
         """Why the root local ``name`` of ``frame`` is not what the code at ``source:line``
-        reads, or None: a block around the line declares a `static`, `extern` (or C++
-        `using`) ``name`` after the local, which the code uses instead, and which lldb-dap
-        does not list among the frame's locals (clang declares a block's static in the
-        function's scope, and a block's `extern` not at all), so the row shows the outer
-        local under that name. Where Peeky cannot read that from the source (a macro or
-        directive that may declare one), withheld too."""
+        reads, or None: a block around the line declares ``name`` after the local, so
+        that the code names that instead: a `static` or an `extern` (lldb-dap does not
+        list them among the frame's locals: clang declares a block's static in the
+        function's scope, and a block's `extern` not at all), a `typedef`, an
+        enumerator, a function, a C++ `using` declaration or class, and the row shows
+        the outer local under that name. Read from the translation unit as the
+        compiler preprocessed it, so what a macro, a conditional or an `#include` makes
+        of the source is what is read; withheld where Peeky cannot read it. ``stop``:
+        the (file, line) the frame runs, where ``source:line`` is an `#include` line
+        that brings it in (the preprocessed text has its lines there instead)."""
         found = shown_declaration(self.declarations, name, self._unslid(frame))
         if found is None:
             return None
         base = (_SHADOWED.fullmatch(name) or [None, name])[1]
-        statements = self._statements(source)
-        after = found[1][1] if found else None
-        storage = (
-            None
-            if statements is None
-            else statements.block_storage(line, base, after, self._stored_elsewhere(base, source))
-        )
-        if storage is False:
+        declared = found[1] if found else (None, None, False)
+        verdicts, failure = set(), None
+        for unit in self._units(source):
+            read = self._preprocessed(unit)
+            if isinstance(read, str):
+                failure = read
+                break
+            preprocessed, statements = read
+            if source not in preprocessed.files:
+                continue
+            at = preprocessed.line(source, line)
+            if at is None and stop is not None and stop[0] in preprocessed.files:
+                at = preprocessed.line(*stop)
+            after = None
+            if declared[1] is not None:
+                after = preprocessed.line(declared[0] or source, declared[1])
+            if not at or after == 0 or (declared[1] is not None and after is None):
+                # The stop's line, or the local's, is not singled out in it.
+                verdicts.add(None)
+                continue
+            storage = statements.block_storage(at, base, after, True)
+            if storage:
+                origin = preprocessed.origins[storage[1] - 1]
+                storage = None if origin is None else (storage[0], *origin)
+            verdicts.add(storage)
+        if failure is None and verdicts == {False}:
             return None
-        if storage is None:
-            return Withholding(
-                f"Peeky cannot tell from the source whether a block around line {line} "
-                f"declares a `static` or `extern` `{base}` (a macro or a directive there may), "
-                "which the code would read instead of this local and the debugger does not "
-                "list",
-                "may not be what the code reads",
-                f"{name!r} cannot be changed here: at line {line} the code may read a "
-                f"`static` or `extern` `{base}` a macro or a directive in a block around it "
-                "declares, which the debugger does not list, so a change to this local may "
-                "not reach that code",
+        if failure is not None or len(verdicts) != 1 or None in verdicts:
+            why = (
+                f"Peeky could not preprocess the source to read it ({failure})"
+                if failure is not None
+                else "Peeky cannot read that from the source as the compiler preprocessed it"
             )
-        kind, at = storage
-        listed = f"`{base} @ {Path(source).name}:{at}`"
+            return Withholding(
+                f"a block around line {line} may declare `{base}` (a `static`, an `extern`, "
+                f"an enumerator, a function or a type), which the code would name instead of "
+                f"this local: {why}",
+                "may not be what the code reads",
+                f"{name!r} cannot be changed here: at line {line} the code may name a "
+                f"`{base}` a block around it declares, not this local ({why}), so a change "
+                "to it may not reach that code",
+            )
+        kind, declared_in, at = next(iter(verdicts))
+        place = f"line {at}" if declared_in == source else f"{Path(declared_in).name}:{at}"
+        listed = f"`{base} @ {Path(declared_in).name}:{at}`"
         what = {
-            "using": f"the `{base}` the block's `using` declaration (line {at}) brings in, "
+            "using": f"the `{base}` the block's `using` declaration ({place}) brings in, "
             "which the debugger does not list",
-            "enumerator": f"the block's enumerator `{base}` (line {at}), a constant",
-            "function": f"the function `{base}` the block declares (line {at})",
-            "typedef": f"the type `{base}` the block's `typedef` names (line {at})",
-            "thread_local": f"the block's `thread_local` `{base}` (line {at}), listed "
+            "enumerator": f"the block's enumerator `{base}` ({place}), a constant",
+            "function": f"the function `{base}` the block declares ({place})",
+            "typedef": f"the type `{base}` the block's `typedef` names ({place})",
+            "class": f"the type `{base}` the block declares ({place})",
+            "thread_local": f"the block's `thread_local` `{base}` ({place}), listed "
             f"separately as {listed}",
-            "_Thread_local": f"the block's `_Thread_local` `{base}` (line {at}), listed "
+            "_Thread_local": f"the block's `_Thread_local` `{base}` ({place}), listed "
             f"separately as {listed}",
-            "__thread": f"the block's `__thread` `{base}` (line {at}), listed separately "
-            f"as {listed}",
-        }.get(kind, f"the block's `{kind}` `{base}` (line {at}), which the debugger does not list")
+            "__thread": f"the block's `__thread` `{base}` ({place}), listed separately as {listed}",
+        }.get(kind, f"the block's `{kind}` `{base}` ({place}), which the debugger does not list")
         return Withholding(
             f"the code here names {what}: this row is the outer local of that name",
             "not what the code reads",
@@ -3216,24 +3258,78 @@ class NativeSession:
             "code",
         )
 
-    def _stored_elsewhere(self, name, source):
-        """Whether another of the program's files may declare ``name`` with static or
-        external storage (an `#include` in a block may bring that in); unreadable ones
-        count as may."""
-        cache = self.__dict__.setdefault("stored_elsewhere", {})
-        if (name, source) not in cache:
-            cache[name, source] = any(
-                text is None or storage_named(text, name)
-                for each in self.target.verification_inputs
-                if str(each) != str(source)
-                for text in [self._source_text(each)]
-            )
-        return cache[name, source]
+    def _units(self, source):
+        """The program's translation units that may hold ``source``'s lines: itself, and
+        those whose dependencies (`-MD`) may name it (all where they cannot be read)."""
+        cache = self.__dict__.setdefault("units_holding", {})
+        if source not in cache:
+            cache[source] = self._read_units(source)
+        return cache[source]
+
+    def _read_units(self, source):
+        units = []
+        for index, unit in enumerate(self.target.sources):
+            unit = str(unit)
+            if unit != source:
+                try:
+                    depends = (self.prepared.workspace / f"peeky-object-{index}.o.d").read_text(
+                        encoding="utf-8", errors="replace"
+                    )
+                except OSError:
+                    depends = None
+                if depends is not None and Path(source).name not in depends:
+                    continue
+            units.append(unit)
+        return units
+
+    def _preprocessed(self, unit):
+        """(c_source.Preprocessed, its Statements) of the translation unit ``unit`` as
+        the build's compiler preprocesses it (once a session), or why it could not."""
+        cache = self.__dict__.setdefault("preprocessed", {})
+        if unit not in cache:
+            workspace = self.prepared.workspace.resolve()
+            own = {posixpath.normpath(str(each)) for each in self.target.verification_inputs}
+
+            def program(path):
+                if path.startswith("<"):
+                    return None
+                if os.path.isabs(path):
+                    try:
+                        path = Path(path).resolve().relative_to(workspace).as_posix()
+                    except (OSError, ValueError):
+                        return None
+                path = posixpath.normpath(path)
+                return path if path in own else None
+
+            def read(output):
+                with output.open("rb") as lines:
+                    return Preprocessed(lines, program)
+
+            try:
+                tool, arguments = self.target.preprocess_argv(unit)
+                preprocessed = _metadata(
+                    tool,
+                    arguments,
+                    workspace,
+                    dict(self.prepared.manifest.effective_environment),
+                    max_bytes=64 * 1024 * 1024,
+                    read=read,
+                )
+            except (OSError, RuntimeError, ValueError) as exc:
+                detail = " ".join(str(exc).split())[:200]
+                cache[unit] = f"preprocessing {unit} failed: {detail}"
+            else:
+                raw_strings = getattr(self.target, "language", None) == "cpp"
+                statements = Statements(preprocessed.text, raw_strings, trigraphs=False)
+                cache[unit] = (preprocessed, statements)
+        return cache[unit]
 
     def _setjmp_above(self, frame, line):
-        """The line of a call that may return twice (`setjmp`) at or above ``line`` in
-        the function ``frame`` runs, 0 if Peeky cannot tell where its calls are, else
-        None (the program has none, or the function makes none up to the line)."""
+        """The line of a call that may return twice (`setjmp`) above ``line`` in the
+        function ``frame`` runs, 0 if Peeky cannot tell where its calls are, else None
+        (the program has none, or the function makes none above the line). One on the
+        line itself does not count: a `longjmp` returns past the call, never to the
+        line's first instruction, where a stop on the line is."""
         if self.__dict__.get("returns_twice") is None:
             return None
         function = self._function_at(frame)
@@ -3251,7 +3347,7 @@ class NativeSession:
         lines = cache[key]
         if lines is None:
             return 0
-        above = [number for number in lines if number <= line]
+        above = [number for number in lines if number < line]
         return min(above) if above else None
 
     def _setjmp_note(self, at, jump, declared):
