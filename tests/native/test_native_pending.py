@@ -282,6 +282,75 @@ def test_a_callers_aggregate_stored_element_by_element_is_withheld(bucket, capsy
     assert shown[11]["total"]["value"] == "0" and shown[11]["k"]["unavailable"]
 
 
+TRIO = """#include <stdio.h>
+
+struct pair { long x, y; };
+struct trio { long x; struct pair p; };
+
+__attribute__((noinline)) static long twice(long v) {
+    long w = v * 2;
+    return w;
+}
+
+__attribute__((noinline)) static void scribble(void) {
+    volatile long junk[96];
+    for (int i = 0; i < 96; i++) junk[i] = 0x5150 + i;
+}
+
+__attribute__((noinline)) static long run(long seed) {
+    struct pair q = { .x = seed,
+        .y = twice(2) };
+    long arr[2] = { seed + 1,
+        twice(9) };
+    struct trio t = { seed,
+        { twice(3),
+          twice(4) } };
+    long *ptrs[2] = { &q.x,
+        (long *)twice(0) };
+    printf("%ld %ld %ld %p\\n", q.y, arr[1], t.p.y, (void *)ptrs[1]);
+    return q.x;
+}
+
+int main(void) {
+    scribble();
+    return (int)(run(5) & 1);
+}
+"""
+
+
+@pytest.mark.timeout(240)
+@pytest.mark.parametrize("suffix", ["c", "cpp"])
+def test_a_callers_declaration_still_running_on_its_line_is_withheld(bucket, capsys, suffix):
+    # Review of #104 (round 3): line 21 has code (`t.x = seed`), all of it before the
+    # call, and `t.p` is stored after the calls on lines 22-23 return, so `--frame 1`
+    # showed `t.p.x = 20905` and `t.p.y = 20906` at hit 3, and `t.p.y = 20906` at hit 4.
+    directory = bucket.parent.with_name(f"trio-{suffix}")
+    directory.mkdir()
+    path = directory / f"frames5.{suffix}"
+    path.write_text(TRIO.replace("<stdio.h>", "<cstdio>") if suffix == "cpp" else TRIO)
+    selectors = ["t", "t.p", "t.p.y", "q.y", "arr[1]", "ptrs"]
+    rows = {}
+    for hit in (3, 4, 5):
+        assert main(["session", "start", str(path), "--at", "8", "--hit", str(hit)]) == 0
+        capsys.readouterr()
+        try:
+            main(["session", "get", "--frame", "1", *selectors, "--json"])
+            rows[hit] = {row["selector"]: row for row in json.loads(capsys.readouterr().out)}
+        finally:
+            main(["session", "close"])
+            capsys.readouterr()
+    for hit in (3, 4):
+        for selector in ("t", "t.p", "t.p.y"):
+            row = rows[hit][selector]
+            assert "value" not in row and row.get("unavailable", selector != "t"), (hit, row)
+            assert (
+                "its declaration (lines 21-23) is still running in this caller frame"
+                in row["error"]
+            ), (hit, row)
+        assert rows[hit]["q.y"]["value"] == "4" and rows[hit]["arr[1]"]["value"] == "18"
+    assert rows[5]["t.p.y"]["value"] == "8" and rows[5]["ptrs"]["unavailable"]
+
+
 GOTO = """#include <stdio.h>
 int main(void) {
     int i = 0;

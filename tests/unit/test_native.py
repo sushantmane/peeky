@@ -846,6 +846,28 @@ def test_a_function_running_code_on_another_files_line_is_among_its_owners():
     assert declared_below([loop], "i", "a.c", 3) is None
 
 
+def test_a_caller_frame_inside_a_locals_declaration_statement_withholds_it():
+    from peeky.c_source import Statements
+    from peeky.native import declared_unfinished
+
+    # Review of #104 (round 3): line 21's own code (`t.x = seed`) all runs before the call
+    # on line 22, and `t.p` is stored after the calls on lines 22-23 return.
+    statements = Statements(
+        "\n" * 20 + "struct trio t = { seed,\n    { twice(3),\n      twice(4) } };\nlong k = 1;\n"
+    )
+    run = {"source": "a.c", "jumps": False, "ranges": [(0, 1000)]}
+    run["rows"] = rows({21: (100, 108), 22: (110, 130), 23: (134, 150), 24: (150, 160)}, "a.c")
+    run["locals"] = {"t": {("a.c", 21, True)}}
+    for line, address in ((22, 116), (23, 140)):
+        assert declared_unfinished([run], "t", "a.c", line, address) is None
+        found = declared_unfinished([run], "t", "a.c", line, address, ends=statements.end)
+        assert found == (21, "statement", 23)
+    assert declared_unfinished([run], "t", "a.c", 24, 156, ends=statements.end) is None
+    # A statement end the source does not give: unknown means withheld.
+    unknown = declared_unfinished([run], "t", "a.c", 24, 156, ends=lambda at, name: None)
+    assert unknown == (21, "statement", None)
+
+
 def test_sources_naming_a_nonlocal_jump_are_found(tmp_path):
     from peeky.native import mentions_nonlocal_jumps
 

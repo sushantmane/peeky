@@ -1046,10 +1046,15 @@ def test_a_store_from_the_first_schema_6_gains_an_integer_identity_and_scope(sto
     rows = evidence.query(
         store, "SELECT selector, identity, typeof(identity) AS kind, scope FROM last_run"
     )["rows"]
+    # #104 review (round 3): that version could read module globals without saying so.
     assert rows == [
-        {"selector": "seen", "identity": 7, "kind": "integer", "scope": None},
-        {"selector": "key", "identity": None, "kind": "null", "scope": None},
+        {"selector": "seen", "identity": 7, "kind": "integer", "scope": "unknown"},
+        {"selector": "key", "identity": None, "kind": "null", "scope": "unknown"},
     ]
+    assert (
+        "'unknown' for a row stored before"
+        in (evidence.schema(store)["tables"]["captures"]["columns"]["scope"])
+    )
     run["rows"][0].update(identity=7, scope="globals")
     evidence.record(store, run, language="python")
     rows = evidence.query(store, "SELECT selector, identity, scope FROM last_run")["rows"]

@@ -35,6 +35,7 @@ from peeky.build import (
     prepare,
     real_tool,
 )
+from peeky.c_source import Statements
 from peeky.digest import sha256_file
 from peeky.names import unicode_escape
 
@@ -1121,6 +1122,8 @@ def has_nonlocal_jumps(binary):
 
 
 _SHADOWED = re.compile(r"(.+) @ [^:]+:([0-9]+)")
+# A source whose statements are scanned (c_source) to place a caller's declaration.
+MAX_STATEMENT_SOURCE = 8_000_000
 
 
 def declared_below(table, name, source, line):
@@ -1162,10 +1165,12 @@ def declared_below(table, name, source, line):
     return min(where[1] for _, where in candidates)
 
 
-def declared_unfinished(table, name, source, line, address):
+def declared_unfinished(table, name, source, line, address, ends=None):
     """For a caller frame at ``source:line``, inside a call that returns to ``address``
-    (unslid; None if unknown): ``(line, has_code)`` for a C/C++ local of that name whose
-    declaration may not have run yet, else None.
+    (unslid; None if unknown): ``(line, why, end)`` for a C/C++ local of that name whose
+    declaration may not have run yet, else None. ``why`` is `no code`, `statement` (the
+    frame's line is within the declaration statement, lines ``line``-``end``; ``end`` None
+    when ``ends(line, name)`` cannot find it) or `unfinished`.
 
     Declared at or above the frame's line: the frame's own line always counts, and so
     does a line the function still has code of at or after ``address`` (`long r =` /
@@ -1173,7 +1178,10 @@ def declared_unfinished(table, name, source, line, address):
     designated initializer over several lines). Declared anywhere on a line with no code
     of its own: an array of structs, a nested struct or a 2-D array is stored element by
     element on its elements' lines, so nothing places it. With the address or its
-    function unknown, every declaration at or above the line counts."""
+    function unknown, every declaration at or above the line counts. And so does one whose
+    statement, as the source writes it (``ends``), still runs on the frame's line:
+    `struct trio t = { seed,` / `{ twice(3), ... } };` has code of its first line, all of
+    it before the call."""
     shown = _SHADOWED.fullmatch(name)
     base = shown[1] if shown else name
     owners = [function for function in table if (source, line) in function["rows"]]
@@ -1197,9 +1205,13 @@ def declared_unfinished(table, name, source, line, address):
                 continue
             span = function["rows"].get((source, at))
             if span is None:
-                return at, False
+                return at, "no code", None
             if at <= line and (at == line or address is None or span[1] >= address):
-                return at, True
+                return at, "unfinished", None
+            if at <= line and ends is not None:
+                end = ends(at, base)
+                if end is None or line <= end:
+                    return at, "statement", end
     return None
 
 
@@ -1900,11 +1912,28 @@ class NativeSession:
             return None
         if not innermost and (
             unfinished := declared_unfinished(
-                self.declarations, name, source.as_posix(), line, self._unslid(frame)
+                self.declarations,
+                name,
+                source.as_posix(),
+                line,
+                self._unslid(frame),
+                ends=lambda at, local: self._statement_end(source, at, local),
             )
         ):
-            at, has_code = unfinished
-            if not has_code:
+            at, why, end = unfinished
+            if why == "statement":
+                return (
+                    (
+                        f"declared on line {at}, and its declaration (lines {at}-{end}) is "
+                        "still running in this caller frame"
+                        if end is not None
+                        else f"declared on line {at}, and Peeky cannot find in the source "
+                        "where its declaration ends, so this caller frame may be inside it"
+                    )
+                    + " (inside a call it makes): it may not be initialized yet, and its "
+                    "storage may hold leftovers; read it after the call returns"
+                )
+            if why == "no code":
                 return (
                     f"declared on line {at}, which has no code of its own (an aggregate is "
                     "stored element by element on its elements' lines), so this caller "
@@ -1939,6 +1968,21 @@ class NativeSession:
             "instruction), so not initialized: its storage holds leftovers; step once, or "
             f"stop after line {line}, to read it"
         )
+
+    def _statement_end(self, source, line, name):
+        """Where the declaration of ``name`` on ``line`` of the prepared ``source`` ends
+        (c_source.Statements), or None."""
+        cache = self.__dict__.setdefault("statements", {})
+        key = str(source)
+        if key not in cache:
+            try:
+                path = self.prepared.workspace / source
+                data = path.read_bytes() if path.stat().st_size <= MAX_STATEMENT_SOURCE else None
+            except OSError:
+                data = None
+            cache[key] = None if data is None else Statements(data.decode("utf-8", "replace"))
+        statements = cache[key]
+        return None if statements is None else statements.end(line, name)
 
     def _unslid(self, frame):
         """The frame's instruction address in the executable's own numbering, or None."""

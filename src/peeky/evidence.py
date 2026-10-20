@@ -97,8 +97,9 @@ TABLES = {
             "object's place. Never compare runs. NULL for values without one (numbers, "
             "strings, None) and in other languages (Java: object_ref(value))",
             "scope": "'globals' when a Python selector's first name was read from the "
-            "module's globals (it was not a local there), else NULL: the stopped frame's own "
-            "variables",
+            "module's globals (it was not a local there); 'unknown' for a row stored before "
+            "Peeky recorded this (an early version of schema 6, which could read module "
+            "globals); else NULL: the stopped frame's own variables",
         },
     ),
     "interventions": (
@@ -201,14 +202,15 @@ def _integer_identity(connection):
     if types.get("identity", "INTEGER") == "INTEGER":
         _add_identity(connection)
         return
-    # Rebuilt in rowid order (capture order), with the number alone as the identity.
+    # Rebuilt in rowid order (capture order), with the number alone as the identity. That
+    # early version could read module globals without recording it: their scope is unknown.
     columns = (
         "run_id, hit, phase, line, function, selector, type, value, num, unavailable, error, view"
     )
     connection.execute(_CAPTURES.format("captures_v7"))
     connection.execute(
-        f"INSERT INTO captures_v7 ({columns}, identity) SELECT {columns}, "
-        "peeky_identity(identity) FROM captures ORDER BY rowid"
+        f"INSERT INTO captures_v7 ({columns}, identity, scope) SELECT {columns}, "
+        "peeky_identity(identity), 'unknown' FROM captures ORDER BY rowid"
     )
     connection.execute("DROP TABLE captures")
     connection.execute("ALTER TABLE captures_v7 RENAME TO captures")
