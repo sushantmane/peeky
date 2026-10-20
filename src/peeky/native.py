@@ -1321,31 +1321,39 @@ _CONSTRUCTOR_NAME = re.compile(
 MAX_STATEMENT_SOURCE = 8_000_000
 
 
-def declared_below(table, name, source, line, through=None):
-    """The line a C/C++ local shown at ``source:line`` is declared on, when control
-    cannot have reached that declaration on this pass, else None.
+def declared_below(table, name, source, line, through=None, address=None):
+    """``(line, why)`` for a C/C++ local shown at ``source:line`` that is declared
+    below it, on ``line``; else None.
 
-    Only when every local of that name in every function owning code of the line is
-    an automatic variable declared in this source below it, and all of that
-    function's code of this line comes before any code of the declaration's line:
-    its value is then indeterminate here (C11 6.2.4). Line numbers alone do not say
-    that: clang runs a struct's default member initializer in its caller on the
-    struct's line, and GCC runs a `cleanup` at its variable's line when the block
-    ends. Never in a function with a label (`goto` can return above a declaration
-    with the local live). lldb-dap names a shadowed local `x @ file:line`, and that
-    line picks among them.
+    Only when every local of that name in every function owning code of the line is an
+    automatic variable declared in this source below it (lldb-dap names a shadowed
+    local `x @ file:line`, and that line picks among them). Above its declaration, in
+    the block that declares it, a local's value is indeterminate (C11 6.2.4): the block
+    was entered anew (a loop's body each pass), and its storage holds leftovers.
+
+    ``why`` is None when control cannot have reached the declaration on this pass:
+    the stop's ``address`` (unslid, when known) comes before any code of the
+    declaration's line, or all of the function's code of this line does. Line numbers
+    alone do not say that. Where Peeky cannot tell, ``why`` says what stands in the way,
+    and the local is withheld all the same (sixth agent evaluation): "after", the line
+    has code placed after the declaration's and the stop is not before it (a temporary's
+    destructor in an exception handler, which clang attributes to the line of
+    `std::string name = f(entry.substr(0, colon));`; GCC's `cleanup` at its variable's
+    line when the block ends; clang's default member initializer of a struct, run in
+    its caller on the struct's line); "label", a label lets `goto` return above the
+    declaration with the local live; "no code", a caller frame's declaration line has
+    no code of its own. A stop past the declaration there is in code after it, where
+    the local may be live, destroyed or not reached: never shown.
 
     A declaration line with no code of its own (an aggregate stored element by element
     on its elements' lines) counts by the code of its statement's lines, to where
-    ``through(source, line, name)`` says it ends; with that unknown, it counts as below.
+    ``through(source, line, name)`` says it ends; with that unknown, it is unproven.
     """
     shown = _SHADOWED.fullmatch(name)
     here = (source, line)
     # Every function with code on the line, whatever file it is defined in: the one
     # stopped in is among them.
     owners = [function for function in table if here in function["rows"]]
-    if any(function["jumps"] for function in owners):
-        return None
     candidates = [
         (function, where)
         for function in owners
@@ -1355,6 +1363,8 @@ def declared_below(table, name, source, line, through=None):
         candidates = [pair for pair in candidates if pair[1][1] == int(shown[2])]
     if not candidates:
         return None
+    # A backward `goto` can return above the declaration with the local live.
+    why = "label" if any(function["jumps"] for function in owners) else None
     for function, (declared_in, at, automatic) in candidates:
         if not automatic or declared_in != source or type(at) is not int or at <= line:
             return None
@@ -1362,7 +1372,7 @@ def declared_below(table, name, source, line, through=None):
         if (source, at) in rows:
             first = rows[source, at][0]
         elif through is None:
-            return None
+            why, first = why or "no code", None
         else:
             end = through(source, at, shown[1] if shown else name)
             starts = [
@@ -1372,8 +1382,14 @@ def declared_below(table, name, source, line, through=None):
             ]
             first = min(starts) if starts else None
         if first is not None and not rows[here][1] < first:
-            return None
-    return min(where[1] for _, where in candidates)
+            # Some code of the stop's line comes after the declaration's first code:
+            # only a stop before that code is proven to be above it.
+            inside = address is not None and any(
+                low <= address < high for low, high in function.get("ranges", ())
+            )
+            if not (inside and address < first):
+                why = why or "after"
+    return min(where[1] for _, where in candidates), why
 
 
 def declared_unfinished(table, name, source, line, address, ends=None):
@@ -1543,15 +1559,18 @@ def declared_skipped(table, name, source, line, address, skipped):
 
 
 def declared_on_line(table, name, source, line, address):
-    """The stop line, when the C/C++ local shown there is declared on it and the stop is
-    where control enters that line in the block declaring it (``address``, unslid; see
-    local_declarations ``starts``): the declaration has not run on this pass, so the
-    local holds leftovers. Else None.
+    """``(line, why)``, when the C/C++ local shown at the stop line is declared on it
+    and the stop is where control enters that line in the block declaring it
+    (``address``, unslid; see local_declarations ``starts``): the declaration has not
+    run on this pass, so the local holds leftovers. Else None.
 
     Only there: a one-line loop, or a return from a call (`step --out`), stops
     mid-line, where the local is live. Only when every local of that name in the
-    function is an automatic variable declared on this line, and never in a function
-    with a label. The caller also rules out an address a loop branches back to.
+    function is an automatic variable declared on this line. ``why`` is None, or
+    "label" in a function with a label: a `goto` may have returned above the line
+    with the local live, or this is its first pass, which Peeky cannot tell apart, so
+    it is withheld all the same (sixth agent evaluation). The caller also rules out an
+    address a loop branches back to.
     """
     shown = _SHADOWED.fullmatch(name)
     here = (source, line)
@@ -1561,7 +1580,7 @@ def declared_on_line(table, name, source, line, address):
         if here in function["rows"]
         and function["rows"][here][0] <= address <= function["rows"][here][1]
     ]
-    if len(owners) != 1 or owners[0]["jumps"]:
+    if len(owners) != 1:
         return None
     base = shown[1] if shown else name
     places = owners[0]["locals"].get(base, ())
@@ -1575,7 +1594,7 @@ def declared_on_line(table, name, source, line, address):
         )
         and address in owners[0].get("starts", {}).get((base, source, line), ())
     ):
-        return line
+        return line, "label" if owners[0]["jumps"] else None
     return None
 
 
@@ -2412,12 +2431,33 @@ class NativeSession:
             )
         address = self._unslid(frame)
         below = declared_below(
-            self.declarations, name, here, line, through=self._through if innermost else None
+            self.declarations,
+            name,
+            here,
+            line,
+            through=self._through if innermost else None,
+            # The stop's own place, where the line is its own; a caller frame's return
+            # address, or a line remapped from another, says nothing of this line.
+            address=address if innermost and (here, line) == (stopped, raw_line) else None,
         )
         if below is not None:
+            at, why = below
+            if why is None:
+                return (
+                    f"declared at line {at}, below this stop, so not initialized yet: its "
+                    f"storage holds leftovers; stop after line {at} to read it"
+                )
+            reason = {
+                "label": "a label in the function lets a `goto` return above it, so this "
+                "may be a later pass",
+                "no code": f"line {at} has no code of its own to place this frame before",
+                "after": f"code of line {line} also runs after its declaration's (as a "
+                "temporary's cleanup does), and Peeky cannot place this stop before it",
+            }[why]
             return (
-                f"declared at line {below}, below this stop, so not initialized yet: its "
-                f"storage holds leftovers; stop after line {below} to read it"
+                f"declared at line {at}, below this stop's line, and Peeky cannot prove the "
+                f"stop comes before its declaration ({reason}), so it may not be "
+                f"initialized: its storage may hold leftovers; stop after line {at} to read it"
             )
         if innermost and (
             running := declared_running(
@@ -2487,10 +2527,16 @@ class NativeSession:
         # A loop that branches back to this address can bring control here with the
         # local live (x86-64 puts `while ((x = next()) > 0)`'s test first): only an
         # address the disassembly shows no loop returns to is withheld.
-        if (
-            declared_on_line(self.declarations, name, here, line, address) is not None
-            and getattr(self, "loop_targets", {}).get(address) is False
-        ):
+        on_line = declared_on_line(self.declarations, name, here, line, address)
+        if on_line is not None and getattr(self, "loop_targets", {}).get(address) is False:
+            if on_line[1] == "label":
+                return (
+                    f"declared on line {line}, at whose first instruction this stop is, and "
+                    "a label in the function lets a `goto` return here with it live, or this "
+                    "is its first pass, which Peeky cannot tell apart: it may not be "
+                    f"initialized, and its storage may hold leftovers; stop after line {line} "
+                    "to read it"
+                )
             return (
                 f"declared on line {line}, which has not run yet at this stop (its first "
                 "instruction), so not initialized: its storage holds leftovers; step once, "

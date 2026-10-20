@@ -929,3 +929,246 @@ def test_an_unnamed_structs_constructor_withholds_this(directory, capsys):
     else:
         assert rows["this"]["function"] == "nested(long)", rows["this"]
         assert "value" not in rows["this"], rows["this"]
+
+
+# Sixth agent evaluation: clang attributes the exception handler destroying line 22's
+# `std::string` temporaries to line 22, after line 23's code, and that disabled the
+# declared-below rule: `qty` showed leftovers (`6712214884 [settable]`, then the last
+# pass's `3`), and `--set qty=99` reported a change line 23 then overwrote.
+STOCK = """#include <cstdio>
+#include <map>
+#include <stdexcept>
+#include <string>
+
+static std::string trim_left(const std::string &s) {
+    size_t i = 0;
+    while (i < s.size() && s[i] == ' ') i++;
+    return s.substr(i);
+}
+
+static long tried(const std::string &entry) {
+    long total = 0;
+    try {
+        std::string head = entry.substr(0, 1) + "x";  // try
+        long n = std::stol(entry.substr(1));
+        total += n + (long)head.size();
+    } catch (const std::exception &) {
+        total = -1;
+    }
+    return total;
+}
+
+int main() {
+    std::string input = "apple:3, pear:2";
+    std::map<std::string, long> stock;
+    size_t pos = 0;
+    long extra = 0;
+    while (pos <= input.size()) {
+        size_t comma = input.find(',', pos);
+        if (comma == std::string::npos) comma = input.size();
+        std::string entry = input.substr(pos, comma - pos);
+        size_t colon = entry.find(':');
+        if (colon != std::string::npos) {
+            std::string name = trim_left(entry.substr(0, colon));  // name
+            long qty = std::stol(entry.substr(colon + 1));
+            stock[name] += qty;
+            extra += tried(entry.substr(colon));
+        }
+        pos = comma + 1;
+    }
+    std::printf("%ld %ld %ld\\n", stock["apple"], stock["pear"], extra);
+    return 0;
+}
+"""
+
+LABELLED = """#include <stdio.h>
+
+__attribute__((noinline)) static long twice(long v) { return v * 2; }
+
+static long labelled(int n) {
+    long total = 0;
+    int tries = 0;
+again:
+    total += twice(tries);  // label
+    long q = twice(total);  // own line
+    if (++tries < n) goto again;
+    return total + q;
+}
+
+int main(void) {
+    printf("%ld\\n", labelled(3));
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(300)
+def test_a_local_below_a_line_with_temporaries_is_withheld_and_refused(directory, capsys):
+    path = directory / "stock.cpp"
+    path.write_text(STOCK)
+    line = line_of(STOCK, "// name")
+    for hit in (1, 2):
+        rows = shown_at(capsys, path, line, "entry", "colon", "name", "qty", hit=hit)
+        assert withheld(rows["name"], f"declared on line {line}")
+        assert withheld(rows["qty"], f"declared at line {line + 1}, below this stop"), rows
+        assert "value" in rows["entry"] and rows["colon"]["value"] == "5", rows
+    # In a `try` block too.
+    rows = shown_at(capsys, path, line_of(STOCK, "// try"), "head", "n", "total")
+    assert withheld(rows["n"], "below this stop") and rows["total"]["value"] == "0", rows
+    assert main(["session", "start", str(path), "--at", str(line)]) == 0
+    capsys.readouterr()
+    assert main(["session", "set", "qty=99", "--json"]) == 2
+    error = json.loads(capsys.readouterr().out)["error"]
+    assert error["code"] == "MUTATION_REJECTED" and "below this stop" in error["message"]
+    assert main(["session", "close"]) == 0
+
+
+@pytest.mark.timeout(300)
+def test_a_local_below_the_stop_in_a_function_with_a_label_is_withheld(directory, capsys):
+    # A `goto` can return above the declaration (C keeps `q` live then), but on the
+    # first pass it holds leftovers: Peeky cannot tell the passes apart, so it withholds.
+    path = directory / "labelled.c"
+    path.write_text(LABELLED)
+    for hit in (1, 2):
+        rows = shown_at(capsys, path, line_of(LABELLED, "// label"), "q", "total", hit=hit)
+        assert withheld(rows["q"], "a `goto` return above it", "may not be initialized"), rows
+        assert "value" in rows["total"], rows
+        # On its own line, where control enters it, likewise.
+        rows = shown_at(capsys, path, line_of(LABELLED, "// own line"), "q", "total", hit=hit)
+        assert withheld(rows["q"], "a `goto` return here", "may not be"), rows
+        assert "value" in rows["total"], rows
+
+
+# Shapes like the evaluation's: a declaration below a line with temporaries, in a `try`
+# block, a range-`for`, an `if`/`while` condition, after a label, a `cleanup` variable
+# and a compound literal. Below the stop: withheld; above it: read.
+SHAPES = {
+    "temps.cpp": """#include <cstdio>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
+static std::string make(int i) { return std::string("v") + std::to_string(i); }
+static long next(long &n) { return n > 0 ? n-- : 0; }
+
+static long temps(const std::vector<std::string> &items) {
+    long total = 0;
+    for (size_t i = 0; i < items.size(); i++) {
+        std::string head = items[i].substr(0, 1) + make((int)i);  // TEMPS
+        long q = (long)head.size() + std::stol(items[i].substr(1));
+        total += q;
+    }
+    return total;
+}
+
+static long trying(const std::vector<std::string> &items) {
+    long total = 0;
+    for (const auto &item : items) {
+        try {
+            std::string t = item + make(1);  // TRY
+            long q = std::stol(item.substr(1));
+            total += q + (long)t.size();
+        } catch (const std::exception &) {
+            total -= 1;
+        }
+    }
+    return total;
+}
+
+static long ranged(const std::vector<std::string> &items) {
+    long total = 0;
+    for (const auto &item : items) {  // RANGE
+        std::string t = item + "x";  // RANGE_BODY
+        long q = (long)t.size();
+        total += q;
+    }
+    return total;
+}
+
+static long conditions(long n) {
+    long total = 0;
+    std::string label = make(2);  // COND_ABOVE
+    if (long r = next(n)) {
+        total += r;
+    }
+    while (long v = next(n)) {
+        std::string s = make((int)v);  // WHILE_BODY
+        long w = (long)s.size();
+        total += v + w;
+    }
+    return total + (long)label.size();
+}
+
+int main() {
+    std::vector<std::string> items{"a12", "b7", "c3"};
+    std::printf("%ld %ld %ld %ld\\n", temps(items), trying(items), ranged(items), conditions(3));
+    return 0;
+}
+""",
+    "labels.c": """#include <stdio.h>
+#include <stdlib.h>
+
+static void freep(char **p) { free(*p); }
+__attribute__((noinline)) static long twice(long v) { return v * 2; }
+
+static long labelled(int n) {
+    long total = 0;
+    int tries = 0;
+again:
+    total += twice(tries);  // LABEL_STOP
+    long q = twice(total);
+    if (++tries < n) goto again;
+    return total + q;
+}
+
+static long cleaned(int n) {
+    long total = 0;
+    for (int i = 0; i < n; i++) {
+        char *buf __attribute__((cleanup(freep))) = malloc(16);  // CLEANUP
+        long q = twice(i) + (buf != NULL);
+        total += q;
+    }
+    return total;
+}
+
+static long literal(int n) {
+    long total = 0;
+    for (int i = 0; i < n; i++) {
+        struct { long a, b; } pr = { twice(i), (struct { long z; }){ twice(1) }.z };  // LITERAL
+        long q = pr.a + pr.b;
+        total += q;
+    }
+    return total;
+}
+
+int main(void) {
+    printf("%ld %ld %ld\\n", labelled(3), cleaned(3), literal(3));
+    return 0;
+}
+""",
+}
+
+
+@pytest.mark.timeout(300)
+@pytest.mark.parametrize(
+    "name, marker, hit, below, above",
+    [
+        ("temps.cpp", "TEMPS", 1, ("head", "q"), ("total", "i")),
+        ("temps.cpp", "TEMPS", 2, ("head", "q"), ("total", "i")),
+        ("temps.cpp", "TRY", 2, ("t", "q"), ("total", "item")),
+        ("temps.cpp", "RANGE_BODY", 2, ("t", "q"), ("total", "item")),
+        ("temps.cpp", "COND_ABOVE", 1, ("label",), ("total", "n")),
+        ("temps.cpp", "WHILE_BODY", 2, ("s", "w"), ("total", "v", "label")),
+        ("labels.c", "CLEANUP", 2, ("buf", "q"), ("total", "i")),
+        ("labels.c", "LITERAL", 2, ("pr", "q"), ("total", "i")),
+    ],
+)
+def test_locals_below_the_stop_are_withheld_whatever_the_line_runs_after(
+    directory, capsys, name, marker, hit, below, above
+):
+    source = SHAPES[name]
+    path = directory / name
+    path.write_text(source)
+    rows = shown_at(capsys, path, line_of(source, f"// {marker}"), *below, *above, hit=hit)
+    assert all(withheld(rows[local], "no value yet") for local in below), rows
+    assert all("value" in rows[local] for local in above), rows
