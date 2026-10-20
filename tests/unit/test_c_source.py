@@ -470,3 +470,28 @@ out:
     statements = Statements(source)
     assert statements.jumped_past(8, "doubled", 10) == 9
     assert statements.jumped_past(8, "doubled", 10, (7, 11)) is False
+
+
+def test_a_class_extent_runs_from_its_head_to_its_closing_brace():
+    # Review of #126 (round 3): a local class's member initializers are not the
+    # function's own lines.
+    source = """void f(void) {
+  struct D : public B<int>, C {
+    int a = g(1);
+  } d;
+  struct Fwd;
+  struct alignas(8) [[nodiscard]] S { long x = g(2); };
+  union U
+  {
+    int i;
+  };
+  struct P p = {1};
+  auto h = [&] { return 1; };
+}
+"""
+    statements = Statements(source)
+    assert statements.class_extent(2) == (2, 4) and statements.class_extent(6) == (6, 6)
+    assert statements.class_extent(7) == (7, 10)
+    # A declaration only, an object of a class, a lambda: none.
+    for line in (5, 11, 12, 99):
+        assert statements.class_extent(line) is None, line

@@ -547,6 +547,48 @@ class Statements:
                 return bisect.bisect_right(starts, mark.start())
         return False
 
+    def class_extent(self, line):
+        """(first, last): the lines from ``line``, where a class, struct or union is
+        defined (`struct Local {`), to its body's closing brace; None if no such head
+        and body follow from that line (a macro, a declaration only, unread text)."""
+        blanked, starts = self.blanked, self.starts
+        if self.unreadable or type(line) is not int or not 1 <= line <= len(starts):
+            return None
+        end_of_line = starts[line] if line < len(starts) else len(blanked)
+        head = next(
+            (
+                word
+                for word in _WORDS.finditer(blanked, starts[line - 1], end_of_line)
+                if word[0] in ("struct", "class", "union")
+            ),
+            None,
+        )
+        if head is None:
+            return None
+        # The head runs to its body's brace: attributes, a name, `final`, bases.
+        depth, opening = 0, None
+        for mark in re.compile(r"[;=(){}\[\]]|<%").finditer(blanked, head.end()):
+            if mark[0] in "([":
+                depth += 1
+            elif mark[0] in ")]":
+                depth -= 1
+            elif depth == 0:
+                opening = mark if mark[0] in ("{", "<%") else None
+                break
+            if depth < 0:
+                break
+        if opening is None:
+            return None
+        if "braces" not in self.__dict__:
+            self.braces = self._braces()
+        if self.braces is None:
+            return None
+        opens, closes, _, _ = self.braces
+        index = bisect.bisect_left(opens, opening.start())
+        if index >= len(opens) or opens[index] != opening.start():
+            return None
+        return line, bisect.bisect_right(starts, closes[index])
+
     def includes(self):
         """``(line, name)`` for each `#include "name"` (or `<name>`) directive; name
         None where it is not written plainly (a macro)."""

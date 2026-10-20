@@ -1037,11 +1037,12 @@ def local_declarations(info, line_text, workspace, declared):
     each automatic local, (name, source, line) -> the code ranges of the block declaring
     it. ``root``: the function's DIE; ``constructor``, ``enclosing`` and ``defined``:
     see _class_role. ``span``: its own lines in its source, or None. ``order``: every row
-    it runs, (address, source, line) by address."""
+    it runs, (address, source, line) by address. ``classes``: _local_classes."""
     dies, functions, _, files, runs, addresses = _function_entries(
         info, line_text, workspace, declared
     )
     workspace = Path(workspace).resolve()
+    classes = _local_classes(dies)
     table = []
     for root, entry in functions.items():
         rows = runs.get(root)
@@ -1108,12 +1109,46 @@ def local_declarations(info, line_text, workspace, declared):
                 "span": (first, max(own)) if first is not None and own else None,
                 # Every row it runs, by address: (address, source, line).
                 "order": tuple(ordered),
+                "classes": classes.get(root, ()),
             }
         )
     return table
 
 
 _CLASSES = ("DW_TAG_class_type", "DW_TAG_structure_type", "DW_TAG_union_type")
+
+
+def _local_classes(dies):
+    """{function root: ((line, closure), ...)}: the classes, structs and unions defined
+    inside each function (not just declared), by the line the debug information gives,
+    and whether it is a lambda's closure (no plain name, an `operator()`): its body is
+    a function of its own, not text the function runs."""
+    found = {}
+    for offset, die in dies.items():
+        if die["tag"] not in _CLASSES or "DW_AT_declaration" in die["attrs"]:
+            continue
+        outer, owner = die, None
+        for _ in range(32):
+            above = outer["parent"]
+            outer = dies.get(above)
+            if outer is None:
+                break
+            if outer["tag"] in _CODE:
+                owner = _chain(dies, above)[-1]
+                break
+        if owner is None:
+            continue
+        line = die["attrs"].get("DW_AT_decl_line")
+        # Clang leaves a closure unnamed; GCC names it `<lambda(...)>`.
+        named = _text(die["attrs"].get("DW_AT_name")) or ""
+        closure = not re.fullmatch(r"[A-Za-z_]\w*", named) and any(
+            _text(dies[child]["attrs"].get("DW_AT_name")) == "operator()"
+            for child in die["children"]
+        )
+        found.setdefault(owner, []).append(
+            (int(line) if line and line.isdigit() else None, closure)
+        )
+    return {owner: tuple(sorted(set(places), key=str)) for owner, places in found.items()}
 
 
 def _class_role(dies, chain):
@@ -2109,14 +2144,33 @@ class NativeSession:
             return None
         if type(line) is not int:
             return None
+        here = stopped = source.as_posix()
+        raw_line = line
+        function = self._function_at(frame)
+        # A line of another file, or outside the function's own lines (a class's member
+        # initializer, a local class's too), runs as part of one of its own: the rules
+        # run from there. A caller frame on another file's line keeps it: everything
+        # declared elsewhere is withheld there.
+        if innermost or (function is not None and function.get("source") == here):
+            place = self._own_place(frame, here, line)
+            if place is None:
+                if self._parameter(name, frame):
+                    return None
+                return (
+                    f"this frame runs {here}:{line}, outside its function's own lines, and "
+                    "Peeky cannot place that among them, so this local may not be "
+                    "initialized yet: its storage may hold leftovers; read it once the "
+                    "frame is back in its own lines"
+                )
+            here, line = place
         if not innermost and (
             unfinished := declared_unfinished(
                 self.declarations,
                 name,
-                source.as_posix(),
+                here,
                 line,
                 self._unslid(frame),
-                ends=lambda at, local: self._statement_end(source, at, local),
+                ends=lambda at, local: self._statement_end(here, at, local),
             )
         ):
             at, why, detail = unfinished
@@ -2124,7 +2178,7 @@ class NativeSession:
                 return (
                     f"declared on line {at} of "
                     + (detail or "a file outside the program's sources")
-                    + f", while this caller frame is at {source.as_posix()}:{line}, in "
+                    + f", while this caller frame is at {stopped}:{raw_line}, in "
                     "another file, inside a call it makes: an initializer can `#include` "
                     "its rows, or be included itself, so Peeky cannot place the frame "
                     "within or after the declaration, and it may not be initialized yet: "
@@ -2159,21 +2213,6 @@ class NativeSession:
                 "leftovers; read it after the call returns"
             )
         address = self._unslid(frame)
-        here = stopped = source.as_posix()
-        if innermost:
-            # A line of another file, or outside the function's own lines, runs as part
-            # of one of its own: its rules run from there.
-            place = self._own_place(frame, here, line)
-            if place is None:
-                if self._parameter(name, frame):
-                    return None
-                return (
-                    f"this frame runs {here}:{line}, outside its function's own lines, and "
-                    "Peeky cannot place that among them, so this local may not be "
-                    "initialized yet: its storage may hold leftovers; read it once the "
-                    "frame is back in its own lines"
-                )
-            here, line = place
         below = declared_below(
             self.declarations, name, here, line, through=self._through if innermost else None
         )
@@ -2227,7 +2266,7 @@ class NativeSession:
                 "directive, a macro, a line splice or a trigraph), so this stop may be "
                 "inside it: it may not be initialized yet, and its storage may hold leftovers"
             )
-        if building := self._foreign_line(variable, frame, stopped, (frame or {}).get("line")):
+        if building := self._foreign_line(variable, frame, stopped, raw_line):
             return building
         if skipped := declared_skipped(
             self.declarations, name, here, line, address, self._jumped_past
@@ -2342,14 +2381,15 @@ class NativeSession:
         function = self._function_at(frame)
         if function is None:
             return source, line
-        own, span = function.get("source"), function.get("span")
-        if source == own and span is not None and span[0] <= line <= span[1]:
+        own = function.get("source")
+        mine = self._own_line(function, source, line)
+        if mine:
             return source, line
-        if span is None:
+        if mine is None:
             return None
         if source != own:
             site = self._include_site(own, source)
-            if site is not None and span[0] <= site <= span[1]:
+            if site is not None and self._own_line(function, own, site):
                 return own, site
         address = self._unslid(frame)
         order = function.get("order", ())
@@ -2358,10 +2398,45 @@ class NativeSession:
         index = bisect.bisect_left(order, (address,)) - 1
         while index >= 0:
             _, where, number = order[index]
-            if where == own and span[0] <= number <= span[1]:
+            if self._own_line(function, where, number):
                 return own, number
             index -= 1
         return None
+
+    def _own_line(self, function, source, line):
+        """Whether ``source:line`` is one of the function's own lines: within its span in
+        its file and outside every class it defines (whose member initializers run where
+        an object is built). None if that cannot be told: no span, or a local class whose
+        extent the source does not give."""
+        if source != function.get("source"):
+            return False
+        span = function.get("span")
+        if span is None:
+            return None
+        if not span[0] <= line <= span[1]:
+            return False
+        extents = self._class_extents(function)
+        if extents is None:
+            return None
+        return not any(first <= line <= last for first, last in extents)
+
+    def _class_extents(self, function):
+        """The (first, last) lines of each class the function defines (not a lambda's
+        closure), from its line in the debug information and the braces after it
+        (Statements.class_extent); None if one cannot be found."""
+        cache = self.__dict__.setdefault("class_extents", {})
+        key = function.get("root")
+        if key not in cache:
+            places = [line for line, closure in function.get("classes", ()) if not closure]
+            statements = self._statements(function.get("source")) if places else None
+            extents = [] if not places else None
+            if statements is not None:
+                found = [
+                    statements.class_extent(line) if type(line) is int else None for line in places
+                ]
+                extents = None if None in found else found
+            cache[key] = extents
+        return cache[key]
 
     def _parameter(self, name, frame):
         """Whether ``name`` is a parameter (or static) of the frame's function only."""
@@ -2384,10 +2459,8 @@ class NativeSession:
         if str(variable.get("name") or "").startswith("(") or not _is_object(variable):
             return None
         function = self._function_at(frame)
-        if function is None:
-            return None
-        span = function.get("span")
-        if function.get("source") == source and (span is None or span[0] <= line <= span[1]):
+        if function is None or self._own_line(function, source, line) is not False:
+            # Its own line, or unknown: then `_own_place` withholds all but parameters.
             return None
         return (
             f"this frame runs {source}:{line}, outside its function's own lines (a class's "

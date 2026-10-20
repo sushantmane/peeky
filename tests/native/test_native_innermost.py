@@ -402,9 +402,7 @@ def test_an_object_a_default_member_initializer_builds_is_withheld(directory, ca
     assert withheld(rows["cfg"], f"this frame runs members.cpp:{member}, outside its function's")
     assert withheld(rows["cfg.b"], "'cfg' has no value here")
     rows = shown_at(capsys, path, line_of(MEMBERS, "return w;"), "cfg", "seed", hit=3, frame=1)
-    assert (
-        withheld(rows["cfg"], "outside its function's own lines") and rows["seed"]["value"] == "6"
-    )
+    assert withheld(rows["cfg"]) and rows["seed"]["value"] == "6"
     rows = shown_at(capsys, path, line_of(MEMBERS, "// after"), "cfg.b")
     assert rows["cfg.b"]["value"] == "4"
 
@@ -778,3 +776,76 @@ def test_a_goto_in_another_function_of_a_namespace_reaches_no_label_here(directo
     path.write_text(NAMESPACED)
     rows = shown_at(capsys, path, line_of(NAMESPACED, "// sum"), "doubled", "tripled")
     assert [rows["doubled"]["value"], rows["tripled"]["value"]] == ["8", "12"]
+
+
+# Review of #126 (round 3).
+
+LOCAL_CLASS = """#include <cstdio>
+
+__attribute__((noinline)) long twice(long v) {
+    long w = v * 2;
+    return w;
+}
+
+__attribute__((noinline)) static void scribble() {
+    volatile long junk[96];
+    for (int i = 0; i < 96; i++) junk[i] = 0x5150 + i;
+}
+
+struct Cfg {
+    long a = twice(1);
+    long b = twice(2);  // Cfg::b
+};
+
+__attribute__((noinline)) static long run() {
+    struct Local {
+        long a = twice(3);
+        long b = twice(4);  // Local::b
+    };
+    long before = 1;
+    Local loc{};  // loc
+    long after = loc.b;
+    Cfg cfg{}; long x = cfg.b + 1; long *px = &x;
+    return before + after + x + *px;  // end
+}
+
+int main() {
+    scribble();
+    std::printf("%ld\\n", run());
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(300)
+def test_a_caller_frame_on_a_member_initializer_above_its_function_reads_from_its_line(
+    directory, capsys
+):
+    # Review of #126 (round 3): `run()` as frame 1 on `Cfg::b`'s line showed `x = 20908`
+    # and a garbage `px`: the remapping to the line running it was the stopped frame's.
+    path = directory / "localcls.cpp"
+    path.write_text(LOCAL_CLASS)
+    rows = shown_at(
+        capsys, path, line_of(LOCAL_CLASS, "return w;"), "x", "px", "cfg", "before", hit=4, frame=1
+    )
+    assert rows["x"]["line"] == line_of(LOCAL_CLASS, "// Cfg::b"), rows["x"]
+    assert withheld(rows["x"]) and withheld(rows["px"]) and withheld(rows["cfg"])
+    assert rows["before"]["value"] == "1"
+    rows = shown_at(capsys, path, line_of(LOCAL_CLASS, "// end"), "loc.b", "x", "px")
+    assert [rows["loc.b"]["value"], rows["x"]["value"]] == ["8", "5"] and "value" in rows["px"]
+
+
+@pytest.mark.timeout(300)
+def test_a_local_classes_member_initializer_is_not_its_functions_own_line(directory, capsys):
+    # Review of #126 (round 3): on the initializer of `Local`, defined inside `run()`
+    # (within its own lines), `loc.b = 4366860288` was shown, stopped and as frame 1.
+    path = directory / "localcls.cpp"
+    path.write_text(LOCAL_CLASS)
+    rows = shown_at(capsys, path, line_of(LOCAL_CLASS, "// loc"), "loc", "after", "before", steps=1)
+    assert rows["loc"]["line"] == line_of(LOCAL_CLASS, "// Local::b"), rows["loc"]
+    assert withheld(rows["loc"], "outside its function's own lines")
+    assert withheld(rows["after"], "below this stop") and rows["before"]["value"] == "1"
+    rows = shown_at(
+        capsys, path, line_of(LOCAL_CLASS, "return w;"), "loc", "after", "before", hit=2, frame=1
+    )
+    assert withheld(rows["loc"]) and withheld(rows["after"]) and rows["before"]["value"] == "1"

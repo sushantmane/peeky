@@ -1320,3 +1320,24 @@ def test_a_local_whose_file_may_include_code_after_it_is_withheld_there():
     assert (
         declared_running([run], "head", "cases.h", 3, 115, through, lambda *_: False, site) is None
     )
+
+
+def test_local_classes_and_closures_are_told_from_the_debug_information():
+    from peeky.native import _local_classes
+
+    def die(tag, parent, children=(), **attrs):
+        return {"tag": tag, "parent": parent, "attrs": attrs, "children": list(children)}
+
+    dies = {
+        1: die("DW_TAG_compile_unit", None),
+        2: die("DW_TAG_subprogram", 1, DW_AT_name='"run"'),
+        3: die("DW_TAG_lexical_block", 2),
+        4: die("DW_TAG_structure_type", 3, DW_AT_name='"Local"', DW_AT_decl_line="19"),
+        5: die("DW_TAG_class_type", 2, [6], DW_AT_decl_line="30"),
+        6: die("DW_TAG_subprogram", 5, DW_AT_name='"operator()"'),
+        7: die("DW_TAG_class_type", 2, [8], DW_AT_name='"<lambda()>"', DW_AT_decl_line="31"),
+        8: die("DW_TAG_subprogram", 7, DW_AT_name='"operator()"'),
+        9: die("DW_TAG_structure_type", 2, DW_AT_name='"Fwd"', DW_AT_declaration="(true)"),
+        10: die("DW_TAG_structure_type", 1, DW_AT_name='"Cfg"', DW_AT_decl_line="13"),
+    }
+    assert _local_classes(dies) == {2: ((19, False), (30, True), (31, True))}
