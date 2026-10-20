@@ -164,6 +164,9 @@ class Body:
     # same-file macros it expands).
     lines: frozenset = frozenset()
     types: dict = field(default_factory=dict)  # {local: its type as MIR prints it}
+    # {(name, file, line, scope): place} for bindings through a projection (a closure's
+    # capture `(*((*_1).0: &mut T))`, an async local).
+    places: dict = field(default_factory=dict)
     scopes: dict = field(default_factory=lambda: {0: None})  # {scope: its parent}
     # {(file, line): the scopes of the statements with a span on that line}
     line_scopes: dict = field(default_factory=dict)
@@ -1162,6 +1165,8 @@ def parse_body(text):
             # A binding through a projection (a closure's capture, an async local) has no
             # whole local, but names its type: `(_1.0: std::boxed::Box<Pt>)`.
             typed = None if whole else _projected_type(debug[2])
+            if not whole:
+                body.places[(debug[1], debug[4], int(debug[5]), int(debug[3]))] = debug[2]
             body.bindings.setdefault(debug[1], []).append(
                 (
                     int(whole[1]) if whole else None,
@@ -1648,6 +1653,7 @@ class OwnedLocals:
             return self._elsewhere(hashed, variable_name, path)
         body, function = site[0], site[1]
         local = self._local(body, variable_name, line, path)
+        captures = []
         if local is not None:
             candidates = [local]
         else:
@@ -1658,7 +1664,21 @@ class OwnedLocals:
                 bindings = [b for b in bindings if Path(b[1]).name == file and str(b[2]) == number]
             bindings = body.in_scopes(bindings, self._visible(body, line, path))
             candidates = [b[0] for b in bindings]
+            # A capture (`(*((*_1).0: &mut Holder))`) has no local of its own: what it
+            # points at is dropped through the environment it is reached by.
+            captures = [
+                int(root[1])
+                for b in bindings
+                if b[0] is None
+                and (root := _ANY_LOCAL.search(body.places.get((name, b[1], b[2], b[4]), "")))
+            ]
         facts = self._facts(function, line, column) if breakpoint else None
+        if captures:
+            positions = self._positions(site, line, facts)
+            if any(
+                body.dropped_through(root, position) for root in captures for position in positions
+            ):
+                return False
         verdicts = [self._judge(site, candidate, line, facts) for candidate in candidates]
         if False in verdicts:
             return False
@@ -1699,6 +1719,17 @@ class OwnedLocals:
                 return False
         return None
 
+    def _positions(self, site, line, facts):
+        """Where in the line's blocks the stop can be."""
+        body, function, blocks, shared = site
+        text = self.texts.get(function.file)
+        if self.precise or not may_invoke_macro(text, line):
+            foreign = may_invoke_macro(text, line)
+            return body.stop_positions(blocks, line, function.file, foreign, facts, shared)
+        # `#[collapse_debuginfo]` puts a local macro's code on the line invoking it, while
+        # its statements keep the macro's lines: any statement can be the stop.
+        return body.anywhere(blocks)
+
     def _judge(self, site, local, line, facts):
         body, function, blocks, _ = site
         if local is None:
@@ -1721,15 +1752,7 @@ class OwnedLocals:
         argument = (
             free and local in body.arguments and not assigned and not _RAW_POINTER.search(kind)
         )
-        file = function.file
-        text = self.texts.get(file)
-        if self.precise or not may_invoke_macro(text, line):
-            foreign = may_invoke_macro(text, line)
-            positions = body.stop_positions(blocks, line, file, foreign, facts, site[3])
-        else:
-            # `#[collapse_debuginfo]` puts a local macro's code on the line invoking it,
-            # while its statements keep the macro's lines: any statement can be the stop.
-            positions = body.anywhere(blocks)
+        positions = self._positions(site, line, facts)
         if not positions:
             return None
         # Between `drop((*v))` and the store of `*v = new`, it points at a dropped value.

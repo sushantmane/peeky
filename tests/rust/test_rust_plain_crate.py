@@ -2505,6 +2505,15 @@ fn via_closure(v: &mut Vec<Res>, other: &mut Vec<Res>, n: i64) -> i64 {
     k
 }
 
+fn via_closure_body(h: &mut Holder, n: i64) -> i64 {
+    let k = h.data.x;
+    let mut reset = || {
+        *h = Holder { tag: n, data: Box::new(Res { x: n }) }; // M11_IN_CLOSURE
+    };
+    reset();
+    k
+}
+
 fn main() {
     let mut h = Holder { tag: 1, data: Box::new(Res { x: 5 }) };
     let a = RefCell::new(vec![Res { x: 5 }]);
@@ -2524,6 +2533,7 @@ fn main() {
         println!("{}", read(v, other, 9));
     }
     std::mem::forget(routes);
+    println!("{}", via_closure_body(&mut h, 9));
     println!("{} {}", A.get(), B.get());
     std::mem::forget((h, a, b, c, d, e, f, g));
 }
@@ -2583,6 +2593,8 @@ def test_references_in_macro_twins_and_parameters_dropped_through_in_other_files
         (8, ("main.rs", "M10_METHOD"), "v"),
         (9, ("main.rs", "M10_FIELD"), "v"),
         (10, ("main.rs", "M10_CLOSURE"), "v"),
+        # Round 11: inside a closure body, through its capture of a `&mut`.
+        (11, ("main.rs", "M11_IN_CLOSURE"), "h"),
     ):
         text = CELL_MACROS if file == "macros.rs" else TWINS_AND_CELLS
         variables = _stepped_out_to(
