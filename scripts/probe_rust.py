@@ -16,7 +16,12 @@ from peeky.agent import execute
 from peeky.dap import DAP
 from peeky.native import MAX_METADATA, NativeSession, _metadata, elf_build_id
 from peeky.rust_manifest import assert_cargo_ancestry_clear, validate_cargo_inputs
-from peeky.rust_symbols import CONTAINER_KINDS, active_variant, application_symbols
+from peeky.rust_symbols import (
+    CONTAINER_KINDS,
+    STRUCT_PREFIX,
+    active_variant,
+    application_symbols,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 INPUTS = ("Cargo.toml", "Cargo.lock", "src/main.rs", "tests/pagination.rs")
@@ -163,8 +168,14 @@ def probe(args):
             assert any(blocks.values()), blocks
             assert layouts["core::option::Option<i32>"]["kind"] == "option", layouts
             assert all(
-                layout["kind"] in ("option", "unqualified", *CONTAINER_KINDS)
-                for layout in layouts.values()
+                layout["kind"]
+                in (
+                    # Tuples and the crate's structs, for previews (#106).
+                    ("composite", "unit", "unread", "unqualified")
+                    if name.startswith(STRUCT_PREFIX)
+                    else ("option", "unqualified", *CONTAINER_KINDS)
+                )
+                for name, layout in layouts.items()
             ), layouts
             protected = [root / name for name in INPUTS] + [binary]
             protected += [p for p in root.rglob("*.dSYM/**/*") if p.is_file()]

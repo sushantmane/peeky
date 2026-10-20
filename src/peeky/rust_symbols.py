@@ -29,6 +29,7 @@ from pathlib import Path
 from peeky.adapters import ViewBudgetExhausted
 from peeky.native import _metadata, parse_lines
 from peeky.rust_chars import ESCAPED
+from peeky.rust_lexer import code_only
 
 # An application unit's own DWARF: a program using std's collections has megabytes of
 # monomorphized types (4.4 MB for one using HashMap); dumping and parsing it takes
@@ -687,6 +688,10 @@ def _composite(die, by_offset):
     alignment = max(ELEMENT_TYPES[scalar][0] for _, _, scalar in fields)
     if size % alignment or any(offset % ELEMENT_TYPES[s][0] for _, offset, s in fields):
         raise ValueError("Rust element is not laid out as its fields' alignment requires")
+    declared = re.fullmatch(r"([0-9]+)\)", die.attributes.get("DW_AT_alignment") or "")
+    if declared and int(declared[1]) < alignment:
+        # `#[repr(packed)]`, even where its fields happen to fall aligned.
+        raise ValueError("Rust struct is packed")
     return {
         "element_size": size,
         "alignment": alignment,
@@ -755,6 +760,31 @@ def _composite_layout(struct, kind, element, by_offset):
     }
 
 
+# Struct and tuple layouts are kept beside the containers', under their own keys: an enum
+# is a DWARF structure too, and its layout is keyed by its bare name.
+STRUCT_PREFIX = "struct:"
+
+
+def _struct_layout(die, by_offset):
+    """A tuple's or struct's layout for its preview (#106): its fields are qualified
+    scalars (see _composite); a unit struct (`struct Marker;`) has none. _UNREAD for any
+    other, so that a struct of the same name is not read either."""
+    plain = all(
+        child.tag == "DW_TAG_template_type_parameter"
+        or (child.tag == "DW_TAG_subprogram" and "DW_AT_declaration" in child.attributes)
+        for child in die.children
+    )
+    try:
+        name = _string(die.attributes.get("DW_AT_name"))
+        if plain and _hex(die.attributes.get("DW_AT_byte_size")) == 0:
+            if name.startswith("(") or not _FIELD_NAME.fullmatch(name.split("<")[0]):
+                return _UNREAD
+            return {"kind": "unit", "shown": name.split("<")[0]}
+        return {"kind": "composite", **_composite(die, by_offset)}
+    except (KeyError, ValueError, IndexError, TypeError):
+        return _UNREAD
+
+
 def container_layouts(text, unit, root=None):
     """Layouts of the qualified containers (`Vec<i32>`, `&[i32]`, `String`, `&str`) that
     one application unit defines, validated member by member; anything else refuses.
@@ -769,6 +799,8 @@ def container_layouts(text, unit, root=None):
     # `Wrapping`) implement their own Debug, which a derived rendering would misstate.
     crate = unit.name.rpartition("/@/")[2].split(".")[0]
 
+    structs = {}
+
     def visit(die, prefix):
         for child in die.children:
             name = child.attributes.get("DW_AT_name")
@@ -776,6 +808,14 @@ def container_layouts(text, unit, root=None):
                 visit(child, (*prefix, _string(name)))
             elif child.tag == "DW_TAG_structure_type" and name is not None:
                 qualified = "::".join((*prefix, _string(name)))
+                if (
+                    qualified.startswith("(") or qualified.startswith(f"{crate}::")
+                ) and "DW_AT_declaration" not in child.attributes:
+                    # A tuple or a struct of the crate's own, for its preview (#106).
+                    layout = _struct_layout(child, by_offset)
+                    if structs.get(qualified, layout) != layout:
+                        layout = {"kind": "unqualified"}
+                    structs[qualified] = layout
                 if qualified in QUALIFIED_CONTAINERS:
                     layout = _container_layout(child, qualified, by_offset)
                     if layouts.get(qualified, layout) != layout:
@@ -791,6 +831,9 @@ def container_layouts(text, unit, root=None):
                         layouts[qualified] = layout
 
     visit(root, ())
+    if len(structs) <= MAX_LAYOUTS:
+        # Too many to keep: none is previewed (a twin left out could share a name).
+        layouts.update({STRUCT_PREFIX + name: layout for name, layout in structs.items()})
     return layouts
 
 
@@ -1346,6 +1389,163 @@ def _composite_owned(shown, declared, layouts):
     if len(names) != 1 or _lossy(shown) != _lossy(names[0]):
         return None
     return names[0]
+
+
+_RUST_PRIMITIVE = re.compile(r"(?<![\w:])(?:[iu](?:8|16|32|64|128|size)|f32|f64|bool|char)(?![\w])")
+
+
+def _spelled(name, shown):
+    """Whether LLDB's type name ``shown`` can be the type the DWARF names ``name`` (or a
+    pointer to it, ``name *``): LLDB names a tuple as the DWARF does (`(char, char)`),
+    and a generic's primitive arguments the C way (`Pair<char>` is Pair<i8> and
+    `Pair<char32_t>` Pair<char>), each of which can be only some Rust primitives."""
+    pointer = name.endswith(" *")
+    base = name.removesuffix(" *")
+    if base.startswith("("):
+        return shown == name
+    parts, at = [], 0
+    for found in _RUST_PRIMITIVE.finditer(base):
+        lldb = RUST_SCALARS.get(found[0])
+        if lldb is None:
+            return False
+        parts += [re.escape(base[at : found.start()]), "(?:" + "|".join(map(re.escape, lldb)) + ")"]
+        at = found.end()
+    parts.append(re.escape(base[at:]))
+    return bool(re.fullmatch("".join(parts) + (r" \*" if pointer else ""), str(shown)))
+
+
+# An identifier named like a tuple's field in the DWARF (`__0`). Rust code never writes a
+# tuple's field so (`t.0`): it is always one of the program's own names.
+_NUMBERED_FIELD = re.compile(r"(?<![\w])__[0-9]+(?![\w])")
+
+
+# A nightly feature gate: `#![feature(…)]`, `#![r#feature(…)]` or one inside `cfg_attr`.
+# Rust's whitespace also has U+200E and U+200F, which `\s` lacks.
+_FEATURE = re.compile(r"(?<![\w])feature[\s\u200e\u200f]*\(")
+
+
+def without_numbered_structs(layouts, texts, others=()):
+    """``layouts`` with every tuple struct unread where the crate could declare a struct
+    with named fields `__0`, `__1`: the DWARF names a tuple struct's fields so too, and
+    such a struct prints `Num { __0: 1 }`, not `Num(1)`. ``texts``: the crate's Rust
+    sources' and tests'; ``others``: every other file the build may read (rustc reads no
+    undeclared one: _require_declared_dependencies), Cargo.toml and Cargo.lock, which
+    `include!("../Cargo.toml")` reads as Rust: searched as plain text, as they need not
+    lex as Rust.
+
+    On stable Rust no identifier is made without its token in the crate's source:
+    `macro_rules!` cannot join identifiers (`concat_idents!` is gone, rustc 1.96), and a
+    procedural macro needs a proc-macro crate, which a binary cannot define for itself
+    and Peeky's builds cannot get (no dependencies, library target, build.rs, Cargo
+    configuration or RUSTFLAGS of the crate's; the sysroot's crates need
+    `rustc_private`). Peeky's MIR builds set RUSTC_BOOTSTRAP, so a crate may enable
+    nightly features (`${concat(__, "0")}`). So an identifier `__0` (`fields!(Num, __0,
+    __1)`), a feature gate, or a source not lexed leaves every tuple struct unread. A
+    feature gate is only ever the crate root's, a declared Rust source: an `include!`d
+    file may hold no inner attribute, and a `#[path]` module's `#![feature]` is ignored."""
+
+    def refused(text):
+        code = code_only(text)
+        return code is None or _NUMBERED_FIELD.search(code) or _FEATURE.search(code)
+
+    if not any(refused(text) for text in texts) and not any(
+        _NUMBERED_FIELD.search(text) for text in others
+    ):
+        return layouts
+    return {
+        name: _UNREAD if layout.get("shape") == "tuple-struct" else layout
+        for name, layout in layouts.items()
+    }
+
+
+def struct_name(declared, shown, layouts):
+    """The tuple or struct an owned local is, by the MIR's declared type (`Span`,
+    `Pair<i8>`, `(i64, char)`), confirmed by LLDB's (lossy) name; None unless exactly
+    one of the crate's tuples and structs is that type.
+
+    The MIR names a type by its crate-relative path (`Span`, `m::Point`), or from its
+    nearest ancestor of a name no other item has (`shapes::Point` for
+    `geo::shapes::Point` beside `other::Point`), and a raw identifier with `r#`."""
+    if not isinstance(declared, str) or not declared:
+        return None
+    # The MIR's 1-tuple `(i8,)` is `(i8)` in the DWARF.
+    plain = re.sub(r"(?<![\w#])r#", "", declared.replace(",)", ")"))
+    segment = "[A-Za-z_][A-Za-z0-9_]*::"
+    wanted = re.compile(rf"(?:{segment})*{re.escape(plain)}")
+    names = [
+        name
+        for key in layouts
+        if key.startswith(STRUCT_PREFIX)
+        and (name := key.removeprefix(STRUCT_PREFIX)).endswith(plain)
+        and wanted.fullmatch(name)
+        # A tuple's name has no path; a struct's is its crate's.
+        and name.startswith("(") == plain.startswith("(")
+    ]
+    if len(names) > 1:
+        # A path that is also a suffix of others' is the crate-relative one.
+        relative = re.compile(rf"(?:{segment})?{re.escape(plain)}")
+        names = [name for name in names if relative.fullmatch(name)]
+    if len(names) != 1 or not _spelled(names[0], shown):
+        return None
+    return names[0]
+
+
+def struct_view(variable, read, layouts, *, parameter=None, owned=False, declared=None):
+    """A tuple or struct of qualified scalars read from memory, as Rust's derived `{:?}`
+    shows it (`Span { start: 2, end: 3 }`, `Point(1, 2)`, `(7,)`, `Marker`), with its
+    fields as children (#106); None leaves it raw.
+
+    Under the same proofs as containers: ``parameter`` is the declared (IR) type of a
+    reference parameter the IR proves live (`&demo::Span`, read through the pointer
+    LLDB shows), ``owned`` says the MIR proves this local initialized at the stop, and
+    ``declared`` is its MIR type, which picks the layout (LLDB's names collide). A
+    struct another of the same name shares its path with (one in a function's body),
+    a std struct (its own Debug), packed or with other fields is never read.
+    """
+    name = thin = None
+    if match := re.fullmatch(r"&(?:mut )?(.+)", str(parameter or "")):
+        if _spelled(f"{match[1]} *", variable.get("type")):
+            name, thin = match[1], True
+    elif owned:
+        name, thin = struct_name(declared, variable.get("type"), layouts), False
+    layout = layouts.get(STRUCT_PREFIX + name) if name else None
+    if layout is None or layout["kind"] not in ("composite", "unit"):
+        return None
+    view = {"name": variable.get("name"), "type": variable.get("type"), "variablesReference": 0}
+    if layout["kind"] == "unit":
+        return {**view, "value": layout["shown"], "rust_view": "memory"}
+    reference = variable.get("memoryReference")
+    if read is None or not isinstance(reference, str):
+        return None
+    try:
+        shown_value = str(variable.get("value") or "")
+        if thin:
+            target = _word(read(reference, 8), 0)
+            if not _ADDRESS.fullmatch(shown_value) or int(shown_value, 16) != target:
+                raise ValueError("Rust reference does not match the debugger's pointer")
+            if target == 0 or target % layout["alignment"]:
+                raise ValueError("Rust reference is null or misaligned")
+            reference = f"0x{target:X}"
+        elif (at := shown_value.rpartition(" @ ")[2]) and _ADDRESS.fullmatch(at):
+            if int(at, 16) != int(reference, 16):
+                raise ValueError("Rust value is not at the debugger's address")
+        raw = read(reference, layout["element_size"])
+        shown = _composite_decoder(layout)(raw)
+        if len(shown) > MAX_SHOWN:
+            # Long field names: whole or not at all (the worker cuts values at 2000).
+            return None
+        return {
+            **view,
+            "value": shown,
+            "rust_view": "memory",
+            "children": [
+                {"name": field, "type": scalar, "value": value}
+                for field, scalar, value in composite_fields(layout)(raw)
+            ],
+        }
+    except (ViewBudgetExhausted, ValueError):
+        # Never worse than before: LLDB's own value and fields.
+        return None
 
 
 def container_view(

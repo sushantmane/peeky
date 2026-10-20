@@ -61,6 +61,9 @@ from peeky.rust_symbols import (
     lldb_byte,
     lldb_char,
     lldb_float_debug,
+    struct_name,
+    struct_view,
+    without_numbered_structs,
 )
 
 DEPS = "target/debug/deps"
@@ -646,6 +649,17 @@ class RustTarget:
                 if deadline is None
                 else min(SYMBOL_BUDGET_S, deadline - time.monotonic()),
             )
+            rust = (*self.sources, *self.tests)
+            texts = {
+                # Every file the build may read (_require_declared_dependencies).
+                name: (prepared.workspace / name).read_bytes().decode("utf-8", errors="replace")
+                for name in cargo_inputs.inputs
+            }
+            layouts = without_numbered_structs(
+                layouts,
+                [texts[name] for name in rust],
+                [text for name, text in texts.items() if name not in rust],
+            )
             identity = module_identity(
                 dwarfdump, binary, symbols, prepared.workspace, env, deadline=deadline
             )
@@ -880,23 +894,26 @@ _PRIMITIVES = frozenset(
 )
 
 
-def _may_own(kind):
+def _may_own(kind, generics=()):
     """Whether a value of MIR type ``kind`` may own memory it reaches through a pointer
     (a Box, a Vec's or String's buffer, an Rc's allocation): anything but a primitive,
     a reference, a raw or fn pointer, or a tuple or array made only of those. A struct's
     or enum's name says nothing of its fields, and None (a type not written out) may be
-    anything (#108)."""
+    anything (#108). In a generic body (``generics``: its type parameters, None if
+    unknown) a primitive's name may be a type parameter's (`fn keep<i64>(h: i64)`)."""
     if kind is None:
         return True
     kind = kind.strip()
-    if kind in _PRIMITIVES or _NON_OWNING.match(kind):
+    if _NON_OWNING.match(kind):
+        return False
+    if kind in _PRIMITIVES and generics is not None and kind not in generics:
         return False
     if kind.startswith("[") and kind.endswith("]"):
         # `[T; N]` or `[T]`: the element's type.
-        return _may_own(_top_level_parts(kind[1:-1], ";")[0])
+        return _may_own(_top_level_parts(kind[1:-1], ";")[0], generics)
     if kind.startswith("(") and kind.endswith(")"):
         parts = [part for part in _top_level_parts(kind[1:-1], ",") if part.strip()]
-        return any(_may_own(part) for part in parts)
+        return any(_may_own(part, generics) for part in parts)
     return True
 
 
@@ -1337,10 +1354,11 @@ class RustSession(NativeSession):
                 ((frame or {}).get("source") or {}).get("path"),
             )
         )
+        layouts = self.layouts
         container = container_view(
             variable,
             read,
-            self.layouts,
+            layouts,
             optimized=self.target.opt_level != "0",
             parameter=parameter,
             owned=owned,
@@ -1348,6 +1366,26 @@ class RustSession(NativeSession):
         )
         if container is not None:
             return container
+        if hashed and unoptimized and proofs is not None:
+            # #106: a tuple or struct of scalars, previewed under the same proofs.
+            declared = (
+                proofs.declared_type(hashed[1], variable.get("name"), line, shown_path)
+                if innermost
+                else None
+            )
+            preview = struct_view(
+                variable,
+                read,
+                layouts,
+                parameter=parameter,
+                owned=bool(
+                    struct_name(declared, kind, layouts)
+                    and proofs.proven(hashed[1], variable.get("name"), line, shown_path)
+                ),
+                declared=declared,
+            )
+            if preview is not None:
+                return preview
         if top and proofs is not None:
             types = self._binding_types(variable, frame)
             # An array is judged by its elements (`[&Pt; 2]` is plain, `[Box<Pt>; 2]` owns).
@@ -1405,7 +1443,7 @@ class RustSession(NativeSession):
                 # read the freed allocation as its fields. The pointer is shown; what it
                 # points at is not.
                 return _unproven(variable)
-        view = active_variant(variable, fetch, self.layouts)
+        view = active_variant(variable, fetch, layouts)
         if view and view["rust_view"] == "active-variant" and self.target.opt_level != "0":
             # Optimized code may track an enum's tag and payload separately and LLDB
             # zero-fills a missing piece without reporting it, so a decoded variant is
@@ -1460,11 +1498,13 @@ class RustSession(NativeSession):
             # (its `Pin<&mut>` self), the `(Return Value)` a step out shows.
             return None
         types = self._binding_types(variable, frame)
-        if types and not any(_may_own(each) for each in types):
+        hashed = _frame_hash(frame)
+        # An unmangled function (`#[no_mangle]`) is never generic.
+        generics = proofs.type_parameters(hashed[1]) if hashed else ()
+        if types and not any(_may_own(each, generics) for each in types):
             # Primitives, references and raw pointers only (`(i64, &Pt)`): a move leaves
             # their bytes as they were, and what a reference reaches is #110's.
             return None
-        hashed = _frame_hash(frame)
         proven = bool(
             self.target.opt_level == "0"
             and hashed
