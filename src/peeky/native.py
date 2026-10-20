@@ -1143,6 +1143,7 @@ def local_declarations(info, line_text, workspace, declared):
                     first.add(later[0])
                 starts.setdefault((name, source, line), set()).update(first)
         constructor, enclosing, defined, initializer = _class_role(dies, entry["chain"])
+        inlined = _inlined_calls(dies, (*entry["bodies"], root), files, workspace)
         first_line = _first(dies, entry["chain"], "DW_AT_decl_line")
         first = int(first_line) if first_line and first_line.isdigit() else None
         own = [
@@ -1168,9 +1169,30 @@ def local_declarations(info, line_text, workspace, declared):
                 "order": tuple(ordered),
                 "classes": classes.get(root, ()),
                 "types": local_types(dies, entry["bodies"]),
+                "inlined": inlined,
             }
         )
     return table
+
+
+def _inlined_calls(dies, bodies, files, workspace):
+    """(source or None, line or None) of each call inlined into these function bodies
+    (`DW_TAG_inlined_subroutine`, an `always_inline` callee's at opt-level 0), from
+    where it is called: its code carries the callee's lines, not the call's (#105)."""
+    inputs, cache = files
+    found, pending = (
+        set(),
+        [child for body in dict.fromkeys(bodies) for child in dies[body]["children"]],
+    )
+    while pending and len(found) < 4096:
+        die = dies[pending.pop()]
+        if die["tag"] == "DW_TAG_lexical_block":
+            pending.extend(die["children"])
+        elif die["tag"] == "DW_TAG_inlined_subroutine":
+            called = die["attrs"].get("DW_AT_call_line", "")
+            source = _source_of(die["attrs"].get("DW_AT_call_file"), inputs, workspace, cache)
+            found.add((source, int(called) if called.isdigit() else None))
+    return tuple(sorted(found, key=str))
 
 
 _CLASSES = ("DW_TAG_class_type", "DW_TAG_structure_type", "DW_TAG_union_type")
@@ -1501,19 +1523,6 @@ def declared_mid_line(table, name, source, line, address, settled):
         if span[0] < address < end:
             return line
     return None
-
-
-def _after_prologue(function, source, line):
-    """The address of the first row after the prologue on the function's first line
-    (a declarations entry), where a breakpoint on that line stops: the line's second
-    row, its first being the function's entry; None if there is none."""
-    rows = sorted(
-        {at for at, file, number in function.get("order", ()) if (file, number) == (source, line)}
-    )
-    entries = [low for low, _ in function.get("ranges", ())]
-    if len(rows) < 2 or not entries or rows[0] != min(entries):
-        return None
-    return rows[1]
 
 
 def declared_skipped(table, name, source, line, address, skipped):
@@ -2878,8 +2887,13 @@ class NativeSession:
           of the statements that start on it (Statements.statement_span): clang emits
           `t =` / `p.x + g();` with the second line's code first.
 
-        Anything else, or anything Peeky cannot tell, is refused. ``stop``: the stop's
-        reason (unused: the address says it)."""
+        On the first line too, the statements start after the body's `{` and the stop
+        must be at the lowest of their rows past the function's entry (`long one(struct P
+        p) { long t =` / `p.x + g();` runs line 2 first). And no call in them may be
+        inlined (`always_inline`): its code carries the callee's lines and runs before
+        the statement's own lowest row (`t = inl(&p) + p.y;`). Anything else, or anything
+        Peeky cannot tell, is refused. ``stop``: the stop's reason (unused: the address
+        says it)."""
         place, function, address = self._place(frame), self._function_at(frame), None
         if function is not None:
             address = self._unslid(frame)
@@ -2892,29 +2906,48 @@ class NativeSession:
                 "class's member initializer, or code an `#include` brings in), part-way "
                 "through the statement that runs it"
             )
-        span = function.get("span")
-        if span is not None and line == span[0]:
-            if address == _after_prologue(function, source, line):
-                return None
-            return (
-                f"the stop is on line {line}, its function's first line, past the first "
-                "instruction after its prologue (back from a call, as after `step --out`)"
-            )
-        statements = self._statements(source)
-        begins = statements.begins(line) if statements is not None else None
-        if begins is False:
-            return f"line {line} continues a statement that an earlier line starts"
-        if begins is None:
+        span, statements = function.get("span"), self._statements(source)
+        if statements is None:
             return f"Peeky cannot tell from the source whether line {line} starts a statement"
-        lines = statements.statement_span(line)
-        if lines is None:
-            return f"Peeky cannot tell from the source where the statement on line {line} ends"
+        first = span is not None and line == span[0]
+        if first:
+            lines = statements.opening_statements(line)
+            if lines is None:
+                return (
+                    f"the stop is on line {line}, its function's first line, and Peeky "
+                    "cannot tell from the source which statement starts there"
+                )
+        else:
+            begins = statements.begins(line)
+            if begins is False and statements.old_style(line):
+                return (
+                    f"line {line} is in a K&R-style definition (parameters declared between "
+                    "its `)` and its body), which Peeky does not read"
+                )
+            if begins is False:
+                return f"line {line} continues a statement that an earlier line starts"
+            if begins is None:
+                return f"Peeky cannot tell from the source whether line {line} starts a statement"
+            lines = statements.statement_span(line)
+            if lines is None:
+                return f"Peeky cannot tell from the source where the statement on line {line} ends"
+        where = f"line {line}" if lines[0] == lines[1] else f"lines {lines[0]}-{lines[1]}"
+        if any(
+            called != source or at is None or lines[0] <= at <= lines[1]
+            for called, at in function.get("inlined", ())
+        ):
+            return (
+                f"the statement on {where} calls a function inlined into it (`always_inline`), "
+                "whose code carries that function's lines and may run before the statement's "
+                "own, so Peeky cannot tell where the statement starts"
+            )
+        entry = min((low for low, _ in function.get("ranges", ())), default=None)
         addresses = [
             at
             for at, file, number in function.get("order", ())
-            if file == source and lines[0] <= number <= lines[1]
+            if file == source and lines[0] <= number <= lines[1] and not (first and at == entry)
         ]
-        if not addresses or address != min(addresses):
+        if entry is None or not addresses or address != min(addresses):
             where = f"line {line}" if lines[0] == lines[1] else f"lines {lines[0]}-{lines[1]}"
             return (
                 f"the stop is not at the first instruction of the statement on {where}: "

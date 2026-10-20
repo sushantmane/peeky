@@ -836,10 +836,44 @@ class Statements:
         may hide a bracket or a `;` in it; see the module)."""
         if self.unreadable or type(line) is not int or not 1 <= line <= len(self.starts):
             return None
+        if self._code()[1] is None:
+            return None
+        return self._span_from(line, self.starts[line - 1])
+
+    def opening_statements(self, line):
+        """For a function's first line, where its body opens (`long one(struct P p) {
+        long t =` / `p.x + g();`, a one-line lambda): (``line``, the last line of the
+        statements that start on it after the body's `{`), as ``statement_span`` reads
+        them. None if unknown: no body (a function's or a lambda's) opens on the line,
+        more than one does, no code follows it on the line, an end is not found, or the
+        compiler may read the text differently (see ``statement_span``)."""
+        if self.unreadable or type(line) is not int or not 1 <= line <= len(self.starts):
+            return None
         code, pairs = self._code()
         if pairs is None:
             return None
         begin = self.starts[line - 1]
+        finish = self.starts[line] if line < len(self.starts) else len(code)
+        bodies = [
+            found.start()
+            for found in re.compile(r"\{|<%").finditer(code, begin, finish)
+            if self._brace(found.start()) in ("function", "lambda")
+        ]
+        if len(bodies) != 1:
+            return None
+        opened = bodies[0] + (1 if code.startswith("{", bodies[0]) else 2)
+        following = _NONBLANK.search(code, opened, finish)
+        if following is None or code.startswith(("}", "%>"), following.start()):
+            return None
+        verdict, body = self._function_body(following.start())
+        if verdict is not True or body != bodies[0]:
+            return None
+        return self._span_from(line, opened)
+
+    def _span_from(self, line, begin):
+        """(``line``, the last line of the statements that start on it from ``begin``), or
+        None (see ``statement_span``)."""
+        code, pairs = self._code()
         finish = self.starts[line] if line < len(self.starts) else len(code)
         position, last = begin, begin
         while (token := _WORDS.search(code, position)) is not None and token.start() < finish:
@@ -879,6 +913,31 @@ class Statements:
             return None
         return line, bisect.bisect_right(self.starts, last)
 
+    def old_style(self, line):
+        """Whether ``line`` is in the body of a K&R-style definition (`long f(a) long a;
+        {`), whose parameters are declared between its `)` and its body: the outermost
+        brace around the line's code opens after a `;` at file scope. Such a body is no
+        function's for `begins`, which then says False."""
+        if self.unreadable or type(line) is not int or not 1 <= line <= len(self.starts):
+            return False
+        code, pairs = self._code()
+        if pairs is None:
+            return False
+        begin = self.starts[line - 1]
+        finish = self.starts[line] if line < len(self.starts) else len(code)
+        first = _NONBLANK.search(code, begin, finish)
+        if first is None:
+            return False
+        braces = [
+            opened
+            for opened, closed in pairs.items()
+            if opened < first.start() <= closed and code.startswith(("{", "<%"), opened)
+        ]
+        if not braces:
+            return False
+        before = self._unattributed(min(braces))
+        return before is not None and before[0] == ";"
+
     def _function_body(self, position, closing=False):
         """(verdict, where the body opens) for ``position``: True if every bracket around
         it, up to the body of its function or lambda, is a block of statements (see
@@ -893,6 +952,15 @@ class Statements:
             ),
             reverse=True,
         )
+        # Inside a GNU statement expression, `({ ... })`, anywhere around it: what reads
+        # a value there is part of an enclosing statement, whose start is unknown.
+        if any(
+            code.startswith(("{", "<%"), opening)
+            and (before := self._before(opening)) is not None
+            and before[0] == "("
+            for opening in around
+        ):
+            return False, None
         for index, opening in enumerate(around):
             if not code.startswith(("{", "<%"), opening):
                 return False, None
@@ -901,16 +969,60 @@ class Statements:
                 return True, opening
             if kind == "function":
                 outer = around[index + 1] if index + 1 < len(around) else None
-                if outer is None or (
-                    code.startswith(("{", "<%"), outer) and self._brace(outer) == "other"
-                ):
+                if outer is None or self._container(outer):
                     return True, opening
-                # A function is not defined in another's body or an expression: this one
-                # is a statement's block (a macro's: `FOR_EACH(x) {`).
+                # A function is defined only at file scope or in a class's or namespace's
+                # body: this one is a statement's block (a macro's: `FOR_EACH(x) {`, a
+                # `for` header `REPEAT(k, 1) {` hides), and the walk goes on outwards.
                 continue
             if kind != "statement":
                 return False, None
         return False, None
+
+    def _container(self, opening):
+        """Whether the brace at ``opening`` opens a body functions are defined in: a
+        class's, struct's or union's (`struct S : B {`, `template <class T> class C {`),
+        a namespace's or a linkage specification's (`extern "C" {`). Not a function's
+        (`struct P make(void) {`), an initializer's (`struct P p = {`) or anything in
+        brackets."""
+        code = self._code()[0]
+        if not code.startswith(("{", "<%"), opening):
+            return False
+        head, at, angles = [], opening, 0
+        for _ in range(256):
+            before = self._before(at)
+            if before is None:
+                break
+            token, start = before
+            if token in (";", "{", "}", "<%", "%>"):
+                break
+            if token in (")", "]", ":>"):
+                # A bracketed group: an attribute's or `alignas(8)` (fine), parameters.
+                opened = self._opening(start)
+                if opened is None:
+                    return False
+                head.append("()" if token == ")" else "[]")
+                at = opened
+                continue
+            if set(token) <= {"<", ">"}:
+                # Read backwards, a template's arguments close first (`<int N = 3>`).
+                angles += token.count(">") - token.count("<")
+            elif token in ("(", "[", "<:") or (token == "=" and angles <= 0):
+                return False
+            head.append(token)
+            at = start
+        else:
+            return False
+        head.reverse()
+        groups = [i for i, token in enumerate(head) if token == "()"]
+        if "namespace" in head:
+            return not groups
+        if head[:1] == ["extern"]:
+            return not groups and len(head) <= 3
+        if not {"class", "struct", "union"} & set(head):
+            return False
+        allowed = {"alignas", "_Alignas", "__attribute__", "__attribute", "__declspec"}
+        return all(i > 0 and head[i - 1] in allowed for i in groups)
 
     def _brace(self, opening):
         """What the brace at ``opening`` opens: "statement" (a block of statements: a

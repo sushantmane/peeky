@@ -2011,6 +2011,89 @@ def test_format_args_constructors_keep_pointers_and_are_no_copies():
     assert body.copies_of(1) == frozenset({7, 9})
 
 
+TUPLE_FIRST = """// MIR for `ref_first` after PreCodegen
+
+fn ref_first(_1: i32) -> () {
+    debug k => _1;                       // in scope 0 at src/main.rs:7:14: 7:15
+    let mut _0: ();                      // return place in scope 0 at src/main.rs:7:21: 7:21
+    let mut _2: Tri;                     // in scope 0 at src/main.rs:8:9: 8:14
+    let mut _4: &i32;                    // in scope 0 at src/main.rs:9:14: 9:16
+    let mut _5: i32;                     // in scope 0 at src/main.rs:10:14: 10:17
+    let mut _6: i32;                     // in scope 0 at src/main.rs:11:14: 11:17
+    scope 1 {
+        debug s => _2;                   // in scope 1 at src/main.rs:8:9: 8:14
+        let _3: (&i32, i32, i32);        // in scope 1 at src/main.rs:9:9: 9:10
+        scope 2 {
+            debug t => _3;               // in scope 2 at src/main.rs:9:9: 9:10
+        }
+    }
+
+    bb0: {
+        _2 = mk() -> [return: bb1, unwind continue]; // scope 0 at src/main.rs:8:17: 8:21
+    }
+
+    bb1: {
+        _4 = &_1;                        // scope 1 at src/main.rs:9:14: 9:16
+        _5 = copy (_2.0: i32);           // scope 1 at src/main.rs:10:14: 10:17
+        _6 = copy (_2.1: i32);           // scope 1 at src/main.rs:11:14: 11:17
+        _3 = (move _4, move _5, move _6); // scope 1 at src/main.rs:9:13: 11:18
+        return;                          // scope 0 at src/main.rs:13:2: 13:2
+    }
+}
+"""
+TUPLE_SOURCE = "\n" * 6 + (
+    "fn ref_first(k: i32) {\n"
+    "    let mut s = mk(); s.c += 1;\n"
+    "    let t = (&k, // REF_1\n"
+    "             s.a, // REF_2\n"
+    "             s.b); // REF_3\n"
+    "    println!();\n"
+    "}\n"
+)
+
+
+def test_a_breakpoints_place_on_its_line_is_told_by_its_column_or_not_at_all():
+    # Review of #105 (round 3): in `let t = (&k,` / `s.a,` / `s.b);`, the line's first
+    # place by the IR's order, `_4 = &_1`, emits no code: its first code is the tuple's,
+    # after `s.a` is read. Only the stop's column tells them apart; without it, the
+    # change was judged before the read (allowed) and the program used the old value.
+    function = IrFunction(
+        "ref_first", "app", "src/main.rs", {"start": {8}, "bb1": {9, 10, 11, 13}}, {}, 7
+    )
+    owned = OwnedLocals(
+        [parse_body(TUPLE_FIRST)],
+        {"h0": function},
+        ("src/main.rs",),
+        texts={"src/main.rs": TUPLE_SOURCE},
+    )
+
+    def judged(column):
+        return owned.copied_in_progress(
+            "h0", "s", 9, "/w/src/main.rs", breakpoint=True, column=column
+        )
+
+    assert judged(13) is True  # the tuple's column: `s.a` is in `_5`
+    assert judged(14) is False  # `&k`'s: nothing of `s` read yet
+    assert judged(None) is None
+
+
+def test_format_args_constructors_count_only_where_nothing_else_can_pass_for_them():
+    # Review of #105 (round 3): the crate's own `mod core { pub mod fmt { ... } }` prints
+    # its `core::fmt::Arguments::new(&s.a)` just as the standard library's.
+    def formatting(text, path="main"):
+        body = mir({0: ["return;"]})
+        body.path = path
+        return OwnedLocals([body], {}, ("src/main.rs",), texts={"src/main.rs": text})._formatting()
+
+    assert formatting('use std::fmt;\nfn main() { println!("{}", core::mem::size_of::<u8>()); }')
+    assert formatting('// mod core {}\nfn main() { let s = "std"; }')
+    assert not formatting("mod core { pub mod fmt {} }\nfn main() {}")
+    assert not formatting("use crate::inner as std;\nfn main() {}")
+    assert not formatting("fn main() {}", path="core::fmt::<impl at src/main.rs:8:5: 8:28>::new")
+    assert not formatting('fn main() { let s = "unterminated; }')
+    assert not OwnedLocals([], {}, ("src/main.rs",))._formatting()
+
+
 def test_a_line_breakpoint_stops_before_its_lines_first_code_in_each_block():
     from peeky.rust_mir import _first_places
 

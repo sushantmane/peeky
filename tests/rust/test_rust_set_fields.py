@@ -465,3 +465,56 @@ def test_rust_a_formatting_line_gives_pointers_and_allows_a_change(crate, capsys
     text = json.loads(capsys.readouterr().out)["output"]
     assert main(["session", "close"]) == 0
     assert "fmt 33 60" in text, text
+
+
+USER_CORE = """#[derive(Clone, Copy, Debug)]
+struct Tri {
+    a: i32,
+    b: i32,
+    c: i32,
+}
+
+mod core {
+    pub mod fmt {
+        pub struct Arguments<'a>(pub i32, pub std::marker::PhantomData<&'a i32>);
+        impl<'a> Arguments<'a> {
+            #[inline(never)]
+            pub fn new(x: &'a i32) -> Arguments<'a> {
+                Arguments(*x, std::marker::PhantomData)
+            }
+        }
+    }
+}
+
+#[inline(never)]
+fn f() -> i32 {
+    1000
+}
+
+fn main() {
+    let mut s = Tri { a: 1, b: 2, c: 3 };
+    s.c += 1;
+    let u = core::fmt::Arguments::new(&s.a).0
+        + f(); // SECOND
+    println!("ucore {} {}", u, s.a);
+}
+"""
+
+
+@pytest.mark.timeout(400)
+def test_rust_a_crates_own_core_fmt_is_no_format_args(crate, capsys):
+    # Review of #105 (round 3): the crate's `mod core { pub mod fmt { ... } }` reads in
+    # the MIR as the standard library's `format_args!`, so its `Arguments::new(&s.a)`
+    # (which copies `s.a`) counted as keeping a pointer: at a breakpoint on `+ f();`,
+    # `set s.a=50` was allowed and the program printed `1001`.
+    (crate / "src/main.rs").write_text(USER_CORE)
+    line = next(i for i, text in enumerate(USER_CORE.splitlines(), 1) if "// SECOND" in text)
+    assert main(["session", "start", str(crate), "--at", f"src/main.rs:{line}"]) == 0
+    capsys.readouterr()
+    refused(capsys, "s.a=50", "cannot be changed here", "already read it into a temporary")
+    assert main(["session", "continue", "--to-exit"]) == 0
+    capsys.readouterr()
+    assert main(["session", "report", "--json"]) == 0
+    text = json.loads(capsys.readouterr().out)["output"]
+    assert main(["session", "close"]) == 0
+    assert "ucore 1001 1" in text, text

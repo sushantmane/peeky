@@ -495,7 +495,7 @@ def test_c_a_one_line_function_allows_a_change_only_after_its_prologue(directory
     assert main(["session", "step", "--into"]) == 0
     assert main(["session", "step", "--out"]) == 0
     capsys.readouterr()
-    refused(capsys, "p.x=70", "its function's first line, past the first instruction after")
+    refused(capsys, "p.x=70", "not at the first instruction of the statement on line")
     assert "E 1061" in output(capsys)
 
 
@@ -625,7 +625,108 @@ def test_cpp_braces_that_are_no_blocks_and_a_lambdas_return_address_are_refused(
     assert main(["session", "step", "--into"]) == 0
     assert main(["session", "step", "--out"]) == 0
     capsys.readouterr()
-    refused(capsys, "q.x=70", "its function's first line, past the first instruction after")
+    refused(capsys, "q.x=70", "not at the first instruction of the statement on line")
     text = output(capsys)
     assert "A 1001" in text and "B 1001" in text and "C 1001" in text, text
     assert "D 1061 2" in text, text
+
+
+ROUND3 = """#include <stdio.h>
+
+struct P { long x; long y; };
+
+__attribute__((noinline)) long g(void) { return 1000; }
+static inline __attribute__((always_inline)) long inl(struct P *q) { return q->x + g(); }
+static inline __attribute__((always_inline)) long getx(struct P *q) { return q->x; }
+#define REPEAT(i, n) for (int i = 0; i < (n); i++)
+__attribute__((noinline)) long first(struct P p) { long t =  // FIRST
+    p.x + g();  // FIRST_2
+    return t; }
+__attribute__((noinline)) long ret(struct P p) { return  // RETURN
+    p.x + g(); }  // RETURN_2
+long old(a, b)
+    long a; long b;
+{
+    long r = a + b;  // OLD
+    return r;
+}
+
+int main(void) {
+    struct P p = { 1, 2 };
+    long t;
+    t = inl(&p) + p.y;  // INLINED
+    printf("A %ld\\n", t);
+    t = getx(&p) + g();  // GETX
+    printf("B %ld\\n", t);
+    t = p.x + ({
+        long q = 0;
+        REPEAT(k, 1) {
+            q += g();  // LOOP_BODY
+        }
+        q;
+    });
+    printf("F %ld\\n", t);
+    t = first(p);
+    printf("E %ld\\n", t);
+    t = ret(p);
+    printf("R %ld\\n", t);
+    t = old(p.x, 2);
+    printf("K %ld\\n", t);
+    t = p.x + 1;  // PLAIN
+    printf("P %ld\\n", t);
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(240)
+def test_c_a_statement_calling_an_always_inline_function_is_refused(directory, capsys):
+    # Review of #105 (round 3): an `always_inline` callee's code carries its own lines
+    # and runs before the statement's lowest row: at `t = inl(&p) + p.y;`, `set p.x=50`
+    # reported `1 -> 50` and the program printed `A 1003`; `t = getx(&p) + g();`,
+    # `B 1050`. Root integers were marked [settable] there too.
+    start_at(directory, capsys, "r3.c", ROUND3, "INLINED")
+    refused(capsys, "p.x=50", "calls a function inlined into it")
+    assert main(["session", "inspect", "--json"]) == 0
+    snapshot = json.loads(capsys.readouterr().out)
+    rows = {v["name"]: v for s in snapshot["scopes"] for v in s["variables"]}
+    assert not rows["t"].get("settable"), rows["t"]
+    continue_to(capsys, ROUND3, "GETX")
+    refused(capsys, "p.x=60", "calls a function inlined into it")
+    continue_to(capsys, ROUND3, "PLAIN")
+    code, result = change(capsys, "p.x=5")
+    assert code == 0 and result["after"] == "5", result
+    text = output(capsys)
+    assert "A 1003" in text and "B 1001" in text and "P 6" in text, text
+
+
+@pytest.mark.timeout(240)
+def test_c_a_macro_loop_inside_a_statement_expression_is_refused(directory, capsys):
+    # Review of #105 (round 3): `REPEAT(k, 1) {` (a `for` header) inside `t = p.x + ({`
+    # read as a function's body, and `set p.x=50` printed `F 1001`.
+    start_at(directory, capsys, "r3.c", ROUND3, "LOOP_BODY")
+    refused(capsys, "p.x=50", "continues a statement")
+    assert "F 1001" in output(capsys)
+
+
+@pytest.mark.timeout(240)
+def test_c_a_functions_first_line_needs_its_statements_first_instruction(directory, capsys):
+    # Review of #105 (round 3): on `long first(struct P p) { long t =` / `p.x + g();`,
+    # a step from the second line lands on the first line's store, which counted as
+    # the first row after the prologue: `set p.x=50` printed `E 1001`. So did
+    # `{ return` with its expression on the next line.
+    for marker, tag in (("FIRST_2", "E"), ("RETURN_2", "R")):
+        start_at(directory, capsys, "r3.c", ROUND3, marker)
+        assert main(["session", "step"]) == 0
+        capsys.readouterr()
+        top = line_of(ROUND3, marker) - 1
+        refused(capsys, "p.x=50", f"first instruction of the statement on lines {top}-{top + 1}")
+        assert f"{tag} 1001" in output(capsys)
+
+
+@pytest.mark.timeout(240)
+def test_c_a_k_and_r_definition_is_refused_as_one(directory, capsys):
+    # Review of #105 (round 3): a K&R body was refused as "line N continues a statement".
+    start_at(directory, capsys, "r3.c", ROUND3, "OLD")
+    refused(capsys, "a=9", "K&R-style definition")
+    assert "K 3" in output(capsys)

@@ -739,19 +739,20 @@ class Body:
                 pending.extend((successor, 0) for successor in (*block.successors, *resumed))
         return False
 
-    def copies_of(self, local):
+    def copies_of(self, local, formatting=True):
         """The temporaries (locals no variable names, other than the return place) that
         may hold a value read from ``local``'s storage, which a later change to it does
         not reach (#105): one assigned from a read of it (`_4 = copy (_1.0: i32)`, not a
         borrow of it), from a read through any pointer (which may point into it), from a
         call given a pointer that may (`get(&s)`), or from such a temporary. A pointer
         into it is not a copy (reads through it see the change), but makes what a call
-        returns one. The program's own variables are not counted: a copy one holds is
-        the program's (`let a = s.x;`)."""
+        returns one, except `format_args!`'s constructors where ``formatting`` (the crate
+        names nothing `core` or `std` that could pass for them). The program's own
+        variables are not counted: a copy one holds is the program's (`let a = s.x;`)."""
         if self._copies is None:
             self._copies = {}
-        if local in self._copies:
-            return self._copies[local]
+        if (local, formatting) in self._copies:
+            return self._copies[local, formatting]
         named = {
             binding[0]
             for bindings in self.bindings.values()
@@ -785,10 +786,12 @@ class Body:
                     call = "->" in value and not _NOT_A_CALL.match(value)
                     hold = local in mentioned or through or bool(mentioned & holds)
                     # `format_args!`'s constructors keep the pointers they are given.
-                    formatting = _FORMAT_CALL.match(value) and _FORMAT_TYPE.fullmatch(
-                        self.types.get(target, "")
+                    keeps = (
+                        formatting
+                        and _FORMAT_CALL.match(value)
+                        and _FORMAT_TYPE.fullmatch(self.types.get(target, ""))
                     )
-                    hold = hold or (call and pointing and not formatting)
+                    hold = hold or (call and pointing and not keeps)
                     point = pointing
                 if hold and target not in holds:
                     holds.add(target)
@@ -798,8 +801,8 @@ class Body:
                     changed = True
             if not changed:
                 break
-        self._copies[local] = frozenset(holds)
-        return self._copies[local]
+        self._copies[local, formatting] = frozenset(holds)
+        return self._copies[local, formatting]
 
     def used_before(self, local, start):
         """True if every path into ``start`` passes a use of ``local`` (or its assignment)
@@ -2478,13 +2481,42 @@ class OwnedLocals:
         if local is None:
             return None
         facts = self._facts(function, line, column) if breakpoint and not function.copies else None
+        if breakpoint and (facts is None or facts.column is None):
+            # The line's first place by the IR's order may emit no code (`&k` in `let t =
+            # (&k,` / `s.a,` / `s.b);`, whose first code is the tuple's, after `s.a` is
+            # read): only the stop's column tells the places it can be before apart.
+            return None
         positions = self._positions(site, line, facts, block)
         if not positions:
             return None
         if breakpoint and not function.inline_only:
             positions = _first_places(body, function, positions)
-        held = body.copies_of(local)
+        held = body.copies_of(local, formatting=self._formatting())
         return any(body.used_ahead(temp, position) for temp in held for position in positions)
+
+    def _formatting(self):
+        """Whether a call that reads like `format_args!`'s constructors (and returns
+        their type) is theirs (#105): the crate names nothing `core` or `std` but the
+        standard library's paths (`core::fmt::...`), in every source's code, and has no
+        MIR body under either (its own `mod core { pub mod fmt { ... } }` prints just
+        like the real one). Unknown text counts as naming one."""
+        if "_formatting_known" not in self.__dict__:
+            from peeky.rust_lexer import code_only
+
+            own = re.compile(r"(?<![\w:])(?:r#)?(?:core|std)\b(?!\s*::)")
+            codes = [
+                code_only(self.texts[source]) if source in self.texts else None
+                for source in self.sources
+            ]
+            self._formatting_known = (
+                bool(codes)
+                and all(code is not None and not own.search(code) for code in codes)
+                and not any(
+                    str(body.path).startswith(("core::", "std::", "r#core::", "r#std::"))
+                    for body in self.bodies
+                )
+            )
+        return self._formatting_known
 
     def reference_valid(
         self, hashed, variable_name, line, path, breakpoint=False, column=None, block=None

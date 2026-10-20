@@ -654,6 +654,81 @@ def test_every_bracket_up_to_the_function_body_must_be_a_block_of_statements():
         assert verdict(text) is True, text
 
 
+ROUND3 = """#define REPEAT(i, n) for (int i = 0; i < (n); i++)
+extern "C" {
+long one(struct P p) { long t =
+    p.x + g();
+    return t; }
+long two(struct P p) { return p.x + g(); }
+long none(void) {}
+}
+namespace app {
+template <typename T, int N = 3> struct X : B<T> {
+    long m(long v) const {
+        return v;
+    }
+};
+}
+long old(a, b)
+    long a; long b;
+{
+    long r = a + b;
+    return r;
+}
+int main(void) {
+    long t = p.x + ({
+        long q = 0;
+        REPEAT(k, 1) {
+            q += g();
+        }
+        q;
+    });
+    auto f = [&](long v) { return v + 1; };
+    return 0;
+}
+"""
+
+
+def test_a_function_like_brace_is_a_body_only_at_file_scope_or_in_a_class():
+    # Review of #105 (round 3): `REPEAT(k, 1) {` inside `({` read as a function's body.
+    statements = Statements(ROUND3, raw_strings=True)
+    lines = ROUND3.splitlines()
+
+    def line(text):
+        return lines.index(text) + 1
+
+    assert statements.begins(line("            q += g();")) is False
+    assert statements.begins(line("        long q = 0;")) is False
+    # Functions in `extern "C" {`, a namespace and a template class with a default.
+    assert statements.begins(line("        return v;")) is True
+    assert statements.begins(line("    return 0;")) is True
+    # A K&R body is no function's: refused, and told apart.
+    assert statements.begins(line("    long r = a + b;")) is False
+    assert statements.old_style(line("    long r = a + b;"))
+    assert not statements.old_style(line("    return 0;"))
+
+
+def test_a_functions_first_line_holds_the_statements_after_its_body_opens():
+    # Review of #105 (round 3): `long one(struct P p) { long t =` / `p.x + g();` ends on
+    # the next line; `{ return p.x + g(); }` on its own.
+    statements = Statements(ROUND3, raw_strings=True)
+    lines = ROUND3.splitlines()
+
+    def line(text):
+        return lines.index(text) + 1
+
+    first = line("long one(struct P p) { long t =")
+    assert statements.opening_statements(first) == (first, first + 1)
+    two = line("long two(struct P p) { return p.x + g(); }")
+    assert statements.opening_statements(two) == (two, two)
+    lambda_line = line("    auto f = [&](long v) { return v + 1; };")
+    assert statements.opening_statements(lambda_line) == (lambda_line, lambda_line)
+    # No statement after the body opens, or no body on the line.
+    assert statements.opening_statements(line("long none(void) {}")) is None
+    assert statements.opening_statements(line("int main(void) {")) is None
+    assert statements.opening_statements(line("    return t; }")) is None
+
+
 def test_begins_is_unknown_where_the_compiler_may_read_the_text_otherwise():
     assert Statements("int f(void) {\n  int a = 1 + \\\n  2;\n}\n").begins(3) is None
     assert Statements("int f(void) {\n  int a = (1;\n}\n").begins(2) is None
