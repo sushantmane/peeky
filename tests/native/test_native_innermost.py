@@ -354,7 +354,7 @@ def test_a_local_read_in_an_included_case_is_withheld(directory, capsys):
         capsys, path, line_of(SWITCH_INCLUDED, "return w;"), "p", "k", out=True, steps=1
     )
     assert rows["p"]["line"] == line_of(CASES, "// read"), rows["p"]
-    assert withheld(rows["p"], "declared on line", "of sw.c", "an `#include` after it")
+    assert withheld(rows["p"], "this frame runs cases.h:3, outside its function's own lines")
     assert rows["k"]["value"] == "1"
 
 
@@ -567,3 +567,214 @@ def test_a_lambda_called_below_the_listed_frames_is_judged_from_more_of_them(dir
     # Past 64 frames nothing below is known: withheld.
     rows = shown_at(capsys, path, line, "this", hit=3)
     assert withheld(rows["this"], "Peeky cannot list every frame below this one")
+
+
+# Review of #126 (round 2).
+
+HEADER_CALLS_C = (
+    """#include <stdio.h>
+"""
+    + HELPERS
+    + """
+__attribute__((noinline)) static long run(long seed) {
+    long total = seed;
+    for (long i = twice(1); i < 20; i += 7) total += i;  // for
+    for (int j = 0; j < 2; j++) total += twice(j + 5);  // counter
+    return total;
+}
+
+int main(void) {
+    scribble();
+    printf("%ld\\n", run(1));
+    return 0;
+}
+"""
+)
+
+HEADER_CALLS_CPP = (
+    """#include <cstdio>
+#include <vector>
+"""
+    + HELPERS.replace("(void)", "()")
+    + """
+__attribute__((noinline)) static long next(long *n) {
+    *n -= 1;  // next
+    return twice(*n);
+}
+
+__attribute__((noinline)) static std::vector<long> pair_of(long v) {
+    return {v, v + 1};  // pair_of
+}
+
+__attribute__((noinline)) static long run(long seed) {
+    long out = seed, n = 3;
+    if (long r = twice(3)) out += r;  // if
+    while (long v = next(&n)) out += v;  // while
+    switch (long k = twice(2)) { default: out += k; }  // switch
+    for (long x : pair_of(4)) out += x;  // range
+    return out;
+}
+
+int main() {
+    scribble();
+    std::printf("%ld\\n", run(1));
+    return 0;
+}
+"""
+)
+
+
+@pytest.mark.timeout(400)
+def test_a_header_variable_whose_initializer_calls_is_withheld_after_the_call(directory, capsys):
+    # Review of #126 (round 2): back from the call in a header's own initializer
+    # (`step --out`), `i`, `r` and `k` were leftovers and `[settable]`; a `while`'s `v`
+    # was garbage, then the last pass's value.
+    path = directory / "headers.c"
+    path.write_text(HEADER_CALLS_C)
+    twice = line_of(HEADER_CALLS_C, "return w;")
+    rows = shown_at(capsys, path, twice, "i", "total", out=True)
+    assert rows["i"]["line"] == line_of(HEADER_CALLS_C, "// for"), rows["i"]
+    assert withheld(rows["i"], "part-way through that line") and rows["i"]["settable"] is False
+    # A counter its header sets with no call reads mid-line, as before.
+    rows = shown_at(capsys, path, twice, "j", hit=2, out=True)
+    assert rows["j"]["line"] == line_of(HEADER_CALLS_C, "// counter") and rows["j"]["value"] == "0"
+    path = directory / "headers.cpp"
+    path.write_text(HEADER_CALLS_CPP)
+    twice = line_of(HEADER_CALLS_CPP, "return w;")
+    for hit, name, marker in ((1, "r", "// if"), (5, "k", "// switch")):
+        rows = shown_at(capsys, path, twice, name, hit=hit, out=True)
+        assert rows[name]["line"] == line_of(HEADER_CALLS_CPP, marker), rows[name]
+        assert withheld(rows[name], "part-way through that line"), rows[name]
+    for hit in (1, 2, 3):
+        rows = shown_at(capsys, path, line_of(HEADER_CALLS_CPP, "// next"), "v", hit=hit, out=True)
+        assert rows["v"]["line"] == line_of(HEADER_CALLS_CPP, "// while"), rows["v"]
+        assert withheld(rows["v"], "part-way through that line"), (hit, rows["v"])
+    # Back from a range-`for`'s range call, its variable is not in scope yet.
+    rows = shown_at(capsys, path, line_of(HEADER_CALLS_CPP, "// pair_of"), "x", out=True)
+    assert rows["x"]["line"] == line_of(HEADER_CALLS_CPP, "// range") and "value" not in rows["x"]
+
+
+DECLARED_BY_INCLUDE = (
+    """#include <stdio.h>
+
+struct pair { long x, y; };
+"""
+    + HELPERS
+    + """
+__attribute__((noinline)) static long run(long seed) {
+    long first = twice(seed);  // first
+#include "decls.h"
+    return first + later.y;  // after
+}
+
+int main(void) {
+    scribble();
+    printf("%ld\\n", run(1));
+    return 0;
+}
+"""
+)
+
+
+@pytest.mark.timeout(300)
+def test_a_local_an_include_below_the_stop_declares_is_withheld(directory, capsys):
+    # Review of #126 (round 2): `decls.h` declares `later`, included below line 16, and
+    # `--at 16` showed its leftovers.
+    (directory / "decls.h").write_text("    struct pair later = { twice(5), twice(6) };\n")
+    path = directory / "rev.c"
+    path.write_text(DECLARED_BY_INCLUDE)
+    site = line_of(DECLARED_BY_INCLUDE, '#include "decls.h"')
+    rows = shown_at(capsys, path, line_of(DECLARED_BY_INCLUDE, "// first"), "later")
+    assert withheld(rows["later"], f"which the `#include` on line {site} brings in, below")
+    # After it, both read: the included text holds no label a jump could use.
+    rows = shown_at(capsys, path, line_of(DECLARED_BY_INCLUDE, "// after"), "later.y", "first")
+    assert [rows["later.y"]["value"], rows["first"]["value"]] == ["12", "2"]
+
+
+HEADER_CFG = (
+    "long twice(long v);\nstruct Cfg {\n    long a = twice(1);\n    long b = twice(2);\n};\n"
+)
+HEADER_CFG_MAIN = """#include <cstdio>
+#include "cfg.hpp"
+
+__attribute__((noinline)) long twice(long v) {
+    long w = v * 2;
+    return w;
+}
+
+__attribute__((noinline)) static void scribble() {
+    volatile long junk[96];
+    for (int i = 0; i < 96; i++) junk[i] = 0x5150 + i;
+}
+
+__attribute__((noinline)) static long run() {
+    long before = 4;
+    Cfg cfg{};  // cfg
+    long after = cfg.b + 1;
+    long *where = &after;
+    return before + after + *where;
+}
+
+int main() {
+    scribble();
+    std::printf("%ld\\n", run());
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(300)
+def test_a_header_class_initializer_reads_from_the_line_that_runs_it(directory, capsys):
+    # Review of #126 (round 2): stopped in `cfg.hpp`'s member initializer inside `run()`,
+    # `after = 20911 [settable]` and a garbage `where` were shown; the stop now reads
+    # as `main.cpp:16`, the line whose code runs it.
+    (directory / "cfg.hpp").write_text(HEADER_CFG)
+    path = directory / "main.cpp"
+    path.write_text(HEADER_CFG_MAIN)
+    rows = shown_at(
+        capsys, path, line_of(HEADER_CFG_MAIN, "// cfg"), "after", "where", "before", "cfg", steps=1
+    )
+    assert rows["before"]["line"] in (3, 4), rows["before"]
+    assert withheld(rows["after"], "below this stop") and withheld(rows["where"], "below this stop")
+    assert rows["before"]["value"] == "4" and withheld(
+        rows["cfg"], "outside its function's own lines"
+    )
+
+
+NAMESPACED = """#include <cstdio>
+
+namespace app {
+
+__attribute__((noinline)) long f(long x) {
+    if (x < 0)
+        goto out;
+    x *= 2;
+out:
+    return x;
+}
+
+__attribute__((noinline)) long g(long y) {
+    long doubled = y * 2;
+    long tripled = y * 3;
+out:
+    long sum = doubled + tripled;  // sum
+    return sum;
+}
+
+}  // namespace app
+
+int main() {
+    std::printf("%ld\\n", app::f(3) + app::g(4));
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(300)
+def test_a_goto_in_another_function_of_a_namespace_reaches_no_label_here(directory, capsys):
+    # Review of #126 (round 2): `app::f`'s `goto out;` counted for `app::g`'s own `out:`
+    # (the namespace's braces bounded the search), withholding `doubled` and `tripled`.
+    path = directory / "ns.cpp"
+    path.write_text(NAMESPACED)
+    rows = shown_at(capsys, path, line_of(NAMESPACED, "// sum"), "doubled", "tripled")
+    assert [rows["doubled"]["value"], rows["tripled"]["value"]] == ["8", "12"]

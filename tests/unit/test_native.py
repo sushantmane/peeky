@@ -1189,19 +1189,27 @@ def test_a_stop_inside_a_declaration_statement_withholds_its_local():
 
     run = _aggregate_run()
     through = _through({("a.c", 17): 22, ("a.c", 16): 16})
-    assert declared_running([run], "o", "a.c", 20, 112, through) == (17, 22, "a.c")
+    assert declared_running([run], "o", "a.c", 20, 112, through) == (17, 22, "a.c", None)
     assert declared_running([run], "o", "a.c", 23, 132, through) is None
     assert declared_running([run], "head", "a.c", 20, 112, through) is None
     assert declared_running([run], "seed", "a.c", 20, 112, through) is None
     # An end the source does not give withholds it, but only for a block holding the stop.
     unknown = _through({("a.c", 16): 16})
-    assert declared_running([run], "o", "a.c", 23, 132, unknown) == (17, None, "a.c")
+    assert declared_running([run], "o", "a.c", 23, 132, unknown) == (17, None, "a.c", None)
     assert declared_running([run], "q", "a.c", 23, 132, unknown) is None
-    assert declared_running([run], "q", "a.c", 23, None, unknown) == (3, None, "a.c")
-    # Declared in another file: only an end the source does not give withholds it.
-    run["rows"][("t.h", 2)] = (114, 116)
-    assert declared_running([run], "o", "t.h", 2, 115, through) is None
-    assert declared_running([run], "o", "t.h", 2, 115, unknown) == (17, None, "a.c")
+    assert declared_running([run], "q", "a.c", 23, None, unknown) == (3, None, "a.c", None)
+    # Declared in another file: its `#include` in the stop's file stands for it
+    # (review of #126, round 2); none found, or an end the source does not give, withholds.
+    run["rows"][("t.c", 9)] = (114, 116)
+
+    def site(source, declared_in):
+        return 5
+
+    assert declared_running([run], "o", "t.c", 9, 115, through) == (17, None, "a.c", None)
+    assert declared_running([run], "o", "t.c", 9, 115, through, site=site) is None
+    assert declared_running([run], "o", "t.c", 9, 115, unknown, site=site) == (17, None, "a.c", 5)
+    # The `#include` at or below the stop: declared below it.
+    assert declared_running([run], "o", "t.c", 5, 115, through, site=site) == (17, None, "a.c", 5)
 
 
 def test_a_local_a_jump_can_skip_is_withheld_below_the_label():
@@ -1210,7 +1218,7 @@ def test_a_local_a_jump_can_skip_is_withheld_below_the_label():
     run = _aggregate_run()
     labels = {17: 21, 16: False}
 
-    def skipped(source, at, name, line):
+    def skipped(source, at, name, line, span):
         return labels.get(at)
 
     assert declared_skipped([run], "o", "a.c", 23, 132, skipped) == (17, 21)
@@ -1299,10 +1307,16 @@ def test_a_local_whose_file_may_include_code_after_it_is_withheld_there():
     def included(source, at, name):
         return True
 
-    assert declared_running([run], "head", "cases.h", 3, 115, through) is None
-    assert declared_running([run], "head", "cases.h", 3, 115, through, included) == (
+    def site(source, declared_in):
+        return 2
+
+    assert declared_running([run], "head", "cases.h", 3, 115, through, site=site) is None
+    assert declared_running([run], "head", "cases.h", 3, 115, through, included, site) == (
         16,
         None,
         "a.c",
+        2,
     )
-    assert declared_running([run], "head", "cases.h", 3, 115, through, lambda *_: False) is None
+    assert (
+        declared_running([run], "head", "cases.h", 3, 115, through, lambda *_: False, site) is None
+    )

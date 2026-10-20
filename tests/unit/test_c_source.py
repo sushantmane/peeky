@@ -404,3 +404,69 @@ def test_a_statement_expression_macro_keeps_its_semicolons_inside():
     hazards = macro_hazards([header])
     source = "int m = max(n,\n    3);\nlong s = m;\n"
     assert Statements(source, hazards=hazards).declared_through(1, "m") == 2
+
+
+# Review of #126 (round 2).
+
+
+def test_a_header_variable_is_settled_only_without_a_call_or_a_while():
+    source = """int f(void) {
+  for (int i = 0; i < 3; i++) g(i);
+  for (long i = twice(1); i < 20; i += 7) g(i);
+  if (long r = twice(3)) g(r);
+  while (long v = n) g(v);
+  switch (long k = m) { default: g(k); }
+  for (auto x : items) g(x);
+  for (Foo f{1}; f.ok(); f.next()) g();
+  if (int n = x) g(n);
+}
+"""
+    statements = Statements(source)
+    settled = {
+        line: statements.declaration(line, name)[3]
+        for line, name in (
+            (2, "i"),
+            (3, "i"),
+            (4, "r"),
+            (5, "v"),
+            (6, "k"),
+            (7, "x"),
+            (8, "f"),
+            (9, "n"),
+        )
+    }
+    assert settled == {2: True, 3: False, 4: False, 5: False, 6: True, 7: False, 8: False, 9: True}
+
+
+def test_includes_and_the_labels_after_one():
+    source = 'long run(long seed) {\n  long first = 1;\n#include "decls.h"\n  return first;\n}\n'
+    statements = Statements(source)
+    assert statements.includes() == [(3, "decls.h")]
+    # Unknown with no reader of the included text, then as that text holds a label.
+    assert statements.jumped_past(2, "first", 4) is None
+    statements.included = lambda line: Statements("  struct pair later = { 5, 6 };\n")
+    # (A span the first call did not ask about, so not its cached answer.)
+    assert statements.jumped_past(2, "first", 4, (1, 5)) is False
+    assert statements.jumped_past_include(3, 4) is False
+    labelled = Statements(source)
+    labelled.included = lambda line: Statements("  case 1:\n    out = 2;\n")
+    assert labelled.jumped_past(2, "first", 4) is None
+
+
+def test_a_goto_counts_only_within_the_function_s_own_lines():
+    source = """namespace app {
+long f(long x) {
+  if (x < 0) goto out;
+out:
+  return x;
+}
+long g(long y) {
+  long doubled = y * 2;
+out:
+  return doubled;
+}
+}
+"""
+    statements = Statements(source)
+    assert statements.jumped_past(8, "doubled", 10) == 9
+    assert statements.jumped_past(8, "doubled", 10, (7, 11)) is False

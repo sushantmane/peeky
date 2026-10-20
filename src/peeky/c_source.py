@@ -62,6 +62,7 @@ _LEADING = frozenset(("else", "do", "try"))
 # A label a jump can reach, in a macro's body: at its start or after `;`, `{` or `}`.
 _LABEL = re.compile(r"(?:^|[;{}])\s*[A-Za-z_]\w*\s*:(?![:>])")
 _INCLUDE = re.compile(r"[ \t\f\v]*(?:#|%:)[ \t\f\v]*(?:include|include_next|import)\b")
+_INCLUDED = re.compile(r'(?:include|include_next|import)\s*(?:"([^"\n]+)"|<([^>\n]+)>)')
 _NONBLANK = re.compile(r"\S")
 # `??/` is a backslash and `??<` a brace where trigraphs are on (C before C23, as
 # `-std=c11` builds it; C++17 has none).
@@ -305,11 +306,12 @@ class Statements:
         return None if found is None else bisect.bisect_right(self.starts, found[0])
 
     def declaration(self, line, name):
-        """``(position, depth, header)``: where the declaration of ``name`` on ``line``
-        ends (the `;` or `)` after it), how many brackets of its statement are open there,
-        and whether a statement's header declares it (`for (int i = 0; ...)`); None if
-        unknown. Of the statements starting on the line, the last naming ``name``
-        counts: a later end only withholds more."""
+        """``(position, depth, header, settled)``: where the declaration of ``name`` on
+        ``line`` ends (the `;` or `)` after it), how many brackets of its statement are
+        open there, whether a statement's header declares it (`for (int i = 0; ...)`),
+        and whether that header sets it once, with no call (`_settled`); None if unknown.
+        Of the statements starting on the line, the last naming ``name`` counts: a later
+        end only withholds more."""
         key = ("declaration", line, name)
         if key not in self._ends:
             self._ends[key] = self._declaration(line, name)
@@ -357,11 +359,14 @@ class Statements:
                             # Maybe declared again after the header: read it whole.
                             pass
                         elif semicolon is not None and self._names(opening.end(), semicolon, name):
-                            found = (semicolon, 1, True)
+                            settled = self._settled(word, opening.end(), semicolon)
+                            found = (semicolon, 1, True, settled)
                             position = closing + 1
                             continue
                         else:
-                            found = (closing, 0, True)
+                            part = opening.end() if semicolon is None else semicolon + 1
+                            settled = self._settled(word, part, closing)
+                            found = (closing, 0, True, settled)
                             position = closing + 1
                             continue
                     else:
@@ -374,7 +379,7 @@ class Statements:
             last = max(last, end)
             # After a header declaring it, its body on the line only uses it.
             if self._names(start, end, name) and not (found is not None and found[2]):
-                found = (end, 0, False)
+                found = (end, 0, False, False)
             position = end + 1
         if found is None or not self._readable(line, first, max(last, found[0])):
             return None
@@ -396,6 +401,14 @@ class Statements:
             elif token == ";" and depth == 0:
                 return mark.start()
         return None
+
+    def _settled(self, keyword, start, end):
+        """Whether a header's variable, declared between ``start`` and ``end``, is set
+        once, by no call: not a `while`'s (run again on each pass), nor one whose
+        initializer may call (a `(`, a `{` that may construct, or a range-`for`'s `:`,
+        whose iterator calls)."""
+        part = self.blanked[start:end]
+        return keyword != "while" and not re.search(r"[({]|<%|(?<!:):(?![:>])", part)
 
     def _closing(self, opening):
         """(position of the bracket closing the one at ``opening``, position of the
@@ -465,7 +478,7 @@ class Statements:
     def _names(self, start, end, name):
         return any(word[0] == name for word in _IDENTIFIER.finditer(self.blanked, start, end))
 
-    def jumped_past(self, line, name, stop):
+    def jumped_past(self, line, name, stop, span=None):
         """For a local whose declaration starts on ``line``, read at a stop on line
         ``stop`` below it: the line of a label between the declaration's end and the
         end of the stop's line that a jump can reach without running the declaration,
@@ -477,21 +490,34 @@ class Statements:
         may `goto` named before it). Unknown: the declaration's end, a block closing
         before the stop, an `#include`, or a macro that may hold a label or a bracket in
         between."""
-        key = ("jumped", line, name, stop)
+        key = ("jumped", line, name, stop, span)
         if key not in self._ends:
-            self._ends[key] = self._jumped_past(line, name, stop)
+            found = self.declaration(line, name)
+            self._ends[key] = (
+                None
+                if found is None
+                else self._labels(found[0], found[1], found[2], line, stop, span)
+            )
         return self._ends[key]
 
-    def _jumped_past(self, line, name, stop):
-        found = self.declaration(line, name)
+    def jumped_past_include(self, line, stop, span=None):
+        """`jumped_past` for a local an `#include` on ``line`` declares: a label between
+        that line and the stop's that a jump can reach past it, False, or None."""
         starts = self.starts
-        if found is None or type(stop) is not int or not line < stop <= len(starts):
+        if type(line) is not int or not 1 <= line < len(starts):
             return None
-        position, depth, header = found
+        return self._labels(starts[line] - 1, 0, False, line, stop, span)
+
+    def _labels(self, position, depth, header, line, stop, span):
+        """See `jumped_past`; ``position`` and ``depth``: where the declaration ends."""
+        starts = self.starts
+        if type(stop) is not int or not line < stop <= len(starts):
+            return None
         blanked = self.blanked
         limit = starts[stop] if stop < len(starts) else len(blanked)
-        for number in range(line, stop + 1):
-            if _INCLUDE.match(blanked, starts[number - 1]):
+        # After the line the declaration ends on (an `#include` that declares it, too).
+        for number in range(bisect.bisect_right(starts, position) + 1, stop + 1):
+            if _INCLUDE.match(blanked, starts[number - 1]) and not self._transparent(number):
                 return None
         marks = list(_WORDS.finditer(blanked, position + 1, limit))
         for index, mark in enumerate(marks):
@@ -513,9 +539,24 @@ class Statements:
                 # A switch whose body opens before the declaration ends holds it.
                 if body is None or body < position:
                     return bisect.bisect_right(starts, mark.start())
-            elif _WORD.fullmatch(word) and after == ":" and self._jumped_to(word, position, header):
+            elif (
+                _WORD.fullmatch(word)
+                and after == ":"
+                and self._jumped_to(word, position, header, span)
+            ):
                 return bisect.bisect_right(starts, mark.start())
         return False
+
+    def includes(self):
+        """``(line, name)`` for each `#include "name"` (or `<name>`) directive; name
+        None where it is not written plainly (a macro)."""
+        found = []
+        for number, start in enumerate(self.starts, 1):
+            if _INCLUDE.match(self.blanked, start):
+                end = self.starts[number] if number < len(self.starts) else len(self.text)
+                named = _INCLUDED.search(self.text, start, end)
+                found.append((number, (named[1] or named[2]) if named else None))
+        return found
 
     def included_after(self, line, name):
         """Whether an `#include` may bring code between the declaration of ``name`` on
@@ -528,9 +569,42 @@ class Statements:
         block, _ = self._enclosing(found[0])
         end = block[1] if block is not None else len(blanked)
         for number in range(line, bisect.bisect_right(starts, end) + 1):
-            if _INCLUDE.match(blanked, starts[number - 1]):
+            if _INCLUDE.match(blanked, starts[number - 1]) and not self._transparent(number):
                 return True
         return False
+
+    def _transparent(self, line):
+        """Whether the `#include` on ``line`` brings in only text a jump cannot use
+        (``self.included(line)`` gives that file's Statements, or None)."""
+        reader = getattr(self, "included", None)
+        found = reader(line) if reader is not None else None
+        return found is not None and found.jumpless()
+
+    def jumpless(self):
+        """Whether this text, `#include`d inside a function, can hold no label, `goto` or
+        unbalanced brace: readable, no `case`, `default:`, `goto`, `name:`, `#include`,
+        nor a macro that may hold a label, a jump or an open bracket."""
+        if "jumpless_text" not in self.__dict__:
+            blanked = self.blanked
+            words = list(_WORDS.finditer(blanked))
+            labelled = any(
+                word[0] in ("case", "goto")
+                or word[0] in self.opaque
+                or word[0] in self.gotos
+                or (
+                    _WORD.fullmatch(word[0])
+                    and index + 1 < len(words)
+                    and words[index + 1][0] == ":"
+                )
+                for index, word in enumerate(words)
+            )
+            self.jumpless_text = not (
+                self.unreadable
+                or labelled
+                or self._braces() is None
+                or any(_INCLUDE.match(blanked, start) for start in self.starts)
+            )
+        return self.jumpless_text
 
     def _enclosing(self, position):
         """((open, close) of the innermost brace pair around ``position``, (open, close)
@@ -551,19 +625,26 @@ class Statements:
             outer = parents[outer]
         return (opens[index], closes[index]), (opens[outer], closes[outer])
 
-    def _jumped_to(self, label, position, header=False):
+    def _jumped_to(self, label, position, header=False, span=None):
         """Whether a `goto` can reach ``label`` (after a declaration ending at
         ``position``) without running the declaration: one before its end, or one
         outside its block in the same function, since a jump back into a block starts the
         local's lifetime anew (C11 6.2.4); for a header's variable, or with the braces
-        unknown, any. Also a macro that may `goto` named there, or a computed `goto`."""
+        unknown, any. Also a macro that may `goto` named there, or a computed `goto`.
+        The function is its lines ``span`` (first, last) when given, else the outermost
+        braces around the declaration (in C++ maybe a namespace's: more counts)."""
         blanked = self.blanked
         if "computed" not in self.__dict__:
             self.computed = re.search(r"(?<!\w)goto\s*\*", blanked) is not None
         if self.computed:
             return True
         block, function = self._enclosing(position)
-        low, high = function if function is not None else (0, len(blanked))
+        starts = self.starts
+        if span is not None and 1 <= span[0] <= span[1] <= len(starts):
+            low = starts[span[0] - 1]
+            high = (starts[span[1]] if span[1] < len(starts) else len(blanked)) - 1
+        else:
+            low, high = function if function is not None else (0, len(blanked))
 
         def counts(at):
             return block is None or header or at < position or not block[0] <= at <= block[1]

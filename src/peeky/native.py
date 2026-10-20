@@ -1036,7 +1036,8 @@ def local_declarations(info, line_text, workspace, declared):
     prologue, where its breakpoint is. ``ranges``: the function's code. ``scopes``: for
     each automatic local, (name, source, line) -> the code ranges of the block declaring
     it. ``root``: the function's DIE; ``constructor``, ``enclosing`` and ``defined``:
-    see _class_role. ``span``: its own lines in its source, or None."""
+    see _class_role. ``span``: its own lines in its source, or None. ``order``: every row
+    it runs, (address, source, line) by address."""
     dies, functions, _, files, runs, addresses = _function_entries(
         info, line_text, workspace, declared
     )
@@ -1105,6 +1106,8 @@ def local_declarations(info, line_text, workspace, declared):
                 "defined": defined,
                 # Its own lines: from its declaration to its last row there (its `}`).
                 "span": (first, max(own)) if first is not None and own else None,
+                # Every row it runs, by address: (address, source, line).
+                "order": tuple(ordered),
             }
         )
     return table
@@ -1170,6 +1173,16 @@ def has_nonlocal_jumps(binary):
 
 
 _SHADOWED = re.compile(r"(.+) @ [^:]+:([0-9]+)")
+
+
+def _is_object(variable):
+    """Whether a DAP variable is a class, struct, union or array: it has children and is
+    no pointer or reference."""
+    kind = re.sub(r"(?:\s*\b(?:const|volatile)\b)+$", "", str(variable.get("type") or "").strip())
+    reference = variable.get("variablesReference")
+    return type(reference) is int and reference > 0 and not kind.endswith(("*", "&"))
+
+
 # A C++ constructor's frame name: `Widget::Widget(long)`, `ns::Box<int>::Box(int)`.
 _CONSTRUCTOR_NAME = re.compile(r"(?:^|::|\s)([A-Za-z_]\w*)(?:<[^()]*>)?::\1(?:<[^()]*>)?\(")
 # A source whose statements are scanned (c_source) to place a caller's declaration.
@@ -1289,7 +1302,7 @@ def declared_unfinished(table, name, source, line, address, ends=None):
 
 
 def _in_scope(table, name, source, line, address):
-    """(declared_in, line) of each automatic C/C++ local of that name a frame at
+    """(declared_in, line, function) of each automatic C/C++ local of that name a frame at
     ``source:line`` may be reading: those of the function running the address (unslid),
     else of every function with code on the line, else of every function with such a
     local; with the address known, only those whose block holds it."""
@@ -1311,48 +1324,61 @@ def _in_scope(table, name, source, line, address):
             block = function.get("scopes", {}).get((base, declared_in, at))
             if running and block and not any(low <= address < high for low, high in block):
                 continue
-            found.append((declared_in, at))
+            found.append((declared_in, at, function))
     return base, found
 
 
-def declared_running(table, name, source, line, address, through, included=None):
-    """For the frame stopped in, at ``source:line``: ``(at, end, declared_in)`` for a
-    C/C++ local of that name whose declaration may still be running there, else None.
+def declared_running(
+    table, name, source, line, address, through, included=None, site=None, skipped=None
+):
+    """For the frame stopped in, at ``source:line``: ``(at, end, declared_in, where)``
+    for a C/C++ local of that name whose declaration may not have run there, else None.
     That is one declared above the stop whose statement reaches the stop's line
-    (``at < line <= end``), or whose end the source does not give (``end`` None), and one
-    declared in another file whose end is unknown (an `#include`d initializer), or whose
-    file may `#include` code after it in its block (``included(declared_in, at, name)``,
-    Statements.included_after: a `case` there skips it).
+    (``at < line <= end``), or whose end the source does not give (``end`` None).
+
+    For one declared in another file, ``where`` is the line of the `#include` in
+    ``source`` that brings that file in (``site(source, declared_in)``, None if none is
+    found), which stands for its declaration: withheld at or above that line, or when it
+    is not found, and below it unless its statement is whole in its file
+    (``through``), no `#include` follows it in its block there (``included``,
+    Statements.included_after) and no label between lets a jump past it
+    (``skipped(source, where, line)``, Statements.jumped_past_include).
     ``through(declared_in, at, name)``: the line by which the declaration has run
     (Statements.declared_through), or None."""
     base, found = _in_scope(table, name, source, line, address)
-    for declared_in, at in found:
+    for declared_in, at, function in found:
         if declared_in != source:
+            where = site(source, declared_in) if site is not None and declared_in else None
             if (
-                declared_in is None
+                where is None
+                or where >= line
                 or through(declared_in, at, base) is None
                 or (included is not None and included(declared_in, at, base) is not False)
+                or (
+                    skipped is not None
+                    and skipped(source, where, line, function.get("span")) is not False
+                )
             ):
-                return at, None, declared_in
+                return at, None, declared_in, where
             continue
         if at >= line:
             continue
         end = through(source, at, base)
         if end is None or line <= end:
-            return at, end, declared_in
+            return at, end, declared_in, None
     return None
 
 
-def declared_mid_line(table, name, source, line, address, header):
+def declared_mid_line(table, name, source, line, address, settled):
     """The stop line, when the C/C++ local is declared on it, the stop is past the
     line's first instruction (``address``, unslid) and the function still has code of
     the line at or after it: back from a call in `long r = f(3) + f(4);` (`step --out`),
-    `r` is stored only by that code. Else None. Not a variable a header declares
-    (``header(source, line, name)`` True: Statements.declaration), which is live
+    `r` is stored only by that code. Else None. Not a variable a header sets once by no
+    call (``settled(source, line, name)`` True: `for (int i = 0; ...)`), which is live
     mid-line on later passes of a one-line loop."""
     base, found = _in_scope(table, name, source, line, address)
-    places = [at for declared_in, at in found if declared_in == source and at == line]
-    if address is None or not places or header(source, line, base) is True:
+    places = [at for declared_in, at, _ in found if declared_in == source and at == line]
+    if address is None or not places or settled(source, line, base) is True:
         return None
     for function in table:
         span = function["rows"].get((source, line))
@@ -1372,12 +1398,13 @@ def declared_skipped(table, name, source, line, address, skipped):
     """``(at, label)`` for a C/C++ local of that name declared above a frame at
     ``source:line`` when a jump may have skipped its declaration: a label between the
     two that a `switch` or `goto` reaches (``label``: its line), or unknown (None);
-    else None. ``skipped(source, at, name, line)``: Statements.jumped_past."""
+    else None. ``skipped(source, at, name, line, span)``: Statements.jumped_past, with
+    the function's own lines."""
     base, found = _in_scope(table, name, source, line, address)
-    for declared_in, at in found:
+    for declared_in, at, function in found:
         if declared_in != source or at >= line:
             continue
-        label = skipped(source, at, base, line)
+        label = skipped(source, at, base, line, function.get("span"))
         if label is not False:
             return at, label
     return None
@@ -2132,7 +2159,21 @@ class NativeSession:
                 "leftovers; read it after the call returns"
             )
         address = self._unslid(frame)
-        here = source.as_posix()
+        here = stopped = source.as_posix()
+        if innermost:
+            # A line of another file, or outside the function's own lines, runs as part
+            # of one of its own: its rules run from there.
+            place = self._own_place(frame, here, line)
+            if place is None:
+                if self._parameter(name, frame):
+                    return None
+                return (
+                    f"this frame runs {here}:{line}, outside its function's own lines, and "
+                    "Peeky cannot place that among them, so this local may not be "
+                    "initialized yet: its storage may hold leftovers; read it once the "
+                    "frame is back in its own lines"
+                )
+            here, line = place
         below = declared_below(
             self.declarations, name, here, line, through=self._through if innermost else None
         )
@@ -2143,19 +2184,36 @@ class NativeSession:
             )
         if innermost and (
             running := declared_running(
-                self.declarations, name, here, line, address, self._through, self._included
+                self.declarations,
+                name,
+                here,
+                line,
+                address,
+                self._through,
+                self._included,
+                self._include_site,
+                self._jumped_past_include,
             )
         ):
-            at, end, declared_in = running
+            at, end, declared_in, where = running
             if declared_in != here:
+                origin = declared_in or "a file outside the program's sources"
+                if where is not None and where >= line:
+                    return (
+                        f"declared on line {at} of {origin}, which the `#include` on line "
+                        f"{where} brings in, below this stop, so not initialized yet: its "
+                        f"storage holds leftovers; stop after line {where} to read it"
+                    )
                 return (
-                    f"declared on line {at} of "
-                    + (declared_in or "a file outside the program's sources")
-                    + f", and this stop is at {here}:{line}, in another file; Peeky cannot "
-                    "tell from the source whether its declaration has run (an initializer "
-                    "can `#include` its rows, and an `#include` after it can hold a `case` "
-                    "that skips it), so it may not be initialized yet: its storage may hold "
-                    "leftovers"
+                    f"declared on line {at} of {origin}, and Peeky cannot tell from the "
+                    f"source whether its declaration has run by {here}:{line} ("
+                    + (
+                        f"the `#include` on line {where} brings it in, and its initializer "
+                        "can run on, or an `#include` or a label after it skip it"
+                        if where is not None
+                        else f"no one `#include` in {here} brings it in"
+                    )
+                    + "), so it may not be initialized yet: its storage may hold leftovers"
                 )
             return (
                 (
@@ -2169,7 +2227,7 @@ class NativeSession:
                 "directive, a macro, a line splice or a trigraph), so this stop may be "
                 "inside it: it may not be initialized yet, and its storage may hold leftovers"
             )
-        if building := self._foreign_line(variable, frame, here, line):
+        if building := self._foreign_line(variable, frame, stopped, (frame or {}).get("line")):
             return building
         if skipped := declared_skipped(
             self.declarations, name, here, line, address, self._jumped_past
@@ -2201,8 +2259,15 @@ class NativeSession:
                 "instruction), so not initialized: its storage holds leftovers; step once, "
                 f"or stop after line {line}, to read it"
             )
+        # In C++ an object's initialization can construct it (a call) without a `(`.
+        constructs = getattr(self.target, "language", None) == "cpp" and _is_object(variable)
         if innermost and declared_mid_line(
-            self.declarations, name, here, line, address, self._header
+            self.declarations,
+            name,
+            here,
+            line,
+            address,
+            lambda *at: not constructs and self._settled(*at),
         ):
             return (
                 f"declared on line {line}, and this stop is part-way through that line, "
@@ -2222,12 +2287,88 @@ class NativeSession:
         statements = self._statements(source)
         return None if statements is None else statements.declared_through(line, name)
 
-    def _header(self, source, line, name):
-        """Whether a statement's header declares ``name`` on ``line`` (True, False), or
-        None if unknown (Statements.declaration)."""
+    def _settled(self, source, line, name):
+        """Whether a statement's header sets ``name`` on ``line`` once, by no call (True,
+        False), or None if unknown (Statements.declaration)."""
         statements = self._statements(source)
         found = None if statements is None else statements.declaration(line, name)
-        return None if found is None else found[2]
+        return None if found is None else found[3]
+
+    def _jumped_past_include(self, source, line, stop, span):
+        """Statements.jumped_past_include for the prepared ``source``; None if unreadable."""
+        statements = self._statements(source)
+        return None if statements is None else statements.jumped_past_include(line, stop, span)
+
+    def _include_site(self, source, target, depth=8):
+        """The line of the one `#include` in the prepared ``source`` that brings in
+        ``target`` (directly, or through the program's other headers), else None: none
+        does, more than one does, or one Peeky cannot read (a macro) may."""
+        cache = self.__dict__.setdefault("include_sites", {})
+        key = (str(source), str(target), depth)
+        if key in cache:
+            return cache[key]
+        cache[key] = None
+        statements = self._statements(source)
+        if statements is None:
+            return None
+        sites = set()
+        for number, name in statements.includes():
+            if name is None:
+                # `#include MACRO`: it may bring in anything.
+                return None
+            try:
+                found = (
+                    (self.prepared.workspace / source)
+                    .parent.joinpath(name)
+                    .resolve()
+                    .relative_to(self.prepared.workspace.resolve())
+                    .as_posix()
+                )
+            except (OSError, ValueError):
+                continue
+            if found == str(target) or (
+                depth > 0 and self._include_site(found, target, depth - 1) is not None
+            ):
+                sites.add(number)
+        cache[key] = sites.pop() if len(sites) == 1 else None
+        return cache[key]
+
+    def _own_place(self, frame, source, line):
+        """Where in its function's own lines a frame stopped at ``source:line`` runs: that
+        line if it is one of them; for another file's line that an `#include` in them
+        brings in, that `#include`'s line; else (a class's member initializer, run
+        where an object is built) the last of its own lines whose code comes before the
+        stop's. None if that cannot be told."""
+        function = self._function_at(frame)
+        if function is None:
+            return source, line
+        own, span = function.get("source"), function.get("span")
+        if source == own and span is not None and span[0] <= line <= span[1]:
+            return source, line
+        if span is None:
+            return None
+        if source != own:
+            site = self._include_site(own, source)
+            if site is not None and span[0] <= site <= span[1]:
+                return own, site
+        address = self._unslid(frame)
+        order = function.get("order", ())
+        if address is None:
+            return None
+        index = bisect.bisect_left(order, (address,)) - 1
+        while index >= 0:
+            _, where, number = order[index]
+            if where == own and span[0] <= number <= span[1]:
+                return own, number
+            index -= 1
+        return None
+
+    def _parameter(self, name, frame):
+        """Whether ``name`` is a parameter (or static) of the frame's function only."""
+        function = self._function_at(frame)
+        shown = _SHADOWED.fullmatch(name or "")
+        places = (function or {}).get("locals", {}).get(shown[1] if shown else name, ())
+        return bool(places) and not any(automatic for _, _, automatic in places)
 
     def _included(self, source, line, name):
         """Statements.included_after for the prepared ``source``; None if unreadable."""
@@ -2240,14 +2381,7 @@ class NativeSession:
         in its own: a class's default member initializer, run where the object is
         built), and the local is a class, struct, union or array. Pointers and
         references (and scalars) keep their values."""
-        kind = str(variable.get("type") or "").strip()
-        reference = variable.get("variablesReference")
-        if (
-            str(variable.get("name") or "").startswith("(")
-            or type(reference) is not int
-            or reference <= 0
-            or re.sub(r"(?:\s*\b(?:const|volatile)\b)+$", "", kind).endswith(("*", "&"))
-        ):
+        if str(variable.get("name") or "").startswith("(") or not _is_object(variable):
             return None
         function = self._function_at(frame)
         if function is None:
@@ -2263,10 +2397,10 @@ class NativeSession:
             "the frame is back in its own lines"
         )
 
-    def _jumped_past(self, source, line, name, stop):
+    def _jumped_past(self, source, line, name, stop, span=None):
         """Statements.jumped_past for the prepared ``source``; None if unreadable."""
         statements = self._statements(source)
-        return None if statements is None else statements.jumped_past(line, name, stop)
+        return None if statements is None else statements.jumped_past(line, name, stop, span)
 
     def _statements(self, source):
         """The prepared ``source``'s c_source.Statements, or None when it, or one of the
@@ -2286,7 +2420,28 @@ class NativeSession:
                 if text is None or hazards is None
                 else Statements(text, raw_strings, hazards=hazards)
             )
+            if cache[key] is not None:
+                cache[key].included = lambda line, at=key: self._included_text(at, line)
         return cache[key]
+
+    def _included_text(self, source, line):
+        """The Statements of the program file the `#include` on ``line`` of ``source``
+        brings in, or None (another program's, a system header, or unreadable)."""
+        statements = self._statements(source)
+        name = dict(statements.includes()).get(line) if statements is not None else None
+        if name is None:
+            return None
+        try:
+            found = (
+                (self.prepared.workspace / source)
+                .parent.joinpath(name)
+                .resolve()
+                .relative_to(self.prepared.workspace.resolve())
+                .as_posix()
+            )
+        except (OSError, ValueError):
+            return None
+        return self._statements(found) if found != str(source) else None
 
     def _under_construction(self, frame, stack, deeper=None):
         """Why `this` in ``frame`` (C++) may point to an object still being built, or
