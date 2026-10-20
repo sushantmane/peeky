@@ -730,8 +730,8 @@ def _resolve(worker, stop, snapshot, segments, pointers=False):
             # #119: LLDB lists a C++ map's or set's entries as [0], [1], ... in iteration
             # order, where C++'s m[k] is the value for key k.
             kind = _associative(variable)
-            if kind is None and _unplaced(variable) and _map_like(first_page(handle)["variables"]):
-                kind = "unresolved"
+            if kind is None and (variable.get("aliased_type") == "?" or _unplaced(variable)):
+                kind = _undecided(variable, first_page(handle)["variables"])
             if kind is not None:
                 whole = _whole_strings(snapshot)
                 variable = _entry(worker, stop, variable, path, segment, kind, first_page, whole)
@@ -1623,13 +1623,36 @@ def _unplaced(variable):
     it could not resolve), which a map or a sequence alike could be behind."""
     from peeky.native import _without_templates
 
-    kind = _without_templates(str(variable.get("type") or "")).strip()
+    kind = re.sub(
+        r"^(?:(?:const|volatile)\s+)+|(?:\s*(?:\bconst\b|\bvolatile\b|&))+$",
+        "",
+        _without_templates(str(variable.get("type") or "")).strip(),
+    )
     return (
         bool(kind)
         and not variable.get("aliased_type")
-        and not re.search(r"\bstd::|[*\[(]", kind)
+        # A standard class itself (`std::vector<int>`), not a member typedef of one
+        # (`std::map<int, std::set<int>>::mapped_type`).
+        and not re.fullmatch(r"(?:::)?std::(?:__\w+::|pmr::)*\w+", kind)
+        and not re.search(r"[*\[(]", kind)
         and not _BARE_ADDRESS.match(str(variable.get("value") or ""))
     )
+
+
+def _undecided(variable, children):
+    """For a value whose type names no map or set Peeky knows of: "unsettled" where the
+    debug information says it may be a C++ map or set ("?": typedefs of one name give
+    several classes) and LLDB lists entries [0], [1], ...; "unresolved" where its type
+    is a name Peeky cannot place and LLDB lists pairs with a const key, as a map's
+    entries; else None."""
+    entries = [child for child in children if child["name"] not in _GROUPS]
+    if variable.get("aliased_type") == "?":
+        return (
+            "unsettled"
+            if entries and all(_ENTRY_NAME.fullmatch(c["name"]) for c in entries)
+            else None
+        )
+    return "unresolved" if _unplaced(variable) and _map_like(children) else None
 
 
 def _map_entry(kind):
@@ -1753,15 +1776,18 @@ def _entry(worker, stop, variable, path, segment, kind, first_page, whole=False)
             + how.replace("an entry", "an element")
         )
     if kind not in _KEYED:
-        what = (
-            "a C++ multimap, which has no [] in C++ (a key can repeat)"
-            if kind != "unresolved"
-            else "listed as a C++ map is (pairs with a const key), under a type name the "
-            "build's debug information does not resolve, so it may be a map read by key or "
-            "a sequence read by position"
-        )
+        what = {
+            "unresolved": "listed as a C++ map is (pairs with a const key), under a type name "
+            "the build's debug information does not resolve, so it may be a map read by key "
+            "or a sequence read by position",
+            "unsettled": "of a type the build's debug information gives several classes, "
+            "which may be a C++ map or set (read by key, or not at all) or a sequence read by "
+            "position",
+        }.get(kind, "a C++ multimap, which has no [] in C++ (a key can repeat)")
         raise ValueError(
             f"{segment} not read: {label} is {what}; {how} and read its .first and .second"
+            if kind != "unsettled"
+            else f"{segment} not read: {label} is {what}; {how}"
         )
     return _value_for_key(worker, stop, variable, path, segment, first_page, how, whole)
 
@@ -2054,6 +2080,11 @@ _ENTRY_NOTES = {
         "debug information does not resolve: {0}[#N] is its Nth entry in iteration order, "
         "and [N] is refused, since it could be a key or a position"
     ),
+    "unsettled": (
+        "{0}'s type is one the build's debug information gives several classes, which may "
+        "be a C++ map or set: {0}[#N] is its Nth entry in iteration order, and [N] is refused, "
+        "since it could be a key, nothing, or a position"
+    ),
 }
 
 
@@ -2119,8 +2150,8 @@ def _entry_children(worker, stop, selector, variable, page, whole=False):
         # A pointer lists what it points at (#102): its entries are p[0][...].
         base, container = f"{selector}[0]", _pointee_type(variable, pointee)
         kind = _associative(container)
-    if kind is None and _unplaced(container) and _map_like(page["variables"]):
-        kind = "unresolved"
+    if kind is None:
+        kind = _undecided(container, page["variables"])
     entries = [child for child in page["variables"] if child["name"] not in _GROUPS]
     if kind is None or not all(_ENTRY_NAME.fullmatch(child["name"]) for child in entries):
         # Not a map or set, or one LLDB shows by its own members: listed as they are.
@@ -2141,8 +2172,8 @@ def _entry_children(worker, stop, selector, variable, page, whole=False):
         if kind in _KEYED
         else "set"
         if kind.endswith("set")
-        else "unresolved"
-        if kind == "unresolved"
+        else kind
+        if kind in ("unresolved", "unsettled")
         else "multi"
     )
     shown = _ENTRY_NOTES[note].format(base)

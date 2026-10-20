@@ -1207,15 +1207,15 @@ def test_a_typedef_names_the_class_behind_it():
     shown = "std::map<int, int, std::__1::less<int>, std::__1::allocator<std::__1::pair<const int, int> > >"
     assert kinds["Index"] == ("other", shown)
     assert kinds["IndexRef"] == ("reference", shown)
-    # Two typedefs of one name for two classes name neither; still not a pointer.
-    assert kinds["Twice"] == ("other", "")
+    # Two typedefs of one name for two classes, a map among them: it may be a map ("?").
+    assert kinds["Twice"] == ("other", "?")
     assert kinds["Id"] == ("other", "")
     native = session()
     native.typedefs = kinds
     for written in ("Index", "const Index &", "Index const&", "IndexRef"):
         assert native.aliased_type(written) == shown, written
     assert native.aliased_type("Index *") is None
-    assert native.aliased_type("Twice") is None
+    assert native.aliased_type("Twice") == "?"
     # What a pointer points at: `Index *`, or a typedef'd pointer's pointee.
     for written in ("Index *", "const Index *", "Index *const"):
         assert native.pointee_aliased_type(written) == shown, written
@@ -1223,3 +1223,87 @@ def test_a_typedef_names_the_class_behind_it():
     assert native.pointee_aliased_type("Index **") is None
     assert native.pointee_aliased_type("Index") is None
     assert native.typedef_kind("const Index") == ("other", shown)
+
+
+MEMBERS = """
+0x0000000b: DW_TAG_compile_unit
+              DW_AT_name\t("a.cpp")
+0x00000010:   DW_TAG_namespace
+                DW_AT_name\t("std")
+0x00000014:     DW_TAG_namespace
+                  DW_AT_name\t("__1")
+                  DW_AT_export_symbols\t(true)
+0x00000020:       DW_TAG_class_type
+                    DW_AT_name\t("set<int, std::__1::less<int>, std::__1::allocator<int> >")
+0x00000024:       DW_TAG_class_type
+                    DW_AT_name\t("map<int, int, std::__1::less<int> >")
+0x00000028:       DW_TAG_class_type
+                    DW_AT_name\t("map<int, long, std::__1::less<int> >")
+0x0000002c:       DW_TAG_class_type
+                    DW_AT_name\t("vector<int, std::__1::allocator<int> >")
+0x00000030:       NULL
+0x00000031:     NULL
+0x00000040:   DW_TAG_structure_type
+                DW_AT_name\t("Holder<int>")
+0x00000044:     DW_TAG_typedef
+                  DW_AT_type\t(0x00000020 "std::__1::set<int>")
+                  DW_AT_name\t("S")
+0x00000048:     DW_TAG_typedef
+                  DW_AT_type\t(0x00000024 "std::__1::map<int, int>")
+                  DW_AT_name\t("M")
+0x0000004c:     DW_TAG_typedef
+                  DW_AT_type\t(0x0000002c "std::__1::vector<int>")
+                  DW_AT_name\t("V")
+0x00000050:     DW_TAG_typedef
+                  DW_AT_type\t(0x00000020 "std::__1::set<int>")
+                  DW_AT_name\t("X")
+0x00000054:     NULL
+0x00000060:   DW_TAG_structure_type
+                DW_AT_name\t("Holder<long>")
+0x00000064:     DW_TAG_typedef
+                  DW_AT_type\t(0x00000020 "std::__1::set<int>")
+                  DW_AT_name\t("S")
+0x00000068:     DW_TAG_typedef
+                  DW_AT_type\t(0x00000028 "std::__1::map<int, long>")
+                  DW_AT_name\t("M")
+0x0000006c:     DW_TAG_typedef
+                  DW_AT_type\t(0x00000078 "int")
+                  DW_AT_name\t("V")
+0x00000070:     DW_TAG_typedef
+                  DW_AT_type\t(0x00000078 "int")
+                  DW_AT_name\t("X")
+0x00000074:     NULL
+0x00000078:   DW_TAG_base_type
+                DW_AT_name\t("int")
+0x00000080:   NULL
+"""
+
+
+def test_a_class_member_typedef_keeps_the_class_every_instance_names():
+    # Review of #119 (PR #127): `Holder<std::string>::S hs2` (a std::set<int>) indexed by
+    # position, since a member typedef's class was dropped.
+    from peeky.native import _merged_class, typedef_kinds
+
+    kinds = typedef_kinds(MEMBERS)
+    assert kinds["::Holder::S"] == (
+        "other",
+        "std::set<int, std::__1::less<int>, std::__1::allocator<int> >",
+    )
+    # Maps of other mapped types: still a std::map, which one depends on the instance.
+    assert kinds["::Holder::M"] == ("other", "std::map")
+    # A vector in one instance, an int in another: no map or set either way.
+    assert kinds["::Holder::V"] == ("other", "")
+    # A set in one, an int in the other: it may be a set.
+    assert kinds["::Holder::X"] == ("other", "?")
+    native = session()
+    native.typedefs = kinds
+    assert native.aliased_type("Holder<std::string>::S").startswith("std::set<int")
+    # By its own instance's name where the debug information spells it as lldb-dap does,
+    # else by the class's.
+    assert native.aliased_type("const Holder<long>::M &").startswith("std::map<int, long")
+    assert native.aliased_type("const Holder<std::string>::M &") == "std::map"
+    assert native.aliased_type("Holder<std::string>::V") is None
+    assert native.aliased_type("Holder<std::string>::X") == "?"
+    assert _merged_class("std::map<int, int>", "std::unordered_map<int, int>") == "?"
+    assert _merged_class("Point", "Line") == ""
+    assert _merged_class("?", "") == "?"

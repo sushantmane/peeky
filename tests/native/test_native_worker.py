@@ -1555,6 +1555,25 @@ def test_a_custom_comparison_never_says_a_key_is_missing(
         assert shown == {"am[-1]": "-10", "am[2]": "20", "am[-3]": "-30", "am[5]": "50"}
 
 
+def test_a_set_or_map_behind_a_member_typedef_is_not_indexed_by_position(
+    tmp_path, native_config, capsys, monkeypatch
+):
+    # Review of #119 (PR #127): `Holder<std::string>::S hs2` (a std::set<int>) read
+    # `hs2[1]` as its second element, and `std::map<int, std::set<int>>::mapped_type mt`
+    # read `mt[1]` (20): a class's member typedef lost the class it names.
+    with _maps_session(tmp_path, capsys, monkeypatch, program=KEYS) as get:
+        rows = get("hs2[1]", "hs2[#1]", "hm2[4]", "mt[1]", "mt[#1]", "hs2", "mt", "hi.m[3]")
+        assert "is a C++ set" in rows["hs2[1]"]["error"], rows["hs2[1]"]
+        assert rows["hs2[#1]"]["value"] == "6"
+        # Holder<std::string>::M and Holder<int>::M are both std::maps.
+        assert rows["hm2[4]"]["value"] == '"four"' and rows["hi.m[3]"]["value"] == "30"
+        assert "value" not in rows["mt[1]"] and "mt[#N]" in rows["mt[1]"]["error"]
+        assert rows["mt[#1]"]["value"] == "20"
+        for name in ("hs2", "mt"):
+            labels = [child["selector"] for child in rows[name]["children"]]
+            assert labels == [f"{name}[#0]", f"{name}[#1]", f"{name}[#2]"], labels
+
+
 TYPEDEF_NAMED = """#include <cstdio>
 #include <vector>
 typedef std::vector<int> &P;

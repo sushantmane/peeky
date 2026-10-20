@@ -413,7 +413,7 @@ def typedef_kinds(info):
     lldb-dap shows a variable of one by the typedef's name alone, so `RowPtr rp` cannot
     be told from `RowRef rr` by its type (#102), nor `Index m` (`std::map<int, int>`)
     from a vector (#119). A name for two kinds (a struct and a pointer typedef, or
-    typedefs in two units) is "unknown"; for two classes, it names none.
+    typedefs in two units) is "unknown"; for two classes, see ``_merged_class``.
     Plain names are taken only for typedefs at file or function scope; a namespace's or
     class's are known by their qualified names, and every typedef and record also by
     the name lldb-dap shows (``_displayed``), so two entities shown alike are "unknown". A class's member typedef is also kept
@@ -429,7 +429,7 @@ def typedef_kinds(info):
         if known == kind:
             found[name] = kind
         elif known[0] == kind[0] and kind[0] in ("other", "reference"):
-            found[name] = (kind[0], "")
+            found[name] = (kind[0], _merged_class(known[1], kind[1]))
         else:
             found[name] = ("unknown", "")
 
@@ -456,9 +456,15 @@ def typedef_kinds(info):
         record = dies[record_offset]
         own = _text(record["attrs"].get("DW_AT_name"))
         for owner in [_without_templates(own)] if own else named.get(record_offset, []):
-            key, (sort, _) = f"::{owner}::{name}", kind
-            if owner and name:
-                known = found.get(key)
+            key, (sort, target) = f"::{owner}::{name}", kind
+            if not (owner and name):
+                continue
+            known = found.get(key)
+            if sort in ("other", "reference") and (known is None or known[0] == sort):
+                # The class every instance's typedef names (`Holder<T>::S`, a std::set<int>),
+                # or its template's: a set or map behind one is still one (#119).
+                found[key] = (sort, target if known is None else _merged_class(known[1], target))
+            else:
                 found[key] = (sort, "") if known in (None, (sort, "")) else ("unknown", "")
 
     for offset, die in dies.items():
@@ -516,6 +522,26 @@ def typedef_kinds(info):
             note(qualified, kind)
         note(_displayed(dies, offset, named), kind)
     return found
+
+
+# A C++ map or set template, its arguments left out (`std::__1::map`, `std::set`).
+_ASSOCIATIVE_CLASS = re.compile(
+    r"(?:::)?std::(?:__\w+::|pmr::)*(?:unordered_|flat_)?(?:multi)?(?:map|set)"
+)
+
+
+def _merged_class(first, second):
+    """The class two typedefs of one name give (``typedef_kinds``): theirs where they
+    agree; else, where either is a C++ map or set, the template both instantiate
+    (`std::map`), or "?" (it may be a map or set, which one is not known); else ""."""
+    if first == second:
+        return first
+    if "?" in (first, second):
+        return "?"
+    templates = {_without_templates(name) for name in (first, second)}
+    if not any(_ASSOCIATIVE_CLASS.fullmatch(name) for name in templates if name):
+        return ""
+    return templates.pop() if len(templates) == 1 else "?"
 
 
 def _without_templates(name):

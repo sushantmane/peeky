@@ -495,3 +495,37 @@ def test_a_custom_comparison_never_says_a_key_is_missing():
     scopes = snapshot(local("hm", "Holder<int>::M", 9, 2, aliased_type="std::map"))
     assert "hm's comparator (or hash and equality) cannot be told" in refused("hm[1]", tree, scopes)
     assert read("hm[2]", tree, scopes)["value"] == "20"
+
+
+# Review of #119: `Holder<T>::S` and `std::map<int, std::set<int>>::mapped_type`.
+UNSETTLED = snapshot(
+    local("mt", "std::map<int, std::set<int> >::mapped_type", 3, 3, aliased_type="?"),
+    local("vt", "std::vector<std::vector<int> >::value_type", 5, 3),
+)
+
+
+def test_a_type_that_may_be_a_set_is_not_indexed_by_position():
+    message = refused("mt[1]", TREE, UNSETTLED)
+    assert "gives several classes, which may be a C++ map or set" in message and "mt[#N]" in message
+    assert read("mt[#1]", TREE, UNSETTLED)["value"] == "2"
+    shown = _children(Lldb(TREE), {}, "mt", UNSETTLED["scopes"][0]["variables"][0], True)
+    assert [c["selector"] for c in shown["children"]] == ["mt[#0]", "mt[#1]", "mt[#2]"]
+    assert "could be a key, nothing, or a position" in shown["note"]
+    # A member typedef of a standard class that names no map or set indexes as before.
+    assert read("vt[1]", TREE, UNSETTLED)["value"] == "8"
+
+
+@pytest.mark.parametrize(
+    "kind, unplaced",
+    [
+        ("std::map<int, std::set<int> >::mapped_type", True),
+        ("const Index &", True),
+        ("std::vector<int>", False),
+        ("const std::__1::vector<int> &", False),
+        ("Index *", False),
+    ],
+)
+def test_types_peeky_cannot_place(kind, unplaced):
+    from peeky.probe import _unplaced
+
+    assert _unplaced({"type": kind, "value": "size=3"}) is unplaced
