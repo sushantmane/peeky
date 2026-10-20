@@ -53,6 +53,24 @@ _RULES = (
         False,
     ),
     (
+        r"^java-debug's event thread died",
+        "DEBUGGER_ERROR",
+        "java-debug stopped processing the JVM's events, so no stop, step or exit can be "
+        "reported any more; the session was closed (an attached JVM is detached, a launched "
+        "one ended). Retry. If it recurs, rebuild the adapter with scripts/setup_java_adapter.py "
+        "and report the message (issue #27).",
+        False,
+    ),
+    (
+        r"^Lost stop: ",
+        "DEBUGGER_ERROR",
+        "java-debug did not report a stop it made (issue #27), so this session's state cannot "
+        "be trusted: Peeky served nothing from it and detached, and the JVM runs on. Close the "
+        "session (`peeky session close`) and retry. To help #27, first keep `peeky session "
+        "report --json` (its `debugger_events`) or the probe's `debugger_events`.",
+        False,
+    ),
+    (
         r"^Job [0-9a-f]{16} was lost",
         "JOB_LOST",
         "The background job process died; rerun the command. The message has its log.",
@@ -151,6 +169,13 @@ _RULES = (
         "INVALID_REQUEST",
         "Nothing outside your sources is read or changed; follow the message (step out "
         "while your code is on the stack, otherwise continue).",
+        False,
+    ),
+    (
+        r"adapter bundle at .* predates Peeky's java-debug fixes",
+        "UNSUPPORTED",
+        "Rebuild the Java adapter with scripts/setup_java_adapter.py (it applies Peeky's "
+        "java-debug patches), then point the target's bundle or PEEKY_JAVA_ADAPTER at it.",
         False,
     ),
     (
