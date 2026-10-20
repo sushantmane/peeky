@@ -1006,7 +1006,11 @@ class DebugWorker:
                         "Provenance: the staged candidate differs from the requested edit; nothing ran"
                     )
                 left()
-                self.dap = DAP(command=runtime.command, env=getattr(runtime, "environment", None))
+                self.dap = DAP(
+                    command=runtime.command,
+                    env=getattr(runtime, "environment", None),
+                    fatal_stderr=getattr(runtime, "fatal_stderr", None),
+                )
                 capabilities = self.dap.request(
                     "initialize", runtime.initialize_args(), timeout=left()
                 )

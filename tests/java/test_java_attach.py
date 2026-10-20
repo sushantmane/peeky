@@ -22,7 +22,7 @@ def free_port():
         return sock.getsockname()[1]
 
 
-def attach_to(tmp_path, source, text, main_class, marker):
+def attach_to(tmp_path, source, text, main_class, marker, jvm_args=()):
     """A JVM suspended on JDWP running ``text`` as ``source``, and its attach target."""
     bundle = os.environ.get("PEEKY_JAVA_ADAPTER")
     if not bundle:
@@ -36,7 +36,7 @@ def attach_to(tmp_path, source, text, main_class, marker):
     port = free_port()
     agent = f"-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=127.0.0.1:{port}"
     process = subprocess.Popen(
-        [java, agent, "-cp", str(tmp_path / "classes"), main_class],
+        [java, *jvm_args, agent, "-cp", str(tmp_path / "classes"), main_class],
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
@@ -526,3 +526,131 @@ def test_a_breakpoint_that_never_ran_is_never_a_lost_stop_under_a_class_load_sto
         if process.poll() is None:
             process.kill()
         process.wait(timeout=10)
+
+
+# #27's root cause: java-debug's "Event Hub" thread died on ObjectCollectedException while
+# building a log line naming a short-lived thread the JVM had already collected, and no
+# JVM event was processed again. Two threads starting short-lived threads in a 32 MB heap
+# with constant garbage reproduce it at once with the unpatched adapter (review round 2,
+# work/vr27/churn/drive6.py); setup_java_adapter.py now patches it (eventhub-log-guard).
+CHURN_SOURCE = "src/demo/Churn.java"
+CHURN = """package demo;
+
+public class Churn {
+    static class Hit {
+        static int warm() { return 1; }
+
+        static int hit(int n) {
+            int doubled = n * 2; // BP
+            return doubled;
+        }
+    }
+
+    static volatile Object sink;
+
+    public static void main(String[] args) throws Exception {
+        Hit.warm();
+        Runnable empty = () -> {};
+        for (int c = 0; c < 2; c++) {
+            Thread t = new Thread(() -> {
+                long stop = System.nanoTime() + 3_000_000_000L;
+                while (System.nanoTime() < stop) {
+                    Thread s = new Thread(empty);
+                    s.start();
+                    try {
+                        s.join();
+                        Thread.sleep(1);
+                    } catch (InterruptedException e) {
+                        return;
+                    }
+                }
+            }, "churner-" + c);
+            t.setDaemon(true);
+            t.start();
+        }
+        Thread garbage = new Thread(() -> { while (true) sink = new byte[64 * 1024]; }, "garbage");
+        garbage.setDaemon(true);
+        garbage.start();
+        Thread.sleep(5000);
+        System.out.println("HIT:" + Hit.hit(21));
+    }
+}
+"""
+
+
+@pytest.fixture
+def churning(tmp_path):
+    target, process, line = attach_to(
+        tmp_path, CHURN_SOURCE, CHURN, "demo.Churn", "// BP", jvm_args=("-Xmx32m",)
+    )
+    try:
+        yield tmp_path, target, process, line
+    finally:
+        if process.poll() is None:
+            process.kill()
+        process.wait(timeout=10)
+
+
+@pytest.mark.timeout(120)
+def test_short_lived_threads_no_longer_lose_the_stop(churning):
+    from peeky.worker import DebugWorker
+
+    root, target, process, line = churning
+    worker = DebugWorker(root, adapter=target)
+    try:
+        started = worker.dispatch(
+            "launch", {"program": CHURN_SOURCE, "breakpoints": [{"line": line}]}
+        )
+        session = {"session_id": started["session_id"]}
+        state = wait_for(worker, session)
+        assert (state["reason"], state["hit"]) == ("breakpoint", 1)
+        assert state["location"].endswith(f"{CHURN_SOURCE}:{line}")
+        snapshot = worker.dispatch("inspect", {**session, "stop_id": state["stop_id"]})
+        values = {v["name"]: v["value"] for scope in snapshot["scopes"] for v in scope["variables"]}
+        assert values["n"] == "21"
+        # Reported by java-debug itself, within milliseconds: nothing was detected as lost.
+        assert "lost_stop" not in [entry["operation"] for entry in worker.audit]
+        stderr = worker.dispatch("report", session)["debugger_events"]["stderr"]
+        assert 'Exception in thread "Event Hub"' not in stderr
+        worker.dispatch("continue", {**session, "stop_id": state["stop_id"]})
+        assert wait_for(worker, session)["state"] == "terminated"
+    finally:
+        worker.close()
+    output = process.stdout.read()
+    assert process.wait(timeout=30) == 0 and "HIT:42" in output
+
+
+@pytest.mark.timeout(120)
+def test_an_unpatched_adapters_dead_event_hub_ends_the_session_at_once(churning, monkeypatch):
+    # The real failure, kept reproducible: point PEEKY_JAVA_ADAPTER_UNPATCHED at a bundle
+    # built before eventhub-log-guard (Peeky refuses such bundles; the test allows it).
+    unpatched = os.environ.get("PEEKY_JAVA_ADAPTER_UNPATCHED")
+    if not unpatched:
+        pytest.skip("set PEEKY_JAVA_ADAPTER_UNPATCHED to a bundle built without the patch")
+    from dataclasses import replace
+
+    import peeky.java
+    from peeky.errors import classify
+    from peeky.worker import DebugWorker
+
+    monkeypatch.setattr(peeky.java, "JAVA_DEBUG_PATCHES", frozenset())
+    root, target, process, line = churning
+    worker = DebugWorker(root, adapter=replace(target, bundle=Path(unpatched)))
+    began = time.monotonic()
+    with pytest.raises(RuntimeError) as failure:
+        started = worker.dispatch(
+            "launch", {"program": CHURN_SOURCE, "breakpoints": [{"line": line}]}
+        )
+        wait_for(worker, {"session_id": started["session_id"]})
+    # Before the breakpoint is even reached, not after a 60 s timeout.
+    assert time.monotonic() - began < 5
+    error = classify(failure.value)
+    assert error["code"] == "DEBUGGER_ERROR"
+    assert error["message"].startswith(
+        'java-debug\'s event thread died (Exception in thread "Event Hub" '
+        "com.sun.jdi.ObjectCollectedException at com.microsoft.java.debug.core.EventHub"
+    )
+    assert worker.dap is None
+    # Detached: the JVM runs on, its breakpoint gone.
+    output = process.stdout.read()
+    assert process.wait(timeout=30) == 0 and "HIT:42" in output

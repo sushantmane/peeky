@@ -362,6 +362,15 @@ class JavaSession:
     implicit_receiver = "this"
     # java-debug occasionally drops VM-death events (#27); infer exit from no threads.
     liveness_by_threads = True
+    # java-debug's "Event Hub" thread turns every JDI event into DAP stops, steps and
+    # exits. If it dies (an unpatched bundle, #27), or an exception escapes one of its
+    # handlers, nothing is ever reported again: end the session at once.
+    fatal_stderr = {
+        r'Exception in thread "Event Hub"': (
+            "java-debug's event thread died ({excerpt}); it reports no more stops, steps or "
+            "exits, so the session cannot continue: close it and retry"
+        )
+    }
 
     def __init__(self, target, prepared, java, bundle, command, bundle_hash, mapping, mapping_path):
         self.target = target

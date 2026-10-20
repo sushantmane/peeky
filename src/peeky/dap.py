@@ -3,6 +3,7 @@
 import collections
 import json
 import os
+import re
 import selectors
 import signal
 import subprocess
@@ -24,12 +25,24 @@ class ResponseTimeout(TimeoutError):
 
 MAX_HEADER_BYTES = 8192
 MAX_CONTROL_EVENTS = 2000
+# The adapter's own stderr: the last STDERR_TAIL bytes are kept for diagnosis, in lines
+# of at most STDERR_LINE bytes.
+STDERR_TAIL = 16 * 1024
+STDERR_LINE = 4096
 LIFECYCLE_EVENTS = frozenset(
     {"initialized", "stopped", "continued", "terminated", "exited", "breakpoint", "process"}
 )
 # Chatty events left out of the trace (still counted): java-debug sends a `telemetry`
 # event after every stackTrace.
 _UNTRACED_EVENTS = frozenset({"output", "thread", "telemetry"})
+_JDK_FRAMES = ("at java.", "at jdk.", "at sun.", "at com.sun.")
+
+
+def selectors_ready(fd, timeout):
+    """Whether ``fd`` has data (or EOF) within ``timeout`` seconds."""
+    with selectors.DefaultSelector() as selector:
+        selector.register(fd, selectors.EVENT_READ)
+        return bool(selector.select(timeout))
 
 
 def read_message(stream):
@@ -70,7 +83,10 @@ def read_message(stream):
 
 
 class DAP:
-    def __init__(self, command=None, *, env=None):
+    def __init__(self, command=None, *, env=None, fatal_stderr=None):
+        """``fatal_stderr`` maps a regex to a message: an adapter stderr line matching it
+        means the adapter can no longer work (e.g. a dead event thread), and fails the
+        transport with that message (``{excerpt}``: the line and its stack frames)."""
         # Trusted worker configuration only. Never forward agent-provided argv.
         command = PythonAdapter().command if command is None else command
         if (
@@ -89,7 +105,7 @@ class DAP:
             command,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
             env={
                 k: v for k, v in (os.environ if env is None else env).items() if k != "DEBUG_TOKEN"
             },
@@ -118,8 +134,16 @@ class DAP:
         self.sequence = 0
         self.event_sequence = 0
         self.error = None
+        self.fatal_stderr = [
+            (re.compile(pattern), text) for pattern, text in (fatal_stderr or {}).items()
+        ]
+        self.stderr_tail = collections.deque()
+        self.stderr_bytes = 0
+        self.stderr_truncated = False
         self.reader = threading.Thread(target=self._read, daemon=True)
         self.reader.start()
+        self.stderr_reader = threading.Thread(target=self._read_stderr, daemon=True)
+        self.stderr_reader.start()
 
     def _note(self, direction, body):
         trace = getattr(self, "trace", None)
@@ -221,6 +245,57 @@ class DAP:
                 self._accept(read_message(self.process.stdout))
         except Exception as exc:
             self._fail(exc)
+
+    def _keep_stderr(self, text):
+        with self.condition:
+            self.stderr_tail.append(text)
+            self.stderr_bytes += len(text) + 1
+            while self.stderr_bytes > STDERR_TAIL and len(self.stderr_tail) > 1:
+                self.stderr_bytes -= len(self.stderr_tail.popleft()) + 1
+                self.stderr_truncated = True
+
+    def _read_stderr(self):
+        """Drain the adapter's stderr, keep a bounded tail, and fail the transport at
+        once on a fatal line (after its stack frames, 0.3 s at most)."""
+        fd, pending, fatal, deadline = self.process.stderr.fileno(), b"", None, 0.0
+        try:
+            while True:
+                if fatal is not None:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0 or not selectors_ready(fd, remaining):
+                        self._fail_fatal(*fatal)
+                        fatal = None
+                        continue
+                chunk = os.read(fd, 65536)
+                if not chunk:
+                    break
+                *lines, pending = (pending + chunk).split(b"\n")
+                if len(pending) > STDERR_LINE:
+                    lines.append(pending)
+                    pending = b""
+                for raw in lines:
+                    text = raw[:STDERR_LINE].decode("utf-8", "replace").rstrip("\r")
+                    self._keep_stderr(text)
+                    if fatal is not None:
+                        frame = text.strip()
+                        if frame.startswith(("at ", "Caused by")) and len(fatal[1]) < 40:
+                            fatal[1].append(frame)
+                        continue
+                    for pattern, message in self.fatal_stderr:
+                        if pattern.search(text) and not self.error:
+                            fatal, deadline = (message, [text.strip()]), time.monotonic() + 0.3
+                            break
+        except (OSError, ValueError):
+            pass
+        if fatal is not None:
+            self._fail_fatal(*fatal)
+
+    def _fail_fatal(self, message, lines):
+        """The fatal line and its first stack frame outside the JDK (the adapter's own
+        code, where it failed); the whole trace stays in the stderr tail."""
+        own = [line for line in lines[1:] if not line.startswith(_JDK_FRAMES)]
+        excerpt = " ".join([lines[0], *(own or lines[1:])[:1]])[:600]
+        self._fail(RuntimeError(message.format(excerpt=excerpt)))
 
     def _fail(self, exc):
         with self.condition:
@@ -360,6 +435,9 @@ class DAP:
                 "recent": recent,
                 "ignored": dict(self.ignored_events),
                 "trace": list(getattr(self, "trace", ()))[-60:],
+                # The adapter's own log (java-debug: java.util.logging), last 16 KiB.
+                "stderr": "\n".join(getattr(self, "stderr_tail", ())),
+                "stderr_truncated": getattr(self, "stderr_truncated", False),
             }
 
     def pending_stop(self, after):
@@ -454,5 +532,9 @@ class DAP:
                     pass
             self.process.wait(timeout=3)
             self.reader.join(timeout=3)
+            if stderr_reader := getattr(self, "stderr_reader", None):
+                stderr_reader.join(timeout=3)
             self.process.stdin.close()
             self.process.stdout.close()
+            if self.process.stderr:
+                self.process.stderr.close()

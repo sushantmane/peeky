@@ -53,6 +53,15 @@ _RULES = (
         False,
     ),
     (
+        r"^java-debug's event thread died",
+        "DEBUGGER_ERROR",
+        "java-debug stopped processing the JVM's events, so no stop, step or exit can be "
+        "reported any more; the session was closed (an attached JVM is detached, a launched "
+        "one ended). Retry. If it recurs, rebuild the adapter with scripts/setup_java_adapter.py "
+        "and report the message (issue #27).",
+        False,
+    ),
+    (
         r"^Lost stop: ",
         "DEBUGGER_ERROR",
         "java-debug did not report a stop it made (issue #27), so this session's state cannot "
