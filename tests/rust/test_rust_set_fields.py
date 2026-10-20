@@ -3,6 +3,7 @@ and proves initialized, read back and seen by the program; everything else refus
 
 import json
 import os
+import re
 
 import pytest
 
@@ -146,7 +147,7 @@ def test_rust_fields_elements_and_tuple_fields_change_and_the_program_sees_them(
     assert main(["session", "continue", "--to", str(line_of("// WIDTH"))]) == 0
     capsys.readouterr()
     # A reference parameter: what it points at is the caller's.
-    refused(capsys, "s.end=3", "`s` is a pointer", "session step --out")
+    refused(capsys, "s.end=3", "`s` is a pointer", "before the call", "--set-hit N")
     # A caller's local: a call it is making may hold a copy of the old value.
     record, client = _load("default")
     remote, stop = _Remote(client), _stop(record)
@@ -588,3 +589,308 @@ def test_rust_a_field_of_a_struct_or_tuple_preview_changes_and_reads_back(crate,
     text = json.loads(capsys.readouterr().out)["output"]
     assert main(["session", "close"]) == 0
     assert "PREVIEW Span { start: 1, end: 20 } Pair(30, 4) (5, 60) [7, 8] 62" in text, text
+
+
+@pytest.mark.timeout(400)
+def test_rust_fields_and_elements_are_marked_where_set_changes_them(crate, capsys):
+    # Sixth evaluation, finding 7: a probe could not tell whether `w.start` could be
+    # changed, and a field read through `&mut` looked like one the frame holds.
+    at = f"src/main.rs:{line_of('// STOP')}"
+    marked = {
+        **dict.fromkeys(("s.end", "s.start", "o.span.start", "o.marks[1]"), True),
+        **dict.fromkeys(("o.pair.__0", "o.pair.__1", "t.__0", "t.__1", "arr[2]"), True),
+        # Packed, through a Box or a reference, moved, unassigned, not a 16- to 64-bit
+        # integer: as `set` refuses them.
+        **dict.fromkeys(("pk.b", "kept.end", "r.end", "gone.n", "later.end"), False),
+        **dict.fromkeys(("o.flag", "o.ch", "o.ratio", "o.small"), False),
+    }
+    code = main(["probe", str(crate), "--at", at, "--capture", ",".join(marked), "--json"])
+    rows = {row["selector"]: row for row in json.loads(capsys.readouterr().out)["rows"]}
+    assert code == 0 and {name: rows[name].get("settable") for name in marked} == marked, rows
+    assert main(["session", "start", str(crate), "--at", at]) == 0
+    capsys.readouterr()
+    try:
+        # `session get` lists them so too, a preview's fields (`s`) and a tuple's.
+        assert main(["session", "get", "s", "t", "o"]) == 0
+        text = capsys.readouterr().out
+        # The type is LLDB's where no preview reads the value (lldb-dap 18: `long`).
+        for name, value in (("s.end", 2), ("t.__1", 20)):
+            assert re.search(rf"^  {re.escape(name)}: \S+ = {value}  \[settable\]$", text, re.M), (
+                text
+            )
+        assert re.search(r"^  o\.small: \S+ = 7$", text, re.M), text
+        assert main(["session", "continue", "--to", str(line_of("// WIDTH"))]) == 0
+        capsys.readouterr()
+        # Through a reference parameter, and a caller's: never marked.
+        assert main(["session", "get", "s", "--json"]) == 0
+        [row] = json.loads(capsys.readouterr().out)
+        assert [child.get("settable") for child in row["children"]] == [False, False], row
+        assert main(["session", "get", "o.span.start", "--frame", "1", "--json"]) == 0
+        assert json.loads(capsys.readouterr().out)[0]["settable"] is False
+    finally:
+        main(["session", "close"])
+
+
+@pytest.mark.timeout(400)
+def test_rust_inspect_says_why_nothing_is_settable_part_way_through_a_statement(crate, capsys):
+    # Sixth evaluation, finding 8: nothing was marked [settable] there, with no reason.
+    start_mid(crate, capsys, "// TEMP_OUT")
+    try:
+        assert main(["session", "inspect", "--json"]) == 0
+        assert "unsettable" not in json.loads(capsys.readouterr().out)
+        assert main(["session", "step", "--into"]) == 0
+        assert main(["session", "step", "--out"]) == 0
+        capsys.readouterr()
+        assert main(["session", "inspect"]) == 0
+        text = capsys.readouterr().out
+        line = mid_line("// TEMP_OUT")
+        # Each reason names the locals it holds for (review 1).
+        assert (
+            f"note: nothing here is [settable]: `x`, `s`: the stop is part-way through line {line}"
+            in text
+        ), text
+        listed = [row for row in text.splitlines() if not row.startswith("note:")]
+        assert not any("[settable]" in row for row in listed), text
+    finally:
+        main(["session", "close"])
+
+
+STD_INSIDE = """struct Holder {
+    v: Vec<i64>,
+    n: i64,
+}
+
+fn main() {
+    let h = Holder { v: vec![1, 2], n: 3 };
+    let t = (4i64, String::from("x"));
+    let b = Box::new(5i64);
+    let total = h.n + t.0 + *b + h.v.len() as i64; // STD_INSIDE
+    println!("{} {} {}", total, t.1, h.v.len());
+}
+"""
+
+
+@pytest.mark.timeout(400)
+def test_rust_a_standard_library_types_internals_are_never_marked(crate, capsys):
+    # Review of the sixth evaluation's PR: a Vec or String held in a struct or tuple is
+    # never decoded, so its internals (`h.v.len`, a String's `vec.len`) are raw fields on
+    # every debugger, as a whole Vec's are on lldb-dap 18. They say `settable: false`,
+    # and `set` refuses them (a standard-library type on the path); so does a Box's.
+    (crate / "src/main.rs").write_text(STD_INSIDE)
+    at = f"src/main.rs:{next(i for i, line in enumerate(STD_INSIDE.splitlines(), 1) if '// STD_INSIDE' in line)}"
+    marked = {
+        "h.n": True,
+        "t.__0": True,
+        "h.v.len": False,
+        "h.v.buf": False,
+        "t.__1.vec.len": False,
+        "t.__1.vec": False,
+    }
+    code = main(["probe", str(crate), "--at", at, "--capture", ",".join(marked), "--json"])
+    rows = {row["selector"]: row for row in json.loads(capsys.readouterr().out)["rows"]}
+    assert code == 0 and {name: rows[name].get("settable") for name in marked} == marked, rows
+    assert main(["session", "start", str(crate), "--at", at]) == 0
+    capsys.readouterr()
+    try:
+        assert main(["session", "get", "b", "--json"]) == 0
+        [row] = json.loads(capsys.readouterr().out)
+        assert row["settable"] is False and row["children"], row
+        assert all(child.get("settable") is not True for child in row["children"]), row
+        for name, settable in marked.items():
+            if not settable and name.endswith(".len"):
+                refused(capsys, f"{name}=0", "is a standard-library type")
+        code, result = change(capsys, "h.n=9")
+        assert code == 0 and result["after"] == "9", result
+    finally:
+        main(["session", "close"])
+
+
+SPLIT = """#[derive(Debug, Clone, Copy)]
+struct Window {
+    start: u64,
+    count: u32,
+}
+
+fn main() {
+    let mut w = Window { start: 3, count: 1 };
+    let mut n = 4u64;
+    n += 0;
+    w.count += 1; // SPLIT_BEFORE
+    let total = n // SPLIT_FIRST
+        + w.start; // SPLIT_SECOND
+    println!("{} {:?}", total, w);
+}
+"""
+
+
+@pytest.mark.timeout(400)
+def test_rust_inspect_says_nothing_is_settable_only_when_no_field_is(crate, capsys):
+    # Review 1 of the sixth evaluation's PR: stepped onto `+ w.start;`, `n` is already
+    # in a temporary but `w`'s fields are not, and `set w.start=1` works; inspect said
+    # "nothing here is [settable]", taking `n`'s reason for the whole stop.
+    (crate / "src/main.rs").write_text(SPLIT)
+    before, second = (
+        next(i for i, line in enumerate(SPLIT.splitlines(), 1) if marker in line)
+        for marker in ("SPLIT_BEFORE", "SPLIT_SECOND")
+    )
+    assert main(["session", "start", str(crate), "--at", f"src/main.rs:{before}"]) == 0
+    capsys.readouterr()
+    try:
+        for _ in range(3):
+            # Steps reach `let total = n`'s second line (rustc runs it after the first).
+            assert main(["session", "step", "--json"]) == 0
+            if json.loads(capsys.readouterr().out)["location"].endswith(f":{second}"):
+                break
+        else:
+            pytest.fail("no step reached the statement's second line")
+        assert main(["session", "inspect", "--json"]) == 0
+        snapshot = json.loads(capsys.readouterr().out)
+        assert "unsettable" not in snapshot, snapshot["unsettable"]
+        assert main(["session", "get", "w.start", "--json"]) == 0
+        assert json.loads(capsys.readouterr().out)[0]["settable"] is True
+        refused(capsys, "n=9", "cannot be changed here")
+        code, result = change(capsys, "w.start=1")
+        assert code == 0 and result["after"] == "1", result
+    finally:
+        main(["session", "close"])
+
+
+LIMITER = """#[derive(Debug, Clone, Copy)]
+struct Window {
+    start: u64,
+    count: u32,
+}
+
+fn allow(w: &mut Window, now: u64, width: u64, limit: u32) -> bool {
+    if now - w.start > width { // ALLOW
+        w.start = now;
+        w.count = 0;
+    }
+    w.count += 1;
+    w.count <= limit
+}
+
+fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    let limit: u32 = args[1].parse().unwrap();
+    let width: u64 = args[2].parse().unwrap();
+    let times: Vec<u64> = args[3].split(',').map(|t| t.parse().unwrap()).collect();
+    let mut w = Window { start: 0, count: 0 };
+    let mut accepted = Vec::new();
+    for now in times {
+        if allow(&mut w, now, width, limit) { // CALL
+            accepted.push(now.to_string());
+        }
+    }
+    println!("ACCEPTED:{}", accepted.join(","));
+}
+"""
+
+
+@pytest.mark.timeout(400)
+def test_rust_a_refused_change_through_a_reference_advises_what_works(crate, capsys):
+    # Review 1 of the sixth evaluation's PR: the advice was `session step --out`, which
+    # returns part-way through the caller's line, where the change is refused again
+    # (the limiter: refused at line 10, then "part-way through line 30"). Review 2: the
+    # next advice, `session continue --to` the call's line, stopped before the NEXT call
+    # (`now=11`); the advice now stops before this same call.
+    (crate / "src/main.rs").write_text(LIMITER)
+    allow, call = (
+        next(i for i, line in enumerate(LIMITER.splitlines(), 1) if marker in line)
+        for marker in ("// ALLOW", "// CALL")
+    )
+    arguments = ["--", "2", "10", "0,1,10,11"]
+    at = f"src/main.rs:{allow}"
+    assert main(["session", "start", str(crate), "--at", at, "--hit", "3", *arguments]) == 0
+    capsys.readouterr()
+    try:
+        assert main(["session", "get", "now", "--json"]) == 0
+        assert json.loads(capsys.readouterr().out)[0]["value"] == "10"
+        code, result = change(capsys, "w.start=10")
+        error = result["error"]
+        assert code == 2 and "does not write through a pointer" in error["message"]
+        assert "--at <call line> --hits N --set-hit N" in error["hint"], error["hint"]
+    finally:
+        main(["session", "close"])
+    # As advised: a stop on the call's line before this call (hit 3, `now=10`).
+    at = f"src/main.rs:{call}"
+    assert main(["session", "start", str(crate), "--at", at, "--hit", "3", *arguments]) == 0
+    capsys.readouterr()
+    try:
+        assert main(["session", "get", "now", "--json"]) == 0
+        assert json.loads(capsys.readouterr().out)[0]["value"] == "10"
+        for assignment in ("w.start=10", "w.count=0"):
+            code, result = change(capsys, assignment)
+            assert code == 0, result
+        assert "ACCEPTED:0,1,10,11" in finish(capsys)
+    finally:
+        main(["session", "close"])
+
+
+TWO_CALLS = """#[derive(Debug, Clone, Copy)]
+struct Window {
+    start: u64,
+    count: u32,
+}
+
+fn allow(w: &mut Window, now: u64) -> bool {
+    if now - w.start > 5 { // TWO_ALLOW
+        w.start = now;
+        w.count = 0;
+    }
+    w.count += 1;
+    w.count <= 2
+}
+
+fn main() {
+    let mut w = Window { start: 0, count: 0 };
+    let mut other = Window { start: 0, count: 0 };
+    let mut seen = Vec::new();
+    for now in [0u64, 1, 10, 11] {
+        let _ = allow(&mut other, now); // TWO_OTHER
+        seen.push(allow(&mut w, now)); // TWO_CALL
+    }
+    println!("SEEN:{:?}", seen);
+}
+"""
+
+
+@pytest.mark.timeout(400)
+def test_rust_the_advice_reaches_the_examined_call_of_a_function_called_from_two_lines(
+    crate, capsys
+):
+    # Review 3 of the sixth evaluation's PR: `--set-hit N` counts the call line's own
+    # stops, not the called function's. Stopped in `allow` at its hit 4 (the call on
+    # `w`, `now=1`), `--set-hit 4` at the call line changed the call where `now=11`.
+    (crate / "src/main.rs").write_text(TWO_CALLS)
+    allow, call = (
+        next(i for i, line in enumerate(TWO_CALLS.splitlines(), 1) if marker in line)
+        for marker in ("// TWO_ALLOW", "// TWO_CALL")
+    )
+    assert main(["session", "start", str(crate), "--at", f"src/main.rs:{allow}", "--hit", "4"]) == 0
+    capsys.readouterr()
+    try:
+        assert main(["session", "get", "now", "--json"]) == 0
+        assert json.loads(capsys.readouterr().out)[0]["value"] == "1"
+        code, result = change(capsys, "w.count=5")
+        error = result["error"]
+        assert code == 2 and "counts that line's own stops" in error["message"], error
+        assert "--capture <argument> --hits all" in error["message"], error
+        assert "does not write through a pointer" in error["message"], error
+    finally:
+        main(["session", "close"])
+        capsys.readouterr()
+    # As advised: N is the call line's own stop where `now` is the examined call's.
+    at = f"src/main.rs:{call}"
+    code = main(["probe", str(crate), "--at", at, "--capture", "now", "--hits", "all", "--json"])
+    rows = json.loads(capsys.readouterr().out)["rows"]
+    assert code == 0, rows
+    hit = next(row["hit"] for row in rows if row["value"] == "1")
+    assert hit == 2, rows
+    command = ["probe", str(crate), "--at", at, "--capture", "now", "--set", "w.count=5"]
+    code = main([*command, "--hits", str(hit), "--set-hit", str(hit), "--json"])
+    result = json.loads(capsys.readouterr().out)
+    assert code == 0, result.get("error")
+    assert [row["value"] for row in result["rows"] if row["hit"] == hit] == ["1", "1"], result
+    # The call at `now=1` saw the change (count 6 > 2), and no other call did.
+    assert "SEEN:[true, false, true, true]" in result["output"], result["output"]

@@ -143,14 +143,17 @@ class CompiledVerification:
     def candidate(
         self, source: Path, check: Path, old: str, new: str, destination: Path, deadline=None
     ):
+        """Build the program with the edit ``old`` -> ``new`` and run the checker on it;
+        with neither (`verify --baseline`), the unedited program, checked the same way."""
         source, check, relative = self._protect(source, check)
         original = source.read_text()
-        if not old or original.count(old) != 1 or old == new:
+        baseline = old is None and new is None
+        if not baseline and (not old or original.count(old) != 1 or old == new):
             raise ValueError("old must match exactly once and new must change it")
         destination = Path(destination).resolve()
         candidate = destination / "candidate" / relative
         candidate.parent.mkdir(parents=True, exist_ok=True)
-        candidate.write_text(original.replace(old, new, 1))
+        candidate.write_text(original if baseline else original.replace(old, new, 1))
         candidate_hash = _hash(candidate)
         runtime = None
         try:
@@ -158,7 +161,7 @@ class CompiledVerification:
                 runtime = self.target.prepare(
                     source,
                     self.root,
-                    edit=SourceEdit(relative, old, new),
+                    edit=None if baseline else SourceEdit(relative, old, new),
                     **({} if deadline is None else {"deadline": deadline}),
                 )
             except BuildCommandError as exc:

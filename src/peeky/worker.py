@@ -146,6 +146,11 @@ class DebugWorker:
         # {handle: taint}: values inside a local whose pointers may reach freed memory
         # (a runtime's aggregate_taint), passed on to everything inside them.
         self.taints = {}
+        # (name, why) for roots a rule left unmarked in the last inspection (unsettable_here).
+        self.unsettable_reasons = []
+        # Verdicts behind [settable] marks on fields and elements, by where the program is
+        # stopped (see mark_place): a loop's later hits at the same place reuse them.
+        self.marks = {}
         self.inspection_nodes = 0
         self.view_fetches = 0
         self.view_items = 0
@@ -1430,6 +1435,8 @@ class DebugWorker:
             listed = self.frame_scopes(runtime, selected_frame, scopes)
             available = bool(is_global) and any(is_global(scope) for scope in listed)
             pending, own, proof = [], [], None
+            # Why a rule left roots unmarked (a stop part-way through a statement).
+            self.unsettable_reasons, roots = [], []
             for scope in listed:
                 module = bool(is_global) and is_global(scope)
                 if module and not wanted:
@@ -1465,6 +1472,8 @@ class DebugWorker:
                 exposed = self.expose_variables(
                     shown, selected_frame, self.scope_identity(scope), ()
                 )
+                if not module:
+                    roots += shown
                 pending.append((handle, scope, exposed, len(variables)))
             references = [scope["variablesReference"] for _, scope, _, _ in pending]
             writable = quiescent and not self.view_timed_out
@@ -1550,6 +1559,16 @@ class DebugWorker:
                 snapshot["globals_proof"] = proof
             if not writable:
                 snapshot["mutation_blocked"] = "A value-view read is still pending; inspect again"
+            elif (
+                index == 0
+                # A whole listing (`session inspect`), not a probe's or `get`'s names.
+                and not args.get("names")
+                and (found := self.unsettable_here(runtime, selected_frame, roots, result))
+            ):
+                snapshot["unsettable"], everywhere = found
+                if everywhere:
+                    # No stop of this run allows a change: no advice to stop elsewhere.
+                    snapshot["unsettable_everywhere"] = True
             return snapshot
         if operation == "expand":
             return self.expand(args, runtime)
@@ -1559,6 +1578,7 @@ class DebugWorker:
                 return self.set_member(args, runtime)
             self.children.clear()
             self.taints.clear()
+            self.marks.clear()
             if not self.capabilities.get("supports_set_variable", False):
                 raise ValueError("Adapter does not support variable mutation")
             ref = args["reference"]
@@ -1906,11 +1926,16 @@ class DebugWorker:
         self.view_bytes += count
         return data
 
-    def expose_variables(self, variables, frame, scope, ancestry, taint=None):
+    def expose_variables(self, variables, frame, scope, ancestry, taint=None, root=None):
         """Only worker-issued handles leave the process. A child handle permits a write only
         to a member the runtime allows (Java fields and array elements), checked again
-        when the write is made. ``taint`` is the parent's (see ``self.taints``)."""
+        when the write is made. ``taint`` is the parent's (see ``self.taints``). ``root``:
+        the debugger's variable for the root local of ``ancestry``, whose fields and
+        elements are marked settable where `set` would change them (C, C++, Rust)."""
         result = []
+        member_rule = (
+            self.member_rule(self.runtime, frame, root) if ancestry and root is not None else None
+        )
         view_variable = getattr(self.runtime, "view_variable", None)
         aggregate_taint = getattr(self.runtime, "aggregate_taint", None)
         display_value = getattr(self.runtime, "display_value", None)
@@ -1989,6 +2014,10 @@ class DebugWorker:
                     output["stale"] = True
                 if kind is not None:
                     output["type"] = kind
+                shown = getattr(self.runtime, "display_type", None)
+                if shown and (rust := shown(variable, frame, top=not ancestry)):
+                    # A reference parameter's Rust type (`&mut Window`), as for plain rows.
+                    output.update(type=rust, debugger_type=kind)
                 result.append(output)
                 self.inspection_nodes += 1
                 continue
@@ -2039,9 +2068,21 @@ class DebugWorker:
                     and not self.optimized()
                     and self.has_memory_location(variable)
                     and bool(check(variable, frame))
-                    and not getattr(reason, "refuses", False)
-                    and not (mid and mid(variable, frame, self.stop_reason))
                 )
+                # Not a value shown with a note whose declaration still runs here (#140),
+                # nor one a statement under way may hold a copy of (#105); why, for
+                # inspect's note (sixth evaluation, finding 8).
+                if settable and getattr(reason, "refuses", False):
+                    settable = False
+                    self.unsettable_reasons.append((name, str(reason)))
+                elif settable and mid and (why := mid(variable, frame, self.stop_reason)):
+                    settable = False
+                    self.unsettable_reasons.append((name, why))
+            elif ancestry and member_rule is not None:
+                # A field or element `set` would change (#105), judged as `set` judges it
+                # (sixth evaluation, finding 7); never one reached through a pointer.
+                steps = [step for step, _ in ancestry[1:]] + [name]
+                settable = member_rule(variable, steps)
             elif ancestry and (member := getattr(self.runtime, "member_settable", None)):
                 settable = (
                     innermost
@@ -2210,6 +2251,7 @@ class DebugWorker:
             count = (
                 1 if "index" in args else min(args.get("count", 64), 512 - self.inspection_nodes)
             )
+            settable = self.preview_settable(record, runtime, elements[start : start + count])
             page = []
             for element in elements[start : start + count]:
                 handle = 0
@@ -2220,6 +2262,8 @@ class DebugWorker:
                     self.children[handle] = ("view", list(element["children"][:512]))
                 shown = {key: value for key, value in element.items() if key != "children"}
                 page.append({**shown, "variablesReference": handle, "view": "memory"})
+                if settable is not None:
+                    page[-1]["settable"] = settable(element.get("name"))
             self.inspection_nodes += len(page)
             return {
                 "variables": page,
@@ -2227,7 +2271,8 @@ class DebugWorker:
                 "truncated": start + len(page) < len(elements),
                 "remaining_nodes": 512 - self.inspection_nodes,
             }
-        frame, scope_identity, ancestry, reference, indexed = self.walk(record, runtime)
+        trail = []
+        frame, scope_identity, ancestry, reference, indexed = self.walk(record, runtime, trail)
         start = args.get("start", 0)
         count = min(args.get("count", 64), 512 - self.inspection_nodes)
         if "index" in args:
@@ -2247,6 +2292,7 @@ class DebugWorker:
             scope_identity,
             ancestry,
             self.taints.get(args["handle"]),
+            root=trail[0] if trail else None,
         )
         runtime.assert_current()
         return {
@@ -2255,6 +2301,190 @@ class DebugWorker:
             "truncated": start + len(result) < len(variables),
             "remaining_nodes": 512 - self.inspection_nodes,
         }
+
+    def unsettable_here(self, runtime, frame, roots, scopes):
+        """Why nothing is settable at this stop, where a rule says so (sixth evaluation,
+        finding 8): the stop is part-way through a statement (a loop header's later
+        pass, back from a call) or at one that makes an inlined call. Each reason names
+        the locals it holds for. Given only when nothing is: no root is marked, and no
+        field or element of a struct, tuple or array local would be (one whose rule
+        lets its members change, with a member `set` takes, or a member holding
+        others, is enough to say nothing). None where nothing could be in any case (an
+        optimized build, a debugger that cannot change values)."""
+        mid = getattr(runtime, "mid_statement", None)
+        if (
+            mid is None
+            or self.capabilities.get("supports_set_variable") is not True
+            or self.optimized()
+            or any(row.get("settable") for entry in scopes for row in entry["variables"])
+        ):
+            return None
+        reasons = {}
+        for name, reason in self.unsettable_reasons:
+            reasons.setdefault(reason, []).append(name)
+        if self.member_set():
+            aggregates = [
+                variable
+                for variable in roots
+                if type(variable.get("variablesReference")) is int
+                and variable["variablesReference"] > 0
+                and self.has_memory_location(variable)
+            ]
+            for variable in aggregates[:8]:
+                name = str(variable.get("name"))
+                if reason := self.root_reason(runtime, frame, variable):
+                    reasons.setdefault(reason, []).append(name)
+                    continue
+                rule = self.member_rule(runtime, frame, variable)
+                try:
+                    children = self.bounded_variables(variable["variablesReference"])
+                except ValueError:
+                    # Too many to list: some may be changeable.
+                    return None
+                for child in children[:64]:
+                    nested = child.get("variablesReference")
+                    if (type(nested) is int and nested > 0) or (
+                        rule is not None and rule(child, [str(child.get("name"))])
+                    ):
+                        # A member that may be changed, or may hold one: not nothing.
+                        return None
+            if len(aggregates) > 8:
+                return None
+        if not reasons:
+            return None
+        text = "; ".join(
+            f"{', '.join(f'`{name}`' for name in names)}: {reason}"
+            for reason, names in reasons.items()
+        )
+        # Whether no other stop would help either (Everywhere reasons alone).
+        return text, all(getattr(reason, "everywhere", False) for reason in reasons)
+
+    def mark_place(self):
+        """Where the program is stopped, as far as [settable] marks go: each listed
+        frame's function and pc, and the stop's reason, which decide every rule a mark
+        follows (the statement under way, what the MIR proves, what a declaration below
+        the stop leaves). Later stops at the same place (a loop's hits under `--hits
+        all`) reuse its marks; this stop alone where the stack does not say all (a
+        frame without a pc, or as many frames as are listed, 10, which may be cut). A
+        runtime whose rules read only the stopped frame (``marks_by_frame``: Rust's MIR
+        proofs) is placed by that frame alone."""
+        frames = getattr(self, "listed_frames", None) or []
+        if frames and getattr(self.runtime, "marks_by_frame", False) is True:
+            frames = frames[:1]
+        stack = tuple((f.get("name"), f.get("instructionPointerReference")) for f in frames)
+        if frames and len(frames) < 10 and all(isinstance(pc, str) for _, pc in stack):
+            return ("stack", stack, self.stop_reason)
+        return ("stop", self.stop_id)
+
+    def remember(self, key, compute):
+        """A mark's verdict, kept under ``key`` (see mark_place); bounded."""
+        if key not in self.marks:
+            if len(self.marks) >= 4096:
+                self.marks.clear()
+            self.marks[key] = compute()
+        return self.marks[key]
+
+    def root_reason(self, runtime, frame, root):
+        """Why no member of the root local ``root`` can change at this stop (a statement
+        under way may hold a copy of it: mid_statement), or None; one per place."""
+        mid = getattr(runtime, "mid_statement", None)
+        if mid is None:
+            return None
+        key = ("root", self.mark_place(), str(root.get("name")), str(root.get("type")))
+        return self.remember(key, lambda: mid(root, frame, self.stop_reason))
+
+    def preview_settable(self, record, runtime, elements):
+        """For the fields of a value shown as a preview read from memory (#106): a check
+        name -> whether `set` would change that field, judged on the debugger's own
+        listing of it, walked again from the frame (once per place: see mark_place).
+        What a view decodes without such a source (a container's elements and length,
+        an enum's payload) is never changed: `set` refuses it, so it says no. None where
+        the runtime judges no member (Python, Java)."""
+        if not elements or getattr(runtime, "validate_member", None) is None:
+            return None
+        source = record[2] if len(record) > 2 else None
+        if (
+            source is None
+            or source[0].get("id") != self.innermost_frame
+            or not self.member_set()
+            or self.optimized()
+        ):
+            return lambda name: False
+        place = ("preview", self.mark_place(), tuple(map(tuple, source[2])))
+        names = [str(element.get("name")) for element in elements]
+        if all((*place, name) in self.marks for name in names):
+            return lambda name: self.marks.get((*place, str(name)), False)
+        trail = []
+        try:
+            frame, _, ancestry, reference, indexed = self.walk(source, runtime, trail)
+        except ValueError:
+            # Marks are advice: a value no longer found is left unmarked (`set` says why).
+            return None
+        rule = self.member_rule(runtime, frame, trail[0]) if trail else None
+        if rule is None:
+            return None
+        listed = {}
+        for variable in self.bounded_variables(reference, indexed):
+            listed.setdefault(variable.get("name"), []).append(variable)
+        prefix = [step for step, _ in ancestry[1:]]
+
+        def judged(name):
+            found = listed.get(name, [])
+            return len(found) == 1 and rule(found[0], [*prefix, name])
+
+        for name in names:
+            self.remember((*place, name), lambda name=name: judged(name))
+        return lambda name: self.marks.get((*place, str(name)), False)
+
+    def member_rule(self, runtime, frame, root):
+        """For the fields and elements of the root local ``root`` of ``frame``: a check
+        (variable, steps) -> whether `set` would change that member here, under every
+        rule `set_member` applies (C, C++ and Rust: ``validate_member``), which says no
+        to all where no member can change here (another frame, an optimized build, a
+        debugger that cannot, a root with no value or memory, a stop part-way through a
+        statement). The rules' verdicts are kept per place (see mark_place): what holds
+        for the root once, each member's once. None where the runtime judges members
+        otherwise (Java's member_settable)."""
+        validate = getattr(runtime, "validate_member", None)
+        if validate is None:
+            return None
+        if (
+            not self.member_set()
+            or frame.get("id") != self.innermost_frame
+            or self.optimized()
+            or (self.placeholders() and is_unavailable(root.get("value")))
+            or not self.has_memory_location(root)
+            or self.root_reason(runtime, frame, root)
+        ):
+            return lambda variable, steps: False
+        stack = getattr(self, "listed_frames", None)
+        place = (self.mark_place(), str(root.get("name")), str(root.get("type")))
+
+        def judged(variable, steps):
+            try:
+                # The value it holds: in range, so only the member itself is judged.
+                validate(
+                    frame,
+                    root,
+                    steps,
+                    variable,
+                    variable.get("value"),
+                    stack=stack,
+                    deeper=self.deeper_stack,
+                )
+            except ValueError:
+                return False
+            return True
+
+        def check(variable, steps):
+            if self.placeholders() and is_unavailable(variable.get("value")):
+                return False
+            if not self.has_memory_location(variable):
+                return False
+            key = ("member", *place, tuple(steps), str(variable.get("type")))
+            return self.remember(key, lambda: judged(variable, steps))
+
+        return check
 
     def member_set(self):
         """Whether `set_variable` may change fields and elements here, not only locals."""
@@ -2281,6 +2511,7 @@ class DebugWorker:
         # A change invalidates every handle: the next read or change inspects again.
         self.children.clear()
         self.taints.clear()
+        self.marks.clear()
         self.references.clear()
         self.reference_frames.clear()
         self.reference_adapter.clear()
@@ -2482,6 +2713,9 @@ class DebugWorker:
         old value (#105): the change would miss that statement. The session is kept."""
         check = getattr(runtime, "mid_statement", None)
         if check and (reason := check(root, frame or {}, self.stop_reason)):
+            if getattr(reason, "everywhere", False):
+                # No stop of this run allows one: no advice to stop elsewhere.
+                raise ValueError(f"{selector!r} cannot be changed: {reason}")
             raise ValueError(
                 f"{selector!r} cannot be changed here: {reason}, so that statement may "
                 "already hold a copy of the old value and would not see the change. Change "

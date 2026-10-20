@@ -1336,8 +1336,8 @@ def test_lines_map_through_every_edit(line, expected):
     ("edit", "message"),
     [
         ((("l2;", "x"), ("l2;\nl3", "y")), "Edits 1 and 2 overlap"),
-        ((("l2;", "x"), ("zz", "y")), "exactly once \\(edit 2\\)"),
-        ((("l2;", "x"), ("l3;", "l3;")), "must change it \\(edit 2\\)"),
+        ((("l2;", "x"), ("zz", "y")), "--old matched 0 times \\(edit 2\\); it must match"),
+        ((("l2;", "x"), ("l3;", "l3;")), "--new equals --old \\(edit 2\\)"),
     ],
 )
 def test_several_edits_are_refused_when_they_overlap_or_miss(edit, message):
