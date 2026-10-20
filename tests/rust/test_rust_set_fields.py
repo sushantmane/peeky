@@ -518,3 +518,67 @@ def test_rust_a_crates_own_core_fmt_is_no_format_args(crate, capsys):
     text = json.loads(capsys.readouterr().out)["output"]
     assert main(["session", "close"]) == 0
     assert "ucore 1001 1" in text, text
+
+
+PREVIEWS = """#[derive(Debug, Clone, Copy)]
+struct Span {
+    start: i64,
+    end: i64,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Pair(i32, u16);
+
+fn main() {
+    let mut s = Span { start: 1, end: 2 };
+    s.start += 0;
+    let p = Pair(3, 4);
+    let t = (5i64, 6u32);
+    let v = vec![7i64, 8];
+    let seen = s.end + p.0 as i64 + t.0 + v[0]; // STOP
+    println!("PREVIEW {:?} {:?} {:?} {:?} {}", s, p, t, v, seen);
+}
+"""
+
+
+def rows(capsys):
+    assert main(["session", "inspect", "--json"]) == 0
+    snapshot = json.loads(capsys.readouterr().out)
+    return {v["name"]: v for s in snapshot["scopes"] for v in s["variables"]}
+
+
+@pytest.mark.timeout(400)
+def test_rust_a_field_of_a_struct_or_tuple_preview_changes_and_reads_back(crate, capsys):
+    # #106 previews a struct or tuple local of scalars from memory (`Span { start: 1,
+    # end: 2 } [memory]`), and its fields are the preview's: `set s.end=20` was refused
+    # as "inside a value Peeky decodes itself". The preview is the local's own storage;
+    # a Vec's elements stay refused.
+    (crate / "src/main.rs").write_text(PREVIEWS)
+    line = next(i for i, text in enumerate(PREVIEWS.splitlines(), 1) if "// STOP" in text)
+    assert main(["session", "start", str(crate), "--at", f"src/main.rs:{line}"]) == 0
+    capsys.readouterr()
+    previews = rows(capsys)["s"].get("view") == "memory"
+    for assignment, before, after in (
+        ("s.end=20", "2", "20"),
+        ("p.__0=30", "3", "30"),
+        ("t.__1=60", "6", "60"),
+    ):
+        code, result = change(capsys, assignment)
+        assert code == 0, (assignment, result)
+        assert (result["before"], result["after"]) == (before, after), (assignment, result)
+    refused(capsys, "v[0]=1", "inside a value Peeky decodes itself")
+    # Read back as shown: the fields and the previews hold the new values.
+    assert main(["session", "get", "s.end", "p.__0", "t.__1", "--json"]) == 0
+    got = {row["selector"]: row for row in json.loads(capsys.readouterr().out)}
+    assert [got[s]["value"] for s in ("s.end", "p.__0", "t.__1")] == ["20", "30", "60"], got
+    shown = rows(capsys)
+    assert shown["s"]["value"].endswith("Span { start: 1, end: 20 }"), shown["s"]
+    if previews:
+        assert got["s.end"].get("view") == "memory", got
+        assert shown["p"]["value"] == "Pair(30, 4)" and shown["t"]["value"] == "(5, 60)", shown
+    assert main(["session", "continue", "--to-exit"]) == 0
+    capsys.readouterr()
+    assert main(["session", "report", "--json"]) == 0
+    text = json.loads(capsys.readouterr().out)["output"]
+    assert main(["session", "close"]) == 0
+    assert "PREVIEW Span { start: 1, end: 20 } Pair(30, 4) (5, 60) [7, 8] 62" in text, text

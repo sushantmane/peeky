@@ -1177,7 +1177,8 @@ def local_declarations(info, line_text, workspace, declared):
 
 def _inlined_calls(dies, bodies, files, workspace):
     """(source or None, line or None) of each call inlined into these function bodies
-    (`DW_TAG_inlined_subroutine`, an `always_inline` callee's at opt-level 0), from
+    (`DW_TAG_inlined_subroutine`: a callee the compiler inlined even at opt-level 0, as
+    `always_inline` and `flatten` make it), from
     where it is called: its code carries the callee's lines, not the call's (#105)."""
     inputs, cache = files
     found, pending = (
@@ -2890,7 +2891,8 @@ class NativeSession:
         On the first line too, the statements start after the body's `{` and the stop
         must be at the lowest of their rows past the function's entry (`long one(struct P
         p) { long t =` / `p.x + g();` runs line 2 first). And no call in them may be
-        inlined (`always_inline`): its code carries the callee's lines and runs before
+        inlined (a call the compiler inlined, `always_inline`, `flatten`): its code
+        carries the callee's lines and runs before
         the statement's own lowest row (`t = inl(&p) + p.y;`). Anything else, or anything
         Peeky cannot tell, is refused. ``stop``: the stop's reason (unused: the address
         says it)."""
@@ -2937,9 +2939,9 @@ class NativeSession:
             for called, at in function.get("inlined", ())
         ):
             return (
-                f"the statement on {where} calls a function inlined into it (`always_inline`), "
-                "whose code carries that function's lines and may run before the statement's "
-                "own, so Peeky cannot tell where the statement starts"
+                f"the statement on {where} makes a call the compiler inlined (`always_inline`, "
+                "`flatten`), whose code carries the called function's lines and may run before "
+                "the statement's own, so Peeky cannot tell where the statement starts"
             )
         entry = min((low for low, _ in function.get("ranges", ())), default=None)
         addresses = [

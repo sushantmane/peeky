@@ -708,6 +708,32 @@ def test_a_function_like_brace_is_a_body_only_at_file_scope_or_in_a_class():
     assert not statements.old_style(line("    return 0;"))
 
 
+def test_a_function_try_block_and_its_handlers_are_function_bodies():
+    # Review of #105 (round 4): `long tryfun(P p) try {` read as a `try` statement's block
+    # outside any function, so its statements "continued" one.
+    text = (
+        "long tryfun(P p) try {\n"
+        "    t = p.x + g();\n"
+        "} catch (const E &) {\n"
+        "    return p.y;\n"
+        "} catch (...) {\n"
+        "    return 0;\n"
+        "}\n"
+        "int main() {\n"
+        "    try {\n"
+        "        f();\n"
+        "    } catch (...) {\n"
+        "        g();\n"
+        "    }\n"
+        "}\n"
+    )
+    statements = Statements(text, raw_strings=True)
+    assert [statements.begins(line) for line in (2, 4, 6, 10, 12)] == [True] * 5
+    # C has no function-try-block.
+    assert Statements(text.replace("try {", "{"), raw_strings=False).begins(2) is True
+    assert Statements(text, raw_strings=False).begins(2) is False
+
+
 def test_a_functions_first_line_holds_the_statements_after_its_body_opens():
     # Review of #105 (round 3): `long one(struct P p) { long t =` / `p.x + g();` ends on
     # the next line; `{ return p.x + g(); }` on its own.

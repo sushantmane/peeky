@@ -1028,12 +1028,17 @@ class Statements:
         """What the brace at ``opening`` opens: "statement" (a block of statements: a
         statement's body, a block after a statement or a label), "function" (a body
         after parameters: `f(int a) {`, `operator()(int a) const {`, maybe a macro's
-        `FOR_EACH(x) {`), "lambda" (`[&] {`, `[](int v) -> int {`), or "other" (a class,
-        an initializer, `({`, `new T[1]{`, `decltype(W{}){`, a compound literal)."""
+        `FOR_EACH(x) {`; a function-try-block's, `f(P p) try {`, and its handlers'),
+        "lambda" (`[&] {`, `[](int v) -> int {`), or "other" (a class, an initializer,
+        `({`, `new T[1]{`, `decltype(W{}){`, a compound literal)."""
         before = self._unattributed(opening)
         if before is None:
             return "other"
         token, at = before
+        if token == "try" and self.raw_strings:
+            # `long f(P p) try {`: the function's body, as a brace in the `try`'s place
+            # would be; else a `try` statement's block.
+            return "function" if self._brace(at) == "function" else "statement"
         if token in (";", "{", "}", "<%", "%>") or token in _LEADING:
             return "statement"
         if token == ":":
@@ -1044,6 +1049,20 @@ class Statements:
         word = self._before(parameters) if parameters is not None else None
         if word is None:
             return "other"
+        if word[0] == "catch" and self.raw_strings:
+            # A handler of a function-try-block is its function's too (after the `}` of
+            # its `try {` or of another such handler); else a `try` statement's.
+            previous = self._unattributed(word[1])
+            block = (
+                self._opening(previous[1])
+                if previous is not None and previous[0] in ("}", "%>")
+                else None
+            )
+            return (
+                "function"
+                if block is not None and self._brace(block) == "function"
+                else "statement"
+            )
         if word[0] in _HEADERS:
             return "statement"
         if word[0] in ("]", ":>"):

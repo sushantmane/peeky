@@ -91,6 +91,18 @@ def optimization_level(identity):
     return None
 
 
+def _same_number(shown, read):
+    """Whether two decimal integers as shown (`50`, `-3`) are the same number."""
+    pattern = re.compile(r"-?[0-9]{1,40}")
+    return (
+        isinstance(shown, str)
+        and isinstance(read, str)
+        and bool(pattern.fullmatch(shown.strip()))
+        and bool(pattern.fullmatch(read.strip()))
+        and int(shown) == int(read)
+    )
+
+
 def is_unavailable(value):
     """LLDB reports "no value" as text such as `<error: variable not available>` or
     `<error: could not evaluate DW_OP_entry_value: ...>`; none of it is a value."""
@@ -1954,7 +1966,16 @@ class DebugWorker:
                 if view.get("children"):
                     self.reference_counter += 1
                     handle = self.reference_counter
-                    self.children[handle] = ("view", list(view["children"][:512]))
+                    # A preview of the value's own fields (#106) also keeps where the
+                    # debugger lists it, which a change to a field walks again (#105).
+                    writable = getattr(self.runtime, "view_writable", None)
+                    raw = variable.get("variablesReference", 0)
+                    source = (
+                        (dict(frame), scope, (*ancestry, (name, kind)))
+                        if writable and writable(view) and type(raw) is int and raw > 0
+                        else None
+                    )
+                    self.children[handle] = ("view", list(view["children"][:512]), source)
                 output = {
                     "name": name,
                     "value": str(view["value"])[:2000],
@@ -2260,12 +2281,17 @@ class DebugWorker:
                 else "Only the stopped function's own locals can be changed for this language "
                 "with this debugger, which cannot change fields and elements"
             )
-        if record is not None and record[0] == "view":
-            raise ValueError(
-                f"{args['name']!r} cannot be changed: it is inside a value Peeky decodes "
-                "itself (such as a Rust Vec, String, Box or enum), whose storage Peeky does "
-                "not write"
-            )
+        previewed = record is not None and record[0] == "view"
+        if previewed:
+            if len(record) < 3 or record[2] is None:
+                raise ValueError(
+                    f"{args['name']!r} cannot be changed: it is inside a value Peeky decodes "
+                    "itself (such as a Rust Vec, String, Box or enum), whose storage Peeky "
+                    "does not write"
+                )
+            # A #106 preview of a struct's or tuple's own fields: changed as the debugger
+            # lists it, under every rule a field there has (#105).
+            record = record[2]
         if record is None:
             raise ValueError("Unknown or stale expansion handle; inspect again")
         if record[0].get("id") != self.innermost_frame:
@@ -2289,7 +2315,7 @@ class DebugWorker:
         variable = matches[0]
         if validate is not None:
             return self._set_scalar_member(
-                record, runtime, frame, ancestry, trail, reference, variable, args
+                record, runtime, frame, ancestry, trail, reference, variable, args, previewed
             )
         if reason := check(variable):
             raise ValueError(f"{name!r} cannot be changed: {reason}")
@@ -2322,11 +2348,13 @@ class DebugWorker:
         return {"name": name, "before": before, "after": after}
 
     def _set_scalar_member(
-        self, record, runtime, frame, ancestry, trail, reference, variable, args
+        self, record, runtime, frame, ancestry, trail, reference, variable, args, previewed=False
     ):
         """set_member for C, C++ and Rust (#105): the runtime proves the change reaches
         the program (``validate_member``), and the value read back, walked again from the
-        frame, must be the one asked; anything else is never reported as a change."""
+        frame, must be the one asked; anything else is never reported as a change.
+        ``previewed``: the parent is shown as a preview read from memory (#106), which
+        must show the same value afterwards."""
         name, value = args["name"], args["value"]
         root, steps = trail[0], [step for step, _ in ancestry[1:]] + [name]
         pairs = ((root, ancestry[0][0]), (variable, name))
@@ -2391,7 +2419,44 @@ class DebugWorker:
         after = found[0]["value"]
         # Exactly the value asked, or an error: never a change reported that is not made.
         runtime.confirm_mutation(name, value, before, after)
+        if previewed:
+            self._confirm_preview(record, runtime, name, after)
         return {"name": name, "before": before, "after": after}
+
+    def _confirm_preview(self, record, runtime, name, after):
+        """After a change to a field of a value shown as a preview read from memory (#106),
+        read the preview again as `inspect` and `get` would: the field must show what the
+        debugger read back. A preview that no longer reads is shown as the debugger lists
+        the value, which matched; one that shows anything else closes the session."""
+        trail = []
+        try:
+            frame, _, path, _, _ = self.walk(record, runtime, trail)
+            self.view_fetches = self.view_items = self.view_bytes = 0
+            self.view_deadline = time.monotonic() + VIEW_SECONDS
+            view = runtime.view_variable(
+                trail[-1],
+                self.view_fetch,
+                self.view_read,
+                frame=frame,
+                top=len(path) == 1,
+                innermost=len(path) == 1 and frame.get("id") == self.innermost_frame,
+                stop=self.stop_reason,
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                f"The change to {name!r} was made, but its value could not be read again "
+                f"from memory ({str(exc)[:200]}): the program's state is unknown, so the "
+                "session is closed"
+            ) from None
+        if view is None or not view.get("children"):
+            return
+        shown = [child for child in view["children"] if child.get("name") == name]
+        if len(shown) != 1 or not _same_number(shown[0].get("value"), after):
+            raise RuntimeError(
+                f"The change to {name!r} reads back as {str(after)[:80]} from the debugger "
+                f"but as {str(shown[0].get('value'))[:80] if len(shown) == 1 else 'nothing'} "
+                "from memory: the program's state is unknown, so the session is closed"
+            )
 
     def refuse_mid_statement(self, runtime, root, frame, selector):
         """Refuse a change to the root local ``root`` (or what ``selector`` reaches in it)

@@ -497,3 +497,70 @@ def test_an_unavailable_root_or_a_value_view_is_refused_before_any_write(tmp_pat
     with pytest.raises(ValueError, match="'end' has no readable value here"):
         worker.dispatch("set_variable", {**STOP, "handle": handle, "name": "end", "value": "3"})
     assert not any(op == "setVariable" for op, _ in worker.dap.calls)
+
+
+class Previewing(Runtime):
+    """A runtime that previews `s` from "memory" (#106): ``memory`` overrides what the
+    preview reads after a write; ``writable`` is what ``view_writable`` says."""
+
+    def __init__(self, backend, writable=True, memory=None):
+        super().__init__()
+        self.backend, self.writable, self.memory, self.views = backend, writable, memory, 0
+
+    def view_variable(self, variable, fetch, read=None, **options):
+        if variable.get("name") != "s":
+            return None
+        self.views += 1
+        fields = dict(self.backend.fields)
+        if self.backend.writes and self.memory is not None:
+            fields["end"] = self.memory
+        return {
+            "name": "s",
+            "type": "pair",
+            "variablesReference": 0,
+            "value": f"Pair {{ start: {fields['start']}, end: {fields['end']} }}",
+            "rust_view": "memory",
+            "children": [{"name": n, "type": "i64", "value": v} for n, v in fields.items()],
+            "struct_layout": "struct:pair",
+        }
+
+    def view_writable(self, view):
+        return self.writable
+
+
+def previewing(tmp_path, **options):
+    worker = worker_for(tmp_path)
+    worker.runtime = Previewing(worker.dap, **options)
+    return worker
+
+
+def test_a_field_of_a_struct_preview_is_changed_as_the_debugger_lists_it(tmp_path):
+    # #105 with #106: a struct local previewed from memory is its own storage; the
+    # change walks the debugger's variable, and the preview is read again after it.
+    worker = previewing(tmp_path)
+    changed = worker.dispatch(
+        "set_variable", {**STOP, "handle": handle_of(worker), "name": "end", "value": "10"}
+    )
+    assert changed == {"name": "end", "before": "2", "after": "10"}
+    assert worker.runtime.seen == [(1, "s", ["end"], "end", "10")]
+    write = next(args for op, args in worker.dap.calls if op == "setVariable")
+    assert write["variablesReference"] == 7  # the debugger's own `s`
+    assert worker.runtime.views == 2  # shown, then read again after the change
+
+
+def test_a_preview_that_reads_otherwise_after_a_change_fails_closed(tmp_path):
+    worker = previewing(tmp_path, memory="2")
+    with pytest.raises(RuntimeError, match="reads back as 10 from the debugger but as 2 from"):
+        worker.dispatch(
+            "set_variable", {**STOP, "handle": handle_of(worker), "name": "end", "value": "10"}
+        )
+
+
+def test_a_value_view_that_is_no_structs_own_storage_is_never_written(tmp_path):
+    # A Vec's, String's or Box's contents, an enum's variant: refused before any write.
+    worker = previewing(tmp_path, writable=False)
+    with pytest.raises(ValueError, match="inside a value Peeky decodes itself"):
+        worker.dispatch(
+            "set_variable", {**STOP, "handle": handle_of(worker), "name": "end", "value": "10"}
+        )
+    assert not any(op == "setVariable" for op, _ in worker.dap.calls)

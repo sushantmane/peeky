@@ -686,13 +686,13 @@ def test_c_a_statement_calling_an_always_inline_function_is_refused(directory, c
     # reported `1 -> 50` and the program printed `A 1003`; `t = getx(&p) + g();`,
     # `B 1050`. Root integers were marked [settable] there too.
     start_at(directory, capsys, "r3.c", ROUND3, "INLINED")
-    refused(capsys, "p.x=50", "calls a function inlined into it")
+    refused(capsys, "p.x=50", "makes a call the compiler inlined (`always_inline`, `flatten`)")
     assert main(["session", "inspect", "--json"]) == 0
     snapshot = json.loads(capsys.readouterr().out)
     rows = {v["name"]: v for s in snapshot["scopes"] for v in s["variables"]}
     assert not rows["t"].get("settable"), rows["t"]
     continue_to(capsys, ROUND3, "GETX")
-    refused(capsys, "p.x=60", "calls a function inlined into it")
+    refused(capsys, "p.x=60", "makes a call the compiler inlined")
     continue_to(capsys, ROUND3, "PLAIN")
     code, result = change(capsys, "p.x=5")
     assert code == 0 and result["after"] == "5", result
@@ -730,3 +730,55 @@ def test_c_a_k_and_r_definition_is_refused_as_one(directory, capsys):
     start_at(directory, capsys, "r3.c", ROUND3, "OLD")
     refused(capsys, "a=9", "K&R-style definition")
     assert "K 3" in output(capsys)
+
+
+TRY_BLOCKS = """#include <cstdio>
+#include <stdexcept>
+
+struct P { long x; long y; };
+
+__attribute__((noinline)) long g() { return 1000; }
+__attribute__((noinline)) long boom(long v) { if (v > 100) throw std::runtime_error("big"); return v; }
+
+long tryfun(P p) try {
+    long t = 0;  // FIRST
+    t = p.x + g();  // BODY
+    return t;
+} catch (const std::exception &) {
+    long u = p.y;  // HANDLER
+    return u + 1;
+}
+
+long caught(P p) try {
+    return boom(p.x);
+} catch (const std::runtime_error &) {
+    long u = p.y;  // CAUGHT
+    return u + 2;
+}
+
+int main() {
+    P p{1, 2};
+    std::printf("T %ld\\n", tryfun(p));
+    P q{500, 7};
+    std::printf("C %ld\\n", caught(q));
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(240)
+def test_cpp_a_function_try_block_and_its_handler_are_function_bodies(directory, capsys):
+    # Review of #105 (round 4): in `long tryfun(P p) try {`, `t = p.x + g();` was refused
+    # as continuing a statement an earlier line starts; so was a handler's statement.
+    start_at(directory, capsys, "ft.cpp", TRY_BLOCKS, "BODY")
+    code, result = change(capsys, "p.x=50")
+    assert code == 0 and result["after"] == "50", result
+    assert main(["session", "step", "--into"]) == 0
+    assert main(["session", "step", "--out"]) == 0
+    capsys.readouterr()
+    refused(capsys, "p.x=60", "not at the first instruction of the statement on line")
+    continue_to(capsys, TRY_BLOCKS, "CAUGHT")
+    code, result = change(capsys, "p.y=9")
+    assert code == 0 and result["after"] == "9", result
+    text = output(capsys)
+    assert "T 1050" in text and "C 11" in text, text

@@ -52,6 +52,7 @@ from peeky.rust_symbols import (
     OWNED_CONTAINERS,
     RUST_METADATA,
     RUST_SCALARS,
+    STRUCT_PREFIX,
     UNIQUE_SCALARS,
     UNVERIFIED,
     active_variant,
@@ -1450,6 +1451,20 @@ class RustSession(NativeSession):
             # not trustworthy there.
             return {**view, "value": UNVERIFIED, "rust_view": "opaque"}
         return view
+
+    def view_writable(self, view):
+        """Whether a field of the value ``view`` shows is the value's own storage, laid
+        out as the build's DWARF says (#105): a #106 tuple or struct preview, read with a
+        `composite` struct layout. A container's contents (a Vec's, a String's, a Box's)
+        or an enum's variant are not: they stay unchangeable. The change itself is still
+        judged by validate_member, from the debugger's own variable."""
+        layout = self.layouts.get(str(view.get("struct_layout")))
+        return (
+            view.get("rust_view") == "memory"
+            and str(view.get("struct_layout")).startswith(STRUCT_PREFIX)
+            and isinstance(layout, dict)
+            and layout.get("kind") == "composite"
+        )
 
     def _binding_types(self, variable, frame):
         """The MIR types of the bindings the frame's top-level ``variable`` can be (see
