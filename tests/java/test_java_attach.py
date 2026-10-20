@@ -688,11 +688,12 @@ def test_an_unattended_session_fails_fast_on_a_lost_stop_at_a_breakpoint_pending
 
 
 @pytest.mark.timeout(120)
-def test_the_pause_guard_never_takes_a_stop_or_breakpoint_update_from_a_waiting_client(
+def test_a_waiting_client_receives_every_stop_exactly_once_beside_the_pause_guard(
     attached_loop,
 ):
     # The guard drains `breakpoint` events and polls between a client's waits; the
-    # worker lock serializes them. Every stop still reaches the client, numbered.
+    # worker lock serializes them. Its own internal `wait` may take a stop first, but
+    # the client's next `wait` still reports it, once, with the same stop_id and hit.
     import threading
 
     from peeky.worker import DebugWorker
@@ -711,7 +712,7 @@ def test_the_pause_guard_never_takes_a_stop_or_breakpoint_update_from_a_waiting_
         session = {"session_id": worker.dispatch("launch", launch)["session_id"]}
         ticking = threading.Thread(target=guard, daemon=True)
         ticking.start()
-        hits, verified = [], False
+        hits, stops, verified = [], [], False
         while True:
             state = wait_for(worker, session)
             verified |= any(
@@ -721,8 +722,10 @@ def test_the_pause_guard_never_takes_a_stop_or_breakpoint_update_from_a_waiting_
             if state["state"] == "terminated":
                 break
             hits.append((state["reason"], state["hit"]))
+            stops.append(state["stop_id"])
             worker.dispatch("continue", {**session, "stop_id": state["stop_id"]})
         assert hits == [("breakpoint", 1), ("breakpoint", 2), ("breakpoint", 3)] and verified
+        assert len(set(stops)) == 3
         assert worker.failed is None and not worker.auto_resumed
     finally:
         stop.set()

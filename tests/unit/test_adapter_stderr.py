@@ -23,8 +23,9 @@ DEATH = (
 # A minimal java-debug stand-in: answers every request, and after `configurationDone`
 # (or at once, with "now") writes the given text to its stderr. "lines:N" makes it write
 # N log lines itself: Linux caps one argument at 128 KiB (MAX_ARG_STRLEN). How it writes:
-# "plain" (one write), "bytewise" (a byte at a time), "exit" (then exits at once), or
-# "orphan" (a descendant outside its process group keeps writing to the same stderr).
+# "plain" (one write), "bytewise" (a byte at a time), "exit" (then exits at once),
+# "stop-exit" (reports a breakpoint stop first, then exits 0.5 s later), or "orphan" (a
+# descendant outside its process group keeps writing to the same stderr).
 FAKE_ADAPTER = r"""
 import json, os, subprocess, sys, threading, time
 mode, stderr = sys.argv[1], sys.argv[2]
@@ -47,11 +48,18 @@ def read():
         key, value = line.decode().split(":", 1)
         headers[key.lower()] = value.strip()
     return json.loads(sys.stdin.buffer.read(int(headers["content-length"])))
+lock = threading.Lock()
 def write(body):
     data = json.dumps(body).encode()
-    sys.stdout.buffer.write(b"Content-Length: %d\r\n\r\n" % len(data) + data)
-    sys.stdout.buffer.flush()
+    with lock:
+        sys.stdout.buffer.write(b"Content-Length: %d\r\n\r\n" % len(data) + data)
+        sys.stdout.buffer.flush()
 def complain():
+    if how == "stop-exit":
+        write({"seq": 0, "type": "event", "event": "stopped",
+               "body": {"reason": "breakpoint", "threadId": 1}})
+        time.sleep(0.5)
+        os._exit(3)
     time.sleep(0.3)
     if how == "bytewise":
         for byte in stderr.encode():
@@ -342,3 +350,77 @@ def test_the_pause_guard_closes_a_session_whose_event_thread_died(tmp_path, monk
         worker.dispatch("wait", {**session, "timeout": 1})
     report = worker.dispatch("report", session)
     assert report["state"] == "closed" and "EventHub.java:71" in report["debugger_events"]["stderr"]
+
+
+def crashing(detects_lost_stops, how="exit"):
+    """A runtime whose adapter dies after the program starts, without a fatal line:
+    Python-like, or attached-Java-like (lost-stop polls and the Event Hub pattern)."""
+
+    class Runtime(PythonAdapter):
+        dap_request = "attach" if detects_lost_stops else "launch"
+        terminate_debuggee = not detects_lost_stops
+
+        @property
+        def command(self):
+            return (sys.executable, "-c", FAKE_ADAPTER, "after-start", "INFO: running\n", how)
+
+    if detects_lost_stops:
+        Runtime.detects_lost_stops = True
+        Runtime.fatal_stderr = JavaSession.fatal_stderr
+    return Runtime()
+
+
+def until(condition, seconds=5):
+    began = time.monotonic()
+    while not condition() and time.monotonic() - began < seconds:
+        time.sleep(0.02)
+    assert condition()
+
+
+@pytest.mark.parametrize("detects_lost_stops", [False, True], ids=["python", "attached-java"])
+def test_an_adapter_crash_with_a_pause_budget_reaches_the_client_as_debugger_error(
+    tmp_path, detects_lost_stops
+):
+    # Review round 5: the pause guard's breakpoint drain met the dead transport, closed
+    # the session and printed a traceback, so the client got NO_SESSION ("Missing or
+    # stale session_id") instead of DEBUGGER_ERROR ("Debugger adapter closed").
+    (tmp_path / "Main.py").write_text("pass\n")
+    worker = DebugWorker(tmp_path, adapter=crashing(detects_lost_stops))
+    launch = {"program": "Main.py", "breakpoints": [{"line": 1}], "max_pause": 5}
+    session = {"session_id": worker.dispatch("launch", launch)["session_id"]}
+    until(lambda: worker.dap.error)
+    for _ in range(8):
+        worker.lost_stop_polled = 0.0  # a lost-stop poll is due at every tick
+        worker.guard_pause()
+    assert worker.dap is not None and worker.failed is None
+    with pytest.raises(RuntimeError) as failure:
+        worker.dispatch("wait", {**session, "timeout": 1})
+    error = classify(failure.value)
+    assert (error["code"], error["message"]) == ("DEBUGGER_ERROR", "Debugger adapter closed")
+
+
+@pytest.mark.parametrize("detects_lost_stops", [False, True], ids=["python", "attached-java"])
+def test_a_failure_the_pause_guard_itself_meets_reaches_the_client_not_no_session(
+    tmp_path, detects_lost_stops
+):
+    # The guard resumes a stop past its pause budget; the adapter died meanwhile. No
+    # client was there to receive the error, so the next request gets it.
+    (tmp_path / "Main.py").write_text("pass\n")
+    worker = DebugWorker(tmp_path, adapter=crashing(detects_lost_stops, how="stop-exit"))
+    launch = {"program": "Main.py", "breakpoints": [{"line": 1}], "max_pause": 2}
+    session = {"session_id": worker.dispatch("launch", launch)["session_id"]}
+    state = worker.dispatch("wait", {**session, "timeout": 2})
+    assert state["state"] == "stopped"
+    until(lambda: worker.dap.error)
+    worker.stopped_at -= 10
+    worker.guard_pause()
+    assert worker.dap is None and worker.failed["message"] == "Debugger adapter closed"
+    for operation in ("wait", "inspect"):
+        with pytest.raises(SessionFailed) as failure:
+            worker.dispatch(operation, {**session, "stop_id": state["stop_id"], "timeout": 1})
+        error = classify(failure.value)
+        assert (error["code"], error["message"]) == ("DEBUGGER_ERROR", "Debugger adapter closed")
+    report = worker.dispatch("report", session)
+    assert (report["state"], report["failure"]) == ("closed", "Debugger adapter closed")
+    assert report["history"][-1]["operation"] == "session_failed"
+    assert worker.dispatch("close", session) == {"state": "idle"}

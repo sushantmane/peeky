@@ -335,12 +335,13 @@ class DebugWorker:
     def drain_breakpoint_events(self):
         """Consume the `breakpoint` events that come before any stop or exit, and only
         those: with no client waiting (the pause guard), a breakpoint that was pending
-        at launch is verified only by such an event. A stop or exit stays for `wait`;
-        the worker lock keeps this and a client's `wait` apart."""
+        at launch is verified only by such an event. A stop or exit is left for a
+        `wait`, and so is a failed transport (its client gets DEBUGGER_ERROR); the
+        worker lock keeps this and a client's `wait` apart."""
         while True:
             try:
                 event = self.dap.wait_event({"stopped", "terminated", "breakpoint"}, self.cursor, 0)
-            except TimeoutError:
+            except (TimeoutError, RuntimeError):
                 return
             if event["event"] != "breakpoint":
                 return
@@ -535,40 +536,49 @@ class DebugWorker:
         self.failed = {"session": session, "message": message, "report": report, "error": LostStop}
         raise LostStop(message)
 
-    def abandon(self, exc):
+    def abandon(self, exc, *, unattended=False):
         """Close the session after a debugger failure; returns the error to raise.
 
         When the adapter itself said why it cannot go on (``DAP.fatal``: java-debug's
         event thread died, #27), the session is kept as a failed one, as for a lost
         stop: its diagnosis goes to the history, later requests repeat the error, and
-        `report` returns its final state with the adapter's stderr tail.
+        `report` returns its final state with the adapter's stderr tail. So is any
+        debugger failure met ``unattended`` (by the pause guard): no client was there
+        to receive it, so its next request does, never "Missing or stale session_id".
         """
         fatal = getattr(self.dap, "fatal", None)
-        if not fatal or not self.session or isinstance(exc, SessionFailed):
+        if isinstance(exc, SessionFailed) or not self.session:
+            self.close()
+            return exc
+        if fatal:
+            message, operation, extra = fatal, "adapter_failed", {"adapter_failure": fatal}
+        elif unattended and isinstance(exc, (TimeoutError, RuntimeError, OSError)):
+            message, operation, extra = str(exc) or type(exc).__name__, "session_failed", {}
+        else:
             self.close()
             return exc
         self.record(
             {
                 "time": time.time(),
-                "operation": "adapter_failed",
+                "operation": operation,
                 "arguments": {},
-                "result": {"message": fatal},
+                "result": {"message": message},
             }
         )
         try:
             report = self.report(self.runtime)
-            report.update(state="closed", adapter_failure=fatal)
+            report.update(state="closed", failure=message, **extra)
         except Exception:
-            report = {"session_id": self.session, "state": "closed", "adapter_failure": fatal}
+            report = {"session_id": self.session, "state": "closed", "failure": message, **extra}
         session = self.session
         self.close()
         self.failed = {
             "session": session,
-            "message": fatal,
+            "message": message,
             "report": report,
             "error": SessionFailed,
         }
-        return SessionFailed(fatal)
+        return SessionFailed(message)
 
     def untraced(self):
         """Keep lost-stop poll traffic out of the bounded DAP trace (its diagnostics)."""
@@ -650,8 +660,10 @@ class DebugWorker:
                         # the same bounded poll `wait` uses, and then budgeted like any.
                         # The poll needs a verified breakpoint, and a pending one is only
                         # verified by a `breakpoint` event no client may be there to take.
-                        self.drain_breakpoint_events()
-                        if not self.lost_stop_due():
+                        if getattr(self.runtime, "detects_lost_stops", False):
+                            self.drain_breakpoint_events()
+                        if getattr(self.dap, "error", None) or not self.lost_stop_due():
+                            # A failed transport is the client's to see (DEBUGGER_ERROR).
                             return
                     elif pending[1] not in RESUMABLE_STOPS:
                         return
@@ -685,10 +697,10 @@ class DebugWorker:
             except Exception as exc:
                 import sys
 
-                failure = self.abandon(exc)
+                failure = self.abandon(exc, unattended=True)
                 if isinstance(failure, SessionFailed):
                     # Closed; requests on the session get the same error.
-                    print(f"peeky: {failure}", file=sys.stderr)
+                    print(f"peeky: pause guard: {failure}", file=sys.stderr)
                 else:
                     import traceback
 
