@@ -20,7 +20,7 @@ from pathlib import Path
 
 from peeky.errors import Refused, classify
 from peeky.java import JAVA_ARRAY, JAVA_LIST, java_list, java_preview
-from peeky.names import display_function
+from peeky.names import display_function, function_labels, shortened_note
 from peeky.worker import (
     DebugWorker,
     load_java_target,
@@ -192,10 +192,14 @@ def _edit_spans(text, pairs):
     spans = []
     for number, (old, new) in enumerate(pairs, 1):
         which = f" (edit {number})" if len(pairs) > 1 else ""
-        if not old or old == new:
-            raise ValueError(f"--old must be nonempty and --new must change it{which}")
-        if text.count(old) != 1:
-            raise ValueError(f"--old must match the --at file exactly once{which}")
+        if not old:
+            raise ValueError(f"--old is empty{which}")
+        if (count := text.count(old)) != 1:
+            raise ValueError(
+                f"--old matched {count} times{which}; it must match the --at file exactly once"
+            )
+        if old == new:
+            raise ValueError(f"--new equals --old{which}, so the edit changes nothing")
         spans.append((text.index(old), old, new, number))
     spans.sort()
     for (start, old, _, first), (after, _, _, second) in zip(spans, spans[1:]):
@@ -695,6 +699,19 @@ def _resolve(worker, stop, snapshot, segments, pointers=False):
         index_segment = pointers and segment.startswith("[") and _key(segment) is None and not entry
         if index_segment and not handle and _null_pointer(variable):
             raise ValueError(f"{path} is NULL: it points at nothing")
+        if (
+            index_segment
+            and variable.get("text")
+            and not variable.get("unavailable")
+            and (pointee := _c_pointee(variable)) is not None
+        ):
+            # A pointer to a C++ string, shown with its text (`0x… "apple"`): p[0] is
+            # that string, as C++ reads it; the worker lists no members (eval 6).
+            if _first_index(segment):
+                variable = _dereferenced(variable, pointee)
+                path += segment
+                continue
+            raise ValueError(_beyond_pointee(variable, path, pointee, segment, []))
         if index_segment and handle and not variable.get("unavailable"):
             pointee = _c_pointee(variable)
             unresolved = pointee is None and _unresolved_indirection(variable)
@@ -714,7 +731,7 @@ def _resolve(worker, stop, snapshot, segments, pointers=False):
                 # struct points at as the pointer's own children. In C, p[0] is that
                 # pointee and p[1] the one after it, which no pointer's length tells.
                 _readable(variable, path, pointee, listed)
-                if segment[1] != "-" and int(segment[1:-1]) == 0:
+                if _first_index(segment):
                     variable = _dereferenced(variable, pointee)
                     path += segment
                     continue
@@ -722,6 +739,19 @@ def _resolve(worker, stop, snapshot, segments, pointers=False):
         if not handle and variable.get("unavailable"):
             raise ValueError(f"{variable['name']!r} has no value here: {variable.get('reason')}")
         if not handle:
+            if variable.get("text"):
+                value = str(variable.get("value"))
+                what = (
+                    "points at a C++ string, shown with its address and text"
+                    if _c_pointee(variable) is not None
+                    else "is a C++ string, shown whole as its text"
+                )
+                raise ValueError(
+                    f"{path} ({variable.get('type')}) {what} ({value[:80]}): Peeky selects "
+                    "neither its characters nor the library's members inside it; capture "
+                    f"{path} and compare its text (in SQL, substr() and instr() over the "
+                    "captured value)"
+                )
             if variable.get("depth_limited"):
                 raise ValueError(
                     f"cannot expand {variable['name']!r}: it is at the inspection depth limit "
@@ -881,6 +911,12 @@ def _rust_composite(kind):
     return not element.startswith(("alloc::", "core::", "std::", "&", "*", "[", "("))
 
 
+def _lldb_type(variable):
+    """The debugger's name for a value's type, where a Rust one is shown (`Vec<T> *` for
+    a `&Vec<T>` parameter shown as such)."""
+    return str(variable.get("debugger_type") or variable.get("type") or "")
+
+
 def _unread_rust(kind):
     """Whether a Rust container's elements are never read: `&Vec<T>` is `Vec<T> *`."""
     return (
@@ -1036,7 +1072,7 @@ def _absence(variable, segment, children, path=None, pointers=False):
         elif variable.get("view") == "memory":
             if kind in _RUST_TEXT:
                 message += "; text read from memory is shown whole, not by element"
-        elif _unread_rust(kind):
+        elif _unread_rust(_lldb_type(variable)):
             message += (
                 f"; Peeky does not read {kind}'s elements: it reads Rust contents only for "
                 "String, &str and containers of integer, bool, float and char elements, "
@@ -1044,7 +1080,7 @@ def _absence(variable, segment, children, path=None, pointers=False):
                 "scalars"
                 + (f". Capture {variable['name']}.{length} for the length" if length else "")
             )
-        elif _rust_composite(kind):
+        elif _rust_composite(_lldb_type(variable)):
             message += (
                 f"; Peeky reads {kind}'s elements only when every field of the tuple or "
                 "struct is an integer, bool, float or char (the build's debug info decides), "
@@ -1053,7 +1089,7 @@ def _absence(variable, segment, children, path=None, pointers=False):
                 + (f". Capture {variable['name']}.{length} for the length" if length else "")
                 + ", and check contents with `peeky verify`"
             )
-        elif kind.startswith(_RUST_CONTAINERS):
+        elif _lldb_type(variable).startswith(_RUST_CONTAINERS):
             message += (
                 "; Peeky reads Rust contents only for reference parameters (&[T], &str, "
                 "&Vec<T>, &String, or &mut) and for owned Vec<T>/String locals the "
@@ -1271,6 +1307,9 @@ def _capture(
                 variable = _resolve(worker, stop, snapshot, parse_selector(selector), pointers)
         except ValueError as exc:
             row["error"] = str(exc)
+            if _in_withheld(snapshot, selector):
+                # Inside a local withheld here (no value yet): `--set` refuses it too.
+                row["settable"] = False
         else:
             if variable.get("unavailable"):
                 # A placeholder such as "<error: variable not available>" is not a value.
@@ -1307,14 +1346,18 @@ def _capture(
                         row["value"] = shown
                 if variable.get("view") == "unproven":
                     row["note"] = _UNPROVEN_RUST[0].upper() + _UNPROVEN_RUST[1:] + "."
-                elif "view" not in variable and str(variable.get("type")) in _OWNED_RUST_TYPES:
+                elif "view" not in variable and _lldb_type(variable) in _OWNED_RUST_TYPES:
                     row["note"] = _OWNED_RUST
                 elif variable.get("stale"):
                     row["note"] = _STALE_RUST + "."
-                elif "view" not in variable and _unread_rust(str(variable.get("type"))):
+                elif "view" not in variable and _unread_rust(_lldb_type(variable)):
                     row["note"] = _UNREAD_RUST
-                elif "view" not in variable and _rust_composite(str(variable.get("type"))):
+                elif "view" not in variable and _rust_composite(_lldb_type(variable)):
                     row["note"] = _COMPOSITE_RUST
+                elif isinstance(variable.get("note"), str):
+                    # A value the runtime shows but cannot vouch for (C, C++: a line a loop
+                    # returns to; initialization not judged).
+                    row["note"] = variable["note"]
             if "view" in variable:
                 row["view"] = variable["view"]
             if variable.get("stale"):
@@ -1379,6 +1422,25 @@ def _roots(selectors):
         if first.isidentifier() and first not in roots:
             roots.append(first)
     return roots[:32]
+
+
+def _in_withheld(snapshot, selector):
+    """True if ``selector`` reads inside a local of the snapshot's own scopes that every
+    row of its name withholds (``withheld``: no value yet)."""
+    try:
+        segments = parse_selector(selector)
+    except ValueError:
+        return False
+    if len(segments) < 2:
+        return False
+    rows = [
+        row
+        for scope in snapshot.get("scopes", ())
+        if not scope.get("globals")
+        for row in scope.get("variables", ())
+        if row.get("name") == segments[0]
+    ]
+    return bool(rows) and all(row.get("withheld") for row in rows)
 
 
 def _settable_here(snapshot):
@@ -1595,6 +1657,12 @@ def _pointee_type(variable, pointee):
     return {"type": pointee, "aliased_type": variable.get("pointee_aliased_type")}
 
 
+def _first_index(segment):
+    """Whether an index ``segment`` is element 0 (`[0]`, `[00]`; never `[-0]`): what a
+    pointer points at (#102, #117)."""
+    return segment[1] != "-" and int(segment[1:-1]) == 0
+
+
 def _dereferenced(variable, pointee):
     """`*p` for a C/C++ pointer whose children the debugger lists from its pointee."""
     value = str(variable.get("value") or "")
@@ -1612,6 +1680,9 @@ def _dereferenced(variable, pointee):
     if summary and variable.get("view") == "memory":
         # A libstdc++ string's text, which the worker read from memory (#128).
         shown["view"] = "memory"
+    if variable.get("text"):
+        # A C++ string's: its text, with no members to list (eval 6).
+        shown.update(text=True, variablesReference=0)
     for key in ("indexedVariables", "namedVariables", "string_length"):
         if type(variable.get(key)) is int:
             shown[key] = variable[key]
@@ -2356,6 +2427,8 @@ def _children(worker, stop, selector, variable, pointers=False, whole_strings=Fa
             entry["view"] = child["view"]
         if child.get("stale"):
             entry["stale"] = True
+        if type(child.get("settable")) is bool:
+            entry["settable"] = child["settable"]
         path = _child_selector(selector, child["name"])
         if pointers and path is None and _pointee(variable, page["variables"]) is child:
             path = f"{selector}[0]"
@@ -2736,6 +2809,14 @@ def run_probe(root, probe, *, adapter=None, progress=None):
     for note in (_OWNED_RUST, _UNREAD_RUST, _COMPOSITE_RUST, unproven, _STALE_RUST + "."):
         if any(row.get("note") == note for row in rows):
             warnings.append(note)
+    # Any other row's note, once per selector: rows marked `[note]` in the table.
+    noted = {}
+    for row in rows:
+        if row.get("note") and row["note"] not in _rust_notes():
+            noted.setdefault(row["note"], []).append(row["selector"])
+    for note, selectors in noted.items():
+        names = ", ".join(dict.fromkeys(selectors))
+        warnings.append(f"{names}: {note[0].upper()}{note[1:]}.")
     if changes and probe.limit > 1:
         warnings.append(
             f"Interventions are applied once, at hit {probe.set_hit}; other hits observe "
@@ -2772,23 +2853,32 @@ def _by_hit(rows):
     return list(grouped.values())
 
 
+def _rust_notes():
+    """The Rust rows' notes, each said once among a probe's warnings, unmarked."""
+    unproven = _UNPROVEN_RUST[0].upper() + _UNPROVEN_RUST[1:] + "."
+    return {_OWNED_RUST, _UNREAD_RUST, _COMPOSITE_RUST, unproven, _STALE_RUST + "."}
+
+
 def _table(result):
     lines = []
     header = ("hit", "phase", "line", "function", "selector", "type", "value")
+    # A C++ frame's signature (`trim_left(std::__1::basic_string<...> const&)`) would
+    # double the table's width; Rust's ends with a symbol hash. JSON keeps the name whole.
+    functions = function_labels(row.get("function") for row in result["rows"])
     rows = [
         (
             str(row["hit"]),
             row["phase"],
             str(row.get("line", "")),
-            # Rust frame names end with a symbol hash (`main::h56a2…`); JSON keeps it.
-            display_function(row.get("function")),
+            functions.get(row.get("function"), ""),
             row["selector"],
             row.get("type") or "",
             row.get("value", "<" + row.get("error", "") + ">")
             + (f"  [{row['view']}]" if row.get("view") else "")
             + ("  [settable]" if row.get("settable") else "")
             + (f"  [id {row['identity']}]" if row.get("identity") else "")
-            + ("  [module global]" if row.get("scope") == "globals" else ""),
+            + ("  [module global]" if row.get("scope") == "globals" else "")
+            + ("  [note]" if row.get("note") and row["note"] not in _rust_notes() else ""),
         )
         for row in result["rows"]
     ]
@@ -2797,6 +2887,8 @@ def _table(result):
         lines.append(
             "  ".join(text.ljust(width) for text, width in zip(item, widths)) + "  " + item[-1]
         )
+    if note := shortened_note(functions):
+        lines.append(note)
     for change in result["interventions"]:
         lines.append(f"set {change['name']}: {change['before']} -> {change['after']}")
     lines.append(

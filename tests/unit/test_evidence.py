@@ -224,18 +224,7 @@ def test_canned_queries_answer_comparisons(store):
     evidence.record(store, result(starts=("3", "7"), output="PAGE: [10]\n"), label="two")
     diff = evidence.run_query(store, "diff")
     assert diff["rows"] == [
-        {
-            "run_a": 1,
-            "run_b": 2,
-            "hit": 2,
-            "phase": "observed",
-            "selector": "start",
-            "value_a": "6",
-            "value_b": "7",
-            "differs": 1,
-            "note": None,
-        },
-        # The outputs differ too: the last row says so.
+        # The outputs differ too: the first row says so (sixth evaluation, finding 9).
         {
             "run_a": 1,
             "run_b": 2,
@@ -246,6 +235,17 @@ def test_canned_queries_answer_comparisons(store):
             "value_b": "PAGE: [10]\n",
             "differs": 1,
             "note": "output differs at line 1, column 8",
+        },
+        {
+            "run_a": 1,
+            "run_b": 2,
+            "hit": 2,
+            "phase": "observed",
+            "selector": "start",
+            "value_a": "6",
+            "value_b": "7",
+            "differs": 1,
+            "note": None,
         },
     ]
     assert evidence.run_query(store, "compare", {"a": 2, "b": 2})["rows"][0]["differs"] == 0
@@ -615,9 +615,9 @@ def test_a_run_that_never_stopped_is_missing_hits_not_selectors(store):
     evidence.record(store, no_stop)
     rows = evidence.run_query(store, "diff")["rows"]
     assert [(r["hit"], r["value_a"], r["note"]) for r in rows] == [
+        (None, "completed", "outcome differs"),
         (1, "1", "missing in run b"),
         (2, "2", "missing in run b"),
-        (None, "completed", "outcome differs"),
     ]
 
 
@@ -647,9 +647,9 @@ def test_values_changed_by_an_intervention_rank_after_real_differences(store):
     )
     rows = evidence.run_query(store, "diff")["rows"]
     assert [(r["hit"], r["phase"], r["note"]) for r in rows] == [
+        (None, None, "the runs made different interventions (--set)"),
         (2, "observed", None),
         (1, "after-set", "intervention only in run b"),
-        (None, None, "the runs made different interventions (--set)"),
     ]
 
 
@@ -672,7 +672,7 @@ def test_no_addresses_cannot_outrun_the_query_deadline(store):
     assert time.monotonic() - started < 3
 
 
-def test_diff_ends_with_the_outcome_and_a_trimmed_output_when_they_differ(store):
+def test_diff_starts_with_the_outcome_and_a_trimmed_output_when_they_differ(store):
     first = captured([(1, "observed", "x", "1")])
     first["output"] = "SUM:14\n"
     evidence.record(store, first)
@@ -681,11 +681,11 @@ def test_diff_ends_with_the_outcome_and_a_trimmed_output_when_they_differ(store)
     evidence.record(store, second)
     rows = evidence.run_query(store, "diff")["rows"]
     assert [(r["selector"], r["note"]) for r in rows] == [
-        ("x", "intervention only in run b"),
         ("(status)", "outcome differs"),
         ("(output)", "output differs at line 1, column 1"),
+        ("x", "intervention only in run b"),
     ]
-    assert rows[-1]["value_a"] == "SUM:14\n" and rows[-1]["value_b"] == "x" * 200 + "…"
+    assert rows[1]["value_a"] == "SUM:14\n" and rows[1]["value_b"] == "x" * 200 + "…"
     # Same outputs: no output row.
     evidence.record(store, first)
     evidence.record(store, first)
@@ -730,10 +730,10 @@ def test_diff_says_when_the_runs_stopped_at_different_lines(store):
     evidence.record(store, captured([(1, "observed", "tokens", "1")], line=22))
     rows = evidence.run_query(store, "diff")["rows"]
     assert [(r["selector"], r["value_a"], r["value_b"]) for r in rows] == [
-        ("tokens", "0", "1"),
         ("(line)", "a.py:8", "a.py:22"),
+        ("tokens", "0", "1"),
     ]
-    assert rows[-1]["note"].startswith("the runs stopped at different lines")
+    assert rows[0]["note"].startswith("the runs stopped at different lines")
     evidence.record(store, captured([(1, "observed", "tokens", "1")], program="b.py", line=22))
     rows = evidence.run_query(store, "diff")["rows"]
     assert [(r["value_a"], r["value_b"]) for r in rows if r["selector"] == "(line)"] == [
@@ -845,6 +845,20 @@ def test_java_object_numbers_differ_between_runs_like_addresses(store):
     assert masked == [{"v": "User@…"}]
 
 
+def test_diff_puts_the_outcome_rows_before_selectors_only_one_run_captured(store):
+    # Sixth evaluation, finding 9: `only in run a` rows came before the decisive (output)
+    # and (edit) rows.
+    first = captured([(1, "observed", "lo", "0"), (1, "observed", "hi", "6")])
+    first["output"] = "HISTO:2,2,2,1\n"
+    evidence.record(store, first)
+    second = captured([(1, "observed", "hi", "8")], capture=["hi"])
+    second.update(output="HISTO:2,2,2,2\n", candidate={"sha256": "e", "diff": "--- h.c\n"})
+    evidence.record(store, second)
+    rows = evidence.run_query(store, "diff")["rows"]
+    assert [r["selector"] for r in rows] == ["(output)", "(edit)", "hi", "lo"]
+    assert rows[-1]["note"].startswith("only in run a")
+
+
 def test_diff_says_when_the_runs_had_different_inputs_or_interventions(store):
     # Eval 4 (Rust): a candidate compared with a run on other input showed only the edit,
     # so the input's effect was easy to credit to the edit.
@@ -852,10 +866,10 @@ def test_diff_says_when_the_runs_had_different_inputs_or_interventions(store):
     evidence.record(store, captured([(1, "observed", "count", "1")], args=["aaab"]))
     rows = evidence.run_query(store, "diff")["rows"]
     assert [(r["selector"], r["value_a"], r["value_b"]) for r in rows] == [
-        ("count", "2", "1"),
         ("(args)", '["aaabb"]', '["aaab"]'),
+        ("count", "2", "1"),
     ]
-    assert rows[-1]["note"].startswith("the runs had different program arguments")
+    assert rows[0]["note"].startswith("the runs had different program arguments")
     evidence.record(store, result(sets=(("start", "0"),)))
     evidence.record(store, result())
     rows = evidence.run_query(store, "diff")["rows"]
@@ -1077,3 +1091,40 @@ def test_a_stale_rust_value_is_stored_as_stale(store):
         {"selector": "f.n", "value": "3", "view": None},
         {"selector": "h.n", "value": "9", "view": "stale"},
     ]
+
+
+def test_a_table_shows_short_frame_names_and_sql_compares_whole_ones(store):
+    # Eval 6, finding 16: a C++ signature doubled the table's width. The text shows the
+    # short name and says so; the result, and what SQL compares, stay whole.
+    whole = (
+        "trim_left(std::__1::basic_string<char, std::__1::char_traits<char>, "
+        "std::__1::allocator<char>> const&)"
+    )
+    probe = result()
+    for row in probe["rows"]:
+        row["function"] = whole
+    evidence.record(store, probe, language="cpp")
+    shaped = evidence.query(store, "SELECT DISTINCT function FROM captures")
+    assert shaped["rows"] == [{"function": whole}]
+    text = evidence.table(shaped)
+    assert "trim_left\n" in text and "basic_string" not in text
+    assert "short_function(function) = 'trim_left'" in text
+    sql = "SELECT count(*) AS n FROM captures WHERE short_function(function) = 'trim_left'"
+    assert evidence.query(store, sql)["rows"] == [{"n": 4}]
+    assert evidence.query(store, "SELECT short_function(NULL) AS f")["rows"] == [{"f": None}]
+    # Nothing shortened, no note.
+    assert "note:" not in evidence.table(evidence.query(store, "SELECT 'main' AS function"))
+
+
+def test_the_notes_example_matches_overloads_as_sql_does(store):
+    # Review of the eval-6 fixes: with overloads the example read
+    # `short_function(function) = 'twice(int)'`, which matches no row.
+    probe = result()
+    names = ["twice(int)", "twice(std::__1::basic_string<char> const&)"]
+    for row, name in zip(probe["rows"], names * 2):
+        row["function"] = name
+    evidence.record(store, probe, language="cpp")
+    text = evidence.table(evidence.query(store, "SELECT DISTINCT function FROM captures"))
+    assert "twice(int)" in text and "short_function(function) = 'twice'" in text, text
+    sql = "SELECT count(*) AS n FROM captures WHERE short_function(function) = 'twice'"
+    assert evidence.query(store, sql)["rows"] == [{"n": 4}]

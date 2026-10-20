@@ -117,6 +117,12 @@ def test_optimized_sessions_say_so_and_never_show_placeholders_as_values(
     assert main(["session", "inspect", "--json"]) == 0
     snapshot = json.loads(capsys.readouterr().out)
     assert snapshot["optimized"] == "-O2"
+    # A run-level warning in JSON too, as the text gives it.
+    assert snapshot["warning"].startswith("optimized build (-O2): shown values can be stale")
+    assert main(["session", "inspect"]) == 0
+    assert "warning: optimized build (-O2)" in capsys.readouterr().out
+    assert main(["session", "get", "a"]) in (0, 1)
+    assert "warning: optimized build (-O2)" in capsys.readouterr().out
     unavailable = [v for s in snapshot["scopes"] for v in s["variables"] if v.get("unavailable")]
     assert unavailable and all(v["value"] is None for v in unavailable)
     # An optimized-out value is a row without a value, so `get` exits 1.

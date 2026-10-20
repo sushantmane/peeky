@@ -659,7 +659,7 @@ def test_a_tainted_locals_children_are_tainted_and_marked(tmp_path):
     worker = DebugWorker(tmp_path)
     worker.runtime, worker.state, worker.stop_id = runtime, "stopped", "stop1"
     worker.innermost_frame = 1
-    worker.walk = lambda record, runtime: (record[0], record[1], record[2], 7, None)
+    worker.walk = lambda record, runtime, trail=None: (record[0], record[1], record[2], 7, None)
     worker.bounded_variables = lambda reference, indexed=None: children[reference]
     top = worker.expose_variables(
         [
@@ -682,12 +682,12 @@ def test_a_tainted_locals_children_are_tainted_and_marked(tmp_path):
         "view": "unproven",
     }
     assert n["value"] == "9" and n["stale"] and v["stale"] and v["variablesReference"]
-    worker.walk = lambda record, runtime: (record[0], record[1], record[2], 8, None)
+    worker.walk = lambda record, runtime, trail=None: (record[0], record[1], record[2], 8, None)
     [length] = worker.expand({"stop_id": "stop1", "handle": v["variablesReference"]}, runtime)[
         "variables"
     ]
     assert length["value"] == "3" and length["stale"] and ("len", False, "stale") in seen
-    worker.walk = lambda record, runtime: (record[0], record[1], record[2], 7, None)
+    worker.walk = lambda record, runtime, trail=None: (record[0], record[1], record[2], 7, None)
     # A caller's proven local: its fields read, its pointers do not.
     b, n, v = worker.expand({"stop_id": "stop1", "handle": top[1]["variablesReference"]}, runtime)[
         "variables"
@@ -741,3 +741,99 @@ def test_a_string_the_runtime_shows_keeps_its_handle_and_never_overrides_no_valu
         (),
     )
     assert calls[-1][1] == worker.view_read
+
+
+def test_a_string_shown_as_its_text_lists_no_members(tmp_path):
+    # Eval 6, finding 15: `session get name` listed libc++'s `(anonymous struct)` (and
+    # libstdc++'s `_M_dataplus`) under a std::string. A value the runtime marks "text"
+    # gets no handle, and is never "at the depth limit".
+    from types import SimpleNamespace
+
+    from peeky.worker import DebugWorker
+
+    def string_value(variable, fetch, read):
+        return {"text": True} if variable["name"] == "s" else None
+
+    runtime = SimpleNamespace(
+        assert_current=lambda: None, reports_unavailable_as_text=True, string_value=string_value
+    )
+    worker = DebugWorker(tmp_path)
+    worker.runtime, worker.state, worker.stop_id = runtime, "stopped", "stop1"
+    text, other = worker.expose_variables(
+        [
+            {"name": "s", "type": "std::string", "value": '"a"', "variablesReference": 7},
+            {"name": "r", "type": "Rec", "value": "Rec @ 0x1", "variablesReference": 8},
+        ],
+        {"id": 1},
+        ("Locals",),
+        (),
+    )
+    assert text["variablesReference"] == 0 and text["text"] is True and text["value"] == '"a"'
+    assert other["variablesReference"] and "text" not in other
+    assert list(worker.children) == [other["variablesReference"]]
+    (deep,) = worker.expose_variables(
+        [{"name": "s", "type": "std::string", "value": '"a"', "variablesReference": 9}],
+        {"id": 1},
+        ("Locals",),
+        (("a", "A"), ("b", "B"), ("c", "C"), ("d", "D")),
+    )
+    assert deep["variablesReference"] == 0 and "depth_limited" not in deep
+
+
+def test_a_noted_reason_shows_the_value_with_its_note_and_only_others_withhold(tmp_path):
+    # #140 with #132's check before any view: a reason with a `note` shows the value (a
+    # view's too) with the note, and is offered for set unless it `refuses`; a reason
+    # without one withholds the row; the runtime sees the frame's rows and the stop.
+    from types import SimpleNamespace
+
+    from peeky.native import ValueNote
+    from peeky.worker import DebugWorker
+
+    reasons = {
+        "kept": ValueNote("declared on line 3", "may be the last pass's value", refuses=False),
+        "loop": ValueNote("declared on line 4", "may be the last pass's value", refuses=True),
+        "late": "declared on line 9, which has not run yet",
+        "seen": ValueNote("in a function calling setjmp", "setjmp may have run", refuses=False),
+    }
+    asked = []
+
+    def not_yet_declared(variable, frame, **kwargs):
+        asked.append((variable["name"], [row["name"] for row in kwargs["siblings"]]))
+        return reasons.get(variable["name"])
+
+    def view_variable(variable, fetch, read=None, **kwargs):
+        if variable["name"] != "seen":
+            return None
+        return {"value": '"x"', "rust_view": "memory"}
+
+    runtime = SimpleNamespace(
+        assert_current=lambda: None,
+        reports_unavailable_as_text=True,
+        not_yet_declared=not_yet_declared,
+        view_variable=view_variable,
+        settable=lambda variable, frame: True,
+    )
+    worker = DebugWorker(tmp_path)
+    worker.runtime, worker.state, worker.stop_id = runtime, "stopped", "stop1"
+    worker.capabilities["supports_set_variable"] = True
+    worker.innermost_frame, worker.stop_reason = 1, "breakpoint"
+    names = ["kept", "loop", "late", "seen", "plain"]
+    rows = worker.expose_variables(
+        [{"name": name, "type": "int", "value": "7"} for name in names],
+        {"id": 1},
+        ("Locals",),
+        (),
+    )
+    kept, loop, late, seen, plain = rows
+    assert kept["value"] == "7" and kept["note"] == "may be the last pass's value"
+    assert kept["settable"] is True and "withheld" not in kept
+    assert loop["value"] == "7" and loop["note"] and loop["settable"] is False
+    assert late["withheld"] and late["value"] is None and late["reason"].startswith("declared")
+    assert late["settable"] is False and late["variablesReference"] == 0
+    assert (
+        seen["value"] == '"x"'
+        and seen["view"] == "memory"
+        and seen["note"] == "setjmp may have run"
+    )
+    assert plain["value"] == "7" and "note" not in plain and plain["settable"] is True
+    assert asked == [(name, names) for name in names]

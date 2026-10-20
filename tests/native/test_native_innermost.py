@@ -929,3 +929,458 @@ def test_an_unnamed_structs_constructor_withholds_this(directory, capsys):
     else:
         assert rows["this"]["function"] == "nested(long)", rows["this"]
         assert "value" not in rows["this"], rows["this"]
+
+
+# Sixth agent evaluation: clang attributes the exception handler destroying line 22's
+# `std::string` temporaries to line 22, after line 23's code, and that disabled the
+# declared-below rule: `qty` showed leftovers (`6712214884 [settable]`, then the last
+# pass's `3`), and `--set qty=99` reported a change line 23 then overwrote.
+STOCK = """#include <cstdio>
+#include <map>
+#include <stdexcept>
+#include <string>
+
+static std::string trim_left(const std::string &s) {
+    size_t i = 0;
+    while (i < s.size() && s[i] == ' ') i++;
+    return s.substr(i);
+}
+
+static long tried(const std::string &entry) {
+    long total = 0;
+    try {
+        std::string head = entry.substr(0, 1) + "x";  // try
+        long n = std::stol(entry.substr(1));
+        total += n + (long)head.size();
+    } catch (const std::exception &) {
+        total = -1;
+    }
+    return total;
+}
+
+int main() {
+    std::string input = "apple:3, pear:2";
+    std::map<std::string, long> stock;
+    size_t pos = 0;
+    long extra = 0;
+    while (pos <= input.size()) {
+        size_t comma = input.find(',', pos);
+        if (comma == std::string::npos) comma = input.size();
+        std::string entry = input.substr(pos, comma - pos);
+        size_t colon = entry.find(':');
+        if (colon != std::string::npos) {
+            std::string name = trim_left(entry.substr(0, colon));  // name
+            long qty = std::stol(entry.substr(colon + 1));
+            stock[name] += qty;
+            extra += tried(entry.substr(colon));
+        }
+        pos = comma + 1;
+    }
+    std::printf("%ld %ld %ld\\n", stock["apple"], stock["pear"], extra);
+    return 0;
+}
+"""
+
+LABELLED = """#include <stdio.h>
+
+__attribute__((noinline)) static long twice(long v) { return v * 2; }
+
+static long labelled(int n) {
+    long total = 0;
+    int tries = 0;
+again:
+    total += twice(tries);  // label
+    long q = twice(total);  // own line
+    if (++tries < n) goto again;
+    return total + q;
+}
+
+int main(void) {
+    printf("%ld\\n", labelled(3));
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(300)
+def test_a_local_below_a_line_with_temporaries_is_withheld_and_refused(directory, capsys):
+    path = directory / "stock.cpp"
+    path.write_text(STOCK)
+    line = line_of(STOCK, "// name")
+    for hit in (1, 2):
+        rows = shown_at(capsys, path, line, "entry", "colon", "name", "qty", hit=hit)
+        assert withheld(rows["name"], f"declared on line {line}")
+        assert withheld(rows["qty"], f"declared at line {line + 1}, below this stop"), rows
+        # `entry` may be unreadable for another reason (a libstdc++ string's summary
+        # where memory is not read), never withheld.
+        assert not withheld(rows["entry"], "no value yet") and rows["colon"]["value"] == "5"
+    # In a `try` block too.
+    rows = shown_at(capsys, path, line_of(STOCK, "// try"), "head", "n", "total")
+    assert withheld(rows["n"], "below this stop") and rows["total"]["value"] == "0", rows
+    assert main(["session", "start", str(path), "--at", str(line)]) == 0
+    capsys.readouterr()
+    assert main(["session", "set", "qty=99", "--json"]) == 2
+    error = json.loads(capsys.readouterr().out)["error"]
+    assert error["code"] == "MUTATION_REJECTED" and "below this stop" in error["message"]
+    assert main(["session", "close"]) == 0
+
+
+@pytest.mark.timeout(300)
+def test_a_local_below_the_stop_in_a_function_with_a_label_is_withheld(directory, capsys):
+    # A `goto` can return above the declaration (C keeps `q` live then), but on the
+    # first pass it holds leftovers: Peeky cannot tell the passes apart, so it withholds.
+    path = directory / "labelled.c"
+    path.write_text(LABELLED)
+    for hit in (1, 2):
+        rows = shown_at(capsys, path, line_of(LABELLED, "// label"), "q", "total", hit=hit)
+        assert withheld(rows["q"], "a `goto` return above it", "may not be initialized"), rows
+        assert "value" in rows["total"], rows
+        # On its own line, where control enters it, likewise.
+        rows = shown_at(capsys, path, line_of(LABELLED, "// own line"), "q", "total", hit=hit)
+        assert withheld(rows["q"], "a `goto` return here", "may not be"), rows
+        assert "value" in rows["total"], rows
+
+
+# Shapes like the evaluation's: a declaration below a line with temporaries, in a `try`
+# block, a range-`for`, an `if`/`while` condition, after a label, a `cleanup` variable
+# and a compound literal. Below the stop: withheld; above it: read.
+SHAPES = {
+    "temps.cpp": """#include <cstdio>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
+static std::string make(int i) { return std::string("v") + std::to_string(i); }
+static long next(long &n) { return n > 0 ? n-- : 0; }
+
+static long temps(const std::vector<std::string> &items) {
+    long total = 0;
+    for (size_t i = 0; i < items.size(); i++) {
+        std::string head = items[i].substr(0, 1) + make((int)i);  // TEMPS
+        long q = (long)head.size() + std::stol(items[i].substr(1));
+        total += q;
+    }
+    return total;
+}
+
+static long trying(const std::vector<std::string> &items) {
+    long total = 0;
+    for (const auto &item : items) {
+        try {
+            std::string t = item + make(1);  // TRY
+            long q = std::stol(item.substr(1));
+            total += q + (long)t.size();
+        } catch (const std::exception &) {
+            total -= 1;
+        }
+    }
+    return total;
+}
+
+static long ranged(const std::vector<std::string> &items) {
+    long total = 0;
+    for (const auto &item : items) {  // RANGE
+        std::string t = item + "x";  // RANGE_BODY
+        long q = (long)t.size();
+        total += q;
+    }
+    return total;
+}
+
+static long conditions(long n) {
+    long total = 0;
+    std::string label = make(2);  // COND_ABOVE
+    if (long r = next(n)) {
+        total += r;
+    }
+    while (long v = next(n)) {
+        std::string s = make((int)v);  // WHILE_BODY
+        long w = (long)s.size();
+        total += v + w;
+    }
+    return total + (long)label.size();
+}
+
+int main() {
+    std::vector<std::string> items{"a12", "b7", "c3"};
+    std::printf("%ld %ld %ld %ld\\n", temps(items), trying(items), ranged(items), conditions(3));
+    return 0;
+}
+""",
+    "labels.c": """#include <stdio.h>
+#include <stdlib.h>
+
+static void freep(char **p) { free(*p); }
+__attribute__((noinline)) static long twice(long v) { return v * 2; }
+
+static long labelled(int n) {
+    long total = 0;
+    int tries = 0;
+again:
+    total += twice(tries);  // LABEL_STOP
+    long q = twice(total);
+    if (++tries < n) goto again;
+    return total + q;
+}
+
+static long cleaned(int n) {
+    long total = 0;
+    for (int i = 0; i < n; i++) {
+        char *buf __attribute__((cleanup(freep))) = malloc(16);  // CLEANUP
+        long q = twice(i) + (buf != NULL);
+        total += q;
+    }
+    return total;
+}
+
+static long literal(int n) {
+    long total = 0;
+    for (int i = 0; i < n; i++) {
+        struct { long a, b; } pr = { twice(i), (struct { long z; }){ twice(1) }.z };  // LITERAL
+        long q = pr.a + pr.b;
+        total += q;
+    }
+    return total;
+}
+
+int main(void) {
+    printf("%ld %ld %ld\\n", labelled(3), cleaned(3), literal(3));
+    return 0;
+}
+""",
+}
+
+
+@pytest.mark.timeout(300)
+@pytest.mark.parametrize(
+    "name, marker, hit, below, above",
+    [
+        ("temps.cpp", "TEMPS", 1, ("head", "q"), ("total", "i")),
+        ("temps.cpp", "TEMPS", 2, ("head", "q"), ("total", "i")),
+        ("temps.cpp", "TRY", 2, ("t", "q"), ("total", "item")),
+        ("temps.cpp", "RANGE_BODY", 2, ("t", "q"), ("total", "item")),
+        ("temps.cpp", "COND_ABOVE", 1, ("label",), ("total", "n")),
+        ("temps.cpp", "WHILE_BODY", 2, ("s", "w"), ("total", "v", "label")),
+        ("labels.c", "CLEANUP", 2, ("buf", "q"), ("total", "i")),
+        ("labels.c", "LITERAL", 2, ("pr", "q"), ("total", "i")),
+    ],
+)
+def test_locals_below_the_stop_are_withheld_whatever_the_line_runs_after(
+    directory, capsys, name, marker, hit, below, above
+):
+    source = SHAPES[name]
+    path = directory / name
+    path.write_text(source)
+    rows = shown_at(capsys, path, line_of(source, f"// {marker}"), *below, *above, hit=hit)
+    assert all(withheld(rows[local], "no value yet") for local in below), rows
+    # Read, or unreadable for another reason (a libstdc++ string where memory is not
+    # read): never withheld.
+    assert not any(withheld(rows[local], "no value yet") for local in above), rows
+    assert all("value" in rows[local] for local in above if local not in ("item", "label"))
+
+
+# Shown though Peeky cannot vouch for them: a note on the row, never a bare value.
+LOOPED = """#include <stdio.h>
+
+__attribute__((noinline)) static long twice(long v) { return v * 2; }
+
+int main(void) {
+    long total = 0;
+    long base = 5;
+    int x = 0;
+    do {
+        long y = twice(x);  // DO_BODY
+        total += y + base;
+        x++;
+    } while (x < 3);
+    printf("%ld\\n", total);
+    return 0;
+}
+"""
+
+JUMPED = """#include <setjmp.h>
+#include <stdio.h>
+
+static jmp_buf env;
+
+__attribute__((noinline)) static long twice(long v) { return v * 2; }
+
+static long run(int n) {
+    volatile int tries = 0;
+    long total = 0;  // TOP
+    if (setjmp(env) != 0) {
+        total += 100;
+    }
+    long later = twice(tries);
+    tries++;
+    if (tries < n) longjmp(env, 1);
+    return total + later;
+}
+
+int main(void) {
+    printf("%ld\\n", run(2));
+    return 0;
+}
+"""
+
+
+def probed(capsys, path, line, capture, hits):
+    code = main(
+        ["probe", str(path), "--at", str(line), "--capture", capture, "--hits", str(hits)]
+        + ["--json", "--quiet", "--no-save"]
+    )
+    result = json.loads(capsys.readouterr().out)
+    assert code == 0, result.get("error")
+    return result, {(row["hit"], row["selector"]): row for row in result["rows"]}
+
+
+@pytest.mark.timeout(300)
+def test_a_local_declared_on_a_line_a_loop_returns_to_carries_a_note(directory, capsys):
+    # A `do` body's first line: a loop returns to its first instruction, where `y`'s
+    # declaration has not run on this pass (its leftovers on the first, the last pass's
+    # value on later ones). Shown, with a note; `total` and `x` are live there.
+    path = directory / "loop.c"
+    path.write_text(LOOPED)
+    line = line_of(LOOPED, "// DO_BODY")
+    result, rows = probed(capsys, path, line, "y,x,total,base", 2)
+    for hit in (1, 2):
+        assert "value" in rows[hit, "y"] and rows[hit, "y"]["settable"] is False
+        assert "may be the last pass's value" in rows[hit, "y"]["note"], rows[hit, "y"]
+        assert "reached again by the loop" in rows[hit, "y"]["note"]
+        assert all("note" not in rows[hit, name] for name in ("x", "total", "base")), rows
+    assert any(w.startswith("y: May be the last pass's value") for w in result["warnings"])
+    assert main(["session", "start", str(path), "--at", str(line), "--hit", "2"]) == 0
+    capsys.readouterr()
+    try:
+        assert main(["session", "inspect"]) == 0
+        assert "    note: may be the last pass's value" in capsys.readouterr().out
+        # Its declaration runs after the stop: a change would be overwritten.
+        assert main(["session", "set", "y=5", "--json"]) == 2
+        error = json.loads(capsys.readouterr().out)["error"]
+        assert error["code"] == "MUTATION_REJECTED" and "runs after this stop" in error["message"]
+    finally:
+        main(["session", "close"])
+        capsys.readouterr()
+
+
+@pytest.mark.timeout(300)
+def test_locals_of_a_program_using_setjmp_carry_a_note(directory, capsys):
+    # With setjmp, Peeky does not judge initialization (a longjmp can return above a
+    # declaration with the local live): each automatic local says so; a parameter not.
+    path = directory / "jump.c"
+    path.write_text(JUMPED)
+    result, rows = probed(capsys, path, line_of(JUMPED, "// TOP"), "total,later,tries,n", 1)
+    for name in ("total", "later", "tries"):
+        assert "does not judge whether this local is initialized" in rows[1, name]["note"]
+        assert "setjmp" in rows[1, name]["note"]
+    assert "note" not in rows[1, "n"] and rows[1, "n"]["value"] == "2", rows
+    assert any("setjmp" in warning for warning in result["warnings"]), result["warnings"]
+
+
+# Review of PR #140: another declaration of the name (an earlier loop's, a static, a
+# lambda's parameter) kept the local declared below the stop shown with leftovers, and
+# settable: only the declaration the debugger shows is judged.
+NAMESAKES = {
+    "f1.c": """#include <stdio.h>
+
+__attribute__((noinline)) void scribble(void) {
+    volatile long junk[64];
+    for (int i = 0; i < 64; i++) junk[i] = 0x5150 + i;
+}
+__attribute__((noinline)) long use(long v) { return v + 1; }
+
+int main(void) {
+    long total = 0;
+    for (int k = 0; k < 2; k++) {
+        long qty = k * 10;
+        total += use(qty);
+    }
+    scribble();
+    total += use(total);
+    long qty = 7;
+    total += qty;
+    printf("T %ld\\n", total);
+    return 0;
+}
+""",
+    "f2.cpp": """#include <cstdio>
+#include <vector>
+#include <algorithm>
+
+__attribute__((noinline)) void scribble() {
+    volatile long junk[64];
+    for (int i = 0; i < 64; i++) junk[i] = 0x5150 + i;
+}
+
+int main() {
+    std::vector<long> v{3, 1, 2};
+    scribble();
+    std::sort(v.begin(), v.end(), [](long a, long b) { return a < b; });
+    long b = v[0] + 5;
+    auto twice = [&](long x) { return x * 2 + b; };
+    long r = twice(b);
+    std::printf("R %ld\\n", r);
+    return 0;
+}
+""",
+    "f3.c": """#include <stdio.h>
+
+__attribute__((noinline)) void scribble(void) {
+    volatile long junk[64];
+    for (int i = 0; i < 64; i++) junk[i] = 0x5150 + i;
+}
+__attribute__((noinline)) long use(long v) { return v + 1; }
+
+int main(void) {
+    long total = 0;
+    if (total == 0) {
+        static long qty = 3;
+        total += qty;
+    }
+    for (int k = 0; k < 2; k++) {
+        long n = k;
+        total += use(n);
+    }
+    scribble();
+    total += use(total);
+    long qty = use(total);
+    long n = qty * 2;
+    printf("T %ld %ld\\n", total, n);
+    return 0;
+}
+""",
+}
+
+
+@pytest.mark.timeout(300)
+@pytest.mark.parametrize(
+    "name, line, withheld_here, shown_here",
+    [
+        ("f1.c", 16, {"qty": "declared at line 17, below this stop"}, ("total",)),
+        ("f2.cpp", 13, {"b": "declared at line 14, below this stop"}, ("v",)),
+        (
+            "f3.c",
+            20,
+            {"qty": "declared at line 21, below this stop", "n": "declared at line 22"},
+            ("total",),
+        ),
+        ("f3.c", 21, {"qty": "declared on line 21, which has not run yet"}, ("total",)),
+    ],
+)
+def test_a_local_below_the_stop_is_judged_by_the_declaration_shown(
+    directory, capsys, name, line, withheld_here, shown_here
+):
+    path = directory / name
+    path.write_text(NAMESAKES[name])
+    rows = shown_at(capsys, path, line, *withheld_here, *shown_here)
+    for local, phrase in withheld_here.items():
+        assert withheld(rows[local], phrase), rows[local]
+    assert all("value" in rows[local] for local in shown_here), rows
+    assert main(["session", "start", str(path), "--at", str(line)]) == 0
+    capsys.readouterr()
+    try:
+        assert main(["session", "set", f"{next(iter(withheld_here))}=5", "--json"]) == 2
+        assert json.loads(capsys.readouterr().out)["error"]["code"] == "MUTATION_REJECTED"
+    finally:
+        main(["session", "close"])
+        capsys.readouterr()

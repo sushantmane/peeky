@@ -83,7 +83,7 @@ probe: peeky probe examples/pagination_bug.py --at pagination_bug.py:<line> [--r
 
 For a large module, `--json` and `jq` find a function quickly: `peeky describe dir --at module.py --json | jq '.scopes[] | select(.scope | test("is_private"))'`.
 
-C, C++ and Rust list the same from the build's debug information: each function in your sources, with its file, lines and parameters and locals. Names are readable (`crate::Type::method`, `<crate::Type as core::fmt::Display>::fmt`, `geo::Box::area`). A probe's `function` column keeps LLDB's frame name, which matches for plain functions and methods. For Rust trait impls and closures it keeps symbol escapes (`_$LT$…`, `_$u7b$$u7b$closure$u7d$$u7d$`), and for C++ it adds the signature, so match those in SQL with `LIKE '%fmt%'`. Closures and lambdas are listed under their function. A function inlined into another (`#[inline(always)]`, `always_inline`) keeps its own lines. Each name shows its type. A local declared only inside nested blocks also shows those blocks' lines, where it is visible: `i (int, lines 23, 28)` is two one-line `for` loops' `i`, not a name of the whole function. A block that also runs another file's code (an `#include` inside it) gives none (a local macro's expansion, on its definition's lines, does not count), and past eight blocks one span covers them all. In Rust every `let` opens a block, so a local shows the lines after its `let`, where it is visible (#107). If the debug information cannot be read, the text says `function names: unavailable (reason)`. A very large optimized C++ unit can exceed the 16 MB bound on reading it:
+C, C++ and Rust list the same from the build's debug information: each function in your sources, with its file, lines and parameters and locals. Names are readable (`crate::Type::method`, `<crate::Type as core::fmt::Display>::fmt`, `geo::Box::area`). A probe table's `function` column shows each frame's short name: `trim_left`, `geo::Box::area`, `same<int>`, a Rust function without its symbol hash; two overloads in one table keep their parameters (`twice(int)`, `twice(std::string const&)`). JSON and the evidence store keep LLDB's whole frame name (a C++ signature, `trim_left(std::__1::basic_string<char, …> const&)`; Rust's symbol escapes, `_$LT$…`), and a session's text names the frame with its parameters, the standard types written as code writes them (`in trim_left(std::string const&)`). SQL compares the whole name, so `WHERE function = 'trim_left'` finds nothing: a table that shows short names says so in a note. Match a frame with `short_function(function) = 'trim_left'` or with its whole name. `short_function` drops the parameters of every overload, so overloads share one name (`operator+` for `operator+(V, V)` and `operator+(W, W)`; `G::get` for `get() &` and `get() &&`): a `GROUP BY` or join on it combines them, and it is not always what a table shows (a table keeps the parameters of overloads that would read alike). Closures and lambdas are listed under their function. A function inlined into another (`#[inline(always)]`, `always_inline`) keeps its own lines. Each name shows its type. A local declared only inside nested blocks also shows those blocks' lines, where it is visible: `i (int, lines 23, 28)` is two one-line `for` loops' `i`, not a name of the whole function. A block that also runs another file's code (an `#include` inside it) gives none (a local macro's expansion, on its definition's lines, does not count), and past eight blocks one span covers them all. In Rust every `let` opens a block, so a local shows the lines after its `let`, where it is visible (#107). Bindings a macro from another crate declares (`println!`'s `args`, `core::fmt::rt::Argument[1]`) are left out: the build's MIR places them in the macro's own file. A macro of your crate's keeps its bindings, `#[collapse_debuginfo(yes)]` too. Lines between a block's own where only code outside the block runs are left out, so one block can give several spans. In C++ a block's cleanup code, which runs when an exception leaves the block, is on the function's closing line: `name (std::string, lines 22-25, 35)` is an `if` block's local, visible on its lines and, while an exception unwinds, at the closing `}`, not on the lines between. A span is never narrower than where the debugger can show the local, so lines without code (comments, a lone `}`) inside it are kept. If the debug information cannot be read, the text says `function names: unavailable (reason)`. A very large optimized C++ unit can exceed the 16 MB bound on reading it:
 
 ```
 names in parse_count (pagination_bug.c:6-14): end (char *), minimum (int), result (int *), text (const char *), value (long)
@@ -94,6 +94,12 @@ names in peeky_pagination::main::{{closure}} (src/main.rs:37-37): index (i32)
 ```
 
 With `--json`, a scope's `spans` maps such a name to its blocks' `[first, last]` lines.
+
+**Line ranges and stepping.** A function's lines (`main (pagination_bug.c:16-31)`) and a local's block lines are where its code is, not where a stop can land:
+
+- A `session step` can stop on a line with no statement of its own: a closing `}` (C, C++, Java, Rust: where a block's locals go out of scope or a loop jumps back) or a loop header on its later passes (`for (...; i++)`).
+- A local listed with block lines (`i (int, lines 23, 28)`) is read only inside them; on the block's closing `}`, Java has already dropped it, so read it on the line before.
+- Use `describe`'s breakpoint lines for `--at` and `continue --to`; a step goes wherever the compiled code goes next.
 
 ### 1.2 First Probe
 
@@ -184,7 +190,12 @@ output:
   PAGE: [10, 20, 30]
 ```
 
-Root locals can be changed: the stopped function's own variables (`start`). In Python a change rebinds the name in that frame: `--set 'seen=[]'` gives this call a new list, while the shared object it named (a default argument, a module global) keeps its contents, and the next call sees it again. In Java, so can scalar fields and array elements (see 7.3); in C, C++ and Rust, integer fields and elements of a struct, tuple or array local the stopped frame holds itself (`s.end`, `xs[2]`, `t.__0`; see 7.1 and 7.2), never through a pointer, reference or `Box`. A change writes the variable's storage, which the program's later reads see; what the program already copied keeps the old value, so C, C++ and Rust allow a change only where Peeky proves no statement is under way, and refuse it anywhere else (after `step --out`, on a statement's later line; see 7.1 and 7.2). Python takes literals, including lists and dicts. C and C++ take integers of 16 to 64 bits (`int`, `long`, `size_t`, `int64_t`, …) within the local's range; Java takes scalars of the target's type. Rust takes integer locals (`i16` to `i64`, `u16` to `u64`, `isize`, `usize`) that the program keeps in memory; any other change is refused, because it would not reach the program. For C, C++ and Rust, `session inspect` marks the locals whose type allows a change with `[settable]`. Every change is read back: one the debugger refuses or cannot store (a computed value, such as a structured binding of a bitfield) is refused and the session kept, and a value stored differently from the one asked for (a type redefined as a float) closes the session. A refusal (`MUTATION_REJECTED`) names the local and the rule.
+- **What:** Root locals can be changed: the stopped function's own variables (`start`). In Python a change rebinds the name in that frame: `--set 'seen=[]'` gives this call a new list, while the shared object it named (a default argument, a module global) keeps its contents, and the next call sees it again.
+- **Fields and elements:** In Java, so can scalar fields and array elements (see 7.3); in C, C++ and Rust, integer fields and elements of a struct, tuple or array local the stopped frame holds itself (`s.end`, `xs[2]`, `t.__0`; see 7.1 and 7.2), never through a pointer, reference or `Box`.
+- **Where:** A change writes the variable's storage, which the program's later reads see; what the program already copied keeps the old value, so C, C++ and Rust allow a change only where Peeky proves no statement is under way, and refuse it anywhere else (after `step --out`, on a statement's later line; see 7.1 and 7.2).
+- **Values:** Python takes literals, including lists and dicts. C and C++ take integers of 16 to 64 bits (`int`, `long`, `size_t`, `int64_t`, …) within the local's range; Java takes scalars of the target's type. Rust takes integer locals (`i16` to `i64`, `u16` to `u64`, `isize`, `usize`) that the program keeps in memory; any other change is refused, because it would not reach the program.
+- **Marks:** For C, C++ and Rust, rows mark what a change would reach with `[settable]`: locals in `session inspect`, and fields and elements in probe rows and `session get` listings. When a rule leaves nothing settable at a stop, `session inspect` says why in a note. In JSON every root, field and element row a change could name carries `settable: true` or `false` (Java's too); `false` includes the internals of a standard-library type (`h.v.len` of a `Vec` field, raw where no view reads it) and what Peeky decodes from memory (a `Vec`'s elements and `len`), both of which `set` refuses.
+- **Read back:** Every change is read back: one the debugger refuses or cannot store (a computed value, such as a structured binding of a bitfield) is refused and the session kept, and a value stored differently from the one asked for (a type redefined as a float) closes the session. A refusal (`MUTATION_REJECTED`) names the local and the rule, and its hint the one way around it.
 
 ### 2.4 Change the Value at a Later Hit
 
@@ -275,12 +286,21 @@ peeky queries diff
 
 ```
 run_a  run_b  hit   phase     selector  value_a                        value_b                      differs  note
+1      2      NULL  NULL      (output)  ::ffff:8.8.8.8: private\n      ::ffff:10.0.0.1: private\n   1        output differs at line 1, column 8
+1      2      NULL  NULL      (args)    ["::ffff:8.8.8.8"]             ["::ffff:10.0.0.1"]          1        the runs had different program arguments: values also differ by input
 1      2      1     observed  self      IPv6Address('::ffff:808:808')  IPv6Address('::ffff:a00:1')  1        NULL
 1      2      1     observed  self._ip  281470816487432                281470849515521              1        NULL
-1      2      NULL  NULL      (output)  ::ffff:8.8.8.8: private\n      ::ffff:10.0.0.1: private\n   1        output differs
 ```
 
-`diff` keeps only the rows that differ. Real differences come first, in hit order and then in `--capture` order, so the first row is the first divergence. Then come values that only one run's `--set` changed (`intervention only in run b`), then values that differ only in heap or stack addresses (`note: addresses only`, for example a C string's pointer; NULL is never treated as an address), then one row per selector that only one run asked for (`only in run a`, with its first hit's value), and last, `(status)` and `(output)` rows when the runs' outcomes or outputs differ, an `(edit)` row when one run built a candidate edit, a `(source)` row when two runs that are not candidates ran different source text (another copy of the file), a `(line)` row when the runs stopped at different lines (their values then differ partly because of where they were read), an `(args)` row when they ran with different program arguments, and a `(sets)` row when they made different interventions. Check those last rows before crediting an edit with a difference. The `(output)` row shows each output from just before the first character that differs (`output differs at line 4, column 13`, counted from 1), so after a `--set` it shows the intervention's effect. Hits that one run never reached say `missing in run b`. A value whose type changed (an edit to `long long`) says `type unsigned int -> long long`. `diff` compares the last two runs unless you name them: `--param a=1 --param b=5`. Comparing needs two saved runs; with fewer, the query says so. `queries compare` shows every value side by side with the same notes. Labels are free text, stored as given.
+`diff` keeps only the rows that differ, in this order:
+
+1. **What the runs did and how they differed**, one row each where it applies: `(status)` and `(output)` when the runs' outcomes or outputs differ; `(edit)` when one run built a candidate edit; `(source)` when two runs that are not candidates ran different source text (another copy of the file); `(line)` when the runs stopped at different lines (their values then differ partly because of where they were read); `(args)` when they ran with different program arguments; `(sets)` when they made different interventions. Check these rows before crediting an edit with a difference.
+2. **Real differences**, in hit order and then in `--capture` order: the first of them is the first divergence.
+3. Values that only one run's `--set` changed (`intervention only in run b`).
+4. Values that differ only in heap or stack addresses (`note: addresses only`, for example a C string's pointer; NULL is never treated as an address).
+5. Last, one row per selector that only one run asked for (`only in run a`, with its first hit's value).
+
+The `(output)` row shows each output from just before the first character that differs (`output differs at line 4, column 13`, counted from 1), so after a `--set` it shows the intervention's effect. Hits that one run never reached say `missing in run b`. A value whose type changed (an edit to `long long`) says `type unsigned int -> long long`. `diff` compares the last two runs unless you name them: `--param a=1 --param b=5`. Comparing needs two saved runs; with fewer, the query says so. `queries compare` shows every value side by side with the same notes. Labels are free text, stored as given.
 
 ### 3.2 Inputs, Outcomes and Outputs of the Last Two Runs
 
@@ -418,6 +438,32 @@ hit  selector                 value       identity  scope
 
 At one hit, equal identities are the same object: `tags` is the function's default list, not a copy. Across hits, a different identity always means a different object, but an equal one means the same object or a new one that took a freed object's place; here the default lives as long as the function, and its contents grow. Numbers, strings and `None` have no identity (NULL). Never compare identities across runs. `scope` is `globals` for a selector whose first name was read from the module's globals (5.1), and `unknown` for a row an early build of schema 6 stored (it could read globals without recording it); NULL is the frame's own variables.
 
+### 4.7 C++ References and Pointers in SQL
+
+**What it answers:** Which arguments did `trim_left` change? A `const std::string &` (or a pointer) is saved as the debugger shows it, its address first: `0x000000016d78b298 "apple"`. It never equals a plain string's `"apple"`, so take the text after the address before comparing.
+
+`examples/cpp/refs/trim.cpp` trims each argument's leading spaces. Capture the reference parameter `s` in `trim_left`, then the result `name` in `main`, one run each:
+
+```sh
+peeky probe examples/cpp/refs/trim.cpp --at trim.cpp:6 --arg apple --arg " pear" --arg "fig " \
+  --capture s --hits all --label argument
+peeky probe examples/cpp/refs/trim.cpp --at trim.cpp:11 --arg apple --arg " pear" --arg "fig " \
+  --capture name --hits all --label name
+peeky sql "SELECT n.hit, s.value AS argument, n.value AS name,
+  substr(s.value, instr(s.value, ' ') + 1) = n.value AS unchanged
+  FROM evidence s JOIN evidence n ON n.hit = s.hit AND n.label = 'name' AND n.selector = 'name'
+  WHERE s.label = 'argument' AND s.selector = 's'"
+```
+
+```
+hit  argument                    name     unchanged
+1    0x000000016d78b298 "apple"  "apple"  1
+2    0x000000016d78b298 " pear"  "pear"   0
+3    0x000000016d78b298 "fig "   "fig "   1
+```
+
+`substr(value, instr(value, ' ') + 1)` is the text after the address: an address has no space, while the text may have several (`" pear"`), so take only the first. Use it only on a reference's or pointer's value (one that starts with `0x`); on a plain string it would cut the text at its first space. `no_addresses(value)` gives `0x… "apple"`: enough to compare two references, or one across runs, but still not equal to `"apple"`. A text Peeky could not check whole carries a note after it (`"v" (shown up to a NUL at byte 1 of 3)`, libstdc++ with lldb-dap 18; 7.1), so it never equals a plain string either.
+
 ---
 
 ## 5. Step-by-Step Sessions
@@ -461,7 +507,6 @@ state: terminated (program exited; `peeky session report` shows output)
 state: terminated
 output:
 PAGE: [10, 20, 30]
-operations: 11 (worker requests in this session, including waits; --json lists them)
 closed default
 ```
 
@@ -530,6 +575,8 @@ peeky session list
 
 A second `session start` with a name that is already taken fails with "exists". It never takes over the other session.
 
+Every later command needs the same `--name`, `inspect`, `get`, `set`, `step`, `continue`, `report` and `close` alike: without it, a command acts on the session named `default` (or says there is none). `peeky session list` shows the names in use. With one session at a time, leave `--name` out everywhere.
+
 ### 5.4 Programs with Timeouts
 
 Tests with timeouts, heartbeats and RPC deadlines keep their clocks running while the program is paused. Prefer probes, which pause for milliseconds per hit, or give sessions a pause budget:
@@ -570,6 +617,21 @@ diff:
 ```
 
 Your files are not changed. The edit is applied to a scratch copy; `--keep` keeps the edited file (build artifacts are always removed) in the system's temporary directory, at the `kept:` path the result prints; delete it when you are done. To see what an edit does before verifying, a candidate probe (6.6) is simpler. For a Cargo crate, its compiled tests run too, and a failure names each failed test with how it failed (`compiled tests: failed (1 failed)`, then `first_page_starts_at_zero: thread … panicked at tests/pagination.rs:10:5: assertion `left == right` failed …`). `--json` identifies the checker's descriptor and build by hash (`descriptor_sha256`, `artifact_manifest_id`); `--details` adds both in full.
+
+**Does the checker catch the bug?** Before trusting `passed: True`, run the checker against the unedited program with `--baseline` (no `--old`/`--new`). It builds and checks the program as it is, like any verify, and should fail:
+
+```sh
+peeky verify examples/pagination_bug.py --check examples/verify_pagination.py --baseline
+```
+
+```
+passed: False  stage: verification
+reason: AssertionError: (1, 3, [10, 20, 30], [40, 50, 60])
+checker exit: 1
+baseline: the unedited program, no edit (the checker rejects it, as it should reject the bug)
+```
+
+A checker that passes here cannot tell a fix from the bug. An `--old`/`--new` pair that changes nothing is refused (`--new equals --old`); `--baseline` is the way to check the original.
 
 ### 6.2 An Overfit Fix Is Rejected
 
@@ -638,9 +700,9 @@ candidate: values are from a fresh build with this edit; your files are unchange
      int end = start + page_size; /* OBSERVE */
 
 run_a  run_b  hit   phase     selector  value_a           value_b               differs  note
-1      2      1     observed  start     6                 3                     1        NULL
 1      2      NULL  NULL      (output)  PAGE:[70, 80]\n  PAGE:[40, 50, 60]\n  1        output differs at line 1, column 7
 1      2      NULL  NULL      (edit)    none              candidate             1        the runs built different edits (runs.edit has each diff)
+1      2      1     observed  start     6                 3                     1        NULL
 ```
 
 - **Lines:** `--at` uses the original file's numbering, so the same command works before and after. A line after an edit that adds or removes lines is moved to match (`line 25 is line 27 of the candidate`). Some lines have no faithful match and are refused before anything is built:
@@ -683,6 +745,18 @@ The commands are the same for every language; only the target changes.
 
 ### 7.1 C and C++
 
+**Quick start (C and C++).** What can be read, what can be set, and where:
+
+- **Read** any local, parameter or global by selector: fields and elements (`s.end`, `bins[3].hi`, `grid[1][0]`), through pointers too (`ps.start`), C++ members through `this` (`this.head_`), a `std::string` whole, a `std::vector` by index and a `std::map` by key (`m[1]`, `ages["al"]`).
+- **Withheld, never guessed:** a local whose storage may still hold leftovers (declared below the stop, an initializer still running, a jump past its declaration) shows `no value yet` and why; one Peeky shows but cannot vouch for (a `do` body's first line, a program using `setjmp`) carries a `note`.
+- **Set** integer locals, and integer fields and elements of a struct, class or array local the frame holds itself: `--set s.end=10`, `--set 'bins[3].hi=8'` (16 to 64 bits, in range).
+- **Never** through a pointer or a reference (`ps.end`, `this.count`), nor in a union, a packed struct, a bitfield, a const or a `std::` type; strings and floats cannot be set.
+- **Where:** at a statement's first instruction, so a breakpoint on its first line (`--at`, `session continue --to LINE`) or a `step` that lands there; not after `step --out`, not on a loop header's later passes.
+- **Marks:** rows show `[settable]` on what `set` would change, fields and elements included; when a rule leaves nothing settable, `session inspect` says why. A refused change's hint names the one way around it.
+- **Later hits:** `--set-hit N` applies a probe's changes at hit N; in a session, change values at as many stops as you like.
+
+The rest of this section shows them at work, then the detail behind them.
+
 ```sh
 peeky probe examples/c/pagination_bug.c --at 25 --capture 'start,page,items[1]' --set start=0
 ```
@@ -705,7 +779,22 @@ peeky probe examples/c/pagination_bug.c --at 25 --capture start,page --arg 2    
 peeky probe examples/cpp/pagination_bug.cpp --at 28 --capture start
 ```
 
-All `.c` files in the directory that don't define their own `main` are built together with the target. A directory holding several programs links only the target's `main`. A directory works as the target too: `peeky probe ring/ --at 16` finds its one program (a checker script beside it doesn't count), and `--at ring.cpp:16` names one when there are several. A C or C++ local declared below the stop line is not shown as a value: until its declaration runs, its storage holds whatever an earlier call or loop iteration left there, so the row says `no value yet: declared at line 18, below this stop` (only when every local of that name in the functions with code on that line is declared below it, and the line's code comes before the declaration's in the build. A static or parameter keeps its value. Nothing is withheld in a function with a `goto` label, or in a program that uses `setjmp`: jumping back above a declaration leaves the local live). A local declared on the stop line itself is shown as its storage reads (a `for` counter is live there on later passes); at a breakpoint on that line its declaration has not run yet, so probe the next line to read it. A local is also withheld while its own declaration is still running at the stop: `struct outer o = {` over lines 17-22 (or an array of structs, or a 2-D array), stopped at line 20, says `its declaration (lines 17-22) is still running at this stop` until its `;` has run. The end comes from the source, read as for caller frames (5.1), and where it cannot be found the local is withheld; a declaration below the stop whose own line has no code is placed by its elements' lines. A variable a `for`, `if`, `while`, `switch` or `catch` header declares has run with its part of the header, so the body reads it. Below a label a jump can reach past a declaration, the local is withheld too (`a jump ... can reach the label on line 21`): a `case` or `default` of the `switch` whose body holds the declaration, or a label that a `goto` above the declaration names, or one outside its block jumps back to (re-entering a block starts its locals anew, C11 6.2.4; any label, with a computed `goto`). A local declared on the stop line is withheld part-way through that line while the line still has code to run (back from a call with `step --out` in `long r = twice(3) + twice(4);`), except a variable a `for`, `if` or `switch` header sets with no call (`for (int i = 0; ...)`), which a one-line loop keeps live; a `while`'s, or one set by a call (`if (long r = twice(3))`), is withheld. A local declared in an `#include`d file counts as declared at that `#include`'s line: below the stop it is withheld, and above it, when its file may `#include` more after it (a `case` there can skip it). When the frame (stopped, or a caller on its own file's line) runs a line outside its function's own (a class's default member initializer, as when you break on `long b = twice(2);` in `struct Cfg`, also a class defined inside the function, or an `#include`d fragment), the usual rules run from the own line that brings it in (that `#include`), or else from the last own line whose code comes before it; its class, struct and array locals are withheld too, since one of them is being built there, and where Peeky cannot place the stop, everything but parameters is. A `goto` counts only within its function's own lines, so a namespace's other functions do not. In C++, `this` is withheld while its object is being built: in a constructor, in any frame a constructor called (Peeky reads up to 64 frames to tell; past that it withholds), in a lambda defined inside a declaration or a constructor that may still be running (the note names that declaration), and in a lambda a class's default member initializer defines (`long b = [this] { ... }();`), since a class with no constructor runs its initializers where the object is built. An unnamed struct's constructor (`$_0::$_0()`) counts as a constructor too. In C++ and Java methods, read members through `this` (`this.head_`); a bare `head_` that is a member gives an error naming that selector. Peeky never reads a member in place of a local: the debugger's list of locals can be incomplete (statics, classes built without local-variable tables), so a missing local does not mean the code uses the member. Headers read from outside the directory, including SDK headers, are hashed and rechecked.
+**Building.** All `.c` files in the directory that don't define their own `main` are built together with the target. A directory holding several programs links only the target's `main`. A directory works as the target too: `peeky probe ring/ --at 16` finds its one program (a checker script beside it doesn't count), and `--at ring.cpp:16` names one when there are several. Headers read from outside the directory, including SDK headers, are hashed and rechecked.
+
+**Locals Peeky withholds.** A C or C++ local declared below the stop line is not shown as a value: until its declaration runs, its storage holds whatever an earlier call or loop iteration left there, so the row says `no value yet: declared at line 18, below this stop` (the declaration the debugger shows, the one in the stopped function whose block holds the stop, is declared below it: another of the name, in an earlier loop or a lambda, changes nothing; where Peeky cannot tell which is shown, any declared below withholds it. A static or parameter keeps its value).
+
+- **Where the stop cannot be placed:** Where Peeky cannot place the stop before the declaration (the line also runs code after it, as a temporary's cleanup does, or a `goto` label lets control return above it), it is withheld all the same, saying it may not be initialized.
+- **`setjmp`:** In a program that uses `setjmp`, initialization is not judged: each local's row carries a `note` saying so, and no value can be changed in it (Peeky reads no statements from such a program's debug information); `set` and `session inspect` say so.
+- **On the stop line:** A local declared on the stop line itself is withheld at the line's first instruction, where its declaration has not run yet, so probe the next line to read it; on a line a loop returns to (a `do` body's first line) it is shown with a `note` that it may be the last pass's value, and mid-line (a `for` counter on later passes, after `step --out`) as its storage reads.
+- **Part-way through the stop line:** A local declared on the stop line is withheld part-way through that line while the line still has code to run (back from a call with `step --out` in `long r = twice(3) + twice(4);`), except a variable a `for`, `if` or `switch` header sets with no call (`for (int i = 0; ...)`), which a one-line loop keeps live; a `while`'s, or one set by a call (`if (long r = twice(3))`), is withheld.
+- **While its declaration runs:** A local is also withheld while its own declaration is still running at the stop: `struct outer o = {` over lines 17-22 (or an array of structs, or a 2-D array), stopped at line 20, says `its declaration (lines 17-22) is still running at this stop` until its `;` has run. The end comes from the source, read as for caller frames (5.1), and where it cannot be found the local is withheld; a declaration below the stop whose own line has no code is placed by its elements' lines.
+- **Header variables:** A variable a `for`, `if`, `while`, `switch` or `catch` header declares has run with its part of the header, so the body reads it.
+- **Below a label:** Below a label a jump can reach past a declaration, the local is withheld too (`a jump ... can reach the label on line 21`): a `case` or `default` of the `switch` whose body holds the declaration, or a label that a `goto` above the declaration names, or one outside its block jumps back to (re-entering a block starts its locals anew, C11 6.2.4; any label, with a computed `goto`). A `goto` counts only within its function's own lines, so a namespace's other functions do not.
+- **Declared in an `#include`d file:** A local declared in an `#include`d file counts as declared at that `#include`'s line: below the stop it is withheld, and above it, when its file may `#include` more after it (a `case` there can skip it).
+- **Outside the function's own lines:** When the frame (stopped, or a caller on its own file's line) runs a line outside its function's own (a class's default member initializer, as when you break on `long b = twice(2);` in `struct Cfg`, also a class defined inside the function, or an `#include`d fragment), the usual rules run from the own line that brings it in (that `#include`), or else from the last own line whose code comes before it; its class, struct and array locals are withheld too, since one of them is being built there, and where Peeky cannot place the stop, everything but parameters is.
+- **`this` in C++:** In C++, `this` is withheld while its object is being built: in a constructor, in any frame a constructor called (Peeky reads up to 64 frames to tell; past that it withholds), in a lambda defined inside a declaration or a constructor that may still be running (the note names that declaration), and in a lambda a class's default member initializer defines (`long b = [this] { ... }();`), since a class with no constructor runs its initializers where the object is built. An unnamed struct's constructor (`$_0::$_0()`) counts as a constructor too.
+
+**Members.** In C++ and Java methods, read members through `this` (`this.head_`); a bare `head_` that is a member gives an error naming that selector. Peeky never reads a member in place of a local: the debugger's list of locals can be incomplete (statics, classes built without local-variable tables), so a missing local does not mean the code uses the member.
 
 **Strings with a NUL byte (C++).** LLDB shows a libc++ (macOS) `std::string` whole, a NUL as `\0`: `"a\0b"`. Its summary of a libstdc++ (Linux) string is a C string, which ends at the first NUL, and a value LLDB names `std::string` gets `error: summary string parsing error` on clang's Linux builds. So on Linux the worker checks each string against its `_M_string_length` (#128), in `inspect`, `get`, listings, probe rows and the evidence store alike:
 
@@ -715,7 +804,8 @@ All `.c` files in the directory that don't define their own `main` are built tog
 - A string under a typedef's name (`typedef std::basic_string<char> Bytes`, `using Name = std::string`, a reference or pointer to one) is checked the same: Peeky resolves the typedef from the build's debug information, or knows the string by its libstdc++ members. LLDB's `error: summary string parsing error` is never shown as a value, for any type.
 - On every platform, a literal reads back in C as the same bytes: where LLDB writes `\0` before a digit (`"n\064"`, which C reads as `"n4"`) or `\xff` before a hex digit, Peeky writes `"n\00064"` and `"\377a"`. Long text stays within 2000 characters, cut between characters with `...`.
 - Each libstdc++ string costs a debugger request (two or three where its bytes are read), within the inspection's budget: a large page of strings may say `(not checked for a NUL byte: ...)` instead.
-- Strings cannot be `--set`; only integer locals can.
+- Strings cannot be `--set`; only integers (locals, fields and elements) can.
+- A string is its text: `session get name` shows `name: std::string = "apple"` and no rows under it (the library's own members, `(anonymous struct)` or `_M_dataplus`, are never listed), and `inspect` offers no `(children: ...)` for it. Selecting inside one (`name[0]`, `name.size`) is refused with what to do instead: capture the string and compare its text, in SQL (4.7). A pointer to one shows its address and text, and `p[0]` is the string.
 
 **Maps and sets (C++).** The debugger lists a `std::map`'s entries as `[0]`, `[1]`, ... in iteration order, but in C++ `m[1]` is the value for key 1. Peeky reads `m[K]` as C++ does, and `m[#N]` is the Nth entry in iteration order (a pair with `.first` and `.second`), so a position is never taken for a key (#119). In `examples/cpp/maps/scores.cpp`, `m` is `std::map<int, int> m{{2, 20}, {1, 10}, {5, 50}}`:
 
@@ -742,6 +832,22 @@ hit  phase     line  function  selector      type       value
 - A `std::map` with integer keys in the standard order (`std::less`, the default, or `std::greater`) and more than 20 entries is bisected, so any size up to 512 entries reads in a few steps. Any other map is compared entry by entry, and one inspection (512 nodes) holds the entries and keys of a map of about 200; a bigger one is refused before any is read (use `m[#N]`).
 - Vectors, deques and arrays index by position as before.
 
+In a session, select a map's entry by key the same way, quoted for the shell, and pass the session's `--name` to every command:
+
+```sh
+peeky session start examples/cpp/maps/scores.cpp --at 9 --name maps
+peeky session get 'ages["al"]' ages --name maps
+peeky session close --name maps
+```
+
+```
+ages["al"]: int = 42
+ages: std::map<std::string, int> = size=2
+  ages["al"]: int = 42
+  ages["bo"]: int = 31
+  note: ages is a C++ map: ages[K] is the value for key K, as in C++ (integer and std::string keys), and ages[#N] its Nth entry in iteration order, a pair with .first and .second
+```
+
 **Changing fields and elements.** `--set` (and `session set`) changes an integer field or array element of a local the stopped frame holds itself, as it does an integer local (#105):
 
 ```sh
@@ -750,9 +856,9 @@ peeky session set 's.arr[2]=7'    # an element of an array in a struct
 peeky session set ps.end=10       # MUTATION_REJECTED: `ps` is a pointer: Peeky changes only values the frame holds itself ...
 ```
 
-The path is checked against the build's debug information, not the debugger's type names: fields of structs and classes and elements of fixed-size arrays only, never through a pointer (including `this`: stop where the object is a local, `session step --out`), a reference, a base class or an anonymous member, nor inside a union, a packed struct or a `std::` type; the target is an integer of 16 to 64 bits, not const, volatile or a bitfield, and the value must fit it. The root must be an automatic or a parameter of the stopped frame that Peeky does not withhold (declared below the stop, an initializer still running, a jump past it), in an unoptimized build; one LLDB names with where it is declared, when another of its name is in scope, is selected as named (`'p @ s1.c:38.x=3'`, `'n @ s1.c:15=9'`; two of one name declared on the same line are ambiguous, and `get` and `set` refuse them), and an element of an array of any length is fetched alone, at any step of the path (`big[700].a=1`, `grid[599][2]=3`). The field is read back from the debugger after the write, and only the value asked counts as a change. Fields carry no `[settable]` mark: a refusal names the rule it broke.
+The path is checked against the build's debug information, not the debugger's type names: fields of structs and classes and elements of fixed-size arrays only, never through a pointer (including `this`: Peeky does not write through a pointer or a reference, since what it reaches may be freed or moved; change the value where it is owned, before the call that passed it: a probe `--at` the call's line with `--hits N --set-hit N`, or `session start --at` it with `--hit N`, where N counts the call line's own stops, not the called function's, which differ when it is called from several lines (find N with `peeky probe ... --at <call line> --capture <argument> --hits all`); `session continue --to` the call's line reaches only the next call), a reference, a base class or an anonymous member, nor inside a union, a packed struct or a `std::` type; the target is an integer of 16 to 64 bits, not const, volatile or a bitfield, and the value must fit it. The root must be an automatic or a parameter of the stopped frame that Peeky does not withhold (declared below the stop, an initializer still running, a jump past it), nor shows with a note that its declaration still runs after the stop (a `do` body's first line), in an unoptimized build; one LLDB names with where it is declared, when another of its name is in scope, is selected as named (`'p @ s1.c:38.x=3'`, `'n @ s1.c:15=9'`; two of one name declared on the same line are ambiguous, and `get` and `set` refuse them), and an element of an array of any length is fetched alone, at any step of the path (`big[700].a=1`, `grid[599][2]=3`). The field is read back from the debugger after the write, and only the value asked counts as a change. Probe rows and `session get` listings mark the fields and elements `set` would change `[settable]`, judged by the same rules at the stop (`bins[3].hi  [settable]`, never `ps.end`); a refusal names the rule it broke, and its hint the one way around it.
 
-What a change makes true, for a local or a field: its storage holds the new value, and the program's later reads of it see it. What the program copied before keeps the old value: a copy on an earlier line (`int a = s.x;`), and a statement under way at the stop, which may hold what it read in a register. So C and C++ allow a change only at a statement's first instruction, and refuse it anywhere else: `set` says `cannot be changed here` and keeps the session, and `inspect` drops `[settable]` there. Peeky proves the stop is there from the source and the line table:
+What a change makes true, for a local or a field: its storage holds the new value, and the program's later reads of it see it. What the program copied before keeps the old value: a copy on an earlier line (`int a = s.x;`), and a statement under way at the stop, which may hold what it read in a register. So C and C++ allow a change only at a statement's first instruction, and refuse it anywhere else: `set` says `cannot be changed here` and keeps the session, and `inspect` drops `[settable]` there and says why (`note: nothing here is [settable]: the stop is not at the first instruction of the statement on line 9 ...`; `unsettable` in JSON). Peeky proves the stop is there from the source and the line table:
 
 - the stop is on one of its function's own lines, and that line starts a statement: every bracket around it, up to the function's body, is a block of statements (not a call's arguments, an initializer, a `new long[1]{`, a compound literal; nothing inside a GNU statement expression `({ … })` at all, even a macro's loop there), no directive or bracket-hiding macro lies between it and the previous token, and that token ends a statement (`;`, `{`, `}`, a label, `else`, the `)` of an `if`/`for`/`while`/`switch` header). A brace after something like parameters (`REPEAT(k, 1) {`) is a function's body only at file scope or in a class's or namespace's body; elsewhere it is a block of the function around it;
 - the pc is the lowest address of all the function's code on the lines of the statements starting there: clang may put a later line's code first (`t =` / `p.x + g();` loads `p.x` and calls `g` before line 1's store);
@@ -762,6 +868,18 @@ What a change makes true, for a local or a field: its storage holds the new valu
 A breakpoint on a statement's first line (`--at`, `continue --to`) or a `step` that lands there qualifies. Back from a call (`step --out`, a return address), on a statement's later line (`+ f();` under `int t = s.a`), on a loop header's later passes, in a K&R-style definition (`long f(a) long a; {`, not supported), and wherever Peeky cannot tell, the change is refused. A `step` onto `} else if (p.y > 1) {` on the else path is refused too: that line's lowest address is the jump that ends the `if` block, so the step stops past it, at the condition (and a breakpoint on that line, placed at the jump, is never hit on the else path, with or without Peeky); change the value before the `if`, or at the first statement inside the `else if` block. Two more stops are refused though nothing is under way there: in an inlined function's own code (a one-line `always_inline` function's line, where its frame stops), and on a body's `{` placed on the line under its signature with a statement after it (`long f(struct P p)` / `{ long t = p.x + 1;`); change the value in the caller, or at the next statement. A function-try-block (`long f(P p) try { … } catch (…) { … }`) is a function body like any other, its handlers too. The stop's own line may still overwrite the change (`s = (struct tri){9, 9, 9};`).
 
 ### 7.2 Rust (a Cargo crate)
+
+**Quick start (Rust).** What can be read, what can be set, and where:
+
+- **Read** integer, float, `bool` and `char` locals with their Rust types (`usize`, and `&mut limiter::Window` for a reference parameter), `Option<i32>`, a struct or tuple local (or a reference parameter to one) as derived `Debug` prints it (`Window { start: 0, count: 2 }`), and the contents of `Vec<T>`, `String`, `&[T]` and `&str` (`[memory]`); fields stay selectable (`w.start`, `runs[0].__0`).
+- **Never guessed:** a value Peeky cannot prove (moved, dropped or not yet assigned, in a caller frame, in an optimized build) keeps its raw fields with a note (`[stale]`, `[unproven]`, `<unverified ...>`).
+- **Set** integer locals (`i16` to `i64`, `u16` to `u64`, `isize`, `usize`) the program keeps in memory, and integer fields and elements of a struct, tuple or array local the frame holds itself, which the MIR proves initialized: `--set w.start=10 --set w.count=0`.
+- **Never** through a reference or a `Box` (`w.start` where `w: &mut Window`: Peeky does not write through a reference, since what it reaches may be freed or moved; change the value where it is owned, before the same call: a probe `--at` the call's line with `--hits N --set-hit N`, or `session start --at` it with `--hit N`, where N counts the call line's own stops, not `allow`'s, which differ when `allow` is called from several lines (find N with `peeky probe ... --at <call line> --capture now --hits all`); `session continue --to` the call's line reaches only the next call, and `session step --out` returns part-way through the line, where changes are refused), nor inside an enum, a `#[repr(packed)]` struct or a standard-library type. A local kept only in a register is refused: a candidate edit adding `std::hint::black_box(&mut x);` after its `let` keeps it in memory.
+- **Where:** a line breakpoint, or a step that lands on a line's start, where the MIR shows no statement under way has read the value; never back from a call (`step --out`).
+- **Marks:** rows show `[settable]` on what `set` would change, fields and elements included; when a rule leaves nothing settable, `session inspect` says why.
+- **Builds:** an unoptimized build (the default) for every change and for owned `Vec`/`String` contents; a plain `cargo new` crate with no dependencies.
+
+The rest of this section shows them at work, then the detail behind them.
 
 ```sh
 peeky describe examples/rust
@@ -778,14 +896,20 @@ hit  phase      line  function                selector      type                
 1    observed   36    peeky_pagination::main  none          core::option::Option<i32>  None  [active-variant]
 1    observed   36    peeky_pagination::main  mode          peeky_pagination::Mode     First
 1    observed   36    peeky_pagination::main  request       peeky_pagination::Request  Request { page: 1, page_size: 3, total: 8 }  [memory]
-1    observed   36    peeky_pagination::main  request.page  i32                        1  [memory]
+1    observed   36    peeky_pagination::main  request.page  i32                        1  [memory]  [settable]
 ...
 set start: 3 -> 0
 output:
   PAGE:[10, 20, 30]
 ```
 
-Values Peeky cannot decode with certainty show as `<unverified ...>` or as opaque enums; they are never guessed (`describe` counts them as "other enum types"). Only integer locals (`i16` to `i64`, `u16` to `u64`, `isize`, `usize`) that the program keeps in memory can be changed; `session inspect` marks them `[settable]`. So can such integer fields and elements of a struct, tuple or array local kept in memory that the build's MIR proves initialized at the stop (`--set s.end=10`, `t.__0=3`, `arr[2]=7`): never through a reference or a `Box`, nor inside an enum, a `#[repr(packed)]` struct or a standard-library type, and only at a line breakpoint, or a step that ends at its line's start, where the MIR shows no statement under way has read the local into a temporary (so never back from `f` in `let t = s.a + f();`, nor after a step back onto `let arr = [s.a,` from its later lines), which also holds for integer locals (see [RUST_AGENT.md](RUST_AGENT.md#changing-fields-and-elements-105)). Reference parameters (`&[T]`, `&str`, `&Vec<T>`, `&String`, shared or `&mut`, for `T` any integer type, `bool`, `f32`, `f64` or `char`) are read from memory at offsets checked against the build's debug information (`describe` lists them). Elements print as Rust's `{:?}` does, floats included (`[0.30000000000000004, 1e16, -0.0, NaN]`), so they can be compared with the program's own output. In `fn median(values: &[i32], label: &str)`, `--capture 'values,values[0],values[-1],values.length,label'` shows `[5, 1, 3]`, `5`, `3`, `3` and `"größe"`. Tuples, and structs your crate defines, of those scalars are read too: `runs` (`Vec<(char, usize)>`) shows `[('a', 3), ('b', 1)]`, and `runs[0].__0` and `spans[1].start` select fields (LLDB's names: `__0` for a tuple's first). A tuple or struct local of them, or a reference parameter to one, previews the same way under the same proofs (`request` above: `Request { page: 1, page_size: 3, total: 8 }`), and its fields stay selectable (#106). See [RUST_AGENT.md](RUST_AGENT.md#reading-rust-values). Owned `Vec<T>` and `String` locals are read as well, in the innermost frame, wherever the compiler's own MIR proves them initialized at the stop line: Peeky builds the binary crate with `-Zmir-opt-level=0` and dumps its MIR, so every move, drop and assignment is explicit. A local that may be moved, dropped or not yet assigned around the line (`drop(ordered)`, `consume(v)`, the old `s` in `let s = s + "x"`, a deferred `let label: String;`) keeps its raw fields (`ordered.len`) with a note, since its pointer can reach reused memory and its contents would be a guess (#53). Reference locals (`let view: &[i32]`) keep their raw fields too. Long values show their first elements with `(first k of N)`, and up to 256 elements stay selectable. This needs a debugger with `readMemory` (lldb-dap from LLVM 20); older debuggers keep the raw fields, with an error that names the length field.
+- **Decoding:** Values Peeky cannot decode with certainty show as `<unverified ...>` or as opaque enums; they are never guessed (`describe` counts them as "other enum types").
+- **Changing values:** Only integer locals (`i16` to `i64`, `u16` to `u64`, `isize`, `usize`) that the program keeps in memory can be changed; `session inspect` marks them `[settable]`. So can such integer fields and elements of a struct, tuple or array local kept in memory that the build's MIR proves initialized at the stop (`--set s.end=10`, `t.__0=3`, `arr[2]=7`): never through a reference or a `Box`, nor inside an enum, a `#[repr(packed)]` struct or a standard-library type, and only at a line breakpoint, or a step that ends at its line's start, where the MIR shows no statement under way has read the local into a temporary (so never back from `f` in `let t = s.a + f();`, nor after a step back onto `let arr = [s.a,` from its later lines), which also holds for integer locals (see [RUST_AGENT.md](RUST_AGENT.md#changing-fields-and-elements-105)).
+- **Reference parameters:** Reference parameters (`&[T]`, `&str`, `&Vec<T>`, `&String`, shared or `&mut`, for `T` any integer type, `bool`, `f32`, `f64` or `char`) are read from memory at offsets checked against the build's debug information (`describe` lists them). Elements print as Rust's `{:?}` does, floats included (`[0.30000000000000004, 1e16, -0.0, NaN]`), so they can be compared with the program's own output. In `fn median(values: &[i32], label: &str)`, `--capture 'values,values[0],values[-1],values.length,label'` shows `[5, 1, 3]`, `5`, `3`, `3` and `"größe"`. Their type column shows the Rust type (`&mut limiter::Window`), not LLDB's (`limiter::Window *`), which `debugger_type` keeps.
+- **Tuples and structs:** Tuples, and structs your crate defines, of those scalars are read too: `runs` (`Vec<(char, usize)>`) shows `[('a', 3), ('b', 1)]`, and `runs[0].__0` and `spans[1].start` select fields (LLDB's names: `__0` for a tuple's first). A tuple or struct local of them, or a reference parameter to one, previews the same way under the same proofs (`request` above: `Request { page: 1, page_size: 3, total: 8 }`), and its fields stay selectable (#106). See [RUST_AGENT.md](RUST_AGENT.md#reading-rust-values).
+- **Owned `Vec` and `String`:** Owned `Vec<T>` and `String` locals are read as well, in the innermost frame, wherever the compiler's own MIR proves them initialized at the stop line: Peeky builds the binary crate with `-Zmir-opt-level=0` and dumps its MIR, so every move, drop and assignment is explicit. A local that may be moved, dropped or not yet assigned around the line (`drop(ordered)`, `consume(v)`, the old `s` in `let s = s + "x"`, a deferred `let label: String;`) keeps its raw fields (`ordered.len`) with a note, since its pointer can reach reused memory and its contents would be a guess (#53). Reference locals (`let view: &[i32]`) keep their raw fields too.
+- **Long values:** Long values show their first elements with `(first k of N)`, and up to 256 elements stay selectable.
+- **Debugger:** This needs a debugger with `readMemory` (lldb-dap from LLVM 20); older debuggers keep the raw fields, with an error that names the length field.
 
 ### 7.3 Java (launched)
 
@@ -938,5 +1062,5 @@ All codes are listed in [ERRORS.md](ERRORS.md). If you suspect a filesystem with
 | `next`, `step`, `finish` | `peeky session step`, `step --into`, `step --out` | Java `--into`/`--out` skip JDK code. After `step --out`, C, C++ and Rust `session inspect` lists the returned value as `(Return Value)`, marked `[not selectable]`: read it there |
 | `until 42`, `advance 42` | `peeky session continue --to 42` | One-shot; the session's own breakpoint stays |
 | `continue` | `peeky session continue [--to-exit]` | Runs to the next stop or to exit |
-| "rerun with another input and compare by eye" | `--arg ... --label A`, then `peeky queries diff` | The first diff row is the first divergence |
+| "rerun with another input and compare by eye" | `--arg ... --label A`, then `peeky queries diff` | The `(output)`, `(args)`, ... rows come first, then the first divergence |
 | "I think this fixes it" | `peeky verify --old ... --new ...` | Fresh build plus an independent checker |

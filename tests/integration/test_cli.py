@@ -63,7 +63,9 @@ def test_session_commands_share_state_across_processes(workspace, capsys):
     assert "start: int = 3" in run(capsys, "session", "inspect")[1].out
     assert "3 -> 0" in run(capsys, "session", "set", "start=0")[1].out
     assert "terminated" in run(capsys, "session", "continue")[1].out
-    assert "PAGE: [10, 20, 30]" in run(capsys, "session", "report")[1].out
+    report = run(capsys, "session", "report")[1].out
+    # No unexplained count of the worker's requests (sixth evaluation, finding 14).
+    assert "PAGE: [10, 20, 30]" in report and "operations" not in report
     assert run(capsys, "session", "list")[1].out.strip() == "default"
     assert run(capsys, "session", "close")[0] == 0
     assert run(capsys, "session", "list")[1].out.strip() == "no sessions"
@@ -173,6 +175,44 @@ def test_verify_explains_why_old_text_does_not_match(workspace, capsys):
     assert code == 2 and "literal backslash-n" in out.err
     code, out = run(capsys, *args, "--old", "nothing like this", "--new", "x")
     assert code == 2 and "matched 0 times" in out.err
+    # Which condition failed (sixth evaluation, finding 11): an edit that changes nothing.
+    code, out = run(capsys, *args, "--old", "page * page_size", "--new", "page * page_size")
+    assert code == 2 and "--new equals --old" in out.err and "matched" not in out.err
+    assert "--baseline" in out.err
+    code, out = run(capsys, *args, "--old", "page_size", "--new", "page_size")
+    assert code == 2 and "--old matched 5 times" in out.err and "--new equals --old" in out.err
+
+
+def test_verify_baseline_checks_the_unedited_program(workspace, capsys):
+    # Sixth evaluation, finding 5: whether the checker fails on the program as it is.
+    args = [
+        "verify",
+        workspace / "pagination_bug.py",
+        "--check",
+        workspace / "verify_pagination.py",
+    ]
+    code, out = run(capsys, *args, "--baseline")
+    assert code == 1 and "passed: False  stage: verification" in out.out
+    assert "baseline: the unedited program, no edit (the checker rejects it" in out.out
+    assert "diff:" not in out.out and "checker exit: 1" in out.out
+    code, out = run(capsys, *args, "--baseline", "--json")
+    result = json.loads(out.out)
+    assert code == 1 and result["baseline"] is True and result["passed"] is False
+    assert result["diff"] == "" and result["exit_code"] == 1
+    code, out = run(capsys, *args, "--baseline", "--old", "page", "--new", "x")
+    assert code == 2 and "leave out --old/--new" in out.err
+    code, out = run(capsys, *args)
+    assert code == 2 and "or --baseline" in out.err
+    # Review 1: a checker that crashes rejects nothing; only the failure is reported.
+    broken = workspace / "broken_check.py"
+    broken.write_text("import no_such_module_anywhere\n")
+    code, out = run(capsys, *args[:2], "--check", broken, "--baseline")
+    assert code == 1 and "ModuleNotFoundError" in out.out, out.out
+    assert "baseline: the unedited program, no edit\n" in out.out + "\n", out.out
+    assert "rejects it" not in out.out and "fails on it" not in out.out
+    with pytest.raises(SystemExit):
+        run(capsys, "verify", "--help")
+    assert "(--old OLD --new NEW [--old OLD --new NEW ...] | --baseline)" in capsys.readouterr().out
 
 
 def test_session_continue_reports_where_it_stopped(workspace, capsys):

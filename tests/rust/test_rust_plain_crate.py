@@ -135,6 +135,20 @@ def test_a_crate_without_tests_is_verified_by_its_checker_alone(plain, capsys):
 
 
 @pytest.mark.timeout(300)
+def test_verify_baseline_builds_and_checks_the_unedited_crate(plain, capsys):
+    # Sixth evaluation, finding 5: whether the checker fails on the program as it is,
+    # before a fix's `passed: True` is trusted (an agent made a whitespace-only edit).
+    common = ["verify", str(plain), "--check", str(plain / "check.py"), "--baseline"]
+    code, result = run(capsys, *common)
+    assert code == 1 and result["passed"] is False and result["baseline"] is True, result
+    assert result["stage"] == "verification" and "RUNS:2" in result["checker"]["error"]
+    assert result["diff"] == "" and result["language"] == "rust"
+    (plain / "src/main.rs").write_text(MAIN.replace('shout("ab")', 'shout("abc")'))
+    code, result = run(capsys, *common)
+    assert code == 0 and result["passed"] is True and result["baseline"] is True, result
+
+
+@pytest.mark.timeout(300)
 def test_tests_found_by_cargos_discovery_run_in_verify(plain, capsys):
     (plain / "tests").mkdir()
     (plain / "tests/smoke.rs").write_text(
@@ -3184,8 +3198,15 @@ def test_a_generic_function_is_one_scope_with_its_blocks_lines(plain, capsys):
     # Review 4: a macro defined inside the function keeps its lines (its expansion
     # stops there in this frame); a function a macro declares runs its argument's code
     # on the invoking line, past other functions, so its blocks give no span.
-    ((first, _),) = scopes["inside"]["spans"]["i"]
-    assert first <= line_of(GENERIC_SPANS, "// TWICE_BODY"), scopes["inside"]
+    # The loop header's line, between the expansion's and the body's, runs code outside
+    # the loop variable's block, so its lines are two spans (eval 6, finding 17). The
+    # later one starts right after it: `let s = twice!(i);` has no code of its own (the
+    # macro's is on its definition's line), and a stop there is made on the next line,
+    # in the block (review of the eval-6 fixes: it was left out).
+    spans = scopes["inside"]["spans"]["i"]
+    assert spans[0][0] <= line_of(GENERIC_SPANS, "// TWICE_BODY"), scopes["inside"]
+    body = line_of(GENERIC_SPANS, "let s = twice!(i);")
+    assert spans[-1] == [body, body + 1], scopes["inside"]
     assert "spans" not in scopes["triple"], scopes["triple"]
 
 
@@ -3670,7 +3691,8 @@ def test_reference_parameters_preview_and_callers_locals_do_not(plain, capsys):
         # The innermost frame's inspection lists previews with their marker.
         assert main(["session", "inspect", "--frame", "1"]) == 0
         text = capsys.readouterr().out
-        assert "s: chars::Span * = Span { start: 2, end: 3 }  [memory]" in text, text
+        # Its Rust type, from the build's IR (sixth evaluation, finding 13).
+        assert "s: &chars::Span = Span { start: 2, end: 3 }  [memory]" in text, text
     finally:
         main(["session", "close"])
         capsys.readouterr()
@@ -4472,6 +4494,9 @@ def test_an_async_bodys_locals_not_kept_across_an_await_are_withheld(plain, caps
         assert _withheld(named["tmp"], "`.await`", "leftovers"), rows
         assert "evaluable" not in copy and "evaluable" not in named["tmp"], rows
         assert _withheld(named["trio"], "`.await`", "leftovers"), rows
+        # Never marked `[settable]`, and nothing in them is listed to be marked (#141).
+        for row in (copy, named["tmp"], named["trio"]):
+            assert row["settable"] is False and row["variablesReference"] == 0, row
         # Nothing to change: the program assigns it before reading it again. Nor in an
         # array or struct local withheld so (#105's changes to fields and elements).
         assert main(["session", "set", "tmp=7", "--json"]) != 0
@@ -4481,10 +4506,13 @@ def test_an_async_bodys_locals_not_kept_across_an_await_are_withheld(plain, caps
         assert error["code"] == "MUTATION_REJECTED", error
         assert "'trio' has no value here" in error["message"], error
         assert "`.await`" in error["message"], error
-        code, found = run(capsys, "session", "get", "tmp", "before")
+        code, found = run(capsys, "session", "get", "tmp", "before", "trio[0]")
         found = {row["selector"]: row for row in found}
         assert "no value yet" in found["tmp"]["error"] and "`.await`" in found["tmp"]["error"]
         assert found["before"]["value"] == "10", found
+        # An element of a withheld local: no value, and never settable (#141's marks).
+        assert "has no value here" in found["trio[0]"]["error"], found
+        assert found["tmp"]["settable"] is False and found["trio[0]"]["settable"] is False
         # A caller frame of the resumed poll (stopped in a function it calls): the same.
         main(["session", "continue", "--to", str(line_of(ASYNC_SCALARS, "// M132_CHURN"))])
         capsys.readouterr()
@@ -4622,3 +4650,209 @@ def test_async_locals_after_several_awaits_in_loops_closures_and_blocks(plain, c
     assert _withheld(rows[3], "`.await`", "leftovers"), rows
     rows = rows_at("M132_BLOCK")
     assert shown(rows) == [("w", "11"), ("inner", None)] and _withheld(rows[1], "`.await`")
+
+
+REFERENCE_TYPES = """#[derive(Debug, Clone, Copy)]
+pub struct Window {
+    start: u64,
+    count: u32,
+}
+
+pub struct Limiter {
+    width: u64,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct Pair<T> {
+    a: T,
+    b: T,
+}
+
+impl Limiter {
+    fn allow(&mut self, w: &mut Window, now: u64) -> bool {
+        let fresh = now - w.start > self.width; // RT_ALLOW
+        if fresh {
+            w.start = now;
+            w.count = 0;
+        }
+        w.count += 1;
+        w.count <= 2
+    }
+}
+
+fn peek(w: &Window, v: &Vec<u64>) -> u64 {
+    w.start + v[0] // RT_PEEK
+}
+
+fn swap<T: Copy + std::fmt::Debug>(p: &mut Pair<T>) {
+    let t = p.a; // RT_GENERIC
+    p.a = p.b;
+    p.b = t;
+}
+
+fn main() {
+    let mut limiter = Limiter { width: 10 };
+    let mut w = Window { start: 0, count: 0 };
+    let ok = limiter.allow(&mut w, 10);
+    let v = vec![5u64];
+    let mut p = Pair { a: 1i8, b: 2i8 };
+    swap(&mut p);
+    println!("{} {} {:?}", ok, peek(&w, &v), p);
+}
+"""
+
+
+@pytest.mark.timeout(300)
+def test_reference_parameters_show_their_rust_types(plain, capsys):
+    # Sixth evaluation, finding 13: a `&mut Window` parameter's type showed as LLDB's
+    # `limiter::Window *`. The build's IR declares each instantiation's own type.
+    (plain / "src/main.rs").write_text(REFERENCE_TYPES)
+    expected = {
+        "RT_ALLOW": {
+            "w": ("&mut chars::Window", "chars::Window *"),
+            "self": ("&mut chars::Limiter", "chars::Limiter *"),
+            "now": ("u64", "unsigned long"),
+        },
+        "RT_PEEK": {
+            "w": ("&chars::Window", "chars::Window *"),
+            "v": (
+                "&alloc::vec::Vec<u64, alloc::alloc::Global>",
+                "alloc::vec::Vec<unsigned long, alloc::alloc::Global> *",
+            ),
+        },
+        # A generic body: the instantiation's own type (`Pair<i8>`, LLDB's `Pair<char>`).
+        "RT_GENERIC": {"p": ("&mut chars::Pair<i8>", "chars::Pair<char> *")},
+    }
+    for marker, types in expected.items():
+        at = f"src/main.rs:{line_of(REFERENCE_TYPES, '// ' + marker)}"
+        code, result = run(
+            capsys, "probe", str(plain), "--at", at, "--capture", ",".join(types), "--quiet"
+        )
+        assert code == 0, result.get("error")
+        rows = {row["selector"]: row for row in result["rows"]}
+        shown = {name: (rows[name]["type"], rows[name].get("debugger_type")) for name in types}
+        assert shown == types, (marker, rows)
+    at = f"src/main.rs:{line_of(REFERENCE_TYPES, '// RT_ALLOW')}"
+    assert main(["session", "start", str(plain), "--at", at]) == 0
+    try:
+        capsys.readouterr()
+        assert main(["session", "inspect"]) == 0
+        assert "  w: &mut chars::Window = " in capsys.readouterr().out
+    finally:
+        main(["session", "close"])
+
+
+MACRO_BINDINGS = """fn count(args: &[String]) -> usize {
+    let f = || args.len();
+    println!("{}", f());
+    f()
+}
+
+fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    let n = args.len();
+    println!("{} {}", n, count(&args));
+    let g = move || {
+        eprintln!("{}", args.len());
+        args.len()
+    };
+    let (args2, args) = (1, 2);
+    println!("{} {}", g(), args + args2);
+}
+"""
+
+
+@pytest.mark.timeout(300)
+def test_describe_leaves_out_a_macros_own_bindings(plain, capsys):
+    # Sixth evaluation, finding 12: `describe` listed `println!`'s `args`
+    # (`core::fmt::rt::Argument[1]`, `(&usize)`) beside the program's own `args`.
+    (plain / "src/main.rs").write_text(MACRO_BINDINGS)
+    code, result = run(capsys, "describe", str(plain))
+    assert code == 0, result
+    types = {(s["scope"], s["lines"][0]): s.get("types", {}) for s in result["scopes"]}
+    vec = "alloc::vec::Vec<alloc::string::String, alloc::alloc::Global>"
+    # The program's own: a parameter, a `let`, a tuple pattern and a closure's capture.
+    assert types[("chars::count", 1)]["args"] == "&[alloc::string::String]", types
+    assert types[("chars::main", line_of(MACRO_BINDINGS, "fn main"))]["args"] == f"{vec} or i32"
+    closure = ("chars::main::{{closure}}", line_of(MACRO_BINDINGS, "let g = move"))
+    assert types[closure]["args"] == vec, types
+    assert not any(
+        "Argument" in kind or kind.startswith("(&")
+        for each in types.values()
+        for kind in each.values()
+    ), types
+
+
+COLLAPSED_MACRO = """#[collapse_debuginfo(yes)]
+macro_rules! mine {
+    ($e:expr) => {{
+        let args = $e;
+        let kind = args * 2;
+        kind
+    }};
+}
+
+fn helper(n: u32) -> u32 {
+    let x = mine!(n);
+    x + 1
+}
+
+fn main() {
+    let total = helper(2);
+    assert_eq!(total, 5);
+    println!("{}", total);
+}
+"""
+
+
+@pytest.mark.timeout(300)
+def test_describe_keeps_the_bindings_of_the_programs_own_collapsed_macro(plain, capsys):
+    # Review 1 of the sixth evaluation's PR: a `#[collapse_debuginfo(yes)]` macro of the
+    # crate's own has its bindings placed on the invoking line by the debug information
+    # and on its definition's lines by the MIR, and `args` and `kind` are names std's
+    # macros bind too: `helper` lost them.
+    (plain / "src/main.rs").write_text(COLLAPSED_MACRO)
+    code, result = run(capsys, "describe", str(plain))
+    assert code == 0, result
+    scopes = {s["scope"]: s for s in result["scopes"]}
+    assert scopes["chars::helper"]["names"] == ["args", "kind", "n", "x"], scopes
+    # std's macros' own (`assert_eq!`'s `kind`, `left_val`; `println!`'s `args`) stay out.
+    assert scopes["chars::main"]["names"] == ["total"], scopes["chars::main"]
+
+
+BYTE_REFERENCES = """fn bytes(b8: &u8, i8v: &i8, ch: &char, n: &i64) -> i64 {
+    let total = *b8 as i64 + *i8v as i64 + *ch as i64 + *n; // BYTES
+    total
+}
+
+fn main() {
+    let a = 200u8;
+    let b = -3i8;
+    let c = 'z';
+    let d = 7i64;
+    println!("{}", bytes(&a, &b, &c, &d));
+}
+"""
+
+
+@pytest.mark.timeout(300)
+def test_a_reference_to_a_byte_or_char_shows_its_address_not_a_c_string(plain, capsys):
+    # Review 1 of the sixth evaluation's PR: LLDB reads `&u8` (`unsigned char *`) and
+    # `&char` (`char32_t *`) as C strings, `0x… "\\xc8\\xfd…"`: past the one value they
+    # point at, unrelated memory, shown under a Rust type.
+    (plain / "src/main.rs").write_text(BYTE_REFERENCES)
+    at = f"src/main.rs:{line_of(BYTE_REFERENCES, '// BYTES')}"
+    names = ("b8", "i8v", "ch", "n")
+    code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", ",".join(names))
+    assert code == 0, result.get("error")
+    rows = {row["selector"]: row for row in result["rows"]}
+    assert [rows[name]["type"] for name in names] == ["&u8", "&i8", "&char", "&i64"], rows
+    assert all(re.fullmatch(r"0x[0-9a-f]+", rows[name]["value"]) for name in names), rows
+    assert main(["session", "start", str(plain), "--at", at]) == 0
+    try:
+        capsys.readouterr()
+        assert main(["session", "get", "b8", "ch", "--json"]) == 0
+        values = [row["children"][0]["value"] for row in json.loads(capsys.readouterr().out)]
+        assert values == ["200", "'z'"], values
+    finally:
+        main(["session", "close"])
