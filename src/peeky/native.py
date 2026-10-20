@@ -865,55 +865,8 @@ def _own_lines(dies, entry, numbers, macro_lines=frozenset()):
     return numbers
 
 
-# Where a comment, string or char literal may start: `r"`/`br#"` only after a non-word.
-_RUST_LEXEME = re.compile(r"//|/\*|(?<!\w)b?r(#*)\"|\"|'")
-_RUST_BLOCK_EDGE = re.compile(r"/\*|\*/")
-_RUST_QUOTED = re.compile(r'"(?:[^"\\]|\\.)*"', re.DOTALL)
-_RUST_CHAR = re.compile(r"'(?:\\(?:u\{[0-9a-fA-F]{1,6}\}|x[0-9a-fA-F]{2}|.)|[^\\'\n])'")
 _MACRO_RULES = re.compile(r"\bmacro_rules!\s*[A-Za-z_][A-Za-z0-9_]*\s*([{(\[])")
 _CLOSING = {"{": "}", "(": ")", "[": "]"}
-
-
-def _rust_code(text):
-    """Rust source with comments, strings and char literals blanked (newlines kept, so
-    lines keep their numbers), or None if one does not end."""
-    kept, at = [], 0
-    while (found := _RUST_LEXEME.search(text, at)) is not None:
-        start, token = found.start(), found[0]
-        if token == "//":
-            end = text.find("\n", start)
-            end = len(text) if end < 0 else end
-        elif token == "/*":
-            depth, end = 1, start + 2
-            while depth:
-                edge = _RUST_BLOCK_EDGE.search(text, end)
-                if edge is None:
-                    return None
-                depth += 1 if edge[0] == "/*" else -1
-                end = edge.end()
-        elif token == "'":
-            literal = _RUST_CHAR.match(text, start)
-            if literal is None:
-                # A lifetime (`'a`).
-                kept.append(text[at : start + 1])
-                at = start + 1
-                continue
-            end = literal.end()
-        elif token == '"':
-            literal = _RUST_QUOTED.match(text, start)
-            if literal is None:
-                return None
-            end = literal.end()
-        else:
-            close = text.find('"' + found[1], found.end())
-            if close < 0:
-                return None
-            end = close + 1 + len(found[1])
-        kept.append(text[at:start])
-        kept.append(re.sub(r"[^\n]", " ", text[start:end]))
-        at = end
-    kept.append(text[at:])
-    return "".join(kept)
 
 
 def _macro_rules_lines(text):
@@ -922,7 +875,9 @@ def _macro_rules_lines(text):
     unclosed literal, comment or bracket."""
     if "macro_rules" not in text:
         return set()
-    code = _rust_code(text)
+    from peeky.rust_lexer import code_only
+
+    code = code_only(text)
     if code is None:
         return None
     lines = set()

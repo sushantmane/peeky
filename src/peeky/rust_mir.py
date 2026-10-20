@@ -2001,7 +2001,7 @@ class OwnedLocals:
         # inlined copy of it (#116) need not share: then any place of the line counts.
         facts = self._facts(function, line, column) if breakpoint and not function.copies else None
         if captures:
-            positions = self._positions(site, line, facts)
+            positions = self._positions(site, line, facts) or ()
             if any(
                 body.dropped_through(root, position) for root in captures for position in positions
             ):
