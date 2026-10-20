@@ -38,9 +38,9 @@ def _stored(target):
 
 
 def _bound_in_body(function):
-    """(names a function's own code binds outside comprehension targets, names only a
-    comprehension's `for` target binds there), from its syntax; nested scopes excluded,
-    but their names (`def g`, `class C`) bind here."""
+    """(names a function's own code binds outside comprehension targets, names its
+    comprehensions' `for` targets bind), from its syntax; nested scopes excluded, but
+    their names (`def g`, `class C`) bind here."""
     outside, targets = set(), set()
     pending = list(function.body)
     while pending:
@@ -77,7 +77,7 @@ def _bound_in_body(function):
         elif isinstance(node, ast.MatchMapping) and node.rest:
             outside.add(node.rest)
         pending.extend(ast.iter_child_nodes(node))
-    return outside, targets - outside
+    return outside, targets
 
 
 def _build(text, path):
@@ -121,11 +121,15 @@ def _build(text, path):
 
 
 def _bindings(table, chain, node):
-    outside, comprehension_only = _bound_in_body(node)
-    bindings = {}
+    outside, targets = _bound_in_body(node)
+    comprehension_only = targets - outside
+    bindings, globals_ = {}, set()
     for symbol in table.get_symbols():
         name = symbol.get_name()
         if symbol.is_global():
+            # The function reads it from its globals, whatever a comprehension or a
+            # generator expression in it binds under that name in its own scope.
+            globals_.add(name)
             continue
         if name == "__class__" and symbol.is_free():
             bindings[name] = ("class cell used", None)
@@ -147,26 +151,35 @@ def _bindings(table, chain, node):
             bindings[name] = ("comprehension", None)
         else:
             bindings[name] = ("local", None)
+    # Names the frame may list: a comprehension that runs in the function's frame
+    # (Python 3.12+) lists its variable there while it runs.
+    own = set(bindings) | targets
     pending = [child for child in table.get_children() if child.get_name() in _COMPREHENSIONS]
     while pending:
         child = pending.pop()
         for symbol in child.get_symbols():
-            if not symbol.is_global() and symbol.get_name() != ".0":
-                bindings.setdefault(symbol.get_name(), ("comprehension", None))
+            name = symbol.get_name()
+            if symbol.is_global() or name == ".0":
+                continue
+            own.add(name)
+            if name not in globals_:
+                bindings.setdefault(name, ("comprehension", None))
         pending.extend(c for c in child.get_children() if c.get_name() in _COMPREHENSIONS)
-    own = frozenset(bindings)
     # A method's `__class__` cell exists only when it uses super() or __class__.
-    bindings.setdefault("__class__", ("class cell", None))
+    if "__class__" not in globals_:
+        bindings.setdefault("__class__", ("class cell", None))
     for outer in reversed(chain):
         kind = str(outer.get_type())
         if kind in ("module", "class"):
             continue
-        # A function around this one binds these: they are its, never the module's.
+        # A function around this one binds these: they are its, never the module's,
+        # unless the function declares them global.
         relation = "type parameter" if kind.startswith("type") else "enclosing"
         for symbol in outer.get_symbols():
-            if not symbol.is_global() and not symbol.get_name().startswith("."):
-                bindings.setdefault(symbol.get_name(), (relation, outer.get_name()))
-    return {"bindings": bindings, "own": own}
+            name = symbol.get_name()
+            if not symbol.is_global() and not name.startswith(".") and name not in globals_:
+                bindings.setdefault(name, (relation, outer.get_name()))
+    return {"bindings": bindings, "own": frozenset(own)}
 
 
 def _size(index):

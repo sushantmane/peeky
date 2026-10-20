@@ -1164,13 +1164,16 @@ def declared_below(table, name, source, line):
 
 def declared_unfinished(table, name, source, line, address):
     """For a caller frame at ``source:line``, inside a call that returns to ``address``
-    (unslid; None if unknown): the line of a C/C++ local of that name declared at or
-    above the frame's line whose code may not have run yet, else None.
+    (unslid; None if unknown): ``(line, has_code)`` for a C/C++ local of that name whose
+    declaration may not have run yet, else None.
 
-    The frame's own line always counts, and so does a line the function still has code
-    of at or after ``address``: `long r =` / `f(x);` stores `r` on the declaration's
-    line after the call returns, and so does a designated initializer over several
-    lines. With the address or its function unknown, every such declaration counts."""
+    Declared at or above the frame's line: the frame's own line always counts, and so
+    does a line the function still has code of at or after ``address`` (`long r =` /
+    `f(x);` stores `r` on the declaration's line after the call returns, and so does a
+    designated initializer over several lines). Declared anywhere on a line with no code
+    of its own: an array of structs, a nested struct or a 2-D array is stored element by
+    element on its elements' lines, so nothing places it. With the address or its
+    function unknown, every declaration at or above the line counts."""
     shown = _SHADOWED.fullmatch(name)
     base = shown[1] if shown else name
     owners = [function for function in table if (source, line) in function["rows"]]
@@ -1185,15 +1188,18 @@ def declared_unfinished(table, name, source, line, address):
     else:
         # The function returned to is not identified: every declaration counts.
         address = None
+        owners = owners or [function for function in table if base in function["locals"]]
     for function in owners:
         for declared_in, at, automatic in function["locals"].get(base, ()):
-            if not automatic or declared_in != source or type(at) is not int or at > line:
+            if not automatic or declared_in != source or type(at) is not int:
                 continue
             if shown and at != int(shown[2]):
                 continue
             span = function["rows"].get((source, at))
-            if at == line or address is None or (span is not None and span[1] >= address):
-                return at
+            if span is None:
+                return at, False
+            if at <= line and (at == line or address is None or span[1] >= address):
+                return at, True
     return None
 
 
@@ -1893,10 +1899,18 @@ class NativeSession:
         if type(line) is not int:
             return None
         if not innermost and (
-            at := declared_unfinished(
+            unfinished := declared_unfinished(
                 self.declarations, name, source.as_posix(), line, self._unslid(frame)
             )
         ):
+            at, has_code = unfinished
+            if not has_code:
+                return (
+                    f"declared on line {at}, which has no code of its own (an aggregate is "
+                    "stored element by element on its elements' lines), so this caller "
+                    "frame cannot tell whether it is initialized yet: its storage may hold "
+                    "leftovers; read it in the frame that is running once it is stored"
+                )
             # A caller is inside a call: `long r = f(x);` stores `r` only after it.
             return (
                 f"declared on line {at}, whose code this caller frame has not finished (it "

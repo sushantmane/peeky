@@ -1675,6 +1675,65 @@ def test_references_read_only_while_their_target_stands(plain, capsys):
     assert variables["item"].get("view") == "unproven", variables["item"]
 
 
+CALLER_REFS = """#[derive(Debug)]
+pub struct Pt {
+    x: i64,
+    y: i64,
+}
+
+#[inline(never)]
+fn churn() -> i64 {
+    let fresh = Box::leak(Box::new(Pt { x: 777, y: 888 }));
+    fresh.x + fresh.y + Box::leak(Box::new([777i64; 4]))[0] // CHURN
+}
+
+fn dropped() -> i64 {
+    let b = Box::new(Pt { x: 7, y: 8 });
+    let r: &Pt = &*b;
+    let k = r.x;
+    drop(b);
+    k + churn()
+}
+
+fn alive() -> i64 {
+    let b = Box::new(Pt { x: 5, y: 6 });
+    let r: &Pt = &*b;
+    let k = churn();
+    k + r.x + b.y
+}
+
+fn main() {
+    println!("{} {}", dropped(), alive());
+}
+"""
+
+
+@pytest.mark.timeout(300)
+def test_a_callers_references_are_judged_as_the_stopped_frames_are(plain, capsys):
+    # #104 review: the #110 gate ran only in the innermost frame, so `--frame 1` read a
+    # reference into a dropped Box through freed memory (`r.x` showed 777).
+    (plain / "src/main.rs").write_text(CALLER_REFS)
+    at = f"src/main.rs:{line_of(CALLER_REFS, '// CHURN')}"
+    assert main(["session", "start", str(plain), "--at", at]) == 0
+    capsys.readouterr()
+    try:
+        code, rows = run(capsys, "session", "get", "--frame", "1", "r", "r.x", "k")
+        found = {row["selector"]: row for row in rows}
+        assert "::dropped" in found["r"]["function"], found
+        assert found["r"].get("view") == "unproven", found["r"]
+        assert "value" not in found["r.x"] and "777" not in str(found["r.x"]), found["r.x"]
+        assert found["k"]["value"] == "7"
+        # Still used after the call: what it points at stands, and it reads.
+        assert main(["session", "continue"]) == 0
+        capsys.readouterr()
+        code, rows = run(capsys, "session", "get", "--frame", "1", "r.x", "b")
+        assert rows[0].get("value") == "5", rows
+        # A Box's proofs stay the innermost frame's: a caller's shows only its address.
+        assert rows[1].get("view") == "unproven", rows
+    finally:
+        main(["session", "close"])
+
+
 REVIEWED_REFS = """use std::ptr::NonNull;
 
 #[derive(Debug, Clone, Copy)]

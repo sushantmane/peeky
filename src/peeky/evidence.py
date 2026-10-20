@@ -17,7 +17,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import quote
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 MAX_RUNS = 500
 DEFAULT_ROWS = 200
 MAX_ROWS = 10000
@@ -173,8 +173,9 @@ _DDL = (
 # before opening it read-only. Version 2 added runs.edit; version 3 rebuilt the views with
 # `candidate` (an early version 2 had the column but the old views); version 4 made
 # captures.num NUMERIC; version 5 added language to the views; version 6 added
-# captures.identity and captures.scope. Views name columns of the newest captures
-# table, so earlier steps only drop them and the last step creates them.
+# captures.identity and captures.scope; version 7 makes identity an INTEGER where an
+# early version 6 stored it as TEXT (`list@7`) without scope. Views name columns of the
+# newest captures table, so earlier steps only drop them and the last step creates them.
 _DROP_VIEWS = ("DROP VIEW IF EXISTS last_run", "DROP VIEW IF EXISTS evidence")
 
 
@@ -183,6 +184,36 @@ def _add_identity(connection):
     for column, kind in (("identity", "INTEGER"), ("scope", "TEXT")):
         if column not in columns:
             connection.execute(f"ALTER TABLE captures ADD COLUMN {column} {kind}")
+
+
+def _identity_number(value):
+    """An identity as an early version 6 stored it (`list@7`), as its number (7)."""
+    if type(value) is int:
+        return value
+    found = re.search(r"@([0-9]{1,18})$", value) if isinstance(value, str) else None
+    return int(found[1]) if found else None
+
+
+def _integer_identity(connection):
+    types = {
+        row[1]: str(row[2]).upper() for row in connection.execute("PRAGMA table_info(captures)")
+    }
+    if types.get("identity", "INTEGER") == "INTEGER":
+        _add_identity(connection)
+        return
+    # Rebuilt in rowid order (capture order), with the number alone as the identity.
+    columns = (
+        "run_id, hit, phase, line, function, selector, type, value, num, unavailable, error, view"
+    )
+    connection.execute(_CAPTURES.format("captures_v7"))
+    connection.execute(
+        f"INSERT INTO captures_v7 ({columns}, identity) SELECT {columns}, "
+        "peeky_identity(identity) FROM captures ORDER BY rowid"
+    )
+    connection.execute("DROP TABLE captures")
+    connection.execute("ALTER TABLE captures_v7 RENAME TO captures")
+    for statement in _CAPTURE_INDEXES:
+        connection.execute(statement)
 
 
 _MIGRATIONS = {
@@ -202,7 +233,8 @@ _MIGRATIONS = {
         *_CAPTURE_INDEXES,
     ),
     4: _DROP_VIEWS,
-    5: (*_DROP_VIEWS, _add_identity, _EVIDENCE_VIEW, _LAST_RUN_VIEW),
+    5: (*_DROP_VIEWS, _add_identity),
+    6: (*_DROP_VIEWS, _integer_identity, _EVIDENCE_VIEW, _LAST_RUN_VIEW),
 }
 
 _LATEST = "(SELECT MAX(run_id) FROM runs)"
@@ -548,6 +580,7 @@ def _ensure(path):
     connection = _connect(path)
     # Migrations recompute numbers exactly as a new run would.
     connection.create_function("peeky_number", 1, _number, deterministic=True)
+    connection.create_function("peeky_identity", 1, _identity_number, deterministic=True)
     try:
         if connection.execute("PRAGMA user_version").fetchone()[0] != SCHEMA_VERSION:
             # Rechecked under the write lock: another process may have just created it.

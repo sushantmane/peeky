@@ -1011,3 +1011,51 @@ def test_python_identities_and_scopes_are_stored_and_a_schema_5_store_gains_them
     assert "its class is reassigned" in columns["identity"]
     assert "'globals'" in columns["scope"]
     assert "captures.identity" in described["functions"]["object_ref(text)"]
+
+
+def test_a_store_from_the_first_schema_6_gains_an_integer_identity_and_scope(store):
+    # Review of #104 (round 2): its first build wrote schema 6 with `identity TEXT`
+    # (`list@7`) and no `scope`, and later code skipped the migration ("table captures
+    # has 13 columns but 14 values").
+    run = captured([(1, "observed", "seen", "['a']"), (1, "observed", "key", "'a'")])
+    evidence.record(store, run, language="python")
+    connection = sqlite3.connect(store)
+    connection.executescript(
+        """
+        DROP VIEW last_run; DROP VIEW evidence;
+        CREATE TABLE early (
+            run_id INTEGER NOT NULL, hit INTEGER, phase TEXT, line INTEGER, function TEXT,
+            selector TEXT, type TEXT, value TEXT, num NUMERIC, unavailable INTEGER NOT NULL,
+            error TEXT, view TEXT, identity TEXT);
+        INSERT INTO early SELECT run_id, hit, phase, line, function, selector, type, value,
+            num, unavailable, error, view,
+            CASE WHEN selector = 'seen' THEN 'list@7' END FROM captures;
+        DROP TABLE captures;
+        ALTER TABLE early RENAME TO captures;
+        CREATE VIEW evidence AS SELECT c.run_id, r.started_at, r.label, r.program,
+            c.line, r.status, c.hit, c.phase, c.function, c.selector, c.type, c.value, c.num,
+            c.unavailable, c.error, c.view, c.identity, r.args, r.sets,
+            r.artifact_manifest_id, r.source_sha256, r.edit IS NOT NULL AS candidate,
+            r.language FROM captures c JOIN runs r ON r.run_id = c.run_id;
+        CREATE VIEW last_run AS SELECT * FROM evidence
+            WHERE run_id = (SELECT MAX(run_id) FROM runs);
+        PRAGMA user_version = 6;
+        """
+    )
+    connection.close()
+    rows = evidence.query(
+        store, "SELECT selector, identity, typeof(identity) AS kind, scope FROM last_run"
+    )["rows"]
+    assert rows == [
+        {"selector": "seen", "identity": 7, "kind": "integer", "scope": None},
+        {"selector": "key", "identity": None, "kind": "null", "scope": None},
+    ]
+    run["rows"][0].update(identity=7, scope="globals")
+    evidence.record(store, run, language="python")
+    rows = evidence.query(store, "SELECT selector, identity, scope FROM last_run")["rows"]
+    assert rows[0] == {"selector": "seen", "identity": 7, "scope": "globals"}
+    connection = sqlite3.connect(store)
+    assert connection.execute("PRAGMA user_version").fetchone() == (evidence.SCHEMA_VERSION,)
+    indexes = {row[0] for row in connection.execute("SELECT name FROM sqlite_master")}
+    assert {"captures_run", "captures_selector"} <= indexes and "captures_v7" not in indexes
+    connection.close()

@@ -207,6 +207,81 @@ def test_a_callers_declaration_over_several_lines_is_withheld_until_it_is_stored
     assert not any(v.get("settable") for hit in shown for v in shown[hit].values())
 
 
+AGGREGATES = """#include <stdio.h>
+
+struct pair { long x, y; };
+struct outer { struct pair in; };
+
+__attribute__((noinline)) static long twice(long v) {
+    long w = v * 2;
+    return w;
+}
+
+__attribute__((noinline)) static void scribble(void) {
+    volatile long junk[96];
+    for (int i = 0; i < 96; i++) junk[i] = 0x5150 + i;
+}
+
+__attribute__((noinline)) static long run(void) {
+    struct outer o = {
+        .in = {
+            .x = twice(1),
+            .y = twice(2),
+        },
+    };
+    struct pair ps[2] = {
+        { twice(3), twice(4) },
+        { twice(5), twice(6) },
+    };
+    long grid[2][2] = {
+        { twice(7), twice(8) },
+        { twice(9), twice(10) },
+    };
+    long total = 0;
+    for (int k = 0; k < 2; k++) {
+        total += twice(k);
+    }
+    printf("%ld %ld %ld %ld %ld\\n", o.in.y, ps[1].y, grid[1][1], grid[0][0], total);
+    return o.in.x;
+}
+
+int main(void) {
+    scribble();
+    return (int)(run() & 1);
+}
+"""
+
+
+@pytest.mark.timeout(180)
+def test_a_callers_aggregate_stored_element_by_element_is_withheld(bucket, capsys):
+    # Review of #104 (round 2): clang puts no code on the declaration line of an array of
+    # structs, a 2-D array or a nested struct, so `--frame 1` showed `o.in.y = 20905`,
+    # `ps[1].x = -1530060163171811189` and `grid[1][0] = 20908` while being stored.
+    path = bucket.parent / "frames3.c"
+    path.write_text(AGGREGATES)
+    bucket.unlink()
+    shown = {}
+    for hit in (2, 5, 9, 11):
+        assert main(["session", "start", str(path), "--at", "8", "--hit", str(hit)]) == 0
+        capsys.readouterr()
+        try:
+            assert main(["session", "inspect", "--frame", "1", "--json"]) == 0
+            snapshot = json.loads(capsys.readouterr().out)
+        finally:
+            main(["session", "close"])
+            capsys.readouterr()
+        shown[hit] = {v["name"]: v for s in snapshot["scopes"] for v in s["variables"]}
+    for hit in (2, 5, 9, 11):
+        for name, line in (("o", 17), ("ps", 23), ("grid", 27)):
+            variable = shown[hit][name]
+            assert variable["unavailable"] and variable.get("value") is None, (hit, variable)
+            assert (
+                f"declared on line {line}, which has no code of its own" in (variable["reason"])
+            ), (hit, variable)
+    # A loop's counter while its body calls: the increment follows the body.
+    assert shown[11]["total"]["value"] == "0" and shown[11]["k"]["unavailable"]
+
+
 GOTO = """#include <stdio.h>
 int main(void) {
     int i = 0;

@@ -4,6 +4,7 @@ import json
 import os
 import re
 import shutil
+import sys
 import time
 
 import pytest
@@ -367,3 +368,50 @@ def test_probe_rows_store_identity_for_sql(program, capsys, tmp_path):
         "--json",
     )
     assert json.loads(out.out)["rows"] == [{"aliased": 1, "equal_is_same": 0}]
+
+
+GENERATED = """\
+X = "global-x"
+Y = "global-y"
+G = "global-g"
+
+
+def f(data):
+    squares = [X for X in range(3)]
+    total = sum(Y for Y in range(3))
+    inside = [
+        X * 2
+        for X in data
+    ]
+    return X, Y, G, squares, total, inside
+
+
+print(f([1, 2]))
+"""
+
+
+def test_a_global_read_beside_a_generator_of_that_name_is_read(tmp_path):
+    # Review of #104 (round 2): `sum(Y for Y in ...)` runs in its own frame, and f reads
+    # the global Y (the program prints it), but the probe refused it as a comprehension's.
+    from peeky.probe import Probe, run_probe
+
+    (tmp_path / "c2.py").write_text(GENERATED)
+    result = run_probe(tmp_path, Probe("c2.py", 13, ("Y", "X", "squares"), hits=1))
+    assert result["status"] == "completed", result.get("error")
+    values = {row["selector"]: row.get("value", row.get("error")) for row in result["rows"]}
+    assert values == {"Y": "'global-y'", "X": "'global-x'", "squares": "[0, 1, 2]"}
+    assert "'global-x', 'global-y'" in result["output"]
+
+
+@pytest.mark.skipif(sys.version_info < (3, 12), reason="comprehensions run in their own frame")
+def test_a_global_read_from_inside_an_inlined_comprehension(tmp_path):
+    # Review of #104 (round 2): inside `[X * 2 for X in data]` (inlined from 3.12), X is
+    # listed though f reads the global X, and `G` was refused as "the file may have
+    # changed since it was loaded".
+    from peeky.probe import Probe, run_probe
+
+    (tmp_path / "c4.py").write_text(GENERATED)
+    result = run_probe(tmp_path, Probe("c4.py", 10, ("G", "X"), hits=1))
+    assert result["status"] == "completed", result.get("error")
+    values = [row.get("value", row.get("error")) for row in result["rows"]]
+    assert values == ["'global-g'", "1"], result["rows"]

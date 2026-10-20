@@ -82,7 +82,9 @@ class Runtime(PythonAdapter):
     def __init__(self):
         object.__setattr__(self, "innermost", [])
 
-    def view_variable(self, variable, fetch, read=None, *, frame=None, top=False, innermost=False):
+    def view_variable(
+        self, variable, fetch, read=None, *, frame=None, top=False, innermost=False, stop=None
+    ):
         if top:
             self.innermost.append((frame["id"], variable["name"], innermost))
         return None
@@ -608,3 +610,47 @@ def test_inspect_and_get_text_name_the_frame_and_identities():
     assert _read_frame({"frame": 1, "function": "main", "location": "app.py:9"}) == (
         "frame 1: main (app.py:9)"
     )
+
+
+COMPREHENSIONS = """\
+X = "global-x"
+Y = "global-y"
+
+
+def f(data):
+    squares = [X for X in range(3)]
+    total = sum(Y for Y in range(3))
+    inside = [
+        X * 2
+        for X in data
+    ]
+    return X, Y, squares, total, inside
+
+
+def outer():
+    X = "outer"
+
+    def declared():
+        global X
+        return X
+
+    return declared()
+"""
+
+
+def test_a_name_the_function_reads_from_its_globals_is_global_whatever_its_comprehensions_bind(
+    tmp_path,
+):
+    # Review of #104 (round 2): `Y` of a generator expression, which runs in its own
+    # frame, was called "the variable of a comprehension in f" where f reads the global.
+    path = tmp_path / "c2.py"
+    path.write_text(COMPREHENSIONS)
+    names, why = classify_names(path, "f", 12, ("X", "Y", "squares"), ("data", "squares"))
+    assert why is None and names == {"X": None, "Y": None, "squares": ("local", None)}
+    # Stopped inside an inlined comprehension (3.12+), its variable is listed: a name the
+    # source binds there, not a sign the file changed.
+    names, why = classify_names(path, "f", 9, ("Y", "data"), ("data", "squares", "X"))
+    assert why is None and names == {"Y": None, "data": ("parameter", None)}
+    # Declared global in a function nested in one that binds it.
+    names, why = classify_names(path, "declared", 20, ("X",))
+    assert why is None and names == {"X": None}

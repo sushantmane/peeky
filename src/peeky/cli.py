@@ -2459,8 +2459,9 @@ def main(argv=None, _job=False, _edits=None):
     actions.choices["inspect"].add_argument(
         "--globals",
         action="store_true",
-        help="Python: also list the module's globals (reading them runs their reprs in the "
-        "program, as reading locals does; `get` reads a global by name without this)",
+        help="Python: also list the module's globals. Listing them runs every global's repr "
+        "in the program, as listing locals runs theirs; `get` lists them too (all of them) "
+        "for a name missing from the locals, a misspelled one included",
     )
     for action in ("inspect", "get"):
         actions.choices[action].add_argument(
