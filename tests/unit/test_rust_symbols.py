@@ -1734,6 +1734,8 @@ def test_tuple_structs_are_unread_where_a_source_names_a_field_like_theirs():
         "#![cfg_attr(all(), feature /* x */ (macro_metavar_expr_concat))]\n",
         "#![r#feature(macro_metavar_expr_concat)]\n",
         "#![feature\n(macro_metavar_expr_concat)]\n",
+        "#![feature\u200e(macro_metavar_expr_concat)]\n",
+        "#![feature\u200f (macro_metavar_expr_concat)]\n",
         "fn main() { /* not closed\n",
     ):
         assert without_numbered_structs(layouts, [plain, gate]) == unread, gate

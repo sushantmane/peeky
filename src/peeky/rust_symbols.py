@@ -1420,7 +1420,8 @@ _NUMBERED_FIELD = re.compile(r"(?<![\w])__[0-9]+(?![\w])")
 
 
 # A nightly feature gate: `#![feature(…)]`, `#![r#feature(…)]` or one inside `cfg_attr`.
-_FEATURE = re.compile(r"(?<![\w])feature\s*\(")
+# Rust's whitespace also has U+200E and U+200F, which `\s` lacks.
+_FEATURE = re.compile(r"(?<![\w])feature[\s\u200e\u200f]*\(")
 
 
 def without_numbered_structs(layouts, texts, others=()):
