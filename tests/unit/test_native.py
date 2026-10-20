@@ -1107,3 +1107,9 @@ def test_of_the_rows_at_one_address_the_last_is_the_one_that_runs(tmp_path):
     assert sorted({row[2] for row in found}) == [25, 28, 29, 30, 38, 39, 40]
     assert {line for _, _, line in replaced} == {25, 28, 29, 39, 40}
     assert (0x401010, "main.c", 38) not in replaced
+    # Review 6: a line-0 row (no source line) is never a line, wherever it is.
+    rows = ((0x1000, 5, True), (0x1010, 0, True), (0x1010, 7, True), (0x1020, 8, True))
+    text = line_dump().split("0x0000000000401000")[0] + "".join(
+        f"0x{0x400000 + address:016x} {number} 1 1 0 0 is_stmt\n" for address, number, _ in rows
+    )
+    assert sorted({row[2] for row in _line_rows(text, tmp_path, ("main.c",))}) == [5, 7, 8]

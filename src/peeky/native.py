@@ -141,8 +141,8 @@ def _line_rows(text, workspace, declared, limit=MAX_METADATA, replaced=None):
         if not group:
             return
         *earlier, last = group
-        for address, name, number, statement, _ in earlier:
-            if name is None:
+        for address, name, number, statement, ending in earlier:
+            if name is None or ending:
                 continue
             if not last[4] and (name, number) == last[1:3]:
                 rows.append((address, name, number))
