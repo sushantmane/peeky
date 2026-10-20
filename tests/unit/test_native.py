@@ -1008,3 +1008,43 @@ def test_macho_text_address_reads_the_header_segment(tmp_path):
     (tmp_path / "q").write_bytes(header[:4] + b"\0" * 28)
     with pytest.raises(ValueError):
         macho_text_address(tmp_path / "q")
+
+
+def test_a_non_statement_row_another_row_replaces_runs_no_code(tmp_path):
+    # Review 3 of #107: GCC -O2 writes a row that is not a statement at the address of
+    # the next row (line 2 under line 3); LLDB keeps the later row there. A statement
+    # row, or one with code of its own, stays.
+    (tmp_path / "main.c").write_text("a\nb\nc\nd\ne\nf\n")
+    rows = (
+        (0x1000, 1, " is_stmt"),
+        (0x1004, 2, ""),
+        (0x1004, 3, " is_stmt"),
+        (0x1008, 4, " is_stmt"),
+        (0x1008, 3, " is_stmt"),
+        (0x100C, 6, ""),
+        (0x1010, 5, ""),
+        (0x1010, 5, " end_sequence"),
+    )
+    text = line_dump().split("0x0000000000401000")[0] + "".join(
+        f"0x{0x401000 + address:016x} {number} 1 1 0 0{flags}\n" for address, number, flags in rows
+    )
+    assert parse_lines(text, tmp_path, ("main.c",)) == {"main.c": [1, 3, 4, 6]}
+
+
+@pytest.mark.parametrize(
+    "text, lines",
+    [
+        ("fn f() {}\n", set()),
+        ('fn f() {}\nmacro_rules! m {\n    () => { "}" };\n}\nfn g() {}\n', {2, 3, 4}),
+        ("macro_rules! m { ('{') => {} }\n// macro_rules! n {\nfn g<'a>(x: &'a u8) {}\n", {1}),
+        ("macro_rules! m (\n /* ) */ () => (1)\n);\n", {1, 2, 3}),
+        ('macro_rules! m { () => { r#"}"# } }\nfn g() {}\n', {1}),
+        ('let s = "macro_rules! m {";\n', set()),
+        ("macro_rules! m {\n () => {}\n", None),
+        ("macro_rules! m { () => {} }\n/* unclosed\n", None),
+    ],
+)
+def test_a_rust_sources_macro_definitions_are_told_by_their_brackets(text, lines):
+    from peeky.native import _macro_rules_lines
+
+    assert _macro_rules_lines(text) == lines

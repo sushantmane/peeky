@@ -1416,10 +1416,34 @@ fn with_macro(n: usize) -> usize {
     total
 }
 
+fn below(n: usize) -> usize {
+    let mut total = 0;
+    for i in 0..n {
+        total += half!(i);
+    }
+    total
+}
+
+fn after(n: usize) -> usize {
+    let mut k = 0;
+    for j in 0..n {
+        k += j;
+    }
+    k
+}
+
+macro_rules! half {
+    ($x:expr) => {{
+        let h = $x / 2;
+        h
+    }};
+}
+use half;
+
 fn main() {
     let a = h(3u8);
     let b = h(4u64);
-    println!("{} {} {}", a, b, with_macro(3));
+    println!("{} {} {} {} {}", a, b, with_macro(3), below(3), after(3));
 }
 """
 
@@ -1440,3 +1464,12 @@ def test_a_generic_function_is_one_scope_with_its_blocks_lines(plain, capsys):
     # span from the blocks around it.
     scope = next(s for s in result["scopes"] if str(s.get("scope")).endswith("::with_macro"))
     assert {"i", "s", "total"} <= set(scope.get("spans", {})), scope
+    # Review 3: one defined below the function, past others, stretched its lines and
+    # spans over theirs.
+    scopes = {str(s.get("scope")).rpartition("::")[2]: s for s in result["scopes"]}
+    end = line_of(GENERIC_SPANS, "fn after(")
+    assert scopes["below"]["lines"][1] < end, scopes["below"]
+    assert all(
+        last < end for spans in scopes["below"].get("spans", {}).values() for _, last in spans
+    ), scopes["below"]
+    assert scopes["after"]["lines"][1] < line_of(GENERIC_SPANS, "macro_rules! half"), scopes

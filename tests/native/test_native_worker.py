@@ -5,6 +5,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -836,6 +837,66 @@ def test_describe_gives_the_lines_of_locals_declared_in_nested_blocks(
     assert "extra" not in scopes["main"].get("spans", {}), scopes["main"]
     assert "j" in scopes["twice"]["spans"], scopes["twice"]
 
+
+def test_a_gcc_optimized_block_span_skips_rows_another_row_replaces(
+    tmp_path, native_config, capsys
+):
+    # Review 3 of #107: GCC -O2 put a row for the loop's line 5 at the address of the
+    # later block's line 15, so `tail` took the loop's lines too.
+    gcc = shutil.which("gcc")
+    version = subprocess.run([gcc, "--version"], capture_output=True, text=True) if gcc else None
+    if version is None or "Free Software Foundation" not in version.stdout:
+        pytest.skip("needs GCC")
+    from peeky.cli import main
+
+    (tmp_path / "o2.c").write_text(OPTIMIZED_BLOCKS)
+    config = {
+        "language": "c",
+        "sources": ["o2.c"],
+        "headers": [],
+        "compiler": gcc,
+        "adapter": native_config["adapter"],
+        "dwarfdump": native_config["dwarfdump"],
+        "optimization": "O2",
+    }
+    (tmp_path / "o2.json").write_text(json.dumps(config))
+    assert (
+        main(["describe", str(tmp_path / "o2.c"), "--config", str(tmp_path / "o2.json"), "--json"])
+        == 0
+    )
+    scopes = json.loads(capsys.readouterr().out)["scopes"]
+    spans = next(s for s in scopes if s["scope"] == "accumulate").get("spans", {})
+    assert all(first >= 14 for first, _ in spans.get("tail", [])), spans
+
+
+OPTIMIZED_BLOCKS = """#include <stdio.h>
+#include <stdlib.h>
+static int accumulate(int n) {
+    int total = 0;
+    for (int i = 0; i < n; i++) {
+        int r = rand() % 5;
+        total += r * i;
+        if (total > 50) {
+            int cut = total / 2;
+            printf("cut %d\\n", cut);
+            total -= cut;
+        }
+    }
+    {
+        int tail = rand() & 3;
+        total += tail;
+    }
+    return total;
+}
+int (*volatile fp)(int) = accumulate;
+int main(int argc, char **argv) {
+    int a = accumulate(argc + 4);
+    int b = fp(argc + 6);
+    int c = accumulate(argc + 8);
+    printf("%d %d %d\\n", a, b, c);
+    return 0;
+}
+"""
 
 BLOCKS = """#include <stdio.h>
 static double average(const int *values, int count) {

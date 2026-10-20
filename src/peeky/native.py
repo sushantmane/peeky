@@ -118,7 +118,9 @@ def _line_rows(text, workspace, declared, limit=MAX_METADATA):
     """Rows of the LLVM DWARF4 line-table dump for declared sources: (address, name, line).
 
     Unrecognized rows fail closed. Rows outside the declared sources (SDK and system
-    headers) and end-of-sequence rows are skipped.
+    headers) and end-of-sequence rows are skipped, and so is a row that is not a
+    statement when the next row starts at its address (GCC -O2): it runs no code, and
+    LLDB keeps the later row there.
     """
     if len(text.encode()) > limit:
         raise ValueError("Native line metadata exceeds limit")
@@ -131,6 +133,8 @@ def _line_rows(text, workspace, declared, limit=MAX_METADATA):
     table_count = 0
     version = None
     rows = []
+    # The address of the last row kept, if it is not a statement.
+    replaceable = None
     for raw in text.splitlines():
         line = raw.strip()
         if line.startswith("debug_line["):
@@ -140,6 +144,7 @@ def _line_rows(text, workspace, declared, limit=MAX_METADATA):
             directories, files, current = {0: str(workspace)}, {}, None
             resolved = {}
             version = None
+            replaceable = None
         elif match := re.fullmatch(r"version:\s+(\d+)", line):
             version = int(match[1])
             if version != 4:
@@ -176,13 +181,19 @@ def _line_rows(text, workspace, declared, limit=MAX_METADATA):
                     resolved[file_id] = inputs.get(str(path))
             except (ValueError, KeyError, TypeError) as exc:
                 raise ValueError("Unresolved native line source") from exc
+            address = int(fields[0], 16)
+            if replaceable == address:
+                rows.pop()
+            replaceable = None
             if "end_sequence" in fields or number == 0:
                 continue
             name = resolved[file_id]
             if name is not None:
                 if not 0 < number <= counts[name]:
                     raise ValueError("Native line exceeds declared source length")
-                rows.append((int(fields[0], 16), name, number))
+                rows.append((address, name, number))
+                if "is_stmt" not in fields:
+                    replaceable = address
     if not table_count:
         raise ValueError("Missing executable native debug symbol line information")
     return rows
@@ -629,14 +640,96 @@ def _source_of(attribute, inputs, workspace, cache):
     return cache[attribute]
 
 
-def _own_lines(dies, entry, numbers):
-    """A function's line numbers from its declaration on, or None if it has none."""
+def _own_lines(dies, entry, numbers, macro_lines=frozenset()):
+    """A function's line numbers from its declaration on, or None if it has none. Lines
+    of a local `macro_rules!` definition (``macro_lines``), where its expansions run,
+    are not its own unless it is declared there."""
     if not numbers:
         return None
     first_line = _first(dies, entry["chain"], "DW_AT_decl_line")
-    if first_line and first_line.isdigit():
-        numbers = {number for number in numbers if number >= int(first_line)} or numbers
+    first = int(first_line) if first_line and first_line.isdigit() else None
+    if first is not None:
+        numbers = {number for number in numbers if number >= first} or numbers
+    if first not in macro_lines:
+        numbers = {number for number in numbers if number not in macro_lines} or numbers
     return numbers
+
+
+# Where a comment, string or char literal may start: `r"`/`br#"` only after a non-word.
+_RUST_LEXEME = re.compile(r"//|/\*|(?<!\w)b?r(#*)\"|\"|'")
+_RUST_BLOCK_EDGE = re.compile(r"/\*|\*/")
+_RUST_QUOTED = re.compile(r'"(?:[^"\\]|\\.)*"', re.DOTALL)
+_RUST_CHAR = re.compile(r"'(?:\\(?:u\{[0-9a-fA-F]{1,6}\}|x[0-9a-fA-F]{2}|.)|[^\\'\n])'")
+_MACRO_RULES = re.compile(r"\bmacro_rules!\s*[A-Za-z_][A-Za-z0-9_]*\s*([{(\[])")
+_CLOSING = {"{": "}", "(": ")", "[": "]"}
+
+
+def _rust_code(text):
+    """Rust source with comments, strings and char literals blanked (newlines kept, so
+    lines keep their numbers), or None if one does not end."""
+    kept, at = [], 0
+    while (found := _RUST_LEXEME.search(text, at)) is not None:
+        start, token = found.start(), found[0]
+        if token == "//":
+            end = text.find("\n", start)
+            end = len(text) if end < 0 else end
+        elif token == "/*":
+            depth, end = 1, start + 2
+            while depth:
+                edge = _RUST_BLOCK_EDGE.search(text, end)
+                if edge is None:
+                    return None
+                depth += 1 if edge[0] == "/*" else -1
+                end = edge.end()
+        elif token == "'":
+            literal = _RUST_CHAR.match(text, start)
+            if literal is None:
+                # A lifetime (`'a`).
+                kept.append(text[at : start + 1])
+                at = start + 1
+                continue
+            end = literal.end()
+        elif token == '"':
+            literal = _RUST_QUOTED.match(text, start)
+            if literal is None:
+                return None
+            end = literal.end()
+        else:
+            close = text.find('"' + found[1], found.end())
+            if close < 0:
+                return None
+            end = close + 1 + len(found[1])
+        kept.append(text[at:start])
+        kept.append(re.sub(r"[^\n]", " ", text[start:end]))
+        at = end
+    kept.append(text[at:])
+    return "".join(kept)
+
+
+def _macro_rules_lines(text):
+    """The line numbers of each `macro_rules!` definition in a Rust source (rustc keeps
+    the definition's lines for code it expands), or None when one cannot be told: an
+    unclosed literal, comment or bracket."""
+    if "macro_rules" not in text:
+        return set()
+    code = _rust_code(text)
+    if code is None:
+        return None
+    lines = set()
+    for found in _MACRO_RULES.finditer(code):
+        opening, depth = found[1], 0
+        for index in range(found.start(1), len(code)):
+            if code[index] == opening:
+                depth += 1
+            elif code[index] == _CLOSING[opening]:
+                depth -= 1
+                if not depth:
+                    break
+        else:
+            return None
+        first = code.count("\n", 0, found.start()) + 1
+        lines.update(range(first, code.count("\n", 0, index) + 2))
+    return lines
 
 
 def function_scopes(info, line_text, workspace, declared):
@@ -650,11 +743,17 @@ def function_scopes(info, line_text, workspace, declared):
     dies, functions, lines, _, _, addresses = _function_entries(
         info, line_text, workspace, declared
     )
-    found = {}
+    found, macros = {}, {}
     for root, entry in functions.items():
         source = entry["source"]
         name = _qualified(dies, entry["bodies"][0])
-        numbers = _own_lines(dies, entry, lines.get(root))
+        if source not in macros:
+            macros[source] = (
+                _macro_rules_lines((Path(workspace) / source).read_text(errors="replace"))
+                if source.endswith(".rs")
+                else set()
+            )
+        numbers = _own_lines(dies, entry, lines.get(root), macros[source] or frozenset())
         if name is None or not numbers:
             continue
         names = {}
@@ -673,7 +772,11 @@ def function_scopes(info, line_text, workspace, declared):
         merged = found.setdefault(json.dumps(scope, sort_keys=True), (scope, {}, {}, set()))
         for local, kinds in names.items():
             merged[1].setdefault(local, set()).update(kinds)
-        blocks = _block_spans(dies, entry, root, addresses.get(root, {}), numbers)
+        blocks = (
+            _block_spans(dies, entry, root, addresses.get(root, {}), numbers)
+            if macros[source] is not None
+            else None
+        )
         if blocks is None:
             merged[3].add(None)
             continue
