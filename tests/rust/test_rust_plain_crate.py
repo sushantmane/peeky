@@ -4018,3 +4018,86 @@ def test_a_twins_primitive_named_type_parameter_may_alias_a_reference(plain, cap
     line = line_of(GENERIC_TWINS, "// GT_TWIN")
     variables = _stepped_out_to(plain, capsys, at, 0, line)
     assert variables["v"].get("view") == "unproven", variables["v"]
+
+
+CONCAT_NUMBERED = """#![feature(macro_metavar_expr_concat)]
+macro_rules! fields {
+    ($name:ident) => {
+        #[derive(Debug, Clone, Copy)]
+        pub struct $name {
+            ${concat(__, "0")}: u32,
+            ${concat(__, "1")}: u32,
+        }
+        impl $name {
+            fn new(x: u32, y: u32) -> Self {
+                Self { ${concat(__, "0")}: x, ${concat(__, "1")}: y }
+            }
+        }
+    };
+}
+
+fields!(Num);
+
+#[derive(Debug, Clone, Copy)]
+pub struct Two(u32, u32);
+
+fn main() {
+    let n = Num::new(1, 2);
+    let v = vec![n];
+    let two = Two(3, 4);
+    println!("{:?} {:?} {:?}", n, v, two); // CN_STOP
+}
+"""
+
+
+@pytest.mark.timeout(300)
+def test_a_tuple_struct_previews_only_where_the_mir_builds_it_as_one(plain, capsys):
+    # Review 3 of #106: a macro concatenating `__` and `0` declares `Num { __0: u32, … }`
+    # with no `__0` token in the source, and it previewed as `Num(1, 2)`. The MIR builds
+    # it as `Num { __0: move _3, … }`, and `Two` as `Two(const 3_u32, …)`.
+    (plain / "src/main.rs").write_text(CONCAT_NUMBERED)
+    at = f"src/main.rs:{line_of(CONCAT_NUMBERED, '// CN_STOP')}"
+    code, result = run(
+        capsys, "probe", str(plain), "--at", at, "--capture", "n,v,two,n.__1", "--quiet"
+    )
+    assert code == 0, result.get("error")
+    rows = {row["selector"]: row for row in result["rows"]}
+    assert "Num { __0: 1, __1: 2 }" in result["output"]
+    for name in ("n", "v"):
+        assert rows[name].get("view") != "memory" and "Num(" not in rows[name]["value"], rows
+    assert rows["n.__1"]["value"] == "2", rows
+    if os.environ.get("PEEKY_EXPECT_READ_MEMORY") or rows["two"].get("view") == "memory":
+        assert rows["two"]["value"] == "Two(3, 4)", rows["two"]
+
+
+CHAR_CONST = """#[derive(Debug, Clone, Copy)]
+pub struct Span {
+    start: usize,
+    end: usize,
+}
+
+fn ch<const C: char>(s: Span) -> usize {
+    let n: usize = C as usize;
+    let w = s;
+    n + w.end // CC_STOP
+}
+
+fn main() {
+    let s = Span { start: 1, end: 2 };
+    println!("{}", ch::<'a'>(s));
+}
+"""
+
+
+@pytest.mark.timeout(300)
+def test_a_char_const_generic_keeps_its_previews_and_rust_types(plain, capsys):
+    # Review 3 of #106: rustc 1.96 names `ch::<'a'>` `ch<{CONST#27d96aba666aa2f7}>`, which
+    # was taken for a generic not understood.
+    (plain / "src/main.rs").write_text(CHAR_CONST)
+    at = f"src/main.rs:{line_of(CHAR_CONST, '// CC_STOP')}"
+    code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "n,w", "--quiet")
+    assert code == 0, result.get("error")
+    rows = {row["selector"]: row for row in result["rows"]}
+    assert rows["n"]["type"] == "usize" and rows["n"]["value"] == "97", rows
+    if os.environ.get("PEEKY_EXPECT_READ_MEMORY") or rows["w"].get("view") == "memory":
+        assert rows["w"]["value"] == "Span { start: 1, end: 2 }", rows["w"]

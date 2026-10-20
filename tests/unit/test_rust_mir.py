@@ -2041,3 +2041,54 @@ def test_a_body_no_function_was_matched_to_may_have_any_type_parameter():
     )
     body.types.update({1: "u64", 2: "u64", 3: "&mut u64"})
     assert body.generics is None and body._aliases(1) == {1, 2, 3}
+
+
+def test_the_mir_tells_tuple_structs_from_structs_by_their_aggregates():
+    from peeky.rust_mir import constructions
+
+    body = mir(
+        {
+            0: [
+                "_2 = Point(const 1_i32, const 2_u8);",
+                "_3 = Pair::<Vec<u8>>(move _5, move _6);",
+                "_4 = Num { __0: move _7, __1: move _8 };",
+                "(_9.0: Meters) = Meters(const 1.5f64);",
+                "_10 = Add(copy _1, copy _2);",
+                "_11 = {closure@src/main.rs:3:9: 3:12} { x: copy _1 };",
+                '_12 = const "Fake(x)";',
+                "_13 = make(move _2) -> [return: bb1, unwind continue];",
+            ],
+            1: ["return;"],
+        }
+    )
+    tuples, named = constructions([body])
+    assert {"Point", "Pair", "Meters"} <= tuples and not {"make", "Fake", "Add"} & tuples
+    # An operator's name is never a proof (`struct Add(i32)`).
+    assert {"Num", "Add"} <= named
+
+
+def test_a_generic_name_rustc_cannot_be_read_from_is_not_understood():
+    # Review 3 of #106: with no parameter list read, a name whose arguments cannot be
+    # read was taken for a non-generic function's.
+    from peeky.rust_mir import _generics
+
+    meta = {"!1": ("list", {"items": []})}
+    assert _generics({}, {"name": "f>"}) is None and _generics({}, {"name": "main"}) == ()
+    assert _generics({}, {"name": "show<u8>"}) is None
+    # A char const is named by a hash (`ch::<'a'>`, rustc 1.96): a value, never a type.
+    assert _generics(meta, {"name": "ch<{CONST#27d96aba666aa2f7}>", "templateParams": "!1"}) == ()
+    assert _generics(meta, {"name": "ng<-3>", "templateParams": "!1"}) == ()
+
+
+def test_an_alias_graph_is_built_again_when_the_type_parameters_become_known():
+    # Review 3 of #106: built while they were unknown (an `#[inline(always)]` body not yet
+    # matched), it kept every link once they were known.
+    body = mir(
+        {0: ["_2 = copy _1;", "_3 = &mut _2;", "return;"]}, header="fn main(_1: u64) -> () {"
+    )
+    body.types.update({1: "u64", 2: "u64", 3: "&mut u64"})
+    assert body._aliases(1) == {1, 2, 3}
+    body.generics = ()
+    assert body._aliases(1) == {1}
+    body.generics = ("u64",)
+    assert body._aliases(1) == {1, 2, 3}

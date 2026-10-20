@@ -1419,15 +1419,25 @@ def _spelled(name, shown):
 _NUMBERED_FIELD = re.compile(r"(?<![\w])__[0-9]+(?![\w])")
 
 
-def without_numbered_structs(layouts, texts):
-    """``layouts`` with every tuple struct unread when a source has an identifier `__0`
-    (`struct Num { __0: u32 }`, or a macro's `fields!(Num, __0, __1)` declaring such
-    fields): the DWARF names a tuple struct's fields so too, and such a struct prints
-    `Num { __0: 1 }`, not `Num(1)`. ``texts``: the sources'."""
-    if not any(_NUMBERED_FIELD.search(code_only(text) or text) for text in texts):
-        return layouts
+def proven_tuple_structs(layouts, texts, constructed):
+    """``layouts`` with each tuple struct unread unless the MIR shows it is one: a struct
+    with named fields `__0`, `__1` has the DWARF of a tuple struct, yet prints
+    `Num { __0: 1 }`, not `Num(1)`. ``constructed``: (the names the MIR builds as tuple
+    structs, those it builds with named fields; rust_mir.constructions), None without
+    MIR. A name built both ways (two structs of that name) is neither's proof. A
+    tuple struct the crate's MIR never builds (one made only in a `const`, or by its
+    constructor passed as a function, `map(Meters)`) stays unread, and so do all where
+    a source has an identifier `__0` (`fields!(Num, __0, __1)`): a backstop.
+    ``texts``: the sources'."""
+    numbered = any(_NUMBERED_FIELD.search(code_only(text) or text) for text in texts)
+    tuples, named = constructed or ((), ())
+
+    def proven(layout):
+        shown = layout.get("shown")
+        return not numbered and shown in tuples and shown not in named
+
     return {
-        name: _UNREAD if layout.get("shape") == "tuple-struct" else layout
+        name: _UNREAD if layout.get("shape") == "tuple-struct" and not proven(layout) else layout
         for name, layout in layouts.items()
     }
 

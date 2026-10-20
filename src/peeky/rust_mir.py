@@ -208,6 +208,8 @@ class Body:
     _replaced: dict | None = None
     _alias_cache: dict | None = None
     _alias_edges: dict | None = None
+    # The ``generics`` the alias graph was built for: it is rebuilt when they change.
+    _alias_generics: tuple | None = ()
     _dropped: set | None = None
     _offset: int | None = None
 
@@ -1080,6 +1082,9 @@ class Body:
     def _aliases(self, local):
         """``local`` and the locals made from it (`&mut (*_1)`, `&((*_1).0: T)`,
         `copy _1`, `move _1`, and so on): pointers into what it points at."""
+        if self._alias_edges is not None and self._alias_generics != self.generics:
+            # Built while its type parameters were unknown (or others): build it again.
+            self._alias_edges = self._alias_cache = None
         if self._alias_cache is None:
             self._alias_cache = {}
         if local in self._alias_cache:
@@ -1126,7 +1131,7 @@ class Body:
                                     r"&mut |\*mut |NonNull<|Cell<", self.types.get(writable, "")
                                 ):
                                     link(n, writable)
-            self._alias_edges = edges
+            self._alias_edges, self._alias_generics = edges, self.generics
         found, pending = {local}, [local]
         while pending:
             for made in self._alias_edges.get(pending.pop(), ()):
@@ -2088,7 +2093,8 @@ def ir_functions(path, files):
 
 
 # A const generic's value as rustc names an instantiation (`sum<3>`, `cgt<u8, 2>`).
-_CONST_ARGUMENT = re.compile(r"-?[0-9]+|true|false|'(?:[^'\\]|\\.)+'")
+# A char's is a hash (`ch<{CONST#27d96aba666aa2f7}>` for `ch::<'a'>`, rustc 1.96).
+_CONST_ARGUMENT = re.compile(r"-?[0-9]+|true|false|\{CONST#[0-9a-f]+\}")
 
 
 def _generics(meta, fields):
@@ -2103,8 +2109,9 @@ def _generics(meta, fields):
     named = fields.get("name", "")
     arguments = _name_arguments(named)
     if items is None:
-        # No list read: generic only if its name says so (`show<u64>`).
-        return None if arguments else ()
+        # No list read: generic only if its name says so (`show<u64>`), or if the name
+        # cannot be read.
+        return () if arguments == [] else None
     names = []
     for item in items:
         kind, parameter = meta.get(item, (None, {}))
@@ -2145,6 +2152,45 @@ def _name_arguments(name):
             start = at + 1
     parts.append(inner[start:].strip())
     return None if depth or not all(parts) else parts
+
+
+# An aggregate a statement builds: a tuple struct's (`_2 = Point(const 1_i32, …)`,
+# `Pair::<i8>(…)`) or a struct's with named fields (`_0 = Num { __0: move _3, … }`). The
+# MIR names it without its path.
+_AGGREGATE = re.compile(r"(?:^|\s)= ([A-Za-z_][A-Za-z0-9_]*)(?:::<.*?>)?(\(| \{)")
+
+
+# MIR's operators, which read like a tuple struct's aggregate (`_4 = Add(copy _1, …)`):
+# a tuple struct of such a name is never told from them.
+_OPERATORS = frozenset(
+    {
+        *(
+            f"{op}{kind}"
+            for op in ("Add", "Sub", "Mul")
+            for kind in ("", "Unchecked", "WithOverflow")
+        ),
+        *("Div", "Rem", "BitXor", "BitAnd", "BitOr", "Shl", "ShlUnchecked", "Shr"),
+        *("ShrUnchecked", "Eq", "Lt", "Le", "Ne", "Ge", "Gt", "Cmp", "Offset", "Not", "Neg"),
+        *("PtrMetadata", "Len", "discriminant", "CopyForDeref", "ShallowInitBox", "SizeOf"),
+        *("AlignOf", "OffsetOf", "UbChecks", "ContractChecks"),
+    }
+)
+
+
+def constructions(bodies):
+    """(the names of the structs ``bodies`` build as tuple structs, those they build
+    with named fields), by their MIR aggregates (a call's statement is no aggregate). An
+    operator's name (`Add`) counts as both: a struct of that name is never proven."""
+    tuples, named = set(), set(_OPERATORS)
+    for body in bodies:
+        for block in body.blocks.values():
+            for text, _, _ in block.statements:
+                if " -> " in text:
+                    continue
+                for found in _AGGREGATE.finditer(_STRING.sub('""', text)):
+                    if found[1] not in _OPERATORS:
+                        (tuples if found[2] == "(" else named).add(found[1])
+    return frozenset(tuples), frozenset(named)
 
 
 def mentions(kind, names):

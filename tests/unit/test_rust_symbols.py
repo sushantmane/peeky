@@ -1681,26 +1681,34 @@ def test_lldbs_name_must_spell_the_layouts_type(name, shown, spelled):
     assert _spelled(name, shown) is spelled
 
 
-def test_tuple_structs_are_unread_where_a_source_names_a_field_like_theirs():
-    # Review of #106: `struct Num { __0: u32 }` has the DWARF of `struct Num(u32)`.
-    from peeky.rust_symbols import without_numbered_structs
+def test_a_tuple_struct_is_read_only_where_the_mir_builds_it_as_one():
+    # Review of #106: `struct Num { __0: u32 }` has the DWARF of `struct Num(u32)`; the
+    # MIR's aggregates tell them apart (`Num(…)` or `Num { __0: … }`).
+    from peeky.rust_symbols import proven_tuple_structs
 
     layouts = {
-        "struct:peeky_pagination::Num": {"kind": "composite", "shape": "tuple-struct"},
-        "struct:peeky_pagination::Span": {"kind": "composite", "shape": "struct"},
-        "&[peeky_pagination::Num]": {"kind": "slice", "shape": "tuple-struct"},
+        "struct:peeky_pagination::Num": {
+            "kind": "composite",
+            "shape": "tuple-struct",
+            "shown": "Num",
+        },
+        "struct:peeky_pagination::Span": {"kind": "composite", "shape": "struct", "shown": "Span"},
+        "&[peeky_pagination::Num]": {"kind": "slice", "shape": "tuple-struct", "shown": "Num"},
     }
-    plain = 'struct Two(u32, u32);\n// __0: a comment\nlet s = "__1: text";\nlet n = 1__0;\n'
-    assert without_numbered_structs(layouts, [plain]) == layouts
-    # Fields a macro declares from the names it is given (review 2).
-    generated = without_numbered_structs(layouts, [plain, "fields!(Num, __0, __1);\n"])
-    assert generated["&[peeky_pagination::Num]"] == {"kind": "unread"}
-    declared = "struct Num {\n    __0: u32,\n}\n"
-    assert without_numbered_structs(layouts, [plain, declared]) == {
-        "struct:peeky_pagination::Num": {"kind": "unread"},
-        "struct:peeky_pagination::Span": layouts["struct:peeky_pagination::Span"],
-        "&[peeky_pagination::Num]": {"kind": "unread"},
-    }
+    unread = {"kind": "unread"}
+    plain = 'struct Num(u32, u32);\n// __0: a comment\nlet s = "__1: text";\nlet n = 1__0;\n'
+    assert proven_tuple_structs(layouts, [plain], ({"Num"}, set())) == layouts
+    # Built with named fields (`${concat(__, "0")}` writes no `__0`; review 3), built
+    # both ways, never built, or no MIR at all: never read as a tuple struct.
+    for constructed in (({"Num"}, {"Num"}), (set(), {"Num"}), (set(), set()), None):
+        shown = proven_tuple_structs(layouts, [plain], constructed)
+        assert shown["struct:peeky_pagination::Num"] == shown["&[peeky_pagination::Num]"] == unread
+        assert shown["struct:peeky_pagination::Span"] == layouts["struct:peeky_pagination::Span"]
+    # A backstop: an identifier `__0` anywhere (a macro given it declares such fields).
+    generated = proven_tuple_structs(
+        layouts, [plain, "fields!(Num, __0, __1);\n"], ({"Num"}, set())
+    )
+    assert generated["&[peeky_pagination::Num]"] == unread
 
 
 def test_a_packed_struct_is_never_previewed_even_when_aligned():
