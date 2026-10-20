@@ -760,3 +760,105 @@ def test_begins_is_unknown_where_the_compiler_may_read_the_text_otherwise():
     assert Statements("int f(void) {\n  int a = (1;\n}\n").begins(2) is None
     hidden = Statements("int f(void) {\n  OPEN 1;\n  g();\n}\n", macros={"OPEN"})
     assert hidden.begins(3) is None
+
+
+BLOCK_STORAGE = """int main(void) {
+    long q = 1, gcount = 6, r = 3;
+    {
+        static long a[2] = {1, 2}, q = 3;
+        use(q);
+    }
+    {
+        { static long q = 9; }
+        use(q);
+    }
+    {
+        struct S { static long q; };
+        use(q);
+    }
+    {
+        KEEP(r);
+        use(r + q);
+    }
+    {
+        extern long gcount;
+        use(gcount);
+    }
+    {
+        use(q); static long q = 4;
+    }
+    {
+        static long other = q + 1;
+        use(q);
+    }
+    return 0;
+}
+"""
+
+
+def test_a_blocks_static_or_extern_of_an_outer_locals_name_is_found():
+    # Review of PR #140: the code reads the block's own `static`/`extern`, which lldb-dap
+    # does not list; the outer local of that name was shown under it.
+    statements = Statements(BLOCK_STORAGE, raw_strings=False, hazards={"declares": {"KEEP"}})
+
+    def found(line, name):
+        return statements.block_storage(line, name, 2)
+
+    assert found(5, "q") == ("static", 4)  # after an initializer's braces too
+    assert found(9, "q") is False  # a block closed before the line
+    assert found(13, "q") is False  # a class member
+    assert found(17, "r") is None and found(17, "q") is False  # a macro given `r`
+    assert found(21, "gcount") == ("extern", 20) and found(21, "q") is False
+    assert found(24, "q") == ("static", 24)  # later on the line: counted
+    assert found(28, "q") is False  # only named in an initializer
+    assert found(30, "q") is False  # the function's own block
+    # Declared before the outer local itself: that one is the local shown.
+    assert Statements(BLOCK_STORAGE, raw_strings=False).block_storage(5, "q", 5) is False
+    cpp = "int main() {\n  long q = 1;\n  {\n    using ns::q;\n    use(q);\n  }\n"
+    cpp += "  {\n    using namespace ns;\n    use(q);\n  }\n}\n"
+    statements = Statements(cpp, raw_strings=True)
+    assert statements.block_storage(5, "q", 2) == ("using", 4)
+    assert statements.block_storage(9, "q", 2) is False
+    # Nothing in the source declares it so: read cheaply, even where unreadable.
+    assert (
+        Statements("int f(void) {\n  long q = 1;\n  use(q);\n}\n").block_storage(3, "q", 2) is False
+    )
+
+
+def test_calls_that_may_return_twice_are_found_by_line_and_through_macros():
+    from peeky.c_source import macro_hazards, returning_twice
+
+    text = (
+        "#define TRY if (setjmp(env) == 0)\n"
+        "#define AGAIN TRY\n"
+        "int f(void) {\n"
+        "  long a = 1;\n"
+        "  AGAIN { a = 2; }\n"
+        '  puts("setjmp");\n'
+        "  if (sigsetjmp(e, 1)) a = 3;\n"
+        "  return a;\n"
+        "}\n"
+    )
+    hazards = macro_hazards([text], raw_strings=False)
+    assert hazards["setjmp"] == {"TRY", "AGAIN"}
+    statements = Statements(text, raw_strings=False, hazards=hazards)
+    assert statements.returns_twice(3, 9) == ((5, 7), False)  # not the string's
+    assert statements.returns_twice(3, 4) == ((), False)
+    assert statements.returns_twice(3, 9, extra={"puts"}) == ((5, 6, 7), False)
+    with_directive = Statements(text.replace("  return a;", "#ifdef X\n  return a;\n#endif"))
+    assert with_directive.returns_twice(3, 11)[1] is True
+    # A library header's TRY, through another macro.
+    header = "#define SJ_TRY(b) if (__builtin_setjmp(b) == 0)\n#define TRY SJ_TRY(env)\n"
+    assert returning_twice([header, "#define OTHER 1\n"]) == {"SJ_TRY", "TRY"}
+
+
+def test_a_storage_declaration_of_a_name_is_read_cheaply_but_not_a_parameters():
+    from peeky.c_source import storage_named
+
+    assert storage_named("{ static long q = 2; use(q); }", "q")
+    assert storage_named("extern long a, gcount;", "gcount")
+    assert storage_named("static long (*q)(int) = 0;", "q")
+    assert storage_named("using cfg::level;", "level")
+    # A static function's parameter, or a name after the statement: not declared so.
+    assert not storage_named("static long run(long seed) {\n  long head = seed;", "seed")
+    assert not storage_named("static long f(void) {\n  long q = 1;", "q")

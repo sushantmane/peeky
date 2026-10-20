@@ -35,7 +35,7 @@ from peeky.build import (
     prepare,
     real_tool,
 )
-from peeky.c_source import Statements, macro_hazards
+from peeky.c_source import Statements, macro_hazards, returning_twice, storage_named
 from peeky.cxx_strings import libstdcxx_string, string_class, text_like, tidy
 from peeky.digest import sha256_file
 from peeky.names import unicode_escape
@@ -2071,7 +2071,7 @@ class NativeTarget:
                 prepared.workspace,
                 self.sources + self.headers,
             )
-            typedefs, fields, unjudged = {}, None, None
+            typedefs, fields, unjudged, returns_twice = {}, None, None, None
             try:
                 info = _metadata(
                     dwarfdump,
@@ -2096,9 +2096,13 @@ class NativeTarget:
                         info, text, prepared.workspace, self.sources + self.headers
                     )
                     if nonlocal_jumps:
-                        # Not judged, and said so on the rows that would be: the table
-                        # only tells them (automatic locals) apart.
-                        unjudged, declarations = ("setjmp", None, declarations), None
+                        # Which functions may call setjmp is read from their source:
+                        # its family's names, or a macro naming one, including those
+                        # of headers outside the program (a TRY macro).
+                        returns_twice = returning_twice(
+                            Path(path).read_bytes().decode("utf-8", errors="replace")
+                            for path in external
+                        )
                     if declarations is not None:
                         from peeky.fields import CPP_LIBRARIES, type_graph
 
@@ -2132,6 +2136,7 @@ class NativeTarget:
                 typedefs=typedefs,
                 fields=fields,
                 unjudged=unjudged,
+                returns_twice=returns_twice,
             )
             session.assert_current()
             return session
@@ -2220,6 +2225,17 @@ def _writable_integer(variable):
     )
 
 
+class Withholding(str):
+    """A reason ``not_yet_declared`` withholds a row for that is not about its value
+    being set yet: ``label`` heads the row's error (in place of `no value yet`), and
+    ``refusal`` is why a change to it is refused."""
+
+    def __new__(cls, reason, label, refusal):
+        made = super().__new__(cls, reason)
+        made.label, made.refusal = label, refusal
+        return made
+
+
 class ValueNote(str):
     """What ``not_yet_declared`` gives for a local it shows, though it cannot vouch for
     the value: the row carries ``note``. As a string, why a change there is refused,
@@ -2231,15 +2247,9 @@ class ValueNote(str):
         return made
 
 
-# Initialization is not judged in a program that can jump back above a declaration
-# through setjmp/longjmp (or a context switch), nor where the build's debug information
-# could not be read: the rows that would be judged say so.
+# Initialization is not judged where the build's debug information could not be read:
+# the rows that would be judged say so.
 _UNJUDGED = {
-    "setjmp": (
-        "Peeky does not judge whether this local is initialized here: the program uses "
-        "setjmp/longjmp (or a context switch), which can return above a declaration, so "
-        "it may hold leftovers"
-    ),
     "unreadable": (
         "Peeky does not judge whether this local is initialized here: it could not read "
         "the build's debug information ({}), so it may hold leftovers"
@@ -2274,6 +2284,7 @@ class NativeSession:
         typedefs=None,
         fields=None,
         unjudged=None,
+        returns_twice=None,
     ):
         self.target, self.prepared = target, prepared
         # local_declarations of the build; None (unknown) never withholds a value, and
@@ -2281,6 +2292,9 @@ class NativeSession:
         # local_declarations if read, to tell which rows are automatic locals).
         self.declarations = declarations
         self.unjudged = unjudged
+        # In a program that may call setjmp: the macros of headers outside the program
+        # that may expand to it (see _returns_twice); None in one that cannot.
+        self.returns_twice = returns_twice
         # fields.type_graph of the locals' types; None (unknown) changes no field.
         self.fields = fields
         # typedef_kinds of the build: {} (unknown) resolves no typedef.
@@ -2495,6 +2509,8 @@ class NativeSession:
                     "frame is back in its own lines"
                 )
             here, line = place
+        if shadowed := self._block_storage(name, frame, here, line):
+            return shadowed
         if not innermost and (
             unfinished := declared_unfinished(
                 self.declarations,
@@ -2557,6 +2573,8 @@ class NativeSession:
             # Which declaration of the name the debugger shows there.
             pc=address,
         )
+        if below is not None and (jump := self._setjmp_above(frame, line)) is not None:
+            return self._setjmp_note(below[0], jump, "declared at line {}, below this stop")
         if below is not None:
             at, why = below
             if why is None:
@@ -2663,6 +2681,10 @@ class NativeSession:
                 )
                 + ", before its declaration runs; read it on the next line",
                 refuses=True,
+            )
+        if on_line is not None and (jump := self._setjmp_above(frame, line)) is not None:
+            return self._setjmp_note(
+                line, jump, "declared on line {}, at whose first instruction this stop is"
             )
         if on_line is not None:
             if on_line[1] == "label":
@@ -3055,6 +3077,102 @@ class NativeSession:
             return None
         return int(pointer, 16) - bias
 
+    def _block_storage(self, name, frame, source, line):
+        """Why the root local ``name`` of ``frame`` is not what the code at ``source:line``
+        reads, or None: a block around the line declares a `static`, `extern` (or C++
+        `using`) ``name`` after the local, which the code uses instead, and which lldb-dap
+        does not list among the frame's locals (clang declares a block's static in the
+        function's scope, and a block's `extern` not at all), so the row shows the outer
+        local under that name. Where Peeky cannot read that from the source (a macro or
+        directive that may declare one), withheld too."""
+        found = shown_declaration(self.declarations, name, self._unslid(frame))
+        if found is None:
+            return None
+        base = (_SHADOWED.fullmatch(name) or [None, name])[1]
+        statements = self._statements(source)
+        after = found[1][1] if found else None
+        storage = (
+            None
+            if statements is None
+            else statements.block_storage(line, base, after, self._stored_elsewhere(base, source))
+        )
+        if storage is False:
+            return None
+        if storage is None:
+            return Withholding(
+                f"Peeky cannot tell from the source whether a block around line {line} "
+                f"declares a `static` or `extern` `{base}` (a macro or a directive there may), "
+                "which the code would read instead of this local and the debugger does not "
+                "list",
+                "may not be what the code reads",
+                f"{name!r} cannot be changed here: at line {line} the code may read a "
+                f"`static` or `extern` `{base}` a macro or a directive in a block around it "
+                "declares, which the debugger does not list, so a change to this local may "
+                "not reach that code",
+            )
+        kind, at = storage
+        return Withholding(
+            f"the code here reads the block's `{kind}` `{base}` (line {at}), which the "
+            "debugger does not list: this row is the outer local of that name",
+            "not what the code reads",
+            f"{name!r} cannot be changed here: at line {line} the code reads the block's "
+            f"`{kind}` `{base}` (line {at}), which the debugger does not list; the local "
+            "this row shows is the outer one, so a change to it would not reach that code",
+        )
+
+    def _stored_elsewhere(self, name, source):
+        """Whether another of the program's files may declare ``name`` with static or
+        external storage (an `#include` in a block may bring that in); unreadable ones
+        count as may."""
+        cache = self.__dict__.setdefault("stored_elsewhere", {})
+        if (name, source) not in cache:
+            cache[name, source] = any(
+                text is None or storage_named(text, name)
+                for each in self.target.verification_inputs
+                if str(each) != str(source)
+                for text in [self._source_text(each)]
+            )
+        return cache[name, source]
+
+    def _setjmp_above(self, frame, line):
+        """The line of a call that may return twice (`setjmp`) at or above ``line`` in
+        the function ``frame`` runs, 0 if Peeky cannot tell where its calls are, else
+        None (the program has none, or the function makes none up to the line)."""
+        if self.__dict__.get("returns_twice") is None:
+            return None
+        function = self._function_at(frame)
+        if function is None:
+            return 0
+        cache = self.__dict__.setdefault("returning_lines", {})
+        key = function.get("root")
+        if key not in cache:
+            span, statements = function.get("span"), self._statements(function["source"])
+            if span is None or statements is None:
+                cache[key] = None
+            else:
+                lines, unknown = statements.returns_twice(span[0], span[1], self.returns_twice)
+                cache[key] = None if unknown else lines
+        lines = cache[key]
+        if lines is None:
+            return 0
+        above = [number for number in lines if number <= line]
+        return min(above) if above else None
+
+    def _setjmp_note(self, at, jump, declared):
+        """A row shown with a note where its declaration is at or below the stop and a
+        call that may return twice (line ``jump``; 0 unknown) lies above: on the first
+        pass it holds leftovers, after a `longjmp` back there its value from before."""
+        where = f"line {jump}" if jump else "a line Peeky cannot tell"
+        reason = declared.format(at)
+        return ValueNote(
+            f"{reason}, and this function calls setjmp ({where}) above the stop, so a "
+            "`longjmp` can bring control here past its declaration",
+            f"may be leftovers, or its value from before a `longjmp`: {reason}, and this "
+            f"function calls setjmp ({where}) above the stop, so Peeky cannot tell whether "
+            "its declaration has run on this pass; read it after its declaration",
+            refuses=True,
+        )
+
     def _unjudged(self, name, frame):
         """The note for a root local whose initialization Peeky does not judge (setjmp,
         unread debug information): an automatic local of the frame's function where the
@@ -3079,7 +3197,10 @@ class NativeSession:
         return ValueNote(text, text, refuses=False)
 
     def validate_mutation_target(self, variable, frame):
-        if (reason := self.not_yet_declared(variable, frame)) and getattr(reason, "refuses", True):
+        reason = self.not_yet_declared(variable, frame)
+        if refusal := getattr(reason, "refusal", None):
+            raise ValueError(refusal)
+        if reason and getattr(reason, "refuses", True):
             raise ValueError(
                 f"{variable.get('name')!r} is {reason}; its declaration would overwrite a "
                 "change made here"
@@ -3246,9 +3367,10 @@ class NativeSession:
         (#120, #121)."""
         from peeky.fields import Unsettable
 
-        if (reason := self.not_yet_declared(root, frame, stack=stack, deeper=deeper)) and getattr(
-            reason, "refuses", True
-        ):
+        reason = self.not_yet_declared(root, frame, stack=stack, deeper=deeper)
+        if refusal := getattr(reason, "refusal", None):
+            raise Unsettable(refusal)
+        if reason and getattr(reason, "refuses", True):
             raise Unsettable(
                 f"`{root.get('name')}` is {reason}; its declaration would overwrite a change "
                 "made here"

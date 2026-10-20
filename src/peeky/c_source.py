@@ -52,6 +52,10 @@ _PAIRS.update({"<%": "{", "%>": "{"})
 _WORDS = re.compile(r"(?<!\w)[A-Za-z_]\w*|" + _TOKENS.pattern)
 _WORD = re.compile(r"[A-Za-z_]\w*")
 _LAST_WORD = re.compile(r"[A-Za-z_]\w*$")
+# Words and punctuators as a declaration is read: its `=` and `,` (not `==`, `+=`, ...).
+_DECLARATION_TOKENS = re.compile(
+    r"(?<!\w)[A-Za-z_]\w*|==|!=|[-+*/%&|^]=|<<=|>>=|" + _TOKENS.pattern + r"|[=,]"
+)
 # Statements whose header (in parentheses) can declare a variable for their body.
 _HEADERS = frozenset(("for", "if", "while", "switch", "catch"))
 # Keywords a name follows where it is used, not declared.
@@ -164,15 +168,31 @@ def unsafe_macros(texts, raw_strings=True, trigraphs=None):
     return macro_hazards(texts, raw_strings, trigraphs)["brackets"]
 
 
+# What may return twice into the function calling it: setjmp's family (`_setjmp`,
+# `sigsetjmp`, `__builtin_setjmp`, ...) and the ucontext switches.
+_RETURNS_TWICE = re.compile(r"\w*setjmp\w*|getcontext|swapcontext|savectx")
+# What declares a name with static or external storage, or brings one into a block.
+_STORAGE = frozenset(("static", "extern", "using", "thread_local", "_Thread_local", "__thread"))
+
+
 def macro_hazards(texts, raw_strings=True, trigraphs=None):
     r"""The macros ``texts`` define, by what their expansion may hide from a scan of the
     text: ``brackets`` (`unsafe_macros`), ``blocks`` (the same but for a `;`: a bracket
-    it does not close), ``labels`` (a `case`, `default` or label a jump can reach, `x:`)
-    and ``gotos`` (a `goto`). A macro naming such a macro counts too, and every macro of
-    a source with a splice before `\n\r` counts for all of them."""
+    it does not close), ``labels`` (a `case`, `default` or label a jump can reach, `x:`),
+    ``gotos`` (a `goto`), ``setjmp`` (a call that may return twice, `setjmp`) and
+    ``declares`` (a `static`, `extern` or `using` declaration). A macro naming such a
+    macro counts too, and every macro of a source with a splice before `\n\r` counts
+    for all of them."""
     trigraphs = not raw_strings if trigraphs is None else trigraphs
     uses = {}
-    found = {"brackets": set(), "blocks": set(), "labels": set(), "gotos": set()}
+    found = {
+        "brackets": set(),
+        "blocks": set(),
+        "labels": set(),
+        "gotos": set(),
+        "setjmp": set(),
+        "declares": set(),
+    }
     for text in texts:
         # Spliced as the compiler splices lines, before comments and literals.
         code = blank(_SPLICE.sub("", translated(text, trigraphs)), raw_strings)
@@ -196,10 +216,49 @@ def macro_hazards(texts, raw_strings=True, trigraphs=None):
                 found["labels"].add(name)
             if unknown or "goto" in words:
                 found["gotos"].add(name)
+            if unknown or any(_RETURNS_TWICE.fullmatch(word) for word in words):
+                found["setjmp"].add(name)
+            if unknown or words & _STORAGE:
+                found["declares"].add(name)
     for names in found.values():
         while more := {name for name, used in uses.items() if name not in names and used & names}:
             names |= more
     return {kind: frozenset(names) for kind, names in found.items()}
+
+
+def returning_twice(texts):
+    """The macros ``texts`` (headers outside the program, read as they are) define that
+    may expand to a call returning twice (`setjmp`, directly or through another), for a
+    TRY macro a library header hides it in. Read without blanking comments: a comment
+    naming one only counts too much."""
+    uses, found = {}, set()
+    for text in texts:
+        for define in _DEFINE.finditer(_SPLICE.sub("", text)):
+            name, body = define[1], define[3]
+            words = {word[0] for word in _IDENTIFIER.finditer(body)}
+            uses.setdefault(name, set()).update(words)
+            if any(_RETURNS_TWICE.fullmatch(word) for word in words):
+                found.add(name)
+    while more := {name for name, used in uses.items() if name not in found and used & found}:
+        found |= more
+    return frozenset(found)
+
+
+def storage_named(text, name):
+    """Whether ``text`` may declare ``name`` with static or external storage, or bring it
+    in with `using` (a cheap read: the keyword, then the name before a `;` or brace),
+    other than as a parameter of a function defined there (`static long run(long q) {`)."""
+    pattern = re.compile(
+        r"\b(?:static|extern|thread_local|_Thread_local|__thread|using)\b[^;{}]*\b"
+        + re.escape(str(name))
+        + r"\b"
+    )
+    for found in pattern.finditer(text):
+        rest = re.match(r"[^;{]*", text[found.end() :])[0]
+        following = text[found.end() + len(rest) : found.end() + len(rest) + 1]
+        if not (following == "{" and ")" in rest and "(" in found[0]):
+            return True
+    return False
 
 
 def _balanced(body):
@@ -237,6 +296,9 @@ class Statements:
         # What may hide a bracket from `begins`: an unclosed one (a `;` alone hides none).
         self.blocks = frozenset(hazards.get("blocks", ())) if "blocks" in hazards else self.macros
         self.gotos = frozenset(hazards.get("gotos", ()))
+        # What may call setjmp, or declare a static, an extern or a `using` name.
+        self.setjmps = frozenset(hazards.get("setjmp", ()))
+        self.declarers = frozenset(hazards.get("declares", ()))
         # Where the compiler may read any line differently from the scan.
         self.unreadable = bool(
             _SPLICED_PAIR.search(text)
@@ -912,6 +974,174 @@ class Statements:
         if not self._readable(line, begin, last):
             return None
         return line, bisect.bisect_right(self.starts, last)
+
+    def returns_twice(self, first, last, extra=frozenset()):
+        """``(lines, unknown)``: the lines from ``first`` to ``last`` (a function's own)
+        that may call a function returning twice (`setjmp`, `sigsetjmp`, a macro that
+        expands to one, ``extra`` naming those of headers outside the program), and
+        whether Peeky cannot tell for some: the source unreadable, or a directive among
+        them, which may bring one in."""
+        if type(first) is not int or type(last) is not int or self.unreadable:
+            return (), True
+        first, last = max(first, 1), min(last, len(self.starts))
+        if first > last:
+            return (), True
+        begin = self.starts[first - 1]
+        finish = self.starts[last] if last < len(self.starts) else len(self.blanked)
+        names = self.setjmps | frozenset(extra)
+        lines = {
+            bisect.bisect_right(self.starts, word.start())
+            for word in _IDENTIFIER.finditer(self.blanked, begin, finish)
+            if _RETURNS_TWICE.fullmatch(word[0]) or word[0] in names
+        }
+        unknown = any(
+            _DIRECTIVE.match(self.blanked, self.starts[number - 1])
+            for number in range(first, last + 1)
+        )
+        return tuple(sorted(lines)), unknown
+
+    def block_storage(self, line, name, after=None, elsewhere=False):
+        """For the local ``name`` the debugger shows at a stop on ``line`` (declared on
+        line ``after``; None for a parameter): ``(kind, its line)`` of a declaration of
+        ``name`` the code there uses instead, which the debugger does not list among the
+        frame's locals: a `static`, `extern` or `thread_local` one, or a C++ `using`
+        declaration, in a block around the line, after ``after`` and up to the line's
+        end (one later on the line counts too), not inside a block closed before it.
+        False if there is none; None if Peeky cannot tell: the source is unreadable or
+        its brackets do not balance, a macro that may declare one (``declares`` of
+        macro_hazards) is in that text, or an `#include` is, where ``elsewhere`` (another
+        of the program's files declares ``name`` so: it may bring that in)."""
+        named = self.__dict__.setdefault("storage_named", {})
+        if name not in named:
+            named[name] = storage_named(self.text, name)
+        if (
+            not named[name]
+            and not (elsewhere and _INCLUDE.search(self.blanked))
+            and not self._names_declarers()
+        ):
+            # Nothing in the source can declare it so (the common case, read cheaply).
+            return False
+        if self.unreadable or type(line) is not int or not 1 <= line <= len(self.starts):
+            return None
+        code, pairs = self._code()
+        if pairs is None:
+            return None
+        begin = self.starts[line - 1]
+        finish = self.starts[line] if line < len(self.starts) else len(code)
+        first = _NONBLANK.search(code, begin, finish)
+        position = first.start() if first else begin
+        lower = (
+            self.starts[after - 1] if type(after) is int and 1 <= after <= len(self.starts) else 0
+        )
+        around = sorted(
+            opened
+            for opened, closed in pairs.items()
+            if opened < position < closed and code.startswith(("{", "<%"), opened)
+        )
+        if not around:
+            return False
+        if elsewhere and any(
+            _INCLUDE.match(self.blanked, self.starts[number - 1])
+            for number in range(bisect.bisect_right(self.starts, max(around[0], lower)), line + 1)
+        ):
+            # An `#include` in a block (a fragment) may declare it so.
+            return None
+        for index, opened in enumerate(around):
+            # This block's own statements, up to the next block around the line.
+            start = max(opened + 1, lower)
+            stop = around[index + 1] if index + 1 < len(around) else finish
+            if start >= stop:
+                continue
+            found = self._storage_declaration(code, start, stop, name)
+            if found is not False:
+                return found
+        return False
+
+    def _names_declarers(self):
+        """Whether the source names a macro that may declare a static or extern."""
+        if "declarer_named" not in self.__dict__:
+            self.declarer_named = bool(self.declarers) and any(
+                word[0] in self.declarers for word in _IDENTIFIER.finditer(self.blanked)
+            )
+        return self.declarer_named
+
+    def _storage_declaration(self, code, start, stop, name):
+        """(kind, line) of the first `static`/`extern`/`thread_local`/`using` declaration
+        of ``name`` among the statements from ``start`` to ``stop`` at their own depth
+        (a block closed before ``stop`` is skipped, an initializer's braces kept in their
+        statement); False if none; None if a macro that may declare one is there: one
+        given ``name`` (`KEEP(q)`), or one without arguments, whose expansion is unseen."""
+        depth, statement, blocks, hidden = 0, [], [], False
+
+        def judged(statement):
+            if hidden and any(text == name for text, _, _ in statement):
+                return None
+            return self._storage_of(statement, name)
+
+        for token in _DECLARATION_TOKENS.finditer(code, start, stop):
+            text = token[0]
+            if depth == 0 and not blocks and text in self.declarers:
+                if not code[token.end() : token.end() + 64].lstrip().startswith("("):
+                    return None
+                hidden = True
+            if text in _OPEN:
+                if (
+                    text in ("{", "<%")
+                    and depth == len(blocks)
+                    and not any(word == "=" and level == 0 for word, _, level in statement)
+                ):
+                    # A nested block (or a class's body): what came before it is judged
+                    # as a statement, and what is in it is out of scope here.
+                    if (found := judged(statement)) is not False:
+                        return found
+                    statement, hidden = [], False
+                    blocks.append(depth)
+                    depth += 1
+                    continue
+                depth += 1
+            elif text in _CLOSE:
+                depth = max(depth - 1, 0)
+                if blocks and depth == blocks[-1] and text in ("}", "%>"):
+                    blocks.pop()
+                    statement, hidden = [], False
+                    continue
+            if blocks:
+                continue
+            if depth == 0 and text == ";":
+                if (found := judged(statement)) is not False:
+                    return found
+                statement, hidden = [], False
+                continue
+            statement.append((text, token.start(), depth))
+        return judged(statement)
+
+    def _storage_of(self, statement, name):
+        """(kind, line) if the tokens of one statement declare ``name`` with static or
+        external storage (`static long q = 2`, `extern long a, gcount`) or bring it in
+        with a C++ `using` declaration; else False."""
+        words = [text for text, _, depth in statement if depth == 0]
+        if not words:
+            return False
+        at = bisect.bisect_right(self.starts, statement[0][1])
+        if words[0] == "using" and self.raw_strings:
+            if len(words) > 1 and words[1] == "namespace":
+                return False
+            return ("using", at) if name in words else False
+        storage = next((word for word in words if word in _STORAGE - {"using"}), None)
+        if storage is None:
+            return False
+        # Each declarator, without its initializer: `long a = q, q = 2` declares the second.
+        declarator, initializing = [], False
+        for text, _, depth in statement:
+            if depth == 0 and text == ",":
+                initializing = False
+                continue
+            if depth == 0 and text == "=":
+                initializing = True
+                continue
+            if not initializing:
+                declarator.append(text)
+        return (storage, at) if name in declarator else False
 
     def old_style(self, line):
         """Whether ``line`` is in the body of a K&R-style definition (`long f(a) long a;

@@ -1203,15 +1203,19 @@ JUMPED = """#include <setjmp.h>
 
 static jmp_buf env;
 
-__attribute__((noinline)) static long twice(long v) { return v * 2; }
+__attribute__((noinline)) static long twice(long v) {
+    long w = v * 2;  // HELPER
+    return w;
+}
 
 static long run(int n) {
+    long before = twice(3);
     volatile int tries = 0;
     long total = 0;  // TOP
     if (setjmp(env) != 0) {
         total += 100;
     }
-    long later = twice(tries);
+    long later = twice(tries);  // AFTER
     tries++;
     if (tries < n) longjmp(env, 1);
     return total + later;
@@ -1265,16 +1269,42 @@ def test_a_local_declared_on_a_line_a_loop_returns_to_carries_a_note(directory, 
 
 @pytest.mark.timeout(300)
 def test_locals_of_a_program_using_setjmp_carry_a_note(directory, capsys):
-    # With setjmp, Peeky does not judge initialization (a longjmp can return above a
-    # declaration with the local live): each automatic local says so; a parameter not.
+    # Below a setjmp call, a `longjmp` can bring control back past a declaration with
+    # the local live, or this is the first pass: the local is shown with a note, and a
+    # change is refused (its declaration may run after it). Review of PR #140: only in
+    # the function that calls setjmp, below the call, and only for what is declared at
+    # or below the stop; elsewhere the usual rules judge it (they withheld nothing in
+    # a program using setjmp, and noted every local, `before` and `tries` included).
     path = directory / "jump.c"
     path.write_text(JUMPED)
-    result, rows = probed(capsys, path, line_of(JUMPED, "// TOP"), "total,later,tries,n", 1)
-    for name in ("total", "later", "tries"):
-        assert "does not judge whether this local is initialized" in rows[1, name]["note"]
-        assert "setjmp" in rows[1, name]["note"]
-    assert "note" not in rows[1, "n"] and rows[1, "n"]["value"] == "2", rows
+    capture = "later,total,before,tries,n"
+    result, rows = probed(capsys, path, line_of(JUMPED, "// AFTER"), capture, 2)
+    for hit in (1, 2):
+        note = rows[hit, "later"]["note"]
+        assert "value" in rows[hit, "later"] and "calls setjmp (line" in note, rows
+        assert rows[hit, "later"]["settable"] is False
+        assert all("note" not in rows[hit, name] for name in ("total", "before", "tries", "n"))
+    assert rows[1, "before"]["value"] == "6" and rows[2, "total"]["value"] == "100", rows
     assert any("setjmp" in warning for warning in result["warnings"]), result["warnings"]
+    # Above the call, the usual rules: `total`, declared on the stop line, is withheld.
+    result, rows = probed(capsys, path, line_of(JUMPED, "// TOP"), "total,later,before", 1)
+    assert withheld(rows[1, "total"], "declared on line") and "note" not in rows[1, "before"]
+    assert withheld(rows[1, "later"], "below this stop"), rows
+    # A function that makes no setjmp call: judged as usual.
+    result, rows = probed(capsys, path, line_of(JUMPED, "// HELPER"), "w,v", 1)
+    assert withheld(rows[1, "w"], "declared on line") and "note" not in rows[1, "v"], rows
+    assert main(["session", "start", str(path), "--at", str(line_of(JUMPED, "// AFTER"))]) == 0
+    capsys.readouterr()
+    try:
+        assert main(["session", "set", "later=5", "--json"]) == 2
+        error = json.loads(capsys.readouterr().out)["error"]
+        assert error["code"] == "MUTATION_REJECTED" and "longjmp" in error["message"], error
+        # What is certainly current there can be changed.
+        assert main(["session", "set", "before=7", "--json"]) == 0
+        assert json.loads(capsys.readouterr().out)["after"] == "7"
+    finally:
+        main(["session", "close"])
+        capsys.readouterr()
 
 
 # Review of PR #140: another declaration of the name (an earlier loop's, a static, a
@@ -1384,3 +1414,103 @@ def test_a_local_below_the_stop_is_judged_by_the_declaration_shown(
     finally:
         main(["session", "close"])
         capsys.readouterr()
+
+
+# Review of PR #140: in a block declaring a `static` or `extern` (or C++ `using`) of an
+# outer local's name, the code reads that one, which lldb-dap does not list (clang
+# declares a block's static in the function's scope, a block's extern not at all): the
+# outer local was shown, and read and changed, under its name.
+SHADOWS = {
+    "shadow.c": """#include <stdio.h>
+
+long gcount = 1;
+#define KEEP(name) static long name = 5
+__attribute__((noinline)) long use(long v) { return v + 1; }
+
+int main(void) {
+    long gcount = 6;
+    long total = 0;
+    {
+        extern long gcount;
+        total += use(gcount);  // EXTERN
+    }
+    long q = 1;
+    {
+        static long q = 2;
+        total += use(q);  // STATIC
+    }
+    long r = 3;
+    {
+        KEEP(r);
+        total += use(r);  // MACRO
+    }
+    total += use(q) + use(gcount) + use(r);  // AFTER
+    printf("T %ld %ld %ld %ld\\n", total, gcount, q, r);
+    return 0;
+}
+""",
+    "shadow.cpp": """#include <cstdio>
+
+namespace cfg { long level = 3; }
+__attribute__((noinline)) long use(long v) { return v + 1; }
+
+int main() {
+    long level = 1;
+    long total = 0;
+    {
+        using cfg::level;
+        total += use(level);  // USING
+    }
+    {
+        static long hits = 0;
+        long kept = hits;
+        total += use(kept);  // OTHER
+    }
+    std::printf("T %ld %ld\\n", total, level);
+    return 0;
+}
+""",
+}
+
+
+@pytest.mark.timeout(300)
+@pytest.mark.parametrize(
+    "name, marker, local, phrase",
+    [
+        ("shadow.c", "EXTERN", "gcount", "reads the block's `extern` `gcount`"),
+        ("shadow.c", "STATIC", "q", "reads the block's `static` `q`"),
+        ("shadow.c", "MACRO", "r", "a macro or a directive there may"),
+        ("shadow.cpp", "USING", "level", "reads the block's `using` `level`"),
+    ],
+)
+def test_an_outer_local_a_blocks_static_or_extern_hides_is_withheld(
+    directory, capsys, name, marker, local, phrase
+):
+    source = SHADOWS[name]
+    path = directory / name
+    path.write_text(source)
+    line = line_of(source, f"// {marker}")
+    rows = shown_at(capsys, path, line, local, "total")
+    assert withheld(rows[local], phrase) and "what the code reads" in rows[local]["error"]
+    assert "value" in rows["total"], rows
+    assert main(["session", "start", str(path), "--at", str(line)]) == 0
+    capsys.readouterr()
+    try:
+        assert main(["session", "set", f"{local}=9", "--json"]) == 2
+        error = json.loads(capsys.readouterr().out)["error"]
+        assert error["code"] == "MUTATION_REJECTED" and "cannot be changed here" in error["message"]
+    finally:
+        main(["session", "close"])
+        capsys.readouterr()
+
+
+@pytest.mark.timeout(300)
+def test_outer_locals_are_read_outside_the_blocks_that_hide_them(directory, capsys):
+    path = directory / "shadow.c"
+    path.write_text(SHADOWS["shadow.c"])
+    rows = shown_at(capsys, path, line_of(SHADOWS["shadow.c"], "// AFTER"), "q", "gcount", "r")
+    assert [rows[local]["value"] for local in ("q", "gcount", "r")] == ["1", "6", "3"], rows
+    path = directory / "shadow.cpp"
+    path.write_text(SHADOWS["shadow.cpp"])
+    rows = shown_at(capsys, path, line_of(SHADOWS["shadow.cpp"], "// OTHER"), "level", "kept")
+    assert rows["level"]["value"] == "1" and rows["kept"]["value"] == "0", rows

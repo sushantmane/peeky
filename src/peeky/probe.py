@@ -1279,7 +1279,7 @@ def _capture(
                     type=variable.get("type"),
                     unavailable=True,
                     error=(
-                        f"no value yet: {reason}"
+                        f"{variable.get('withheld_as') or 'no value yet'}: {reason}"
                         if variable.get("withheld")
                         else f"no value here: optimized out or not live (debugger: {reason})"
                         if snapshot.get("optimized")
