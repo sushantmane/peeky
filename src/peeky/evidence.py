@@ -17,7 +17,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import quote
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 MAX_RUNS = 500
 DEFAULT_ROWS = 200
 MAX_ROWS = 10000
@@ -88,8 +88,9 @@ TABLES = {
             "(write num * 1.0 / k), and SUM fails past 64 bits (TOTAL(num) does not)",
             "unavailable": "1 when the debugger has no value here (optimized out, not live)",
             "error": "Why there is no value (unknown name, unreadable, ...), else NULL",
-            "view": "Qualified value view (e.g. a Rust Option); 'stale' for a value in a Rust "
-            "local that may be moved or dropped (the bytes it left, #108); else NULL",
+            "view": "Qualified value view (e.g. a Rust Option); 'stale' (whatever its view) "
+            "for a value in a Rust local that may be moved or dropped (the bytes it left, "
+            "#108); else NULL",
             "identity": "Python: which object the value is, an INTEGER (debugpy's number for "
             "the object, not an address; the object keeps it if its class is reassigned). "
             "Within one hit, equal means the same object (an alias), different means "
@@ -101,6 +102,10 @@ TABLES = {
             "module's globals (it was not a local there); 'unknown' for a row stored before "
             "Peeky recorded this (an early version of schema 6, which could read module "
             "globals); else NULL: the stopped frame's own variables",
+            "note": "What Peeky says about the value, which it cannot vouch for or shows "
+            "raw (a C/C++ local a loop returns to, a program using setjmp; a Rust value "
+            "shown as LLDB's summary, a pointer it does not follow, a moved local): read "
+            "the value with it. NULL for a plain value (and for runs saved before schema 8)",
         },
     ),
     "interventions": (
@@ -120,7 +125,7 @@ TABLES = {
 }
 _EVIDENCE_COLUMNS = (
     "run_id, started_at, label, program, line, status, hit, phase, function, selector, type, "
-    "value, num, unavailable, error, view, identity, scope, args, sets, "
+    "value, num, unavailable, error, view, note, identity, scope, args, sets, "
     "artifact_manifest_id, source_sha256, candidate, language"
 )
 VIEWS = {
@@ -133,7 +138,7 @@ VIEWS = {
 }
 _EVIDENCE_VIEW = """CREATE VIEW evidence AS SELECT c.run_id, r.started_at, r.label, r.program,
         c.line, r.status, c.hit, c.phase, c.function, c.selector, c.type, c.value, c.num,
-        c.unavailable, c.error, c.view, c.identity, c.scope, r.args, r.sets,
+        c.unavailable, c.error, c.view, c.note, c.identity, c.scope, r.args, r.sets,
         r.artifact_manifest_id,
         r.source_sha256, r.edit IS NOT NULL AS candidate, r.language
         FROM captures c JOIN runs r ON r.run_id = c.run_id"""
@@ -145,7 +150,7 @@ _LAST_RUN_VIEW = (
 _CAPTURES = """CREATE TABLE {} (
         run_id INTEGER NOT NULL, hit INTEGER, phase TEXT, line INTEGER, function TEXT,
         selector TEXT, type TEXT, value TEXT, num NUMERIC, unavailable INTEGER NOT NULL,
-        error TEXT, view TEXT, identity INTEGER, scope TEXT)"""
+        error TEXT, view TEXT, identity INTEGER, scope TEXT, note TEXT)"""
 _CAPTURE_INDEXES = (
     "CREATE INDEX captures_run ON captures (run_id, hit)",
     "CREATE INDEX captures_selector ON captures (selector)",
@@ -176,16 +181,23 @@ _DDL = (
 # `candidate` (an early version 2 had the column but the old views); version 4 made
 # captures.num NUMERIC; version 5 added language to the views; version 6 added
 # captures.identity and captures.scope; version 7 makes identity an INTEGER where an
-# early version 6 stored it as TEXT (`list@7`) without scope. Views name columns of the
+# early version 6 stored it as TEXT (`list@7`) without scope; version 8 adds captures.note
+# (earlier runs' notes were not kept: NULL). Views name columns of the
 # newest captures table, so earlier steps only drop them and the last step creates them.
 _DROP_VIEWS = ("DROP VIEW IF EXISTS last_run", "DROP VIEW IF EXISTS evidence")
 
 
-def _add_identity(connection):
-    columns = {row[1] for row in connection.execute("PRAGMA table_info(captures)")}
-    for column, kind in (("identity", "INTEGER"), ("scope", "TEXT")):
-        if column not in columns:
-            connection.execute(f"ALTER TABLE captures ADD COLUMN {column} {kind}")
+def _add_columns(*added):
+    def add(connection):
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(captures)")}
+        for column, kind in added:
+            if column not in columns:
+                connection.execute(f"ALTER TABLE captures ADD COLUMN {column} {kind}")
+
+    return add
+
+
+_add_identity = _add_columns(("identity", "INTEGER"), ("scope", "TEXT"))
 
 
 def _identity_number(value):
@@ -237,7 +249,8 @@ _MIGRATIONS = {
     ),
     4: _DROP_VIEWS,
     5: (*_DROP_VIEWS, _add_identity),
-    6: (*_DROP_VIEWS, _integer_identity, _EVIDENCE_VIEW, _LAST_RUN_VIEW),
+    6: (*_DROP_VIEWS, _integer_identity),
+    7: (*_DROP_VIEWS, _add_columns(("note", "TEXT")), _EVIDENCE_VIEW, _LAST_RUN_VIEW),
 }
 
 _LATEST = "(SELECT MAX(run_id) FROM runs)"
@@ -437,9 +450,10 @@ QUERIES = {
         (),
     ),
     "run": (
-        "Every captured value of one run, in capture order; error says why a value is NULL",
-        f"SELECT hit, phase, line, function, selector, type, value, {_ERROR} AS error, view "
-        f"FROM captures WHERE run_id = {_RUN} ORDER BY rowid",
+        "Every captured value of one run, in capture order; error says why a value is NULL; "
+        "view and note qualify a value (read it with them)",
+        f"SELECT hit, phase, line, function, selector, type, value, {_ERROR} AS error, view, "
+        f"note FROM captures WHERE run_id = {_RUN} ORDER BY rowid",
         _RUN_PARAM,
         (),
     ),
@@ -503,12 +517,15 @@ WHERE o.run_id = {_RUN} AND o.phase = 'observed' ORDER BY o.hit, o.rowid""",
         ("selector",),
     ),
     "wide": (
-        "One row per hit (and phase) of one run, a column per selector in capture order, "
-        "each cell the value as stored; a cell with no value (unavailable, withheld, an "
-        "error) is NULL and named in no_value with why; a selector not captured at that "
-        "hit is NULL and not named; views names cells whose value a view qualifies "
-        "(stale, unproven, opaque, budget-exhausted). --json gives the generated SQL too "
-        "(`sql`), to refine with peeky sql",
+        "One row per hit (and phase) of one run, a column per selector in capture order "
+        "(a name SQLite would take for an earlier column, ignoring case, gets ` (2)`), each "
+        "cell the value as stored. no_value is a JSON object naming the cells with no value "
+        "(NULL: unavailable, withheld, an error) and why; a selector not captured at that "
+        "hit is NULL and not named. caveats names the cells whose value is qualified: "
+        "{selector: view} for stale, unproven, opaque or budget-exhausted, else "
+        "{selector: 'note'} for a row with a note (queries run shows it): read those with "
+        "it, never as plain values. --json gives the generated SQL too (`sql`), to refine "
+        "with peeky sql",
         lambda path, params: _wide(path, params),
         {**_RUN_PARAM, "phase": "observed or after-set (default: both, after-set after)"},
         (),
@@ -519,13 +536,16 @@ WHERE o.run_id = {_RUN} AND o.phase = 'observed' ORDER BY o.hit, o.rowid""",
         "pairs every hit of a with every hit of b), with each run's other selectors "
         "(columns a:<selector>, b:<selector>); then the hits of each run whose key value "
         "the other run never had, or that have none (matched: only in run a / b). "
-        "no_value_a/b and views_a/b are wide's, per run. --json gives the generated SQL "
-        "too (`sql`)",
+        "no_value_a/b and caveats_a/b are wide's, per run (the key's own included). A key "
+        "whose values carry addresses gets a note; masked=1 matches them masked. --json "
+        "gives the generated SQL too (`sql`)",
         lambda path, params: _join(path, params),
         {
             **_PAIR_PARAMS,
             "key": "Selector whose value links the runs, e.g. v (required)",
             "phase": "observed (default) or after-set",
+            "masked": "1: match key values with addresses masked (no_addresses), for a "
+            "pointer or a C string; any address then matches any other",
         },
         ("key",),
     ),
@@ -718,7 +738,9 @@ def record(path, result, *, language=None, target=None, label=None, worker=None)
             tuple(run.values()),
         ).lastrowid
         connection.executemany(
-            "INSERT INTO captures VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO captures (run_id, hit, phase, line, function, selector, type, value, "
+            "num, unavailable, error, view, identity, scope, note) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [
                 (
                     run_id,
@@ -732,9 +754,12 @@ def record(path, result, *, language=None, target=None, label=None, worker=None)
                     _number(row.get("value")),
                     1 if row.get("unavailable") else 0,
                     row.get("error"),
-                    _text(row.get("view") or ("stale" if row.get("stale") else None)),
+                    # Stale wins: a moved local's `Some(40)` (active-variant) is the bytes
+                    # it left, whatever view decoded them.
+                    _text("stale" if row.get("stale") else row.get("view")),
                     row["identity"] if type(row.get("identity")) is int else None,
                     "globals" if row.get("scope") == "globals" else None,
+                    _text(row.get("note")),
                 )
                 for row in result.get("rows") or []
             ],
@@ -1020,18 +1045,29 @@ def _identifier(name):
 
 
 _PHASES = ("observed", "after-set")
-# A cell with no value, named with why: `selector: reason`, joined with `; `.
-_NO_VALUE = (
-    "group_concat(CASE WHEN value IS NULL THEN selector || ': ' || COALESCE(error, "
-    "'no value') END, '; ')"
-)
-# A cell whose value a view qualifies (`stale`, `unproven`, `opaque`, `budget-exhausted`),
-# named with it, so it is never read as a plain value. `memory` (read from the program's
-# memory) and `active-variant` (a decoded enum) say how a value was read, not a caveat.
-_VIEWS = (
-    "group_concat(CASE WHEN value IS NOT NULL AND view IS NOT NULL AND view NOT IN "
-    "('memory', 'active-variant') THEN selector || ': ' || view END, '; ')"
-)
+# Views that say how a value was read (from the program's memory, a decoded enum
+# variant), not that it may be wrong. Any other view (stale, unproven, opaque,
+# budget-exhausted, or one added later) qualifies the value, as a note does.
+_CAVEAT_VIEW = "CASE WHEN view NOT IN ('memory', 'active-variant') THEN view END"
+# Each run's cells: names whose value is NULL, with why, and names whose value something
+# qualifies, with what: JSON objects, so no reason or selector text can be misread as a
+# separator. NULL where there are none.
+_NO_VALUE = "NULLIF(json_group_object(selector, reason) FILTER (WHERE reason IS NOT NULL), '{}')"
+_CAVEATS = "NULLIF(json_group_object(selector, caveat) FILTER (WHERE caveat IS NOT NULL), '{}')"
+
+
+def _cells(where):
+    """SQL for one row per hit, phase and selector of the captures matching ``where``:
+    ``value``; ``reason``, why it has none; ``caveat``, what qualifies a value (a view
+    other than how it was read, else `note` where the row has a note). A selector
+    captured twice at a hit read the same both times (``_captured`` checks): one cell."""
+    return (
+        "SELECT hit, phase, selector, MIN(line) AS line, MAX(value) AS value,\n"
+        "    CASE WHEN MAX(value) IS NULL THEN COALESCE(MAX(error), 'no value') END AS reason,\n"
+        f"    CASE WHEN MAX(value) IS NOT NULL THEN COALESCE(MAX({_CAVEAT_VIEW}),\n"
+        "      CASE WHEN MAX(note) IS NOT NULL THEN 'note' END) END AS caveat\n"
+        f"  FROM captures WHERE {where} GROUP BY hit, phase, selector"
+    )
 
 
 def _phase(params, default=None):
@@ -1085,13 +1121,22 @@ def _captured(path, run, phase):
     return [row["selector"] for row in rows]
 
 
-def _columns(selectors, reserved, prefix=""):
-    """A result column name for each selector: the selector itself (after ``prefix``),
-    or `<selector> (selector)` where that is one of the query's own columns."""
+def _columns(selectors, taken, prefix="", fixed=frozenset()):
+    """A result column name for each selector: the selector itself (after ``prefix``);
+    `<name> (selector)` where that is one of the query's ``fixed`` columns; and
+    `<name> (2)`, `(3)`, ... where SQLite would take it for a column before it (its
+    identifiers ignore ASCII case: `x` and `X` would be one column). ``taken`` holds the
+    lowercased names given so far, and gains these."""
     names = []
     for selector in selectors:
         name = f"{prefix}{selector}"
-        names.append(f"{name} (selector)" if name.lower() in reserved else name)
+        if name.lower() in fixed:
+            name = f"{name} (selector)"
+        column, number = name, 2
+        while column.lower() in taken:
+            column, number = f"{name} ({number})", number + 1
+        taken.add(column.lower())
+        names.append(column)
     return names
 
 
@@ -1104,83 +1149,109 @@ def _too_wide(count, run, name):
         )
 
 
-def _wide(path, params):
-    """(SQL, params) of `queries wide`: one row per hit and phase of a run, a column per
-    selector in capture order. Generated per run, as SQL cannot pivot on its own."""
-    run, phase = _run_id(path, params.get("run")), _phase(params)
-    selectors = _captured(path, run, phase)
-    names = _columns(selectors, {"hit", "phase", "line", "no_value", "views"})
-    _too_wide(len(names) + 5, run, "wide")
-    cells = "".join(
-        f"\n  MAX(CASE WHEN selector = {_literal(selector)} THEN value END) AS {_identifier(name)},"
+def _picked(selectors, names, indent):
+    return "".join(
+        f"\n{indent}MAX(CASE WHEN selector = {_literal(selector)} THEN value END) AS "
+        f"{_identifier(name)},"
         for selector, name in zip(selectors, names)
     )
+
+
+def _wide(path, params):
+    """(SQL, params, notes) of `queries wide`: one row per hit and phase of a run, a
+    column per selector in capture order. Generated per run: SQL cannot pivot alone."""
+    run, phase = _run_id(path, params.get("run")), _phase(params)
+    selectors = _captured(path, run, phase)
+    fixed = {"hit", "phase", "line", "no_value", "caveats"}
+    names = _columns(selectors, set(fixed), fixed=fixed)
+    _too_wide(len(names) + len(fixed), run, "wide")
     where = f"run_id = {run}" + (f" AND phase = {_literal(phase)}" if phase else "")
     sql = (
-        f"SELECT hit, phase, MIN(line) AS line,{cells}\n  {_NO_VALUE} AS no_value,\n"
-        f"  {_VIEWS} AS views\n"
-        f"FROM captures WHERE {where}\nGROUP BY hit, phase ORDER BY hit, phase = 'after-set'"
+        f"SELECT hit, phase, MIN(line) AS line,{_picked(selectors, names, '  ')}\n"
+        f"  {_NO_VALUE} AS no_value,\n  {_CAVEATS} AS caveats\n"
+        f"FROM ({_cells(where)})\nGROUP BY hit, phase ORDER BY hit, phase = 'after-set'"
     )
-    return sql, {}
+    return sql, {}, []
 
 
 def _join(path, params):
-    """(SQL, params) of `queries join`: two runs' hits paired where ``key`` has the same
-    value (stored text), every pair where it repeats; then each run's unpaired hits."""
+    """(SQL, params, notes) of `queries join`: two runs' hits paired where ``key`` has
+    the same value (stored text; with ``masked``, addresses masked), every pair where it
+    repeats; then each run's unpaired hits."""
     _require_runs(path, params)
     found = query(
-        path, f"SELECT {_A} AS a, {_B} AS b", {"a": params.get("a"), "b": params.get("b")}
-    )
-    a, b = found["rows"][0]["a"], found["rows"][0]["b"]
+        path,
+        f"SELECT {_A} AS a, {_B} AS b, (SELECT language FROM runs WHERE run_id = {_A}) AS la, "
+        f"(SELECT language FROM runs WHERE run_id = {_B}) AS lb",
+        {"a": params.get("a"), "b": params.get("b")},
+    )["rows"][0]
+    a, b = found["a"], found["b"]
     key, phase = params["key"], _phase(params, "observed")
+    if params.get("masked") not in (None, 0, 1):
+        raise ValueError("Evidence query failed: masked is 1 (or 0)")
+    masked = params.get("masked") == 1
+    fixed = {"hit_a", "hit_b", "no_value_a", "no_value_b", "caveats_a", "caveats_b", "matched"}
+    taken = set(fixed)
+    (key_name,) = _columns([key], taken, fixed=fixed)
     sides = {}
-    for name, run in (("a", a), ("b", b)):
+    for name, run, language in (("a", a, found["la"]), ("b", b, found["lb"])):
         captured = _captured(path, run, phase)
         if key not in captured:
             raise ValueError(
                 f"Evidence query failed: run {run} captured no {key!r} ({phase}); it "
                 f"captured: {', '.join(captured[:20]) or 'nothing'}"
             )
-        others = [selector for selector in captured if selector != key]
-        sides[name] = (run, others, _columns(others, set(), f"{name}:"))
-    reserved = {"hit_a", "hit_b", "no_value_a", "no_value_b", "views_a", "views_b", "matched"}
-    (key_name,) = _columns([key], reserved)
-    _too_wide(8 + len(sides["a"][1]) + len(sides["b"][1]), f"{a} and {b}", "join")
+        # Masked, each run's own key value is a column too: the masked text is the match.
+        others = [selector for selector in captured if masked or selector != key]
+        matched = "value" if not masked else f"no_addresses(value, {_literal(language)})"
+        sides[name] = (run, others, _columns(others, taken, f"{name}:"), matched)
+    _too_wide(len(fixed) + 1 + len(sides["a"][1]) + len(sides["b"][1]), f"{a} and {b}", "join")
+    notes = []
+    if not masked:
+        carried = query(
+            path,
+            "SELECT c.value FROM captures c JOIN runs r USING (run_id) WHERE c.run_id IN "
+            "(:a, :b) AND c.selector = :key AND c.phase = :phase AND c.value IS NOT NULL "
+            "AND no_addresses(c.value, r.language) IS NOT c.value LIMIT 1",
+            {"a": a, "b": b, "key": key, "phase": phase},
+        )["rows"]
+        if carried:
+            notes.append(
+                f"{key}'s values carry addresses ({carried[0]['value'][:60]}), which "
+                "differ between runs even where what they point at is equal, so such "
+                "hits rarely pair: --param masked=1 matches them with addresses masked "
+                "(no_addresses: any address then matches any other)"
+            )
 
     def side(name):
-        run, others, names = sides[name]
-        cells = "".join(
-            f"\n    MAX(CASE WHEN selector = {_literal(selector)} THEN value END) AS "
-            f"{_identifier(column)},"
-            for selector, column in zip(others, names)
-        )
+        run, others, names, matched = sides[name]
+        where = f"run_id = {run} AND phase = {_literal(phase)}"
         return (
-            f"{name} AS (SELECT hit, MAX(CASE WHEN selector = {_literal(key)} THEN value END) "
-            f"AS k,{cells}\n    {_NO_VALUE} AS no_value,\n    {_VIEWS} AS views\n"
-            f"  FROM captures WHERE run_id = {run} "
-            f"AND phase = {_literal(phase)} GROUP BY hit)"
+            f"{name} AS (SELECT hit, MAX(CASE WHEN selector = {_literal(key)} THEN {matched} "
+            f"END) AS k,{_picked(others, names, '    ')}\n    {_NO_VALUE} AS no_value,\n"
+            f"    {_CAVEATS} AS caveats\n  FROM ({_cells(where)}) GROUP BY hit)"
         )
 
-    def picked(name, present):
-        return ", ".join(
+    def columns(name, present):
+        return [
             f"{name}.{_identifier(column)}" if present else f"NULL AS {_identifier(column)}"
             for column in sides[name][2]
-        )
+        ]
 
     def row(present_a, present_b, matched):
         parts = [
             f"{'a' if present_a else 'b'}.k AS {_identifier(key_name)}",
             "a.hit AS hit_a" if present_a else "NULL AS hit_a",
             "b.hit AS hit_b" if present_b else "NULL AS hit_b",
-            picked("a", present_a),
-            picked("b", present_b),
+            *columns("a", present_a),
+            *columns("b", present_b),
             "a.no_value AS no_value_a" if present_a else "NULL AS no_value_a",
             "b.no_value AS no_value_b" if present_b else "NULL AS no_value_b",
-            "a.views AS views_a" if present_a else "NULL AS views_a",
-            "b.views AS views_b" if present_b else "NULL AS views_b",
+            "a.caveats AS caveats_a" if present_a else "NULL AS caveats_a",
+            "b.caveats AS caveats_b" if present_b else "NULL AS caveats_b",
             f"{_literal(matched)} AS matched",
         ]
-        return "SELECT " + ", ".join(part for part in parts if part)
+        return "SELECT " + ", ".join(parts)
 
     sql = (
         f"WITH {side('a')},\n{side('b')}\nSELECT * FROM (\n"
@@ -1191,7 +1262,7 @@ def _join(path, params):
         "WHERE NOT EXISTS (SELECT 1 FROM a WHERE a.k = b.k))\n"
         "ORDER BY matched != 'both', hit_a IS NULL, hit_a, hit_b"
     )
-    return sql, {}
+    return sql, {}, notes
 
 
 def run_query(path, name, params=None, *, limit=DEFAULT_ROWS):
@@ -1216,8 +1287,9 @@ def run_query(path, name, params=None, *, limit=DEFAULT_ROWS):
         )
     if callable(sql):
         # Built for the runs named (a column per selector): shown, to refine with peeky sql.
-        built, bound = sql(path, params)
-        return {**query(path, built, bound, limit=limit), "sql": built}
+        built, bound, notes = sql(path, params)
+        result = {**query(path, built, bound, limit=limit), "sql": built}
+        return {**result, "notes": notes} if notes else result
     return query(path, sql, {**dict.fromkeys(accepted), **params}, limit=limit)
 
 
@@ -1306,6 +1378,7 @@ def table(result, width=120):
     count = result["row_count"]
     if note := shortened_note(shortened):
         lines.append(note)
+    lines.extend(f"note: {note}" for note in result.get("notes", ()))
     lines.append(
         f"({count} row{'s' if count != 1 else ''}"
         + (

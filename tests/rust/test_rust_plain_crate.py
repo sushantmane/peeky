@@ -4856,3 +4856,48 @@ def test_a_reference_to_a_byte_or_char_shows_its_address_not_a_c_string(plain, c
         assert values == ["200", "'z'"], values
     finally:
         main(["session", "close"])
+
+
+MOVED_HOLDER = """#[derive(Debug)]
+struct Span {
+    start: usize,
+    end: usize,
+}
+
+#[derive(Debug)]
+struct Holder {
+    b: Box<u8>,
+    o: Option<i32>,
+    s: Span,
+    n: i64,
+}
+
+fn consume(h: Holder) -> i64 {
+    h.n + *h.b as i64
+}
+
+fn main() {
+    let h = Holder { b: Box::new(7), o: Some(40), s: Span { start: 1, end: 2 }, n: 9 };
+    let got = consume(h);
+    println!("{}", got); // MOVED
+}
+"""
+
+
+@pytest.mark.timeout(300)
+def test_saved_evidence_keeps_a_moved_locals_fields_stale(plain, capsys):
+    # Review of #139 (PR #145, round 1): `h.o` read `Some(40)` with `stale` and the
+    # `active-variant` view; the store kept only the view, so `queries wide` showed it
+    # plain while `h.n` was stale.
+    (plain / "src/main.rs").write_text(MOVED_HOLDER)
+    at = f"src/main.rs:{line_of(MOVED_HOLDER, 'MOVED')}"
+    code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "h.o,h.n,h.s.start")
+    assert code == 0, result.get("error")
+    rows = {row["selector"]: row for row in result["rows"]}
+    assert all(row.get("stale") and "value" in row for row in rows.values()), rows
+    code, wide = run(capsys, "queries", "wide")
+    assert code == 0 and wide["rows"][0]["h.o"] == rows["h.o"]["value"], wide
+    caveats = json.loads(wide["rows"][0]["caveats"])
+    assert caveats == {"h.o": "stale", "h.n": "stale", "h.s.start": "stale"}, wide
+    code, stored = run(capsys, "queries", "run")
+    assert all(row["view"] == "stale" and "(#108)" in row["note"] for row in stored["rows"])

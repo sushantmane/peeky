@@ -58,7 +58,7 @@ def test_wide_and_join_read_probes_of_a_c_program(bins, capsys):
         "total",
         "bins[3].hi",
         "no_value",
-        "views",
+        "caveats",
     ]
     rows = [(row["hit"], row["v"], row["total"], row["bins[3].hi"]) for row in wide["rows"]]
     assert rows == [(1, "7", "0", "4"), (2, "2", "28", "4"), (3, "5", "34", "4")]
@@ -87,3 +87,71 @@ def test_wide_and_join_read_probes_of_a_c_program(bins, capsys):
     assert "bins[3].hi" in text and "62" in text
     assert main(["sql", joined["sql"], "--json"]) == 0
     assert json.loads(capsys.readouterr().out)["rows"] == joined["rows"]
+
+
+LOOP = """#include <stdio.h>
+#include <stdlib.h>
+int main(int argc, char **argv) {
+  int total = 0, i = 1;
+  do {
+    int k = total % 7;
+    const char *name = argv[i];
+    int x = i + 1, X = 100 + i;
+    total += k + x + X + atoi(name);
+    i++;
+  } while (i < argc);
+  printf("TOTAL:%d\\n", total);
+  return 0;
+}
+"""
+
+
+@pytest.mark.timeout(240)
+def test_wide_and_join_keep_notes_case_and_addresses_apart(bins, capsys):
+    # Review of #139 (PR #145, round 1).
+    (bins / "bins.c").write_text(LOOP)
+
+    def probe(line, capture, *args):
+        argv = ["probe", str(bins), "--at", f"bins.c:{line}", "--capture", capture]
+        code = main([*argv, "--hits", "all", "--quiet", "--", *args])
+        assert code == 0, capsys.readouterr().out
+        capsys.readouterr()
+
+    # Line 6 is a do body's first line: `k` shows a value Peeky cannot vouch for (the last
+    # pass's, or leftovers), which the probe marks [note]. wide and join showed it plain.
+    probe(6, "k,i", "5", "6")
+    probe(6, "k,i", "6", "5")
+    wide = queried(capsys, "wide", "--param", "run=1")
+    assert [json.loads(row["caveats"]) for row in wide["rows"]] == [{"k": "note"}] * 2
+    assert all(row["k"] is not None for row in wide["rows"])
+    stored = queried(capsys, "run", "--param", "run=1")["rows"]
+    assert all("loop" in row["note"] for row in stored if row["selector"] == "k")
+    joined = queried(capsys, "join", "--param", "a=1", "--param", "b=2", "--param", "key=k")
+    assert joined["rows"]
+    for row in joined["rows"]:
+        for side in ("a", "b"):
+            if row[f"hit_{side}"] is not None:
+                assert json.loads(row[f"caveats_{side}"]) == {"k": "note"}, row
+
+    # `x` and `X` are one name to SQLite: join's `a:X` held x's values.
+    probe(9, "name,x,X", "5", "6")
+    probe(9, "name,x,X", "6", "5")
+    wide = queried(capsys, "wide", "--param", "run=3")
+    assert wide["columns"][3:6] == ["name", "x", "X (2)"]
+    assert [(row["x"], row["X (2)"]) for row in wide["rows"]] == [("2", "101"), ("3", "102")]
+    assert main(["sql", f'SELECT "x", "X (2)" FROM ({wide["sql"]})', "--json"]) == 0
+    refined = json.loads(capsys.readouterr().out)["rows"]
+    assert refined == [{"x": "2", "X (2)": "101"}, {"x": "3", "X (2)": "102"}]
+
+    # A C string's address differs between runs: said, and maskable.
+    params = ("--param", "a=3", "--param", "b=4", "--param", "key=name")
+    exact = queried(capsys, "join", *params)
+    assert {row["matched"] for row in exact["rows"]} == {"only in run a", "only in run b"}
+    assert "--param masked=1" in exact["notes"][0]
+    masked = queried(capsys, "join", *params, "--param", "masked=1")
+    shown = [
+        (row["name"], row["hit_a"], row["hit_b"], row["a:x"], row["a:X (2)"], row["b:x"])
+        for row in masked["rows"]
+    ]
+    assert shown == [('0x… "5"', 1, 2, "2", "101", "3"), ('0x… "6"', 2, 1, "3", "102", "2")]
+    assert all(row["matched"] == "both" and row["b:X (2)"] for row in masked["rows"])

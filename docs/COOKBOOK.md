@@ -342,17 +342,22 @@ peeky queries wide                  # the newest run; --param run=3 for another
 ```
 
 ```
-hit  phase     line  v  total  bins[3].hi  no_value  views
+hit  phase     line  v  total  bins[3].hi  no_value  caveats
 1    observed  9     2  0      4           NULL      NULL
 2    observed  9     7  6      4           NULL      NULL
 3    observed  9     7  34     4           NULL      NULL
 4    observed  9     8  62     4           NULL      NULL
 ```
 
-- **Columns:** one per selector, named exactly as captured, in `--capture` order. A selector named like a fixed column (`line`) becomes `line (selector)`. In your own SQL, quote such names with double quotes: `"bins[3].hi"`.
+- **Columns:** one per selector, named exactly as captured, in `--capture` order.
+  - A selector named like a fixed column (`line`) becomes `line (selector)`.
+  - SQLite ignores case in column names, so a selector that differs from an earlier column only by case gets a number: `--capture x,X` gives `x` and `X (2)`.
+  - In your own SQL, quote such names with double quotes: `"bins[3].hi"`, `"X (2)"`.
 - **Cells** are the values exactly as stored (text; use `num` in `captures` to compare numbers).
-- **NULL is never a value.** A cell with no value (optimized out, withheld, an error) is NULL and named in `no_value` with why (`w.start: no value yet: …`). A selector not captured at that hit is NULL and not named.
-- **`views`** names cells whose value a view qualifies: `stale`, `unproven`, `opaque` or `budget-exhausted` (`h.b: unproven`). Read such a cell with that caveat (`peeky sql --schema` explains `view`), never as a plain value.
+- **NULL is never a value.** `no_value` is a JSON object naming each cell with no value (optimized out, withheld, an error) and why: `{"name":"no value yet: declared at line 7, below this stop, …"}`. A selector not captured at that hit is NULL and not named.
+- **`caveats`** is a JSON object naming each cell whose value is qualified. Read such a cell with its caveat, never as a plain value.
+  - `stale`, `unproven`, `opaque` or `budget-exhausted`: the row's view (`peeky sql --schema` explains `view`). `stale` is a moved or dropped Rust local's leftover bytes, whatever view decoded them.
+  - `note`: the probe marked the row `[note]` (for example a C local declared on a `do` body's first line: `{"k":"note"}`, "may be the last pass's value, or leftovers"), or gave it one of the Rust notes among its warnings. `peeky queries run` shows each row's note.
 - **Phases:** a run with `--set` has an `after-set` row after its hit's `observed` row. `--param phase=observed` (or `after-set`) keeps one.
 - **`--json`** also gives the SQL it ran (`sql`): refine it with `peeky sql`, e.g. `SELECT * FROM (<sql>) WHERE "v" = '7'`. Up to 95 selectors fit (100 columns at most); a wider run is refused.
 
@@ -367,18 +372,19 @@ peeky queries join --param key=v    # the last two runs; --param a=3 --param b=4
 ```
 
 ```
-v  hit_a  hit_b  a:total  a:bins[3].hi  b:total  b:bins[3].hi  no_value_a  no_value_b  views_a  views_b  matched
-7  1      2      0        4             6        4             NULL        NULL        NULL     NULL     both
-7  1      3      0        4             34       4             NULL        NULL        NULL     NULL     both
-2  2      1      28       4             0        4             NULL        NULL        NULL     NULL     both
-5  3      NULL   34       4             NULL     NULL          NULL        NULL        NULL     NULL     only in run a
-8  NULL   4      NULL     NULL          62       4             NULL        NULL        NULL     NULL     only in run b
+v  hit_a  hit_b  a:total  a:bins[3].hi  b:total  b:bins[3].hi  no_value_a  no_value_b  caveats_a  caveats_b  matched
+7  1      2      0        4             6        4             NULL        NULL        NULL       NULL       both
+7  1      3      0        4             34       4             NULL        NULL        NULL       NULL       both
+2  2      1      28       4             0        4             NULL        NULL        NULL       NULL       both
+5  3      NULL   34       4             NULL     NULL          NULL        NULL        NULL       NULL       only in run a
+8  NULL   4      NULL     NULL          62       4             NULL        NULL        NULL       NULL       only in run b
 ```
 
-- **Matching** is by the key's stored text, exactly (addresses included). It joins the `observed` rows unless you pass `--param phase=after-set`.
+- **Matching** is by the key's stored text, exactly. It joins the `observed` rows unless you pass `--param phase=after-set`.
+- **Addresses:** a key whose values carry one (a pointer, a C string `0x16fbcbb1e "apple"`) rarely matches, as addresses differ between runs. The result then says so in a `note:` line (`notes` in JSON). `--param masked=1` matches the keys with addresses masked (`no_addresses`), showing each run's own value as `a:<key>` and `b:<key>`. Masked, any address matches any other, so a bare pointer pairs with every other bare pointer; NULL is not masked.
 - **A repeated key pairs every hit:** a value at 2 hits of run a and 3 of run b gives 6 rows, in run a's hit order and then run b's. Here run b saw `7` twice, so run a's hit 1 appears twice.
 - **Unmatched hits** come last, one row each: `only in run a` (or `b`) when the other run never had that key value, or when the hit has no key value (the key cell is NULL, and `no_value_a` says why).
-- **Columns:** the key, each run's hit, then each run's other selectors as `a:<selector>` and `b:<selector>`, and `no_value`/`views` per run as in `wide`. Both runs must have captured the key.
+- **Columns:** the key, each run's hit, then each run's other selectors as `a:<selector>` and `b:<selector>` (numbered as in `wide` where only case differs), and `no_value`/`caveats` per run as in `wide`. The key's own caveat is among them: a pair made on a value Peeky cannot vouch for says so. Both runs must have captured the key.
 - **`--json`** gives the SQL too (`sql`).
 
 ---
@@ -397,7 +403,7 @@ peeky queries               # canned questions: runs, run, hits, compare, diff, 
 | Table or view | One row per |
 | --- | --- |
 | `runs` | probe run: inputs, interventions, status, output, build identity |
-| `captures` | selector × hit × phase; `num` holds the value as a number |
+| `captures` | selector × hit × phase; `num` holds the value as a number; `view` and `note` qualify a value (read it with them) |
 | `interventions`, `pauses` | applied `--set`, pause per hit |
 | `evidence` (view) | captures joined with their run (with its `language`): no JOIN needed; output is `runs.output` |
 | `last_run` (view) | the evidence rows of the newest run |

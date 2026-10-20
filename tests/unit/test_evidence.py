@@ -1159,7 +1159,7 @@ def test_wide_gives_one_row_per_hit_with_a_column_per_selector(store):
         *selectors[:-1],
         "line (selector)",
         "no_value",
-        "views",
+        "caveats",
     ]
     shown = [
         (row["hit"], row["phase"], row["now"], row["w.start"], row["bins[3].hi"], row["no_value"])
@@ -1167,11 +1167,11 @@ def test_wide_gives_one_row_per_hit_with_a_column_per_selector(store):
     ]
     assert shown == [
         (1, "observed", "00", "01", "02", None),
-        (2, "observed", "10", None, "12", "w.start: gone"),
+        (2, "observed", "10", None, "12", '{"w.start":"gone"}'),
         (2, "after-set", "7", None, None, None),
         (3, "observed", "100", "101", None, None),
     ]
-    assert [row["views"] for row in wide["rows"]] == ["bins[3].hi: stale", None, None, None]
+    assert [row["caveats"] for row in wide["rows"]] == ['{"bins[3].hi":"stale"}', None, None, None]
     assert wide["rows"][0]['ages["al"]'] == "03" and wide["rows"][0]["d['k']"] == "04"
     assert wide["rows"][0]["line (selector)"] == "05" and wide["rows"][0]["line"] == 8
     # The SQL it ran, to refine with peeky sql: the same rows.
@@ -1237,8 +1237,8 @@ def test_join_links_two_runs_by_a_selectors_value(store):
         "b:tests",
         "no_value_a",
         "no_value_b",
-        "views_a",
-        "views_b",
+        "caveats_a",
+        "caveats_b",
         "matched",
     ]
     shown = [
@@ -1255,7 +1255,7 @@ def test_join_links_two_runs_by_a_selectors_value(store):
         (None, 4, None, "4", None, "only in run a"),
         ("8", None, 4, None, "2", "only in run b"),
     ]
-    assert joined["rows"][4]["no_value_a"] == "v: gone"
+    assert json.loads(joined["rows"][4]["no_value_a"]) == {"v": "gone"}
     assert evidence.query(store, joined["sql"])["rows"] == joined["rows"]
     with pytest.raises(ValueError, match="join needs --param key=<value>"):
         evidence.run_query(store, "join", {"a": 1, "b": 2})
@@ -1263,3 +1263,141 @@ def test_join_links_two_runs_by_a_selectors_value(store):
         evidence.run_query(store, "join", {"a": 1, "b": 2, "key": "bin"})
     with pytest.raises(ValueError, match="comparing needs two saved runs"):
         evidence.run_query(store, "join", {"a": 1, "b": 7, "key": "v"})
+
+
+def test_wide_and_join_name_every_qualified_cell_and_never_merge_columns(store):
+    # Review of #139 (PR #145, round 1): a C/C++ row's note (a `do` body's first line, a
+    # program using setjmp) was not stored, so wide showed `k=1` plain; a stale value
+    # that also had a view (`Some(40)`, active-variant) was stored with the view alone;
+    # `x` and `X` were one column to SQLite (join's `a:X:1` held x's values); no_value
+    # joined reasons with `; `, which reasons contain.
+    note = "may be the last pass's value, or leftovers on the first pass; read it on the next"
+    recorded = captured(
+        [
+            (1, "observed", "k", "1"),
+            (1, "observed", "x", "2"),
+            (1, "observed", "X", "101"),
+            (1, "observed", "h.o", "Some(40)"),
+            (1, "observed", "s", "[1, 2]"),
+            (1, "observed", "gone; here", None),
+        ]
+    )
+    rows = recorded["rows"]
+    rows[0]["note"] = note
+    rows[3].update(view="active-variant", stale=True, note="This is (or is inside) …")
+    rows[4]["view"] = "memory"
+    rows[5].update(error="no value yet: a; b", unavailable=True)
+    evidence.record(store, recorded)
+    stored = evidence.run_query(store, "run")["rows"]
+    assert [(row["selector"], row["view"], row["note"]) for row in stored] == [
+        ("k", None, note),
+        ("x", None, None),
+        ("X", None, None),
+        ("h.o", "stale", "This is (or is inside) …"),
+        ("s", "memory", None),
+        ("gone; here", None, None),
+    ]
+    wide = evidence.run_query(store, "wide")
+    assert wide["columns"] == [
+        "hit", "phase", "line", "k", "x", "X (2)", "h.o", "s", "gone; here", "no_value", "caveats"
+    ]  # fmt: skip
+    (row,) = wide["rows"]
+    assert (row["x"], row["X (2)"]) == ("2", "101")
+    assert json.loads(row["caveats"]) == {"k": "note", "h.o": "stale"}
+    assert json.loads(row["no_value"]) == {"gone; here": "no value yet: a; b"}
+    # Refined with peeky sql, each name is its own column.
+    refined = evidence.query(store, f'SELECT "x", "X (2)" FROM ({wide["sql"]})')["rows"]
+    assert refined == [{"x": "2", "X (2)": "101"}]
+
+    other = captured(
+        [(1, "observed", "k", "1"), (1, "observed", "x", "5"), (1, "observed", "X", "104")]
+    )
+    evidence.record(store, other)
+    joined = evidence.run_query(store, "join", {"key": "k"})
+    assert joined["columns"][:9] == [
+        "k", "hit_a", "hit_b", "a:x", "a:X (2)", "a:h.o", "a:s", "a:gone; here", "b:x"
+    ]  # fmt: skip
+    assert "b:X (2)" in joined["columns"]
+    (row,) = joined["rows"]
+    assert (row["a:x"], row["a:X (2)"], row["b:x"], row["b:X (2)"]) == ("2", "101", "5", "104")
+    # The key's own caveat too: a pair made on a value Peeky cannot vouch for says so.
+    assert json.loads(row["caveats_a"]) == {"k": "note", "h.o": "stale"}
+    assert row["caveats_b"] is None and "notes" not in joined
+
+
+def test_join_says_when_its_key_carries_addresses_and_can_mask_them(store):
+    # Review of #139 (low): `const char *name` is `0x… "apple"`, whose address differs
+    # between runs, so nothing paired and nothing said why.
+    first = captured(
+        [
+            (1, "observed", "name", '0x0000000100003f90 "apple"'),
+            (1, "observed", "n", "1"),
+            (2, "observed", "name", '0x0000000100003fa0 "pear"'),
+            (2, "observed", "n", "2"),
+        ]
+    )
+    second = captured(
+        [
+            (1, "observed", "name", '0x000000016fdff6a0 "pear"'),
+            (1, "observed", "n", "3"),
+            (2, "observed", "name", "0x0000000000000000"),
+            (2, "observed", "n", "4"),
+        ]
+    )
+    evidence.record(store, first, language="c")
+    evidence.record(store, second, language="c")
+    exact = evidence.run_query(store, "join", {"key": "name"})
+    assert [row["matched"] for row in exact["rows"]] == ["only in run a"] * 2 + [
+        "only in run b"
+    ] * 2
+    (note,) = exact["notes"]
+    assert "name's values carry addresses" in note and "--param masked=1" in note
+    assert "note: name's values carry addresses" in evidence.table(exact)
+    masked = evidence.run_query(store, "join", {"key": "name", "masked": 1})
+    assert "notes" not in masked
+    shown = [
+        (row["name"], row["a:name"], row["b:name"], row["a:n"], row["b:n"], row["matched"])
+        for row in masked["rows"]
+    ]
+    # NULL is not an address: it is never masked, so it pairs only with NULL.
+    assert shown == [
+        ('0x… "pear"', '0x0000000100003fa0 "pear"', '0x000000016fdff6a0 "pear"', "2", "3", "both"),
+        ('0x… "apple"', '0x0000000100003f90 "apple"', None, "1", None, "only in run a"),
+        ("0x0000000000000000", None, "0x0000000000000000", None, "4", "only in run b"),
+    ]
+    assert evidence.query(store, masked["sql"])["rows"] == masked["rows"]
+    with pytest.raises(ValueError, match="masked is 1"):
+        evidence.run_query(store, "join", {"key": "name", "masked": "yes"})
+
+
+def test_a_schema_7_store_gains_notes(store):
+    # Review of #139: rows' notes are kept from schema 8; earlier runs have none.
+    evidence.record(store, captured([(1, "observed", "k", "1")]))
+    connection = sqlite3.connect(store)
+    connection.executescript(
+        """
+        DROP VIEW last_run; DROP VIEW evidence;
+        ALTER TABLE captures DROP COLUMN note;
+        CREATE VIEW evidence AS SELECT c.run_id, r.started_at, r.label, r.program,
+            c.line, r.status, c.hit, c.phase, c.function, c.selector, c.type, c.value, c.num,
+            c.unavailable, c.error, c.view, c.identity, c.scope, r.args, r.sets,
+            r.artifact_manifest_id, r.source_sha256, r.edit IS NOT NULL AS candidate,
+            r.language FROM captures c JOIN runs r ON r.run_id = c.run_id;
+        CREATE VIEW last_run AS SELECT * FROM evidence
+            WHERE run_id = (SELECT MAX(run_id) FROM runs);
+        PRAGMA user_version = 7;
+        """
+    )
+    connection.close()
+    assert evidence.query(store, "SELECT selector, note FROM last_run")["rows"] == [
+        {"selector": "k", "note": None}
+    ]
+    recorded = captured([(1, "observed", "k", "2")])
+    recorded["rows"][0]["note"] = "may be the last pass's value"
+    evidence.record(store, recorded)
+    assert evidence.query(store, "SELECT selector, note FROM last_run")["rows"] == [
+        {"selector": "k", "note": "may be the last pass's value"}
+    ]
+    connection = sqlite3.connect(store)
+    assert connection.execute("PRAGMA user_version").fetchone() == (evidence.SCHEMA_VERSION,)
+    connection.close()
