@@ -2,6 +2,7 @@
 
 import importlib.util
 import io
+import json
 import sys
 from pathlib import Path
 
@@ -89,21 +90,103 @@ def test_the_event_hub_patch_fails_loudly_when_the_source_moved(bootstrap, tmp_p
 def test_the_runtime_requires_every_patch_setup_applies(bootstrap):
     from peeky.java import JAVA_DEBUG_PATCHES
 
-    assert set(bootstrap.PATCHES) == JAVA_DEBUG_PATCHES
+    assert set(bootstrap.PATCHES) == set(JAVA_DEBUG_PATCHES)
 
 
-@pytest.mark.parametrize("patches", [None, {}, ["eventhub-log-guard"], {"other": {}}])
-def test_a_bundle_built_without_the_patches_is_refused(tmp_path, patches):
+EVENT_HUB_CLASS = "classes/com/microsoft/java/debug/core/EventHub.class"
+
+
+def fake_bundle(root, event_hub, patches=None):
+    """A bundle that passes every other check: its command, inventory and checksums."""
+    import hashlib
     import json
+    import os
 
+    from peeky.java import _tool
+
+    files = {
+        "classes/PeekyJavaAdapter.class": b"\xca\xfe\xba\xbe launcher",
+        EVENT_HUB_CLASS: event_hub,
+        "lib/dependency.jar": b"PK jar",
+    }
+    for name, data in files.items():
+        (root / name).parent.mkdir(parents=True, exist_ok=True)
+        (root / name).write_bytes(data)
+    java = _tool(sys.executable)
+    manifest = {
+        "schema": 1,
+        "command": [java, "-cp", f"{root}/classes{os.pathsep}{root}/lib/*", "PeekyJavaAdapter"],
+        "files": {name: hashlib.sha256(data).hexdigest() for name, data in files.items()},
+        **({} if patches is None else {"patches": patches}),
+    }
+    (root / "adapter.json").write_text(json.dumps(manifest))
+    return java
+
+
+OLD_EVENT_HUB = b"\xca\xfe\xba\xbe java/util/logging/Logger fine lambda$start$0"
+PATCHED_EVENT_HUB = OLD_EVENT_HUB + b" isLoggable"
+
+
+@pytest.mark.parametrize(
+    "patches", [None, {}, {"eventhub-log-guard": {}}, {"eventhub-log-guard": {"sha256": "0" * 64}}]
+)
+def test_a_bundle_whose_compiled_event_hub_lacks_the_patch_is_refused_whatever_it_claims(
+    tmp_path, patches
+):
     from peeky.errors import classify
     from peeky.java import _verify_bundle
 
-    manifest = {"schema": 1, **({} if patches is None else {"patches": patches})}
-    (tmp_path / "adapter.json").write_text(json.dumps(manifest))
+    java = fake_bundle(tmp_path, OLD_EVENT_HUB, patches)
     with pytest.raises(ValueError, match="predates Peeky's java-debug fixes") as refused:
-        _verify_bundle(tmp_path, "/usr/bin/java")
+        _verify_bundle(tmp_path, java)
     assert "eventhub-log-guard" in str(refused.value) and "setup_java_adapter.py" in str(
         refused.value
     )
     assert classify(refused.value)["code"] == "UNSUPPORTED"
+
+
+def test_a_bundle_without_the_event_hub_class_is_refused(tmp_path):
+    from peeky.java import _verify_bundle
+
+    java = fake_bundle(tmp_path, PATCHED_EVENT_HUB)
+    manifest = json.loads((tmp_path / "adapter.json").read_text())
+    del manifest["files"][EVENT_HUB_CLASS]
+    (tmp_path / EVENT_HUB_CLASS).unlink()
+    (tmp_path / "adapter.json").write_text(json.dumps(manifest))
+    with pytest.raises(ValueError, match="predates"):
+        _verify_bundle(tmp_path, java)
+
+
+@pytest.mark.parametrize("patches", [None, {"eventhub-log-guard": {}}])
+def test_the_compiled_patch_is_what_counts(tmp_path, patches):
+    from peeky.java import _verify_bundle
+
+    java = fake_bundle(tmp_path, PATCHED_EVENT_HUB, patches)
+    command, _ = _verify_bundle(tmp_path, java)
+    assert command[-1] == "PeekyJavaAdapter"
+
+
+def test_real_bundles_are_told_apart_by_their_compiled_event_hub(tmp_path):
+    # The patched build's EventHub calls Logger.isLoggable; a bundle built before the
+    # patch does not, even with a forged `patches` record.
+    import os
+    import shutil
+
+    from peeky.java import _tool, _verify_bundle
+
+    patched, old = (
+        os.environ.get("PEEKY_JAVA_ADAPTER"),
+        os.environ.get("PEEKY_JAVA_ADAPTER_UNPATCHED"),
+    )
+    if not (patched and old):
+        pytest.skip("set PEEKY_JAVA_ADAPTER and PEEKY_JAVA_ADAPTER_UNPATCHED")
+    java = _tool("java")
+    assert _verify_bundle(Path(patched).resolve(), java)
+    forged = tmp_path / "forged"
+    shutil.copytree(old, forged)
+    manifest = json.loads((forged / "adapter.json").read_text())
+    manifest["patches"] = {"eventhub-log-guard": {"file": "EventHub.java", "sha256": "0" * 64}}
+    manifest["command"][2] = f"{forged}/classes{os.pathsep}{forged}/lib/*"
+    (forged / "adapter.json").write_text(json.dumps(manifest))
+    with pytest.raises(ValueError, match="missing: eventhub-log-guard"):
+        _verify_bundle(forged, java)

@@ -162,10 +162,14 @@ def _member(root, name):
 
 
 _BUNDLES = {}
-# Patches scripts/setup_java_adapter.py applies to java-debug and records in the bundle
-# manifest. eventhub-log-guard (#27): without it java-debug's event thread can die on a
-# finished thread's name, and the adapter reports no stop, step or exit ever again.
-JAVA_DEBUG_PATCHES = frozenset({"eventhub-log-guard"})
+# Patches scripts/setup_java_adapter.py applies to java-debug (also listed, for people, in
+# the bundle's adapter.json), each proven by the compiled class it changes: the class and
+# bytes only the patched code has. eventhub-log-guard (#27): without it java-debug's
+# event thread can die on a finished thread's name, and the adapter reports no stop,
+# step or exit ever again; the patched EventHub calls Logger.isLoggable, the old one not.
+JAVA_DEBUG_PATCHES = {
+    "eventhub-log-guard": ("classes/com/microsoft/java/debug/core/EventHub.class", b"isLoggable")
+}
 STALE_BUNDLE = (
     "The Java adapter bundle at {bundle} predates Peeky's java-debug fixes (missing: "
     "{missing}; without eventhub-log-guard java-debug can stop reporting every stop and "
@@ -199,9 +203,6 @@ def _verify_bundle(bundle, java):
     manifest = json.loads(manifest_path.read_text())
     if manifest.get("schema") != 1:
         raise ValueError("Unsupported adapter manifest schema")
-    patches = manifest.get("patches")
-    if missing := sorted(JAVA_DEBUG_PATCHES - set(patches if isinstance(patches, dict) else ())):
-        raise ValueError(STALE_BUNDLE.format(bundle=bundle, missing=", ".join(missing)))
     command = manifest.get("command")
     expected_classpath = f"{bundle}/classes{os.pathsep}{bundle}/lib/*"
     if (
@@ -230,6 +231,14 @@ def _verify_bundle(bundle, java):
             raise ValueError("Invalid bundle checksum")
         if _hash(_member(bundle, name)) != expected:
             raise ValueError("Adapter bundle checksum mismatch")
+    # The verified class files themselves, not the manifest's word for it.
+    missing = [
+        name
+        for name, (member, marker) in sorted(JAVA_DEBUG_PATCHES.items())
+        if member not in files or marker not in _member(bundle, member).read_bytes()
+    ]
+    if missing:
+        raise ValueError(STALE_BUNDLE.format(bundle=bundle, missing=", ".join(missing)))
     jars = sorted(name for name in files if name.startswith("lib/") and name.endswith(".jar"))
     if not jars:
         raise ValueError("Adapter bundle has no dependencies")
