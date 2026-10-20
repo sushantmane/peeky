@@ -1563,9 +1563,12 @@ class DebugWorker:
                 index == 0
                 # A whole listing (`session inspect`), not a probe's or `get`'s names.
                 and not args.get("names")
-                and (reason := self.unsettable_here(runtime, selected_frame, roots, result))
+                and (found := self.unsettable_here(runtime, selected_frame, roots, result))
             ):
-                snapshot["unsettable"] = reason
+                snapshot["unsettable"], everywhere = found
+                if everywhere:
+                    # No stop of this run allows a change: no advice to stop elsewhere.
+                    snapshot["unsettable_everywhere"] = True
             return snapshot
         if operation == "expand":
             return self.expand(args, runtime)
@@ -2339,10 +2342,12 @@ class DebugWorker:
                 return None
         if not reasons:
             return None
-        return "; ".join(
+        text = "; ".join(
             f"{', '.join(f'`{name}`' for name in names)}: {reason}"
             for reason, names in reasons.items()
         )
+        # Whether no other stop would help either (Everywhere reasons alone).
+        return text, all(getattr(reason, "everywhere", False) for reason in reasons)
 
     def mark_place(self):
         """Where the program is stopped, as far as [settable] marks go: each listed
@@ -2698,6 +2703,9 @@ class DebugWorker:
         old value (#105): the change would miss that statement. The session is kept."""
         check = getattr(runtime, "mid_statement", None)
         if check and (reason := check(root, frame or {}, self.stop_reason)):
+            if getattr(reason, "everywhere", False):
+                # No stop of this run allows one: no advice to stop elsewhere.
+                raise ValueError(f"{selector!r} cannot be changed: {reason}")
             raise ValueError(
                 f"{selector!r} cannot be changed here: {reason}, so that statement may "
                 "already hold a copy of the old value and would not see the change. Change "

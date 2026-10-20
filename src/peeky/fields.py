@@ -329,10 +329,11 @@ def settable_member(graph, root, name, steps):
                 raise Unsettable(
                     f"`{path}` is a {node[0]}: Peeky changes only values the frame holds "
                     f"itself, never what a {node[0]} reaches (it may be freed or moved); "
-                    "change it in the frame whose local holds the object, before the call: "
-                    "stop on the caller's line that makes it (`session continue --to LINE`, "
-                    "a probe's `--at`), not after `session step --out`, which returns "
-                    "part-way through that line"
+                    "change it in the frame whose local holds the object, before the call "
+                    "that passed it: a probe `--at` that call's line with `--set-hit N`, or "
+                    "`session start --at` it with `--hit N`. A stop inside the call cannot "
+                    "change what the call already received (`session continue --to` the "
+                    "call's line reaches only the next call)"
                 )
             if node[0] == "record":
                 _, record, kind, _, _, members, _, variant, incomplete, library = node

@@ -147,7 +147,7 @@ def test_rust_fields_elements_and_tuple_fields_change_and_the_program_sees_them(
     assert main(["session", "continue", "--to", str(line_of("// WIDTH"))]) == 0
     capsys.readouterr()
     # A reference parameter: what it points at is the caller's.
-    refused(capsys, "s.end=3", "`s` is a pointer", "before the call", "continue --to")
+    refused(capsys, "s.end=3", "`s` is a pointer", "before the call", "--set-hit N")
     # A caller's local: a call it is making may hold a copy of the old value.
     record, client = _load("default")
     remote, stop = _Remote(client), _stop(record)
@@ -791,28 +791,34 @@ fn main() {
 def test_rust_a_refused_change_through_a_reference_advises_what_works(crate, capsys):
     # Review 1 of the sixth evaluation's PR: the advice was `session step --out`, which
     # returns part-way through the caller's line, where the change is refused again
-    # (the limiter: refused at line 10, then "part-way through line 30").
+    # (the limiter: refused at line 10, then "part-way through line 30"). Review 2: the
+    # next advice, `session continue --to` the call's line, stopped before the NEXT call
+    # (`now=11`); the advice now stops before this same call.
     (crate / "src/main.rs").write_text(LIMITER)
     allow, call = (
         next(i for i, line in enumerate(LIMITER.splitlines(), 1) if marker in line)
         for marker in ("// ALLOW", "// CALL")
     )
+    arguments = ["--", "2", "10", "0,1,10,11"]
     at = f"src/main.rs:{allow}"
-    assert (
-        main(
-            ["session", "start", str(crate), "--at", at, "--hit", "2", "--", "2", "10", "0,1,10,11"]
-        )
-        == 0
-    )
+    assert main(["session", "start", str(crate), "--at", at, "--hit", "3", *arguments]) == 0
     capsys.readouterr()
     try:
+        assert main(["session", "get", "now", "--json"]) == 0
+        assert json.loads(capsys.readouterr().out)[0]["value"] == "10"
         code, result = change(capsys, "w.start=10")
         error = result["error"]
-        assert code == 2 and "before the call" in error["message"] and "--to LINE" in error["hint"]
-        assert "step --out`" not in error["hint"].replace("not after `step --out`", "")
-        # As advised: the caller's line that makes the call, before the next call.
-        assert main(["session", "continue", "--to", str(call)]) == 0
-        capsys.readouterr()
+        assert code == 2 and "cannot change what the call already received" in error["message"]
+        assert "--at <call line> --hit N" in error["hint"] and "too late" in error["hint"]
+    finally:
+        main(["session", "close"])
+    # As advised: a stop on the call's line before this call (hit 3, `now=10`).
+    at = f"src/main.rs:{call}"
+    assert main(["session", "start", str(crate), "--at", at, "--hit", "3", *arguments]) == 0
+    capsys.readouterr()
+    try:
+        assert main(["session", "get", "now", "--json"]) == 0
+        assert json.loads(capsys.readouterr().out)[0]["value"] == "10"
         for assignment in ("w.start=10", "w.count=0"):
             code, result = change(capsys, assignment)
             assert code == 0, result

@@ -1218,9 +1218,13 @@ def _variables_text(snapshot, name="default"):
         lines.append(f"note: {snapshot['mutation_blocked']}")
     if snapshot.get("unsettable"):
         lines.append(
-            f"note: nothing here is [settable]: {snapshot['unsettable']}. Values change at a "
-            "statement's first instruction: `session continue --to LINE`, or a `session "
-            "step` that lands on a statement's first line"
+            f"note: nothing here is [settable]: {snapshot['unsettable']}"
+            + (
+                ""
+                if snapshot.get("unsettable_everywhere")
+                else ". Values change at a statement's first instruction: `session continue "
+                "--to LINE`, or a `session step` that lands on a statement's first line"
+            )
         )
     return "\n".join(lines)
 

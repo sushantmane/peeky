@@ -276,13 +276,13 @@ _MUTATION_HINTS = (
     ),
     (
         r"in a caller's frame",
-        "Change it in its own frame, at a statement's start: stop on a line of that "
-        "function (`session continue --to LINE`, a probe's `--at`).",
+        "Change it in its own frame, before the call under way: `probe --at <its line> "
+        "--set-hit N`, or `session start --at <its line> --hit N`.",
     ),
     (
         r"is a (?:pointer|reference)\b(?!;)",
-        "Change it where a local holds it, before the call: stop on the caller's line that "
-        "makes it (`session continue --to LINE`, a probe's `--at`), not after `step --out`.",
+        "Change it in the caller before this call: `probe --at <call line> --set-hit N`, "
+        "or `session start --at <call line> --hit N`; a stop inside the call is too late.",
     ),
     (
         r"kept in a register",
@@ -290,6 +290,11 @@ _MUTATION_HINTS = (
         "`let`, by `--old`/`--new`) and `--set` it in that same probe.",
     ),
     (r"optimized build|unoptimized build", "Use an unoptimized build to change values."),
+    (
+        r"no value can be changed in this program",
+        "Observe the value instead, or change the source with a candidate edit "
+        "(`--old`/`--new`) and verify it.",
+    ),
     (r"outside the range", "Pass a value within the range the message gives."),
     (
         r"declared at line|would overwrite a change|not prove .* initialized|not yet assigned"

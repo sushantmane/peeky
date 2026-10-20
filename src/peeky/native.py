@@ -2265,6 +2265,13 @@ def _writable_integer(variable):
     )
 
 
+class Everywhere(str):
+    """A reason no stop of this run allows a change (mid_statement): no other stop, line
+    or step helps, so no advice to stop elsewhere goes with it."""
+
+    everywhere = True
+
+
 class ValueNote(str):
     """What ``not_yet_declared`` gives for a local it shows, though it cannot vouch for
     the value: the row carries ``note``. As a string, why a change there is refused,
@@ -3123,6 +3130,25 @@ class NativeSession:
         text = _UNJUDGED[kind].format(detail)
         return ValueNote(text, text, refuses=False)
 
+    def _unread_statements(self):
+        """Why Peeky reads no function's statements for this run, so that no stop allows a
+        change (an ``Everywhere`` reason), or None: the build's declarations were not
+        read (a program using setjmp has none, as _root_type says; or its debug
+        information could not be read)."""
+        kind, detail, _ = getattr(self, "unjudged", None) or (None, None, None)
+        if kind == "setjmp":
+            return Everywhere(
+                "the program uses setjmp/longjmp (or a context switch), and Peeky reads no "
+                "statements or declarations of a program using setjmp, so no value can be "
+                "changed in this program"
+            )
+        if kind == "unreadable":
+            return Everywhere(
+                f"Peeky could not read the build's debug information ({detail}), so no "
+                "value can be changed in this program"
+            )
+        return None
+
     def validate_mutation_target(self, variable, frame):
         if (reason := self.not_yet_declared(variable, frame)) and getattr(reason, "refuses", True):
             raise ValueError(
@@ -3153,6 +3179,9 @@ class NativeSession:
         the statement's own lowest row (`t = inl(&p) + p.y;`). Anything else, or anything
         Peeky cannot tell, is refused. ``stop``: the stop's reason (unused: the address
         says it)."""
+        if not getattr(self, "declarations", None) and (unread := self._unread_statements()):
+            # No stop of this run is placed: no other stop would allow a change.
+            return unread
         place, function, address = self._place(frame), self._function_at(frame), None
         if function is not None:
             address = self._unslid(frame)
@@ -3280,7 +3309,8 @@ class NativeSession:
         function = self._function_at(frame) if self.fields is not None else None
         if function is None or function.get("types") is None:
             raise Unsettable(
-                "Peeky cannot match this frame to the build's debug information (it reads "
+                self._unread_statements()
+                or "Peeky cannot match this frame to the build's debug information (it reads "
                 "it when the session starts; a program using setjmp has none)"
             )
         return (*self._declared_type(function["types"], root.get("name")), self.fields)

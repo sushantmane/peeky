@@ -154,7 +154,7 @@ def test_c_fields_and_elements_change_and_the_program_sees_them(directory, capsy
         code, result = change(capsys, assignment)
         assert code == 0, (assignment, result)
         assert (result["before"], result["after"]) == (before, after), (assignment, result)
-    refused(capsys, "ps.start=8", "`ps` is a pointer", "before the call", "continue --to")
+    refused(capsys, "ps.start=8", "`ps` is a pointer", "before the call", "--set-hit N")
     refused(capsys, "b.a=3", "`b.a` is a bitfield")
     refused(capsys, "c.fixed=3", "`c.fixed` is const")
     refused(capsys, "u.i=3", "`u` is a union")
@@ -947,5 +947,52 @@ def test_c_marks_agree_with_the_refusals_of_locals_with_a_note_or_withheld(direc
         assert "may not be initialized" in row.get("error", ""), row
         assert row.get("settable") is not True and not row.get("children"), row
         refused(capsys, "q.a=5", "may not be initialized")
+    finally:
+        main(["session", "close"])
+
+
+JUMPING = """#include <setjmp.h>
+#include <stdio.h>
+
+static jmp_buf env;
+struct pt { long a; long b; };
+
+static long run(int n) {
+    struct pt p = { 1, 2 };
+    long total = 0;
+    total += p.a;  // TOP
+    if (setjmp(env) != 0) {
+        total += 100;
+    }
+    if (--n > 0) longjmp(env, 1);
+    return total + p.b;
+}
+
+int main(void) {
+    printf("%ld\\n", run(2));
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(240)
+def test_c_a_program_using_setjmp_says_no_stop_allows_a_change(directory, capsys):
+    # Review 2 of the sixth evaluation's PR: in a program using setjmp no function's
+    # statements are read, so no line accepts a change; the inspect note and `set`
+    # advised `session continue --to LINE`, which can never work.
+    start_at(directory, capsys, "jump.c", JUMPING, "TOP")
+    try:
+        assert main(["session", "inspect"]) == 0
+        text = capsys.readouterr().out
+        note = next(line for line in text.splitlines() if line.startswith("note: nothing"))
+        assert "uses setjmp" in note and "no value can be changed in this program" in note
+        assert "continue --to" not in note and "first instruction" not in note, note
+        for assignment in ("total=5", "n=3", "p.a=7"):
+            code, result = change(capsys, assignment)
+            error = result["error"]
+            assert code == 2 and error["code"] == "MUTATION_REJECTED", result
+            assert "no value can be changed in this program" in error["message"], error
+            assert "continue --to" not in error["message"] + error["hint"], error
+            assert "cannot be changed here" not in error["message"], error
     finally:
         main(["session", "close"])
