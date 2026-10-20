@@ -1,8 +1,9 @@
 #!/bin/bash
 # Runs inside the image, from the root of an extracted tree (see CONTRIBUTING.md):
 # each lane of .github/workflows/ci.yml except the remote SSH e2e (run that on the
-# host with PEEKY_E2E_DOCKER=1), plus Rust with LLVM 20's lldb-dap, whose readMemory
-# qualifies Rust memory views, and GDB's DAP, which CUDA qualification drives
+# host with PEEKY_E2E_DOCKER=1), plus Rust and C++ with LLVM 20's lldb-dap, whose
+# readMemory qualifies Rust memory views and libstdc++ strings with a NUL byte (#128),
+# and GDB's DAP, which CUDA qualification drives
 # (scripts/cuda/qualify.py). One PASS/FAIL line per lane; non-zero on failure.
 set -u
 python3 -m venv /v >/dev/null && /v/bin/pip install -q -e '.[dev]' || exit 90
@@ -27,6 +28,8 @@ lane unit pytest -q -p no:cacheprovider tests/unit
 lane integration pytest -q -p no:cacheprovider tests/integration
 lane c "${native[@]}" PEEKY_NATIVE_CC=/usr/bin/clang-18 pytest -q -p no:cacheprovider tests/native
 lane cpp "${native[@]}" PEEKY_NATIVE_CXX=/usr/bin/clang++-18 pytest -q -p no:cacheprovider tests/cpp
+lane cpp-llvm20 PEEKY_NATIVE_DAP=/usr/bin/lldb-dap-20 PEEKY_NATIVE_DWARFDUMP=/usr/bin/llvm-dwarfdump-20 \
+  PEEKY_NATIVE_CXX=/usr/bin/clang++-18 PEEKY_EXPECT_READ_MEMORY=1 pytest -q -p no:cacheprovider tests/cpp
 lane rust "${rust[@]}" pytest -q -p no:cacheprovider tests/rust
 lane rust-llvm20 "${rust[@]}" PEEKY_RUST_DAP=/usr/bin/lldb-dap-20 \
   PEEKY_RUST_DWARFDUMP=/usr/bin/llvm-dwarfdump-20 PEEKY_EXPECT_READ_MEMORY=1 \

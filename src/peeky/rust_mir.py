@@ -193,6 +193,7 @@ class Body:
     _lent_cache: frozenset | None = None
     _written_fields: frozenset = frozenset()
     _into: dict | None = None
+    _declared_names: dict | None = None
     _assigned: dict | None = None
     _entry: dict | None = None
     _direct: set | None = None
@@ -266,7 +267,162 @@ class Body:
             self._assigned = assigned
         return self._assigned
 
-    def stop_positions(self, blocks, line, file, foreign, facts=None, shared=None):
+    def scope_chain(self, scope):
+        """The names of the variables each DWARF lexical block declares, sorted, from the
+        block of MIR ``scope`` (see ``lexical``) out to the function's own (#115)."""
+        declared = self._declared()
+        chain, scope = [], self.lexical(scope)
+        for _ in range(4096):
+            if scope in (None, 0):
+                break
+            chain.append(declared.get(scope, ()))
+            scope = self.lexical(self.scopes.get(scope))
+        chain.append(declared.get(0, ()))
+        return tuple(chain)
+
+    def _declared(self):
+        """{scope: the names of the variables it declares, sorted}."""
+        if self._declared_names is None:
+            found = {}
+            for name, bindings in self.bindings.items():
+                for binding in bindings:
+                    found.setdefault(binding[4], []).append(name)
+            self._declared_names = {scope: tuple(sorted(names)) for scope, names in found.items()}
+        return self._declared_names
+
+    def chain_scopes(self, block, function=None):
+        """The MIR scopes whose bindings lldb-dap shows at a stop in ``block`` (#115): the
+        scopes with its chain of names and those enclosing them, where the function's
+        debug info and IR (``function``) have as many blocks with that chain as the body
+        has scopes; else None."""
+        if function is None or not function.scoped:
+            return None
+        declared = self._declared()
+        matched = [
+            scope
+            for scope in {0, *declared}
+            if (scope == 0 or scope == self.lexical(scope))
+            and self.scope_chain(scope) == block.chain
+        ]
+        count = block.chains.get(block.chain)
+        if not matched or count != len(matched) or function.chains.get(block.chain) != count:
+            return None
+        found = set()
+        for scope in matched:
+            for _ in range(4096):
+                if scope is None:
+                    break
+                found.add(scope)
+                scope = self.scopes.get(scope)
+        return found
+
+    def _in_block(self, found, block, line, function, breakpoint=False):
+        """The places of ``found`` ({position: its statements, or None}) whose code is in
+        the lexical block the stop's pc is in (#115), or all of them where that block is
+        not told apart: every MIR scope a statement placed there is in must have as many
+        DWARF blocks with its chain of names as the body has scopes with it, just one of
+        them the stop's, and the IR (``function``) must have as many blocks with the
+        stop's chain as the DWARF, just one with code of ``line``. Code no statement
+        explains stays.
+
+        A line breakpoint stops at the line's lowest address in that block, so at or
+        before the IR's first instruction of the line there that surely leaves code
+        (``_cut``): places past it go.
+
+        Returns (the places kept, the MIR scope told apart or None)."""
+        scopes = {
+            self.lexical(_scope(self.blocks[number], index))
+            for owners in found.values()
+            if owners
+            for number, index in owners
+        }
+        if (
+            not scopes
+            or scopes & self.inlined_scopes
+            or function is None
+            or not function.agrees(block, line)
+        ):
+            return found, None
+        declared = self._declared()
+        counts = {}
+        for scope in {0, *declared}:
+            if scope == 0 or scope == self.lexical(scope):
+                chain = self.scope_chain(scope)
+                counts[chain] = counts.get(chain, 0) + 1
+        chains = {scope: self.scope_chain(scope) for scope in scopes}
+        if any(block.chains.get(chain) != counts.get(chain) for chain in chains.values()):
+            return found, None
+        matched = [scope for scope, chain in chains.items() if chain == block.chain]
+        if len(matched) != 1 or block.chains.get(block.chain) != counts.get(block.chain):
+            return found, None
+        kept = {
+            position: owners
+            for position, owners in found.items()
+            if owners is None
+            or any(self.lexical(_scope(self.blocks[n], i)) == matched[0] for n, i in owners)
+        }
+        if kept and breakpoint and (cut := self._cut(function, line, block.chain)) is not None:
+            kept = {
+                position: owners
+                for position, owners in kept.items()
+                if (order := self._address_order(position, function)) is None or order <= cut
+            }
+        if not kept:
+            return found, None
+        return kept, matched[0]
+
+    def _cut(self, function, line, chain):
+        """The last place (``_address_order``) a line breakpoint's stop in the lexical
+        block with ``chain`` can be, or None if unknown (#115). LLDB stops at the line's
+        lowest address in the block. The IR's first instruction of the line there that
+        surely leaves code (a call, a store of bytes, a branch on a value) is at or after
+        it: opt-level 0 keeps the IR's order for addresses. Codegen emits the MIR blocks
+        merged into an IR block in order, each call terminator one call there or none
+        (inlined), so that instruction is before the MIR block of the IR's next call
+        ends, which is that many calls later in the MIR or a few more."""
+        for place, label in enumerate(function.blocks):
+            for number, named, calls in function.sure.get(label, ()):
+                if number != line or named != chain:
+                    continue
+                found = re.fullmatch(r"bb([0-9]+)", label)
+                if label != "start" and found is None:
+                    return None
+                head = int(found[1]) if found else 0
+                ir = self._ir_chain(head, function) if head in self.blocks else None
+                if ir is None or ir[0] != label:
+                    return None
+                members = ir[1]
+                callers = [
+                    member
+                    for member in members
+                    if _call(self.blocks[member], len(self.blocks[member].statements) - 1)
+                    or _DROP.match(self.blocks[member].terminator)
+                ]
+                # A call LLVM inlined (or a drop with no glue) leaves no call of its own:
+                # the IR's call after the instruction is then the MIR's at most that many
+                # calls later.
+                missing = len(callers) - function.calls.get(label, -1)
+                if missing < 0 or missing > len(callers):
+                    return None
+                end = callers[calls + missing] if calls + missing < len(callers) else members[-1]
+                return place, members.index(end), len(self.blocks[end].statements) - 1
+        return None
+
+    def _address_order(self, position, function):
+        """Where ``position``'s code is in ``function``'s IR (the label's place, the MIR
+        block's place among those merged into it, the statement's), or None."""
+        chain = self._ir_chain(position[0], function)
+        if chain is None:
+            return None
+        label, members = chain
+        labels = {name: index for index, name in enumerate(function.blocks)}
+        if label not in labels:
+            return None
+        return labels[label], members.index(position[0]), position[1]
+
+    def stop_positions(
+        self, blocks, line, file, foreign, facts=None, shared=None, within=None, function=None
+    ):
         """[(block, index)]: where a stop on ``line`` of ``file`` can be in ``blocks``,
         before that statement runs; None if a block is missing. A statement is the
         line's when it starts on it (a call: spans it, `w\n.len()`'s is on `.len()`'s
@@ -283,7 +439,42 @@ class Body:
         block when first branched to, and opt-level 0 keeps that order. Only a call or
         branch the IR shows there, not inlined, counts as such code. Where the column
         cannot be a statement's (its own, a macro's on the line, or within a call), the
-        stop is not before it."""
+        stop is not before it.
+
+        ``within`` (a ``StopBlock``): the DWARF lexical block the stop's pc is in, which
+        keeps only the places in its MIR scope, where it and the IR's ``function`` tell
+        that apart, and at a line breakpoint, only those up to ``_cut`` (#115)."""
+        found = self._placed(blocks, line, file, foreign, facts, shared)
+        if found is None:
+            return None
+        if within is not None:
+            found, _ = self._in_block(found, within, line, function, facts is not None)
+        if facts is None or facts.column is None:
+            return sorted(found)
+        kept = [
+            position
+            for position, owners in found.items()
+            if owners is None or any(self._could_be(o, i, line, file, facts) for o, i in owners)
+        ]
+        return sorted(kept or found)
+
+    def stop_scope(self, blocks, line, file, foreign, within, shared=None, function=None):
+        """The MIR scope of the DWARF lexical block a stop on ``line`` is in (``within``,
+        a ``StopBlock``), where the line's places tell it apart and no code of the line
+        there goes unexplained (#115); else None. Its bindings and those of the scopes
+        around it are the ones lldb-dap shows, where two scopes have the same names
+        (two `for item in items` loops)."""
+        found = self._placed(blocks, line, file, foreign, None, shared)
+        if found is None:
+            return None
+        kept, scope = self._in_block(found, within, line, function)
+        if scope is None or None in kept.values():
+            return None
+        return scope
+
+    def _placed(self, blocks, line, file, foreign, facts=None, shared=None):
+        """{position: [(block, index) of each statement whose code is there], or None
+        for code of the line no statement explains} (see ``stop_positions``)."""
         predecessors, found = self.predecessors(), {}
         explained = set()
 
@@ -361,14 +552,7 @@ class Body:
                     ):
                         continue
                 place(position, owner, index)
-        if facts is None or facts.column is None:
-            return sorted(found)
-        kept = [
-            position
-            for position, owners in found.items()
-            if owners is None or any(self._could_be(o, i, line, file, facts) for o, i in owners)
-        ]
-        return sorted(kept or found)
+        return found
 
     def anywhere(self, blocks):
         """Every place in ``blocks``, and after each call or drop ending one."""
@@ -1178,21 +1362,21 @@ class Body:
             _call(block, index) and span is not None and spanned_line < line <= span[1]
         )
 
-    def could_show(self, position, scope, line, file, foreign=True, blocks=None):
-        """False only if lldb-dap cannot show a binding of MIR ``scope`` with the stop at
-        ``position`` ((block, index)) on ``line`` of ``file``: it lists a variable only
-        where the pc is in its scope's DWARF lexical block, and the code there (the
-        statement about to run, or a call or drop returning into the block) is in
-        another scope. One of the line's ``blocks`` with no statement of the line (code
-        none explains) can stop anywhere, so any position in it can."""
+    def scopes_at(self, position, line, file, foreign=True, blocks=None):
+        """The MIR scopes whose DWARF lexical blocks hold the pc with the stop at
+        ``position`` ((block, index)) on ``line`` of ``file``: those enclosing the scope
+        of the code there (the statement about to run, or a call or drop returning into
+        the block). None where it can be any: one of the line's ``blocks`` with no
+        statement of the line (code none explains) can stop anywhere. lldb-dap lists a
+        variable only where the pc is in its scope's block."""
         number, index = position
         block = self.blocks.get(number)
         if block is None:
-            return True
+            return None
         if (blocks is None or number in blocks) and not any(
             self.line_code(number, at, line, file, foreign) for at in range(len(block.statements))
         ):
-            return True
+            return None
         owners = [(number, index)] if index < len(block.statements) else []
         if index == 0:
             owners += [
@@ -1200,11 +1384,23 @@ class Body:
                 for other in self.predecessors().get(number, ())
                 if _target(self.blocks[other]) == number
             ]
+        found = set()
         for owner, at in owners:
-            inner = _scope(self.blocks[owner], at)
-            if inner is None or _encloses(self, scope, inner):
-                return True
-        return False
+            scope = _scope(self.blocks[owner], at)
+            if scope is None:
+                return None
+            for _ in range(4096):
+                if scope is None or scope in found:
+                    break
+                found.add(scope)
+                scope = self.scopes.get(scope)
+        return found
+
+    def could_show(self, position, scope, line, file, foreign=True, blocks=None):
+        """False only if lldb-dap cannot show a binding of MIR ``scope`` with the stop at
+        ``position`` (see ``scopes_at``)."""
+        found = self.scopes_at(position, line, file, foreign, blocks)
+        return found is None or scope in found
 
     def returned_into(self, number, line, file, foreign, blocks):
         """The blocks whose call or drop of ``line`` returns into block ``number``, where
@@ -1391,6 +1587,53 @@ def _event(text, local):
     if local in {int(n) for n in _MENTIONED.findall(text)}:
         return "use"
     return None
+
+
+@dataclass(frozen=True)
+class StopBlock:
+    """Where a stop's pc is (#115): the names of the variables each lexical block
+    declares (sorted), from the innermost DWARF block holding the pc out to the
+    function's own scope; and how many of the function's blocks have each such chain."""
+
+    chain: tuple
+    chains: dict
+
+
+def stop_block(blocks, pc):
+    """The ``StopBlock`` of ``pc`` (unslid) in a function's ``CodeBlock``s, or None where
+    the pc is outside its own code, in an inlined call, or in two blocks at once."""
+    if not blocks or type(pc) is not int or blocks[0].parent is not None:
+        return None
+
+    def holds(block):
+        return any(low <= pc < high for low, high in block.ranges)
+
+    if not holds(blocks[0]):
+        return None
+    children = {}
+    for index, block in enumerate(blocks[1:], 1):
+        children.setdefault(block.parent, []).append(index)
+    current = 0
+    for _ in range(len(blocks)):
+        inside = [index for index in children.get(current, ()) if holds(blocks[index])]
+        if not inside:
+            break
+        if len(inside) > 1 or blocks[inside[0]].inlined:
+            return None
+        current = inside[0]
+
+    def chain(index):
+        names = []
+        while index is not None:
+            names.append(blocks[index].names)
+            index = blocks[index].parent
+        return tuple(names)
+
+    counts = {}
+    for index, block in enumerate(blocks):
+        if not block.inlined:
+            counts[chain(index)] = counts.get(chain(index), 0) + 1
+    return StopBlock(chain(current), counts)
 
 
 @dataclass(frozen=True)
@@ -1752,7 +1995,7 @@ _LABEL = re.compile(r'^([-$._A-Za-z0-9]+|"[^"]+"):(?:\s+; (?:preds = (.*)|No pre
 _DBG = re.compile(r"!dbg (![0-9]+)")
 _META = re.compile(
     r"^(![0-9]+) = (?:distinct )?!(DILocation|DISubprogram|DILexicalBlock|DILexicalBlockFile"
-    r"|DIFile|DINamespace|DICompositeType)\((.*)\)\s*$"
+    r"|DIFile|DINamespace|DICompositeType|DILocalVariable)\((.*)\)\s*$"
 )
 _METAFIELDS = {
     key: re.compile(rf'(?:^|, ){key}: ("(?:[^"\\]|\\.)*"|![0-9]+|[0-9]+)')
@@ -1762,6 +2005,19 @@ _METAFIELDS = {
 # which may lower to nothing) or a conditional branch.
 _IR_CALL = re.compile(r"^\s*(?:%\S+ = )?(?:tail |musttail |notail )?(?:call|invoke) (?!.*@llvm\.)")
 _IR_BRANCH = re.compile(r"^\s*(?:br i1 |switch )")
+# Code opt-level 0 surely emits at the instruction's location (#115): a branch on a value
+# (not a constant), a store of bytes (not of nothing, nor of an undefined value).
+_IR_SURE_BRANCH = re.compile(r"^\s*br i1 %")
+_IR_STORE = re.compile(r"^\s*store (?:volatile )?(.+) (\S+), ptr ")
+
+
+def _stores_bytes(found):
+    kind, value = found[1].strip(), found[2]
+    return (
+        value not in ("undef", "poison")
+        and kind not in ("{}", "{ }", "<{}>", "<{ }>")
+        and not kind.startswith(("[0 x", "<0 x"))
+    )
 
 
 @dataclass
@@ -1785,6 +2041,27 @@ class IrFunction:
     # The names of the namespaces it is in, outermost first (its crate's, then its
     # modules', functions', closures'): `parent` is the last.
     ancestors: tuple = ()
+    # Its own lexical blocks (#115), each named as the DWARF names a block holding a stop
+    # (`StopBlock.chain`): {chain: how many blocks with it have code, LLVM emitting a
+    # DWARF block for each}, {(line, chain): how many have code of the line}, {label:
+    # ((line, chain, the calls before it in the label), ...) for each instruction that
+    # surely leaves code there: a call, a store of bytes, a branch on a value}, and
+    # {label: its calls}. ``scoped``: every block's names are known.
+    chains: dict = field(default_factory=dict)
+    line_chains: dict = field(default_factory=dict)
+    sure: dict = field(default_factory=dict)
+    calls: dict = field(default_factory=dict)
+    scoped: bool = False
+
+    def agrees(self, block, line):
+        """True if the IR's blocks with the names of a stop's DWARF block (``block``, a
+        ``StopBlock``) are as many as the DWARF's, and just one has code of ``line``:
+        that one is the stop's."""
+        return (
+            self.scoped
+            and block.chains.get(block.chain) == self.chains.get(block.chain)
+            and self.line_chains.get((line, block.chain)) == 1
+        )
 
     def labeled(self):
         """MIR blocks that have an IR block of their own (`start` is bb0)."""
@@ -1866,14 +2143,31 @@ def ir_functions(path, files):
                 continue
             if "@llvm.dbg." in line or line.lstrip().startswith("#dbg_"):
                 continue
-            kind = "c" if _IR_CALL.match(line) else "b" if _IR_BRANCH.match(line) else ""
+            if _IR_CALL.match(line):
+                kind = "c"
+            elif _IR_BRANCH.match(line):
+                kind = "B" if _IR_SURE_BRANCH.match(line) else "b"
+            elif (store := _IR_STORE.match(line)) and _stores_bytes(store):
+                kind = "s"
+            else:
+                kind = ""
             if dbg := _DBG.search(line):
                 # An `invoke`'s location is on its `to label ...` line.
                 current[2].setdefault(current[4][0], []).append((dbg[1], kind or pending))
                 pending = ""
-            elif kind:
+            elif kind == "c" and not re.search(r"\binvoke ", line):
+                # A call with no location: still one of the block's calls.
+                current[2].setdefault(current[4][0], []).append((None, kind))
+            elif kind in ("c", "b", "B"):
                 pending = kind
     wanted = set(files)
+    # {lexical block or subprogram: the names of the variables it declares} (#115).
+    names = {}
+    for kind, fields in meta.values():
+        if kind == "DILocalVariable" and "name" in fields:
+            block = _lexical_block(meta, fields.get("scope"))
+            if block is not None:
+                names.setdefault(block, []).append(fields["name"])
     # {subprogram: lines} of code LLVM inlined from each function into another, in the
     # inlined function's own file (#116).
     copies = {}
@@ -1900,28 +2194,44 @@ def ir_functions(path, files):
         if file not in wanted:
             continue
         lines, events, inlined = {}, {}, {}
+        # #115: the named blocks with code (an inlined call's site counts), those with
+        # code of each line, and each label's sure instructions and calls.
+        active, line_blocks, sure, calls = set(), {}, {}, {}
         for label, refs in blocks.items():
             lines[label] = set()
             found_events = ([], [])
+            found_sure, before = [], 0
             for ref, instruction in refs:
                 kind, location = meta.get(ref, (None, {}))
                 if kind != "DILocation":
+                    before += instruction == "c"
                     continue
                 if "inlinedAt" in location:
                     site = _call_site(meta, location)
+                    if site is not None:
+                        active.add(_named_block(meta, names, site.get("scope")))
                     if site is not None and _file(meta, site.get("scope")) == file:
                         found = (int(site.get("line") or 0), int(site.get("column") or 0))
                         inlined.setdefault(found[0], set()).add(found[1])
                     continue
+                calls_before = before
+                before += instruction == "c"
+                block = _named_block(meta, names, location.get("scope"))
+                active.add(block)
                 if _file(meta, location.get("scope")) != file or not location.get("line"):
                     continue
                 number = int(location["line"])
                 if number > 0:
                     lines[label].add(number)
-                slot = {"c": 0, "b": 1}.get(instruction)
+                    line_blocks.setdefault(number, set()).add(block)
+                    if instruction in ("c", "B", "s"):
+                        found_sure.append((number, block, calls_before))
+                slot = {"c": 0, "b": 1, "B": 1}.get(instruction)
                 if slot is not None:
                     found_events[slot].append((number, int(location.get("column") or 0)))
             events[label] = (tuple(found_events[0]), tuple(found_events[1]))
+            sure[label], calls[label] = found_sure, before
+        chain = _chains(meta, names, active)
         parent = meta.get(fields.get("scope"), (None, {}))[1].get("name")
         functions[hashed] = IrFunction(
             re.sub(r"<.*>$", "", fields.get("name", "")),
@@ -1934,6 +2244,20 @@ def ir_functions(path, files):
             inlined,
             frozenset(copies.get(subprogram, ())),
             ancestors=_namespaces(meta, fields.get("scope")),
+            chains=_count(chain[block] for block in chain) if chain else {},
+            line_chains=_count(
+                (number, chain[block]) for number, found in line_blocks.items() for block in found
+            )
+            if chain
+            else {},
+            sure={
+                label: tuple((number, chain[block], at) for number, block, at in found)
+                for label, found in sure.items()
+            }
+            if chain
+            else {},
+            calls=calls,
+            scoped=chain is not None,
         )
     # A function LLVM inlined everywhere (`#[inline(always)]`, even at opt-level 0) has
     # no IR function, yet its frames carry its own hash; its MIR body is the one before
@@ -1982,6 +2306,62 @@ def _subprogram(meta, scope):
             return None
         scope = fields.get("scope")
     return None
+
+
+def _lexical_block(meta, scope):
+    """The DILexicalBlock or DISubprogram ``scope`` is (a DILexicalBlockFile only gives
+    its block another file), or None."""
+    for _ in range(256):
+        kind, fields = meta.get(scope, (None, {}))
+        if kind in ("DILexicalBlock", "DISubprogram"):
+            return scope
+        if kind != "DILexicalBlockFile":
+            return None
+        scope = fields.get("scope")
+    return None
+
+
+def _named_block(meta, names, scope):
+    """The block DWARF puts code of ``scope`` in: LLVM emits no DWARF block for a lexical
+    block that declares no variable, so its code is its parent's."""
+    for _ in range(4096):
+        block = _lexical_block(meta, scope)
+        kind, fields = meta.get(block, (None, {}))
+        if kind != "DILexicalBlock" or names.get(block):
+            return block
+        scope = fields.get("scope")
+    return None
+
+
+def _chains(meta, names, blocks):
+    """{block: its chain}: the sorted names of the variables it and each block around it
+    declare, out to its function's (`StopBlock.chain`), for ``blocks`` and the blocks
+    around them; None if one is not a function's lexical block."""
+    found = {}
+    for block in blocks:
+        path = []
+        for _ in range(4096):
+            kind, fields = meta.get(block, (None, {}))
+            if kind not in ("DILexicalBlock", "DISubprogram"):
+                return None
+            path.append(block)
+            if kind == "DISubprogram":
+                break
+            block = _named_block(meta, names, fields.get("scope"))
+        else:
+            return None
+        chain = ()
+        for block in reversed(path):
+            chain = (tuple(sorted(names.get(block, ()))), *chain)
+            found[block] = chain
+    return found
+
+
+def _count(items):
+    counts = {}
+    for item in items:
+        counts[item] = counts.get(item, 0) + 1
+    return counts
 
 
 def _call_site(meta, location):
@@ -2095,11 +2475,48 @@ class OwnedLocals:
         self._matched[hashed] = found
         return found
 
-    def _visible(self, body, line, path):
+    def _visible(self, body, line, path, block=None, site=None, bindings=None):
         """The scopes a binding shown at ``line`` can be in, or None to keep them all.
         A line that may invoke a macro runs code whose spans are in another file
         (`eprintln!`'s, collapsed onto the line), in scopes no statement of this file
-        there shows: the stop can be in one of those."""
+        there shows: the stop can be in one of those. Where the DWARF lexical block the
+        stop's pc is in (``block``) is told apart, only it and its enclosing scopes
+        (#115): by the stop line's places (of ``site``) where several scopes have its
+        names, else every scope with them. A name none of whose ``bindings`` are there
+        (lldb-dap shows none at the stop) is judged as without the block."""
+        visible = self._line_visible(body, line, path)
+        scopes = self._block_scopes(site, line, block) if block is not None else None
+        if scopes is None:
+            return visible
+        narrowed = scopes if visible is None else (visible & scopes) or visible
+        if bindings is not None and not any(b[4] in narrowed for b in bindings):
+            return visible
+        return narrowed
+
+    def _block_scopes(self, site, line, block):
+        if site is None:
+            return None
+        body, function, blocks, shared = site
+        named = body.chain_scopes(block, function)
+        if named is None:
+            return None
+        text = self.texts.get(function.file)
+        if function.inline_only or not (self.precise or not may_invoke_macro(text, line)):
+            return named
+        scope = body.stop_scope(
+            blocks, line, function.file, may_invoke_macro(text, line), block, shared, function
+        )
+        if scope not in named:
+            return named
+        found = set()
+        for _ in range(4096):
+            if scope is None:
+                break
+            found.add(scope)
+            scope = body.scopes.get(scope)
+        return found
+
+    def _line_visible(self, body, line, path):
         if line is None:
             return None
         # The stop's own file: a macro defined in another module, or `include!`d code,
@@ -2110,7 +2527,7 @@ class OwnedLocals:
             return None
         return body.visible_scopes(line, path)
 
-    def _local(self, body, variable_name, line=None, path=None):
+    def _local(self, body, variable_name, line=None, path=None, block=None, site=None):
         name, at, declared = str(variable_name).partition(" @ ")
         where = None
         if at:
@@ -2118,7 +2535,12 @@ class OwnedLocals:
             if not number.isdigit():
                 return None
             where = (file, int(number))
-        return body.local(name, where, self._visible(body, line, path))
+        bindings = [
+            b
+            for b in body.bindings.get(name, [])
+            if where is None or (Path(b[1]).name, b[2]) == where
+        ]
+        return body.local(name, where, self._visible(body, line, path, block, site, bindings))
 
     def declared_type(self, hashed, variable_name, line=None, path=None):
         """The MIR type of the frame's local ``variable_name`` (`std::vec::Vec<usize>`),
@@ -2192,7 +2614,9 @@ class OwnedLocals:
         local = self._local(site[0], variable_name, line, path)
         return local is not None and self._initialized(site, local, line)
 
-    def reference_valid(self, hashed, variable_name, line, path, breakpoint=False, column=None):
+    def reference_valid(
+        self, hashed, variable_name, line, path, breakpoint=False, column=None, block=None
+    ):
         """For the frame's local ``variable_name`` whose type borrows (a reference, `&str`,
         a tuple, `Vec` or closure holding one, a raw pointer): True if what it points into
         is shown to stand at ``line`` of ``path``, False if not (#110), None if this does
@@ -2213,12 +2637,13 @@ class OwnedLocals:
         local never borrowed itself, for the last two. A raw pointer keeps no borrow, so
         it is False (one inside a tuple reads with the tuple). A value not yet assigned
         (its declaration line) is False. A name bound more than once that the stop
-        cannot tell apart is judged by every binding."""
+        cannot tell apart is judged by every binding. ``block`` (a ``StopBlock``): the
+        DWARF lexical block the stop's pc is in, if known (#115)."""
         site = self._site(hashed, line, path)
         if site is None:
             return self._elsewhere(hashed, variable_name, path)
         body, function = site[0], site[1]
-        local = self._local(body, variable_name, line, path)
+        local = self._local(body, variable_name, line, path, block, site)
         captures = []
         if local is not None:
             candidates = [local]
@@ -2228,7 +2653,9 @@ class OwnedLocals:
             if at:
                 file, _, number = declared.rpartition(":")
                 bindings = [b for b in bindings if Path(b[1]).name == file and str(b[2]) == number]
-            bindings = body.in_scopes(bindings, self._visible(body, line, path))
+            bindings = body.in_scopes(
+                bindings, self._visible(body, line, path, block, site, bindings)
+            )
             candidates = [b[0] for b in bindings]
             # A capture (`(*((*_1).0: &mut Holder))`) has no local of its own: what it
             # points at is dropped through the environment it is reached by. A value a
@@ -2250,19 +2677,21 @@ class OwnedLocals:
         # inlined copy of it (#116) need not share: then any place of the line counts.
         facts = self._facts(function, line, column) if breakpoint and not function.copies else None
         if captures:
-            positions = self._positions(site, line, facts) or ()
+            positions = self._positions(site, line, facts, block) or ()
             if any(
                 body.dropped_through(root, position) for root in captures for position in positions
             ):
                 return False
-        verdicts = [self._judge(site, candidate, line, facts) for candidate in candidates]
+        verdicts = [self._judge(site, candidate, line, facts, block) for candidate in candidates]
         if False in verdicts:
             return False
         if verdicts and all(verdict is True for verdict in verdicts):
             return True
         return None
 
-    def lent_copies(self, hashed, variable_name, line, path, breakpoint=False, column=None):
+    def lent_copies(
+        self, hashed, variable_name, line, path, breakpoint=False, column=None, block=None
+    ):
         """For a name an `async fn`'s body binds twice to one parameter (#116): the
         field its state keeps it in (`debug v => ((*_34).0: &Pt)`), which holds what the
         caller lent for as long as the future lives, and the poll's own copy of it (`_3 =
@@ -2279,7 +2708,7 @@ class OwnedLocals:
         if at:
             file, _, number = declared.rpartition(":")
             bindings = [b for b in bindings if Path(b[1]).name == file and str(b[2]) == number]
-        bindings = body.in_scopes(bindings, self._visible(body, line, path))
+        bindings = body.in_scopes(bindings, self._visible(body, line, path, block, site, bindings))
         fields = [b for b in bindings if b[0] is None]
         copies = [b[0] for b in bindings if b[0] is not None]
         if len(fields) != 1 or not copies:
@@ -2290,7 +2719,7 @@ class OwnedLocals:
         if found is None or int(found[1]) in body._written_fields or _RAW_POINTER.search(found[2]):
             return None
         facts = self._facts(function, line, column) if breakpoint and not function.copies else None
-        positions = self._positions(site, line, facts)
+        positions = self._positions(site, line, facts, block)
         if not positions or any(
             body.dropped_through(local, position)
             for local in (body.coroutine, *copies)
@@ -2310,7 +2739,16 @@ class OwnedLocals:
         return (16 if wide else 8), len(bindings)
 
     def unassigned(
-        self, hashed, variable_name, line, path, breakpoint=False, column=None, caller=False
+        self,
+        hashed,
+        variable_name,
+        line,
+        path,
+        breakpoint=False,
+        column=None,
+        caller=False,
+        block=None,
+        shown=None,
     ):
         """#132: which of the rows lldb-dap shows as the frame's ``variable_name`` hold
         no value of their own at ``line`` of ``path``: (how many rows the name has,
@@ -2319,8 +2757,9 @@ class OwnedLocals:
         not borrow: a reference's are #110's (an unassigned one is not read through).
 
         A row is the frame's own local where some path to a place the stop can be on
-        the line (``breakpoint``, ``column``: see reference_valid), of those where
-        lldb-dap can show it (``Body.could_show``), leaves it unassigned since its
+        the line (``breakpoint``, ``column``, ``block``: see reference_valid), of those
+        where lldb-dap can show it and every row of the frame (``shown``: their names;
+        see ``Body.scopes_at``), leaves it unassigned since its
         storage began (``Body._assigned_flow``), as rustc's own initialization check
         would say there. A caller frame (``caller``) is inside a call or drop of the
         line: the places before those count (every place of the line must, where none
@@ -2344,7 +2783,7 @@ class OwnedLocals:
         if at:
             file, _, number = declared.rpartition(":")
             bindings = [b for b in bindings if Path(b[1]).name == file and str(b[2]) == number]
-        bindings = body.in_scopes(bindings, self._visible(body, line, path))
+        bindings = body.in_scopes(bindings, self._visible(body, line, path, block, site, bindings))
         pair = self._parameter_copy(body, name, bindings)
         if pair is not None:
             place, (local, *_, scope) = pair
@@ -2357,7 +2796,7 @@ class OwnedLocals:
             return None
         facts = self._facts(function, line, column) if breakpoint and not function.copies else None
         foreign = may_invoke_macro(self.texts.get(function.file), line)
-        positions = self._positions(site, line, facts) or ()
+        positions = self._positions(site, line, facts, block) or ()
         found = {}
         if pair is not None and body.reassigned_before(local, place, positions):
             found[0] = "passed"
@@ -2368,11 +2807,27 @@ class OwnedLocals:
                 return body.unassigned_after(local, position[0], callers, resumed)
             return body.unassigned_at(local, position, resumed)
 
+        # Every row lldb-dap shows has the pc in its binding's lexical block: in one of
+        # the scopes each shown name is bound in (``shown``: the frame's row names).
+        within = []
+        for other in set(shown or ()):
+            bound, near, where = str(other).partition(" @ ")
+            scopes = {
+                b[4]
+                for b in body.bindings.get(bound, ())
+                if not near or f"{Path(b[1]).name}:{b[2]}" == where
+            }
+            if scopes:
+                within.append(scopes)
+
+        def possible(position):
+            found = body.scopes_at(position, line, function.file, foreign, site[2])
+            return found is None or (scope in found and all(s & found for s in within))
+
         verdicts = {
             position: verdict
             for position in (positions if row is not None else ())
-            if body.could_show(position, scope, line, function.file, foreign, site[2])
-            and (verdict := judge(position)) is not None
+            if possible(position) and (verdict := judge(position)) is not None
         }
         if caller:
             # Inside one of the line's calls (or drops): before it, if they are told.
@@ -2458,8 +2913,9 @@ class OwnedLocals:
                 return False
         return None
 
-    def _positions(self, site, line, facts):
-        """Where in the line's blocks the stop can be."""
+    def _positions(self, site, line, facts, block=None):
+        """Where in the line's blocks the stop can be; in the DWARF lexical block the
+        stop's pc is in, where ``block`` tells it apart (#115)."""
         body, function, blocks, shared = site
         if function.inline_only:
             # Before any statement of the line, after any call or drop of it: more
@@ -2479,12 +2935,14 @@ class OwnedLocals:
         text = self.texts.get(function.file)
         if self.precise or not may_invoke_macro(text, line):
             foreign = may_invoke_macro(text, line)
-            return body.stop_positions(blocks, line, function.file, foreign, facts, shared)
+            return body.stop_positions(
+                blocks, line, function.file, foreign, facts, shared, block, function
+            )
         # `#[collapse_debuginfo]` puts a local macro's code on the line invoking it, while
         # its statements keep the macro's lines: any statement can be the stop.
         return body.anywhere(blocks)
 
-    def _judge(self, site, local, line, facts):
+    def _judge(self, site, local, line, facts, block=None):
         body, function, blocks, _ = site
         if local is None:
             return None
@@ -2511,7 +2969,7 @@ class OwnedLocals:
             and not _RAW_POINTER.search(kind)
             and (lent or local in body.arguments and not assigned)
         )
-        positions = self._positions(site, line, facts)
+        positions = self._positions(site, line, facts, block)
         if not positions:
             return None
         # Between `drop((*v))` and the store of `*v = new`, it points at a dropped value.
@@ -2526,7 +2984,12 @@ class OwnedLocals:
         if free and assigned and all(value.startswith("const ") for value in assigned):
             return True
         # Not yet assigned (its declaration line), it holds whatever its slot last held.
-        if not self._initialized(site, local, line):
+        # Where the stop's pc tells its places apart (#115), initialized at those.
+        if not self._initialized(site, local, line) and not (
+            block is not None
+            and positions != self._positions(site, line, facts)
+            and body.initialized_before(local, positions)
+        ):
             return False
         if argument:
             return True
