@@ -1923,6 +1923,39 @@ class DebugWorker:
                 result.append(shown)
                 self.inspection_nodes += 1
                 continue
+            pending = getattr(self.runtime, "not_yet_declared", None) if not ancestry else None
+            if pending and (
+                reason := pending(
+                    variable,
+                    frame,
+                    innermost=frame.get("id") == self.innermost_frame,
+                    stack=getattr(self, "listed_frames", None),
+                    deeper=self.deeper_stack,
+                    # The scope's other variables: rows a debugger shows under one name.
+                    siblings=variables,
+                    stop=self.stop_reason,
+                )
+            ):
+                # Indeterminate here: never shown as a value, expanded or offered for set,
+                # nor read through by a qualified view (a Rust container, enum or Box).
+                output = {
+                    "name": name,
+                    "value": None,
+                    "variablesReference": 0,
+                    "unavailable": True,
+                    "reason": reason[:300],
+                    # Peeky's own reason, not the debugger's.
+                    "withheld": True,
+                    "settable": False,
+                }
+                if kind is not None:
+                    output["type"] = kind
+                    shown = getattr(self.runtime, "display_type", None)
+                    if shown and (rust := shown(variable, frame, top=True)):
+                        output.update(type=rust, debugger_type=kind)
+                result.append(output)
+                self.inspection_nodes += 1
+                continue
             view = (
                 view_variable(
                     variable,
@@ -1959,32 +1992,6 @@ class DebugWorker:
                 if taint == "stale" and view["rust_view"] != "unproven":
                     # A decoded enum inside a moved-from value: its stack bytes (#108).
                     output["stale"] = True
-                if kind is not None:
-                    output["type"] = kind
-                result.append(output)
-                self.inspection_nodes += 1
-                continue
-            pending = getattr(self.runtime, "not_yet_declared", None) if not ancestry else None
-            if pending and (
-                reason := pending(
-                    variable,
-                    frame,
-                    innermost=frame.get("id") == self.innermost_frame,
-                    stack=getattr(self, "listed_frames", None),
-                    deeper=self.deeper_stack,
-                )
-            ):
-                # Indeterminate here: never shown as a value, expanded or offered for set.
-                output = {
-                    "name": name,
-                    "value": None,
-                    "variablesReference": 0,
-                    "unavailable": True,
-                    "reason": reason[:300],
-                    # Peeky's own reason, not the debugger's.
-                    "withheld": True,
-                    "settable": False,
-                }
                 if kind is not None:
                     output["type"] = kind
                 result.append(output)

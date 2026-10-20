@@ -205,6 +205,7 @@ class Body:
     _alias_edges: dict | None = None
     _dropped: set | None = None
     _offset: int | None = None
+    _assigned_flows: dict | None = None
 
     @property
     def name(self):
@@ -1104,6 +1105,207 @@ class Body:
         self._entry = entry
         return entry
 
+    def _assigned_flow(self, resumed=True):
+        """{block: bitset of the locals assigned on entry, on every path from bb0} for the
+        blocks reachable from bb0 (#132); None past its budget. A local is assigned from
+        a whole assignment (a call's result on its return edge) until its storage begins
+        again (`StorageLive`: a loop's next pass, a poll resuming the body), not until a
+        move or drop: those leave a value's bytes, which #108's views judge, and at
+        opt-level 0 a slot keeps what was last stored in it past `StorageDead` (rustc
+        emits no lifetime markers, so no other local shares it). Across a suspension,
+        only what the coroutine's state saves is kept. ``resumed=False``: the first
+        poll's paths only, none through a suspension."""
+        if self._assigned_flows is None:
+            self._assigned_flows = {}
+        if resumed in self._assigned_flows:
+            return self._assigned_flows[resumed]
+
+        def flows(number):
+            return () if not resumed and number in self.resumes else self._flows(number)
+
+        self._assigned_flows[resumed] = None
+        reachable, pending = set(), [0]
+        while pending:
+            number = pending.pop()
+            if number in reachable:
+                continue
+            if number not in self.blocks:
+                return None
+            reachable.add(number)
+            pending.extend(flows(number))
+        top = (1 << (1 + max(map(_max_local, self.blocks.values()), default=0))) - 1
+        entry = {number: top for number in reachable}
+        entry[0] = _mask(self.arguments)
+        kept = _mask(self.saved | self.arguments)
+        work = sorted(reachable, reverse=True)
+        queued, steps = set(work), 0
+        limit = max(MAX_ITERATIONS, STEPS_PER_BLOCK * len(reachable))
+        while work:
+            steps += 1
+            if steps > limit:
+                return None
+            number = work.pop()
+            queued.discard(number)
+            block = self.blocks[number]
+            state = entry[number]
+            for text, _, _ in block.statements[:-1]:
+                state = _assigns(text, state)
+            for target in flows(number):
+                out = state & kept if number in self.resumes else state
+                if target == block.returns:
+                    out |= 1 << int(_ASSIGN.match(block.terminator)[1])
+                merged = entry[target] & out
+                if merged != entry[target]:
+                    entry[target] = merged
+                    if target not in queued:
+                        queued.add(target)
+                        work.append(target)
+        self._assigned_flows[resumed] = entry
+        return entry
+
+    def line_code(self, number, index, line, file, foreign):
+        """True if statement ``index`` of block ``number`` emits code of ``line`` of
+        ``file``, as ``stop_positions`` counts it (``foreign``: the line may invoke a
+        macro, whose statements span another file or none)."""
+        block = self.blocks[number]
+        text, spanned, spanned_line = block.statements[index]
+        if _NO_CODE.match(text):
+            return False
+        if spanned != file:
+            return spanned is None or foreign
+        span = _span(block, index)
+        return spanned_line == line or (
+            _call(block, index) and span is not None and spanned_line < line <= span[1]
+        )
+
+    def could_show(self, position, scope, line, file, foreign=True, blocks=None):
+        """False only if lldb-dap cannot show a binding of MIR ``scope`` with the stop at
+        ``position`` ((block, index)) on ``line`` of ``file``: it lists a variable only
+        where the pc is in its scope's DWARF lexical block, and the code there (the
+        statement about to run, or a call or drop returning into the block) is in
+        another scope. One of the line's ``blocks`` with no statement of the line (code
+        none explains) can stop anywhere, so any position in it can."""
+        number, index = position
+        block = self.blocks.get(number)
+        if block is None:
+            return True
+        if (blocks is None or number in blocks) and not any(
+            self.line_code(number, at, line, file, foreign) for at in range(len(block.statements))
+        ):
+            return True
+        owners = [(number, index)] if index < len(block.statements) else []
+        if index == 0:
+            owners += [
+                (other, len(self.blocks[other].statements) - 1)
+                for other in self.predecessors().get(number, ())
+                if _target(self.blocks[other]) == number
+            ]
+        for owner, at in owners:
+            inner = _scope(self.blocks[owner], at)
+            if inner is None or _encloses(self, scope, inner):
+                return True
+        return False
+
+    def returned_into(self, number, line, file, foreign, blocks):
+        """The blocks whose call or drop of ``line`` returns into block ``number``, where
+        the stop can be at its start only after one of them (``stop_positions``' place
+        after a call): the block's first statement is not code of the line, and the
+        block is not one of the line's ``blocks`` with none (anywhere in it). None
+        otherwise. A join's other edges (a cleanup block entered from an earlier
+        unwind) do not reach that place."""
+        block = self.blocks.get(number)
+        if block is None or not block.statements:
+            return None
+        if self.line_code(number, 0, line, file, foreign):
+            return None
+        if number in blocks and not any(
+            self.line_code(number, at, line, file, foreign) for at in range(len(block.statements))
+        ):
+            return None
+        found = [
+            other
+            for other in self.predecessors().get(number, ())
+            if _target(self.blocks[other]) == number
+            and (
+                _call(self.blocks[other], last := len(self.blocks[other].statements) - 1)
+                or _DROP.match(self.blocks[other].terminator)
+            )
+            and self.line_code(other, last, line, file, foreign)
+        ]
+        return found or None
+
+    def unassigned_after(self, local, number, callers, resumed=True):
+        """``unassigned_at`` at the start of block ``number`` when entered from one of the
+        ``callers`` returning into it: True if one leaves ``local`` unassigned (a call's
+        return edge assigns its result), None if none is reached."""
+        verdicts = []
+        for other in callers:
+            block = self.blocks[other]
+            verdict = self.unassigned_at(local, (other, len(block.statements) - 1), resumed)
+            if verdict and block.returns == number:
+                verdict = int(_ASSIGN.match(block.terminator)[1]) != local
+            verdicts.append(verdict)
+        if True in verdicts:
+            return True
+        return False if False in verdicts else None
+
+    def reassigned_before(self, local, place, positions):
+        """True if a write to ``local`` other than its copy of ``place`` (a whole or
+        partial assignment, a `&mut` or raw borrow of it) can run before one of
+        ``positions``, through a suspension and a later poll too; or if the body writes the state's field
+        ``place`` (see _lent)."""
+        self._lent()
+        if int(re.search(r"\.([0-9]+): ", place)[1]) in self._written_fields:
+            return True
+        sources = []
+        for number, block in self.blocks.items():
+            for index, (text, _, _) in enumerate(block.statements):
+                text = _STRING.sub('""', text)
+                found = _WHOLE_ASSIGNMENT.match(text) or _PART_ASSIGNMENT.match(text)
+                if (
+                    found
+                    and int(found[1]) == local
+                    and found[2].partition(" -> ")[0] not in (f"copy {place}", f"move {place}")
+                ) or local in {int(n) for n in _WRITABLE_BORROW.findall(text)}:
+                    sources.append((number, index))
+
+        def after(number):
+            # A suspension flows to its resume, and the next poll starts at bb0, whose
+            # dispatch goes on only to a resume (never to the first poll's code).
+            if number == 0 and self.resumes:
+                return ()
+            return (*self._flows(number), *((0,) if number in self.resumes else ()))
+
+        pending, seen = [], set()
+        for number, index in sources:
+            if any(other == number and index < at for other, at in positions):
+                return True
+            pending.extend(after(number))
+        targets = {number for number, _ in positions}
+        while pending:
+            number = pending.pop()
+            if number in seen:
+                continue
+            if number in targets:
+                return True
+            seen.add(number)
+            pending.extend(after(number) if number in self.blocks else ())
+        return False
+
+    def unassigned_at(self, local, position, resumed=True):
+        """True if a path from bb0 reaches ``position`` ((block, index): before that
+        statement) with ``local`` not assigned since its storage began (see
+        ``_assigned_flow``), False if every path assigns it; None if no path reaches the
+        position or the analysis gave up."""
+        entry = self._assigned_flow(resumed)
+        number, index = position
+        if entry is None or number not in entry:
+            return None
+        state = entry[number]
+        for text, _, _ in self.blocks[number].statements[:index]:
+            state = _assigns(text, state)
+        return not state & (1 << local)
+
 
 _CLOSURE_SEGMENT = re.compile(r"_?\{+closure(?:#[0-9]+)?\}+")
 # What rustc's debug info names a coroutine by its kind; its MIR path says `{closure#N}`
@@ -1291,6 +1493,19 @@ def _transfer(text, state):
     state &= ~_mask(_kills(text))
     if assigned := _ASSIGN.match(text):
         state |= 1 << int(assigned[1])
+    return state
+
+
+# Where a local's storage begins anew, its bytes are what the slot last held (#132).
+_STORAGE_BEGINS = re.compile(r"^(?:StorageLive|Deinit)\(_([0-9]+)\);$")
+
+
+def _assigns(text, state):
+    """``state`` (see Body._assigned_flow) after statement ``text``."""
+    if begun := _STORAGE_BEGINS.match(text):
+        return state & ~(1 << int(begun[1]))
+    if assigned := _ASSIGN.match(text):
+        return state | (1 << int(assigned[1]))
     return state
 
 
@@ -2093,6 +2308,122 @@ class OwnedLocals:
                 return None
         wide = re.match(r"&(?:mut )?(?:\[|str$|dyn )", found[2])
         return (16 if wide else 8), len(bindings)
+
+    def unassigned(
+        self, hashed, variable_name, line, path, breakpoint=False, column=None, caller=False
+    ):
+        """#132: which of the rows lldb-dap shows as the frame's ``variable_name`` hold
+        no value of their own at ``line`` of ``path``: (how many rows the name has,
+        {row: why}), rows in lldb-dap's order, or None where none is told (or nothing
+        can be: the site, the binding or the body not understood). For a type that does
+        not borrow: a reference's are #110's (an unassigned one is not read through).
+
+        A row is the frame's own local where some path to a place the stop can be on
+        the line (``breakpoint``, ``column``: see reference_valid), of those where
+        lldb-dap can show it (``Body.could_show``), leaves it unassigned since its
+        storage began (``Body._assigned_flow``), as rustc's own initialization check
+        would say there. A caller frame (``caller``) is inside a call or drop of the
+        line: the places before those count (every place of the line must, where none
+        is told). ``why`` is "suspended" where only a poll resuming the body after a
+        suspension (an `.await`) leaves it so, since the state keeps no copy of it (the
+        body does not use it again), else "unassigned" (a `let` without a value, a
+        loop's next pass before its `let`).
+
+        An `async fn`'s parameter is bound twice (#116): the state's field, in the
+        function's own scope, whose variables lldb-dap lists before any lexical
+        block's, and the poll's own copy (`_3 = copy ((*_29).0: u32)`) in a scope
+        within it, row 1 where both are shown. The field (row 0) is "passed" where a
+        reassignment of the copy (`mut n`) can have run before the stop: it holds what
+        the caller passed, not the parameter's value since."""
+        site = self._site(hashed, line, path)
+        if site is None or not site[0].supported or site[0]._assigned_flow() is None:
+            return None
+        body, function = site[0], site[1]
+        name, at, declared = str(variable_name).partition(" @ ")
+        bindings = body.bindings.get(name, [])
+        if at:
+            file, _, number = declared.rpartition(":")
+            bindings = [b for b in bindings if Path(b[1]).name == file and str(b[2]) == number]
+        bindings = body.in_scopes(bindings, self._visible(body, line, path))
+        pair = self._parameter_copy(body, name, bindings)
+        if pair is not None:
+            place, (local, *_, scope) = pair
+            row = 1 if len(bindings) == 2 else None
+        elif len(bindings) == 1 and bindings[0][0] is not None:
+            row, (local, *_, scope) = 0, bindings[0]
+        else:
+            return None
+        if _BORROWING.search(body.types.get(local) or "&"):
+            return None
+        facts = self._facts(function, line, column) if breakpoint and not function.copies else None
+        foreign = may_invoke_macro(self.texts.get(function.file), line)
+        positions = self._positions(site, line, facts) or ()
+        found = {}
+        if pair is not None and body.reassigned_before(local, place, positions):
+            found[0] = "passed"
+
+        def judge(position, resumed=True):
+            callers = body.returned_into(position[0], line, function.file, foreign, site[2])
+            if position[1] == 0 and callers:
+                return body.unassigned_after(local, position[0], callers, resumed)
+            return body.unassigned_at(local, position, resumed)
+
+        verdicts = {
+            position: verdict
+            for position in (positions if row is not None else ())
+            if body.could_show(position, scope, line, function.file, foreign, site[2])
+            and (verdict := judge(position)) is not None
+        }
+        if caller:
+            # Inside one of the line's calls (or drops): before it, if they are told.
+            calls = {
+                (number, index): verdict
+                for (number, index), verdict in verdicts.items()
+                if index == len(body.blocks[number].statements) - 1
+                and (
+                    _call(body.blocks[number], index) or _DROP.match(body.blocks[number].terminator)
+                )
+                and body.line_code(number, index, line, function.file, foreign)
+            }
+            # Else every place of the line must leave it unassigned.
+            verdicts = calls or (verdicts if all(verdicts.values()) else {})
+        unassigned = [position for position, verdict in verdicts.items() if verdict]
+        if unassigned:
+            first = body.resumes and body._assigned_flow(resumed=False) is not None
+            # On the first poll's paths every one of these places has it assigned (or
+            # none reaches them): only a resumed poll leaves it so.
+            found[row] = (
+                "suspended"
+                if first and all(judge(position, False) is not True for position in unassigned)
+                else "unassigned"
+            )
+        return (len(bindings), found) if found else None
+
+    @staticmethod
+    def _parameter_copy(body, name, bindings):
+        """(the field's place, the copy's binding) where ``bindings`` (of ``name``, as
+        the stop shows it) are an `async fn`'s parameter: the state's field (`debug n =>
+        ((*_29).0: u32)`) in the function's own scope, and, if shown, the one whole local
+        declared with it in a scope within it, which the body sets from the field: the
+        poll's own copy."""
+        fields = [b for b in bindings if b[0] is None]
+        if body.coroutine is None or len(fields) != 1 or len(bindings) > 2 or fields[0][4] != 0:
+            return None
+        field = fields[0]
+        place = body.places.get((name, *field[1:3], field[4]), "")
+        if not re.fullmatch(rf"\(\(\*_{body.coroutine}\)\.[0-9]+: .+\)", place):
+            return None
+        copies = [
+            b
+            for b in body.bindings.get(name, [])
+            if b[0] is not None and b[1:3] == field[1:3] and b[4] != 0
+        ]
+        if len(copies) != 1 or any(b is not field and b != copies[0] for b in bindings):
+            return None
+        values = body._assignments().get(copies[0][0], [])
+        return (
+            (place, copies[0]) if f"copy {place}" in values or f"move {place}" in values else None
+        )
 
     def _elsewhere(self, hashed, variable_name, path):
         """For a stop no line of the function's own can place: in another of the crate's

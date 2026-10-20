@@ -2226,11 +2226,14 @@ class NativeSession:
             pointee = found[1] if found else None
         return self.aliased_type(pointee) if pointee else None
 
-    def not_yet_declared(self, variable, frame, innermost=True, stack=None, deeper=None):
+    def not_yet_declared(
+        self, variable, frame, innermost=True, stack=None, deeper=None, siblings=None, stop=None
+    ):
         """Why a root local of ``frame`` has no value yet (declared below the stop), or
         None. Its storage then holds whatever an earlier call or iteration left.
         ``stack``: the frames listed with it (innermost first), when known; ``deeper()``:
-        more of them, when a rule needs what runs below the listed ones."""
+        more of them, when a rule needs what runs below the listed ones. ``siblings``
+        (the frame's rows) and ``stop`` (the stop's reason) are for Rust's rules."""
         name, path = variable.get("name"), ((frame or {}).get("source") or {}).get("path")
         line = (frame or {}).get("line")
         if name == "this" and (building := self._under_construction(frame, stack, deeper)):

@@ -1563,3 +1563,173 @@ def test_a_replaced_field_leaves_a_partly_moved_local_partly_moved():
     body = replaced(store=f"(_1.1: {BOXED}) = move (_1.2: {BOXED});")
     assert set(body._replacements()[1].values()) == {1}
     assert not body.initialized_throughout(1, {3})
+
+
+# #132: `async fn work(n: u32)` with a local the future does not keep across its `.await`
+# (`tmp`) and one it does (`before`): lines 1-6 are the fn line, `let tmp = n + 100;`,
+# `let before = n * 2;`, `Yield.await;`, `before + 1` and `}`.
+SCALARS = "\n".join(
+    [
+        "fn work::{closure#0}(_1: Pin<&mut {async fn body of work()}>, _2: &mut Context<'_>) -> Poll<u32> {",
+        "    debug _task_context => _2;           // in scope 0 at src/main.rs:1:30: 6:2",
+        "    debug n => ((*_9).0: u32);           // in scope 0 at src/main.rs:1:15: 1:16",
+        "    let mut _0: std::task::Poll<u32>;    // return place in scope 0 at src/main.rs:1:30: 6:2",
+        "    let _3: u32;                         // in scope 0 at src/main.rs:1:15: 1:16",
+        "    let _4: u32;                         // in scope 1 at src/main.rs:2:9: 2:12",
+        "    let mut _5: bool;                    // in scope 0 at src/main.rs:4:5: 4:15",
+        "    let mut _6: u32;                     // in scope 0 at src/main.rs:5:5: 5:11",
+        "    let mut _8: u32;                     // in scope 0 at src/main.rs:1:30: 6:2",
+        "    let mut _9: &mut {async fn body of work()}; // in scope 0 at src/main.rs:1:30: 6:2",
+        "    scope 1 {",
+        "        debug n => _3;                   // in scope 1 at src/main.rs:1:15: 1:16",
+        "        scope 2 {",
+        "            debug tmp => _4;             // in scope 2 at src/main.rs:2:9: 2:12",
+        "            scope 3 {",
+        "                debug before => (((*_9) as variant#3).0: u32); // in scope 3 at src/main.rs:3:9: 3:15",
+        "            }",
+        "        }",
+        "    }",
+        "",
+        "    bb0: {",
+        "        _9 = copy (_1.0: &mut {async fn body of work()}); // scope 0 at src/main.rs:1:30: 6:2",
+        "        _8 = discriminant((*_9));        // scope 0 at src/main.rs:1:30: 6:2",
+        "        switchInt(move _8) -> [0: bb1, 1: bb6, 2: bb6, 3: bb5, otherwise: bb6]; // scope 0 at src/main.rs:1:30: 6:2",
+        "    }",
+        "",
+        "    bb1: {",
+        "        StorageLive(_3);                 // scope 0 at src/main.rs:1:15: 1:16",
+        "        _3 = copy ((*_9).0: u32);        // scope 0 at src/main.rs:1:15: 1:16",
+        "        StorageLive(_4);                 // scope 1 at src/main.rs:2:9: 2:12",
+        "        _4 = Add(copy _3, const 100_u32); // scope 1 at src/main.rs:2:15: 2:22",
+        "        (((*_9) as variant#3).0: u32) = Mul(copy _3, const 2_u32); // scope 2 at src/main.rs:3:18: 3:23",
+        "        goto -> bb8;                     // scope 3 at src/main.rs:4:5: 4:15",
+        "    }",
+        "",
+        "    bb8: {",
+        "        _5 = poll() -> [return: bb3, unwind continue]; // scope 3 at src/main.rs:4:5: 4:15",
+        "    }",
+        "",
+        "    bb3: {",
+        "        switchInt(move _5) -> [0: bb7, otherwise: bb4]; // scope 3 at src/main.rs:4:5: 4:15",
+        "    }",
+        "",
+        "    bb4: {",
+        "        _6 = copy (((*_9) as variant#3).0: u32); // scope 3 at src/main.rs:5:5: 5:11",
+        "        _0 = Poll::<u32>::Ready(move _6); // scope 0 at src/main.rs:6:2: 6:2",
+        "        discriminant((*_9)) = 1;         // scope 0 at src/main.rs:6:2: 6:2",
+        "        return;                          // scope 0 at src/main.rs:6:2: 6:2",
+        "    }",
+        "",
+        "    bb5: {",
+        "        StorageLive(_3);                 // scope 0 at src/main.rs:1:30: 6:2",
+        "        StorageLive(_4);                 // scope 0 at src/main.rs:1:30: 6:2",
+        "        goto -> bb8;                     // scope 3 at src/main.rs:4:5: 4:15",
+        "    }",
+        "",
+        "    bb6: {",
+        "        unreachable;                     // scope 0 at src/main.rs:1:30: 6:2",
+        "    }",
+        "",
+        "    bb7: {",
+        "        _0 = Poll::<u32>::Pending;       // scope 3 at src/main.rs:4:10: 4:15",
+        "        StorageDead(_4);                 // scope 3 at src/main.rs:4:10: 4:15",
+        "        StorageDead(_3);                 // scope 3 at src/main.rs:4:10: 4:15",
+        "        discriminant((*_9)) = 3;         // scope 3 at src/main.rs:4:10: 4:15",
+        "        return;                          // scope 3 at src/main.rs:4:10: 4:15",
+        "    }",
+        "}",
+        "",
+    ]
+)
+
+
+def scalars(text=SCALARS):
+    body = parse_body(text)
+    blocks = {"start": {1}}
+    for number, block in body.blocks.items():
+        if number:
+            blocks[f"bb{number}"] = {line for _, _, line in block.statements}
+    function = IrFunction(
+        "{async_fn#0}", "work", "src/main.rs", blocks, {}, 1, ancestors=("app", "work")
+    )
+    lines = "async fn work(n: u32) -> u32 {\n    let tmp = n + 100;\n    let before = n * 2;\n"
+    lines += "    Yield.await;\n    before + 1\n}\n"
+    return body, OwnedLocals([body], {"h": function}, SOURCES, texts={"src/main.rs": lines})
+
+
+def test_a_resumed_poll_leaves_what_the_future_does_not_keep_unassigned():
+    body, owned = scalars()
+    assert body.supported and body.saved == {10} and body.resumes == {7: 5}
+    # The poll's copy of `n` and `tmp`: assigned in the first poll, never after a resume.
+    assert body.unassigned_at(3, (4, 0)) and body.unassigned_at(4, (4, 0))
+    assert body.unassigned_at(3, (4, 0), resumed=False) is False
+    assert body.unassigned_at(10, (4, 0)) is False  # `before`, in the state
+    assert owned.unassigned("h", "n @ main.rs:1", 5, MAIN) == (2, {1: "suspended"})
+    assert owned.unassigned("h", "tmp", 5, MAIN) == (1, {0: "suspended"})
+    assert owned.unassigned("h", "before", 5, MAIN) is None
+    assert owned.unassigned("h", "_task_context", 5, MAIN) is None
+    # A caller frame inside the `.await`'s poll: everywhere on the line, so withheld.
+    assert owned.unassigned("h", "tmp", 4, MAIN, caller=True) == (1, {0: "suspended"})
+    # Before the `.await` only the first poll runs: assigned.
+    assert owned.unassigned("h", "n @ main.rs:1", 3, MAIN) is None
+    assert owned.unassigned("h", "tmp", 3, MAIN) is None
+    # Not yet assigned on its own line (lldb-dap shows it only inside its scope).
+    assert owned.unassigned("h", "before", 3, MAIN) is None
+
+
+def test_a_parameter_the_body_reassigns_is_not_what_the_futures_field_holds():
+    # `mut n; n += 1` before the `.await`: the field holds what the caller passed.
+    text = SCALARS.replace(
+        "        (((*_9) as variant#3).0: u32) = Mul(",
+        "        _3 = Add(copy _3, const 1_u32);  // scope 2 at src/main.rs:3:5: 3:11\n"
+        "        (((*_9) as variant#3).0: u32) = Mul(",
+    )
+    _, owned = scalars(text)
+    assert owned.unassigned("h", "n @ main.rs:1", 5, MAIN) == (2, {0: "passed", 1: "suspended"})
+    # Out of the copy's scope, the field alone.
+    assert owned.unassigned("h", "n", 6, MAIN) == (1, {0: "passed"})
+    _, plain = scalars()
+    assert plain.unassigned("h", "n", 6, MAIN) is None
+    # Before the reassignment can run, the field is the parameter; on the fn line a later
+    # poll's start (its dispatch, its resume) runs after it.
+    assert owned.unassigned("h", "n @ main.rs:1", 2, MAIN) is None
+    assert owned.unassigned("h", "n", 1, MAIN) == (1, {0: "passed"})
+
+
+def test_a_let_without_a_value_is_unassigned_until_assigned_and_joins_take_their_edge():
+    body = parse_body(
+        "fn main() -> () {\n"
+        "    let mut _0: ();  // return place in scope 0 at src/main.rs:1:10: 1:10\n"
+        "    scope 1 {\n"
+        "        debug late => _1;  // in scope 1 at src/main.rs:2:9: 2:13\n"
+        "        debug v => _2;  // in scope 1 at src/main.rs:3:9: 3:10\n"
+        "    }\n"
+        "    bb0: {\n"
+        "        StorageLive(_1);  // scope 0 at src/main.rs:2:9: 2:13\n"
+        "        _2 = make() -> [return: bb1, unwind: bb4];  // scope 1 at src/main.rs:3:13: 3:19\n"
+        "    }\n"
+        "    bb1: {\n"
+        "        _1 = const 5_u32;  // scope 1 at src/main.rs:4:5: 4:13\n"
+        "        drop(_2) -> [return: bb2, unwind: bb3];  // scope 1 at src/main.rs:5:1: 5:2\n"
+        "    }\n"
+        "    bb2: {\n"
+        "        return;  // scope 0 at src/main.rs:5:2: 5:2\n"
+        "    }\n"
+        "    bb3 (cleanup): {\n"
+        "        drop(_9) -> [return: bb4, unwind terminate(cleanup)];  // scope 1 at src/main.rs:5:1: 5:2\n"
+        "    }\n"
+        "    bb4 (cleanup): {\n"
+        "        resume;  // scope 0 at src/main.rs:1:1: 5:2\n"
+        "    }\n"
+        "}\n"
+    )
+    assert body.unassigned_at(1, (0, 1)) and body.unassigned_at(1, (1, 0))
+    assert body.unassigned_at(1, (1, 1)) is False
+    # bb4 joins the unwind from `make()` (before `late` is assigned) with the cleanup
+    # drop on line 5: a stop after that drop comes through its edge only.
+    assert body.unassigned_at(1, (4, 0))
+    assert body.returned_into(4, 5, "src/main.rs", False, {1, 3}) == [3]
+    assert body.unassigned_after(1, 4, [3]) is False
+    # A call's own result is assigned on its return edge.
+    assert body.unassigned_after(2, 1, [0]) is False
+    assert body.returned_into(1, 4, "src/main.rs", False, {1}) is None

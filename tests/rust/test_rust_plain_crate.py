@@ -3316,3 +3316,259 @@ def test_a_field_reassigned_in_place_leaves_its_struct_whole(plain, capsys):
     rows = _rows_at(plain, capsys, "AG_PARTLY_REPLACED", "h,h.b,h.b.x,h.n,h.v.len")
     assert _hidden(rows["h.b.x"]) and rows["h.b"]["view"] == "unproven", rows
     assert _stale(rows["h"]) and _stale(rows["h.n"]) and rows["h.v.len"].get("stale"), rows
+
+
+ASYNC_SCALARS = """use std::future::Future;
+use std::pin::{Pin, pin};
+use std::task::{Context, Poll, Waker};
+
+struct YieldOnce(bool);
+
+impl Future for YieldOnce {
+    type Output = ();
+    fn poll(mut self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<()> {
+        if self.0 { Poll::Ready(()) } else { self.0 = true; Poll::Pending }
+    }
+}
+
+#[inline(never)]
+fn scribble() -> u64 {
+    let junk = [0xABu8; 512];
+    std::hint::black_box(&junk);
+    junk.iter().map(|b| *b as u64).sum()
+}
+
+#[inline(never)]
+fn churn(x: u32) -> u32 {
+    std::hint::black_box(x) + 1 // M132_CHURN
+}
+
+async fn work(n: u32) -> u32 {
+    let tmp = n + 100;
+    std::hint::black_box(tmp);
+    let before = n * 2;
+    YieldOnce(false).await;
+    before + churn(1) // M132_STOP
+}
+
+async fn used(n: u32) -> u32 {
+    let before = n * 2;
+    YieldOnce(false).await;
+    before + n // M132_USED
+}
+
+async fn bumped(mut n: u32) -> u32 {
+    n += 1;
+    YieldOnce(false).await;
+    n + 1 // M132_BUMPED
+}
+
+fn plain(n: u32) -> u32 {
+    let a = n + 1;
+    let late;
+    let b = a * 2; // M132_PLAIN
+    late = b + 1;
+    late
+}
+
+fn drive<F: Future>(future: F) -> F::Output {
+    let mut cx = Context::from_waker(Waker::noop());
+    let mut future = pin!(future);
+    loop {
+        if let Poll::Ready(value) = future.as_mut().poll(&mut cx) {
+            return value;
+        }
+        // Between polls: what a later poll's frame finds in slots it never assigns.
+        scribble();
+    }
+}
+
+fn main() {
+    println!("{}", drive(work(5)));
+    println!("{}", drive(used(5)));
+    println!("{}", drive(bumped(5)));
+    println!("{}", plain(5));
+}
+"""
+
+
+def _inspect(capsys, *frame):
+    assert main(["session", "inspect", "--json", *frame]) == 0
+    snapshot = json.loads(capsys.readouterr().out)
+    return [v for scope in snapshot["scopes"] for v in scope["variables"]]
+
+
+def _withheld(row, *words):
+    return (
+        row.get("withheld") is True
+        and row.get("value") is None
+        and all(word in row.get("reason", "") for word in words)
+    )
+
+
+@pytest.mark.timeout(600)
+def test_an_async_bodys_locals_not_kept_across_an_await_are_withheld(plain, capsys):
+    # #132: a poll resumed after an `.await` showed its own copy of a parameter, which
+    # only the first poll assigns, as an ordinary value: whatever an earlier call left
+    # in its slot (0xABABABAB here), beside the future's field holding 5. So did a local
+    # the future does not keep across the `.await` (`tmp`, 105 in the first poll).
+    (plain / "src/main.rs").write_text(ASYNC_SCALARS)
+    parameter = f"n @ main.rs:{line_of(ASYNC_SCALARS, 'async fn work(')}"
+    at = f"src/main.rs:{line_of(ASYNC_SCALARS, '// M132_STOP')}"
+    assert main(["session", "start", str(plain), "--at", at]) == 0
+    capsys.readouterr()
+    try:
+        rows = _inspect(capsys)
+        named = {row["name"]: row for row in rows}
+        field, copy = [row for row in rows if row["name"] == parameter]
+        # The future's field holds what the caller passed; the saved local reads too.
+        assert field["value"] == "5" and not field.get("withheld"), rows
+        assert named["before"]["value"] == "10" and not named["before"].get("withheld"), rows
+        assert _withheld(copy, "`.await`", f"the other `{parameter}` row"), rows
+        assert copy["type"] == "u32" and copy.get("settable") is False, rows
+        assert _withheld(named["tmp"], "`.await`", "leftovers"), rows
+        assert "evaluable" not in copy and "evaluable" not in named["tmp"], rows
+        # Nothing to change: the program assigns it before reading it again.
+        assert main(["session", "set", "tmp=7", "--json"]) != 0
+        assert "has no value here" in capsys.readouterr().err
+        code, found = run(capsys, "session", "get", "tmp", "before")
+        found = {row["selector"]: row for row in found}
+        assert "no value yet" in found["tmp"]["error"] and "`.await`" in found["tmp"]["error"]
+        assert found["before"]["value"] == "10", found
+        # A caller frame of the resumed poll (stopped in a function it calls): the same.
+        main(["session", "continue", "--to", str(line_of(ASYNC_SCALARS, "// M132_CHURN"))])
+        capsys.readouterr()
+        rows = _inspect(capsys, "--frame", "1")
+        named = {row["name"]: row for row in rows}
+        field, copy = [row for row in rows if row["name"] == parameter]
+        assert field["value"] == "5" and _withheld(copy, "`.await`"), rows
+        assert _withheld(named["tmp"], "`.await`") and named["before"]["value"] == "10", rows
+    finally:
+        main(["session", "close"])
+        capsys.readouterr()
+    code, result = run(
+        capsys, "probe", str(plain), "--at", at, "--capture", "tmp,before", "--quiet"
+    )
+    rows = {row["selector"]: row for row in result["rows"]}
+    assert "no value yet" in rows["tmp"]["error"] and "value" not in rows["tmp"], rows
+    assert rows["before"]["value"] == "10", rows
+
+
+@pytest.mark.timeout(600)
+def test_async_parameters_kept_across_an_await_and_plain_functions_read(plain, capsys):
+    # #132: what the future keeps across the `.await` reads as before: a parameter used
+    # after it (both rows), and its saved locals. A parameter the body reassigns (`mut
+    # n`) is in its own copy: the future's field holds only what the caller passed. In a
+    # plain function, scalars read as before, and a `let` without a value is withheld
+    # until it is assigned (its slot holds what an earlier call left).
+    (plain / "src/main.rs").write_text(ASYNC_SCALARS)
+
+    def rows_at(marker, declared):
+        at = f"src/main.rs:{line_of(ASYNC_SCALARS, '// ' + marker)}"
+        assert main(["session", "start", str(plain), "--at", at]) == 0
+        capsys.readouterr()
+        try:
+            rows = _inspect(capsys)
+        finally:
+            main(["session", "close"])
+            capsys.readouterr()
+        name = f"n @ main.rs:{line_of(ASYNC_SCALARS, declared)}"
+        return {row["name"]: row for row in rows}, [row for row in rows if row["name"] == name]
+
+    named, pair = rows_at("M132_USED", "async fn used(")
+    assert [row["value"] for row in pair] == ["5", "5"], pair
+    assert named["before"]["value"] == "10" and not any(row.get("withheld") for row in pair)
+    named, pair = rows_at("M132_BUMPED", "async fn bumped(")
+    assert _withheld(pair[0], "the caller passed", "reassigned") and pair[1]["value"] == "6"
+    named, _ = rows_at("M132_PLAIN", "fn plain(")
+    assert named["n"]["value"] == "5" and named["a"]["value"] == "6", named
+    assert not named["n"].get("withheld") and not named["a"].get("withheld"), named
+    assert _withheld(named["late"], "not assigned"), named
+
+
+ASYNC_SHAPES = ASYNC_SCALARS.replace(
+    "fn main() {\n",
+    """async fn several(n: u32) -> u32 {
+    let a = n + 1;
+    YieldOnce(false).await;
+    let b = a + 1;
+    YieldOnce(false).await;
+    let c = b + 1;
+    YieldOnce(false).await;
+    c + 1 // M132_SEVERAL
+}
+
+async fn looped(n: u32) -> u32 {
+    let mut total = 0;
+    for i in 0..n {
+        let k = i * 3;
+        YieldOnce(false).await;
+        total += i; // M132_LOOPED
+        std::hint::black_box(k);
+    }
+    total
+}
+
+async fn shadowed(n: u32) -> u32 {
+    let x = n + 1;
+    YieldOnce(false).await;
+    let x = x * 10;
+    x + 1 // M132_SHADOWED
+}
+
+fn main() {
+    println!("{} {} {}", drive(several(5)), drive(looped(3)), drive(shadowed(5)));
+    let m = 9;
+    let closure = async move |z: u32| {
+        let q = z + m;
+        std::hint::black_box(q);
+        YieldOnce(false).await;
+        z * 2 // M132_CLOSURE
+    };
+    println!("{}", drive(closure(4)));
+    let w = 11u32;
+    println!("{}", drive(async move {
+        let inner = w + 1;
+        std::hint::black_box(inner);
+        YieldOnce(false).await;
+        w * 3 // M132_BLOCK
+    }));
+""",
+)
+
+
+@pytest.mark.timeout(600)
+def test_async_locals_after_several_awaits_in_loops_closures_and_blocks(plain, capsys):
+    # #132: the same in a poll after several `.await`s, an `.await` in a loop, a name
+    # shadowed after the `.await`, an async closure and an async block: what the future
+    # keeps reads, what it does not is withheld.
+    (plain / "src/main.rs").write_text(ASYNC_SHAPES)
+
+    def rows_at(marker, hit=1):
+        at = f"src/main.rs:{line_of(ASYNC_SHAPES, '// ' + marker)}"
+        assert main(["session", "start", str(plain), "--at", at, "--hit", str(hit)]) == 0
+        capsys.readouterr()
+        try:
+            rows = _inspect(capsys)
+        finally:
+            main(["session", "close"])
+            capsys.readouterr()
+        return [row for row in rows if row["name"] not in ("<null>", "_task_context")]
+
+    def shown(rows):
+        return [(row["name"].partition(" @ ")[0], row["value"]) for row in rows]
+
+    rows = rows_at("M132_SEVERAL")
+    assert shown(rows) == [("n", "5"), ("n", None), ("a", "6"), ("b", "7"), ("c", "8")], rows
+    assert _withheld(rows[1], "`.await`")
+    rows = rows_at("M132_LOOPED", hit=2)
+    assert shown(rows)[:2] == [("n", "3"), ("n", None)] and _withheld(rows[1], "`.await`")
+    named = {row["name"]: row["value"] for row in rows}
+    assert (named["total"], named["i"], named["k"]) == ("0", "1", "3"), rows
+    rows = rows_at("M132_SHADOWED")
+    assert shown(rows) == [("n", "5"), ("n", None), ("x", "6"), ("x", "60")], rows
+    rows = rows_at("M132_CLOSURE")
+    assert shown(rows) == [("z", "4"), ("m", "9"), ("z", "4"), ("q", None)], rows
+    assert _withheld(rows[3], "`.await`", "leftovers"), rows
+    rows = rows_at("M132_BLOCK")
+    assert shown(rows) == [("w", "11"), ("inner", None)] and _withheld(rows[1], "`.await`")
