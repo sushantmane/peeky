@@ -552,11 +552,17 @@ def _groups(snapshot):
 
 def _scope_lookup(worker, stop, snapshot, scopes, name):
     """``name`` in these scopes: listed directly, or in one of debugpy's groups; with
-    the scope it is in."""
-    for scope in scopes:
-        for variable in scope["variables"]:
-            if variable["name"] == name:
-                return variable, scope
+    the scope it is in. Listed more than once (LLDB names two locals declared on one
+    line alike, `p @ s.c:10`), it is refused: which is which cannot be told."""
+    listed = [(v, scope) for scope in scopes for v in scope["variables"] if v["name"] == name]
+    if len(listed) > 1:
+        raise Refused(
+            "NOT_FOUND",
+            f"{name!r} is ambiguous: the debugger lists {len(listed)} locals of that name here "
+            "(declared on the same line), which Peeky cannot tell apart",
+        )
+    for variable, scope in listed:
+        return variable, scope
     for scope in scopes:
         if found := _grouped(worker, stop, scope["variables"], name, _groups(snapshot)):
             return found[0], scope
@@ -758,6 +764,18 @@ def _resolve(worker, stop, snapshot, segments, pointers=False):
             path += segment
             continue
         key = _key(segment)
+        length = variable.get("indexedVariables")
+        if (index := _INDEX.fullmatch(segment)) and type(length) is int and length > 512:
+            # An element past one listing's bound (`es[699].a`): fetched alone (#105).
+            if int(index[1]) >= length:
+                raise ValueError(f"{segment} is out of range: {path} has {length} elements")
+            page = worker.dispatch("expand", {**stop, "handle": handle, "index": int(index[1])})
+            found = next((v for v in page["variables"] if v["name"] == segment), None)
+            if found is None:
+                raise ValueError(f"{segment} not found: the debugger lists no such element")
+            variable = found
+            path += segment
+            continue
         found, children, incomplete = _page_find(worker, stop, handle, segment, first_page)
         if found is None and incomplete:
             raise Refused(

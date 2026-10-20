@@ -144,6 +144,12 @@ _THROUGH = re.compile(r"(?:\bmove\s+|^drop\()\(*\*_([0-9]+)\b")
 _WRITABLE_BORROW = re.compile(r"&(?:mut |raw const |raw mut )\(*_([0-9]+)\b")
 _DIRECT_BORROW = re.compile(r"&(?:mut |raw const |raw mut |fake \w+ )?\(*_([0-9]+)\b")
 _ANY_LOCAL = re.compile(r"\b_([0-9]+)\b")
+# `format_args!`'s calls, which return what holds the pointers they are given (an
+# `Argument` holds `&s.a`), never a value read through them. The dump may shorten the
+# call's path (`Arguments::<'_>::new::<7, 2>(…)`), but not the declared type of what
+# it returns, which must be the standard library's too.
+_FORMAT_CALL = re.compile(r"(?:(?:core|std)::fmt::(?:rt::)?)?Arguments?::<'_>::new\w*\b")
+_FORMAT_TYPE = re.compile(r"(?:core|std)::fmt::(?:rt::)?Arguments?<'_>")
 _SUCCESSOR = re.compile(r"\bbb([0-9]+)\b")
 _RETURN_EDGE = re.compile(r"\breturn: bb([0-9]+)\b")
 _EXITS = re.compile(r"^(?:return|unreachable|resume|abort|terminate)\b")
@@ -778,7 +784,11 @@ class Body:
                 else:
                     call = "->" in value and not _NOT_A_CALL.match(value)
                     hold = local in mentioned or through or bool(mentioned & holds)
-                    hold = hold or (call and pointing)
+                    # `format_args!`'s constructors keep the pointers they are given.
+                    formatting = _FORMAT_CALL.match(value) and _FORMAT_TYPE.fullmatch(
+                        self.types.get(target, "")
+                    )
+                    hold = hold or (call and pointing and not formatting)
                     point = pointing
                 if hold and target not in holds:
                     holds.add(target)
@@ -2447,15 +2457,7 @@ class OwnedLocals:
         return local is not None and self._initialized(site, local, line)
 
     def copied_in_progress(
-        self,
-        hashed,
-        variable_name,
-        line,
-        path,
-        breakpoint=False,
-        column=None,
-        block=None,
-        stepped=False,
+        self, hashed, variable_name, line, path, breakpoint=False, column=None, block=None
     ):
         """For the frame's local ``variable_name``: False if, from every place the stop
         can be on ``line`` of ``path``, no temporary that may hold a value read from it
@@ -2463,11 +2465,9 @@ class OwnedLocals:
         so a change made here reaches what the program reads of it from now on. True if
         one may be (`let t = s.a + f();` back from `f`: `s.a` is in a temporary); None if
         not understood. ``breakpoint``, ``column`` and ``block`` as for
-        ``reference_valid``; a line breakpoint stops before the line's first code in its
-        lexical block. ``stepped``: a step's stop, at the start of the line's code in a
-        MIR block (a step over enters a line where its code starts, and a step out
-        returns to the start of the block after its call). Any other stop (a pause) can
-        be at any place of the line."""
+        ``reference_valid``: a line breakpoint (or a step that ends at its line's lowest
+        address) stops before the line's first code in its lexical block; any other
+        stop can be at any place of the line."""
         site = self._site(hashed, line, path)
         if site is None:
             return None
@@ -2481,8 +2481,8 @@ class OwnedLocals:
         positions = self._positions(site, line, facts, block)
         if not positions:
             return None
-        if (breakpoint or stepped) and not function.inline_only:
-            positions = _first_places(body, function, positions, stepped)
+        if breakpoint and not function.inline_only:
+            positions = _first_places(body, function, positions)
         held = body.copies_of(local)
         return any(body.used_ahead(temp, position) for temp in held for position in positions)
 
@@ -2840,23 +2840,17 @@ class OwnedLocals:
         )
 
 
-def _first_places(body, function, positions, stepped=False):
+def _first_places(body, function, positions):
     """Of the places a line breakpoint's stop can be, the first in each lexical block
     by address (``Body._address_order``): LLDB stops at the line's lowest address in
     each, before the line's first code there. A temporary a statement before it sets
     without code of its own (`_4 = copy _9`) copies one that is used there, so it is
-    judged. A block whose places' order is not known keeps them all. ``stepped``: of a
-    step's places, the first in each MIR block instead."""
+    judged. A block whose places' order is not known keeps them all."""
     groups = {}
     for position in positions:
         number, index = position
-        if stepped:
-            groups.setdefault(number, []).append(position)
-            continue
         scope = _scope(body.blocks[number], index) if number in body.blocks else None
         groups.setdefault(None if scope is None else body.lexical(scope), []).append(position)
-    if stepped:
-        return sorted(min(members) for members in groups.values())
     kept = []
     for scope, members in groups.items():
         orders = [(body._address_order(position, function), position) for position in members]

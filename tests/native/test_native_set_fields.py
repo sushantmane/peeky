@@ -302,7 +302,12 @@ def test_a_change_part_way_through_a_statement_is_refused(directory, capsys, lan
     assert main(["session", "step", "--out"]) == 0
     capsys.readouterr()
     assert settable(capsys, "x") is False
-    refused(capsys, "s.a=50", "cannot be changed here", f"part-way through line {at}")
+    refused(
+        capsys,
+        "s.a=50",
+        "cannot be changed here",
+        f"first instruction of the statement on line {at}",
+    )
     refused(capsys, "x=7", "cannot be changed here", "would not see the change")
     # A line that continues a statement an earlier line started.
     second = line_of(MID_SOURCE, "TEMP_SECOND")
@@ -401,3 +406,226 @@ def test_c_a_variable_length_array_is_refused_as_one(directory, capsys):
     start_shadowed(directory, capsys)
     refused(capsys, "vla[1]=5", "`vla` is a variable-length array")
     assert "inner 3 1" in output(capsys)
+
+
+STARTS = """#include <stdio.h>
+
+struct P { long x; long y; };
+struct W { long v; };
+
+__attribute__((noinline)) long g(void) { return 1000; }
+__attribute__((noinline)) long sink(long a, long b) { return a + b; }
+__attribute__((noinline)) long one(struct P p) { return p.x + sink(g(), 1); }  // ONE
+#define TWICE(v) t = v.x; t += g()
+
+int main(void) {
+    struct P p = { 1, 2 };
+    long c = 1, t;
+    t =  // WRAPPED
+        p.x + g();
+    printf("A %ld\\n", t);
+    t = p.x + ({
+        long q = 0;
+        if (c) {
+            q = g();  // EXPRESSION
+        }
+        q;
+    });
+    printf("B %ld\\n", t);
+    t = p.x + (long)(struct W){
+        g() }.v;  // LITERAL
+    printf("C %ld\\n", t);
+    t = p.x
+#if 0
+        ;
+#endif
+        + g();  // DIRECTIVE
+    printf("D %ld\\n", t);
+    t = one(p);
+    printf("E %ld\\n", t);
+    TWICE(p);
+    printf("F %ld\\n", t);  // AFTER_MACRO
+    return 0;
+}
+"""
+
+
+def start_at(directory, capsys, name, source, marker):
+    path = directory / name
+    path.write_text(source)
+    assert main(["session", "start", str(path), "--at", str(line_of(source, marker))]) == 0
+    capsys.readouterr()
+
+
+def continue_to(capsys, source, marker):
+    assert main(["session", "continue", "--to", str(line_of(source, marker))]) == 0
+    capsys.readouterr()
+
+
+@pytest.mark.timeout(240)
+def test_c_a_change_is_refused_unless_at_its_statements_first_instruction(directory, capsys):
+    # Review of #105 (round 2): each stop looked like a statement's start while the
+    # statement was under way, and `set p.x=50` reported `1 -> 50` while the program
+    # printed `1001`:
+    # - `t =` / `p.x + g();`: clang emits the second line's code first, so `t =` has
+    #   only the final store;
+    # - `if (c) {` inside a statement expression `({ ... })`;
+    # - `(long)(struct W){` (a compound literal after a cast);
+    # - `t = p.x` / `#if 0` / `;` / `#endif` / `+ g();`.
+    start_at(directory, capsys, "starts.c", STARTS, "WRAPPED")
+    wrapped = line_of(STARTS, "WRAPPED")
+    refused(capsys, "p.x=50", f"not at the first instruction of the statement on lines {wrapped}-")
+    for marker in ("EXPRESSION", "LITERAL"):
+        continue_to(capsys, STARTS, marker)
+        refused(capsys, "p.x=50", f"line {line_of(STARTS, marker)} continues a statement")
+    continue_to(capsys, STARTS, "DIRECTIVE")
+    refused(capsys, "p.x=50", "cannot tell from the source whether line")
+    text = output(capsys)
+    assert all(f"{tag} 1001" in text for tag in "ABCD"), text
+
+
+@pytest.mark.timeout(240)
+def test_c_a_one_line_function_allows_a_change_only_after_its_prologue(directory, capsys):
+    # Review of #105 (round 2): back from `g` (`step --out`) in `long one(struct P p) {
+    # return p.x + sink(g(), 1); }`, `set p.x=70` reported `1 -> 70`, and the program
+    # printed `E 1002`: every row of a function's first line counted as its start.
+    start_at(directory, capsys, "starts.c", STARTS, "ONE")
+    code, result = change(capsys, "p.x=60")
+    assert code == 0 and result["after"] == "60", result
+    assert main(["session", "step", "--into"]) == 0
+    assert main(["session", "step", "--out"]) == 0
+    capsys.readouterr()
+    refused(capsys, "p.x=70", "its function's first line, past the first instruction after")
+    assert "E 1061" in output(capsys)
+
+
+@pytest.mark.timeout(240)
+def test_c_a_multi_statement_macro_leaves_the_lines_after_it_settable(directory, capsys):
+    # Review of #105 (round 2): one `TWICE(p);` (a macro holding a `;`) refused every
+    # change in the rest of its block; only a macro that may hide a bracket does now.
+    start_at(directory, capsys, "starts.c", STARTS, "AFTER_MACRO")
+    code, result = change(capsys, "t=5")
+    assert code == 0 and result["after"] == "5", result
+    assert "F 5" in output(capsys)
+
+
+SHADOWS = """#include <stdio.h>
+
+struct P { long x; long y; };
+struct E { long a; int b; };
+
+int main(void) {
+    long n = 3;  // OUTER
+    struct E es[700];
+    long g2[600][3];
+    for (int i = 0; i < 700; i++) { es[i].a = i; es[i].b = -i; }
+    for (int i = 0; i < 600; i++) for (int j = 0; j < 3; j++) g2[i][j] = i * 10 + j;
+    {
+        long n = 4;  // INNER
+        { struct P p = { 7, 8 }; { struct P p = { 9, 10 };
+            n += p.x;  // STOP
+        } }
+    }
+    printf("%ld %ld %ld\\n", n, es[699].a, g2[599][2]);
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(240)
+def test_c_shadowed_root_integers_and_elements_past_512_at_any_step(directory, capsys):
+    # Review of #105 (round 2): `n@s.c:13=99` was refused ("only ... long; has type
+    # 'long'"), `es[699].a` and `g2[599][2]` exhausted the expansion budget, and `get`
+    # read the first of two locals LLDB names alike (`p @ s.c:14`) without a word.
+    start_at(directory, capsys, "s.c", SHADOWS, "STOP")
+    inner, outer = line_of(SHADOWS, "INNER"), line_of(SHADOWS, "OUTER")
+    for assignment, after in (
+        (f"n@s.c:{inner}=90", "90"),
+        (f"n @ s.c:{outer}=30", "30"),
+        ("es[699].a=7", "7"),
+        ("g2[599][2]=8", "8"),
+    ):
+        code, result = change(capsys, assignment)
+        assert code == 0 and result["after"] == after, (assignment, result)
+    same = line_of(SHADOWS, "{ struct P p = { 7, 8 };")
+    assert main(["session", "get", f"p @ s.c:{same}", "--json"]) == 1
+    row = json.loads(capsys.readouterr().out)[0]
+    assert "is ambiguous: the debugger lists 2 locals of that name" in row["error"], row
+    assert "30 7 8" in output(capsys)
+
+
+CPP_STARTS = """#include <cstdio>
+#include <memory>
+
+struct P { long x; long y; };
+struct W { long v; };
+
+__attribute__((noinline)) long g() { return 1000; }
+__attribute__((noinline)) long sink(long a, long b) { return a + b; }
+
+struct Counter {
+    long n = 0;
+    void add(long v) {
+        long k = v;
+        n += k;
+    }  // CLOSE
+};
+
+int main() {
+    P p{1, 2};
+    long c = 1, t = 0;
+    t = p.x + std::unique_ptr<long[]>(new long[1]{
+        g() })[0];  // NEW
+    std::printf("A %ld\\n", t);
+    t = p.x + decltype(W{}){
+        g() }.v;  // DECLTYPE
+    std::printf("B %ld\\n", t);
+    t = p.x + ({
+        long q = 0;
+        for (int i = 0; i < 1; i++) {
+            q += g();  // FOR
+        }
+        q;
+    });
+    std::printf("C %ld\\n", t);
+    if (c) [[likely]] {
+        t = 5;  // LIKELY
+    }
+    Counter counter;
+    counter.add(2);
+    auto f = [](P q) { return q.x + sink(g(), 1); };  // LAMBDA
+    t = f(p);
+    std::printf("D %ld %ld\\n", t, counter.n);
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(240)
+def test_cpp_braces_that_are_no_blocks_and_a_lambdas_return_address_are_refused(directory, capsys):
+    # Review of #105 (round 2): `new long[1]{`, `decltype(W{}){` and a `for` body in
+    # `({` passed as blocks of statements, and back from `g` in a one-line lambda
+    # `set q.x=70` reported `1 -> 70` while the program printed `L 1002`.
+    start_at(directory, capsys, "starts.cpp", CPP_STARTS, "NEW")
+    refused(capsys, "p.x=50", f"line {line_of(CPP_STARTS, 'NEW')} continues a statement")
+    for marker in ("DECLTYPE", "FOR"):
+        continue_to(capsys, CPP_STARTS, marker)
+        refused(capsys, "p.x=50", f"line {line_of(CPP_STARTS, marker)} continues a statement")
+    # After `if (c) [[likely]] {`, and at an in-class method's closing `}`, a change is
+    # allowed: each is where a statement starts.
+    continue_to(capsys, CPP_STARTS, "LIKELY")
+    code, result = change(capsys, "c=3")
+    assert code == 0 and result["after"] == "3", result
+    continue_to(capsys, CPP_STARTS, "CLOSE")
+    code, result = change(capsys, "v=4")
+    assert code == 0 and result["after"] == "4", result
+    continue_to(capsys, CPP_STARTS, "LAMBDA")
+    code, result = change(capsys, "q.x=60")
+    assert code == 0 and result["after"] == "60", result
+    assert main(["session", "step", "--into"]) == 0
+    assert main(["session", "step", "--out"]) == 0
+    capsys.readouterr()
+    refused(capsys, "q.x=70", "its function's first line, past the first instruction after")
+    text = output(capsys)
+    assert "A 1001" in text and "B 1001" in text and "C 1001" in text, text
+    assert "D 1061 2" in text, text

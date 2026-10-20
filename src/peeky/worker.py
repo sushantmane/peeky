@@ -1018,6 +1018,9 @@ class DebugWorker:
                 ("handle", None, 1, None),
                 ("start", 0, 0, 511),
                 ("count", 64, 1, 64),
+                # One element by its index, of an array of any length (`[N]` as LLDB
+                # names it); instead of `start` and `count`.
+                ("index", 0, 0, 2**31 - 1),
             ):
                 value = args.get(key, default)
                 if type(value) is not int or value < low or (high is not None and value > high):
@@ -2109,11 +2112,12 @@ class DebugWorker:
     def named_children(self, reference, indexed, name, runtime):
         """The children named ``name`` of the value ``reference`` names. An element LLDB
         names `[N]` of an array with more children than one bounded listing holds is
-        fetched alone (`start` N, `count` 1), as reads index it; anything else from the
-        bounded listing."""
+        fetched alone (`start` N, `count` 1), as reads index it, where the debugger names
+        elements so (lldb-dap); anything else from the bounded listing."""
         validate_children = getattr(runtime, "validate_children", None)
         index = re.fullmatch(r"\[(0|[1-9][0-9]{0,9})\]", str(name))
-        if index and type(indexed) is int and indexed > 512 and type(reference) is int:
+        alone = getattr(runtime, "elements_by_index", False) is True
+        if alone and index and type(indexed) is int and indexed > 512 and type(reference) is int:
             if int(index[1]) >= indexed:
                 return []
             variables = self.dap.request(
@@ -2163,8 +2167,10 @@ class DebugWorker:
             # Elements a value view already decoded at this stop: nothing to re-read.
             runtime.assert_current()
             elements = record[1]
-            start = args.get("start", 0)
-            count = min(args.get("count", 64), 512 - self.inspection_nodes)
+            start = args.get("index", args.get("start", 0))
+            count = (
+                1 if "index" in args else min(args.get("count", 64), 512 - self.inspection_nodes)
+            )
             page = []
             for element in elements[start : start + count]:
                 handle = 0
@@ -2183,14 +2189,19 @@ class DebugWorker:
                 "remaining_nodes": 512 - self.inspection_nodes,
             }
         frame, scope_identity, ancestry, reference, indexed = self.walk(record, runtime)
-        variables = self.bounded_variables(reference, indexed)
-        if validate_children := getattr(runtime, "validate_children", None):
-            validate_children(variables)
+        start = args.get("start", 0)
+        count = min(args.get("count", 64), 512 - self.inspection_nodes)
+        if "index" in args:
+            # The one element `[N]`, fetched alone however long the array (#105).
+            variables = self.named_children(reference, indexed, f"[{args['index']}]", runtime)
+            start, count = 0, 1
+        else:
+            variables = self.bounded_variables(reference, indexed)
+            if validate_children := getattr(runtime, "validate_children", None):
+                validate_children(variables)
         # Each expansion is its own bounded request with a fresh value-view budget.
         self.view_fetches = self.view_items = self.view_bytes = 0
         self.view_deadline = time.monotonic() + VIEW_SECONDS
-        start = args.get("start", 0)
-        count = min(args.get("count", 64), 512 - self.inspection_nodes)
         result = self.expose_variables(
             variables[start : start + count],
             frame,
@@ -2391,8 +2402,9 @@ class DebugWorker:
             raise ValueError(
                 f"{selector!r} cannot be changed here: {reason}, so that statement may "
                 "already hold a copy of the old value and would not see the change. Change "
-                "it where a statement starts: at a breakpoint on the statement's first line "
-                "(`session continue --to LINE`, a probe's `--at`), or a `session step` onto it"
+                "it at a statement's first instruction, this one's or an earlier one's: a "
+                "breakpoint on the statement's first line (`session continue --to LINE`, a "
+                "probe's `--at`), or a `session step` that lands there"
             )
 
     def walk(self, record, runtime, trail=None):

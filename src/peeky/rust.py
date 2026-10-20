@@ -1049,33 +1049,44 @@ class RustSession(NativeSession):
 
     def mid_statement(self, variable, frame, stop=None):
         """Why a change to the root local ``variable`` of the stopped ``frame`` may not
-        reach a statement under way at the stop, or None (#105): the build's MIR shows a
-        temporary that may hold a value read from it and is used again from where the
-        stop can be (`let t = s.a + f();`, back from `f`; a breakpoint on `+ f();`
-        under `let t = s.a`). Unknown counts as such. ``stop``: the stop's reason, as a
-        line breakpoint's stop is at its line's start."""
+        reach a statement under way at the stop, or None (#105). Allowed only where the
+        stop is before its line's first code (``stop``, its reason: a line breakpoint's,
+        or a step's that ends at the line's lowest address) and from there no temporary
+        the build's MIR shows may hold a value read from it is used again: a statement
+        that starts on an earlier line (`let arr = [s.a,` / `k,` / `s.b];` at its last
+        line) has already read it. A step that ends elsewhere (back from a call, as after
+        `step --out`, or onto a later part of a statement spanning lines), any other
+        stop, and anything the MIR does not explain are refused."""
         hashed, proofs, place = _frame_hash(frame), getattr(self, "owned", None), frame or {}
+        line = place.get("line")
+        if stop == "step" and not self._line_start(frame):
+            return (
+                f"the stop is part-way through line {line}, past its first instruction (a "
+                "step back from a call, as after `step --out`, or onto a later part of a "
+                "statement spanning lines)"
+            )
+        if stop not in ("breakpoint", "step"):
+            return (
+                f"the stop ({stop or 'unknown'}) is not a line breakpoint's or a step's, so "
+                "Peeky cannot tell where it is in its statement"
+            )
         verdict = None
         if hashed and proofs is not None and not self._optimized():
-            # A step that ends where its line's code starts is placed as a breakpoint
-            # is; one back from a call (`step --out`) is at the start of a MIR block.
-            started = stop == "breakpoint" or (stop == "step" and self._line_start(frame))
             verdict = proofs.copied_in_progress(
                 hashed[1],
                 variable.get("name"),
-                place.get("line"),
+                line,
                 (place.get("source") or {}).get("path"),
-                breakpoint=started,
+                breakpoint=True,
                 column=place.get("column"),
                 block=stop_block(self.code_blocks.get(hashed[1]), self._unslid(frame)),
-                stepped=stop == "step" and not started,
             )
         if verdict is False:
             return None
         if verdict:
             return (
                 "a statement under way at the stop has already read it into a temporary "
-                "(`let t = s.a + f();`, back from `f`)"
+                "(`let t = s.a` / `+ f();`, at its second line)"
             )
         return (
             "Peeky cannot tell from the build's MIR whether a statement under way at the "

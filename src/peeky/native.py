@@ -1503,21 +1503,17 @@ def declared_mid_line(table, name, source, line, address, settled):
     return None
 
 
-def _line_start(function, source, line, address):
-    """Whether ``address`` (unslid) is where control enters ``source:line`` in the
-    function (a declarations entry): the line's lowest address, as a line breakpoint
-    and a step stop there; or, on its first line, after the prologue (only that line's
-    code runs before it)."""
-    span = function.get("rows", {}).get((source, line))
-    if span is None:
-        return False
-    if address == span[0]:
-        return True
-    order = function.get("order", ())
-    if not any(row == (address, source, line) for row in order):
-        return False
-    earlier = [row for row in order if row[0] < address]
-    return bool(earlier) and all(row[1:] == (source, line) for row in earlier)
+def _after_prologue(function, source, line):
+    """The address of the first row after the prologue on the function's first line
+    (a declarations entry), where a breakpoint on that line stops: the line's second
+    row, its first being the function's entry; None if there is none."""
+    rows = sorted(
+        {at for at, file, number in function.get("order", ()) if (file, number) == (source, line)}
+    )
+    entries = [low for low, _ in function.get("ranges", ())]
+    if len(rows) < 2 or not entries or rows[0] != min(entries):
+        return None
+    return rows[1]
 
 
 def declared_skipped(table, name, source, line, address, skipped):
@@ -2103,13 +2099,22 @@ def _writable_integer(variable):
         variable.get("type") in INTEGER_RANGES
         and variable.get("variablesReference", 0) == 0
         and "readOnly" not in attributes
-        and bool(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", str(variable.get("name", ""))))
+        # A name a selector can give: also one LLDB gives with where it is declared,
+        # when several of that name are in scope (`n @ main.c:15`).
+        and bool(
+            re.fullmatch(
+                r"[A-Za-z_][A-Za-z0-9_]*(?: @ [^\s:@]+:[0-9]+)?", str(variable.get("name", ""))
+            )
+        )
     )
 
 
 class NativeSession:
     # lldb-dap reports optimized-out/not-live locals as `<error: ...>` text.
     reports_unavailable_as_text = True
+    # lldb-dap names an array's elements `[N]` and lists any range of them on request,
+    # so one element of a long array can be fetched alone (#105).
+    elements_by_index = True
 
     @property
     def implicit_receiver(self):
@@ -2862,11 +2867,19 @@ class NativeSession:
         """Why a change to the root local ``variable`` of the stopped ``frame`` may not
         reach a statement under way at the stop, or None (#105). Part-way through a
         statement, what it has already read may be held in a register or a temporary
-        (`long t = s.a + f();`, back from `f` with `step --out`). So the stop must be on
-        one of its function's own lines, at that line's first instruction, and the line
-        must start a statement (Statements.begins), not continue one (`+ f();` under
-        `long t = s.a`); anything Peeky cannot tell counts as part-way. ``stop``: the
-        stop's reason (unused here)."""
+        (`long t = s.a + f();`, back from `f` with `step --out`), so a change is allowed
+        only where the stop is the statement's first instruction:
+
+        - on one of its function's own lines;
+        - on the function's first line (a one-line function's or lambda's), only at
+          the first row after the prologue, where a breakpoint there stops;
+        - elsewhere, the line must start a statement (Statements.begins), and the stop
+          must be at the lowest address of every row, in this function, on the lines
+          of the statements that start on it (Statements.statement_span): clang emits
+          `t =` / `p.x + g();` with the second line's code first.
+
+        Anything else, or anything Peeky cannot tell, is refused. ``stop``: the stop's
+        reason (unused: the address says it)."""
         place, function, address = self._place(frame), self._function_at(frame), None
         if function is not None:
             address = self._unslid(frame)
@@ -2879,10 +2892,13 @@ class NativeSession:
                 "class's member initializer, or code an `#include` brings in), part-way "
                 "through the statement that runs it"
             )
-        if not _line_start(function, source, line, address):
+        span = function.get("span")
+        if span is not None and line == span[0]:
+            if address == _after_prologue(function, source, line):
+                return None
             return (
-                f"the stop is part-way through line {line} (back from a call on it, as after "
-                "`step --out`)"
+                f"the stop is on line {line}, its function's first line, past the first "
+                "instruction after its prologue (back from a call, as after `step --out`)"
             )
         statements = self._statements(source)
         begins = statements.begins(line) if statements is not None else None
@@ -2890,6 +2906,21 @@ class NativeSession:
             return f"line {line} continues a statement that an earlier line starts"
         if begins is None:
             return f"Peeky cannot tell from the source whether line {line} starts a statement"
+        lines = statements.statement_span(line)
+        if lines is None:
+            return f"Peeky cannot tell from the source where the statement on line {line} ends"
+        addresses = [
+            at
+            for at, file, number in function.get("order", ())
+            if file == source and lines[0] <= number <= lines[1]
+        ]
+        if not addresses or address != min(addresses):
+            where = f"line {line}" if lines[0] == lines[1] else f"lines {lines[0]}-{lines[1]}"
+            return (
+                f"the stop is not at the first instruction of the statement on {where}: "
+                "it is part-way through it (back from a call, as after `step --out`; on a "
+                "loop's later pass; or where the compiler put code of a later line first)"
+            )
         return None
 
     def validate_member(self, frame, root, steps, variable, value, stack=None, deeper=None):

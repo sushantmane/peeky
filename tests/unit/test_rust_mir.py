@@ -1978,6 +1978,39 @@ def test_temporaries_holding_a_copy_of_a_local_are_found_and_judged_live():
     assert body.used_ahead(4, (1, 0)) and not body.used_ahead(4, (0, 0))
 
 
+def test_format_args_constructors_keep_pointers_and_are_no_copies():
+    # Review of #105 (round 2): `println!("{} {}", s.a, f())` gives `format_args!` a
+    # pointer to `s.a`; what its constructors return keeps it (a later change is seen),
+    # while any other call given that pointer may return a copy.
+    bindings = "debug s => _1;   // in scope 1 at src/main.rs:2:9: 2:10\n"
+    body = mir(
+        {
+            0: [
+                "_4 = &(_1.0: i32);",
+                "_3 = core::fmt::rt::Argument::<'_>::new_display::<i32>(copy _4) "
+                "-> [return: bb1, unwind continue];",
+            ],
+            1: [
+                "_6 = [move _3];",
+                '_5 = Arguments::<\'_>::new::<7, 2>(const "", move _6) '
+                "-> [return: bb2, unwind continue];",
+            ],
+            2: [
+                "_8 = &(_1.0: i32);",
+                "_7 = get(copy _8) -> [return: bb3, unwind continue];",
+                "_9 = Arguments::<'_>::new(copy _8) -> [return: bb3, unwind continue];",
+            ],
+            3: ["return;"],
+        },
+        bindings=bindings,
+    )
+    body.types.update(
+        {3: "core::fmt::rt::Argument<'_>", 5: "std::fmt::Arguments<'_>", 9: "Arguments<'_>"}
+    )
+    # `_9` is the program's own `Arguments`: its type is no standard library's.
+    assert body.copies_of(1) == frozenset({7, 9})
+
+
 def test_a_line_breakpoint_stops_before_its_lines_first_code_in_each_block():
     from peeky.rust_mir import _first_places
 
@@ -1990,10 +2023,9 @@ def test_a_line_breakpoint_stops_before_its_lines_first_code_in_each_block():
 
         @staticmethod
         def _address_order(position, function):
-            return None if position[0] == 2 and function == "unknown" else (0, *position)
+            return None if function == "unknown" else (0, *position)
 
     places = [(1, 1), (1, 2), (2, 0)]
     assert _first_places(Body, "ir", places) == [(1, 1), (2, 0)]
-    # A step: the first place of each MIR block (a step out returns to a block's start).
-    assert _first_places(Body, "ir", [(1, 2), (2, 0)], stepped=True) == [(1, 2), (2, 0)]
-    assert _first_places(Body, "ir", places, stepped=True) == [(1, 1), (2, 0)]
+    # A block whose places' order is not known keeps them all.
+    assert _first_places(Body, "unknown", places) == [(1, 1), (1, 2), (2, 0)]

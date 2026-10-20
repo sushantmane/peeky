@@ -287,7 +287,8 @@ def test_rust_a_change_part_way_through_a_statement_is_refused(crate, capsys):
     assert main(["session", "step", "--out"]) == 0
     capsys.readouterr()
     assert settable(capsys, "x") is False
-    refused(capsys, "s.a=50", "cannot be changed here", "already read it into a temporary")
+    line = mid_line("// TEMP_OUT")
+    refused(capsys, "s.a=50", "cannot be changed here", f"part-way through line {line}")
     refused(capsys, "x=7", "cannot be changed here", "would not see the change")
     # A step onto a line starts it: nothing of the line is read yet.
     assert main(["session", "step"]) == 0
@@ -324,3 +325,143 @@ def test_rust_an_element_of_a_large_array_local_is_changed(crate, capsys):
     code, result = change(capsys, "a[257]=9")
     assert code == 0 and result["after"] == "9", result
     assert "big 9 999" in finish(capsys)
+
+
+STEPS = """#[derive(Clone, Copy, Debug)]
+struct Tri {
+    a: i32,
+    b: i32,
+    c: i32,
+}
+
+#[inline(never)]
+fn add3(a: i32, b: i32, c: i32) -> i32 {
+    a * 100 + b * 10 + c
+}
+
+fn array_lit() {
+    let mut s = Tri { a: 1, b: 2, c: 3 };
+    s.c += 1;
+    let k = 7;
+    let arr = [s.a, // ARR_1
+               k,
+               s.b]; // ARR_3
+    println!("arr {:?} {}", arr, s.a);
+}
+
+fn call_args() {
+    let mut s = Tri { a: 1, b: 2, c: 3 };
+    s.c += 1;
+    let k = 7;
+    let r = add3(s.a, // CALL_1
+                 k,
+                 s.b); // CALL_3
+    println!("call {} {}", r, s.a);
+}
+
+fn shadowed() {
+    let mut x = 1i32; // X_OUTER
+    x += 1;
+    let mut x = 10i32; // X_INNER
+    x += 1; // X_STOP
+    println!("shadow {}", x);
+}
+
+#[inline(never)]
+fn sixty() -> i32 {
+    60
+}
+
+fn formatted() {
+    let mut s = Tri { a: 1, b: 2, c: 3 };
+    s.c += 1;
+    println!("fmt {} {}", s.a, sixty()); // FMT
+}
+
+fn main() {
+    array_lit();
+    call_args();
+    shadowed();
+    formatted();
+}
+"""
+
+
+def steps_line(marker):
+    return next(i for i, line in enumerate(STEPS.splitlines(), 1) if marker in line)
+
+
+def stopped_line(capsys):
+    assert main(["session", "inspect", "--json"]) == 0
+    return json.loads(capsys.readouterr().out)["frames"][0]["line"]
+
+
+@pytest.mark.timeout(400)
+def test_rust_a_step_back_onto_a_statements_first_line_is_refused(crate, capsys):
+    # Review of #105 (round 2): `let arr = [s.a,` / `k,` / `s.b];` from a breakpoint on
+    # its first line, `step` twice comes back to that line at the array's
+    # construction, after `s.a` was read: `set s.a=50` reported `1 -> 50` and the
+    # program printed `arr [1, 7, 2] 50`. So did call arguments over several lines.
+    (crate / "src/main.rs").write_text(STEPS)
+    for first, total in (("// ARR_1", "arr [40, 7, 2] 40"), ("// CALL_1", "call 4072 40")):
+        at = f"src/main.rs:{steps_line(first)}"
+        assert main(["session", "start", str(crate), "--at", at]) == 0
+        capsys.readouterr()
+        # At the breakpoint, the statement's first instruction: the change reaches it.
+        code, result = change(capsys, "s.a=40")
+        assert code == 0 and result["after"] == "40", result
+        lines = []
+        for _ in range(2):
+            assert main(["session", "step"]) == 0
+            capsys.readouterr()
+            lines.append(stopped_line(capsys))
+            refused(capsys, "s.a=50", "cannot be changed here")
+        if lines[-1] == steps_line(first):
+            # Back on the first line, part-way through it.
+            refused(capsys, "s.a=50", f"part-way through line {lines[-1]}")
+        assert main(["session", "continue", "--to-exit"]) == 0
+        capsys.readouterr()
+        assert main(["session", "report", "--json"]) == 0
+        text = json.loads(capsys.readouterr().out)["output"]
+        assert main(["session", "close"]) == 0
+        capsys.readouterr()
+        assert total in text, text
+
+
+@pytest.mark.timeout(400)
+def test_rust_a_shadowed_root_integer_is_changed(crate, capsys):
+    # Review of #105 (round 2): `x @ main.rs:N=500` was refused with "only writable
+    # integer locals ... has debugger type 'int'".
+    (crate / "src/main.rs").write_text(STEPS)
+    at = f"src/main.rs:{steps_line('// X_STOP')}"
+    assert main(["session", "start", str(crate), "--at", at]) == 0
+    capsys.readouterr()
+    code, result = change(capsys, f"x @ main.rs:{steps_line('// X_INNER')}=500")
+    assert code == 0 and result["after"] == "500", result
+    code, result = change(capsys, f"x@main.rs:{steps_line('// X_OUTER')}=20")
+    assert code == 0 and result["after"] == "20", result
+    assert main(["session", "continue", "--to-exit"]) == 0
+    capsys.readouterr()
+    assert main(["session", "report", "--json"]) == 0
+    text = json.loads(capsys.readouterr().out)["output"]
+    assert main(["session", "close"]) == 0
+    assert "shadow 501" in text, text
+
+
+@pytest.mark.timeout(400)
+def test_rust_a_formatting_line_gives_pointers_and_allows_a_change(crate, capsys):
+    # Review of #105 (round 2): `println!("{} {}", s.a, f())` was refused, though
+    # `format_args!` only takes a pointer to `s.a` (it reads the field when printing).
+    (crate / "src/main.rs").write_text(STEPS)
+    assert (
+        main(["session", "start", str(crate), "--at", f"src/main.rs:{steps_line('// FMT')}"]) == 0
+    )
+    capsys.readouterr()
+    code, result = change(capsys, "s.a=33")
+    assert code == 0 and result["after"] == "33", result
+    assert main(["session", "continue", "--to-exit"]) == 0
+    capsys.readouterr()
+    assert main(["session", "report", "--json"]) == 0
+    text = json.loads(capsys.readouterr().out)["output"]
+    assert main(["session", "close"]) == 0
+    assert "fmt 33 60" in text, text
