@@ -1515,15 +1515,12 @@ def test_a_string_key_matches_only_a_string_of_its_length(
         # Never two entries under one label: "a\0" is no `both["a"]`.
         labels = [child["selector"] for child in rows["both"]["children"]]
         assert labels == ['both["a"]', "both[#1]"], labels
-        # A key at the depth limit shows no length: read only where the summary is whole.
-        if sys.platform == "darwin":
-            assert rows['cfg.opts["k"]']["value"] == "1"
-            labels = [child["selector"] for child in rows["cfg.opts"]["children"]]
-            assert labels == ['cfg.opts["k"]', "cfg.opts[#1]"], labels
-        else:
-            assert "length" in rows['cfg.opts["k"]']["error"], rows['cfg.opts["k"]']
-            labels = [child["selector"] for child in rows["cfg.opts"]["children"]]
-            assert labels == ["cfg.opts[#0]", "cfg.opts[#1]"], labels
+        # A key at the depth limit: libc++'s summary is whole, and the worker checks a
+        # libstdc++ one against its length, read through the debugger's own reference
+        # (#128), or reads its bytes.
+        assert rows['cfg.opts["k"]']["value"] == "1"
+        labels = [child["selector"] for child in rows["cfg.opts"]["children"]]
+        assert labels == ['cfg.opts["k"]', "cfg.opts[#1]"], labels
 
 
 def test_a_custom_comparison_never_says_a_key_is_missing(
