@@ -36,7 +36,7 @@ from peeky.build import (
     real_tool,
 )
 from peeky.c_source import Statements, macro_hazards
-from peeky.cxx_strings import libstdcxx_string, string_class, text_like, tidy
+from peeky.cxx_strings import libstdcxx_string, shows_text, string_class, text_like, tidy
 from peeky.digest import sha256_file
 from peeky.names import unicode_escape
 
@@ -741,14 +741,19 @@ def _block_spans(dies, entry, root, addresses, numbers, source_of):
     within its code (a local macro's definition lines, where its expansions run, are not
     counted), and the call lines of what is inlined into it (LLDB stops there, at the
     callee's entry, in this frame); one that also runs another file's code (an
-    `#include` inside it) gives no span. ``source_of`` names the declared source of a
-    DW_AT_call_file."""
+    `#include` inside it) gives no span. They are one span unless a line between two of
+    them has code only outside the block: C++ puts a block's cleanup, which runs when an
+    exception leaves it, on the function's closing line, so a `while` body's locals are
+    visible on its lines and on that one (`17-26, 35`), not on the lines between (the
+    eval-6 review). ``source_of`` names the declared source of a DW_AT_call_file."""
     rows = sorted(
         (address, source, line) for (source, line), found in addresses.items() for address in found
     )
     keys = [row[0] for row in rows]
     lines, spans, everywhere = {}, {}, set()
     lowest, highest = min(numbers), max(numbers)
+    # The function's own lines that run code: where a stop is made at all.
+    running = sorted({line for _, source, line in rows if source == entry["source"]} & numbers)
 
     def span(block):
         if block not in lines:
@@ -776,7 +781,7 @@ def _block_spans(dies, entry, root, addresses, numbers, source_of):
                         and source_of(die["attrs"].get("DW_AT_call_file")) == entry["source"]
                     ):
                         covered.append(int(called))
-            lines[block] = (min(covered), max(covered)) if covered and not other else None
+            lines[block] = _runs(covered, running) if covered and not other else None
         return lines[block]
 
     def name_of(child):
@@ -804,10 +809,29 @@ def _block_spans(dies, entry, root, addresses, numbers, source_of):
                 # Declared at the function's level, or in a block of unknown lines.
                 everywhere.add(name)
             else:
-                spans.setdefault(name, set()).add(found)
+                spans.setdefault(name, set()).update(found)
     if root not in entry["bodies"]:
         everywhere.update(name for child in dies[root]["children"] if (name := name_of(child)))
     return spans, everywhere
+
+
+def _runs(covered, running):
+    """The block's lines ``covered`` as spans ((first, last), ...): split only where a
+    line between two of them runs code (``running``, sorted) none of which is the
+    block's, so no line the block's code runs on is left out. A later span starts right
+    after the last such line: a line with no code before the block's next one (`let s =
+    twice!(i);`, whose code is the macro's) stops there, as LLDB moves a breakpoint to
+    the next line with code (review of the eval-6 fixes)."""
+    ordered = sorted(set(covered))
+    found = [[ordered[0], ordered[0]]]
+    for line in ordered[1:]:
+        at = bisect.bisect_right(running, found[-1][1])
+        if at < len(running) and running[at] < line:
+            outside = running[bisect.bisect_left(running, line) - 1]
+            found.append([outside + 1, line])
+        else:
+            found[-1][1] = line
+    return tuple((first, last) for first, last in found)
 
 
 def _tidy_spans(found):
@@ -2402,13 +2426,20 @@ class NativeSession:
         members: its bytes read from memory where the debugger's summary ends at a NUL
         or fails, else that summary with a note. libc++'s LLDB shows whole. Any string
         literal is then spelled as C reads it, within the worker's bound, and LLDB's
-        `error: summary string parsing error` is never a value. None leaves the value."""
+        `error: summary string parsing error` is never a value. A string shown as its
+        text (or as why it has none) is marked "text": the worker lists none of its
+        members, which are the library's (the sixth evaluation). None leaves the value."""
         shown = None
         language = getattr(getattr(self, "target", None), "language", None)
-        if not self.whole_string_summaries and language == "cpp":
+        if language == "cpp":
             found = self._string_class(variable.get("type"))
-            if found is not None or text_like(variable):
-                shown = libstdcxx_string(variable, fetch, read, found)
+            if not self.whole_string_summaries:
+                if found is not None or text_like(variable):
+                    shown = libstdcxx_string(variable, fetch, read, found)
+                    if shown is not None:
+                        shown = {**shown, "text": True}
+            elif found is not None and shows_text(variable.get("value"), found):
+                shown = {"text": True}
         if shown and ("value" in shown or shown.get("unavailable")):
             # Peeky's own text (read from memory, or noted): spelled and bounded already.
             return shown
