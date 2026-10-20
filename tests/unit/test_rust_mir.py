@@ -2043,47 +2043,6 @@ def test_a_body_no_function_was_matched_to_may_have_any_type_parameter():
     assert body.generics is None and body._aliases(1) == {1, 2, 3}
 
 
-def test_the_mir_tells_tuple_structs_from_structs_by_their_aggregates():
-    from peeky.rust_mir import constructions
-
-    body = mir(
-        {
-            0: [
-                "_2 = Point(const 1_i32, const 2_u8);",
-                "_3 = Pair::<Vec<u8>>(move _5, move _6);",
-                "_4 = Num { __0: move _7, __1: move _8 };",
-                "(_9.0: Meters) = Meters(const 1.5f64);",
-                "_10 = Add(copy _1, copy _2);",
-                "_11 = {closure@src/main.rs:3:9: 3:12} { x: copy _1 };",
-                '_12 = const "Fake(x)";',
-                "_13 = make(move _2) -> [return: bb1, unwind continue];",
-            ],
-            1: ["return;"],
-        }
-    )
-    tuples, named = constructions([body])
-    assert {"Point", "Pair", "Meters"} <= tuples and not {"make", "Fake", "Add"} & tuples
-    # An operator's name is never a proof (`struct Add(i32)`).
-    assert {"Num", "Add"} <= named
-    # Paths where a name is not unique (review 4), generics left out.
-    body = mir(
-        {
-            0: [
-                "_2 = m::Point(const 1_i32, const 2_i32);",
-                "_3 = m::Wrap::<u8>(const 1_u8);",
-                "_4 = b::Num { __0: move _7, __1: move _8 };",
-                "_5 = E::Num(const 5_u32);",
-                "_6 = Option::<i32>::Some(const 1_i32);",
-                "_7 = local::Loc(const 9_u32);",
-            ],
-            1: ["return;"],
-        }
-    )
-    tuples, named = constructions([body])
-    assert {"m::Point", "m::Wrap", "E::Num", "local::Loc"} <= tuples and "b::Num" in named
-    assert not any("Option" in path or "Some" in path for path in tuples)
-
-
 def test_a_generic_name_rustc_cannot_be_read_from_is_not_understood():
     # Review 3 of #106: with no parameter list read, a name whose arguments cannot be
     # read was taken for a non-generic function's.

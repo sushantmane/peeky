@@ -47,14 +47,7 @@ from peeky.native import (
 from peeky.rust_ir import ir_locals
 from peeky.rust_lexer import without_comments
 from peeky.rust_manifest import assert_cargo_ancestry_clear, validate_cargo_inputs
-from peeky.rust_mir import (
-    OwnedLocals,
-    constructions,
-    frame_shape,
-    ir_functions,
-    load_bodies,
-    stop_block,
-)
+from peeky.rust_mir import OwnedLocals, frame_shape, ir_functions, load_bodies, stop_block
 from peeky.rust_symbols import (
     OWNED_CONTAINERS,
     RUST_METADATA,
@@ -68,9 +61,9 @@ from peeky.rust_symbols import (
     lldb_byte,
     lldb_char,
     lldb_float_debug,
-    proven_tuple_structs,
     struct_name,
     struct_view,
+    without_numbered_structs,
 )
 
 DEPS = "target/debug/deps"
@@ -656,13 +649,13 @@ class RustTarget:
                 if deadline is None
                 else min(SYMBOL_BUDGET_S, deadline - time.monotonic()),
             )
-            layouts = proven_tuple_structs(
+            layouts = without_numbered_structs(
                 layouts,
                 [
+                    # Every file the build read (_require_declared_dependencies).
                     (prepared.workspace / name).read_bytes().decode("utf-8", errors="replace")
-                    for name in self.sources
+                    for name in (*self.sources, *self.tests)
                 ],
-                constructions(owned.bodies) if owned is not None else None,
             )
             identity = module_identity(
                 dwarfdump, binary, symbols, prepared.workspace, env, deadline=deadline

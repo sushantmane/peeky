@@ -4051,10 +4051,12 @@ fn main() {
 
 
 @pytest.mark.timeout(300)
-def test_a_tuple_struct_previews_only_where_the_mir_builds_it_as_one(plain, capsys):
+def test_a_nightly_feature_leaves_every_tuple_struct_unread(plain, capsys):
     # Review 3 of #106: a macro concatenating `__` and `0` declares `Num { __0: u32, … }`
-    # with no `__0` token in the source, and it previewed as `Num(1, 2)`. The MIR builds
-    # it as `Num { __0: move _3, … }`, and `Two` as `Two(const 3_u32, …)`.
+    # with no `__0` token in the source, and it previewed as `Num(1, 2)`. Review 5: only
+    # a nightly feature does that (Peeky's builds allow them), so a crate enabling any
+    # reads no tuple struct, `Two` neither (the MIR's aggregates, which had proved it,
+    # name types by too short a path to be matched).
     (plain / "src/main.rs").write_text(CONCAT_NUMBERED)
     at = f"src/main.rs:{line_of(CONCAT_NUMBERED, '// CN_STOP')}"
     code, result = run(
@@ -4066,8 +4068,8 @@ def test_a_tuple_struct_previews_only_where_the_mir_builds_it_as_one(plain, caps
     for name in ("n", "v"):
         assert rows[name].get("view") != "memory" and "Num(" not in rows[name]["value"], rows
     assert rows["n.__1"]["value"] == "2", rows
-    if os.environ.get("PEEKY_EXPECT_READ_MEMORY") or rows["two"].get("view") == "memory":
-        assert rows["two"]["value"] == "Two(3, 4)", rows["two"]
+    assert "Two(3, 4)" in result["output"] and rows["two"].get("view") != "memory", rows
+    assert "Two(" not in rows["two"]["value"], rows["two"]
 
 
 CHAR_CONST = """#[derive(Debug, Clone, Copy)]
@@ -4186,7 +4188,8 @@ fn main() {
 def test_a_root_tuple_struct_proves_nothing_for_a_same_named_one_elsewhere(plain, capsys):
     # Review 4 of #106: the root `Num(3, 4)` proved the name `Num`, and `b::Num { __0: … }`
     # (named fields, which the DWARF cannot tell from a tuple struct's) was not counted,
-    # so `n` previewed as `Num(1, 2)`; the program prints `Num { __0: 1, __1: 2 }`.
+    # so `n` previewed as `Num(1, 2)`; the program prints `Num { __0: 1, __1: 2 }`. Since
+    # review 5 the crate's nightly feature leaves both unread.
     (plain / "src/main.rs").write_text(ROOT_AND_MODULE_NUM)
     at = f"src/main.rs:{line_of(ROOT_AND_MODULE_NUM, '// RM_STOP')}"
     code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "t,n,n.__0", "--quiet")
@@ -4195,5 +4198,106 @@ def test_a_root_tuple_struct_proves_nothing_for_a_same_named_one_elsewhere(plain
     assert "Num(3, 4) Num { __0: 1, __1: 2 }" in result["output"]
     assert rows["n"].get("view") != "memory" and "Num(" not in rows["n"]["value"], rows
     assert rows["n.__0"]["value"] == "1", rows
-    if os.environ.get("PEEKY_EXPECT_READ_MEMORY") or rows["t"].get("view") == "memory":
-        assert rows["t"]["value"] == "Num(3, 4)", rows["t"]
+    # A nightly feature: no tuple struct is read (review 5).
+    assert rows["t"].get("view") != "memory" and "Num(" not in rows["t"]["value"], rows
+
+
+SHORT_PATHS = """mod geo {
+    pub mod shapes {
+        #[derive(Debug, Clone, Copy)]
+        pub struct Point(pub i32, pub i32);
+    }
+}
+
+mod other {
+    #[derive(Debug, Clone, Copy)]
+    pub struct Point(pub u8);
+}
+
+mod r#match {
+    #[derive(Debug, Clone, Copy)]
+    pub struct Kw(pub u8);
+}
+
+#[allow(non_camel_case_types)]
+#[derive(Debug, Clone, Copy)]
+struct r#type(u16);
+
+fn main() {
+    let g = vec![geo::shapes::Point(6, 7)];
+    let o = other::Point(8);
+    let k = r#match::Kw(9);
+    let t = r#type(10);
+    let s = geo::shapes::Point(11, 12);
+    println!("{:?} {:?} {:?} {:?} {:?}", g, o, k, t, s); // SP_STOP
+}
+"""
+
+
+@pytest.mark.timeout(300)
+def test_tuple_structs_read_whatever_path_the_mir_prints(plain, capsys):
+    # Review 5 of #106: the MIR prints a type from its nearest uniquely named ancestor
+    # (`shapes::Point` for `geo::shapes::Point` beside `other::Point`) and raw identifiers
+    # with `r#`, which the construction proof never matched: `g` was raw (main read it).
+    # The locals' MIR types are printed so too.
+    (plain / "src/main.rs").write_text(SHORT_PATHS)
+    at = f"src/main.rs:{line_of(SHORT_PATHS, '// SP_STOP')}"
+    names = ("g", "o", "k", "t", "s")
+    code, result = run(
+        capsys, "probe", str(plain), "--at", at, "--capture", ",".join(names), "--quiet"
+    )
+    assert code == 0, result.get("error")
+    rows = {row["selector"]: row for row in result["rows"]}
+    if not (os.environ.get("PEEKY_EXPECT_READ_MEMORY") or rows["o"].get("view") == "memory"):
+        pytest.skip("this lldb-dap has no readMemory")
+    assert " ".join(rows[name]["value"] for name in names) == result["output"].splitlines()[0]
+    assert all(rows[name].get("view") == "memory" for name in names), rows
+
+
+VARIANT_PATH = """#![feature(macro_metavar_expr_concat)]
+mod a {
+    #[derive(Debug, Clone, Copy)]
+    pub enum Color {
+        Red(u32, u32),
+    }
+}
+
+macro_rules! fields {
+    ($name:ident) => {
+        #[derive(Debug, Clone, Copy)]
+        pub struct $name {
+            ${concat(__, "0")}: u32,
+            ${concat(__, "1")}: u32,
+        }
+    };
+}
+
+#[allow(non_snake_case)]
+fn Color() -> u32 {
+    fields!(Red);
+    let r: Red = unsafe { std::mem::transmute([7u32, 8u32]) };
+    let c = a::Color::Red(1, 2);
+    println!("{:?} {:?}", r, c); // VP_STOP
+    3
+}
+
+fn main() {
+    println!("{}", Color());
+}
+"""
+
+
+@pytest.mark.timeout(300)
+def test_an_enum_variant_never_proves_a_struct_of_its_path(plain, capsys):
+    # Review 5 of #106: the MIR prints `a::Color::Red(1, 2)` as `Color::Red(…)`, the
+    # DWARF path of `fn Color`'s own `Red { __0, __1 }` (built with `${concat}`, never by
+    # an aggregate), so `r` previewed `Red(7, 8)`; the program prints
+    # `Red { __0: 7, __1: 8 }`. The crate's nightly feature now leaves it unread.
+    (plain / "src/main.rs").write_text(VARIANT_PATH)
+    at = f"src/main.rs:{line_of(VARIANT_PATH, '// VP_STOP')}"
+    code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "r,r.__1", "--quiet")
+    assert code == 0, result.get("error")
+    rows = {row["selector"]: row for row in result["rows"]}
+    assert "Red { __0: 7, __1: 8 } Red(1, 2)" in result["output"]
+    assert rows["r"].get("view") != "memory" and "Red(" not in rows["r"]["value"], rows
+    assert rows["r.__1"]["value"] == "8", rows

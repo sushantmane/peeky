@@ -1419,85 +1419,51 @@ def _spelled(name, shown):
 _NUMBERED_FIELD = re.compile(r"(?<![\w])__[0-9]+(?![\w])")
 
 
-def _relative(name):
-    """A DWARF type name's crate-relative path, without generic arguments
-    (`demo::m::Wrap<u8>` -> `m::Wrap`)."""
-    text = str(name).replace("->", "  ")
-    while (stripped := re.sub(r"<[^<>]*>", "", text)) != text:
-        text = stripped
-    return text.strip().partition("::")[2]
+# A nightly feature gate: `#![feature(…)]`, `#![r#feature(…)]` or one inside `cfg_attr`.
+_FEATURE = re.compile(r"(?<![\w])feature\s*\(")
 
 
-def proven_tuple_structs(layouts, texts, constructed):
-    """``layouts`` with each tuple struct unread unless the MIR shows it is one: a struct
-    with named fields `__0`, `__1` has the DWARF of a tuple struct, yet prints
-    `Num { __0: 1 }`, not `Num(1)`. ``constructed``: (the paths the MIR builds as tuple
-    structs, those it builds with named fields, as it prints them; rust_mir.
-    constructions), None without MIR.
+def without_numbered_structs(layouts, texts):
+    """``layouts`` with every tuple struct unread where the crate could declare a struct
+    with named fields `__0`, `__1`: the DWARF names a tuple struct's fields so too, and
+    such a struct prints `Num { __0: 1 }`, not `Num(1)`. ``texts``: every file the build
+    read (rustc's dependency files list no other: _require_declared_dependencies).
 
-    A printed path is the crate-relative one the DWARF gives (`m::Point`, `b::Num`), or
-    a name alone: the root struct's of that name, else the one struct of that name. A
-    struct built with named fields is never read as a tuple struct, and where its path
-    is not one the DWARF gives (a method's own struct, `S::method::Loc`), neither is any
-    struct of its name; an enum's variant (`E::Num(…)`) proves nothing. A tuple struct
-    the crate's MIR never builds (one made only in a `const`, or by its constructor
-    passed as a function, `map(Meters)`) stays unread, and so do all where a source has
-    an identifier `__0` (`fields!(Num, __0, __1)`): a backstop. ``texts``: the
-    sources'."""
-    numbered = any(_NUMBERED_FIELD.search(code_only(text) or text) for text in texts)
-    tuples, named = constructed or ((), ())
-    paths = {
-        _relative(key.removeprefix(STRUCT_PREFIX))
-        for key in layouts
-        if key.startswith(STRUCT_PREFIX) and not key.removeprefix(STRUCT_PREFIX).startswith("(")
+    On stable Rust no identifier is made without its token in the crate's source:
+    `macro_rules!` cannot join identifiers (`concat_idents!` is gone, rustc 1.96), and a
+    procedural macro needs a proc-macro crate, which a binary cannot define for itself
+    and Peeky's builds cannot get (no dependencies, library target, build.rs, Cargo
+    configuration or RUSTFLAGS of the crate's; the sysroot's crates need
+    `rustc_private`). Peeky's MIR builds set RUSTC_BOOTSTRAP, so a crate may enable
+    nightly features (`${concat(__, "0")}`). So an identifier `__0` (`fields!(Num, __0,
+    __1)`), a feature gate, or a source not lexed leaves every tuple struct unread."""
+
+    def refused(text):
+        code = code_only(text)
+        return code is None or _NUMBERED_FIELD.search(code) or _FEATURE.search(code)
+
+    if not any(refused(text) for text in texts):
+        return layouts
+    return {
+        name: _UNREAD if layout.get("shape") == "tuple-struct" else layout
+        for name, layout in layouts.items()
     }
-
-    def candidates(printed):
-        if printed in paths:
-            return {printed}
-        if "::" in printed:
-            # An enum's variant (`E::Num`: a module never shares a type's name), or a
-            # path the DWARF spells otherwise.
-            return set()
-        return {path for path in paths if path.rpartition("::")[2] == printed}
-
-    proven = set()
-    for printed in tuples:
-        if len(found := candidates(printed)) == 1:
-            proven |= found
-    refused = set()
-    for printed in named:
-        found = candidates(printed)
-        parent = printed.rpartition("::")[0]
-        if not found and "::" in printed and parent not in paths:
-            # Not a variant: a struct whose path the DWARF spells otherwise.
-            last = printed.rpartition("::")[2]
-            found = {path for path in paths if path.rpartition("::")[2] == last}
-        refused |= found
-
-    result = {}
-    for name, layout in layouts.items():
-        if layout.get("shape") == "tuple-struct":
-            path = _relative(
-                name.removeprefix(STRUCT_PREFIX)
-                if name.startswith(STRUCT_PREFIX)
-                else layout["element"]
-            )
-            if numbered or path not in proven or path in refused:
-                layout = _UNREAD
-        result[name] = layout
-    return result
 
 
 def struct_name(declared, shown, layouts):
     """The tuple or struct an owned local is, by the MIR's declared type (`Span`,
-    `Pair<i8>`, `(i64, char)`: crate-relative), confirmed by LLDB's (lossy) name; None
-    unless exactly one of the crate's tuples and structs is that type."""
+    `Pair<i8>`, `(i64, char)`), confirmed by LLDB's (lossy) name; None unless exactly
+    one of the crate's tuples and structs is that type.
+
+    The MIR names a type by its crate-relative path (`Span`, `m::Point`), or from its
+    nearest ancestor of a name no other item has (`shapes::Point` for
+    `geo::shapes::Point` beside `other::Point`), and a raw identifier with `r#`."""
     if not isinstance(declared, str) or not declared:
         return None
     # The MIR's 1-tuple `(i8,)` is `(i8)` in the DWARF.
-    plain = declared.replace(",)", ")")
-    wanted = re.compile(rf"(?:[A-Za-z_][A-Za-z0-9_]*::)?{re.escape(plain)}")
+    plain = re.sub(r"(?<![\w#])r#", "", declared.replace(",)", ")"))
+    segment = "[A-Za-z_][A-Za-z0-9_]*::"
+    wanted = re.compile(rf"(?:{segment})*{re.escape(plain)}")
     names = [
         name
         for key in layouts
@@ -1507,6 +1473,10 @@ def struct_name(declared, shown, layouts):
         # A tuple's name has no path; a struct's is its crate's.
         and name.startswith("(") == plain.startswith("(")
     ]
+    if len(names) > 1:
+        # A path that is also a suffix of others' is the crate-relative one.
+        relative = re.compile(rf"(?:{segment})?{re.escape(plain)}")
+        names = [name for name in names if relative.fullmatch(name)]
     if len(names) != 1 or not _spelled(names[0], shown):
         return None
     return names[0]

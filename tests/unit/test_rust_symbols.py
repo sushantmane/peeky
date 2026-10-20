@@ -1584,6 +1584,28 @@ def test_a_preview_takes_its_layout_from_the_mir_type_not_lldbs_name():
     assert struct_name("Span", "peeky_pagination::Span *", STRUCTS) is None
 
 
+def test_a_preview_finds_its_struct_by_the_path_the_mir_prints():
+    # Review 5 of #106: the MIR names a type from its nearest uniquely named ancestor,
+    # and a raw identifier with `r#`.
+    from peeky.rust_symbols import struct_name
+
+    point = {"kind": "composite", "shape": "tuple-struct"}
+    paths = ("Point", "main::Point", "geo::shapes::Point", "other::Point", "match::Kw", "type")
+    structs = {f"struct:demo::{path}": point for path in paths}
+
+    def found(declared, path):
+        return struct_name(declared, f"demo::{path}", structs) == f"demo::{path}"
+
+    assert found("shapes::Point", "geo::shapes::Point") and found("other::Point", "other::Point")
+    # A name alone, or a path that is a suffix of another's, is crate-relative.
+    assert found("Point", "Point") and found("main::Point", "main::Point")
+    assert found("r#match::Kw", "match::Kw") and found("r#type", "type")
+    twins = {f"struct:demo::{path}": point for path in ("a::shapes::P", "b::shapes::P")}
+    assert struct_name("shapes::P", "demo::a::shapes::P", twins) is None
+    # LLDB's name still decides between a suffix and another type (`_spelled`).
+    assert struct_name("shapes::Point", "demo::other::Point", structs) is None
+
+
 def preview(variable, blocks, **proof):
     from peeky.rust_symbols import struct_view
 
@@ -1681,87 +1703,40 @@ def test_lldbs_name_must_spell_the_layouts_type(name, shown, spelled):
     assert _spelled(name, shown) is spelled
 
 
-def test_a_tuple_struct_is_read_only_where_the_mir_builds_it_as_one():
-    # Review of #106: `struct Num { __0: u32 }` has the DWARF of `struct Num(u32)`; the
-    # MIR's aggregates tell them apart (`Num(…)` or `Num { __0: … }`).
-    from peeky.rust_symbols import proven_tuple_structs
-
-    def tuple_struct(path):
-        return {"kind": "composite", "shape": "tuple-struct", "shown": path.split("::")[-1]}
+def test_tuple_structs_are_unread_where_a_source_names_a_field_like_theirs():
+    # Review of #106: `struct Num { __0: u32 }` has the DWARF of `struct Num(u32)`.
+    from peeky.rust_symbols import without_numbered_structs
 
     layouts = {
-        "struct:peeky_pagination::Num": tuple_struct("Num"),
-        "struct:peeky_pagination::Span": {"kind": "composite", "shape": "struct", "shown": "Span"},
-        "&[peeky_pagination::Num]": {
-            "kind": "slice",
-            "shape": "tuple-struct",
-            "shown": "Num",
-            "element": "peeky_pagination::Num",
-        },
+        "struct:peeky_pagination::Num": {"kind": "composite", "shape": "tuple-struct"},
+        "struct:peeky_pagination::Span": {"kind": "composite", "shape": "struct"},
+        "&[peeky_pagination::Num]": {"kind": "slice", "shape": "tuple-struct"},
     }
-    unread = {"kind": "unread"}
-    plain = 'struct Num(u32, u32);\n// __0: a comment\nlet s = "__1: text";\nlet n = 1__0;\n'
-    assert proven_tuple_structs(layouts, [plain], ({"Num"}, set())) == layouts
-    # Built with named fields (`${concat(__, "0")}` writes no `__0`; review 3), built
-    # both ways, never built, or no MIR at all: never read as a tuple struct.
-    for constructed in (({"Num"}, {"Num"}), (set(), {"Num"}), (set(), set()), None):
-        shown = proven_tuple_structs(layouts, [plain], constructed)
-        assert shown["struct:peeky_pagination::Num"] == shown["&[peeky_pagination::Num]"] == unread
-        assert shown["struct:peeky_pagination::Span"] == layouts["struct:peeky_pagination::Span"]
-    # A backstop: an identifier `__0` anywhere (a macro given it declares such fields).
-    generated = proven_tuple_structs(
-        layouts, [plain, "fields!(Num, __0, __1);\n"], ({"Num"}, set())
+    unread = {
+        "struct:peeky_pagination::Num": {"kind": "unread"},
+        "struct:peeky_pagination::Span": layouts["struct:peeky_pagination::Span"],
+        "&[peeky_pagination::Num]": {"kind": "unread"},
+    }
+    plain = (
+        'struct Two(u32, u32);\n// __0: a comment\nlet s = "__1: text";\nlet n = 1__0;\n'
+        '#[cfg(feature = "x")]\nfn f() {}\nlet t = "feature(x)"; // #![feature(y)]\n'
     )
-    assert generated["&[peeky_pagination::Num]"] == unread
-
-
-def test_the_mir_proves_a_tuple_struct_by_its_path():
-    # Review 4 of #106: the MIR prints a type's path where its name is not unique
-    # (`m::Point`, `m::Wrapping` beside std's, `b::Num`), and the name alone otherwise.
-    from peeky.rust_symbols import STRUCT_PREFIX, proven_tuple_structs
-
-    names = ("Num", "b::Num", "m::Point", "n::Point", "m::Wrapping", "m::Wrap<u8>", "m::Only")
-    layouts = {
-        f"{STRUCT_PREFIX}demo::{name}": {
-            "kind": "composite",
-            "shape": "struct" if name == "n::Point" else "tuple-struct",
-        }
-        for name in names
-    }
-    layouts[f"{STRUCT_PREFIX}demo::E"] = {"kind": "unread"}  # an enum
-    tuples = {"Num", "m::Point", "m::Wrapping", "m::Wrap", "Only", "E::Num"}
-    named = {"b::Num", "n::Point"}
-    shown = proven_tuple_structs(layouts, [], (tuples, named))
-    read = {
-        key.removeprefix(f"{STRUCT_PREFIX}demo::")
-        for key, layout in shown.items()
-        if layout.get("shape") == "tuple-struct"
-    }
-    # `b::Num` is built with named fields; the root `Num` as a tuple struct.
-    assert read == {"Num", "m::Point", "m::Wrapping", "m::Wrap<u8>", "m::Only"}
-    # A name alone is the root struct's, else the one struct's of that name.
-    assert shown[f"{STRUCT_PREFIX}demo::b::Num"] == {"kind": "unread"}
-    # An enum's variant proves nothing; a struct with named fields at a path the DWARF
-    # spells otherwise (a method's own, `S::method::Num`) refuses every `Num`.
-    alone = {f"{STRUCT_PREFIX}demo::m::Num": layouts[f"{STRUCT_PREFIX}demo::Num"]}
-    alone[f"{STRUCT_PREFIX}demo::E"] = {"kind": "unread"}
-    assert proven_tuple_structs(alone, [], ({"E::Num"}, set()))[f"{STRUCT_PREFIX}demo::m::Num"] == {
-        "kind": "unread"
-    }
-    assert proven_tuple_structs(alone, [], ({"Num"}, set())) == alone
-    assert proven_tuple_structs(alone, [], ({"Num"}, {"E::Num"})) == alone
-    assert proven_tuple_structs(alone, [], ({"Num"}, {"S::method::Num"}))[
-        f"{STRUCT_PREFIX}demo::m::Num"
-    ] == {"kind": "unread"}
-    # Two structs of one name and none at the root: a name alone proves neither.
-    twins = {
-        f"{STRUCT_PREFIX}demo::a::Num": layouts[f"{STRUCT_PREFIX}demo::Num"],
-        f"{STRUCT_PREFIX}demo::c::Num": layouts[f"{STRUCT_PREFIX}demo::Num"],
-    }
-    assert all(
-        layout == {"kind": "unread"}
-        for layout in proven_tuple_structs(twins, [], ({"Num"}, set())).values()
-    )
+    assert without_numbered_structs(layouts, [plain]) == layouts
+    # Fields a macro declares from the names it is given (review 2).
+    generated = without_numbered_structs(layouts, [plain, "fields!(Num, __0, __1);\n"])
+    assert generated["&[peeky_pagination::Num]"] == {"kind": "unread"}
+    declared = "struct Num {\n    __0: u32,\n}\n"
+    assert without_numbered_structs(layouts, [plain, declared]) == unread
+    # Review 5: a nightly feature gate (`${concat(__, "0")}` writes no `__0`), however
+    # spelled, and a source not lexed.
+    for gate in (
+        "#![feature(macro_metavar_expr_concat)]\n",
+        "#![cfg_attr(all(), feature /* x */ (macro_metavar_expr_concat))]\n",
+        "#![r#feature(macro_metavar_expr_concat)]\n",
+        "#![feature\n(macro_metavar_expr_concat)]\n",
+        "fn main() { /* not closed\n",
+    ):
+        assert without_numbered_structs(layouts, [plain, gate]) == unread, gate
 
 
 def test_a_packed_struct_is_never_previewed_even_when_aligned():

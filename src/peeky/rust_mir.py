@@ -2154,50 +2154,6 @@ def _name_arguments(name):
     return None if depth or not all(parts) else parts
 
 
-# An aggregate a statement builds: a tuple struct's (`_2 = Point(const 1_i32, …)`,
-# `m::Wrap::<u8>(…)`) or a struct's with named fields (`_0 = b::Num { __0: move _3, … }`),
-# or an enum variant's (`E::Num(…)`). The MIR names a type by its crate-relative path
-# where its name is not unique (`m::Point`, `local::Loc`, `m::Wrapping` beside std's),
-# else by its name alone (a root struct's path is its name).
-_AGGREGATE = re.compile(
-    r"(?:^|\s)= ((?:[A-Za-z_][A-Za-z0-9_]*::)*[A-Za-z_][A-Za-z0-9_]*)(?:::<.*?>)?(\(| \{)"
-)
-
-
-# MIR's operators, which read like a tuple struct's aggregate (`_4 = Add(copy _1, …)`):
-# a tuple struct of such a name is never told from them.
-_OPERATORS = frozenset(
-    {
-        *(
-            f"{op}{kind}"
-            for op in ("Add", "Sub", "Mul")
-            for kind in ("", "Unchecked", "WithOverflow")
-        ),
-        *("Div", "Rem", "BitXor", "BitAnd", "BitOr", "Shl", "ShlUnchecked", "Shr"),
-        *("ShrUnchecked", "Eq", "Lt", "Le", "Ne", "Ge", "Gt", "Cmp", "Offset", "Not", "Neg"),
-        *("PtrMetadata", "Len", "discriminant", "CopyForDeref", "ShallowInitBox", "SizeOf"),
-        *("AlignOf", "OffsetOf", "UbChecks", "ContractChecks"),
-    }
-)
-
-
-def constructions(bodies):
-    """(the paths of the types ``bodies`` build as tuple structs, those they build with
-    named fields), as the MIR prints them (`m::Point`, `Num`; see _AGGREGATE), by their
-    MIR aggregates (a call's statement is no aggregate). An operator's name (`Add`)
-    counts as both: a struct of that name is never proven."""
-    tuples, named = set(), set(_OPERATORS)
-    for body in bodies:
-        for block in body.blocks.values():
-            for text, _, _ in block.statements:
-                if " -> " in text:
-                    continue
-                for found in _AGGREGATE.finditer(_STRING.sub('""', text)):
-                    if found[1] not in _OPERATORS:
-                        (tuples if found[2] == "(" else named).add(found[1])
-    return frozenset(tuples), frozenset(named)
-
-
 def mentions(kind, names):
     """Whether the MIR type ``kind`` names any of ``names`` (type parameters) as a type."""
     return any(
