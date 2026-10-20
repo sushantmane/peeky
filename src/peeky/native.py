@@ -389,17 +389,21 @@ def typedef_kinds(info):
     under `::Class::member` (the class's own name, without template arguments), and
     each namespace's name under `namespace::Name`, for ``typedef_kind``'s fallback."""
     dies, found = _dies(info), {}
+    named = _typedef_named(dies)
 
     def note(name, kind):
         if name:
             found[name] = kind if found.get(name, kind) == kind else ("unknown", "")
 
-    def note_member(record, name, kind):
+    def note_member(record_offset, name, kind):
         # A class's member typedef by its class's own name (`::vector::reference`):
         # lldb-dap and the debug information spell the class's scope and template
         # arguments differently (`std::vector<std::vector<int> >` against
         # `std::__1::vector<..., std::__1::allocator<...> >`).
-        owner = _without_templates(_text(record["attrs"].get("DW_AT_name")) or "")
+        record = dies[record_offset]
+        owner = _without_templates(
+            _text(record["attrs"].get("DW_AT_name")) or named.get(record_offset) or ""
+        )
         key, (sort, _) = f"::{owner}::{name}", kind
         if owner and name:
             known = found.get(key)
@@ -412,7 +416,7 @@ def typedef_kinds(info):
         if die["tag"] in _RECORDS or die["tag"] == "DW_TAG_enumeration_type":
             note(_text(die["attrs"].get("DW_AT_name")), ("other", ""))
             note(_qualified(dies, offset), ("other", ""))
-            note(_displayed(dies, offset), ("other", ""))
+            note(_displayed(dies, offset, named), ("other", ""))
             continue
         if die["tag"] != "DW_TAG_typedef":
             continue
@@ -452,11 +456,11 @@ def typedef_kinds(info):
         ) or (parent.get("tag") == "DW_TAG_namespace" and "DW_AT_name" not in parent["attrs"]):
             note(name, kind)
         if parent.get("tag") in _RECORDS:
-            note_member(parent, name, kind)
+            note_member(die["parent"], name, kind)
         qualified = _qualified(dies, offset)
         if qualified and qualified != name:
             note(qualified, kind)
-        note(_displayed(dies, offset), kind)
+        note(_displayed(dies, offset, named), kind)
     return found
 
 
@@ -498,11 +502,14 @@ def _qualified(dies, offset, depth=0):
     return "::".join(reversed(parts))
 
 
-def _displayed(dies, offset):
+def _displayed(dies, offset, named=None):
     """A type's name as lldb-dap shows it: scoped by its namespaces and classes, but not
     by inline namespaces (`DW_AT_export_symbols`: `v1`, libc++'s `__1`), unnamed ones,
-    or the function declaring it (`Node::Link` for `main`'s local `Node`)."""
-    name = _text(dies[offset]["attrs"].get("DW_AT_name"))
+    or the function declaring it (`Node::Link` for `main`'s local `Node`). An unnamed
+    class a typedef names (``named``: {offset: name}) shows by that name
+    (`typedef struct {...} Anon;`)."""
+    named = named or {}
+    name = _text(dies[offset]["attrs"].get("DW_AT_name")) or named.get(offset)
     if name is None:
         return None
     parts, parent = [name], dies[offset]["parent"]
@@ -512,12 +519,33 @@ def _displayed(dies, offset):
             break
         if (
             die["tag"] in _QUALIFIERS
-            and (outer := _text(die["attrs"].get("DW_AT_name")))
+            and (outer := _text(die["attrs"].get("DW_AT_name")) or named.get(parent))
             and "DW_AT_export_symbols" not in die["attrs"]
         ):
             parts.append(outer)
         parent = die["parent"]
     return "::".join(reversed(parts))
+
+
+def _typedef_named(dies):
+    """{offset: name} for each unnamed class or union a typedef in its own scope names
+    (`typedef struct { ... } Anon;`): lldb-dap shows it, and its members, by that name."""
+    named = {}
+    for die in dies.values():
+        if die["tag"] != "DW_TAG_typedef":
+            continue
+        reference = _REFERENCE.fullmatch(die["attrs"].get("DW_AT_type") or "")
+        target = int(reference[1], 16) if reference else None
+        record = dies.get(target)
+        if (
+            record is not None
+            and record["tag"] in _RECORDS
+            and "DW_AT_name" not in record["attrs"]
+            and record["parent"] == die["parent"]
+            and (name := _text(die["attrs"].get("DW_AT_name")))
+        ):
+            named[target] = name if named.get(target, name) == name else None
+    return {offset: name for offset, name in named.items() if name}
 
 
 # Types that wrap another (`T *`, `const T`, `T[3]`): an unnamed struct, union, class

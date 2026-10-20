@@ -855,6 +855,7 @@ def test_a_pointer_to_an_array_or_container_indexes_as_c_does(tmp_path, native_c
         ("names.cpp", SAME_NAMES, 23, "r[1],r[0][1],rf[0],rf[1],v[0],v[1],h.r[0],g.v[0][1],g.v[1]"),
         ("inline.cpp", INLINE_NAMES, 20, "rf[0],rf[1],r[1],r[0][1]"),
         ("local.cpp", LOCAL_CLASS, 10, "l[0],l[1],g.l[0][1],g.l[1]"),
+        ("anon.cpp", TYPEDEF_NAMED, 12, "a.p[1],a.p[0][1],pr[0],pr[1]"),
     ):
         (tmp_path / name).write_text(text)
         probe = ["probe", str(tmp_path / name), "--at", str(line), "--json", "--no-save"]
@@ -882,6 +883,13 @@ def test_a_pointer_to_an_array_or_container_indexes_as_c_does(tmp_path, native_c
             assert rows["v[0]"]["value"] == "7" and rows["v[1]"]["value"] == "8", rows
             assert rows["h.r[0]"]["value"] == "size=3" and rows["g.v[0][1]"]["value"] == "2"
             assert "read g.v[0][1]" in rows["g.v[1]"]["error"]
+        elif name == "anon.cpp":
+            # Review 6: an unnamed struct a typedef names shows by that name (`Anon::P`),
+            # so its member typedef took another `Anon::P`'s kind, or none.
+            assert "not read" in rows["a.p[1]"]["error"], rows
+            assert rows["a.p[0][1]"].get("value") in (None, "2"), rows
+            assert rows["pr[0]"].get("value") in (None, "7"), rows
+            assert rows["pr[1]"].get("value") in (None, "8"), rows
         elif name in ("inline.cpp", "local.cpp"):
             # Review 5: lldb-dap leaves out inline namespaces and a local class's
             # function (`Ref`, `Node::Link`), so another entity shown alike (a function's
@@ -927,6 +935,23 @@ def test_a_pointer_to_an_array_or_container_indexes_as_c_does(tmp_path, native_c
         main(["session", "close"])
         capsys.readouterr()
 
+
+TYPEDEF_NAMED = """#include <cstdio>
+#include <vector>
+typedef std::vector<int> &P;
+typedef struct { typedef int (*P)[3]; P p; } Anon;
+namespace x { struct Anon { typedef int P; P n; }; }
+int main() {
+    int rows[2][3] = {{1, 2, 3}, {4, 5, 6}};
+    std::vector<int> v{7, 8, 9};
+    Anon a{rows};
+    x::Anon xa{4};
+    P pr = v;
+    int n = a.p[1][0] + xa.n + pr[1];
+    std::printf("%d\\n", n);
+    return 0;
+}
+"""
 
 INLINE_NAMES = """#include <cstdio>
 #include <vector>
