@@ -35,7 +35,7 @@ from peeky.build import (
     prepare,
     real_tool,
 )
-from peeky.c_source import Statements, unsafe_macros
+from peeky.c_source import Statements, macro_hazards
 from peeky.digest import sha256_file
 from peeky.names import unicode_escape
 
@@ -1033,7 +1033,10 @@ def local_declarations(info, line_text, workspace, declared):
     ``starts``: for each automatic local, (name, source, line) -> the addresses where
     control enters its declaration line's code in the block declaring it: the line's
     first row in that block, and on a function's first line also the row after the
-    prologue, where its breakpoint is. ``ranges``: the function's code."""
+    prologue, where its breakpoint is. ``ranges``: the function's code. ``scopes``: for
+    each automatic local, (name, source, line) -> the code ranges of the block declaring
+    it. ``root``: the function's DIE; ``constructor``, ``enclosing`` and ``defined``:
+    see _class_role."""
     dies, functions, _, files, runs, addresses = _function_entries(
         info, line_text, workspace, declared
     )
@@ -1045,7 +1048,7 @@ def local_declarations(info, line_text, workspace, declared):
             continue
         ranges = sorted(span for body in entry["bodies"] for span in _code_ranges(dies[body]))
         entries = {min(span)[0] for body in entry["bodies"] if (span := _code_ranges(dies[body]))}
-        names, jumps, starts = {}, False, {}
+        names, jumps, starts, scopes = {}, False, {}, {}
         # Every row this function runs, by address: what runs just before a line's start.
         ordered = sorted(
             (address, source, line)
@@ -1062,6 +1065,7 @@ def local_declarations(info, line_text, workspace, declared):
                 if not automatic or scope not in dies:
                     continue
                 block = _code_ranges(dies[scope])
+                scopes.setdefault((name, source, line), set()).update(block)
                 found = sorted(
                     address
                     for address in addresses.get(root, {}).get((source, line), ())
@@ -1080,6 +1084,7 @@ def local_declarations(info, line_text, workspace, declared):
                 if found[0] in entries and (later := [a for a in found if a > found[0]]):
                     first.add(later[0])
                 starts.setdefault((name, source, line), set()).update(first)
+        constructor, enclosing, defined = _class_role(dies, entry["chain"])
         table.append(
             {
                 "source": entry["source"],
@@ -1088,9 +1093,45 @@ def local_declarations(info, line_text, workspace, declared):
                 "jumps": jumps,
                 "starts": starts,
                 "ranges": tuple(ranges),
+                "scopes": scopes,
+                "root": root,
+                "constructor": constructor,
+                "enclosing": enclosing,
+                "defined": defined,
             }
         )
     return table
+
+
+_CLASSES = ("DW_TAG_class_type", "DW_TAG_structure_type", "DW_TAG_union_type")
+
+
+def _class_role(dies, chain):
+    """(constructor, enclosing, defined) for a function's DIE chain: whether it is a
+    constructor of its class (`C::C`, its name the class's without template arguments);
+    and for a member of a class defined inside a function (a lambda's `operator()`, a
+    local class's method), that function's root DIE and the class's line, else None."""
+    for offset in chain:
+        parent = dies.get(dies[offset]["parent"])
+        if parent is None or parent["tag"] not in _CLASSES:
+            continue
+        name = _text(_first(dies, chain, "DW_AT_name"))
+        owner = _text(parent["attrs"].get("DW_AT_name"))
+        constructor = bool(name and owner and name == re.sub(r"<.*>$", "", owner))
+        enclosing, outer = None, parent
+        for _ in range(16):
+            above = outer["parent"]
+            outer = dies.get(above)
+            if outer is None:
+                break
+            if outer["tag"] in _CODE:
+                enclosing = _chain(dies, above)[-1]
+                break
+            if outer["tag"] not in _CLASSES:
+                break
+        line = parent["attrs"].get("DW_AT_decl_line")
+        return constructor, enclosing, int(line) if line and line.isdigit() else None
+    return False, None, None
 
 
 # Non-local jumps: after one returns, code above a declaration can run again with the
@@ -1122,11 +1163,13 @@ def has_nonlocal_jumps(binary):
 
 
 _SHADOWED = re.compile(r"(.+) @ [^:]+:([0-9]+)")
+# A C++ constructor's frame name: `Widget::Widget(long)`, `ns::Box<int>::Box(int)`.
+_CONSTRUCTOR_NAME = re.compile(r"(?:^|::|\s)([A-Za-z_]\w*)(?:<[^()]*>)?::\1(?:<[^()]*>)?\(")
 # A source whose statements are scanned (c_source) to place a caller's declaration.
 MAX_STATEMENT_SOURCE = 8_000_000
 
 
-def declared_below(table, name, source, line):
+def declared_below(table, name, source, line, through=None):
     """The line a C/C++ local shown at ``source:line`` is declared on, when control
     cannot have reached that declaration on this pass, else None.
 
@@ -1139,6 +1182,10 @@ def declared_below(table, name, source, line):
     ends. Never in a function with a label (`goto` can return above a declaration
     with the local live). lldb-dap names a shadowed local `x @ file:line`, and that
     line picks among them.
+
+    A declaration line with no code of its own (an aggregate stored element by element
+    on its elements' lines) counts by the code of its statement's lines, to where
+    ``through(source, line, name)`` says it ends; with that unknown, it counts as below.
     """
     shown = _SHADOWED.fullmatch(name)
     here = (source, line)
@@ -1160,7 +1207,19 @@ def declared_below(table, name, source, line):
         if not automatic or declared_in != source or type(at) is not int or at <= line:
             return None
         rows = function["rows"]
-        if not ((source, at) in rows and rows[here][1] < rows[source, at][0]):
+        if (source, at) in rows:
+            first = rows[source, at][0]
+        elif through is None:
+            return None
+        else:
+            end = through(source, at, shown[1] if shown else name)
+            starts = [
+                rows[source, number][0]
+                for number in range(at, (end or at) + 1)
+                if end is not None and (source, number) in rows
+            ]
+            first = min(starts) if starts else None
+        if first is not None and not rows[here][1] < first:
             return None
     return min(where[1] for _, where in candidates)
 
@@ -1219,6 +1278,70 @@ def declared_unfinished(table, name, source, line, address, ends=None):
                 end = ends(at, base)
                 if end is None or line <= end:
                     return at, "statement", end
+    return None
+
+
+def _in_scope(table, name, source, line, address):
+    """(declared_in, line) of each automatic C/C++ local of that name a frame at
+    ``source:line`` may be reading: those of the function running the address (unslid),
+    else of every function with code on the line, else of every function with such a
+    local; with the address known, only those whose block holds it."""
+    shown = _SHADOWED.fullmatch(name)
+    base = shown[1] if shown else name
+    owners = [function for function in table if (source, line) in function["rows"]]
+    running = [
+        function
+        for function in owners
+        if address is not None
+        and any(low <= address < high for low, high in function.get("ranges", ()))
+    ]
+    owners = running or owners or [f for f in table if base in f["locals"]]
+    found = []
+    for function in owners:
+        for declared_in, at, automatic in function["locals"].get(base, ()):
+            if not automatic or type(at) is not int or (shown and at != int(shown[2])):
+                continue
+            block = function.get("scopes", {}).get((base, declared_in, at))
+            if running and block and not any(low <= address < high for low, high in block):
+                continue
+            found.append((declared_in, at))
+    return base, found
+
+
+def declared_running(table, name, source, line, address, through):
+    """For the frame stopped in, at ``source:line``: ``(at, end, declared_in)`` for a
+    C/C++ local of that name whose declaration may still be running there, else None.
+    That is one declared above the stop whose statement reaches the stop's line
+    (``at < line <= end``), or whose end the source does not give (``end`` None), and one
+    declared in another file whose end is unknown (an `#include`d initializer).
+    ``through(declared_in, at, name)``: the line by which the declaration has run
+    (Statements.declared_through), or None."""
+    base, found = _in_scope(table, name, source, line, address)
+    for declared_in, at in found:
+        if declared_in != source:
+            if declared_in is None or through(declared_in, at, base) is None:
+                return at, None, declared_in
+            continue
+        if at >= line:
+            continue
+        end = through(source, at, base)
+        if end is None or line <= end:
+            return at, end, declared_in
+    return None
+
+
+def declared_skipped(table, name, source, line, address, skipped):
+    """``(at, label)`` for a C/C++ local of that name declared above a frame at
+    ``source:line`` when a jump may have skipped its declaration: a label between the
+    two that a `switch` or `goto` reaches (``label``: its line), or unknown (None);
+    else None. ``skipped(source, at, name, line)``: Statements.jumped_past."""
+    base, found = _in_scope(table, name, source, line, address)
+    for declared_in, at in found:
+        if declared_in != source or at >= line:
+            continue
+        label = skipped(source, at, base, line)
+        if label is not False:
+            return at, label
     return None
 
 
@@ -1904,11 +2027,14 @@ class NativeSession:
             return None
         return self.typedefs.get(f"::{parts[-2]}::{parts[-1]}")
 
-    def not_yet_declared(self, variable, frame, innermost=True):
+    def not_yet_declared(self, variable, frame, innermost=True, stack=None):
         """Why a root local of ``frame`` has no value yet (declared below the stop), or
-        None. Its storage then holds whatever an earlier call or iteration left."""
+        None. Its storage then holds whatever an earlier call or iteration left.
+        ``stack``: the frames listed with it (innermost first), when known."""
         name, path = variable.get("name"), ((frame or {}).get("source") or {}).get("path")
         line = (frame or {}).get("line")
+        if name == "this" and (building := self._under_construction(frame, stack)):
+            return building
         if not self.declarations or not isinstance(name, str) or not isinstance(path, str):
             return None
         try:
@@ -1966,16 +2092,60 @@ class NativeSession:
                 "returns), so it may not be initialized yet: its storage may hold "
                 "leftovers; read it after the call returns"
             )
-        below = declared_below(self.declarations, name, source.as_posix(), line)
+        address = self._unslid(frame)
+        here = source.as_posix()
+        below = declared_below(
+            self.declarations, name, here, line, through=self._through if innermost else None
+        )
         if below is not None:
             return (
                 f"declared at line {below}, below this stop, so not initialized yet: its "
                 f"storage holds leftovers; stop after line {below} to read it"
             )
-        address = self._unslid(frame)
+        if innermost and (
+            running := declared_running(self.declarations, name, here, line, address, self._through)
+        ):
+            at, end, declared_in = running
+            if declared_in != here:
+                return (
+                    f"declared on line {at} of "
+                    + (declared_in or "a file outside the program's sources")
+                    + f", and this stop is at {here}:{line}, in another file; Peeky cannot "
+                    "tell from the source where its declaration ends (an initializer can "
+                    "`#include` its rows), so the stop may be inside it: it may not be "
+                    "initialized yet, and its storage may hold leftovers"
+                )
+            return (
+                (
+                    f"declared on line {at}, and its declaration (lines {at}-{end}) is still "
+                    f"running at this stop: it is not fully initialized yet, and its storage "
+                    f"may hold leftovers; stop after line {end} to read it"
+                )
+                if end is not None
+                else f"declared on line {at}, and Peeky cannot tell from the source where its "
+                "declaration ends (or the compiler may read that text differently: a "
+                "directive, a macro, a line splice or a trigraph), so this stop may be "
+                "inside it: it may not be initialized yet, and its storage may hold leftovers"
+            )
+        if skipped := declared_skipped(
+            self.declarations, name, here, line, address, self._jumped_past
+        ):
+            at, label = skipped
+            return (
+                (
+                    f"declared on line {at}, but a jump (a `switch` to its `case`, or a "
+                    f"`goto`) can reach the label on line {label} without running the "
+                    "declaration, so it may not be initialized here: its storage may hold "
+                    "leftovers"
+                )
+                if label is not None
+                else f"declared on line {at}, and Peeky cannot tell from the source whether "
+                "a jump (a `switch` or a `goto`) reaches this line past the declaration, so "
+                "it may not be initialized here: its storage may hold leftovers"
+            )
         if address is None or self.target.optimization != "O0":
             return None
-        if declared_on_line(self.declarations, name, source.as_posix(), line, address) is None:
+        if declared_on_line(self.declarations, name, here, line, address) is None:
             return None
         # A loop that branches back to this address can bring control here with the
         # local live (x86-64 puts `while ((x = next()) > 0)`'s test first): only an
@@ -1991,6 +2161,22 @@ class NativeSession:
     def _statement_end(self, source, line, name):
         """Where the declaration of ``name`` on ``line`` of the prepared ``source`` ends
         (c_source.Statements), or None, also when a source or header cannot be read."""
+        statements = self._statements(source)
+        return None if statements is None else statements.end(line, name)
+
+    def _through(self, source, line, name):
+        """Statements.declared_through for the prepared ``source``, or None."""
+        statements = self._statements(source)
+        return None if statements is None else statements.declared_through(line, name)
+
+    def _jumped_past(self, source, line, name, stop):
+        """Statements.jumped_past for the prepared ``source``; None if unreadable."""
+        statements = self._statements(source)
+        return None if statements is None else statements.jumped_past(line, name, stop)
+
+    def _statements(self, source):
+        """The prepared ``source``'s c_source.Statements, or None when it, or one of the
+        program's sources or headers (for their macros), cannot be read."""
         cache = self.__dict__.setdefault("statements", {})
         key = str(source)
         if key not in cache:
@@ -1998,15 +2184,125 @@ class NativeSession:
             if "macro_hazards" not in self.__dict__:
                 # The program's own sources and headers (not the SDK's or the system's).
                 inputs = [self._source_text(each) for each in self.target.verification_inputs]
-                self.macro_hazards = None if None in inputs else unsafe_macros(inputs, raw_strings)
+                self.macro_hazards = None if None in inputs else macro_hazards(inputs, raw_strings)
             text = self._source_text(source)
+            hazards = self.macro_hazards
             cache[key] = (
                 None
-                if text is None or self.macro_hazards is None
-                else Statements(text, raw_strings, self.macro_hazards)
+                if text is None or hazards is None
+                else Statements(text, raw_strings, hazards=hazards)
             )
-        statements = cache[key]
-        return None if statements is None else statements.end(line, name)
+        return cache[key]
+
+    def _under_construction(self, frame, stack):
+        """Why `this` in ``frame`` (C++) may point to an object still being built, or
+        None: the frame runs its constructor, a constructor runs below the frame
+        (``stack``, innermost first), or the frame runs a lambda defined where what it
+        captures may be under construction."""
+        if getattr(self.target, "language", None) != "cpp" or not isinstance(frame, dict):
+            return None
+        frames = [listed for listed in stack or () if isinstance(listed, dict)]
+        index = next(
+            (i for i, listed in enumerate(frames) if listed.get("id") == frame.get("id")),
+            None,
+        )
+        unread = (
+            "its members may not be initialized yet and may hold leftovers; read them once "
+            "it returns"
+        )
+        if self._constructs(frame):
+            return f"the object this constructor ({frame.get('name')}) is building: {unread}"
+        for caller in frames[index + 1 :] if index is not None else ():
+            if self._constructs(caller):
+                return (
+                    f"a constructor ({caller.get('name')}) called this frame, directly or "
+                    f"not, so `this` may point to the object it is building: {unread}"
+                )
+        entry = self._function_at(frame)
+        if entry is None or entry.get("enclosing") is None:
+            return None
+        # Truncated at the worker's 10 frames, or not listed: what runs below is unknown.
+        complete = index is not None and len(frames) < 10
+        callers = frames[index + 1 :] if index is not None else []
+        if (outer := self._lambda_scope(entry, callers, complete)) is not None:
+            return (
+                f"this lambda is defined {outer}, which may still be running, so what it "
+                "captures may be under construction: its members may not be initialized "
+                "yet and may hold leftovers; read them once that has run"
+            )
+        return None
+
+    def _lambda_scope(self, entry, callers, complete):
+        """Where a lambda (or a local class's method), as ``entry``, is defined that may
+        still be running, as text, or None: in a constructor, or within a local's
+        declaration statement in the function around it (and around that, for a lambda
+        in a lambda), unless the frames below show it has finished."""
+        by_root = {function.get("root"): function for function in self.declarations}
+        for _ in range(4):
+            outer, defined = by_root.get(entry.get("enclosing")), entry.get("defined")
+            if outer is None or defined is None:
+                return "in a function Peeky cannot place"
+            running = [caller for caller in callers if self._function_at(caller) is outer]
+            if outer.get("constructor"):
+                if running or not complete:
+                    return f"in a constructor (line {defined})"
+            else:
+                for name, places in outer["locals"].items():
+                    for declared_in, at, automatic in places:
+                        if not automatic or type(at) is not int or at > defined:
+                            continue
+                        end = self._through(declared_in, at, name) if declared_in else None
+                        if end is not None and defined > end:
+                            continue
+                        if not complete and not running:
+                            return f"in the declaration of `{name}` (line {at})"
+                        for caller in running:
+                            place = self._place(caller)
+                            if place is None or (
+                                place[0] == declared_in and at <= place[1] <= (end or place[1])
+                            ):
+                                return f"in the declaration of `{name}` (line {at})"
+            if outer.get("enclosing") is None:
+                return None
+            entry = outer
+        return None
+
+    def _constructs(self, frame):
+        """Whether a frame runs a C++ constructor: by its function's debug information,
+        or by its name (`Widget::Widget(long)`)."""
+        entry = self._function_at(frame)
+        if entry is not None and entry.get("constructor"):
+            return True
+        return bool(_CONSTRUCTOR_NAME.search(str(frame.get("name") or "")))
+
+    def _function_at(self, frame):
+        """The declarations entry of the function a frame runs (the narrowest whose code
+        holds its address), or None."""
+        address = self._unslid(frame)
+        if address is None or not self.declarations:
+            return None
+        cache = self.__dict__.setdefault("functions_at", {})
+        if address not in cache:
+            holding = [
+                (high - low, index)
+                for index, function in enumerate(self.declarations)
+                for low, high in function.get("ranges", ())
+                if low <= address < high
+            ]
+            cache[address] = self.declarations[min(holding)[1]] if holding else None
+        return cache[address]
+
+    def _place(self, frame):
+        """(source relative to the workspace, line) of a frame, or None."""
+        path = ((frame or {}).get("source") or {}).get("path")
+        line = (frame or {}).get("line")
+        if not isinstance(path, str) or type(line) is not int:
+            return None
+        try:
+            source = Path(path).resolve().relative_to(self.prepared.workspace.resolve())
+        except (OSError, ValueError):
+            return None
+        return source.as_posix(), line
 
     def _source_text(self, source):
         """A prepared source's text, or None if it is unreadable or too large."""

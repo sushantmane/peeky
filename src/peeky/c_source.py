@@ -45,6 +45,22 @@ _TOKENS = re.compile(
 )
 _OPEN = frozenset(("(", "[", "{", "<%", "<:"))
 _CLOSE = frozenset((")", "]", "}", "%>", ":>"))
+_PAIRS = {"(": "(", ")": "(", "[": "[", "]": "[", "<:": "[", ":>": "[", "{": "{", "}": "{"}
+_PAIRS.update({"<%": "{", "%>": "{"})
+# A word or a punctuator, as statements are read: keywords, labels and brackets.
+_WORDS = re.compile(r"(?<!\w)[A-Za-z_]\w*|" + _TOKENS.pattern)
+_WORD = re.compile(r"[A-Za-z_]\w*")
+_LAST_WORD = re.compile(r"[A-Za-z_]\w*$")
+# Statements whose header (in parentheses) can declare a variable for their body.
+_HEADERS = frozenset(("for", "if", "while", "switch", "catch"))
+# Keywords a name follows where it is used, not declared.
+_USES = frozenset(("return", "case", "sizeof", "delete", "throw", "co_return", "co_yield"))
+_USES = _USES | {"else", "do", "goto", "typeid", "alignof", "_Alignof", "new"}
+# What a statement or block follows: `else {`, `do {`, `try {`.
+_LEADING = frozenset(("else", "do", "try"))
+# A label a jump can reach, in a macro's body: at its start or after `;`, `{` or `}`.
+_LABEL = re.compile(r"(?:^|[;{}])\s*[A-Za-z_]\w*\s*:(?![:>])")
+_INCLUDE = re.compile(r"[ \t\f\v]*(?:#|%:)[ \t\f\v]*(?:include|include_next|import)\b")
 _NONBLANK = re.compile(r"\S")
 # `??/` is a backslash and `??<` a brace where trigraphs are on (C before C23).
 _TRIGRAPH = re.compile(r"\?\?[=(/)'<!>-]")
@@ -124,7 +140,17 @@ def unsafe_macros(texts, raw_strings=True):
     through: an expansion that may hold a bracket it does not close, a `;`, a `<::`, or
     a pasted token (`<` ## `%` is a brace), or that names such a macro. Every macro a
     source with a trigraph, or a splice before `\n\r`, defines counts."""
-    uses, unsafe = {}, set()
+    return macro_hazards(texts, raw_strings)["brackets"]
+
+
+def macro_hazards(texts, raw_strings=True):
+    r"""The macros ``texts`` define, by what their expansion may hide from a scan of the
+    text: ``brackets`` (`unsafe_macros`), ``blocks`` (the same but for a `;`: a bracket
+    it does not close), ``labels`` (a `case`, `default` or label a jump can reach, `x:`)
+    and ``gotos`` (a `goto`). A macro naming such a macro counts too, and every macro of
+    a source with a trigraph, or a splice before `\n\r`, counts for all of them."""
+    uses = {}
+    found = {"brackets": set(), "blocks": set(), "labels": set(), "gotos": set()}
     for text in texts:
         # Spliced as the compiler splices lines, before comments and literals.
         code = blank(_SPLICE.sub("", normalized(text)), raw_strings)
@@ -134,15 +160,24 @@ def unsafe_macros(texts, raw_strings=True):
             if define[2]:
                 close = body.find(")")
                 if close < 0:
-                    unsafe.add(name)
+                    for names in found.values():
+                        names.add(name)
                     continue
                 body = body[close + 1 :]
-            uses.setdefault(name, set()).update(word[0] for word in _IDENTIFIER.finditer(body))
+            words = {word[0] for word in _IDENTIFIER.finditer(body)}
+            uses.setdefault(name, set()).update(words)
             if trigraphs or not _balanced(body):
-                unsafe.add(name)
-    while more := {name for name, used in uses.items() if name not in unsafe and used & unsafe}:
-        unsafe |= more
-    return frozenset(unsafe)
+                found["brackets"].add(name)
+            if trigraphs or not _balanced(body.replace(";", " ")):
+                found["blocks"].add(name)
+            if trigraphs or words & {"case", "default"} or _LABEL.search(body):
+                found["labels"].add(name)
+            if trigraphs or "goto" in words:
+                found["gotos"].add(name)
+    for names in found.values():
+        while more := {name for name, used in uses.items() if name not in names and used & names}:
+            names |= more
+    return {kind: frozenset(names) for kind, names in found.items()}
 
 
 def _balanced(body):
@@ -163,13 +198,18 @@ def _balanced(body):
 
 class Statements:
     """A source's statements, for finding where a declaration ends. ``macros``: the
-    names `unsafe_macros` gives for the build's sources and headers."""
+    names `unsafe_macros` gives for the build's sources and headers; ``hazards``: what
+    `macro_hazards` gives for them (its ``brackets`` replace ``macros``)."""
 
-    def __init__(self, text, raw_strings=True, macros=frozenset()):
+    def __init__(self, text, raw_strings=True, macros=frozenset(), hazards=None):
         self.text = normalized(text)
         self.blanked = blank(self.text, raw_strings)
         self.starts = [0] + [mark.end() for mark in re.finditer("\n", self.blanked)]
-        self.macros = frozenset(macros)
+        hazards = hazards or {"brackets": macros}
+        self.macros = frozenset(hazards.get("brackets", ()))
+        # What `jumped_past` cannot see through: a label, or a bracket left open.
+        self.opaque = frozenset(hazards.get("labels", ())) | frozenset(hazards.get("blocks", ()))
+        self.gotos = frozenset(hazards.get("gotos", ()))
         # Where the compiler may read any line differently from the scan.
         self.unreadable = bool(
             _TRIGRAPH.search(text)
@@ -238,3 +278,280 @@ class Statements:
                 return False
         names = {word[0] for word in _IDENTIFIER.finditer(self.blanked, first, last)}
         return not names & self.macros
+
+    def declared_through(self, line, name):
+        """For the frame stopped in: the line (from 1) by which the declaration of
+        ``name`` that starts on ``line`` has run, or None if unknown (as for `end`).
+        Unlike `end`, a variable a statement's header declares (`for (int i = 0; ...)`,
+        `if (auto p = f())`, `catch (E& e)`) has run with its part of the header, so the
+        lines of its body are past it; a plain declaration runs to its `;`."""
+        found = self.declaration(line, name)
+        return None if found is None else bisect.bisect_right(self.starts, found[0])
+
+    def declaration(self, line, name):
+        """``(position, depth)``: where the declaration of ``name`` on ``line`` ends
+        (the `;` or `)` after it) and how many brackets of its statement are open there,
+        or None if unknown. Of the statements starting on the line, the last naming
+        ``name`` counts: a later end only withholds more."""
+        key = ("declaration", line, name)
+        if key not in self._ends:
+            self._ends[key] = self._declaration(line, name)
+        return self._ends[key]
+
+    def _declaration(self, line, name):
+        blanked, starts = self.blanked, self.starts
+        if self.unreadable or type(line) is not int or not 1 <= line <= len(starts):
+            return None
+        first = position = starts[line - 1]
+        end_of_line = starts[line] if line < len(starts) else len(blanked)
+        found, last = None, first
+        while (token := _WORDS.search(blanked, position)) is not None:
+            word, start = token[0], token.start()
+            if start >= end_of_line:
+                break
+            following = _WORDS.search(blanked, token.end())
+            after = following[0] if following else None
+            if word in ("{", "<%", "}", "%>", ";") or word in _LEADING:
+                # A block's edge, an empty statement, or what a statement follows.
+                position = token.end()
+                continue
+            if (
+                word == "case"
+                or (word == "default" and after == ":")
+                or (_WORD.fullmatch(word) and after == ":")
+            ):
+                colon = re.compile(r"(?<!:):(?![:>])").search(blanked, token.end())
+                if colon is None:
+                    return None
+                position = colon.end()
+                continue
+            if word in _HEADERS:
+                opening = following
+                if after == "constexpr":
+                    opening = _WORDS.search(blanked, following.end())
+                if opening is not None and opening[0] == "(":
+                    closed = self._closing(opening.start())
+                    if closed is None:
+                        return None
+                    closing, semicolon = closed
+                    last = max(last, closing)
+                    if self._names(opening.end(), closing, name):
+                        if self._declares(closing + 1, end_of_line, name):
+                            # Maybe declared again after the header: read it whole.
+                            pass
+                        elif semicolon is not None and self._names(opening.end(), semicolon, name):
+                            found = (semicolon, 1)
+                            position = closing + 1
+                            continue
+                        else:
+                            found = (closing, 0)
+                            position = closing + 1
+                            continue
+                    else:
+                        # The body is a statement of its own.
+                        position = closing + 1
+                        continue
+            end = self._statement(start)
+            if end is None:
+                return None
+            last = max(last, end)
+            if self._names(start, end, name):
+                found = (end, 0)
+            position = end + 1
+        if found is None or not self._readable(line, first, max(last, found[0])):
+            return None
+        return found
+
+    def _statement(self, start):
+        """Where the plain statement at ``start`` ends (its `;`), or None."""
+        depth = 0
+        for mark in _TOKENS.finditer(self.blanked, start):
+            token = mark[0]
+            if token in _OPEN:
+                depth += 1
+            elif token in _CLOSE:
+                depth -= 1
+                if depth < 0:
+                    return None
+            elif token == "<::":
+                return None
+            elif token == ";" and depth == 0:
+                return mark.start()
+        return None
+
+    def _closing(self, opening):
+        """(position of the bracket closing the one at ``opening``, position of the
+        first `;` directly inside it or None), or None if they do not balance."""
+        depth, semicolon = 0, None
+        for mark in _TOKENS.finditer(self.blanked, opening):
+            token = mark[0]
+            if token in _OPEN:
+                depth += 1
+            elif token in _CLOSE:
+                depth -= 1
+                if depth == 0:
+                    return mark.start(), semicolon
+                if depth < 0:
+                    return None
+            elif token == "<::":
+                return None
+            elif token == ";" and depth == 1 and semicolon is None:
+                semicolon = mark.start()
+        return None
+
+    def _declares(self, start, end, name):
+        """Whether ``name`` may be declared between ``start`` and ``end``: it follows a
+        name other than a keyword that only uses it (`int i`, `return i`), or `*`, `&`
+        or `>` (`T *i`, `vector<int> i`)."""
+        blanked = self.blanked
+        for word in _IDENTIFIER.finditer(blanked, start, end):
+            if word[0] != name:
+                continue
+            at = word.start() - 1
+            while at >= start and blanked[at].isspace():
+                at -= 1
+            if at < start:
+                continue
+            if blanked[at] in "*&>":
+                return True
+            previous = self._word_before(word.start())
+            if previous is not None and previous not in _USES:
+                return True
+        return False
+
+    def _names(self, start, end, name):
+        return any(word[0] == name for word in _IDENTIFIER.finditer(self.blanked, start, end))
+
+    def jumped_past(self, line, name, stop):
+        """For a local whose declaration starts on ``line``, read at a stop on line
+        ``stop`` below it: the line of a label between the declaration's end and the
+        end of the stop's line that a jump can reach without running the declaration,
+        False if there is none, or None if unknown.
+
+        Such a label is a `case` or `default` of a `switch` whose body holds the
+        declaration (the switch jumps there), or a label a `goto` before the
+        declaration's end names (or any label, with a computed `goto` or a macro that
+        may `goto` named before it). Unknown: the declaration's end, a block closing
+        before the stop, an `#include`, or a macro that may hold a label or a bracket in
+        between."""
+        key = ("jumped", line, name, stop)
+        if key not in self._ends:
+            self._ends[key] = self._jumped_past(line, name, stop)
+        return self._ends[key]
+
+    def _jumped_past(self, line, name, stop):
+        found = self.declaration(line, name)
+        starts = self.starts
+        if found is None or type(stop) is not int or not line < stop <= len(starts):
+            return None
+        position, depth = found
+        blanked = self.blanked
+        limit = starts[stop] if stop < len(starts) else len(blanked)
+        for number in range(line, stop + 1):
+            if _INCLUDE.match(blanked, starts[number - 1]):
+                return None
+        marks = list(_WORDS.finditer(blanked, position + 1, limit))
+        for index, mark in enumerate(marks):
+            word = mark[0]
+            after = marks[index + 1][0] if index + 1 < len(marks) else None
+            if word in self.opaque:
+                return None
+            if word in _OPEN:
+                depth += 1
+            elif word in _CLOSE:
+                depth -= 1
+                if depth < 0:
+                    # Its block closes before the stop: not the scope Peeky reads.
+                    return None
+            elif word == "<::":
+                return None
+            elif word == "case" or (word == "default" and after == ":"):
+                body = self._switch_body(mark.start())
+                # A switch whose body opens before the declaration ends holds it.
+                if body is None or body < position:
+                    return bisect.bisect_right(starts, mark.start())
+            elif _WORD.fullmatch(word) and after == ":" and self._jumped_to(word, position):
+                return bisect.bisect_right(starts, mark.start())
+        return False
+
+    def _jumped_to(self, label, before):
+        """Whether a `goto` before ``before`` may jump to ``label``."""
+        blanked = self.blanked
+        if "computed" not in self.__dict__:
+            self.computed = re.search(r"(?<!\w)goto\s*\*", blanked) is not None
+        if self.computed:
+            return True
+        if re.compile(rf"(?<!\w)goto\s+{re.escape(label)}(?!\w)").search(blanked, 0, before):
+            return True
+        return bool(self.gotos) and any(
+            word[0] in self.gotos for word in _IDENTIFIER.finditer(blanked, 0, before)
+        )
+
+    def _switch_body(self, position):
+        """Where the body (`{`) of the innermost `switch` around ``position`` opens, or
+        None if there is none or the source's brackets do not balance."""
+        if "braces" not in self.__dict__:
+            self.braces = self._braces()
+        if self.braces is None:
+            return None
+        opens, closes, parents, switches = self.braces
+        index = bisect.bisect_right(opens, position) - 1
+        while index >= 0 and closes[index] < position:
+            index = parents[index]
+        while index >= 0:
+            if switches[index]:
+                return opens[index]
+            index = parents[index]
+        return None
+
+    def _braces(self):
+        """Every brace pair: (opens, closes, parent index or -1, whether it is a
+        `switch`'s body), by where they open; None if the brackets do not balance."""
+        blanked = self.blanked
+        stack, braces, switches = [], [], {}
+        closed_paren = None
+        for mark in _TOKENS.finditer(blanked):
+            token = mark[0]
+            if token in _OPEN:
+                if token in ("{", "<%"):
+                    # `switch (...) {`: the brace follows the header's `)` directly.
+                    switches[mark.start()] = (
+                        closed_paren is not None
+                        and not blanked[closed_paren[0] : mark.start()].strip()
+                        and self._word_before(closed_paren[1]) == "switch"
+                    )
+                stack.append((token, mark.start()))
+            elif token in _CLOSE:
+                if not stack or _PAIRS[stack[-1][0]] != _PAIRS[token]:
+                    return None
+                kind, opened = stack.pop()
+                if kind in ("{", "<%"):
+                    braces.append((opened, mark.start()))
+                closed_paren = (mark.end(), opened) if token == ")" else None
+                continue
+            elif token == "<::":
+                return None
+            closed_paren = None
+        if stack:
+            return None
+        braces.sort()
+        opens = [opened for opened, _ in braces]
+        closes = [closed for _, closed in braces]
+        parents, open_stack = [], []
+        for index, (opened, _) in enumerate(braces):
+            while open_stack and closes[open_stack[-1]] < opened:
+                open_stack.pop()
+            parents.append(open_stack[-1] if open_stack else -1)
+            open_stack.append(index)
+        return opens, closes, parents, [switches[opened] for opened in opens]
+
+    def _word_before(self, position):
+        """The identifier just before ``position`` (spaces skipped), or None."""
+        blanked, at = self.blanked, position - 1
+        while at >= 0 and blanked[at].isspace():
+            at -= 1
+        end = at + 1
+        while at >= 0 and (blanked[at].isalnum() or blanked[at] == "_"):
+            at -= 1
+        word = blanked[at + 1 : end]
+        return word if _WORD.fullmatch(word) else None

@@ -1157,3 +1157,108 @@ def test_of_the_rows_at_one_address_the_last_is_the_one_that_runs(tmp_path):
         f"0x{0x400000 + address:016x} {number} 1 1 0 0 is_stmt\n" for address, number, _ in rows
     )
     assert sorted({row[2] for row in _line_rows(text, tmp_path, ("main.c",))}) == [5, 7, 8]
+
+
+# #121: the frame stopped in.
+
+
+def _aggregate_run():
+    """`long head` (16); `struct outer o = {` (17, no code) to `};` (22); a local `q` of
+    a block (lines 3-4) the stop is not in; code of lines 16, 19, 20 and 23."""
+    run = {"source": "a.c", "jumps": False, "ranges": [(0, 1000)]}
+    run["rows"] = rows({16: (90, 96), 19: (100, 110), 20: (110, 120), 23: (130, 140)}, "a.c")
+    run["locals"] = {
+        "o": {("a.c", 17, True)},
+        "head": {("a.c", 16, True)},
+        "q": {("a.c", 3, True)},
+        "seed": {(None, None, False)},
+    }
+    run["scopes"] = {("q", "a.c", 3): {(500, 600)}, ("o", "a.c", 17): {(0, 1000)}}
+    return run
+
+
+def _through(ends):
+    def through(source, at, name):
+        return ends.get((source, at))
+
+    return through
+
+
+def test_a_stop_inside_a_declaration_statement_withholds_its_local():
+    from peeky.native import declared_running
+
+    run = _aggregate_run()
+    through = _through({("a.c", 17): 22, ("a.c", 16): 16})
+    assert declared_running([run], "o", "a.c", 20, 112, through) == (17, 22, "a.c")
+    assert declared_running([run], "o", "a.c", 23, 132, through) is None
+    assert declared_running([run], "head", "a.c", 20, 112, through) is None
+    assert declared_running([run], "seed", "a.c", 20, 112, through) is None
+    # An end the source does not give withholds it, but only for a block holding the stop.
+    unknown = _through({("a.c", 16): 16})
+    assert declared_running([run], "o", "a.c", 23, 132, unknown) == (17, None, "a.c")
+    assert declared_running([run], "q", "a.c", 23, 132, unknown) is None
+    assert declared_running([run], "q", "a.c", 23, None, unknown) == (3, None, "a.c")
+    # Declared in another file: only an end the source does not give withholds it.
+    run["rows"][("t.h", 2)] = (114, 116)
+    assert declared_running([run], "o", "t.h", 2, 115, through) is None
+    assert declared_running([run], "o", "t.h", 2, 115, unknown) == (17, None, "a.c")
+
+
+def test_a_local_a_jump_can_skip_is_withheld_below_the_label():
+    from peeky.native import declared_skipped
+
+    run = _aggregate_run()
+    labels = {17: 21, 16: False}
+
+    def skipped(source, at, name, line):
+        return labels.get(at)
+
+    assert declared_skipped([run], "o", "a.c", 23, 132, skipped) == (17, 21)
+    assert declared_skipped([run], "head", "a.c", 23, 132, skipped) is None
+    # Unknown: withheld.
+    assert declared_skipped([run], "o", "a.c", 23, 132, lambda *_: None) == (17, None)
+    # Declared below the stop, or on its line: other rules.
+    assert declared_skipped([run], "o", "a.c", 17, 99, skipped) is None
+
+
+def test_a_declaration_line_without_code_is_placed_by_its_statements_code():
+    from peeky.native import declared_below
+
+    # #121: `struct pair ps[2] = {` (25) has no code; its elements' lines (26, 27) do.
+    run = {"source": "a.c", "jumps": False}
+    run["rows"] = rows({20: (100, 110), 26: (120, 130), 27: (130, 140), 15: (140, 150)}, "a.c")
+    run["locals"] = {"ps": {("a.c", 25, True)}}
+    through = _through({("a.c", 25): 28})
+    assert declared_below([run], "ps", "a.c", 20) is None
+    assert declared_below([run], "ps", "a.c", 20, through=through) == 25
+    # Code of the stop's line after the statement's (a member initializer run there).
+    assert declared_below([run], "ps", "a.c", 15, through=through) is None
+    # Its end unknown: below.
+    assert declared_below([run], "ps", "a.c", 20, through=_through({})) == 25
+
+
+def test_constructors_and_lambdas_are_told_from_their_debug_information():
+    from peeky.native import _CONSTRUCTOR_NAME, _class_role
+
+    def die(tag, parent, **attrs):
+        return {"tag": tag, "parent": parent, "attrs": attrs, "children": []}
+
+    dies = {
+        1: die("DW_TAG_compile_unit", None),
+        2: die("DW_TAG_structure_type", 1, DW_AT_name='"Box<int>"'),
+        3: die("DW_TAG_subprogram", 2, DW_AT_name='"Box"'),
+        4: die("DW_TAG_subprogram", 1, DW_AT_specification='0x00000003 "Box"'),
+        5: die("DW_TAG_subprogram", 2, DW_AT_name='"size"'),
+        6: die("DW_TAG_subprogram", 1, DW_AT_name='"run"'),
+        7: die("DW_TAG_class_type", 6, DW_AT_decl_line="22"),
+        8: die("DW_TAG_subprogram", 7, DW_AT_name='"operator()"'),
+        9: die("DW_TAG_subprogram", 1, DW_AT_specification='0x00000008 "operator()"'),
+    }
+    assert _class_role(dies, [4, 3]) == (True, None, None)
+    assert _class_role(dies, [5]) == (False, None, None)
+    assert _class_role(dies, [6]) == (False, None, None)
+    assert _class_role(dies, [9, 8]) == (False, 6, 22)
+    for name in ("Widget::Widget(long)", "ns::Box<int>::Box(int)", "A::B::B<int>(int)"):
+        assert _CONSTRUCTOR_NAME.search(name), name
+    for name in ("Widget::size() const", "run(long)::$_0::operator()() const", "Box(int)"):
+        assert not _CONSTRUCTOR_NAME.search(name), name

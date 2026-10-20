@@ -2,7 +2,7 @@
 
 import pytest
 
-from peeky.c_source import Statements, blank, unsafe_macros
+from peeky.c_source import Statements, blank, macro_hazards, unsafe_macros
 
 TRIO = """long run(long seed) {
     struct trio t = { seed,
@@ -190,3 +190,137 @@ def test_a_splice_before_newline_and_carriage_return_is_unreadable():
     assert unsafe_macros(["#define M(x) x\\\n\r\n#define N 1\n"]) == {"M", "N"}
     # Each `#define` ends at its line's break.
     assert unsafe_macros(["#define N 1\r#define O {\r\n#define P 2\n\r"]) == {"O"}
+
+
+# #121: the frame stopped in. A declaration has run once its own part has, so a body's
+# lines are past a header's variable; a jump past it leaves it unset.
+
+HEADERS = """int main(void) {
+  struct outer o = {
+      { g(1),
+        g(2) } };
+  for (int i = 0; i < 3; i++) {
+    total += i;
+  }
+  for (int j = 0;
+       j < 3;
+       j++) { total += j;
+  }
+  if (int n = f(
+      1)) {
+  } else if (auto p = f(
+      2)) {
+  }
+  while (int k = next()) { int k = 2;
+    k++;
+  }
+  try { x(); } catch (const E& e) {
+  }
+  case 1: int c = h(
+      3);
+  lbl: int a = 1, b = g(
+      4);
+  if (auto it = m.find(k); it != m.end()) {
+  }
+  for (auto v = get(); auto& x : v) {
+  }
+"""
+
+
+@pytest.mark.parametrize(
+    "line, name, through",
+    [
+        (2, "o", 4),
+        # A header's variable has run with its part of the header.
+        (5, "i", 5),
+        (8, "j", 8),
+        (12, "n", 13),
+        (14, "p", 15),
+        (20, "e", 20),
+        (26, "it", 26),
+        (28, "v", 28),
+        (28, "x", 28),
+        # Declared again after the header on its line: read whole, to the next `;`.
+        (17, "k", 23),
+        # After a label; several declarators.
+        (22, "c", 23),
+        (24, "a", 25),
+        (24, "b", 25),
+        # Not a statement start: a bracket closes first.
+        (10, "j", None),
+    ],
+)
+def test_a_declaration_has_run_once_its_own_part_has(line, name, through):
+    assert Statements(HEADERS).declared_through(line, name) == through
+
+
+SWITCH = """void f(int k) {
+  int pre = 1;
+  switch (k) {
+  case 0:
+    int p = 1;
+  case 1: {
+    int q = 2;
+    switch (q) { case 5: break; }
+    use(p, q);
+  }
+  default:
+    break;
+  }
+  char *buf = get();
+  if (!buf) goto fail;
+  int n = 3;
+  if (n) goto fail;
+fail:
+  release(buf);
+  int after = 1;
+again:
+  after++;
+  if (after < 3) goto again;
+}
+"""
+
+
+def test_a_label_a_jump_reaches_past_a_declaration_is_found():
+    statements = Statements(SWITCH)
+    # A `case` of the switch whose body holds the declaration.
+    assert statements.jumped_past(5, "p", 9) == 6
+    # The switch opens after the declaration, or a nested switch does.
+    assert statements.jumped_past(2, "pre", 9) is False
+    assert statements.jumped_past(7, "q", 9) is False
+    # A `goto` from above the declaration; one only from below it.
+    assert statements.jumped_past(16, "n", 19) == 18
+    assert statements.jumped_past(14, "buf", 19) is False
+    assert statements.jumped_past(20, "after", 22) is False
+    # A computed goto reaches any label.
+    computed = SWITCH.replace("  if (n) goto fail;", "  goto *where;")
+    assert Statements(computed).jumped_past(14, "buf", 19) == 18
+
+
+def test_a_jump_the_text_cannot_show_is_unknown():
+    # A macro that may be a label, or `goto` named before the declaration.
+    hazards = macro_hazards(["#define LABEL(x) x:\n#define FAIL goto fail\n"])
+    assert hazards["labels"] == {"LABEL"} and hazards["gotos"] == {"FAIL"}
+    labelled = SWITCH.replace("  int n = 3;", "  int n = 3;\n  LABEL(mid);")
+    assert Statements(labelled, hazards=hazards).jumped_past(16, "n", 20) is None
+    via_macro = SWITCH.replace("  if (!buf) goto fail;", "  if (!buf) FAIL;")
+    assert Statements(via_macro, hazards=hazards).jumped_past(16, "n", 19) == 18
+    assert Statements(via_macro).jumped_past(16, "n", 19) is False
+    # An `#include` between them, or the declaration's block closing first.
+    included = SWITCH.replace("  int n = 3;", '  int n = 3;\n#include "more.h"')
+    assert Statements(included).jumped_past(16, "n", 20) is None
+    assert Statements(SWITCH).jumped_past(7, "q", 12) is None
+    # A switch Peeky cannot find around the label.
+    assert (
+        Statements("int f(void) {\n  int p = 1;\n  case 2: p++;\n}\n").jumped_past(2, "p", 3) == 3
+    )
+
+
+def test_macro_hazards_name_what_each_expansion_hides():
+    header = (
+        "#define OPEN {\n#define SEMI(x) x;\n#define LBL(x) x:\n#define CASE(n) case n:\n"
+        "#define JUMP goto out\n#define MAX(a, b) ((a) > (b) ? (a) : (b))\n#define WRAP LBL(w)\n"
+    )
+    hazards = macro_hazards([header])
+    assert hazards["brackets"] == {"OPEN", "SEMI"} and hazards["blocks"] == {"OPEN"}
+    assert hazards["labels"] == {"LBL", "CASE", "WRAP"} and hazards["gotos"] == {"JUMP"}
