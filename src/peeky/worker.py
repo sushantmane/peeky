@@ -107,6 +107,9 @@ class DebugWorker:
         self.reference_adapter = {}
         self.reference_counter = 0
         self.children = {}
+        # {handle: taint}: values inside a local whose pointers may reach freed memory
+        # (a runtime's aggregate_taint), passed on to everything inside them.
+        self.taints = {}
         self.inspection_nodes = 0
         self.view_fetches = 0
         self.view_items = 0
@@ -516,6 +519,7 @@ class DebugWorker:
         self.stop_function = None
         self.stop_reason = None
         self.children.clear()
+        self.taints.clear()
         self.stop_id = None
         self.frames.clear()
         self.references.clear()
@@ -885,6 +889,7 @@ class DebugWorker:
             self.reference_frames.clear()
             self.reference_adapter.clear()
             self.children.clear()
+            self.taints.clear()
             self.stop_id = uuid.uuid4().hex if self.state == "stopped" else None
             self.stopped_at = event.get("received", time.monotonic()) if self.stop_id else None
             self.thread_id = event.get("body", {}).get("threadId")
@@ -911,6 +916,7 @@ class DebugWorker:
         if operation == "inspect":
             self.stopped(args)
             self.children.clear()
+            self.taints.clear()
             self.inspection_nodes = 0
             self.view_fetches = self.view_items = self.view_bytes = 0
             self.view_deadline = time.monotonic() + VIEW_SECONDS
@@ -1113,6 +1119,7 @@ class DebugWorker:
             if "handle" in args:
                 return self.set_member(args, runtime)
             self.children.clear()
+            self.taints.clear()
             if not self.capabilities.get("supports_set_variable", False):
                 raise ValueError("Adapter does not support variable mutation")
             ref = args["reference"]
@@ -1436,12 +1443,13 @@ class DebugWorker:
         self.view_bytes += count
         return data
 
-    def expose_variables(self, variables, frame, scope, ancestry):
+    def expose_variables(self, variables, frame, scope, ancestry, taint=None):
         """Only worker-issued handles leave the process. A child handle permits a write only
         to a member the runtime allows (Java fields and array elements), checked again
-        when the write is made."""
+        when the write is made. ``taint`` is the parent's (see ``self.taints``)."""
         result = []
         view_variable = getattr(self.runtime, "view_variable", None)
+        aggregate_taint = getattr(self.runtime, "aggregate_taint", None)
         display_value = getattr(self.runtime, "display_value", None)
         identify = getattr(self.runtime, "object_identity", None)
         groups = getattr(self.runtime, "variable_groups", frozenset())
@@ -1481,6 +1489,7 @@ class DebugWorker:
                     stop=self.stop_reason,
                     # The scope's other variables: rows a debugger shows under one name.
                     siblings=None if ancestry else variables,
+                    **({"taint": taint} if taint else {}),
                 )
                 if view_variable
                 else None
@@ -1502,6 +1511,9 @@ class DebugWorker:
                 }
                 if type(view.get("length")) is int:
                     output["length"] = view["length"]
+                if taint == "stale" and view["rust_view"] != "unproven":
+                    # A decoded enum inside a moved-from value: its stack bytes (#108).
+                    output["stale"] = True
                 if kind is not None:
                     output["type"] = kind
                 result.append(output)
@@ -1554,10 +1566,16 @@ class DebugWorker:
             depth = sum(1 for step in path if not (step[0] in groups and not step[1]))
             handle = 0
             raw = variable.get("variablesReference", 0)
+            own = taint
+            if not ancestry and aggregate_taint and type(raw) is int and raw > 0:
+                # #108: a struct, tuple or array local that may be moved or dropped.
+                own = aggregate_taint(variable, frame, innermost=innermost)
             if type(raw) is int and raw > 0 and depth < 4:
                 self.reference_counter += 1
                 handle = self.reference_counter
                 self.children[handle] = (dict(frame), scope, path)
+                if own:
+                    self.taints[handle] = own
             output = {
                 "name": name,
                 "value": str(variable.get("value", ""))[:2000],
@@ -1610,6 +1628,9 @@ class DebugWorker:
                 output["identity"] = identity
             if settable is not None:
                 output["settable"] = settable
+            if own == "stale":
+                # Not proven initialized: the bytes a move or drop left (#108).
+                output["stale"] = True
             result.append(output)
             self.inspection_nodes += 1
         return result
@@ -1679,7 +1700,11 @@ class DebugWorker:
         start = args.get("start", 0)
         count = min(args.get("count", 64), 512 - self.inspection_nodes)
         result = self.expose_variables(
-            variables[start : start + count], frame, scope_identity, ancestry
+            variables[start : start + count],
+            frame,
+            scope_identity,
+            ancestry,
+            self.taints.get(args["handle"]),
         )
         runtime.assert_current()
         return {
@@ -1707,6 +1732,7 @@ class DebugWorker:
         record = self.children.get(args["handle"])
         # A change invalidates every handle: the next read or change inspects again.
         self.children.clear()
+        self.taints.clear()
         self.references.clear()
         self.reference_frames.clear()
         self.reference_adapter.clear()
@@ -1829,6 +1855,7 @@ class DebugWorker:
         self.reference_frames.clear()
         self.reference_adapter.clear()
         self.children.clear()
+        self.taints.clear()
         try:
             if adapter:
                 if runtime is not None and getattr(runtime, "terminate_debuggee", True) is False:
