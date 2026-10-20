@@ -1686,14 +1686,18 @@ def test_a_tuple_struct_is_read_only_where_the_mir_builds_it_as_one():
     # MIR's aggregates tell them apart (`Num(…)` or `Num { __0: … }`).
     from peeky.rust_symbols import proven_tuple_structs
 
+    def tuple_struct(path):
+        return {"kind": "composite", "shape": "tuple-struct", "shown": path.split("::")[-1]}
+
     layouts = {
-        "struct:peeky_pagination::Num": {
-            "kind": "composite",
+        "struct:peeky_pagination::Num": tuple_struct("Num"),
+        "struct:peeky_pagination::Span": {"kind": "composite", "shape": "struct", "shown": "Span"},
+        "&[peeky_pagination::Num]": {
+            "kind": "slice",
             "shape": "tuple-struct",
             "shown": "Num",
+            "element": "peeky_pagination::Num",
         },
-        "struct:peeky_pagination::Span": {"kind": "composite", "shape": "struct", "shown": "Span"},
-        "&[peeky_pagination::Num]": {"kind": "slice", "shape": "tuple-struct", "shown": "Num"},
     }
     unread = {"kind": "unread"}
     plain = 'struct Num(u32, u32);\n// __0: a comment\nlet s = "__1: text";\nlet n = 1__0;\n'
@@ -1709,6 +1713,55 @@ def test_a_tuple_struct_is_read_only_where_the_mir_builds_it_as_one():
         layouts, [plain, "fields!(Num, __0, __1);\n"], ({"Num"}, set())
     )
     assert generated["&[peeky_pagination::Num]"] == unread
+
+
+def test_the_mir_proves_a_tuple_struct_by_its_path():
+    # Review 4 of #106: the MIR prints a type's path where its name is not unique
+    # (`m::Point`, `m::Wrapping` beside std's, `b::Num`), and the name alone otherwise.
+    from peeky.rust_symbols import STRUCT_PREFIX, proven_tuple_structs
+
+    names = ("Num", "b::Num", "m::Point", "n::Point", "m::Wrapping", "m::Wrap<u8>", "m::Only")
+    layouts = {
+        f"{STRUCT_PREFIX}demo::{name}": {
+            "kind": "composite",
+            "shape": "struct" if name == "n::Point" else "tuple-struct",
+        }
+        for name in names
+    }
+    layouts[f"{STRUCT_PREFIX}demo::E"] = {"kind": "unread"}  # an enum
+    tuples = {"Num", "m::Point", "m::Wrapping", "m::Wrap", "Only", "E::Num"}
+    named = {"b::Num", "n::Point"}
+    shown = proven_tuple_structs(layouts, [], (tuples, named))
+    read = {
+        key.removeprefix(f"{STRUCT_PREFIX}demo::")
+        for key, layout in shown.items()
+        if layout.get("shape") == "tuple-struct"
+    }
+    # `b::Num` is built with named fields; the root `Num` as a tuple struct.
+    assert read == {"Num", "m::Point", "m::Wrapping", "m::Wrap<u8>", "m::Only"}
+    # A name alone is the root struct's, else the one struct's of that name.
+    assert shown[f"{STRUCT_PREFIX}demo::b::Num"] == {"kind": "unread"}
+    # An enum's variant proves nothing; a struct with named fields at a path the DWARF
+    # spells otherwise (a method's own, `S::method::Num`) refuses every `Num`.
+    alone = {f"{STRUCT_PREFIX}demo::m::Num": layouts[f"{STRUCT_PREFIX}demo::Num"]}
+    alone[f"{STRUCT_PREFIX}demo::E"] = {"kind": "unread"}
+    assert proven_tuple_structs(alone, [], ({"E::Num"}, set()))[f"{STRUCT_PREFIX}demo::m::Num"] == {
+        "kind": "unread"
+    }
+    assert proven_tuple_structs(alone, [], ({"Num"}, set())) == alone
+    assert proven_tuple_structs(alone, [], ({"Num"}, {"E::Num"})) == alone
+    assert proven_tuple_structs(alone, [], ({"Num"}, {"S::method::Num"}))[
+        f"{STRUCT_PREFIX}demo::m::Num"
+    ] == {"kind": "unread"}
+    # Two structs of one name and none at the root: a name alone proves neither.
+    twins = {
+        f"{STRUCT_PREFIX}demo::a::Num": layouts[f"{STRUCT_PREFIX}demo::Num"],
+        f"{STRUCT_PREFIX}demo::c::Num": layouts[f"{STRUCT_PREFIX}demo::Num"],
+    }
+    assert all(
+        layout == {"kind": "unread"}
+        for layout in proven_tuple_structs(twins, [], ({"Num"}, set())).values()
+    )
 
 
 def test_a_packed_struct_is_never_previewed_even_when_aligned():

@@ -4101,3 +4101,99 @@ def test_a_char_const_generic_keeps_its_previews_and_rust_types(plain, capsys):
     assert rows["n"]["type"] == "usize" and rows["n"]["value"] == "97", rows
     if os.environ.get("PEEKY_EXPECT_READ_MEMORY") or rows["w"].get("view") == "memory":
         assert rows["w"]["value"] == "Span { start: 1, end: 2 }", rows["w"]
+
+
+MODULE_TUPLES = """mod m {
+    #[derive(Debug, Clone, Copy)]
+    pub struct Wrapping(pub u32);
+    #[derive(Debug, Clone, Copy)]
+    pub struct Point(pub i32, pub i32);
+    #[derive(Debug, Clone, Copy)]
+    pub struct Duration(pub u64);
+    #[derive(Debug, Clone, Copy)]
+    pub struct Wrap<T>(pub T);
+}
+
+mod n {
+    #[derive(Debug, Clone, Copy)]
+    pub struct Point {
+        pub x: i32,
+    }
+}
+
+fn main() {
+    let v = vec![m::Wrapping(1), m::Wrapping(2)];
+    let p = vec![m::Point(3, 4)];
+    let q = n::Point { x: 5 };
+    let d = m::Duration(6);
+    let w = m::Wrap::<u8>(7);
+    let pt = m::Point(8, 9);
+    println!("{:?} {:?} {:?} {:?} {:?} {:?}", v, p, q, d, w, pt); // MT_STOP
+}
+"""
+
+
+@pytest.mark.timeout(300)
+def test_tuple_structs_the_mir_names_by_their_path_are_read(plain, capsys):
+    # Review 4 of #106: the MIR prints `m::Point(…)` where `Point` is not unique (`n`'s)
+    # and `m::Wrapping(…)` beside std's; the proof matched names alone, so these stayed
+    # raw, `v` and `p` too, which main read.
+    (plain / "src/main.rs").write_text(MODULE_TUPLES)
+    at = f"src/main.rs:{line_of(MODULE_TUPLES, '// MT_STOP')}"
+    names = ("v", "p", "q", "d", "w", "pt")
+    code, result = run(
+        capsys, "probe", str(plain), "--at", at, "--capture", ",".join(names), "--quiet"
+    )
+    assert code == 0, result.get("error")
+    rows = {row["selector"]: row for row in result["rows"]}
+    if not (os.environ.get("PEEKY_EXPECT_READ_MEMORY") or rows["q"].get("view") == "memory"):
+        pytest.skip("this lldb-dap has no readMemory")
+    assert " ".join(rows[name]["value"] for name in names) == result["output"].splitlines()[0]
+    assert all(rows[name].get("view") == "memory" for name in names), rows
+
+
+ROOT_AND_MODULE_NUM = """#![feature(macro_metavar_expr_concat)]
+#[derive(Debug, Clone, Copy)]
+pub struct Num(u32, u32);
+
+mod b {
+    macro_rules! fields {
+        ($name:ident) => {
+            #[derive(Debug, Clone, Copy)]
+            pub struct $name {
+                ${concat(__, "0")}: u32,
+                ${concat(__, "1")}: u32,
+            }
+            impl $name {
+                pub fn new(x: u32, y: u32) -> Self {
+                    Self { ${concat(__, "0")}: x, ${concat(__, "1")}: y }
+                }
+            }
+        };
+    }
+    fields!(Num);
+}
+
+fn main() {
+    let t = Num(3, 4);
+    let n = b::Num::new(1, 2);
+    println!("{:?} {:?}", t, n); // RM_STOP
+}
+"""
+
+
+@pytest.mark.timeout(300)
+def test_a_root_tuple_struct_proves_nothing_for_a_same_named_one_elsewhere(plain, capsys):
+    # Review 4 of #106: the root `Num(3, 4)` proved the name `Num`, and `b::Num { __0: … }`
+    # (named fields, which the DWARF cannot tell from a tuple struct's) was not counted,
+    # so `n` previewed as `Num(1, 2)`; the program prints `Num { __0: 1, __1: 2 }`.
+    (plain / "src/main.rs").write_text(ROOT_AND_MODULE_NUM)
+    at = f"src/main.rs:{line_of(ROOT_AND_MODULE_NUM, '// RM_STOP')}"
+    code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "t,n,n.__0", "--quiet")
+    assert code == 0, result.get("error")
+    rows = {row["selector"]: row for row in result["rows"]}
+    assert "Num(3, 4) Num { __0: 1, __1: 2 }" in result["output"]
+    assert rows["n"].get("view") != "memory" and "Num(" not in rows["n"]["value"], rows
+    assert rows["n.__0"]["value"] == "1", rows
+    if os.environ.get("PEEKY_EXPECT_READ_MEMORY") or rows["t"].get("view") == "memory":
+        assert rows["t"]["value"] == "Num(3, 4)", rows["t"]

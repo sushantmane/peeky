@@ -2155,9 +2155,13 @@ def _name_arguments(name):
 
 
 # An aggregate a statement builds: a tuple struct's (`_2 = Point(const 1_i32, …)`,
-# `Pair::<i8>(…)`) or a struct's with named fields (`_0 = Num { __0: move _3, … }`). The
-# MIR names it without its path.
-_AGGREGATE = re.compile(r"(?:^|\s)= ([A-Za-z_][A-Za-z0-9_]*)(?:::<.*?>)?(\(| \{)")
+# `m::Wrap::<u8>(…)`) or a struct's with named fields (`_0 = b::Num { __0: move _3, … }`),
+# or an enum variant's (`E::Num(…)`). The MIR names a type by its crate-relative path
+# where its name is not unique (`m::Point`, `local::Loc`, `m::Wrapping` beside std's),
+# else by its name alone (a root struct's path is its name).
+_AGGREGATE = re.compile(
+    r"(?:^|\s)= ((?:[A-Za-z_][A-Za-z0-9_]*::)*[A-Za-z_][A-Za-z0-9_]*)(?:::<.*?>)?(\(| \{)"
+)
 
 
 # MIR's operators, which read like a tuple struct's aggregate (`_4 = Add(copy _1, …)`):
@@ -2178,9 +2182,10 @@ _OPERATORS = frozenset(
 
 
 def constructions(bodies):
-    """(the names of the structs ``bodies`` build as tuple structs, those they build
-    with named fields), by their MIR aggregates (a call's statement is no aggregate). An
-    operator's name (`Add`) counts as both: a struct of that name is never proven."""
+    """(the paths of the types ``bodies`` build as tuple structs, those they build with
+    named fields), as the MIR prints them (`m::Point`, `Num`; see _AGGREGATE), by their
+    MIR aggregates (a call's statement is no aggregate). An operator's name (`Add`)
+    counts as both: a struct of that name is never proven."""
     tuples, named = set(), set(_OPERATORS)
     for body in bodies:
         for block in body.blocks.values():

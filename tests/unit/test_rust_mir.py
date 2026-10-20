@@ -2065,6 +2065,23 @@ def test_the_mir_tells_tuple_structs_from_structs_by_their_aggregates():
     assert {"Point", "Pair", "Meters"} <= tuples and not {"make", "Fake", "Add"} & tuples
     # An operator's name is never a proof (`struct Add(i32)`).
     assert {"Num", "Add"} <= named
+    # Paths where a name is not unique (review 4), generics left out.
+    body = mir(
+        {
+            0: [
+                "_2 = m::Point(const 1_i32, const 2_i32);",
+                "_3 = m::Wrap::<u8>(const 1_u8);",
+                "_4 = b::Num { __0: move _7, __1: move _8 };",
+                "_5 = E::Num(const 5_u32);",
+                "_6 = Option::<i32>::Some(const 1_i32);",
+                "_7 = local::Loc(const 9_u32);",
+            ],
+            1: ["return;"],
+        }
+    )
+    tuples, named = constructions([body])
+    assert {"m::Point", "m::Wrap", "E::Num", "local::Loc"} <= tuples and "b::Num" in named
+    assert not any("Option" in path or "Some" in path for path in tuples)
 
 
 def test_a_generic_name_rustc_cannot_be_read_from_is_not_understood():
