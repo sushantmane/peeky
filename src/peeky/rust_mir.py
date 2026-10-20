@@ -118,9 +118,6 @@ _BOX_COPY = re.compile(
 )
 # A drop through a pointer: `drop((*_1))`, `drop(((*_8).1: T))`.
 _DROP_THROUGH = re.compile(r"^drop\(\(*\*\(*_([0-9]+)\b")
-# A mutable borrow of a local's place (`&mut _3`, `&raw mut ((*_3).0: T)`): what is
-# written through it lands in that local.
-_MUT_BORROW = re.compile(r"&(?:mut |raw mut )\(*\*?\(*_([0-9]+)\b")
 # A call's arguments (`f(move _7, copy _8) -> [return: ...]`).
 _CALL_ARGUMENTS = re.compile(r"^(?:.*? = )?[^ (][^(]*?\((.*)\) -> ")
 _NOT_A_CALL = re.compile(
@@ -804,28 +801,30 @@ class Body:
         if local in self._alias_cache:
             return self._alias_cache[local]
         if self._alias_edges is None:
-            # {local: the locals assigned from it}. Anything made from it, whole or in
-            # part: a reborrow, a copy, a struct holding it (`Ctx { v: move _5 }`), a
-            # call's result; not a value that cannot hold a pointer (`v.len()`).
+            # {local: the locals linked to it}. A value made from another, whole or in
+            # part (a reborrow, a copy, a struct or closure holding it, a call's result),
+            # may point where it does, and what is stored through either may land in the
+            # other (`*sl.get() = &mut *v`, `Hold { slot: &mut slot }`, a closure setting
+            # `slot`), so links go both ways; never through a value that cannot hold a
+            # pointer (`v.len()`).
             edges = {}
 
-            def holds(local):
-                return not _POINTERLESS.fullmatch(self.types.get(local, ""))
+            def link(a, b):
+                if a != b and all(
+                    not _POINTERLESS.fullmatch(self.types.get(n, "")) for n in (a, b)
+                ):
+                    edges.setdefault(a, set()).add(b)
+                    edges.setdefault(b, set()).add(a)
 
             for block in self.blocks.values():
                 for text, _, _ in block.statements:
                     text = _STRING.sub('""', text)
                     assigned = _WHOLE_ASSIGNMENT.match(text) or _PART_ASSIGNMENT.match(text)
-                    if assigned and holds(target := int(assigned[1])):
+                    if assigned:
                         for used in _MENTIONED.findall(assigned[2]):
-                            edges.setdefault(int(used), set()).add(target)
-                        # What is stored through a mutable borrow lands in its place
-                        # (`let sr = &mut slot; *sr = &mut *v;`).
-                        for borrowed in _MUT_BORROW.findall(assigned[2]):
-                            if holds(int(borrowed)):
-                                edges.setdefault(target, set()).add(int(borrowed))
+                            link(int(used), int(assigned[1]))
                     # A call may store any argument through a mutable one
-                    # (`mem::swap(&mut slot, &mut w)`).
+                    # (`mem::swap(&mut slot, &mut w)`, `Cell::set(&c, &mut *v)`).
                     if " -> " in text and not _NOT_A_CALL.match(text):
                         arguments = _CALL_ARGUMENTS.match(text)
                         used = (
@@ -833,13 +832,12 @@ class Body:
                             if arguments
                             else set()
                         )
-                        writable = {
-                            n
-                            for n in used
-                            if re.search(r"&mut |\*mut |NonNull<", self.types.get(n, ""))
-                        }
                         for n in used:
-                            edges.setdefault(n, set()).update(writable - {n})
+                            for writable in used:
+                                if re.search(
+                                    r"&mut |\*mut |NonNull<|Cell<", self.types.get(writable, "")
+                                ):
+                                    link(n, writable)
             self._alias_edges = edges
         found, pending = {local}, [local]
         while pending:

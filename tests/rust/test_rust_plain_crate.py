@@ -2341,7 +2341,7 @@ def test_references_through_nested_boxes_struct_fields_calls_and_big_functions(
     assert rows[1].get("value") == "7", rows
 
 
-TWINS_AND_CELLS = """use std::cell::RefCell;
+TWINS_AND_CELLS = """use std::cell::{Cell, RefCell};
 #[macro_use]
 mod macros;
 
@@ -2441,6 +2441,70 @@ fn other_file_swap(h: &mut Holder, other: &mut Holder, n: i64) -> i64 {
     k
 }
 
+fn via_cell(v: &mut Vec<Res>, other: &mut Vec<Res>, n: i64) -> i64 {
+    let k = v[0].x;
+    let c: Cell<&mut Vec<Res>> = Cell::new(other);
+    c.set(&mut *v);
+    let w = c.into_inner();
+    *w = vec![Res { x: n }]; // M10_CELL
+    k
+}
+
+fn via_refcell(v: &mut Vec<Res>, other: &mut Vec<Res>, n: i64) -> i64 {
+    let k = v[0].x;
+    let rc: RefCell<&mut Vec<Res>> = RefCell::new(other);
+    *rc.borrow_mut() = &mut *v;
+    **rc.borrow_mut() = vec![Res { x: n }]; // M10_REFCELL
+    k
+}
+
+struct Slot<'a> {
+    s: &'a mut Vec<Res>,
+}
+
+impl<'a> Slot<'a> {
+    #[inline(never)]
+    fn get(&mut self) -> &mut &'a mut Vec<Res> {
+        &mut self.s
+    }
+}
+
+fn via_method(v: &mut Vec<Res>, other: &mut Vec<Res>, n: i64) -> i64 {
+    let k = v[0].x;
+    let mut sl = Slot { s: other };
+    *sl.get() = &mut *v;
+    *sl.s = vec![Res { x: n }]; // M10_METHOD
+    k
+}
+
+struct Hold<'a, 'b> {
+    slot: &'b mut &'a mut Vec<Res>,
+}
+
+fn via_field(v: &mut Vec<Res>, other: &mut Vec<Res>, n: i64) -> i64 {
+    let k = v[0].x;
+    let mut slot: &mut Vec<Res> = other;
+    {
+        let h = Hold { slot: &mut slot };
+        *h.slot = &mut *v;
+    }
+    *slot = vec![Res { x: n }]; // M10_FIELD
+    k
+}
+
+fn via_closure(v: &mut Vec<Res>, other: &mut Vec<Res>, n: i64) -> i64 {
+    let k = v[0].x;
+    let mut slot: &mut Vec<Res> = other;
+    {
+        let mut set = |x| {
+            slot = x;
+        };
+        set(&mut *v);
+    }
+    *slot = vec![Res { x: n }]; // M10_CLOSURE
+    k
+}
+
 fn main() {
     let mut h = Holder { tag: 1, data: Box::new(Res { x: 5 }) };
     let a = RefCell::new(vec![Res { x: 5 }]);
@@ -2454,6 +2518,12 @@ fn main() {
     println!("{}", via_slot(&mut e, &mut f, 9));
     let mut g = Holder { tag: 2, data: Box::new(Res { x: 1 }) };
     println!("{}", other_file_swap(&mut h, &mut g, 9));
+    let mut routes: Vec<(Vec<Res>, Vec<Res>)> = (0..5).map(|_| (vec![Res { x: 5 }], Vec::new())).collect();
+    for (route, (v, other)) in routes.iter_mut().enumerate() {
+        let read = [via_cell, via_refcell, via_method, via_field, via_closure][route];
+        println!("{}", read(v, other, 9));
+    }
+    std::mem::forget(routes);
     println!("{} {}", A.get(), B.get());
     std::mem::forget((h, a, b, c, d, e, f, g));
 }
@@ -2506,6 +2576,13 @@ def test_references_in_macro_twins_and_parameters_dropped_through_in_other_files
         (3, ("main.rs", "M9_VIA_SWAP"), "v"),
         (4, ("main.rs", "M9_VIA_SLOT"), "v"),
         (5, ("macros.rs", "M9_SWAP_RESET"), "h"),
+        # Round 10: through a value made from the slot's borrow (a `Cell` or `RefCell`
+        # holding it, a method's `&mut` to it, a struct field, a closure capturing it).
+        (6, ("main.rs", "M10_CELL"), "v"),
+        (7, ("main.rs", "M10_REFCELL"), "v"),
+        (8, ("main.rs", "M10_METHOD"), "v"),
+        (9, ("main.rs", "M10_FIELD"), "v"),
+        (10, ("main.rs", "M10_CLOSURE"), "v"),
     ):
         text = CELL_MACROS if file == "macros.rs" else TWINS_AND_CELLS
         variables = _stepped_out_to(
