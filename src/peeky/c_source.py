@@ -54,7 +54,7 @@ _WORD = re.compile(r"[A-Za-z_]\w*")
 _LAST_WORD = re.compile(r"[A-Za-z_]\w*$")
 # Words and punctuators as a declaration is read: its `=` and `,` (not `==`, `+=`, ...).
 _DECLARATION_TOKENS = re.compile(
-    r"(?<!\w)[A-Za-z_]\w*|==|!=|[-+*/%&|^]=|<<=|>>=|" + _TOKENS.pattern + r"|[=,]"
+    r"(?<!\w)[A-Za-z_]\w*|==|!=|[-+*/%&|^]=|<<=|>>=|" + _TOKENS.pattern + r"|[=,.]"
 )
 # Statements whose header (in parentheses) can declare a variable for their body.
 _HEADERS = frozenset(("for", "if", "while", "switch", "catch"))
@@ -172,7 +172,30 @@ def unsafe_macros(texts, raw_strings=True, trigraphs=None):
 # `sigsetjmp`, `__builtin_setjmp`, ...) and the ucontext switches.
 _RETURNS_TWICE = re.compile(r"\w*setjmp\w*|getcontext|swapcontext|savectx")
 # What declares a name with static or external storage, or brings one into a block.
-_STORAGE = frozenset(("static", "extern", "using", "thread_local", "_Thread_local", "__thread"))
+_STORAGE = frozenset(
+    ("static", "extern", "using", "thread_local", "_Thread_local", "__thread", "typedef")
+)
+# Of those, what a declaration's specifiers say: a block's name the code reads instead.
+_HIDERS = frozenset(("static", "extern", "thread_local", "_Thread_local", "__thread", "typedef"))
+# A body that belongs to the statement it is in, not a block of statements.
+_TYPE_BODIES = frozenset(("struct", "union", "enum", "class"))
+# A statement starting so names no function it declares (`return use2(1);`).
+_NOT_DECLARING = frozenset(
+    (
+        "return",
+        "case",
+        "goto",
+        "throw",
+        "delete",
+        "new",
+        "sizeof",
+        "else",
+        "do",
+        "co_return",
+        "co_yield",
+        "co_await",
+    )
+)
 
 
 def macro_hazards(texts, raw_strings=True, trigraphs=None):
@@ -223,7 +246,21 @@ def macro_hazards(texts, raw_strings=True, trigraphs=None):
     for names in found.values():
         while more := {name for name, used in uses.items() if name not in names and used & names}:
             names |= more
-    return {kind: frozenset(names) for kind, names in found.items()}
+    # What each macro's expansion may name, through the macros it names.
+    expands = {name: set(used) for name, used in uses.items()}
+    for _ in range(len(expands)):
+        changed = False
+        for words in expands.values():
+            more = set().union(*(expands[w] for w in words & expands.keys())) - words
+            if more:
+                words |= more
+                changed = True
+        if not changed:
+            break
+    return {
+        **{kind: frozenset(names) for kind, names in found.items()},
+        "expands": {name: frozenset(words) for name, words in expands.items()},
+    }
 
 
 def returning_twice(texts):
@@ -245,20 +282,35 @@ def returning_twice(texts):
 
 
 def storage_named(text, name):
-    """Whether ``text`` may declare ``name`` with static or external storage, or bring it
-    in with `using` (a cheap read: the keyword, then the name before a `;` or brace),
-    other than as a parameter of a function defined there (`static long run(long q) {`)."""
-    pattern = re.compile(
-        r"\b(?:static|extern|thread_local|_Thread_local|__thread|using)\b[^;{}]*\b"
-        + re.escape(str(name))
+    """Whether ``text`` may declare ``name`` so that it hides an outer local of that name:
+    with static or external storage or as a typedef, by a C++ `using` declaration, as an
+    enumerator or as a function a block declares (a cheap read: an initializer's braces
+    are skipped; a parameter of a function defined there is not counted)."""
+    escaped = re.escape(str(name))
+    balanced = r"(?:[^;{}]|\{(?:[^{}]|\{[^{}]*\})*\})*"
+    keyword = re.compile(
+        r"\b(?:static|extern|thread_local|_Thread_local|__thread|using|typedef)\b"
+        + balanced
+        + r"\b"
+        + escaped
         + r"\b"
     )
-    for found in pattern.finditer(text):
+    for found in keyword.finditer(text):
         rest = re.match(r"[^;{]*", text[found.end() :])[0]
         following = text[found.end() + len(rest) : found.end() + len(rest) + 1]
         if not (following == "{" and ")" in rest and "(" in found[0]):
             return True
-    return False
+    if re.search(r"\benum\b[^;{}]*\{[^{}]*\b" + escaped + r"\b", text):
+        return True
+    # A function a block declares where an outer local's name is: `long use2(long);`.
+    return bool(re.search(r"[A-Za-z_]\w*[\s*&]+" + escaped + r"\s*\(", text))
+
+
+def _parameters_follow(token):
+    """Whether a `(` after ``token`` opens a declarator's parameters (after its name or
+    a bracket), not a grouping (`long (*q)[3]` opens after a type's name, followed by
+    `*`, which the caller checks)."""
+    return bool(_WORD.fullmatch(token)) or token in (")", "]", ":>")
 
 
 def _balanced(body):
@@ -299,6 +351,8 @@ class Statements:
         # What may call setjmp, or declare a static, an extern or a `using` name.
         self.setjmps = frozenset(hazards.get("setjmp", ()))
         self.declarers = frozenset(hazards.get("declares", ()))
+        # What each of the program's macros may expand to name (macro_hazards).
+        self.expansions = dict(hazards.get("expands", {}))
         # Where the compiler may read any line differently from the scan.
         self.unreadable = bool(
             _SPLICED_PAIR.search(text)
@@ -1003,14 +1057,17 @@ class Statements:
     def block_storage(self, line, name, after=None, elsewhere=False):
         """For the local ``name`` the debugger shows at a stop on ``line`` (declared on
         line ``after``; None for a parameter): ``(kind, its line)`` of a declaration of
-        ``name`` the code there uses instead, which the debugger does not list among the
-        frame's locals: a `static`, `extern` or `thread_local` one, or a C++ `using`
-        declaration, in a block around the line, after ``after`` and up to the line's
-        end (one later on the line counts too), not inside a block closed before it.
-        False if there is none; None if Peeky cannot tell: the source is unreadable or
-        its brackets do not balance, a macro that may declare one (``declares`` of
-        macro_hazards) is in that text, or an `#include` is, where ``elsewhere`` (another
-        of the program's files declares ``name`` so: it may bring that in)."""
+        ``name`` the code there names instead, which is not that local: one with
+        `static`, `extern` or `thread_local` storage, a `typedef`, a C++ `using`
+        declaration ("using"), an enumerator ("enumerator") or a function a block
+        declares ("function"). In a block around the line or opening on it, after
+        ``after`` and up to the line's end (one later on the line counts too), not
+        inside a block closed before it, nor in text an `#if 0` leaves out. False if
+        there is none; None if Peeky cannot tell: the source is unreadable or its
+        brackets do not balance, one is under another conditional (`#ifdef X`), a macro
+        that may declare one names it (given it, or in its expansion), or an `#include`
+        is there, where ``elsewhere`` (another of the program's files declares ``name``
+        so: it may bring that in)."""
         named = self.__dict__.setdefault("storage_named", {})
         if name not in named:
             named[name] = storage_named(self.text, name)
@@ -1033,10 +1090,12 @@ class Statements:
         lower = (
             self.starts[after - 1] if type(after) is int and 1 <= after <= len(self.starts) else 0
         )
+        # Every block around the line, and every one opening on it before its end
+        # (`{ extern long gcount; total += use(gcount); }`).
         around = sorted(
             opened
             for opened, closed in pairs.items()
-            if opened < position < closed and code.startswith(("{", "<%"), opened)
+            if opened < finish and closed > position and code.startswith(("{", "<%"), opened)
         )
         if not around:
             return False
@@ -1052,7 +1111,7 @@ class Statements:
             stop = around[index + 1] if index + 1 < len(around) else finish
             if start >= stop:
                 continue
-            found = self._storage_declaration(code, start, stop, name)
+            found = self._storage_declaration(code, start, stop, name, after)
             if found is not False:
                 return found
         return False
@@ -1065,36 +1124,110 @@ class Statements:
             )
         return self.declarer_named
 
-    def _storage_declaration(self, code, start, stop, name):
-        """(kind, line) of the first `static`/`extern`/`thread_local`/`using` declaration
-        of ``name`` among the statements from ``start`` to ``stop`` at their own depth
-        (a block closed before ``stop`` is skipped, an initializer's braces kept in their
-        statement); False if none; None if a macro that may declare one is there: one
-        given ``name`` (`KEEP(q)`), or one without arguments, whose expansion is unseen."""
-        depth, statement, blocks, hidden = 0, [], [], False
+    def _conditions(self):
+        """{line: "dead" or "maybe"}: lines an `#if 0` (or the `#else` of an `#if 1`)
+        leaves out, and lines under any other conditional, which may be compiled or not."""
+        if "conditions" not in self.__dict__:
+            states, stack = {}, []
+            for number, start in enumerate(self.starts, 1):
+                end = self.starts[number] if number < len(self.starts) else len(self.blanked)
+                found = re.match(
+                    r"[ \t\f\v]*(?:#|%:)[ \t\f\v]*(if|ifdef|ifndef|elif|else|endif)\b(.*)",
+                    self.blanked[start:end],
+                )
+                if found:
+                    kind, rest = found[1], found[2].strip()
+                    if kind in ("if", "ifdef", "ifndef"):
+                        literal = {"0": "dead", "1": "live"}.get(rest) if kind == "if" else None
+                        stack.append(literal or "maybe")
+                    elif kind == "elif" and stack:
+                        stack[-1] = "maybe"
+                    elif kind == "else" and stack:
+                        stack[-1] = {"dead": "live", "live": "dead"}.get(stack[-1], "maybe")
+                    elif kind == "endif" and stack:
+                        stack.pop()
+                    continue
+                if "dead" in stack:
+                    states[number] = "dead"
+                elif "maybe" in stack:
+                    states[number] = "maybe"
+            self.conditions = states
+        return self.conditions
+
+    def _storage_declaration(self, code, start, stop, name, after=None):
+        """(kind, line) of the first declaration of ``name`` that hides an outer local
+        (see ``block_storage``) among the statements from ``start`` to ``stop`` at their
+        own depth: a block closed before ``stop`` is skipped, and an initializer's
+        braces and a type's body (`static struct { long v; } q`) are kept in their
+        statement; False if none; None if Peeky cannot tell (see ``block_storage``)."""
+        conditions = self._conditions()
+        depth, statement, blocks, hidden = 0, [], [], set()
+        body = None  # a type's body in the statement: [its depth, enum?, previous, names]
 
         def judged(statement):
-            if hidden and any(text == name for text, _, _ in statement):
+            # A macro given ``name``, or expanding to name it, may declare it.
+            given = any(text == name for text, _, _ in statement)
+            if any(given or name in self.expansions.get(macro, {name}) for macro in hidden):
                 return None
-            return self._storage_of(statement, name)
+            found = self._storage_of(statement, name, after, code)
+            if found:
+                state = conditions.get(found[1])
+                if state == "maybe":
+                    return None
+            return found
 
         for token in _DECLARATION_TOKENS.finditer(code, start, stop):
             text = token[0]
+            state = conditions.get(bisect.bisect_right(self.starts, token.start()))
+            if state == "dead":
+                continue
+            if body is not None:
+                # Inside a type's body: only an enum's enumerators can hide the name.
+                if text in _OPEN:
+                    depth += 1
+                elif text in _CLOSE:
+                    depth -= 1
+                    if depth == body[0]:
+                        if body[1] and name in body[3]:
+                            at = bisect.bisect_right(self.starts, body[3][name])
+                            return None if conditions.get(at) == "maybe" else ("enumerator", at)
+                        body = None
+                        continue
+                elif body[1] and depth == body[0] + 1 and body[2] in ("{", ",", "<%"):
+                    if _WORD.fullmatch(text):
+                        body[3].setdefault(text, token.start())
+                if depth == body[0] + 1:
+                    body[2] = text
+                continue
             if depth == 0 and not blocks and text in self.declarers:
+                # A macro that may declare a static: Peeky cannot see what, beyond the
+                # names its expansion and its arguments give.
                 if not code[token.end() : token.end() + 64].lstrip().startswith("("):
-                    return None
-                hidden = True
+                    if name in self.expansions.get(text, {name}):
+                        return None
+                else:
+                    hidden.add(text)
             if text in _OPEN:
                 if (
                     text in ("{", "<%")
                     and depth == len(blocks)
                     and not any(word == "=" and level == 0 for word, _, level in statement)
                 ):
-                    # A nested block (or a class's body): what came before it is judged
-                    # as a statement, and what is in it is out of scope here.
+                    words = [word for word, _, level in statement if level == 0]
+                    if not blocks and set(words) & _TYPE_BODIES and words[-1:] != [")"]:
+                        # A type's body: its statement goes on after it (`} q = { 5 };`).
+                        scoped = "enum" in words and words[words.index("enum") + 1 :][:1] in (
+                            ["class"],
+                            ["struct"],
+                        )
+                        body = [depth, "enum" in words and not scoped, "{", {}]
+                        depth += 1
+                        continue
+                    # A nested block (or a function's body): what came before it is
+                    # judged as a statement, and what is in it is out of scope here.
                     if (found := judged(statement)) is not False:
                         return found
-                    statement, hidden = [], False
+                    statement, hidden = [], set()
                     blocks.append(depth)
                     depth += 1
                     continue
@@ -1103,22 +1236,25 @@ class Statements:
                 depth = max(depth - 1, 0)
                 if blocks and depth == blocks[-1] and text in ("}", "%>"):
                     blocks.pop()
-                    statement, hidden = [], False
+                    statement, hidden = [], set()
                     continue
             if blocks:
                 continue
             if depth == 0 and text == ";":
                 if (found := judged(statement)) is not False:
                     return found
-                statement, hidden = [], False
+                statement, hidden = [], set()
                 continue
             statement.append((text, token.start(), depth))
         return judged(statement)
 
-    def _storage_of(self, statement, name):
-        """(kind, line) if the tokens of one statement declare ``name`` with static or
-        external storage (`static long q = 2`, `extern long a, gcount`) or bring it in
-        with a C++ `using` declaration; else False."""
+    def _storage_of(self, statement, name, after=None, code=None):
+        """(kind, line) if the tokens of one statement declare ``name`` so that it hides
+        an outer local (see ``block_storage``): with static or external storage or as a
+        typedef (`static long q = 2`, `extern long a, gcount`), by a C++ `using`
+        declaration, or as a function (`long use2(long);`, not on line ``after``, the
+        local's own); else False. Names in a function declarator's parameters
+        (`extern long helper(long q);`) are not declared there."""
         words = [text for text, _, depth in statement if depth == 0]
         if not words:
             return False
@@ -1127,21 +1263,50 @@ class Statements:
             if len(words) > 1 and words[1] == "namespace":
                 return False
             return ("using", at) if name in words else False
-        storage = next((word for word in words if word in _STORAGE - {"using"}), None)
-        if storage is None:
-            return False
-        # Each declarator, without its initializer: `long a = q, q = 2` declares the second.
-        declarator, initializing = [], False
-        for text, _, depth in statement:
-            if depth == 0 and text == ",":
-                initializing = False
-                continue
-            if depth == 0 and text == "=":
-                initializing = True
-                continue
-            if not initializing:
+        code = self._code()[0] if code is None else code
+        # A thread's own (`static thread_local`) is listed apart, so it is said first.
+        storage = next(
+            (word for word in words if word in ("thread_local", "_Thread_local", "__thread")),
+            next((word for word in words if word in _HIDERS), None),
+        )
+        if storage is not None:
+            # Each declarator, without its initializer (`long a = q, q = 2` declares the
+            # second) or a function declarator's parameters.
+            declarator, initializing, skipping = [], False, None
+            for index, (text, position, depth) in enumerate(statement):
+                if skipping is not None:
+                    if text in (")", ":>", "]") and depth == skipping - 1:
+                        skipping = None
+                    continue
+                if depth == 0 and text == ",":
+                    initializing = False
+                    continue
+                if depth == 0 and text == "=":
+                    initializing = True
+                    continue
+                if initializing:
+                    continue
+                if text == "(" and index and _parameters_follow(statement[index - 1][0]):
+                    following = code[position + 1 : position + 64].lstrip()[:1]
+                    if following not in ("*", "&", "^", "("):
+                        skipping = depth
+                        continue
                 declarator.append(text)
-        return (storage, at) if name in declarator else False
+            return (storage, at) if name in declarator else False
+        if at == after or words[0] in _NOT_DECLARING or "=" in words:
+            return False
+        for index, (text, _, depth) in enumerate(statement):
+            if (
+                depth == 0
+                and text == name
+                and 0 < index < len(statement) - 1
+                and statement[index + 1][0] == "("
+                and statement[index - 1][2] == 0
+                and _WORD.fullmatch(statement[index - 1][0])
+                and statement[index - 1][0] not in _NOT_DECLARING
+            ):
+                return ("function", at)
+        return False
 
     def old_style(self, line):
         """Whether ``line`` is in the body of a K&R-style definition (`long f(a) long a;

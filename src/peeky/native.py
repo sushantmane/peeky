@@ -3142,13 +3142,26 @@ class NativeSession:
                 "not reach that code",
             )
         kind, at = storage
+        listed = f"`{base} @ {Path(source).name}:{at}`"
+        what = {
+            "using": f"the `{base}` the block's `using` declaration (line {at}) brings in, "
+            "which the debugger does not list",
+            "enumerator": f"the block's enumerator `{base}` (line {at}), a constant",
+            "function": f"the function `{base}` the block declares (line {at})",
+            "typedef": f"the type `{base}` the block's `typedef` names (line {at})",
+            "thread_local": f"the block's `thread_local` `{base}` (line {at}), listed "
+            f"separately as {listed}",
+            "_Thread_local": f"the block's `_Thread_local` `{base}` (line {at}), listed "
+            f"separately as {listed}",
+            "__thread": f"the block's `__thread` `{base}` (line {at}), listed separately "
+            f"as {listed}",
+        }.get(kind, f"the block's `{kind}` `{base}` (line {at}), which the debugger does not list")
         return Withholding(
-            f"the code here reads the block's `{kind}` `{base}` (line {at}), which the "
-            "debugger does not list: this row is the outer local of that name",
+            f"the code here names {what}: this row is the outer local of that name",
             "not what the code reads",
-            f"{name!r} cannot be changed here: at line {line} the code reads the block's "
-            f"`{kind}` `{base}` (line {at}), which the debugger does not list; the local "
-            "this row shows is the outer one, so a change to it would not reach that code",
+            f"{name!r} cannot be changed here: at line {line} the code names {what}; the "
+            "local this row shows is the outer one, so a change to it would not reach that "
+            "code",
         )
 
     def _stored_elsewhere(self, name, source):

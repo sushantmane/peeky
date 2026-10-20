@@ -799,7 +799,8 @@ BLOCK_STORAGE = """int main(void) {
 def test_a_blocks_static_or_extern_of_an_outer_locals_name_is_found():
     # Review of PR #140: the code reads the block's own `static`/`extern`, which lldb-dap
     # does not list; the outer local of that name was shown under it.
-    statements = Statements(BLOCK_STORAGE, raw_strings=False, hazards={"declares": {"KEEP"}})
+    hazards = {"declares": {"KEEP"}, "expands": {"KEEP": frozenset({"static", "long", "n"})}}
+    statements = Statements(BLOCK_STORAGE, raw_strings=False, hazards=hazards)
 
     def found(line, name):
         return statements.block_storage(line, name, 2)
@@ -862,3 +863,101 @@ def test_a_storage_declaration_of_a_name_is_read_cheaply_but_not_a_parameters():
     # A static function's parameter, or a name after the statement: not declared so.
     assert not storage_named("static long run(long seed) {\n  long head = seed;", "seed")
     assert not storage_named("static long f(void) {\n  long q = 1;", "q")
+
+
+MORE_HIDING = """#define ONCE static int once_flag = 0
+#define KEEP(x) static long x = 5
+int main(void) {
+    long q = 1, gcount = 6, use2 = 4;
+    { extern long gcount; use(gcount); }
+    {
+        static struct { long v; } q = { 5 };
+        use(q.v);
+    }
+    {
+        enum { q = 7 };
+        use(q);
+    }
+    {
+        enum class E { q };
+        use(q);
+    }
+    {
+        long use2(long);
+        use(use2 != 0);
+    }
+    {
+        v.use2(1);
+        use(use2);
+    }
+    {
+#if 0
+        static long q = 2;
+#endif
+        use(q);
+    }
+    {
+#ifdef NOT_DEFINED
+        static long q = 2;
+#endif
+        use(q);
+    }
+    {
+        extern long helper(long q);
+        static long (*gcount)(long) = 0;
+        use(q);
+    }
+    {
+        ONCE;
+        use(q);
+    }
+    {
+        KEEP(q);
+        use(q);
+    }
+    {
+        static thread_local long q = 8;
+        use(q);
+    }
+    return 0;
+}
+"""
+
+
+def test_names_a_block_declares_that_hide_an_outer_local_are_told_apart():
+    # Review of PR #144: a block opening on the stop line, a declarator after a type's
+    # body, an enumerator and a function declaration each hide the outer local; `#if 0`
+    # text, a prototype's parameter and a macro whose expansion names another do not.
+    from peeky.c_source import macro_hazards
+
+    hazards = macro_hazards([MORE_HIDING], raw_strings=True)
+    assert hazards["declares"] == {"ONCE", "KEEP"} and "once_flag" in hazards["expands"]["ONCE"]
+    statements = Statements(MORE_HIDING, raw_strings=True, hazards=hazards)
+    expected = {
+        5: ("gcount", ("extern", 5)),  # a block opening on the stop line
+        8: ("q", ("static", 7)),  # after a type's body
+        12: ("q", ("enumerator", 11)),
+        16: ("q", False),  # a scoped enum's enumerator
+        20: ("use2", ("function", 19)),
+        24: ("use2", False),  # a member's call declares nothing
+        30: ("q", False),  # `#if 0`
+        36: ("q", None),  # another conditional: Peeky cannot tell
+        41: ("q", False),  # a prototype's parameter; another's grouped declarator
+        45: ("q", False),  # ONCE's expansion names `once_flag`, not `q`
+        49: ("q", None),  # KEEP given `q`
+        53: ("q", ("thread_local", 52)),  # said as a thread's own, listed apart
+    }
+    for line, (name, found) in expected.items():
+        assert statements.block_storage(line, name, 4) == found, line
+    assert statements.block_storage(41, "gcount", 4) == ("static", 40)
+
+
+def test_a_cheap_read_finds_declarators_after_braces_enumerators_and_functions():
+    from peeky.c_source import storage_named
+
+    assert storage_named("{ static long a[2] = {1, 2}, q = 3; }", "q")
+    assert storage_named("{ static struct { long v; } q = { 5 }; }", "q")
+    assert storage_named("{ enum { q = 7 }; }", "q")
+    assert storage_named("{ long use2(long); }", "use2")
+    assert storage_named("{ typedef long q; }", "q")
+    assert not storage_named("{ long r = 1; use(r); }", "q")

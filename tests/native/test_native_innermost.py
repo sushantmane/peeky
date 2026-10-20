@@ -1477,10 +1477,10 @@ int main() {
 @pytest.mark.parametrize(
     "name, marker, local, phrase",
     [
-        ("shadow.c", "EXTERN", "gcount", "reads the block's `extern` `gcount`"),
-        ("shadow.c", "STATIC", "q", "reads the block's `static` `q`"),
+        ("shadow.c", "EXTERN", "gcount", "names the block's `extern` `gcount`"),
+        ("shadow.c", "STATIC", "q", "names the block's `static` `q`"),
         ("shadow.c", "MACRO", "r", "a macro or a directive there may"),
-        ("shadow.cpp", "USING", "level", "reads the block's `using` `level`"),
+        ("shadow.cpp", "USING", "level", "the block's `using` declaration (line"),
     ],
 )
 def test_an_outer_local_a_blocks_static_or_extern_hides_is_withheld(
@@ -1514,3 +1514,199 @@ def test_outer_locals_are_read_outside_the_blocks_that_hide_them(directory, caps
     path.write_text(SHADOWS["shadow.cpp"])
     rows = shown_at(capsys, path, line_of(SHADOWS["shadow.cpp"], "// OTHER"), "level", "kept")
     assert rows["level"]["value"] == "1" and rows["kept"]["value"] == "0", rows
+
+
+# Review of PR #144: more shapes that hide an outer local's name, and some that do not.
+HIDING = {
+    "hide.c": """#include <stdio.h>
+
+long gcount = 1;
+#define ONCE static int once_flag = 0
+__attribute__((noinline)) long use(long v) { return v + 1; }
+__attribute__((noinline)) long helper(long q) { return q * 3; }
+
+__attribute__((noinline)) long same_line(void) {
+    long gcount = 6;
+    long total = 0;
+    { extern long gcount; total += use(gcount); }  // SAME_LINE
+    return total;
+}
+__attribute__((noinline)) long multi(void) {
+    long m = 1;
+    long total = 0;
+    {
+        static long a[2] = {1, 2}, m = 3;
+        total += use(m) + a[0];  // MULTI
+    }
+    return total;
+}
+__attribute__((noinline)) long anon(void) {
+    long q = 1;
+    long total = 0;
+    {
+        static struct { long v; } q = { 5 };
+        total += use(q.v);  // ANON
+    }
+    return total;
+}
+__attribute__((noinline)) long enumer(void) {
+    long q = 1;
+    long total = 0;
+    {
+        enum { q = 7 };
+        total += use(q);  // ENUM
+    }
+    return total;
+}
+__attribute__((noinline)) long fdecl(void) {
+    long use2 = 4;
+    long total = 0;
+    {
+        long use2(long);
+        total += (use2 != 0);  // FDECL
+    }
+    return total;
+}
+__attribute__((noinline)) long ifzero(void) {
+    long q = 1;
+    long total = 0;
+    {
+#if 0
+        static long q = 2;
+#endif
+        total += use(q);  // IFZERO
+    }
+    return total;
+}
+__attribute__((noinline)) long ifdef(void) {
+    long q = 1;
+    long total = 0;
+    {
+#ifdef NOT_DEFINED
+        static long q = 2;
+#endif
+        total += use(q);  // IFDEF
+    }
+    return total;
+}
+__attribute__((noinline)) long protoparam(void) {
+    long q = 4;
+    long total = 0;
+    {
+        extern long helper(long q);
+        total += helper(q);  // PROTO
+    }
+    return total;
+}
+__attribute__((noinline)) long once(void) {
+    long q = 2;
+    long total = 0;
+    {
+        ONCE;
+        total += use(q) + once_flag;  // ONCE
+    }
+    return total;
+}
+
+int main(void) {
+    printf("%ld %ld %ld %ld %ld %ld %ld %ld %ld\\n", same_line(), multi(), anon(), enumer(),
+           fdecl(), ifzero(), ifdef(), protoparam(), once());
+    return 0;
+}
+long use2(long v) { return v; }
+""",
+    "hide.cpp": """#include <cstdio>
+
+__attribute__((noinline)) long use(long v) { return v + 1; }
+
+__attribute__((noinline)) long tls() {
+    long q = 6;
+    long total = 0;
+    {
+        static thread_local long q = 8;
+        total += use(q);  // TLS
+    }
+    return total;
+}
+
+int main() {
+    std::printf("%ld\\n", tls());
+    return 0;
+}
+""",
+    "multi.c": """#include <stdio.h>
+
+__attribute__((noinline)) long use(long v) { return v + 1; }
+
+__attribute__((noinline)) long multi(void) {
+    long q = 1;
+    long total = 0;
+    {
+        static long a[2] = {1, 2}, q = 3;
+        total += use(q) + a[0];  // MULTI
+    }
+    return total;
+}
+
+int main(void) {
+    printf("%ld\\n", multi());
+    return 0;
+}
+""",
+}
+
+
+@pytest.mark.timeout(300)
+@pytest.mark.parametrize(
+    "name, marker, local, phrase",
+    [
+        # A block opening on the stop line itself.
+        ("hide.c", "SAME_LINE", "gcount", "names the block's `extern` `gcount`"),
+        # A declarator after an initializer's braces (no other such `q` in the file).
+        ("multi.c", "MULTI", "q", "names the block's `static` `q`"),
+        # After a type's body; an enumerator; a function a block declares.
+        ("hide.c", "ANON", "q", "names the block's `static` `q`"),
+        ("hide.c", "ENUM", "q", "names the block's enumerator `q`"),
+        ("hide.c", "FDECL", "use2", "names the function `use2` the block declares"),
+        # Under a conditional Peeky cannot evaluate: not claimed, withheld all the same.
+        ("hide.c", "IFDEF", "q", "may not be what the code reads"),
+        # A thread's own static is listed, apart: the row says where.
+        ("hide.cpp", "TLS", "q @ hide.cpp:6", "listed separately as `q @ hide.cpp:9`"),
+    ],
+)
+def test_a_name_a_block_declares_otherwise_hides_the_outer_local(
+    directory, capsys, name, marker, local, phrase
+):
+    source = HIDING[name]
+    path = directory / name
+    path.write_text(source)
+    line = line_of(source, f"// {marker}")
+    rows = shown_at(capsys, path, line, local)
+    assert withheld(rows[local], phrase), rows[local]
+    assert main(["session", "start", str(path), "--at", str(line)]) == 0
+    capsys.readouterr()
+    try:
+        assert main(["session", "set", f"{local}=9", "--json"]) == 2
+        assert json.loads(capsys.readouterr().out)["error"]["code"] == "MUTATION_REJECTED"
+    finally:
+        main(["session", "close"])
+        capsys.readouterr()
+
+
+@pytest.mark.timeout(300)
+@pytest.mark.parametrize(
+    "marker, local, value",
+    [
+        ("IFZERO", "q", "1"),  # an `#if 0` leaves the static out
+        ("PROTO", "q", "4"),  # a prototype's parameter declares nothing here
+        ("ONCE", "q", "2"),  # a macro declaring a static that does not name `q`
+    ],
+)
+def test_a_name_a_block_does_not_declare_leaves_the_outer_local_read(
+    directory, capsys, marker, local, value
+):
+    source = HIDING["hide.c"]
+    path = directory / "hide.c"
+    path.write_text(source)
+    rows = shown_at(capsys, path, line_of(source, f"// {marker}"), local)
+    assert rows[local].get("value") == value, rows[local]
