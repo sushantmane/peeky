@@ -17,6 +17,7 @@ from peeky.rust_mir import (
     ir_functions,
     may_invoke_macro,
     parse_body,
+    stop_block,
 )
 
 
@@ -1563,3 +1564,384 @@ def test_a_replaced_field_leaves_a_partly_moved_local_partly_moved():
     body = replaced(store=f"(_1.1: {BOXED}) = move (_1.2: {BOXED});")
     assert set(body._replacements()[1].values()) == {1}
     assert not body.initialized_throughout(1, {3})
+
+
+# #115: `let k = r.x; println!("k = {}", k);`: `format_args!` declares `args` twice, so
+# LLDB stops three times on the line, once per lexical block (k's, then each `args`'s).
+PRINTED = r"""
+fn kay(_1: &Vec<Pt>) -> i64 {
+    debug v => _1;                       // in scope 0 at src/main.rs:16:8: 16:9
+    let mut _0: i64;                     // return place in scope 0 at src/main.rs:16:24: 16:27
+    let _2: &Pt;                         // in scope 0 at src/main.rs:17:9: 17:10
+    let _3: &Pt;                         // in scope 0 at src/main.rs:17:15: 17:18
+    let mut _4: &std::vec::Vec<Pt>;      // in scope 0 at src/main.rs:17:14: 17:15
+    let _6: ();                          // in scope 0 at /rustc/x/library/std/src/macros.rs:145:23: 147:6
+    let _7: ();                          // in scope 0 at /rustc/x/library/std/src/macros.rs:146:9: 146:62
+    let mut _8: std::fmt::Arguments<'_>; // in scope 0 at /rustc/x/library/std/src/macros.rs:146:28: 146:61
+    let mut _10: &i64;                   // in scope 0 at src/main.rs:19:24: 19:25
+    let mut _12: core::fmt::rt::Argument<'_>; // in scope 0 at src/main.rs:19:19: 19:21
+    let mut _13: &i64;                   // in scope 0 at src/main.rs:19:24: 19:25
+    let mut _14: &[u8; 9];               // in scope 0 at /rustc/x/library/std/src/macros.rs:146:28: 146:61
+    let _15: &[u8; 9];                   // in scope 0 at /rustc/x/library/std/src/macros.rs:146:28: 146:61
+    let mut _16: &[core::fmt::rt::Argument<'_>; 1]; // in scope 0 at /rustc/x/library/std/src/macros.rs:146:28: 146:61
+    let _17: &[core::fmt::rt::Argument<'_>; 1]; // in scope 0 at /rustc/x/library/std/src/macros.rs:146:28: 146:61
+    let mut _18: i64;                    // in scope 0 at src/main.rs:20:5: 20:6
+    let mut _19: (i64, bool);            // in scope 0 at src/main.rs:20:5: 20:10
+    let mut _20: &i64;                   // in scope 0 at /rustc/x/library/std/src/macros.rs:146:28: 146:61
+    scope 1 {
+        debug r => _2;                   // in scope 1 at src/main.rs:17:9: 17:10
+        let _5: i64;                     // in scope 1 at src/main.rs:18:9: 18:10
+        scope 2 {
+            debug k => _5;               // in scope 2 at src/main.rs:18:9: 18:10
+            let _9: (&i64,);             // in scope 2 at /rustc/x/library/std/src/macros.rs:146:28: 146:61
+            scope 3 {
+                debug args => _9;        // in scope 3 at /rustc/x/library/std/src/macros.rs:146:28: 146:61
+                let _11: [core::fmt::rt::Argument<'_>; 1]; // in scope 3 at /rustc/x/library/std/src/macros.rs:146:28: 146:61
+                scope 4 {
+                    debug args => _11;   // in scope 4 at /rustc/x/library/std/src/macros.rs:146:28: 146:61
+                }
+            }
+        }
+    }
+
+    bb0: {
+        StorageLive(_2);                 // scope 0 at src/main.rs:17:9: 17:10
+        StorageLive(_3);                 // scope 0 at src/main.rs:17:15: 17:18
+        StorageLive(_4);                 // scope 0 at src/main.rs:17:14: 17:15
+        _4 = &(*_1);                     // scope 0 at src/main.rs:17:14: 17:15
+        _3 = <Vec<Pt> as Index<usize>>::index(move _4, const 0_usize) -> [return: bb1, unwind continue]; // scope 0 at src/main.rs:17:15: 17:18
+    }
+
+    bb1: {
+        StorageDead(_4);                 // scope 0 at src/main.rs:17:17: 17:18
+        _2 = &(*_3);                     // scope 0 at src/main.rs:17:13: 17:18
+        StorageLive(_5);                 // scope 1 at src/main.rs:18:9: 18:10
+        _5 = copy ((*_2).0: i64);        // scope 1 at src/main.rs:18:13: 18:16
+        StorageLive(_6);                 // scope 2 at /rustc/x/library/std/src/macros.rs:145:23: 147:6
+        StorageLive(_7);                 // scope 2 at /rustc/x/library/std/src/macros.rs:146:9: 146:62
+        StorageLive(_8);                 // scope 2 at /rustc/x/library/std/src/macros.rs:146:28: 146:61
+        StorageLive(_9);                 // scope 2 at /rustc/x/library/std/src/macros.rs:146:28: 146:61
+        StorageLive(_10);                // scope 2 at src/main.rs:19:24: 19:25
+        _10 = &_5;                       // scope 2 at src/main.rs:19:24: 19:25
+        _9 = (move _10,);                // scope 2 at /rustc/x/library/std/src/macros.rs:146:28: 146:61
+        StorageDead(_10);                // scope 2 at /rustc/x/library/std/src/macros.rs:146:60: 146:61
+        StorageLive(_11);                // scope 3 at /rustc/x/library/std/src/macros.rs:146:28: 146:61
+        StorageLive(_12);                // scope 3 at src/main.rs:19:19: 19:21
+        StorageLive(_13);                // scope 3 at src/main.rs:19:24: 19:25
+        _20 = copy (_9.0: &i64);         // scope 3 at src/main.rs:19:24: 19:25
+        _13 = &(*_20);                   // scope 3 at src/main.rs:19:24: 19:25
+        _12 = core::fmt::rt::Argument::<'_>::new_display::<i64>(move _13) -> [return: bb2, unwind continue]; // scope 3 at src/main.rs:19:19: 19:21
+    }
+
+    bb2: {
+        StorageDead(_13);                // scope 3 at src/main.rs:19:20: 19:21
+        _11 = [move _12];                // scope 3 at /rustc/x/library/std/src/macros.rs:146:28: 146:61
+        StorageDead(_12);                // scope 3 at /rustc/x/library/std/src/macros.rs:146:60: 146:61
+        StorageLive(_14);                // scope 4 at /rustc/x/library/std/src/macros.rs:146:28: 146:61
+        StorageLive(_15);                // scope 4 at /rustc/x/library/std/src/macros.rs:146:28: 146:61
+        _15 = const b"\x04k = \xc0\x01\n\x00"; // scope 4 at /rustc/x/library/std/src/macros.rs:146:28: 146:61
+        _14 = &(*_15);                   // scope 4 at /rustc/x/library/std/src/macros.rs:146:28: 146:61
+        StorageLive(_16);                // scope 4 at /rustc/x/library/std/src/macros.rs:146:28: 146:61
+        StorageLive(_17);                // scope 4 at /rustc/x/library/std/src/macros.rs:146:28: 146:61
+        _17 = &_11;                      // scope 4 at /rustc/x/library/std/src/macros.rs:146:28: 146:61
+        _16 = &(*_17);                   // scope 4 at /rustc/x/library/std/src/macros.rs:146:28: 146:61
+        _8 = Arguments::<'_>::new::<9, 1>(move _14, move _16) -> [return: bb3, unwind continue]; // scope 4 at /rustc/x/library/std/src/macros.rs:146:28: 146:61
+    }
+
+    bb3: {
+        StorageDead(_17);                // scope 4 at /rustc/x/library/std/src/macros.rs:146:60: 146:61
+        StorageDead(_16);                // scope 4 at /rustc/x/library/std/src/macros.rs:146:60: 146:61
+        StorageDead(_15);                // scope 4 at /rustc/x/library/std/src/macros.rs:146:60: 146:61
+        StorageDead(_14);                // scope 4 at /rustc/x/library/std/src/macros.rs:146:60: 146:61
+        _7 = std::io::_print(move _8) -> [return: bb4, unwind continue]; // scope 2 at /rustc/x/library/std/src/macros.rs:146:9: 146:62
+    }
+
+    bb4: {
+        StorageDead(_8);                 // scope 2 at /rustc/x/library/std/src/macros.rs:146:61: 146:62
+        StorageDead(_11);                // scope 2 at /rustc/x/library/std/src/macros.rs:146:62: 146:63
+        StorageDead(_9);                 // scope 2 at /rustc/x/library/std/src/macros.rs:146:62: 146:63
+        StorageDead(_7);                 // scope 2 at /rustc/x/library/std/src/macros.rs:146:62: 146:63
+        _6 = const ();                   // scope 2 at /rustc/x/library/std/src/macros.rs:145:23: 147:6
+        StorageDead(_6);                 // scope 2 at /rustc/x/library/std/src/macros.rs:147:5: 147:6
+        StorageLive(_18);                // scope 2 at src/main.rs:20:5: 20:6
+        _18 = copy _5;                   // scope 2 at src/main.rs:20:5: 20:6
+        _19 = AddWithOverflow(copy _18, const 1_i64); // scope 2 at src/main.rs:20:5: 20:10
+        assert(!move (_19.1: bool), "attempt to compute `{} + {}`, which would overflow", move _18, const 1_i64) -> [success: bb5, unwind continue]; // scope 2 at src/main.rs:20:5: 20:10
+    }
+
+    bb5: {
+        _0 = move (_19.0: i64);          // scope 2 at src/main.rs:20:5: 20:10
+        StorageDead(_18);                // scope 2 at src/main.rs:20:9: 20:10
+        StorageDead(_5);                 // scope 1 at src/main.rs:21:1: 21:2
+        StorageDead(_3);                 // scope 0 at src/main.rs:21:1: 21:2
+        StorageDead(_2);                 // scope 0 at src/main.rs:21:1: 21:2
+        return;                          // scope 0 at src/main.rs:21:2: 21:2
+    }
+
+}
+"""
+
+
+# The source, with `kay` on its lines.
+PRINTED_TEXT = "\n" * 15 + (
+    "fn kay(v: &Vec<Pt>) -> i64 {\n"
+    "    let r = &v[0];\n"
+    "    let k = r.x;\n"
+    '    println!("k = {}", k);\n'
+    "    k + 1\n"
+    "}\n"
+)
+
+
+# `kay`'s IR as the real build has it (trimmed): rustc merges each block a call that
+# cannot unwind returns to into its caller's, and `println!`'s calls are collapsed onto
+# its column. `args` is spilled for debug info (`args.dbg.spill`) in k's block.
+KAY_IR = """define internal i64 @_ZN5chars3kay17h8491af1d40105d89E(ptr align 8 %v) unnamed_addr #0 !dbg !10 {
+start:
+  %args.dbg.spill = alloca [8 x i8], align 8
+  %r.dbg.spill = alloca [8 x i8], align 8
+  %v.dbg.spill = alloca [8 x i8], align 8
+  %_12 = alloca [16 x i8], align 8
+  %args = alloca [16 x i8], align 8
+  %k = alloca [8 x i8], align 8
+  store ptr %v, ptr %v.dbg.spill, align 8
+    #dbg_declare(ptr %v.dbg.spill, !12, !DIExpression(), !30)
+    #dbg_declare(ptr %k, !15, !DIExpression(), !31)
+    #dbg_declare(ptr %args, !20, !DIExpression(), !32)
+; call <alloc::vec::Vec<T,A> as core::ops::index::Index<I>>::index
+  %_3 = call align 8 ptr @index(ptr align 8 %v, i64 0, ptr align 8 @alloc_e2) #16, !dbg !33
+  store ptr %_3, ptr %r.dbg.spill, align 8, !dbg !34
+    #dbg_declare(ptr %r.dbg.spill, !13, !DIExpression(), !35)
+  %0 = load i64, ptr %_3, align 8, !dbg !36
+  store i64 %0, ptr %k, align 8, !dbg !36
+  store ptr %k, ptr %args.dbg.spill, align 8, !dbg !37
+    #dbg_declare(ptr %args.dbg.spill, !17, !DIExpression(), !38)
+; call core::fmt::rt::Argument::new_display
+  call void @new_display(ptr sret([16 x i8]) align 8 %_12, ptr align 8 %k) #16, !dbg !38
+  %1 = getelementptr inbounds nuw %"core::fmt::rt::Argument<'_>", ptr %args, i64 0, !dbg !38
+  call void @llvm.memcpy.p0.p0.i64(ptr align 8 %1, ptr align 8 %_12, i64 16, i1 false), !dbg !38
+; call core::fmt::Arguments::new
+  %2 = call { ptr, ptr } @new(ptr @alloc_7b, ptr align 8 %args) #16, !dbg !32
+  %_8.0 = extractvalue { ptr, ptr } %2, 0, !dbg !32
+  %_8.1 = extractvalue { ptr, ptr } %2, 1, !dbg !32
+; call std::io::stdio::_print
+  call void @_print(ptr %_8.0, ptr %_8.1), !dbg !37
+  %_18 = load i64, ptr %k, align 8, !dbg !39
+  %3 = call { i64, i1 } @llvm.sadd.with.overflow.i64(i64 %_18, i64 1), !dbg !39
+  %_19.0 = extractvalue { i64, i1 } %3, 0, !dbg !39
+  %_19.1 = extractvalue { i64, i1 } %3, 1, !dbg !39
+  br i1 %_19.1, label %panic, label %bb5, !dbg !39
+
+bb5:                                              ; preds = %start
+  ret i64 %_19.0, !dbg !40
+
+panic:                                            ; preds = %start
+  call void @panic_const_add_overflow(ptr align 8 @alloc_86) #20, !dbg !39
+  unreachable, !dbg !39
+}
+
+!2 = !DIFile(filename: "src/main.rs", directory: "/w")
+!3 = !DIFile(filename: "/rustc/x/library/std/src/macros.rs", directory: "")
+!9 = !DINamespace(name: "chars", scope: null)
+!10 = distinct !DISubprogram(name: "kay", linkageName: "_ZN5chars3kay17h8491af1d40105d89E", scope: !9, file: !2, line: 16, unit: !1, retainedNodes: !11)
+!11 = !{!12, !13, !15, !17, !20}
+!12 = !DILocalVariable(name: "v", arg: 1, scope: !10, file: !2, line: 16, type: !7)
+!13 = !DILocalVariable(name: "r", scope: !14, file: !2, line: 17, type: !7, align: 64)
+!14 = distinct !DILexicalBlock(scope: !10, file: !2, line: 17, column: 5)
+!15 = !DILocalVariable(name: "k", scope: !16, file: !2, line: 18, type: !7, align: 64)
+!16 = distinct !DILexicalBlock(scope: !14, file: !2, line: 18, column: 5)
+!17 = !DILocalVariable(name: "args", scope: !18, file: !2, line: 19, type: !7, align: 64)
+!18 = !DILexicalBlockFile(scope: !19, file: !2, discriminator: 0)
+!19 = distinct !DILexicalBlock(scope: !16, file: !3, line: 146, column: 28)
+!20 = !DILocalVariable(name: "args", scope: !21, file: !2, line: 19, type: !7, align: 64)
+!21 = !DILexicalBlockFile(scope: !22, file: !2, discriminator: 0)
+!22 = distinct !DILexicalBlock(scope: !19, file: !3, line: 146, column: 28)
+!30 = !DILocation(line: 16, column: 8, scope: !10)
+!31 = !DILocation(line: 18, column: 9, scope: !16)
+!32 = !DILocation(line: 19, column: 5, scope: !21)
+!33 = !DILocation(line: 17, column: 15, scope: !10)
+!34 = !DILocation(line: 17, column: 13, scope: !10)
+!35 = !DILocation(line: 17, column: 9, scope: !14)
+!36 = !DILocation(line: 18, column: 13, scope: !14)
+!37 = !DILocation(line: 19, column: 5, scope: !16)
+!38 = !DILocation(line: 19, column: 5, scope: !18)
+!39 = !DILocation(line: 20, column: 5, scope: !16)
+!40 = !DILocation(line: 21, column: 2, scope: !10)
+"""
+
+K = (("k",), ("r",), ("v",))
+ARGS = (("args",), *K)
+INNER = (("args",), *ARGS)
+
+
+def printed_function(tmp_path, ir=KAY_IR):
+    path = tmp_path / "kay.ll"
+    path.write_text(ir)
+    return ir_functions(path, ["src/main.rs"])["h8491af1d40105d89"]
+
+
+def test_the_ir_names_each_lexical_block_and_its_code(tmp_path):
+    # #115: each instruction's scope, named as the DWARF names the block holding a stop;
+    # a DILexicalBlockFile is its block's.
+    function = printed_function(tmp_path)
+    assert function.blocks == {"start": {17, 18, 19, 20}, "bb5": {21}, "panic": {20}}
+    assert function.events["start"] == (((17, 15), (19, 5), (19, 5), (19, 5)), ((20, 5),))
+    assert function.scoped
+    assert function.chains == {(("v",),): 1, (("r",), ("v",)): 1, K: 1, ARGS: 1, INNER: 1}
+    assert function.line_chains[(19, K)] == function.line_chains[(19, INNER)] == 1
+    # Calls (not intrinsics), stores of bytes, a branch on a value; each with the calls
+    # before it in its IR block. A store with no location (the prologue's) is none.
+    assert function.sure["start"] == (
+        (17, (("v",),), 0),
+        (17, (("v",),), 1),
+        (18, (("r",), ("v",)), 1),
+        (19, K, 1),
+        (19, ARGS, 1),
+        (19, INNER, 2),
+        (19, K, 3),
+        (20, K, 4),
+    )
+    assert function.calls == {"start": 4, "bb5": 0, "panic": 1}
+    # A store of nothing or of an undefined value, or a branch on a constant, leaves none.
+    for line in ("store {} %e, ptr %p", "store i64 undef, ptr %p", "br i1 true, label %a"):
+        changed = KAY_IR.replace(
+            "  %_18 = load i64, ptr %k, align 8, !dbg !39\n", f"  {line}, !dbg !39\n"
+        )
+        assert printed_function(tmp_path, changed).sure == function.sure
+    # A block with no variable of its own has no DWARF block: its code is its parent's.
+    changed = KAY_IR.replace('!17 = !DILocalVariable(name: "args"', "!17 = !DILocalVariable(")
+    function = printed_function(tmp_path, changed)
+    assert INNER not in function.chains and function.chains[ARGS] == function.chains[K] == 1
+    assert (19, K, 1) in function.sure["start"] and (19, ARGS, 2) in function.sure["start"]
+
+
+def kay_blocks():
+    from peeky.rust_symbols import CodeBlock
+
+    # As the real build's DWARF has them (addresses less the image base).
+    return (
+        CodeBlock(None, ((0xE0C, 0xEA4),), ("v",)),
+        CodeBlock(0, ((0xE38, 0xE88), (0xE98, 0xEA4)), ("r",)),
+        CodeBlock(1, ((0xE44, 0xE88), (0xE98, 0xEA4)), ("k",)),
+        CodeBlock(2, ((0xE50, 0xE6C),), ("args",)),
+        CodeBlock(3, ((0xE60, 0xE6C),), ("args",)),
+        CodeBlock(3, ((0xE64, 0xE68),), (), inlined=True),
+    )
+
+
+def test_a_stop_address_names_its_lexical_block_and_the_blocks_around_it(tmp_path):
+    blocks = kay_blocks()
+    assert stop_block(blocks, 0xE44).chain == (("k",), ("r",), ("v",))
+    assert stop_block(blocks, 0xE50).chain == (("args",), ("k",), ("r",), ("v",))
+    inner = stop_block(blocks, 0xE60)
+    assert inner.chain == (("args",), ("args",), ("k",), ("r",), ("v",))
+    assert inner.chains[(("k",), ("r",), ("v",))] == 1
+    # Outside the function, in an inlined call (another frame's), or no blocks: unknown.
+    assert stop_block(blocks, 0xEA4) is None and stop_block(blocks, 0xE64) is None
+    assert stop_block((), 0xE44) is None and stop_block(blocks, None) is None
+    body = parse_body(PRINTED)
+    assert body.scope_chain(4) == inner.chain and body.scope_chain(0) == (("v",),)
+    function = printed_function(tmp_path)
+    assert body.chain_scopes(stop_block(blocks, 0xE50), function) == {0, 1, 2, 3}
+    # Without the IR's blocks, or with fewer of them than the DWARF's: none.
+    assert body.chain_scopes(stop_block(blocks, 0xE50)) is None
+    function.chains[ARGS] = 2
+    assert body.chain_scopes(stop_block(blocks, 0xE50), function) is None
+
+
+def test_a_macro_s_own_stops_are_told_apart_by_their_lexical_block(tmp_path):
+    # #115: all three stops report the macro's column; the block keeps only its places,
+    # and at a breakpoint (the line's lowest address in the block) only those up to the
+    # IR's first instruction of the line there that surely leaves code.
+    body = parse_body(PRINTED)
+    function = printed_function(tmp_path)
+    blocks = kay_blocks()
+    line = {0, 1, 2, 3, 4}
+    shared = dict.fromkeys(line, line)
+
+    def places(pc, facts=None, function=function):
+        within = None if pc is None else stop_block(blocks, pc)
+        return body.stop_positions(line, 19, "src/main.rs", True, facts, shared, within, function)
+
+    every = places(None)
+    # A step in k's block: its own statements, the `_print` call after the macro's.
+    assert set(places(0xE44)) < set(every) and (3, 4) in places(0xE44)
+    assert (1, 15) not in places(0xE44)
+    breakpoint = LineFacts(5, function, frozenset(), frozenset({5}), int)
+    # Its lowest address in k's block is at or before `args`'s spill, the IR's first
+    # store of the line there: before `Argument::new_display`, the next call.
+    assert places(0xE44, breakpoint) == [(1, 9), (1, 10)]
+    # The MIR's spans do not say which line a macro's code is collapsed onto: where the
+    # IR puts that store on another line, the first code of the line in k's block is
+    # `_print`'s call, past the macro's other calls.
+    moved = KAY_IR.replace(
+        "  store ptr %k, ptr %args.dbg.spill, align 8, !dbg !37",
+        "  store ptr %k, ptr %args.dbg.spill, align 8, !dbg !41",
+    ).replace("!40 = ", "!41 = !DILocation(line: 18, column: 5, scope: !16)\n!40 = ")
+    later = places(0xE44, breakpoint, printed_function(tmp_path, moved))
+    assert later == [(1, 9), (1, 10), (3, 4)]
+    assert not body.used_before(body.local("r"), (3, 4))
+    # The IR's call after that store is the MIR's second (`new_display`'s block, bb1). One
+    # LLVM inlined leaves no call: then the next may be a MIR call later (bb2), no
+    # further. More IR calls than the MIR's tell nothing.
+    last = {number: len(body.blocks[number].statements) - 1 for number in (1, 2)}
+    assert body._cut(function, 19, K) == (0, 1, last[1])
+    inlined = KAY_IR.replace(
+        "  call void @new_display(ptr sret([16 x i8]) align 8 %_12, ptr align 8 %k) #16, !dbg !38",
+        "  store i64 0, ptr %_12, align 8, !dbg !43",
+    ).replace(
+        "!40 = ",
+        '!42 = distinct !DISubprogram(name: "new_display", file: !3, line: 1, unit: !1)\n'
+        "!43 = !DILocation(line: 1, column: 1, scope: !42, inlinedAt: !38)\n!40 = ",
+    )
+    assert body._cut(printed_function(tmp_path, inlined), 19, K) == (0, 2, last[2])
+    extra = KAY_IR.replace(
+        "  %_18 = load i64, ptr %k, align 8, !dbg !39\n",
+        "  call void @extra(), !dbg !39\n  %_18 = load i64, ptr %k, align 8, !dbg !39\n",
+    )
+    assert body._cut(printed_function(tmp_path, extra), 19, K) is None
+    # In the first `args`'s: up to `Argument::new_display`, the first call.
+    assert places(0xE50, breakpoint) == [(1, 15), (1, 16), (1, 17)]
+    r = body.local("r")
+    for pc in (0xE44, 0xE50):
+        assert all(body.used_before(r, at) for at in places(pc, breakpoint))
+    # In the second's: past that call, and past `r`'s last use.
+    after = places(0xE60, breakpoint)
+    assert after and all(at > (1, 17) for at in after)
+    assert not any(body.used_ahead(r, at) or body.used_before(r, at) for at in after)
+    # A block the debug info has fewer of than the body (one with no code), or not the
+    # stop's at all: every place counts.
+    fewer = stop_block(blocks, 0xE50)
+    fewer.chains.pop((("args",), ("args",), ("k",), ("r",), ("v",)))
+    assert (
+        body.stop_positions(line, 19, "src/main.rs", True, None, shared, fewer, function) == every
+    )
+    assert places(0xE38) == every
+    # Without the IR's blocks, or where the IR has two blocks with the stop's names on
+    # the line: every place counts.
+    assert places(0xE44, breakpoint, None) == places(None, breakpoint)
+    function.line_chains[(19, K)] = 2
+    assert places(0xE44, breakpoint) == places(None, breakpoint)
+
+
+def test_a_macro_s_own_stops_judge_the_references_of_their_block(tmp_path):
+    owned = OwnedLocals(
+        [parse_body(PRINTED)],
+        {"h": printed_function(tmp_path)},
+        SOURCES,
+        texts={"src/main.rs": PRINTED_TEXT},
+    )
+    blocks = kay_blocks()
+
+    def judged(name, breakpoint, pc=None):
+        within = None if pc is None else stop_block(blocks, pc)
+        return owned.reference_valid("h", name, 19, MAIN, breakpoint, 5, within)
+
+    assert [judged("r", True, pc) for pc in (0xE44, 0xE50, 0xE60)] == [True, True, False]
+    # Without the address, as before: gated at every stop.
+    assert judged("r", True) is False
+    # A step may stop in k's block after `_print`: `r` past its last use and a call.
+    assert judged("r", False, 0xE44) is False
+    # The macro's own `args` of the stop's block, set there.
+    assert judged("args", True, 0xE50) is True
+    assert judged("v", True, 0xE60) is True
