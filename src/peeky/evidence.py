@@ -17,7 +17,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import quote
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 7
 MAX_RUNS = 500
 DEFAULT_ROWS = 200
 MAX_ROWS = 10000
@@ -89,6 +89,17 @@ TABLES = {
             "unavailable": "1 when the debugger has no value here (optimized out, not live)",
             "error": "Why there is no value (unknown name, unreadable, ...), else NULL",
             "view": "Qualified value view (e.g. a Rust Option), else NULL",
+            "identity": "Python: which object the value is, an INTEGER (debugpy's number for "
+            "the object, not an address; the object keeps it if its class is reassigned). "
+            "Within one hit, equal means the same object (an alias), different means "
+            "different objects. Across hits of one run, different still means different "
+            "objects, but equal means the same object or a new one that took a freed "
+            "object's place. Never compare runs. NULL for values without one (numbers, "
+            "strings, None) and in other languages (Java: object_ref(value))",
+            "scope": "'globals' when a Python selector's first name was read from the "
+            "module's globals (it was not a local there); 'unknown' for a row stored before "
+            "Peeky recorded this (an early version of schema 6, which could read module "
+            "globals); else NULL: the stopped frame's own variables",
         },
     ),
     "interventions": (
@@ -108,8 +119,8 @@ TABLES = {
 }
 _EVIDENCE_COLUMNS = (
     "run_id, started_at, label, program, line, status, hit, phase, function, selector, type, "
-    "value, num, unavailable, error, view, args, sets, artifact_manifest_id, source_sha256, "
-    "candidate, language"
+    "value, num, unavailable, error, view, identity, scope, args, sets, "
+    "artifact_manifest_id, source_sha256, candidate, language"
 )
 VIEWS = {
     "evidence": f"captures joined with their run, so no join is needed: {_EVIDENCE_COLUMNS} "
@@ -121,7 +132,8 @@ VIEWS = {
 }
 _EVIDENCE_VIEW = """CREATE VIEW evidence AS SELECT c.run_id, r.started_at, r.label, r.program,
         c.line, r.status, c.hit, c.phase, c.function, c.selector, c.type, c.value, c.num,
-        c.unavailable, c.error, c.view, r.args, r.sets, r.artifact_manifest_id,
+        c.unavailable, c.error, c.view, c.identity, c.scope, r.args, r.sets,
+        r.artifact_manifest_id,
         r.source_sha256, r.edit IS NOT NULL AS candidate, r.language
         FROM captures c JOIN runs r ON r.run_id = c.run_id"""
 _LAST_RUN_VIEW = (
@@ -132,7 +144,7 @@ _LAST_RUN_VIEW = (
 _CAPTURES = """CREATE TABLE {} (
         run_id INTEGER NOT NULL, hit INTEGER, phase TEXT, line INTEGER, function TEXT,
         selector TEXT, type TEXT, value TEXT, num NUMERIC, unavailable INTEGER NOT NULL,
-        error TEXT, view TEXT)"""
+        error TEXT, view TEXT, identity INTEGER, scope TEXT)"""
 _CAPTURE_INDEXES = (
     "CREATE INDEX captures_run ON captures (run_id, hit)",
     "CREATE INDEX captures_selector ON captures (selector)",
@@ -157,24 +169,62 @@ _DDL = (
     _LAST_RUN_VIEW,
 )
 
-# Older schemas upgraded in place: {version: statements to the next version}. A writer
-# upgrades before saving; a reader upgrades a writable store before opening it read-only.
-# Version 2 added runs.edit; version 3 rebuilt the views with `candidate` (an early
-# version 2 had the column but the old views); version 4 made captures.num NUMERIC;
-# version 5 added language to the views.
+# Older schemas upgraded in place: {version: statements to the next version}; a callable
+# takes the connection. A writer upgrades before saving; a reader upgrades a writable store
+# before opening it read-only. Version 2 added runs.edit; version 3 rebuilt the views with
+# `candidate` (an early version 2 had the column but the old views); version 4 made
+# captures.num NUMERIC; version 5 added language to the views; version 6 added
+# captures.identity and captures.scope; version 7 makes identity an INTEGER where an
+# early version 6 stored it as TEXT (`list@7`) without scope. Views name columns of the
+# newest captures table, so earlier steps only drop them and the last step creates them.
+_DROP_VIEWS = ("DROP VIEW IF EXISTS last_run", "DROP VIEW IF EXISTS evidence")
+
+
+def _add_identity(connection):
+    columns = {row[1] for row in connection.execute("PRAGMA table_info(captures)")}
+    for column, kind in (("identity", "INTEGER"), ("scope", "TEXT")):
+        if column not in columns:
+            connection.execute(f"ALTER TABLE captures ADD COLUMN {column} {kind}")
+
+
+def _identity_number(value):
+    """An identity as an early version 6 stored it (`list@7`), as its number (7)."""
+    if type(value) is int:
+        return value
+    found = re.search(r"@([0-9]{1,18})$", value) if isinstance(value, str) else None
+    return int(found[1]) if found else None
+
+
+def _integer_identity(connection):
+    types = {
+        row[1]: str(row[2]).upper() for row in connection.execute("PRAGMA table_info(captures)")
+    }
+    if types.get("identity", "INTEGER") == "INTEGER":
+        _add_identity(connection)
+        return
+    # Rebuilt in rowid order (capture order), with the number alone as the identity. That
+    # early version could read module globals without recording it: their scope is unknown.
+    columns = (
+        "run_id, hit, phase, line, function, selector, type, value, num, unavailable, error, view"
+    )
+    connection.execute(_CAPTURES.format("captures_v7"))
+    connection.execute(
+        f"INSERT INTO captures_v7 ({columns}, identity, scope) SELECT {columns}, "
+        "peeky_identity(identity), 'unknown' FROM captures ORDER BY rowid"
+    )
+    connection.execute("DROP TABLE captures")
+    connection.execute("ALTER TABLE captures_v7 RENAME TO captures")
+    for statement in _CAPTURE_INDEXES:
+        connection.execute(statement)
+
+
 _MIGRATIONS = {
     1: ("ALTER TABLE runs ADD COLUMN edit TEXT",),
-    2: (
-        "DROP VIEW IF EXISTS last_run",
-        "DROP VIEW IF EXISTS evidence",
-        _EVIDENCE_VIEW,
-        _LAST_RUN_VIEW,
-    ),
+    2: _DROP_VIEWS,
     # Rebuilt in rowid order, which is capture order; `num` is recomputed from the
     # exact `value` text (a REAL above 2**53 had already lost digits).
     3: (
-        "DROP VIEW IF EXISTS last_run",
-        "DROP VIEW IF EXISTS evidence",
+        *_DROP_VIEWS,
         _CAPTURES.format("captures_v4"),
         "INSERT INTO captures_v4 (run_id, hit, phase, line, function, selector, type, value, "
         "num, unavailable, error, view) SELECT run_id, hit, phase, line, function, selector, "
@@ -183,15 +233,10 @@ _MIGRATIONS = {
         "DROP TABLE captures",
         "ALTER TABLE captures_v4 RENAME TO captures",
         *_CAPTURE_INDEXES,
-        _EVIDENCE_VIEW,
-        _LAST_RUN_VIEW,
     ),
-    4: (
-        "DROP VIEW IF EXISTS last_run",
-        "DROP VIEW IF EXISTS evidence",
-        _EVIDENCE_VIEW,
-        _LAST_RUN_VIEW,
-    ),
+    4: _DROP_VIEWS,
+    5: (*_DROP_VIEWS, _add_identity),
+    6: (*_DROP_VIEWS, _integer_identity, _EVIDENCE_VIEW, _LAST_RUN_VIEW),
 }
 
 _LATEST = "(SELECT MAX(run_id) FROM runs)"
@@ -537,6 +582,7 @@ def _ensure(path):
     connection = _connect(path)
     # Migrations recompute numbers exactly as a new run would.
     connection.create_function("peeky_number", 1, _number, deterministic=True)
+    connection.create_function("peeky_identity", 1, _identity_number, deterministic=True)
     try:
         if connection.execute("PRAGMA user_version").fetchone()[0] != SCHEMA_VERSION:
             # Rechecked under the write lock: another process may have just created it.
@@ -552,7 +598,10 @@ def _ensure(path):
             elif version in _MIGRATIONS:
                 while version != SCHEMA_VERSION:
                     for statement in _MIGRATIONS[version]:
-                        connection.execute(statement)
+                        if callable(statement):
+                            statement(connection)
+                        else:
+                            connection.execute(statement)
                     version += 1
                 connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             else:
@@ -630,7 +679,7 @@ def record(path, result, *, language=None, target=None, label=None, worker=None)
             tuple(run.values()),
         ).lastrowid
         connection.executemany(
-            "INSERT INTO captures VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO captures VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [
                 (
                     run_id,
@@ -645,6 +694,8 @@ def record(path, result, *, language=None, target=None, label=None, worker=None)
                     1 if row.get("unavailable") else 0,
                     row.get("error"),
                     _text(row.get("view")),
+                    row["identity"] if type(row.get("identity")) is int else None,
+                    "globals" if row.get("scope") == "globals" else None,
                 )
                 for row in result.get("rows") or []
             ],
@@ -971,7 +1022,10 @@ def schema(path):
             "differs from b",
             "object_ref(text)": "The Java object a value is (`Merge$Interval@143`), else NULL: "
             "two values of one run with the same object_ref are the same object (aliasing); "
-            "the numbers differ between runs",
+            "the numbers differ between runs. Python values carry theirs in "
+            "captures.identity (an integer), not in their text: within one hit equal means "
+            "the same object; across hits equal may also be a new object in a freed one's "
+            "place, while different always means different objects",
         },
         "examples": list(EXAMPLES),
         "rules": [

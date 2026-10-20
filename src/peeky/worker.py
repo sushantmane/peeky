@@ -100,6 +100,9 @@ class DebugWorker:
         self.frames = set()
         self.innermost_frame = None
         self.references = set()
+        # Scope handles of module globals: listed for reading, never changed.
+        self.global_handles = set()
+        self.launched_at = None
         self.reference_frames = {}
         self.reference_adapter = {}
         self.reference_counter = 0
@@ -609,6 +612,16 @@ class DebugWorker:
                 raise ValueError("timeout must be a positive finite number")
         if operation == "inspect" and "frame_id" in args and type(args["frame_id"]) is not int:
             raise ValueError("frame_id must be an integer")
+        if operation == "inspect" and "frame" in args:
+            if type(args["frame"]) is not int or args["frame"] < 0:
+                raise ValueError("frame must be a non-negative integer (0 is the innermost)")
+            if "frame_id" in args:
+                raise ValueError("Pass frame or frame_id, not both")
+        if operation == "inspect" and "globals" in args and type(args["globals"]) is not bool:
+            if not _name_list(args["globals"]):
+                raise ValueError("globals must be true, false or a list of at most 32 names")
+        if operation == "inspect" and "names" in args and not _name_list(args["names"]):
+            raise ValueError("names must be a list of at most 32 names")
         if operation == "expand":
             for key, default, low, high in (
                 ("handle", None, 1, None),
@@ -678,6 +691,8 @@ class DebugWorker:
             edit, candidate_sha256 = self.candidate_edit(program, args.get("edit"))
             self.adapter.validate_breakpoints(args.get("breakpoints", []))
             self.session = uuid.uuid4().hex
+            # Wall-clock start: a source file changed after it may not be the code running.
+            self.launched_at = time.time()
             self.audit, self.audit_sizes, self.audit_bytes = [], [], 0
             self.breakpoint_events = []
             self.breakpoint_counts = {str(program): len(args.get("breakpoints", []))}
@@ -909,10 +924,29 @@ class DebugWorker:
             frames = stack.get("stackFrames", [])[:10]
             self.frames = {f["id"] for f in frames}
             self.innermost_frame = frames[0].get("id") if frames else None
-            selected = args.get("frame_id", frames[0]["id"] if frames else None)
+            if "frame" in args:
+                # An index into `frames` as this reply lists them (0 is the innermost).
+                if args["frame"] >= len(frames):
+                    raise ValueError(
+                        f"Frame {args['frame']} is out of range: this stop lists "
+                        f"{len(frames)} frame(s)"
+                        + (f", 0 to {len(frames) - 1}" if frames else "")
+                        + " (0 is the innermost; at most 10 are listed)"
+                    )
+                index = args["frame"]
+            else:
+                selected = args.get("frame_id", frames[0]["id"] if frames else None)
+                index = next((i for i, f in enumerate(frames) if f["id"] == selected), None)
+            selected = frames[index]["id"] if index is not None else None
             if selected not in self.frames:
                 raise ValueError("Unknown frame")
-            selected_frame = next(frame for frame in frames if frame["id"] == selected)
+            if [f["id"] for f in frames].count(selected) != 1:
+                # Proofs that hold only in the innermost frame are keyed by its id.
+                raise ValueError(
+                    f"The debugger gave frame {index} the same id as another frame; it "
+                    "cannot be read"
+                )
+            selected_frame = frames[index]
             if self.stop_reason == "step" and not _in_program_sources(
                 runtime, selected_frame, self.root
             ):
@@ -936,7 +970,7 @@ class DebugWorker:
                 # A caller frame outside the prepared program (JDK, libc, test runner) is
                 # a request the stop cannot serve, not a debugger failure.
                 raise ValueError(
-                    f"Frame {selected} ({selected_frame.get('name')}) is not in the prepared "
+                    f"Frame {index} ({selected_frame.get('name')}) is not in the prepared "
                     "program's sources; inspect one of your program's frames"
                 ) from exc
             if validate_debugger := getattr(runtime, "validate_debugger", None):
@@ -947,35 +981,74 @@ class DebugWorker:
             self.reference_frames.clear()
             self.reference_adapter.clear()
             scopes = self.dap.request("scopes", {"frameId": selected}).get("scopes", [])
-            pending = []
-            for scope in runtime.local_scopes(scopes)[:16]:
+            is_global = getattr(runtime, "global_scope", None)
+            groups = getattr(runtime, "variable_groups", frozenset())
+            # Module globals are listed only on request (`true`), or for names missing
+            # from the locals (a list) that the function provably reads from them:
+            # listing a value runs its repr in the program.
+            wanted = args.get("globals") or None
+            names = {*(args.get("names") or ()), *(wanted if isinstance(wanted, list) else ())}
+            listed = self.frame_scopes(runtime, selected_frame, scopes)
+            available = bool(is_global) and any(is_global(scope) for scope in listed)
+            pending, own, proof = [], [], None
+            for scope in listed:
+                module = bool(is_global) and is_global(scope)
+                if module and not wanted:
+                    continue
+                if module and isinstance(wanted, list):
+                    proof = self.globals_proof(runtime, selected_frame, own, wanted)
+                    if None not in (proof.get("names") or {}).values():
+                        continue
                 variables = self.dap.request(
                     "variables", {"variablesReference": scope["variablesReference"]}
                 ).get("variables", [])
                 if validate_children:
                     validate_children(variables)
+                if not module:
+                    own += [
+                        v["name"]
+                        for v in variables
+                        if isinstance(v, dict)
+                        and isinstance(v.get("name"), str)
+                        and v["name"] not in groups
+                    ]
                 self.reference_counter += 1
                 handle = self.reference_counter
+                shown = variables[: min(50, 512 - self.inspection_nodes)]
+                if names:
+                    # Names a request asks for are listed even past the bound.
+                    room = max(0, min(32, 512 - self.inspection_nodes - len(shown)))
+                    shown += [
+                        v
+                        for v in variables[len(shown) :]
+                        if isinstance(v, dict) and v.get("name") in names
+                    ][:room]
                 exposed = self.expose_variables(
-                    variables[: min(50, 512 - self.inspection_nodes)],
-                    selected_frame,
-                    self.scope_identity(scope),
-                    (),
+                    shown, selected_frame, self.scope_identity(scope), ()
                 )
-                pending.append((handle, scope, exposed))
-            references = [scope["variablesReference"] for _, scope, _ in pending]
+                pending.append((handle, scope, exposed, len(variables)))
+            references = [scope["variablesReference"] for _, scope, _, _ in pending]
             writable = quiescent and not self.view_timed_out
             if self.view_fetches and writable:
                 # Value views issued nested reads that may change adapter scope context.
                 # Bind mutation authority only to freshly re-acquired, identical scopes.
                 references = self.reacquire_scopes(runtime, selected_frame, pending)
             result = []
-            for (handle, scope, exposed), reference in zip(pending, references):
-                if writable:
+            self.global_handles = set()
+            for (handle, scope, exposed, total), reference in zip(pending, references):
+                entry = {"name": scope["name"], "reference": handle, "variables": exposed}
+                if is_global and is_global(scope):
+                    # The module's globals are read, never changed.
+                    entry["globals"] = True
+                    self.global_handles.add(handle)
+                elif writable:
                     self.references.add(handle)
                     self.reference_frames[handle] = selected_frame
                     self.reference_adapter[handle] = reference
-                result.append({"name": scope["name"], "reference": handle, "variables": exposed})
+                if total > len(exposed):
+                    # Cut at the bound (50 per scope, 512 per inspection): never silently.
+                    entry.update(truncated=True, total=total)
+                result.append(entry)
             source = (selected_frame.get("source") or {}).get("path")
             snapshot = {
                 "stop_id": self.stop_id,
@@ -986,6 +1059,8 @@ class DebugWorker:
                     else {}
                 ),
                 "function": str(selected_frame.get("name") or "")[:300],
+                # Which frame was read: an index into `frames` (0 is the innermost).
+                "frame": index,
                 # Which stop at the session's breakpoint this is, as state lines say.
                 **({"hit": self.stop_hit} if self.stop_hit else {}),
                 "frames": frames,
@@ -999,6 +1074,35 @@ class DebugWorker:
                 **self.pause_status(),
                 **({"optimized": level} if (level := self.optimized()) else {}),
             }
+            if index:
+                # Where the program is stopped, which a caller frame's location is not.
+                stopped = (frames[0].get("source") or {}).get("path")
+                snapshot["innermost"] = {
+                    **(
+                        {"location": f"{_display_path(runtime, stopped)}:{frames[0].get('line')}"}
+                        if isinstance(stopped, str) and stopped
+                        else {}
+                    ),
+                    "function": str(frames[0].get("name") or "")[:300],
+                }
+            if available:
+                # A name missing from the locals may be a module global (`globals`).
+                snapshot["globals_available"] = True
+            if names:
+                # Searched in every listed scope, past the bound too.
+                snapshot["names"] = sorted(names)
+            if wanted:
+                snapshot["globals"] = (
+                    "listed"
+                    if any("globals" in entry for entry in result)
+                    else "not listed: no requested name is one the function reads from them"
+                    if proof is not None
+                    else "not listed: at module level the locals are the module's globals"
+                    if is_global and selected_frame.get("name") == "<module>"
+                    else "not listed: this frame has no module globals to list"
+                )
+            if proof is not None:
+                snapshot["globals_proof"] = proof
             if not writable:
                 snapshot["mutation_blocked"] = "A value-view read is still pending; inspect again"
             return snapshot
@@ -1012,14 +1116,37 @@ class DebugWorker:
             if not self.capabilities.get("supports_set_variable", False):
                 raise ValueError("Adapter does not support variable mutation")
             ref = args["reference"]
+            if ref in self.global_handles:
+                raise ValueError(
+                    "Module globals cannot be changed: only the stopped function's own locals can"
+                )
             if ref not in self.references:
                 raise ValueError("Inspect the scope before changing variables")
+            if (self.reference_frames.get(ref) or {}).get("id") != self.innermost_frame:
+                raise ValueError(_CALLER_SET.format(name=repr(args["name"])))
             adapter_ref = self.reference_adapter[ref]
             runtime.validate_value(args["value"])
             current = self.dap.request("variables", {"variablesReference": adapter_ref}).get(
                 "variables", []
             )
             matches = [v for v in current if v.get("name") == args["name"]]
+            for group in current if not matches else ():
+                # debugpy files a local whose value is a function or class under a group;
+                # a literal never is one, so the changed local is listed directly after.
+                reference = group.get("variablesReference")
+                if (
+                    group.get("name") in getattr(runtime, "value_groups", ())
+                    and not group.get("type")
+                    and type(reference) is int
+                    and reference > 0
+                ):
+                    matches += [
+                        v
+                        for v in self.dap.request(
+                            "variables", {"variablesReference": reference}
+                        ).get("variables", [])
+                        if v.get("name") == args["name"]
+                    ]
             if len(matches) != 1:
                 raise ValueError("Expected exactly one existing local variable")
             variable = matches[0]
@@ -1190,6 +1317,28 @@ class DebugWorker:
     def scope_identity(scope):
         return (scope.get("name"), scope.get("presentationHint"))
 
+    def globals_proof(self, runtime, frame, own, names):
+        """How the frame's function sees each of ``names`` missing from its locals (see
+        PythonAdapter.globals_proof), computed only when asked."""
+        if not _inside_program(runtime, frame, self.root):
+            return {"unproven": "its source is outside the target root"}
+        return runtime.globals_proof(
+            frame,
+            [name for name in own if name.isidentifier()],
+            names,
+            loaded_by=self.launched_at,
+        )
+
+    @staticmethod
+    def frame_scopes(runtime, frame, scopes):
+        """The scopes an inspection of ``frame`` lists, at most 16."""
+        listed = runtime.local_scopes(scopes)
+        is_global = getattr(runtime, "global_scope", None)
+        if is_global and frame.get("name") == "<module>":
+            # Module code runs with its globals as its locals: they are listed once.
+            listed = [scope for scope in listed if not is_global(scope)]
+        return listed[:16]
+
     @staticmethod
     def frame_identity(frame):
         return (
@@ -1211,10 +1360,10 @@ class DebugWorker:
         runtime.validate_stop(matches[0])
         if validate_debugger := getattr(runtime, "validate_debugger", None):
             validate_debugger(self.dap, matches[0])
-        fresh = runtime.local_scopes(
-            self.dap.request("scopes", {"frameId": frame["id"]}).get("scopes", [])
-        )[:16]
-        original = [self.scope_identity(scope) for _, scope, _ in pending]
+        fresh = self.frame_scopes(
+            runtime, frame, self.dap.request("scopes", {"frameId": frame["id"]}).get("scopes", [])
+        )
+        original = [self.scope_identity(scope) for _, scope, _, _ in pending]
         if len(set(original)) != len(original):
             raise ValueError("Duplicate scope identities after value views; inspect again")
         if sorted(map(repr, (self.scope_identity(s) for s in fresh))) != sorted(
@@ -1294,6 +1443,8 @@ class DebugWorker:
         result = []
         view_variable = getattr(self.runtime, "view_variable", None)
         display_value = getattr(self.runtime, "display_value", None)
+        identify = getattr(self.runtime, "object_identity", None)
+        groups = getattr(self.runtime, "variable_groups", frozenset())
         for variable in variables:
             name, kind = variable.get("name"), variable.get("type")
             if not isinstance(name, str) or (kind is not None and not isinstance(kind, str)):
@@ -1355,7 +1506,11 @@ class DebugWorker:
                 self.inspection_nodes += 1
                 continue
             pending = getattr(self.runtime, "not_yet_declared", None) if not ancestry else None
-            if pending and (reason := pending(variable, frame)):
+            if pending and (
+                reason := pending(
+                    variable, frame, innermost=frame.get("id") == self.innermost_frame
+                )
+            ):
                 # Indeterminate here: never shown as a value, expanded or offered for set.
                 output = {
                     "name": name,
@@ -1373,21 +1528,31 @@ class DebugWorker:
                 self.inspection_nodes += 1
                 continue
             settable = None
+            # Only the stopped frame's values change: a caller's are read-only.
+            innermost = frame.get("id") == self.innermost_frame
             if not ancestry and (check := getattr(self.runtime, "settable", None)):
                 # Root locals `set` can change, so agents need not try and be refused;
                 # optimized builds refuse every change.
                 settable = (
                     self.capabilities.get("supports_set_variable", False) is True
+                    and innermost
                     and not self.optimized()
                     and self.has_memory_location(variable)
                     and bool(check(variable, frame))
                 )
             elif ancestry and (member := getattr(self.runtime, "member_settable", None)):
-                settable = self.member_set() and not self.optimized() and member(variable) is None
+                settable = (
+                    innermost
+                    and self.member_set()
+                    and not self.optimized()
+                    and member(variable) is None
+                )
             path = (*ancestry, (name, kind))
+            # A debugger's grouping node (debugpy's `special variables`) is not a level.
+            depth = sum(1 for step in path if not (step[0] in groups and not step[1]))
             handle = 0
             raw = variable.get("variablesReference", 0)
-            if type(raw) is int and raw > 0 and len(path) < 4:
+            if type(raw) is int and raw > 0 and depth < 4:
                 self.reference_counter += 1
                 handle = self.reference_counter
                 self.children[handle] = (dict(frame), scope, path)
@@ -1437,8 +1602,10 @@ class DebugWorker:
                         v[:100] for v in attributes[:16] if isinstance(v, str)
                     ]
                 output["presentationHint"] = safe_hint
-            if type(raw) is int and raw > 0 and len(path) >= 4:
+            if type(raw) is int and raw > 0 and depth >= 4:
                 output["depth_limited"] = True
+            if identify and (identity := identify(variable)):
+                output["identity"] = identity
             if settable is not None:
                 output["settable"] = settable
             result.append(output)
@@ -1554,6 +1721,8 @@ class DebugWorker:
             )
         if record is None or record[0] == "view":
             raise ValueError("Unknown or stale expansion handle; inspect again")
+        if record[0].get("id") != self.innermost_frame:
+            raise ValueError(_CALLER_SET.format(name=repr(args["name"])))
         if level := self.optimized():
             raise ValueError(
                 f"Changing values is refused in an optimized build ({level}); use an "
@@ -1619,8 +1788,8 @@ class DebugWorker:
         runtime.validate_stop(frame)
         if validate_debugger := getattr(runtime, "validate_debugger", None):
             validate_debugger(self.dap, frame)
-        scopes = runtime.local_scopes(
-            self.dap.request("scopes", {"frameId": frame["id"]}).get("scopes", [])
+        scopes = self.frame_scopes(
+            runtime, frame, self.dap.request("scopes", {"frameId": frame["id"]}).get("scopes", [])
         )
         matches = [scope for scope in scopes if self.scope_identity(scope) == scope_identity]
         if len(matches) != 1:
@@ -1654,6 +1823,7 @@ class DebugWorker:
         self.capabilities = {}
         self.frames.clear()
         self.references.clear()
+        self.global_handles.clear()
         self.reference_frames.clear()
         self.reference_adapter.clear()
         self.children.clear()
@@ -1666,6 +1836,23 @@ class DebugWorker:
         finally:
             if runtime:
                 runtime.close()
+
+
+_CALLER_SET = (
+    "{name} is in a caller's frame, whose values cannot be changed: only the stopped "
+    "(innermost) frame's can, which `session set` and probes change"
+)
+
+
+def _name_list(value):
+    """A request's list of at most 32 Python-style names."""
+    return (
+        isinstance(value, list)
+        and len(value) <= 32
+        and all(
+            isinstance(name, str) and len(name) <= 128 and name.isidentifier() for name in value
+        )
+    )
 
 
 def _display_path(runtime, path):

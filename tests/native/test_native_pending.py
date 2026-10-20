@@ -102,6 +102,477 @@ def test_a_local_declared_below_cannot_be_set(bucket, capsys):
     assert code == 0 and result["interventions"][0]["after"] == "5"
 
 
+TWICE = """#include <stdio.h>
+
+static long twice(long v) {
+    long doubled = v * 2;
+    return doubled;
+}
+
+int main(void) {
+    long seed = 21;
+    long result = twice(seed);
+    printf("%ld\\n", result);
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(120)
+def test_a_callers_local_declared_on_its_calling_line_is_withheld(bucket, capsys):
+    # #104: in `long result = twice(seed);`, main stores `result` only after twice
+    # returns, so `--frame 1` showed its leftovers (6712212928) as its value.
+    path = bucket.parent / "twice.c"
+    path.write_text(TWICE)
+    bucket.unlink()
+    assert main(["session", "start", str(path), "--at", "4"]) == 0
+    capsys.readouterr()
+    try:
+        main(["session", "get", "--frame", "1", "result", "seed", "--json"])
+        rows = {row["selector"]: row for row in json.loads(capsys.readouterr().out)}
+        assert rows["seed"]["value"] == "21" and rows["seed"]["frame"] == 1
+        result = rows["result"]
+        assert "value" not in result and result["unavailable"], result
+        assert (
+            "declared on line 10, whose code this caller frame has not finished"
+            in (result["error"])
+        )
+        main(["session", "get", "v", "--json"])
+        assert json.loads(capsys.readouterr().out)[0]["value"] == "21"
+    finally:
+        main(["session", "close"])
+
+
+FRAMES = """#include <stdio.h>
+
+struct pair { long x, y; };
+
+__attribute__((noinline)) static long twice(long v) {
+    long w = v * 2;
+    return w;
+}
+
+__attribute__((noinline)) static void scribble(void) {
+    volatile long junk[64];
+    for (int i = 0; i < 64; i++) junk[i] = 0x5150 + i;
+}
+
+__attribute__((noinline)) static long run(void) {
+    long seed = 21;
+    long result = twice(seed);
+    long multi =
+        twice(seed + 1);
+    struct pair p = {
+        .x = twice(1),
+        .y = twice(2),
+    };
+    printf("%ld %ld %ld %ld\\n", result, multi, p.x, p.y);
+    return result;
+}
+
+int main(void) {
+    scribble();
+    return (int)(run() & 1);
+}
+"""
+
+
+@pytest.mark.timeout(120)
+def test_a_callers_declaration_over_several_lines_is_withheld_until_it_is_stored(bucket, capsys):
+    # Review of #104: `long multi =` / `twice(seed + 1);` stores `multi` on line 18 after
+    # the call returns, so `--frame 1` showed leftovers (-1575490704436559704), and so did
+    # a designated initializer's fields (20878, 20879). Caller values are never settable.
+    path = bucket.parent / "frames.c"
+    path.write_text(FRAMES)
+    bucket.unlink()
+    shown = {}
+    for hit in (2, 3):
+        assert main(["session", "start", str(path), "--at", "7", "--hit", str(hit)]) == 0
+        capsys.readouterr()
+        try:
+            assert main(["session", "inspect", "--frame", "1", "--json"]) == 0
+            snapshot = json.loads(capsys.readouterr().out)
+        finally:
+            main(["session", "close"])
+            capsys.readouterr()
+        shown[hit] = {v["name"]: v for s in snapshot["scopes"] for v in s["variables"]}
+    for hit, name, line in ((2, "multi", 18), (3, "p", 20)):
+        variable = shown[hit][name]
+        assert variable["unavailable"] and variable.get("value") is None, variable
+        assert (
+            f"declared on line {line}, whose code this caller frame has not finished"
+            in (variable["reason"])
+        )
+    assert shown[2]["result"]["value"] == "42" and shown[3]["multi"]["value"] == "44"
+    assert not any(v.get("settable") for hit in shown for v in shown[hit].values())
+
+
+AGGREGATES = """#include <stdio.h>
+
+struct pair { long x, y; };
+struct outer { struct pair in; };
+
+__attribute__((noinline)) static long twice(long v) {
+    long w = v * 2;
+    return w;
+}
+
+__attribute__((noinline)) static void scribble(void) {
+    volatile long junk[96];
+    for (int i = 0; i < 96; i++) junk[i] = 0x5150 + i;
+}
+
+__attribute__((noinline)) static long run(void) {
+    struct outer o = {
+        .in = {
+            .x = twice(1),
+            .y = twice(2),
+        },
+    };
+    struct pair ps[2] = {
+        { twice(3), twice(4) },
+        { twice(5), twice(6) },
+    };
+    long grid[2][2] = {
+        { twice(7), twice(8) },
+        { twice(9), twice(10) },
+    };
+    long total = 0;
+    for (int k = 0; k < 2; k++) {
+        total += twice(k);
+    }
+    printf("%ld %ld %ld %ld %ld\\n", o.in.y, ps[1].y, grid[1][1], grid[0][0], total);
+    return o.in.x;
+}
+
+int main(void) {
+    scribble();
+    return (int)(run() & 1);
+}
+"""
+
+
+@pytest.mark.timeout(180)
+def test_a_callers_aggregate_stored_element_by_element_is_withheld(bucket, capsys):
+    # Review of #104 (round 2): clang puts no code on the declaration line of an array of
+    # structs, a 2-D array or a nested struct, so `--frame 1` showed `o.in.y = 20905`,
+    # `ps[1].x = -1530060163171811189` and `grid[1][0] = 20908` while being stored.
+    path = bucket.parent / "frames3.c"
+    path.write_text(AGGREGATES)
+    bucket.unlink()
+    shown = {}
+    for hit in (2, 5, 9, 11):
+        assert main(["session", "start", str(path), "--at", "8", "--hit", str(hit)]) == 0
+        capsys.readouterr()
+        try:
+            assert main(["session", "inspect", "--frame", "1", "--json"]) == 0
+            snapshot = json.loads(capsys.readouterr().out)
+        finally:
+            main(["session", "close"])
+            capsys.readouterr()
+        shown[hit] = {v["name"]: v for s in snapshot["scopes"] for v in s["variables"]}
+    for hit in (2, 5, 9, 11):
+        for name, line in (("o", 17), ("ps", 23), ("grid", 27)):
+            variable = shown[hit][name]
+            assert variable["unavailable"] and variable.get("value") is None, (hit, variable)
+            assert (
+                f"declared on line {line}, which has no code of its own" in (variable["reason"])
+            ), (hit, variable)
+    # A loop's counter while its body calls: the increment follows the body.
+    assert shown[11]["total"]["value"] == "0" and shown[11]["k"]["unavailable"]
+
+
+TRIO = """#include <stdio.h>
+
+struct pair { long x, y; };
+struct trio { long x; struct pair p; };
+
+__attribute__((noinline)) static long twice(long v) {
+    long w = v * 2;
+    return w;
+}
+
+__attribute__((noinline)) static void scribble(void) {
+    volatile long junk[96];
+    for (int i = 0; i < 96; i++) junk[i] = 0x5150 + i;
+}
+
+__attribute__((noinline)) static long run(long seed) {
+    struct pair q = { .x = seed,
+        .y = twice(2) };
+    long arr[2] = { seed + 1,
+        twice(9) };
+    struct trio t = { seed,
+        { twice(3),
+          twice(4) } };
+    long *ptrs[2] = { &q.x,
+        (long *)twice(0) };
+    printf("%ld %ld %ld %p\\n", q.y, arr[1], t.p.y, (void *)ptrs[1]);
+    return q.x;
+}
+
+int main(void) {
+    scribble();
+    return (int)(run(5) & 1);
+}
+"""
+
+
+@pytest.mark.timeout(240)
+@pytest.mark.parametrize("suffix", ["c", "cpp"])
+def test_a_callers_declaration_still_running_on_its_line_is_withheld(bucket, capsys, suffix):
+    # Review of #104 (round 3): line 21 has code (`t.x = seed`), all of it before the
+    # call, and `t.p` is stored after the calls on lines 22-23 return, so `--frame 1`
+    # showed `t.p.x = 20905` and `t.p.y = 20906` at hit 3, and `t.p.y = 20906` at hit 4.
+    directory = bucket.parent.with_name(f"trio-{suffix}")
+    directory.mkdir()
+    path = directory / f"frames5.{suffix}"
+    path.write_text(TRIO.replace("<stdio.h>", "<cstdio>") if suffix == "cpp" else TRIO)
+    selectors = ["t", "t.p", "t.p.y", "q.y", "arr[1]", "ptrs"]
+    rows = {}
+    for hit in (3, 4, 5):
+        assert main(["session", "start", str(path), "--at", "8", "--hit", str(hit)]) == 0
+        capsys.readouterr()
+        try:
+            main(["session", "get", "--frame", "1", *selectors, "--json"])
+            rows[hit] = {row["selector"]: row for row in json.loads(capsys.readouterr().out)}
+        finally:
+            main(["session", "close"])
+            capsys.readouterr()
+    for hit in (3, 4):
+        for selector in ("t", "t.p", "t.p.y"):
+            row = rows[hit][selector]
+            assert "value" not in row and row.get("unavailable", selector != "t"), (hit, row)
+            assert (
+                "its declaration (lines 21-23) is still running in this caller frame"
+                in row["error"]
+            ), (hit, row)
+        assert rows[hit]["q.y"]["value"] == "4" and rows[hit]["arr[1]"]["value"] == "18"
+    assert rows[5]["t.p.y"]["value"] == "8" and rows[5]["ptrs"]["unavailable"]
+
+
+HELPERS = """#include <stdio.h>
+
+struct pair { long x, y; };
+struct trio { long x; struct pair p; };
+
+__attribute__((noinline)) static long twice(long v) {
+    long w = v * 2;
+    return w;
+}
+
+__attribute__((noinline)) static void scribble(void) {
+    volatile long junk[96];
+    for (int i = 0; i < 96; i++) junk[i] = 0x5150 + i;
+}
+"""
+
+INCLUDED = {
+    "rows": (
+        """
+__attribute__((noinline)) static long run(long seed) {
+    long head = seed;
+    struct pair ps[2] = {
+#include "table.h"
+    };
+    printf("%ld %ld\\n", ps[1].y, head);
+    return ps[0].x;
+}
+""",
+        "table.h",
+        "        { twice(1), twice(2) },\n        { twice(3), twice(4) },\n",
+    ),
+    "declaration": (
+        """
+__attribute__((noinline)) static long run(long seed) {
+    long head = seed;
+#include "decl.h"
+        { twice(1), twice(2) },
+        { twice(3), twice(4) },
+    };
+    printf("%ld %ld\\n", ps[1].y, head);
+    return ps[0].x;
+}
+""",
+        "decl.h",
+        "    struct pair ps[2] = {\n",
+    ),
+}
+MAIN = """
+int main(void) {
+    scribble();
+    return (int)(run(5) & 1);
+}
+"""
+
+
+def _frame_one(capsys, path, line, hit, *selectors):
+    assert main(["session", "start", str(path), "--at", str(line), "--hit", str(hit)]) == 0
+    capsys.readouterr()
+    try:
+        main(["session", "get", "--frame", "1", *selectors, "--json"])
+        return {row["selector"]: row for row in json.loads(capsys.readouterr().out)}
+    finally:
+        main(["session", "close"])
+        capsys.readouterr()
+
+
+@pytest.mark.timeout(240)
+@pytest.mark.parametrize("kind", sorted(INCLUDED))
+def test_a_callers_local_declared_in_another_file_than_its_line_is_withheld(bucket, capsys, kind):
+    # Review of #104 (round 4): with an initializer's rows in an `#include`d file,
+    # `--frame 1` (at table.h:2) showed `ps[1].x = 429835611285028900`; so does a
+    # declaration in an included file, with the frame in the including file.
+    body, header, fragment = INCLUDED[kind]
+    directory = bucket.parent.with_name(f"inc-{kind}")
+    directory.mkdir()
+    (directory / header).write_text(fragment)
+    (directory / "inc.c").write_text(HELPERS + body + MAIN)
+    rows = _frame_one(capsys, directory / "inc.c", 8, 3, "ps[1]", "ps[1].x", "seed")
+    declared, line, frame = (
+        ("inc.c", 18, "table.h:2") if kind == "rows" else ("decl.h", 1, "inc.c:20")
+    )
+    assert rows["ps[1].x"]["location"].endswith(frame), rows["ps[1].x"]
+    for selector in ("ps[1]", "ps[1].x"):
+        assert "value" not in rows[selector], rows[selector]
+        assert (
+            f"declared on line {line} of {declared}, while this caller frame is at {frame}"
+            in rows[selector]["error"]
+        ), rows[selector]
+    assert rows["seed"]["value"] == "5"
+
+
+DIRECTIVES = (
+    HELPERS
+    + """
+__attribute__((noinline)) static long run(long seed) {
+    struct trio t = { seed,
+%:if 0
+        };
+%:endif
+        { twice(3),
+          twice(4) } };
+    struct trio u = { seed,
+#\\
+if 0
+        };
+#endif
+        { twice(5),
+          twice(6) } };
+    return t.p.y + u.p.y;
+}
+
+int main(void) {
+    scribble();
+    printf("%ld\\n", run(1));
+    return 0;
+}
+"""
+)
+
+DIGRAPHS = """#include <cstdio>
+
+struct Pair { long x, y; };
+struct Trio { long x; Pair p; };
+
+__attribute__((noinline)) static long twice(long v) {
+    long w = v * 2;
+    return w;
+}
+
+__attribute__((noinline)) static void scribble() {
+    volatile long junk[96];
+    for (int i = 0; i < 96; i++) junk[i] = 0x5150 + i;
+}
+
+#define INIT_BEGIN {
+#define INIT_END }
+#define LAMBDA_BEGIN [&]() {
+#define LAMBDA_END }()
+
+__attribute__((noinline)) static long run_digraph(long seed) {
+    Trio t <% [&]() <% long a = twice(10); return a + seed; %>(),
+        <% twice(11),
+           twice(12) %> %>;
+    return t.p.y;
+}
+
+__attribute__((noinline)) static long run_macro(long seed) {
+    Trio u = INIT_BEGIN LAMBDA_BEGIN long a = twice(20); return a + seed; LAMBDA_END,
+        { twice(21),
+          twice(22) } INIT_END;
+    return u.p.y;
+}
+
+int main() {
+    scribble();
+    long r = run_digraph(1);
+    scribble();
+    r += run_macro(2);
+    std::printf("%ld\\n", r);
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(300)
+@pytest.mark.parametrize(
+    "program, cases",
+    [
+        # `%:if 0` and `#\` + `if 0` hide `};` from the compiler, not from a text scan.
+        ("dirs.c", ((1, "t", 17, None), (3, "u", 23, None))),
+        # `<%` `%>` are braces; INIT_BEGIN and LAMBDA_BEGIN open them out of sight.
+        ("dig.cpp", ((2, "t", 22, 24), (5, "u", 29, None), (6, "u", 29, None))),
+    ],
+)
+def test_a_declaration_the_compiler_reads_differently_from_its_text_is_withheld(
+    bucket, capsys, program, cases
+):
+    # Review of #104 (round 4): the statement scan found an end too early, so
+    # `get t.p --frame 1` showed leftovers.
+    directory = bucket.parent.with_name(program.replace(".", "-"))
+    directory.mkdir()
+    path = directory / program
+    path.write_text(DIRECTIVES if program == "dirs.c" else DIGRAPHS)
+    for hit, name, declared, end in cases:
+        rows = _frame_one(capsys, path, 8, hit, f"{name}.p", f"{name}.p.y")
+        for row in rows.values():
+            assert "value" not in row, (hit, row)
+            assert f"declared on line {declared}, and " in row["error"], (hit, row)
+            assert (
+                f"(lines {declared}-{end}) is still running"
+                if end
+                else "cannot tell from the source where its declaration ends"
+            ) in row["error"], (hit, row)
+
+
+@pytest.mark.timeout(240)
+def test_a_lone_carriage_return_breaks_a_line_as_the_compiler_counts_it(bucket, capsys):
+    # Review of #104 (round 5): with a lone `\r` between `{ twice(3),` and
+    # `twice(4) } };`, the scan ended `t` on line 22, so frame 1 at line 23 (hit 4)
+    # showed `t.p.y = 20906`. The frame's line and DWARF's declaration lines count it too.
+    directory = bucket.parent.with_name("cr")
+    directory.mkdir()
+    path = directory / "cr.c"
+    source = TRIO.replace("{ twice(3),\n", "{ twice(3),\r")
+    assert source.count("\r") == 1
+    path.write_bytes(source.encode())
+    for hit, line in ((3, 22), (4, 23)):
+        rows = _frame_one(capsys, path, 8, hit, "t", "t.p.y")
+        assert rows["t"]["location"].endswith(f"cr.c:{line}"), rows["t"]
+        for row in rows.values():
+            assert "value" not in row, (hit, row)
+            assert "its declaration (lines 21-23) is still running" in row["error"], (hit, row)
+    rows = _frame_one(capsys, path, 8, 5, "t.p.y", "ptrs")
+    assert rows["t.p.y"]["value"] == "8" and rows["ptrs"]["location"].endswith("cr.c:25")
+    assert "declared on line 24" in rows["ptrs"]["error"], rows["ptrs"]
+    # `\n\r` is two breaks to Clang's line table (since Clang 9), not one pair.
+    path.write_bytes(TRIO.replace("{ twice(3),\n", "{ twice(3),\n\r").encode())
+    rows = _frame_one(capsys, path, 8, 4, "t")
+    assert rows["t"]["location"].endswith("cr.c:24"), rows["t"]
+    assert "its declaration (lines 21-24) is still running" in rows["t"]["error"], rows["t"]
+
+
 GOTO = """#include <stdio.h>
 int main(void) {
     int i = 0;
