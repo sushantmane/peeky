@@ -778,3 +778,62 @@ def test_a_string_shown_as_its_text_lists_no_members(tmp_path):
         (("a", "A"), ("b", "B"), ("c", "C"), ("d", "D")),
     )
     assert deep["variablesReference"] == 0 and "depth_limited" not in deep
+
+
+def test_a_noted_reason_shows_the_value_with_its_note_and_only_others_withhold(tmp_path):
+    # #140 with #132's check before any view: a reason with a `note` shows the value (a
+    # view's too) with the note, and is offered for set unless it `refuses`; a reason
+    # without one withholds the row; the runtime sees the frame's rows and the stop.
+    from types import SimpleNamespace
+
+    from peeky.native import ValueNote
+    from peeky.worker import DebugWorker
+
+    reasons = {
+        "kept": ValueNote("declared on line 3", "may be the last pass's value", refuses=False),
+        "loop": ValueNote("declared on line 4", "may be the last pass's value", refuses=True),
+        "late": "declared on line 9, which has not run yet",
+        "seen": ValueNote("in a function calling setjmp", "setjmp may have run", refuses=False),
+    }
+    asked = []
+
+    def not_yet_declared(variable, frame, **kwargs):
+        asked.append((variable["name"], [row["name"] for row in kwargs["siblings"]]))
+        return reasons.get(variable["name"])
+
+    def view_variable(variable, fetch, read=None, **kwargs):
+        if variable["name"] != "seen":
+            return None
+        return {"value": '"x"', "rust_view": "memory"}
+
+    runtime = SimpleNamespace(
+        assert_current=lambda: None,
+        reports_unavailable_as_text=True,
+        not_yet_declared=not_yet_declared,
+        view_variable=view_variable,
+        settable=lambda variable, frame: True,
+    )
+    worker = DebugWorker(tmp_path)
+    worker.runtime, worker.state, worker.stop_id = runtime, "stopped", "stop1"
+    worker.capabilities["supports_set_variable"] = True
+    worker.innermost_frame, worker.stop_reason = 1, "breakpoint"
+    names = ["kept", "loop", "late", "seen", "plain"]
+    rows = worker.expose_variables(
+        [{"name": name, "type": "int", "value": "7"} for name in names],
+        {"id": 1},
+        ("Locals",),
+        (),
+    )
+    kept, loop, late, seen, plain = rows
+    assert kept["value"] == "7" and kept["note"] == "may be the last pass's value"
+    assert kept["settable"] is True and "withheld" not in kept
+    assert loop["value"] == "7" and loop["note"] and loop["settable"] is False
+    assert late["withheld"] and late["value"] is None and late["reason"].startswith("declared")
+    assert late["settable"] is False and late["variablesReference"] == 0
+    assert (
+        seen["value"] == '"x"'
+        and seen["view"] == "memory"
+        and seen["note"] == "setjmp may have run"
+    )
+    assert plain["value"] == "7" and "note" not in plain and plain["settable"] is True
+    assert asked == [(name, names) for name in names]
