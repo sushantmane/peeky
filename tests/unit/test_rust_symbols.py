@@ -1690,8 +1690,11 @@ def test_tuple_structs_are_unread_where_a_source_names_a_field_like_theirs():
         "struct:peeky_pagination::Span": {"kind": "composite", "shape": "struct"},
         "&[peeky_pagination::Num]": {"kind": "slice", "shape": "tuple-struct"},
     }
-    plain = 'struct Two(u32, u32);\n// __0: a comment\nlet s = "__1: text";\n'
+    plain = 'struct Two(u32, u32);\n// __0: a comment\nlet s = "__1: text";\nlet n = 1__0;\n'
     assert without_numbered_structs(layouts, [plain]) == layouts
+    # Fields a macro declares from the names it is given (review 2).
+    generated = without_numbered_structs(layouts, [plain, "fields!(Num, __0, __1);\n"])
+    assert generated["&[peeky_pagination::Num]"] == {"kind": "unread"}
     declared = "struct Num {\n    __0: u32,\n}\n"
     assert without_numbered_structs(layouts, [plain, declared]) == {
         "struct:peeky_pagination::Num": {"kind": "unread"},

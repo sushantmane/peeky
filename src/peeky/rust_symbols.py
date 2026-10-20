@@ -1414,14 +1414,16 @@ def _spelled(name, shown):
     return bool(re.fullmatch("".join(parts) + (r" \*" if pointer else ""), str(shown)))
 
 
-# A field named like a tuple's (`struct Num { __0: u32 }`), declared or written.
-_NUMBERED_FIELD = re.compile(r"(?<![\w:])__[0-9]+\s*:(?!:)")
+# An identifier named like a tuple's field in the DWARF (`__0`). Rust code never writes a
+# tuple's field so (`t.0`): it is always one of the program's own names.
+_NUMBERED_FIELD = re.compile(r"(?<![\w])__[0-9]+(?![\w])")
 
 
 def without_numbered_structs(layouts, texts):
-    """``layouts`` with every tuple struct unread when a source names a field `__0`
-    (`struct Num { __0: u32 }`): the DWARF names a tuple struct's fields so too, and
-    such a struct prints `Num { __0: 1 }`, not `Num(1)`. ``texts``: the sources'."""
+    """``layouts`` with every tuple struct unread when a source has an identifier `__0`
+    (`struct Num { __0: u32 }`, or a macro's `fields!(Num, __0, __1)` declaring such
+    fields): the DWARF names a tuple struct's fields so too, and such a struct prints
+    `Num { __0: 1 }`, not `Num(1)`. ``texts``: the sources'."""
     if not any(_NUMBERED_FIELD.search(code_only(text) or text) for text in texts):
         return layouts
     return {

@@ -189,8 +189,9 @@ class Body:
     # block: the block resuming it}, which the dispatch at bb0 jumps to on a later poll.
     coroutine: int | None = None
     # The type parameters of a generic body (IrFunction.generics, set when an IR function
-    # is matched to it): a type named like a primitive (`i8`) may be one of them.
-    generics: tuple | None = ()
+    # is matched to it): a type named like a primitive (`i8`) may be one of them. None
+    # until then (a twin a macro generates): any may be.
+    generics: tuple | None = None
     saved: frozenset = frozenset()
     resumes: dict = field(default_factory=dict)
     _lent_cache: frozenset | None = None
@@ -2086,23 +2087,64 @@ def ir_functions(path, files):
     return functions
 
 
+# A const generic's value as rustc names an instantiation (`sum<3>`, `cgt<u8, 2>`).
+_CONST_ARGUMENT = re.compile(r"-?[0-9]+|true|false|'(?:[^'\\]|\\.)+'")
+
+
 def _generics(meta, fields):
-    """A DISubprogram's type parameters, by name (see IrFunction.generics)."""
+    """A DISubprogram's type parameters, by name (see IrFunction.generics).
+
+    rustc lists each type parameter (its impl's and enclosing function's too) and never
+    a const one, and its name gives every argument (`cgt<u8, 2>`) but no lifetime: the
+    arguments beyond the listed types must all be const values, which are no types.
+    """
     kind, listed = meta.get(fields.get("templateParams"), (None, {}))
     items = listed.get("items", []) if kind == "list" else None
     named = fields.get("name", "")
+    arguments = _name_arguments(named)
     if items is None:
         # No list read: generic only if its name says so (`show<u64>`).
-        return None if named.endswith(">") else ()
+        return None if arguments else ()
     names = []
     for item in items:
         kind, parameter = meta.get(item, (None, {}))
         if kind != "DITemplateTypeParameter" or not parameter.get("name"):
             return None
         names.append(parameter["name"])
-    if not names and named.endswith(">"):
+    if arguments is None:
+        return None
+    consts = sum(1 for argument in arguments if _CONST_ARGUMENT.fullmatch(argument))
+    if len(arguments) - len(names) != consts and arguments:
         return None
     return tuple(names)
+
+
+def _name_arguments(name):
+    """The generic arguments a DISubprogram's name ends with (`cgt<u8, 2>`: ["u8", "2"]),
+    [] for none, None if they cannot be read."""
+    if not name.endswith(">"):
+        return []
+    # `->` would close a bracket (`show<fn(u8) -> u8>`).
+    text, depth = name.replace("->", "  "), 0
+    for at in range(len(text) - 1, -1, -1):
+        depth += {">": 1, "<": -1}.get(text[at], 0)
+        if depth == 0:
+            inner = name[at + 1 : -1]
+            break
+    else:
+        return None
+    parts, depth, start = [], 0, 0
+    masked = inner.replace("->", "  ")
+    for at, char in enumerate(masked):
+        if char in "<([{":
+            depth += 1
+        elif char in ">)]}":
+            depth -= 1
+        elif char == "," and depth == 0:
+            parts.append(inner[start:at].strip())
+            start = at + 1
+    parts.append(inner[start:].strip())
+    return None if depth or not all(parts) else parts
 
 
 def mentions(kind, names):
@@ -2295,6 +2337,7 @@ class OwnedLocals:
                 else (found.supported or found.coroutine is None) and _covered(found, function)
             ):
                 # Identified, but its layout or dataflow is not understood.
+                found.generics = function.generics
                 self._unanalyzed[hashed] = [found]
                 found = None
             elif len(candidates) > 1:

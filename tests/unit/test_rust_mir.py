@@ -1075,6 +1075,7 @@ def test_aliases_follow_values_that_can_hold_a_pointer_and_find_drops_through_th
     )
     body = parse_body(text)
     assert body.supported
+    body.generics = ()  # matched to a function that has no type parameters
     assert body._aliases(1) == {1, 4, 5, 6}  # not the length or the String made from it
     assert body.drops_through(1) and not body.drops_through(2)
 
@@ -1586,16 +1587,23 @@ start:
   ret void, !dbg !23
 }
 
+define internal void @_ZN3app3odd17h5555555555555555E() !dbg !14 {
+start:
+  ret void, !dbg !24
+}
+
 !2 = !DIFile(filename: "src/main.rs", directory: "/w")
 !9 = !DINamespace(name: "app", scope: null)
 !10 = distinct !DISubprogram(name: "show<i8>", linkageName: "_ZN3app4show17h1111111111111111E", scope: !9, file: !2, line: 1, unit: !1, templateParams: !30)
 !11 = distinct !DISubprogram(name: "show<char>", linkageName: "_ZN3app4show17h2222222222222222E", scope: !9, file: !2, line: 1, unit: !1, templateParams: !32)
 !12 = distinct !DISubprogram(name: "main", linkageName: "_ZN3app4main17h3333333333333333E", scope: !9, file: !2, line: 5, unit: !1, templateParams: !34)
 !13 = distinct !DISubprogram(name: "fixed<3>", linkageName: "_ZN3app5fixed17h4444444444444444E", scope: !9, file: !2, line: 7, unit: !1, templateParams: !34)
+!14 = distinct !DISubprogram(name: "odd<u8>", linkageName: "_ZN3app3odd17h5555555555555555E", scope: !9, file: !2, line: 9, unit: !1, templateParams: !34)
 !20 = !DILocation(line: 2, scope: !10)
 !21 = !DILocation(line: 2, scope: !11)
 !22 = !DILocation(line: 6, scope: !12)
 !23 = !DILocation(line: 8, scope: !13)
+!24 = !DILocation(line: 10, scope: !14)
 !30 = !{!31}
 !31 = !DITemplateTypeParameter(name: "i8", type: !40)
 !32 = !{!33}
@@ -1613,8 +1621,9 @@ def test_a_generic_instantiation_names_its_type_parameters(tmp_path):
     path.write_text(GENERIC_IR)
     functions = ir_functions(path, ["src/main.rs"])
     generics = {hashed[-1]: function.generics for hashed, function in functions.items()}
-    # A const generic (`fixed<3>`, no type parameter listed) is not understood.
-    assert generics == {"1": ("i8",), "2": ("i8",), "3": (), "4": None}
+    # rustc lists no const parameter (`fixed<3>`): its argument is a value, no type. A
+    # name's type argument with no parameter listed for it is not understood.
+    assert generics == {"1": ("i8",), "2": ("i8",), "3": (), "4": (), "5": None}
     assert mentions("Pair<i8>", ("i8",)) and mentions("(i8, i8)", ("i8",))
     assert mentions("std::vec::Vec<Pair<T>>", ("T",))
     assert not mentions("chars::i8::Span", ("i8",)) and not mentions("Thing", ("T",))
@@ -1630,6 +1639,7 @@ def test_a_generic_bodys_primitive_named_types_may_hold_pointers():
         header="fn main(_1: u64) -> () {",
     )
     body.types.update({1: "u64", 2: "u64", 3: "&mut u64"})
+    body.generics = ()
     assert body._aliases(1) == {1}
     body = mir(
         {
@@ -2021,3 +2031,13 @@ def test_a_macro_s_own_stops_judge_the_references_of_their_block(tmp_path):
     # The macro's own `args` of the stop's block, set there.
     assert judged("args", True, 0xE50) is True
     assert judged("v", True, 0xE60) is True
+
+
+def test_a_body_no_function_was_matched_to_may_have_any_type_parameter():
+    # Review of #106: a macro's twins are never matched, so their type parameters are
+    # unknown: a `usize` there may hold a pointer too.
+    body = mir(
+        {0: ["_2 = copy _1;", "_3 = &mut _2;", "return;"]}, header="fn main(_1: u64) -> () {"
+    )
+    body.types.update({1: "u64", 2: "u64", 3: "&mut u64"})
+    assert body.generics is None and body._aliases(1) == {1, 2, 3}

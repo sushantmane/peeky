@@ -3764,7 +3764,9 @@ def test_a_generic_bodys_types_are_never_taken_for_the_frames(plain, capsys):
         assert second[name].get("view") != "memory", second[name]
     # The debugger's own fields: the chars the program holds.
     assert second["p.a"]["value"] == "'A'" and second["t.__0"]["value"] == "'C'", second
-    assert "65" not in str(second) and "67" not in str(second), second
+    # Never the bytes of `Pair<i8>`'s layout (addresses and hashes may hold the digits).
+    shown = " ".join(str(row.get("value")) for row in second.values())
+    assert "Pair { a: 65" not in shown and "(67, " not in shown, second
     # A scalar's Rust type: not the MIR's `u64` (a type parameter, here a usize).
     at = f"src/main.rs:{line_of(GENERIC_PREVIEWS, '// GP_LABEL')}"
     code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "x", "--quiet")
@@ -3834,3 +3836,177 @@ def test_numbered_fields_and_packed_structs_are_never_previewed(plain, capsys):
     # A struct with named fields still previews.
     if os.environ.get("PEEKY_EXPECT_READ_MEMORY") or rows["s"].get("view") == "memory":
         assert rows["s"]["value"] == "Span { start: 7, end: 8 }", rows["s"]
+
+
+MACRO_NUMBERED = """macro_rules! fields {
+    ($name:ident, $a:ident, $b:ident) => {
+        #[derive(Debug, Clone, Copy)]
+        pub struct $name {
+            $a: u32,
+            $b: u32,
+        }
+        impl $name {
+            fn new(x: u32, y: u32) -> Self {
+                Self { $a: x, $b: y }
+            }
+        }
+    };
+}
+
+fields!(Num, __0, __1);
+
+fn main() {
+    let n = Num::new(1, 2);
+    let v = vec![n];
+    println!("{:?} {:?}", n, v); // MN_STOP
+}
+"""
+
+
+@pytest.mark.timeout(300)
+def test_fields_a_macro_names_like_a_tuples_are_never_previewed(plain, capsys):
+    # Review 2 of #106: `fields!(Num, __0, __1)` declares `Num { __0: u32, __1: u32 }`,
+    # which previewed as `Num(1, 2)`: the source had no `__0:`, only the token.
+    (plain / "src/main.rs").write_text(MACRO_NUMBERED)
+    at = f"src/main.rs:{line_of(MACRO_NUMBERED, '// MN_STOP')}"
+    code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "n,v,n.__1", "--quiet")
+    assert code == 0, result.get("error")
+    rows = {row["selector"]: row for row in result["rows"]}
+    assert "Num { __0: 1, __1: 2 }" in result["output"]
+    for name in ("n", "v"):
+        assert rows[name].get("view") != "memory" and "Num(" not in rows[name]["value"], rows
+    assert rows["n.__1"]["value"] == "2", rows
+
+
+CONST_GENERICS = """#[derive(Debug, Clone, Copy)]
+pub struct Span {
+    start: usize,
+    end: usize,
+}
+
+pub struct Grid<const N: usize> {
+    cells: [u32; N],
+}
+
+impl<const N: usize> Grid<N> {
+    fn width(&self, s: Span) -> usize {
+        let w = s;
+        let f = |k: usize| {
+            let inner = w;
+            k + N + inner.end // CG_CLOSURE
+        };
+        f(self.cells.len()) // CG_METHOD
+    }
+}
+
+fn sum<const N: usize>(arr: [u32; N], s: Span) -> usize {
+    let n: usize = arr.len();
+    let w = s;
+    n + w.end // CG_SUM
+}
+
+fn main() {
+    let s = Span { start: 1, end: 2 };
+    let g = Grid { cells: [1u32; 4] };
+    println!("{} {}", sum([1, 2, 3], s), g.width(s));
+}
+"""
+
+
+@pytest.mark.timeout(600)
+def test_const_generic_functions_keep_their_previews_and_rust_types(plain, capsys):
+    # Review 2 of #106: rustc names a const generic's instantiation `sum<3>` but lists no
+    # template parameter for it, which was taken for a generic not understood: `n` lost
+    # its `usize` and `s`, `w` their previews. A const argument is a value, never a type.
+    (plain / "src/main.rs").write_text(CONST_GENERICS)
+    reads = os.environ.get("PEEKY_EXPECT_READ_MEMORY") is not None
+    for marker, capture in (
+        ("CG_SUM", "n,s,w"),
+        ("CG_METHOD", "s,w"),
+        ("CG_CLOSURE", "k,inner"),
+    ):
+        at = f"src/main.rs:{line_of(CONST_GENERICS, '// ' + marker)}"
+        code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", capture, "--quiet")
+        assert code == 0, result.get("error")
+        rows = {row["selector"]: row for row in result["rows"]}
+        for name in capture.split(","):
+            row = rows[name]
+            if name in ("n", "k"):
+                assert row["type"] == "usize", (marker, row)
+            elif reads or row.get("view") == "memory":
+                assert row["value"] == "Span { start: 1, end: 2 }", (marker, row)
+
+
+GENERIC_TWINS = """#![allow(non_camel_case_types)]
+#[derive(Debug, Clone, Copy)]
+pub struct Pt {
+    x: i64,
+    y: i64,
+}
+
+#[derive(Debug)]
+pub struct Res {
+    x: i64,
+}
+
+impl Drop for Res {
+    fn drop(&mut self) {
+        churn(); // GT_IN_DROP
+    }
+}
+
+#[inline(never)]
+fn churn() -> i64 {
+    Box::leak(Box::new(Pt { x: 777, y: 888 })).x + Box::leak(Box::new([777i64; 4]))[0]
+}
+
+fn ident<'a>(v: &'a mut Vec<Res>) -> &'a mut Vec<Res> {
+    v
+}
+
+// Twins: methods a macro generates, which the MIR cannot tell apart. Their type
+// parameter `u64` is a `&mut Vec<Res>` pointing where `v` does.
+macro_rules! twin {
+    ($t:ident) => {
+        impl $t {
+            fn reset<'a, u64: std::ops::DerefMut<Target = Vec<Res>> + 'a>(
+                &self,
+                v: &'a mut Vec<Res>,
+                make: fn(&'a mut Vec<Res>) -> u64,
+                n: i64,
+            ) -> i64 {
+                let k = v[0].x;
+                let mut w = make(v);
+                *w = vec![Res { x: n }]; // GT_TWIN
+                k + w[0].x
+            }
+        }
+    };
+}
+
+struct A;
+struct B;
+twin!(A);
+twin!(B);
+
+fn main() {
+    let mut v = vec![Res { x: 5 }];
+    let mut u = vec![Res { x: 6 }];
+    println!("{} {}", A.reset(&mut v, ident, 9), B.reset(&mut u, ident, 10));
+    std::mem::forget(v);
+    std::mem::forget(u);
+}
+"""
+
+
+@pytest.mark.timeout(600)
+def test_a_twins_primitive_named_type_parameter_may_alias_a_reference(plain, capsys):
+    # Review 2 of #106: a macro's twins are matched to no function, so their type
+    # parameters are unknown; their `u64` was taken for a pointerless integer, so the
+    # drop through `w` (made from `v`) of `*w = new` was not seen as one through `v`, which
+    # then read the dropped Vec between the drop and the store.
+    (plain / "src/main.rs").write_text(GENERIC_TWINS)
+    at = f"src/main.rs:{line_of(GENERIC_TWINS, '// GT_IN_DROP')}"
+    line = line_of(GENERIC_TWINS, "// GT_TWIN")
+    variables = _stepped_out_to(plain, capsys, at, 0, line)
+    assert variables["v"].get("view") == "unproven", variables["v"]
