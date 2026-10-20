@@ -384,7 +384,8 @@ def typedef_kinds(info):
     alone, so `RowPtr rp` cannot be told from `RowRef rr` by its type (#102). A name for
     two kinds (a struct and a pointer typedef, or typedefs in two units) is "unknown".
     Plain names are taken only for typedefs at file or function scope; a namespace's or
-    class's are known by their qualified names. A class's member typedef is also kept
+    class's are known by their qualified names, and every typedef and record also by
+    the name lldb-dap shows (``_displayed``), so two entities shown alike are "unknown". A class's member typedef is also kept
     under `::Class::member` (the class's own name, without template arguments), and
     each namespace's name under `namespace::Name`, for ``typedef_kind``'s fallback."""
     dies, found = _dies(info), {}
@@ -411,6 +412,7 @@ def typedef_kinds(info):
         if die["tag"] in _RECORDS or die["tag"] == "DW_TAG_enumeration_type":
             note(_text(die["attrs"].get("DW_AT_name")), ("other", ""))
             note(_qualified(dies, offset), ("other", ""))
+            note(_displayed(dies, offset), ("other", ""))
             continue
         if die["tag"] != "DW_TAG_typedef":
             continue
@@ -454,6 +456,7 @@ def typedef_kinds(info):
         qualified = _qualified(dies, offset)
         if qualified and qualified != name:
             note(qualified, kind)
+        note(_displayed(dies, offset), kind)
     return found
 
 
@@ -491,6 +494,28 @@ def _qualified(dies, offset, depth=0):
             if outer := _qualified(dies, parent, depth + 1) or _local_scope(linkage):
                 parts.append(outer)
             break
+        parent = die["parent"]
+    return "::".join(reversed(parts))
+
+
+def _displayed(dies, offset):
+    """A type's name as lldb-dap shows it: scoped by its namespaces and classes, but not
+    by inline namespaces (`DW_AT_export_symbols`: `v1`, libc++'s `__1`), unnamed ones,
+    or the function declaring it (`Node::Link` for `main`'s local `Node`)."""
+    name = _text(dies[offset]["attrs"].get("DW_AT_name"))
+    if name is None:
+        return None
+    parts, parent = [name], dies[offset]["parent"]
+    while parent is not None and len(parts) < 32:
+        die = dies[parent]
+        if die["tag"] == "DW_TAG_subprogram":
+            break
+        if (
+            die["tag"] in _QUALIFIERS
+            and (outer := _text(die["attrs"].get("DW_AT_name")))
+            and "DW_AT_export_symbols" not in die["attrs"]
+        ):
+            parts.append(outer)
         parent = die["parent"]
     return "::".join(reversed(parts))
 

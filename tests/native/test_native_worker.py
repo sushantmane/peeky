@@ -852,7 +852,9 @@ def test_a_pointer_to_an_array_or_container_indexes_as_c_does(tmp_path, native_c
             "rp[0][1],rp[1],crp[0][1],rr[1],vr[1],bigp[0][450],bigp[-1],ep[0],np[0],"
             "garbage[0],tp[1],dp[0],later[0],pc[1],vref[0],avp[0][1]",
         ),
-        ("names.cpp", SAME_NAMES, 23, "r[1],r[0],rf[0],rf[1],v[0],v[1],h.r[0],g.v[0][1],g.v[1]"),
+        ("names.cpp", SAME_NAMES, 23, "r[1],r[0][1],rf[0],rf[1],v[0],v[1],h.r[0],g.v[0][1],g.v[1]"),
+        ("inline.cpp", INLINE_NAMES, 20, "rf[0],rf[1],r[1],r[0][1]"),
+        ("local.cpp", LOCAL_CLASS, 10, "l[0],l[1],g.l[0][1],g.l[1]"),
     ):
         (tmp_path / name).write_text(text)
         probe = ["probe", str(tmp_path / name), "--at", str(line), "--json", "--no-save"]
@@ -872,12 +874,22 @@ def test_a_pointer_to_an_array_or_container_indexes_as_c_does(tmp_path, native_c
             # Review 4: a member typedef's last name (`Table::Rows`, `Graph::vector`)
             # resolved `lib::Rows` (lldb-dap leaves out the inline namespace) and plain
             # `std::vector<int>`.
-            assert all("not read" in rows[s]["error"] for s in ("r[1]", "r[0]")), rows
+            # Round 5: `lib::v1::Rows` is known by the name lldb-dap shows, `lib::Rows`.
+            assert "not read" in rows["r[1]"]["error"], rows
+            assert rows["r[0][1]"].get("value") in (None, "2"), rows["r[0][1]"]
             assert rows["rf[0]"].get("value") in (None, "7"), rows["rf[0]"]
             assert rows["rf[1]"].get("value") in (None, "8"), rows["rf[1]"]
             assert rows["v[0]"]["value"] == "7" and rows["v[1]"]["value"] == "8", rows
             assert rows["h.r[0]"]["value"] == "size=3" and rows["g.v[0][1]"]["value"] == "2"
             assert "read g.v[0][1]" in rows["g.v[1]"]["error"]
+        elif name in ("inline.cpp", "local.cpp"):
+            # Review 5: lldb-dap leaves out inline namespaces and a local class's
+            # function (`Ref`, `Node::Link`), so another entity shown alike (a function's
+            # own `Ref`, the file's `Node`) gave its kind to these.
+            expected = {"rf[0]": "7", "rf[1]": "8", "r[0][1]": "2", "l[0]": "7", "l[1]": "8"}
+            expected["g.l[0][1]"] = "2"
+            for selector, row in rows.items():
+                assert row.get("value") in (None, expected.get(selector)), row
         else:
             # Review of #117: a typedef'd pointer shows by the typedef's name alone, as a
             # typedef'd reference does; the build's debug information tells them apart.
@@ -915,6 +927,46 @@ def test_a_pointer_to_an_array_or_container_indexes_as_c_does(tmp_path, native_c
         main(["session", "close"])
         capsys.readouterr()
 
+
+INLINE_NAMES = """#include <cstdio>
+#include <vector>
+inline namespace v1 {
+    using Ref = std::vector<int> &;
+    typedef int (*Rows)[3];
+}
+static int helper(std::vector<int> *vs, int (*rows)[3]) {
+    typedef std::vector<int> *Ref;
+    typedef int Rows;
+    Ref p = vs;
+    Rows k = rows[0][0];
+    return (*p)[0] + k;
+}
+int main() {
+    int rows[2][3] = {{1, 2, 3}, {4, 5, 6}};
+    std::vector<int> v{7, 8, 9};
+    std::vector<int> vs[2] = {v, v};
+    Ref rf = v;
+    Rows r = rows;
+    int n = rf[1] + r[1][0] + helper(vs, rows);
+    std::printf("%d\\n", n);
+    return 0;
+}
+"""
+
+LOCAL_CLASS = """#include <cstdio>
+#include <vector>
+struct Node { typedef int (*Link)[3]; Link l; };
+int main() {
+    int rows[2][3] = {{1, 2, 3}, {4, 5, 6}};
+    std::vector<int> v{7, 8, 9};
+    Node g{rows};
+    struct Node { using Link = std::vector<int> &; };
+    Node::Link l = v;
+    int n = g.l[1][0] + l[1];
+    std::printf("%d\\n", n);
+    return 0;
+}
+"""
 
 SAME_NAMES = """#include <cstdio>
 #include <vector>
