@@ -1077,3 +1077,40 @@ def test_a_stale_rust_value_is_stored_as_stale(store):
         {"selector": "f.n", "value": "3", "view": None},
         {"selector": "h.n", "value": "9", "view": "stale"},
     ]
+
+
+def test_a_table_shows_short_frame_names_and_sql_compares_whole_ones(store):
+    # Eval 6, finding 16: a C++ signature doubled the table's width. The text shows the
+    # short name and says so; the result, and what SQL compares, stay whole.
+    whole = (
+        "trim_left(std::__1::basic_string<char, std::__1::char_traits<char>, "
+        "std::__1::allocator<char>> const&)"
+    )
+    probe = result()
+    for row in probe["rows"]:
+        row["function"] = whole
+    evidence.record(store, probe, language="cpp")
+    shaped = evidence.query(store, "SELECT DISTINCT function FROM captures")
+    assert shaped["rows"] == [{"function": whole}]
+    text = evidence.table(shaped)
+    assert "trim_left\n" in text and "basic_string" not in text
+    assert "short_function(function) = 'trim_left'" in text
+    sql = "SELECT count(*) AS n FROM captures WHERE short_function(function) = 'trim_left'"
+    assert evidence.query(store, sql)["rows"] == [{"n": 4}]
+    assert evidence.query(store, "SELECT short_function(NULL) AS f")["rows"] == [{"f": None}]
+    # Nothing shortened, no note.
+    assert "note:" not in evidence.table(evidence.query(store, "SELECT 'main' AS function"))
+
+
+def test_the_notes_example_matches_overloads_as_sql_does(store):
+    # Review of the eval-6 fixes: with overloads the example read
+    # `short_function(function) = 'twice(int)'`, which matches no row.
+    probe = result()
+    names = ["twice(int)", "twice(std::__1::basic_string<char> const&)"]
+    for row, name in zip(probe["rows"], names * 2):
+        row["function"] = name
+    evidence.record(store, probe, language="cpp")
+    text = evidence.table(evidence.query(store, "SELECT DISTINCT function FROM captures"))
+    assert "twice(int)" in text and "short_function(function) = 'twice'" in text, text
+    sql = "SELECT count(*) AS n FROM captures WHERE short_function(function) = 'twice'"
+    assert evidence.query(store, sql)["rows"] == [{"n": 4}]

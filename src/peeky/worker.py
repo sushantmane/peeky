@@ -2079,6 +2079,13 @@ class DebugWorker:
                     for key in ("value", "unavailable", "reason", "view", "string_length"):
                         if key in shown:
                             output[key] = shown[key]
+                    if shown.get("text") is True:
+                        # A C++ string is its text: its members are the library's own
+                        # (`(anonymous struct)`, `_M_dataplus`), never listed (eval 6).
+                        output["text"] = True
+                        self.children.pop(handle, None)
+                        self.taints.pop(handle, None)
+                        output["variablesReference"] = handle = 0
             if self.placeholders() and is_unavailable(output["value"]):
                 # The placeholder text is the debugger's reason, never the value.
                 output["unavailable"] = True
@@ -2128,7 +2135,7 @@ class DebugWorker:
                         v[:100] for v in attributes[:16] if isinstance(v, str)
                     ]
                 output["presentationHint"] = safe_hint
-            if type(raw) is int and raw > 0 and depth >= 4:
+            if type(raw) is int and raw > 0 and depth >= 4 and not output.get("text"):
                 output["depth_limited"] = True
             if identify and (identity := identify(variable)):
                 output["identity"] = identity
