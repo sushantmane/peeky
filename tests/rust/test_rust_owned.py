@@ -172,6 +172,24 @@ def test_a_deferred_local_is_read_only_after_its_assignment(crate, capsys):
 
 
 @pytest.mark.timeout(300)
+def test_a_callers_owned_locals_are_never_read_through_another_frame(crate, capsys):
+    # #104: `--frame 1` reads main's locals, but the MIR proofs hold only in the innermost
+    # frame, so main's live `acc` and `text` keep their raw fields there.
+    assert main(["session", "start", str(crate), "--at", f"src/main.rs:{line('BEFORE')}"]) == 0
+    capsys.readouterr()
+    try:
+        main(["session", "get", "--frame", "1", "acc", "text", "--json"])
+        rows = {row["selector"]: row for row in json.loads(capsys.readouterr().out)}
+        for row in rows.values():
+            assert row["frame"] == 1 and "::main::" in row["function"], row
+            assert row.get("view") != "memory" and "innermost frame" in row["note"], row
+        assert main(["session", "inspect", "--frame", "1"]) == 0
+        assert "\nframe 1: peeky_pagination::main (" in capsys.readouterr().out
+    finally:
+        main(["session", "close"])
+
+
+@pytest.mark.timeout(300)
 def test_a_shadowed_string_is_read_only_through_its_live_binding(crate, capsys):
     assert main(["session", "start", str(crate), "--at", f"src/main.rs:{line('SHADOW')}"]) == 0
     capsys.readouterr()

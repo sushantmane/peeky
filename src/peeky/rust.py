@@ -1031,7 +1031,9 @@ class RustSession(NativeSession):
                         variable.get("name"),
                         line,
                         shown_path,
-                        breakpoint=stop == "breakpoint",
+                        # A caller frame is on its call's line, anywhere on it (a step's
+                        # rule): more places can only make the verdict stricter.
+                        breakpoint=innermost and stop == "breakpoint",
                         column=(frame or {}).get("column"),
                     )
                 )
@@ -1127,7 +1129,9 @@ class RustSession(NativeSession):
             gated = (owning or (pointer and not plain)) and not (
                 provable and proofs.proven(hashed[1], variable.get("name"), line, shown_path)
             )
-            if not gated and provable:
+            # Judged in every frame (`--frame N` reads callers): only proofs that make a
+            # value readable (an owned container, a Box) are the innermost frame's.
+            if not gated and unoptimized and hashed:
                 # #110: a reference (or raw pointer, `&str`, a tuple holding one) outlives
                 # what it points into in scope, though not in use: it reads while the code
                 # still uses it ahead. A line breakpoint stops only where the line starts in

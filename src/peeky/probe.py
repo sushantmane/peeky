@@ -405,13 +405,38 @@ def _report_hit(hit, limit, last_said):
     return hit in (1, limit) or time.monotonic() - last_said >= PROGRESS_SECONDS
 
 
-def _visible(snapshot):
+def _listing(scopes):
+    """The names these scopes list, for a not-found message, and what the bound left out."""
     # lldb-dap names a nameless slot (a closure's environment) "<null>": not selectable.
-    names = sorted(
-        {v["name"] for scope in snapshot["scopes"] for v in scope["variables"]} - {"<null>"}
-    )
-    shown = ", ".join(names[:40]) + (f", ... ({len(names)} total)" if len(names) > 40 else "")
-    return shown or "(none)"
+    names = sorted({v["name"] for scope in scopes for v in scope["variables"]} - {"<null>"})
+    grouped = [name for name in names if name in _GROUPS]
+    names = [name for name in names if name not in _GROUPS]
+    parts = []
+    if names:
+        parts.append(
+            ", ".join(names[:40]) + (f", ... ({len(names)} total)" if len(names) > 40 else "")
+        )
+    if grouped:
+        parts.append(f"the names in debugpy's {', '.join(grouped)} (select them by name)")
+    shown = " and ".join(parts)
+    for scope in scopes:
+        if scope.get("truncated"):
+            shown += (
+                f" ({scope['name']} lists {len(scope['variables'])} of its "
+                f"{scope.get('total')} entries, debugpy's groups included)"
+            )
+    return shown
+
+
+def _visible(snapshot, module=True):
+    """The names a selector's first part can take: the frame's own, then (Python)
+    the module's globals, when they were listed."""
+    own = [scope for scope in snapshot["scopes"] if not scope.get("globals")]
+    shown = _listing(own) or "(none)"
+    globals_ = [scope for scope in snapshot["scopes"] if scope.get("globals")]
+    if module and globals_:
+        shown += f"; module globals: {_listing(globals_) or '(none)'}"
+    return shown
 
 
 def _member_hint(worker, stop, snapshot, name):
@@ -443,22 +468,187 @@ def _member_hint(worker, stop, snapshot, name):
     return ""
 
 
+def _page_find(worker, stop, handle, segment=None, first_page=None):
+    """Pages of a value's children (64 at a time, at most 512) until one is ``segment``
+    (all of them without one): (the child or None, the children read, whether the bound
+    stopped the search). ``first_page(handle)``, if given, serves the first page (fetched
+    once per selector)."""
+    found, start, incomplete, children = None, 0, False, []
+    while found is None:
+        page = (
+            first_page(handle)
+            if first_page is not None and start == 0
+            else worker.dispatch("expand", {**stop, "handle": handle, "start": start})
+        )
+        children.extend(page["variables"])
+        if segment is not None:
+            found = next((v for v in page["variables"] if _names(v, segment)), None)
+        if found is not None or not page["truncated"]:
+            break
+        if start + 64 > 511 or page.get("remaining_nodes", 1) <= 0:
+            incomplete = True
+            break
+        start += 64
+    return found, children, incomplete
+
+
+def _grouped(worker, stop, children, name, cache):
+    """Members named ``name`` that debugpy filed under one of its groups among
+    ``children``, by its own rule: `__dunder__` names in `special variables`, `_x` in
+    `protected variables`, functions and classes in `function` or `class variables`.
+    A group is read once per inspection (``cache``: its handle -> its members)."""
+    if name.startswith("__") and name.endswith("__"):
+        wanted = {"special variables"}
+    elif name.startswith("_") or name.endswith("__"):
+        wanted = {"protected variables"}
+    else:
+        wanted = {"function variables", "class variables"}
+    found = []
+    for group in children:
+        handle = group.get("variablesReference")
+        if group["name"] not in wanted or group.get("type") or not handle:
+            continue
+        if handle not in cache:
+            _, members, incomplete = _page_find(worker, stop, handle)
+            cache[handle] = (members, incomplete)
+        members, incomplete = cache[handle]
+        member = next((m for m in members if m["name"] == name), None)
+        if member is None and incomplete:
+            raise Refused(
+                "BUDGET_EXHAUSTED",
+                f"{name!r} is beyond the bounded inspection window of debugpy's {group['name']}",
+            )
+        if member is not None:
+            found.append(member)
+    return found
+
+
+def _groups(snapshot):
+    """The groups read at this inspection; a new inspection starts afresh."""
+    return snapshot.setdefault("_groups", {})
+
+
+def _scope_lookup(worker, stop, snapshot, scopes, name):
+    """``name`` in these scopes: listed directly, or in one of debugpy's groups; with
+    the scope it is in."""
+    for scope in scopes:
+        for variable in scope["variables"]:
+            if variable["name"] == name:
+                return variable, scope
+    for scope in scopes:
+        if found := _grouped(worker, stop, scope["variables"], name, _groups(snapshot)):
+            return found[0], scope
+    return None, None
+
+
+def _with_globals(worker, stop, snapshot, name):
+    """Inspect the same frame again, asking for the module globals its function reads
+    among the selectors' names missing from its locals. The snapshot is replaced in
+    place: the new inspection revokes the old one's handles."""
+    own = {
+        variable["name"]
+        for scope in snapshot["scopes"]
+        if not scope.get("globals")
+        for variable in scope["variables"]
+    }
+    asked = [name, *(n for n in snapshot.get("names") or () if n != name and n not in own)]
+    request = {
+        **stop,
+        "names": sorted({name, *(snapshot.get("names") or ())})[:32],
+        "globals": asked[:32],
+    }
+    if snapshot.get("frame"):
+        request["frame"] = snapshot["frame"]
+    fresh = worker.dispatch("inspect", request)
+    snapshot.clear()
+    snapshot.update(fresh)
+
+
+def _bound(name, how, function):
+    """Why ``name`` in ``function`` is not a module global (python_scopes.classify)."""
+    kind, owner = how.get("kind"), how.get("owner") or "a function around it"
+    return {
+        "local": f"{name!r} is a local of {function} with no value at this line (not yet "
+        "assigned, or deleted): reading it here raises UnboundLocalError",
+        "parameter": f"{name!r} is a parameter of {function}, deleted before this line: "
+        "reading it here raises UnboundLocalError",
+        "comprehension": f"{name!r} is the variable of a comprehension in {function}, "
+        "which has no value outside that comprehension",
+        "free": f"{name!r} is a variable of {owner} that {function} uses (a closure "
+        "variable), with no value there yet: reading it here raises NameError",
+        "enclosing": f"{name!r} is a local of {owner}, the function around {function}, "
+        f"which {function} does not use",
+        "type parameter": f"{name!r} is a type parameter of {owner} (PEP 695), which "
+        f"{function} does not use",
+        "class cell": f"'__class__' is the class cell Python gives only a method that uses "
+        f"super() or __class__, which {function} does not",
+        "class cell used": f"'__class__' is {function}'s implicit class cell, with no value here",
+    }.get(kind, f"{name!r} is bound in {function} ({kind})")
+
+
+def _root(worker, stop, snapshot, name):
+    """The variable a selector's first name reads, and whether it is a module global.
+
+    The frame's own scopes come first. A Python name missing there is read from the
+    module's globals only when the worker proved, from the function's own scoping, that
+    the function reads that name from its globals: a local not yet assigned is missing
+    from the locals too, and its global namesake is not its value. The globals are
+    listed (running their reprs) only then."""
+    own = [scope for scope in snapshot["scopes"] if not scope.get("globals")]
+    if (found := _scope_lookup(worker, stop, snapshot, own, name)[0]) is not None:
+        return found, False
+    if any(scope.get("truncated") for scope in own) and name not in (snapshot.get("names") or ()):
+        # A worker that predates `names` lists no name past the bound.
+        raise ValueError(
+            f"not found among the names listed (visible: {_visible(snapshot)}): {name!r} "
+            "may be past them"
+        )
+    if not snapshot.get("globals_available"):
+        raise ValueError(
+            f"not found; visible: {_visible(snapshot)}" + _member_hint(worker, stop, snapshot, name)
+        )
+    proof = snapshot.get("globals_proof") or {}
+    if "unproven" not in proof and name not in (proof.get("names") or {}):
+        _with_globals(worker, stop, snapshot, name)
+        proof = snapshot.get("globals_proof") or {"unproven": "the worker gave no proof"}
+    function = display_function(snapshot.get("function")) or "this function"
+    if "unproven" in proof or name not in (proof.get("names") or {}):
+        raise ValueError(
+            f"not found: {name!r} is not a local here. It may be a module global, but Peeky "
+            f"could not prove that {function} reads it from there "
+            f"({str(proof.get('unproven') or 'no proof for this name')[:300]}), so module "
+            "globals are not read"
+        )
+    if (how := proof["names"][name]) is not None:
+        raise ValueError(
+            f"not found: {_bound(name, how, function)}. A module global of that name is not "
+            f"what {function} reads here, so it is not read; visible: {_visible(snapshot)}"
+        )
+    module = [scope for scope in snapshot["scopes"] if scope.get("globals")]
+    found = _scope_lookup(worker, stop, snapshot, module, name)[0] if module else None
+    if found is None:
+        raise ValueError(
+            f"not found: {name!r} is neither a local nor a module global here; visible: "
+            f"{_visible(snapshot)}"
+        )
+    return found, True
+
+
+def _keyed(variable, children):
+    """Whether debugpy lists ``variable`` by key (a dict or set: `len()`, and not a
+    list, tuple or deque), whose entries' names are their keys' reprs, not attributes."""
+    return variable.get("type") not in _PY_SEQUENCES and any(
+        child["name"] == "len()" for child in children
+    )
+
+
 def _resolve(worker, stop, snapshot, segments, pointers=False):
     """The variable a parsed selector names. ``pointers``: a C/C++ target, where `p[0]`
     reads a scalar pointer's pointee (not Rust, whose references and Boxes LLDB also
-    shows as pointers, and whose target may have been freed)."""
-    matches = [
-        variable
-        for scope in snapshot["scopes"]
-        for variable in scope["variables"]
-        if variable["name"] == segments[0]
-    ]
-    if not matches:
-        raise ValueError(
-            f"not found; visible: {_visible(snapshot)}"
-            + _member_hint(worker, stop, snapshot, segments[0])
-        )
-    variable, path = matches[0], segments[0]
+    shows as pointers, and whose target may have been freed). A value read through a
+    module global carries ``"scope": "globals"``."""
+    variable, module = _root(worker, stop, snapshot, segments[0])
+    path = segments[0]
     pages = {}  # {handle: its first page}, fetched once per selector
 
     def first_page(handle):
@@ -520,26 +710,23 @@ def _resolve(worker, stop, snapshot, segments, pointers=False):
             path += segment
             continue
         key = _key(segment)
-        found, start, incomplete, children = None, 0, False, []
-        while found is None:
-            page = (
-                first_page(handle)
-                if start == 0
-                else worker.dispatch("expand", {**stop, "handle": handle, "start": start})
-            )
-            children.extend(page["variables"])
-            found = next((v for v in page["variables"] if _names(v, segment)), None)
-            if found is not None or not page["truncated"]:
-                break
-            if start + 64 > 511 or page.get("remaining_nodes", 1) <= 0:
-                incomplete = True
-                break
-            start += 64
+        found, children, incomplete = _page_find(worker, stop, handle, segment, first_page)
         if found is None and incomplete:
             raise Refused(
                 "BUDGET_EXHAUSTED",
                 f"{_shown(segment)} is beyond the bounded inspection window (512 children)",
             )
+        if found is None and not segment.startswith("[") and not _keyed(variable, children):
+            # An attribute debugpy filed under a group (`f.__defaults__` is in `special
+            # variables`). A dict's or set's groups also hold entries named by their keys'
+            # reprs, which an attribute name must never read.
+            grouped = _grouped(worker, stop, children, segment, _groups(snapshot))
+            if len(grouped) > 1:
+                raise ValueError(
+                    f"{_shown(segment)} is ambiguous: debugpy lists {len(grouped)} members of "
+                    f"{variable['name']!r} with that name"
+                )
+            found = grouped[0] if grouped else None
         if (
             found is None
             and segment.startswith("[")
@@ -585,7 +772,7 @@ def _resolve(worker, stop, snapshot, segments, pointers=False):
             )
         variable = found
         path += segment if segment.startswith("[") else f".{segment}"
-    return variable
+    return {**variable, "scope": "globals"} if module else variable
 
 
 _RUST_TEXT = frozenset({"&str", "&mut str", "alloc::string::String *"})
@@ -727,7 +914,10 @@ def _partial(children):
 
 def _not_found(variable, segment, children, path=None, pointers=False):
     """Why `segment` is absent, with the selectors that would work."""
+    # Attribute names were looked for in the groups already; keys and indexes never are.
     grouped = sorted({child["name"] for child in children} & _VALUE_GROUPS)
+    if not segment.startswith("["):
+        grouped = []
     reach = (
         f" (debugpy files entries whose values are functions or classes under "
         f"{' and '.join(repr(group) for group in grouped)}, which selectors cannot reach)"
@@ -954,6 +1144,7 @@ def _capture(
     children=False,
     preview=False,
     pointers=False,
+    frame=0,
 ):
     """Rows for each selector at one stop.
 
@@ -961,26 +1152,46 @@ def _capture(
     change); a selector that runs out of expansion budget is retried once on a fresh
     inspection, so sharing never turns a readable value into an error. With
     ``children``, an expandable value also lists its first page of children, each with
-    the selector that reads it.
+    the selector that reads it. ``frame`` is the index of the stack frame every selector
+    reads (0, the innermost, by default).
     """
+
+    # Asked for by name, a local or global past the listing bound is read too.
+    named = {"names": roots} if (roots := _roots(selectors)) else {}
+
+    def inspect():
+        if not frame:
+            return worker.dispatch("inspect", {**stop, **named})
+        shown = worker.dispatch("inspect", {**stop, "frame": frame, **named})
+        if shown.get("frame") != frame:
+            # A worker that predates `frame` ignores it and reads the innermost frame.
+            raise ValueError(
+                "This worker cannot read a caller's frame (it predates --frame); update "
+                "Peeky on the worker host"
+            )
+        return shown
+
     rows = []
     for selector in selectors:
         row = {"hit": hit, "phase": phase, "selector": selector}
         fresh = snapshot is None
         if fresh:
-            snapshot = worker.dispatch("inspect", stop)
-        frame = snapshot["frames"][0] if snapshot["frames"] else {}
-        row["line"] = frame.get("line")
-        if frame.get("name"):
+            snapshot = inspect()
+        index = snapshot.get("frame", 0)
+        read = snapshot["frames"][index] if len(snapshot["frames"]) > index else {}
+        row["line"] = read.get("line")
+        if read.get("name"):
             # Tells a function body from a nested generator/lambda frame on the same line.
-            row["function"] = frame["name"]
+            row["function"] = read["name"]
+        if index:
+            row.update(frame=index, location=snapshot.get("location"))
         try:
             try:
                 variable = _resolve(worker, stop, snapshot, parse_selector(selector), pointers)
             except ValueError as exc:
                 if fresh or not _BUDGET.search(str(exc)):
                     raise
-                snapshot = worker.dispatch("inspect", stop)
+                snapshot = inspect()
                 variable = _resolve(worker, stop, snapshot, parse_selector(selector), pointers)
         except ValueError as exc:
             row["error"] = str(exc)
@@ -1009,7 +1220,7 @@ def _capture(
                         try:
                             shown = java_preview(variable, _expander(worker, stop))
                         except ValueError:
-                            snapshot = worker.dispatch("inspect", stop)
+                            snapshot = inspect()
                             variable = _resolve(
                                 worker, stop, snapshot, parse_selector(selector), pointers
                             )
@@ -1028,6 +1239,11 @@ def _capture(
                     row["note"] = _COMPOSITE_RUST
             if "view" in variable:
                 row["view"] = variable["view"]
+            if variable.get("scope") == "globals":
+                row["scope"] = "globals"
+            if variable.get("identity") and not variable.get("unavailable"):
+                # Which object the value is (Python): see PythonAdapter.object_identity.
+                row["identity"] = variable["identity"]
             if type(variable.get("settable")) is bool:
                 # Whether --set can change this value here: a local (C, C++, Rust, Java),
                 # or a Java field or array element.
@@ -1042,7 +1258,7 @@ def _capture(
                         if not _BUDGET.search(str(exc)):
                             raise
                         # As for values: a fresh inspection restores the node budget.
-                        snapshot = worker.dispatch("inspect", stop)
+                        snapshot = inspect()
                         variable = _resolve(
                             worker, stop, snapshot, parse_selector(selector), pointers
                         )
@@ -1051,6 +1267,19 @@ def _capture(
                     row["children_error"] = str(exc)
         rows.append(row)
     return rows
+
+
+def _roots(selectors):
+    """The distinct first names of these selectors (at most 32)."""
+    roots = []
+    for selector in selectors:
+        try:
+            first = parse_selector(selector)[0]
+        except ValueError:
+            continue
+        if first.isidentifier() and first not in roots:
+            roots.append(first)
+    return roots[:32]
 
 
 def _settable_here(snapshot):
@@ -1087,18 +1316,21 @@ def apply_set(worker, stop, name, value):
     """Apply one `--set name=value` at this stop: a root local, or in Java a field or
     array element a selector names (`current.end`, `this.count`, `xs[0]`, `xs[-1]`)."""
     worker = _Coded(worker)
-    snapshot = worker.dispatch("inspect", stop)
     segments = parse_selector(name)
+    snapshot = worker.dispatch("inspect", {**stop, "names": [segments[0]]})
     if len(segments) == 1:
-        scope = next(
-            (s for s in snapshot["scopes"] if any(v["name"] == name for v in s["variables"])),
-            None,
-        )
+        own = [scope for scope in snapshot["scopes"] if not scope.get("globals")]
+        # Listed directly, or in a group of debugpy's (a local holding a function).
+        found, scope = _scope_lookup(worker, stop, snapshot, own, name)
+        if found is not None and found not in scope["variables"]:
+            # Reading the group revoked the scope's authority to change: inspect again.
+            fresh = worker.dispatch("inspect", {**stop, "names": [segments[0]]})
+            scope = next((s for s in fresh["scopes"] if s["name"] == scope["name"]), None)
         if scope is None:
             raise Refused(
                 "NOT_FOUND",
                 f"Intervention target {name!r} is not a visible local; "
-                f"visible: {_visible(snapshot)}"
+                f"visible: {_visible(snapshot, module=False)}"
                 + _member_hint(worker, stop, snapshot, name).replace(
                     "select it as", "it can be read as"
                 )
@@ -1344,13 +1576,19 @@ def _children(worker, stop, selector, variable, pointers=False):
             if "exceeds bounded expansion" not in str(exc):
                 raise
             # A backing array over 512 slots: its fields (size, elementData) instead.
-    listed = []
+    listed, grouped = [], []
+    # A container's groups hold its type's methods and dunders: named only for objects.
+    container = any(child["name"] == "len()" for child in page["variables"])
     for child in page["variables"]:
         if child["name"] in _GROUPS:
+            if not child.get("type") and not container:
+                grouped.append(child["name"])
             continue
         entry = {"name": child["name"], "type": child.get("type"), "value": child.get("value")}
         if child.get("unavailable"):
             entry.update(unavailable=True, reason=child.get("reason"))
+        if child.get("identity"):
+            entry["identity"] = child["identity"]
         path = _child_selector(selector, child["name"])
         if pointers and path is None and _pointee(variable, page["variables"]) is child:
             path = f"{selector}[0]"
@@ -1381,7 +1619,12 @@ def _children(worker, stop, selector, variable, pointers=False):
         if child.get("variablesReference"):
             entry["expandable"] = True
         listed.append(entry)
-    return {"children": listed, **({"children_truncated": True} if page["truncated"] else {})}
+    return {
+        "children": listed,
+        **({"children_truncated": True} if page["truncated"] else {}),
+        # Members debugpy files under its groups, selected by name (`f.__defaults__`).
+        **({"children_grouped": grouped} if grouped else {}),
+    }
 
 
 def _expected_line(breakpoint, state, requested):
@@ -1502,7 +1745,8 @@ def run_probe(root, probe, *, adapter=None, progress=None):
             # Only the requested breakpoint counts; a crash, signal or other stop fails
             # closed before any capture or intervention.
             expected = _expected_line(result["breakpoint"], state, line)
-            snapshot = worker.dispatch("inspect", stop)
+            roots = _roots(probe.capture)
+            snapshot = worker.dispatch("inspect", {**stop, **({"names": roots} if roots else {})})
             frame = snapshot["frames"][0] if snapshot["frames"] else {}
             reason = state.get("event", {}).get("body", {}).get("reason")
             path = str(frame.get("source", {}).get("path", "")).replace("\\", "/")
@@ -1747,7 +1991,9 @@ def _table(result):
             row.get("type") or "",
             row.get("value", "<" + row.get("error", "") + ">")
             + (f"  [{row['view']}]" if row.get("view") else "")
-            + ("  [settable]" if row.get("settable") else ""),
+            + ("  [settable]" if row.get("settable") else "")
+            + (f"  [id {row['identity']}]" if row.get("identity") else "")
+            + ("  [module global]" if row.get("scope") == "globals" else ""),
         )
         for row in result["rows"]
     ]

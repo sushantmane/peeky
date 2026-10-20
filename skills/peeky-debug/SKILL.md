@@ -19,4 +19,4 @@ For a breakpoint in an imported Python module, pass the project directory, `--at
 
 If a call may outlast your tool timeout, add `--background` and poll with `peeky job wait <id>` (exit 3 means still running). Programs with timeouts or heartbeats: prefer probes, and give sessions `--max-pause`.
 
-For several looks at one stop, use `peeky session start ... --at ...`, then `session get`, `session set`, `session continue`, `session report` and `session close`. Use `--json` when you need to parse output.
+For several looks at one stop, use `peeky session start ... --at ...`, then `session get`, `session set`, `session continue`, `session report` and `session close`. `session inspect --frame 1` and `session get --frame 1 <names>` read the caller's frame. Use `--json` when you need to parse output.

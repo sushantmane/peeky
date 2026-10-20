@@ -22,7 +22,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from peeky.adapters import PythonAdapter
+from peeky.adapters import PythonAdapter, locals_only
 from peeky.build import (
     ArtifactSpec,
     BuildCommandError,
@@ -35,6 +35,7 @@ from peeky.build import (
     prepare,
     real_tool,
 )
+from peeky.c_source import Statements, unsafe_macros
 from peeky.digest import sha256_file
 from peeky.names import unicode_escape
 
@@ -1121,6 +1122,8 @@ def has_nonlocal_jumps(binary):
 
 
 _SHADOWED = re.compile(r"(.+) @ [^:]+:([0-9]+)")
+# A source whose statements are scanned (c_source) to place a caller's declaration.
+MAX_STATEMENT_SOURCE = 8_000_000
 
 
 def declared_below(table, name, source, line):
@@ -1160,6 +1163,63 @@ def declared_below(table, name, source, line):
         if not ((source, at) in rows and rows[here][1] < rows[source, at][0]):
             return None
     return min(where[1] for _, where in candidates)
+
+
+def declared_unfinished(table, name, source, line, address, ends=None):
+    """For a caller frame at ``source:line``, inside a call that returns to ``address``
+    (unslid; None if unknown): ``(line, why, detail)`` for a C/C++ local of that name
+    whose declaration may not have run yet, else None. ``why`` is `file` (``detail``: the
+    file declaring it, None outside the program's sources), `no code`, `statement` (the
+    frame's line is within the declaration statement, lines ``line``-``detail``;
+    ``detail`` None when ``ends(line, name)`` cannot find it) or `unfinished`.
+
+    Declared in another file than the frame's line: an initializer can `#include` its
+    rows (the frame is then in the included file), or be in an included file itself, so
+    no line of either file places the frame within or after the declaration.
+
+    Declared at or above the frame's line: the frame's own line always counts, and so
+    does a line the function still has code of at or after ``address`` (`long r =` /
+    `f(x);` stores `r` on the declaration's line after the call returns, and so does a
+    designated initializer over several lines). Declared anywhere on a line with no code
+    of its own: an array of structs, a nested struct or a 2-D array is stored element by
+    element on its elements' lines, so nothing places it. With the address or its
+    function unknown, every declaration at or above the line counts. And so does one whose
+    statement, as the source writes it (``ends``), still runs on the frame's line:
+    `struct trio t = { seed,` / `{ twice(3), ... } };` has code of its first line, all of
+    it before the call."""
+    shown = _SHADOWED.fullmatch(name)
+    base = shown[1] if shown else name
+    owners = [function for function in table if (source, line) in function["rows"]]
+    running = [
+        function
+        for function in owners
+        if address is not None
+        and any(low <= address < high for low, high in function.get("ranges", ()))
+    ]
+    if running:
+        owners = running
+    else:
+        # The function returned to is not identified: every declaration counts.
+        address = None
+        owners = owners or [function for function in table if base in function["locals"]]
+    for function in owners:
+        for declared_in, at, automatic in function["locals"].get(base, ()):
+            if not automatic or type(at) is not int:
+                continue
+            if shown and at != int(shown[2]):
+                continue
+            if declared_in != source:
+                return at, "file", declared_in
+            span = function["rows"].get((source, at))
+            if span is None:
+                return at, "no code", None
+            if at <= line and (at == line or address is None or span[1] >= address):
+                return at, "unfinished", None
+            if at <= line and ends is not None:
+                end = ends(at, base)
+                if end is None or line <= end:
+                    return at, "statement", end
+    return None
 
 
 def declared_on_line(table, name, source, line, address):
@@ -1844,7 +1904,7 @@ class NativeSession:
             return None
         return self.typedefs.get(f"::{parts[-2]}::{parts[-1]}")
 
-    def not_yet_declared(self, variable, frame):
+    def not_yet_declared(self, variable, frame, innermost=True):
         """Why a root local of ``frame`` has no value yet (declared below the stop), or
         None. Its storage then holds whatever an earlier call or iteration left."""
         name, path = variable.get("name"), ((frame or {}).get("source") or {}).get("path")
@@ -1857,22 +1917,64 @@ class NativeSession:
             return None
         if type(line) is not int:
             return None
+        if not innermost and (
+            unfinished := declared_unfinished(
+                self.declarations,
+                name,
+                source.as_posix(),
+                line,
+                self._unslid(frame),
+                ends=lambda at, local: self._statement_end(source, at, local),
+            )
+        ):
+            at, why, detail = unfinished
+            if why == "file":
+                return (
+                    f"declared on line {at} of "
+                    + (detail or "a file outside the program's sources")
+                    + f", while this caller frame is at {source.as_posix()}:{line}, in "
+                    "another file, inside a call it makes: an initializer can `#include` "
+                    "its rows, or be included itself, so Peeky cannot place the frame "
+                    "within or after the declaration, and it may not be initialized yet: "
+                    "its storage may hold leftovers; read it after the call returns"
+                )
+            if why == "statement":
+                return (
+                    (
+                        f"declared on line {at}, and its declaration (lines {at}-{detail}) "
+                        "is still running in this caller frame"
+                        if detail is not None
+                        else f"declared on line {at}, and Peeky cannot tell from the source "
+                        "where its declaration ends (or the compiler may read that text "
+                        "differently: a directive, a macro, a line splice or a trigraph), "
+                        "so this caller frame may be inside it"
+                    )
+                    + " (inside a call it makes): it may not be initialized yet, and its "
+                    "storage may hold leftovers; read it after the call returns"
+                )
+            if why == "no code":
+                return (
+                    f"declared on line {at}, which has no code of its own (an aggregate is "
+                    "stored element by element on its elements' lines), so this caller "
+                    "frame cannot tell whether it is initialized yet: its storage may hold "
+                    "leftovers; read it in the frame that is running once it is stored"
+                )
+            # A caller is inside a call: `long r = f(x);` stores `r` only after it.
+            return (
+                f"declared on line {at}, whose code this caller frame has not finished (it "
+                "is inside a call, and the declaration may be stored after the call "
+                "returns), so it may not be initialized yet: its storage may hold "
+                "leftovers; read it after the call returns"
+            )
         below = declared_below(self.declarations, name, source.as_posix(), line)
         if below is not None:
             return (
                 f"declared at line {below}, below this stop, so not initialized yet: its "
                 f"storage holds leftovers; stop after line {below} to read it"
             )
-        pointer = (frame or {}).get("instructionPointerReference")
-        bias = getattr(self, "load_bias", None)
-        if (
-            bias is None
-            or self.target.optimization != "O0"
-            or not isinstance(pointer, str)
-            or not re.fullmatch(r"0x[0-9a-fA-F]{1,16}", pointer)
-        ):
+        address = self._unslid(frame)
+        if address is None or self.target.optimization != "O0":
             return None
-        address = int(pointer, 16) - bias
         if declared_on_line(self.declarations, name, source.as_posix(), line, address) is None:
             return None
         # A loop that branches back to this address can bring control here with the
@@ -1885,6 +1987,46 @@ class NativeSession:
             "instruction), so not initialized: its storage holds leftovers; step once, or "
             f"stop after line {line}, to read it"
         )
+
+    def _statement_end(self, source, line, name):
+        """Where the declaration of ``name`` on ``line`` of the prepared ``source`` ends
+        (c_source.Statements), or None, also when a source or header cannot be read."""
+        cache = self.__dict__.setdefault("statements", {})
+        key = str(source)
+        if key not in cache:
+            raw_strings = getattr(self.target, "language", None) == "cpp"
+            if "macro_hazards" not in self.__dict__:
+                # The program's own sources and headers (not the SDK's or the system's).
+                inputs = [self._source_text(each) for each in self.target.verification_inputs]
+                self.macro_hazards = None if None in inputs else unsafe_macros(inputs, raw_strings)
+            text = self._source_text(source)
+            cache[key] = (
+                None
+                if text is None or self.macro_hazards is None
+                else Statements(text, raw_strings, self.macro_hazards)
+            )
+        statements = cache[key]
+        return None if statements is None else statements.end(line, name)
+
+    def _source_text(self, source):
+        """A prepared source's text, or None if it is unreadable or too large."""
+        try:
+            path = self.prepared.workspace / source
+            if path.stat().st_size > MAX_STATEMENT_SOURCE:
+                return None
+            return path.read_bytes().decode("utf-8", "replace")
+        except OSError:
+            return None
+
+    def _unslid(self, frame):
+        """The frame's instruction address in the executable's own numbering, or None."""
+        pointer = (frame or {}).get("instructionPointerReference")
+        bias = getattr(self, "load_bias", None)
+        if bias is None or not isinstance(pointer, str):
+            return None
+        if not re.fullmatch(r"0x[0-9a-fA-F]{1,16}", pointer):
+            return None
+        return int(pointer, 16) - bias
 
     def validate_mutation_target(self, variable, frame):
         if reason := self.not_yet_declared(variable, frame):
@@ -1902,7 +2044,7 @@ class NativeSession:
         return self.prepared.workspace / relative
 
     def local_scopes(self, scopes):
-        return PythonAdapter().local_scopes(scopes)
+        return locals_only(scopes)
 
     def normalize_capabilities(self, raw):
         return {
