@@ -1315,6 +1315,10 @@ def _capture(
                     row["note"] = _UNREAD_RUST
                 elif "view" not in variable and _rust_composite(str(variable.get("type"))):
                     row["note"] = _COMPOSITE_RUST
+                elif isinstance(variable.get("note"), str):
+                    # A value the runtime shows but cannot vouch for (C, C++: a line a loop
+                    # returns to; initialization not judged).
+                    row["note"] = variable["note"]
             if "view" in variable:
                 row["view"] = variable["view"]
             if variable.get("stale"):
@@ -2736,6 +2740,14 @@ def run_probe(root, probe, *, adapter=None, progress=None):
     for note in (_OWNED_RUST, _UNREAD_RUST, _COMPOSITE_RUST, unproven, _STALE_RUST + "."):
         if any(row.get("note") == note for row in rows):
             warnings.append(note)
+    # Any other row's note, once per selector: rows marked `[note]` in the table.
+    noted = {}
+    for row in rows:
+        if row.get("note") and row["note"] not in _rust_notes():
+            noted.setdefault(row["note"], []).append(row["selector"])
+    for note, selectors in noted.items():
+        names = ", ".join(dict.fromkeys(selectors))
+        warnings.append(f"{names}: {note[0].upper()}{note[1:]}.")
     if changes and probe.limit > 1:
         warnings.append(
             f"Interventions are applied once, at hit {probe.set_hit}; other hits observe "
@@ -2772,6 +2784,12 @@ def _by_hit(rows):
     return list(grouped.values())
 
 
+def _rust_notes():
+    """The Rust rows' notes, each said once among a probe's warnings, unmarked."""
+    unproven = _UNPROVEN_RUST[0].upper() + _UNPROVEN_RUST[1:] + "."
+    return {_OWNED_RUST, _UNREAD_RUST, _COMPOSITE_RUST, unproven, _STALE_RUST + "."}
+
+
 def _table(result):
     lines = []
     header = ("hit", "phase", "line", "function", "selector", "type", "value")
@@ -2788,7 +2806,8 @@ def _table(result):
             + (f"  [{row['view']}]" if row.get("view") else "")
             + ("  [settable]" if row.get("settable") else "")
             + (f"  [id {row['identity']}]" if row.get("identity") else "")
-            + ("  [module global]" if row.get("scope") == "globals" else ""),
+            + ("  [module global]" if row.get("scope") == "globals" else "")
+            + ("  [note]" if row.get("note") and row["note"] not in _rust_notes() else ""),
         )
         for row in result["rows"]
     ]

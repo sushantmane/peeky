@@ -727,29 +727,32 @@ def test_local_declarations_record_where_and_how_each_local_is_declared(tmp_path
 
 
 @pytest.mark.parametrize(
-    "name, line, below",
+    "name, line, pc, below",
     [
-        ("refill", 7, (8, None)),  # #74: declared on the next line, so leftovers here
-        ("refill", 8, None),  # its own line: a for-header counter is live there again
-        ("elapsed", 7, None),
-        ("calls", 7, None),  # a static has its value before its declaration
-        ("now", 7, None),  # the parameter or the block's `now`: either may be shown
-        ("now @ bucket.c:11", 7, (11, None)),  # lldb-dap names each shadowed local
-        ("now @ bucket.c:5", 7, None),
-        ("missing", 7, None),
-        ("refill", 13, None),  # outside the function
+        ("refill", 7, 0x420, (8, None)),  # #74: declared on the next line: leftovers here
+        ("refill", 8, 0x430, None),  # its own line: a for-header counter is live there
+        ("elapsed", 7, 0x420, None),
+        ("calls", 7, 0x420, None),  # a static (listed among globals) has its value
+        # Outside the block declaring the other `now`: the parameter is the one shown.
+        ("now", 7, 0x420, None),
+        # lldb-dap names each shadowed local; out of its block, which one is shown
+        # cannot be told: withheld.
+        ("now @ bucket.c:11", 7, 0x420, (11, "unknown")),
+        ("now @ bucket.c:5", 7, 0x420, None),
+        ("missing", 7, 0x420, None),
+        ("refill", 13, 0x500, None),  # outside the function
+        ("refill", 7, None, (8, "unknown")),  # the stop's address unknown
     ],
 )
-def test_a_local_is_withheld_only_when_every_candidate_is_declared_below(
-    tmp_path, name, line, below
-):
+def test_a_local_is_withheld_when_the_declaration_shown_is_below(tmp_path, name, line, pc, below):
     from peeky.native import declared_below, local_declarations
 
     (tmp_path / "bucket.c").write_text("\n" * 20)
     info, dump = declaration_dumps(tmp_path)
     table = local_declarations(info, dump, tmp_path, ("bucket.c",))
-    assert declared_below(table, name, "bucket.c", line) == below
-    assert declared_below(table, name, "other.c", line) is None
+    pc = None if pc is None else 0x100000000 + pc
+    assert declared_below(table, name, "bucket.c", line, pc=pc) == below
+    assert declared_below(table, name, "other.c", line, pc=pc) is None
 
 
 def rows(spans, source="a.cpp"):
@@ -762,15 +765,56 @@ def test_only_functions_owning_the_line_count_and_jumps_disable_withholding():
     # Review of #81: a local class's constructor owns its member initializer on line 5,
     # above its own declaration; `main`, which defines the class, declares `v` on line 12.
     ctor = {"source": "a.cpp", "rows": rows({5: (50, 50), 7: (70, 70), 8: (80, 80)})}
-    ctor.update(locals={"v": {(None, None, False)}}, jumps=False)
+    ctor.update(locals={"v": {(None, None, False)}}, jumps=False, ranges=((50, 90),))
+    ctor["visible"] = {("v", None, None, False): ((50, 90),)}
     main = {"source": "a.cpp", "rows": rows({3: (3, 3), 11: (11, 11), 12: (12, 12)})}
-    main["jumps"] = False
+    main.update(jumps=False, ranges=((1, 20),))
     main["locals"] = {"v": {("a.cpp", 12, True)}}
-    assert declared_below([ctor, main], "v", "a.cpp", 5) is None
-    assert declared_below([ctor, main], "v", "a.cpp", 11) == (12, None)
+    main["visible"] = {("v", "a.cpp", 12, True): ((1, 20),)}
+    # Stopped in the constructor, its parameter is the `v` shown.
+    assert declared_below([ctor, main], "v", "a.cpp", 5, pc=50) is None
+    assert declared_below([ctor, main], "v", "a.cpp", 11, pc=11) == (12, None)
     # A backward goto can return above the declaration with `v` live, or this is the
     # first pass: unproven, and withheld all the same (sixth agent evaluation).
-    assert declared_below([ctor, {**main, "jumps": True}], "v", "a.cpp", 11) == (12, "label")
+    jumps = {**main, "jumps": True}
+    assert declared_below([ctor, jumps], "v", "a.cpp", 11, pc=11) == (12, "label")
+
+
+def test_only_the_declaration_the_debugger_shows_is_judged():
+    from peeky.native import declared_below, declared_on_line
+
+    # Review of PR #140: an earlier loop's `qty` (lines 11-14), a static `qty` clang
+    # declares in the function's scope, and a lambda's parameter `b` each kept the
+    # local declared below the stop shown with leftovers, and settable.
+    main = {"source": "a.c", "jumps": False, "ranges": ((100, 200),)}
+    main["rows"] = rows({12: (110, 112), 16: (130, 134), 17: (140, 144)}, "a.c")
+    main["locals"] = {
+        "qty": {("a.c", 12, True), ("a.c", 17, True), ("a.c", 5, False)},
+        "b": {("a.c", 17, True)},
+    }
+    main["visible"] = {
+        ("qty", "a.c", 12, True): ((108, 120),),  # the loop's body
+        ("qty", "a.c", 17, True): ((100, 200),),
+        ("qty", "a.c", 5, False): ((100, 200),),  # a static: listed among globals
+        ("b", "a.c", 17, True): ((100, 200),),
+    }
+    main["starts"] = {("qty", "a.c", 17): {140}}
+    sort = {"source": "a.c", "jumps": False, "ranges": ((300, 320),)}
+    sort.update(rows=rows({16: (300, 310)}, "a.c"), locals={"b": {(None, None, False)}})
+    sort["visible"] = {("b", None, None, False): ((300, 320),)}
+    table = [main, sort]
+    assert declared_below(table, "qty", "a.c", 16, pc=130) == (17, None)
+    assert declared_below(table, "b", "a.c", 16, pc=130) == (17, None)
+    assert declared_on_line(table, "qty", "a.c", 17, 140) == (17, None)
+    # In the loop's body, its own `qty` is the one shown; in the lambda, its parameter.
+    assert declared_below(table, "qty", "a.c", 12, pc=110) is None
+    assert declared_below(table, "b", "a.c", 16, pc=305) is None
+    # Two of the name in one block, or a block not known: whichever is shown, withheld.
+    twice = {**main, "visible": {**main["visible"], ("qty", "a.c", 12, True): ((100, 200),)}}
+    assert declared_below([twice], "qty", "a.c", 16, pc=130) == (17, "unknown")
+    assert declared_on_line([twice], "qty", "a.c", 17, 140) == (17, "unknown")
+    unknown = {**main, "visible": {}}
+    assert declared_below([unknown], "qty", "a.c", 16, pc=130) == (17, "unknown")
 
 
 @pytest.mark.parametrize(
@@ -789,7 +833,7 @@ def test_only_functions_owning_the_line_count_and_jumps_disable_withholding():
         ({7: (10, 40), 8: (20, 24)}, None, (8, "after")),
         ({7: (10, 40), 8: (20, 24)}, 10, (8, None)),
         ({7: (10, 40), 8: (20, 24)}, 40, (8, "after")),
-        ({7: (10, 40), 8: (20, 24)}, 99, (8, "after")),  # not in the function's code
+        ({7: (10, 40), 8: (20, 24)}, 99, (8, "unknown")),  # not in the function's code
         ({7: (10, 12)}, None, (8, "no code")),  # a declaration without code proves nothing
     ],
 )
@@ -800,7 +844,9 @@ def test_a_local_declared_below_is_proven_so_only_before_its_declarations_code(
 
     function = {"source": "a.c", "rows": {("a.c", n): span for n, span in rows.items()}}
     function.update(locals={"later": {("a.c", 8, True)}}, jumps=False, ranges=((0, 50),))
-    assert declared_below([function], "later", "a.c", 7, address=address) == below
+    function["visible"] = {("later", "a.c", 8, True): ((0, 50),)}
+    pc = rows[7][0] if address is None else address
+    assert declared_below([function], "later", "a.c", 7, address=address, pc=pc) == below
 
 
 def test_a_function_with_a_label_can_jump_back(tmp_path):
@@ -845,14 +891,19 @@ def test_a_function_running_code_on_another_files_line_is_among_its_owners():
     # on geo.hpp:5.
     main = {"source": "main.cpp", "jumps": False, "locals": {"x": {("main.cpp", 5, True)}}}
     main["rows"] = {("main.cpp", 5): (10, 12), ("geo.hpp", 2): (20, 22), ("main.cpp", 6): (14, 24)}
+    main.update(ranges=((10, 30),), visible={("x", "main.cpp", 5, True): ((10, 30),)})
     origin = {"source": "geo.hpp", "jumps": False, "locals": {"x": {("geo.hpp", 5, True)}}}
     origin["rows"] = {("geo.hpp", 2): (40, 42), ("geo.hpp", 5): (50, 52)}
-    assert declared_below([main, origin], "x", "geo.hpp", 2) is None
-    assert declared_below([origin], "x", "geo.hpp", 2) == (5, None)
+    origin.update(ranges=((40, 60),), visible={("x", "geo.hpp", 5, True): ((40, 60),)})
+    # Stopped in main, main's `x` is the one shown; in origin_sum, its own.
+    assert declared_below([main, origin], "x", "geo.hpp", 2, pc=20) is None
+    assert declared_below([main, origin], "x", "geo.hpp", 2, pc=40) == (5, None)
     # Declared on the stop line itself: never withheld (a `for` counter is live there
     # at a later pass).
     loop = {"source": "a.c", "jumps": False, "locals": {"i": {("a.c", 3, True)}}}
     loop["rows"] = {("a.c", 3): (10, 12), ("a.c", 4): (20, 30)}
+    loop.update(ranges=((10, 30),), visible={("i", "a.c", 3, True): ((10, 30),)})
+    assert declared_below([loop], "i", "a.c", 3, pc=10) is None
     assert declared_below([loop], "i", "a.c", 3) is None
 
 
@@ -931,11 +982,19 @@ def test_a_local_declared_on_the_stop_line_is_withheld_only_where_its_line_start
         "source": "a.c",
         "rows": rows({7: (0x70, 0x7F), 8: (0x80, 0x9F)}, "a.c"),
         "jumps": False,
+        "ranges": ((0x70, 0xA0),),
     }
     main["locals"] = {
         "i": {("a.c", 8, True)},
         "total": {("a.c", 7, True)},
         "sq": {("a.c", 8, True)},
+    }
+    main["visible"] = {
+        ("i", "a.c", 8, True): ((0x70, 0xA0),),
+        ("total", "a.c", 7, True): ((0x70, 0xA0),),
+        ("sq", "a.c", 8, True): ((0x90, 0xA0),),
+        ("i", "a.c", 8, False): ((0x70, 0xA0),),
+        ("i", "a.c", 3, True): ((0x60, 0x70),),
     }
     main["starts"] = {("i", "a.c", 8): {0x80}, ("sq", "a.c", 8): {0x90}}
     assert declared_on_line([main], "i", "a.c", 8, 0x80) == (8, None)
@@ -952,8 +1011,9 @@ def test_a_local_declared_on_the_stop_line_is_withheld_only_where_its_line_start
     # A same-named static, or another `i` declared elsewhere in the function.
     static = {**main, "locals": {"i": {("a.c", 8, False)}}}
     assert declared_on_line([static], "i", "a.c", 8, 0x80) is None
+    # Another `i`, in a block out of scope here: the one shown is this line's.
     twice = {**main, "locals": {"i": {("a.c", 8, True), ("a.c", 3, True)}}}
-    assert declared_on_line([twice], "i", "a.c", 8, 0x80) is None
+    assert declared_on_line([twice], "i", "a.c", 8, 0x80) == (8, None)
     assert declared_on_line([twice], "i @ a.c:8", "a.c", 8, 0x80) == (8, None)
 
 
@@ -1245,17 +1305,18 @@ def test_a_declaration_line_without_code_is_placed_by_its_statements_code():
     from peeky.native import declared_below
 
     # #121: `struct pair ps[2] = {` (25) has no code; its elements' lines (26, 27) do.
-    run = {"source": "a.c", "jumps": False}
+    run = {"source": "a.c", "jumps": False, "ranges": ((100, 160),)}
     run["rows"] = rows({20: (100, 110), 26: (120, 130), 27: (130, 140), 15: (140, 150)}, "a.c")
     run["locals"] = {"ps": {("a.c", 25, True)}}
+    run["visible"] = {("ps", "a.c", 25, True): ((100, 160),)}
     through = _through({("a.c", 25): 28})
     # Without its statement's end (a caller frame), unproven: withheld all the same.
-    assert declared_below([run], "ps", "a.c", 20) == (25, "no code")
-    assert declared_below([run], "ps", "a.c", 20, through=through) == (25, None)
+    assert declared_below([run], "ps", "a.c", 20, pc=100) == (25, "no code")
+    assert declared_below([run], "ps", "a.c", 20, through=through, pc=100) == (25, None)
     # Code of the stop's line after the statement's (a member initializer run there).
-    assert declared_below([run], "ps", "a.c", 15, through=through) == (25, "after")
-    # Its end unknown: below.
-    assert declared_below([run], "ps", "a.c", 20, through=_through({})) == (25, None)
+    assert declared_below([run], "ps", "a.c", 15, through=through, pc=140) == (25, "after")
+    # Its end unknown: unproven (review of PR #140), withheld all the same.
+    assert declared_below([run], "ps", "a.c", 20, through=_through({}), pc=100) == (25, "no code")
 
 
 def test_constructors_and_lambdas_are_told_from_their_debug_information():
