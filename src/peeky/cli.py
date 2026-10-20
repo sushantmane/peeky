@@ -685,8 +685,16 @@ def _describe_text(manifest):
             where = f" ({scope['source']}:{span})"
         else:
             where = f" (lines {span})" if span else ""
-        types = scope.get("types", {})
-        shown = [f"{name} ({types[name]})" if name in types else name for name in scope["names"]]
+        types, spans = scope.get("types", {}), scope.get("spans", {})
+        shown = []
+        for name in scope["names"]:
+            # A local declared only in nested blocks is visible on their lines alone.
+            parts = [types[name]] if name in types else []
+            if name in spans:
+                listed = [f"{a}-{b}" if b > a else str(a) for a, b in spans[name]]
+                single = len(listed) == 1 and "-" not in listed[0]
+                parts.append(("line " if single else "lines ") + ", ".join(listed))
+            shown.append(f"{name} ({', '.join(parts)})" if parts else name)
         lines.append(f"names in {scope['scope']}{where}: {', '.join(shown) or '-'}")
     from peeky.probe import optimization_level
 

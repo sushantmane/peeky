@@ -2601,3 +2601,146 @@ def test_references_in_macro_twins_and_parameters_dropped_through_in_other_files
             plain, capsys, at, continues, line_of(text, "// " + marker), file
         )
         assert variables[name].get("view") == "unproven", (marker, variables[name])
+
+
+GENERIC_SPANS = """macro_rules! square {
+    ($x:expr) => {{
+        let v = $x;
+        v * v
+    }};
+}
+
+trait Big {
+    const BIG: bool;
+}
+impl Big for u8 {
+    const BIG: bool = false;
+}
+impl Big for u64 {
+    const BIG: bool = true;
+}
+
+fn h<T: Big>(_v: T) -> usize {
+    let mut n = 0;
+    for i in 0..2 {
+        n += i;
+        if T::BIG {
+            n += 100;
+        }
+    }
+    n
+}
+
+fn with_macro(n: usize) -> usize {
+    let mut total = 0;
+    for i in 0..n {
+        let s = square!(i);
+        total += s;
+    }
+    total
+}
+
+fn below(n: usize) -> usize {
+    let mut total = 0;
+    for i in 0..n {
+        total += half!(i);
+    }
+    total
+}
+
+fn after(n: usize) -> usize {
+    let mut k = 0;
+    for j in 0..n {
+        k += j;
+    }
+    k
+}
+
+macro_rules! half {
+    ($x:expr) => {{
+        let h = $x / 2;
+        h
+    }};
+}
+use half;
+
+fn inside(n: usize) -> usize {
+    let mut total = 0;
+    macro_rules! twice {
+        ($x:expr) => {
+            $x + $x // TWICE_BODY
+        };
+    }
+    for i in 0..n {
+        let s = twice!(i);
+        total += s;
+    }
+    total
+}
+
+macro_rules! make_fn {
+    ($name:ident, $step:expr) => {
+        fn $name(n: usize) -> usize {
+            let mut t = 0;
+            for i in 0..n {
+                let d = $step + i;
+                t += d;
+            }
+            t
+        }
+    };
+}
+
+fn between(v: usize) -> usize {
+    let mut acc = 0;
+    for k in 0..v {
+        acc += k;
+    }
+    acc
+}
+
+make_fn!(triple, {
+    let y = 3;
+    y
+});
+
+fn main() {
+    let a = h(3u8);
+    let b = h(4u64);
+    println!("{} {} {} {} {}", a, b, with_macro(3), below(3), after(3));
+    println!("{} {} {}", inside(3), between(2), triple(3));
+}
+"""
+
+
+@pytest.mark.timeout(300)
+def test_a_generic_function_is_one_scope_with_its_blocks_lines(plain, capsys):
+    # Review of #107: instantiations whose code differs (a per-type constant condition)
+    # gave different block lines and were listed once each.
+    (plain / "src/main.rs").write_text(GENERIC_SPANS)
+    code, result = run(capsys, "describe", str(plain))
+    scopes = [s for s in result["scopes"] if str(s.get("scope")).endswith("::h")]
+    assert len(scopes) == 1, scopes
+    ((first, last),) = scopes[0]["spans"]["i"]
+    assert first <= line_of(GENERIC_SPANS, "n += i;"), scopes
+    assert last >= line_of(GENERIC_SPANS, "n += 100;"), scopes
+    assert "_v" not in scopes[0]["spans"], scopes
+    # Review 2: a local macro's expansion runs on its definition's lines, which take no
+    # span from the blocks around it.
+    scope = next(s for s in result["scopes"] if str(s.get("scope")).endswith("::with_macro"))
+    assert {"i", "s", "total"} <= set(scope.get("spans", {})), scope
+    # Review 3: one defined below the function, past others, stretched its lines and
+    # spans over theirs.
+    scopes = {str(s.get("scope")).rpartition("::")[2]: s for s in result["scopes"]}
+    end = line_of(GENERIC_SPANS, "fn after(")
+    assert scopes["below"]["lines"][1] < end, scopes["below"]
+    assert all(
+        last < end for spans in scopes["below"].get("spans", {}).values() for _, last in spans
+    ), scopes["below"]
+    assert scopes["after"]["lines"][1] < line_of(GENERIC_SPANS, "macro_rules! half"), scopes
+    # Review 4: a macro defined inside the function keeps its lines (its expansion
+    # stops there in this frame); a function a macro declares runs its argument's code
+    # on the invoking line, past other functions, so its blocks give no span.
+    ((first, _),) = scopes["inside"]["spans"]["i"]
+    assert first <= line_of(GENERIC_SPANS, "// TWICE_BODY"), scopes["inside"]
+    assert "spans" not in scopes["triple"], scopes["triple"]

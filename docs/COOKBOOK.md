@@ -83,15 +83,17 @@ probe: peeky probe examples/pagination_bug.py --at pagination_bug.py:<line> [--r
 
 For a large module, `--json` and `jq` find a function quickly: `peeky describe dir --at module.py --json | jq '.scopes[] | select(.scope | test("is_private"))'`.
 
-C, C++ and Rust list the same from the build's debug information: each function in your sources, with its file, lines and parameters and locals. Names are readable (`crate::Type::method`, `<crate::Type as core::fmt::Display>::fmt`, `geo::Box::area`). A probe's `function` column keeps LLDB's frame name, which matches for plain functions and methods. For Rust trait impls and closures it keeps symbol escapes (`_$LT$…`, `_$u7b$$u7b$closure$u7d$$u7d$`), and for C++ it adds the signature, so match those in SQL with `LIKE '%fmt%'`. Closures and lambdas are listed under their function. A function inlined into another (`#[inline(always)]`, `always_inline`) keeps its own lines. If the debug information cannot be read, the text says `function names: unavailable (reason)`. A very large optimized C++ unit can exceed the 16 MB bound on reading it:
+C, C++ and Rust list the same from the build's debug information: each function in your sources, with its file, lines and parameters and locals. Names are readable (`crate::Type::method`, `<crate::Type as core::fmt::Display>::fmt`, `geo::Box::area`). A probe's `function` column keeps LLDB's frame name, which matches for plain functions and methods. For Rust trait impls and closures it keeps symbol escapes (`_$LT$…`, `_$u7b$$u7b$closure$u7d$$u7d$`), and for C++ it adds the signature, so match those in SQL with `LIKE '%fmt%'`. Closures and lambdas are listed under their function. A function inlined into another (`#[inline(always)]`, `always_inline`) keeps its own lines. Each name shows its type. A local declared only inside nested blocks also shows those blocks' lines, where it is visible: `i (int, lines 23, 28)` is two one-line `for` loops' `i`, not a name of the whole function. A block that also runs another file's code (an `#include` inside it) gives none (a local macro's expansion, on its definition's lines, does not count), and past eight blocks one span covers them all. In Rust every `let` opens a block, so a local shows the lines after its `let`, where it is visible (#107). If the debug information cannot be read, the text says `function names: unavailable (reason)`. A very large optimized C++ unit can exceed the 16 MB bound on reading it:
 
 ```
-names in parse_count (pagination_bug.c:6-14): end, minimum, result, text, value
-names in main (pagination_bug.c:16-31): argc, argv, end, i, items, page, page_size, start, total
+names in parse_count (pagination_bug.c:6-14): end (char *), minimum (int), result (int *), text (const char *), value (long)
+names in main (pagination_bug.c:16-31): argc (int), argv (char **), end (int), i (int, lines 23, 28), items (int[128]), page (int), page_size (int), start (int), total (int)
 
-names in peeky_pagination::main (src/main.rs:22-41): args, end, mode, none, request, some, start, values
-names in peeky_pagination::main::{{closure}} (src/main.rs:37-37): index
+names in peeky_pagination::bounded (src/main.rs:14-20): default (i32), minimum (i32), text (core::option::Option<&alloc::string::String>), value (i32, lines 16-19)
+names in peeky_pagination::main::{{closure}} (src/main.rs:37-37): index (i32)
 ```
+
+With `--json`, a scope's `spans` maps such a name to its blocks' `[first, last]` lines.
 
 ### 1.2 First Probe
 

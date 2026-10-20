@@ -435,12 +435,14 @@ def test_function_scopes_list_qualified_names_spans_and_locals(tmp_path):
     scopes = function_scopes(info, line, tmp_path, ("app.cpp",))
     assert scopes == [
         # The out-of-line definition takes its name and file from its declaration;
-        # nested blocks contribute locals; `$`-synthesized storage does not.
+        # nested blocks contribute locals, with their blocks' lines (#107);
+        # `$`-synthesized storage does not.
         {
             "scope": "geo::Box::area",
             "source": "app.cpp",
             "lines": [7, 9],
             "names": ["product", "this"],
+            "spans": {"product": [[8, 8]]},
         },
         {"scope": "main", "source": "app.cpp", "lines": [12, 15], "names": ["total"]},
         # A closure is qualified by its function; SDK functions are not listed.
@@ -1006,3 +1008,108 @@ def test_macho_text_address_reads_the_header_segment(tmp_path):
     (tmp_path / "q").write_bytes(header[:4] + b"\0" * 28)
     with pytest.raises(ValueError):
         macho_text_address(tmp_path / "q")
+
+
+def test_a_non_statement_row_another_row_replaces_runs_no_code(tmp_path):
+    # Review 3 of #107: GCC -O2 writes a row that is not a statement at the address of
+    # the next row (line 2 under line 3); LLDB keeps the later row there. A statement
+    # row, or one with code of its own, stays.
+    (tmp_path / "main.c").write_text("a\nb\nc\nd\ne\nf\n")
+    rows = (
+        (0x1000, 1, " is_stmt"),
+        (0x1004, 2, ""),
+        (0x1004, 3, " is_stmt"),
+        (0x1008, 4, " is_stmt"),
+        (0x1008, 3, " is_stmt"),
+        (0x100C, 6, ""),
+        (0x1010, 5, ""),
+        (0x1010, 5, " end_sequence"),
+    )
+    text = line_dump().split("0x0000000000401000")[0] + "".join(
+        f"0x{0x401000 + address:016x} {number} 1 1 0 0{flags}\n" for address, number, flags in rows
+    )
+    assert parse_lines(text, tmp_path, ("main.c",)) == {"main.c": [1, 3, 4, 6]}
+
+
+@pytest.mark.parametrize(
+    "text, lines",
+    [
+        ("fn f() {}\n", set()),
+        ('fn f() {}\nmacro_rules! m {\n    () => { "}" };\n}\nfn g() {}\n', {2, 3, 4}),
+        ("macro_rules! m { ('{') => {} }\n// macro_rules! n {\nfn g<'a>(x: &'a u8) {}\n", {1}),
+        ("macro_rules! m (\n /* ) */ () => (1)\n);\n", {1, 2, 3}),
+        ('macro_rules! m { () => { r#"}"# } }\nfn g() {}\n', {1}),
+        ('let s = "macro_rules! m {";\n', set()),
+        ("macro_rules! m {\n () => {}\n", None),
+        ("macro_rules! m { () => {} }\n/* unclosed\n", None),
+    ],
+)
+def test_a_rust_sources_macro_definitions_are_told_by_their_brackets(text, lines):
+    from peeky.native import _macro_rules_lines
+
+    assert _macro_rules_lines(text) == lines
+
+
+def test_a_statement_row_another_row_replaces_is_kept_for_breakpoints_but_noted(tmp_path):
+    # Review 4 of #107: LLDB keeps the later row at an address, so a statement row the
+    # next row replaces runs no code; its line stays a breakpoint line.
+    from peeky.native import _line_rows
+
+    (tmp_path / "main.c").write_text("a\nb\nc\nd\n")
+    rows = (
+        (0x1000, 1, 1),
+        (0x1000, 2, 1),  # replaces line 1
+        (0x1004, 3, 1),
+        (0x1004, 3, 1),  # the same line again: nothing replaced
+        (0x100C, 4, 1),
+        (0x100C, 7, 9),  # an undeclared header's row replaces line 4
+    )
+    header = 'dir_index: 0\nfile_names[ 9]:\nname: "/usr/include/stdio.h"\ndir_index: 0\n'
+    dump = line_dump().split("0x0000000000401000")[0].replace("dir_index: 0\n", header, 1)
+    text = dump + "".join(
+        f"0x{0x400000 + address:016x} {number} 1 {file} 0 0 is_stmt\n"
+        for address, number, file in rows
+    )
+    replaced = set()
+    found = _line_rows(text, tmp_path, ("main.c",), replaced=replaced)
+    assert [row[2] for row in found] == [1, 2, 3, 3, 4]
+    assert replaced == {(0x401000, "main.c", 1), (0x40100C, "main.c", 4)}
+
+
+def test_of_the_rows_at_one_address_the_last_is_the_one_that_runs(tmp_path):
+    # Review 5 of #107: GCC gives one address runs of rows; only the last runs. A row
+    # of the last row's line is not replaced, whatever comes between.
+    from peeky.native import _line_rows
+
+    (tmp_path / "main.c").write_text("x\n" * 40)
+    rows = (
+        (0x1000, 25, True),
+        (0x1000, 25, False),
+        (0x1000, 28, True),
+        (0x1000, 29, True),
+        (0x1000, 29, False),
+        (0x1000, 30, False),  # runs
+        (0x1010, 38, True),
+        (0x1010, 39, True),
+        (0x1010, 38, False),  # runs: line 38 stays
+        (0x1020, 40, True),
+        (0x1020, 40, False, "end_sequence"),
+    )
+    text = line_dump().split("0x0000000000401000")[0] + "".join(
+        f"0x{0x400000 + row[0]:016x} {row[1]} 1 1 0 0"
+        + (" is_stmt" if row[2] else "")
+        + "".join(f" {flag}" for flag in row[3:])
+        + "\n"
+        for row in rows
+    )
+    replaced = set()
+    found = _line_rows(text, tmp_path, ("main.c",), replaced=replaced)
+    assert sorted({row[2] for row in found}) == [25, 28, 29, 30, 38, 39, 40]
+    assert {line for _, _, line in replaced} == {25, 28, 29, 39, 40}
+    assert (0x401010, "main.c", 38) not in replaced
+    # Review 6: a line-0 row (no source line) is never a line, wherever it is.
+    rows = ((0x1000, 5, True), (0x1010, 0, True), (0x1010, 7, True), (0x1020, 8, True))
+    text = line_dump().split("0x0000000000401000")[0] + "".join(
+        f"0x{0x400000 + address:016x} {number} 1 1 0 0 is_stmt\n" for address, number, _ in rows
+    )
+    assert sorted({row[2] for row in _line_rows(text, tmp_path, ("main.c",))}) == [5, 7, 8]

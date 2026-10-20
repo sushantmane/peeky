@@ -116,11 +116,14 @@ def _metadata(tool, arguments, workspace, env, *, max_bytes=MAX_METADATA, timeou
         return output.read_text(encoding="utf-8")
 
 
-def _line_rows(text, workspace, declared, limit=MAX_METADATA):
+def _line_rows(text, workspace, declared, limit=MAX_METADATA, replaced=None):
     """Rows of the LLVM DWARF4 line-table dump for declared sources: (address, name, line).
 
     Unrecognized rows fail closed. Rows outside the declared sources (SDK and system
-    headers) and end-of-sequence rows are skipped.
+    headers) and end-of-sequence rows are skipped. Of the rows a sequence gives one
+    address (GCC -O2), LLDB keeps the last: each earlier one of another line or file
+    runs no code. It is skipped if it is not a statement; a statement row is kept,
+    since a breakpoint can be set on its line, and added to ``replaced`` when given.
     """
     if len(text.encode()) > limit:
         raise ValueError("Native line metadata exceeds limit")
@@ -133,12 +136,33 @@ def _line_rows(text, workspace, declared, limit=MAX_METADATA):
     table_count = 0
     version = None
     rows = []
+    # The rows of one address in a sequence: (address, name, line, statement, ending).
+    group = []
+
+    def flush():
+        if not group:
+            return
+        *earlier, last = group
+        for address, name, number, statement, ending in earlier:
+            if name is None or ending:
+                continue
+            if not last[4] and (name, number) == last[1:3]:
+                rows.append((address, name, number))
+            elif statement:
+                rows.append((address, name, number))
+                if replaced is not None:
+                    replaced.add((address, name, number))
+        if last[1] is not None and not last[4]:
+            rows.append(last[:3])
+        group.clear()
+
     for raw in text.splitlines():
         line = raw.strip()
         if line.startswith("debug_line["):
             table_count += 1
             if table_count > 4096:
                 raise ValueError("Too many native line tables")
+            flush()
             directories, files, current = {0: str(workspace)}, {}, None
             resolved = {}
             version = None
@@ -178,13 +202,17 @@ def _line_rows(text, workspace, declared, limit=MAX_METADATA):
                     resolved[file_id] = inputs.get(str(path))
             except (ValueError, KeyError, TypeError) as exc:
                 raise ValueError("Unresolved native line source") from exc
-            if "end_sequence" in fields or number == 0:
-                continue
-            name = resolved[file_id]
-            if name is not None:
-                if not 0 < number <= counts[name]:
-                    raise ValueError("Native line exceeds declared source length")
-                rows.append((int(fields[0], 16), name, number))
+            address, name = int(fields[0], 16), resolved[file_id]
+            ending = "end_sequence" in fields or number == 0
+            if name is not None and not ending and not 0 < number <= counts[name]:
+                raise ValueError("Native line exceeds declared source length")
+            if group and group[0][0] != address:
+                flush()
+            group.append((address, name, number, "is_stmt" in fields, ending))
+            if "end_sequence" in fields:
+                # The next sequence may start at this address: its rows are its own.
+                flush()
+    flush()
     if not table_count:
         raise ValueError("Missing executable native debug symbol line information")
     return rows
@@ -648,6 +676,100 @@ def _locals(dies, offset):
     return names
 
 
+_MAX_SPANS = 8
+
+
+def _block_spans(dies, entry, root, addresses, numbers, source_of):
+    """({name: {(first, last)}}, {names visible in the whole function}), or None when
+    the declarations were too many to read all: the lines of the blocks declaring each
+    local, for the locals declared only inside nested blocks (a `for` loop's `i`), so
+    visible only there (#107). A block's lines are those of the function's own rows
+    within its code (a local macro's definition lines, where its expansions run, are not
+    counted), and the call lines of what is inlined into it (LLDB stops there, at the
+    callee's entry, in this frame); one that also runs another file's code (an
+    `#include` inside it) gives no span. ``source_of`` names the declared source of a
+    DW_AT_call_file."""
+    rows = sorted(
+        (address, source, line) for (source, line), found in addresses.items() for address in found
+    )
+    keys = [row[0] for row in rows]
+    lines, spans, everywhere = {}, {}, set()
+    lowest, highest = min(numbers), max(numbers)
+
+    def span(block):
+        if block not in lines:
+            covered, other = [], False
+            for low, high in _code_ranges(dies[block]):
+                for _, source, line in rows[
+                    bisect.bisect_left(keys, low) : bisect.bisect_left(keys, high)
+                ]:
+                    if source != entry["source"]:
+                        other = True
+                    elif line in numbers:
+                        covered.append(line)
+                    # The file's other lines are a local macro's definition, expanded here.
+            pending = list(dies[block]["children"])
+            while pending:
+                die = dies[pending.pop()]
+                if die["tag"] == "DW_TAG_lexical_block":
+                    pending.extend(die["children"])
+                elif die["tag"] == "DW_TAG_inlined_subroutine":
+                    called = die["attrs"].get("DW_AT_call_line", "")
+                    # Its rows are the callee's, so the line may be none of the function's.
+                    if (
+                        called.isdigit()
+                        and lowest <= int(called) <= highest
+                        and source_of(die["attrs"].get("DW_AT_call_file")) == entry["source"]
+                    ):
+                        covered.append(int(called))
+            lines[block] = (min(covered), max(covered)) if covered and not other else None
+        return lines[block]
+
+    def name_of(child):
+        die = dies[child]
+        if die["tag"] not in ("DW_TAG_formal_parameter", "DW_TAG_variable"):
+            return None
+        name = _text(_first(dies, _chain(dies, child), "DW_AT_name"))
+        return None if not name or name.startswith("$") else name
+
+    # The concrete copies carry the code; an abstract or declaring DIE only says which
+    # names are the function's own.
+    for body in dict.fromkeys(entry["bodies"]):
+        pending = [(child, None) for child in dies[body]["children"]]
+        while pending:
+            if len(spans) + len(everywhere) >= 512:
+                return None
+            child, block = pending.pop()
+            if dies[child]["tag"] == "DW_TAG_lexical_block":
+                pending.extend((grandchild, child) for grandchild in dies[child]["children"])
+                continue
+            if (name := name_of(child)) is None:
+                continue
+            found = span(block) if block is not None else None
+            if found is None:
+                # Declared at the function's level, or in a block of unknown lines.
+                everywhere.add(name)
+            else:
+                spans.setdefault(name, set()).add(found)
+    if root not in entry["bodies"]:
+        everywhere.update(name for child in dies[root]["children"] if (name := name_of(child)))
+    return spans, everywhere
+
+
+def _tidy_spans(found):
+    """Sorted spans, overlapping ones joined (shadowed bindings); past ``_MAX_SPANS``,
+    one span over them all."""
+    joined = []
+    for first, last in sorted(found):
+        if joined and first <= joined[-1][1]:
+            joined[-1][1] = max(joined[-1][1], last)
+        else:
+            joined.append([first, last])
+    if len(joined) > _MAX_SPANS:
+        return [[joined[0][0], max(last for _, last in joined)]]
+    return joined
+
+
 def _code_ranges(die):
     attrs = die["attrs"]
     try:
@@ -661,9 +783,10 @@ def _code_ranges(die):
     return [(lo, hi) for lo, hi in spans if 0 < lo < hi and lo < _TOMBSTONE]
 
 
-def _function_entries(info, line_text, workspace, declared):
+def _function_entries(info, line_text, workspace, declared, replaced=None):
     """(dies, {root: entry}, {root: {line: span}}, files, {root: {(source, line): span}})
-    for functions in declared sources; see function_scopes. A span is the lowest and
+    for functions in declared sources; see function_scopes. ``replaced``: see
+    _line_rows. A span is the lowest and
     highest address of a function's rows on a line. The first mapping keeps rows of the
     function's own file (describe); the last keeps every row the function runs, in any
     declared file (clang runs a header struct's member initializers in its caller)."""
@@ -671,7 +794,7 @@ def _function_entries(info, line_text, workspace, declared):
 
     workspace = Path(workspace).resolve()
     inputs = {str((workspace / name).resolve()): name for name in declared}
-    rows = sorted(_line_rows(line_text, workspace, declared))
+    rows = sorted(_line_rows(line_text, workspace, declared, replaced=replaced))
     addresses = [row[0] for row in rows]
     dies = _dies(info)
     owner = [None] * len(rows)
@@ -723,14 +846,100 @@ def _source_of(attribute, inputs, workspace, cache):
     return cache[attribute]
 
 
-def _own_lines(dies, entry, numbers):
-    """A function's line numbers from its declaration on, or None if it has none."""
+def _own_lines(dies, entry, numbers, macro_lines=frozenset()):
+    """A function's line numbers from its declaration on, or None if it has none. Lines
+    of a local `macro_rules!` definition (``macro_lines``), where its expansions run,
+    are not its own unless it is declared there."""
     if not numbers:
         return None
     first_line = _first(dies, entry["chain"], "DW_AT_decl_line")
-    if first_line and first_line.isdigit():
-        numbers = {number for number in numbers if number >= int(first_line)} or numbers
+    first = int(first_line) if first_line and first_line.isdigit() else None
+    if first is not None:
+        numbers = {number for number in numbers if number >= first} or numbers
+    if first not in macro_lines:
+        # A macro defined inside the function (between its other lines) keeps them.
+        outside = {number for number in numbers if number not in macro_lines}
+        if outside:
+            low, high = min(outside), max(outside)
+            numbers = {number for number in numbers if number in outside or low < number < high}
     return numbers
+
+
+# Where a comment, string or char literal may start: `r"`/`br#"` only after a non-word.
+_RUST_LEXEME = re.compile(r"//|/\*|(?<!\w)b?r(#*)\"|\"|'")
+_RUST_BLOCK_EDGE = re.compile(r"/\*|\*/")
+_RUST_QUOTED = re.compile(r'"(?:[^"\\]|\\.)*"', re.DOTALL)
+_RUST_CHAR = re.compile(r"'(?:\\(?:u\{[0-9a-fA-F]{1,6}\}|x[0-9a-fA-F]{2}|.)|[^\\'\n])'")
+_MACRO_RULES = re.compile(r"\bmacro_rules!\s*[A-Za-z_][A-Za-z0-9_]*\s*([{(\[])")
+_CLOSING = {"{": "}", "(": ")", "[": "]"}
+
+
+def _rust_code(text):
+    """Rust source with comments, strings and char literals blanked (newlines kept, so
+    lines keep their numbers), or None if one does not end."""
+    kept, at = [], 0
+    while (found := _RUST_LEXEME.search(text, at)) is not None:
+        start, token = found.start(), found[0]
+        if token == "//":
+            end = text.find("\n", start)
+            end = len(text) if end < 0 else end
+        elif token == "/*":
+            depth, end = 1, start + 2
+            while depth:
+                edge = _RUST_BLOCK_EDGE.search(text, end)
+                if edge is None:
+                    return None
+                depth += 1 if edge[0] == "/*" else -1
+                end = edge.end()
+        elif token == "'":
+            literal = _RUST_CHAR.match(text, start)
+            if literal is None:
+                # A lifetime (`'a`).
+                kept.append(text[at : start + 1])
+                at = start + 1
+                continue
+            end = literal.end()
+        elif token == '"':
+            literal = _RUST_QUOTED.match(text, start)
+            if literal is None:
+                return None
+            end = literal.end()
+        else:
+            close = text.find('"' + found[1], found.end())
+            if close < 0:
+                return None
+            end = close + 1 + len(found[1])
+        kept.append(text[at:start])
+        kept.append(re.sub(r"[^\n]", " ", text[start:end]))
+        at = end
+    kept.append(text[at:])
+    return "".join(kept)
+
+
+def _macro_rules_lines(text):
+    """The line numbers of each `macro_rules!` definition in a Rust source (rustc keeps
+    the definition's lines for code it expands), or None when one cannot be told: an
+    unclosed literal, comment or bracket."""
+    if "macro_rules" not in text:
+        return set()
+    code = _rust_code(text)
+    if code is None:
+        return None
+    lines = set()
+    for found in _MACRO_RULES.finditer(code):
+        opening, depth = found[1], 0
+        for index in range(found.start(1), len(code)):
+            if code[index] == opening:
+                depth += 1
+            elif code[index] == _CLOSING[opening]:
+                depth -= 1
+                if not depth:
+                    break
+        else:
+            return None
+        first = code.count("\n", 0, found.start()) + 1
+        lines.update(range(first, code.count("\n", 0, index) + 2))
+    return lines
 
 
 def function_scopes(info, line_text, workspace, declared):
@@ -741,12 +950,26 @@ def function_scopes(info, line_text, workspace, declared):
     the callee, not its caller. Copies of one function (C1/C2 constructors, inlined and
     out-of-line copies) are merged through the DIE that declares them.
     """
-    dies, functions, lines, _, _, _ = _function_entries(info, line_text, workspace, declared)
-    found = {}
+    replaced = set()
+    dies, functions, lines, (inputs, sources), _, addresses = _function_entries(
+        info, line_text, workspace, declared, replaced
+    )
+    workspace = Path(workspace).resolve()
+
+    def source_of(attribute):
+        return _source_of(attribute, inputs, workspace, sources)
+
+    found, macros = {}, {}
     for root, entry in functions.items():
         source = entry["source"]
         name = _qualified(dies, entry["bodies"][0])
-        numbers = _own_lines(dies, entry, lines.get(root))
+        if source not in macros:
+            macros[source] = (
+                _macro_rules_lines((Path(workspace) / source).read_text(errors="replace"))
+                if source.endswith(".rs")
+                else set()
+            )
+        numbers = _own_lines(dies, entry, lines.get(root), macros[source] or frozenset())
         if name is None or not numbers:
             continue
         names = {}
@@ -760,15 +983,45 @@ def function_scopes(info, line_text, workspace, declared):
             "names": sorted(names),
         }
         # Instantiations of one generic function (Rust's names drop the generic
-        # arguments) are one scope; their types join (`&[i32] or &[char]`).
-        merged = found.setdefault(json.dumps(scope, sort_keys=True), (scope, {}))[1]
+        # arguments) are one scope; their types join (`&[i32] or &[char]`), and so do
+        # their blocks' lines (code a constant condition removes differs between them).
+        merged = found.setdefault(json.dumps(scope, sort_keys=True), (scope, {}, {}, set()))
         for local, kinds in names.items():
-            merged.setdefault(local, set()).update(kinds)
+            merged[1].setdefault(local, set()).update(kinds)
+        # Rows a later row at their address replaces run no code.
+        ran = {
+            key: [address for address in found if (address, *key) not in replaced]
+            for key, found in addresses.get(root, {}).items()
+        }
+        declared_at = _first(dies, entry["chain"], "DW_AT_decl_line")
+        # A function a macro declares runs its arguments' code on the invoking line,
+        # past other functions: its blocks' lines are not one span.
+        in_macro = (
+            declared_at and declared_at.isdigit() and int(declared_at) in (macros[source] or ())
+        )
+        blocks = (
+            _block_spans(dies, entry, root, ran, numbers, source_of)
+            if macros[source] is not None and not in_macro
+            else None
+        )
+        if blocks is None:
+            merged[3].add(None)
+            continue
+        for local, spans in blocks[0].items():
+            merged[2].setdefault(local, set()).update(spans)
+        merged[3].update(blocks[1])
     scopes = []
-    for scope, kinds in found.values():
+    for scope, kinds, spans, everywhere in found.values():
         # Two blocks may declare one name with different types (`int or long`).
         types = {local: " or ".join(sorted(k)) for local, k in sorted(kinds.items()) if k}
-        scopes.append({**scope, **({"types": types} if types else {})})
+        spans = {
+            local: _tidy_spans(found_spans)
+            for local, found_spans in sorted(spans.items())
+            if local not in everywhere and None not in everywhere
+        }
+        scopes.append(
+            {**scope, **({"types": types} if types else {}), **({"spans": spans} if spans else {})}
+        )
     scopes.sort(key=lambda s: (s["source"], s["lines"][0], s["scope"]))
     if len(scopes) > MAX_SCOPES:
         scopes = [*scopes[:MAX_SCOPES], {"omitted": len(scopes) - MAX_SCOPES}]

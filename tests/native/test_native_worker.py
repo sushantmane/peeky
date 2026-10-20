@@ -5,6 +5,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -804,6 +805,308 @@ def test_describe_leaves_out_types_a_program_cannot_write(tmp_path, native_confi
         assert not any(
             unwritable.search(kind) for s in scopes for kind in s.get("types", {}).values()
         ), scopes
+
+
+def test_describe_gives_the_lines_of_locals_declared_in_nested_blocks(
+    tmp_path, native_config, capsys
+):
+    # #107: `describe` listed a `for` loop's `i` among the function's names, though it
+    # is not visible after the loop. A local declared only in nested blocks now carries
+    # the lines of those blocks.
+    from peeky.cli import main
+
+    (tmp_path / "blocks.c").write_text(BLOCKS)
+    assert main(["describe", str(tmp_path / "blocks.c"), "--json"]) == 0
+    scopes = json.loads(capsys.readouterr().out)["scopes"]
+    spans = next(s for s in scopes if s["scope"] == "average")["spans"]
+    assert set(spans) == {"i", "half"}, spans
+    ((first, last),) = spans["i"]
+    assert first == 4 and 5 <= last <= 6, spans
+    ((first, last),) = spans["half"]
+    assert 7 <= first <= 8 and 9 <= last <= 10, spans
+    assert main(["describe", str(tmp_path / "blocks.c")]) == 0
+    text = capsys.readouterr().out
+    assert "i (int, lines 4-" in text and "count (int)," in text
+    # Review of #107: a block that runs an `#include`d file's code gives no span (its
+    # names are visible on that file's lines too); an always-inline function's blocks
+    # are read from its inlined copies.
+    (tmp_path / "step.h").write_text("extra += k;\n")
+    (tmp_path / "included.c").write_text(INCLUDED)
+    assert main(["describe", str(tmp_path / "included.c"), "--json"]) == 0
+    scopes = {s["scope"]: s for s in json.loads(capsys.readouterr().out)["scopes"]}
+    assert "extra" not in scopes["main"].get("spans", {}), scopes["main"]
+    assert "j" in scopes["twice"]["spans"], scopes["twice"]
+
+
+def test_a_gcc_optimized_block_span_skips_rows_another_row_replaces(
+    tmp_path, native_config, capsys
+):
+    # Review 3 of #107: GCC -O2 put a row for the loop's line 5 at the address of the
+    # later block's line 15, so `tail` took the loop's lines too.
+    gcc = shutil.which("gcc")
+    version = subprocess.run([gcc, "--version"], capture_output=True, text=True) if gcc else None
+    if version is None or "Free Software Foundation" not in version.stdout:
+        pytest.skip("needs GCC")
+    from peeky.cli import main
+
+    def line_of(text, marker):
+        return next(i for i, line in enumerate(text.splitlines(), 1) if marker in line)
+
+    def described(name, text, level):
+        (tmp_path / name).write_text(text)
+        config = {
+            "language": "c",
+            "sources": [name],
+            "headers": [],
+            "compiler": gcc,
+            "adapter": native_config["adapter"],
+            "dwarfdump": native_config["dwarfdump"],
+            "optimization": level,
+        }
+        (tmp_path / f"{level}.json").write_text(json.dumps(config))
+        arguments = ["describe", str(tmp_path / name), "--config", str(tmp_path / f"{level}.json")]
+        assert main([*arguments, "--json"]) == 0
+        return {
+            s["scope"]: s.get("spans", {}) for s in json.loads(capsys.readouterr().out)["scopes"]
+        }
+
+    spans = described("o2.c", OPTIMIZED_BLOCKS, "O2")["accumulate"]
+    assert all(first >= 14 for first, _ in spans.get("tail", [])), spans
+    # Review 4: a statement row a later row at its address replaces (an inlined
+    # `printf`'s) runs no code either; an inlined call's line is its block's (LLDB stops
+    # there, at the callee's entry, in this frame).
+    words = line_of(RICH, "int words = count_words(buf);")
+    spans = described("rich.c", RICH, "O2")["main"]
+    assert spans["words"] and all(first >= words for first, _ in spans["words"]), spans
+    neg = line_of(RICH, "return clamp(neg, -50, 0);")
+    spans = described("rich.c", RICH, "Og")["classify"]
+    assert any(first <= neg <= last for first, last in spans["neg"]), spans
+    # Review 5: of the rows at one address, only the last runs, whatever its neighbours;
+    # one of its own line stays.
+    doubled = line_of(RICH, "int doubled = v * 2;")
+    spans = described("rich.c", RICH, "O1")["classify"]
+    assert any(first <= doubled <= last for first, last in spans["doubled"]), spans
+    spans = described("calls.c", INLINED_CALLS, "O2")["work"]
+    for local in ("w", "z"):
+        declared = line_of(INLINED_CALLS, f"int {local} = ")
+        assert spans[local] and all(first >= declared for first, _ in spans[local]), spans
+
+
+OPTIMIZED_BLOCKS = """#include <stdio.h>
+#include <stdlib.h>
+static int accumulate(int n) {
+    int total = 0;
+    for (int i = 0; i < n; i++) {
+        int r = rand() % 5;
+        total += r * i;
+        if (total > 50) {
+            int cut = total / 2;
+            printf("cut %d\\n", cut);
+            total -= cut;
+        }
+    }
+    {
+        int tail = rand() & 3;
+        total += tail;
+    }
+    return total;
+}
+int (*volatile fp)(int) = accumulate;
+int main(int argc, char **argv) {
+    int a = accumulate(argc + 4);
+    int b = fp(argc + 6);
+    int c = accumulate(argc + 8);
+    printf("%d %d %d\\n", a, b, c);
+    return 0;
+}
+"""
+
+INLINED_CALLS = """#include <stdio.h>
+#include <stdlib.h>
+
+static inline int lim(int n) {
+    int r = n > 5 ? 5 : n;
+    return r;
+}
+
+static inline int step(int i) {
+    return i + 1 + (rand() & 1);
+}
+
+static int work(int n) {
+    int total = 0;
+    for (int i = 0; i < lim(n); i = step(i)) {
+        int sq = i * i + rand() % 3;
+        printf("sq %d\\n", sq);
+        total += sq;
+    }
+    {
+        int a = lim(n + rand() % 4);
+        {
+            int b = a + rand() % 5;
+            printf("b %d\\n", b);
+            total += b;
+        }
+    }
+    int k = 0;
+    while (lim(k + n) > k) {
+        int w = k * 3 + rand() % 2;
+        printf("w %d\\n", w);
+        total += w;
+        k++;
+    }
+    do {
+        int d = rand() % 7;
+        printf("d %d\\n", d);
+        total += d;
+    } while (lim(total) < 3);
+    if (lim(n) > 2) {
+        int y = n * 2 + rand() % 3;
+        printf("y %d\\n", y);
+        total += y;
+    }
+    switch (lim(n + total)) {
+    case 5: {
+        int z = rand() % 9;
+        printf("z %d\\n", z);
+        total += z;
+        break;
+    }
+    default:
+        total += 1;
+    }
+    return total;
+}
+
+int main(int argc, char **argv) {
+    int r = work(argc + 6);
+    printf("%d\\n", r);
+    return r & 1;
+}
+"""
+
+RICH = """#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+struct stats { int count; long sum; int max; };
+
+static inline int clamp(int v, int lo, int hi) {
+    if (v < lo) return lo;
+    if (v > hi) return hi;
+    return v;
+}
+
+static void add(struct stats *s, int v) {
+    s->count++;
+    s->sum += v;
+    if (v > s->max) {
+        int old = s->max;
+        s->max = v;
+        if (old < 0) printf("first max %d\\n", v);
+    }
+}
+
+static int count_words(const char *text) {
+    int words = 0, in_word = 0;
+    for (const char *p = text; *p; p++) {
+        int space = (*p == ' ' || *p == '\\n');
+        if (!space && !in_word) {
+            words++;
+        }
+        in_word = !space;
+    }
+    return words;
+}
+
+static int classify(int v) {
+    switch (v % 4) {
+    case 0: {
+        int doubled = v * 2;
+        return clamp(doubled, 0, 100);
+    }
+    case 1: {
+        int neg = -v;
+        return clamp(neg, -50, 0);
+    }
+    case 2:
+        return v;
+    default: {
+        int sq = v * v;
+        for (int k = 0; k < 3; k++) {
+            sq ^= rand() & k;
+        }
+        return sq;
+    }
+    }
+}
+
+static int fib(int n) {
+    if (n < 2) return n;
+    int a = fib(n - 1);
+    int b = fib(n - 2);
+    return a + b;
+}
+
+int main(int argc, char **argv) {
+    struct stats s = {0, 0, -1};
+    char buf[64];
+    snprintf(buf, sizeof buf, "the quick %s fox", argc > 1 ? argv[1] : "brown");
+    for (int i = 0; i < 6 + argc; i++) {
+        int c = classify(i + rand() % 3);
+        add(&s, c);
+        if (c > 10) {
+            int words = count_words(buf);
+            printf("words %d\\n", words);
+        }
+    }
+    int f = fib(8 + argc);
+    {
+        long avg = s.count ? s.sum / s.count : 0;
+        printf("%d %ld %d %ld %d\\n", s.count, s.sum, s.max, avg, f);
+    }
+    return (int)strlen(buf) & 1;
+}
+"""
+
+BLOCKS = """#include <stdio.h>
+static double average(const int *values, int count) {
+    int total = 0;
+    for (int i = 0; i < count; i++) {
+        total += values[i];
+    }
+    if (count > 0) {
+        int half = count / 2;
+        total += half * 0;
+    }
+    return count ? (double)total / count : 0.0;
+}
+int main(void) {
+    int values[3] = {1, 2, 3};
+    printf("%f\\n", average(values, 3));
+    return 0;
+}
+"""
+
+INCLUDED = """#include <stdio.h>
+static inline __attribute__((always_inline)) int twice(int v) {
+    int out = 0;
+    for (int j = 0; j < 2; j++) {
+        out += v;
+    }
+    return out;
+}
+int main(void) {
+    int total = 0;
+    for (int k = 0; k < 2; k++) {
+        int extra = 0;
+#include "step.h"
+        total += extra + twice(k);
+    }
+    printf("%d\\n", total);
+    return 0;
+}
+"""
 
 
 def test_a_pointers_first_element_is_its_pointee(tmp_path, native_config, capsys):
