@@ -171,8 +171,13 @@ def test_reinspect_revokes_previous_scope_even_if_adapter_reuses_reference(tmp_p
     with pytest.raises(ValueError, match="scope"):
         mutate(worker, old)
     assert not any(op == "setVariable" for op, _ in worker.dap.calls)
-    mutate(worker, new)
     assert worker.runtime.validated[-1] == frame_id
+    if frame_id == 1:
+        mutate(worker, new)
+    else:
+        # A caller's frame (#104 review) is read-only.
+        with pytest.raises(ValueError, match="caller's frame"):
+            mutate(worker, new)
 
 
 def test_uninspected_scope_rejected_without_fetching_variables(tmp_path):

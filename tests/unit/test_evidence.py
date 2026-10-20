@@ -963,3 +963,117 @@ def test_a_run_without_set_has_no_intervention_hit(store):
     evidence.record(store, result(sets=(("start", "0"),)))
     rows = evidence.query(store, "SELECT sets, set_hit FROM runs ORDER BY run_id")["rows"]
     assert rows[0]["set_hit"] is None and rows[1]["set_hit"] == 1
+
+
+def test_python_identities_and_scopes_are_stored_and_a_schema_5_store_gains_them(store):
+    # #104: whether `seen` is the same list on every call needs Python object identity.
+    # Its review: the number alone is the identity (an object keeps it when its class is
+    # reassigned), and a row says whether a module global was read.
+    run = captured(
+        [
+            (1, "observed", "seen", "['a']"),
+            (1, "observed", "key", "'a'"),
+            (2, "observed", "seen", "['a', 'b']"),
+            (2, "observed", "LIMIT", "[1]"),
+        ]
+    )
+    for row, identity in zip(run["rows"], (7, None, 7, 9)):
+        if identity:
+            row["identity"] = identity
+    run["rows"][-1]["scope"] = "globals"
+    evidence.record(store, run, language="python")
+    connection = sqlite3.connect(store)
+    connection.executescript(
+        "DROP VIEW last_run; DROP VIEW evidence; ALTER TABLE captures DROP COLUMN identity; "
+        "ALTER TABLE captures DROP COLUMN scope; "
+        "CREATE VIEW evidence AS SELECT c.run_id, c.selector FROM captures c; "
+        "CREATE VIEW last_run AS SELECT * FROM evidence; PRAGMA user_version = 5;"
+    )
+    connection.close()
+    rows = evidence.query(store, "SELECT selector, identity, scope FROM last_run")["rows"]
+    assert rows == [
+        {"selector": s, "identity": None, "scope": None} for s in ("seen", "key", "seen", "LIMIT")
+    ]
+    evidence.record(store, run, language="python")
+    rows = evidence.query(
+        store,
+        "SELECT hit, selector, identity, typeof(identity) AS kind, scope FROM last_run "
+        "WHERE identity IS NOT NULL ORDER BY hit, selector",
+    )["rows"]
+    assert rows == [
+        {"hit": 1, "selector": "seen", "identity": 7, "kind": "integer", "scope": None},
+        {"hit": 2, "selector": "LIMIT", "identity": 9, "kind": "integer", "scope": "globals"},
+        {"hit": 2, "selector": "seen", "identity": 7, "kind": "integer", "scope": None},
+    ]
+    described = evidence.schema(store)
+    columns = described["tables"]["captures"]["columns"]
+    assert "Within one hit, equal means the same object" in columns["identity"]
+    assert "its class is reassigned" in columns["identity"]
+    assert "'globals'" in columns["scope"]
+    assert "captures.identity" in described["functions"]["object_ref(text)"]
+
+
+def test_a_store_from_the_first_schema_6_gains_an_integer_identity_and_scope(store):
+    # Review of #104 (round 2): its first build wrote schema 6 with `identity TEXT`
+    # (`list@7`) and no `scope`, and later code skipped the migration ("table captures
+    # has 13 columns but 14 values").
+    run = captured([(1, "observed", "seen", "['a']"), (1, "observed", "key", "'a'")])
+    evidence.record(store, run, language="python")
+    connection = sqlite3.connect(store)
+    connection.executescript(
+        """
+        DROP VIEW last_run; DROP VIEW evidence;
+        CREATE TABLE early (
+            run_id INTEGER NOT NULL, hit INTEGER, phase TEXT, line INTEGER, function TEXT,
+            selector TEXT, type TEXT, value TEXT, num NUMERIC, unavailable INTEGER NOT NULL,
+            error TEXT, view TEXT, identity TEXT);
+        INSERT INTO early SELECT run_id, hit, phase, line, function, selector, type, value,
+            num, unavailable, error, view,
+            CASE WHEN selector = 'seen' THEN 'list@7' END FROM captures;
+        DROP TABLE captures;
+        ALTER TABLE early RENAME TO captures;
+        CREATE VIEW evidence AS SELECT c.run_id, r.started_at, r.label, r.program,
+            c.line, r.status, c.hit, c.phase, c.function, c.selector, c.type, c.value, c.num,
+            c.unavailable, c.error, c.view, c.identity, r.args, r.sets,
+            r.artifact_manifest_id, r.source_sha256, r.edit IS NOT NULL AS candidate,
+            r.language FROM captures c JOIN runs r ON r.run_id = c.run_id;
+        CREATE VIEW last_run AS SELECT * FROM evidence
+            WHERE run_id = (SELECT MAX(run_id) FROM runs);
+        PRAGMA user_version = 6;
+        """
+    )
+    connection.close()
+    rows = evidence.query(
+        store, "SELECT selector, identity, typeof(identity) AS kind, scope FROM last_run"
+    )["rows"]
+    # #104 review (round 3): that version could read module globals without saying so.
+    assert rows == [
+        {"selector": "seen", "identity": 7, "kind": "integer", "scope": "unknown"},
+        {"selector": "key", "identity": None, "kind": "null", "scope": "unknown"},
+    ]
+    assert (
+        "'unknown' for a row stored before"
+        in (evidence.schema(store)["tables"]["captures"]["columns"]["scope"])
+    )
+    run["rows"][0].update(identity=7, scope="globals")
+    evidence.record(store, run, language="python")
+    rows = evidence.query(store, "SELECT selector, identity, scope FROM last_run")["rows"]
+    assert rows[0] == {"selector": "seen", "identity": 7, "scope": "globals"}
+    connection = sqlite3.connect(store)
+    assert connection.execute("PRAGMA user_version").fetchone() == (evidence.SCHEMA_VERSION,)
+    indexes = {row[0] for row in connection.execute("SELECT name FROM sqlite_master")}
+    assert {"captures_run", "captures_selector"} <= indexes and "captures_v7" not in indexes
+    connection.close()
+
+
+def test_a_stale_rust_value_is_stored_as_stale(store):
+    # #108: a field of a moved or dropped Rust local is the bytes it left behind; the
+    # store says so in `view`, as a row's note does.
+    recorded = captured([(1, "observed", "h.n", "9"), (1, "observed", "f.n", "3")])
+    recorded["rows"][0]["stale"] = True
+    evidence.record(store, recorded)
+    rows = evidence.query(store, "SELECT selector, value, view FROM captures ORDER BY selector")
+    assert rows["rows"] == [
+        {"selector": "f.n", "value": "3", "view": None},
+        {"selector": "h.n", "value": "9", "view": "stale"},
+    ]

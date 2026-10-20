@@ -74,9 +74,9 @@ Requests are JSON objects with `Authorization: Bearer <token>`. The worker binds
 | --- | --- | --- |
 | launch | worker-relative program, breakpoint list | session ID, source hash, capabilities, verified locations |
 | wait | session ID, bounded timeout | stopped, terminated, or still running |
-| inspect | session ID, stop ID, optional frame ID | stack and bounded locals |
+| inspect | session ID, stop ID; optional `frame` (index into `frames`, 0 the innermost) or `frame_id`; optional `names` (up to 32 names also listed past the 50-entry bound); optional `globals` (Python: `true` lists the module's globals; a list of names lists them only if the function provably reads one of those names from them, with `globals_proof`) | stack and bounded locals (`frame`, `innermost` for a caller, `globals_available`); Python values carry `identity` |
 | expand | session ID, stop ID, opaque child handle, start/count | bounded read-only children |
-| set_variable | session ID, stop ID, scope reference, name, expression value | before/after |
+| set_variable | session ID, stop ID, scope reference, name, expression value (the innermost frame's only) | before/after |
 | breakpoints | session ID, program, complete replacement breakpoint list | verified locations |
 | continue | session ID, stop ID | running |
 | report | session ID | bounded output and operation history |

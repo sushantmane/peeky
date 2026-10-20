@@ -742,6 +742,28 @@ def _frame_hash(frame):
     return re.search(r"::(h[0-9a-f]{16})$", name)
 
 
+def _same_lent_rows(copies, variable, siblings, read):
+    """True if every row shown under the variable's name holds the same bytes, where
+    the MIR says they are an async body's parameter and its copies (``copies``: bytes,
+    rows; see OwnedLocals.lent_copies, #116): then each shows what the caller lent."""
+    if not copies:
+        return False
+    width, count = copies
+    rows = [row for row in siblings if row.get("name") == variable.get("name")]
+    if len(rows) != count or not any(row is variable for row in rows):
+        return False
+    shown = [str(row.get("value") or "") for row in rows]
+    if width == 8 and all(re.fullmatch(r"0x[0-9a-fA-F]{1,16}", value) for value in shown):
+        # A thin reference shows the pointer it holds, all of its bytes: so lldb-dap 18,
+        # which cannot read memory, can be told too.
+        return len({int(value, 16) for value in shown}) == 1
+    try:
+        held = {bytes(read(row.get("memoryReference"), width)) for row in rows}
+    except Exception:
+        return False
+    return len(held) == 1
+
+
 def _holds_data_pointers(kind):
     """Whether LLDB's type is a data pointer, or an array of them (`Pt *[2]`, which a
     `[Box<Pt>; 2]` is too): what a Box may be. A fn pointer (`long (*)(long)`, `long
@@ -842,6 +864,62 @@ def _group_at(text, at):
 
 # MIR types that do not own what they point at (`for<'a> fn(&'a T)` has a binder).
 _NON_OWNING = re.compile(r"&|\*const |\*mut |(?:for<[^<>]*> )?(?:unsafe )?(?:extern \S+ )?fn\(")
+_PRIMITIVES = frozenset(
+    {
+        *(f"{sign}{bits}" for sign in "iu" for bits in ("8", "16", "32", "64", "128", "size")),
+        *("f16", "f32", "f64", "f128", "bool", "char", "()", "!"),
+    }
+)
+
+
+def _may_own(kind):
+    """Whether a value of MIR type ``kind`` may own memory it reaches through a pointer
+    (a Box, a Vec's or String's buffer, an Rc's allocation): anything but a primitive,
+    a reference, a raw or fn pointer, or a tuple or array made only of those. A struct's
+    or enum's name says nothing of its fields, and None (a type not written out) may be
+    anything (#108)."""
+    if kind is None:
+        return True
+    kind = kind.strip()
+    if kind in _PRIMITIVES or _NON_OWNING.match(kind):
+        return False
+    if kind.startswith("[") and kind.endswith("]"):
+        # `[T; N]` or `[T]`: the element's type.
+        return _may_own(_top_level_parts(kind[1:-1], ";")[0])
+    if kind.startswith("(") and kind.endswith(")"):
+        parts = [part for part in _top_level_parts(kind[1:-1], ",") if part.strip()]
+        return any(_may_own(part) for part in parts)
+    return True
+
+
+def _top_level_parts(text, separator):
+    """``text`` split at each ``separator`` outside brackets of any kind."""
+    # `->` would close a bracket (`(fn(i64) -> i64, Pt)`).
+    masked = text.replace("->", "  ")
+    parts, depth, start = [], 0, 0
+    for at, char in enumerate(masked):
+        if char in "<([{":
+            depth += 1
+        elif char in ">)]}":
+            depth -= 1
+        elif char == separator and depth == 0:
+            parts.append(text[start:at])
+            start = at + 1
+    return [*parts, text[start:]]
+
+
+def _unproven(variable):
+    """``variable`` shown only as its pointer (#101, #108)."""
+    # Only the address: LLDB's summary of a `char *` (`Box<u8>`) is read through the
+    # pointer too.
+    address = re.match(r"0x[0-9a-fA-F]+", str(variable.get("value") or ""))
+    return {
+        "name": variable.get("name"),
+        "type": variable.get("type"),
+        "value": address[0] if address else "<not shown: may point at freed memory>",
+        "variablesReference": 0,
+        "rust_view": "unproven",
+    }
 
 
 class RustSession(NativeSession):
@@ -960,7 +1038,17 @@ class RustSession(NativeSession):
             )
 
     def view_variable(
-        self, variable, fetch, read=None, *, frame=None, top=False, innermost=False, stop=None
+        self,
+        variable,
+        fetch,
+        read=None,
+        *,
+        frame=None,
+        top=False,
+        innermost=False,
+        stop=None,
+        siblings=None,
+        taint=None,
     ):
         """Qualified views: containers read from memory, active enum variants; None
         leaves ordinary values unchanged.
@@ -972,7 +1060,15 @@ class RustSession(NativeSession):
         (rust_mir). A `&mut` parameter and an owned local are read only in the
         innermost frame: from an outer frame, a callee (`retain`, `sort_by` calling back
         into your code) may be midway through changing it.
+
+        ``taint`` (see aggregate_taint) says the value is inside a local whose pointers
+        may reach freed memory: a pointer there shows only its address.
         """
+        kind = variable.get("type")
+        if taint and not top and (_holds_data_pointers(kind) or _is_wide_box(kind)):
+            # #108: a Box field (or a Vec's, String's or Rc's pointer, a reference) of a
+            # moved, dropped or unproven local; its own fields hold no pointer.
+            return _unproven(variable)
         parameter = None
         hashed = _frame_hash(frame) if top else None
         proof = self.parameters.get((hashed[1], variable.get("name"))) if hashed else None
@@ -1000,7 +1096,9 @@ class RustSession(NativeSession):
                         variable.get("name"),
                         line,
                         shown_path,
-                        breakpoint=stop == "breakpoint",
+                        # A caller frame is on its call's line, anywhere on it (a step's
+                        # rule): more places can only make the verdict stricter.
+                        breakpoint=innermost and stop == "breakpoint",
                         column=(frame or {}).get("column"),
                     )
                 )
@@ -1047,34 +1145,11 @@ class RustSession(NativeSession):
         if container is not None:
             return container
         if top and proofs is not None:
-            # An unmangled function (`#[no_mangle]`) has no hash: its bindings come from
-            # the bodies on the stop line, and nothing there is ever proven.
-            function = hashed[1] if hashed else None
-            source = ((frame or {}).get("source") or {}).get("path")
-            declared = (
-                proofs.declared_type(function, variable.get("name"), line, source)
-                if hashed
-                else None
-            )
-            types = (
-                [declared]
-                if declared is not None
-                else proofs.binding_types(
-                    function,
-                    variable.get("name"),
-                    source,
-                    line,
-                    # The frame's own shape: a `fn` nested in a closure or async body
-                    # (`af::{{closure}}::tw`) is not a closure itself.
-                    closure=frame_shape((frame or {}).get("name"))[1] > 0,
-                    frame=(frame or {}).get("name"),
-                )
-            )
+            types = self._binding_types(variable, frame)
             # An array is judged by its elements (`[&Pt; 2]` is plain, `[Box<Pt>; 2]` owns).
             plain = bool(types) and all(_NON_OWNING.match((t or "").lstrip("[")) for t in types)
             # LLDB names a wide Box (`Box<str>`, `Box<[T]>`, `Box<dyn Trait>`) itself, even
             # where the MIR says only `T`; a reference to one (`&Box<str>`) is not owning.
-            kind = variable.get("type")
             wide = _is_wide_box(kind)
             # A Box among a name's bindings counts only for a value that could be one (a
             # data pointer or an array of them, or a wide Box): another binding of the name
@@ -1096,7 +1171,9 @@ class RustSession(NativeSession):
             gated = (owning or (pointer and not plain)) and not (
                 provable and proofs.proven(hashed[1], variable.get("name"), line, shown_path)
             )
-            if not gated and provable:
+            # Judged in every frame (`--frame N` reads callers): only proofs that make a
+            # value readable (an owned container, a Box) are the innermost frame's.
+            if not gated and unoptimized and hashed:
                 # #110: a reference (or raw pointer, `&str`, a tuple holding one) outlives
                 # what it points into in scope, though not in use: it reads while the code
                 # still uses it ahead. A line breakpoint stops only where the line starts in
@@ -1104,20 +1181,25 @@ class RustSession(NativeSession):
                 # stop anywhere in it. What cannot be told (a site or local not understood)
                 # reads as before.
                 gated = reference_valid() is False
+                if gated and siblings:
+                    gated = not _same_lent_rows(
+                        proofs.lent_copies(
+                            hashed[1],
+                            variable.get("name"),
+                            line,
+                            shown_path,
+                            breakpoint=stop == "breakpoint",
+                            column=(frame or {}).get("column"),
+                        ),
+                        variable,
+                        siblings,
+                        read,
+                    )
             if gated:
                 # #101: a moved or dropped Box still holds its pointer, and LLDB would
                 # read the freed allocation as its fields. The pointer is shown; what it
                 # points at is not.
-                # Only the address: LLDB's summary of a `char *` (`Box<u8>`) is read
-                # through the pointer too.
-                address = re.match(r"0x[0-9a-fA-F]+", str(variable.get("value") or ""))
-                return {
-                    "name": variable.get("name"),
-                    "type": variable.get("type"),
-                    "value": address[0] if address else "<not shown: may point at freed memory>",
-                    "variablesReference": 0,
-                    "rust_view": "unproven",
-                }
+                return _unproven(variable)
         view = active_variant(variable, fetch, self.layouts)
         if view and view["rust_view"] == "active-variant" and self.target.opt_level != "0":
             # Optimized code may track an enum's tag and payload separately and LLDB
@@ -1125,6 +1207,72 @@ class RustSession(NativeSession):
             # not trustworthy there.
             return {**view, "value": UNVERIFIED, "rust_view": "opaque"}
         return view
+
+    def _binding_types(self, variable, frame):
+        """The MIR types of the bindings the frame's top-level ``variable`` can be (see
+        OwnedLocals.binding_types): the one declared, if the stop tells which."""
+        proofs, hashed = self.owned, _frame_hash(frame)
+        line = (frame or {}).get("line")
+        # An unmangled function (`#[no_mangle]`) has no hash: its bindings come from
+        # the bodies on the stop line, and nothing there is ever proven.
+        function = hashed[1] if hashed else None
+        source = ((frame or {}).get("source") or {}).get("path")
+        declared = (
+            proofs.declared_type(function, variable.get("name"), line, source) if hashed else None
+        )
+        if declared is not None:
+            return [declared]
+        return proofs.binding_types(
+            function,
+            variable.get("name"),
+            source,
+            line,
+            # The frame's own shape: a `fn` nested in a closure or async body
+            # (`af::{{closure}}::tw`) is not a closure itself.
+            closure=frame_shape((frame or {}).get("name"))[1] > 0,
+            frame=(frame or {}).get("name"),
+        )
+
+    def aggregate_taint(self, variable, frame, *, innermost=False):
+        """#108: how much of a top-level local LLDB shows as a struct, tuple, array or
+        enum (a value with children, not a pointer) reads, for one whose MIR type may own
+        memory through a pointer inside it (a Box field, a Vec's or String's buffer, an
+        Rc; any struct, as the MIR names no fields). None: all of it, where the build's
+        MIR proves it initialized at the stop in the innermost frame of an unoptimized
+        build. "pointers": its own fields, not what its pointers reach, in a caller frame
+        proven the same way (a callee may be midway through replacing a Box it lent).
+        "stale": its fields marked as the bytes it left behind, and not what its
+        pointers reach, where it may be moved, dropped, partly moved or not yet
+        assigned, or nothing is proven (an optimized build, a frame the MIR cannot
+        match). The worker passes the result to ``view_variable`` for everything inside
+        it."""
+        proofs, kind = getattr(self, "owned", None), variable.get("type")
+        if proofs is None or _holds_data_pointers(kind) or _is_wide_box(kind):
+            # A pointer at the top is the Box and reference gates' (view_variable).
+            return None
+        if not re.fullmatch(r"[^\W\d]\w*(?: @ .+)?", str(variable.get("name"))):
+            # LLDB's own values, not a local the code moves: an async body's `<null>`
+            # (its `Pin<&mut>` self), the `(Return Value)` a step out shows.
+            return None
+        types = self._binding_types(variable, frame)
+        if types and not any(_may_own(each) for each in types):
+            # Primitives, references and raw pointers only (`(i64, &Pt)`): a move leaves
+            # their bytes as they were, and what a reference reaches is #110's.
+            return None
+        hashed = _frame_hash(frame)
+        proven = bool(
+            self.target.opt_level == "0"
+            and hashed
+            and proofs.proven(
+                hashed[1],
+                variable.get("name"),
+                (frame or {}).get("line"),
+                ((frame or {}).get("source") or {}).get("path"),
+            )
+        )
+        if proven:
+            return None if innermost else "pointers"
+        return "stale"
 
     def display_type(self, variable, frame, top=True):
         """A value's Rust primitive type where LLDB shows a C-style name: a root local's

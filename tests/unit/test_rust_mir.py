@@ -10,6 +10,8 @@ from peeky.rust_mir import (
     LineFacts,
     OwnedLocals,
     _event,
+    _mir_name,
+    _same_path,
     _segments,
     frame_shape,
     ir_functions,
@@ -1076,6 +1078,392 @@ def test_aliases_follow_values_that_can_hold_a_pointer_and_find_drops_through_th
     assert body.drops_through(1) and not body.drops_through(2)
 
 
+# #116: an `#[inline(always)]` function, as rustc dumps its MIR (built before LLVM
+# inlines it into every caller, even at opt-level 0).
+INLINED = """fn e(_1: &mut Vec<Pt>) -> i64 {
+    debug v => _1;                       // in scope 0 at src/main.rs:13:6: 13:7
+    let mut _0: i64;                     // return place in scope 0 at src/main.rs:13:26: 13:29
+    let _2: &Pt;                         // in scope 0 at src/main.rs:14:9: 14:14
+    let _3: &Pt;                         // in scope 0 at src/main.rs:14:19: 14:22
+    let mut _4: &std::vec::Vec<Pt>;      // in scope 0 at src/main.rs:14:18: 14:19
+    let _6: ();                          // in scope 0 at src/main.rs:16:5: 16:30
+    let mut _7: &mut std::vec::Vec<Pt>;  // in scope 0 at src/main.rs:16:5: 16:6
+    let mut _8: Pt;                      // in scope 0 at src/main.rs:16:12: 16:29
+    let mut _9: i64;                     // in scope 0 at src/main.rs:17:5: 17:6
+    let mut _10: i64;                    // in scope 0 at src/main.rs:17:9: 17:16
+    let mut _11: (i64, bool);            // in scope 0 at src/main.rs:17:5: 17:16
+    scope 1 {
+        debug first => _2;               // in scope 1 at src/main.rs:14:9: 14:14
+        let _5: i64;                     // in scope 1 at src/main.rs:15:9: 15:10
+        scope 2 {
+            debug k => _5;               // in scope 2 at src/main.rs:15:9: 15:10
+        }
+    }
+    bb0: {
+        StorageLive(_2);                 // scope 0 at src/main.rs:14:9: 14:14
+        StorageLive(_3);                 // scope 0 at src/main.rs:14:19: 14:22
+        StorageLive(_4);                 // scope 0 at src/main.rs:14:18: 14:19
+        _4 = &(*_1);                     // scope 0 at src/main.rs:14:18: 14:19
+        _3 = <Vec<Pt> as Index<usize>>::index(move _4, const 0_usize) -> [return: bb1, unwind continue]; // scope 0 at src/main.rs:14:19: 14:22
+    }
+    bb1: {
+        StorageDead(_4);                 // scope 0 at src/main.rs:14:21: 14:22
+        _2 = &(*_3);                     // scope 0 at src/main.rs:14:17: 14:22
+        StorageLive(_5);                 // scope 1 at src/main.rs:15:9: 15:10
+        _5 = copy ((*_2).0: i64);        // scope 1 at src/main.rs:15:13: 15:20
+        StorageLive(_6);                 // scope 2 at src/main.rs:16:5: 16:30
+        StorageLive(_7);                 // scope 2 at src/main.rs:16:5: 16:6
+        _7 = &mut (*_1);                 // scope 2 at src/main.rs:16:5: 16:6
+        StorageLive(_8);                 // scope 2 at src/main.rs:16:12: 16:29
+        _8 = Pt { x: const 3_i64, y: const 4_i64 }; // scope 2 at src/main.rs:16:12: 16:29
+        _6 = Vec::<Pt>::push(move _7, move _8) -> [return: bb2, unwind continue]; // scope 2 at src/main.rs:16:5: 16:30
+    }
+    bb2: {
+        StorageDead(_8);                 // scope 2 at src/main.rs:16:29: 16:30
+        StorageDead(_7);                 // scope 2 at src/main.rs:16:29: 16:30
+        StorageDead(_6);                 // scope 2 at src/main.rs:16:30: 16:31
+        StorageLive(_9);                 // scope 2 at src/main.rs:17:5: 17:6
+        _9 = copy _5;                    // scope 2 at src/main.rs:17:5: 17:6
+        StorageLive(_10);                // scope 2 at src/main.rs:17:9: 17:16
+        _10 = churn() -> [return: bb3, unwind continue]; // scope 2 at src/main.rs:17:9: 17:16
+    }
+    bb3: {
+        _11 = AddWithOverflow(copy _9, copy _10); // scope 2 at src/main.rs:17:5: 17:16
+        assert(!move (_11.1: bool), "attempt to compute `{} + {}`, which would overflow", move _9, move _10) -> [success: bb4, unwind continue]; // scope 2 at src/main.rs:17:5: 17:16
+    }
+    bb4: {
+        _0 = move (_11.0: i64);          // scope 2 at src/main.rs:17:5: 17:16
+        StorageDead(_10);                // scope 2 at src/main.rs:17:15: 17:16
+        StorageDead(_9);                 // scope 2 at src/main.rs:17:15: 17:16
+        StorageDead(_5);                 // scope 1 at src/main.rs:18:1: 18:2
+        StorageDead(_3);                 // scope 0 at src/main.rs:18:1: 18:2
+        StorageDead(_2);                 // scope 0 at src/main.rs:18:1: 18:2
+        return;                          // scope 0 at src/main.rs:18:2: 18:2
+    }
+}
+"""
+
+INLINED_IR = """define internal void @_ZN5chars4main17h0123456789abcdefE() unnamed_addr #0 !dbg !10 {
+start:
+  %_3.i = call ptr @index(), !dbg !31
+  call void @push(), !dbg !32
+  %_10.i = call i64 @churn(), !dbg !33
+  ret void, !dbg !24
+}
+
+!2 = !DIFile(filename: "src/main.rs", directory: "/w")
+!9 = !DINamespace(name: "chars", scope: null)
+!10 = distinct !DISubprogram(name: "main", linkageName: "_ZN5chars4main17h0123456789abcdefE", scope: !9, file: !2, line: 27, unit: !1)
+!12 = distinct !DISubprogram(name: "e", linkageName: "_ZN5chars1e17h00000000000000eeE", scope: !9, file: !2, line: 13, unit: !1)
+!13 = distinct !DILexicalBlock(scope: !12, file: !2, line: 14, column: 5)
+!22 = !DILocation(line: 29, column: 20, scope: !10)
+!24 = !DILocation(line: 31, column: 2, scope: !10)
+!31 = !DILocation(line: 14, column: 19, scope: !12, inlinedAt: !22)
+!32 = !DILocation(line: 16, column: 7, scope: !13, inlinedAt: !22)
+!33 = !DILocation(line: 17, column: 9, scope: !13, inlinedAt: !22)
+"""
+
+
+def test_a_function_inlined_everywhere_is_recorded_from_its_inlined_code(tmp_path):
+    # #116: `#[inline(always)]` leaves no IR function of its own, yet its frames carry
+    # its hash; the lines of its inlined copies identify its MIR body.
+    path = tmp_path / "app.ll"
+    path.write_text(INLINED_IR)
+    functions = ir_functions(path, ["src/main.rs"])
+    inlined = functions["h00000000000000ee"]
+    assert inlined.inline_only and not inlined.blocks
+    assert (inlined.name, inlined.parent, inlined.line) == ("e", "chars", 13)
+    assert inlined.copies == {14, 16, 17} and inlined.ancestors == ("chars",)
+    assert not functions["h0123456789abcdef"].inline_only
+    assert not functions["h0123456789abcdef"].copies
+
+
+def test_an_inlined_frame_s_references_are_judged_at_every_place_of_its_line(tmp_path):
+    path = tmp_path / "app.ll"
+    path.write_text(INLINED_IR)
+    functions = ir_functions(path, ["src/main.rs"])
+    body = parse_body(INLINED)
+    owned = OwnedLocals([body], functions, SOURCES)
+    assert owned.body("h00000000000000ee") is body
+    for breakpoint in (False, True):
+        # `first` past its last use and `v.push(...)`: the Vec may have reallocated.
+        assert owned.reference_valid("h00000000000000ee", "first", 17, MAIN, breakpoint, 5) is False
+        assert owned.reference_valid("h00000000000000ee", "first", 15, MAIN, breakpoint, 13)
+        # The caller lent `v` for the whole call.
+        assert owned.reference_valid("h00000000000000ee", "v", 17, MAIN, breakpoint, 5)
+    # Every statement of the line, and after its call: the line's own places only (not
+    # before the `return` of the closing brace, past the `StorageDead`s).
+    site = owned._site("h00000000000000ee", 17, MAIN)
+    assert owned._positions(site, 17, None) == [(2, 4), (2, 6), (3, 0), (3, 1), (4, 0)]
+    assert owned._positions(owned._site("h00000000000000ee", 13, MAIN), 13, None) == [(0, 0)]
+    # Not yet assigned on its own line.
+    assert owned.reference_valid("h00000000000000ee", "first", 14, MAIN) is False
+    # A line with no code of it: nothing places the stop, so its references are gated.
+    assert owned._site("h00000000000000ee", 19, MAIN) is None
+    assert owned.reference_valid("h00000000000000ee", "first", 19, MAIN) is False
+    assert owned.reference_valid("h00000000000000ee", "v", 19, MAIN) is None
+    assert owned.proven("h00000000000000ee", "k", 17, MAIN)
+
+
+def test_an_inlined_function_not_told_apart_gates_its_borrowing_bindings(tmp_path):
+    path = tmp_path / "app.ll"
+    path.write_text(INLINED_IR)
+    functions = ir_functions(path, ["src/main.rs"])
+    # Two bodies it may be (a macro's twins), or none with a span on its `fn` line.
+    for bodies in (
+        [parse_body(INLINED), parse_body(INLINED)],
+        [parse_body(INLINED.replace("13:", "12:"))],
+    ):
+        owned = OwnedLocals(bodies, functions, SOURCES)
+        assert owned.body("h00000000000000ee") is None
+        assert owned.reference_valid("h00000000000000ee", "first", 15, MAIN) is False
+        # A reference parameter never reassigned is the caller's.
+        assert owned.reference_valid("h00000000000000ee", "v", 15, MAIN) is None
+
+
+def test_a_function_also_inlined_takes_no_breakpoint_facts(tmp_path):
+    # A frame with its hash may be an inlined copy, whose layout its IR does not show.
+    path = tmp_path / "app.ll"
+    path.write_text(IR.replace("!23 = !DILocation(line: 99", "!23 = !DILocation(line: 4"))
+    function = ir_functions(path, ["src/main.rs"])["h0123456789abcdef"]
+    assert function.copies == {4} and not function.inline_only
+
+
+# #116: an `async fn`'s body after rustc's coroutine transform: `first` is kept in its
+# state across the `.await` (variant 3), `stale` is not, and `v` is copied from the
+# state into the poll's own frame.
+COROUTINE = "\n".join(
+    [
+        "fn live::{closure#0}(_1: Pin<&mut {async fn body of live()}>, _2: &mut Context<'_>) -> Poll<i64> {",
+        "    debug _task_context => _2;           // in scope 0 at src/main.rs:1:35: 6:2",
+        "    debug v => ((*_9).0: &std::vec::Vec<Pt>); // in scope 0 at src/main.rs:1:15: 1:16",
+        "    let mut _0: std::task::Poll<i64>;    // return place in scope 0 at src/main.rs:1:35: 6:2",
+        "    let _3: &std::vec::Vec<Pt>;          // in scope 0 at src/main.rs:1:15: 1:16",
+        "    let _4: &Pt;                         // in scope 0 at src/main.rs:2:9: 2:14",
+        "    let _5: &Pt;                         // in scope 0 at src/main.rs:2:19: 2:22",
+        "    let mut _6: bool;                    // in scope 0 at src/main.rs:4:5: 4:23",
+        "    let mut _7: i64;                     // in scope 0 at src/main.rs:5:5: 5:12",
+        "    let mut _8: u32;                     // in scope 0 at src/main.rs:1:35: 6:2",
+        "    let mut _9: &mut {async fn body of live()}; // in scope 0 at src/main.rs:1:35: 6:2",
+        "    let _10: &Pt;                        // in scope 0 at src/main.rs:3:9: 3:14",
+        "    scope 1 {",
+        "        debug v => _3;                   // in scope 1 at src/main.rs:1:15: 1:16",
+        "        scope 2 {",
+        "            debug first => (((*_9) as variant#3).0: &Pt); // in scope 2 at src/main.rs:2:9: 2:14",
+        "            debug stale => _10;          // in scope 2 at src/main.rs:3:9: 3:14",
+        "        }",
+        "    }",
+        "",
+        "    bb0: {",
+        "        _9 = copy (_1.0: &mut {async fn body of live()}); // scope 0 at src/main.rs:1:35: 6:2",
+        "        _8 = discriminant((*_9));        // scope 0 at src/main.rs:1:35: 6:2",
+        "        switchInt(move _8) -> [0: bb1, 1: bb6, 2: bb6, 3: bb5, otherwise: bb6]; // scope 0 at src/main.rs:1:35: 6:2",
+        "    }",
+        "",
+        "    bb1: {",
+        "        StorageLive(_3);                 // scope 0 at src/main.rs:1:15: 1:16",
+        "        _3 = copy ((*_9).0: &std::vec::Vec<Pt>); // scope 0 at src/main.rs:1:15: 1:16",
+        "        _5 = <Vec<Pt> as Index<usize>>::index(copy _3, const 0_usize) -> [return: bb2, unwind continue]; // scope 1 at src/main.rs:2:19: 2:22",
+        "    }",
+        "",
+        "    bb2: {",
+        "        (((*_9) as variant#3).0: &Pt) = &(*_5); // scope 1 at src/main.rs:2:17: 2:22",
+        "        StorageLive(_10);                // scope 2 at src/main.rs:3:9: 3:14",
+        "        _10 = &(*_5);                    // scope 2 at src/main.rs:3:17: 3:22",
+        "        goto -> bb8;                     // scope 2 at src/main.rs:4:5: 4:23",
+        "    }",
+        "",
+        "    bb8: {",
+        "        _6 = poll() -> [return: bb3, unwind continue]; // scope 2 at src/main.rs:4:5: 4:23",
+        "    }",
+        "",
+        "    bb3: {",
+        "        switchInt(move _6) -> [0: bb7, otherwise: bb4]; // scope 2 at src/main.rs:4:5: 4:23",
+        "    }",
+        "",
+        "    bb4: {",
+        "        _7 = copy ((*(((*_9) as variant#3).0: &Pt)).0: i64); // scope 2 at src/main.rs:5:5: 5:12",
+        "        _0 = Poll::<i64>::Ready(move _7); // scope 0 at src/main.rs:6:2: 6:2",
+        "        discriminant((*_9)) = 1;         // scope 0 at src/main.rs:6:2: 6:2",
+        "        return;                          // scope 0 at src/main.rs:6:2: 6:2",
+        "    }",
+        "",
+        "    bb5: {",
+        "        StorageLive(_3);                 // scope 0 at src/main.rs:1:35: 6:2",
+        "        StorageLive(_10);                // scope 0 at src/main.rs:1:35: 6:2",
+        "        goto -> bb8;                     // scope 2 at src/main.rs:4:5: 4:23",
+        "    }",
+        "",
+        "    bb6: {",
+        "        unreachable;                     // scope 0 at src/main.rs:1:35: 6:2",
+        "    }",
+        "",
+        "    bb7: {",
+        "        _0 = Poll::<i64>::Pending;       // scope 2 at src/main.rs:4:18: 4:23",
+        "        StorageDead(_3);                 // scope 2 at src/main.rs:4:18: 4:23",
+        "        StorageDead(_10);                // scope 2 at src/main.rs:4:18: 4:23",
+        "        discriminant((*_9)) = 3;         // scope 2 at src/main.rs:4:18: 4:23",
+        "        return;                          // scope 2 at src/main.rs:4:18: 4:23",
+        "    }",
+        "}",
+        "",
+    ]
+)
+
+
+def coroutine_function():
+    body = parse_body(COROUTINE)
+    blocks = {"start": {1}}
+    for number, block in body.blocks.items():
+        if number:
+            blocks[f"bb{number}"] = {line for _, _, line in block.statements}
+    return IrFunction(
+        "{async_fn#0}", "live", "src/main.rs", blocks, {}, 1, ancestors=("app", "live")
+    )
+
+
+def test_what_a_coroutine_keeps_across_a_suspension_is_a_local_of_its_own():
+    body = parse_body(COROUTINE)
+    assert body.supported and body.coroutine == 9
+    # The state's variant field is renamed a local past the body's own.
+    assert body.saved == {11} and body.types[11] == "&Pt"
+    assert body.local("first") == 11 and body.resumes == {7: 5}
+    assert body.blocks[4].statements[0][0] == "_7 = copy ((*_11).0: i64);"
+    # It stays initialized across the suspension; the poll's own locals do not.
+    entry = body._dataflow()
+    assert entry[4] & (1 << 11) and not entry[4] & (1 << 10) and not entry[4] & (1 << 3)
+    assert entry[4] & (1 << 2)
+    # Used after the `.await`, it is used ahead of the suspension too.
+    assert body.used_ahead(11, (7, 0)) and body.used_ahead(11, (8, 0))
+    assert not body.used_before(11, (5, 0))
+    # What the caller lent: the parameter's copy, and the poll's `&mut Context`.
+    assert body._lent() == {2, 3}
+
+
+def test_an_async_body_is_matched_and_judges_what_it_keeps_and_what_it_does_not():
+    owned = OwnedLocals([parse_body(COROUTINE)], {"h": coroutine_function()}, SOURCES)
+    assert owned.body("h") is not None
+    assert owned.reference_valid("h", "first", 5, MAIN) is True
+    assert owned.reference_valid("h", "first", 3, MAIN) is True
+    # After a later poll resumes it, the poll's own copies hold whatever the stack did.
+    assert owned.reference_valid("h", "stale", 5, MAIN) is False
+    assert owned.reference_valid("h", "v @ main.rs:1", 5, MAIN) is False
+    # Before the suspension the parameter's copy is the caller's (the state's is not
+    # judged, so the name reads as before).
+    assert owned.reference_valid("h", "v @ main.rs:1", 3, MAIN) is None
+    assert owned.reference_valid("h", "_task_context", 5, MAIN) is True
+
+
+def test_a_coroutine_whose_state_is_not_understood_gates_its_references():
+    # A suspension the dispatch never resumes: its saved values are not followed.
+    text = COROUTINE.replace("3: bb5, otherwise", "otherwise")
+    body = parse_body(text)
+    assert not body.supported
+    owned = OwnedLocals([body], {"h": coroutine_function()}, SOURCES)
+    assert owned.body("h") is None
+    assert owned.reference_valid("h", "first", 5, MAIN) is False
+    # A coroutine whose state is not taken where it always is.
+    moved = parse_body(COROUTINE.replace("_9 = copy (_1.0:", "_9 = move (_1.0:"))
+    assert not moved.supported and moved.coroutine == -1
+    assert OwnedLocals([moved], {"h": coroutine_function()}, SOURCES).body("h") is None
+    # A place in the state other than a field of a variant.
+    assert not parse_body(
+        COROUTINE.replace("_10 = &(*_5);", "_10 = &(((*_9) as variant#3));")
+    ).supported
+
+
+@pytest.mark.parametrize(
+    ("name", "ancestors", "path"),
+    [
+        ("{async_fn#0}", ("app", "serve"), "serve::{closure#0}"),
+        ("{async_block#0}", ("app", "serve", "{async_fn#0}"), "serve::{closure#0}::{closure#0}"),
+        (
+            "{closure#0}",
+            ("app", "serve", "{async_fn#0}", "{async_block#0}"),
+            "serve::{closure#0}::{closure#0}::{closure#0}",
+        ),
+        ("{async_closure#1}", ("app", "main", "{closure#1}"), "main::{closure#1}::{closure#1}"),
+        (
+            "{async_fn#0}",
+            ("app", "{impl#1}", "lookup"),
+            "<impl at src/main.rs:48:1: 48:8>::lookup::{closure#0}",
+        ),
+    ],
+)
+def test_a_coroutine_s_body_is_its_closure_of_the_same_path(name, ancestors, path):
+    # #116: debug info names a coroutine by its kind, the MIR as a closure; a closure in
+    # an async block is told from the block by the whole path.
+    body = mir({0: ["return;"]}, header=f"fn {path}() -> () {{")
+    function = IrFunction(
+        name, ancestors[-1], "src/main.rs", {"start": {1}}, {}, 1, ancestors=ancestors
+    )
+    assert _mir_name(name) == body.name and _same_path(body, function)
+    nested = mir({0: ["return;"]}, header=f"fn {path}::{{closure#0}}() -> () {{")
+    assert not (_mir_name(name) == nested.name and _same_path(nested, function))
+
+
+def test_a_parameter_s_rows_read_where_its_copy_holds_what_the_state_does():
+    # #116: lldb-dap shows an async fn's parameter twice, as the state's field (lent for
+    # the future's life) and as the poll's copy; after a resume the copy is unassigned.
+    from peeky.rust import _same_lent_rows
+
+    owned = OwnedLocals([parse_body(COROUTINE)], {"h": coroutine_function()}, SOURCES)
+    assert owned.reference_valid("h", "v @ main.rs:1", 5, MAIN) is False
+    assert owned.lent_copies("h", "v @ main.rs:1", 5, MAIN) == (8, 2)
+    assert owned.lent_copies("h", "first", 5, MAIN) is None
+    assert owned.lent_copies("h", "stale", 5, MAIN) is None
+    rows = [
+        {"name": "v @ main.rs:1", "memoryReference": "0x10"},
+        {"name": "v @ main.rs:1", "memoryReference": "0x20"},
+        {"name": "first", "memoryReference": "0x30"},
+    ]
+    memory = {"0x10": b"\x01" * 8, "0x20": b"\x01" * 8, "0x30": b"\x02" * 8}
+
+    def read(reference, count):
+        return memory[reference][:count]
+
+    assert _same_lent_rows((8, 2), rows[1], rows, read)
+    assert not _same_lent_rows(None, rows[1], rows, read)
+    # A row missing, a row not among them, other bytes, an unreadable row.
+    assert not _same_lent_rows((8, 3), rows[1], rows, read)
+    assert not _same_lent_rows((8, 2), dict(rows[1]), rows, read)
+    memory["0x20"] = b"\x01" * 7 + b"\x03"
+    assert not _same_lent_rows((8, 2), rows[1], rows, read)
+    del memory["0x20"]
+    assert not _same_lent_rows((8, 2), rows[1], rows, read)
+    # A thin reference shows the pointer it holds: lldb-dap 18 reads no memory, and
+    # gives no memoryReference.
+    shown = [{"name": "v @ main.rs:1", "value": "0x0000fffffffff120"} for _ in range(2)]
+    assert _same_lent_rows((8, 2), shown[0], shown, None)
+    shown[1]["value"] = "0x0000fffffffff128"
+    assert not _same_lent_rows((8, 2), shown[0], shown, None)
+    # A wide one (`&[T]`, `&str`) shows no pointer, nor does a summary: then its bytes.
+    shown[1]["value"] = "0x0000fffffffff120"
+    assert not _same_lent_rows((16, 2), shown[0], shown, None)
+    summary = [{"name": "s @ main.rs:1", "value": '0x0000fffffffff120 "ab"'} for _ in range(2)]
+    assert not _same_lent_rows((8, 2), summary[0], summary, None)
+
+
+def test_a_value_a_coroutine_s_state_holds_is_not_a_capture_through_it():
+    # #116: `n: i64`, an async fn's parameter in its state, points at nothing that a drop
+    # through the state's other fields (`*v = new`) frees.
+    text = COROUTINE.replace(
+        "    debug v => ((*_9).0: &std::vec::Vec<Pt>); // in scope 0 at src/main.rs:1:15: 1:16",
+        "    debug v => ((*_9).0: &std::vec::Vec<Pt>); // in scope 0 at src/main.rs:1:15: 1:16\n"
+        "    debug n => ((*_9).1: i64);           // in scope 0 at src/main.rs:1:30: 1:31",
+    ).replace(
+        "        _7 = copy ((*(((*_9) as variant#3).0: &Pt)).0: i64); // scope 2 at src/main.rs:5:5: 5:12",
+        "        drop((*_3)) -> [return: bb9, unwind continue]; // scope 2 at src/main.rs:5:5: 5:12\n"
+        "    }\n\n    bb9: {\n"
+        "        _7 = copy ((*(((*_9) as variant#3).0: &Pt)).0: i64); // scope 2 at src/main.rs:5:5: 5:12",
+    )
+    function = coroutine_function()
+    function.blocks["bb9"] = {5}
+    owned = OwnedLocals([parse_body(text)], {"h": function}, SOURCES)
+    assert owned.reference_valid("h", "n", 5, MAIN) is None
+    assert owned.reference_valid("h", "v @ main.rs:1", 5, MAIN) is False
+
+
 @pytest.mark.parametrize(
     "text, spans, complete",
     [
@@ -1096,3 +1484,82 @@ def test_rust_comments_and_literals_are_found_by_one_lexer(text, spans, complete
     assert (blanked is None) is not complete
     if blanked is not None:
         assert len(blanked) == len(text) and blanked.count("\n") == text.count("\n")
+
+
+BOXED = "std::boxed::Box<Pt>"
+
+
+def replaced(between=(), store=f"(_1.1: {BOXED}) = move _4;", dropped=f"(_1.1: {BOXED})"):
+    """`h.b = new` on a local: its drop, then (past ``between``) a store."""
+    return mir(
+        {
+            0: ["_1 = make() -> [return: bb1, unwind continue];"],
+            1: [f"drop({dropped}) -> [return: bb2, unwind: bb4];"],
+            2: ["StorageDead(_5);", *between, store, "goto -> bb3;"],
+            3: ["_6 = const ();", "return;"],
+            4: [store, "resume;"],
+        },
+        bindings=V,
+    )
+
+
+def test_a_field_dropped_and_replaced_in_place_leaves_its_local_whole():
+    # Review of #108: the drop of `h.b = new` ended `h`, and the store of the new Box
+    # into the same place never made it whole again.
+    body = replaced()
+    drops, stores = body._replacements()
+    assert set(drops.values()) == {1} and stores == {f"(_1.1: {BOXED}) = move _4;": 1}
+    assert body.initialized_throughout(1, {3})
+    assert not body.initialized_throughout(1, {2})  # between the drop and the store
+    # A nested field, and an element (`arr[i] = new`).
+    nested = f"((_1.0: Inner).2: {BOXED})"
+    assert replaced(store=f"{nested} = move _4;", dropped=nested).initialized_throughout(1, {3})
+    assert replaced(store="_1[_7] = move _4;", dropped="_1[_7]").initialized_throughout(1, {3})
+    # Past the drop flags an element's store sets (`_20 = const false;`).
+    flagged = replaced(("_20 = const false;",), "_1[_7] = move _4;", "_1[_7]")
+    assert flagged.initialized_throughout(1, {3})
+
+
+@pytest.mark.parametrize(
+    "between, store, dropped",
+    [
+        # The store goes to another field, or another element.
+        ((), "(_1.0: i64) = const 2_i64;", None),
+        ((), "_1[_8] = move _4;", "_1[_7]"),
+        # Something runs between them (an index changes; a move out of the local).
+        (("_7 = const 1_usize;",), "_1[_7] = move _4;", "_1[_7]"),
+        ((f"_9 = move (_1.0: {BOXED});",), None, None),
+        # Not the local's own place: through a pointer it holds.
+        ((), f"((*_1).1: {BOXED}) = move _4;", f"((*_1).1: {BOXED})"),
+    ],
+)
+def test_a_drop_whose_store_is_not_to_the_same_place_is_never_paired(between, store, dropped):
+    body = replaced(
+        between,
+        store or f"(_1.1: {BOXED}) = move _4;",
+        dropped or f"(_1.1: {BOXED})",
+    )
+    assert body._replacements() == ({}, {})
+    assert not body.initialized_throughout(1, {3})
+
+
+def test_a_replaced_field_leaves_a_partly_moved_local_partly_moved():
+    # `let d = h.b; h.v = new;`: the store fills `h.v`, not `h.b`.
+    body = mir(
+        {
+            0: ["_1 = make() -> [return: bb1, unwind continue];"],
+            1: [
+                f"_2 = move (_1.1: {BOXED});",
+                "drop((_1.0: Vec<i64>)) -> [return: bb2, unwind continue];",
+            ],
+            2: ["(_1.0: Vec<i64>) = move _4;", "goto -> bb3;"],
+            3: ["return;"],
+        },
+        bindings=V,
+    )
+    assert set(body._replacements()[0].values()) == {1}
+    assert not body.initialized_throughout(1, {3})
+    # The store moving out of the local itself (`h.b = h.c`) leaves it partly moved.
+    body = replaced(store=f"(_1.1: {BOXED}) = move (_1.2: {BOXED});")
+    assert set(body._replacements()[1].values()) == {1}
+    assert not body.initialized_throughout(1, {3})

@@ -2,7 +2,13 @@
 
 import pytest
 
-from peeky.rust import _NON_OWNING, _constructors, _holds_data_pointers, _is_wide_box
+from peeky.rust import (
+    _NON_OWNING,
+    _constructors,
+    _holds_data_pointers,
+    _is_wide_box,
+    _may_own,
+)
 
 
 @pytest.mark.parametrize(
@@ -169,3 +175,53 @@ def test_not_data_pointers(kind):
 @pytest.mark.parametrize("mir", ["[&Pt; 2]", "[[&Pt; 2]; 3]", "[fn(i64) -> i64; 2]"])
 def test_arrays_of_non_owning_mir_types(mir):
     assert _NON_OWNING.match(mir.lstrip("["))
+
+
+@pytest.mark.parametrize(
+    "mir",
+    [
+        "i64",
+        "usize",
+        "()",
+        "&Holder",
+        "&mut std::vec::Vec<i64>",
+        "*const Pt",
+        "fn(i64) -> i64",
+        "(i64, char)",
+        "(&Pt, i64)",
+        "(fn(i64) -> i64, &str)",
+        "[i64; 4]",
+        "[(u8, bool); 2]",
+        "[&std::boxed::Box<Pt>; 2]",
+        "((i64, f64), [u8; 3])",
+    ],
+)
+def test_values_that_own_no_memory(mir):
+    # #108: primitives, references and raw or fn pointers, and tuples or arrays of them.
+    assert not _may_own(mir)
+
+
+@pytest.mark.parametrize(
+    "mir",
+    [
+        None,
+        "Holder",
+        "Flat",
+        "T",
+        "std::boxed::Box<Pt>",
+        "std::vec::Vec<i64>",
+        "std::string::String",
+        "std::rc::Rc<Pt>",
+        "std::option::Option<std::boxed::Box<Pt>>",
+        "std::pin::Pin<std::boxed::Box<Pt>>",
+        "(std::boxed::Box<Pt>, i64)",
+        "(i64, (u8, std::string::String))",
+        "(fn(i64) -> i64, Holder)",
+        "[Holder; 2]",
+        "[(std::boxed::Box<Pt>, i64); 2]",
+        "{closure@src/main.rs:27:22: 27:35}",
+    ],
+)
+def test_values_that_may_own_memory(mir):
+    # A struct's name lists no fields: it may hold a Box.
+    assert _may_own(mir)
