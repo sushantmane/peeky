@@ -1406,6 +1406,8 @@ def run_probe(root, probe, *, adapter=None, progress=None):
     # The edit's texts are not evidence of the run; the CLI adds the diff.
     result["probe"].pop("edit")
     rows, changes, hits, warnings, relocated, pauses = [], [], 0, [], False, []
+    # Stops the debugger never reported, found by the worker (java-debug, #27).
+    recovered = 0
     # The breakpoint line in the build that runs: the candidate's numbering with an edit.
     line = probe.line
     # {function: [hits]}: a line shared by a function and a closure or lambda stops in each.
@@ -1495,6 +1497,9 @@ def run_probe(root, probe, *, adapter=None, progress=None):
                 status = "completed" if hits else "no-stop"
                 say(f"program finished after {hits} hit(s)")
                 break
+            if state.get("recovered"):
+                recovered += 1
+                say("the debugger never reported this stop; recovered it from the paused thread")
             # From the moment the stop arrived, so debugger reads before capture count too.
             paused = state.get("event", {}).get("received", time.monotonic())
             stop = {**session, "stop_id": state["stop_id"]}
@@ -1705,6 +1710,12 @@ def run_probe(root, probe, *, adapter=None, progress=None):
         warnings.append(
             f"No intervention was applied: the program stopped {hits} time(s), before hit "
             f"{probe.set_hit}."
+        )
+    if recovered:
+        result["recovered_stops"] = recovered
+        warnings.append(
+            f"The debugger never reported {recovered} stop(s) at the breakpoint; Peeky found "
+            "the thread paused there and read it as usual (java-debug, issue #27)."
         )
     result.update(
         warnings=warnings,

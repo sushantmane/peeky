@@ -191,6 +191,10 @@ An hourly thread heartbeat (`continue-peeky-mvp`) checks for available usage and
   - `rust_mir` runs a definite-initialization dataflow, checked at every place code of the stop line can be.
   - Five review rounds found five false proofs (merged codegen blocks, matching by elimination, a stop in another file, two kinds of macro twins), each fixed with a real-build regression.
 - **#70 (`ea6c728`):** the Java adapter test infers a dropped exit the way the worker does (#27, observation 3).
+- **Attached JVMs recover a lost `stopped` event** (#27, branch `fix/java-lost-stop`). java-debug sometimes never reported a stop on an attached JVM (Venice; twice in the attach tests under heavy load), and the probe or session waited out its timeout. See [JAVA_ATTACH.md](JAVA_ATTACH.md#lost-stop-events-27).
+  - While waiting, the worker polls `threads` and one-frame `stackTrace`: java-debug lists frames only for a suspended thread, and Peeky's adapter suspends threads only for the session's breakpoints and steps. A thread with no step in flight, at a verified session breakpoint's exact source and line in two consecutive polls (2 s apart) with no report, is recovered as that breakpoint's stop. It is an ordinary stop: same `stop_id` rules, reason `breakpoint`, numbered, `continue`/`step` work. It is marked `recovered: true` and recorded as `stop_recovered`, and probes count `recovered_stops`.
+  - A late report is absorbed (`late_stop_report`), never a second stop; a real report during the poll wins. Polls start 2 s after a resume, at most every 2 s, with at most 256 `stackTrace` requests within 1 s (40–90 ms with 300 threads), and stay out of the DAP trace. Launched JVMs are not polled.
+  - Real-JDK tests drop the event at Peeky's DAP client: an attached probe recovers in about 4 s; a session steps and continues after recovered stops with late reports and counts each hit once; a step whose lost report ends on a breakpoint line is never taken for a breakpoint stop.
 - **#67 (`0a1fad7`): CUDA phase 0** for #61. [ADR 0007](adr/0007-cuda-gdb-dap.md) (proposed) drives `cuda-gdb -i=dap`. `scripts/cuda/qualify.py` is the qualification to run on a GPU host.
   - Found by experiment: upstream GDB 14.2, 15.1 and 16.3 start the program at different DAP requests. One order works on all three (breakpoints, `launch`, then `configurationDone`).
   - The new `gdb-dap` lane keeps that order tested against GDB 15.1; 14.2 and 16.3 were run by hand.
@@ -199,7 +203,7 @@ An hourly thread heartbeat (`continue-peeky-mvp`) checks for available usage and
 **Closed issues:** #6, #7, #8, #9, #10, #11, #12, #13, #48, #49, #53, #55, #56, #57, #58, #59, #74, #75, #76, #77, #78, #79, #86.
 
 **Open issues:**
-- **#27:** an attached JVM whose `stopped` event is lost (seen once on Venice). The launch case is fixed. 160 targeted stress runs (simple and Venice-like thread churn) did not reproduce it; diagnostics stay in place.
+- **#27:** an attached JVM whose `stopped` event is lost. The launch case (dropped exit) is fixed, and branch `fix/java-lost-stop` recovers the attach case from the suspended thread. The root cause in java-debug is still unknown: 160 targeted stress runs did not reproduce it, and diagnostics stay in place.
 - **#61:** NVIDIA CUDA debugging, sanitizers and profiling, filed by the owner. [ADR 0007](adr/0007-cuda-gdb-dap.md) proposes driving `cuda-gdb -i=dap`; `scripts/cuda/qualify.py` is the phase 0 qualification, and its DAP sequence is tested against upstream GDB (lane `gdb-dap`). Running it needs a Linux host with an NVIDIA GPU, reachable over Peeky's SSH remote worker; this Mac has none.
 
 **Process notes:**
@@ -263,7 +267,7 @@ Known local-only limitation (pre-existing on main): test_native_adapter_death_re
 The original slices are delivered: #6–#13 are closed. Remaining:
 1. **Hosted CI:** restore it (billing). Then rerun CI on `main` to confirm the Docker-verified merges on x86_64.
 2. **Hosted LLVM 20 Rust job:** mirror the Docker `rust-llvm20` lane in `ci.yml` once Actions runs again. It needs a workflow-scope push over SSH.
-3. **#27:** if the lost `stopped` event on an attached JVM recurs, capture the DAP trace and fix it from that evidence. It recurred twice under full-suite load in the launch-only adapter test; details are on the issue.
+3. **#27:** merge `fix/java-lost-stop` (lost `stopped` events on attached JVMs are recovered). If a stop is recovered in practice (`recovered: true`, history `stop_recovered`), capture `debugger_events.trace` and the worker log to find java-debug's root cause.
 4. **ADR 0004, step 5:** a prepared-build cache, only if measured probe latency requires it. Step 4 shipped in #35; the SQL-shaped probe form was deliberately not implemented.
 5. Implement the bounded evidence correlation design (code, logs, metrics).
 6. A live-model evaluation on Venice, using the cookbook.

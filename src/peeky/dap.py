@@ -27,6 +27,9 @@ MAX_CONTROL_EVENTS = 2000
 LIFECYCLE_EVENTS = frozenset(
     {"initialized", "stopped", "continued", "terminated", "exited", "breakpoint", "process"}
 )
+# Chatty events left out of the trace (still counted): java-debug sends a `telemetry`
+# event after every stackTrace.
+_UNTRACED_EVENTS = frozenset({"output", "thread", "telemetry"})
 
 
 def read_message(stream):
@@ -100,6 +103,8 @@ class DAP:
         self.ignored_events = {}
         # Bounded message summaries (no arguments or values) for diagnosing lost events.
         self.trace = collections.deque(maxlen=200)
+        # Requests kept out of the trace (Peeky's own bounded polls), until their reply.
+        self.untraced = set()
         self.debuggee_pid = None
         # The program's exit status from the `exited` event, when the debugger sends one.
         self.exit_code = None
@@ -121,6 +126,10 @@ class DAP:
         if trace is None:
             return
         kind = body.get("type")
+        untraced = getattr(self, "untraced", None)
+        if kind == "response" and untraced and body.get("request_seq") in untraced:
+            untraced.discard(body.get("request_seq"))
+            return
         entry = {
             "t": round(time.monotonic() - getattr(self, "started", 0.0), 3),
             "dir": direction,
@@ -131,11 +140,34 @@ class DAP:
             entry.update(request_seq=body.get("request_seq"), success=body.get("success"))
         elif kind == "request":
             entry["seq"] = body.get("seq")
-        elif kind == "event" and body.get("event") not in ("output", "thread"):
+        elif kind == "event" and body.get("event") not in _UNTRACED_EVENTS:
             detail = body.get("body") or {}
             entry.update(reason=detail.get("reason"), thread=detail.get("threadId"))
-        if kind != "event" or body.get("event") not in ("output", "thread"):
+        if kind != "event" or body.get("event") not in _UNTRACED_EVENTS:
             trace.append(entry)
+
+    def annotate(self, name, **fields):
+        """Add one of Peeky's own diagnostics (not a DAP message) to the trace.
+
+        Consecutive notes of one name merge (`times` counts them), so a long run of
+        periodic notes cannot evict the DAP messages before it.
+        """
+        with self.condition:
+            trace = getattr(self, "trace", None)
+            if trace is None:
+                return
+            entry = {
+                "t": round(time.monotonic() - getattr(self, "started", 0.0), 3),
+                "dir": "peeky",
+                "type": "note",
+                "name": name,
+                **fields,
+            }
+            last = trace[-1] if trace else {}
+            if last.get("dir") == "peeky" and last.get("name") == name:
+                trace[-1] = {**entry, "times": last.get("times", 1) + 1}
+            else:
+                trace.append(entry)
 
     def _accept(self, body):
         with self.condition:
@@ -196,7 +228,7 @@ class DAP:
             self.error = self.error or str(exc)
             self.condition.notify_all()
 
-    def send(self, command, arguments=None, timeout=5):
+    def send(self, command, arguments=None, timeout=5, *, trace=True):
         """Write one complete frame within a deadline, or poison the transport.
 
         Never hold the response/event condition while waiting for pipe capacity.
@@ -216,7 +248,12 @@ class DAP:
                     raise RuntimeError(self.error or self.write_error)
                 self.sequence += 1
                 seq = self.sequence
-                self._note("out", {"type": "request", "command": command, "seq": seq})
+                if trace:
+                    self._note("out", {"type": "request", "command": command, "seq": seq})
+                else:
+                    if len(self.untraced) >= 1024:
+                        self.untraced.clear()
+                    self.untraced.add(seq)
             data = json.dumps(
                 dict(seq=seq, type="request", command=command, arguments=arguments or {})
             ).encode()
@@ -282,10 +319,10 @@ class DAP:
                 self.condition.wait(remaining)
             return not self.abandoned and not self.error
 
-    def request(self, command, arguments=None, *, timeout=15):
+    def request(self, command, arguments=None, *, timeout=15, trace=True):
         """One absolute deadline covers both the write and the response."""
         deadline = time.monotonic() + timeout
-        seq = self.send(command, arguments, timeout=max(0.001, min(5, timeout)))
+        seq = self.send(command, arguments, timeout=max(0.001, min(5, timeout)), trace=trace)
         return self.response(seq, timeout=max(0, deadline - time.monotonic()))
 
     def wait_event(self, names, after=0, timeout=15, *, failed_request=None):

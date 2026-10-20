@@ -45,6 +45,19 @@ OPERATIONS = frozenset(
 # user's own steps. Crashes, exceptions and signals stay stopped for inspection.
 RESUMABLE_STOPS = frozenset({"breakpoint", "step"})
 STEPS = {"over": "next", "in": "stepIn", "out": "stepOut"}
+# Lost `stopped` events on attached JVMs (#27). java-debug reports a breakpoint stop
+# within milliseconds; a poll looks only after LOST_STOP_POLL_S without one, polls at
+# most that often, and a stop is recovered only when two consecutive polls (so at
+# least that far apart) find the same thread suspended at the same verified breakpoint
+# with no report. Each poll is one `threads` request plus at most LOST_STOP_THREADS
+# one-frame `stackTrace` requests, all within LOST_STOP_BUDGET_S.
+LOST_STOP_POLL_S = 2.0
+LOST_STOP_THREADS = 256
+LOST_STOP_BUDGET_S = 1.0
+RECOVERED_NOTE = (
+    "recovered: the debugger never reported this stop; its thread is suspended at the "
+    "session's verified breakpoint"
+)
 
 
 # Debugger placeholders for a local that has no value at this point (optimized out,
@@ -140,6 +153,7 @@ class DebugWorker:
         # adapter ids, and every one-shot `--to` line the session has used.
         self.own_lines, self.own_ids, self.temporary_lines = set(), set(), set()
         self.stop_outside = self.stop_returns = self.co_served = False
+        self.reset_lost_stops()
         # The single absolute launch budget, below Client.call's 45 s HTTP timeout.
         # Preparation (supports_deadline adapters: builds, symbols, module identity)
         # and every DAP launch phase receive only the remaining time, so a launch
@@ -232,6 +246,245 @@ class DebugWorker:
             return not _process_alive(pid)
         return self.empty_thread_replies >= 2
 
+    def reset_lost_stops(self):
+        """Forget everything lost-stop recovery (#27) knows; every session starts clean.
+
+        ``placed``: the session's breakpoints per resolved source path, as the adapter
+        placed them (line, id, verified). ``stepping``: threads with a step in flight.
+        ``owed``: per thread, recovered stops whose own `stopped` event may still arrive.
+        ``suspects``: threads the last poll found suspended at a placed breakpoint.
+        """
+        self.placed, self.stepping, self.owed, self.suspects = {}, set(), {}, {}
+        self.lost_stop_polled = time.monotonic()
+        self.lost_stop_offset = 0
+        self.stop_recovered = False
+
+    def mark_resumed(self):
+        """The program runs again: restart the liveness and lost-stop clocks."""
+        self.resumed_at = self.lost_stop_polled = time.monotonic()
+        self.empty_thread_replies = 0
+        self.suspects = {}
+
+    def note_placed(self, source, requested, reply):
+        """Record where the adapter placed one source's breakpoints (DAP `setBreakpoints`
+        replaces them all for that source). Unreadable replies place nothing."""
+        try:
+            key = str(Path(source).resolve())
+        except (OSError, ValueError):
+            return
+        placed = []
+        for point, answer in zip(requested, (reply or {}).get("breakpoints") or []):
+            if not isinstance(answer, dict):
+                continue
+            line = answer.get("line", point.get("line"))
+            if type(line) is int:
+                placed.append(
+                    {
+                        "id": answer.get("id"),
+                        "line": line,
+                        "verified": answer.get("verified") is True,
+                    }
+                )
+        self.placed[key] = placed
+
+    def note_breakpoint_update(self, body):
+        """Apply a DAP `breakpoint` event (a pending breakpoint verified once its class
+        loads, or moved) to the placed breakpoint with the same id."""
+        point = body.get("breakpoint") or {}
+        if point.get("id") is None:
+            return
+        for placed in self.placed.values():
+            for entry in placed:
+                if entry["id"] != point["id"]:
+                    continue
+                if type(point.get("line")) is int:
+                    entry["line"] = point["line"]
+                entry["verified"] = body.get("reason") != "removed" and (
+                    point.get("verified") is True if "verified" in point else entry["verified"]
+                )
+
+    def placed_breakpoint(self, frame):
+        """Whether a frame is exactly at one of the session's verified breakpoints: the
+        same resolved source file and line."""
+        path, line = (frame.get("source") or {}).get("path"), frame.get("line")
+        if not isinstance(path, str) or not path or type(line) is not int:
+            return False
+        try:
+            key = str(Path(path).resolve())
+        except (OSError, ValueError):
+            return False
+        return any(
+            entry["verified"] and entry["line"] == line for entry in self.placed.get(key, ())
+        )
+
+    def lost_stop_due(self, runtime=None):
+        """Whether a lost-stop poll (see find_lost_stop) may run now."""
+        runtime = runtime or self.runtime
+        return bool(
+            getattr(runtime, "recovers_lost_stops", False)
+            and self.dap
+            and self.state == "running"
+            and time.monotonic() - self.lost_stop_polled >= LOST_STOP_POLL_S
+            and any(entry["verified"] for placed in self.placed.values() for entry in placed)
+        )
+
+    def find_lost_stop(self, runtime):
+        """A breakpoint stop whose `stopped` event the debugger never sent (#27).
+
+        Only for runtimes that opt in (an attached JVM through java-debug), while
+        running. java-debug lists frames only for a thread the debugger suspended,
+        and Peeky's Java adapter suspends threads only for the session's own
+        breakpoints and steps (no pause, exception or function breakpoints). So a
+        thread that is not stepping, whose top frame sits exactly at one of the
+        session's verified breakpoints in two consecutive polls with no report in
+        between, is stopped at that breakpoint and its event was lost.
+
+        Returns a synthetic `stopped` event; "event" when a real stop or exit arrived
+        during the check (it wins); else None. A slow or failed check is no evidence.
+        """
+        if not self.lost_stop_due(runtime):
+            return None
+        started = time.monotonic()
+        self.lost_stop_polled = started
+        deadline = started + LOST_STOP_BUDGET_S
+        previous, self.suspects = self.suspects, {}
+        found, checked = None, 0
+        try:
+            listed = self.dap.request("threads", {}, timeout=LOST_STOP_BUDGET_S, **self.untraced())
+            listed = listed.get("threads") if isinstance(listed, dict) else None
+            ids = [
+                thread["id"]
+                for thread in (listed if isinstance(listed, list) else [])
+                if isinstance(thread, dict) and type(thread.get("id")) is int
+            ]
+            ids = [thread for thread in dict.fromkeys(ids) if thread not in self.stepping]
+            # Last poll's suspects first (to confirm them), then a rotating window.
+            known = [thread for thread in ids if thread in previous]
+            others = [thread for thread in ids if thread not in previous]
+            if others:
+                start = self.lost_stop_offset % len(others)
+                others = others[start:] + others[:start]
+            window = others[: max(0, LOST_STOP_THREADS - len(known))]
+            self.lost_stop_offset += len(window)
+            for thread in known + window:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                checked += 1
+                frames = self.dap.request(
+                    "stackTrace",
+                    {"threadId": thread, "levels": 1},
+                    timeout=remaining,
+                    **self.untraced(),
+                )
+                frames = frames.get("stackFrames") if isinstance(frames, dict) else None
+                frame = frames[0] if isinstance(frames, list) and frames else None
+                if not isinstance(frame, dict) or not self.placed_breakpoint(frame):
+                    continue
+                where = ((frame.get("source") or {}).get("path"), frame.get("line"))
+                seen = previous.get(thread)
+                if seen and seen["where"] == where:
+                    self.suspects[thread] = seen
+                    found = thread
+                    break
+                self.suspects[thread] = {"where": where, "since": time.monotonic()}
+        except (TimeoutError, RuntimeError):
+            self.suspects = {}
+            return None
+        finally:
+            if annotate := getattr(self.dap, "annotate", None):
+                annotate(
+                    "lost-stop poll",
+                    checked=checked,
+                    suspects=sorted(self.suspects),
+                    recovered=found,
+                )
+        if found is None:
+            return None
+        try:
+            self.dap.wait_event({"stopped", "terminated"}, self.cursor, 0)
+            return "event"
+        except TimeoutError:
+            pass
+        seen = self.suspects.pop(found)
+        self.owed[found] = self.owed.get(found, 0) + 1
+        path, line = seen["where"]
+        self.record(
+            {
+                "time": time.time(),
+                "operation": "stop_recovered",
+                "arguments": {},
+                "result": {
+                    "thread": found,
+                    "location": f"{_display_path(runtime, path)}:{line}",
+                    "unreported_s": round(time.monotonic() - seen["since"], 2),
+                },
+            }
+        )
+        return {
+            "event": "stopped",
+            "cursor": self.cursor,
+            # From the first sighting: the thread was already paused then.
+            "received": seen["since"],
+            "body": {
+                "reason": "breakpoint",
+                "threadId": found,
+                "allThreadsStopped": False,
+                "peeky": RECOVERED_NOTE,
+            },
+        }
+
+    def untraced(self):
+        """Keep lost-stop poll traffic out of the bounded DAP trace (its diagnostics)."""
+        return {"trace": False} if getattr(self.dap, "annotate", None) else {}
+
+    def late_reports(self, events):
+        """Cursors of `stopped` events that are late reports of stops Peeky recovered.
+
+        java-debug reports one thread's stops in order, at most once each, so the first
+        `stopped` event for a thread after its recovered stop is that stop's own late
+        report, or a new stop if the report was lost for good. A breakpoint report is
+        taken as the late one: never counted twice, and if it was really a new stop,
+        the thread is still suspended at the breakpoint for the next poll to recover.
+        Any other reason (a step) means the late report never came.
+        """
+        owed, late = dict(self.owed), set()
+        for event in events:
+            body = event.get("body") or {}
+            thread = body.get("threadId")
+            if event.get("event") != "stopped" or not owed.get(thread):
+                continue
+            if body.get("reason") == "breakpoint":
+                owed[thread] -= 1
+                late.add(event["cursor"])
+            else:
+                owed[thread] = 0
+        return late
+
+    def absorb_late_report(self, event):
+        """Consume one `stopped` event if it is a late report (see ``late_reports``)."""
+        body = event.get("body") or {}
+        thread = body.get("threadId")
+        if event.get("event") != "stopped" or not self.owed.get(thread):
+            return False
+        if body.get("reason") != "breakpoint":
+            self.owed.pop(thread, None)
+            return False
+        self.owed[thread] -= 1
+        if not self.owed[thread]:
+            self.owed.pop(thread)
+        # A late report cancels a step java-debug had in flight on that thread.
+        self.stepping.discard(thread)
+        self.record(
+            {
+                "time": time.time(),
+                "operation": "late_stop_report",
+                "arguments": {},
+                "result": {"thread": thread, "cursor": event.get("cursor")},
+            }
+        )
+        return True
+
     def read_location(self):
         """Best-effort top-frame location for display; never evidence, never fatal.
 
@@ -272,6 +525,9 @@ class DebugWorker:
             # A step that left the program (into a library, past main): nothing to read.
             where["outside_program"] = True
             where["returns_to_program"] = self.stop_returns
+        if self.stop_id and self.stop_recovered:
+            # The debugger never reported this stop (#27); Peeky found it (see find_lost_stop).
+            where["recovered"] = True
         return {**where, "reason": self.stop_reason} if self.stop_id else where
 
     def pause_status(self):
@@ -297,9 +553,14 @@ class DebugWorker:
             try:
                 if self.state == "running":
                     pending = self.dap.pending_stop(self.cursor)
-                    if pending is None or pending[1] not in RESUMABLE_STOPS:
+                    if pending is None:
+                        # No reported stop; one whose report was lost (#27) is found by
+                        # the same bounded poll `wait` uses, and then budgeted like any.
+                        if not self.lost_stop_due():
+                            return
+                    elif pending[1] not in RESUMABLE_STOPS:
                         return
-                    if time.monotonic() - pending[0] < self.max_pause:
+                    elif time.monotonic() - pending[0] < self.max_pause:
                         return
                     self._dispatch("wait", {"timeout": 0.1})
                 if self.state != "stopped" or self.stopped_at is None:
@@ -399,9 +660,12 @@ class DebugWorker:
         cursor = getattr(self.dap, "event_cursor", None)
         if not (events_between and cursor):
             return False
+        events = events_between(self.cursor, cursor(), {"stopped"})
+        # A late report of a stop Peeky recovered (#27) is nothing to serve.
+        late = self.late_reports(events)
         return any(
-            event["event"] == "stopped" and event.get("body", {}).get("threadId") != self.thread_id
-            for event in events_between(self.cursor, cursor(), {"stopped"})
+            event["cursor"] not in late and event.get("body", {}).get("threadId") != self.thread_id
+            for event in events
         )
 
     def record_own_points(self, requested, placed):
@@ -445,6 +709,7 @@ class DebugWorker:
             "setBreakpoints",
             {"source": {"path": str(runtime.source_path(self.program))}, "breakpoints": unique},
         )
+        self.note_placed(runtime.source_path(self.program), unique, placed)
         self.breakpoint_counts[str(self.program)] = len(unique)
         self.temporary_line = temporary
         if temporary is not None:
@@ -506,6 +771,7 @@ class DebugWorker:
 
     def forget_stop(self):
         self.stop_outside = self.stop_returns = False
+        self.stop_recovered = False
         self.stop_hit = self.stop_line = None
         self.state = "running"
         self.stopped_at = None
@@ -690,6 +956,7 @@ class DebugWorker:
             # Nothing about an earlier session's stops carries over on a shared worker.
             self.co_served = self.stop_outside = self.stop_returns = False
             self.stop_all_threads = False
+            self.reset_lost_stops()
             self.max_pause = args.get("max_pause")
             self.stopped_at = None
             self.auto_resumed = []
@@ -743,15 +1010,15 @@ class DebugWorker:
                     timeout=left(),
                 )
                 self.record_own_points(args.get("breakpoints", []), points)
+                self.note_placed(runtime.source_path(program), args.get("breakpoints", []), points)
                 self.dap.request("configurationDone", timeout=left())
                 self.dap.response(launch, timeout=left())
                 runtime.assert_current()
                 left()
                 self.state = "running"
                 self.cursor = 0
-                self.resumed_at = time.monotonic()
+                self.mark_resumed()
                 self.exit_inferred = False
-                self.empty_thread_replies = 0
                 self.liveness_checked = 0.0
                 # What the program actually received: per-run arguments replace the
                 # configured ones, so records never show arguments it did not get. An
@@ -819,6 +1086,7 @@ class DebugWorker:
                     **updates,
                 }
             deadline = time.monotonic() + timeout
+            recovered = None
             while True:
                 try:
                     event = self.dap.wait_event(
@@ -850,8 +1118,19 @@ class DebugWorker:
                             }
                         )
                         break
+                    found = self.find_lost_stop(runtime)
+                    if found == "event":
+                        # A real stop or exit arrived during the check: it wins.
+                        continue
+                    if found is not None:
+                        recovered = event = found
+                        break
                     return {"state": self.state, "timed_out": True, **updates}
                 self.cursor = event["cursor"]
+                if self.absorb_late_report(event):
+                    if time.monotonic() >= deadline:
+                        return {"state": self.state, "timed_out": True, **updates}
+                    continue
                 if event["event"] != "breakpoint":
                     break
                 self.breakpoint_events.append(event.get("body", {}))
@@ -860,6 +1139,7 @@ class DebugWorker:
                 moved = event.get("body", {}).get("breakpoint") or {}
                 if moved.get("id") in self.own_ids and type(moved.get("line")) is int:
                     self.own_lines.add(moved["line"])
+                self.note_breakpoint_update(event.get("body") or {})
                 if time.monotonic() >= deadline:
                     return {"state": self.state, "timed_out": True, **updates}
             # Rebuilt classes or edited sources while running invalidate the evidence.
@@ -876,6 +1156,10 @@ class DebugWorker:
             self.stop_all_threads = event.get("body", {}).get("allThreadsStopped") is True
             self.stop_reason = event.get("body", {}).get("reason") if self.stop_id else None
             self.stop_function = self.stop_line = self.stop_hit = None
+            self.stop_recovered = recovered is not None and event is recovered
+            # This thread's step (if any) has ended; the next poll starts afresh.
+            self.stepping.discard(self.thread_id)
+            self.suspects = {}
             self.stop_location = self.read_location() if self.stop_id else None
             # Counted like a probe's hits: every stop at the session's breakpoints,
             # including other threads' stops served one by one; never `--to` lines.
@@ -1084,6 +1368,9 @@ class DebugWorker:
                     "breakpoints": args["breakpoints"],
                 },
             )
+            self.note_placed(
+                runtime.source_path(self.path(args["program"])), args["breakpoints"], placed
+            )
             if self.path(args["program"]) == self.program:
                 self.points, self.temporary_line = list(args["breakpoints"]), None
                 self.record_own_points(args["breakpoints"], placed)
@@ -1107,6 +1394,7 @@ class DebugWorker:
                     "setBreakpoints",
                     {"source": {"path": str(runtime.source_path(self.program))}, "breakpoints": []},
                 )
+                self.note_placed(runtime.source_path(self.program), [], {})
                 self.breakpoint_counts[str(self.program)] = 0
                 self.points, self.temporary_line = [], None
             elif args.get("to_line") is not None:
@@ -1126,8 +1414,7 @@ class DebugWorker:
                     self.breakpoint_events.append(update.get("body", {}))
                 self.breakpoint_events = self.breakpoint_events[-100:]
                 self.cursor = max(self.cursor, consumed)
-            self.resumed_at = time.monotonic()
-            self.empty_thread_replies = 0
+            self.mark_resumed()
             self.forget_stop()
             return {"state": self.state}
         if operation == "step":
@@ -1160,8 +1447,10 @@ class DebugWorker:
                 # before this step describe nothing current. Otherwise (java-debug) each
                 # earlier stop is a thread still suspended there, so none is skipped.
                 self.cursor = max(self.cursor, consumed)
-            self.resumed_at = time.monotonic()
-            self.empty_thread_replies = 0
+            # Until this thread reports a stop, it may sit suspended anywhere the step
+            # ends, a breakpoint line included: never a lost-stop candidate (#27).
+            self.stepping.add(self.thread_id)
+            self.mark_resumed()
             self.forget_stop()
             return {"state": self.state}
         if operation == "report":
@@ -1645,6 +1934,7 @@ class DebugWorker:
         self.state = "idle"
         self.stopped_at = None
         self.empty_thread_replies = 0
+        self.reset_lost_stops()
         self.stop_location = None
         self.stop_function = None
         self.stop_reason = None

@@ -266,3 +266,56 @@ def test_a_refusal_carries_the_debuggers_own_reason():
     dap._accept({"type": "response", "request_seq": 4, "success": False, "message": "notStopped"})
     with pytest.raises(RequestFailed, match="^notStopped$"):
         dap.response(4, timeout=0)
+
+
+ECHO_ADAPTER = r"""
+import json, sys
+def read():
+    headers = {}
+    while True:
+        line = sys.stdin.buffer.readline()
+        if not line:
+            sys.exit(0)
+        if line == b"\r\n":
+            break
+        key, value = line.decode().split(":", 1)
+        headers[key.lower()] = value.strip()
+    return json.loads(sys.stdin.buffer.read(int(headers["content-length"])))
+def write(body):
+    data = json.dumps(body).encode()
+    sys.stdout.buffer.write(b"Content-Length: %d\r\n\r\n" % len(data) + data)
+    sys.stdout.buffer.flush()
+while True:
+    request = read()
+    # java-debug follows every stackTrace with a telemetry event.
+    write({"seq": 0, "type": "event", "event": "telemetry", "body": {}})
+    write({"seq": 0, "type": "response", "request_seq": request["seq"], "success": True,
+           "command": request["command"], "body": {}})
+"""
+
+
+def test_bounded_polls_and_their_notes_never_flood_the_trace(monkeypatch):
+    # #27: the trace is how a lost event is diagnosed; Peeky's own lost-stop polls
+    # (hundreds of requests each) must not evict it.
+    import subprocess
+    import sys
+
+    popen = subprocess.Popen
+
+    def spawn(_command, **kwargs):
+        return popen([sys.executable, "-c", ECHO_ADAPTER], **kwargs)
+
+    monkeypatch.setattr("peeky.dap.subprocess.Popen", spawn)
+    dap = DAP()
+    try:
+        dap.request("threads", timeout=5)
+        for poll in range(3):
+            for thread in range(100):
+                dap.request("stackTrace", {"threadId": thread}, timeout=5, trace=False)
+            dap.annotate("lost-stop poll", checked=100, poll=poll)
+        names = [(entry["dir"], entry["name"]) for entry in dap.trace]
+        assert names == [("out", "threads"), ("in", "threads"), ("peeky", "lost-stop poll")]
+        assert (dap.trace[-1]["times"], dap.trace[-1]["poll"]) == (3, 2)
+        assert dap.ignored_events["telemetry"] == 301 and not dap.untraced
+    finally:
+        dap.close()

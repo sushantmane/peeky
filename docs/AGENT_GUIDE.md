@@ -39,7 +39,7 @@ Session names are claimed atomically, so a second `session start` with the same 
 - Read `warnings` every time. They flag:
   - a breakpoint the debugger moved to another line (the values then come from that line);
   - runs that ended before all requested hits;
-  - a Java exit that Peeky inferred because the debugger dropped its exit event (the result is still valid).
+  - a Java exit Peeky inferred, or a Java stop it recovered, because the debugger dropped the event (the result is still valid).
 - In a launched Java program, a value you capture or `session get` shows more:
   - an object its first fields inline (`Merge$Interval@143 {end=10, start=1}`);
   - an array its first elements (`int[3]@144 [1, 2, 3]`);

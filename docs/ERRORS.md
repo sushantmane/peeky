@@ -34,4 +34,6 @@ Every Peeky failure, from the HTTP worker, the SDK (`peeky.errors.PeekyError`) o
 | `TRANSPORT_LOST` | The connection broke mid-request; outcome unknown | Reconnect, then `inspect`/`wait`; never repeat a mutation blindly |
 | `JOB_LOST` | A `--background` job's process died before finishing | Rerun the command |
 
+A Java stop that the debugger never reported (#27) is not an error. On an attached JVM, Peeky recovers it from the thread suspended at the breakpoint: the stop carries `recovered: true`, the history gets `stop_recovered` (and `late_stop_report` if the report arrives later), and probes add `recovered_stops` and a warning. See [JAVA_ATTACH.md](JAVA_ATTACH.md#lost-stop-events-27). A probe that still times out carries `debugger_events`, whose `trace` shows whether a `stopped` event ever arrived.
+
 `POST /version` returns the protocol version, supported operations and the error codes. Every HTTP response carries `X-Peeky-Protocol: 1`.
