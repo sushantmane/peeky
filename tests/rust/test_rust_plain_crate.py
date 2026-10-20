@@ -1652,12 +1652,13 @@ def test_references_read_only_while_their_target_stands(plain, capsys):
     code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "item.x", "--quiet")
     assert result["rows"][0].get("value") == "5", result["rows"]
     # `println!` declares variables of its own: LLDB stops in each of its lexical blocks,
-    # at one column, and after its first calls the stops cannot be told from the first.
+    # at one column; the stop's address tells them apart (#115), so the first reads.
     at = f"src/main.rs:{line_of(REFERENCES, '// PRINTED')}"
     code, result = run(
         capsys, "probe", str(plain), "--at", at, "--capture", "item.x", "--hits", "3", "--quiet"
     )
-    assert all(row.get("value") in (None, "5") for row in result["rows"]), result["rows"]
+    found = [row.get("value") for row in result["rows"]]
+    assert found[0] == "5" and set(found) <= {None, "5"}, result["rows"]
     at = f"src/main.rs:{line_of(REFERENCES, '// LITERAL')}"
     code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "label", "--quiet")
     assert result["rows"][0].get("view") != "unproven", result["rows"]
@@ -2899,6 +2900,150 @@ def test_references_in_inlined_frames_and_async_bodies(plain, capsys):
     name = f"v @ main.rs:{line_of(UNMATCHED, 'async fn reset(')}"
     assert variables[name].get("view") == "unproven", variables
     assert variables[f"n @ main.rs:{line_of(UNMATCHED, 'async fn reset(')}"]["value"] == "9"
+
+
+MACRO_STOPS = """#[derive(Debug, Clone, Copy)]
+pub struct Pt {
+    x: i64,
+    y: i64,
+}
+
+#[inline(never)]
+fn churn() -> i64 {
+    Box::leak(Box::new(Pt { x: 777, y: 888 })).x + Box::leak(Box::new([777i64; 4]))[0]
+}
+
+fn kay(v: &Vec<Pt>) -> i64 {
+    let r = &v[0];
+    let k = r.x;
+    println!("k = {}", k); // M13_K
+    k + 1
+}
+
+fn show(items: &[Pt]) -> i64 {
+    let mut total = 0;
+    for item in items {
+        println!("{}", item.x); // M13_LAST
+        total += 1;
+    }
+    total
+}
+
+fn checked(v: &Vec<Pt>) -> i64 {
+    let r = &v[0];
+    assert_eq!(r.x, 1); // M13_ASSERT
+    v.len() as i64
+}
+
+fn asserted(v: &Vec<Pt>) -> i64 {
+    let r = &v[0];
+    let k = r.x;
+    assert_eq!(k, 1, "k = {}", k); // M13_ASSERT_K
+    k
+}
+
+fn freed() -> i64 {
+    let mut v = vec![Pt { x: 1, y: 2 }];
+    let r = &v[0];
+    let k = r.x;
+    v.push(Pt { x: 3, y: 4 });
+    println!("{}", k + churn()); // M13_FREED
+    k
+}
+
+fn pushed() -> i64 {
+    let mut v = vec![Pt { x: 1, y: 2 }];
+    let r = &v[0];
+    let k = r.x;
+    println!("{} {}", k, { v.push(Pt { x: 3, y: 4 }); churn() }); // M13_PUSHED
+    k
+}
+
+fn assert_freed() -> i64 {
+    let mut v = vec![Pt { x: 1, y: 2 }];
+    let r = &v[0];
+    let k = r.x;
+    v.push(Pt { x: 3, y: 4 });
+    assert_eq!(k + churn(), 1555, "k = {}", k); // M13_ASSERT_FREED
+    k
+}
+
+fn twice(v: &mut Vec<Pt>) -> i64 {
+    let r = &v[0];
+    let k = r.x;
+    println!("{}", k);
+    v.push(Pt { x: 3, y: 4 });
+    println!("{}", k + churn()); // M13_TWICE
+    k
+}
+
+macro_rules! grow {
+    ($v:ident) => {
+        println!("growing {}", 1);
+        $v.push(Pt { x: 5, y: 6 });
+    };
+}
+
+fn grown(v: &mut Vec<Pt>) -> i64 {
+    let r = &v[0];
+    let k = r.x;
+    grow!(v); println!("{}", k + churn()); // M13_GROWN
+    k
+}
+
+fn main() {
+    let v = vec![Pt { x: 1, y: 2 }, Pt { x: 3, y: 4 }];
+    println!("{} {} {} {}", kay(&v), show(&v), checked(&v), freed());
+    println!("{} {} {}", asserted(&v), pushed(), assert_freed());
+    let (mut w, mut u) = (vec![Pt { x: 1, y: 2 }], vec![Pt { x: 1, y: 2 }]);
+    println!("{} {}", twice(&mut w), grown(&mut u));
+}
+"""
+
+
+@pytest.mark.timeout(600)
+def test_a_macro_s_own_stops_are_told_apart_by_the_stop_address(plain, capsys):
+    # #115: `println!` and `assert_eq!` declare variables of their own; LLDB stops in each
+    # of their lexical blocks, all at the macro's column, so each stop was judged as any
+    # of them, and a reference past its last use showed only its address at the first
+    # stop too. The stop's address names its DWARF lexical block, so its MIR scope.
+    (plain / "src/main.rs").write_text(MACRO_STOPS)
+
+    def values(marker, capture):
+        at = f"src/main.rs:{line_of(MACRO_STOPS, '// M13_' + marker)}"
+        code, result = run(
+            capsys,
+            "probe",
+            str(plain),
+            "--at",
+            at,
+            "--capture",
+            capture,
+            "--hits",
+            "all",
+            "--quiet",
+        )
+        assert code == 0, (marker, result.get("error"))
+        # Gated: refused (no value), never `churn`'s 777 from a freed block.
+        return [row.get("value") for row in result["rows"]]
+
+    # Before `format_args!`'s first call, then past `r`'s last use and that call.
+    assert values("K", "r.x") == ["1", "1", None]
+    # The last use of each iteration's `item`.
+    assert values("LAST", "item.x") == ["1", "1", None, "3", "3", None]
+    assert values("ASSERT", "r.x") == ["1", "1"]
+    # Only arithmetic since its last use: both of `assert_eq!`'s stops read.
+    assert values("ASSERT_K", "r.x") == ["1", "1"]
+    # Its first stop is before the push inside the macro's arguments; the later ones,
+    # after it, are in the macro's own blocks.
+    assert values("PUSHED", "r.x") == ["1", None, None]
+    # Past the push that reallocated what it points into: gated at every stop. In
+    # `twice` and `grown` codegen merges the function into one IR block, so the MIR
+    # places the first `println!`'s (or `grow!`'s) `args` store on the stop's line too,
+    # before the push: only the IR says that store's code is on another line.
+    for marker in ("FREED", "ASSERT_FREED", "TWICE", "GROWN"):
+        found = values(marker, "r.x")
+        assert found and set(found) == {None}, (marker, found)
 
 
 GENERIC_SPANS = """macro_rules! square {

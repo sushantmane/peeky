@@ -15,6 +15,7 @@ from peeky.rust_symbols import (
     active_variant,
     application_symbols,
     application_units,
+    code_blocks,
     enum_layouts,
     parse_dies,
 )
@@ -438,7 +439,7 @@ def test_application_symbols_dump_only_selected_tables(tmp_path):
             "0x0000000b": option_dump(),
         },
     )
-    lines, layouts, units = application_symbols(
+    lines, layouts, units, blocks = application_symbols(
         tool,
         "program",
         workspace,
@@ -450,6 +451,7 @@ def test_application_symbols_dump_only_selected_tables(tmp_path):
     assert lines == {"src/main.rs": [2]}
     assert layouts[OPTION]["kind"] == "option"
     assert [unit.stmt_list for unit in units] == [0]
+    assert blocks == {}
     assert not list(workspace.glob("peeky-symbols-*"))
 
 
@@ -1712,3 +1714,109 @@ def test_a_packed_struct_is_never_previewed_even_when_aligned():
     assert struct_dump(packed)[key] == {"kind": "unread"}
     aligned = (*packed[:2], [*packed[2][:2], ("DW_AT_alignment", "8")], packed[3])
     assert struct_dump(aligned)[key]["kind"] == "composite"
+
+
+def blocks_dump(*, ranges=True):
+    """`kay` (a `println!` after `let k = r.x;`) as llvm-dwarfdump shows it: the macro's
+    `args` scopes nest in `k`'s block; a method's code completes its declaration."""
+    lines = [
+        *entry(0x0B, 0, "DW_TAG_compile_unit", ("DW_AT_name", json.dumps(APP))),
+        *entry(0x20, 1, "DW_TAG_namespace", ("DW_AT_name", '"chars"')),
+        *entry(
+            0x30,
+            2,
+            "DW_TAG_subprogram",
+            ("DW_AT_low_pc", "0x0000000100000e0c"),
+            ("DW_AT_high_pc", "0x0000000100000ea4"),
+            ("DW_AT_linkage_name", '"_ZN5chars3kay17h8491af1d40105d89E"'),
+            ("DW_AT_name", '"kay"'),
+        ),
+        *entry(0x40, 3, "DW_TAG_formal_parameter", ("DW_AT_name", '"v"')),
+        *entry(0x48, 3, "DW_TAG_lexical_block", ("DW_AT_ranges", "0x00000090")),
+        "                       [0x0000000100000e38, 0x0000000100000e88)",
+        "                       [0x0000000100000e98, 0x0000000100000ea4))",
+        *entry(0x50, 4, "DW_TAG_variable", ("DW_AT_name", '"r"')),
+        *entry(
+            0x58,
+            4,
+            "DW_TAG_lexical_block",
+            *(
+                [("DW_AT_low_pc", "0x0000000100000e44"), ("DW_AT_high_pc", "0x0000000100000e88")]
+                if ranges
+                else [("DW_AT_low_pc", "0x0000000100000e44"), ("DW_AT_high_pc", "0x00000000")]
+            ),
+        ),
+        *entry(0x60, 5, "DW_TAG_variable", ("DW_AT_name", '"k"')),
+        *entry(
+            0x68,
+            5,
+            "DW_TAG_lexical_block",
+            ("DW_AT_low_pc", "0x0000000100000e50"),
+            ("DW_AT_high_pc", "0x0000001c"),
+        ),
+        *entry(0x70, 6, "DW_TAG_variable", ("DW_AT_name", '"args"')),
+        *entry(
+            0x78,
+            6,
+            "DW_TAG_inlined_subroutine",
+            ("DW_AT_low_pc", "0x0000000100000e58"),
+            ("DW_AT_high_pc", "0x0000000100000e5c"),
+        ),
+        *entry(0x80, 7, "DW_TAG_variable", ("DW_AT_name", '"inner"')),
+        *null(0x88, 7),
+        *null(0x89, 6),
+        *null(0x8A, 5),
+        *null(0x8B, 4),
+        *null(0x8C, 3),
+        *entry(0x90, 2, "DW_TAG_structure_type", ("DW_AT_name", '"Pt"')),
+        *entry(
+            0x98,
+            3,
+            "DW_TAG_subprogram",
+            ("DW_AT_linkage_name", '"_ZN5chars2Pt3get17h0123456789abcdefE"'),
+            ("DW_AT_name", '"get"'),
+            ("DW_AT_declaration", "true"),
+        ),
+        *null(0xA0, 3),
+        *entry(
+            0xA8,
+            2,
+            "DW_TAG_subprogram",
+            ("DW_AT_low_pc", "0x0000000100001000"),
+            ("DW_AT_high_pc", "0x00000020"),
+            ("DW_AT_specification", '0x00000098 "_ZN5chars2Pt3get17h0123456789abcdefE"'),
+        ),
+        *entry(0xB0, 3, "DW_TAG_formal_parameter", ("DW_AT_name", '"self"')),
+        *null(0xB8, 3),
+        *null(0xB9, 2),
+        *null(0xBA, 1),
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def test_a_function_s_lexical_blocks_name_their_variables_and_code(tmp_path):
+    # #115: which DWARF lexical block a stop's address is in tells a macro's own stops
+    # apart (`println!`'s `args`); an inlined call's own blocks are its callee's.
+    (root,) = parse_dies(blocks_dump(), units=False)
+    found = code_blocks(root, RustUnit(0, 0x0B, 0x1000, 0, APP))
+    kay = found["h8491af1d40105d89"]
+    assert [(block.parent, block.names, block.inlined) for block in kay] == [
+        (None, ("v",), False),
+        (0, ("r",), False),
+        (1, ("k",), False),
+        (2, ("args",), False),
+        (3, (), True),
+    ]
+    assert kay[1].ranges == ((0x100000E38, 0x100000E88), (0x100000E98, 0x100000EA4))
+    # DWARF 4's high_pc may be the code's size.
+    assert kay[3].ranges == ((0x100000E50, 0x100000E6C),)
+    # A method's code takes its declaration's linkage name.
+    assert found["h0123456789abcdef"][0].names == ("self",)
+    # A size is told from an end by its digits, not by being below the start.
+    low = blocks_dump().replace("0x0000000100001000", "0x0000000000000100")
+    (root,) = parse_dies(low.replace("0x00000020", "0x00000200"), units=False)
+    found = code_blocks(root, RustUnit(0, 0x0B, 0x1000, 0, APP))
+    assert found["h0123456789abcdef"][0].ranges == ((0x100, 0x300),)
+    # A block without code gives its function no blocks: none is told apart.
+    (root,) = parse_dies(blocks_dump(ranges=False), units=False)
+    assert code_blocks(root, RustUnit(0, 0x0B, 0x1000, 0, APP))["h8491af1d40105d89"] == ()
