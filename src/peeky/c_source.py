@@ -68,6 +68,12 @@ _NONBLANK = re.compile(r"\S")
 # `-std=c11` builds it; C++17 has none).
 _TRIGRAPH = re.compile(r"\?\?([=(/)'<!>-])")
 _TRIGRAPHS = dict(zip("=(/)'<!>-", "#[\\]^{|}~"))
+# Words a `(` follows in an expression, never in a function's head.
+_EXPRESSIONS = _USES | {"decltype", "noexcept", "and", "or", "not", "static_assert", "requires"}
+# What may stand between a function's (or a lambda's) parameters and its body.
+_QUALIFIED = re.compile(
+    r"(?:\s|const\b|volatile\b|noexcept\b|override\b|final\b|mutable\b|&|->[^;{}()]*)*"
+)
 # A directive's line (`%:` is `#`).
 _DIRECTIVE = re.compile(r"[ \t\f\v]*(?:#|%:)")
 # `#line 7` and a line marker (`# 7 "x.c"`) renumber the lines after them.
@@ -220,6 +226,7 @@ class Statements:
 
     def __init__(self, text, raw_strings=True, macros=frozenset(), hazards=None, trigraphs=None):
         # C (`-std=c11`) has trigraphs and no raw strings; C++17 the other way round.
+        self.raw_strings = raw_strings
         self.text = translated(text, not raw_strings if trigraphs is None else trigraphs)
         self.blanked = blank(self.text, raw_strings)
         self.starts = [0] + [mark.end() for mark in re.finditer("\n", self.blanked)]
@@ -227,6 +234,8 @@ class Statements:
         self.macros = frozenset(hazards.get("brackets", ()))
         # What `jumped_past` cannot see through: a label, or a bracket left open.
         self.opaque = frozenset(hazards.get("labels", ())) | frozenset(hazards.get("blocks", ()))
+        # What may hide a bracket from `begins`: an unclosed one (a `;` alone hides none).
+        self.blocks = frozenset(hazards.get("blocks", ())) if "blocks" in hazards else self.macros
         self.gotos = frozenset(hazards.get("gotos", ()))
         # Where the compiler may read any line differently from the scan.
         self.unreadable = bool(
@@ -757,6 +766,428 @@ class Statements:
             parents.append(open_stack[-1] if open_stack else -1)
             open_stack.append(index)
         return opens, closes, parents, [switches[opened] for opened in opens]
+
+    def begins(self, line):
+        """Whether the code of ``line`` starts a statement (True), or continues one that
+        an earlier line started (False: `long t = s.a` then `+ f();`, a call's arguments,
+        a `for` header's parts, an initializer's rows), as a stop at the line's start
+        finds it (#105). Part-way through a statement, what it has read may be held in a
+        register or a temporary, which a change to the variable does not reach.
+
+        Every bracket around the line, up to its function's (or lambda's) body, must be
+        a block of statements: an `if`, `for`, `while`, `switch` or `catch` body, an
+        `else`, `do` or `try` block, a block after a statement or a label. Anything
+        else continues a statement: parentheses, brackets, an initializer, `new T[1]{`,
+        `decltype(W{}){`, a compound literal, a class body, a GNU statement expression
+        `({`. None if unknown: the compiler may read the text differently (see the
+        module), the line is a directive or holds no code, the brackets do not balance,
+        a directive lies between the line and the code before it, or a macro that may
+        hide a bracket is named in its function before it."""
+        if self.unreadable or type(line) is not int or not 1 <= line <= len(self.starts):
+            return None
+        code, pairs = self._code()
+        if pairs is None:
+            return None
+        begin = self.starts[line - 1]
+        finish = self.starts[line] if line < len(self.starts) else len(code)
+        first = _NONBLANK.search(code, begin, finish)
+        if first is None:
+            return None
+        first = first.start()
+        if line > 1 and code[self.starts[line - 2] : begin - 1].rstrip(" \t\f\v").endswith("\\"):
+            # Spliced onto the line above.
+            return None
+        # A line starting with `}` is the last of the block it closes.
+        verdict, body = self._function_body(first, code.startswith(("}", "%>"), first))
+        if verdict is not True:
+            return verdict
+        if {word[0] for word in _IDENTIFIER.finditer(code, body, first)} & self.blocks:
+            return None
+        before = self._unattributed(first)
+        if before is None or before[1] <= body:
+            return True
+        token, at = before
+        if any(
+            _DIRECTIVE.match(self.blanked, self.starts[number - 1])
+            for number in range(bisect.bisect_right(self.starts, at) + 1, line)
+        ):
+            # `t = p.x` / `#if 0` / `;` / `#endif` / `+ g();`: what the compiler reads
+            # before the line is not known.
+            return None
+        if token == ";" or token in _LEADING:
+            return True
+        if token in ("{", "<%"):
+            return True  # a block of statements: `_function_body` checked it
+        if token in ("}", "%>"):
+            opening = self._opening(at)
+            return opening is not None and self._brace(opening) == "statement"
+        if token == ")":
+            opening = self._opening(at)
+            return opening is not None and self._word_before(opening) in _HEADERS - {"catch"}
+        if token == ":":
+            return self._label(at)
+        return False
+
+    def statement_span(self, line):
+        """(``line``, the last line of the statements that start on it): where the last
+        one's `;` is (a statement's header, `if (...)`, ends at its `)`). None if
+        unknown: no statement starts on the line, an end is not found, or the compiler
+        may read the text differently (a directive or splice on its lines, a macro that
+        may hide a bracket or a `;` in it; see the module)."""
+        if self.unreadable or type(line) is not int or not 1 <= line <= len(self.starts):
+            return None
+        if self._code()[1] is None:
+            return None
+        return self._span_from(line, self.starts[line - 1])
+
+    def opening_statements(self, line):
+        """For a function's first line, where its body opens (`long one(struct P p) {
+        long t =` / `p.x + g();`, a one-line lambda): (``line``, the last line of the
+        statements that start on it after the body's `{`), as ``statement_span`` reads
+        them. None if unknown: no body (a function's or a lambda's) opens on the line,
+        more than one does, no code follows it on the line, an end is not found, or the
+        compiler may read the text differently (see ``statement_span``)."""
+        if self.unreadable or type(line) is not int or not 1 <= line <= len(self.starts):
+            return None
+        code, pairs = self._code()
+        if pairs is None:
+            return None
+        begin = self.starts[line - 1]
+        finish = self.starts[line] if line < len(self.starts) else len(code)
+        bodies = [
+            found.start()
+            for found in re.compile(r"\{|<%").finditer(code, begin, finish)
+            if self._brace(found.start()) in ("function", "lambda")
+        ]
+        if len(bodies) != 1:
+            return None
+        opened = bodies[0] + (1 if code.startswith("{", bodies[0]) else 2)
+        following = _NONBLANK.search(code, opened, finish)
+        if following is None or code.startswith(("}", "%>"), following.start()):
+            return None
+        verdict, body = self._function_body(following.start())
+        if verdict is not True or body != bodies[0]:
+            return None
+        return self._span_from(line, opened)
+
+    def _span_from(self, line, begin):
+        """(``line``, the last line of the statements that start on it from ``begin``), or
+        None (see ``statement_span``)."""
+        code, pairs = self._code()
+        finish = self.starts[line] if line < len(self.starts) else len(code)
+        position, last = begin, begin
+        while (token := _WORDS.search(code, position)) is not None and token.start() < finish:
+            word, start = token[0], token.start()
+            following = _WORDS.search(code, token.end())
+            after = following[0] if following else None
+            if word in ("{", "<%", "}", "%>", ";") or word in _LEADING:
+                position = token.end()
+                continue
+            if word in ("[", "<:") and after in ("[", "<:"):
+                # An attribute (`[[likely]]`).
+                closing = pairs.get(start)
+                if closing is None:
+                    return None
+                position, last = closing + 1, max(last, closing)
+                continue
+            if word == "case" or (_WORD.fullmatch(word) and after == ":"):
+                colon = re.compile(r"(?<!:):(?![:>])").search(code, token.end())
+                if colon is None:
+                    return None
+                position, last = colon.end(), max(last, colon.start())
+                continue
+            opening = following
+            if word in _HEADERS and after == "constexpr":
+                opening = _WORDS.search(code, following.end())
+            if word in _HEADERS and opening is not None and opening[0] == "(":
+                closing = pairs.get(opening.start())
+                if closing is None:
+                    return None
+                position, last = closing + 1, max(last, closing)
+                continue
+            end = self._statement(start)
+            if end is None:
+                return None
+            position, last = end + 1, max(last, end)
+        if not self._readable(line, begin, last):
+            return None
+        return line, bisect.bisect_right(self.starts, last)
+
+    def old_style(self, line):
+        """Whether ``line`` is in the body of a K&R-style definition (`long f(a) long a;
+        {`), whose parameters are declared between its `)` and its body: the outermost
+        brace around the line's code opens after a `;` at file scope. Such a body is no
+        function's for `begins`, which then says False."""
+        if self.unreadable or type(line) is not int or not 1 <= line <= len(self.starts):
+            return False
+        code, pairs = self._code()
+        if pairs is None:
+            return False
+        begin = self.starts[line - 1]
+        finish = self.starts[line] if line < len(self.starts) else len(code)
+        first = _NONBLANK.search(code, begin, finish)
+        if first is None:
+            return False
+        braces = [
+            opened
+            for opened, closed in pairs.items()
+            if opened < first.start() <= closed and code.startswith(("{", "<%"), opened)
+        ]
+        if not braces:
+            return False
+        before = self._unattributed(min(braces))
+        return before is not None and before[0] == ";"
+
+    def _function_body(self, position, closing=False):
+        """(verdict, where the body opens) for ``position``: True if every bracket around
+        it, up to the body of its function or lambda, is a block of statements (see
+        `begins`); False if one is not, or there is no function around it. ``closing``:
+        the position is a `}`, of the block it closes."""
+        code, pairs = self._code()
+        around = sorted(
+            (
+                opened
+                for opened, closed in pairs.items()
+                if opened < position < closed or (closing and closed == position)
+            ),
+            reverse=True,
+        )
+        # Inside a GNU statement expression, `({ ... })`, anywhere around it: what reads
+        # a value there is part of an enclosing statement, whose start is unknown.
+        if any(
+            code.startswith(("{", "<%"), opening)
+            and (before := self._before(opening)) is not None
+            and before[0] == "("
+            for opening in around
+        ):
+            return False, None
+        for index, opening in enumerate(around):
+            if not code.startswith(("{", "<%"), opening):
+                return False, None
+            kind = self._brace(opening)
+            if kind == "lambda":
+                return True, opening
+            if kind == "function":
+                outer = around[index + 1] if index + 1 < len(around) else None
+                if outer is None or self._container(outer):
+                    return True, opening
+                # A function is defined only at file scope or in a class's or namespace's
+                # body: this one is a statement's block (a macro's: `FOR_EACH(x) {`, a
+                # `for` header `REPEAT(k, 1) {` hides), and the walk goes on outwards.
+                continue
+            if kind != "statement":
+                return False, None
+        return False, None
+
+    def _container(self, opening):
+        """Whether the brace at ``opening`` opens a body functions are defined in: a
+        class's, struct's or union's (`struct S : B {`, `template <class T> class C {`),
+        a namespace's or a linkage specification's (`extern "C" {`). Not a function's
+        (`struct P make(void) {`), an initializer's (`struct P p = {`) or anything in
+        brackets."""
+        code = self._code()[0]
+        if not code.startswith(("{", "<%"), opening):
+            return False
+        head, at, angles = [], opening, 0
+        for _ in range(256):
+            before = self._before(at)
+            if before is None:
+                break
+            token, start = before
+            if token in (";", "{", "}", "<%", "%>"):
+                break
+            if token in (")", "]", ":>"):
+                # A bracketed group: an attribute's or `alignas(8)` (fine), parameters.
+                opened = self._opening(start)
+                if opened is None:
+                    return False
+                head.append("()" if token == ")" else "[]")
+                at = opened
+                continue
+            if set(token) <= {"<", ">"}:
+                # Read backwards, a template's arguments close first (`<int N = 3>`).
+                angles += token.count(">") - token.count("<")
+            elif token in ("(", "[", "<:") or (token == "=" and angles <= 0):
+                return False
+            head.append(token)
+            at = start
+        else:
+            return False
+        head.reverse()
+        groups = [i for i, token in enumerate(head) if token == "()"]
+        if "namespace" in head:
+            return not groups
+        if head[:1] == ["extern"]:
+            return not groups and len(head) <= 3
+        if not {"class", "struct", "union"} & set(head):
+            return False
+        allowed = {"alignas", "_Alignas", "__attribute__", "__attribute", "__declspec"}
+        return all(i > 0 and head[i - 1] in allowed for i in groups)
+
+    def _brace(self, opening):
+        """What the brace at ``opening`` opens: "statement" (a block of statements: a
+        statement's body, a block after a statement or a label), "function" (a body
+        after parameters: `f(int a) {`, `operator()(int a) const {`, maybe a macro's
+        `FOR_EACH(x) {`; a function-try-block's, `f(P p) try {`, and its handlers'),
+        "lambda" (`[&] {`, `[](int v) -> int {`), or "other" (a class, an initializer,
+        `({`, `new T[1]{`, `decltype(W{}){`, a compound literal)."""
+        before = self._unattributed(opening)
+        if before is None:
+            return "other"
+        token, at = before
+        if token == "try" and self.raw_strings:
+            # `long f(P p) try {`: the function's body, as a brace in the `try`'s place
+            # would be; else a `try` statement's block.
+            return "function" if self._brace(at) == "function" else "statement"
+        if token in (";", "{", "}", "<%", "%>") or token in _LEADING:
+            return "statement"
+        if token == ":":
+            return "statement" if self._label(at) else "other"
+        if token in ("]", ":>"):
+            return "lambda" if self._introducer(self._opening(at)) else "other"
+        parameters = self._opening(at) if token == ")" else self._parameters(opening)
+        word = self._before(parameters) if parameters is not None else None
+        if word is None:
+            return "other"
+        if word[0] == "catch" and self.raw_strings:
+            # A handler of a function-try-block is its function's too (after the `}` of
+            # its `try {` or of another such handler); else a `try` statement's.
+            previous = self._unattributed(word[1])
+            block = (
+                self._opening(previous[1])
+                if previous is not None and previous[0] in ("}", "%>")
+                else None
+            )
+            return (
+                "function"
+                if block is not None and self._brace(block) == "function"
+                else "statement"
+            )
+        if word[0] in _HEADERS:
+            return "statement"
+        if word[0] in ("]", ":>"):
+            bracket = self._opening(word[1])
+            if bracket is not None and self._word_before(bracket) == "operator":
+                return "function"  # `operator[](int i) {`
+            return "lambda" if self._introducer(bracket) else "other"
+        if word[0] == ")":
+            # Only `operator()(...)`; `(long)(struct W){` is a compound literal.
+            inner = self._opening(word[1])
+            return (
+                "function"
+                if inner is not None and self._word_before(inner) == "operator"
+                else "other"
+            )
+        if word[0] == ">" and self.raw_strings:
+            return "function"  # a template's: `f<int>(int a) {` (C++ only)
+        if self._word_before(word[1] + len(word[0])) == "operator":
+            return "function"  # `operator+(...) {`
+        if _WORD.fullmatch(word[0]) and word[0] not in _EXPRESSIONS:
+            return "function"
+        return "other"
+
+    def _introducer(self, bracket):
+        """Whether the `[` at ``bracket`` starts a lambda (`= [&]`, `([](int v)`), not a
+        subscript or an array's bound (`new long[1]`, `a[1]`) or an attribute."""
+        if bracket is None:
+            return False
+        code = self._code()[0]
+        if code.startswith(("[[", "<:<:", "[<:", "<:["), bracket):
+            return False
+        before = self._before(bracket)
+        if before is None:
+            return True
+        token = before[0]
+        if token in ("return", "co_return", "co_yield", "throw"):
+            return True
+        return not (token[0].isalnum() or token[0] == "_" or token in (")", "]", ":>", ">", "}"))
+
+    def _unattributed(self, position):
+        """The token before ``position`` (``_before``), skipping attributes
+        (`[[likely]]`)."""
+        code = self._code()[0]
+        before = self._before(position)
+        for _ in range(16):
+            if before is None or before[0] not in ("]", ":>"):
+                break
+            opening = self._opening(before[1])
+            if opening is None or not code.startswith(("[[", "<:<:", "[<:", "<:["), opening):
+                break
+            before = self._before(opening)
+        return before
+
+    def _code(self):
+        """(the blanked text with directive lines blanked too, {position of each bracket
+        opening: position of the one closing it}, or None if they do not balance)."""
+        if "code" not in self.__dict__:
+            lines = self.blanked.split("\n")
+            directive = False
+            for index, text in enumerate(lines):
+                if directive or _DIRECTIVE.match(text):
+                    directive = text.rstrip(" \t\f\v").endswith("\\")
+                    lines[index] = " " * len(text)
+            code = "\n".join(lines)
+            stack, pairs = [], {}
+            for mark in _TOKENS.finditer(code):
+                token = mark[0]
+                if token in _OPEN:
+                    stack.append((token, mark.start()))
+                elif token in _CLOSE:
+                    if not stack or _PAIRS[stack[-1][0]] != _PAIRS[token]:
+                        pairs = None
+                        break
+                    pairs[stack.pop()[1]] = mark.start()
+                elif token == "<::":
+                    pairs = None
+                    break
+            if stack:
+                pairs = None
+            self.code = (code, pairs)
+            self.closes = (
+                {} if pairs is None else {closed: opened for opened, closed in pairs.items()}
+            )
+        return self.code
+
+    def _opening(self, closing):
+        """Where the bracket closing at ``closing`` opens, or None."""
+        self._code()
+        return self.closes.get(closing)
+
+    def _before(self, position):
+        """(the token just before ``position`` in ``_code``, where it starts), spaces
+        skipped, or None. A word, a punctuator `_TOKENS` reads, or one other character."""
+        code = self._code()[0]
+        at = position - 1
+        while at >= 0 and code[at].isspace():
+            at -= 1
+        if at < 0:
+            return None
+        if code[at].isalnum() or code[at] == "_":
+            start = at
+            while start > 0 and (code[start - 1].isalnum() or code[start - 1] == "_"):
+                start -= 1
+            return code[start : at + 1], start
+        for mark in _TOKENS.finditer(code, max(0, at - 3), at + 1):
+            if mark.end() == at + 1:
+                return mark[0], mark.start()
+        return code[at], at
+
+    def _parameters(self, opening):
+        """Where the parentheses before the brace at ``opening`` open, when only what may
+        follow a function's parameters stands between them (`const`, `noexcept`,
+        `mutable`, `override`, a trailing return type), else None."""
+        code = self._code()[0]
+        closing = code.rfind(")", 0, opening)
+        if closing < 0 or not _QUALIFIED.fullmatch(code, closing + 1, opening):
+            return None
+        return self._opening(closing)
+
+    def _label(self, colon):
+        """Whether the `:` at ``colon`` ends a label (`case 1:`, `default:`, `out:`)."""
+        code = self._code()[0]
+        start = max(code.rfind(mark, 0, colon) for mark in ";{}:")
+        head = code[start + 1 : colon].strip()
+        return bool(re.fullmatch(r"case\b[\s\S]*|default|[A-Za-z_]\w*", head)) and "?" not in head
 
     def _word_before(self, position):
         """The identifier just before ``position`` (spaces skipped), or None."""

@@ -91,6 +91,18 @@ def optimization_level(identity):
     return None
 
 
+def _same_number(shown, read):
+    """Whether two decimal integers as shown (`50`, `-3`) are the same number."""
+    pattern = re.compile(r"-?[0-9]{1,40}")
+    return (
+        isinstance(shown, str)
+        and isinstance(read, str)
+        and bool(pattern.fullmatch(shown.strip()))
+        and bool(pattern.fullmatch(read.strip()))
+        and int(shown) == int(read)
+    )
+
+
 def is_unavailable(value):
     """LLDB reports "no value" as text such as `<error: variable not available>` or
     `<error: could not evaluate DW_OP_entry_value: ...>`; none of it is a value."""
@@ -1018,6 +1030,9 @@ class DebugWorker:
                 ("handle", None, 1, None),
                 ("start", 0, 0, 511),
                 ("count", 64, 1, 64),
+                # One element by its index, of an array of any length (`[N]` as LLDB
+                # names it); instead of `start` and `count`.
+                ("index", 0, 0, 2**31 - 1),
             ):
                 value = args.get(key, default)
                 if type(value) is not int or value < low or (high is not None and value > high):
@@ -1606,6 +1621,9 @@ class DebugWorker:
                     raise ValueError("Inspect the scope before changing variables")
                 runtime.validate_stop(frame)
                 validate_debugger(self.dap, frame)
+            self.refuse_mid_statement(
+                runtime, variable, self.reference_frames.get(ref), args["name"]
+            )
             before = variable.get("value")
             literal = getattr(runtime, "mutation_literal", None)
             try:
@@ -1948,7 +1966,16 @@ class DebugWorker:
                 if view.get("children"):
                     self.reference_counter += 1
                     handle = self.reference_counter
-                    self.children[handle] = ("view", list(view["children"][:512]))
+                    # A preview of the value's own fields (#106) also keeps where the
+                    # debugger lists it, which a change to a field walks again (#105).
+                    writable = getattr(self.runtime, "view_writable", None)
+                    raw = variable.get("variablesReference", 0)
+                    source = (
+                        (dict(frame), scope, (*ancestry, (name, kind)))
+                        if writable and writable(view) and type(raw) is int and raw > 0
+                        else None
+                    )
+                    self.children[handle] = ("view", list(view["children"][:512]), source)
                 output = {
                     "name": name,
                     "value": str(view["value"])[:2000],
@@ -1997,12 +2024,14 @@ class DebugWorker:
             if not ancestry and (check := getattr(self.runtime, "settable", None)):
                 # Root locals `set` can change, so agents need not try and be refused;
                 # optimized builds refuse every change.
+                mid = getattr(self.runtime, "mid_statement", None)
                 settable = (
                     self.capabilities.get("supports_set_variable", False) is True
                     and innermost
                     and not self.optimized()
                     and self.has_memory_location(variable)
                     and bool(check(variable, frame))
+                    and not (mid and mid(variable, frame, self.stop_reason))
                 )
             elif ancestry and (member := getattr(self.runtime, "member_settable", None)):
                 settable = (
@@ -2101,6 +2130,28 @@ class DebugWorker:
             self.inspection_nodes += 1
         return result
 
+    def named_children(self, reference, indexed, name, runtime):
+        """The children named ``name`` of the value ``reference`` names. An element LLDB
+        names `[N]` of an array with more children than one bounded listing holds is
+        fetched alone (`start` N, `count` 1), as reads index it, where the debugger names
+        elements so (lldb-dap); anything else from the bounded listing."""
+        validate_children = getattr(runtime, "validate_children", None)
+        index = re.fullmatch(r"\[(0|[1-9][0-9]{0,9})\]", str(name))
+        alone = getattr(runtime, "elements_by_index", False) is True
+        if alone and index and type(indexed) is int and indexed > 512 and type(reference) is int:
+            if int(index[1]) >= indexed:
+                return []
+            variables = self.dap.request(
+                "variables", {"variablesReference": reference, "start": int(index[1]), "count": 1}
+            ).get("variables", [])
+            if not isinstance(variables, list) or len(variables) > 1:
+                raise ValueError("Variable collection exceeds bounded expansion limit")
+        else:
+            variables = self.bounded_variables(reference, indexed)
+        if validate_children:
+            validate_children(variables)
+        return [v for v in variables if v.get("name") == name]
+
     def bounded_variables(self, reference, indexed=None):
         if type(reference) is not int or reference <= 0:
             raise ValueError("Variable is not expandable")
@@ -2137,8 +2188,10 @@ class DebugWorker:
             # Elements a value view already decoded at this stop: nothing to re-read.
             runtime.assert_current()
             elements = record[1]
-            start = args.get("start", 0)
-            count = min(args.get("count", 64), 512 - self.inspection_nodes)
+            start = args.get("index", args.get("start", 0))
+            count = (
+                1 if "index" in args else min(args.get("count", 64), 512 - self.inspection_nodes)
+            )
             page = []
             for element in elements[start : start + count]:
                 handle = 0
@@ -2157,14 +2210,19 @@ class DebugWorker:
                 "remaining_nodes": 512 - self.inspection_nodes,
             }
         frame, scope_identity, ancestry, reference, indexed = self.walk(record, runtime)
-        variables = self.bounded_variables(reference, indexed)
-        if validate_children := getattr(runtime, "validate_children", None):
-            validate_children(variables)
+        start = args.get("start", 0)
+        count = min(args.get("count", 64), 512 - self.inspection_nodes)
+        if "index" in args:
+            # The one element `[N]`, fetched alone however long the array (#105).
+            variables = self.named_children(reference, indexed, f"[{args['index']}]", runtime)
+            start, count = 0, 1
+        else:
+            variables = self.bounded_variables(reference, indexed)
+            if validate_children := getattr(runtime, "validate_children", None):
+                validate_children(variables)
         # Each expansion is its own bounded request with a fresh value-view budget.
         self.view_fetches = self.view_items = self.view_bytes = 0
         self.view_deadline = time.monotonic() + VIEW_SECONDS
-        start = args.get("start", 0)
-        count = min(args.get("count", 64), 512 - self.inspection_nodes)
         result = self.expose_variables(
             variables[start : start + count],
             frame,
@@ -2185,15 +2243,21 @@ class DebugWorker:
         return (
             self.capabilities.get("supports_set_variable") is True
             and self.capabilities.get("supports_member_set") is True
-            and hasattr(self.runtime or self.adapter, "member_settable")
+            and any(
+                hasattr(self.runtime or self.adapter, hook)
+                for hook in ("member_settable", "validate_member")
+            )
         )
 
     def set_member(self, args, runtime):
-        """Change a field or element of a value an expansion handle names (Java only).
+        """Change a field or element of a value an expansion handle names (Java; and in
+        C, C++ and Rust a scalar the runtime's ``validate_member`` proves the frame holds
+        itself, #105).
 
         The handle only locates the parent: it is walked again from its frame and scope,
         the member must be listed exactly once, and the runtime decides what may change.
-        The new value is read back from the parent, not taken from the debugger's echo.
+        The new value is read back from the parent, not taken from the debugger's echo
+        (C, C++ and Rust: walked again from the frame, and it must be the value asked).
         """
         record = self.children.get(args["handle"])
         # A change invalidates every handle: the next read or change inspects again.
@@ -2203,7 +2267,8 @@ class DebugWorker:
         self.reference_frames.clear()
         self.reference_adapter.clear()
         check = getattr(runtime, "member_settable", None)
-        if check is None:
+        validate = getattr(runtime, "validate_member", None)
+        if check is None and validate is None:
             raise ValueError(
                 "Only the stopped function's own locals can be changed for this language "
                 "(fields and elements cannot)"
@@ -2212,8 +2277,22 @@ class DebugWorker:
             raise ValueError(
                 "This Java adapter bundle predates field and element changes, so only locals "
                 "can be changed; rebuild it with scripts/setup_java_adapter.py"
+                if check is not None
+                else "Only the stopped function's own locals can be changed for this language "
+                "with this debugger, which cannot change fields and elements"
             )
-        if record is None or record[0] == "view":
+        previewed = record is not None and record[0] == "view"
+        if previewed:
+            if len(record) < 3 or record[2] is None:
+                raise ValueError(
+                    f"{args['name']!r} cannot be changed: it is inside a value Peeky decodes "
+                    "itself (such as a Rust Vec, String, Box or enum), whose storage Peeky "
+                    "does not write"
+                )
+            # A #106 preview of a struct's or tuple's own fields: changed as the debugger
+            # lists it, under every rule a field there has (#105).
+            record = record[2]
+        if record is None:
             raise ValueError("Unknown or stale expansion handle; inspect again")
         if record[0].get("id") != self.innermost_frame:
             raise ValueError(_CALLER_SET.format(name=repr(args["name"])))
@@ -2224,18 +2303,20 @@ class DebugWorker:
             )
         name, value = args["name"], args["value"]
         runtime.validate_value(value)
-        frame, _, _, reference, indexed = self.walk(record, runtime)
+        trail = []
+        frame, _, ancestry, reference, indexed = self.walk(record, runtime, trail)
 
         def member():
-            variables = self.bounded_variables(reference, indexed)
-            if validate_children := getattr(runtime, "validate_children", None):
-                validate_children(variables)
-            return [v for v in variables if v.get("name") == name]
+            return self.named_children(reference, indexed, name, runtime)
 
         matches = member()
         if len(matches) != 1:
             raise ValueError(f"{name!r} is not a field or element the debugger lists there")
         variable = matches[0]
+        if validate is not None:
+            return self._set_scalar_member(
+                record, runtime, frame, ancestry, trail, reference, variable, args, previewed
+            )
         if reason := check(variable):
             raise ValueError(f"{name!r} cannot be changed: {reason}")
         runtime.validate_variable(variable, value)
@@ -2266,9 +2347,135 @@ class DebugWorker:
             )
         return {"name": name, "before": before, "after": after}
 
-    def walk(self, record, runtime):
+    def _set_scalar_member(
+        self, record, runtime, frame, ancestry, trail, reference, variable, args, previewed=False
+    ):
+        """set_member for C, C++ and Rust (#105): the runtime proves the change reaches
+        the program (``validate_member``), and the value read back, walked again from the
+        frame, must be the one asked; anything else is never reported as a change.
+        ``previewed``: the parent is shown as a preview read from memory (#106), which
+        must show the same value afterwards."""
+        name, value = args["name"], args["value"]
+        root, steps = trail[0], [step for step, _ in ancestry[1:]] + [name]
+        pairs = ((root, ancestry[0][0]), (variable, name))
+        for each, shown in pairs:
+            if self.placeholders() and is_unavailable(each.get("value")):
+                raise ValueError(
+                    f"{shown!r} has no readable value here ({str(each.get('value'))[1:-1][:200]}); "
+                    f"{name!r} cannot be changed"
+                )
+        runtime.validate_member(
+            frame,
+            root,
+            steps,
+            variable,
+            value,
+            stack=getattr(self, "listed_frames", None),
+            deeper=self.deeper_stack,
+        )
+        for each, shown in pairs:
+            if not self.has_memory_location(each):
+                raise ValueError(
+                    f"{shown!r} has no memory location here (a computed value): {name!r} "
+                    "cannot be changed, as a change would not reach the program"
+                )
+        selector = ancestry[0][0] + "".join(
+            step if step.startswith("[") else f".{step}" for step in steps
+        )
+        self.refuse_mid_statement(runtime, root, frame, selector)
+        before = variable.get("value")
+        literal = getattr(runtime, "mutation_literal", None)
+        try:
+            self.dap.request(
+                "setVariable",
+                {
+                    "variablesReference": reference,
+                    "name": name,
+                    "value": literal(value) if literal else value,
+                },
+            )
+        except RequestFailed as exc:
+            raise ValueError(
+                f"The debugger refused to change {name!r} ({str(exc)[:200]}); it is unchanged"
+            ) from None
+        runtime.assert_current()
+        # Read back from a fresh walk (new scopes, new children), not the debugger's echo.
+        try:
+            _, _, _, reread, indexed = self.walk(record, runtime)
+            found = self.named_children(reread, indexed, name, runtime)
+        except Exception as exc:
+            found = [str(exc)[:200]]
+        if (
+            len(found) != 1
+            or not isinstance(found[0], dict)
+            or not isinstance(found[0].get("value"), str)
+        ):
+            # A write was attempted, and what it did cannot be confirmed: fail closed.
+            raise RuntimeError(
+                f"The change to {name!r} was sent, but could not be read back"
+                + (f" ({found[0]})" if found and isinstance(found[0], str) else "")
+                + ": the program's state is unknown, so the session is closed"
+            )
+        after = found[0]["value"]
+        # Exactly the value asked, or an error: never a change reported that is not made.
+        runtime.confirm_mutation(name, value, before, after)
+        if previewed:
+            self._confirm_preview(record, runtime, name, after)
+        return {"name": name, "before": before, "after": after}
+
+    def _confirm_preview(self, record, runtime, name, after):
+        """After a change to a field of a value shown as a preview read from memory (#106),
+        read the preview again as `inspect` and `get` would: the field must show what the
+        debugger read back. A preview that no longer reads is shown as the debugger lists
+        the value, which matched; one that shows anything else closes the session."""
+        trail = []
+        try:
+            frame, _, path, _, _ = self.walk(record, runtime, trail)
+            self.view_fetches = self.view_items = self.view_bytes = 0
+            self.view_deadline = time.monotonic() + VIEW_SECONDS
+            view = runtime.view_variable(
+                trail[-1],
+                self.view_fetch,
+                self.view_read,
+                frame=frame,
+                top=len(path) == 1,
+                innermost=len(path) == 1 and frame.get("id") == self.innermost_frame,
+                stop=self.stop_reason,
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                f"The change to {name!r} was made, but its value could not be read again "
+                f"from memory ({str(exc)[:200]}): the program's state is unknown, so the "
+                "session is closed"
+            ) from None
+        if view is None or not view.get("children"):
+            return
+        shown = [child for child in view["children"] if child.get("name") == name]
+        if len(shown) != 1 or not _same_number(shown[0].get("value"), after):
+            raise RuntimeError(
+                f"The change to {name!r} reads back as {str(after)[:80]} from the debugger "
+                f"but as {str(shown[0].get('value'))[:80] if len(shown) == 1 else 'nothing'} "
+                "from memory: the program's state is unknown, so the session is closed"
+            )
+
+    def refuse_mid_statement(self, runtime, root, frame, selector):
+        """Refuse a change to the root local ``root`` (or what ``selector`` reaches in it)
+        where the runtime says a statement under way at the stop may hold a copy of its
+        old value (#105): the change would miss that statement. The session is kept."""
+        check = getattr(runtime, "mid_statement", None)
+        if check and (reason := check(root, frame or {}, self.stop_reason)):
+            raise ValueError(
+                f"{selector!r} cannot be changed here: {reason}, so that statement may "
+                "already hold a copy of the old value and would not see the change. Change "
+                "it at a statement's first instruction, this one's or an earlier one's: a "
+                "breakpoint on the statement's first line (`session continue --to LINE`, a "
+                "probe's `--at`), or a `session step` that lands there"
+            )
+
+    def walk(self, record, runtime, trail=None):
         """The value an expansion handle names, found again from its frame and scope by
-        each step's name and type: (frame, scope identity, path, reference, indexed)."""
+        each step's name and type: (frame, scope identity, path, reference, indexed).
+        ``trail``, if given, receives the debugger's variable for each step."""
         original_frame, scope_identity, ancestry = record
         frames = self.dap.request("stackTrace", {"threadId": self.thread_id, "levels": 10}).get(
             "stackFrames", []
@@ -2290,16 +2497,14 @@ class DebugWorker:
             raise ValueError("Expansion scope is missing or ambiguous")
         reference = matches[0].get("variablesReference")
         indexed = matches[0].get("indexedVariables")
-        validate_children = getattr(runtime, "validate_children", None)
         for name, kind in ancestry:
-            variables = self.bounded_variables(reference, indexed)
-            if validate_children:
-                validate_children(variables)
-            matches = [v for v in variables if v.get("name") == name]
+            matches = self.named_children(reference, indexed, name, runtime)
             if len(matches) != 1 or matches[0].get("type") != kind:
                 raise ValueError("Expansion ancestry changed or is ambiguous")
             reference = matches[0].get("variablesReference")
             indexed = matches[0].get("indexedVariables")
+            if trail is not None:
+                trail.append(matches[0])
         return frame, scope_identity, ancestry, reference, indexed
 
     def close(self):
@@ -2343,14 +2548,22 @@ _CALLER_SET = (
 
 
 def _name_list(value):
-    """A request's list of at most 32 Python-style names."""
+    """A request's list of at most 32 Python-style names, or names LLDB gives a local
+    with where it is declared (`s @ main.rs:81`, when several of that name are in
+    scope)."""
     return (
         isinstance(value, list)
         and len(value) <= 32
         and all(
-            isinstance(name, str) and len(name) <= 128 and name.isidentifier() for name in value
+            isinstance(name, str)
+            and len(name) <= 400
+            and (name.isidentifier() or bool(_SHADOWED_NAME.fullmatch(name)))
+            for name in value
         )
     )
+
+
+_SHADOWED_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,127} @ [^\s:@\[\]'\"]{1,255}:[0-9]{1,9}")
 
 
 def _display_path(runtime, path):

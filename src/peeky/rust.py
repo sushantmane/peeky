@@ -52,6 +52,7 @@ from peeky.rust_symbols import (
     OWNED_CONTAINERS,
     RUST_METADATA,
     RUST_SCALARS,
+    STRUCT_PREFIX,
     UNIQUE_SCALARS,
     UNVERIFIED,
     active_variant,
@@ -751,6 +752,13 @@ RUST_INTEGERS = frozenset(
 )
 
 
+def _plain(name):
+    """A local's name without where LLDB says it is declared (`s @ main.rs:81` is `s`,
+    when several of that name are in scope); the IR's memory proof covers every local
+    of a name."""
+    return str(name).partition(" @ ")[0]
+
+
 def _frame_hash(frame):
     # lldb-dap marks an optimized frame's name ` [opt]` (macOS).
     name = re.sub(r"\s*\[opt\]$", "", str((frame or {}).get("name") or ""))
@@ -1025,7 +1033,7 @@ class RustSession(NativeSession):
         if variable.get("type") not in RUST_INTEGERS or not _writable_integer(variable):
             return False
         hashed = _frame_hash(frame)
-        return bool(hashed) and self.memory.get((hashed[1], variable.get("name"))) is True
+        return bool(hashed) and self.memory.get((hashed[1], _plain(variable.get("name")))) is True
 
     def validate_variable(self, variable, value):
         if (kind := variable.get("type")) not in RUST_INTEGERS:
@@ -1046,7 +1054,7 @@ class RustSession(NativeSession):
                 "affect the program"
             )
         hashed = _frame_hash(frame)
-        if not hashed or self.memory.get((hashed[1], name)) is not True:
+        if not hashed or self.memory.get((hashed[1], _plain(name))) is not True:
             where = display_function((frame or {}).get("name")) or "this frame"
             raise ValueError(
                 f"Rust mutation requires a local the program keeps in memory; {name!r} in "
@@ -1056,6 +1064,192 @@ class RustSession(NativeSession):
                 "(`std::hint::black_box(&mut x);` after its `let`, with `--set x=…` in the same "
                 "probe); otherwise edit the source and run verify"
             )
+
+    def mid_statement(self, variable, frame, stop=None):
+        """Why a change to the root local ``variable`` of the stopped ``frame`` may not
+        reach a statement under way at the stop, or None (#105). Allowed only where the
+        stop is before its line's first code (``stop``, its reason: a line breakpoint's,
+        or a step's that ends at the line's lowest address) and from there no temporary
+        the build's MIR shows may hold a value read from it is used again: a statement
+        that starts on an earlier line (`let arr = [s.a,` / `k,` / `s.b];` at its last
+        line) has already read it. A step that ends elsewhere (back from a call, as after
+        `step --out`, or onto a later part of a statement spanning lines), any other
+        stop, and anything the MIR does not explain are refused."""
+        hashed, proofs, place = _frame_hash(frame), getattr(self, "owned", None), frame or {}
+        line = place.get("line")
+        if stop == "step" and not self._line_start(frame):
+            return (
+                f"the stop is part-way through line {line}, past its first instruction (a "
+                "step back from a call, as after `step --out`, or onto a later part of a "
+                "statement spanning lines)"
+            )
+        if stop not in ("breakpoint", "step"):
+            return (
+                f"the stop ({stop or 'unknown'}) is not a line breakpoint's or a step's, so "
+                "Peeky cannot tell where it is in its statement"
+            )
+        verdict = None
+        if hashed and proofs is not None and not self._optimized():
+            verdict = proofs.copied_in_progress(
+                hashed[1],
+                variable.get("name"),
+                line,
+                (place.get("source") or {}).get("path"),
+                breakpoint=True,
+                column=place.get("column"),
+                block=stop_block(self.code_blocks.get(hashed[1]), self._unslid(frame)),
+            )
+        if verdict is False:
+            return None
+        if verdict:
+            return (
+                "a statement under way at the stop has already read it into a temporary "
+                "(`let t = s.a` / `+ f();`, at its second line)"
+            )
+        return (
+            "Peeky cannot tell from the build's MIR whether a statement under way at the "
+            "stop has read it"
+        )
+
+    def _line_start(self, frame):
+        """Whether the frame's pc is the lowest address of its line's code in its
+        function, where a step onto the line stops (as a line breakpoint does). False
+        where it is not, or that is not known."""
+        hashed, pc, place = _frame_hash(frame), self._unslid(frame), self._place(frame)
+        blocks = self.code_blocks.get(hashed[1]) if hashed else None
+        if not blocks or pc is None or place is None:
+            return False
+        ranges = blocks[0].ranges
+        addresses = [
+            address
+            for address, name, number in self._address_rows()
+            if (name, number) == place and any(low <= address < high for low, high in ranges)
+        ]
+        return bool(addresses) and pc == min(addresses)
+
+    def _address_rows(self):
+        """The application units' line-table rows, (address, source, line); empty if
+        they cannot be read. Read once, on the first change after a step."""
+        if "_rows" not in self.__dict__:
+            from peeky.native import _line_rows
+
+            rows = []
+            try:
+                dwarfdump = _absolute_tool(self.target.dwarfdump, "dwarfdump")
+                env = dict(self.prepared.manifest.effective_environment)
+                for unit in self.units:
+                    table = _metadata(
+                        dwarfdump,
+                        [f"--debug-line=0x{unit.stmt_list:08x}", str(self.symbols)],
+                        self.prepared.workspace,
+                        env,
+                        max_bytes=RUST_METADATA,
+                    )
+                    rows += _line_rows(
+                        table, self.prepared.workspace, tuple(self.lines), RUST_METADATA
+                    )
+                self.assert_current()
+            except (OSError, RuntimeError, ValueError):
+                rows = []
+            self._rows = sorted(rows)
+        return self._rows
+
+    def _root_type(self, frame, root):
+        """(type offset, whether the frame keeps it in its own memory, type graph) of the
+        root local of a field or element change (#105), from the application units'
+        debug information."""
+        from peeky.fields import Unsettable
+
+        hashed = _frame_hash(frame)
+        functions, graph = self._field_types()
+        types = functions.get(hashed[1]) if hashed else None
+        if types is None:
+            raise Unsettable("Peeky cannot match this frame to the build's debug information")
+        return (*self._declared_type(types, root.get("name")), graph)
+
+    def _root_holds(self, frame, root, stack=None, deeper=None):
+        """Raise fields.Unsettable unless the build's IR keeps the root local in memory
+        and its MIR proves it initialized at the stop (not moved, dropped or yet to be
+        assigned), in an unoptimized build."""
+        from peeky.fields import Unsettable
+
+        name = root.get("name")
+        if self._optimized():
+            raise Unsettable(
+                "Rust field and element changes need an unoptimized build (opt-level 0)"
+            )
+        hashed = _frame_hash(frame)
+        if not hashed or self.memory.get((hashed[1], _plain(name))) is not True:
+            raise Unsettable(
+                f"the build's IR does not keep `{name}` in memory here (the debugger may "
+                "show a copy), so a change would not reach the program"
+            )
+        proofs = getattr(self, "owned", None)
+        place = frame or {}
+        if (
+            proofs is None
+            or not proofs.proven(
+                hashed[1], name, place.get("line"), (place.get("source") or {}).get("path")
+            )
+            or self.aggregate_taint(root, frame, innermost=True)
+        ):
+            raise Unsettable(
+                f"the build's MIR does not prove `{name}` initialized here: it may be moved, "
+                "dropped or not yet assigned, so a change could be lost or overwritten"
+            )
+
+    def _field_types(self):
+        """({function hash: fields.local_types}, fields.type_graph) of the application
+        units, read once, on the first field or element change."""
+        from peeky.fields import Unsettable
+
+        cached = self.__dict__.get("_field_cache")
+        if cached is None:
+            try:
+                cached = self._read_field_types()
+            except (OSError, RuntimeError, ValueError) as exc:
+                cached = exc
+            self._field_cache = cached
+        if isinstance(cached, Exception):
+            raise Unsettable(
+                f"Peeky could not read the build's debug information ({str(cached)[:200]})"
+            )
+        return cached
+
+    def _read_field_types(self):
+        from peeky.fields import RUST_LIBRARIES, local_types, type_graph
+        from peeky.native import _chain, _code_ranges, _first, _parse_dies, _text
+
+        dwarfdump = _absolute_tool(self.target.dwarfdump, "dwarfdump")
+        env = dict(self.prepared.manifest.effective_environment)
+        dies = {}
+        for unit in self.units:
+            dies.update(
+                _parse_dies(
+                    _metadata(
+                        dwarfdump,
+                        [f"--debug-info=0x{unit.die:08x}", "--show-children", str(self.symbols)],
+                        self.prepared.workspace,
+                        env,
+                        max_bytes=RUST_METADATA,
+                    )
+                )
+            )
+        self.assert_current()
+        functions, kinds = {}, set()
+        for offset, die in dies.items():
+            if die["tag"] != "DW_TAG_subprogram" or not _code_ranges(die):
+                continue
+            chain = _chain(dies, offset)
+            linkage = _text(_first(dies, chain, "DW_AT_linkage_name")) or ""
+            hashed = re.search(r"17(h[0-9a-f]{16})E$", linkage)
+            if not hashed:
+                continue
+            types = local_types(dies, [offset])
+            # One hash, two bodies that disagree (never expected): neither is trusted.
+            functions[hashed[1]] = types if functions.get(hashed[1], types) == types else None
+            kinds.update(kind for each in (types or {}).values() for kind, _, _ in each)
+        return functions, type_graph(dies, kinds, RUST_LIBRARIES)
 
     def view_variable(
         self,
@@ -1257,6 +1451,20 @@ class RustSession(NativeSession):
             # not trustworthy there.
             return {**view, "value": UNVERIFIED, "rust_view": "opaque"}
         return view
+
+    def view_writable(self, view):
+        """Whether a field of the value ``view`` shows is the value's own storage, laid
+        out as the build's DWARF says (#105): a #106 tuple or struct preview, read with a
+        `composite` struct layout. A container's contents (a Vec's, a String's, a Box's)
+        or an enum's variant are not: they stay unchangeable. The change itself is still
+        judged by validate_member, from the debugger's own variable."""
+        layout = self.layouts.get(str(view.get("struct_layout")))
+        return (
+            view.get("rust_view") == "memory"
+            and str(view.get("struct_layout")).startswith(STRUCT_PREFIX)
+            and isinstance(layout, dict)
+            and layout.get("kind") == "composite"
+        )
 
     def _binding_types(self, variable, frame):
         """The MIR types of the bindings the frame's top-level ``variable`` can be (see

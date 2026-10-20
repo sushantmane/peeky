@@ -495,3 +495,268 @@ def test_a_class_extent_runs_from_its_head_to_its_closing_brace():
     # A declaration only, an object of a class, a lambda: none.
     for line in (5, 11, 12, 99):
         assert statements.class_extent(line) is None, line
+
+
+BEGINS = """#include <stdio.h>
+struct S { long a; long b; };
+static long f(void) { return 1000; }
+int main(void) {
+    struct S s = { 1, 2 };
+    long t = s.a
+        + f();
+    if (s.a)
+        s.b = 3;
+    switch (s.a) {
+    case 1:
+        s.b = 4;
+        break;
+    default: {
+        s.b = 5;
+    }
+    }
+    for (int i = 0;
+         i < 3;
+         i++) {
+        s.a += i;
+    }
+    long u = g(s.a,
+               f());
+    struct S w = {
+        s.a,
+        f() };
+    long v = ({ long q = f();
+        q; });
+#ifdef X
+    s.a = 9;
+#endif
+    x = c ? s.a :
+        f();
+out:
+    s.a = 1;
+    auto lam = [&](int v) -> int {
+        return v;
+    }
+    (3);
+    return 0;
+}
+struct Cfg { long a = f();
+    long b = f(); };
+int Klass::get() const {
+    return 1;
+}
+"""
+
+
+def test_a_line_continuing_a_statement_is_told_from_one_starting_it():
+    # Review of #105: a stop on `+ f();` under `long t = s.a` is part-way through the
+    # statement, which already read `s.a`.
+    statements = Statements(BEGINS)
+    verdicts = {}
+    for number, text in enumerate(BEGINS.splitlines(), 1):
+        verdicts.setdefault(statements.begins(number), []).append(text.strip())
+    assert verdicts[False] == [
+        # Outside any function's body: its first line is judged by its rows.
+        "struct S { long a; long b; };",
+        "static long f(void) { return 1000; }",
+        "int main(void) {",
+        "+ f();",
+        "i < 3;",
+        "i++) {",
+        "f());",
+        "s.a,",
+        "f() };",
+        "q; });",
+        "f();",
+        "(3);",
+        "struct Cfg { long a = f();",
+        "long b = f(); };",
+        "int Klass::get() const {",
+    ]
+    # A directive between the line and the code before it (`#ifdef X`).
+    assert verdicts[None] == [
+        "#include <stdio.h>",
+        "#ifdef X",
+        "s.a = 9;",
+        "#endif",
+        "x = c ? s.a :",
+    ]
+    for text in ("long t = s.a", "s.b = 3;", "s.b = 4;", "s.b = 5;", "s.a += i;", "s.a = 1;"):
+        assert text in verdicts[True]
+    assert "return v;" in verdicts[True] and "return 1;" in verdicts[True]  # a lambda's, a method's
+    assert statements.statement_span(6) == (6, 7)  # `long t = s.a` / `+ f();`
+    assert statements.statement_span(18) == (18, 20)  # a `for` header, to its `)`
+    assert statements.statement_span(25) == (25, 27)
+    # `t = p.x` / `#if 0` / `;` / `#endif` / `+ g();`: a directive inside the statement.
+    hidden = Statements("int f(void) {\n    t = p.x\n#if 0\n    ;\n#endif\n    + g();\n}\n")
+    assert hidden.statement_span(2) is None and hidden.begins(6) is None
+
+
+STATEMENT_EXPRESSIONS = """int main(void) {
+    long t = p.x + ({
+        long q = 0;
+        if (c) {
+            q = g();
+        }
+        for (int i = 0; i < 1; i++) {
+            q += g();
+        }
+        q;
+    });
+    t = p.x + std::unique_ptr<long[]>(new long[1]{
+        g() })[0];
+    t = p.x + decltype(W{}){
+        g() }.v;
+    t = (long)(struct W){
+        g() }.v;
+    if (t) [[likely]] {
+        t = 1;
+    }
+    FOR_EACH(x) {
+        t = 2;
+    }
+    struct L {
+        long m() {
+            return 3;
+        }
+    };
+    auto f = [](long v) {
+        return v;
+    };
+    return 0;
+}
+"""
+
+
+def test_every_bracket_up_to_the_function_body_must_be_a_block_of_statements():
+    # Review of #105 (round 2): `if (c) {` inside `({`, `new long[1]{`, `decltype(W{}){`
+    # and `(long)(struct W){` each passed as a block of statements.
+    statements = Statements(STATEMENT_EXPRESSIONS, raw_strings=True)
+    lines = STATEMENT_EXPRESSIONS.splitlines()
+
+    def verdict(text):
+        return statements.begins(lines.index(text) + 1)
+
+    for text in (
+        "            q = g();",
+        "            q += g();",
+        "        long q = 0;",
+        "        g() })[0];",
+        "        g() }.v;",
+    ):
+        assert verdict(text) is False, text
+    for text in (
+        "        t = 1;",  # after `if (t) [[likely]] {`
+        "        t = 2;",  # a macro's block (`FOR_EACH(x) {`) in a function's body
+        "            return 3;",  # a local class's method
+        "        return v;",  # a lambda's body
+        "    return 0;",
+    ):
+        assert verdict(text) is True, text
+
+
+ROUND3 = """#define REPEAT(i, n) for (int i = 0; i < (n); i++)
+extern "C" {
+long one(struct P p) { long t =
+    p.x + g();
+    return t; }
+long two(struct P p) { return p.x + g(); }
+long none(void) {}
+}
+namespace app {
+template <typename T, int N = 3> struct X : B<T> {
+    long m(long v) const {
+        return v;
+    }
+};
+}
+long old(a, b)
+    long a; long b;
+{
+    long r = a + b;
+    return r;
+}
+int main(void) {
+    long t = p.x + ({
+        long q = 0;
+        REPEAT(k, 1) {
+            q += g();
+        }
+        q;
+    });
+    auto f = [&](long v) { return v + 1; };
+    return 0;
+}
+"""
+
+
+def test_a_function_like_brace_is_a_body_only_at_file_scope_or_in_a_class():
+    # Review of #105 (round 3): `REPEAT(k, 1) {` inside `({` read as a function's body.
+    statements = Statements(ROUND3, raw_strings=True)
+    lines = ROUND3.splitlines()
+
+    def line(text):
+        return lines.index(text) + 1
+
+    assert statements.begins(line("            q += g();")) is False
+    assert statements.begins(line("        long q = 0;")) is False
+    # Functions in `extern "C" {`, a namespace and a template class with a default.
+    assert statements.begins(line("        return v;")) is True
+    assert statements.begins(line("    return 0;")) is True
+    # A K&R body is no function's: refused, and told apart.
+    assert statements.begins(line("    long r = a + b;")) is False
+    assert statements.old_style(line("    long r = a + b;"))
+    assert not statements.old_style(line("    return 0;"))
+
+
+def test_a_function_try_block_and_its_handlers_are_function_bodies():
+    # Review of #105 (round 4): `long tryfun(P p) try {` read as a `try` statement's block
+    # outside any function, so its statements "continued" one.
+    text = (
+        "long tryfun(P p) try {\n"
+        "    t = p.x + g();\n"
+        "} catch (const E &) {\n"
+        "    return p.y;\n"
+        "} catch (...) {\n"
+        "    return 0;\n"
+        "}\n"
+        "int main() {\n"
+        "    try {\n"
+        "        f();\n"
+        "    } catch (...) {\n"
+        "        g();\n"
+        "    }\n"
+        "}\n"
+    )
+    statements = Statements(text, raw_strings=True)
+    assert [statements.begins(line) for line in (2, 4, 6, 10, 12)] == [True] * 5
+    # C has no function-try-block.
+    assert Statements(text.replace("try {", "{"), raw_strings=False).begins(2) is True
+    assert Statements(text, raw_strings=False).begins(2) is False
+
+
+def test_a_functions_first_line_holds_the_statements_after_its_body_opens():
+    # Review of #105 (round 3): `long one(struct P p) { long t =` / `p.x + g();` ends on
+    # the next line; `{ return p.x + g(); }` on its own.
+    statements = Statements(ROUND3, raw_strings=True)
+    lines = ROUND3.splitlines()
+
+    def line(text):
+        return lines.index(text) + 1
+
+    first = line("long one(struct P p) { long t =")
+    assert statements.opening_statements(first) == (first, first + 1)
+    two = line("long two(struct P p) { return p.x + g(); }")
+    assert statements.opening_statements(two) == (two, two)
+    lambda_line = line("    auto f = [&](long v) { return v + 1; };")
+    assert statements.opening_statements(lambda_line) == (lambda_line, lambda_line)
+    # No statement after the body opens, or no body on the line.
+    assert statements.opening_statements(line("long none(void) {}")) is None
+    assert statements.opening_statements(line("int main(void) {")) is None
+    assert statements.opening_statements(line("    return t; }")) is None
+
+
+def test_begins_is_unknown_where_the_compiler_may_read_the_text_otherwise():
+    assert Statements("int f(void) {\n  int a = 1 + \\\n  2;\n}\n").begins(3) is None
+    assert Statements("int f(void) {\n  int a = (1;\n}\n").begins(2) is None
+    hidden = Statements("int f(void) {\n  OPEN 1;\n  g();\n}\n", macros={"OPEN"})
+    assert hidden.begins(3) is None

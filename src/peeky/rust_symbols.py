@@ -1542,6 +1542,9 @@ def struct_view(variable, read, layouts, *, parameter=None, owned=False, declare
                 {"name": field, "type": scalar, "value": value}
                 for field, scalar, value in composite_fields(layout)(raw)
             ],
+            # The layout the fields were read with: the value's own storage (#105 may
+            # change a field there, under its own rules), not a container's contents.
+            "struct_layout": STRUCT_PREFIX + name,
         }
     except (ViewBudgetExhausted, ValueError):
         # Never worse than before: LLDB's own value and fields.
