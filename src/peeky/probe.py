@@ -41,10 +41,12 @@ _INDEX = re.compile(r"\[?([0-9]{1,6})\]?")
 # Escapes Python accepts without a warning; anything else (`\d`, `\777`) is refused.
 _ESCAPE = r"""\\(?:[\\'"abfnrtv]|[0-3][0-7]{2}|[0-7]{1,2}(?![0-7])|x[0-9a-fA-F]{2}|u[0-9a-fA-F]{4}|U[0-9a-fA-F]{8}|N\{[A-Z0-9 -]{1,88}\})"""
 _KEY_LITERAL = rf"'(?:[^'\\\n]|{_ESCAPE}){{0,256}}'" + "|" + rf'"(?:[^"\\\n]|{_ESCAPE}){{0,256}}"'
-# One selector step: `.name`, `[3]`, `[-1]`, or a quoted string key `['id']` / `["id"]`.
+# One selector step: `.name`, `[3]`, `[-1]`, `[#3]` (a C++ map's or set's entry by
+# position), or a quoted string key `['id']` / `["id"]`.
 _STEP = re.compile(
     r"\.(?P<name>[A-Za-z_][A-Za-z0-9_]{0,127})"
     r"|\[(?P<index>-?[0-9]{1,6})\]"
+    r"|\[#(?P<entry>[0-9]{1,6})\]"
     rf"|\[(?P<key>{_KEY_LITERAL})\]"
 )
 _NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,127}")
@@ -52,11 +54,12 @@ _NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,127}")
 
 def parse_selector(text):
     """`request.page` -> ['request', 'page']; `args[0]` -> ['args', '[0]'];
-    `order['id']` -> ['order', "['id']"].
+    `order['id']` -> ['order', "['id']"]; `m[#0]` -> ['m', '[#0]'].
 
     Negative indexes (`items[-1]`) count from the end of a sequence whose elements
     all fit in the bounded inspection window. A quoted key reads one entry of a
-    mapping; it is kept in its canonical Python form, `[` + repr(key) + `]`.
+    mapping; it is kept in its canonical Python form, `[` + repr(key) + `]`. `[#N]` is
+    the Nth entry of a C++ map or set in iteration order, where `[N]` is key N (#119).
     """
     if not isinstance(text, str) or not text or len(text) > 512:
         raise ValueError("Selectors must be nonempty dotted paths")
@@ -84,6 +87,8 @@ def parse_selector(text):
             segments.append(step["name"])
         elif step["index"]:
             segments.append(f"[{step['index']}]")
+        elif step["entry"]:
+            segments.append(f"[#{step['entry']}]")
         else:
             try:
                 key = _literal(step["key"])
@@ -99,7 +104,8 @@ def parse_selector(text):
 
 
 _SELECTOR_HELP = (
-    " (selectors are paths, never expressions: name, a.b, a[0], a[-1], a['key'] or a[\"key\"])"
+    " (selectors are paths, never expressions: name, a.b, a[0], a[-1], a['key'] or a[\"key\"];"
+    " a[#0] is a C++ map's or set's first entry)"
 )
 
 
@@ -325,7 +331,9 @@ class Probe:
                 or not all(isinstance(part, str) for part in change)
             ):
                 raise ValueError("Interventions are (selector, value) string pairs")
-            if (last := parse_selector(change[0])[-1]).startswith("[") and _key(last) is not None:
+            if (last := parse_selector(change[0])[-1]).startswith("[") and (
+                _key(last) is not None or last.startswith("[#")
+            ):
                 raise Refused(
                     "MUTATION_REJECTED",
                     f"Intervention target {change[0]!r}: map and dict entries cannot be changed; "
@@ -663,7 +671,13 @@ def _resolve(worker, stop, snapshot, segments, pointers=False):
 
     for segment in segments[1:]:
         handle = variable.get("variablesReference", 0)
-        index_segment = pointers and segment.startswith("[") and _key(segment) is None
+        entry = segment.startswith("[#")
+        if entry and not pointers:
+            raise ValueError(
+                f"{segment} not read: [#N] is the Nth entry of a C++ map or set; index a "
+                "sequence with [N], and select a mapping's entry by its key"
+            )
+        index_segment = pointers and segment.startswith("[") and _key(segment) is None and not entry
         if index_segment and not handle and _null_pointer(variable):
             raise ValueError(f"{path} is NULL: it points at nothing")
         if index_segment and handle and not variable.get("unavailable"):
@@ -707,9 +721,29 @@ def _resolve(worker, stop, snapshot, segments, pointers=False):
             )
             if variable.get("view") == "unproven":
                 raise ValueError(f"cannot expand {variable['name']!r}: {_UNPROVEN_RUST}")
+            keyed = (
+                f"; {path} is the value for that key, as in C++ (an entry's key and value are "
+                f"{variable['_map']}[#N].first and .second)"
+                if variable.get("_map")
+                else ""
+            )
             raise ValueError(
                 f"cannot expand {variable['name']!r} ({variable.get('view', 'leaf')}{shown})"
+                + keyed
             )
+        if pointers and segment.startswith("["):
+            # #119: LLDB lists a C++ map's or set's entries as [0], [1], ... in iteration
+            # order, where C++'s m[k] is the value for key k.
+            kind = _associative(variable)
+            if kind is None and (variable.get("aliased_type") == "?" or _unplaced(variable)):
+                kind = _undecided(variable, first_page(handle)["variables"])
+            if kind is not None:
+                whole = _whole_strings(snapshot)
+                variable = _entry(worker, stop, variable, path, segment, kind, first_page, whole)
+                path += segment
+                continue
+            if entry:
+                raise ValueError(_not_associative(variable, path, segment))
         if segment.startswith("[-"):
             variable = _from_end(worker, stop, variable, int(segment[2:-1]), segment)
             path += segment
@@ -1272,7 +1306,11 @@ def _capture(
             if children and variable.get("variablesReference"):
                 try:
                     try:
-                        row.update(_children(worker, stop, selector, variable, pointers))
+                        row.update(
+                            _children(
+                                worker, stop, selector, variable, pointers, _whole_strings(snapshot)
+                            )
+                        )
                     except ValueError as exc:
                         if not _BUDGET.search(str(exc)):
                             raise
@@ -1281,7 +1319,11 @@ def _capture(
                         variable = _resolve(
                             worker, stop, snapshot, parse_selector(selector), pointers
                         )
-                        row.update(_children(worker, stop, selector, variable, pointers))
+                        row.update(
+                            _children(
+                                worker, stop, selector, variable, pointers, _whole_strings(snapshot)
+                            )
+                        )
                 except ValueError as exc:
                     row["children_error"] = str(exc)
                 listed = row.get("children", ())
@@ -1292,6 +1334,11 @@ def _capture(
                     row["note"] = _STALE_RUST + "."
         rows.append(row)
     return rows
+
+
+def _whole_strings(snapshot):
+    """Whether LLDB's summary of a std::string shows all of it at this stop (libc++)."""
+    return snapshot.get("whole_string_summaries") is True
 
 
 def _roots(selectors):
@@ -1500,6 +1547,12 @@ def _readable(variable, path, pointee, children):
         raise ValueError(f"{path} points at nothing the debugger can show")
 
 
+def _pointee_type(variable, pointee):
+    """What a C/C++ pointer points at as a value's type: its name, and the class a
+    typedef by that name stands for (`IntSet *`: `std::set<int>`)."""
+    return {"type": pointee, "aliased_type": variable.get("pointee_aliased_type")}
+
+
 def _dereferenced(variable, pointee):
     """`*p` for a C/C++ pointer whose children the debugger lists from its pointee."""
     value = str(variable.get("value") or "")
@@ -1512,6 +1565,8 @@ def _dereferenced(variable, pointee):
         "type": pointee or None,
         "variablesReference": variable["variablesReference"],
     }
+    if variable.get("pointee_aliased_type"):
+        shown["aliased_type"] = variable["pointee_aliased_type"]
     for key in ("indexedVariables", "namedVariables"):
         if type(variable.get(key)) is int:
             shown[key] = variable[key]
@@ -1527,6 +1582,11 @@ def _beyond_pointee(variable, path, pointee, segment, children):
         f"{path}{segment} is not inside it; a pointer carries no length. {path}[0] is the "
         f"{what} it points at"
     )
+    kind = _associative(_pointee_type(variable, pointee))
+    if kind in _KEYED and _key(segment) is None:
+        return message + f": read {path}[0]{segment}, its value for key {segment[1:-1]}"
+    if kind is not None:
+        return message + f": its entries are {path}[0][#N]"
     # Counting from the end needs a length the type states (`int[3]`).
     stated = re.search(r"\[[0-9]+\]$", pointee or "")
     if elements and segment != "[-0]" and (segment[1] != "-" or stated):
@@ -1547,6 +1607,623 @@ def _pointee(variable, children):
     if names == [f"*{variable.get('name')}"]:
         return next(child for child in children if child["name"] == names[0])
     return None
+
+
+# C++ associative containers as LLDB names them, their template arguments left out
+# (libc++'s `std::__1::map`, libstdc++'s debug mode `std::__debug::set`, `std::pmr::map`).
+_ASSOCIATIVE = re.compile(
+    r"(?:(?:const|volatile)\s+)*(?:::)?std::(?:__\w+::|pmr::)*"
+    r"((?:unordered_|flat_)?(?:multi)?(?:map|set))(?:\s*\b(?:const|volatile)\b|\s*&)*\s*"
+)
+# The containers whose keys are unique and that C++ indexes by key (`m[k]`).
+_KEYED = frozenset({"map", "unordered_map", "flat_map"})
+_ENTRY_NAME = re.compile(r"\[([0-9]{1,9})\]")
+_STD_STRING = re.compile(r"(?:::)?std::(?:__\w+::)*(?:string|basic_string<\s*char\s*(?:,.*)?>)\s*")
+# Keys compared as text: what LLDB shows of such a std::string is `"` + the key + `"`.
+_PLAIN_KEY = re.compile(r"[ !#-\[\]-~]{0,256}")
+_STRING_SUMMARY = re.compile(r'"(?:[^"\\]|\\.)*"(?:\.\.\.)?', re.S)
+# GCC's spellings of the integer types (`long unsigned int`) as LLDB's.
+_GCC_INTEGERS = {
+    "short unsigned int": "unsigned short",
+    "long unsigned int": "unsigned long",
+    "long long unsigned int": "unsigned long long",
+}
+
+
+def _unqualified(kind):
+    """A type without its own `const` and `volatile` (`const int` is `int`, `char *const`
+    is `char *`), keeping a pointee's (`const char *`)."""
+    kind = re.sub(r"(?:\s*\b(?:const|volatile)\b)+\s*$", "", str(kind or "").strip())
+    if not re.search(r"[*&]", kind):
+        kind = re.sub(r"^(?:(?:const|volatile)\s+)+", "", kind)
+    return kind
+
+
+def _associative(variable):
+    """The kind of C++ map or set a value is (`map`, `unordered_set`, ...), by its type
+    or, for a typedef, the class it names in the build's debug information; or None."""
+    from peeky.native import _without_templates
+
+    for kind in (variable.get("type"), variable.get("aliased_type")):
+        if isinstance(kind, str) and (found := _ASSOCIATIVE.fullmatch(_without_templates(kind))):
+            return found[1]
+    return None
+
+
+def _unplaced(variable):
+    """Whether a value's type is a name Peeky cannot place: not the standard library's,
+    not a pointer, array or address, and no class the debug information names (a typedef
+    it could not resolve), which a map or a sequence alike could be behind."""
+    from peeky.native import _without_templates
+
+    kind = re.sub(
+        r"^(?:(?:const|volatile)\s+)+|(?:\s*(?:\bconst\b|\bvolatile\b|&))+$",
+        "",
+        _without_templates(str(variable.get("type") or "")).strip(),
+    )
+    return (
+        bool(kind)
+        and not variable.get("aliased_type")
+        # A standard class itself (`std::vector<int>`), not a member typedef of one
+        # (`std::map<int, std::set<int>>::mapped_type`).
+        and not re.fullmatch(r"(?:::)?std::(?:__\w+::|pmr::)*\w+", kind)
+        and not re.search(r"[*\[(]", kind)
+        and not _BARE_ADDRESS.match(str(variable.get("value") or ""))
+    )
+
+
+def _undecided(variable, children):
+    """For a value whose type names no map or set Peeky knows of: "unsettled" where the
+    debug information says it may be a C++ map or set ("?": typedefs of one name give
+    several classes) and LLDB lists entries [0], [1], ...; "unresolved" where its type
+    is a name Peeky cannot place and LLDB lists pairs with a const key, as a map's
+    entries; else None."""
+    entries = [child for child in children if child["name"] not in _GROUPS]
+    if variable.get("aliased_type") == "?":
+        return (
+            "unsettled"
+            if entries and all(_ENTRY_NAME.fullmatch(c["name"]) for c in entries)
+            else None
+        )
+    return "unresolved" if _unplaced(variable) and _map_like(children) else None
+
+
+def _map_entry(kind):
+    """Whether a type is what LLDB lists as a map's entry: `std::pair<const K, V>` (GCC's
+    debug information spells it `std::pair<K const, V>`), or libc++'s
+    `std::__value_type<K, V>` in older LLDBs."""
+    kind = _unqualified(kind)
+    if _template_arguments(kind, "__value_type") is not None:
+        return True
+    arguments = _template_arguments(kind, "pair")
+    return bool(arguments) and bool(re.search(r"^const\b|\bconst$", arguments[0]))
+
+
+def _map_like(children):
+    """Whether LLDB lists these children as it lists a C++ map's entries: [0], [1], ...,
+    each a pair with a const key."""
+    entries = [child for child in children if child["name"] not in _GROUPS]
+    return bool(entries) and all(
+        _ENTRY_NAME.fullmatch(child["name"]) and _map_entry(child.get("type")) for child in entries
+    )
+
+
+def _not_associative(variable, path, segment):
+    pointee = _c_pointee(variable)
+    if pointee is not None and _associative(_pointee_type(variable, pointee)):
+        return (
+            f"{segment} not read: {path} ({variable.get('type')}) is a pointer; "
+            f"{path}[0]{segment} is that entry of the {pointee} it points at"
+        )
+    return (
+        f"{segment} not read: [#N] is the Nth entry of a C++ map or set, and {path} "
+        f"({variable.get('type')}) is not one; index a sequence with [N]"
+    )
+
+
+def _listed_entries(worker, stop, variable, path, first_page):
+    """The entries LLDB lists for a C++ map or set, in iteration order, 64 a page (at
+    most 512)."""
+    handle, start = variable["variablesReference"], 0
+    while True:
+        page = (
+            first_page(handle)
+            if start == 0
+            else worker.dispatch("expand", {**stop, "handle": handle, "start": start})
+        )
+        for child in page["variables"]:
+            if child["name"] in _GROUPS:
+                continue
+            if not _ENTRY_NAME.fullmatch(child["name"]):
+                raise ValueError(
+                    f"the debugger shows {path}'s own members ({child['name']}, ...), not "
+                    "its entries, so no entry can be selected; select a member with `.`"
+                )
+            yield child
+        if not page["truncated"]:
+            return
+        if start + 64 > 511 or page.get("remaining_nodes", 1) <= 0:
+            raise Refused(
+                "BUDGET_EXHAUSTED",
+                f"{path} has more entries than the bounded inspection window (512 nodes) holds",
+            )
+        start += 64
+
+
+def _entry_part(worker, stop, child, part, path):
+    """`first` or `second` of one entry LLDB lists for a map (`first` alone is fetched
+    first: one node, not two)."""
+    if not child.get("variablesReference"):
+        why = (
+            "it is at the inspection depth limit (4 levels below a local)"
+            if child.get("depth_limited")
+            else f"the debugger shows it as {child.get('value')!r}"
+        )
+        raise ValueError(f"cannot read the keys of {path}'s entries: {why}")
+    request = {**stop, "handle": child["variablesReference"], "start": 0}
+    shown = worker.dispatch("expand", {**request, "count": 1})["variables"]
+    if not any(field["name"] == part for field in shown):
+        shown = worker.dispatch("expand", request)["variables"]
+    found = next((field for field in shown if field["name"] == part), None)
+    if found is None:
+        names = ", ".join(field["name"] for field in shown[:8]) or "none"
+        raise ValueError(
+            f"cannot read the keys of {path}'s entries: the debugger shows no {part} in one "
+            f"(it shows {names})"
+        )
+    return found
+
+
+def _key_kind(first):
+    """("integer", (low, high)) or ("string", None) for a key Peeky compares, else
+    (the key's type, None)."""
+    from peeky.native import INTEGER_RANGES
+
+    kind = _unqualified(first.get("type"))
+    if (span := INTEGER_RANGES.get(_GCC_INTEGERS.get(kind, kind))) is not None:
+        return "integer", span
+    if _STD_STRING.fullmatch(kind):
+        return "string", None
+    return kind or "unknown", None
+
+
+def _entry(worker, stop, variable, path, segment, kind, first_page, whole=False):
+    """What `segment` names in a C++ map or set (#119). LLDB lists the entries as
+    [0], [1], ... in iteration order, where C++'s `m[k]` is the value for key k: so
+    `[#N]` is the Nth entry, `[k]` the value for key k (a map with unique keys that
+    Peeky compares exactly), and anything else is refused, never read by position.
+    ``whole``: LLDB's summary of a std::string shows all of it (libc++)."""
+    label = f"{path} ({variable.get('type')})"
+    if segment.startswith("[#"):
+        position = int(segment[2:-1])
+        if (found := _entry_at(worker, stop, variable, position)[0]) is not None:
+            return {**found, "name": segment}
+        count = sum(1 for _ in _listed_entries(worker, stop, variable, path, first_page))
+        span = f": {path}[#0] to {path}[#{count - 1}]" if count else ""
+        raise ValueError(f"{segment} not found: {path} has {count} entries{span}")
+    how = f"select an entry by position with {path}[#N] (`peeky session get {path}` lists them)"
+    if kind.endswith("set"):
+        raise ValueError(
+            f"{segment} not read: {label} is a C++ set, which has no [] in C++, and the "
+            f"debugger lists its elements in iteration order, not by index; "
+            + how.replace("an entry", "an element")
+        )
+    if kind not in _KEYED:
+        what = {
+            "unresolved": "listed as a C++ map is (pairs with a const key), under a type name "
+            "the build's debug information does not resolve, so it may be a map read by key "
+            "or a sequence read by position",
+            "unsettled": "of a type the build's debug information gives several classes, "
+            "which may be a C++ map or set (read by key, or not at all) or a sequence read by "
+            "position",
+        }.get(kind, "a C++ multimap, which has no [] in C++ (a key can repeat)")
+        raise ValueError(
+            f"{segment} not read: {label} is {what}; {how} and read its .first and .second"
+            if kind != "unsettled"
+            else f"{segment} not read: {label} is {what}; {how}"
+        )
+    return _value_for_key(worker, stop, variable, path, segment, first_page, how, whole)
+
+
+def _summary_size(variable):
+    """The entry count LLDB's summary of a container states (`size=3`), or None."""
+    found = re.search(r"(?:^|\s)size=([0-9]{1,9})$", str(variable.get("value") or ""))
+    return int(found[1]) if found else None
+
+
+def _entry_at(worker, stop, variable, position):
+    """Entry ``position`` of a C++ map as LLDB lists it (one node), with whether more
+    follow it; (None, False) past the last."""
+    page = worker.dispatch(
+        "expand", {**stop, "handle": variable["variablesReference"], "start": position, "count": 1}
+    )
+    child = next((c for c in page["variables"] if c["name"] == f"[{position}]"), None)
+    return child, bool(page["truncated"])
+
+
+def _template_arguments(kind, name):
+    """The template arguments of the class ``name`` (`map`) a type names, split at its
+    top-level commas, or None."""
+    found = re.match(
+        rf"(?:(?:const|volatile)\s+)*(?:::)?std::(?:__\w+::|pmr::)*{name}<", kind or ""
+    )
+    if not found:
+        return None
+    arguments, depth, current = [], 1, []
+    for char in kind[found.end() :]:
+        if char in "<([":
+            depth += 1
+        elif char in ">)]":
+            depth -= 1
+            if not depth:
+                return [*arguments, "".join(current).strip()]
+        elif char == "," and depth == 1:
+            arguments.append("".join(current).strip())
+            current = []
+            continue
+        current.append(char)
+    return None
+
+
+def _order(variable):
+    """1 when a std::map's type says its entries are in ascending key order (its
+    comparator is std::less, the default LLDB leaves out), -1 for std::greater, else
+    None (a comparator of the program's own)."""
+    for kind in (variable.get("type"), variable.get("aliased_type")):
+        arguments = _template_arguments(kind, "map")
+        if arguments is None or len(arguments) < 2:
+            continue
+        if len(arguments) == 2:
+            return 1
+        compare = re.fullmatch(r"(?:::)?std::(?:__\w+::)*(less|greater)<\s*(.*?)\s*>", arguments[2])
+        if compare and compare[2] in ("", "void", arguments[0]):
+            return 1 if compare[1] == "less" else -1
+        return None
+    return None
+
+
+def _comparison(variable):
+    """None when C++'s `m[K]` finds only a key equal to K: a std::map ordered by
+    std::less or std::greater, or a std::unordered_map using std::hash and std::equal_to
+    (the defaults LLDB leaves out of a type's name). Else why not (`comparator (ByAbs) is
+    not ...`): the map's own comparison may treat another key as equal to K, which `m[K]`
+    then reads (review of #119)."""
+    if _order(variable) is not None:
+        return None
+    for kind in (variable.get("type"), variable.get("aliased_type")):
+        arguments = _template_arguments(kind, "unordered_map")
+        if arguments is None or len(arguments) < 2:
+            continue
+        key = re.escape(arguments[0])
+        hashing = len(arguments) < 3 or re.fullmatch(
+            rf"(?:::)?std::(?:__\w+::)*hash<\s*{key}\s*>", arguments[2]
+        )
+        equal = len(arguments) < 4 or re.fullmatch(
+            rf"(?:::)?std::(?:__\w+::)*equal_to<\s*(?:{key}|void)?\s*>", arguments[3]
+        )
+        if hashing and equal:
+            return None
+        return f"hash or equality ({', '.join(arguments[2:4])}) is not std::hash and std::equal_to"
+    for kind in (variable.get("type"), variable.get("aliased_type")):
+        arguments = _template_arguments(kind, "map")
+        if arguments is not None and len(arguments) > 2:
+            return f"comparator ({arguments[2]}) is not std::less or std::greater"
+    return "comparator (or hash and equality) cannot be told from its type"
+
+
+def _string_bytes(worker, stop, first, whole):
+    """How much of a std::string key LLDB's summary shows: True for all of it (libc++,
+    whose summary LLDB prints from the string's size, a NUL as `\\0`), else its length in
+    bytes from libstdc++'s `_M_string_length` (that summary is a C string, which ends at
+    the first NUL), or None where neither can be read."""
+    if whole:
+        return True
+    if not first.get("variablesReference"):
+        return None
+    shown = worker.dispatch("expand", {**stop, "handle": first["variablesReference"], "start": 0})[
+        "variables"
+    ]
+    length = next((field for field in shown if field["name"] == "_M_string_length"), None)
+    if length is not None:
+        value = str(length.get("value"))
+        return int(value) if re.fullmatch(r"[0-9]{1,12}", value) else None
+    if shown and not any(field["name"].startswith("_M_") for field in shown):
+        # No libstdc++ member: LLDB's quoted summary came from its libc++ formatter.
+        return True
+    return None
+
+
+_LISTED_KEYS = 20
+
+
+def _value_for_key(worker, stop, variable, path, segment, first_page, how, whole=False):
+    """The value for one key of a C++ map with unique keys: the `second` of the one
+    entry whose `first` the debugger shows as exactly that key (a std::string key also
+    of its length). A std::map with integer keys in a standard order is bisected; any
+    other map is read entry by entry. That no entry has the key is said only where the
+    map's comparison is the standard one, under which C++'s `m[K]` finds no other."""
+    key = _key(segment)
+    wanted = _literal(key) if key is not None else int(segment[1:-1])
+    shown = f'"{wanted}"' if key is not None else str(wanted)
+    written = f"[{shown}]" if key is None or _PLAIN_KEY.fullmatch(wanted) else segment
+    if key is not None and not _PLAIN_KEY.fullmatch(wanted):
+        raise ValueError(
+            f"{written} not read: Peeky compares a string key only when it is printable ASCII "
+            f'without " or \\ (as the debugger shows such keys); {how}'
+        )
+    found = _entry_at(worker, stop, variable, 0)[0]
+    size = _summary_size(variable)
+    if found is None:
+        # Nothing at [0]: an empty map, or one LLDB shows by its own members (refused).
+        count = sum(1 for _ in _listed_entries(worker, stop, variable, path, first_page))
+        if count or size:
+            raise ValueError(
+                f"{written} not read: the debugger lists {count} of {path}'s {size} entries; {how}"
+            )
+        raise ValueError(
+            f"{written} not found: {path} is empty; in C++, {path}{written} would insert the "
+            "key with a default value"
+        )
+    first = _entry_part(worker, stop, found, "first", path)
+    compared, span = _key_kind(first)
+    named = _unqualified(first.get("type")) or "unknown"
+    if compared not in ("integer", "string"):
+        raise ValueError(
+            f"{written} not read: {path}'s keys are {compared}, which Peeky does not compare "
+            "(it reads a map by key only for integer and std::string keys, compared as the "
+            f"debugger shows them); {how} and read its .first and .second"
+        )
+    if compared == "string" and key is None:
+        raise ValueError(
+            f'{written} not read: {path}\'s keys are strings; select one as {path}["key"], or {how}'
+        )
+    if compared == "integer" and key is not None:
+        raise ValueError(
+            f"{written} not read: {path}'s keys are {named}; select one as {path}[N], or {how}"
+        )
+    if compared == "integer" and not span[0] <= wanted <= span[1]:
+        raise ValueError(
+            f"{written} not read: {wanted} is outside the range of {path}'s key type "
+            f"({named}), so C++ would convert it to another key"
+        )
+
+    def key_of(child, shown_first=None):
+        """(the key as compared, as shown, its `first`)."""
+        part = shown_first or _entry_part(worker, stop, child, "first", path)
+        value = part.get("value")
+        if (
+            compared == "integer"
+            and isinstance(value, str)
+            and re.fullmatch(r"-?[0-9]{1,20}", value)
+        ):
+            return int(value), value, part
+        if compared == "string" and isinstance(value, str) and _STRING_SUMMARY.fullmatch(value):
+            return value, value, part
+        raise ValueError(
+            f"{written} not read: the debugger shows the key of {path}[#{child['name'][1:-1]}] "
+            f"as {value!r}, which Peeky cannot compare; {how}"
+        )
+
+    def value_of(child):
+        return {**_entry_part(worker, stop, child, "second", path), "name": segment, "_map": path}
+
+    target = wanted if compared == "integer" else f'"{wanted}"'
+    order = _order(variable)
+    if compared == "integer" and order and size and size > _LISTED_KEYS:
+        # Sorted by key: a bisection reads about log2(size) entries, not all of them. A
+        # smaller map is read whole, so that a missing key's error lists the keys.
+        last, more = _entry_at(worker, stop, variable, size - 1)
+        if last is not None and not more:
+            low, high, known = 0, size - 1, {0: (found, first)}
+            while low <= high:
+                middle = (low + high) // 2
+                child, shown_first = known.get(middle) or (
+                    _entry_at(worker, stop, variable, middle)[0],
+                    None,
+                )
+                if child is None:
+                    break
+                number = key_of(child, shown_first)[0]
+                if number == target:
+                    return value_of(child)
+                if (number < target) == (order > 0):
+                    low = middle + 1
+                else:
+                    high = middle - 1
+            else:
+                ordering = "ascending (std::less)" if order > 0 else "descending (std::greater)"
+                raise ValueError(
+                    f"{written} not found: {path} has no key {shown} (its {size} keys are in "
+                    f"{ordering} order); in C++, {path}{written} would insert it with a "
+                    "default value"
+                )
+    keys, remaining, checked = [], None, 0
+    for child in _listed_entries(worker, stop, variable, path, first_page):
+        if remaining is None:
+            page = first_page(variable["variablesReference"])
+            remaining = page.get("remaining_nodes")
+            listed = len(page["variables"])
+            if size is not None and type(remaining) is int and 2 * size - listed + 4 > remaining:
+                # Each entry is a node, and so is its key: refused before any is read.
+                raise Refused(
+                    "BUDGET_EXHAUSTED",
+                    f"{written} not read: comparing the keys of {path}'s {size} entries reads "
+                    f"{2 * size} nodes, beyond the bounded inspection window (512 nodes); {how}",
+                )
+        number, value, part = key_of(child, first if checked == 0 else None)
+        checked += 1
+        if number == target and compared == "string":
+            # libstdc++'s summary ends at a NUL: "a\0b" shows as "a" (review of #119).
+            length = _string_bytes(worker, stop, part, whole)
+            if length is None:
+                raise ValueError(
+                    f"{written} not read: the key of {path}[#{child['name'][1:-1]}] shows as "
+                    f"{value}, but the debugger shows this build's std::string only up to its "
+                    "first NUL byte, and Peeky cannot read this key's length (at the "
+                    f"inspection depth limit, or not shown); {how}"
+                )
+            if length is not True and length != len(wanted):
+                keys.append(f"{value} ({length} bytes)")
+                continue
+        if number == target:
+            return value_of(child)
+        keys.append(value)
+    if size is not None and size != len(keys):
+        raise ValueError(
+            f"{written} not read: the debugger lists {len(keys)} of {path}'s {size} entries, "
+            f"none with key {shown}; {how}"
+        )
+    listed = ", ".join(keys[:_LISTED_KEYS]) + (
+        f", ... ({len(keys)} total)" if len(keys) > _LISTED_KEYS else ""
+    )
+    if compared == "string" and not whole:
+        listed += "; each as the debugger shows it, up to a NUL byte"
+    if (why := _comparison(variable)) is not None:
+        raise ValueError(
+            f"{written} not read: no key equals {shown} exactly (keys of {path}: {listed}), "
+            f"but {path}'s {why}, so C++'s {path}{written} may read an entry whose key it "
+            f"treats as equal to {shown}, which Peeky cannot tell from the keys; {how}"
+        )
+    raise ValueError(
+        f"{written} not found: {path} has no key {shown} (keys: {listed}); in C++, "
+        f"{path}{written} would insert it with a default value"
+    )
+
+
+_ENTRY_NOTES = {
+    "keyed": (
+        "{0} is a C++ map: {0}[K] is the value for key K, as in C++ (integer and "
+        "std::string keys), and {0}[#N] its Nth entry in iteration order, a pair with "
+        ".first and .second"
+    ),
+    "uncompared": (
+        "{0} is a C++ map whose keys Peeky does not compare (it reads by key only integer and "
+        "std::string keys): {0}[#N] is its Nth entry in iteration order, a pair with .first "
+        "and .second, and {0}[K] is refused"
+    ),
+    "set": (
+        "{0} is a C++ set, which has no [] in C++: {0}[#N] is its Nth element in iteration order"
+    ),
+    "multi": (
+        "{0} is a C++ multimap, which has no [] in C++ (a key can repeat): {0}[#N] is its "
+        "Nth entry in iteration order, a pair with .first and .second"
+    ),
+    "unresolved": (
+        "{0} lists pairs with a const key, as a C++ map does, under a type name the build's "
+        "debug information does not resolve: {0}[#N] is its Nth entry in iteration order, "
+        "and [N] is refused, since it could be a key or a position"
+    ),
+    "unsettled": (
+        "{0}'s type is one the build's debug information gives several classes, which may "
+        "be a C++ map or set: {0}[#N] is its Nth entry in iteration order, and [N] is refused, "
+        "since it could be a key, nothing, or a position"
+    ),
+}
+
+
+def _keyed_child(worker, stop, base, child, whole):
+    """The key selector (`[2]`, `["a"]`) that reads a map entry's value, with that value,
+    when its key is one Peeky compares and a selector can write exactly; None when this
+    entry's is not, and False when the map's key type is not one Peeky compares.
+    ``whole``: LLDB's summary of a std::string shows all of it (libc++)."""
+    if not child.get("variablesReference"):
+        return None
+    shown = worker.dispatch("expand", {**stop, "handle": child["variablesReference"], "start": 0})[
+        "variables"
+    ]
+    first = next((field for field in shown if field["name"] == "first"), None)
+    second = next((field for field in shown if field["name"] == "second"), None)
+    if first is None or second is None:
+        return None
+    compared, _ = _key_kind(first)
+    value = str(first.get("value"))
+    if compared not in ("integer", "string"):
+        return False
+    # The selector grammar's own bounds: six digits, a quoted key of plain characters.
+    if compared == "integer" and re.fullmatch(r"-?[0-9]{1,6}", value):
+        segment = f"[{int(value)}]"
+    elif (
+        compared == "string"
+        and len(value) >= 2
+        and value[0] == value[-1] == '"'
+        and _PLAIN_KEY.fullmatch(value[1:-1])
+        and _string_bytes(worker, stop, first, whole) in (True, len(value) - 2)
+    ):
+        segment = f'["{value[1:-1]}"]'
+    else:
+        return None
+    entry = {"name": segment, "type": second.get("type"), "value": second.get("value")}
+    if second.get("unavailable"):
+        entry.update(unavailable=True, reason=second.get("reason"))
+    entry["selector"] = base + segment
+    if second.get("variablesReference"):
+        entry["expandable"] = True
+    return entry
+
+
+def _positional_child(base, child):
+    position = child["name"][1:-1]
+    entry = {"name": f"[#{position}]", "type": child.get("type"), "value": child.get("value")}
+    if child.get("unavailable"):
+        entry.update(unavailable=True, reason=child.get("reason"))
+    entry["selector"] = f"{base}[#{position}]"
+    if child.get("variablesReference"):
+        entry["expandable"] = True
+    return entry
+
+
+def _entry_children(worker, stop, selector, variable, page, whole=False):
+    """A C++ map's or set's first page of entries (#119), each with the selector that
+    reads it: `m[K]` (the value for key K) for a map whose keys Peeky compares, else
+    `m[#N]` (the Nth entry in iteration order), never `m[N]`, which is key N in C++.
+    None for any other value. ``whole``: LLDB's summary of a std::string shows all of
+    it (libc++)."""
+    base, container, kind = selector, variable, _associative(variable)
+    pointee = _c_pointee(variable)
+    if kind is None and pointee is not None and _pointee(variable, page["variables"]) is None:
+        # A pointer lists what it points at (#102): its entries are p[0][...].
+        base, container = f"{selector}[0]", _pointee_type(variable, pointee)
+        kind = _associative(container)
+    if kind is None:
+        kind = _undecided(container, page["variables"])
+    entries = [child for child in page["variables"] if child["name"] not in _GROUPS]
+    if kind is None or not all(_ENTRY_NAME.fullmatch(child["name"]) for child in entries):
+        # Not a map or set, or one LLDB shows by its own members: listed as they are.
+        return None
+    listed, keys = [], kind in _KEYED
+    for child in entries:
+        keyed = _keyed_child(worker, stop, base, child, whole) if keys else None
+        if keyed is False:
+            keys, keyed = False, None
+        listed.append(keyed or _positional_child(base, child))
+    # One label, one entry: two keys a selector cannot tell apart are listed by position.
+    labels = [entry["selector"] for entry in listed]
+    for at, (entry, child) in enumerate(zip(listed, entries)):
+        if labels.count(entry["selector"]) > 1:
+            listed[at] = _positional_child(base, child)
+    for entry in listed:
+        try:
+            parse_selector(entry["selector"])
+        except ValueError:
+            # Past the selector grammar's bounds (16 steps, 512 characters).
+            del entry["selector"]
+    note = (
+        ("keyed" if keys else "uncompared")
+        if kind in _KEYED
+        else "set"
+        if kind.endswith("set")
+        else kind
+        if kind in ("unresolved", "unsettled")
+        else "multi"
+    )
+    shown = _ENTRY_NOTES[note].format(base)
+    if note == "keyed" and (why := _comparison(container)) is not None:
+        shown += f"; its {why}, so only a key equal to K reads"
+    return {
+        "children": listed,
+        **({"children_truncated": True} if page["truncated"] else {}),
+        "note": shown,
+    }
 
 
 def _child_selector(parent, name):
@@ -1591,8 +2268,9 @@ def _list_children(worker, stop, selector, backing, size):
     return {"children": listed, **({"children_truncated": True} if size > len(listed) else {})}
 
 
-def _children(worker, stop, selector, variable, pointers=False):
-    """One page (64) of a value's children, for a person or agent deciding what to read."""
+def _children(worker, stop, selector, variable, pointers=False, whole_strings=False):
+    """One page (64) of a value's children, for a person or agent deciding what to read.
+    ``whole_strings``: LLDB's summary of a std::string shows all of it (libc++)."""
     page = worker.dispatch("expand", {**stop, "handle": variable["variablesReference"], "start": 0})
     if listed := java_list(variable, page["variables"]):
         try:
@@ -1601,6 +2279,10 @@ def _children(worker, stop, selector, variable, pointers=False):
             if "exceeds bounded expansion" not in str(exc):
                 raise
             # A backing array over 512 slots: its fields (size, elementData) instead.
+    if pointers and (
+        entries := _entry_children(worker, stop, selector, variable, page, whole_strings)
+    ):
+        return entries
     listed, grouped = [], []
     # A container's groups hold its type's methods and dunders: named only for objects.
     container = any(child["name"] == "len()" for child in page["variables"])

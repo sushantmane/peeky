@@ -407,11 +407,13 @@ def _local_scope(linkage):
 
 
 def typedef_kinds(info):
-    """{type name: ("pointer", the name of what it points at, or "") | ("reference", "")
-    | ("other", "") | ("unknown", "")}: what each typedef (or C++ alias) names, through
-    qualifiers and other typedefs. lldb-dap shows a variable of one by the typedef's name
-    alone, so `RowPtr rp` cannot be told from `RowRef rr` by its type (#102). A name for
-    two kinds (a struct and a pointer typedef, or typedefs in two units) is "unknown".
+    """{type name: ("pointer", the name of what it points at, or "") | ("reference", the
+    class it refers to, or "") | ("other", the class it names, or "") | ("unknown", "")}:
+    what each typedef (or C++ alias) names, through qualifiers and other typedefs.
+    lldb-dap shows a variable of one by the typedef's name alone, so `RowPtr rp` cannot
+    be told from `RowRef rr` by its type (#102), nor `Index m` (`std::map<int, int>`)
+    from a vector (#119). A name for two kinds (a struct and a pointer typedef, or
+    typedefs in two units) is "unknown"; for two classes, see ``_merged_class``.
     Plain names are taken only for typedefs at file or function scope; a namespace's or
     class's are known by their qualified names, and every typedef and record also by
     the name lldb-dap shows (``_displayed``), so two entities shown alike are "unknown". A class's member typedef is also kept
@@ -421,8 +423,30 @@ def typedef_kinds(info):
     named = _typedef_named(dies)
 
     def note(name, kind):
-        if name:
-            found[name] = kind if found.get(name, kind) == kind else ("unknown", "")
+        if not name:
+            return
+        known = found.get(name, kind)
+        if known == kind:
+            found[name] = kind
+        elif known[0] == kind[0] and kind[0] in ("other", "reference"):
+            found[name] = (kind[0], _merged_class(known[1], kind[1]))
+        else:
+            found[name] = ("unknown", "")
+
+    def class_named(target):
+        """The name lldb-dap shows for the class a DW_AT_type reference names, through
+        qualifiers and typedefs, or ""."""
+        for _ in range(16):
+            reference = _REFERENCE.fullmatch(target or "")
+            inner = dies.get(int(reference[1], 16)) if reference else None
+            if inner is None:
+                return ""
+            if inner["tag"] in _RECORDS and inner["tag"] != "DW_TAG_enumeration_type":
+                return _displayed(dies, int(reference[1], 16), named) or ""
+            if inner["tag"] not in ("DW_TAG_typedef", "DW_TAG_const_type", "DW_TAG_volatile_type"):
+                return ""
+            target = inner["attrs"].get("DW_AT_type")
+        return ""
 
     def note_member(record_offset, name, kind):
         # A class's member typedef by its class's own name (`::vector::reference`):
@@ -432,9 +456,15 @@ def typedef_kinds(info):
         record = dies[record_offset]
         own = _text(record["attrs"].get("DW_AT_name"))
         for owner in [_without_templates(own)] if own else named.get(record_offset, []):
-            key, (sort, _) = f"::{owner}::{name}", kind
-            if owner and name:
-                known = found.get(key)
+            key, (sort, target) = f"::{owner}::{name}", kind
+            if not (owner and name):
+                continue
+            known = found.get(key)
+            if sort in ("other", "reference") and (known is None or known[0] == sort):
+                # The class every instance's typedef names (`Holder<T>::S`, a std::set<int>),
+                # or its template's: a set or map behind one is still one (#119).
+                found[key] = (sort, target if known is None else _merged_class(known[1], target))
+            else:
                 found[key] = (sort, "") if known in (None, (sort, "")) else ("unknown", "")
 
     for offset, die in dies.items():
@@ -464,7 +494,9 @@ def typedef_kinds(info):
                 target = inner["attrs"].get("DW_AT_type")
                 continue
             if inner["tag"] in ("DW_TAG_reference_type", "DW_TAG_rvalue_reference_type"):
-                kind = ("reference", "")
+                kind = ("reference", class_named(inner["attrs"].get("DW_AT_type")))
+            elif inner["tag"] in _RECORDS:
+                kind = ("other", class_named(target))
             elif inner["tag"] == "DW_TAG_pointer_type":
                 pointee = _REFERENCE.fullmatch(inner["attrs"].get("DW_AT_type") or "")
                 aimed = dies.get(int(pointee[1], 16)) if pointee else None
@@ -490,6 +522,26 @@ def typedef_kinds(info):
             note(qualified, kind)
         note(_displayed(dies, offset, named), kind)
     return found
+
+
+# A C++ map or set template, its arguments left out (`std::__1::map`, `std::set`).
+_ASSOCIATIVE_CLASS = re.compile(
+    r"(?:::)?std::(?:__\w+::|pmr::)*(?:unordered_|flat_)?(?:multi)?(?:map|set)"
+)
+
+
+def _merged_class(first, second):
+    """The class two typedefs of one name give (``typedef_kinds``): theirs where they
+    agree; else, where either is a C++ map or set, the template both instantiate
+    (`std::map`), or "?" (it may be a map or set, which one is not known); else ""."""
+    if first == second:
+        return first
+    if "?" in (first, second):
+        return "?"
+    templates = {_without_templates(name) for name in (first, second)}
+    if not any(_ASSOCIATIVE_CLASS.fullmatch(name) for name in templates if name):
+        return ""
+    return templates.pop() if len(templates) == 1 else "?"
 
 
 def _without_templates(name):
@@ -2126,6 +2178,36 @@ class NativeSession:
         if len(parts) < 2 or not all(parts[-2:]) or f"namespace::{parts[-2]}" in self.typedefs:
             return None
         return self.typedefs.get(f"::{parts[-2]}::{parts[-1]}")
+
+    @property
+    def whole_string_summaries(self):
+        """Whether LLDB's summary of this build's std::string values shows every byte.
+        LLDB reads a libc++ string's size and prints a NUL as `\\0`; its libstdc++ summary
+        is the `_M_dataplus._M_p` C string, which ends at the first NUL (#119). Told by the
+        standard library's namespaces in the debug information: libc++'s `std::__1`,
+        libstdc++'s `std::__cxx11`."""
+        return "namespace::__1" in self.typedefs and "namespace::__cxx11" not in self.typedefs
+
+    def aliased_type(self, kind):
+        """The class a typedef'd value's type names (`Index`, `const Index &` for
+        `using Index = std::map<int, int>`), as lldb-dap would show it, or None: a map or
+        set by another name still reads by key (#119)."""
+        if not isinstance(kind, str):
+            return None
+        bare = re.sub(r"(?:\s*&{1,2}|\s+(?:const|volatile))+$", "", kind.strip())
+        found = self.typedef_kind(bare)
+        if found is not None and found[0] in ("other", "reference") and found[1]:
+            return found[1]
+        return None
+
+    def pointee_aliased_type(self, kind, pointee=None):
+        """``aliased_type`` of what a pointer points at (`IntSet *`), or of a typedef'd
+        pointer's ``pointee`` as the debug information names it; None for a value that is
+        no pointer."""
+        if pointee is None and isinstance(kind, str):
+            found = re.fullmatch(r"(.+?)\s*\*\s*(?:const\s*)?", kind.strip())
+            pointee = found[1] if found else None
+        return self.aliased_type(pointee) if pointee else None
 
     def not_yet_declared(self, variable, frame, innermost=True, stack=None, deeper=None):
         """Why a root local of ``frame`` has no value yet (declared below the stop), or

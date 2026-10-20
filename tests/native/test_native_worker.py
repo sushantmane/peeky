@@ -1,5 +1,6 @@
 """Real LLDB C worker conformance; optional locally, required in the native CI lane."""
 
+import contextlib
 import hashlib
 import json
 import os
@@ -1239,6 +1240,352 @@ def test_a_pointer_to_an_array_or_container_indexes_as_c_does(tmp_path, native_c
     finally:
         main(["session", "close"])
         capsys.readouterr()
+
+
+MAPS = """#include <array>
+#include <cstdio>
+#include <deque>
+#include <map>
+#include <set>
+#include <string>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
+using Index = std::map<int, int>;
+typedef std::set<int> IntSet;
+struct Holder { std::map<int, int> m; Index im; int n; };
+static int total(const Index &ref, std::map<int, int> *mp, const IntSet *isp, Index *ip) {
+    return ref.at(1) + mp->at(2) + (int)isp->size() + ip->at(1); // IN_TOTAL
+}
+int main() {
+    std::map<int, int> m{{2, 20}, {1, 10}, {5, 50}};
+    std::unordered_map<int, int> um{{2, 20}, {1, 10}, {5, 50}};
+    std::set<int> s{3, 1, 2};
+    std::multimap<int, int> mm{{1, 10}, {1, 11}, {2, 20}};
+    std::multiset<int> ms{2, 1, 1};
+    std::unordered_set<int> us{3, 1, 2};
+    std::map<std::string, int> sm{{"b", 2}, {"a", 1}};
+    std::map<double, int> dm{{1.5, 2}, {0.5, 1}};
+    std::map<int, int, std::greater<int>> gm;
+    for (int i = 0; i < 40; i++) gm[i * 3] = i;
+    Index im{{2, 20}, {1, 10}};
+    IntSet is{3, 1, 2};
+    Holder h{{{2, 20}, {1, 10}}, {{7, 70}}, 3};
+    std::vector<int> v{7, 8, 9};
+    std::array<int, 3> a{7, 8, 9};
+    std::deque<int> d{7, 8, 9};
+    std::vector<std::map<int, int>> vm{{{4, 40}}};
+    int n = total(im, &m, &is, &im) + (int)um.size() + (int)s.size() + (int)mm.size() + (int)ms.size();
+    n += (int)us.size() + sm["a"] + dm[0.5] + gm[3] + (int)is.count(1) + h.m[1] + h.im[7];
+    n += v[1] + a[1] + d[1] + vm[0][4];
+    std::printf("%d\\n", n); // OBSERVE
+    return 0;
+}
+"""
+
+
+def _session_rows(main, capsys, *selectors):
+    main(["session", "get", *selectors, "--json"])
+    shown = json.loads(capsys.readouterr().out)
+    return {row["selector"]: row for row in (shown["rows"] if isinstance(shown, dict) else shown)}
+
+
+@contextlib.contextmanager
+def _maps_session(tmp_path, capsys, monkeypatch, marker="// OBSERVE", program=None):
+    """A session on MAPS (or ``program``) stopped at ``marker``; yields `session get` as
+    {selector: row}."""
+    from peeky.cli import main
+
+    program = program or MAPS
+    monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
+    source = tmp_path / "maps.cpp"
+    source.write_text(program)
+    line = next(i for i, text in enumerate(program.splitlines(), 1) if marker in text)
+    assert main(["session", "start", str(source), "--at", str(line)]) == 0
+    capsys.readouterr()
+    try:
+        yield lambda *selectors: _session_rows(main, capsys, *selectors)
+    finally:
+        main(["session", "close"])
+        capsys.readouterr()
+
+
+def test_a_cpp_maps_index_is_the_value_for_that_key(tmp_path, native_config, capsys, monkeypatch):
+    # #119: LLDB lists a map's entries as [0], [1], ... in iteration order, so `m[1]` read
+    # the second entry ({2, 20}; `m[1].second` was 20) where C++'s m[1] is 10. Now [K] is
+    # the value for key K, and [#N] is the Nth entry.
+    with _maps_session(tmp_path, capsys, monkeypatch) as get:
+        rows = get(
+            *("m[1]", "m[2]", "m[5]", "m[3]", "m[#1].first", "m[#1].second", "m[1].second"),
+            *("um[1]", "um[5]", "um[7]", 'sm["a"]', "sm['b']", "sm[0]", "dm[0]"),
+            *("gm[3]", "gm[117]", "gm[4]", "im[1]", "h.m[1]", "h.im[7]", "vm[0][4]"),
+        )
+        values = {selector: row.get("value") for selector, row in rows.items()}
+        errors = {selector: row.get("error", "") for selector, row in rows.items()}
+        assert values["m[1]"] == "10" and values["m[2]"] == "20" and values["m[5]"] == "50"
+        assert rows["m[1]"]["type"] == "int"
+        assert "m has no key 3 (keys: 1, 2, 5)" in errors["m[3]"]
+        assert values["m[#1].first"] == "2" and values["m[#1].second"] == "20"
+        assert "m[1] is the value for that key, as in C++" in errors["m[1].second"]
+        assert values["um[1]"] == "10" and values["um[5]"] == "50"
+        assert "um has no key 7" in errors["um[7]"]
+        assert values['sm["a"]'] == "1" and values["sm['b']"] == "2"
+        assert 'sm\'s keys are strings; select one as sm["key"]' in errors["sm[0]"]
+        assert "dm's keys are double, which Peeky does not compare" in errors["dm[0]"]
+        # std::greater: bisected in descending order.
+        assert values["gm[3]"] == "1" and values["gm[117]"] == "39"
+        assert "descending (std::greater) order" in errors["gm[4]"]
+        # A typedef, a struct's members, a map inside a vector.
+        assert values["im[1]"] == "10" and values["h.m[1]"] == "10" and values["h.im[7]"] == "70"
+        assert values["vm[0][4]"] == "40"
+    # A typedef'd map behind a reference, and a pointer to a map.
+    with _maps_session(tmp_path, capsys, monkeypatch, "// IN_TOTAL") as get:
+        rows = get("ref[1]", "ref[#1].first", "mp[0][2]", "mp[1]", "mp[#0]")
+        rows.update(get("isp[0][1]", "isp[0][#1]", "ip[0][1]", "ip[1]"))
+        assert rows["ref[1]"]["value"] == "10" and rows["ref[#1].first"]["value"] == "2"
+        assert rows["mp[0][2]"]["value"] == "20"
+        assert "read mp[0][1], its value for key 1" in rows["mp[1]"]["error"]
+        assert "mp[0][#0] is that entry" in rows["mp[#0]"]["error"]
+        # Pointers to typedefs: the class behind what they point at.
+        assert "is a C++ set" in rows["isp[0][1]"]["error"]
+        assert rows["isp[0][#1]"]["value"] == "2"
+        assert rows["ip[0][1]"]["value"] == "10"
+        assert "read ip[0][1], its value for key 1" in rows["ip[1]"]["error"]
+
+
+def test_a_cpp_set_or_multimap_index_is_refused(tmp_path, native_config, capsys, monkeypatch):
+    # #119: `s[1]` read a set's second element and `mm[1]` a multimap's second entry,
+    # where C++ has no [] for either. Now they are refused with the [#N] that reads one.
+    with _maps_session(tmp_path, capsys, monkeypatch) as get:
+        rows = get("s[1]", "s[#1]", "mm[1]", "mm[#1].second", "ms[0]", "ms[#2]", "us[0]")
+        rows.update(get("us[#0]", "is[1]", "is[#0]"))
+        values = {selector: row.get("value") for selector, row in rows.items()}
+        errors = {selector: row.get("error", "") for selector, row in rows.items()}
+        assert "is a C++ set, which has no [] in C++" in errors["s[1]"]
+        assert "select an element by position with s[#N]" in errors["s[1]"]
+        assert values["s[#1]"] == "2"
+        assert "C++ multimap, which has no [] in C++" in errors["mm[1]"]
+        # Equal keys keep their insertion order, in both standard libraries.
+        assert values["mm[#1].second"] == "11"
+        assert "is a C++ set" in errors["ms[0]"] and values["ms[#2]"] == "2"
+        assert "is a C++ set" in errors["us[0]"] and values["us[#0]"] in ("1", "2", "3")
+        # A typedef'd set, by the class the build's debug information gives.
+        assert "is a C++ set" in errors["is[1]"] and values["is[#0]"] == "1"
+
+
+def test_a_cpp_map_or_set_listing_never_labels_an_entry_by_position(
+    tmp_path, native_config, capsys, monkeypatch
+):
+    # #119: `session get m` listed m[0], m[1], m[2], each read by position.
+    with _maps_session(tmp_path, capsys, monkeypatch) as get:
+        listed = get("m", "um", "s", "mm", "sm", "dm", "im", "is")
+        selectors = {
+            name: [(child.get("selector"), child.get("value")) for child in row["children"]]
+            for name, row in listed.items()
+        }
+        assert selectors["m"] == [("m[1]", "10"), ("m[2]", "20"), ("m[5]", "50")]
+        assert sorted(selectors["um"]) == [("um[1]", "10"), ("um[2]", "20"), ("um[5]", "50")]
+        assert selectors["sm"] == [('sm["a"]', "1"), ('sm["b"]', "2")]
+        assert selectors["im"] == [("im[1]", "10"), ("im[2]", "20")]
+        assert "m[K] is the value for key K, as in C++" in listed["m"]["note"]
+        for name in ("s", "mm", "dm", "is"):
+            assert [selector for selector, _ in selectors[name]] == [
+                f"{name}[#{i}]" for i in range(len(selectors[name]))
+            ]
+        assert "s[#N] is its Nth element in iteration order" in listed["s"]["note"]
+        assert "dm is a C++ map whose keys Peeky does not compare" in listed["dm"]["note"]
+        # Each listed selector reads the value its row shows.
+        for name in ("m", "um", "sm", "s"):
+            shown = dict(selectors[name])
+            assert {s: r.get("value") for s, r in get(*shown).items()} == shown
+    with _maps_session(tmp_path, capsys, monkeypatch, "// IN_TOTAL") as get:
+        listed = get("ref", "mp", "isp", "ip")
+        assert [c["selector"] for c in listed["ref"]["children"]] == ["ref[1]", "ref[2]"]
+        assert [c["selector"] for c in listed["isp"]["children"]] == [
+            "isp[0][#0]",
+            "isp[0][#1]",
+            "isp[0][#2]",
+        ]
+        assert [c["selector"] for c in listed["ip"]["children"]] == ["ip[0][1]", "ip[0][2]"]
+        assert [c["selector"] for c in listed["mp"]["children"]] == [
+            "mp[0][1]",
+            "mp[0][2]",
+            "mp[0][5]",
+        ]
+
+
+def test_cpp_sequences_index_as_before(tmp_path, native_config, capsys, monkeypatch):
+    # #119 changed maps and sets only: vectors, deques and arrays index by position.
+    with _maps_session(tmp_path, capsys, monkeypatch) as get:
+        rows = get("v[1]", "d[1]", "v[-1]", "v", "a")
+        assert rows["v[1]"]["value"] == rows["d[1]"]["value"] == "8"
+        assert "use a non-negative index" in rows["v[-1]"]["error"]
+        assert [c["selector"] for c in rows["v"]["children"]] == ["v[0]", "v[1]", "v[2]"]
+        assert "note" not in rows["v"]
+        # std::array: LLDB's element listing, or its one raw member, indexes as before.
+        children = rows["a"]["children"]
+        if [c["name"] for c in children] == ["[0]", "[1]", "[2]"]:
+            assert children[1]["selector"] == "a[1]" and children[1]["value"] == "8"
+        else:
+            (raw,) = children
+            selector = f"{raw['selector']}[1]"
+            assert get(selector)[selector]["value"] == "8"
+
+
+KEYS = """#include <cctype>
+#include <cstdio>
+#include <map>
+#include <set>
+#include <string>
+#include <unordered_map>
+struct ByAbs { bool operator()(int a, int b) const { return (a < 0 ? -a : a) < (b < 0 ? -b : b); } };
+struct Mod10 { bool operator()(int a, int b) const { return a % 10 < b % 10; } };
+struct NoCase {
+    bool operator()(const std::string &a, const std::string &b) const {
+        for (size_t i = 0; i < a.size() && i < b.size(); i++) {
+            int x = std::tolower(a[i]), y = std::tolower(b[i]);
+            if (x != y) return x < y;
+        }
+        return a.size() < b.size();
+    }
+};
+struct LowerHash {
+    size_t operator()(const std::string &s) const {
+        size_t h = 0;
+        for (char c : s) h = h * 31 + std::tolower(c);
+        return h;
+    }
+};
+struct LowerEq {
+    bool operator()(const std::string &a, const std::string &b) const {
+        if (a.size() != b.size()) return false;
+        for (size_t i = 0; i < a.size(); i++)
+            if (std::tolower(a[i]) != std::tolower(b[i])) return false;
+        return true;
+    }
+};
+template <class T> struct Holder { using M = std::map<int, T>; using S = std::set<int>; M m; S s; };
+struct Config { std::map<std::string, int> opts; };
+int main() {
+    std::map<std::string, int> sso{{std::string("a\\0b", 3), 3}, {"zz", 9}};
+    std::map<std::string, int> heap{{std::string("abcdefghijklmnopqrstuvwxyz\\0tail", 31), 31}};
+    std::map<std::string, int> trail{{std::string("q\\0", 2), 2}};
+    std::unordered_map<std::string, int> hnul{{std::string("id\\0x", 4), 4}};
+    std::map<std::string, int> both{{"a", 1}, {std::string("a\\0", 2), 2}};
+    Config cfg{{{"k", 1}, {std::string("k\\0x", 3), 2}}};
+    std::map<int, int> plain{{2, 20}, {1, 10}};
+    std::map<int, int, ByAbs> am{{2, 20}, {-1, -10}, {5, 50}, {-3, -30}};
+    std::map<int, int, Mod10> mod{{13, 1}, {7, 2}};
+    std::map<int, int, ByAbs> bigabs;
+    for (int i = 1; i <= 30; i++) bigabs[i % 2 ? -i : i] = i;
+    std::map<std::string, int, NoCase> ci{{"Alpha", 1}, {"beta", 2}};
+    std::unordered_map<std::string, int, LowerHash, LowerEq> hci{{"Alpha", 1}, {"beta", 2}};
+    Holder<std::string> h{{{1, "one"}, {4, "four"}}, {5, 6, 7}};
+    Holder<int> hi{{{3, 30}}, {1}};
+    Holder<std::string>::M hm2 = h.m;
+    Holder<std::string>::S hs2 = h.s;
+    std::map<int, std::set<int>>::mapped_type mt{10, 20, 30};
+    std::map<long, int> ids{{1234567, 7}, {42, 1}};
+    std::map<const char *, int> cpm{{"al", 1}};
+    int n = (int)(sso.size() + heap.size() + trail.size() + hnul.size() + both.size());
+    n += cfg.opts["k"] + plain[1] + am[1] + mod[3] + bigabs[4] + ci["alpha"] + hci["ALPHA"];
+    n += (int)hm2[4].size() + (int)hs2.size() + (int)hi.m.size() + (int)mt.size() + ids[42];
+    std::printf("%d %d\\n", n, (int)cpm.size()); // OBSERVE
+    return 0;
+}
+"""
+
+
+def test_a_string_key_matches_only_a_string_of_its_length(
+    tmp_path, native_config, capsys, monkeypatch
+):
+    # Review of #119 (PR #127): libstdc++'s std::string summary stops at the first NUL,
+    # so on Linux `sso["a"]` read the entry whose key is "a\0b" (3), where C++ has no key
+    # "a". A key now matches only a string of its own length: libstdc++'s
+    # `_M_string_length`, or libc++'s summary, which shows every byte (a NUL as \0).
+    with _maps_session(tmp_path, capsys, monkeypatch, program=KEYS) as get:
+        rows = get(
+            *('sso["a"]', 'sso["zz"]', 'heap["abcdefghijklmnopqrstuvwxyz"]', 'trail["q"]'),
+            *('hnul["id"]', 'both["a"]', 'cfg.opts["k"]', "both", "cfg.opts"),
+        )
+        for selector in ('sso["a"]', 'heap["abcdefghijklmnopqrstuvwxyz"]', 'trail["q"]'):
+            assert "value" not in rows[selector], rows[selector]
+        assert "value" not in rows['hnul["id"]'], rows['hnul["id"]']
+        assert rows['sso["zz"]']["value"] == "9" and rows['both["a"]']["value"] == "1"
+        # Never two entries under one label: "a\0" is no `both["a"]`.
+        labels = [child["selector"] for child in rows["both"]["children"]]
+        assert labels == ['both["a"]', "both[#1]"], labels
+        # A key at the depth limit shows no length: read only where the summary is whole.
+        if sys.platform == "darwin":
+            assert rows['cfg.opts["k"]']["value"] == "1"
+            labels = [child["selector"] for child in rows["cfg.opts"]["children"]]
+            assert labels == ['cfg.opts["k"]', "cfg.opts[#1]"], labels
+        else:
+            assert "length" in rows['cfg.opts["k"]']["error"], rows['cfg.opts["k"]']
+            labels = [child["selector"] for child in rows["cfg.opts"]["children"]]
+            assert labels == ["cfg.opts[#0]", "cfg.opts[#1]"], labels
+
+
+def test_a_custom_comparison_never_says_a_key_is_missing(
+    tmp_path, native_config, capsys, monkeypatch
+):
+    # Review of #119 (PR #127): with `ByAbs`, C++'s am[1] reads key -1's -10, but `am[1]`
+    # said "not found ... would insert it". Absence is now claimed only under std::less,
+    # std::greater, or std::hash with std::equal_to; an exact key still reads.
+    with _maps_session(tmp_path, capsys, monkeypatch, program=KEYS) as get:
+        rows = get(
+            *("am[1]", "am[-1]", "mod[3]", "mod[13]", "bigabs[-3]", "bigabs[3]", "plain[4]"),
+            *('ci["alpha"]', 'ci["Alpha"]', 'hci["ALPHA"]', 'hci["Alpha"]', "am"),
+        )
+        for selector in ("am[1]", "mod[3]", "bigabs[3]", 'ci["alpha"]', 'hci["ALPHA"]'):
+            error = rows[selector].get("error", "")
+            assert "would insert" not in error and "no key equals" in error, (selector, error)
+            assert "[#N]" in error, error
+        assert "comparator" in rows["am[1]"]["error"]
+        assert "hash or equality" in rows['hci["ALPHA"]']["error"]
+        assert rows["am[-1]"]["value"] == "-10" and rows["mod[13]"]["value"] == "1"
+        assert rows["bigabs[-3]"]["value"] == "3"
+        assert rows['ci["Alpha"]']["value"] == rows['hci["Alpha"]']["value"] == "1"
+        assert (
+            "plain has no key 4 (keys: 1, 2); in C++, plain[4] would insert"
+            in (rows["plain[4]"]["error"])
+        )
+        # Each exact key's own selector reads its value.
+        shown = {c["selector"]: c["value"] for c in rows["am"]["children"]}
+        assert shown == {"am[-1]": "-10", "am[2]": "20", "am[-3]": "-30", "am[5]": "50"}
+
+
+def test_a_set_or_map_behind_a_member_typedef_is_not_indexed_by_position(
+    tmp_path, native_config, capsys, monkeypatch
+):
+    # Review of #119 (PR #127): `Holder<std::string>::S hs2` (a std::set<int>) read
+    # `hs2[1]` as its second element, and `std::map<int, std::set<int>>::mapped_type mt`
+    # read `mt[1]` (20): a class's member typedef lost the class it names.
+    with _maps_session(tmp_path, capsys, monkeypatch, program=KEYS) as get:
+        rows = get("hs2[1]", "hs2[#1]", "hm2[4]", "mt[1]", "mt[#1]", "hs2", "mt", "hi.m[3]")
+        assert "is a C++ set" in rows["hs2[1]"]["error"], rows["hs2[1]"]
+        assert rows["hs2[#1]"]["value"] == "6"
+        # Holder<std::string>::M and Holder<int>::M are both std::maps.
+        assert rows["hm2[4]"]["value"] == '"four"' and rows["hi.m[3]"]["value"] == "30"
+        assert "value" not in rows["mt[1]"] and "mt[#N]" in rows["mt[1]"]["error"]
+        assert rows["mt[#1]"]["value"] == "20"
+        for name in ("hs2", "mt"):
+            labels = [child["selector"] for child in rows[name]["children"]]
+            assert labels == [f"{name}[#0]", f"{name}[#1]", f"{name}[#2]"], labels
+
+
+def test_a_key_no_selector_can_write_is_listed_by_position(
+    tmp_path, native_config, capsys, monkeypatch
+):
+    # Review of #119 (PR #127): `session get ids` listed `ids[1234567]`, which the
+    # selector grammar (six digits) cannot read back; `const char *` keys were named
+    # `char *const`.
+    with _maps_session(tmp_path, capsys, monkeypatch, program=KEYS) as get:
+        rows = get("ids", 'cpm["al"]')
+        shown = {c["selector"]: c["value"] for c in rows["ids"]["children"]}
+        assert shown == {"ids[42]": "1", "ids[#1]": rows["ids"]["children"][1]["value"]}
+        assert get("ids[#1].first")["ids[#1].first"]["value"] == "1234567"
+        assert "cpm's keys are const char *," in rows['cpm["al"]']["error"]
 
 
 TYPEDEF_NAMED = """#include <cstdio>
