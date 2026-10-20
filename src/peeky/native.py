@@ -7,6 +7,7 @@ against hostile in-memory patching. SDK/system headers are not hermetic inputs.
 
 import bisect
 import codecs
+import contextlib
 import hashlib
 import json
 import os
@@ -16,6 +17,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -245,12 +247,35 @@ _CODE = ("DW_TAG_subprogram", "DW_TAG_inlined_subroutine")
 _TOMBSTONE = 0xFFFF_FFFF_0000_0000
 
 
+# (text, its DIEs) while `_reusing_dies` holds: launch reads one dump twice.
+_PARSED = threading.local()
+
+
+@contextlib.contextmanager
+def _reusing_dies():
+    _PARSED.last = (None, None)
+    try:
+        yield
+    finally:
+        _PARSED.last = None
+
+
 def _dies(text):
     """A bounded, lenient parse of `dwarfdump --debug-info`, for display only.
 
     Returns {offset: die} with each die {tag, attrs, parent, children, depth, ranges};
     nesting is read from the indentation (one level per two spaces after the offset).
     """
+    last = getattr(_PARSED, "last", None)
+    if last is not None and last[0] is text:
+        return last[1]
+    dies = _parse_dies(text)
+    if last is not None:
+        _PARSED.last = (text, dies)
+    return dies
+
+
+def _parse_dies(text):
     dies, stack, ranges = {}, [], None
     for raw in text.splitlines():
         if ranges is not None:
@@ -380,6 +405,105 @@ def _local_scope(linkage):
     return "::".join(names)
 
 
+def typedef_kinds(info):
+    """{type name: ("pointer", the name of what it points at, or "") | ("reference", "")
+    | ("other", "") | ("unknown", "")}: what each typedef (or C++ alias) names, through
+    qualifiers and other typedefs. lldb-dap shows a variable of one by the typedef's name
+    alone, so `RowPtr rp` cannot be told from `RowRef rr` by its type (#102). A name for
+    two kinds (a struct and a pointer typedef, or typedefs in two units) is "unknown".
+    Plain names are taken only for typedefs at file or function scope; a namespace's or
+    class's are known by their qualified names, and every typedef and record also by
+    the name lldb-dap shows (``_displayed``), so two entities shown alike are "unknown". A class's member typedef is also kept
+    under `::Class::member` (the class's own name, without template arguments), and
+    each namespace's name under `namespace::Name`, for ``typedef_kind``'s fallback."""
+    dies, found = _dies(info), {}
+    named = _typedef_named(dies)
+
+    def note(name, kind):
+        if name:
+            found[name] = kind if found.get(name, kind) == kind else ("unknown", "")
+
+    def note_member(record_offset, name, kind):
+        # A class's member typedef by its class's own name (`::vector::reference`):
+        # lldb-dap and the debug information spell the class's scope and template
+        # arguments differently (`std::vector<std::vector<int> >` against
+        # `std::__1::vector<..., std::__1::allocator<...> >`).
+        record = dies[record_offset]
+        own = _text(record["attrs"].get("DW_AT_name"))
+        for owner in [_without_templates(own)] if own else named.get(record_offset, []):
+            key, (sort, _) = f"::{owner}::{name}", kind
+            if owner and name:
+                known = found.get(key)
+                found[key] = (sort, "") if known in (None, (sort, "")) else ("unknown", "")
+
+    for offset, die in dies.items():
+        if die["tag"] == "DW_TAG_namespace" and (name := _text(die["attrs"].get("DW_AT_name"))):
+            found[f"namespace::{name}"] = ("other", "")
+            continue
+        if die["tag"] in _RECORDS or die["tag"] == "DW_TAG_enumeration_type":
+            note(_text(die["attrs"].get("DW_AT_name")), ("other", ""))
+            note(_qualified(dies, offset), ("other", ""))
+            note(_displayed(dies, offset, named), ("other", ""))
+            continue
+        if die["tag"] != "DW_TAG_typedef":
+            continue
+        target, kind = die["attrs"].get("DW_AT_type"), ("other", "")
+        for _ in range(16):
+            reference = _REFERENCE.fullmatch(target or "")
+            inner = dies.get(int(reference[1], 16)) if reference else None
+            if inner is None:
+                kind = ("unknown", "")
+                break
+            if inner["tag"] in (
+                "DW_TAG_typedef",
+                "DW_TAG_const_type",
+                "DW_TAG_volatile_type",
+                "DW_TAG_restrict_type",
+            ):
+                target = inner["attrs"].get("DW_AT_type")
+                continue
+            if inner["tag"] in ("DW_TAG_reference_type", "DW_TAG_rvalue_reference_type"):
+                kind = ("reference", "")
+            elif inner["tag"] == "DW_TAG_pointer_type":
+                pointee = _REFERENCE.fullmatch(inner["attrs"].get("DW_AT_type") or "")
+                aimed = dies.get(int(pointee[1], 16)) if pointee else None
+                if aimed is not None and aimed["tag"] == "DW_TAG_subroutine_type":
+                    kind = ("other", "")  # a function pointer has no elements
+                else:
+                    kind = ("pointer", _type_name(dies, inner["attrs"].get("DW_AT_type")) or "")
+            break
+        parent = dies.get(die["parent"], {})
+        name = _text(die["attrs"].get("DW_AT_name"))
+        # An unnamed namespace's names show unqualified, as the file's own do.
+        if parent.get("tag") in (
+            None,
+            "DW_TAG_compile_unit",
+            "DW_TAG_subprogram",
+            "DW_TAG_lexical_block",
+        ) or (parent.get("tag") == "DW_TAG_namespace" and "DW_AT_name" not in parent["attrs"]):
+            note(name, kind)
+        if parent.get("tag") in _RECORDS:
+            note_member(die["parent"], name, kind)
+        qualified = _qualified(dies, offset)
+        if qualified and qualified != name:
+            note(qualified, kind)
+        note(_displayed(dies, offset, named), kind)
+    return found
+
+
+def _without_templates(name):
+    """``name`` with every balanced `<...>` removed (`X<int *>::P` is `X::P`)."""
+    out, depth = [], 0
+    for char in name.replace("->", ""):
+        if char == "<":
+            depth += 1
+        elif char == ">" and depth:
+            depth -= 1
+        elif not depth:
+            out.append(char)
+    return "".join(out)
+
+
 def _qualified(dies, offset, depth=0):
     chain = _chain(dies, offset)
     linkage = _text(_first(dies, chain, "DW_AT_linkage_name"))
@@ -403,6 +527,53 @@ def _qualified(dies, offset, depth=0):
             break
         parent = die["parent"]
     return "::".join(reversed(parts))
+
+
+def _displayed(dies, offset, named=None):
+    """A type's name as lldb-dap shows it: scoped by its namespaces and classes, but not
+    by inline namespaces (`DW_AT_export_symbols`: `v1`, libc++'s `__1`), unnamed ones,
+    or the function declaring it (`Node::Link` for `main`'s local `Node`). An unnamed
+    class a typedef names (``named``: {offset: name}) shows by that name
+    (`typedef struct {...} Anon;`)."""
+    named = {offset: names[0] for offset, names in (named or {}).items()}
+    name = _text(dies[offset]["attrs"].get("DW_AT_name")) or named.get(offset)
+    if name is None:
+        return None
+    parts, parent = [name], dies[offset]["parent"]
+    while parent is not None and len(parts) < 32:
+        die = dies[parent]
+        if die["tag"] == "DW_TAG_subprogram":
+            break
+        if (
+            die["tag"] in _QUALIFIERS
+            and (outer := _text(die["attrs"].get("DW_AT_name")) or named.get(parent))
+            and "DW_AT_export_symbols" not in die["attrs"]
+        ):
+            parts.append(outer)
+        parent = die["parent"]
+    return "::".join(reversed(parts))
+
+
+def _typedef_named(dies):
+    """{offset: [names]} for each unnamed class or union typedefs in its own scope name
+    (`typedef struct { ... } A, B;`), in declaration order: lldb-dap shows it, and its
+    members, by the first (`A::P` for `B`'s member too)."""
+    named = {}
+    for die in dies.values():
+        if die["tag"] != "DW_TAG_typedef":
+            continue
+        reference = _REFERENCE.fullmatch(die["attrs"].get("DW_AT_type") or "")
+        target = int(reference[1], 16) if reference else None
+        record = dies.get(target)
+        if (
+            record is not None
+            and record["tag"] in _RECORDS
+            and "DW_AT_name" not in record["attrs"]
+            and record["parent"] == die["parent"]
+            and (name := _text(die["attrs"].get("DW_AT_name")))
+        ):
+            named.setdefault(target, []).append(name)
+    return named
 
 
 # Types that wrap another (`T *`, `const T`, `T[3]`): an unnamed struct, union, class
@@ -1470,6 +1641,7 @@ class NativeTarget:
                 prepared.workspace,
                 self.sources + self.headers,
             )
+            typedefs = {}
             try:
                 info = _metadata(
                     dwarfdump,
@@ -1479,19 +1651,21 @@ class NativeTarget:
                     max_bytes=MAX_DEBUG_INFO,
                     timeout=_remaining(deadline),
                 )
-                declarations = (
-                    None
-                    if has_nonlocal_jumps(binary)
-                    or mentions_nonlocal_jumps(
-                        prepared.workspace / name for name in self.sources + self.headers
+                with _reusing_dies():
+                    typedefs = typedef_kinds(info)
+                    declarations = (
+                        None
+                        if has_nonlocal_jumps(binary)
+                        or mentions_nonlocal_jumps(
+                            prepared.workspace / name for name in self.sources + self.headers
+                        )
+                        # A header outside the workspace can hide the builtin in a macro;
+                        # the SDK's own setjmp.h names `setjmp`, so only the builtin counts.
+                        or mentions_nonlocal_jumps(external, (b"__builtin_setjmp",))
+                        else local_declarations(
+                            info, text, prepared.workspace, self.sources + self.headers
+                        )
                     )
-                    # A header outside the workspace can hide the builtin in a macro;
-                    # the SDK's own setjmp.h names `setjmp`, so only the builtin counts.
-                    or mentions_nonlocal_jumps(external, (b"__builtin_setjmp",))
-                    else local_declarations(
-                        info, text, prepared.workspace, self.sources + self.headers
-                    )
-                )
             except (RuntimeError, ValueError, OSError):
                 # Display aid only: without it, values show as the debugger reads them.
                 declarations = None
@@ -1505,6 +1679,7 @@ class NativeTarget:
                 symbols,
                 external,
                 declarations=declarations,
+                typedefs=typedefs,
             )
             session.assert_current()
             return session
@@ -1608,10 +1783,13 @@ class NativeSession:
         symbols,
         external=None,
         declarations=None,
+        typedefs=None,
     ):
         self.target, self.prepared = target, prepared
         # local_declarations of the build; None (unknown) never withholds a value.
         self.declarations = declarations
+        # typedef_kinds of the build: {} (unknown) resolves no typedef.
+        self.typedefs = dict(typedefs or {})
         self.external_inputs = dict(external or {})
         self.binary, self.symbols, self.adapter = binary, symbols, adapter
         self._lines_data, self.module_identity = json.dumps(lines, sort_keys=True), identity
@@ -1694,6 +1872,22 @@ class NativeSession:
         return function_scopes(
             info, dump("--debug-line", MAX_METADATA), workspace, tuple(self.lines)
         )
+
+    def typedef_kind(self, kind):
+        """(kind, pointee) for a type lldb-dap names by a typedef (`const RowPtr`): see
+        typedef_kinds; None for a name the build's debug information does not give."""
+        if not isinstance(kind, str):
+            return None
+        bare = re.sub(r"^(?:(?:const|volatile)\s+)+|(?:\s+(?:const|volatile))+$", "", kind.strip())
+        if (found := self.typedefs.get(bare)) is not None:
+            return found
+        # A class's member typedef (`std::vector<...>::reference`) by its class's own
+        # name and its own: never a name whose qualifier is a namespace (lldb-dap leaves
+        # out inline namespaces, `lib::Rows` for `lib::v1::Rows`), nor a class's name.
+        parts = _without_templates(bare).split("::")
+        if len(parts) < 2 or not all(parts[-2:]) or f"namespace::{parts[-2]}" in self.typedefs:
+            return None
+        return self.typedefs.get(f"::{parts[-2]}::{parts[-1]}")
 
     def not_yet_declared(self, variable, frame):
         """Why a root local of ``frame`` has no value yet (declared below the stop), or
