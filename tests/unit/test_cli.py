@@ -24,18 +24,20 @@ def test_inspect_marks_names_no_selector_can_read():
     assert "total: int = 1\n" in text + "\n" and "total: int = 1 [not" not in text
 
 
-def test_field_sets_outside_java_are_refused_before_any_build(tmp_path, capsys):
-    # Eval 5 (Rust): `--set s.end=10` was refused only after a build and a run.
+def test_field_sets_where_no_rule_allows_them_are_refused_before_any_build(tmp_path, capsys):
+    # Eval 5 (Rust): `--set s.end=10` was refused only after a build and a run. Since
+    # #105 Rust, C and C++ change fields too; Python still refuses before it runs.
     from peeky.cli import main
 
-    (tmp_path / "a.c").write_text("int main(void) { return 0; }\n")
-    code = main(["probe", str(tmp_path / "a.c"), "--at", "1", "--set", "s.end=10", "--json"])
+    (tmp_path / "a.py").write_text("x = 1\n")
+    code = main(["probe", str(tmp_path / "a.py"), "--at", "1", "--set", "s.end=10", "--json"])
     error = json.loads(capsys.readouterr().out)["error"]
     assert code == 2 and error["code"] == "MUTATION_REJECTED"
-    assert "only Java targets allow" in error["message"] and "COOKBOOK 6.6" in error["message"]
-    assert main(["describe", str(tmp_path / "a.c"), "--json", "--quiet"]) in (0, 2)
-    capsys.readouterr()
+    assert "only Java, Rust, C and C++ targets allow" in error["message"]
+    assert "COOKBOOK 6.6" in error["message"]
     # Review of #109: names are stripped as `--set` itself strips them (`n = 3`).
     from peeky.cli import _member_sets
 
-    _member_sets(["n = 3", " x=1"], "c")
+    for language in ("c", "cpp", "rust", "java"):
+        _member_sets(["s.end=10", "xs[2] = 1", "t.__0=3"], language)
+    _member_sets(["n = 3", " x=1"], "python")

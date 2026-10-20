@@ -1037,6 +1037,102 @@ class RustSession(NativeSession):
                 "probe); otherwise edit the source and run verify"
             )
 
+    def _root_type(self, frame, root):
+        """(type offset, type graph) of the root local of a field or element change
+        (#105), from the application units' debug information."""
+        from peeky.fields import Unsettable
+
+        hashed = _frame_hash(frame)
+        functions, graph = self._field_types()
+        types = functions.get(hashed[1]) if hashed else None
+        if types is None:
+            raise Unsettable("Peeky cannot match this frame to the build's debug information")
+        return self._declared_type(types, root.get("name")), graph
+
+    def _root_holds(self, frame, root, stack=None, deeper=None):
+        """Raise fields.Unsettable unless the build's IR keeps the root local in memory
+        and its MIR proves it initialized at the stop (not moved, dropped or yet to be
+        assigned), in an unoptimized build."""
+        from peeky.fields import Unsettable
+
+        name = root.get("name")
+        if self._optimized():
+            raise Unsettable(
+                "Rust field and element changes need an unoptimized build (opt-level 0)"
+            )
+        hashed = _frame_hash(frame)
+        if not hashed or self.memory.get((hashed[1], name)) is not True:
+            raise Unsettable(
+                f"the build's IR does not keep `{name}` in memory here (the debugger may "
+                "show a copy), so a change would not reach the program"
+            )
+        proofs = getattr(self, "owned", None)
+        place = frame or {}
+        if (
+            proofs is None
+            or not proofs.proven(
+                hashed[1], name, place.get("line"), (place.get("source") or {}).get("path")
+            )
+            or self.aggregate_taint(root, frame, innermost=True)
+        ):
+            raise Unsettable(
+                f"the build's MIR does not prove `{name}` initialized here: it may be moved, "
+                "dropped or not yet assigned, so a change could be lost or overwritten"
+            )
+
+    def _field_types(self):
+        """({function hash: fields.local_types}, fields.type_graph) of the application
+        units, read once, on the first field or element change."""
+        from peeky.fields import Unsettable
+
+        cached = self.__dict__.get("_field_cache")
+        if cached is None:
+            try:
+                cached = self._read_field_types()
+            except (OSError, RuntimeError, ValueError) as exc:
+                cached = exc
+            self._field_cache = cached
+        if isinstance(cached, Exception):
+            raise Unsettable(
+                f"Peeky could not read the build's debug information ({str(cached)[:200]})"
+            )
+        return cached
+
+    def _read_field_types(self):
+        from peeky.fields import local_types, type_graph
+        from peeky.native import _chain, _code_ranges, _first, _parse_dies, _text
+
+        dwarfdump = _absolute_tool(self.target.dwarfdump, "dwarfdump")
+        env = dict(self.prepared.manifest.effective_environment)
+        dies = {}
+        for unit in self.units:
+            dies.update(
+                _parse_dies(
+                    _metadata(
+                        dwarfdump,
+                        [f"--debug-info=0x{unit.die:08x}", "--show-children", str(self.symbols)],
+                        self.prepared.workspace,
+                        env,
+                        max_bytes=RUST_METADATA,
+                    )
+                )
+            )
+        self.assert_current()
+        functions, kinds = {}, set()
+        for offset, die in dies.items():
+            if die["tag"] != "DW_TAG_subprogram" or not _code_ranges(die):
+                continue
+            chain = _chain(dies, offset)
+            linkage = _text(_first(dies, chain, "DW_AT_linkage_name")) or ""
+            hashed = re.search(r"17(h[0-9a-f]{16})E$", linkage)
+            if not hashed:
+                continue
+            types = local_types(dies, [offset])
+            # One hash, two bodies that disagree (never expected): neither is trusted.
+            functions[hashed[1]] = types if functions.get(hashed[1], types) == types else None
+            kinds.update(kind for each in (types or {}).values() for kind, _ in each)
+        return functions, type_graph(dies, kinds)
+
     def view_variable(
         self,
         variable,

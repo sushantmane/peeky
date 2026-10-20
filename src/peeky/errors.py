@@ -123,9 +123,10 @@ _RULES = (
         r"|cannot be changed|can be changed only|changes only the stopped|locals can be changed "
         r"for this language|predates field and element changes",
         "MUTATION_REJECTED",
-        "The message names the rule broken. Root locals, and in Java also fields and array "
-        "elements (`current.end`, `xs[0]`; not final or static fields, not list or map "
-        "entries); literal values only (Python: literals incl. containers; C, C++: integers "
+        "The message names the rule broken. Root locals, and also fields and array elements "
+        "(`current.end`, `xs[0]`; Java: not final or static fields, not list or map entries; "
+        "Rust, C, C++: integers in a local the frame holds itself, never through a pointer, "
+        "reference, Box, union or enum); literal values only (Python: literals incl. containers; C, C++: integers "
         "of 16 to 64 bits; Java: scalars of the target's type; Rust: i16 to i64, u16 to u64, "
         "isize and usize kept in memory). Probe rows and `session inspect` mark the values "
         "that can be changed ([settable]), and the message lists the locals for that stop. "
@@ -137,7 +138,8 @@ _RULES = (
         r"|not a field or element the debugger lists",
         "NOT_FOUND",
         "Inspect to list visible names. Reads take dotted paths (a.b, this.x); changes take "
-        "the stopped function's own locals, and in Java their fields and array elements.",
+        "the stopped function's own locals, and in Java, Rust, C and C++ their fields and "
+        "array elements.",
         False,
     ),
     (

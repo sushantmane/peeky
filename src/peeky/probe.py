@@ -337,7 +337,8 @@ class Probe:
                 raise Refused(
                     "MUTATION_REJECTED",
                     f"Intervention target {change[0]!r}: map and dict entries cannot be changed; "
-                    "--set changes a local, or in Java a field or array element",
+                    "--set changes a local, or a field or array element (Java, Rust, C, "
+                    "C++)",
                 )
         if self.hits != "all" and (type(self.hits) is not int or not 1 <= self.hits <= MAX_HITS):
             raise ValueError(f"Probe hits must be 1..{MAX_HITS} or 'all'")
@@ -1385,8 +1386,10 @@ class _Coded:
 
 
 def apply_set(worker, stop, name, value):
-    """Apply one `--set name=value` at this stop: a root local, or in Java a field or
-    array element a selector names (`current.end`, `this.count`, `xs[0]`, `xs[-1]`)."""
+    """Apply one `--set name=value` at this stop: a root local, or a field or array
+    element a selector names (Java: `current.end`, `this.count`, `xs[0]`, `xs[-1]`; C,
+    C++ and Rust: `s.end`, `s.in.lo`, `xs[2]`, `t.__0`, which the worker proves the
+    frame holds itself, #105)."""
     worker = _Coded(worker)
     segments = parse_selector(name)
     snapshot = worker.dispatch("inspect", {**stop, "names": [segments[0]]})
@@ -1417,6 +1420,16 @@ def apply_set(worker, stop, name, value):
             # Classified by the debugger's reason, never by the names listed after it.
             raise Refused(exc.code, f"{exc}{_settable_here(snapshot)}") from None
     target = f"Intervention target {name!r}"
+    for scope in snapshot["scopes"]:
+        for row in scope["variables"] if not scope.get("globals") else ():
+            if row.get("name") == segments[0] and row.get("unavailable"):
+                # Withheld (declared below the stop, an initializer still running) or
+                # optimized out: nothing in it holds a value a change could replace.
+                raise Refused(
+                    "MUTATION_REJECTED",
+                    f"{target}: {segments[0]!r} has no value here ({row.get('reason')}); "
+                    "nothing in it can be changed",
+                )
     try:
         parent = _resolve(worker, stop, snapshot, segments[:-1])
     except Refused as exc:
@@ -1450,7 +1463,8 @@ def apply_set(worker, stop, name, value):
             )
         if index < 0:
             index += int(array[1])
-        member = str(index)
+        # java-debug names an element by its index; LLDB as `[2]`.
+        member = str(index) if array else last
     if not parent.get("variablesReference"):
         if parent.get("unavailable"):
             raise Refused(
@@ -2407,7 +2421,7 @@ def run_probe(root, probe, *, adapter=None, progress=None):
                     "this Java adapter bundle predates field and element changes (rebuild it "
                     "with scripts/setup_java_adapter.py)"
                     if identity.get("language") == "java"
-                    else "fields and array elements can be changed only in Java"
+                    else "fields and array elements can be changed only in Java, Rust, C and C++"
                 )
             )
         if probe.edit:

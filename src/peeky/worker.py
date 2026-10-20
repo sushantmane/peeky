@@ -2176,15 +2176,21 @@ class DebugWorker:
         return (
             self.capabilities.get("supports_set_variable") is True
             and self.capabilities.get("supports_member_set") is True
-            and hasattr(self.runtime or self.adapter, "member_settable")
+            and any(
+                hasattr(self.runtime or self.adapter, hook)
+                for hook in ("member_settable", "validate_member")
+            )
         )
 
     def set_member(self, args, runtime):
-        """Change a field or element of a value an expansion handle names (Java only).
+        """Change a field or element of a value an expansion handle names (Java; and in
+        C, C++ and Rust a scalar the runtime's ``validate_member`` proves the frame holds
+        itself, #105).
 
         The handle only locates the parent: it is walked again from its frame and scope,
         the member must be listed exactly once, and the runtime decides what may change.
-        The new value is read back from the parent, not taken from the debugger's echo.
+        The new value is read back from the parent, not taken from the debugger's echo
+        (C, C++ and Rust: walked again from the frame, and it must be the value asked).
         """
         record = self.children.get(args["handle"])
         # A change invalidates every handle: the next read or change inspects again.
@@ -2194,7 +2200,8 @@ class DebugWorker:
         self.reference_frames.clear()
         self.reference_adapter.clear()
         check = getattr(runtime, "member_settable", None)
-        if check is None:
+        validate = getattr(runtime, "validate_member", None)
+        if check is None and validate is None:
             raise ValueError(
                 "Only the stopped function's own locals can be changed for this language "
                 "(fields and elements cannot)"
@@ -2203,8 +2210,17 @@ class DebugWorker:
             raise ValueError(
                 "This Java adapter bundle predates field and element changes, so only locals "
                 "can be changed; rebuild it with scripts/setup_java_adapter.py"
+                if check is not None
+                else "Only the stopped function's own locals can be changed for this language "
+                "with this debugger, which cannot change fields and elements"
             )
-        if record is None or record[0] == "view":
+        if record is not None and record[0] == "view":
+            raise ValueError(
+                f"{args['name']!r} cannot be changed: it is inside a value Peeky decodes "
+                "itself (such as a Rust Vec, String, Box or enum), whose storage Peeky does "
+                "not write"
+            )
+        if record is None:
             raise ValueError("Unknown or stale expansion handle; inspect again")
         if record[0].get("id") != self.innermost_frame:
             raise ValueError(_CALLER_SET.format(name=repr(args["name"])))
@@ -2215,7 +2231,8 @@ class DebugWorker:
             )
         name, value = args["name"], args["value"]
         runtime.validate_value(value)
-        frame, _, _, reference, indexed = self.walk(record, runtime)
+        trail = []
+        frame, _, ancestry, reference, indexed = self.walk(record, runtime, trail)
 
         def member():
             variables = self.bounded_variables(reference, indexed)
@@ -2227,6 +2244,10 @@ class DebugWorker:
         if len(matches) != 1:
             raise ValueError(f"{name!r} is not a field or element the debugger lists there")
         variable = matches[0]
+        if validate is not None:
+            return self._set_scalar_member(
+                record, runtime, frame, ancestry, trail, reference, variable, args
+            )
         if reason := check(variable):
             raise ValueError(f"{name!r} cannot be changed: {reason}")
         runtime.validate_variable(variable, value)
@@ -2257,9 +2278,78 @@ class DebugWorker:
             )
         return {"name": name, "before": before, "after": after}
 
-    def walk(self, record, runtime):
+    def _set_scalar_member(
+        self, record, runtime, frame, ancestry, trail, reference, variable, args
+    ):
+        """set_member for C, C++ and Rust (#105): the runtime proves the change reaches
+        the program (``validate_member``), and the value read back, walked again from the
+        frame, must be the one asked; anything else is never reported as a change."""
+        name, value = args["name"], args["value"]
+        root, steps = trail[0], [step for step, _ in ancestry[1:]] + [name]
+        pairs = ((root, ancestry[0][0]), (variable, name))
+        for each, shown in pairs:
+            if self.placeholders() and is_unavailable(each.get("value")):
+                raise ValueError(
+                    f"{shown!r} has no readable value here ({str(each.get('value'))[1:-1][:200]}); "
+                    f"{name!r} cannot be changed"
+                )
+        runtime.validate_member(
+            frame,
+            root,
+            steps,
+            variable,
+            value,
+            stack=getattr(self, "listed_frames", None),
+            deeper=self.deeper_stack,
+        )
+        for each, shown in pairs:
+            if not self.has_memory_location(each):
+                raise ValueError(
+                    f"{shown!r} has no memory location here (a computed value): {name!r} "
+                    "cannot be changed, as a change would not reach the program"
+                )
+        before = variable.get("value")
+        literal = getattr(runtime, "mutation_literal", None)
+        try:
+            self.dap.request(
+                "setVariable",
+                {
+                    "variablesReference": reference,
+                    "name": name,
+                    "value": literal(value) if literal else value,
+                },
+            )
+        except RequestFailed as exc:
+            raise ValueError(
+                f"The debugger refused to change {name!r} ({str(exc)[:200]}); it is unchanged"
+            ) from None
+        runtime.assert_current()
+        # Read back from a fresh walk (new scopes, new children), not the debugger's echo.
+        try:
+            _, _, _, reread, indexed = self.walk(record, runtime)
+            found = [v for v in self.bounded_variables(reread, indexed) if v.get("name") == name]
+        except Exception as exc:
+            found = [str(exc)[:200]]
+        if (
+            len(found) != 1
+            or not isinstance(found[0], dict)
+            or not isinstance(found[0].get("value"), str)
+        ):
+            # A write was attempted, and what it did cannot be confirmed: fail closed.
+            raise RuntimeError(
+                f"The change to {name!r} was sent, but could not be read back"
+                + (f" ({found[0]})" if found and isinstance(found[0], str) else "")
+                + ": the program's state is unknown, so the session is closed"
+            )
+        after = found[0]["value"]
+        # Exactly the value asked, or an error: never a change reported that is not made.
+        runtime.confirm_mutation(name, value, before, after)
+        return {"name": name, "before": before, "after": after}
+
+    def walk(self, record, runtime, trail=None):
         """The value an expansion handle names, found again from its frame and scope by
-        each step's name and type: (frame, scope identity, path, reference, indexed)."""
+        each step's name and type: (frame, scope identity, path, reference, indexed).
+        ``trail``, if given, receives the debugger's variable for each step."""
         original_frame, scope_identity, ancestry = record
         frames = self.dap.request("stackTrace", {"threadId": self.thread_id, "levels": 10}).get(
             "stackFrames", []
@@ -2291,6 +2381,8 @@ class DebugWorker:
                 raise ValueError("Expansion ancestry changed or is ambiguous")
             reference = matches[0].get("variablesReference")
             indexed = matches[0].get("indexedVariables")
+            if trail is not None:
+                trail.append(matches[0])
         return frame, scope_identity, ancestry, reference, indexed
 
     def close(self):

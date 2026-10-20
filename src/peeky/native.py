@@ -1089,7 +1089,10 @@ def local_declarations(info, line_text, workspace, declared):
     each automatic local, (name, source, line) -> the code ranges of the block declaring
     it. ``root``: the function's DIE; ``constructor``, ``enclosing`` and ``defined``:
     see _class_role. ``span``: its own lines in its source, or None. ``order``: every row
-    it runs, (address, source, line) by address. ``classes``: _local_classes."""
+    it runs, (address, source, line) by address. ``classes``: _local_classes.
+    ``types``: fields.local_types, the type and storage of each local (#105)."""
+    from peeky.fields import local_types
+
     dies, functions, _, files, runs, addresses = _function_entries(
         info, line_text, workspace, declared
     )
@@ -1163,6 +1166,7 @@ def local_declarations(info, line_text, workspace, declared):
                 # Every row it runs, by address: (address, source, line).
                 "order": tuple(ordered),
                 "classes": classes.get(root, ()),
+                "types": local_types(dies, entry["bodies"]),
             }
         )
     return table
@@ -1948,7 +1952,7 @@ class NativeTarget:
                 prepared.workspace,
                 self.sources + self.headers,
             )
-            typedefs = {}
+            typedefs, fields = {}, None
             try:
                 info = _metadata(
                     dwarfdump,
@@ -1973,9 +1977,23 @@ class NativeTarget:
                             info, text, prepared.workspace, self.sources + self.headers
                         )
                     )
+                    if declarations is not None:
+                        from peeky.fields import type_graph
+
+                        # The types field and element changes walk (#105).
+                        fields = type_graph(
+                            _dies(info),
+                            {
+                                kind
+                                for function in declarations
+                                for kinds in (function["types"] or {}).values()
+                                for kind, _ in kinds
+                            },
+                        )
             except (RuntimeError, ValueError, OSError):
-                # Display aid only: without it, values show as the debugger reads them.
-                declarations = None
+                # Display aid only: without it, values show as the debugger reads them
+                # (and no field or element can be changed).
+                declarations, fields = None, None
             session = NativeSession(
                 self,
                 prepared,
@@ -1987,6 +2005,7 @@ class NativeTarget:
                 external,
                 declarations=declarations,
                 typedefs=typedefs,
+                fields=fields,
             )
             session.assert_current()
             return session
@@ -2091,10 +2110,13 @@ class NativeSession:
         external=None,
         declarations=None,
         typedefs=None,
+        fields=None,
     ):
         self.target, self.prepared = target, prepared
         # local_declarations of the build; None (unknown) never withholds a value.
         self.declarations = declarations
+        # fields.type_graph of the locals' types; None (unknown) changes no field.
+        self.fields = fields
         # typedef_kinds of the build: {} (unknown) resolves no typedef.
         self.typedefs = dict(typedefs or {})
         self.external_inputs = dict(external or {})
@@ -2774,6 +2796,104 @@ class NativeSession:
                 "change made here"
             )
 
+    def validate_member(self, frame, root, steps, variable, value, stack=None, deeper=None):
+        """Refuse (ValueError) unless `--set` can change ``variable``, the field or
+        element ``steps`` (the debugger's child names) reach from the root local
+        ``root`` of the stopped ``frame``, to the decimal ``value`` (#105). The local
+        must be kept in the frame's own memory (an automatic or a parameter there) and
+        hold its value at the stop; the path, read from the debug information, may only
+        select fields of plain records and elements of fixed-size arrays; the value
+        must be a 16- to 64-bit integer, and ``value`` in its range."""
+        from peeky.fields import Unsettable, integer_range, settable_member
+
+        name = str(root.get("name"))
+        selector = name + "".join(step if step.startswith("[") else f".{step}" for step in steps)
+        try:
+            kind, graph = self._root_type(frame, root)
+            # What the path reaches first (a pointer, a union...), then the local's state.
+            signed, bits, names = settable_member(graph, kind, name, steps)
+            self._root_holds(frame, root, stack=stack, deeper=deeper)
+            low, high = integer_range(signed, bits)
+            shown, debugger = variable.get("value"), variable.get("type")
+            hint = variable.get("presentationHint")
+            attributes = hint.get("attributes") if isinstance(hint, dict) else None
+            if variable.get("variablesReference", 0) != 0 or "readOnly" in (attributes or ()):
+                raise Unsettable(f"the debugger does not show `{selector}` as a writable integer")
+            # The debugger's view must be the member the debug information describes.
+            agrees = (
+                INTEGER_RANGES.get(debugger) == (low, high)
+                if debugger in INTEGER_RANGES
+                else any(debugger == each or str(debugger).endswith(f"::{each}") for each in names)
+            )
+            if not agrees:
+                raise Unsettable(
+                    f"the debugger shows `{selector}` as {debugger!r}, which does not match "
+                    f"its declared type ({names[0]})"
+                )
+            if not (
+                isinstance(shown, str)
+                and re.fullmatch(r"-?(?:0|[1-9][0-9]{0,19})", shown)
+                and low <= int(shown) <= high
+            ):
+                raise Unsettable(
+                    f"the debugger shows `{selector}` as {str(shown)[:40]!r}, not as a number, "
+                    "so a change could not be read back"
+                )
+        except Unsettable as exc:
+            raise ValueError(f"`{selector}` cannot be changed: {exc}") from None
+        if not low <= int(value) <= high:
+            raise ValueError(
+                f"Native integer mutation is outside the range of `{selector}` ({names[0]}: "
+                f"{low} to {high})"
+            )
+
+    def _root_type(self, frame, root):
+        """(type offset, type graph) of the root local of a field or element change;
+        raises fields.Unsettable unless it is one local the frame keeps in its memory."""
+        from peeky.fields import Unsettable
+
+        function = self._function_at(frame) if self.fields is not None else None
+        if function is None or function.get("types") is None:
+            raise Unsettable(
+                "Peeky cannot match this frame to the build's debug information (it reads "
+                "it when the session starts; a program using setjmp has none)"
+            )
+        return self._declared_type(function["types"], root.get("name")), self.fields
+
+    def _root_holds(self, frame, root, stack=None, deeper=None):
+        """Raise fields.Unsettable unless the root local holds its value at the stop:
+        not declared below it, in an initializer still running, or skipped by a jump
+        (#120, #121)."""
+        from peeky.fields import Unsettable
+
+        if reason := self.not_yet_declared(root, frame, stack=stack, deeper=deeper):
+            raise Unsettable(
+                f"`{root.get('name')}` is {reason}; its declaration would overwrite a change "
+                "made here"
+            )
+
+    @staticmethod
+    def _declared_type(types, name):
+        from peeky.fields import Unsettable
+
+        declared = types.get(name)
+        if not declared:
+            raise Unsettable(f"the debug information declares no local `{name}` in this function")
+        kinds = {kind for kind, _ in declared}
+        if None in kinds:
+            raise Unsettable(f"the debug information gives the local `{name}` no type")
+        if len(kinds) != 1:
+            raise Unsettable(
+                f"this function declares several locals named `{name}` of different types, "
+                "and Peeky cannot tell which one the debugger shows"
+            )
+        if {storage for _, storage in declared} - {"automatic", "parameter"}:
+            raise Unsettable(
+                f"`{name}` is not kept in this frame's own memory (a static, or a value the "
+                "debug information places in registers)"
+            )
+        return next(iter(declared))[0]
+
     def source_path(self, original):
         relative = (
             Path(original).resolve(strict=True).relative_to(self.prepared.source_root).as_posix()
@@ -2788,6 +2908,8 @@ class NativeSession:
     def normalize_capabilities(self, raw):
         return {
             "supports_set_variable": raw.get("supportsSetVariable") is True,
+            # lldb-dap changes a field or element as it changes a local (#105).
+            "supports_member_set": raw.get("supportsSetVariable") is True,
             # Used only inside the worker, by qualified value views (Rust containers).
             "supports_read_memory": raw.get("supportsReadMemoryRequest") is True,
             "supports_conditional_breakpoints": False,

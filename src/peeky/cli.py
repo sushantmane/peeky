@@ -565,9 +565,10 @@ def describe(args):
         },
         "selectors": "dotted paths, indexes and string keys, e.g. request.page, args[0], "
         "order['id']; never expressions",
-        "interventions": "root locals (the stopped function's own variables); in Java also "
-        "scalar fields and array elements (current.end, this.count, xs[0]); evidence about one "
-        "run, never a verified fix",
+        "interventions": "root locals (the stopped function's own variables); in Java, Rust, "
+        "C and C++ also scalar fields and array elements (current.end, this.count, xs[0]; in "
+        "Rust, C and C++ only of a local the frame holds itself, never through a pointer); "
+        "evidence about one run, never a verified fix",
     }
     if language == "python":
         manifest["breakpoint_lines"] = {program: _python_lines(root / program)}
@@ -598,11 +599,16 @@ def describe(args):
             runtime.close()
         manifest["mutable_types"] = {
             "rust": "integer root locals (i16 to i64, u16 to u64, isize, usize) the program "
-            "keeps in memory; `inspect` marks them [settable]",
+            "keeps in memory; `inspect` marks them [settable]. Also such integer fields and "
+            "elements (s.end, t.__0, xs[2]) of a struct, tuple or array local the MIR proves "
+            "initialized, never through a reference, Box or enum (unmarked)",
             "c": "integer root locals (16 to 64 bits, incl. size_t/int64_t); `inspect` marks "
-            "them [settable]",
+            "them [settable]. Also such integer fields and elements (s.end, s.in.lo, xs[2]) "
+            "of a struct or array local, never through a pointer (unmarked)",
             "cpp": "integer root locals (16 to 64 bits, incl. size_t/int64_t); `inspect` marks "
-            "them [settable]",
+            "them [settable]. Also such integer fields and elements (s.end, xs[2]) of a "
+            "struct, class or array local, never through a pointer or reference, nor in std "
+            "types (unmarked)",
             "java": "numeric/boolean root locals, and numeric/boolean fields (not final or "
             "static) and array elements (current.end, xs[0]); rows mark them [settable]",
             "java-attach": "numeric/boolean root locals, fields and array elements (attached "
@@ -798,18 +804,20 @@ def _misplaced_options(args):
 
 
 def _member_sets(sets, language):
-    """Refuse a field or element --set before anything is built where only Java has them."""
+    """Refuse a field or element --set before anything is built where no language rule
+    allows one (Python)."""
     from peeky.errors import Refused
 
     names = [text.split("=", 1)[0].strip() for text in sets or ()]
     fields = [name for name in names if name and len(parse_selector(name)) > 1]
-    if fields and language not in ("java", "java-attach"):
+    if fields and language not in ("java", "java-attach", "c", "cpp", "rust"):
         raise Refused(
             "MUTATION_REJECTED",
-            f"--set {fields[0]} changes a field or element, which only Java targets allow; in "
-            f"{language} only the stopped function's own locals change. To test a value there, "
-            "add a local with a candidate edit and set it in the same probe (COOKBOOK 6.6: "
-            "`--old/--new` with `--set`), or edit the source and run verify",
+            f"--set {fields[0]} changes a field or element, which only Java, Rust, C and C++ "
+            f"targets allow; in {language} only the stopped function's own locals change. To "
+            "test a value there, add a local with a candidate edit and set it in the same "
+            "probe (COOKBOOK 6.6: `--old/--new` with `--set`), or edit the source and run "
+            "verify",
         )
 
 
@@ -1361,7 +1369,7 @@ def session(args):
             raise Refused(
                 "MUTATION_REJECTED",
                 f"Intervention target {name!r}: map and dict entries cannot be changed; "
-                "set changes a local, or in Java a field or array element",
+                "set changes a local, or a field or array element (Java, Rust, C, C++)",
             )
         changed = apply_set(_Remote(client), stop, name, value)
         _emit(changed, args.json, lambda c: f"set {c['name']}: {c['before']} -> {c['after']}")
@@ -2345,8 +2353,8 @@ def main(argv=None, _job=False, _edits=None):
         "--set",
         action="append",
         default=[],
-        help="name=value: a local; in Java also a field or array element (current.end=10, "
-        "xs[0]=1). Repeatable",
+        help="name=value: a local; in Java, Rust, C and C++ also a scalar field or array "
+        "element (current.end=10, xs[0]=1). Repeatable",
     )
     sub.add_argument(
         "--hits",
@@ -2455,8 +2463,8 @@ def main(argv=None, _job=False, _edits=None):
         ),
         (
             "set",
-            "Change one root local (in Java also a field or array element) to a literal "
-            "(name=value) at the current stop",
+            "Change one root local (in Java, Rust, C and C++ also a field or array element) "
+            "to a literal (name=value) at the current stop",
         ),
         ("continue", "Resume to the next breakpoint stop, --to LINE, or --to-exit"),
         ("step", "Run to the next line (--into a call, --out of the function)"),
