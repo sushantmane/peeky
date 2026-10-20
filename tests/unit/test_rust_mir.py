@@ -1074,3 +1074,25 @@ def test_aliases_follow_values_that_can_hold_a_pointer_and_find_drops_through_th
     assert body.supported
     assert body._aliases(1) == {1, 4, 5, 6}  # not the length or the String made from it
     assert body.drops_through(1) and not body.drops_through(2)
+
+
+@pytest.mark.parametrize(
+    "text, spans, complete",
+    [
+        ("let a = 1; // x\nlet b;", [(11, 15, True)], True),
+        ("/* a /* b */ c */ x", [(0, 17, True)], True),
+        ("f::<'a>('x', \"y\")", [(8, 11, False), (13, 16, False)], True),
+        ('let s = cr"C:\\"; // c', [(8, 15, False), (17, 21, True)], True),
+        ('let s = br#"a"b"#;', [(8, 17, False)], True),
+        ("/* open", [(0, 7, True)], False),
+        ('let s = "open', [(8, 13, False)], False),
+    ],
+)
+def test_rust_comments_and_literals_are_found_by_one_lexer(text, spans, complete):
+    from peeky.rust_lexer import code_only, lexemes
+
+    assert lexemes(text) == (spans, complete)
+    blanked = code_only(text)
+    assert (blanked is None) is not complete
+    if blanked is not None:
+        assert len(blanked) == len(text) and blanked.count("\n") == text.count("\n")

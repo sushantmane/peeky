@@ -1040,6 +1040,8 @@ def test_a_non_statement_row_another_row_replaces_runs_no_code(tmp_path):
         ("macro_rules! m (\n /* ) */ () => (1)\n);\n", {1, 2, 3}),
         ('macro_rules! m { () => { r#"}"# } }\nfn g() {}\n', {1}),
         ('let s = "macro_rules! m {";\n', set()),
+        # A C raw string (`cr"..."`) ends at its quote: a backslash escapes nothing.
+        ('macro_rules! m { () => { cr"C:\\" } }\nfn g() {}\n', {1}),
         ("macro_rules! m {\n () => {}\n", None),
         ("macro_rules! m { () => {} }\n/* unclosed\n", None),
     ],
