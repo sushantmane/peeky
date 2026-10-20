@@ -1,11 +1,19 @@
 """libstdc++ strings with a NUL byte (#128), as lldb-dap shows them and Peeky reads them."""
 
 import struct
+from types import SimpleNamespace
 
 import pytest
 
 from peeky.adapters import ViewBudgetExhausted
-from peeky.cxx_strings import libstdcxx_string, render, string_class, summary_units
+from peeky.cxx_strings import (
+    libstdcxx_string,
+    render,
+    string_class,
+    summary_units,
+    text_like,
+    tidy,
+)
 
 
 @pytest.mark.parametrize(
@@ -166,8 +174,156 @@ def test_libcxx_builds_keep_lldbs_strings():
     from peeky.native import NativeSession
 
     native = NativeSession.__new__(NativeSession)
+    native.target = SimpleNamespace(language="cpp")
     native.typedefs = {"namespace::__1": ("other", "")}
     assert native.string_value(variable('"a"'), lambda reference: libstdcxx(3), None) is None
     native.typedefs = {"namespace::__cxx11": ("other", "")}
     shown = native.string_value(variable('"a"'), lambda reference: libstdcxx(3), None)
     assert shown == {"value": '"a" (shown up to a NUL at byte 1 of 3)'}
+
+
+# Review of #128 (PR #131): typedef'd names, the C reading of an escape, long text.
+@pytest.mark.parametrize(
+    "text, shown",
+    [
+        # LLDB's `\0` before a digit: C reads "\064" as one character, `4`.
+        ('"n\\064"', '"n\\00064"'),
+        ('"x\\05"', '"x\\0005"'),
+        ('0x7ff0 "x\\05"', '0x7ff0 "x\\0005"'),
+        (
+            '"x\\05" (shown up to a NUL at byte 1 of 3)',
+            '"x\\0005" (shown up to a NUL at byte 1 of 3)',
+        ),
+        # Its `\xff` before a hex digit: C reads "\xffa" as one character.
+        ('"\\xffa"', '"\\377a"'),
+        ('"\\xff\\xfe"', None),
+        ('"\\0\\0"', None),
+        ('"\\08"', None),
+        ('"\\xffg"', None),
+        ('L"a\\01"', 'L"a\\0001"'),
+        ("hello", None),
+        ('"a" b', None),
+    ],
+)
+def test_a_literal_is_spelled_as_c_reads_it_back(text, shown):
+    assert tidy(text) == (None if shown is None else {"value": shown})
+
+
+def test_the_debuggers_failed_summary_is_never_a_value():
+    for failure in ("summary string parsing error", "no target", "no ScriptInterpreter"):
+        shown = tidy(f"error: {failure}")
+        assert shown["unavailable"] and shown["value"] is None
+        assert f"error: {failure}" in shown["reason"] and "select its members" in shown["reason"]
+        shown = tidy(f"0x00007ff0 error: {failure}")
+        assert shown["value"].startswith("0x00007ff0 <no text: LLDB's summary of this value")
+    # Rust: the same backstop, but its literals are not respelled (`\0` is one NUL there).
+    assert tidy("error: summary string parsing error", False)["unavailable"]
+    assert tidy('"n\\064"', False) is None
+
+
+def test_a_long_literal_is_cut_between_characters():
+    text = '"' + "\\U00000001" * 500 + '\\0z"'
+    shown = tidy(text)["value"]
+    assert len(shown) <= 2000 and shown.endswith('\\U00000001"...'), shown[-40:]
+    noted = tidy(text + " (shown up to a NUL at byte 500 of 502)")["value"]
+    assert len(noted) <= 2000 and noted.endswith('"... (shown up to a NUL at byte 500 of 502)')
+    # LLDB's own `...` is kept; a short literal is left as it is.
+    assert tidy('"yyy"...') is None
+
+
+def test_a_string_is_told_by_its_members_under_any_name():
+    def members(length, owner="std::basic_string<char>::_Alloc_hider"):
+        found = libstdcxx(length)
+        found[0]["type"] = owner
+        return found
+
+    fetch = lambda reference: members(3)  # noqa: E731
+    shown = libstdcxx_string(variable('"b"', "Bytes"), fetch, None, None)
+    assert shown == {"value": '"b" (shown up to a NUL at byte 1 of 3)'}
+    shown = libstdcxx_string(variable('"b"', "Bytes"), fetch, Memory(b"b\0y"), None)
+    assert shown == {"value": '"b\\0y"', "view": "memory", "string_length": 3}
+    shown = libstdcxx_string(variable('0x7ff0 "b"', "const Bytes &"), fetch, None, None)
+    assert shown == {"value": '0x7ff0 "b" (shown up to a NUL at byte 1 of 3)'}
+    wide = lambda reference: members(3, "std::basic_string<wchar_t>::_Alloc_hider")  # noqa: E731
+    shown = libstdcxx_string(variable('L"b"', "Wide"), wide, None, None)
+    assert shown == {"value": 'L"b" (shown up to a NUL at character 1 of 3)'}
+    # Anything else with a `_M_dataplus`, or none, is left as the debugger shows it.
+    other = lambda reference: members(3, "Mine::_Alloc_hider")  # noqa: E731
+    assert libstdcxx_string(variable('"b"', "Mine"), other, None, None) is None
+    plain = lambda reference: [{"name": "x", "value": "1"}]  # noqa: E731
+    assert libstdcxx_string(variable('"b"', "Mine"), plain, None, None) is None
+
+
+def test_only_text_with_members_is_worth_reading_them():
+    assert text_like(variable('"b"', "Bytes"))
+    assert text_like(variable("error: summary string parsing error", "Name"))
+    assert text_like(variable('0x7ff0 "b"', "const Bytes &"))
+    assert not text_like(variable('"b"', "Bytes", reference=0))
+    assert not text_like(variable("3", "Count"))
+    # C's own text: LLDB shows it as C has it.
+    for kind in ("char *", "const char *", "char[16]", "unsigned char[4]", "const wchar_t *"):
+        assert not text_like(variable('"b"', kind))
+
+
+class Reads:
+    """readMemory, recording each request."""
+
+    def __init__(self, cells):
+        self.cells, self.requests = cells, []
+
+    def __call__(self, address, count):
+        self.requests.append((address, count))
+        return self.cells[address][:count]
+
+
+def test_a_string_in_its_own_buffer_is_read_in_one_request():
+    local = struct.pack("<QQ", 0x1010, 3) + b"a\0b" + b"\0" * 13
+    reads = Reads({"0x1000": local})
+    shown = libstdcxx_string(variable('"a"'), lambda reference: libstdcxx(3), reads)
+    assert shown["value"] == '"a\\0b"' and reads.requests == [("0x1000", 32)]
+    reads = Reads({"0x1000": struct.pack("<QQ", 0x2000, 20) + b"\0" * 16, "0x2000": b"x\0" * 10})
+    shown = libstdcxx_string(variable('"x"'), lambda reference: libstdcxx(20), reads)
+    assert shown["value"] == '"' + "x\\0" * 10 + '"'
+    assert reads.requests == [("0x1000", 32), ("0x2000", 20)]
+
+
+def test_a_typedef_of_a_string_class_is_resolved():
+    from peeky.native import NativeSession
+
+    native = NativeSession.__new__(NativeSession)
+    native.target = SimpleNamespace(language="cpp")
+    native.typedefs = {
+        "Bytes": ("other", "std::basic_string<char>"),
+        "Name": ("other", "std::string"),
+        "BytesRef": ("reference", "std::basic_string<char>"),
+        "BytesPtr": ("pointer", "Bytes"),
+        "Count": ("other", "int"),
+        "namespace::__cxx11": ("other", ""),
+    }
+    assert native._string_class("Bytes") == (1, "", "")
+    assert native._string_class("const Name &") == (1, "", "&")
+    assert native._string_class("BytesRef") == (1, "", "&")
+    assert native._string_class("Bytes *") == (1, "", "*")
+    assert native._string_class("BytesPtr") == (1, "", "*")
+    assert native._string_class("Count") is None
+    assert native._string_class("Unknown") is None
+
+
+def test_peekys_own_text_is_spelled_once():
+    from peeky.native import NativeSession
+
+    native = NativeSession.__new__(NativeSession)
+    native.target = SimpleNamespace(language="cpp")
+    native.typedefs = {"namespace::__cxx11": ("other", "")}
+    fetch = lambda reference: libstdcxx(4)  # noqa: E731
+    # Read from memory: `\000` then "64" (C reads `\00064` as NUL, '6', '4').
+    shown = native.string_value(variable('"n"'), fetch, Memory(b"n\x0064"))
+    assert shown["value"] == '"n\\00064"' and shown["view"] == "memory"
+    # LLDB's whole text, respelled once; Rust's left as LLDB shows it.
+    whole = lambda reference: libstdcxx(2)  # noqa: E731
+    assert native.string_value(variable('"\\xffa"'), whole, None) == {
+        "string_length": 2,
+        "value": '"\\377a"',
+    }
+    native.target = SimpleNamespace(language="rust")
+    assert native.string_value(variable('"a\\064"', "&str"), whole, None) is None

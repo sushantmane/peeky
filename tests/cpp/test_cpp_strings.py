@@ -188,3 +188,158 @@ def test_a_probe_and_its_evidence_keep_the_whole_string(strings, capsys):
     # A key "k\0x" is no key "k", however it is shown (#119).
     assert saved["keys['zz']"]["value"] == "2"
     assert 'no key "k"' in saved["keys['k']"]["error"], saved["keys['k']"]
+
+
+# Review of #128 (PR #131): strings by a typedef's name, digits after a NUL, long text.
+NAMED = """#include <cstdio>
+#include <string>
+#include <vector>
+typedef std::basic_string<char> Bytes;
+#if defined(__GLIBCXX__)
+using Bytes2 = std::__cxx11::basic_string<char>;
+#else
+using Bytes2 = std::basic_string<char>;
+#endif
+using Name = std::string;
+template <class T> struct Hold { using S = T; };
+struct Box { Bytes b; };
+struct Person { Name name; int age; };
+static size_t take(const Bytes &br, const Bytes *bp, const Name &nref) {
+    size_t n = br.size() + bp->size() + nref.size();
+    return n; // IN_TAKE
+}
+int main() {
+    Bytes b(std::string("b\\0y", 3));
+    Bytes2 b2(std::string("c\\0y", 3));
+    Box bx{Bytes(std::string("x\\0b", 3))};
+    Name tn(std::string("t\\0n", 3));
+    Person per{Name("p\\0e", 3), 3};
+    Hold<std::string>::S hs(std::string("h\\0s", 3));
+    Hold<int>::S hi = 4;
+    std::vector<std::string> v;
+    v.push_back(std::string("n\\0" "64", 4));
+    v.push_back(std::string("\\xff" "a", 2));
+    v.push_back(std::string(500, '\\x01') + std::string("\\0", 1) + "z");
+    std::string digits("x\\0" "5", 3);
+    size_t n = take(b, &b, tn) + b2.size() + bx.b.size() + per.name.size() + hs.size() + hi;
+    std::printf("%zu %zu %zu\\n", n, v.size(), digits.size()); // OBSERVE
+    return 0;
+}
+"""
+NAMED_WHOLE = {
+    "b": '"b\\0y"',
+    "b2": '"c\\0y"',
+    "bx.b": '"x\\0b"',
+    "tn": '"t\\0n"',
+    "per.name": '"p\\0e"',
+    "hs": '"h\\0s"',
+    # A NUL before a digit, and a byte before a hex digit, as C reads them back.
+    "v[0]": '"n\\00064"',
+    "digits": '"x\\0005"',
+}
+
+
+@contextlib.contextmanager
+def named(tmp_path, capsys, marker="// OBSERVE"):
+    from peeky.cli import main
+
+    source = tmp_path / "named.cpp"
+    source.write_text(NAMED)
+    line = next(i for i, text in enumerate(NAMED.splitlines(), 1) if marker in text)
+    assert main(["session", "start", str(source), "--at", str(line)]) == 0
+    capsys.readouterr()
+
+    def get(*selectors):
+        main(["session", "get", *selectors, "--json"])
+        return {row["selector"]: row for row in json.loads(capsys.readouterr().out)}
+
+    try:
+        yield get
+    finally:
+        main(["session", "close"])
+        capsys.readouterr()
+
+
+def test_a_string_by_a_typedefs_name_is_never_cut_short(strings, tmp_path, capsys):
+    # Review of #128: `Bytes b` (typedef std::basic_string<char>) showed "b" for "b\0y",
+    # and `bx.b` "x", `b2` (std::__cxx11::basic_string<char>) "c": no note. A typedef of
+    # std::string (`Name`) showed `error: summary string parsing error`, as the value.
+    with named(tmp_path, capsys) as get:
+        rows = get("b", "b2", "bx.b", "tn", "per.name", "hs", "per")
+        for name in ("b", "b2", "bx.b", "tn", "per.name", "hs"):
+            row = rows[name]
+            assert "summary string parsing error" not in str(row.get("value")), row
+            if whole(row):
+                assert row["value"] == NAMED_WHOLE[name], row
+            elif name in ("b", "b2", "bx.b", "hs"):
+                # LLDB's libstdc++ summary, cut at the NUL: noted.
+                text = NAMED_WHOLE[name][:2] + '"'
+                assert row["value"] == f"{text} (shown up to a NUL at byte 1 of 3)", row
+            else:
+                # Named std::string: LLDB's summary fails, and lldb-dap 18 reads no memory.
+                assert row.get("unavailable") and "it holds 3 bytes" in row["error"], row
+        listed = {child["selector"]: child for child in rows["per"]["children"]}
+        assert listed["per.name"].get("value") == rows["per.name"].get("value")
+    with named(tmp_path, capsys, "// IN_TAKE") as get:
+        rows = get("br", "bp", "bp[0]", "nref")
+        for name, text in (("br", '"b\\0y"'), ("bp", '"b\\0y"'), ("nref", '"t\\0n"')):
+            value = rows[name]["value"]
+            # LLDB's error may be quoted in a note, never shown as the text.
+            assert value.startswith("0x") and not value.split(" ", 1)[1].startswith("error:")
+            if whole(rows[name]):
+                assert value.endswith(" " + text), rows[name]
+            elif name == "nref":
+                assert "<no text: the string's summary failed" in value, rows[name]
+            else:
+                assert value.endswith(' "b" (shown up to a NUL at byte 1 of 3)'), rows[name]
+        assert rows["bp[0]"]["value"] == rows["bp"]["value"].split(" ", 1)[1]
+
+
+def test_a_nul_or_byte_before_a_digit_reads_back_as_the_same_bytes(strings, tmp_path, capsys):
+    # Review of #128: "n\0" "64" showed `"n\064"`, which C reads as "n4", and "x\0" "5"
+    # `"x\05"`; also LLDB's own libc++ text on macOS. A raw byte before a hex digit the
+    # same: `"\xffa"` is one character to C.
+    with named(tmp_path, capsys) as get:
+        rows = get("v[0]", "v[1]", "digits")
+        assert rows["v[1]"]["value"] == '"\\377a"', rows["v[1]"]
+        for name in ("v[0]", "digits"):
+            row = rows[name]
+            if whole(row):
+                assert row["value"] == NAMED_WHOLE[name], row
+            elif name == "v[0]":
+                assert row["value"] == '"n" (shown up to a NUL at byte 1 of 4)', row
+            else:
+                assert row.get("unavailable"), row
+
+
+def test_a_long_string_is_cut_between_characters_and_says_so(strings, tmp_path, capsys):
+    # Review of #128: 500 control bytes, a NUL and "z" showed 5041 characters on
+    # lldb-dap 18 (the note's text past the worker's 2000), and macOS's 2000 ended inside
+    # an escape with no `...`.
+    with named(tmp_path, capsys) as get:
+        value = get("v[2]")["v[2]"]["value"]
+        assert len(value) <= 2000, len(value)
+        literal = value.split('"...', 1)[0] + '"'
+        assert value.startswith('"\\U00000001') and '"...' in value, value[-80:]
+        # Cut between escapes, never inside one.
+        assert literal.endswith('\\U00000001"'), literal[-30:]
+        if not whole(get("v[0]")["v[0]"]):
+            assert value.endswith("(shown up to a NUL at byte 500 of 502)"), value[-80:]
+
+
+def test_a_named_strings_evidence_is_never_lldbs_error_text(strings, tmp_path, capsys):
+    # Review of #128: `queries run` showed `tn  Name  error: summary string parsing error`.
+    from peeky.cli import main
+
+    source = tmp_path / "named.cpp"
+    source.write_text(NAMED)
+    line = next(i for i, text in enumerate(NAMED.splitlines(), 1) if "// OBSERVE" in text)
+    assert main(["probe", str(source), "--at", str(line), "--quiet", "--capture", "tn,b"]) == 0
+    capsys.readouterr()
+    assert main(["sql", "SELECT selector, value, unavailable, view FROM last_run", "--json"]) == 0
+    saved = {row["selector"]: row for row in json.loads(capsys.readouterr().out)["rows"]}
+    for name in ("tn", "b"):
+        assert "summary string parsing error" not in str(saved[name]["value"]), saved[name]
+        if whole(saved[name]):
+            assert saved[name]["value"] == NAMED_WHOLE[name], saved[name]
+    assert saved["tn"]["value"] == NAMED_WHOLE["tn"] or saved["tn"]["unavailable"]

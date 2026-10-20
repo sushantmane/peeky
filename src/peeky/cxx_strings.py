@@ -7,6 +7,12 @@ incomplete (clang's default on Linux): `error: summary string parsing error`. Th
 string's `_M_string_length` member says how many characters it holds; where the debugger
 reads memory, its bytes are read and shown as LLDB prints a libc++ string (every byte,
 a NUL as `\\0`); elsewhere the text is shown with a note, never as if complete.
+
+Every string literal LLDB or Peeky shows is also spelled so that C reads it back as
+the same bytes (``tidy``): LLDB writes a NUL as `\\0` and an invalid byte as `\\xff`
+even before a digit, where C would read `"\\064"` as one character `4` and `"\\xffa"` as
+one; there the three-digit octal form is used (`\\000`, `\\377`), and a text longer than
+the worker keeps is cut between characters, with LLDB's `...`.
 """
 
 import re
@@ -15,8 +21,9 @@ import unicodedata
 
 # LLDB's `target.max-string-summary-length`: a longer string's summary ends `"...`.
 SUMMARY_UNITS = 1024
-# The worker keeps a value's first 2000 characters.
-_SHOWN = 1900
+# The worker keeps a value's first 2000 characters: a literal, its address and a note fit.
+_SHOWN = 1700
+_VALUE = 2000
 
 # A standard string class (`std::string`, `std::basic_string<char>`, libstdc++'s
 # `std::__cxx11::basic_string<char, ...>`), by value, reference or pointer.
@@ -60,36 +67,120 @@ def _code_units(code, width):
     return 1
 
 
+def _lex(text, at=0):
+    """The string literal LLDB prints at ``text[at:]`` (`"a\\tb"`, `L"x"`, `"yyy"...`):
+    (prefix, [(spelling, code point or None for a raw byte `\\xNN`, raw)], whether LLDB
+    cut it at its length limit, where it ends), or None for other text. ``raw``: written
+    as the character itself, not an escape."""
+    found = re.compile(r'(L|u|U)?"').match(text, at)
+    if not found:
+        return None
+    tokens, at = [], found.end()
+    while at < len(text):
+        char = text[at]
+        if char == '"':
+            capped = text.startswith("...", at + 1)
+            return found[1] or "", tokens, capped, at + 1 + 3 * capped
+        if char != "\\":
+            tokens.append((char, ord(char), True))
+            at += 1
+            continue
+        escape = text[at + 1 : at + 2]
+        if escape in _SIMPLE:
+            code = {"0": 0, "a": 7, "b": 8, "t": 9, "n": 10, "v": 11, "f": 12, "r": 13, "e": 27}
+            tokens.append((text[at : at + 2], code.get(escape, ord(escape)), False))
+            at += 2
+        elif escape == "x" and re.fullmatch(r"[0-9a-fA-F]{2}", text[at + 2 : at + 4]):
+            tokens.append((text[at : at + 4], None, False))
+            at += 4
+        elif escape in ("u", "U"):
+            digits = 4 if escape == "u" else 8
+            code = text[at + 2 : at + 2 + digits]
+            if not re.fullmatch(rf"[0-9a-fA-F]{{{digits}}}", code) or int(code, 16) > 0x10FFFF:
+                return None
+            tokens.append((text[at : at + 2 + digits], int(code, 16), False))
+            at += 2 + digits
+        else:
+            return None
+    return None
+
+
 def summary_units(text, width, prefix):
     """(characters shown, whether LLDB cut the summary at its length limit) for a string
     summary as LLDB prints it (`"a\\tb"`, `L"x"`, `"yyy"...`), or None for other text.
     A character is a byte for `char` (UTF-8), a code unit for the wider types."""
-    found = re.fullmatch(rf'{re.escape(prefix)}"(.*)"(\.\.\.)?', text, re.S)
-    if not found:
+    lexed = _lex(text)
+    if lexed is None or lexed[0] != prefix or lexed[3] != len(text):
         return None
-    body, count, at = found[1], 0, 0
-    while at < len(body):
-        char = body[at]
-        if char == '"':
-            return None
-        if char != "\\":
-            count += _code_units(ord(char), width)
-            at += 1
-            continue
-        escape = body[at + 1 : at + 2]
-        if escape in _SIMPLE:
-            count, at = count + 1, at + 2
-        elif escape == "x" and re.fullmatch(r"[0-9a-fA-F]{2}", body[at + 2 : at + 4]):
-            count, at = count + 1, at + 4
-        elif escape in ("u", "U"):
-            digits = 4 if escape == "u" else 8
-            code = body[at + 2 : at + 2 + digits]
-            if not re.fullmatch(rf"[0-9a-fA-F]{{{digits}}}", code) or int(code, 16) > 0x10FFFF:
-                return None
-            count, at = count + _code_units(int(code, 16), width), at + 2 + digits
-        else:
-            return None
-    return count, bool(found[2])
+    count = sum(1 if code is None else _code_units(code, width) for _, code, _ in lexed[1])
+    return count, lexed[2]
+
+
+def _spell(tokens):
+    """The tokens' text, each escape spelled so that C reads it back alone: LLDB's `\\0`
+    before an octal digit is `\\000`, its `\\xNN` before a hex digit `\\NNN` (octal)."""
+    shown = []
+    for at, (spelling, code, _) in enumerate(tokens):
+        after = tokens[at + 1] if at + 1 < len(tokens) else None
+        follows = after[0] if after and after[2] else ""
+        if spelling == "\\0" and follows in "01234567" and follows:
+            spelling = "\\000"
+        elif spelling.startswith("\\x") and follows and follows in "0123456789abcdefABCDEF":
+            spelling = f"\\{int(spelling[2:], 16):03o}"
+        shown.append(spelling)
+    return shown
+
+
+def _literal(prefix, tokens, capped, room):
+    """A literal of ``tokens`` within ``room`` characters, cut between characters with
+    LLDB's `...` where it does not fit (or LLDB already cut it)."""
+    size = len(prefix) + 2
+    spelled = _spell(tokens)
+    for at, spelling in enumerate(spelled):
+        if size + len(spelling) + 3 > room:
+            capped = True
+            spelled = spelled[:at]
+            break
+        size += len(spelling)
+    return f'{prefix}"{"".join(spelled)}"' + ("..." if capped else "")
+
+
+# LLDB's text where a summary failed, after a pointer's or reference's address.
+_FAILED = re.compile(
+    r"(?:(0x[0-9a-fA-F]+)\s+)?(error: (?:summary string parsing error|no target|no "
+    r"ScriptInterpreter))\s*"
+)
+
+
+def tidy(text, spell=True):
+    """What to show instead of the debugger's text ``text`` for a native value, or None
+    to keep it: never LLDB's own `error: summary string parsing error` as if it were
+    the value (an unavailable value, or `<no text: ...>` after a pointer's address);
+    and, with ``spell`` (C and C++, not Rust, whose `\0` is never followed by more
+    digits), a string literal (after an address, before a note) spelled as C reads it
+    and bounded to the worker's 2000 characters. Only for the debugger's own text: a
+    literal Peeky spelled reads differently (its `\000` is one NUL, LLDB's three
+    characters)."""
+    text = str(text)
+    if failed := _FAILED.fullmatch(text):
+        reason = f"LLDB's summary of this value failed ({failed[2]}); select its members"
+        if failed[1]:
+            return {"value": f"{failed[1]} <no text: {reason}>"}
+        return {"value": None, "unavailable": True, "reason": reason}
+    if not spell:
+        return None
+    located = _ADDRESS.match(text)
+    start = located.end() if located else 0
+    lexed = _lex(text, start)
+    if lexed is None:
+        return None
+    prefix, tokens, capped, end = lexed
+    note = text[end:]
+    if note and not note.startswith(" ("):
+        return None
+    room = _VALUE - start - min(len(note), 200)
+    shown = text[:start] + _literal(prefix, tokens, capped, room) + note[:200]
+    return None if shown == text else {"value": shown}
 
 
 def _printable(code):
@@ -140,35 +231,63 @@ def _characters(data, width):
 
 def render(data, width, prefix, more):
     """``data`` as LLDB's libc++ summary prints a string: quoted, escaped, every NUL as
-    `\\0`; ``more`` (or the shown text's own bound) adds LLDB's `...`."""
-    shown = []
-    size = 0
-    cut = more
+    `\\0` (spelled as C reads it back: see ``tidy``); ``more`` adds LLDB's `...`."""
+    tokens = []
     for character in _characters(data, width):
-        if size + len(character) > _SHOWN:
-            cut = True
+        tokens.append((character, None, not character.startswith("\\")))
+        if len(tokens) > _SHOWN:
+            more = True
             break
-        shown.append(character)
-        size += len(character)
-    return f'{prefix}"{"".join(shown)}"' + ("..." if cut else "")
+    return _literal(prefix, tokens, more, _SHOWN)
 
 
-def libstdcxx_string(variable, fetch, read):
+# The class a libstdc++ string's `_M_dataplus` member names (`std::basic_string<char>::
+# _Alloc_hider`): its character type, whatever name the value itself goes by.
+_MEMBER_OF = re.compile(
+    r"(?:(?:const|volatile)\s+)*(?:::)?std::(?:__\w+::)*basic_string<\s*"
+    r"(char|wchar_t|char16_t|char32_t)\s*(?:,.*)?>::_Alloc_hider\s*",
+    re.S,
+)
+# What LLDB shows for a value it gives a string summary, or whose summary failed.
+_TEXT_LIKE = re.compile(r'(?:0x[0-9a-fA-F]+\s+)?(?:(?:L|u|U)?"|error: summary string)')
+# C's own text (`char *`, `char[16]`): LLDB shows it as a literal, as C has it.
+_C_TEXT = re.compile(
+    r"(?:(?:const|volatile|signed|unsigned)\s+)*(?:char|char8_t|char16_t|char32_t|wchar_t)"
+    r"(?:\s+(?:const|volatile))*\s*(?:\*|\[).*",
+    re.S,
+)
+
+
+def text_like(variable):
+    """Whether a value LLDB shows as a string literal (or as a failed summary) may be a
+    libstdc++ string under a type name Peeky cannot resolve: worth reading its members."""
+    raw = variable.get("variablesReference")
+    return (
+        type(raw) is int
+        and raw > 0
+        and bool(_TEXT_LIKE.match(str(variable.get("value", ""))))
+        and not _C_TEXT.fullmatch(str(variable.get("type") or "").strip())
+    )
+
+
+def libstdcxx_string(variable, fetch, read, found="type"):
     """The value to show for a libstdc++ string ``variable`` (a DAP variable whose
     children are its members), as {"value": ...} (with "view": "memory" where its bytes
     were read) or {"unavailable": True, "reason": ...}; {"string_length": N} alone where
     the debugger's text is whole (N characters); None for anything else.
-    ``fetch(reference)`` lists a debugger variable's children; ``read(address, count)``
-    reads memory, or is None where the debugger cannot."""
-    found = string_class(variable.get("type"))
-    if found is None:
+    ``found``: its ``string_class`` (by default its type's), or that of the class a
+    typedef names; None for a value told by its members alone (`_M_dataplus`,
+    `_M_string_length`), whatever its type's name. ``fetch(reference)`` lists a
+    debugger variable's children;
+    ``read(address, count)`` reads memory, or is None where the debugger cannot."""
+    if found == "type" and (found := string_class(variable.get("type"))) is None:
         return None
-    width, prefix, indirect = found
+    width, prefix, indirect = found or (None, None, None)
     value = str(variable.get("value", ""))
     address = ""
-    if indirect:
+    located = _ADDRESS.match(value)
+    if indirect or (found is None and located):
         # A pointer or reference shows its address, then what its target's summary says.
-        located = _ADDRESS.match(value)
         if not located:
             return None
         address, value = located[1] + " ", value[located.end() :]
@@ -181,7 +300,17 @@ def libstdcxx_string(variable, fetch, read):
         )
     except ValueError as exc:
         # Includes the view budget: the text is not checked, so it is not vouched for.
-        return {"value": f"{address}{value} (not checked for a NUL byte: {str(exc)[:80]})"}
+        if found is None:
+            return None
+        if _FAILED.fullmatch(value):
+            return _no_text(address, f"the string's summary failed ({value[:60]}): {exc}"[:300])
+        return _noted(address, value, f"not checked for a NUL byte: {str(exc)[:80]}")
+    if found is None:
+        # Told by its members: libstdc++'s, with the character type `_M_dataplus` names.
+        owner = _MEMBER_OF.fullmatch(str((members.get("_M_dataplus") or {}).get("type") or ""))
+        if owner is None or "_M_string_length" not in members:
+            return None
+        width, prefix = _UNITS[owner[1]]
     length = members.get("_M_string_length", {}).get("value")
     if not isinstance(length, str) or not re.fullmatch(r"[0-9]{1,19}", length):
         if members and not any(str(name).startswith("_M_") for name in members):
@@ -197,10 +326,11 @@ def libstdcxx_string(variable, fetch, read):
                 "information gives no length for it",
             )
         if summary_units(value, width, prefix):
-            return {
-                "value": f"{address}{value} (not checked for a NUL byte: the debugger shows "
-                "no length for this string)"
-            }
+            return _noted(
+                address,
+                value,
+                "not checked for a NUL byte: the debugger shows no length for this string",
+            )
         return None
     length = int(length)
     shown = summary_units(value, width, prefix)
@@ -226,7 +356,7 @@ def libstdcxx_string(variable, fetch, read):
             note = f"the debugger shows its first {count} of {length} {unit}s"
         else:
             note = f"the debugger shows {count} {unit}s of a string of {length}"
-        return {"value": f"{address}{value} ({note})"}
+        return _noted(address, value, note)
     if value.startswith("error:"):
         return _no_text(
             address,
@@ -234,6 +364,12 @@ def libstdcxx_string(variable, fetch, read):
             f"memory (lldb-dap 20 can); it holds {length} {unit}s",
         )
     return None
+
+
+def _noted(address, value, note):
+    """The debugger's literal (bounded, as ``tidy`` keeps it) and a note on it."""
+    shown = f"{address}{value} ({note})"
+    return {"value": (tidy(shown) or {"value": shown})["value"]}
 
 
 def _no_text(address, reason):
@@ -246,16 +382,21 @@ def _no_text(address, reason):
 def _read(members, length, width, prefix, read):
     """The string's first characters, read from memory: its data pointer and length
     (libstdc++'s first two words, the length checked against `_M_string_length`), then
-    up to SUMMARY_UNITS characters. None where any read fails."""
+    up to SUMMARY_UNITS characters. A string in its own 16-byte buffer (right after
+    those words) is read in the same request. None where any read fails."""
     reference = (members.get("_M_dataplus") or {}).get("memoryReference")
     if not isinstance(reference, str) or not re.fullmatch(r"0x[0-9A-Fa-f]{1,16}", reference):
         return None
     try:
-        data, stored = struct.unpack("<QQ", read(reference, 16))
+        head = read(reference, 32)
+        data, stored = struct.unpack("<QQ", head[:16])
         if stored != length:
             return None
-        count = min(length, SUMMARY_UNITS)
-        body = read(f"0x{data:x}", count * width) if count else b""
+        count = min(length, SUMMARY_UNITS) * width
+        if data == int(reference, 16) + 16 and count <= 16:
+            body = head[16 : 16 + count]
+        else:
+            body = read(f"0x{data:x}", count) if count else b""
     except (ValueError, struct.error):
         return None
     return render(body, width, prefix, length > SUMMARY_UNITS)

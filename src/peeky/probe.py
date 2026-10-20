@@ -1567,7 +1567,10 @@ def _dereferenced(variable, pointee):
     }
     if variable.get("pointee_aliased_type"):
         shown["aliased_type"] = variable["pointee_aliased_type"]
-    for key in ("indexedVariables", "namedVariables"):
+    if summary and variable.get("view") == "memory":
+        # A libstdc++ string's text, which the worker read from memory (#128).
+        shown["view"] = "memory"
+    for key in ("indexedVariables", "namedVariables", "string_length"):
         if type(variable.get(key)) is int:
             shown[key] = variable[key]
     return shown
