@@ -874,8 +874,9 @@ _COMPOSITE_RUST = (
     "or read it where it is passed as &Vec or &[T], and check contents with `peeky verify`."
 )
 _UNPROVEN_RUST = (
-    "this Rust Box (or a pointer the build's MIR does not identify, or a reference into a "
-    "value that may be moved or dropped) shows only its pointer: Peeky reads what it "
+    "this Rust Box (or a pointer the build's MIR does not identify, a reference into a "
+    "value that may be moved or dropped, or a pointer inside a struct, tuple or array "
+    "that may be) shows only its pointer: Peeky reads what it "
     "points at only where the build's MIR proves it initialized (a reference: still used "
     "at or after the stop, or no call or drop since its last use, or into a shared "
     "parameter's target or a live enclosing variable; a raw pointer: never) in the "
@@ -883,8 +884,17 @@ _UNPROVEN_RUST = (
     "may be moved or dropped, or the MIR cannot say (a generic `T`, `Self` or `impl "
     "Trait`, an `async fn`'s parameter, a closure's capture, an unmangled `#[no_mangle]` "
     "function), so "
-    "its pointer can reach freed memory (#101, #110). A plain function's own local reads "
+    "its pointer can reach freed memory (#101, #108, #110). A plain function's own local reads "
     "on a line where it is live; otherwise capture what it holds where it is created"
+)
+_STALE_RUST = (
+    "This is (or is inside) a Rust local that may own memory through a pointer (a "
+    "struct, tuple, array or enum holding a Box, Vec, String or Rc) and that the build's "
+    "MIR does not prove initialized here: it may be moved, dropped, partly moved or not "
+    "yet assigned, or nothing is proven (an optimized build, a caller frame's call that "
+    "may move it, a frame the MIR cannot match). Its fields show the bytes left in its "
+    "own storage, which may be a moved-from copy, and its pointers show only their "
+    "address (#108). Probe a line where it is live, or read it where it is passed"
 )
 _UNREAD_RUST = (
     "Peeky reads Rust contents only for String, &str and containers of integer, bool, "
@@ -1267,12 +1277,16 @@ def _capture(
                     row["note"] = _UNPROVEN_RUST[0].upper() + _UNPROVEN_RUST[1:] + "."
                 elif "view" not in variable and str(variable.get("type")) in _OWNED_RUST_TYPES:
                     row["note"] = _OWNED_RUST
+                elif variable.get("stale"):
+                    row["note"] = _STALE_RUST + "."
                 elif "view" not in variable and _unread_rust(str(variable.get("type"))):
                     row["note"] = _UNREAD_RUST
                 elif "view" not in variable and _rust_composite(str(variable.get("type"))):
                     row["note"] = _COMPOSITE_RUST
             if "view" in variable:
                 row["view"] = variable["view"]
+            if variable.get("stale"):
+                row["stale"] = True
             if variable.get("scope") == "globals":
                 row["scope"] = "globals"
             if variable.get("identity") and not variable.get("unavailable"):
@@ -1307,6 +1321,12 @@ def _capture(
                         )
                 except ValueError as exc:
                     row["children_error"] = str(exc)
+                listed = row.get("children", ())
+                if "note" not in row and any(c.get("view") == "unproven" for c in listed):
+                    # A caller's struct reads, but not what its pointers reach (#108).
+                    row["note"] = _UNPROVEN_RUST[0].upper() + _UNPROVEN_RUST[1:] + "."
+                elif "note" not in row and any(c.get("stale") for c in listed):
+                    row["note"] = _STALE_RUST + "."
         rows.append(row)
     return rows
 
@@ -2271,6 +2291,10 @@ def _children(worker, stop, selector, variable, pointers=False, whole_strings=Fa
             entry.update(unavailable=True, reason=child.get("reason"))
         if child.get("identity"):
             entry["identity"] = child["identity"]
+        if child.get("view"):
+            entry["view"] = child["view"]
+        if child.get("stale"):
+            entry["stale"] = True
         path = _child_selector(selector, child["name"])
         if pointers and path is None and _pointee(variable, page["variables"]) is child:
             path = f"{selector}[0]"
@@ -2620,7 +2644,7 @@ def run_probe(root, probe, *, adapter=None, progress=None):
             "is which."
         )
     unproven = _UNPROVEN_RUST[0].upper() + _UNPROVEN_RUST[1:] + "."
-    for note in (_OWNED_RUST, _UNREAD_RUST, _COMPOSITE_RUST, unproven):
+    for note in (_OWNED_RUST, _UNREAD_RUST, _COMPOSITE_RUST, unproven, _STALE_RUST + "."):
         if any(row.get("note") == note for row in rows):
             warnings.append(note)
     if changes and probe.limit > 1:

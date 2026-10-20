@@ -1064,3 +1064,16 @@ def test_a_store_from_the_first_schema_6_gains_an_integer_identity_and_scope(sto
     indexes = {row[0] for row in connection.execute("SELECT name FROM sqlite_master")}
     assert {"captures_run", "captures_selector"} <= indexes and "captures_v7" not in indexes
     connection.close()
+
+
+def test_a_stale_rust_value_is_stored_as_stale(store):
+    # #108: a field of a moved or dropped Rust local is the bytes it left behind; the
+    # store says so in `view`, as a row's note does.
+    recorded = captured([(1, "observed", "h.n", "9"), (1, "observed", "f.n", "3")])
+    recorded["rows"][0]["stale"] = True
+    evidence.record(store, recorded)
+    rows = evidence.query(store, "SELECT selector, value, view FROM captures ORDER BY selector")
+    assert rows["rows"] == [
+        {"selector": "f.n", "value": "3", "view": None},
+        {"selector": "h.n", "value": "9", "view": "stale"},
+    ]

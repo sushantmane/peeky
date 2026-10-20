@@ -1175,6 +1175,9 @@ def _variables_text(snapshot, name="default"):
                 # LLDB's `(Return Value)` after `step --out`, debugpy's `special variables`.
                 more = " [not selectable]"
             view = f"  [{variable['view']}]" if variable.get("view") else ""
+            if variable.get("stale"):
+                # May be moved or dropped: its fields are what it left behind (#108).
+                view += "  [stale]"
             if variable.get("settable"):
                 view += "  [settable]"
             if variable.get("identity"):
@@ -1228,6 +1231,7 @@ def _get_lines(row):
             f"{row['selector']}: {row.get('type') or ''} = {value}"
             + (f"  [id {row['identity']}]" if row.get("identity") else "")
             + ("  [module global]" if row.get("scope") == "globals" else "")
+            + ("  [stale]" if row.get("stale") else "")
         ]
     for child in row.get("children", []):
         name = child.get("selector") or f"{child['name']} [not selectable]"
@@ -1243,6 +1247,10 @@ def _get_lines(row):
             else child.get("value")
         )
         shown = f"  [id {child['identity']}]" if child.get("identity") else ""
+        if child.get("view") == "unproven":
+            shown += "  [unproven]"
+        if child.get("stale"):
+            shown += "  [stale]"
         lines.append(f"  {name}: {child.get('type') or ''} = {value}{shown}{more}")
     if row.get("children_truncated"):
         lines.append("  ... more children; select one by name or index")
