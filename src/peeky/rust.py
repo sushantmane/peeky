@@ -752,6 +752,11 @@ def _same_lent_rows(copies, variable, siblings, read):
     rows = [row for row in siblings if row.get("name") == variable.get("name")]
     if len(rows) != count or not any(row is variable for row in rows):
         return False
+    shown = [str(row.get("value") or "") for row in rows]
+    if width == 8 and all(re.fullmatch(r"0x[0-9a-fA-F]{1,16}", value) for value in shown):
+        # A thin reference shows the pointer it holds, all of its bytes: so lldb-dap 18,
+        # which cannot read memory, can be told too.
+        return len({int(value, 16) for value in shown}) == 1
     try:
         held = {bytes(read(row.get("memoryReference"), width)) for row in rows}
     except Exception:
@@ -1130,7 +1135,7 @@ class RustSession(NativeSession):
                 # stop anywhere in it. What cannot be told (a site or local not understood)
                 # reads as before.
                 gated = reference_valid() is False
-                if gated and siblings and read is not None:
+                if gated and siblings:
                     gated = not _same_lent_rows(
                         proofs.lent_copies(
                             hashed[1],

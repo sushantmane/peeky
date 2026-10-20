@@ -1431,6 +1431,17 @@ def test_a_parameter_s_rows_read_where_its_copy_holds_what_the_state_does():
     assert not _same_lent_rows((8, 2), rows[1], rows, read)
     del memory["0x20"]
     assert not _same_lent_rows((8, 2), rows[1], rows, read)
+    # A thin reference shows the pointer it holds: lldb-dap 18 reads no memory, and
+    # gives no memoryReference.
+    shown = [{"name": "v @ main.rs:1", "value": "0x0000fffffffff120"} for _ in range(2)]
+    assert _same_lent_rows((8, 2), shown[0], shown, None)
+    shown[1]["value"] = "0x0000fffffffff128"
+    assert not _same_lent_rows((8, 2), shown[0], shown, None)
+    # A wide one (`&[T]`, `&str`) shows no pointer, nor does a summary: then its bytes.
+    shown[1]["value"] = "0x0000fffffffff120"
+    assert not _same_lent_rows((16, 2), shown[0], shown, None)
+    summary = [{"name": "s @ main.rs:1", "value": '0x0000fffffffff120 "ab"'} for _ in range(2)]
+    assert not _same_lent_rows((8, 2), summary[0], summary, None)
 
 
 def test_a_value_a_coroutine_s_state_holds_is_not_a_capture_through_it():
