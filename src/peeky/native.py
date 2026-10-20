@@ -1090,7 +1090,10 @@ def local_declarations(info, line_text, workspace, declared):
     each automatic local, (name, source, line) -> the code ranges of the block declaring
     it. ``root``: the function's DIE; ``constructor``, ``enclosing`` and ``defined``:
     see _class_role. ``span``: its own lines in its source, or None. ``order``: every row
-    it runs, (address, source, line) by address. ``classes``: _local_classes."""
+    it runs, (address, source, line) by address. ``classes``: _local_classes.
+    ``types``: fields.local_types, the type and storage of each local (#105)."""
+    from peeky.fields import local_types
+
     dies, functions, _, files, runs, addresses = _function_entries(
         info, line_text, workspace, declared
     )
@@ -1140,6 +1143,7 @@ def local_declarations(info, line_text, workspace, declared):
                     first.add(later[0])
                 starts.setdefault((name, source, line), set()).update(first)
         constructor, enclosing, defined, initializer = _class_role(dies, entry["chain"])
+        inlined = _inlined_calls(dies, (*entry["bodies"], root), files, workspace)
         first_line = _first(dies, entry["chain"], "DW_AT_decl_line")
         first = int(first_line) if first_line and first_line.isdigit() else None
         own = [
@@ -1164,9 +1168,32 @@ def local_declarations(info, line_text, workspace, declared):
                 # Every row it runs, by address: (address, source, line).
                 "order": tuple(ordered),
                 "classes": classes.get(root, ()),
+                "types": local_types(dies, entry["bodies"]),
+                "inlined": inlined,
             }
         )
     return table
+
+
+def _inlined_calls(dies, bodies, files, workspace):
+    """(source or None, line or None) of each call inlined into these function bodies
+    (`DW_TAG_inlined_subroutine`: a callee the compiler inlined even at opt-level 0, as
+    `always_inline` and `flatten` make it), from
+    where it is called: its code carries the callee's lines, not the call's (#105)."""
+    inputs, cache = files
+    found, pending = (
+        set(),
+        [child for body in dict.fromkeys(bodies) for child in dies[body]["children"]],
+    )
+    while pending and len(found) < 4096:
+        die = dies[pending.pop()]
+        if die["tag"] == "DW_TAG_lexical_block":
+            pending.extend(die["children"])
+        elif die["tag"] == "DW_TAG_inlined_subroutine":
+            called = die["attrs"].get("DW_AT_call_line", "")
+            source = _source_of(die["attrs"].get("DW_AT_call_file"), inputs, workspace, cache)
+            found.add((source, int(called) if called.isdigit() else None))
+    return tuple(sorted(found, key=str))
 
 
 _CLASSES = ("DW_TAG_class_type", "DW_TAG_structure_type", "DW_TAG_union_type")
@@ -1949,7 +1976,7 @@ class NativeTarget:
                 prepared.workspace,
                 self.sources + self.headers,
             )
-            typedefs = {}
+            typedefs, fields = {}, None
             try:
                 info = _metadata(
                     dwarfdump,
@@ -1974,9 +2001,24 @@ class NativeTarget:
                             info, text, prepared.workspace, self.sources + self.headers
                         )
                     )
+                    if declarations is not None:
+                        from peeky.fields import CPP_LIBRARIES, type_graph
+
+                        # The types field and element changes walk (#105).
+                        fields = type_graph(
+                            _dies(info),
+                            {
+                                kind
+                                for function in declarations
+                                for kinds in (function["types"] or {}).values()
+                                for kind, _, _ in kinds
+                            },
+                            CPP_LIBRARIES,
+                        )
             except (RuntimeError, ValueError, OSError):
-                # Display aid only: without it, values show as the debugger reads them.
-                declarations = None
+                # Display aid only: without it, values show as the debugger reads them
+                # (and no field or element can be changed).
+                declarations, fields = None, None
             session = NativeSession(
                 self,
                 prepared,
@@ -1988,6 +2030,7 @@ class NativeTarget:
                 external,
                 declarations=declarations,
                 typedefs=typedefs,
+                fields=fields,
             )
             session.assert_current()
             return session
@@ -2066,13 +2109,22 @@ def _writable_integer(variable):
         variable.get("type") in INTEGER_RANGES
         and variable.get("variablesReference", 0) == 0
         and "readOnly" not in attributes
-        and bool(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", str(variable.get("name", ""))))
+        # A name a selector can give: also one LLDB gives with where it is declared,
+        # when several of that name are in scope (`n @ main.c:15`).
+        and bool(
+            re.fullmatch(
+                r"[A-Za-z_][A-Za-z0-9_]*(?: @ [^\s:@]+:[0-9]+)?", str(variable.get("name", ""))
+            )
+        )
     )
 
 
 class NativeSession:
     # lldb-dap reports optimized-out/not-live locals as `<error: ...>` text.
     reports_unavailable_as_text = True
+    # lldb-dap names an array's elements `[N]` and lists any range of them on request,
+    # so one element of a long array can be fetched alone (#105).
+    elements_by_index = True
 
     @property
     def implicit_receiver(self):
@@ -2092,10 +2144,13 @@ class NativeSession:
         external=None,
         declarations=None,
         typedefs=None,
+        fields=None,
     ):
         self.target, self.prepared = target, prepared
         # local_declarations of the build; None (unknown) never withholds a value.
         self.declarations = declarations
+        # fields.type_graph of the locals' types; None (unknown) changes no field.
+        self.fields = fields
         # typedef_kinds of the build: {} (unknown) resolves no typedef.
         self.typedefs = dict(typedefs or {})
         self.external_inputs = dict(external or {})
@@ -2821,6 +2876,198 @@ class NativeSession:
                 "change made here"
             )
 
+    def mid_statement(self, variable, frame, stop=None):
+        """Why a change to the root local ``variable`` of the stopped ``frame`` may not
+        reach a statement under way at the stop, or None (#105). Part-way through a
+        statement, what it has already read may be held in a register or a temporary
+        (`long t = s.a + f();`, back from `f` with `step --out`), so a change is allowed
+        only where the stop is the statement's first instruction:
+
+        - on one of its function's own lines;
+        - on the function's first line (a one-line function's or lambda's), only at
+          the first row after the prologue, where a breakpoint there stops;
+        - elsewhere, the line must start a statement (Statements.begins), and the stop
+          must be at the lowest address of every row, in this function, on the lines
+          of the statements that start on it (Statements.statement_span): clang emits
+          `t =` / `p.x + g();` with the second line's code first.
+
+        On the first line too, the statements start after the body's `{` and the stop
+        must be at the lowest of their rows past the function's entry (`long one(struct P
+        p) { long t =` / `p.x + g();` runs line 2 first). And no call in them may be
+        inlined (a call the compiler inlined, `always_inline`, `flatten`): its code
+        carries the callee's lines and runs before
+        the statement's own lowest row (`t = inl(&p) + p.y;`). Anything else, or anything
+        Peeky cannot tell, is refused. ``stop``: the stop's reason (unused: the address
+        says it)."""
+        place, function, address = self._place(frame), self._function_at(frame), None
+        if function is not None:
+            address = self._unslid(frame)
+        if place is None or function is None or address is None:
+            return "Peeky cannot place the stop among its function's statements"
+        source, line = place
+        if self._own_line(function, source, line) is not True:
+            return (
+                f"the stop is on {source}:{line}, outside its function's own lines (a "
+                "class's member initializer, or code an `#include` brings in), part-way "
+                "through the statement that runs it"
+            )
+        span, statements = function.get("span"), self._statements(source)
+        if statements is None:
+            return f"Peeky cannot tell from the source whether line {line} starts a statement"
+        first = span is not None and line == span[0]
+        if first:
+            lines = statements.opening_statements(line)
+            if lines is None:
+                return (
+                    f"the stop is on line {line}, its function's first line, and Peeky "
+                    "cannot tell from the source which statement starts there"
+                )
+        else:
+            begins = statements.begins(line)
+            if begins is False and statements.old_style(line):
+                return (
+                    f"line {line} is in a K&R-style definition (parameters declared between "
+                    "its `)` and its body), which Peeky does not read"
+                )
+            if begins is False:
+                return f"line {line} continues a statement that an earlier line starts"
+            if begins is None:
+                return f"Peeky cannot tell from the source whether line {line} starts a statement"
+            lines = statements.statement_span(line)
+            if lines is None:
+                return f"Peeky cannot tell from the source where the statement on line {line} ends"
+        where = f"line {line}" if lines[0] == lines[1] else f"lines {lines[0]}-{lines[1]}"
+        if any(
+            called != source or at is None or lines[0] <= at <= lines[1]
+            for called, at in function.get("inlined", ())
+        ):
+            return (
+                f"the statement on {where} makes a call the compiler inlined (`always_inline`, "
+                "`flatten`), whose code carries the called function's lines and may run before "
+                "the statement's own, so Peeky cannot tell where the statement starts"
+            )
+        entry = min((low for low, _ in function.get("ranges", ())), default=None)
+        addresses = [
+            at
+            for at, file, number in function.get("order", ())
+            if file == source and lines[0] <= number <= lines[1] and not (first and at == entry)
+        ]
+        if entry is None or not addresses or address != min(addresses):
+            where = f"line {line}" if lines[0] == lines[1] else f"lines {lines[0]}-{lines[1]}"
+            return (
+                f"the stop is not at the first instruction of the statement on {where}: "
+                "it is part-way through it (back from a call, as after `step --out`; on a "
+                "loop's later pass; or where the compiler put code of a later line first)"
+            )
+        return None
+
+    def validate_member(self, frame, root, steps, variable, value, stack=None, deeper=None):
+        """Refuse (ValueError) unless `--set` can change ``variable``, the field or
+        element ``steps`` (the debugger's child names) reach from the root local
+        ``root`` of the stopped ``frame``, to the decimal ``value`` (#105). The local
+        must be kept in the frame's own memory (an automatic or a parameter there) and
+        hold its value at the stop; the path, read from the debug information, may only
+        select fields of plain records and elements of fixed-size arrays; the value
+        must be a 16- to 64-bit integer, and ``value`` in its range."""
+        from peeky.fields import Unsettable, integer_range, settable_member
+
+        name = str(root.get("name"))
+        selector = name + "".join(step if step.startswith("[") else f".{step}" for step in steps)
+        try:
+            kind, framed, graph = self._root_type(frame, root)
+            # What the path reaches first (a pointer, a union...), then the local's state.
+            signed, bits, names = settable_member(graph, kind, name, steps)
+            if not framed:
+                raise Unsettable(
+                    f"`{name}` is not kept in this frame's own memory (a static, or a value "
+                    "the debug information places in registers)"
+                )
+            self._root_holds(frame, root, stack=stack, deeper=deeper)
+            low, high = integer_range(signed, bits)
+            shown, debugger = variable.get("value"), variable.get("type")
+            hint = variable.get("presentationHint")
+            attributes = hint.get("attributes") if isinstance(hint, dict) else None
+            if variable.get("variablesReference", 0) != 0 or "readOnly" in (attributes or ()):
+                raise Unsettable(f"the debugger does not show `{selector}` as a writable integer")
+            # The debugger's view must be the member the debug information describes.
+            agrees = (
+                INTEGER_RANGES.get(debugger) == (low, high)
+                if debugger in INTEGER_RANGES
+                else any(debugger == each or str(debugger).endswith(f"::{each}") for each in names)
+            )
+            if not agrees:
+                raise Unsettable(
+                    f"the debugger shows `{selector}` as {debugger!r}, which does not match "
+                    f"its declared type ({names[0]})"
+                )
+            if not (
+                isinstance(shown, str)
+                and re.fullmatch(r"-?(?:0|[1-9][0-9]{0,19})", shown)
+                and low <= int(shown) <= high
+            ):
+                raise Unsettable(
+                    f"the debugger shows `{selector}` as {str(shown)[:40]!r}, not as a number, "
+                    "so a change could not be read back"
+                )
+        except Unsettable as exc:
+            raise ValueError(f"`{selector}` cannot be changed: {exc}") from None
+        if not low <= int(value) <= high:
+            raise ValueError(
+                f"Native integer mutation is outside the range of `{selector}` ({names[0]}: "
+                f"{low} to {high})"
+            )
+
+    def _root_type(self, frame, root):
+        """(type offset, whether the frame keeps it in its own memory, type graph) of
+        the root local of a field or element change; raises fields.Unsettable unless it
+        is one local of one type."""
+        from peeky.fields import Unsettable
+
+        function = self._function_at(frame) if self.fields is not None else None
+        if function is None or function.get("types") is None:
+            raise Unsettable(
+                "Peeky cannot match this frame to the build's debug information (it reads "
+                "it when the session starts; a program using setjmp has none)"
+            )
+        return (*self._declared_type(function["types"], root.get("name")), self.fields)
+
+    def _root_holds(self, frame, root, stack=None, deeper=None):
+        """Raise fields.Unsettable unless the root local holds its value at the stop:
+        not declared below it, in an initializer still running, or skipped by a jump
+        (#120, #121)."""
+        from peeky.fields import Unsettable
+
+        if reason := self.not_yet_declared(root, frame, stack=stack, deeper=deeper):
+            raise Unsettable(
+                f"`{root.get('name')}` is {reason}; its declaration would overwrite a change "
+                "made here"
+            )
+
+    @staticmethod
+    def _declared_type(types, name):
+        """(type offset, whether every declaration is an automatic or a parameter in the
+        frame's memory) of the local ``name`` (`s`, or `s @ main.rs:81` as LLDB names one
+        of several) in a function's ``types`` (fields.local_types)."""
+        from peeky.fields import Unsettable
+
+        shown = re.fullmatch(r"(.+) @ ([^:]+):([0-9]+)", str(name))
+        declared = types.get(shown[1] if shown else name)
+        if declared and shown:
+            # LLDB names a local by where it is declared when several share its name.
+            declared = {each for each in declared if each[2] == (shown[2], int(shown[3]))}
+        if not declared:
+            raise Unsettable(f"the debug information declares no local `{name}` in this function")
+        kinds = {kind for kind, _, _ in declared}
+        if None in kinds:
+            raise Unsettable(f"the debug information gives the local `{name}` no type")
+        if len(kinds) != 1:
+            raise Unsettable(
+                f"this function declares several locals named `{name}` of different types, "
+                "and Peeky cannot tell which one the debugger shows"
+            )
+        framed = not {storage for _, storage, _ in declared} - {"automatic", "parameter"}
+        return next(iter(declared))[0], framed
+
     def source_path(self, original):
         relative = (
             Path(original).resolve(strict=True).relative_to(self.prepared.source_root).as_posix()
@@ -2835,6 +3082,8 @@ class NativeSession:
     def normalize_capabilities(self, raw):
         return {
             "supports_set_variable": raw.get("supportsSetVariable") is True,
+            # lldb-dap changes a field or element as it changes a local (#105).
+            "supports_member_set": raw.get("supportsSetVariable") is True,
             # Used only inside the worker, by qualified value views (Rust containers).
             "supports_read_memory": raw.get("supportsReadMemoryRequest") is True,
             "supports_conditional_breakpoints": False,

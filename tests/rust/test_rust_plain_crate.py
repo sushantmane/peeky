@@ -4387,6 +4387,8 @@ fn churn(x: u32) -> u32 {
 async fn work(n: u32) -> u32 {
     let tmp = n + 100;
     std::hint::black_box(tmp);
+    let trio = [n, n + 1, n + 2];
+    std::hint::black_box(trio);
     let before = n * 2;
     YieldOnce(false).await;
     before + churn(1) // M132_STOP
@@ -4469,9 +4471,16 @@ def test_an_async_bodys_locals_not_kept_across_an_await_are_withheld(plain, caps
         assert copy["type"] == "u32" and copy.get("settable") is False, rows
         assert _withheld(named["tmp"], "`.await`", "leftovers"), rows
         assert "evaluable" not in copy and "evaluable" not in named["tmp"], rows
-        # Nothing to change: the program assigns it before reading it again.
+        assert _withheld(named["trio"], "`.await`", "leftovers"), rows
+        # Nothing to change: the program assigns it before reading it again. Nor in an
+        # array or struct local withheld so (#105's changes to fields and elements).
         assert main(["session", "set", "tmp=7", "--json"]) != 0
         assert "has no value here" in capsys.readouterr().err
+        assert main(["session", "set", "trio[0]=7", "--json"]) == 2
+        error = json.loads(capsys.readouterr().out)["error"]
+        assert error["code"] == "MUTATION_REJECTED", error
+        assert "'trio' has no value here" in error["message"], error
+        assert "`.await`" in error["message"], error
         code, found = run(capsys, "session", "get", "tmp", "before")
         found = {row["selector"]: row for row in found}
         assert "no value yet" in found["tmp"]["error"] and "`.await`" in found["tmp"]["error"]

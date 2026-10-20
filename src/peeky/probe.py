@@ -50,11 +50,17 @@ _STEP = re.compile(
     rf"|\[(?P<key>{_KEY_LITERAL})\]"
 )
 _NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,127}")
+# A local LLDB shows with where it is declared, when several of that name are in scope
+# (`s @ main.rs:81`, `p @ s1.c:38`): the spaces around `@` may be left out.
+_SHADOWED_ROOT = re.compile(
+    r"([A-Za-z_][A-Za-z0-9_]{0,127}) ?@ ?([^\s:@\[\]'\"]{1,255}):([0-9]{1,9})"
+)
 
 
 def parse_selector(text):
     """`request.page` -> ['request', 'page']; `args[0]` -> ['args', '[0]'];
-    `order['id']` -> ['order', "['id']"]; `m[#0]` -> ['m', '[#0]'].
+    `order['id']` -> ['order', "['id']"]; `m[#0]` -> ['m', '[#0]']; `s @ main.rs:81.a`
+    -> ['s @ main.rs:81', 'a'] (a local LLDB names by its declaration, shadowing).
 
     Negative indexes (`items[-1]`) count from the end of a sequence whose elements
     all fit in the bounded inspection window. A quoted key reads one entry of a
@@ -63,10 +69,11 @@ def parse_selector(text):
     """
     if not isinstance(text, str) or not text or len(text) > 512:
         raise ValueError("Selectors must be nonempty dotted paths")
-    first = _NAME.match(text)
+    first = _SHADOWED_ROOT.match(text) or _NAME.match(text)
     if not first:
         raise ValueError(f"Invalid selector: {text}{_SELECTOR_HELP}")
-    segments, position = [first[0]], first.end()
+    root = f"{first[1]} @ {first[2]}:{int(first[3])}" if first.re is _SHADOWED_ROOT else first[0]
+    segments, position = [root], first.end()
     while position < len(text):
         step = _STEP.match(text, position)
         if not step:
@@ -105,7 +112,8 @@ def parse_selector(text):
 
 _SELECTOR_HELP = (
     " (selectors are paths, never expressions: name, a.b, a[0], a[-1], a['key'] or a[\"key\"];"
-    " a[#0] is a C++ map's or set's first entry)"
+    " a[#0] is a C++ map's or set's first entry; 's @ main.rs:81.a' starts at a local the"
+    " debugger names with where it is declared)"
 )
 
 
@@ -337,7 +345,8 @@ class Probe:
                 raise Refused(
                     "MUTATION_REJECTED",
                     f"Intervention target {change[0]!r}: map and dict entries cannot be changed; "
-                    "--set changes a local, or in Java a field or array element",
+                    "--set changes a local, or a field or array element (Java, Rust, C, "
+                    "C++)",
                 )
         if self.hits != "all" and (type(self.hits) is not int or not 1 <= self.hits <= MAX_HITS):
             raise ValueError(f"Probe hits must be 1..{MAX_HITS} or 'all'")
@@ -543,11 +552,17 @@ def _groups(snapshot):
 
 def _scope_lookup(worker, stop, snapshot, scopes, name):
     """``name`` in these scopes: listed directly, or in one of debugpy's groups; with
-    the scope it is in."""
-    for scope in scopes:
-        for variable in scope["variables"]:
-            if variable["name"] == name:
-                return variable, scope
+    the scope it is in. Listed more than once (LLDB names two locals declared on one
+    line alike, `p @ s.c:10`), it is refused: which is which cannot be told."""
+    listed = [(v, scope) for scope in scopes for v in scope["variables"] if v["name"] == name]
+    if len(listed) > 1:
+        raise Refused(
+            "NOT_FOUND",
+            f"{name!r} is ambiguous: the debugger lists {len(listed)} locals of that name here "
+            "(declared on the same line), which Peeky cannot tell apart",
+        )
+    for variable, scope in listed:
+        return variable, scope
     for scope in scopes:
         if found := _grouped(worker, stop, scope["variables"], name, _groups(snapshot)):
             return found[0], scope
@@ -749,6 +764,18 @@ def _resolve(worker, stop, snapshot, segments, pointers=False):
             path += segment
             continue
         key = _key(segment)
+        length = variable.get("indexedVariables")
+        if (index := _INDEX.fullmatch(segment)) and type(length) is int and length > 512:
+            # An element past one listing's bound (`es[699].a`): fetched alone (#105).
+            if int(index[1]) >= length:
+                raise ValueError(f"{segment} is out of range: {path} has {length} elements")
+            page = worker.dispatch("expand", {**stop, "handle": handle, "index": int(index[1])})
+            found = next((v for v in page["variables"] if v["name"] == segment), None)
+            if found is None:
+                raise ValueError(f"{segment} not found: the debugger lists no such element")
+            variable = found
+            path += segment
+            continue
         found, children, incomplete = _page_find(worker, stop, handle, segment, first_page)
         if found is None and incomplete:
             raise Refused(
@@ -1385,12 +1412,16 @@ class _Coded:
 
 
 def apply_set(worker, stop, name, value):
-    """Apply one `--set name=value` at this stop: a root local, or in Java a field or
-    array element a selector names (`current.end`, `this.count`, `xs[0]`, `xs[-1]`)."""
+    """Apply one `--set name=value` at this stop: a root local, or a field or array
+    element a selector names (Java: `current.end`, `this.count`, `xs[0]`, `xs[-1]`; C,
+    C++ and Rust: `s.end`, `s.in.lo`, `xs[2]`, `t.__0`, which the worker proves the
+    frame holds itself, #105)."""
     worker = _Coded(worker)
     segments = parse_selector(name)
     snapshot = worker.dispatch("inspect", {**stop, "names": [segments[0]]})
     if len(segments) == 1:
+        # As LLDB names it (`s @ main.rs:81` however written).
+        name = segments[0]
         own = [scope for scope in snapshot["scopes"] if not scope.get("globals")]
         # Listed directly, or in a group of debugpy's (a local holding a function).
         found, scope = _scope_lookup(worker, stop, snapshot, own, name)
@@ -1417,6 +1448,16 @@ def apply_set(worker, stop, name, value):
             # Classified by the debugger's reason, never by the names listed after it.
             raise Refused(exc.code, f"{exc}{_settable_here(snapshot)}") from None
     target = f"Intervention target {name!r}"
+    for scope in snapshot["scopes"]:
+        for row in scope["variables"] if not scope.get("globals") else ():
+            if row.get("name") == segments[0] and row.get("unavailable"):
+                # Withheld (declared below the stop, an initializer still running) or
+                # optimized out: nothing in it holds a value a change could replace.
+                raise Refused(
+                    "MUTATION_REJECTED",
+                    f"{target}: {segments[0]!r} has no value here ({row.get('reason')}); "
+                    "nothing in it can be changed",
+                )
     try:
         parent = _resolve(worker, stop, snapshot, segments[:-1])
     except Refused as exc:
@@ -1450,7 +1491,8 @@ def apply_set(worker, stop, name, value):
             )
         if index < 0:
             index += int(array[1])
-        member = str(index)
+        # java-debug names an element by its index; LLDB as `[2]`.
+        member = str(index) if array else last
     if not parent.get("variablesReference"):
         if parent.get("unavailable"):
             raise Refused(
@@ -2421,7 +2463,7 @@ def run_probe(root, probe, *, adapter=None, progress=None):
                     "this Java adapter bundle predates field and element changes (rebuild it "
                     "with scripts/setup_java_adapter.py)"
                     if identity.get("language") == "java"
-                    else "fields and array elements can be changed only in Java"
+                    else "fields and array elements can be changed only in Java, Rust, C and C++"
                 )
             )
         if probe.edit:
