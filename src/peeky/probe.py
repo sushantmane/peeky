@@ -2356,6 +2356,7 @@ def run_probe(root, probe, *, adapter=None, progress=None):
     # The edit's texts are not evidence of the run; the CLI adds the diff.
     result["probe"].pop("edit")
     rows, changes, hits, warnings, relocated, pauses = [], [], 0, [], False, []
+    unreported = None
     # The breakpoint line in the build that runs: the candidate's numbering with an edit.
     line = probe.line
     # {function: [hits]}: a line shared by a function and a closure or lambda stops in each.
@@ -2442,7 +2443,10 @@ def run_probe(root, probe, *, adapter=None, progress=None):
                         "The debugger never reported the program's exit; Peeky inferred it "
                         "because no threads were left (java-debug, issue #27)."
                     )
-                status = "completed" if hits else "no-stop"
+                # A thread was seen paused at the breakpoint, but the debugger never
+                # reported that stop (#27): the line did run.
+                unreported = state.get("unreported_stop")
+                status = "completed" if hits else "failed" if unreported else "no-stop"
                 say(f"program finished after {hits} hit(s)")
                 break
             # From the moment the stop arrived, so debugger reads before capture count too.
@@ -2543,6 +2547,26 @@ def run_probe(root, probe, *, adapter=None, progress=None):
         )
         if type(report.get("exit_code")) is int:
             result["exit_code"] = report["exit_code"]
+        if unreported:
+            seen = (
+                f"thread {unreported.get('thread_name')!r} was seen paused at "
+                f"{unreported.get('breakpoint')} (in {unreported.get('function')} at "
+                f"{unreported.get('location')}), a stop the debugger never reported "
+                "(java-debug, issue #27)"
+            )
+            if events := report.get("debugger_events"):
+                result["debugger_events"] = events
+            if hits:
+                warnings.append(f"Before the program ended, {seen}; values from it were not read.")
+            else:
+                result["error"] = {
+                    "code": "DEBUGGER_ERROR",
+                    "message": f"The program ended after {seen}; no values were read",
+                    "hint": "The line did run; the debugger failed to report its stop. Retry "
+                    "the probe, and keep `debugger_events` for issue #27.",
+                    "retryable": False,
+                    "session_closed": True,
+                }
         if status == "timeout":
             from peeky.errors import classify
 
@@ -2618,6 +2642,10 @@ def run_probe(root, probe, *, adapter=None, progress=None):
                     output_truncated=report.get("output_truncated", False),
                     output_complete=report.get("state") == "terminated",
                 )
+            failed_for_good = report.get("lost_stop") or report.get("adapter_failure")
+            if failed_for_good and (events := report.get("debugger_events")):
+                # The evidence for #27: the last DAP messages, the polls, the adapter's log.
+                result["debugger_events"] = events
     finally:
         worker.close()
     if level := optimization_level(result.get("target_identity")):
