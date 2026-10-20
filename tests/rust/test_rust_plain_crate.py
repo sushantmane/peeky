@@ -1722,7 +1722,7 @@ def test_a_callers_references_are_judged_as_the_stopped_frames_are(plain, capsys
         found = {row["selector"]: row for row in rows}
         assert "::dropped" in found["r"]["function"], found
         assert found["r"].get("view") == "unproven", found["r"]
-        assert "value" not in found["r.x"] and "777" not in str(found["r.x"]), found["r.x"]
+        assert "value" not in found["r.x"] and "777" not in _shown(found["r.x"]), found["r.x"]
         assert found["k"]["value"] == "7"
         # Still used after the call: what it points at stands, and it reads.
         assert main(["session", "continue"]) == 0
@@ -3334,7 +3334,15 @@ def _stale(row):
 
 def _hidden(row):
     """Nothing read through the pointer: an error naming why, never a value."""
-    return "value" not in row and "freed memory" in row.get("error", "") and "777" not in str(row)
+    return (
+        "value" not in row and "freed memory" in row.get("error", "") and "777" not in _shown(row)
+    )
+
+
+def _shown(row):
+    """A row's text without its function's name, whose symbol hash (`h…77790a7bd`), new
+    with each build's path, can hold any digits."""
+    return str({key: value for key, value in row.items() if key != "function"})
 
 
 @pytest.mark.timeout(600)
