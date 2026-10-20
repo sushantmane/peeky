@@ -588,3 +588,61 @@ def test_rust_a_field_of_a_struct_or_tuple_preview_changes_and_reads_back(crate,
     text = json.loads(capsys.readouterr().out)["output"]
     assert main(["session", "close"]) == 0
     assert "PREVIEW Span { start: 1, end: 20 } Pair(30, 4) (5, 60) [7, 8] 62" in text, text
+
+
+@pytest.mark.timeout(400)
+def test_rust_fields_and_elements_are_marked_where_set_changes_them(crate, capsys):
+    # Sixth evaluation, finding 7: a probe could not tell whether `w.start` could be
+    # changed, and a field read through `&mut` looked like one the frame holds.
+    at = f"src/main.rs:{line_of('// STOP')}"
+    marked = {
+        **dict.fromkeys(("s.end", "s.start", "o.span.start", "o.marks[1]"), True),
+        **dict.fromkeys(("o.pair.__0", "o.pair.__1", "t.__0", "t.__1", "arr[2]"), True),
+        # Packed, through a Box or a reference, moved, unassigned, not a 16- to 64-bit
+        # integer: as `set` refuses them.
+        **dict.fromkeys(("pk.b", "kept.end", "r.end", "gone.n", "later.end"), False),
+        **dict.fromkeys(("o.flag", "o.ch", "o.ratio", "o.small"), False),
+    }
+    code = main(["probe", str(crate), "--at", at, "--capture", ",".join(marked), "--json"])
+    rows = {row["selector"]: row for row in json.loads(capsys.readouterr().out)["rows"]}
+    assert code == 0 and {name: rows[name].get("settable") for name in marked} == marked, rows
+    assert main(["session", "start", str(crate), "--at", at]) == 0
+    capsys.readouterr()
+    try:
+        # `session get` lists them so too, a preview's fields (`s`) and a tuple's.
+        assert main(["session", "get", "s", "t", "o"]) == 0
+        text = capsys.readouterr().out
+        assert "  s.end: i64 = 2  [settable]" in text and "  t.__1: u32 = 20  [settable]" in text
+        assert "  o.small: u8 = 7\n" in text, text
+        assert main(["session", "continue", "--to", str(line_of("// WIDTH"))]) == 0
+        capsys.readouterr()
+        # Through a reference parameter, and a caller's: never marked.
+        assert main(["session", "get", "s", "--json"]) == 0
+        [row] = json.loads(capsys.readouterr().out)
+        assert [child.get("settable") for child in row["children"]] == [False, False], row
+        assert main(["session", "get", "o.span.start", "--frame", "1", "--json"]) == 0
+        assert json.loads(capsys.readouterr().out)[0]["settable"] is False
+    finally:
+        main(["session", "close"])
+
+
+@pytest.mark.timeout(400)
+def test_rust_inspect_says_why_nothing_is_settable_part_way_through_a_statement(crate, capsys):
+    # Sixth evaluation, finding 8: nothing was marked [settable] there, with no reason.
+    start_mid(crate, capsys, "// TEMP_OUT")
+    try:
+        assert main(["session", "inspect", "--json"]) == 0
+        assert "unsettable" not in json.loads(capsys.readouterr().out)
+        assert main(["session", "step", "--into"]) == 0
+        assert main(["session", "step", "--out"]) == 0
+        capsys.readouterr()
+        assert main(["session", "inspect"]) == 0
+        text = capsys.readouterr().out
+        line = mid_line("// TEMP_OUT")
+        assert f"note: nothing here is [settable]: the stop is part-way through line {line}" in (
+            text
+        ), text
+        listed = [row for row in text.splitlines() if not row.startswith("note:")]
+        assert not any("[settable]" in row for row in listed), text
+    finally:
+        main(["session", "close"])

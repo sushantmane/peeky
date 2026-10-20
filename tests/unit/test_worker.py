@@ -659,7 +659,7 @@ def test_a_tainted_locals_children_are_tainted_and_marked(tmp_path):
     worker = DebugWorker(tmp_path)
     worker.runtime, worker.state, worker.stop_id = runtime, "stopped", "stop1"
     worker.innermost_frame = 1
-    worker.walk = lambda record, runtime: (record[0], record[1], record[2], 7, None)
+    worker.walk = lambda record, runtime, trail=None: (record[0], record[1], record[2], 7, None)
     worker.bounded_variables = lambda reference, indexed=None: children[reference]
     top = worker.expose_variables(
         [
@@ -682,12 +682,12 @@ def test_a_tainted_locals_children_are_tainted_and_marked(tmp_path):
         "view": "unproven",
     }
     assert n["value"] == "9" and n["stale"] and v["stale"] and v["variablesReference"]
-    worker.walk = lambda record, runtime: (record[0], record[1], record[2], 8, None)
+    worker.walk = lambda record, runtime, trail=None: (record[0], record[1], record[2], 8, None)
     [length] = worker.expand({"stop_id": "stop1", "handle": v["variablesReference"]}, runtime)[
         "variables"
     ]
     assert length["value"] == "3" and length["stale"] and ("len", False, "stale") in seen
-    worker.walk = lambda record, runtime: (record[0], record[1], record[2], 7, None)
+    worker.walk = lambda record, runtime, trail=None: (record[0], record[1], record[2], 7, None)
     # A caller's proven local: its fields read, its pointers do not.
     b, n, v = worker.expand({"stop_id": "stop1", "handle": top[1]["variablesReference"]}, runtime)[
         "variables"

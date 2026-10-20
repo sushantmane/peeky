@@ -283,53 +283,56 @@ _PAIR_COLUMNS = (
 )
 # Capture order within a hit: the order the probe recorded (its --capture order).
 _PAIR_ORDER = " ORDER BY hit, phase = 'after-set', pos"
-# Real divergences first, in hit and capture order (a hit only one run reached is
-# one); then values changed by an intervention only one run made; then values that
-# differ only in memory addresses; then one row per selector only one run asked for.
-# Nothing is dropped: an address-only difference may still be a real one. Last, the
-# runs' outcomes and outputs when they differ, each output shown from just before the
-# first character that differs (an intervention's effect shows there).
+# The runs' outcomes and outputs first, when they differ, each output shown from just
+# before the first character that differs (an intervention's effect shows there), and
+# what else told the runs apart: their edits, source, stop lines, arguments and
+# interventions (sixth evaluation, finding 9: the decisive (output) row came after rows
+# for selectors only one run captured). Then real divergences, in hit and capture order
+# (a hit only one run reached is one); then values changed by an intervention only one
+# run made; then values that differ only in memory addresses; last, one row per
+# selector only one run asked for. Nothing is dropped: an address-only difference may
+# still be a real one.
 _DIFF = f"""{_PAIR}
 SELECT {_PAIR_COLUMNS} FROM (
-  SELECT 0 AS rank, hit, phase, selector, value_a, value_b, differs, note, pos FROM pair
+  SELECT 10 AS rank, hit, phase, selector, value_a, value_b, differs, note, pos FROM pair
     WHERE differs AND (note IS NULL OR note LIKE 'missing%' OR note LIKE 'type %')
-  UNION ALL SELECT 1, hit, phase, selector, value_a, value_b, differs, note, pos FROM pair
+  UNION ALL SELECT 11, hit, phase, selector, value_a, value_b, differs, note, pos FROM pair
     WHERE note LIKE 'intervention only%'
-  UNION ALL SELECT 2, hit, phase, selector, value_a, value_b, differs, note, pos FROM pair
+  UNION ALL SELECT 12, hit, phase, selector, value_a, value_b, differs, note, pos FROM pair
     WHERE note = 'addresses only'
-  UNION ALL SELECT 3, hit, phase, selector, value_a, value_b, 1,
+  UNION ALL SELECT 13, hit, phase, selector, value_a, value_b, 1,
     note || ' (one row per selector: its first hit)', MIN(pos) FROM pair
     WHERE note LIKE 'only in%' GROUP BY selector, note
-  UNION ALL SELECT 4, NULL, NULL, '(status)', ra.status, rb.status, 1, 'outcome differs', 0
+  UNION ALL SELECT 0, NULL, NULL, '(status)', ra.status, rb.status, 1, 'outcome differs', 0
     FROM runs ra, runs rb WHERE ra.run_id = {_A} AND rb.run_id = {_B}
     AND ra.status IS NOT rb.status
-  UNION ALL SELECT 5, NULL, NULL, '(output)', output_window(ra.output, rb.output),
+  UNION ALL SELECT 1, NULL, NULL, '(output)', output_window(ra.output, rb.output),
     output_window(rb.output, ra.output), 1,
     'output differs at ' || difference_position(ra.output, rb.output), 0
     FROM runs ra, runs rb WHERE ra.run_id = {_A} AND rb.run_id = {_B}
     AND ra.output IS NOT rb.output
-  UNION ALL SELECT 6, NULL, NULL, '(edit)',
+  UNION ALL SELECT 2, NULL, NULL, '(edit)',
     CASE WHEN ra.edit IS NULL THEN 'none' ELSE 'candidate' END,
     CASE WHEN rb.edit IS NULL THEN 'none' ELSE 'candidate' END, 1,
     'the runs built different edits (runs.edit has each diff)', 0
     FROM runs ra, runs rb WHERE ra.run_id = {_A} AND rb.run_id = {_B}
     AND ra.edit IS NOT rb.edit
-  UNION ALL SELECT 6, NULL, NULL, '(source)', ra.target || '/' || ra.program,
+  UNION ALL SELECT 2, NULL, NULL, '(source)', ra.target || '/' || ra.program,
     rb.target || '/' || rb.program, 1,
     'the runs ran different source text, neither a candidate edit (source_sha256 differs)', 0
     FROM runs ra, runs rb WHERE ra.run_id = {_A} AND rb.run_id = {_B}
     AND ra.edit IS NULL AND rb.edit IS NULL AND ra.source_sha256 IS NOT NULL
     AND rb.source_sha256 IS NOT NULL AND ra.source_sha256 != rb.source_sha256
-  UNION ALL SELECT 7, NULL, NULL, '(line)', ra.program || ':' || ra.line,
+  UNION ALL SELECT 3, NULL, NULL, '(line)', ra.program || ':' || ra.line,
     rb.program || ':' || rb.line, 1,
     'the runs stopped at different lines: values also differ by where they were read', 0
     FROM runs ra, runs rb WHERE ra.run_id = {_A} AND rb.run_id = {_B}
     AND (ra.program, ra.line) IS NOT (rb.program, rb.line)
-  UNION ALL SELECT 8, NULL, NULL, '(args)', ra.args, rb.args, 1,
+  UNION ALL SELECT 4, NULL, NULL, '(args)', ra.args, rb.args, 1,
     'the runs had different program arguments: values also differ by input', 0
     FROM runs ra, runs rb WHERE ra.run_id = {_A} AND rb.run_id = {_B}
     AND ra.args IS NOT rb.args
-  UNION ALL SELECT 9, NULL, NULL, '(sets)', COALESCE(ra.sets, '[]'), COALESCE(rb.sets, '[]'), 1,
+  UNION ALL SELECT 5, NULL, NULL, '(sets)', COALESCE(ra.sets, '[]'), COALESCE(rb.sets, '[]'), 1,
     'the runs made different interventions (--set)', 0
     FROM runs ra, runs rb WHERE ra.run_id = {_A} AND rb.run_id = {_B}
     AND COALESCE(ra.sets, '[]') IS NOT COALESCE(rb.sets, '[]'))
@@ -454,11 +457,11 @@ WINDOW w AS (PARTITION BY selector ORDER BY hit) ORDER BY selector, hit""",
         (),
     ),
     "diff": (
-        "Only the values that differ between two runs. Real differences come first, in hit and "
-        "capture order (the first row is the first divergence); then address-only "
-        "differences; then selectors only one run captured; then (status), (output), "
-        "(edit), (line), (args) and (sets) rows when the runs' outcomes, outputs, edits, "
-        "stop lines, program arguments or interventions differ",
+        "Only the values that differ between two runs. First (status), (output), (edit), "
+        "(source), (line), (args) and (sets) rows when the runs' outcomes, outputs, edits, "
+        "source, stop lines, program arguments or interventions differ; then real "
+        "differences in hit and capture order (the first is the first divergence); then "
+        "address-only differences; last, selectors only one run captured",
         _DIFF,
         _PAIR_PARAMS,
         (),

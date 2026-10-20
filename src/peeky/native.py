@@ -710,15 +710,18 @@ def _balanced(name):
     return not depth
 
 
-def _locals(dies, offset):
+def _locals(dies, offset, hidden=None):
     """{name: {types}} for the parameters and variables of one function body, including
     nested blocks but not the bodies of calls inlined into it. A type is the name
-    dwarfdump gives the DIE's DW_AT_type (`long long`, `Stats *`)."""
+    dwarfdump gives the DIE's DW_AT_type (`long long`, `Stats *`). ``hidden(offset)``:
+    a binding left out (a macro's own, see function_scopes)."""
     names, pending = {}, list(dies[offset]["children"])
     while pending and len(names) < 512:
         child = pending.pop()
         die = dies[child]
         if die["tag"] in ("DW_TAG_formal_parameter", "DW_TAG_variable"):
+            if hidden and hidden(child):
+                continue
             chain = _chain(dies, child)
             name = _text(_first(dies, chain, "DW_AT_name"))
             # `$`-prefixed names are debugger-synthesized storage, not program locals.
@@ -733,7 +736,7 @@ def _locals(dies, offset):
 _MAX_SPANS = 8
 
 
-def _block_spans(dies, entry, root, addresses, numbers, source_of):
+def _block_spans(dies, entry, root, addresses, numbers, source_of, hidden=None):
     """({name: {(first, last)}}, {names visible in the whole function}), or None when
     the declarations were too many to read all: the lines of the blocks declaring each
     local, for the locals declared only inside nested blocks (a `for` loop's `i`), so
@@ -782,6 +785,8 @@ def _block_spans(dies, entry, root, addresses, numbers, source_of):
     def name_of(child):
         die = dies[child]
         if die["tag"] not in ("DW_TAG_formal_parameter", "DW_TAG_variable"):
+            return None
+        if hidden and hidden(child):
             return None
         name = _text(_first(dies, _chain(dies, child), "DW_AT_name"))
         return None if not name or name.startswith("$") else name
@@ -951,13 +956,17 @@ def _macro_rules_lines(text):
     return lines
 
 
-def function_scopes(info, line_text, workspace, declared):
+def function_scopes(info, line_text, workspace, declared, hidden=None):
     """Each function in a declared source: qualified name, source, line span, locals.
 
     Display only (`describe`). A line-table row belongs to the innermost function or
     inlined call whose address range covers it, so an inlined callee's lines count for
     the callee, not its caller. Copies of one function (C1/C2 constructors, inlined and
     out-of-line copies) are merged through the DIE that declares them.
+
+    ``hidden(source, name, line)``: whether a parameter or variable the debug
+    information declares at ``line`` of the declared ``source`` (None for another file)
+    is left out, as a macro's own binding (Rust: `println!`'s `args`).
     """
     replaced = set()
     dies, functions, lines, (inputs, sources), _, addresses = _function_entries(
@@ -968,6 +977,16 @@ def function_scopes(info, line_text, workspace, declared):
     def source_of(attribute):
         return _source_of(attribute, inputs, workspace, sources)
 
+    def left_out(offset):
+        chain = _chain(dies, offset)
+        line = _first(dies, chain, "DW_AT_decl_line")
+        return hidden(
+            source_of(_first(dies, chain, "DW_AT_decl_file")),
+            _text(_first(dies, chain, "DW_AT_name")),
+            int(line) if line and line.isdigit() else None,
+        )
+
+    skip = left_out if hidden else None
     found, macros = {}, {}
     for root, entry in functions.items():
         source = entry["source"]
@@ -983,7 +1002,7 @@ def function_scopes(info, line_text, workspace, declared):
             continue
         names = {}
         for body in (*entry["bodies"], root):
-            for local, kinds in _locals(dies, body).items():
+            for local, kinds in _locals(dies, body, skip).items():
                 names.setdefault(local, set()).update(kinds)
         scope = {
             "scope": name,
@@ -1009,7 +1028,7 @@ def function_scopes(info, line_text, workspace, declared):
             declared_at and declared_at.isdigit() and int(declared_at) in (macros[source] or ())
         )
         blocks = (
-            _block_spans(dies, entry, root, ran, numbers, source_of)
+            _block_spans(dies, entry, root, ran, numbers, source_of, skip)
             if macros[source] is not None and not in_macro
             else None
         )

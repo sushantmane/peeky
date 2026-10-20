@@ -192,10 +192,14 @@ def _edit_spans(text, pairs):
     spans = []
     for number, (old, new) in enumerate(pairs, 1):
         which = f" (edit {number})" if len(pairs) > 1 else ""
-        if not old or old == new:
-            raise ValueError(f"--old must be nonempty and --new must change it{which}")
-        if text.count(old) != 1:
-            raise ValueError(f"--old must match the --at file exactly once{which}")
+        if not old:
+            raise ValueError(f"--old is empty{which}")
+        if (count := text.count(old)) != 1:
+            raise ValueError(
+                f"--old matched {count} times{which}; it must match the --at file exactly once"
+            )
+        if old == new:
+            raise ValueError(f"--new equals --old{which}, so the edit changes nothing")
         spans.append((text.index(old), old, new, number))
     spans.sort()
     for (start, old, _, first), (after, _, _, second) in zip(spans, spans[1:]):
@@ -881,6 +885,12 @@ def _rust_composite(kind):
     return not element.startswith(("alloc::", "core::", "std::", "&", "*", "[", "("))
 
 
+def _lldb_type(variable):
+    """The debugger's name for a value's type, where a Rust one is shown (`Vec<T> *` for
+    a `&Vec<T>` parameter shown as such)."""
+    return str(variable.get("debugger_type") or variable.get("type") or "")
+
+
 def _unread_rust(kind):
     """Whether a Rust container's elements are never read: `&Vec<T>` is `Vec<T> *`."""
     return (
@@ -1036,7 +1046,7 @@ def _absence(variable, segment, children, path=None, pointers=False):
         elif variable.get("view") == "memory":
             if kind in _RUST_TEXT:
                 message += "; text read from memory is shown whole, not by element"
-        elif _unread_rust(kind):
+        elif _unread_rust(_lldb_type(variable)):
             message += (
                 f"; Peeky does not read {kind}'s elements: it reads Rust contents only for "
                 "String, &str and containers of integer, bool, float and char elements, "
@@ -1044,7 +1054,7 @@ def _absence(variable, segment, children, path=None, pointers=False):
                 "scalars"
                 + (f". Capture {variable['name']}.{length} for the length" if length else "")
             )
-        elif _rust_composite(kind):
+        elif _rust_composite(_lldb_type(variable)):
             message += (
                 f"; Peeky reads {kind}'s elements only when every field of the tuple or "
                 "struct is an integer, bool, float or char (the build's debug info decides), "
@@ -1053,7 +1063,7 @@ def _absence(variable, segment, children, path=None, pointers=False):
                 + (f". Capture {variable['name']}.{length} for the length" if length else "")
                 + ", and check contents with `peeky verify`"
             )
-        elif kind.startswith(_RUST_CONTAINERS):
+        elif _lldb_type(variable).startswith(_RUST_CONTAINERS):
             message += (
                 "; Peeky reads Rust contents only for reference parameters (&[T], &str, "
                 "&Vec<T>, &String, or &mut) and for owned Vec<T>/String locals the "
@@ -1307,13 +1317,13 @@ def _capture(
                         row["value"] = shown
                 if variable.get("view") == "unproven":
                     row["note"] = _UNPROVEN_RUST[0].upper() + _UNPROVEN_RUST[1:] + "."
-                elif "view" not in variable and str(variable.get("type")) in _OWNED_RUST_TYPES:
+                elif "view" not in variable and _lldb_type(variable) in _OWNED_RUST_TYPES:
                     row["note"] = _OWNED_RUST
                 elif variable.get("stale"):
                     row["note"] = _STALE_RUST + "."
-                elif "view" not in variable and _unread_rust(str(variable.get("type"))):
+                elif "view" not in variable and _unread_rust(_lldb_type(variable)):
                     row["note"] = _UNREAD_RUST
-                elif "view" not in variable and _rust_composite(str(variable.get("type"))):
+                elif "view" not in variable and _rust_composite(_lldb_type(variable)):
                     row["note"] = _COMPOSITE_RUST
             if "view" in variable:
                 row["view"] = variable["view"]
@@ -2356,6 +2366,8 @@ def _children(worker, stop, selector, variable, pointers=False, whole_strings=Fa
             entry["view"] = child["view"]
         if child.get("stale"):
             entry["stale"] = True
+        if type(child.get("settable")) is bool:
+            entry["settable"] = child["settable"]
         path = _child_selector(selector, child["name"])
         if pointers and path is None and _pointee(variable, page["variables"]) is child:
             path = f"{selector}[0]"

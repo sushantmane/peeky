@@ -123,14 +123,8 @@ _RULES = (
         r"|cannot be changed|can be changed only|changes only the stopped|locals can be changed "
         r"for this language|predates field and element changes",
         "MUTATION_REJECTED",
-        "The message names the rule broken. Root locals, and also fields and array elements "
-        "(`current.end`, `xs[0]`; Java: not final or static fields, not list or map entries; "
-        "Rust, C, C++: integers in a local the frame holds itself, never through a pointer, "
-        "reference, Box, union or enum); literal values only (Python: literals incl. containers; C, C++: integers "
-        "of 16 to 64 bits; Java: scalars of the target's type; Rust: i16 to i64, u16 to u64, "
-        "isize and usize kept in memory). Probe rows and `session inspect` mark the values "
-        "that can be changed ([settable]), and the message lists the locals for that stop. "
-        "Observe instead, or edit the source and run verify.",
+        "Observe the value instead, or change the source with a candidate edit "
+        "(`--old`/`--new`) and verify it; rows marked [settable] can be changed here.",
         False,
     ),
     (
@@ -271,6 +265,57 @@ def _build_failure(exc):
 _FIX_ARGUMENTS = "Fix the request arguments; see `peeky <command> --help`."
 
 
+# The one action each MUTATION_REJECTED rule leaves (sixth evaluation, finding 6): the
+# message names the rule, so the hint need not repeat every rule. First match wins.
+_MUTATION_HINTS = (
+    (
+        r"cannot be changed here",
+        "Change it at the statement's first instruction: a breakpoint on the statement's "
+        "first line (`--at`, `session continue --to LINE`), or a `session step` that lands "
+        "there.",
+    ),
+    (
+        r"in a caller's frame",
+        "Change it in its own frame: `session step --out` until that frame is the innermost, "
+        "or probe a line of that function.",
+    ),
+    (
+        r"is a (?:pointer|reference)\b(?!;)",
+        "Change it in the frame whose local holds the value (`session step --out`, or probe "
+        "a line there), or add a local holding it with a candidate edit (`--old`/`--new`) "
+        "and set that local.",
+    ),
+    (
+        r"kept in a register",
+        "Keep it in memory with a candidate edit (`std::hint::black_box(&mut x);` after its "
+        "`let`, by `--old`/`--new`) and `--set` it in that same probe.",
+    ),
+    (r"optimized build|unoptimized build", "Use an unoptimized build to change values."),
+    (r"outside the range", "Pass a value within the range the message gives."),
+    (
+        r"declared at line|would overwrite a change|not prove .* initialized|not yet assigned"
+        r"|has no readable value here|no value here",
+        "Change it where it holds a value: stop after its declaration or assignment has run "
+        "(a later `--at`, or `session continue --to LINE`).",
+    ),
+    (
+        r"predates field and element changes",
+        "Rebuild the Java adapter bundle with scripts/setup_java_adapter.py.",
+    ),
+    (
+        r"literal|bounded decimal integer|numeric or boolean scalar",
+        "Pass a literal value of the variable's type (C, C++ and Rust: a decimal integer).",
+    ),
+)
+
+
+def _mutation_hint(message):
+    return next(
+        (hint for pattern, hint in _MUTATION_HINTS if re.search(pattern, message)),
+        next(h for _, c, h, _ in _RULES if c == "MUTATION_REJECTED"),
+    )
+
+
 def _refusal(code):
     """(hint, retryable) for a Refused code, from the rule that describes that refusal."""
     if code == "INVALID_REQUEST":
@@ -315,6 +360,8 @@ def classify(exc, *, session_closed=None):
         }
     if isinstance(exc, Refused):
         code, (hint, retryable) = exc.code, _refusal(exc.code)
+        if code == "MUTATION_REJECTED":
+            hint = _mutation_hint(message)
         return {
             "code": code,
             "message": message[:2000],
@@ -327,6 +374,8 @@ def classify(exc, *, session_closed=None):
             if code in ("UNREACHABLE", "TRANSPORT_LOST"):
                 # A client-side transport failure never closes the worker's session.
                 closed = False
+            if code == "MUTATION_REJECTED":
+                hint = _mutation_hint(message)
             break
     else:
         if isinstance(exc, TimeoutError):

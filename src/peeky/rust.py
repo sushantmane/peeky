@@ -55,6 +55,7 @@ from peeky.rust_symbols import (
     STRUCT_PREFIX,
     UNIQUE_SCALARS,
     UNVERIFIED,
+    _spelled,
     active_variant,
     application_symbols,
     composite_container,
@@ -1014,7 +1015,38 @@ class RustSession(NativeSession):
             )
         if not infos:
             raise ValueError("No application units were recorded for this build")
-        return function_scopes("\n".join(infos), "\n".join(tables), workspace, tuple(self.lines))
+        return function_scopes(
+            "\n".join(infos),
+            "\n".join(tables),
+            workspace,
+            tuple(self.lines),
+            hidden=self._macro_binding(),
+        )
+
+    def _macro_binding(self):
+        """Whether a binding the DWARF declares (source, name, line) is a macro's own,
+        which `describe` leaves out (sixth evaluation, finding 12): `println!`'s `args`
+        (`core::fmt::rt::Argument[1]`), which rustc places on the line invoking the
+        macro. Told by the build's MIR, which spans each binding where its code is: a
+        name some binding of which is spanned in another crate's file (std's
+        `macros.rs`), declared where no binding of that name is spanned in the
+        program's own sources. None without the MIR (an optimized build): all listed."""
+        proofs = getattr(self, "owned", None)
+        if proofs is None:
+            return None
+        declared, foreign, own = set(self.lines), set(), set()
+        for body in proofs.bodies:
+            for name, bindings in body.bindings.items():
+                for _, file, line, _, _ in bindings:
+                    if file in declared:
+                        own.add((file, name, line))
+                    else:
+                        foreign.add(name)
+
+        def hidden(source, name, line):
+            return name in foreign and source is not None and (source, name, line) not in own
+
+        return hidden
 
     def launch_args(self, program, root, args=None):
         return {
@@ -1535,11 +1567,18 @@ class RustSession(NativeSession):
         return "stale"
 
     def display_type(self, variable, frame, top=True):
-        """A value's Rust primitive type where LLDB shows a C-style name: a root local's
+        """A value's Rust type where LLDB shows a C-style name: a root local's primitive
         from the build's MIR (`usize`, not `unsigned long`), any other's when only one
-        primitive renders as that name (`double` is `f64`)."""
+        primitive renders as that name (`double` is `f64`); and a reference parameter's
+        from the build's IR (`&mut limiter::Window`, not `limiter::Window *`), which
+        declares each instantiation's own types, never a type parameter."""
         kind = variable.get("type")
         hashed, proofs = _frame_hash(frame), getattr(self, "owned", None)
+        proof = self.parameters.get((hashed[1], variable.get("name"))) if top and hashed else None
+        if proof and (match := re.fullmatch(r"&(?:mut )?(.+)", proof["type"])):
+            # The parameter's only declaration (ir_locals): LLDB's name must spell it.
+            if _spelled(f"{match[1]} *", kind):
+                return proof["type"]
         if top and hashed and proofs is not None:
             declared = proofs.declared_type(hashed[1], variable.get("name"))
             if kind in RUST_SCALARS.get(declared, ()):

@@ -782,3 +782,101 @@ def test_cpp_a_function_try_block_and_its_handler_are_function_bodies(directory,
     assert code == 0 and result["after"] == "9", result
     text = output(capsys)
     assert "T 1050" in text and "C 11" in text, text
+
+
+@pytest.mark.timeout(240)
+def test_c_fields_and_elements_are_marked_where_set_changes_them(directory, capsys):
+    # Sixth evaluation, finding 7: an observation probe could not tell whether
+    # `bins[3].hi` could be changed, and a field read through a pointer looked the same.
+    path = directory / "fields.c"
+    path.write_text(C_SOURCE)
+    at = str(line_of(C_SOURCE, "STOP"))
+    marked = {
+        **dict.fromkeys(("s.end", "s.in.lo", "s.in.hi", "s.arr[2]", "grid[1][0]"), True),
+        **dict.fromkeys(("b.whole", "c.loose", "f.tiny"), True),
+        # As `set` refuses them: through a pointer, a bitfield, const, a union's, packed,
+        # not an integer, an aggregate itself.
+        **dict.fromkeys(("ps.start", "b.a", "c.fixed", "u.i", "k.i", "f.ch", "f.ratio"), False),
+        **dict.fromkeys(("s.in", "s.arr"), False),
+    }
+    code = main(["probe", str(path), "--at", at, "--capture", ",".join(marked), "--json"])
+    rows = {row["selector"]: row for row in json.loads(capsys.readouterr().out)["rows"]}
+    assert code == 0 and {name: rows[name].get("settable") for name in marked} == marked, rows
+    assert main(["probe", str(path), "--at", at, "--capture", "s.end,ps.end"]) == 0
+    table = capsys.readouterr().out
+    assert any("s.end" in row and row.endswith("2  [settable]") for row in table.splitlines())
+    assert any("ps.end" in row and row.endswith("  2") for row in table.splitlines()), table
+    assert main(["session", "start", str(path), "--at", at]) == 0
+    capsys.readouterr()
+    assert main(["session", "get", "s", "ps"]) == 0
+    text = capsys.readouterr().out
+    assert "  s.end: myint = 2  [settable]" in text and "  ps.end: myint = 2\n" in text, text
+    # A caller's: never marked.
+    assert main(["session", "continue", "--to", str(line_of(C_SOURCE, "SPAN"))]) == 0
+    capsys.readouterr()
+    assert main(["session", "get", "s.end", "--frame", "1", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)[0]["settable"] is False
+    assert main(["session", "get", "o.in.hi", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)[0]["settable"] is True
+    assert main(["session", "close"]) == 0
+
+
+LOOP = """#include <stdio.h>
+
+struct bin { long lo; long hi; int count; };
+
+int main(void) {
+    struct bin bins[4] = { { 0, 2, 0 }, { 2, 4, 0 }, { 4, 6, 0 }, { 6, 7, 0 } };
+    int values[3] = { 1, 5, 6 };
+    for (int i = 0; i < 3; i++) {  // HEADER
+        bins[i].count += values[i];  // BODY
+    }
+    printf("COUNT %d %d\\n", bins[0].count, bins[2].count);
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(240)
+def test_c_inspect_says_why_nothing_is_settable_on_a_loops_later_pass(directory, capsys):
+    # Sixth evaluation, finding 8: at a loop header's later pass `session inspect`
+    # marked nothing [settable] and gave no reason.
+    path = directory / "loop.c"
+    path.write_text(LOOP)
+    assert main(["session", "start", str(path), "--at", str(line_of(LOOP, "BODY"))]) == 0
+    capsys.readouterr()
+    assert main(["session", "inspect", "--json"]) == 0
+    snapshot = json.loads(capsys.readouterr().out)
+    assert "unsettable" not in snapshot, snapshot
+    header = line_of(LOOP, "HEADER")
+    for _ in range(3):
+        # From the body, a step reaches the header's increment: a later pass.
+        assert main(["session", "step", "--json"]) == 0
+        if json.loads(capsys.readouterr().out)["location"].endswith(f"loop.c:{header}"):
+            break
+    assert main(["session", "inspect"]) == 0
+    text = capsys.readouterr().out
+    assert (
+        "note: nothing here is [settable]: the stop is not at the first instruction of the "
+        f"statement on line {header}" in text
+    ), text
+    assert "on a loop's later pass" in text
+    assert main(["session", "get", "bins[1]"]) == 0
+    assert "[settable]" not in capsys.readouterr().out
+    assert main(["session", "close"]) == 0
+
+
+@pytest.mark.timeout(240)
+def test_cpp_fields_are_marked_only_in_objects_the_frame_holds(directory, capsys):
+    # Sixth evaluation, finding 7, in C++: through a reference member, a reference, a
+    # const object or a standard-library type, never marked.
+    path = directory / "fields.cpp"
+    path.write_text(CPP_SOURCE)
+    marked = {
+        **dict.fromkeys(("sp.end", "al.end", "dv.d", "h.n", "c.count"), True),
+        **dict.fromkeys(("h.ref.end", "rs.end", "cs.end", "pr.first"), False),
+    }
+    at = str(line_of(CPP_SOURCE, "STOP"))
+    code = main(["probe", str(path), "--at", at, "--capture", ",".join(marked), "--json"])
+    rows = {row["selector"]: row for row in json.loads(capsys.readouterr().out)["rows"]}
+    assert code == 0 and {name: rows[name].get("settable") for name in marked} == marked, rows
