@@ -1074,3 +1074,36 @@ def test_a_statement_row_another_row_replaces_is_kept_for_breakpoints_but_noted(
     found = _line_rows(text, tmp_path, ("main.c",), replaced=replaced)
     assert [row[2] for row in found] == [1, 2, 3, 3, 4]
     assert replaced == {(0x401000, "main.c", 1), (0x40100C, "main.c", 4)}
+
+
+def test_of_the_rows_at_one_address_the_last_is_the_one_that_runs(tmp_path):
+    # Review 5 of #107: GCC gives one address runs of rows; only the last runs. A row
+    # of the last row's line is not replaced, whatever comes between.
+    from peeky.native import _line_rows
+
+    (tmp_path / "main.c").write_text("x\n" * 40)
+    rows = (
+        (0x1000, 25, True),
+        (0x1000, 25, False),
+        (0x1000, 28, True),
+        (0x1000, 29, True),
+        (0x1000, 29, False),
+        (0x1000, 30, False),  # runs
+        (0x1010, 38, True),
+        (0x1010, 39, True),
+        (0x1010, 38, False),  # runs: line 38 stays
+        (0x1020, 40, True),
+        (0x1020, 40, False, "end_sequence"),
+    )
+    text = line_dump().split("0x0000000000401000")[0] + "".join(
+        f"0x{0x400000 + row[0]:016x} {row[1]} 1 1 0 0"
+        + (" is_stmt" if row[2] else "")
+        + "".join(f" {flag}" for flag in row[3:])
+        + "\n"
+        for row in rows
+    )
+    replaced = set()
+    found = _line_rows(text, tmp_path, ("main.c",), replaced=replaced)
+    assert sorted({row[2] for row in found}) == [25, 28, 29, 30, 38, 39, 40]
+    assert {line for _, _, line in replaced} == {25, 28, 29, 39, 40}
+    assert (0x401010, "main.c", 38) not in replaced

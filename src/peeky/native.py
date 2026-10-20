@@ -118,11 +118,10 @@ def _line_rows(text, workspace, declared, limit=MAX_METADATA, replaced=None):
     """Rows of the LLVM DWARF4 line-table dump for declared sources: (address, name, line).
 
     Unrecognized rows fail closed. Rows outside the declared sources (SDK and system
-    headers) and end-of-sequence rows are skipped, and so is a row that is not a
-    statement when the next row starts at its address (GCC -O2): it runs no code, and
-    LLDB keeps the later row there. A statement row the next row replaces that way (of
-    another line or file) is kept, since a breakpoint can be set on its line, and
-    added to ``replaced`` when given: it runs no code either.
+    headers) and end-of-sequence rows are skipped. Of the rows a sequence gives one
+    address (GCC -O2), LLDB keeps the last: each earlier one of another line or file
+    runs no code. It is skipped if it is not a statement; a statement row is kept,
+    since a breakpoint can be set on its line, and added to ``replaced`` when given.
     """
     if len(text.encode()) > limit:
         raise ValueError("Native line metadata exceeds limit")
@@ -135,18 +134,36 @@ def _line_rows(text, workspace, declared, limit=MAX_METADATA, replaced=None):
     table_count = 0
     version = None
     rows = []
-    # The last row kept and whether it is a statement, until the next row.
-    last = None
+    # The rows of one address in a sequence: (address, name, line, statement, ending).
+    group = []
+
+    def flush():
+        if not group:
+            return
+        *earlier, last = group
+        for address, name, number, statement, _ in earlier:
+            if name is None:
+                continue
+            if not last[4] and (name, number) == last[1:3]:
+                rows.append((address, name, number))
+            elif statement:
+                rows.append((address, name, number))
+                if replaced is not None:
+                    replaced.add((address, name, number))
+        if last[1] is not None and not last[4]:
+            rows.append(last[:3])
+        group.clear()
+
     for raw in text.splitlines():
         line = raw.strip()
         if line.startswith("debug_line["):
             table_count += 1
             if table_count > 4096:
                 raise ValueError("Too many native line tables")
+            flush()
             directories, files, current = {0: str(workspace)}, {}, None
             resolved = {}
             version = None
-            last = None
         elif match := re.fullmatch(r"version:\s+(\d+)", line):
             version = int(match[1])
             if version != 4:
@@ -185,19 +202,15 @@ def _line_rows(text, workspace, declared, limit=MAX_METADATA, replaced=None):
                 raise ValueError("Unresolved native line source") from exc
             address, name = int(fields[0], 16), resolved[file_id]
             ending = "end_sequence" in fields or number == 0
-            if last is not None and last[0][0] == address:
-                if not last[1]:
-                    rows.pop()
-                elif replaced is not None and (ending or last[0][1:] != (name, number)):
-                    replaced.add(last[0])
-            last = None
-            if ending:
-                continue
-            if name is not None:
-                if not 0 < number <= counts[name]:
-                    raise ValueError("Native line exceeds declared source length")
-                rows.append((address, name, number))
-                last = (rows[-1], "is_stmt" in fields)
+            if name is not None and not ending and not 0 < number <= counts[name]:
+                raise ValueError("Native line exceeds declared source length")
+            if group and group[0][0] != address:
+                flush()
+            group.append((address, name, number, "is_stmt" in fields, ending))
+            if "end_sequence" in fields:
+                # The next sequence may start at this address: its rows are its own.
+                flush()
+    flush()
     if not table_count:
         raise ValueError("Missing executable native debug symbol line information")
     return rows

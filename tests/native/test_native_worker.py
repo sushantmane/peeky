@@ -881,6 +881,15 @@ def test_a_gcc_optimized_block_span_skips_rows_another_row_replaces(
     neg = line_of(RICH, "return clamp(neg, -50, 0);")
     spans = described("rich.c", RICH, "Og")["classify"]
     assert any(first <= neg <= last for first, last in spans["neg"]), spans
+    # Review 5: of the rows at one address, only the last runs, whatever its neighbours;
+    # one of its own line stays.
+    doubled = line_of(RICH, "int doubled = v * 2;")
+    spans = described("rich.c", RICH, "O1")["classify"]
+    assert any(first <= doubled <= last for first, last in spans["doubled"]), spans
+    spans = described("calls.c", INLINED_CALLS, "O2")["work"]
+    for local in ("w", "z"):
+        declared = line_of(INLINED_CALLS, f"int {local} = ")
+        assert spans[local] and all(first >= declared for first, _ in spans[local]), spans
 
 
 OPTIMIZED_BLOCKS = """#include <stdio.h>
@@ -909,6 +918,70 @@ int main(int argc, char **argv) {
     int c = accumulate(argc + 8);
     printf("%d %d %d\\n", a, b, c);
     return 0;
+}
+"""
+
+INLINED_CALLS = """#include <stdio.h>
+#include <stdlib.h>
+
+static inline int lim(int n) {
+    int r = n > 5 ? 5 : n;
+    return r;
+}
+
+static inline int step(int i) {
+    return i + 1 + (rand() & 1);
+}
+
+static int work(int n) {
+    int total = 0;
+    for (int i = 0; i < lim(n); i = step(i)) {
+        int sq = i * i + rand() % 3;
+        printf("sq %d\\n", sq);
+        total += sq;
+    }
+    {
+        int a = lim(n + rand() % 4);
+        {
+            int b = a + rand() % 5;
+            printf("b %d\\n", b);
+            total += b;
+        }
+    }
+    int k = 0;
+    while (lim(k + n) > k) {
+        int w = k * 3 + rand() % 2;
+        printf("w %d\\n", w);
+        total += w;
+        k++;
+    }
+    do {
+        int d = rand() % 7;
+        printf("d %d\\n", d);
+        total += d;
+    } while (lim(total) < 3);
+    if (lim(n) > 2) {
+        int y = n * 2 + rand() % 3;
+        printf("y %d\\n", y);
+        total += y;
+    }
+    switch (lim(n + total)) {
+    case 5: {
+        int z = rand() % 9;
+        printf("z %d\\n", z);
+        total += z;
+        break;
+    }
+    default:
+        total += 1;
+    }
+    return total;
+}
+
+int main(int argc, char **argv) {
+    int r = work(argc + 6);
+    printf("%d\\n", r);
+    return r & 1;
 }
 """
 
