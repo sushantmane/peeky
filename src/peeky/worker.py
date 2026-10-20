@@ -1488,6 +1488,12 @@ class DebugWorker:
                 ),
                 **self.pause_status(),
                 **({"optimized": level} if (level := self.optimized()) else {}),
+                # C++ string keys: whether LLDB's summary of a std::string is all of it.
+                **(
+                    {"whole_string_summaries": True}
+                    if getattr(runtime, "whole_string_summaries", False) is True
+                    else {}
+                ),
             }
             if index:
                 # Where the program is stopped, which a caller frame's location is not.
@@ -2014,6 +2020,14 @@ class DebugWorker:
                 output["typedef_kind"], pointee = resolved
                 if resolved[0] == "pointer":
                     output["pointee_type"] = pointee
+            alias = getattr(self.runtime, "aliased_type", None)
+            if alias and (aliased := alias(kind)) is not None:
+                # The class behind a typedef'd type: a C++ map by another name (#119).
+                output["aliased_type"] = aliased[:2000]
+            pointed = getattr(self.runtime, "pointee_aliased_type", None)
+            if pointed and (aliased := pointed(kind, output.get("pointee_type"))) is not None:
+                # Or behind what a pointer points at (`IntSet *`).
+                output["pointee_aliased_type"] = aliased[:2000]
             shown = getattr(self.runtime, "display_type", None)
             if shown and (rust := shown(variable, frame, top=not ancestry)):
                 # The language's own name; the debugger's stays alongside.
