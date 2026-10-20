@@ -1526,6 +1526,35 @@ def test_a_string_key_matches_only_a_string_of_its_length(
             assert labels == ["cfg.opts[#0]", "cfg.opts[#1]"], labels
 
 
+def test_a_custom_comparison_never_says_a_key_is_missing(
+    tmp_path, native_config, capsys, monkeypatch
+):
+    # Review of #119 (PR #127): with `ByAbs`, C++'s am[1] reads key -1's -10, but `am[1]`
+    # said "not found ... would insert it". Absence is now claimed only under std::less,
+    # std::greater, or std::hash with std::equal_to; an exact key still reads.
+    with _maps_session(tmp_path, capsys, monkeypatch, program=KEYS) as get:
+        rows = get(
+            *("am[1]", "am[-1]", "mod[3]", "mod[13]", "bigabs[-3]", "bigabs[3]", "plain[4]"),
+            *('ci["alpha"]', 'ci["Alpha"]', 'hci["ALPHA"]', 'hci["Alpha"]', "am"),
+        )
+        for selector in ("am[1]", "mod[3]", "bigabs[3]", 'ci["alpha"]', 'hci["ALPHA"]'):
+            error = rows[selector].get("error", "")
+            assert "would insert" not in error and "no key equals" in error, (selector, error)
+            assert "[#N]" in error, error
+        assert "comparator" in rows["am[1]"]["error"]
+        assert "hash or equality" in rows['hci["ALPHA"]']["error"]
+        assert rows["am[-1]"]["value"] == "-10" and rows["mod[13]"]["value"] == "1"
+        assert rows["bigabs[-3]"]["value"] == "3"
+        assert rows['ci["Alpha"]']["value"] == rows['hci["Alpha"]']["value"] == "1"
+        assert (
+            "plain has no key 4 (keys: 1, 2); in C++, plain[4] would insert"
+            in (rows["plain[4]"]["error"])
+        )
+        # Each exact key's own selector reads its value.
+        shown = {c["selector"]: c["value"] for c in rows["am"]["children"]}
+        assert shown == {"am[-1]": "-10", "am[2]": "20", "am[-3]": "-30", "am[5]": "50"}
+
+
 TYPEDEF_NAMED = """#include <cstdio>
 #include <vector>
 typedef std::vector<int> &P;

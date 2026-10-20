@@ -453,3 +453,45 @@ def test_libcxx_string_members_say_the_summary_is_whole():
     )
     assert _string_bytes(old_abi, {}, first, False) is None
     assert _string_bytes(old_abi, {}, {**first, "variablesReference": 0}, True) is True
+
+
+@pytest.mark.parametrize(
+    "kind, why",
+    [
+        ("std::map<int, int>", None),
+        ("std::map<int, int, std::greater<int> >", None),
+        ("std::map<int, int, std::less<>, MyAlloc<std::pair<const int, int> > >", None),
+        ("std::unordered_map<int, int>", None),
+        (
+            "std::__1::unordered_map<int, int, std::__1::hash<int>, std::__1::equal_to<int>, "
+            "std::__1::allocator<std::__1::pair<const int, int> > >",
+            None,
+        ),
+        ("std::map<int, int, ByAbs>", "comparator (ByAbs) is not std::less or std::greater"),
+        (
+            "std::unordered_map<std::string, int, LowerHash, LowerEq>",
+            "hash or equality (LowerHash, LowerEq) is not std::hash and std::equal_to",
+        ),
+        ("Holder<int>::M", "comparator (or hash and equality) cannot be told from its type"),
+    ],
+)
+def test_only_the_standard_comparison_says_which_key_cxx_reads(kind, why):
+    from peeky.probe import _comparison
+
+    assert _comparison({"type": kind}) == why
+
+
+def test_a_custom_comparison_never_says_a_key_is_missing():
+    # Review of #119: under `ByAbs`, C++'s am[1] reads key -1's -10.
+    tree = entries(9, [("-1", "-10"), ("2", "20")])
+    scopes = snapshot(local("am", "std::map<int, int, ByAbs>", 9, 2))
+    message = refused("am[1]", tree, scopes)
+    assert "would insert" not in message
+    assert "no key equals 1 exactly (keys of am: -1, 2), but am's comparator (ByAbs)" in message
+    assert read("am[-1]", tree, scopes)["value"] == "-10"
+    shown = _children(Lldb(tree), {}, "am", scopes["scopes"][0]["variables"][0], True)
+    assert "only a key equal to K reads" in shown["note"]
+    # A map by a template's name only (`Holder<T>::M`): its comparator is not known.
+    scopes = snapshot(local("hm", "Holder<int>::M", 9, 2, aliased_type="std::map"))
+    assert "hm's comparator (or hash and equality) cannot be told" in refused("hm[1]", tree, scopes)
+    assert read("hm[2]", tree, scopes)["value"] == "20"

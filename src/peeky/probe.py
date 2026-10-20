@@ -1823,6 +1823,35 @@ def _order(variable):
     return None
 
 
+def _comparison(variable):
+    """None when C++'s `m[K]` finds only a key equal to K: a std::map ordered by
+    std::less or std::greater, or a std::unordered_map using std::hash and std::equal_to
+    (the defaults LLDB leaves out of a type's name). Else why not (`comparator (ByAbs) is
+    not ...`): the map's own comparison may treat another key as equal to K, which `m[K]`
+    then reads (review of #119)."""
+    if _order(variable) is not None:
+        return None
+    for kind in (variable.get("type"), variable.get("aliased_type")):
+        arguments = _template_arguments(kind, "unordered_map")
+        if arguments is None or len(arguments) < 2:
+            continue
+        key = re.escape(arguments[0])
+        hashing = len(arguments) < 3 or re.fullmatch(
+            rf"(?:::)?std::(?:__\w+::)*hash<\s*{key}\s*>", arguments[2]
+        )
+        equal = len(arguments) < 4 or re.fullmatch(
+            rf"(?:::)?std::(?:__\w+::)*equal_to<\s*(?:{key}|void)?\s*>", arguments[3]
+        )
+        if hashing and equal:
+            return None
+        return f"hash or equality ({', '.join(arguments[2:4])}) is not std::hash and std::equal_to"
+    for kind in (variable.get("type"), variable.get("aliased_type")):
+        arguments = _template_arguments(kind, "map")
+        if arguments is not None and len(arguments) > 2:
+            return f"comparator ({arguments[2]}) is not std::less or std::greater"
+    return "comparator (or hash and equality) cannot be told from its type"
+
+
 def _string_bytes(worker, stop, first, whole):
     """How much of a std::string key LLDB's summary shows: True for all of it (libc++,
     whose summary LLDB prints from the string's size, a NUL as `\\0`), else its length in
@@ -1852,7 +1881,8 @@ def _value_for_key(worker, stop, variable, path, segment, first_page, how, whole
     """The value for one key of a C++ map with unique keys: the `second` of the one
     entry whose `first` the debugger shows as exactly that key (a std::string key also
     of its length). A std::map with integer keys in a standard order is bisected; any
-    other map is read entry by entry."""
+    other map is read entry by entry. That no entry has the key is said only where the
+    map's comparison is the standard one, under which C++'s `m[K]` finds no other."""
     key = _key(segment)
     wanted = _literal(key) if key is not None else int(segment[1:-1])
     shown = f'"{wanted}"' if key is not None else str(wanted)
@@ -1989,6 +2019,12 @@ def _value_for_key(worker, stop, variable, path, segment, first_page, how, whole
     )
     if compared == "string" and not whole:
         listed += "; each as the debugger shows it, up to a NUL byte"
+    if (why := _comparison(variable)) is not None:
+        raise ValueError(
+            f"{written} not read: no key equals {shown} exactly (keys of {path}: {listed}), "
+            f"but {path}'s {why}, so C++'s {path}{written} may read an entry whose key it "
+            f"treats as equal to {shown}, which Peeky cannot tell from the keys; {how}"
+        )
     raise ValueError(
         f"{written} not found: {path} has no key {shown} (keys: {listed}); in C++, "
         f"{path}{written} would insert it with a default value"
@@ -2109,10 +2145,13 @@ def _entry_children(worker, stop, selector, variable, page, whole=False):
         if kind == "unresolved"
         else "multi"
     )
+    shown = _ENTRY_NOTES[note].format(base)
+    if note == "keyed" and (why := _comparison(container)) is not None:
+        shown += f"; its {why}, so only a key equal to K reads"
     return {
         "children": listed,
         **({"children_truncated": True} if page["truncated"] else {}),
-        "note": _ENTRY_NOTES[note].format(base),
+        "note": shown,
     }
 
 
