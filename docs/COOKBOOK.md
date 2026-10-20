@@ -83,7 +83,7 @@ probe: peeky probe examples/pagination_bug.py --at pagination_bug.py:<line> [--r
 
 For a large module, `--json` and `jq` find a function quickly: `peeky describe dir --at module.py --json | jq '.scopes[] | select(.scope | test("is_private"))'`.
 
-C, C++ and Rust list the same from the build's debug information: each function in your sources, with its file, lines and parameters and locals. Names are readable (`crate::Type::method`, `<crate::Type as core::fmt::Display>::fmt`, `geo::Box::area`). A probe's `function` column keeps LLDB's frame name, which matches for plain functions and methods. For Rust trait impls and closures it keeps symbol escapes (`_$LT$…`, `_$u7b$$u7b$closure$u7d$$u7d$`), and for C++ it adds the signature, so match those in SQL with `LIKE '%fmt%'`. Closures and lambdas are listed under their function. A function inlined into another (`#[inline(always)]`, `always_inline`) keeps its own lines. Each name shows its type. A local declared only inside nested blocks also shows those blocks' lines, where it is visible: `i (int, lines 23, 28)` is two one-line `for` loops' `i`, not a name of the whole function. A block that also runs another file's code (an `#include` inside it) gives none (a local macro's expansion, on its definition's lines, does not count), and past eight blocks one span covers them all. In Rust every `let` opens a block, so a local shows the lines after its `let`, where it is visible (#107). If the debug information cannot be read, the text says `function names: unavailable (reason)`. A very large optimized C++ unit can exceed the 16 MB bound on reading it:
+C, C++ and Rust list the same from the build's debug information: each function in your sources, with its file, lines and parameters and locals. Names are readable (`crate::Type::method`, `<crate::Type as core::fmt::Display>::fmt`, `geo::Box::area`). A probe table's `function` column shows each frame's short name: `trim_left`, `geo::Box::area`, `same<int>`, a Rust function without its symbol hash; two overloads in one table keep their parameters (`twice(int)`, `twice(std::string const&)`). JSON and the evidence store keep LLDB's whole frame name (a C++ signature, `trim_left(std::__1::basic_string<char, …> const&)`; Rust's symbol escapes, `_$LT$…`), and a session's text names the frame with its parameters, the standard types written as code writes them (`in trim_left(std::string const&)`). In SQL, match a frame with `short_function(function) = 'trim_left'` (a query's table shows the short name too, with a note). Closures and lambdas are listed under their function. A function inlined into another (`#[inline(always)]`, `always_inline`) keeps its own lines. Each name shows its type. A local declared only inside nested blocks also shows those blocks' lines, where it is visible: `i (int, lines 23, 28)` is two one-line `for` loops' `i`, not a name of the whole function. A block that also runs another file's code (an `#include` inside it) gives none (a local macro's expansion, on its definition's lines, does not count), and past eight blocks one span covers them all. In Rust every `let` opens a block, so a local shows the lines after its `let`, where it is visible (#107). Lines between a block's own where only code outside the block runs are left out, so one block can give several spans. In C++ a block's cleanup code, which runs when an exception leaves the block, is on the function's closing line: `name (std::string, lines 22-25, 35)` is an `if` block's local, visible on its lines and, while an exception unwinds, at the closing `}`, not on the lines between. A span is never narrower than where the debugger can show the local, so lines without code (comments, a lone `}`) inside it are kept. If the debug information cannot be read, the text says `function names: unavailable (reason)`. A very large optimized C++ unit can exceed the 16 MB bound on reading it:
 
 ```
 names in parse_count (pagination_bug.c:6-14): end (char *), minimum (int), result (int *), text (const char *), value (long)
@@ -418,6 +418,32 @@ hit  selector                 value       identity  scope
 
 At one hit, equal identities are the same object: `tags` is the function's default list, not a copy. Across hits, a different identity always means a different object, but an equal one means the same object or a new one that took a freed object's place; here the default lives as long as the function, and its contents grow. Numbers, strings and `None` have no identity (NULL). Never compare identities across runs. `scope` is `globals` for a selector whose first name was read from the module's globals (5.1), and `unknown` for a row an early build of schema 6 stored (it could read globals without recording it); NULL is the frame's own variables.
 
+### 4.7 C++ References and Pointers in SQL
+
+**What it answers:** Which arguments did `trim_left` change? A `const std::string &` (or a pointer) is saved as the debugger shows it, its address first: `0x000000016d78b298 "apple"`. It never equals a plain string's `"apple"`, so take the text after the address before comparing.
+
+`examples/cpp/refs/trim.cpp` trims each argument's leading spaces. Capture the reference parameter `s` in `trim_left`, then the result `name` in `main`, one run each:
+
+```sh
+peeky probe examples/cpp/refs/trim.cpp --at trim.cpp:6 --arg apple --arg " pear" --arg "fig " \
+  --capture s --hits all --label argument
+peeky probe examples/cpp/refs/trim.cpp --at trim.cpp:11 --arg apple --arg " pear" --arg "fig " \
+  --capture name --hits all --label name
+peeky sql "SELECT n.hit, s.value AS argument, n.value AS name,
+  substr(s.value, instr(s.value, ' ') + 1) = n.value AS unchanged
+  FROM evidence s JOIN evidence n ON n.hit = s.hit AND n.label = 'name' AND n.selector = 'name'
+  WHERE s.label = 'argument' AND s.selector = 's'"
+```
+
+```
+hit  argument                    name     unchanged
+1    0x000000016d78b298 "apple"  "apple"  1
+2    0x000000016d78b298 " pear"  "pear"   0
+3    0x000000016d78b298 "fig "   "fig "   1
+```
+
+`substr(value, instr(value, ' ') + 1)` is the text after the address: an address has no space, while the text may have several (`" pear"`), so take only the first. Use it only on a reference's or pointer's value (one that starts with `0x`); on a plain string it would cut the text at its first space. `no_addresses(value)` gives `0x… "apple"`: enough to compare two references, or one across runs, but still not equal to `"apple"`. A text Peeky could not check whole carries a note after it (`"v" (shown up to a NUL at byte 1 of 3)`, libstdc++ with lldb-dap 18; 7.1), so it never equals a plain string either.
+
 ---
 
 ## 5. Step-by-Step Sessions
@@ -716,6 +742,7 @@ All `.c` files in the directory that don't define their own `main` are built tog
 - On every platform, a literal reads back in C as the same bytes: where LLDB writes `\0` before a digit (`"n\064"`, which C reads as `"n4"`) or `\xff` before a hex digit, Peeky writes `"n\00064"` and `"\377a"`. Long text stays within 2000 characters, cut between characters with `...`.
 - Each libstdc++ string costs a debugger request (two or three where its bytes are read), within the inspection's budget: a large page of strings may say `(not checked for a NUL byte: ...)` instead.
 - Strings cannot be `--set`; only integer locals can.
+- A string is its text: `session get name` shows `name: std::string = "apple"` and no rows under it (the library's own members, `(anonymous struct)` or `_M_dataplus`, are never listed), and `inspect` offers no `(children: ...)` for it. Selecting inside one (`name[0]`, `name.size`) is refused with what to do instead: capture the string and compare its text, in SQL (4.7). A pointer to one shows its address and text, and `p[0]` is the string.
 
 **Maps and sets (C++).** The debugger lists a `std::map`'s entries as `[0]`, `[1]`, ... in iteration order, but in C++ `m[1]` is the value for key 1. Peeky reads `m[K]` as C++ does, and `m[#N]` is the Nth entry in iteration order (a pair with `.first` and `.second`), so a position is never taken for a key (#119). In `examples/cpp/maps/scores.cpp`, `m` is `std::map<int, int> m{{2, 20}, {1, 10}, {5, 50}}`:
 

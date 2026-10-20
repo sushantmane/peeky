@@ -116,6 +116,20 @@ def summary_units(text, width, prefix):
     return count, lexed[2]
 
 
+def shows_text(value, found):
+    """Whether the debugger's ``value`` for a standard string (``found``: its
+    ``string_class``) is its text: a literal, after the address of a pointer or
+    reference to it. Such a value is shown whole; its members are the library's."""
+    width, prefix, indirect = found
+    value = str(value or "")
+    if indirect:
+        located = _ADDRESS.match(value)
+        if not located:
+            return False
+        value = value[located.end() :]
+    return summary_units(value, width, prefix) is not None
+
+
 def _spell(tokens):
     """The tokens' text, each escape spelled so that C reads it back alone: LLDB's `\\0`
     before an octal digit is `\\000`, its `\\xNN` before a hex digit `\\NNN` (octal)."""

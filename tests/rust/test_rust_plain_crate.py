@@ -3184,8 +3184,11 @@ def test_a_generic_function_is_one_scope_with_its_blocks_lines(plain, capsys):
     # Review 4: a macro defined inside the function keeps its lines (its expansion
     # stops there in this frame); a function a macro declares runs its argument's code
     # on the invoking line, past other functions, so its blocks give no span.
-    ((first, _),) = scopes["inside"]["spans"]["i"]
-    assert first <= line_of(GENERIC_SPANS, "// TWICE_BODY"), scopes["inside"]
+    # The loop header's line, between the expansion's and the body's, runs code outside
+    # the loop variable's block, so its lines are two spans (eval 6, finding 17).
+    spans = scopes["inside"]["spans"]["i"]
+    assert spans[0][0] <= line_of(GENERIC_SPANS, "// TWICE_BODY"), scopes["inside"]
+    assert spans[-1][1] >= line_of(GENERIC_SPANS, "let s = twice!(i);") + 1, scopes["inside"]
     assert "spans" not in scopes["triple"], scopes["triple"]
 
 

@@ -20,7 +20,7 @@ from pathlib import Path
 
 from peeky.errors import Refused, classify
 from peeky.java import JAVA_ARRAY, JAVA_LIST, java_list, java_preview
-from peeky.names import display_function
+from peeky.names import display_function, function_labels
 from peeky.worker import (
     DebugWorker,
     load_java_target,
@@ -695,6 +695,19 @@ def _resolve(worker, stop, snapshot, segments, pointers=False):
         index_segment = pointers and segment.startswith("[") and _key(segment) is None and not entry
         if index_segment and not handle and _null_pointer(variable):
             raise ValueError(f"{path} is NULL: it points at nothing")
+        if (
+            index_segment
+            and variable.get("text")
+            and not variable.get("unavailable")
+            and (pointee := _c_pointee(variable)) is not None
+        ):
+            # A pointer to a C++ string, shown with its text (`0x… "apple"`): p[0] is
+            # that string, as C++ reads it; the worker lists no members (eval 6).
+            if segment == "[0]":
+                variable = _dereferenced(variable, pointee)
+                path += segment
+                continue
+            raise ValueError(_beyond_pointee(variable, path, pointee, segment, []))
         if index_segment and handle and not variable.get("unavailable"):
             pointee = _c_pointee(variable)
             unresolved = pointee is None and _unresolved_indirection(variable)
@@ -722,6 +735,19 @@ def _resolve(worker, stop, snapshot, segments, pointers=False):
         if not handle and variable.get("unavailable"):
             raise ValueError(f"{variable['name']!r} has no value here: {variable.get('reason')}")
         if not handle:
+            if variable.get("text"):
+                value = str(variable.get("value"))
+                what = (
+                    "points at a C++ string, shown with its address and text"
+                    if _c_pointee(variable) is not None
+                    else "is a C++ string, shown whole as its text"
+                )
+                raise ValueError(
+                    f"{path} ({variable.get('type')}) {what} ({value[:80]}): Peeky selects "
+                    "neither its characters nor the library's members inside it; capture "
+                    f"{path} and compare its text (in SQL, substr() and instr() over the "
+                    "captured value)"
+                )
             if variable.get("depth_limited"):
                 raise ValueError(
                     f"cannot expand {variable['name']!r}: it is at the inspection depth limit "
@@ -1612,6 +1638,9 @@ def _dereferenced(variable, pointee):
     if summary and variable.get("view") == "memory":
         # A libstdc++ string's text, which the worker read from memory (#128).
         shown["view"] = "memory"
+    if variable.get("text"):
+        # A C++ string's: its text, with no members to list (eval 6).
+        shown.update(text=True, variablesReference=0)
     for key in ("indexedVariables", "namedVariables", "string_length"):
         if type(variable.get(key)) is int:
             shown[key] = variable[key]
@@ -2775,13 +2804,15 @@ def _by_hit(rows):
 def _table(result):
     lines = []
     header = ("hit", "phase", "line", "function", "selector", "type", "value")
+    # A C++ frame's signature (`trim_left(std::__1::basic_string<...> const&)`) would
+    # double the table's width; Rust's ends with a symbol hash. JSON keeps the name whole.
+    functions = function_labels(row.get("function") for row in result["rows"])
     rows = [
         (
             str(row["hit"]),
             row["phase"],
             str(row.get("line", "")),
-            # Rust frame names end with a symbol hash (`main::h56a2…`); JSON keeps it.
-            display_function(row.get("function")),
+            functions.get(row.get("function"), ""),
             row["selector"],
             row.get("type") or "",
             row.get("value", "<" + row.get("error", "") + ">")
