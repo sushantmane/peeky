@@ -1410,7 +1410,247 @@ def test_composites_are_read_only_from_the_crate_and_never_beside_an_unreadable_
     assert twins(readable, unreadable) == {"kind": "unqualified"}
     alone = _struct("el", "Interval", "0x08", _member("g0", "p", "u_ptr", "0x00"))
     alone = container_layouts(*composite_dump(alone, "&[peeky_pagination::Interval]"))
-    assert alone == {"&[peeky_pagination::Interval]": {"kind": "unread"}}
+    # Recorded for previews too (#106), under a key no type name has.
+    assert alone == {
+        "&[peeky_pagination::Interval]": {"kind": "unread"},
+        "struct:peeky_pagination::Interval": {"kind": "unread"},
+    }
     # Such a container is never mistaken for an enum.
     variable = {"name": "v", "type": "&[peeky_pagination::Interval]", "variablesReference": 1}
     assert active_variant(variable, None, alone) is None
+
+
+def struct_dump(*structs, roots=()):
+    """A unit of the crate `peeky_pagination` declaring ``structs`` (and ``roots``, such
+    as tuples, outside any namespace)."""
+    from peeky.rust_symbols import container_layouts
+
+    tree = (
+        "cu",
+        "DW_TAG_compile_unit",
+        [("DW_AT_name", '"src/main.rs/@/comp"')],
+        [
+            _namespace("crate", "peeky_pagination", *structs),
+            *roots,
+            _namespace("core", "core", _namespace("r", "range", RANGE)),
+            _base("char", "char", "0x04", "DW_ATE_UTF"),
+            _base("usize", "usize", "0x08", "DW_ATE_unsigned"),
+            _base("i64", "i64", "0x08", "DW_ATE_signed"),
+            _base("i8", "i8", "0x01", "DW_ATE_signed"),
+            _base("u8", "u8", "0x01", "DW_ATE_unsigned"),
+            _base("bool", "bool", "0x01", "DW_ATE_boolean"),
+            ("u_ptr", "DW_TAG_pointer_type", [("DW_AT_type", ("ref", "usize"))], []),
+        ],
+    )
+    return container_layouts(*_tree_dump(tree))
+
+
+RANGE = _struct(
+    "range",
+    "Range<usize>",
+    "0x10",
+    _member("r0", "start", "usize", "0x00"),
+    _member("r1", "end", "usize", "0x08"),
+)
+
+
+def test_struct_and_tuple_layouts_are_kept_for_previews():
+    # #106: the crate's structs and every tuple whose fields are qualified scalars.
+    from peeky.rust_symbols import STRUCT_PREFIX
+
+    pair = _struct(
+        "pair",
+        "Pair<i8>",
+        "0x02",
+        _param("pair_t", "i8"),
+        _member("p0", "a", "i8", "0x00"),
+        _member("p1", "b", "i8", "0x01"),
+    )
+    point = _struct(
+        "point",
+        "Point",
+        "0x10",
+        _member("q0", "__0", "i64", "0x00"),
+        _member("q1", "__1", "u8", "0x08"),
+    )
+    unit = _struct("unit", "Marker", "0x00")
+    tuple_ = _struct(
+        "tup",
+        "(i64, char)",
+        "0x10",
+        _member("t0", "__0", "i64", "0x00"),
+        _member("t1", "__1", "char", "0x08"),
+    )
+    layouts = struct_dump(INTERVAL, pair, point, unit, roots=(tuple_,))
+    shapes = {
+        name.removeprefix(STRUCT_PREFIX): (layout["kind"], layout.get("shape"), layout["shown"])
+        for name, layout in layouts.items()
+    }
+    assert shapes == {
+        "peeky_pagination::Interval": ("composite", "struct", "Interval"),
+        "peeky_pagination::Pair<i8>": ("composite", "struct", "Pair"),
+        "peeky_pagination::Point": ("composite", "tuple-struct", "Point"),
+        "peeky_pagination::Marker": ("unit", None, "Marker"),
+        "(i64, char)": ("composite", "tuple", "(i64, char)"),
+    }
+    # The standard library's `Range` has its own Debug (`1..5`): never kept.
+    assert not any("Range" in name for name in layouts)
+
+
+@pytest.mark.parametrize(
+    "element",
+    [
+        # A field that is not a qualified scalar (a pointer), packed, and an enum.
+        _struct("el2", "Interval", "0x08", _member("g0", "p", "u_ptr", "0x00")),
+        _struct(
+            "el2",
+            "Interval",
+            "0x09",
+            _member("g0", "open", "bool", "0x00"),
+            _member("g1", "n", "usize", "0x01"),
+        ),
+        (
+            "el2",
+            "DW_TAG_structure_type",
+            [("DW_AT_name", '"Interval"'), ("DW_AT_byte_size", "0x08")],
+            [("vp2", "DW_TAG_variant_part", [], [])],
+        ),
+    ],
+)
+def test_structs_that_are_not_plain_scalars_are_never_previewed(element):
+    from peeky.rust_symbols import STRUCT_PREFIX
+
+    key = STRUCT_PREFIX + "peeky_pagination::Interval"
+    assert struct_dump(element)[key] == {"kind": "unread"}
+    # Nor is a readable struct sharing its path (one in a function's body).
+    assert struct_dump(INTERVAL, element)[key] == {"kind": "unqualified"}
+
+
+STRUCTS = {
+    "struct:peeky_pagination::Span": {
+        "kind": "composite",
+        "element_size": 16,
+        "alignment": 8,
+        "fields": [["start", 0, "usize"], ["end", 8, "usize"]],
+        "shape": "struct",
+        "shown": "Span",
+    },
+    "struct:peeky_pagination::Pair<i8>": {
+        "kind": "composite",
+        "element_size": 2,
+        "alignment": 1,
+        "fields": [["a", 0, "i8"], ["b", 1, "i8"]],
+        "shape": "struct",
+        "shown": "Pair",
+    },
+    "struct:peeky_pagination::Pair<char>": {
+        "kind": "composite",
+        "element_size": 8,
+        "alignment": 4,
+        "fields": [["a", 0, "char"], ["b", 4, "char"]],
+        "shape": "struct",
+        "shown": "Pair",
+    },
+    "struct:(i8)": {
+        "kind": "composite",
+        "element_size": 1,
+        "alignment": 1,
+        "fields": [["__0", 0, "i8"]],
+        "shape": "tuple",
+        "shown": "(i8)",
+    },
+    "struct:peeky_pagination::Marker": {"kind": "unit", "shown": "Marker"},
+    "struct:peeky_pagination::Twin": {"kind": "unqualified"},
+    "struct:peeky_pagination::Named": {"kind": "unread"},
+}
+
+
+def test_a_preview_takes_its_layout_from_the_mir_type_not_lldbs_name():
+    from peeky.rust_symbols import struct_name
+
+    # LLDB names Pair<i8> `Pair<char>`, which is the DWARF name of Pair<char>.
+    shown = "peeky_pagination::Pair<char>"
+    assert struct_name("Pair<i8>", shown, STRUCTS) == "peeky_pagination::Pair<i8>"
+    assert struct_name("Pair<char>", "peeky_pagination::Pair<char32_t>", STRUCTS) == (
+        "peeky_pagination::Pair<char>"
+    )
+    assert struct_name("(i8,)", "(i8)", STRUCTS) == "(i8)"
+    # No MIR type, none of the crate's, or LLDB's name for another type.
+    assert struct_name(None, shown, STRUCTS) is None
+    assert struct_name("Pair<u8>", shown, STRUCTS) is None
+    assert struct_name("Span", "peeky_pagination::Other", STRUCTS) is None
+    assert struct_name("Span", "peeky_pagination::Span *", STRUCTS) is None
+
+
+def preview(variable, blocks, **proof):
+    from peeky.rust_symbols import struct_view
+
+    return struct_view(
+        {"name": "s", "memoryReference": "0x10", **variable}, memory(blocks), STRUCTS, **proof
+    )
+
+
+def test_structs_and_tuples_preview_as_derived_debug_with_their_fields():
+    span = {"type": "peeky_pagination::Span", "value": "peeky_pagination::Span @ 0x10"}
+    shown = preview(span, {"0x10": words(2, 3)}, owned=True, declared="Span")
+    assert shown["value"] == "Span { start: 2, end: 3 }" and shown["rust_view"] == "memory"
+    assert shown["children"] == [
+        {"name": "start", "type": "usize", "value": "2"},
+        {"name": "end", "type": "usize", "value": "3"},
+    ]
+    pair = {"type": "peeky_pagination::Pair<char>"}
+    assert preview(pair, {"0x10": bytes([1, 0xFE])}, owned=True, declared="Pair<i8>")["value"] == (
+        "Pair { a: 1, b: -2 }"
+    )
+    single = {"type": "(i8)", "value": "(i8) @ 0x10"}
+    assert preview(single, {"0x10": bytes([7])}, owned=True, declared="(i8,)")["value"] == "(7,)"
+    marker = {"type": "peeky_pagination::Marker"}
+    assert preview(marker, {}, owned=True, declared="Marker")["value"] == "Marker"
+    # A reference parameter: read through the pointer it holds, which LLDB shows.
+    reference = {"type": "peeky_pagination::Span *", "value": "0x0000000000001000"}
+    blocks = {"0x10": words(0x1000), "0x1000": words(4, 9)}
+    shown = preview(reference, blocks, parameter="&mut peeky_pagination::Span")
+    assert shown["value"] == "Span { start: 4, end: 9 }"
+
+
+def test_a_preview_needs_a_proof_a_plain_layout_and_agreeing_addresses():
+    span = {"type": "peeky_pagination::Span", "value": "peeky_pagination::Span @ 0x10"}
+    blocks = {"0x10": words(2, 3)}
+    # Not proven initialized (moved, not yet assigned, a caller's frame).
+    assert preview(span, blocks, declared="Span") is None
+    # Same-named structs, one with other fields, a std struct: never read.
+    for name in ("Twin", "Named", "Range<usize>"):
+        variable = {"type": f"peeky_pagination::{name}"}
+        assert preview(variable, blocks, owned=True, declared=name) is None
+    # LLDB's address for the value is not where the debugger reads it.
+    moved = {**span, "value": "peeky_pagination::Span @ 0x20"}
+    assert preview(moved, blocks, owned=True, declared="Span") is None
+    # A reference whose pointer the debugger shows differently, null or misaligned.
+    reference = {"type": "peeky_pagination::Span *", "value": "0x0000000000001000"}
+    for target in (0x2000, 0, 0x1004):
+        blocks = {"0x10": words(target), "0x1000": words(4, 9), "0x1004": words(4, 9)}
+        shown = {**reference, "value": f"0x{target:016x}"} if target != 0x2000 else reference
+        assert preview(shown, blocks, parameter="&peeky_pagination::Span") is None
+    # A memory read the debugger refuses, or past the view's budget, leaves it raw.
+    from peeky.adapters import ViewBudgetExhausted
+    from peeky.rust_symbols import struct_view
+
+    def refuse(address, count):
+        raise ViewBudgetExhausted("budget")
+
+    variable = {"name": "s", "memoryReference": "0x10", **span}
+    assert struct_view(variable, refuse, STRUCTS, owned=True, declared="Span") is None
+    # A bool that is neither 0 nor 1 is not a value the program could hold.
+    flags = {
+        "struct:peeky_pagination::Flag": {
+            "kind": "composite",
+            "element_size": 1,
+            "alignment": 1,
+            "fields": [["on", 0, "bool"]],
+            "shape": "struct",
+            "shown": "Flag",
+        }
+    }
+    variable = {"name": "f", "type": "peeky_pagination::Flag", "memoryReference": "0x10"}
+    read = memory({"0x10": bytes([2])})
+    assert struct_view(variable, read, flags, owned=True, declared="Flag") is None

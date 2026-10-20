@@ -1139,7 +1139,9 @@ def test_generic_boxes_are_gated_and_non_owning_values_read(plain, capsys):
         if value is None:
             assert whole["view"] == "unproven" and "value" not in field, (marker, result["rows"])
         else:
-            assert field["value"] == value and "view" not in whole, (marker, result["rows"])
+            # Read, not gated: a `&Pt` held by `T` (a reference parameter) previews (#106).
+            assert field["value"] == value, (marker, result["rows"])
+            assert whole.get("view") in (None, "memory"), (marker, result["rows"])
     # Verification of #103: a wide Box (`Box<str>`, which LLDB names itself) and a 2-D
     # array Box (`unsigned char (*)[2][4]`) held by a generic `T`.
     for marker, capture in (
@@ -1169,8 +1171,9 @@ def test_generic_boxes_are_gated_and_non_owning_values_read(plain, capsys):
     rows = result["rows"]
     assert rows[0].get("value") == "2" and rows[2].get("value") == "10", rows
     # Verification of #103: a captured `fn(&Pt)` (MIR: `for<'a> fn(&'a Pt) -> i64`) and
-    # an array of fn pointers whose parameter LLDB names `unsigned char (*)[4]` read.
-    assert not any(row.get("view") for row in rows), rows
+    # an array of fn pointers whose parameter LLDB names `unsigned char (*)[4]` read
+    # (`p`, a `Pt`, previews: #106).
+    assert all(row.get("view") in (None, "memory") for row in rows), rows
     assert "px" in str(rows[3].get("value")), rows
     assert "not shown" not in str(rows[4].get("value")), rows
     # A Box bound to the same name in a sibling block does not hide an integer or an
@@ -3316,3 +3319,222 @@ def test_a_field_reassigned_in_place_leaves_its_struct_whole(plain, capsys):
     rows = _rows_at(plain, capsys, "AG_PARTLY_REPLACED", "h,h.b,h.b.x,h.n,h.v.len")
     assert _hidden(rows["h.b.x"]) and rows["h.b"]["view"] == "unproven", rows
     assert _stale(rows["h"]) and _stale(rows["h.n"]) and rows["h.v.len"].get("stale"), rows
+
+
+PREVIEWS = """#[derive(Debug, Clone, Copy)]
+pub struct Span {
+    start: usize,
+    end: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct Point(i32, u8);
+
+#[derive(Debug, Clone, Copy)]
+pub struct Pair<T> {
+    a: T,
+    b: T,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct Marker;
+
+#[derive(Debug, Clone, Copy)]
+pub struct Mixed {
+    c: char,
+    f: f32,
+    on: bool,
+    u: u8,
+    i: i8,
+    d: f64,
+}
+
+#[derive(Debug)]
+pub struct Named {
+    name: String,
+    n: i32,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct Rect {
+    a: Span,
+    b: Span,
+}
+
+#[derive(Debug, Clone, Copy)]
+#[repr(C, packed)]
+pub struct Packed {
+    a: u8,
+    b: u32,
+}
+
+#[derive(Debug)]
+pub struct Owned {
+    v: i64,
+}
+
+mod parse {
+    #[derive(Debug, Clone, Copy)]
+    pub struct Token {
+        pub start: u32,
+        pub end: u32,
+    }
+}
+
+fn parse(text: &str) -> usize {
+    // Shares its path, `parse::Token`, with the module's.
+    #[derive(Debug)]
+    struct Token {
+        text: String,
+        line: u32,
+    }
+    let t = Token { text: text.to_string(), line: 7 };
+    t.text.len() + t.line as usize
+}
+
+#[inline(never)]
+fn consume(o: Owned) -> i64 {
+    o.v
+}
+
+fn widen(s: &Span, m: &mut Span, p: Span, t: &(i64, char)) -> usize {
+    m.end += 1;
+    s.end - s.start + m.end + p.start + t.0 as usize // PV_PARAMS
+}
+
+#[inline(never)]
+fn inner(k: usize) -> usize {
+    k + 1 // PV_INNER
+}
+
+fn outer(s: &Span, m: &mut Span) -> usize {
+    m.start += 1;
+    inner(s.start) + m.end
+}
+
+fn main() {
+    let s = Span { start: 2, end: 3 };
+    let p = Point(1, 2);
+    let small = Pair { a: 1i8, b: -2 };
+    let letters = Pair { a: 'x', b: 'y' };
+    let pair = Pair { a: 1u16, b: 2 };
+    let mark = Marker;
+    let mixed = Mixed { c: 'é', f: 0.1, on: true, u: 255, i: -3, d: 1e16 };
+    let single = (7i8,);
+    let t = (1i64, 'a');
+    let named = Named { name: "x".to_string(), n: 1 };
+    let rect = Rect { a: s, b: Span { start: 4, end: 9 } };
+    let packed = Packed { a: 1, b: 2 };
+    let tok = parse::Token { start: 0, end: 3 };
+    let o = Owned { v: 5 };
+    let later: Span;
+    let mut m = Span { start: 5, end: 6 };
+    let k = consume(o);
+    later = Span { start: 8, end: 9 }; // PV_LATER
+    let w = widen(&s, &mut m, s, &t) + parse("ab") + outer(&s, &mut m);
+    println!("{:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?}", s, p, small, letters, pair, mark, mixed, single, t, later); // PV_LOCALS
+    println!("{:?} {:?} {:?} {:?} {} {} {:?}", named, rect, { packed }, tok, k, w, m);
+}
+"""
+PREVIEWED = ("s", "p", "small", "letters", "pair", "mark", "mixed", "single", "t", "later")
+
+
+@pytest.mark.timeout(600)
+def test_struct_and_tuple_locals_preview_as_rust_prints_them(plain, capsys):
+    # #106: a struct local showed `chars::Span @ 0x…` (a reference parameter its
+    # address) while a Vec of them read `[Span { start: 1, end: 10 }]`.
+    (plain / "src/main.rs").write_text(PREVIEWS)
+    if not _reads_memory_here(plain, capsys):
+        pytest.skip("this lldb-dap has no readMemory")
+    fields = "s.start,p.__1,t.__1,mixed.c,mixed.f,mixed.u,small.b,rect.a.end,tok.end,named.n"
+    rows = _preview_rows(
+        plain, capsys, "PV_LOCALS", ",".join((*PREVIEWED, "rect,packed,tok,named,o,m", fields))
+    )
+    for name in PREVIEWED:
+        assert rows[name]["view"] == "memory", rows[name]
+    # As Rust's derived Debug prints them: names collide in LLDB (`Pair<char>` for
+    # Pair<i8>); the MIR's type picks the layout.
+    printed = rows["s"]["output"].splitlines()[0]
+    assert " ".join(rows[name]["value"] for name in PREVIEWED) == printed
+    # Nested, packed, same-named (a function's own `Token`) or with a String: raw, as
+    # before, and their fields still read.
+    for name in ("rect", "packed", "tok", "named"):
+        assert "view" not in rows[name] and " @ 0x" in rows[name]["value"], rows[name]
+    # Moved (`consume(o)`): never previewed, and marked (#108).
+    assert "view" not in rows["o"] and rows["o"].get("stale"), rows["o"]
+    picked = {name: (rows[name]["value"], rows[name]["type"]) for name in fields.split(",")}
+    assert picked == {
+        "s.start": ("2", "usize"),
+        "p.__1": ("2", "u8"),
+        "t.__1": ("'a'", "char"),
+        "mixed.c": ("'é'", "char"),
+        "mixed.f": ("0.1", "f32"),
+        "mixed.u": ("255", "u8"),
+        "small.b": ("-2", "i8"),
+        "rect.a.end": ("3", "unsigned long"),
+        "tok.end": ("3", "u32"),
+        "named.n": ("1", "i32"),
+    }
+    # A raw field keeps LLDB's name beside the Rust one; a previewed one has its DWARF type.
+    assert rows["named.n"]["debugger_type"] == "int" and "debugger_type" not in rows["s.start"]
+    # Not yet assigned (`later` on its assignment's line): no preview.
+    rows = _preview_rows(plain, capsys, "PV_LATER", "later,s")
+    assert "view" not in rows["later"] and rows["s"]["view"] == "memory", rows
+
+
+@pytest.mark.timeout(600)
+def test_reference_parameters_preview_and_callers_locals_do_not(plain, capsys):
+    (plain / "src/main.rs").write_text(PREVIEWS)
+    if not _reads_memory_here(plain, capsys):
+        pytest.skip("this lldb-dap has no readMemory")
+    rows = _preview_rows(plain, capsys, "PV_PARAMS", "s,m,p,t,s.end,t.__0")
+    values = {name: (row["value"], row.get("view")) for name, row in rows.items()}
+    assert values == {
+        "s": ("Span { start: 2, end: 3 }", "memory"),
+        "m": ("Span { start: 5, end: 7 }", "memory"),
+        "p": ("Span { start: 2, end: 3 }", "memory"),
+        "t": ("(1, 'a')", "memory"),
+        "s.end": ("3", "memory"),
+        "t.__0": ("1", "memory"),
+    }
+    # A caller's frame: a shared reference parameter (the caller's loan freezes it) still
+    # previews; a `&mut` one (a callee may be changing it) and owned locals do not.
+    at = f"src/main.rs:{line_of(PREVIEWS, '// PV_INNER')}"
+    assert main(["session", "start", str(plain), "--at", at]) == 0
+    capsys.readouterr()
+    try:
+        code, rows = run(capsys, "session", "get", "--frame", "1", "s", "m", "s.start")
+        found = {row["selector"]: row for row in rows}
+        assert "::outer" in found["s"]["function"], found
+        assert found["s"]["value"] == "Span { start: 2, end: 3 }", found["s"]
+        assert "view" not in found["m"] and found["m"]["value"].startswith("0x"), found["m"]
+        assert found["s.start"]["value"] == "2", found
+        code, rows = run(capsys, "session", "get", "--frame", "2", "s", "t", "s.end")
+        found = {row["selector"]: row for row in rows}
+        assert "::main" in found["s"]["function"], found
+        assert "view" not in found["s"] and "view" not in found["t"], found
+        assert found["s.end"]["value"] == "3", found
+        # The innermost frame's inspection lists previews with their marker.
+        assert main(["session", "inspect", "--frame", "1"]) == 0
+        text = capsys.readouterr().out
+        assert "s: chars::Span * = Span { start: 2, end: 3 }  [memory]" in text, text
+    finally:
+        main(["session", "close"])
+        capsys.readouterr()
+
+
+def _reads_memory_here(plain, capsys):
+    if os.environ.get("PEEKY_EXPECT_READ_MEMORY") is not None:
+        return True
+    rows = _preview_rows(plain, capsys, "PV_LOCALS", "s")
+    return rows["s"].get("view") == "memory"
+
+
+def _preview_rows(plain, capsys, marker, capture):
+    at = f"src/main.rs:{line_of(PREVIEWS, '// ' + marker)}"
+    code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", capture, "--quiet")
+    assert code == 0, result.get("error")
+    rows = {row["selector"]: row for row in result["rows"]}
+    for row in rows.values():
+        row["output"] = result["output"]
+    return rows

@@ -61,6 +61,8 @@ from peeky.rust_symbols import (
     lldb_byte,
     lldb_char,
     lldb_float_debug,
+    struct_name,
+    struct_view,
 )
 
 DEPS = "target/debug/deps"
@@ -1133,10 +1135,11 @@ class RustSession(NativeSession):
                 ((frame or {}).get("source") or {}).get("path"),
             )
         )
+        layouts = self.layouts
         container = container_view(
             variable,
             read,
-            self.layouts,
+            layouts,
             optimized=self.target.opt_level != "0",
             parameter=parameter,
             owned=owned,
@@ -1144,6 +1147,26 @@ class RustSession(NativeSession):
         )
         if container is not None:
             return container
+        if hashed and unoptimized and proofs is not None:
+            # #106: a tuple or struct of scalars, previewed under the same proofs.
+            declared = (
+                proofs.declared_type(hashed[1], variable.get("name"), line, shown_path)
+                if innermost
+                else None
+            )
+            preview = struct_view(
+                variable,
+                read,
+                layouts,
+                parameter=parameter,
+                owned=bool(
+                    struct_name(declared, kind, layouts)
+                    and proofs.proven(hashed[1], variable.get("name"), line, shown_path)
+                ),
+                declared=declared,
+            )
+            if preview is not None:
+                return preview
         if top and proofs is not None:
             types = self._binding_types(variable, frame)
             # An array is judged by its elements (`[&Pt; 2]` is plain, `[Box<Pt>; 2]` owns).
@@ -1200,7 +1223,7 @@ class RustSession(NativeSession):
                 # read the freed allocation as its fields. The pointer is shown; what it
                 # points at is not.
                 return _unproven(variable)
-        view = active_variant(variable, fetch, self.layouts)
+        view = active_variant(variable, fetch, layouts)
         if view and view["rust_view"] == "active-variant" and self.target.opt_level != "0":
             # Optimized code may track an enum's tag and payload separately and LLDB
             # zero-fills a missing piece without reporting it, so a decoded variant is
