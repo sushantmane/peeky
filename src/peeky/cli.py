@@ -1349,7 +1349,7 @@ def session(args):
         from peeky.probe import apply_set
 
         (name, value), stop = _sets([args.assignment])[0], _stop(record)
-        if (last := parse_selector(name)[-1]).startswith("[") and last[1:2] in "'\"":
+        if (last := parse_selector(name)[-1]).startswith("[") and last[1:2] in "'\"#":
             from peeky.errors import Refused
 
             raise Refused(
@@ -2442,7 +2442,11 @@ def main(argv=None, _job=False, _edits=None):
         ("list", "Names of this user's sessions"),
         ("wait", "Wait up to --timeout for the program to stop or exit"),
         ("inspect", "Stack and locals at the current stop"),
-        ("get", "Read selectors (a, a.b, a[0], a['key']); lists one level of children"),
+        (
+            "get",
+            "Read selectors (a, a.b, a[0], a['key']; a C++ map's m[K] is key K's value, "
+            "m[#N] its Nth entry); lists one level of children",
+        ),
         (
             "set",
             "Change one root local (in Java also a field or array element) to a literal "
