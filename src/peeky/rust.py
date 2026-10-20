@@ -1172,7 +1172,7 @@ class RustSession(NativeSession):
                 (place.get("source") or {}).get("path"),
                 breakpoint=True,
                 column=place.get("column"),
-                block=stop_block(self.code_blocks.get(hashed[1]), self._unslid(frame)),
+                block=self._stop_block(hashed[1], frame),
             )
         if verdict is False:
             return None

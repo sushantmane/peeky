@@ -229,6 +229,8 @@ class Body:
     _assign_cache: dict | None = None
     _line_blocks: dict | None = None
     _copies: dict | None = None
+    _live: tuple | None = None
+    _copy_reads: tuple | None = None
 
     @property
     def name(self):
@@ -768,6 +770,71 @@ class Body:
                 pending.extend((successor, 0) for successor in (*block.successors, *resumed))
         return False
 
+    def live_ahead(self, start):
+        """A bitset of the locals ``used_ahead`` finds used on some path from ``start``,
+        all at once (#105 judges every copy of a local at every place of a line): each
+        statement is read once, and which locals each block's successors use is a
+        backward dataflow over the body; a place replays its block from there."""
+        number, index = start
+        if number not in self.blocks:
+            return 0
+        out, effects = self._liveness()
+        state = out[number]
+        for uses, ends in reversed(effects[number][index:]):
+            state = uses | state & ~ends
+        return state
+
+    def _liveness(self):
+        """({block: the locals some path from its end uses ahead}, {block: [(the locals
+        each statement uses, those it ends)]}) for ``live_ahead``, per ``_event``."""
+        if self._live is None:
+            effects = {}
+            for number, block in self.blocks.items():
+                found = []
+                for text, _, _ in block.statements:
+                    uses = ends = 0
+                    for local in {int(n) for n in _ANY_LOCAL.findall(_STRING.sub('""', text))}:
+                        event = _event(text, local)
+                        if event == "use":
+                            uses |= 1 << local
+                        elif event == "end":
+                            ends |= 1 << local
+                    found.append((uses, ends))
+                effects[number] = found
+
+            def through(number, state):
+                for uses, ends in reversed(effects[number]):
+                    state = uses | state & ~ends
+                return state
+
+            successors, predecessors = {}, {}
+            for number, block in self.blocks.items():
+                # Through a suspension too, as ``used_ahead`` goes.
+                resumed = (self.resumes[number],) if number in self.resumes else ()
+                successors[number] = [n for n in (*block.successors, *resumed) if n in self.blocks]
+                for target in successors[number]:
+                    predecessors.setdefault(target, set()).add(number)
+            out = dict.fromkeys(self.blocks, 0)
+            entry = {number: through(number, 0) for number in self.blocks}
+            work = list(self.blocks)
+            queued = set(work)
+            while work:
+                number = work.pop()
+                queued.discard(number)
+                state = 0
+                for target in successors[number]:
+                    state |= entry[target]
+                out[number] = state
+                found = through(number, state)
+                if found != entry[number]:
+                    entry[number] = found
+                    for other in predecessors.get(number, ()):
+                        if other not in queued:
+                            queued.add(other)
+                            work.append(other)
+            self._live = (out, effects)
+        return self._live
+
     def copies_of(self, local, formatting=True):
         """The temporaries (locals no variable names, other than the return place) that
         may hold a value read from ``local``'s storage, which a later change to it does
@@ -782,56 +849,87 @@ class Body:
             self._copies = {}
         if (local, formatting) in self._copies:
             return self._copies[local, formatting]
-        named = {
-            binding[0]
-            for bindings in self.bindings.values()
-            for binding in bindings
-            if binding[0] is not None
-        }
-        assignments = []
-        for block in self.blocks.values():
-            for text, _, _ in block.statements:
-                text = _STRING.sub('""', text)
-                found = _WHOLE_ASSIGNMENT.match(text) or (
-                    None if re.match(r"\(+\*_", text) else _PART_ASSIGNMENT.match(text)
-                )
-                if found and int(found[1]) not in named and int(found[1]) not in (0, local):
-                    assignments.append((int(found[1]), found[2]))
+        parts, mentions, seeds = self._copy_parts()
+        # From what holds or points with no local given, then along what mentions each
+        # temporary found: the least fixpoint, as passes over every assignment reach.
         holds, points = set(), set()
-        for _ in range(len(assignments) + 1):
-            changed = False
-            for target, value in assignments:
-                mentioned = {int(n) for n in _MENTIONED.findall(value)}
-                through = bool(re.search(r"\(\*[(_]", value))
-                pointing = any(
-                    n in points
-                    or (n in named and n != local and _BORROWING.search(self.types.get(n, "&")))
-                    for n in mentioned
-                )
-                if re.match(r"&(?:mut |raw const |raw mut |fake \w+ )?", value):
-                    hold = bool(mentioned & holds)
-                    point = local in mentioned or through or pointing
-                else:
-                    call = "->" in value and not _NOT_A_CALL.match(value)
-                    hold = local in mentioned or through or bool(mentioned & holds)
-                    # `format_args!`'s constructors keep the pointers they are given.
-                    keeps = (
-                        formatting
-                        and _FORMAT_CALL.match(value)
-                        and _FORMAT_TYPE.fullmatch(self.types.get(target, ""))
-                    )
-                    hold = hold or (call and pointing and not keeps)
-                    point = pointing
-                if hold and target not in holds:
-                    holds.add(target)
-                    changed = True
-                if point and target not in points:
-                    points.add(target)
-                    changed = True
-            if not changed:
-                break
+        work = [*seeds, *mentions.get(local, ())]
+        queued = set(work)
+        while work:
+            index = work.pop()
+            queued.discard(index)
+            target, mentioned, through, borrow, call, formats, pointers = parts[index]
+            if target == local:
+                continue
+            pointing = bool(mentioned & points) or any(n != local for n in pointers)
+            if borrow:
+                hold = bool(mentioned & holds)
+                point = local in mentioned or through or pointing
+            else:
+                hold = local in mentioned or through or bool(mentioned & holds)
+                # `format_args!`'s constructors keep the pointers they are given.
+                hold = hold or (call and pointing and not (formatting and formats))
+                point = pointing
+            for found, into in ((hold, holds), (point, points)):
+                if found and target not in into:
+                    into.add(target)
+                    for other in mentions.get(target, ()):
+                        if other not in queued:
+                            queued.add(other)
+                            work.append(other)
         self._copies[local, formatting] = frozenset(holds)
         return self._copies[local, formatting]
+
+    def _copy_parts(self):
+        """``copies_of``'s reading of each assignment to a temporary, once per body:
+        ([(its target, the locals its value mentions, whether it reads through a
+        pointer, is a borrow, is a call, is `format_args!`'s constructor, the reference
+        variables it mentions)], {local: the indexes of those mentioning it}, the
+        indexes of those that may hold or point whatever local is judged)."""
+        if self._copy_reads is None:
+            named = {
+                binding[0]
+                for bindings in self.bindings.values()
+                for binding in bindings
+                if binding[0] is not None
+            }
+            parts, mentions, seeds = [], {}, []
+            for block in self.blocks.values():
+                for text, _, _ in block.statements:
+                    text = _STRING.sub('""', text)
+                    found = _WHOLE_ASSIGNMENT.match(text) or (
+                        None if re.match(r"\(+\*_", text) else _PART_ASSIGNMENT.match(text)
+                    )
+                    if not found or int(found[1]) in named or int(found[1]) == 0:
+                        continue
+                    target, value = int(found[1]), found[2]
+                    mentioned = frozenset(int(n) for n in _MENTIONED.findall(value))
+                    pointers = frozenset(
+                        n
+                        for n in mentioned
+                        if n in named and _BORROWING.search(self.types.get(n, "&"))
+                    )
+                    through = bool(re.search(r"\(\*[(_]", value))
+                    parts.append(
+                        (
+                            target,
+                            mentioned,
+                            through,
+                            bool(re.match(r"&(?:mut |raw const |raw mut |fake \w+ )?", value)),
+                            "->" in value and not _NOT_A_CALL.match(value),
+                            bool(
+                                _FORMAT_CALL.match(value)
+                                and _FORMAT_TYPE.fullmatch(self.types.get(target, ""))
+                            ),
+                            pointers,
+                        )
+                    )
+                    for n in mentioned:
+                        mentions.setdefault(n, []).append(len(parts) - 1)
+                    if through or pointers:
+                        seeds.append(len(parts) - 1)
+            self._copy_reads = (parts, mentions, seeds)
+        return self._copy_reads
 
     def used_before(self, local, start):
         """True if every path into ``start`` passes a use of ``local`` (or its assignment)
@@ -2634,6 +2732,9 @@ class OwnedLocals:
         # What each stop's rows share (its places, its lexical block's scopes), by what
         # determines it: every row of a frame asks for the same (see ``_memo``).
         self._memos = {}
+        # {a StopBlock's contents: its number}, never renumbered (a memo's key holds one),
+        # and {id(StopBlock): (it, its number)}.
+        self._block_tokens, self._block_ids = {}, {}
         # {(file, line): {body index}}: which bodies have a span on each line.
         self._owners = {}
         for index, body in enumerate(self.bodies):
@@ -2896,8 +2997,8 @@ class OwnedLocals:
             return None
         if breakpoint and not function.inline_only:
             positions = _first_places(body, function, positions)
-        held = body.copies_of(local, formatting=self._formatting())
-        return any(body.used_ahead(temp, position) for temp in held for position in positions)
+        held = _mask(body.copies_of(local, formatting=self._formatting()))
+        return any(body.live_ahead(position) & held for position in positions)
 
     def _formatting(self):
         """Whether a call that reads like `format_args!`'s constructors (and returns
@@ -3232,17 +3333,20 @@ class OwnedLocals:
     def _memo(self, kind, site, line, facts, block, compute):
         """``compute()``, once per stop: ``site`` is ``_site``'s for the function and
         ``line`` (its body and function live as long as this), and ``facts`` the
-        breakpoint's (``_facts``, from them and its column)."""
-        key = (kind, id(site[0]), id(site[1]), line, None if facts is None else facts.column)
+        breakpoint's (``_facts``, from them and its column) or None for any other stop:
+        a breakpoint's facts without a column still differ from none."""
+        column = None if facts is None else facts.column
+        key = (kind, id(site[0]), id(site[1]), line, facts is not None, column)
         if block is not None:
             # A frame's rows pass one StopBlock: its contents are read (and numbered,
             # equal ones alike) once.
-            known = self._memos.get(("block", id(block)))
+            known = self._block_ids.get(id(block))
             if known is None or known[0] is not block:
-                tokens = self._memos.setdefault(("blocks",), {})
                 content = (block.chain, tuple(sorted(block.chains.items())))
-                known = (block, tokens.setdefault(content, len(tokens)))
-                self._memos[("block", id(block))] = known
+                known = (block, self._block_tokens.setdefault(content, len(self._block_tokens)))
+                if len(self._block_ids) >= 1024:
+                    self._block_ids.clear()
+                self._block_ids[id(block)] = known
             key += (known[1],)
         if key not in self._memos:
             if len(self._memos) >= 4096:

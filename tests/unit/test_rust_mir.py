@@ -2491,3 +2491,90 @@ def test_a_places_assigned_state_is_its_blocks_entry_and_each_locals_last_event(
                             state &= ~(1 << int(found[1]))
                         elif found := assigns.match(text):
                             state |= 1 << int(found[1])
+
+
+def test_a_stops_places_are_kept_apart_by_its_kind_even_without_a_column(tmp_path):
+    # #132's per-stop memo: a line breakpoint's places (its facts, here without a column)
+    # are fewer than a step's on the same line, whichever stop is judged first.
+    owned = OwnedLocals(
+        [parse_body(PRINTED)],
+        {"h": printed_function(tmp_path)},
+        SOURCES,
+        texts={"src/main.rs": PRINTED_TEXT},
+    )
+    site = owned._site("h", 17, MAIN)
+    facts = owned._facts(site[1], 17, None)
+    assert facts.column is None
+    for _ in range(2):
+        assert owned._positions(site, 17, None) == [(0, 3), (0, 4), (1, 0), (1, 1)]
+        assert owned._positions(site, 17, facts) == [(0, 3), (0, 4)]
+
+
+def test_what_is_live_ahead_of_a_place_is_what_used_ahead_finds_for_each_local():
+    # #105's copies are judged at once, by a backward dataflow (``live_ahead``): every
+    # local at every place of a body reads as ``used_ahead``'s search from there does.
+    bodies = [OWNERS, CONTINUED, INLINED, COROUTINE, SCALARS, PRINTED, TUPLE_FIRST]
+    for text in bodies:
+        body = parse_body(text)
+        locals_ = range(2 + max(body.types, default=0))
+        for number, block in body.blocks.items():
+            for index in range(len(block.statements) + 1):
+                live = body.live_ahead((number, index))
+                for local in locals_:
+                    used = body.used_ahead(local, (number, index))
+                    assert bool(live >> local & 1) == used, (number, index, local)
+    assert parse_body(OWNERS).live_ahead((99, 0)) == 0
+
+
+def test_a_locals_copies_are_what_passes_over_every_assignment_find():
+    # #105's copies follow only what mentions each temporary found (``copies_of``): they
+    # are what passes over every assignment to a temporary, until none changes, find.
+    import re
+
+    from peeky.rust_mir import (
+        _BORROWING,
+        _MENTIONED,
+        _NOT_A_CALL,
+        _PART_ASSIGNMENT,
+        _STRING,
+        _WHOLE_ASSIGNMENT,
+    )
+
+    def passes(body, local):
+        named = {b[0] for bs in body.bindings.values() for b in bs if b[0] is not None}
+        found = []
+        for block in body.blocks.values():
+            for text, _, _ in block.statements:
+                text = _STRING.sub('""', text)
+                part = _WHOLE_ASSIGNMENT.match(text) or (
+                    None if re.match(r"\(+\*_", text) else _PART_ASSIGNMENT.match(text)
+                )
+                if part and int(part[1]) not in named and int(part[1]) not in (0, local):
+                    mentioned = {int(n) for n in _MENTIONED.findall(part[2])}
+                    found.append((int(part[1]), part[2], mentioned))
+        holds, points, changed = set(), set(), True
+        while changed:
+            changed = False
+            for target, value, mentioned in found:
+                through = bool(re.search(r"\(\*[(_]", value))
+                pointing = any(
+                    n in points
+                    or (n in named and n != local and _BORROWING.search(body.types.get(n, "&")))
+                    for n in mentioned
+                )
+                if value.startswith("&"):
+                    hold, point = bool(mentioned & holds), local in mentioned or through or pointing
+                else:
+                    call = "->" in value and not _NOT_A_CALL.match(value)
+                    hold = local in mentioned or through or bool(mentioned & holds)
+                    hold, point = hold or (call and pointing), pointing
+                for flag, into in ((hold, holds), (point, points)):
+                    if flag and target not in into:
+                        into.add(target)
+                        changed = True
+        return frozenset(holds)
+
+    for text in (OWNERS, CONTINUED, INLINED, COROUTINE, SCALARS, PRINTED, TUPLE_FIRST):
+        body = parse_body(text)
+        for local in range(2 + max(body.types, default=0)):
+            assert body.copies_of(local, formatting=False) == passes(body, local), local
