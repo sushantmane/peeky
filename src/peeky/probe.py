@@ -20,7 +20,7 @@ from pathlib import Path
 
 from peeky.errors import Refused, classify
 from peeky.java import JAVA_ARRAY, JAVA_LIST, java_list, java_preview
-from peeky.names import display_function, function_labels
+from peeky.names import display_function, function_labels, shortened_note
 from peeky.worker import (
     DebugWorker,
     load_java_target,
@@ -703,7 +703,7 @@ def _resolve(worker, stop, snapshot, segments, pointers=False):
         ):
             # A pointer to a C++ string, shown with its text (`0x… "apple"`): p[0] is
             # that string, as C++ reads it; the worker lists no members (eval 6).
-            if segment == "[0]":
+            if _first_index(segment):
                 variable = _dereferenced(variable, pointee)
                 path += segment
                 continue
@@ -727,7 +727,7 @@ def _resolve(worker, stop, snapshot, segments, pointers=False):
                 # struct points at as the pointer's own children. In C, p[0] is that
                 # pointee and p[1] the one after it, which no pointer's length tells.
                 _readable(variable, path, pointee, listed)
-                if segment[1] != "-" and int(segment[1:-1]) == 0:
+                if _first_index(segment):
                     variable = _dereferenced(variable, pointee)
                     path += segment
                     continue
@@ -1619,6 +1619,12 @@ def _pointee_type(variable, pointee):
     """What a C/C++ pointer points at as a value's type: its name, and the class a
     typedef by that name stands for (`IntSet *`: `std::set<int>`)."""
     return {"type": pointee, "aliased_type": variable.get("pointee_aliased_type")}
+
+
+def _first_index(segment):
+    """Whether an index ``segment`` is element 0 (`[0]`, `[00]`; never `[-0]`): what a
+    pointer points at (#102, #117)."""
+    return segment[1] != "-" and int(segment[1:-1]) == 0
 
 
 def _dereferenced(variable, pointee):
@@ -2828,6 +2834,8 @@ def _table(result):
         lines.append(
             "  ".join(text.ljust(width) for text, width in zip(item, widths)) + "  " + item[-1]
         )
+    if note := shortened_note(functions):
+        lines.append(note)
     for change in result["interventions"]:
         lines.append(f"set {change['name']}: {change['before']} -> {change['after']}")
     lines.append(

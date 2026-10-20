@@ -54,16 +54,18 @@ TEXTS = """#include <cstdio>
 #include <string>
 #include <vector>
 using Name = std::string;
+typedef std::string *StrPtr;
 struct Rec { std::string name; int id; };
 int main() {
     std::string name("apple");
     const std::string &ref = name;
     std::string *ptr = &name;
+    StrPtr sp = &name;
     Name tn("typed");
     Rec rec{"r", 1};
     std::vector<std::string> vs{"a", "b"};
     std::map<std::string, std::string> ms{{"k", "v"}};
-    size_t n = name.size() + ref.size() + ptr->size() + tn.size() + rec.name.size();
+    size_t n = name.size() + ref.size() + ptr->size() + sp->size() + tn.size() + rec.name.size();
     std::printf("%zu %zu %zu\\n", n, vs.size(), ms.size()); // HERE
     return 0;
 }
@@ -154,6 +156,12 @@ def test_a_string_shows_its_text_and_no_library_members(cpp, capsys):
         first = {c.get("selector"): c for c in rows["ms[#0]"]["children"]}["ms[#0].first"]
         assert first["value"] == '"k"' and not first.get("expandable"), first
         # Selecting inside one says why, and what to do instead.
+        # Element 0 however written (#117's `parr[00]`), through a typedef'd pointer too
+        # (review of the eval-6 fixes: `ptr[00]` was refused as past the pointee).
+        pointed = get("ptr[00]", "sp[0]", "sp[00]")
+        for selector, row in pointed.items():
+            assert "error" not in row and shows(row, '"apple"'), row
+            assert row["value"] == rows["ptr[0]"]["value"], row
         errors = get("name[0]", "name.size", "ptr[1]")
         if rows["name"].get("unavailable"):
             # lldb-dap 18: no text to compare, and the reason says so.
@@ -174,6 +182,12 @@ def test_a_cpp_frames_signature_does_not_widen_the_table(cpp, capsys):
     text = capsys.readouterr().out
     assert "trim_left " in text and "basic_string" not in text, text
     assert max(len(line) for line in text.splitlines() if line.startswith(("hit", "1 "))) < 80
+    # Review of the eval-6 fixes: SQL compares the stored name, which `WHERE function =
+    # 'trim_left'` does not match; the probe's table says how to match it.
+    assert "note: function shows short frame names" in text, text
+    assert "short_function(function) = 'trim_left'" in text, text
+    assert main(["sql", "SELECT count(*) AS n FROM last_run WHERE function = 'trim_left'"]) == 0
+    assert "\n0" in capsys.readouterr().out
     assert main(["sql", "SELECT DISTINCT function FROM last_run", "--json"]) == 0
     (stored,) = [row["function"] for row in json.loads(capsys.readouterr().out)["rows"]]
     assert stored.startswith("trim_left(") and "basic_string" in stored, stored
@@ -186,10 +200,15 @@ def test_a_cpp_frames_signature_does_not_widen_the_table(cpp, capsys):
     assert json.loads(capsys.readouterr().out)["rows"] == [{"n": 2}]
     # Two overloads in one table keep their parameters, so they stay apart.
     source = cpp("overloads.cpp", OVERLOADS)
-    assert main(["probe", str(source), "--at", "3", "--capture", "n", "--hits", "all"]) == 0
+    assert main(["probe", str(source), "--at", "3", "--capture", "x", "--hits", "all"]) == 0
     text = capsys.readouterr().out
     assert "twice(int)" in text and "twice(std::string const&)" in text, text
     assert "basic_string" not in text, text
+    # The note's example is what short_function gives: both overloads' rows.
+    assert "short_function(function) = 'twice'" in text, text
+    query = "SELECT count(*) AS n FROM last_run WHERE short_function(function) = 'twice'"
+    assert main(["sql", query, "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["rows"] == [{"n": 2}]
     # A session names the frame with its parameters, as code writes their types.
     with session(source, 3, capsys, "--hit", "2") as (_, started):
         assert " in twice(std::string const&), hit 2" in started, started

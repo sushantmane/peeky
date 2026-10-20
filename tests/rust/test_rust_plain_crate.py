@@ -3185,10 +3185,14 @@ def test_a_generic_function_is_one_scope_with_its_blocks_lines(plain, capsys):
     # stops there in this frame); a function a macro declares runs its argument's code
     # on the invoking line, past other functions, so its blocks give no span.
     # The loop header's line, between the expansion's and the body's, runs code outside
-    # the loop variable's block, so its lines are two spans (eval 6, finding 17).
+    # the loop variable's block, so its lines are two spans (eval 6, finding 17). The
+    # later one starts right after it: `let s = twice!(i);` has no code of its own (the
+    # macro's is on its definition's line), and a stop there is made on the next line,
+    # in the block (review of the eval-6 fixes: it was left out).
     spans = scopes["inside"]["spans"]["i"]
     assert spans[0][0] <= line_of(GENERIC_SPANS, "// TWICE_BODY"), scopes["inside"]
-    assert spans[-1][1] >= line_of(GENERIC_SPANS, "let s = twice!(i);") + 1, scopes["inside"]
+    body = line_of(GENERIC_SPANS, "let s = twice!(i);")
+    assert spans[-1] == [body, body + 1], scopes["inside"]
     assert "spans" not in scopes["triple"], scopes["triple"]
 
 

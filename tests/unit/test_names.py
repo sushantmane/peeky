@@ -119,3 +119,13 @@ def test_overloads_in_one_table_keep_their_parameters():
     # Names alike even with their parameters spelled as code does: in full.
     alike = ["f(std::string)", f"f({LIBCXX_STRING})"]
     assert function_labels(alike) == {name: name for name in alike}
+
+
+def test_the_note_says_how_sql_matches_a_short_name():
+    from peeky.names import shortened_note
+
+    assert shortened_note({"main": "main"}) is None
+    labels = function_labels(["main", "twice(int)", f"twice({LIBCXX_STRING} const&)"])
+    note = shortened_note(labels)
+    assert "short_function(function) = 'twice'" in note and "whole name" in note
+    assert "''" in shortened_note({"o'k(int)": "o'k"})

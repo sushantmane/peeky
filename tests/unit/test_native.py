@@ -1538,7 +1538,11 @@ def test_a_blocks_lines_split_only_where_code_outside_it_runs_between():
     from peeky.native import _runs
 
     running = [12, 13, 14, 15, 16, 17, 18, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 33, 35]
-    assert _runs([22, 23, 24, 25, 35, 22], running) == ((22, 25), (35, 35))
+    # Line 34 runs no code here: a stop there is made at 35.
+    assert _runs([22, 23, 24, 25, 35, 22], running) == ((22, 25), (34, 35))
+    # A later span starts right after the last line of code outside the block: a line
+    # with no code stops at the next line with code (Rust's `let s = twice!(i);`).
+    assert _runs([66, 71], [63, 66, 69, 71, 73]) == ((66, 66), (70, 71))
     # Lines with no code between two of the block's (a comment, a blank) stay inside.
     assert _runs([17, 18, 22], running) == ((17, 22),)
     assert _runs([35], running) == ((35, 35),)

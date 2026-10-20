@@ -818,13 +818,17 @@ def _block_spans(dies, entry, root, addresses, numbers, source_of):
 def _runs(covered, running):
     """The block's lines ``covered`` as spans ((first, last), ...): split only where a
     line between two of them runs code (``running``, sorted) none of which is the
-    block's, so no line the block's code runs on is left out."""
+    block's, so no line the block's code runs on is left out. A later span starts right
+    after the last such line: a line with no code before the block's next one (`let s =
+    twice!(i);`, whose code is the macro's) stops there, as LLDB moves a breakpoint to
+    the next line with code (review of the eval-6 fixes)."""
     ordered = sorted(set(covered))
     found = [[ordered[0], ordered[0]]]
     for line in ordered[1:]:
         at = bisect.bisect_right(running, found[-1][1])
         if at < len(running) and running[at] < line:
-            found.append([line, line])
+            outside = running[bisect.bisect_left(running, line) - 1]
+            found.append([outside + 1, line])
         else:
             found[-1][1] = line
     return tuple((first, last) for first, last in found)

@@ -1028,9 +1028,11 @@ def schema(path):
             "(from 1)",
             "output_window(a, b)": "Up to 200 characters of a from just before where it first "
             "differs from b",
-            "short_function(function)": "A frame name as tables show it: without a C++ "
-            "signature's parameters and return type (`trim_left`) or a Rust symbol hash; "
-            "NULL for NULL",
+            "short_function(function)": "A frame name without a C++ signature's parameters, "
+            "qualifiers and return type (`trim_left`) or a Rust symbol hash; NULL for NULL. "
+            "Overloads share it (`operator+`, `G::get` for `get() &` and `get() &&`), so "
+            "GROUP BY or a join on it combines them; a table shows it, except that "
+            "overloads in one table keep their parameters there",
             "object_ref(text)": "The Java object a value is (`Merge$Interval@143`), else NULL: "
             "two values of one run with the same object_ref are the same object (aliasing); "
             "the numbers differ between runs. Python values carry theirs in "
@@ -1059,7 +1061,7 @@ def schema(path):
 def table(result, width=120):
     """A plain-text table of a query result. A `function` column shows each frame's
     short name (see ``names.function_labels``), with a note: the result keeps it whole."""
-    from peeky.names import function_labels
+    from peeky.names import function_labels, shortened_note
 
     def text(value):
         value = "NULL" if value is None else str(value).replace("\n", "\\n")
@@ -1082,12 +1084,8 @@ def table(result, width=120):
         "  ".join(c.ljust(w) for c, w in zip(item, widths)).rstrip() for item in [columns, *cells]
     ]
     count = result["row_count"]
-    if shortened:
-        example = next(iter(shortened.values()))
-        lines.append(
-            "note: function shows short frame names; the values (--json, and what SQL "
-            f"compares) are the debugger's whole names: short_function(function) = '{example}'"
-        )
+    if note := shortened_note(shortened):
+        lines.append(note)
     lines.append(
         f"({count} row{'s' if count != 1 else ''}"
         + (

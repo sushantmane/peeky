@@ -242,3 +242,19 @@ def function_labels(names):
             return labels
         for name in clashing:
             level[name] += 1
+
+
+def shortened_note(labels):
+    """The note under a table whose function column ``labels`` ({name: label}, see
+    ``function_labels``) shows a name other than the one stored, or None: SQL compares
+    the stored name, so `WHERE function = 'trim_left'` finds nothing. Its example is
+    what ``short_function`` gives, which every overload of the name shares."""
+    changed = [name for name, label in labels.items() if label != name]
+    if not changed:
+        return None
+    example = short_function(changed[0]).replace("'", "''")
+    return (
+        "note: function shows short frame names; the evidence store and --json keep the "
+        f"debugger's whole names, which SQL compares: use short_function(function) = "
+        f"'{example}' (any overload of it) or the whole name"
+    )
