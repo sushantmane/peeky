@@ -193,7 +193,7 @@ def test_verify_baseline_checks_the_unedited_program(workspace, capsys):
     ]
     code, out = run(capsys, *args, "--baseline")
     assert code == 1 and "passed: False  stage: verification" in out.out
-    assert "baseline: the unedited program, no edit (the checker fails on it" in out.out
+    assert "baseline: the unedited program, no edit (the checker rejects it" in out.out
     assert "diff:" not in out.out and "checker exit: 1" in out.out
     code, out = run(capsys, *args, "--baseline", "--json")
     result = json.loads(out.out)
@@ -203,6 +203,13 @@ def test_verify_baseline_checks_the_unedited_program(workspace, capsys):
     assert code == 2 and "leave out --old/--new" in out.err
     code, out = run(capsys, *args)
     assert code == 2 and "or --baseline" in out.err
+    # Review 1: a checker that crashes rejects nothing; only the failure is reported.
+    broken = workspace / "broken_check.py"
+    broken.write_text("import no_such_module_anywhere\n")
+    code, out = run(capsys, *args[:2], "--check", broken, "--baseline")
+    assert code == 1 and "ModuleNotFoundError" in out.out, out.out
+    assert "baseline: the unedited program, no edit\n" in out.out + "\n", out.out
+    assert "rejects it" not in out.out and "fails on it" not in out.out
     with pytest.raises(SystemExit):
         run(capsys, "verify", "--help")
     assert "(--old OLD --new NEW [--old OLD --new NEW ...] | --baseline)" in capsys.readouterr().out

@@ -4503,3 +4503,78 @@ def test_describe_leaves_out_a_macros_own_bindings(plain, capsys):
         for each in types.values()
         for kind in each.values()
     ), types
+
+
+COLLAPSED_MACRO = """#[collapse_debuginfo(yes)]
+macro_rules! mine {
+    ($e:expr) => {{
+        let args = $e;
+        let kind = args * 2;
+        kind
+    }};
+}
+
+fn helper(n: u32) -> u32 {
+    let x = mine!(n);
+    x + 1
+}
+
+fn main() {
+    let total = helper(2);
+    assert_eq!(total, 5);
+    println!("{}", total);
+}
+"""
+
+
+@pytest.mark.timeout(300)
+def test_describe_keeps_the_bindings_of_the_programs_own_collapsed_macro(plain, capsys):
+    # Review 1 of the sixth evaluation's PR: a `#[collapse_debuginfo(yes)]` macro of the
+    # crate's own has its bindings placed on the invoking line by the debug information
+    # and on its definition's lines by the MIR, and `args` and `kind` are names std's
+    # macros bind too: `helper` lost them.
+    (plain / "src/main.rs").write_text(COLLAPSED_MACRO)
+    code, result = run(capsys, "describe", str(plain))
+    assert code == 0, result
+    scopes = {s["scope"]: s for s in result["scopes"]}
+    assert scopes["chars::helper"]["names"] == ["args", "kind", "n", "x"], scopes
+    # std's macros' own (`assert_eq!`'s `kind`, `left_val`; `println!`'s `args`) stay out.
+    assert scopes["chars::main"]["names"] == ["total"], scopes["chars::main"]
+
+
+BYTE_REFERENCES = """fn bytes(b8: &u8, i8v: &i8, ch: &char, n: &i64) -> i64 {
+    let total = *b8 as i64 + *i8v as i64 + *ch as i64 + *n; // BYTES
+    total
+}
+
+fn main() {
+    let a = 200u8;
+    let b = -3i8;
+    let c = 'z';
+    let d = 7i64;
+    println!("{}", bytes(&a, &b, &c, &d));
+}
+"""
+
+
+@pytest.mark.timeout(300)
+def test_a_reference_to_a_byte_or_char_shows_its_address_not_a_c_string(plain, capsys):
+    # Review 1 of the sixth evaluation's PR: LLDB reads `&u8` (`unsigned char *`) and
+    # `&char` (`char32_t *`) as C strings, `0x… "\\xc8\\xfd…"`: past the one value they
+    # point at, unrelated memory, shown under a Rust type.
+    (plain / "src/main.rs").write_text(BYTE_REFERENCES)
+    at = f"src/main.rs:{line_of(BYTE_REFERENCES, '// BYTES')}"
+    names = ("b8", "i8v", "ch", "n")
+    code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", ",".join(names))
+    assert code == 0, result.get("error")
+    rows = {row["selector"]: row for row in result["rows"]}
+    assert [rows[name]["type"] for name in names] == ["&u8", "&i8", "&char", "&i64"], rows
+    assert all(re.fullmatch(r"0x[0-9a-f]+", rows[name]["value"]) for name in names), rows
+    assert main(["session", "start", str(plain), "--at", at]) == 0
+    try:
+        capsys.readouterr()
+        assert main(["session", "get", "b8", "ch", "--json"]) == 0
+        values = [row["children"][0]["value"] for row in json.loads(capsys.readouterr().out)]
+        assert values == ["200", "'z'"], values
+    finally:
+        main(["session", "close"])

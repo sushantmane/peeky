@@ -733,6 +733,20 @@ def _locals(dies, offset, hidden=None):
     return names
 
 
+def _bindings(dies, offset):
+    """The parameter and variable DIEs of one function body, nested blocks included, the
+    bodies of calls inlined into it not (as _locals walks them; at most 512)."""
+    found, pending = [], list(dies[offset]["children"])
+    while pending and len(found) < 512:
+        child = pending.pop()
+        tag = dies[child]["tag"]
+        if tag in ("DW_TAG_formal_parameter", "DW_TAG_variable"):
+            found.append(child)
+        elif tag == "DW_TAG_lexical_block":
+            pending.extend(dies[child]["children"])
+    return found
+
+
 _MAX_SPANS = 8
 
 
@@ -964,9 +978,10 @@ def function_scopes(info, line_text, workspace, declared, hidden=None):
     the callee, not its caller. Copies of one function (C1/C2 constructors, inlined and
     out-of-line copies) are merged through the DIE that declares them.
 
-    ``hidden(source, name, line)``: whether a parameter or variable the debug
-    information declares at ``line`` of the declared ``source`` (None for another file)
-    is left out, as a macro's own binding (Rust: `println!`'s `args`).
+    ``hidden(linkages, declared)``: for one function, given its copies' linkage names
+    and the (source, name, line) of every parameter and variable its debug information
+    declares (source None for another file), a test (source, name, line) of which are
+    left out as a macro's own bindings (Rust: `println!`'s `args`), or None.
     """
     replaced = set()
     dies, functions, lines, (inputs, sources), _, addresses = _function_entries(
@@ -977,16 +992,27 @@ def function_scopes(info, line_text, workspace, declared, hidden=None):
     def source_of(attribute):
         return _source_of(attribute, inputs, workspace, sources)
 
-    def left_out(offset):
+    def position(offset):
         chain = _chain(dies, offset)
         line = _first(dies, chain, "DW_AT_decl_line")
-        return hidden(
+        return (
             source_of(_first(dies, chain, "DW_AT_decl_file")),
             _text(_first(dies, chain, "DW_AT_name")),
             int(line) if line and line.isdigit() else None,
         )
 
-    skip = left_out if hidden else None
+    def skipped(entry, root):
+        """The test of which of this function's bindings are left out (see hidden)."""
+        if hidden is None:
+            return None
+        copies = (*entry["bodies"], root)
+        linkages = {
+            _text(_first(dies, _chain(dies, body), "DW_AT_linkage_name")) for body in copies
+        }
+        declared_here = {position(offset) for body in copies for offset in _bindings(dies, body)}
+        test = hidden(linkages, declared_here)
+        return None if test is None else (lambda offset: test(*position(offset)))
+
     found, macros = {}, {}
     for root, entry in functions.items():
         source = entry["source"]
@@ -1000,7 +1026,7 @@ def function_scopes(info, line_text, workspace, declared, hidden=None):
         numbers = _own_lines(dies, entry, lines.get(root), macros[source] or frozenset())
         if name is None or not numbers:
             continue
-        names = {}
+        names, skip = {}, skipped(entry, root)
         for body in (*entry["bodies"], root):
             for local, kinds in _locals(dies, body, skip).items():
                 names.setdefault(local, set()).update(kinds)

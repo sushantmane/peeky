@@ -2093,14 +2093,30 @@ def _verify_text(result, keep=False):
         lines.append(
             "baseline: the unedited program, no edit"
             + (
-                " (the checker fails on it, as it should on the bug)"
-                if result["passed"] is False and result.get("stage") == "verification"
+                " (the checker rejects it, as it should reject the bug)"
+                if _rejected(result)
                 else ""
             )
         )
     else:
         lines.append("diff:\n" + result["diff"])
     return "\n".join(line for line in lines if line)
+
+
+def _rejected(result):
+    """Whether the checker ran to its own verdict and rejected the program: an assertion
+    failed, or it exited with a nonzero status. Not a crash of the checker (any other
+    exception), a timeout, nor a build that failed before it ran."""
+    error = str((result.get("checker") or {}).get("error") or "")
+    return (
+        result.get("stage") == "verification"
+        and not result.get("timed_out")
+        and result.get("exit_code") not in (0, None)
+        and (
+            error.startswith("AssertionError")
+            or re.fullmatch(r"SystemExit: (?!0$|None$)\S.*", error) is not None
+        )
+    )
 
 
 def _printable(text):

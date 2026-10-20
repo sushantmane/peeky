@@ -276,14 +276,13 @@ _MUTATION_HINTS = (
     ),
     (
         r"in a caller's frame",
-        "Change it in its own frame: `session step --out` until that frame is the innermost, "
-        "or probe a line of that function.",
+        "Change it in its own frame, at a statement's start: stop on a line of that "
+        "function (`session continue --to LINE`, a probe's `--at`).",
     ),
     (
         r"is a (?:pointer|reference)\b(?!;)",
-        "Change it in the frame whose local holds the value (`session step --out`, or probe "
-        "a line there), or add a local holding it with a candidate edit (`--old`/`--new`) "
-        "and set that local.",
+        "Change it where a local holds it, before the call: stop on the caller's line that "
+        "makes it (`session continue --to LINE`, a probe's `--at`), not after `step --out`.",
     ),
     (
         r"kept in a register",

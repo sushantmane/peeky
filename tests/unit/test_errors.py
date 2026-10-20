@@ -9,7 +9,7 @@ from peeky.errors import Refused, classify
     ("message", "action"),
     [
         ("'s.a' cannot be changed here: the stop is part-way through line 9", "first instruction"),
-        ("`ps.start` cannot be changed: `ps` is a pointer: Peeky changes only", "step --out"),
+        ("`ps.start` cannot be changed: `ps` is a pointer: Peeky changes only", "continue --to"),
         (
             "Rust mutation requires a local the program keeps in memory; 'width' in f is "
             "kept in a register and the debugger only shows a copy",
@@ -21,7 +21,7 @@ from peeky.errors import Refused, classify
             "initialized here",
             "stop after its",
         ),
-        ("'s' in a caller's frame, whose values cannot be changed", "its own frame"),
+        ("'s' in a caller's frame, whose values cannot be changed", "continue --to"),
         ("Changing values is refused in an optimized build (-O1)", "unoptimized build"),
         ("`f.ch` cannot be changed: `f.ch` is a character (char)", "candidate edit"),
     ],

@@ -147,7 +147,7 @@ def test_rust_fields_elements_and_tuple_fields_change_and_the_program_sees_them(
     assert main(["session", "continue", "--to", str(line_of("// WIDTH"))]) == 0
     capsys.readouterr()
     # A reference parameter: what it points at is the caller's.
-    refused(capsys, "s.end=3", "`s` is a pointer", "session step --out")
+    refused(capsys, "s.end=3", "`s` is a pointer", "before the call", "continue --to")
     # A caller's local: a call it is making may hold a copy of the old value.
     record, client = _load("default")
     remote, stop = _Remote(client), _stop(record)
@@ -644,8 +644,10 @@ def test_rust_inspect_says_why_nothing_is_settable_part_way_through_a_statement(
         assert main(["session", "inspect"]) == 0
         text = capsys.readouterr().out
         line = mid_line("// TEMP_OUT")
-        assert f"note: nothing here is [settable]: the stop is part-way through line {line}" in (
-            text
+        # Each reason names the locals it holds for (review 1).
+        assert (
+            f"note: nothing here is [settable]: `x`, `s`: the stop is part-way through line {line}"
+            in text
         ), text
         listed = [row for row in text.splitlines() if not row.startswith("note:")]
         assert not any("[settable]" in row for row in listed), text
@@ -699,5 +701,121 @@ def test_rust_a_standard_library_types_internals_are_never_marked(crate, capsys)
                 refused(capsys, f"{name}=0", "is a standard-library type")
         code, result = change(capsys, "h.n=9")
         assert code == 0 and result["after"] == "9", result
+    finally:
+        main(["session", "close"])
+
+
+SPLIT = """#[derive(Debug, Clone, Copy)]
+struct Window {
+    start: u64,
+    count: u32,
+}
+
+fn main() {
+    let mut w = Window { start: 3, count: 1 };
+    let mut n = 4u64;
+    n += 0;
+    w.count += 1; // SPLIT_BEFORE
+    let total = n // SPLIT_FIRST
+        + w.start; // SPLIT_SECOND
+    println!("{} {:?}", total, w);
+}
+"""
+
+
+@pytest.mark.timeout(400)
+def test_rust_inspect_says_nothing_is_settable_only_when_no_field_is(crate, capsys):
+    # Review 1 of the sixth evaluation's PR: stepped onto `+ w.start;`, `n` is already
+    # in a temporary but `w`'s fields are not, and `set w.start=1` works; inspect said
+    # "nothing here is [settable]", taking `n`'s reason for the whole stop.
+    (crate / "src/main.rs").write_text(SPLIT)
+    before, second = (
+        next(i for i, line in enumerate(SPLIT.splitlines(), 1) if marker in line)
+        for marker in ("SPLIT_BEFORE", "SPLIT_SECOND")
+    )
+    assert main(["session", "start", str(crate), "--at", f"src/main.rs:{before}"]) == 0
+    capsys.readouterr()
+    try:
+        for _ in range(3):
+            # Steps reach `let total = n`'s second line (rustc runs it after the first).
+            assert main(["session", "step", "--json"]) == 0
+            if json.loads(capsys.readouterr().out)["location"].endswith(f":{second}"):
+                break
+        else:
+            pytest.fail("no step reached the statement's second line")
+        assert main(["session", "inspect", "--json"]) == 0
+        snapshot = json.loads(capsys.readouterr().out)
+        assert "unsettable" not in snapshot, snapshot["unsettable"]
+        assert main(["session", "get", "w.start", "--json"]) == 0
+        assert json.loads(capsys.readouterr().out)[0]["settable"] is True
+        refused(capsys, "n=9", "cannot be changed here")
+        code, result = change(capsys, "w.start=1")
+        assert code == 0 and result["after"] == "1", result
+    finally:
+        main(["session", "close"])
+
+
+LIMITER = """#[derive(Debug, Clone, Copy)]
+struct Window {
+    start: u64,
+    count: u32,
+}
+
+fn allow(w: &mut Window, now: u64, width: u64, limit: u32) -> bool {
+    if now - w.start > width { // ALLOW
+        w.start = now;
+        w.count = 0;
+    }
+    w.count += 1;
+    w.count <= limit
+}
+
+fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    let limit: u32 = args[1].parse().unwrap();
+    let width: u64 = args[2].parse().unwrap();
+    let times: Vec<u64> = args[3].split(',').map(|t| t.parse().unwrap()).collect();
+    let mut w = Window { start: 0, count: 0 };
+    let mut accepted = Vec::new();
+    for now in times {
+        if allow(&mut w, now, width, limit) { // CALL
+            accepted.push(now.to_string());
+        }
+    }
+    println!("ACCEPTED:{}", accepted.join(","));
+}
+"""
+
+
+@pytest.mark.timeout(400)
+def test_rust_a_refused_change_through_a_reference_advises_what_works(crate, capsys):
+    # Review 1 of the sixth evaluation's PR: the advice was `session step --out`, which
+    # returns part-way through the caller's line, where the change is refused again
+    # (the limiter: refused at line 10, then "part-way through line 30").
+    (crate / "src/main.rs").write_text(LIMITER)
+    allow, call = (
+        next(i for i, line in enumerate(LIMITER.splitlines(), 1) if marker in line)
+        for marker in ("// ALLOW", "// CALL")
+    )
+    at = f"src/main.rs:{allow}"
+    assert (
+        main(
+            ["session", "start", str(crate), "--at", at, "--hit", "2", "--", "2", "10", "0,1,10,11"]
+        )
+        == 0
+    )
+    capsys.readouterr()
+    try:
+        code, result = change(capsys, "w.start=10")
+        error = result["error"]
+        assert code == 2 and "before the call" in error["message"] and "--to LINE" in error["hint"]
+        assert "step --out`" not in error["hint"].replace("not after `step --out`", "")
+        # As advised: the caller's line that makes the call, before the next call.
+        assert main(["session", "continue", "--to", str(call)]) == 0
+        capsys.readouterr()
+        for assignment in ("w.start=10", "w.count=0"):
+            code, result = change(capsys, assignment)
+            assert code == 0, result
+        assert "ACCEPTED:0,1,10,11" in finish(capsys)
     finally:
         main(["session", "close"])

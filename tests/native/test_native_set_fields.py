@@ -154,7 +154,7 @@ def test_c_fields_and_elements_change_and_the_program_sees_them(directory, capsy
         code, result = change(capsys, assignment)
         assert code == 0, (assignment, result)
         assert (result["before"], result["after"]) == (before, after), (assignment, result)
-    refused(capsys, "ps.start=8", "`ps` is a pointer", "session step --out")
+    refused(capsys, "ps.start=8", "`ps` is a pointer", "before the call", "continue --to")
     refused(capsys, "b.a=3", "`b.a` is a bitfield")
     refused(capsys, "c.fixed=3", "`c.fixed` is const")
     refused(capsys, "u.i=3", "`u` is a union")
@@ -856,9 +856,10 @@ def test_c_inspect_says_why_nothing_is_settable_on_a_loops_later_pass(directory,
             break
     assert main(["session", "inspect"]) == 0
     text = capsys.readouterr().out
+    # Each reason names the locals it holds for (review 1).
     assert (
-        "note: nothing here is [settable]: the stop is not at the first instruction of the "
-        f"statement on line {header}" in text
+        "note: nothing here is [settable]: `i`, `bins`, `values`: the stop is not at the first "
+        f"instruction of the statement on line {header}" in text
     ), text
     assert "on a loop's later pass" in text
     assert main(["session", "get", "bins[1]"]) == 0

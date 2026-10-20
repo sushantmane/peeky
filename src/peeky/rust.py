@@ -760,6 +760,14 @@ def _plain(name):
     return str(name).partition(" @ ")[0]
 
 
+# LLDB's names for a pointer to a Rust u8 (`unsigned char`), i8 (`char`, `signed char`)
+# or char (`char32_t`), whose value it follows with a C-string reading.
+_CHAR_POINTER = re.compile(
+    r"(?:const )?(?:unsigned char|signed char|char|char8_t|char16_t|char32_t)(?: const)? \*"
+)
+_ADDRESS = re.compile(r"(0x[0-9a-fA-F]+)(?:\s|$)")
+
+
 def _frame_hash(frame):
     # lldb-dap marks an optimized frame's name ` [opt]` (macOS).
     name = re.sub(r"\s*\[opt\]$", "", str((frame or {}).get("name") or ""))
@@ -1024,27 +1032,47 @@ class RustSession(NativeSession):
         )
 
     def _macro_binding(self):
-        """Whether a binding the DWARF declares (source, name, line) is a macro's own,
-        which `describe` leaves out (sixth evaluation, finding 12): `println!`'s `args`
-        (`core::fmt::rt::Argument[1]`), which rustc places on the line invoking the
-        macro. Told by the build's MIR, which spans each binding where its code is: a
-        name some binding of which is spanned in another crate's file (std's
-        `macros.rs`), declared where no binding of that name is spanned in the
-        program's own sources. None without the MIR (an optimized build): all listed."""
+        """For `describe`, which bindings the DWARF declares are a macro's own (sixth
+        evaluation, finding 12): `println!`'s `args` (`core::fmt::rt::Argument[1]`),
+        which rustc places on the line invoking the macro. Told per function by its own
+        MIR body (the IR function its linkage name is), which places each binding where
+        its code is: a name the body binds in another crate's file (std's `macros.rs`),
+        declared where the body places no binding of that name in the program's
+        sources, while every binding of the name the body places there has a
+        declaration of its own (one moved to the invoking line, by a
+        `#[collapse_debuginfo(yes)]` macro of the crate's, keeps them all). Shown when
+        unsure: a function with no body matched, and anything without the MIR (an
+        optimized build)."""
         proofs = getattr(self, "owned", None)
         if proofs is None:
             return None
-        declared, foreign, own = set(self.lines), set(), set()
-        for body in proofs.bodies:
-            for name, bindings in body.bindings.items():
-                for _, file, line, _, _ in bindings:
-                    if file in declared:
-                        own.add((file, name, line))
-                    else:
-                        foreign.add(name)
+        declared = set(self.lines)
 
-        def hidden(source, name, line):
-            return name in foreign and source is not None and (source, name, line) not in own
+        def hidden(linkages, positions):
+            bodies = []
+            for linkage in linkages:
+                found = re.search(r"17h([0-9a-f]{16})E", linkage or "")
+                if found and (body := proofs.body("h" + found[1])) is not None:
+                    bodies.append(body)
+            if not bodies:
+                return None
+            own, foreign = {}, set()
+            for body in bodies:
+                for name, bindings in body.bindings.items():
+                    for _, file, line, _, _ in bindings:
+                        if file in declared:
+                            own.setdefault(name, set()).add((file, line))
+                        else:
+                            foreign.add(name)
+
+            def left_out(source, name, line):
+                places = own.get(name, set())
+                if name not in foreign or source is None or (source, line) in places:
+                    return False
+                at = {(where, number) for where, each, number in positions if each == name}
+                return places <= at
+
+            return left_out
 
         return hidden
 
@@ -1054,6 +1082,10 @@ class RustSession(NativeSession):
             # Never execute Python scripts embedded beside symbol files.
             "initCommands": ["settings set target.load-script-from-symbol-file false"],
         }
+
+    # The rules behind a [settable] mark (mid_statement, _root_holds, validate_member)
+    # read the stopped frame alone, never the frames below it: marks are kept by it.
+    marks_by_frame = True
 
     def _optimized(self):
         return getattr(getattr(self, "target", None), "opt_level", "0") != "0"
@@ -1588,8 +1620,12 @@ class RustSession(NativeSession):
     def display_value(self, variable):
         """A scalar as Rust's `{:?}` shows it: `f64`/`f32` (`10.0`, not LLDB's `10`),
         `u8`/`i8` as integers (`65`, not LLDB's `'A'`) and `char` as `'b'` (not LLDB's
-        `U+0062 U+0062 U'b'`)."""
+        `U+0062 U+0062 U'b'`). A pointer to one (`&u8`, `&i8`, `&char`, a raw pointer)
+        shows only its address: LLDB reads it as a C string (`0x… "\\xc8\\xfd…"`,
+        `U"zq…"`), whose text past the one value it points at is unrelated memory."""
         value, kind = variable.get("value"), variable.get("type")
+        if _CHAR_POINTER.fullmatch(str(kind)) and (address := _ADDRESS.match(str(value))):
+            return address[1]
         return lldb_float_debug(value, kind) or lldb_byte(value, kind) or lldb_char(value, kind)
 
     def validate_children(self, variables):
