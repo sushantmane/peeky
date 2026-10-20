@@ -120,6 +120,8 @@ class DebugWorker:
         self.stop_id = None
         self.thread_id = None
         self.frames = set()
+        self.listed_frames = []
+        self.deeper_frames = None
         self.innermost_frame = None
         self.references = set()
         # Scope handles of module globals: listed for reading, never changed.
@@ -905,6 +907,8 @@ class DebugWorker:
         self.taints.clear()
         self.stop_id = None
         self.frames.clear()
+        self.listed_frames = []
+        self.deeper_frames = None
         self.references.clear()
         self.reference_frames.clear()
         self.reference_adapter.clear()
@@ -1277,6 +1281,8 @@ class DebugWorker:
             runtime.assert_current()
             self.state = event["event"]
             self.frames.clear()
+            self.listed_frames = []
+            self.deeper_frames = None
             self.references.clear()
             self.reference_frames.clear()
             self.reference_adapter.clear()
@@ -1338,6 +1344,9 @@ class DebugWorker:
             stack = self.dap.request("stackTrace", {"threadId": self.thread_id, "levels": 10})
             frames = stack.get("stackFrames", [])[:10]
             self.frames = {f["id"] for f in frames}
+            # As listed, for rules that read what runs below a frame (a constructor).
+            self.listed_frames = list(frames)
+            self.deeper_frames = None
             self.innermost_frame = frames[0].get("id") if frames else None
             if "frame" in args:
                 # An index into `frames` as this reply lists them (0 is the innermost).
@@ -1769,6 +1778,19 @@ class DebugWorker:
             listed = [scope for scope in listed if not is_global(scope)]
         return listed[:16]
 
+    def deeper_stack(self, levels=64):
+        """The stop's first ``levels`` frames, fetched once per inspection for a rule that
+        cannot decide from the ten listed; [] if the debugger refuses."""
+        if getattr(self, "deeper_frames", None) is None:
+            try:
+                reply = self.dap.request(
+                    "stackTrace", {"threadId": self.thread_id, "levels": levels}
+                )
+                self.deeper_frames = list(reply.get("stackFrames", [])[:levels])
+            except (TimeoutError, RuntimeError, OSError):
+                self.deeper_frames = []
+        return self.deeper_frames
+
     @staticmethod
     def frame_identity(frame):
         return (
@@ -1945,7 +1967,11 @@ class DebugWorker:
             pending = getattr(self.runtime, "not_yet_declared", None) if not ancestry else None
             if pending and (
                 reason := pending(
-                    variable, frame, innermost=frame.get("id") == self.innermost_frame
+                    variable,
+                    frame,
+                    innermost=frame.get("id") == self.innermost_frame,
+                    stack=getattr(self, "listed_frames", None),
+                    deeper=self.deeper_stack,
                 )
             ):
                 # Indeterminate here: never shown as a value, expanded or offered for set.
@@ -2282,6 +2308,8 @@ class DebugWorker:
         self.thread_id = None
         self.capabilities = {}
         self.frames.clear()
+        self.listed_frames = []
+        self.deeper_frames = None
         self.references.clear()
         self.global_handles.clear()
         self.reference_frames.clear()

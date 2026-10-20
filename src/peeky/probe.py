@@ -462,6 +462,11 @@ def _member_hint(worker, stop, snapshot, name):
         ),
         None,
     )
+    if holder and holder.get("withheld") and not name.startswith("["):
+        return (
+            f"; if the code means a member, {receiver} has no value here: "
+            f"{holder.get('reason') or 'withheld'}"
+        )
     if name.startswith("[") or not holder or not holder.get("variablesReference"):
         return ""
     try:
