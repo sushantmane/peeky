@@ -969,9 +969,13 @@ class PythonAdapter:
 
     # Listing nodes the worker walks through without counting them as a level of depth.
     variable_groups = PYDEVD_GROUPS
+    # Groups debugpy files a value under by its type (a function, a class): a literal
+    # `--set` never makes one, so the changed local is listed directly afterwards.
+    value_groups = frozenset({"function variables", "class variables"})
 
     def local_scopes(self, scopes):
-        """The frame's Locals, then debugpy's Globals: the module's globals, read-only."""
+        """The frame's Locals, then debugpy's Globals: the module's globals, read-only and
+        listed only on request (the worker's `globals`)."""
         return locals_only(scopes) + [scope for scope in scopes if self.global_scope(scope)]
 
     @staticmethod
@@ -984,34 +988,43 @@ class PythonAdapter:
 
     @staticmethod
     def object_identity(variable):
-        """`list@7`: which object a value is. pydevd numbers each object by `id(value)`
-        (one variablesReference per id, never reused for another id while debugpy runs),
-        and keeps every object it lists alive while the program is stopped. So within one
-        stop, equal identities are the same object; across stops, an equal identity may
-        also be a new object at a freed one's address. Scalars (reference 0) have none,
-        nor do debugpy's own grouping and paging nodes."""
+        """Which object a value is: debugpy's number for it. pydevd numbers each object
+        by `id(value)` (one variablesReference per id, never reused for another id while
+        debugpy runs), and keeps every object it lists alive while the program is
+        stopped. So within one stop, equal numbers are the same object; across stops, an
+        equal number may also be a new object at a freed one's address. The number alone
+        identifies it (`obj.__class__ = Other` keeps it). Scalars (reference 0) have
+        none, nor do debugpy's own grouping and paging nodes."""
         reference, kind = variable.get("variablesReference"), variable.get("type")
         if type(reference) is not int or reference <= 0 or not isinstance(kind, str) or not kind:
             return None
         if kind in _PYDEVD_PAGES or variable.get("name") in PYDEVD_GROUPS:
             return None
-        return f"{kind}@{reference}"
+        return reference
 
     @staticmethod
-    def globals_proof(frame, listed, loaded_by=None):
-        """Whether a name missing from this frame's locals may be read from its globals:
-        `{"shadowed": [...]}` lists the names that may not, `{"unproven": reason}` says
-        why none may. ``loaded_by``: when the program started (a source changed since
-        may not be the code running)."""
-        from peeky.python_scopes import shadowed_names
+    def globals_proof(frame, listed, names, loaded_by=None):
+        """How the frame's function sees each of ``names``, missing from its locals:
+        `{"names": {name: null or {"kind", "owner"}}}`, null meaning it reads that name
+        from its module's globals (see python_scopes.classify); or `{"unproven":
+        reason}`. ``loaded_by``: when the program started (a source changed since may
+        not be the code running)."""
+        from peeky.python_scopes import classify
 
         path, line = (frame.get("source") or {}).get("path"), frame.get("line")
         if not isinstance(path, str) or not path or type(line) is not int:
             return {"unproven": "the debugger gave no source line for this frame"}
-        names, reason = shadowed_names(
-            path, str(frame.get("name") or ""), line, listed, loaded_by=loaded_by
+        found, reason = classify(
+            path, str(frame.get("name") or ""), line, names, listed, loaded_by=loaded_by
         )
-        return {"unproven": reason} if names is None else {"shadowed": names}
+        if found is None:
+            return {"unproven": reason}
+        return {
+            "names": {
+                name: None if how is None else {"kind": how[0], "owner": how[1]}
+                for name, how in found.items()
+            }
+        }
 
     def normalize_capabilities(self, raw):
         # Advertise the intersection of backend support and the worker operations.

@@ -1175,8 +1175,7 @@ def _variables_text(snapshot, name="default"):
                 # LLDB's `(Return Value)` after `step --out`, debugpy's `special variables`.
                 more = " [not selectable]"
             view = f"  [{variable['view']}]" if variable.get("view") else ""
-            if variable.get("settable") and not index:
-                # `session set` changes the stopped frame's locals, not a caller's.
+            if variable.get("settable"):
                 view += "  [settable]"
             if variable.get("identity"):
                 view += f"  [id {variable['identity']}]"
@@ -1186,9 +1185,11 @@ def _variables_text(snapshot, name="default"):
             )
         if scope.get("truncated"):
             lines.append(
-                f"  ... and {scope['total'] - len(scope['variables'])} more, not listed or "
-                "readable: Peeky reads at most the first 50 names of a scope"
+                f"  ... and {scope['total'] - len(scope['variables'])} more, not listed (at "
+                "most 50 per scope): `session get NAME` reads one by name"
             )
+    if str(snapshot.get("globals", "listed")) != "listed":
+        lines.append(f"note: module globals {str(snapshot['globals'])[:300]}")
     if snapshot.get("optimized"):
         lines.append(_OPTIMIZED_NOTE.format(snapshot["optimized"]))
     if snapshot.get("mutation_blocked"):
@@ -1285,13 +1286,24 @@ def session(args):
         state = _wait(record, client, args.timeout)
         _emit(state, args.json, _state_text)
     elif args.action == "inspect":
+        if args.globals and record.get("language") not in (None, "python"):
+            raise ValueError("--globals lists a Python module's globals; this is not Python")
         snapshot = client.call(
-            "inspect", **_stop(record), **({"frame": args.frame} if args.frame else {})
+            "inspect",
+            **_stop(record),
+            **({"frame": args.frame} if args.frame else {}),
+            # Listing a global runs its repr in the program, so only on request.
+            **({"globals": True} if args.globals else {}),
         )
         if snapshot.get("frame", 0) != args.frame:
             # A worker that predates `frame` ignores it and shows the innermost frame.
             raise ValueError(
                 "This worker cannot read a caller's frame (it predates --frame); update "
+                "Peeky on the worker host"
+            )
+        if args.globals and "globals" not in snapshot:
+            raise ValueError(
+                "This worker cannot list module globals (it predates --globals); update "
                 "Peeky on the worker host"
             )
         _emit(snapshot, args.json, lambda shown: _variables_text(shown, args.name))
@@ -2444,6 +2456,12 @@ def main(argv=None, _job=False, _edits=None):
             "running is left running: `session wait` again",
         )
     actions.choices["get"].add_argument("selectors", nargs="+")
+    actions.choices["inspect"].add_argument(
+        "--globals",
+        action="store_true",
+        help="Python: also list the module's globals (reading them runs their reprs in the "
+        "program, as reading locals does; `get` reads a global by name without this)",
+    )
     for action in ("inspect", "get"):
         actions.choices[action].add_argument(
             "--frame",

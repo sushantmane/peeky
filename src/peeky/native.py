@@ -1162,17 +1162,39 @@ def declared_below(table, name, source, line):
     return min(where[1] for _, where in candidates)
 
 
-def declared_at(table, name, source, line):
-    """Whether a C/C++ local shown at ``source:line`` may be declared on that very line,
-    in any function with code there."""
+def declared_unfinished(table, name, source, line, address):
+    """For a caller frame at ``source:line``, inside a call that returns to ``address``
+    (unslid; None if unknown): the line of a C/C++ local of that name declared at or
+    above the frame's line whose code may not have run yet, else None.
+
+    The frame's own line always counts, and so does a line the function still has code
+    of at or after ``address``: `long r =` / `f(x);` stores `r` on the declaration's
+    line after the call returns, and so does a designated initializer over several
+    lines. With the address or its function unknown, every such declaration counts."""
     shown = _SHADOWED.fullmatch(name)
     base = shown[1] if shown else name
-    return any(
-        declared_in == source and at == line and (not shown or at == int(shown[2]))
-        for function in table
-        if (source, line) in function["rows"]
-        for declared_in, at, _ in function["locals"].get(base, ())
-    )
+    owners = [function for function in table if (source, line) in function["rows"]]
+    running = [
+        function
+        for function in owners
+        if address is not None
+        and any(low <= address < high for low, high in function.get("ranges", ()))
+    ]
+    if running:
+        owners = running
+    else:
+        # The function returned to is not identified: every declaration counts.
+        address = None
+    for function in owners:
+        for declared_in, at, automatic in function["locals"].get(base, ()):
+            if not automatic or declared_in != source or type(at) is not int or at > line:
+                continue
+            if shown and at != int(shown[2]):
+                continue
+            span = function["rows"].get((source, at))
+            if at == line or address is None or (span is not None and span[1] >= address):
+                return at
+    return None
 
 
 def declared_on_line(table, name, source, line, address):
@@ -1870,13 +1892,17 @@ class NativeSession:
             return None
         if type(line) is not int:
             return None
-        if not innermost and declared_at(self.declarations, name, source.as_posix(), line):
-            # A caller is inside a call made from its line: `long r = f(x);` has not
-            # stored `r` yet, and which declarations on the line have run is not known.
+        if not innermost and (
+            at := declared_unfinished(
+                self.declarations, name, source.as_posix(), line, self._unslid(frame)
+            )
+        ):
+            # A caller is inside a call: `long r = f(x);` stores `r` only after it.
             return (
-                f"declared on line {line}, where this caller frame is still inside a call, "
-                "so it may not be initialized yet (its initializer may be that call): its "
-                "storage may hold leftovers; read it after the call returns"
+                f"declared on line {at}, whose code this caller frame has not finished (it "
+                "is inside a call, and the declaration may be stored after the call "
+                "returns), so it may not be initialized yet: its storage may hold "
+                "leftovers; read it after the call returns"
             )
         below = declared_below(self.declarations, name, source.as_posix(), line)
         if below is not None:
@@ -1884,16 +1910,9 @@ class NativeSession:
                 f"declared at line {below}, below this stop, so not initialized yet: its "
                 f"storage holds leftovers; stop after line {below} to read it"
             )
-        pointer = (frame or {}).get("instructionPointerReference")
-        bias = getattr(self, "load_bias", None)
-        if (
-            bias is None
-            or self.target.optimization != "O0"
-            or not isinstance(pointer, str)
-            or not re.fullmatch(r"0x[0-9a-fA-F]{1,16}", pointer)
-        ):
+        address = self._unslid(frame)
+        if address is None or self.target.optimization != "O0":
             return None
-        address = int(pointer, 16) - bias
         if declared_on_line(self.declarations, name, source.as_posix(), line, address) is None:
             return None
         # A loop that branches back to this address can bring control here with the
@@ -1907,8 +1926,18 @@ class NativeSession:
             f"stop after line {line}, to read it"
         )
 
-    def validate_mutation_target(self, variable, frame, innermost=True):
-        if reason := self.not_yet_declared(variable, frame, innermost):
+    def _unslid(self, frame):
+        """The frame's instruction address in the executable's own numbering, or None."""
+        pointer = (frame or {}).get("instructionPointerReference")
+        bias = getattr(self, "load_bias", None)
+        if bias is None or not isinstance(pointer, str):
+            return None
+        if not re.fullmatch(r"0x[0-9a-fA-F]{1,16}", pointer):
+            return None
+        return int(pointer, 16) - bias
+
+    def validate_mutation_target(self, variable, frame):
+        if reason := self.not_yet_declared(variable, frame):
             raise ValueError(
                 f"{variable.get('name')!r} is {reason}; its declaration would overwrite a "
                 "change made here"

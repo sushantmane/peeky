@@ -89,12 +89,16 @@ TABLES = {
             "unavailable": "1 when the debugger has no value here (optimized out, not live)",
             "error": "Why there is no value (unknown name, unreadable, ...), else NULL",
             "view": "Qualified value view (e.g. a Rust Option), else NULL",
-            "identity": "Python: which object the value is, as `type@N` (debugpy's number for "
-            "the object, not an address). Within one hit, equal means the same object (an "
-            "alias), different means different objects. Across hits of one run, different "
-            "still means different objects, but equal means the same object or a new one "
-            "that took a freed object's place. Never compare runs. NULL for values without "
-            "one (numbers, strings, None) and in other languages (Java: object_ref(value))",
+            "identity": "Python: which object the value is, an INTEGER (debugpy's number for "
+            "the object, not an address; the object keeps it if its class is reassigned). "
+            "Within one hit, equal means the same object (an alias), different means "
+            "different objects. Across hits of one run, different still means different "
+            "objects, but equal means the same object or a new one that took a freed "
+            "object's place. Never compare runs. NULL for values without one (numbers, "
+            "strings, None) and in other languages (Java: object_ref(value))",
+            "scope": "'globals' when a Python selector's first name was read from the "
+            "module's globals (it was not a local there), else NULL: the stopped frame's own "
+            "variables",
         },
     ),
     "interventions": (
@@ -114,8 +118,8 @@ TABLES = {
 }
 _EVIDENCE_COLUMNS = (
     "run_id, started_at, label, program, line, status, hit, phase, function, selector, type, "
-    "value, num, unavailable, error, view, identity, args, sets, artifact_manifest_id, "
-    "source_sha256, candidate, language"
+    "value, num, unavailable, error, view, identity, scope, args, sets, "
+    "artifact_manifest_id, source_sha256, candidate, language"
 )
 VIEWS = {
     "evidence": f"captures joined with their run, so no join is needed: {_EVIDENCE_COLUMNS} "
@@ -127,7 +131,8 @@ VIEWS = {
 }
 _EVIDENCE_VIEW = """CREATE VIEW evidence AS SELECT c.run_id, r.started_at, r.label, r.program,
         c.line, r.status, c.hit, c.phase, c.function, c.selector, c.type, c.value, c.num,
-        c.unavailable, c.error, c.view, c.identity, r.args, r.sets, r.artifact_manifest_id,
+        c.unavailable, c.error, c.view, c.identity, c.scope, r.args, r.sets,
+        r.artifact_manifest_id,
         r.source_sha256, r.edit IS NOT NULL AS candidate, r.language
         FROM captures c JOIN runs r ON r.run_id = c.run_id"""
 _LAST_RUN_VIEW = (
@@ -138,7 +143,7 @@ _LAST_RUN_VIEW = (
 _CAPTURES = """CREATE TABLE {} (
         run_id INTEGER NOT NULL, hit INTEGER, phase TEXT, line INTEGER, function TEXT,
         selector TEXT, type TEXT, value TEXT, num NUMERIC, unavailable INTEGER NOT NULL,
-        error TEXT, view TEXT, identity TEXT)"""
+        error TEXT, view TEXT, identity INTEGER, scope TEXT)"""
 _CAPTURE_INDEXES = (
     "CREATE INDEX captures_run ON captures (run_id, hit)",
     "CREATE INDEX captures_selector ON captures (selector)",
@@ -168,15 +173,16 @@ _DDL = (
 # before opening it read-only. Version 2 added runs.edit; version 3 rebuilt the views with
 # `candidate` (an early version 2 had the column but the old views); version 4 made
 # captures.num NUMERIC; version 5 added language to the views; version 6 added
-# captures.identity. Views name columns of the newest captures table, so earlier steps
-# only drop them and the last step creates them.
+# captures.identity and captures.scope. Views name columns of the newest captures
+# table, so earlier steps only drop them and the last step creates them.
 _DROP_VIEWS = ("DROP VIEW IF EXISTS last_run", "DROP VIEW IF EXISTS evidence")
 
 
 def _add_identity(connection):
     columns = {row[1] for row in connection.execute("PRAGMA table_info(captures)")}
-    if "identity" not in columns:
-        connection.execute("ALTER TABLE captures ADD COLUMN identity TEXT")
+    for column, kind in (("identity", "INTEGER"), ("scope", "TEXT")):
+        if column not in columns:
+            connection.execute(f"ALTER TABLE captures ADD COLUMN {column} {kind}")
 
 
 _MIGRATIONS = {
@@ -638,7 +644,7 @@ def record(path, result, *, language=None, target=None, label=None, worker=None)
             tuple(run.values()),
         ).lastrowid
         connection.executemany(
-            "INSERT INTO captures VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO captures VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [
                 (
                     run_id,
@@ -653,7 +659,8 @@ def record(path, result, *, language=None, target=None, label=None, worker=None)
                     1 if row.get("unavailable") else 0,
                     row.get("error"),
                     _text(row.get("view")),
-                    _text(row.get("identity")),
+                    row["identity"] if type(row.get("identity")) is int else None,
+                    "globals" if row.get("scope") == "globals" else None,
                 )
                 for row in result.get("rows") or []
             ],
@@ -981,7 +988,7 @@ def schema(path):
             "object_ref(text)": "The Java object a value is (`Merge$Interval@143`), else NULL: "
             "two values of one run with the same object_ref are the same object (aliasing); "
             "the numbers differ between runs. Python values carry theirs in "
-            "captures.identity (`list@7`), not in their text: within one hit equal means "
+            "captures.identity (an integer), not in their text: within one hit equal means "
             "the same object; across hits equal may also be a new object in a freed one's "
             "place, while different always means different objects",
         },

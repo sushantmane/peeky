@@ -134,13 +134,77 @@ def test_a_callers_local_declared_on_its_calling_line_is_withheld(bucket, capsys
         result = rows["result"]
         assert "value" not in result and result["unavailable"], result
         assert (
-            "declared on line 10, where this caller frame is still inside a call"
+            "declared on line 10, whose code this caller frame has not finished"
             in (result["error"])
         )
         main(["session", "get", "v", "--json"])
         assert json.loads(capsys.readouterr().out)[0]["value"] == "21"
     finally:
         main(["session", "close"])
+
+
+FRAMES = """#include <stdio.h>
+
+struct pair { long x, y; };
+
+__attribute__((noinline)) static long twice(long v) {
+    long w = v * 2;
+    return w;
+}
+
+__attribute__((noinline)) static void scribble(void) {
+    volatile long junk[64];
+    for (int i = 0; i < 64; i++) junk[i] = 0x5150 + i;
+}
+
+__attribute__((noinline)) static long run(void) {
+    long seed = 21;
+    long result = twice(seed);
+    long multi =
+        twice(seed + 1);
+    struct pair p = {
+        .x = twice(1),
+        .y = twice(2),
+    };
+    printf("%ld %ld %ld %ld\\n", result, multi, p.x, p.y);
+    return result;
+}
+
+int main(void) {
+    scribble();
+    return (int)(run() & 1);
+}
+"""
+
+
+@pytest.mark.timeout(120)
+def test_a_callers_declaration_over_several_lines_is_withheld_until_it_is_stored(bucket, capsys):
+    # Review of #104: `long multi =` / `twice(seed + 1);` stores `multi` on line 18 after
+    # the call returns, so `--frame 1` showed leftovers (-1575490704436559704), and so did
+    # a designated initializer's fields (20878, 20879). Caller values are never settable.
+    path = bucket.parent / "frames.c"
+    path.write_text(FRAMES)
+    bucket.unlink()
+    shown = {}
+    for hit in (2, 3):
+        assert main(["session", "start", str(path), "--at", "7", "--hit", str(hit)]) == 0
+        capsys.readouterr()
+        try:
+            assert main(["session", "inspect", "--frame", "1", "--json"]) == 0
+            snapshot = json.loads(capsys.readouterr().out)
+        finally:
+            main(["session", "close"])
+            capsys.readouterr()
+        shown[hit] = {v["name"]: v for s in snapshot["scopes"] for v in s["variables"]}
+    for hit, name, line in ((2, "multi", 18), (3, "p", 20)):
+        variable = shown[hit][name]
+        assert variable["unavailable"] and variable.get("value") is None, variable
+        assert (
+            f"declared on line {line}, whose code this caller frame has not finished"
+            in (variable["reason"])
+        )
+    assert shown[2]["result"]["value"] == "42" and shown[3]["multi"]["value"] == "44"
+    assert not any(v.get("settable") for hit in shown for v in shown[hit].values())
 
 
 GOTO = """#include <stdio.h>

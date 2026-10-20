@@ -2,11 +2,14 @@
 
 import json
 import os
+import re
+import shutil
 import time
 
 import pytest
 
 from peeky.cli import main
+from peeky.errors import classify
 
 PROGRAM = """\
 LIMIT = [1, 2]
@@ -92,9 +95,14 @@ def test_frame_option_reads_a_callers_locals_and_refuses_past_the_stack(program,
     assert rows(capsys, "word", frame=2)[1]["word"]["error"].startswith("not found")
 
 
-def test_python_inspect_lists_module_globals_once(program, capsys):
+def test_python_inspect_lists_module_globals_on_request_and_once(program, capsys):
     assert run(capsys, "session", "start", program, "--at", RETURN_KEY)[0] == 0
+    # Review of #104: listing globals runs their reprs, and a client that predates them
+    # resolves names across every scope it gets: they come only on request.
     snapshot = json.loads(run(capsys, "session", "inspect", "--json")[1].out)
+    assert [scope["name"] for scope in snapshot["scopes"]] == ["Locals"]
+    assert snapshot["globals_available"] is True
+    snapshot = json.loads(run(capsys, "session", "inspect", "--globals", "--json")[1].out)
     locals_, globals_ = snapshot["scopes"]
     assert (locals_["name"], globals_["name"]) == ("Locals", "Globals")
     assert globals_["globals"] is True and "globals" not in locals_
@@ -105,12 +113,17 @@ def test_python_inspect_lists_module_globals_once(program, capsys):
     assert all(
         "identity" not in shown[name] for name in ("special variables", "function variables")
     )
-    assert "[Globals] (module globals, read-only)" in run(capsys, "session", "inspect")[1].out
+    text = run(capsys, "session", "inspect", "--globals")[1].out
+    assert "[Globals] (module globals, read-only)" in text
+    assert "[Globals]" not in run(capsys, "session", "inspect")[1].out
     # Module code runs with its globals as its locals: listed once.
-    module = json.loads(run(capsys, "session", "inspect", "--frame", 2, "--json")[1].out)
+    code, out = run(capsys, "session", "inspect", "--frame", 2, "--globals", "--json")
+    module = json.loads(out.out)
     assert [scope["name"] for scope in module["scopes"]] == ["Locals"]
+    code, out = run(capsys, "session", "inspect", "--frame", 2, "--globals")
+    assert "note: module globals not listed: at module level the locals are" in out.out
     code, out = run(capsys, "session", "set", "LIMIT=[3]")
-    assert code == 2 and "[MUTATION_REJECTED]" in out.err and "module global" in out.err
+    assert code == 2 and "[NOT_FOUND]" in out.err and "'LIMIT' is not a visible local" in out.err
 
 
 def test_globals_are_read_when_proven_and_never_for_an_unassigned_local(program, capsys):
@@ -122,13 +135,13 @@ def test_globals_are_read_when_proven_and_never_for_an_unassigned_local(program,
     assert found["normalize.__defaults__"]["value"] == "(['a'],)"
     assert found["normalize.__name__"]["value"] == "'normalize'"
     code, out = run(capsys, "session", "get", "LIMIT")
-    assert "LIMIT: list = [1, 2]  [id list@" in out.out and "[module global]" in out.out
+    assert re.search(r"^LIMIT: list = \[1, 2\]  \[id \d+\]  \[module global\]$", out.out, re.M)
     # A source edited after the start may not be the code running: nothing is proven.
     later = time.time() + 5
     os.utime(program, (later, later))
     code, found = rows(capsys, "LIMIT")
     assert code == 1 and "value" not in found["LIMIT"]
-    assert "may be the module global 'LIMIT'" in found["LIMIT"]["error"]
+    assert "It may be a module global" in found["LIMIT"]["error"]
     assert "changed after the program started" in found["LIMIT"]["error"]
     run(capsys, "session", "close")
     earlier = time.time() - 5
@@ -138,8 +151,150 @@ def test_globals_are_read_when_proven_and_never_for_an_unassigned_local(program,
     code, found = rows(capsys, "LIMIT")
     assert code == 1 and "value" not in found["LIMIT"]
     error = found["LIMIT"]["error"]
-    assert error.startswith("not found: 'LIMIT' has no value in this frame at this line")
-    assert "UnboundLocalError" in error and "shadow binds it" in error
+    assert error.startswith("not found: 'LIMIT' is a local of shadow with no value at this line")
+    assert "UnboundLocalError" in error
+
+
+def test_a_source_replaced_by_an_older_file_proves_nothing(program, capsys, tmp_path):
+    # Review of #104: `cp -p` gives the replacement its old mtime, so the running `f`
+    # (which binds X) was judged from a file in which it did not.
+    running = "X = 'global'\n\n\ndef f():\n    print(1)\n    X = 2\n    return X\n\n\nf()\n"
+    alternative = running.replace("    X = 2\n    return X\n", "    return 2\n")
+    source, copy = tmp_path / "mt.py", tmp_path / "mt_alt.py"
+    source.write_text(running)
+    copy.write_text(alternative)
+    old = time.time() - 86400
+    os.utime(copy, (old, old))
+    os.utime(source, (old, old))
+    assert run(capsys, "session", "start", source, "--at", 5)[0] == 0
+    code, found = rows(capsys, "X")
+    assert "UnboundLocalError" in found["X"]["error"]
+    time.sleep(0.05)
+    shutil.copy2(copy, source)
+    assert source.stat().st_mtime < time.time() - 3600
+    code, found = rows(capsys, "X")
+    assert code == 1 and "value" not in found["X"]
+    assert "changed after the program started" in found["X"]["error"]
+
+
+def test_reading_a_local_runs_no_globals_repr_and_parses_no_source(tmp_path, monkeypatch):
+    # Review of #104: every inspection listed the globals (running each one's __repr__
+    # in the program) and parsed the module to prove names nobody asked for.
+    import symtable
+
+    from peeky.probe import Probe, run_probe
+
+    (tmp_path / "r1.py").write_text(LOUD)
+    parsed = []
+    original = symtable.symtable
+    monkeypatch.setattr(symtable, "symtable", lambda *a: parsed.append(a) or original(*a))
+    result = run_probe(tmp_path, Probe("r1.py", 18, ("total",), hits=3))
+    assert result["status"] == "completed", result.get("error")
+    assert [row["value"] for row in result["rows"]] == ["1", "2", "3"]
+    assert "repr calls: 0" in result["output"] and not parsed
+    # A global asked for by name is proven, then read, as reading a local runs its repr.
+    result = run_probe(tmp_path, Probe("r1.py", 18, ("HANDLE",), hits=1))
+    assert result["rows"][0]["value"] == "<Loud>" and result["rows"][0]["scope"] == "globals"
+    assert len(parsed) == 1
+
+
+LOUD = """\
+import sys
+
+
+class Loud:
+    calls = 0
+
+    def __repr__(self):
+        Loud.calls += 1
+        return "<Loud>"
+
+
+HANDLE = Loud()
+
+
+def work(n):
+    total = n + 1
+    return total
+
+
+for i in range(3):
+    work(i)
+print("repr calls:", Loud.calls)
+"""
+
+
+def test_a_local_debugpy_groups_with_functions_is_set_as_a_local(tmp_path, monkeypatch, capsys):
+    # Review of #104: `set callback=None` said "'callback' is a module global".
+    monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
+    path = tmp_path / "s1.py"
+    path.write_text(
+        'callback = "global-cb"\n\n\ndef f():\n    callback = print\n    return 1\n\n\nf()\n'
+    )
+    assert run(capsys, "session", "start", path, "--at", 6)[0] == 0
+    try:
+        code, out = run(capsys, "session", "set", "callback=None")
+        assert code == 0, out.err
+        assert out.out.strip() == "set callback: <built-in function print> -> None"
+        assert rows(capsys, "callback")[1]["callback"]["value"] == "None"
+    finally:
+        run(capsys, "session", "close")
+
+
+def test_names_past_the_listing_bound_are_read_by_name(tmp_path, monkeypatch, capsys):
+    # Review of #104: `get zz_last` said "not found" for a global past the 50-entry cut.
+    monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
+    path = tmp_path / "many.py"
+    globals_ = "".join(f"g{i:02} = 'global-{i}'\n" for i in range(60))
+    locals_ = "".join(f"    l{i:02} = {i}\n" for i in range(55))
+    path.write_text(
+        f"{globals_}zz_last = 'global-zz'\n\ndef f():\n{locals_}"
+        "    zz_local = 'local-zz'\n    return l00\n\nf()\n"
+    )
+    assert run(capsys, "session", "start", path, "--at", 120)[0] == 0
+    try:
+        code, found = rows(capsys, "zz_last", "zz_local", "l54", "g59", "nowhere")
+        assert found["zz_last"]["value"] == "'global-zz'"
+        assert found["zz_last"]["scope"] == "globals"
+        assert found["zz_local"]["value"] == "'local-zz'" and found["l54"]["value"] == "54"
+        assert found["g59"]["value"] == "'global-59'"
+        assert found["nowhere"]["error"].startswith("not found: 'nowhere' is neither")
+        text = run(capsys, "session", "inspect")[1].out
+        assert "  ... and 6 more, not listed (at most 50 per scope)" in text
+    finally:
+        run(capsys, "session", "close")
+
+
+CALLER = "def callee():\n    return 0\n\n\ndef caller():\n    n = 2\n    r = n + callee()\n    return n * 10, r\n\n\nprint(caller())\n"
+
+
+def test_a_callers_locals_are_read_only_and_globals_come_only_on_request(tmp_path):
+    # Review of #104: set_variable on `inspect {"frame": 1}` changed the caller's `n`;
+    # and a client that predates globals resolved names across every scope it got.
+    from peeky.worker import DebugWorker
+
+    (tmp_path / "m1.py").write_text(CALLER)
+    worker = DebugWorker(tmp_path)
+    launched = worker.dispatch("launch", {"program": "m1.py", "breakpoints": [{"line": 2}]})
+    session = {"session_id": launched["session_id"]}
+    try:
+        state = worker.dispatch("wait", {**session, "timeout": 10})
+        stop = {**session, "stop_id": state["stop_id"]}
+        own = worker.dispatch("inspect", stop)
+        assert [scope["name"] for scope in own["scopes"]] == ["Locals"]
+        caller = worker.dispatch("inspect", {**stop, "frame": 1})
+        assert [scope["name"] for scope in caller["scopes"]] == ["Locals"]
+        reference = caller["scopes"][0]["reference"]
+        with pytest.raises(ValueError, match="'n' is in a caller's frame") as caught:
+            worker.dispatch(
+                "set_variable", {**stop, "reference": reference, "name": "n", "value": "5"}
+            )
+        assert classify(caught.value)["code"] == "MUTATION_REJECTED"
+        worker.dispatch("continue", stop)
+        assert worker.dispatch("wait", {**session, "timeout": 10})["state"] == "terminated"
+        assert "(20, 2)" in worker.dispatch("report", session)["output"]
+    finally:
+        worker.dispatch("close", session)
 
 
 def test_python_identity_tells_the_same_object_from_an_equal_one(program, capsys):
@@ -147,7 +302,7 @@ def test_python_identity_tells_the_same_object_from_an_equal_one(program, capsys
     code, caller = rows(capsys, "same", "alias", "equal", "words", frame=1)
     assert code == 0
     assert caller["same"]["identity"] == caller["alias"]["identity"]
-    assert caller["same"]["identity"].startswith("list@")
+    assert type(caller["same"]["identity"]) is int
     assert caller["same"]["value"] == caller["equal"]["value"] == "[0]"
     assert caller["same"]["identity"] != caller["equal"]["identity"]
     code, here = rows(capsys, "seen", "normalize.__defaults__[0]", "key", "word")
@@ -175,7 +330,7 @@ def test_probe_rows_store_identity_for_sql(program, capsys, tmp_path):
     args = ("probe", program, "--at", RETURN_KEY, "--capture", capture, "--hits", 2)
     code, out = run(capsys, *args, "--store", store)
     assert code == 0, out.out + out.err
-    assert "[id list@" in out.out
+    assert re.search(r"\[id \d+\]", out.out)
     code, out = run(
         capsys,
         "sql",

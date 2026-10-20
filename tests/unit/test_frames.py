@@ -7,7 +7,6 @@ import pytest
 from peeky.adapters import PythonAdapter
 from peeky.errors import classify
 from peeky.probe import _capture, _resolve, parse_selector
-from peeky.python_scopes import shadowed_names
 from peeky.worker import DebugWorker
 
 GROUP = {"name": "special variables", "type": "", "value": "", "variablesReference": 90}
@@ -88,10 +87,11 @@ class Runtime(PythonAdapter):
             self.innermost.append((frame["id"], variable["name"], innermost))
         return None
 
-    @staticmethod
-    def globals_proof(frame, listed, loaded_by=None):
+    def globals_proof(self, frame, listed, names, loaded_by=None):
         assert loaded_by == 1000.0
-        return {"shadowed": ["key", "seen"]} if frame["name"] == "normalize" else {"shadowed": []}
+        self.innermost.append(("proof", tuple(names), None))
+        bound = {"key": {"kind": "local", "owner": None}} if frame["name"] == "normalize" else {}
+        return {"names": {name: bound.get(name) for name in names}}
 
 
 @pytest.fixture
@@ -146,16 +146,34 @@ def test_a_frame_sharing_the_innermost_frames_id_is_refused(worker):
         inspect(worker, frame=1)
 
 
-def test_python_globals_are_listed_read_only_and_once_at_module_level(worker):
+def test_python_globals_are_listed_and_proven_only_on_request(worker):
+    # Review of #104: every inspection listed the globals, running each one's repr in
+    # the program, and computed the proof, even to read a local.
     snapshot = inspect(worker)
+    assert [scope["name"] for scope in snapshot["scopes"]] == ["Locals"]
+    assert snapshot["globals_available"] is True and "globals_proof" not in snapshot
+    assert not any(args.get("variablesReference", 0) > 100 for _, args in worker.dap.calls)
+    assert not any(entry[0] == "proof" for entry in worker.runtime.innermost)
+    # Asked for by name: proven first, listed only for a name the function reads there.
+    snapshot = inspect(worker, globals=["key"])
+    assert [scope["name"] for scope in snapshot["scopes"]] == ["Locals"]
+    assert snapshot["globals_proof"] == {"names": {"key": {"kind": "local", "owner": None}}}
+    assert snapshot["globals"].startswith("not listed")
+    assert not any(args.get("variablesReference", 0) > 100 for _, args in worker.dap.calls)
+    snapshot = inspect(worker, globals=["LIMIT"])
+    assert [scope["name"] for scope in snapshot["scopes"]] == ["Locals", "Globals"]
+    assert snapshot["globals"] == "listed"
+    worker.dap.frames[0]["source"]["path"] = "/elsewhere/app.py"
+    snapshot = inspect(worker, globals=["LIMIT"])
+    assert snapshot["globals_proof"] == {"unproven": "its source is outside the target root"}
+    assert [scope["name"] for scope in snapshot["scopes"]] == ["Locals"]
+
+
+def test_python_globals_are_listed_read_only_and_once_at_module_level(worker):
+    snapshot = inspect(worker, globals=True)
     locals_, globals_ = snapshot["scopes"]
     assert globals_["name"] == "Globals" and globals_["globals"] is True
-    assert "globals" not in locals_
-    assert snapshot["globals_proof"] == {"shadowed": ["key", "seen"]}
-    worker.dap.frames[0]["source"]["path"] = "/elsewhere/app.py"
-    snapshot = inspect(worker)
-    assert snapshot["globals_proof"] == {"unproven": "its source is outside the target root"}
-    globals_ = snapshot["scopes"][1]
+    assert "globals" not in locals_ and snapshot["globals"] == "listed"
     with pytest.raises(ValueError, match="Module globals cannot be changed") as caught:
         worker.dispatch(
             "set_variable",
@@ -163,18 +181,23 @@ def test_python_globals_are_listed_read_only_and_once_at_module_level(worker):
         )
     assert classify(caught.value)["code"] == "MUTATION_REJECTED"
     # A module's code runs with its globals as its locals: one scope, no proof needed.
-    module = inspect(worker, frame=2)
+    module = inspect(worker, frame=2, globals=True)
     assert [scope["name"] for scope in module["scopes"]] == ["Locals"]
-    assert "globals_proof" not in module
+    assert "globals_proof" not in module and "globals_available" not in module
+    assert module["globals"] == "not listed: at module level the locals are the module's globals"
+    for bad in ("yes", ["not a name"], ["x"] * 33, 1):
+        with pytest.raises(ValueError, match="globals must be"):
+            inspect(worker, globals=bad)
 
 
 def test_python_values_carry_an_identity_but_scalars_and_groups_do_not(worker):
-    snapshot = inspect(worker, frame=1)
+    # Review of #104: the number alone identifies the object; its class can change.
+    snapshot = inspect(worker, frame=1, globals=True)
     a, b, n = snapshot["scopes"][0]["variables"]
-    assert a["identity"] == b["identity"] == "list@8" and "identity" not in n
+    assert a["identity"] == b["identity"] == 8 and "identity" not in n
     group = snapshot["scopes"][1]["variables"][0]
     assert group["name"] == "special variables" and "identity" not in group
-    assert snapshot["scopes"][1]["variables"][2]["identity"] == "dict@9"
+    assert snapshot["scopes"][1]["variables"][2]["identity"] == 9
 
 
 @pytest.mark.parametrize(
@@ -193,13 +216,19 @@ def test_no_identity_without_an_adapter_reference_or_for_debugpys_own_nodes(vari
     assert PythonAdapter.object_identity(variable) is None
 
 
-def test_scopes_cut_at_the_bound_say_so(worker):
+def test_scopes_cut_at_the_bound_say_so_and_names_asked_for_are_listed_past_it(worker):
     worker.dap.locals[11] = [
         {"name": f"v{i:02}", "type": "int", "value": "1", "variablesReference": 0}
         for i in range(60)
     ]
     scope = inspect(worker)["scopes"][0]
     assert len(scope["variables"]) == 50 and scope["truncated"] and scope["total"] == 60
+    snapshot = inspect(worker, names=["v58", "v01", "missing"])
+    shown = [v["name"] for v in snapshot["scopes"][0]["variables"]]
+    assert shown[:50] == [f"v{i:02}" for i in range(50)] and shown[50:] == ["v58"]
+    assert snapshot["names"] == ["missing", "v01", "v58"]
+    found = _resolve(worker, STOP, snapshot, parse_selector("v58"))
+    assert found["name"] == "v58"
 
 
 def test_a_missing_name_is_read_from_globals_only_when_proven_unshadowed(worker):
@@ -208,22 +237,137 @@ def test_a_missing_name_is_read_from_globals_only_when_proven_unshadowed(worker)
     assert found["value"] == "3" and found["scope"] == "globals"
     # In debugpy's `special variables` group of the Globals listing.
     assert _resolve(worker, STOP, snapshot, parse_selector("__name__"))["value"] == "'app'"
-    with pytest.raises(ValueError, match="normalize binds it"):
+    with pytest.raises(ValueError, match="'key' is a local of normalize with no value"):
         _resolve(worker, STOP, snapshot, parse_selector("key"))
+    snapshot = inspect(worker)
     snapshot["globals_proof"] = {"unproven": "its source could not be parsed"}
     with pytest.raises(ValueError) as caught:
         _resolve(worker, STOP, snapshot, parse_selector("LIMIT"))
-    assert "may be the module global 'LIMIT'" in str(caught.value)
+    assert "It may be a module global" in str(caught.value)
     assert "could not prove" in str(caught.value) and "could not be parsed" in str(caught.value)
     assert str(caught.value).startswith("not found")
-    with pytest.raises(ValueError, match=r"^not found; visible: seen; module globals: LIMIT"):
+    snapshot = inspect(worker)
+    with pytest.raises(ValueError, match=r"^not found: 'nothing' is neither a local nor a module"):
         _resolve(worker, STOP, snapshot, parse_selector("nothing"))
+
+
+@pytest.mark.parametrize(
+    "kind, owner, words",
+    [
+        ("local", None, "'X' is a local of f with no value at this line"),
+        ("parameter", None, "'X' is a parameter of f, deleted before this line"),
+        ("comprehension", None, "'X' is the variable of a comprehension in f"),
+        ("free", "outer", "'X' is a variable of outer that f uses (a closure variable)"),
+        ("enclosing", "outer", "'X' is a local of outer, the function around f, which f"),
+        ("type parameter", "generic", "'X' is a type parameter of generic (PEP 695)"),
+        ("class cell", None, "'__class__' is the class cell Python gives only a method"),
+    ],
+)
+def test_each_reason_a_name_is_not_a_global_is_worded_for_what_binds_it(kind, owner, words):
+    # Review of #104: an enclosing function's local, a type parameter and a method's
+    # missing `__class__` were all called "a local not yet assigned".
+    class Proven:
+        def dispatch(self, operation, args):
+            assert operation == "inspect" and args["globals"] == ["X"]
+            how = {"kind": kind, "owner": owner}
+            return {**snapshot, "globals_proof": {"names": {"X": how}}}
+
+    snapshot = {"function": "f", "globals_available": True, "frames": [], "scopes": []}
+    with pytest.raises(ValueError) as caught:
+        _resolve(Proven(), STOP, dict(snapshot), parse_selector("X"))
+    message = str(caught.value)
+    assert message.startswith("not found: ") and words in message
+    assert ("UnboundLocalError" in message) == (kind in ("local", "parameter"))
+
+
+def test_a_caller_frames_values_are_never_changed_or_marked_settable(worker):
+    # Review of #104: set_variable on a scope of `inspect --frame 1` changed the caller.
+    worker.runtime.settable = lambda variable, frame: True
+    caller = inspect(worker, frame=1)
+    assert not any(v.get("settable") for v in caller["scopes"][0]["variables"])
+    with pytest.raises(ValueError, match="in a caller's frame, whose values cannot") as caught:
+        worker.dispatch(
+            "set_variable",
+            {**STOP, "reference": caller["scopes"][0]["reference"], "name": "n", "value": "4"},
+        )
+    assert classify(caught.value)["code"] == "MUTATION_REJECTED"
+    assert not any(operation == "setVariable" for operation, _ in worker.dap.calls)
+    own = inspect(worker)
+    assert own["scopes"][0]["variables"][0]["settable"] is True
+
+
+def test_a_frame_outside_the_program_is_named_by_its_index(worker):
+    # Review of #104: the error named lldb-dap's frame id (`Frame 524291 (start)`).
+    def validate_stop(frame):
+        if frame["name"] != "normalize":
+            raise RuntimeError("not a prepared source")
+
+    object.__setattr__(worker.runtime, "validate_stop", validate_stop)
+    worker.dap.frames[1]["source"] = {"path": "/usr/lib/dyld"}
+    with pytest.raises(ValueError, match=r"^Frame 1 \(main\) is not in the prepared"):
+        inspect(worker, frame=1)
+
+
+def test_a_module_listing_of_only_debugpys_groups_reads_plainly():
+    from peeky.probe import _visible
+
+    snapshot = {
+        "scopes": [
+            {"name": "Locals", "variables": [{"name": "x"}]},
+            {"name": "Globals", "globals": True, "variables": [dict(GROUP)]},
+        ]
+    }
+    assert _visible(snapshot) == (
+        "x; module globals: the names in debugpy's special variables (select them by name)"
+    )
+    cut = {"name": "Globals", "globals": True, "truncated": True, "total": 63}
+    cut["variables"] = [dict(GROUP), *({"name": f"g{i:02}"} for i in range(49))]
+    assert _visible({"scopes": [cut]}) == (
+        "(none); module globals: g00, g01, g02, g03, g04, g05, g06, g07, g08, g09, g10, g11, "
+        "g12, g13, g14, g15, g16, g17, g18, g19, g20, g21, g22, g23, g24, g25, g26, g27, "
+        "g28, g29, g30, g31, g32, g33, g34, g35, g36, g37, g38, g39, ... (49 total) and the "
+        "names in debugpy's special variables (select them by name) (Globals lists 50 of "
+        "its 63 entries, debugpy's groups included)"
+    )
+
+
+def test_debugpys_groups_are_read_once_per_inspection():
+    # Review of #104: every selector expanded a value's groups again.
+    class Counting(Tree):
+        def __init__(self, tree):
+            super().__init__(tree)
+            self.expanded = []
+
+        def dispatch(self, operation, args):
+            if operation == "inspect":
+                return {
+                    "frames": [{"line": 1}],
+                    "scopes": [
+                        {
+                            "name": "Locals",
+                            "variables": [entry("normalize", "<function>", "function", 1)],
+                        }
+                    ],
+                }
+            self.expanded.append(args["handle"])
+            return super().dispatch(operation, args)
+
+    worker = Counting(
+        {
+            1: [group("special variables", 2)],
+            2: [entry("__defaults__", "([],)", "tuple"), entry("__name__", "'normalize'")],
+        }
+    )
+    selectors = ("normalize.__defaults__", "normalize.__name__", "normalize.__doc__")
+    rows = _capture(worker, STOP, selectors, 0, "observed")
+    assert [row.get("value") for row in rows[:2]] == ["([],)", "'normalize'"]
+    assert worker.expanded.count(2) == 1
 
 
 def test_get_rows_name_the_frame_scope_and_identity(worker):
     rows = _capture(worker, STOP, ("a", "LIMIT"), 0, "observed", frame=1)
     assert rows[0]["frame"] == 1 and rows[0]["function"] == "main" and rows[0]["line"] == 9
-    assert rows[0]["identity"] == "list@8" and "scope" not in rows[0]
+    assert rows[0]["identity"] == 8 and "scope" not in rows[0]
     assert rows[1]["value"] == "3" and rows[1]["scope"] == "globals"
     assert "identity" not in rows[1]
 
@@ -237,10 +381,19 @@ def test_a_worker_that_ignores_frame_is_refused():
         _capture(Old(), STOP, ("a",), 0, "observed", frame=1)
 
 
+NAMES = ("LIMIT", "TOTAL", "n", "w", "self", "size", "__class__", "print")
+
+
+def classify_names(*args, **kwargs):
+    from peeky.python_scopes import classify
+
+    return classify(*args, **kwargs)
+
+
 def scope_of(tmp_path, text, function, line, listed=()):
     path = tmp_path / "app.py"
     path.write_text(text)
-    return shadowed_names(path, function, line, listed)
+    return classify_names(path, function, line, NAMES, listed)
 
 
 SOURCE = """\
@@ -279,16 +432,20 @@ class Box:
 """
 
 
-def test_shadowed_names_follow_the_compilers_scoping(tmp_path):
+def test_names_are_classified_by_the_compilers_scoping(tmp_path):
     names, reason = scope_of(tmp_path, SOURCE, "shadow", 7, ["n"])
-    assert reason is None and {"LIMIT", "n", "w"} <= set(names) and "TOTAL" not in names
+    assert reason is None
+    assert names["LIMIT"] == ("local", None) and names["n"] == ("parameter", None)
+    assert names["w"] == ("comprehension", None) and names["TOTAL"] is None
+    assert names["print"] is None and names["__class__"] == ("class cell", None)
     names, _ = scope_of(tmp_path, SOURCE, "declared", 15)
-    assert "TOTAL" not in names
+    assert names["TOTAL"] is None
     # The name is free in neither: still the enclosing function's, never the module's.
     names, _ = scope_of(tmp_path, SOURCE, "inner", 22)
-    assert "TOTAL" in names and "LIMIT" not in names
+    assert names["TOTAL"] == ("enclosing", "outer") and names["LIMIT"] is None
     names, _ = scope_of(tmp_path, SOURCE, "grow", 31, ["self", "__class__"])
-    assert "self" in names and "size" not in names
+    assert names["self"] == ("parameter", None) and names["size"] is None
+    assert names["__class__"] == ("class cell used", None)
 
 
 NESTED_TWINS = """\
@@ -323,15 +480,53 @@ def test_a_source_changed_after_the_program_started_proves_nothing(tmp_path):
 
     path = tmp_path / "app.py"
     path.write_text(SOURCE)
+    time.sleep(0.01)
     started = time.time()
-    assert shadowed_names(path, "shadow", 7, ["n"], loaded_by=started)[1] is None
+    assert classify_names(path, "shadow", 7, NAMES, ["n"], loaded_by=started)[1] is None
     os.utime(path, (started + 5, started + 5))
-    names, why = shadowed_names(path, "shadow", 7, ["n"], loaded_by=started)
+    names, why = classify_names(path, "shadow", 7, NAMES, ["n"], loaded_by=started)
+    assert names is None and why == "its source file changed after the program started"
+    # Review of #104: a file copied over it with an older mtime (`cp -p`) is changed too.
+    os.utime(path, (started - 3600, started - 3600))
+    names, why = classify_names(path, "shadow", 7, NAMES, ["n"], loaded_by=started)
     assert names is None and why == "its source file changed after the program started"
 
 
+def test_the_index_keeps_no_syntax_tree_and_is_bounded_by_size(tmp_path, monkeypatch):
+    # Review of #104: each cached parse of a 3.9 MB module held about 1.4 GB.
+    import ast
+    import symtable
+
+    from peeky import python_scopes
+
+    monkeypatch.setattr(python_scopes, "_INDEX", python_scopes.OrderedDict())
+    monkeypatch.setattr(python_scopes, "_INDEX_BYTES", [0])
+    paths = []
+    for number in range(6):
+        path = tmp_path / f"m{number}.py"
+        path.write_text(SOURCE + "".join(f"\ndef f{i}(a):\n    return a\n" for i in range(50)))
+        paths.append(path)
+    assert classify_names(paths[0], "shadow", 7, NAMES)[1] is None
+    index, size = next(iter(python_scopes._INDEX.values()))
+    pending = [index]
+    while pending:
+        item = pending.pop()
+        assert not isinstance(item, (ast.AST, symtable.SymbolTable))
+        if isinstance(item, dict):
+            pending.extend([*item.keys(), *item.values()])
+        elif isinstance(item, (list, tuple, set, frozenset)):
+            pending.extend(item)
+    monkeypatch.setattr(python_scopes, "MAX_INDEX_BYTES", size * 3)
+    for path in paths:
+        assert classify_names(path, "shadow", 7, NAMES)[1] is None
+    assert len(python_scopes._INDEX) == 3 and python_scopes._INDEX_BYTES[0] <= size * 3
+    # A cached index is reused without parsing again.
+    monkeypatch.setattr(symtable, "symtable", None)
+    assert classify_names(paths[-1], "shadow", 7, NAMES)[1] is None
+
+
 def test_unreadable_or_unparsable_sources_prove_nothing(tmp_path):
-    assert shadowed_names(tmp_path / "gone.py", "f", 1)[1].startswith(
+    assert classify_names(tmp_path / "gone.py", "f", 1, NAMES)[1].startswith(
         "its source could not be read"
     )
     names, why = scope_of(tmp_path, "def f(:\n", "f", 1)
@@ -395,7 +590,7 @@ def test_inspect_and_get_text_name_the_frame_and_identities():
             {
                 "name": "Locals",
                 "variables": [
-                    {"name": "a", "type": "list", "value": "[1]", "identity": "list@8"},
+                    {"name": "a", "type": "list", "value": "[1]", "identity": 8},
                 ],
                 "truncated": True,
                 "total": 70,
@@ -405,13 +600,11 @@ def test_inspect_and_get_text_name_the_frame_and_identities():
     }
     text = _variables_text(snapshot)
     assert text.startswith("stopped at app.py:4 in normalize\nframe 1: main (app.py:9)\n")
-    assert "a: list = [1]  [id list@8]" in text
-    assert "and 69 more, not listed or readable" in text
+    assert "a: list = [1]  [id 8]" in text
+    assert "and 69 more, not listed (at most 50 per scope): `session get NAME`" in text
     assert "[Globals] (module globals, read-only)" in text
-    row = {"selector": "a", "type": "list", "value": "[1]", "identity": "list@8"}
-    assert _get_lines({**row, "scope": "globals"}) == [
-        "a: list = [1]  [id list@8]  [module global]"
-    ]
+    row = {"selector": "a", "type": "list", "value": "[1]", "identity": 8}
+    assert _get_lines({**row, "scope": "globals"}) == ["a: list = [1]  [id 8]  [module global]"]
     assert _read_frame({"frame": 1, "function": "main", "location": "app.py:9"}) == (
         "frame 1: main (app.py:9)"
     )
