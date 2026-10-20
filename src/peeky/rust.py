@@ -64,6 +64,52 @@ from peeky.rust_symbols import (
 
 DEPS = "target/debug/deps"
 MIR_DIR = "target/peeky-mir"
+_COLLAPSE = re.compile(r"\bcollapse_debuginfo\b")
+# Where a comment, string or char literal may start: `r"`/`br#"` only after a non-word.
+_LEXEME = re.compile(r"//|/\*|(?<!\w)b?r(#*)\"|\"|'")
+_BLOCK_EDGE = re.compile(r"/\*|\*/")
+_QUOTED = re.compile(r'"(?:[^"\\]|\\.)*"', re.DOTALL)
+_CHAR = re.compile(r"'(?:\\(?:u\{[0-9a-fA-F]{1,6}\}|x[0-9a-fA-F]{2}|.)|[^\\'\n])'")
+
+
+def without_comments(text):
+    """``text`` with its comments (`//`, nested `/* */`) blanked. Strings, raw strings
+    and char literals stay whole, so a `//` or `/*` inside one starts no comment; an
+    unterminated one keeps the rest."""
+    kept, at = [], 0
+    while (found := _LEXEME.search(text, at)) is not None:
+        start, token = found.start(), found[0]
+        if token == "//":
+            end = text.find("\n", start)
+            end = len(text) if end < 0 else end
+        elif token == "/*":
+            depth, end = 1, start + 2
+            while depth:
+                edge = _BLOCK_EDGE.search(text, end)
+                if edge is None:
+                    end = len(text)
+                    break
+                depth += 1 if edge[0] == "/*" else -1
+                end = edge.end()
+        else:
+            if token == "'":
+                literal = _CHAR.match(text, start)
+                end = literal.end() if literal else start + 1
+            elif token == '"':
+                literal = _QUOTED.match(text, start)
+                end = literal.end() if literal else len(text)
+            else:
+                close = text.find('"' + found[1], found.end())
+                end = len(text) if close < 0 else close + 1 + len(found[1])
+            kept.append(text[at:end])
+            at = end
+            continue
+        kept.append(text[at:start] + " ")
+        at = end
+    kept.append(text[at:])
+    return "".join(kept)
+
+
 # Cargo runs this for workspace crates only (RUSTC_WORKSPACE_WRAPPER). For the debugged
 # binary crate alone it adds the MIR the owned-local proof reads (rust_mir): no MIR
 # optimizations, so moves stay moves and blocks keep their names in the IR. Unstable
@@ -682,9 +728,12 @@ def owned_locals(workspace, artifacts, crate, ir, sources):
     )
     if not mir or not all(pattern.fullmatch(name) for name in mir):
         raise ValueError("Unexpected Rust MIR artifact")
+    # Any mention outside comments (`#[collapse_debuginfo]`, inside `cfg_attr`); a
+    # string naming it only counts too much.
     collapsed = any(
-        "collapse_debuginfo" in (Path(workspace) / name).read_text(errors="replace")
+        _COLLAPSE.search(text) and _COLLAPSE.search(without_comments(text))
         for name in sources
+        for text in [(Path(workspace) / name).read_text(errors="replace")]
     )
     return OwnedLocals(
         load_bodies(Path(workspace) / MIR_DIR, crate),
@@ -952,7 +1001,9 @@ class RustSession(NativeSession):
                 "probe); otherwise edit the source and run verify"
             )
 
-    def view_variable(self, variable, fetch, read=None, *, frame=None, top=False, innermost=False):
+    def view_variable(
+        self, variable, fetch, read=None, *, frame=None, top=False, innermost=False, stop=None
+    ):
         """Qualified views: containers read from memory, active enum variants; None
         leaves ordinary values unchanged.
 
@@ -979,6 +1030,35 @@ class RustSession(NativeSession):
         proofs = getattr(self, "owned", None)
         # An optimized build's line table cannot place a proof (#13): nothing is proven.
         unoptimized = self.target.opt_level == "0"
+        shown_path = ((frame or {}).get("source") or {}).get("path")
+        verdict = []
+
+        def reference_valid():
+            # #110, once per variable: True, False or None (see OwnedLocals).
+            if not verdict:
+                verdict.append(
+                    proofs.reference_valid(
+                        hashed[1],
+                        variable.get("name"),
+                        line,
+                        shown_path,
+                        breakpoint=stop == "breakpoint",
+                        column=(frame or {}).get("column"),
+                    )
+                )
+            return verdict[0]
+
+        if (
+            parameter
+            and innermost
+            and unoptimized
+            and hashed
+            and proofs is not None
+            and reference_valid() is False
+        ):
+            # A reference parameter whose target the frame dropped (`*v = new` between
+            # its drop and its store) is not read as a container either.
+            parameter = None
         owned = bool(
             hashed
             and innermost
@@ -1054,17 +1134,19 @@ class RustSession(NativeSession):
             # every binding is a reference, a raw pointer or a fn pointer (or an array of
             # them): a generic `T`, `Self` or `impl Trait` may be a Box.
             pointer = _holds_data_pointers(kind)
-            if (owning or (pointer and not plain)) and not (
-                innermost
-                and unoptimized
-                and hashed
-                and proofs.proven(
-                    hashed[1],
-                    variable.get("name"),
-                    line,
-                    ((frame or {}).get("source") or {}).get("path"),
-                )
-            ):
+            provable = innermost and unoptimized and hashed
+            gated = (owning or (pointer and not plain)) and not (
+                provable and proofs.proven(hashed[1], variable.get("name"), line, shown_path)
+            )
+            if not gated and provable:
+                # #110: a reference (or raw pointer, `&str`, a tuple holding one) outlives
+                # what it points into in scope, though not in use: it reads while the code
+                # still uses it ahead. A line breakpoint stops only where the line starts in
+                # each lexical block, at the frame's column (`stop`); a step or a pause can
+                # stop anywhere in it. What cannot be told (a site or local not understood)
+                # reads as before.
+                gated = reference_valid() is False
+            if gated:
                 # #101: a moved or dropped Box still holds its pointer, and LLDB would
                 # read the freed allocation as its fields. The pointer is shown; what it
                 # points at is not.

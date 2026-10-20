@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from peeky import rust_mir
 from peeky.cli import main
 
 MANIFEST = """[package]
@@ -1011,6 +1012,20 @@ async fn twin_b(q: &Pt) -> i64 {
     twin!(q)
 }
 
+fn dangling(q: &Pt) -> i64 {
+    let b = Box::new(Pt { x: 1, y: 2 });
+    let r = &*b;
+    let rp: *const Pt = &*b;
+    let v = vec![Pt { x: 3, y: 4 }];
+    let first = &v[0];
+    let total = r.x + first.y + q.x; // USED_REFS
+    std::hint::black_box(total); // LIVE_REFS
+    drop(b);
+    drop(v);
+    let again = churn();
+    std::hint::black_box(again + q.x + rp as usize as i64 * 0) // DANGLING_REFS
+}
+
 fn make() -> Box<dyn Debug> {
     Box::new(1u8)
 }
@@ -1092,6 +1107,7 @@ fn main() {
     let far = Pt { x: 41, y: 0 };
     println!("{} {}", nm_cross(1), macros::peer(&pts[0]));
     println!("{} {}", run_async(twin_a(&far)), run_async(twin_b(&far)));
+    println!("{}", dangling(&far));
     println!("{} {}", fat_params(Box::new(takes as fn(*const [u8])), Box::new(tables)), factories());
     println!("{} {} {:?} {} {}", a, b, r, closures(&[1, 2]), exported(&Pt { x: 10, y: 1 }, &[1, 2]));
 }
@@ -1225,6 +1241,30 @@ def test_generic_boxes_are_gated_and_non_owning_values_read(plain, capsys):
     )
     read = [row.get("value") for row in result["rows"] if row["selector"] == "b.x"]
     assert read and all(value in (None, "41") for value in read), result["rows"]
+    # #110: a reference or raw pointer into a dropped Box or Vec read freed memory
+    # through the address the Box's own row hid; a reference reads only where the code
+    # still uses it, a raw pointer never. A reference parameter's referent is outside
+    # the frame.
+    at = f"src/main.rs:{line_of(BOX_GENERIC, '// USED_REFS')}"
+    code, result = run(
+        capsys, "probe", str(plain), "--at", at, "--capture", "r.x,first.y,rp", "--quiet"
+    )
+    rows = result["rows"]
+    assert [row.get("value") for row in rows[:2]] == ["1", "4"], rows
+    assert rows[2].get("view") == "unproven", rows
+    # Past their last use with only arithmetic since, their targets still stand.
+    at = f"src/main.rs:{line_of(BOX_GENERIC, '// LIVE_REFS')}"
+    code, result = run(
+        capsys, "probe", str(plain), "--at", at, "--capture", "r.x,first.y", "--quiet"
+    )
+    assert [row.get("value") for row in result["rows"]] == ["1", "4"], result["rows"]
+    at = f"src/main.rs:{line_of(BOX_GENERIC, '// DANGLING_REFS')}"
+    code, result = run(
+        capsys, "probe", str(plain), "--at", at, "--capture", "r,rp,first,q.x", "--quiet"
+    )
+    rows = result["rows"]
+    assert [row.get("view") for row in rows[:3]] == ["unproven"] * 3, rows
+    assert rows[3].get("value") == "41", rows
     at = f"src/main.rs:{line_of(BOX_GENERIC, '// LIVE_ARRAY')}"
     code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "arr[0].x", "--quiet")
     assert result["rows"][0].get("value") == "1", result["rows"]
@@ -1377,6 +1417,1190 @@ def test_an_optimized_build_never_reads_a_box(plain):
     result = run_probe(plain, Probe("src/main.rs", line, ("r2.x",)), adapter=target)
     assert result["rows"][0].get("value") in ("41", None), result["rows"]
     assert "view" not in result["rows"][0], result["rows"]
+
+
+REFERENCES = """use std::collections::HashMap;
+
+#[derive(Debug)]
+pub struct Pt {
+    x: i64,
+    y: i64,
+}
+
+pub struct S {
+    a: i64,
+    b: Box<Pt>,
+}
+
+pub struct Raw {
+    p: *const Pt,
+}
+
+pub struct Named<'a> {
+    pt: &'a Pt,
+    label: String,
+}
+
+#[inline(never)]
+fn churn() -> i64 {
+    Box::leak(Box::new(Pt { x: 777, y: 888 })).x + Box::leak(Box::new([777i64; 4]))[0]
+}
+
+fn field_box() -> i64 {
+    let s = S { a: 1, b: Box::new(Pt { x: 7, y: 8 }) };
+    let r: &Pt = &*s.b;
+    let k = r.x + s.a;
+    drop(s);
+    k + churn() // FIELD_BOX
+}
+
+fn vec_box() -> i64 {
+    let vb = vec![Box::new(Pt { x: 7, y: 8 })];
+    let r: &Pt = &*vb[0];
+    let k = r.x;
+    drop(vb);
+    k + churn() // VEC_BOX
+}
+
+fn ref_ref() -> i64 {
+    let b = Box::new(Pt { x: 7, y: 8 });
+    let bb = &b;
+    let r: &Pt = &**bb;
+    let k = r.x;
+    drop(b);
+    k + churn() // REF_REF
+}
+
+fn reassigned() -> i64 {
+    let mut b = Box::new(Pt { x: 1, y: 2 });
+    let r = &*b;
+    let k = r.x;
+    b = Box::new(Pt { x: 5, y: 6 });
+    k + b.x + churn() // REASSIGNED
+}
+
+fn pushed() -> i64 {
+    let mut v = vec![Pt { x: 1, y: 2 }];
+    let first = &v[0];
+    let k = first.x;
+    v.push(Pt { x: 3, y: 4 });
+    k + churn() // PUSHED
+}
+
+fn mut_param(v: &mut Vec<Pt>) -> i64 {
+    let first = &v[0];
+    let k = first.x;
+    v.push(Pt { x: 3, y: 4 });
+    k + churn() // MUT_PARAM
+}
+
+fn carried() -> i64 {
+    let b = Box::new(Pt { x: 7, y: 8 });
+    let raw = Raw { p: &*b };
+    let p = raw.p;
+    drop(b);
+    churn() + p as usize as i64 * 0 // CARRIED
+}
+
+fn in_vec() -> i64 {
+    let b = Box::new(Pt { x: 7, y: 8 });
+    let mut refs: Vec<&Pt> = Vec::new();
+    refs.push(&*b);
+    let r = refs[0];
+    let k = r.x;
+    drop(refs);
+    drop(b);
+    k + churn() // IN_VEC
+}
+
+fn text() -> usize {
+    let s = String::from("hello there");
+    let t: &str = s.as_str();
+    let n = t.len();
+    drop(s);
+    n + churn() as usize // TEXT
+}
+
+fn tupled() -> i64 {
+    let b = Box::new(Pt { x: 7, y: 8 });
+    let t = (&*b, 5);
+    let k = t.0.x + t.1;
+    drop(b);
+    k + churn() // TUPLED
+}
+
+fn reads(v: &[Pt], label: String, grid: &HashMap<(i64, i64), Pt>, m: &HashMap<String, Pt>, n: i64) -> i64 {
+    let cell = grid.get(&(1, 2)).unwrap();
+    let hit = m.get(&format!("k{}", n)).unwrap();
+    let found = v.iter().find(move |p| p.x == label.len() as i64 + 2).unwrap();
+    let named = Named { pt: &v[0], label: String::from("a") };
+    let r = named.pt;
+    cell.x + hit.x + found.x + r.x + named.label.len() as i64 // READS
+}
+
+fn loop_back() -> i64 {
+    let mut v = vec![Pt { x: 1, y: 2 }];
+    let first = &v[0];
+    let k = first.x;
+    let mut t = k;
+    for i in 0..3 {
+        t += churn() + i; // LOOP_BACK
+        v.push(Pt { x: 3, y: 4 });
+    }
+    t
+}
+
+fn tuple_drop() -> i64 {
+    let b = Box::new(Pt { x: 7, y: 8 });
+    let t = (&*b, String::from("label"));
+    let k = t.0.x;
+    drop(b);
+    k + churn() // TUPLE_DROP
+}
+
+fn score(p: &Pt) -> i64 {
+    p.x * 2 // IN_SCORE
+}
+
+fn last_uses(items: &[Pt]) -> i64 {
+    let label = "label";
+    let mut total = label.len() as i64;
+    for item in items {
+        total += item.y;
+        println!("{}", item.x); // PRINTED
+    }
+    for item in items {
+        total += score(item); // SCORED
+    }
+    total + churn() // LITERAL
+}
+
+fn dead_but_fine() -> i64 {
+    let b = Box::new(Pt { x: 7, y: 8 });
+    let r = &*b;
+    let k = r.x;
+    let m = k * 2;
+    m + b.y // DEAD_FINE
+}
+
+fn main() {
+    let mut v = vec![Pt { x: 3, y: 4 }];
+    let mut grid = HashMap::new();
+    grid.insert((1, 2), Pt { x: 7, y: 0 });
+    let mut m = HashMap::new();
+    m.insert("k1".to_string(), Pt { x: 9, y: 0 });
+    println!("{} {} {} {} {}", field_box(), vec_box(), ref_ref(), reassigned(), pushed());
+    println!("{} {} {} {} {}", mut_param(&mut v), carried(), in_vec(), text(), tupled());
+    println!("{} {}", reads(&v, String::from("x"), &grid, &m, 1), dead_but_fine());
+    println!("{} {}", loop_back(), tuple_drop());
+    let w = vec![Pt { x: 5, y: 6 }];
+    println!("{}", last_uses(&w));
+}
+"""
+
+
+@pytest.mark.timeout(600)
+def test_references_read_only_while_their_target_stands(plain, capsys):
+    # #110: a reference or raw pointer into a moved, dropped, reassigned or reallocated
+    # value read freed memory. A reference now reads while the code still uses it (at a
+    # breakpoint, on its last line too); otherwise only its address shows.
+    (plain / "src/main.rs").write_text(REFERENCES)
+    gated = {
+        "FIELD_BOX": "r",
+        "VEC_BOX": "r",
+        "REF_REF": "r",
+        "REASSIGNED": "r",
+        "PUSHED": "first",
+        "MUT_PARAM": "first",
+        "CARRIED": "p",
+        "IN_VEC": "r",
+        "TEXT": "t",
+        "TUPLED": "t",
+    }
+    for marker, name in gated.items():
+        at = f"src/main.rs:{line_of(REFERENCES, '// ' + marker)}"
+        code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", name, "--quiet")
+        assert code == 0, (marker, result.get("error"))
+        row = result["rows"][0]
+        assert row.get("view") == "unproven", (marker, row)
+        assert "777" not in str(row.get("value")), (marker, row)
+    at = f"src/main.rs:{line_of(REFERENCES, '// READS')}"
+    code, result = run(
+        capsys, "probe", str(plain), "--at", at, "--capture", "cell.x,hit.x,found.x,r.x", "--quiet"
+    )
+    assert [row.get("value") for row in result["rows"]] == ["7", "9", "3", "3"], result["rows"]
+    # Past its last use with only arithmetic since, what it points into still stands.
+    at = f"src/main.rs:{line_of(REFERENCES, '// DEAD_FINE')}"
+    code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "r.x", "--quiet")
+    assert result["rows"][0].get("value") == "7", result["rows"]
+    # Verification of #110: a loop's later iteration reallocated the buffer a reference
+    # still pointed into, and drop glue (`t` beside a String) counted as a use.
+    at = f"src/main.rs:{line_of(REFERENCES, '// LOOP_BACK')}"
+    code, result = run(
+        capsys, "probe", str(plain), "--at", at, "--capture", "first", "--hits", "3", "--quiet"
+    )
+    assert all(row.get("view") == "unproven" for row in result["rows"]), result["rows"]
+    at = f"src/main.rs:{line_of(REFERENCES, '// TUPLE_DROP')}"
+    code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "t", "--quiet")
+    assert result["rows"][0].get("view") == "unproven", result["rows"]
+    # A breakpoint stops where its line starts, before the line's own code: a last use
+    # there (an argument) reads. A literal `&str` always does.
+    at = f"src/main.rs:{line_of(REFERENCES, '// SCORED')}"
+    code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "item.x", "--quiet")
+    assert result["rows"][0].get("value") == "5", result["rows"]
+    # `println!` declares variables of its own: LLDB stops in each of its lexical blocks,
+    # at one column, and after its first calls the stops cannot be told from the first.
+    at = f"src/main.rs:{line_of(REFERENCES, '// PRINTED')}"
+    code, result = run(
+        capsys, "probe", str(plain), "--at", at, "--capture", "item.x", "--hits", "3", "--quiet"
+    )
+    assert all(row.get("value") in (None, "5") for row in result["rows"]), result["rows"]
+    at = f"src/main.rs:{line_of(REFERENCES, '// LITERAL')}"
+    code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "label", "--quiet")
+    assert result["rows"][0].get("view") != "unproven", result["rows"]
+    # `step --out` stops inside the line, after `score(item)` returned: past the last use.
+    at = f"src/main.rs:{line_of(REFERENCES, '// IN_SCORE')}"
+    assert main(["session", "start", str(plain), "--at", at]) == 0
+    capsys.readouterr()
+    try:
+        assert main(["session", "step", "--out", "--json"]) == 0
+        state = json.loads(capsys.readouterr().out)
+        scored = line_of(REFERENCES, "// SCORED")
+        assert str(state.get("location")).endswith(f"main.rs:{scored}"), state
+        assert main(["session", "inspect", "--json"]) == 0
+        snapshot = json.loads(capsys.readouterr().out)
+    finally:
+        main(["session", "close"])
+    variables = {v["name"]: v for scope in snapshot["scopes"] for v in scope["variables"]}
+    assert variables["item"].get("view") == "unproven", variables["item"]
+
+
+REVIEWED_REFS = """use std::ptr::NonNull;
+
+#[derive(Debug, Clone, Copy)]
+pub struct Pt {
+    x: i64,
+    y: i64,
+}
+
+#[inline(never)]
+fn churn() -> i64 {
+    Box::leak(Box::new(Pt { x: 777, y: 888 })).x + Box::leak(Box::new([777i64; 4]))[0]
+}
+
+fn consume(b: Box<Pt>) -> i64 {
+    b.y
+}
+
+fn asserted() -> i64 {
+    let b = Box::new(Pt { x: 5, y: 6 });
+    let r = &*b;
+    let k = r.x;
+    assert_eq!(consume(b), 6); // R3_ASSERTED
+    k
+}
+
+#[inline(always)]
+fn grow(v: &mut Vec<Pt>) -> i64 {
+    v.push(Pt { x: 3, y: 4 });
+    v.push(Pt { x: 5, y: 6 });
+    churn()
+}
+
+fn inlined() -> i64 {
+    let mut v = vec![Pt { x: 1, y: 2 }];
+    let first = &v[0];
+    let k = first.x;
+    let n = grow(&mut v) + k; // R3_INLINED
+    n
+}
+
+fn chained() -> usize {
+    let v = vec![Pt { x: 1, y: 2 }];
+    let w = vec![1u8; 3];
+    let r = &v[0];
+    let k = r.x;
+    drop(v);
+    churn();
+    let n = w
+        .len(); // R3_CHAINED
+    n + k as usize
+}
+
+fn shadowed() -> i64 {
+    let mut k = 0;
+    {
+        let a = Box::new(Pt { x: 1, y: 2 });
+        let r = &*a;
+        k += r.x;
+    }
+    let b = Box::new(Pt { x: 3, y: 4 });
+    let r = &*b;
+    k += r.x;
+    drop(b);
+    churn();
+    println!("{}", k); // R3_SHADOWED
+    k
+}
+
+fn swapped_in() -> usize {
+    let owned = String::from("hello world, long enough to be heap");
+    let mut s = "literal";
+    {
+        let p = &mut s;
+        *p = owned.as_str();
+    }
+    let n = s.len();
+    drop(owned);
+    let junk = churn();
+    n + junk as usize // R3_SWAPPED_IN
+}
+
+fn non_null() -> i64 {
+    let b = Box::new(Pt { x: 5, y: 6 });
+    let p = NonNull::from(&*b);
+    let k = unsafe { p.as_ref().x };
+    drop(b);
+    let junk = churn();
+    k + junk // R3_NON_NULL
+}
+
+fn reused() -> i64 {
+    let dummy = Pt { x: 0, y: 0 };
+    let mut r = &dummy;
+    let mut total = r.x;
+    for i in 0..3 {
+        let p = Pt { x: i + 10, y: i };
+        if i == 0 {
+            r = &p;
+            total += r.x;
+        }
+        total += churn() + p.y; // R3_REUSED
+    }
+    total
+}
+
+fn from_argument(items: &[Pt]) -> i64 {
+    let first = &items[0];
+    let base = first.x;
+    let extra = churn();
+    base + extra // R3_FROM_ARGUMENT
+}
+
+fn at_local() -> i64 {
+    let p = Pt { x: 1, y: 2 };
+    let r = &p;
+    let k = r.x;
+    let n = churn();
+    k + n + p.y // R3_AT_LOCAL
+}
+
+fn main() {
+    let v = vec![Pt { x: 3, y: 4 }];
+    println!("{} {} {} {}", asserted(), inlined(), chained(), shadowed());
+    println!("{} {} {}", swapped_in(), non_null(), reused());
+    println!("{} {}", from_argument(&v), at_local());
+}
+"""
+
+
+@pytest.mark.timeout(600)
+def test_references_read_only_where_their_stop_is_told_apart(plain, capsys):
+    # Verification of #110: where a breakpoint stops was guessed from the MIR alone, and
+    # wrong where a line has several lexical blocks (`assert_eq!`'s), an inlined call,
+    # or code on a method's own line; a name bound twice on a macro line, a literal
+    # `&str` written through `&mut`, and `NonNull` read freed memory. The stop's column
+    # and the IR's calls now place it.
+    (plain / "src/main.rs").write_text(REVIEWED_REFS)
+
+    def probe(marker, capture, hits="1"):
+        at = f"src/main.rs:{line_of(REVIEWED_REFS, '// R3_' + marker)}"
+        code, result = run(
+            capsys, "probe", str(plain), "--at", at, "--capture", capture, "--hits", hits, "--quiet"
+        )
+        assert code == 0, (marker, result.get("error"))
+        return result["rows"]
+
+    # Before `consume(b)` the Box stands; inside the macro's own block, after it, not.
+    rows = probe("ASSERTED", "r", "2")
+    assert len(rows) == 2 and rows[1].get("view") == "unproven", rows
+    assert rows[0].get("view") != "unproven", rows
+    assert probe("ASSERTED", "r.x")[0].get("value") == "5"
+    for marker, name, hits in (
+        ("INLINED", "first", "1"),
+        ("CHAINED", "r", "1"),
+        ("SHADOWED", "r", "3"),
+        ("SWAPPED_IN", "s", "1"),
+        ("NON_NULL", "p", "1"),
+        ("REUSED", "r", "3"),
+    ):
+        rows = probe(marker, name, hits)
+        assert rows and all(row.get("view") == "unproven" for row in rows), (marker, rows)
+    # Into a shared argument (frozen by the caller's loan), and at a live local.
+    assert probe("FROM_ARGUMENT", "first.x")[0].get("value") == "3"
+    assert probe("AT_LOCAL", "r.x")[0].get("value") == "1"
+
+
+COLLAPSED_REFS = """#[derive(Debug, Clone, Copy)]
+pub struct Pt {
+    x: i64,
+    y: i64,
+}
+
+#[inline(never)]
+fn churn() -> i64 {
+    Box::leak(Box::new(Pt { x: 777, y: 888 })).x + Box::leak(Box::new([777i64; 4]))[0]
+}
+
+#[inline(never)]
+extern "C" fn consume_c(b: Box<Pt>) -> i64 {
+    b.y
+}
+
+#[inline(never)]
+extern "C" fn churn_c(n: i64) -> i64 {
+    churn() + n
+}
+
+#[collapse_debuginfo(yes)]
+macro_rules! eat {
+    ($b:expr) => {{
+        let n = consume_c($b);
+        let t = churn_c(n);
+        t
+    }};
+}
+
+fn collapsed() -> i64 {
+    let b = Box::new(Pt { x: 5, y: 6 });
+    let r: &Pt = &*b;
+    let z = churn();
+    let k = r.x;
+    let t = eat!(b); // M4_COLLAPSED
+    k + t + z
+}
+
+fn main() {
+    println!("{}", collapsed());
+}
+"""
+
+MACRO_FILE = """macro_rules! eat {
+    ($b:expr) => {{
+        let n = crate::consume($b);
+        let t = crate::churn(); // M4_IN_MACRO
+        n + t
+    }};
+}
+"""
+
+PARAMETER_REFS = """// Mentions collapse_debuginfo, but has no such attribute.
+#[macro_use]
+mod macros;
+
+#[derive(Debug, Clone, Copy)]
+pub struct Pt {
+    x: i64,
+    y: i64,
+}
+
+#[inline(never)]
+pub fn churn() -> i64 {
+    Box::leak(Box::new(Pt { x: 777, y: 888 })).x + Box::leak(Box::new([777i64; 4]))[0]
+}
+
+#[inline(never)]
+pub fn consume(b: Box<Pt>) -> i64 {
+    b.y
+}
+
+fn other_file() -> i64 {
+    let b = Box::new(Pt { x: 5, y: 6 });
+    let r: &Pt = &*b;
+    let k = r.x;
+    let t = eat!(b);
+    k + t
+}
+
+struct Counter {
+    count: i64,
+}
+
+impl Counter {
+    fn tick(&mut self, n: i64) -> i64 {
+        self.count += n;
+        let z = churn();
+        z // M4_TICK
+    }
+}
+
+fn bump(p: &mut Pt, n: i64) -> i64 {
+    p.x += n;
+    let z = churn();
+    z // M4_BUMP
+}
+
+struct View<'a> {
+    p: &'a Pt,
+}
+
+fn view(v: View<'_>, pair: (&Pt, i64)) -> i64 {
+    let k = v.p.x + pair.0.y;
+    let z = churn();
+    z + k // M4_VIEW
+}
+
+fn with_param(p: &Pt, b: Box<Pt>) -> i64 {
+    let t = eat!(b);
+    t + p.x
+}
+
+fn score(p: &Pt) -> i64 {
+    p.x * 2
+}
+
+fn scored(items: &[Pt]) -> i64 {
+    let mut total = 0;
+    for item in items {
+        total += score(item); // M4_SCORED
+    }
+    total
+}
+
+fn main() {
+    let mut c = Counter { count: 1 };
+    let mut p = Pt { x: 5, y: 6 };
+    let q = Pt { x: 7, y: 8 };
+    println!("{} {} {}", c.tick(2), bump(&mut p, 3), view(View { p: &q }, (&q, 1)));
+    println!("{}", other_file());
+    println!("{} {}", with_param(&q, Box::new(Pt { x: 5, y: 6 })), scored(&[q]));
+}
+"""
+
+
+@pytest.mark.timeout(600)
+def test_references_in_collapsed_and_other_file_macros_and_parameters(plain, capsys):
+    # Verification of #110 (round 4): a same-file macro with `#[collapse_debuginfo]` puts
+    # its code on the invoking line while its statements keep the macro's lines; a stop in
+    # a macro from another module is in another file than its function. Both read freed
+    # memory. A parameter written through, or holding references by value, was hidden.
+    at = f"src/main.rs:{line_of(COLLAPSED_REFS, '// M4_COLLAPSED')}"
+    # Round 6: inside `cfg_attr` too.
+    attributes = (
+        "#[collapse_debuginfo(yes)]",
+        "#[cfg_attr(debug_assertions, collapse_debuginfo(yes))]",
+        # Round 7: after a comment on the same line.
+        "/* eat collapses */ #[collapse_debuginfo(yes)]",
+    )
+    for attribute in attributes:
+        (plain / "src/main.rs").write_text(COLLAPSED_REFS.replace(attributes[0], attribute))
+        code, result = run(
+            capsys, "probe", str(plain), "--at", at, "--capture", "r", "--hits", "3", "--quiet"
+        )
+        rows = result["rows"]
+        assert rows and all(row.get("view") == "unproven" for row in rows), (attribute, rows)
+    (plain / "src/main.rs").write_text(PARAMETER_REFS)
+    (plain / "src/macros.rs").write_text(MACRO_FILE)
+    at = f"src/macros.rs:{line_of(MACRO_FILE, '// M4_IN_MACRO')}"
+    code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "r", "--quiet")
+    assert result["rows"][0].get("view") == "unproven", result["rows"]
+    # Round 5: a reference parameter the frame never reassigns is the caller's there too.
+    code, result = run(
+        capsys, "probe", str(plain), "--at", at, "--capture", "p.x", "--hits", "2", "--quiet"
+    )
+    assert "7" in [row.get("value") for row in result["rows"]], result["rows"]
+    for marker, capture, value in (
+        ("M4_TICK", "self.count", "3"),
+        ("M4_BUMP", "p.x", "8"),
+        ("M4_VIEW", "v.p.x", "7"),
+        ("M4_VIEW", "pair.__0.y", "8"),
+        # A comment naming the attribute is not the attribute (round 5).
+        ("M4_SCORED", "item.x", "7"),
+    ):
+        at = f"src/main.rs:{line_of(PARAMETER_REFS, '// ' + marker)}"
+        code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", capture, "--quiet")
+        assert result["rows"][0].get("value") == value, (marker, result["rows"])
+
+
+DROPPED_INSIDE = """#[derive(Debug, Clone, Copy)]
+pub struct Pt {
+    x: i64,
+    y: i64,
+}
+
+#[derive(Debug)]
+pub struct Res {
+    x: i64,
+}
+
+impl Drop for Res {
+    fn drop(&mut self) {
+        churn(); // M5_IN_DROP
+    }
+}
+
+#[inline(never)]
+fn churn() -> i64 {
+    Box::leak(Box::new(Pt { x: 777, y: 888 })).x + Box::leak(Box::new([777i64; 4]))[0]
+}
+
+#[inline(never)]
+fn consume(b: Box<Pt>) -> i64 {
+    b.y
+}
+
+struct Node {
+    tag: i64,
+    data: Box<Pt>,
+}
+
+fn moved_out() -> i64 {
+    let bx = Box::new(Node { tag: 1, data: Box::new(Pt { x: 5, y: 6 }) });
+    let d = bx.data;
+    let n = consume(d);
+    let z = churn() + n;
+    z + bx.tag // M5_MOVED_OUT
+}
+
+fn replace_vec(v: &mut Vec<Res>, n: i64) -> i64 {
+    let k = v[0].x;
+    *v = vec![Res { x: n }]; // M5_REPLACE
+    k + v[0].x
+}
+
+fn reborrowed(v: &mut Vec<Res>, n: i64) -> i64 {
+    let w = &mut *v;
+    *w = vec![Res { x: n }]; // M6_REBORROW
+    v[0].x
+}
+
+struct Named {
+    tag: i64,
+    name: String,
+    data: Box<Pt>,
+}
+
+fn replaced_fields() -> i64 {
+    let mut bx = Box::new(Named { tag: 1, name: String::from("a"), data: Box::new(Pt { x: 5, y: 6 }) });
+    bx.name = String::from("bee");
+    bx.data = Box::new(Pt { x: 8, y: 9 });
+    let z = churn();
+    z + bx.tag // M6_REPLACED
+}
+
+fn moved_then_replaced() -> i64 {
+    let mut bx = Box::new(Named { tag: 1, name: String::from("a"), data: Box::new(Pt { x: 5, y: 6 }) });
+    let d = bx.data;
+    let n = consume(d);
+    bx.name = String::from("bee");
+    let z = churn() + n;
+    z + bx.tag // M6_MOVED_THEN
+}
+
+fn main() {
+    let mut v = vec![Res { x: 5 }, Res { x: 7 }];
+    println!("{}", replace_vec(&mut v, 9));
+    let mut w = vec![Res { x: 3 }];
+    println!("{}", reborrowed(&mut w, 4));
+    println!("{} {} {}", moved_out(), replaced_fields(), moved_then_replaced());
+    std::mem::forget(v);
+    std::mem::forget(w);
+}
+"""
+
+
+@pytest.mark.timeout(600)
+def test_references_into_moved_box_contents_and_mid_replacement_values(plain, capsys):
+    # Verification of #110 (round 5): the built MIR moves out of a Box's contents through
+    # a raw pointer made from it, so the Box looked initialized after `let d = bx.data;`;
+    # and between `drop((*v))` and the store of `*v = new`, `v` points at a dropped value.
+    (plain / "src/main.rs").write_text(DROPPED_INSIDE)
+    at = f"src/main.rs:{line_of(DROPPED_INSIDE, '// M5_MOVED_OUT')}"
+    code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "bx", "--quiet")
+    assert result["rows"][0].get("view") == "unproven", result["rows"]
+    replace = line_of(DROPPED_INSIDE, "// M5_REPLACE")
+    at = f"src/main.rs:{line_of(DROPPED_INSIDE, '// M5_IN_DROP')}"
+    assert main(["session", "start", str(plain), "--at", at]) == 0
+    capsys.readouterr()
+    try:
+        state = {}
+        for _ in range(8):
+            main(["session", "step", "--out", "--json"])
+            state = json.loads(capsys.readouterr().out)
+            if str(state.get("location")).endswith(f"main.rs:{replace}"):
+                break
+        assert str(state.get("location")).endswith(f"main.rs:{replace}"), state
+        assert main(["session", "inspect", "--json"]) == 0
+        snapshot = json.loads(capsys.readouterr().out)
+    finally:
+        main(["session", "close"])
+        capsys.readouterr()
+    variables = {v["name"]: v for scope in snapshot["scopes"] for v in scope["variables"]}
+    assert variables["v"].get("view") == "unproven", variables["v"]
+    # Round 6: a drop through a reborrow of it (`let w = &mut *v; *w = new`) too. The
+    # third drop is the reborrowed vector's (`replace_vec` dropped two).
+    reborrow = line_of(DROPPED_INSIDE, "// M6_REBORROW")
+    assert main(["session", "start", str(plain), "--at", at]) == 0
+    capsys.readouterr()
+    try:
+        for _ in range(2):
+            main(["session", "continue"])
+            capsys.readouterr()
+        for _ in range(8):
+            main(["session", "step", "--out", "--json"])
+            state = json.loads(capsys.readouterr().out)
+            if str(state.get("location")).endswith(f"main.rs:{reborrow}"):
+                break
+        assert str(state.get("location")).endswith(f"main.rs:{reborrow}"), state
+        assert main(["session", "inspect", "--json"]) == 0
+        snapshot = json.loads(capsys.readouterr().out)
+    finally:
+        main(["session", "close"])
+        capsys.readouterr()
+    variables = {v["name"]: v for scope in snapshot["scopes"] for v in scope["variables"]}
+    assert variables["v"].get("view") == "unproven", variables["v"]
+    # A field dropped and replaced through the Box leaves it whole; one moved out
+    # before another is replaced does not.
+    at = f"src/main.rs:{line_of(DROPPED_INSIDE, '// M6_REPLACED')}"
+    code, result = run(
+        capsys, "probe", str(plain), "--at", at, "--capture", "bx.tag,bx.data.x", "--quiet"
+    )
+    assert [row.get("value") for row in result["rows"]] == ["1", "8"], result["rows"]
+    at = f"src/main.rs:{line_of(DROPPED_INSIDE, '// M6_MOVED_THEN')}"
+    code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "bx", "--quiet")
+    assert result["rows"][0].get("view") == "unproven", result["rows"]
+
+
+BRANCHES = "\n".join(
+    f"            if total > i {{ total += {n}; }} else {{ total -= j; }}" for n in range(700)
+)
+
+ALIASED_DROPS = """#[derive(Debug, Clone, Copy)]
+pub struct Pt {
+    x: i64,
+    y: i64,
+}
+
+#[derive(Debug)]
+pub struct Res {
+    x: i64,
+}
+
+impl Drop for Res {
+    fn drop(&mut self) {
+        churn(); // M7_IN_DROP
+    }
+}
+
+#[inline(never)]
+fn churn() -> i64 {
+    Box::leak(Box::new(Pt { x: 777, y: 888 })).x + Box::leak(Box::new([777i64; 4]))[0]
+}
+
+#[inline(never)]
+fn consume(b: Box<Pt>) -> i64 {
+    b.y
+}
+
+struct Inner {
+    data: Box<Pt>,
+}
+
+struct Outer {
+    tag: i64,
+    inner: Box<Inner>,
+}
+
+fn nested_move() -> i64 {
+    let bx = Box::new(Outer { tag: 1, inner: Box::new(Inner { data: Box::new(Pt { x: 5, y: 6 }) }) });
+    let d = bx.inner.data;
+    let n = consume(d);
+    let z = churn() + n;
+    z + bx.tag // M7_NESTED_MOVE
+}
+
+struct Held {
+    data: Box<Res>,
+}
+
+struct Holder {
+    tag: i64,
+    held: Box<Held>,
+}
+
+fn nested_replace(n: i64) -> i64 {
+    let mut bx = Box::new(Holder { tag: 1, held: Box::new(Held { data: Box::new(Res { x: 5 }) }) });
+    bx.held.data = Box::new(Res { x: n }); // M7_NESTED_REPLACE
+    bx.tag + bx.held.data.x
+}
+
+struct Ctx<'a> {
+    v: &'a mut Vec<Res>,
+}
+
+fn via_struct(v: &mut Vec<Res>, n: i64) -> i64 {
+    let k = v[0].x;
+    let c = Ctx { v: &mut *v };
+    *c.v = vec![Res { x: n }]; // M7_VIA_STRUCT
+    k
+}
+
+#[inline(never)]
+fn id_mut<T>(x: &mut T) -> &mut T {
+    x
+}
+
+fn via_call(v: &mut Vec<Res>, n: i64) -> i64 {
+    let k = v[0].x;
+    let w = id_mut(v);
+    *w = vec![Res { x: n }]; // M7_VIA_CALL
+    k
+}
+
+fn big(n: i64, p: &Pt) -> i64 {
+    let mut total = 0i64;
+    let b = Box::new(Pt { x: 5, y: 6 });
+    let r: &Pt = &*b;
+    let k = r.x;
+    let m = consume(b);
+    for i in 0..n {
+        for j in 0..n {
+BRANCHES
+        }
+    }
+    let z = churn();
+    total + k + m + z + p.y // M7_BIG
+}
+
+fn main() {
+    let mut s = vec![Res { x: 3 }];
+    let mut t = vec![Res { x: 4 }];
+    println!("{}", via_struct(&mut s, 9));
+    println!("{}", via_call(&mut t, 9));
+    println!("{}", nested_replace(9));
+    println!("{} {}", nested_move(), big(2, &Pt { x: 7, y: 8 }));
+    std::mem::forget(s);
+    std::mem::forget(t);
+}
+""".replace("BRANCHES", BRANCHES)
+
+
+def _stepped_out_to(plain, capsys, at, continues, line, file="main.rs"):
+    """The variables at ``line`` of ``file`` after stopping at ``at``, continuing
+    ``continues`` times and stepping out until there."""
+    assert main(["session", "start", str(plain), "--at", at]) == 0
+    capsys.readouterr()
+    try:
+        for _ in range(continues):
+            main(["session", "continue"])
+            capsys.readouterr()
+        state = {}
+        for _ in range(8):
+            main(["session", "step", "--out", "--json"])
+            state = json.loads(capsys.readouterr().out)
+            if str(state.get("location")).endswith(f"{file}:{line}"):
+                break
+        assert str(state.get("location")).endswith(f"{file}:{line}"), state
+        assert main(["session", "inspect", "--json"]) == 0
+        snapshot = json.loads(capsys.readouterr().out)
+    finally:
+        main(["session", "close"])
+        capsys.readouterr()
+    return {v["name"]: v for scope in snapshot["scopes"] for v in scope["variables"]}
+
+
+@pytest.mark.timeout(600)
+def test_references_through_nested_boxes_struct_fields_calls_and_big_functions(
+    plain, capsys, monkeypatch
+):
+    # Verification of #110 (round 7): a Box inside a Box is moved out of or dropped
+    # through a copy of it; a `&mut` stored in a struct or returned by a call aliases the
+    # reference it came from; and the dataflow's budget gave up in a big function.
+    (plain / "src/main.rs").write_text(ALIASED_DROPS)
+    at = f"src/main.rs:{line_of(ALIASED_DROPS, '// M7_IN_DROP')}"
+    for continues, marker, names in (
+        (0, "M7_VIA_STRUCT", ("v", "c")),
+        (1, "M7_VIA_CALL", ("v", "w")),
+        (2, "M7_NESTED_REPLACE", ("bx",)),
+    ):
+        line = line_of(ALIASED_DROPS, "// " + marker)
+        variables = _stepped_out_to(plain, capsys, at, continues, line)
+        for name in names:
+            assert variables[name].get("view") == "unproven", (marker, variables[name])
+    for marker, capture in (("M7_NESTED_MOVE", "bx"), ("M7_BIG", "r")):
+        at = f"src/main.rs:{line_of(ALIASED_DROPS, '// ' + marker)}"
+        code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", capture, "--quiet")
+        assert result["rows"][0].get("view") == "unproven", (marker, result["rows"])
+    # A function whose dataflow still runs past its budget gates its references; a
+    # shared reference parameter is the caller's and reads.
+    monkeypatch.setattr(rust_mir, "MAX_ITERATIONS", 1)
+    monkeypatch.setattr(rust_mir, "STEPS_PER_BLOCK", 1)
+    code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "r,p.x", "--quiet")
+    rows = result["rows"]
+    assert [row.get("view") for row in rows][:1] == ["unproven"], rows
+    assert rows[1].get("value") == "7", rows
+
+
+TWINS_AND_CELLS = """use std::cell::{Cell, RefCell};
+#[macro_use]
+mod macros;
+
+#[derive(Debug, Clone, Copy)]
+pub struct Pt {
+    x: i64,
+    y: i64,
+}
+
+#[derive(Debug)]
+pub struct Res {
+    x: i64,
+}
+
+impl Drop for Res {
+    fn drop(&mut self) {
+        churn(); // M8_IN_DROP
+    }
+}
+
+#[inline(never)]
+fn churn() -> i64 {
+    Box::leak(Box::new(Pt { x: 777, y: 888 })).x + Box::leak(Box::new([777i64; 4]))[0]
+}
+
+#[inline(never)]
+fn consume(b: Box<Pt>) -> i64 {
+    b.y
+}
+
+macro_rules! imp {
+    ($t:ident) => {
+        impl $t {
+            fn get(&self) -> i64 {
+                let b = Box::new(Pt { x: 5, y: 6 });
+                let r: &Pt = &*b;
+                let k = r.x;
+                let n = consume(b);
+                let z = churn() + n;
+                z + k // M8_IMPL_TWIN
+            }
+        }
+    };
+}
+
+struct A;
+struct B;
+imp!(A);
+imp!(B);
+
+pub struct Holder {
+    tag: i64,
+    data: Box<Res>,
+}
+
+fn other_file_reset(h: &mut Holder, n: i64) -> i64 {
+    let k = h.data.x;
+    reset!(h, n);
+    k
+}
+
+fn other_file_cell(c: &RefCell<Vec<Res>>, n: i64) -> i64 {
+    let k = c.borrow()[0].x;
+    swap_in!(c, n);
+    k
+}
+
+fn same_file_cell(c: &RefCell<Vec<Res>>, n: i64) -> i64 {
+    let k = c.borrow()[0].x;
+    *c.borrow_mut() = vec![Res { x: n }]; // M8_SAME_CELL
+    k
+}
+
+fn via_swap(v: &mut Vec<Res>, other: &mut Vec<Res>, n: i64) -> i64 {
+    let k = v[0].x;
+    let mut slot: &mut Vec<Res> = other;
+    let mut w: &mut Vec<Res> = &mut *v;
+    std::mem::swap(&mut slot, &mut w);
+    *slot = vec![Res { x: n }]; // M9_VIA_SWAP
+    k
+}
+
+fn via_slot(v: &mut Vec<Res>, other: &mut Vec<Res>, n: i64) -> i64 {
+    let k = v[0].x;
+    let mut slot: &mut Vec<Res> = other;
+    {
+        let sr = &mut slot;
+        *sr = &mut *v;
+    }
+    *slot = vec![Res { x: n }]; // M9_VIA_SLOT
+    k
+}
+
+fn other_file_swap(h: &mut Holder, other: &mut Holder, n: i64) -> i64 {
+    let k = h.data.x;
+    swap_reset!(h, other, n);
+    k
+}
+
+fn via_cell(v: &mut Vec<Res>, other: &mut Vec<Res>, n: i64) -> i64 {
+    let k = v[0].x;
+    let c: Cell<&mut Vec<Res>> = Cell::new(other);
+    c.set(&mut *v);
+    let w = c.into_inner();
+    *w = vec![Res { x: n }]; // M10_CELL
+    k
+}
+
+fn via_refcell(v: &mut Vec<Res>, other: &mut Vec<Res>, n: i64) -> i64 {
+    let k = v[0].x;
+    let rc: RefCell<&mut Vec<Res>> = RefCell::new(other);
+    *rc.borrow_mut() = &mut *v;
+    **rc.borrow_mut() = vec![Res { x: n }]; // M10_REFCELL
+    k
+}
+
+struct Slot<'a> {
+    s: &'a mut Vec<Res>,
+}
+
+impl<'a> Slot<'a> {
+    #[inline(never)]
+    fn get(&mut self) -> &mut &'a mut Vec<Res> {
+        &mut self.s
+    }
+}
+
+fn via_method(v: &mut Vec<Res>, other: &mut Vec<Res>, n: i64) -> i64 {
+    let k = v[0].x;
+    let mut sl = Slot { s: other };
+    *sl.get() = &mut *v;
+    *sl.s = vec![Res { x: n }]; // M10_METHOD
+    k
+}
+
+struct Hold<'a, 'b> {
+    slot: &'b mut &'a mut Vec<Res>,
+}
+
+fn via_field(v: &mut Vec<Res>, other: &mut Vec<Res>, n: i64) -> i64 {
+    let k = v[0].x;
+    let mut slot: &mut Vec<Res> = other;
+    {
+        let h = Hold { slot: &mut slot };
+        *h.slot = &mut *v;
+    }
+    *slot = vec![Res { x: n }]; // M10_FIELD
+    k
+}
+
+fn via_closure(v: &mut Vec<Res>, other: &mut Vec<Res>, n: i64) -> i64 {
+    let k = v[0].x;
+    let mut slot: &mut Vec<Res> = other;
+    {
+        let mut set = |x| {
+            slot = x;
+        };
+        set(&mut *v);
+    }
+    *slot = vec![Res { x: n }]; // M10_CLOSURE
+    k
+}
+
+fn via_closure_body(h: &mut Holder, n: i64) -> i64 {
+    let k = h.data.x;
+    let mut reset = || {
+        *h = Holder { tag: n, data: Box::new(Res { x: n }) }; // M11_IN_CLOSURE
+    };
+    reset();
+    k
+}
+
+fn main() {
+    let mut h = Holder { tag: 1, data: Box::new(Res { x: 5 }) };
+    let a = RefCell::new(vec![Res { x: 5 }]);
+    let b = RefCell::new(vec![Res { x: 5 }]);
+    println!("{}", other_file_reset(&mut h, 9));
+    println!("{}", other_file_cell(&a, 9));
+    println!("{}", same_file_cell(&b, 9));
+    let (mut c, mut d) = (vec![Res { x: 5 }], Vec::new());
+    println!("{}", via_swap(&mut c, &mut d, 9));
+    let (mut e, mut f) = (vec![Res { x: 5 }], Vec::new());
+    println!("{}", via_slot(&mut e, &mut f, 9));
+    let mut g = Holder { tag: 2, data: Box::new(Res { x: 1 }) };
+    println!("{}", other_file_swap(&mut h, &mut g, 9));
+    let mut routes: Vec<(Vec<Res>, Vec<Res>)> = (0..5).map(|_| (vec![Res { x: 5 }], Vec::new())).collect();
+    for (route, (v, other)) in routes.iter_mut().enumerate() {
+        let read = [via_cell, via_refcell, via_method, via_field, via_closure][route];
+        println!("{}", read(v, other, 9));
+    }
+    std::mem::forget(routes);
+    println!("{}", via_closure_body(&mut h, 9));
+    println!("{} {}", A.get(), B.get());
+    std::mem::forget((h, a, b, c, d, e, f, g));
+}
+"""
+
+CELL_MACROS = """macro_rules! reset {
+    ($v:expr, $n:expr) => {
+        *$v = crate::Holder { tag: $n, data: Box::new(crate::Res { x: $n }) } // M8_RESET
+    };
+}
+
+macro_rules! swap_in {
+    ($c:expr, $n:expr) => {
+        *$c.borrow_mut() = vec![crate::Res { x: $n }] // M8_SWAP
+    };
+}
+
+macro_rules! swap_reset {
+    ($h:expr, $other:expr, $n:expr) => {{
+        let mut slot: &mut crate::Holder = $other;
+        let mut w: &mut crate::Holder = &mut *$h;
+        std::mem::swap(&mut slot, &mut w);
+        *slot = crate::Holder { tag: $n, data: Box::new(crate::Res { x: $n }) } // M9_SWAP_RESET
+    }};
+}
+"""
+
+
+@pytest.mark.timeout(600)
+def test_references_in_macro_twins_and_parameters_dropped_through_in_other_files(plain, capsys):
+    # Verification of #110 (round 8): methods a macro generates are not told apart, so
+    # their references read as before; and a reference parameter dropped through in a
+    # macro from another file (`*h = new`, `*c.borrow_mut() = new` through a shared
+    # `&RefCell`) read its dropped value between the drop and the store.
+    (plain / "src/main.rs").write_text(TWINS_AND_CELLS)
+    (plain / "src/macros.rs").write_text(CELL_MACROS)
+    at = f"src/main.rs:{line_of(TWINS_AND_CELLS, '// M8_IMPL_TWIN')}"
+    code, result = run(
+        capsys, "probe", str(plain), "--at", at, "--capture", "r", "--hits", "2", "--quiet"
+    )
+    rows = result["rows"]
+    assert len(rows) == 2 and all(row.get("view") == "unproven" for row in rows), rows
+    at = f"src/main.rs:{line_of(TWINS_AND_CELLS, '// M8_IN_DROP')}"
+    for continues, (file, marker), name in (
+        (0, ("macros.rs", "M8_RESET"), "h"),
+        (1, ("macros.rs", "M8_SWAP"), "c"),
+        (2, ("main.rs", "M8_SAME_CELL"), "c"),
+        # Round 9: a pointer stored into a slot through `&mut` (by `mem::swap`, or
+        # through a reference to the slot) makes the slot an alias.
+        (3, ("main.rs", "M9_VIA_SWAP"), "v"),
+        (4, ("main.rs", "M9_VIA_SLOT"), "v"),
+        (5, ("macros.rs", "M9_SWAP_RESET"), "h"),
+        # Round 10: through a value made from the slot's borrow (a `Cell` or `RefCell`
+        # holding it, a method's `&mut` to it, a struct field, a closure capturing it).
+        (6, ("main.rs", "M10_CELL"), "v"),
+        (7, ("main.rs", "M10_REFCELL"), "v"),
+        (8, ("main.rs", "M10_METHOD"), "v"),
+        (9, ("main.rs", "M10_FIELD"), "v"),
+        (10, ("main.rs", "M10_CLOSURE"), "v"),
+        # Round 11: inside a closure body, through its capture of a `&mut`.
+        (11, ("main.rs", "M11_IN_CLOSURE"), "h"),
+    ):
+        text = CELL_MACROS if file == "macros.rs" else TWINS_AND_CELLS
+        variables = _stepped_out_to(
+            plain, capsys, at, continues, line_of(text, "// " + marker), file
+        )
+        assert variables[name].get("view") == "unproven", (marker, variables[name])
 
 
 GENERIC_SPANS = """macro_rules! square {
