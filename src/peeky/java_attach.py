@@ -206,9 +206,9 @@ class JavaAttachSession(JavaSession):
     # dropped exit event (#27) was seen only on launch, and a false "terminated"
     # would detach a live JVM.
     liveness_by_threads = False
-    # Their `stopped` event can be lost instead (#27): the worker recovers a stop from
-    # a thread suspended exactly at a verified session breakpoint (find_lost_stop).
-    recovers_lost_stops = True
+    # Their `stopped` event can be lost instead (#27): the worker detects a thread left
+    # suspended at a verified session breakpoint and fails fast (find_lost_stop).
+    detects_lost_stops = True
 
     dap_request = "attach"
     terminate_debuggee = False

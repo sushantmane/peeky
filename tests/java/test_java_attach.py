@@ -301,28 +301,22 @@ def attached_loop(tmp_path):
         process.wait(timeout=10)
 
 
-class LostStops:
-    """Drops chosen `stopped` events before Peeky's DAP client sees them; ``deliver``
-    hands them over later (a late report)."""
+def lose_stops(monkeypatch, lose):
+    """Drop the `stopped` events ``lose(body)`` picks before Peeky's DAP client sees
+    them. Returns the list of dropped event bodies."""
+    from peeky.dap import DAP
 
-    def __init__(self, monkeypatch, lose):
-        from peeky.dap import DAP
+    lost, real = [], DAP._accept
 
-        self.lose, self.lost, self.real = lose, [], DAP._accept
+    def accept(dap, body):
+        if body.get("type") == "event" and body.get("event") == "stopped":
+            if lose(body.get("body") or {}):
+                lost.append(body.get("body") or {})
+                return
+        real(dap, body)
 
-        def accept(dap, body):
-            if body.get("type") == "event" and body.get("event") == "stopped":
-                if self.lose(body.get("body") or {}, len(self.lost)):
-                    self.lost.append((dap, body))
-                    return
-            self.real(dap, body)
-
-        monkeypatch.setattr(DAP, "_accept", accept)
-
-    def deliver(self):
-        for dap, body in self.lost:
-            self.real(dap, body)
-        self.lost.clear()
+    monkeypatch.setattr(DAP, "_accept", accept)
+    return lost
 
 
 def wait_for(worker, session, seconds=20):
@@ -330,85 +324,79 @@ def wait_for(worker, session, seconds=20):
     while time.monotonic() - started < seconds:
         state = worker.dispatch("wait", {**session, "timeout": 2})
         if state["state"] != "running":
-            return state, time.monotonic() - started
+            return state
     raise AssertionError(f"no stop within {seconds} s")
 
 
-def local(worker, stop, name):
-    snapshot = worker.dispatch("inspect", stop)
-    values = {v["name"]: v["value"] for scope in snapshot["scopes"] for v in scope["variables"]}
-    return values[name]
-
-
 @pytest.mark.timeout(120)
-def test_an_attached_probe_recovers_a_stop_whose_event_was_lost(attached, monkeypatch):
+def test_an_attached_probe_fails_fast_when_a_stop_is_never_reported(attached, monkeypatch):
     root, target, process, line = attached
-    lost = LostStops(monkeypatch, lambda body, count: True)
-    result = run_probe(
-        root, Probe(SOURCE, line, ("start", "pageSize"), (("start", "0"),)), adapter=target
-    )
-    assert result["status"] == "completed", (result.get("error"), result.get("debugger_events"))
-    assert len(lost.lost) == 1 and result["hits"] == 1 and result["recovered_stops"] == 1
-    rows = {(r["phase"], r["selector"]): r["value"] for r in result["rows"]}
-    assert rows["observed", "start"] == "3" and rows["observed", "pageSize"] == "3"
-    assert rows["after-set", "start"] == "0"
-    assert any("never reported 1 stop" in warning for warning in result["warnings"])
-    # Two polls 2 s apart, not the 60 s timeout.
-    assert result["seconds"] < 15
+    lost = lose_stops(monkeypatch, lambda body: True)
+    probe = Probe(SOURCE, line, ("start", "pageSize"), (("start", "0"),))
+    result = run_probe(root, probe, adapter=target)
+    assert result["status"] == "failed" and len(lost) == 1
+    error = result["error"]
+    assert error["code"] == "DEBUGGER_ERROR" and error["session_closed"] is True
+    assert error["message"].startswith("Lost stop: java-debug never reported a stop it made")
+    for evidence in (
+        "'main'",
+        "PaginationBug.main",
+        f"PaginationBug.java:{line}",
+        f"{SOURCE}:{line}",
+    ):
+        assert evidence in error["message"]
+    assert "close" in error["hint"]
+    # Nothing was read or changed, and in seconds rather than the 60 s timeout.
+    assert result["hits"] == 0 and result["rows"] == [] and result["interventions"] == []
+    assert result["seconds"] < 9
+    trace = result["debugger_events"]["trace"]
+    assert any(entry["name"] == "lost stop" for entry in trace)
+    # Peeky detached: the JVM ran on, unchanged.
     output = process.stdout.read()
-    assert process.wait(timeout=30) == 0 and "PAGE:[10, 20, 30]" in output
+    assert process.wait(timeout=30) == 0 and "PAGE:[40, 50, 60]" in output
 
 
 @pytest.mark.timeout(120)
-def test_a_session_steps_and_continues_after_recovered_stops_and_counts_each_hit_once(
+def test_a_session_whose_stop_is_never_reported_fails_and_serves_nothing_more(
     attached_loop, monkeypatch
 ):
-    from peeky.worker import DebugWorker
+    from peeky.errors import classify
+    from peeky.worker import DebugWorker, LostStop
 
     root, target, process, line = attached_loop
-    # The reports of hits 1 and 2 are lost, and each arrives late.
-    lost = LostStops(
-        monkeypatch, lambda body, count: body.get("reason") == "breakpoint" and count < 1
-    )
+    # Hit 1 is reported and served; hit 2's report is lost.
+    reports = []
+    lost = lose_stops(monkeypatch, lambda body: reports.append(body) or len(reports) == 2)
     worker = DebugWorker(root, adapter=target)
     try:
         started = worker.dispatch(
             "launch", {"program": LOOP_SOURCE, "breakpoints": [{"line": line}]}
         )
         session = {"session_id": started["session_id"]}
-        state, waited = wait_for(worker, session)
-        assert (state["reason"], state["hit"], state.get("recovered")) == ("breakpoint", 1, True)
-        assert state["location"].endswith(f"{LOOP_SOURCE}:{line}") and waited < 10
-        assert state["event"]["body"]["peeky"].startswith("recovered")
-        stop = {**session, "stop_id": state["stop_id"]}
-        assert local(worker, stop, "n") == "1"
-        # The late report arrives while the recovered stop is current: never a new stop.
-        lost.deliver()
-        worker.dispatch("step", stop)
-        state, _ = wait_for(worker, session)
-        assert state["reason"] == "step" and "recovered" not in state and "hit" not in state
-        assert state["location"].endswith(f"{LOOP_SOURCE}:{line + 1}")
-        assert local(worker, {**session, "stop_id": state["stop_id"]}, "doubled") == "2"
-        # Lose the next report too, and deliver it only after the thread runs again.
-        lost.lose = lambda body, count: body.get("reason") == "breakpoint" and count < 1
+        state = wait_for(worker, session)
+        assert state["hit"] == 1
         worker.dispatch("continue", {**session, "stop_id": state["stop_id"]})
-        state, _ = wait_for(worker, session)
-        assert (state["hit"], state.get("recovered")) == (2, True)
-        assert local(worker, {**session, "stop_id": state["stop_id"]}, "n") == "2"
-        lost.lose = lambda body, count: False
-        worker.dispatch("continue", {**session, "stop_id": state["stop_id"]})
-        # Hit 3's own report may come before or after hit 2's late one: either way
-        # one is consumed, the other serves hit 3, and nothing is counted twice.
-        lost.deliver()
-        state, _ = wait_for(worker, session)
-        assert (state["hit"], "recovered" in state) == (3, False)
-        assert local(worker, {**session, "stop_id": state["stop_id"]}, "n") == "3"
-        worker.dispatch("continue", {**session, "stop_id": state["stop_id"]})
-        state, _ = wait_for(worker, session)
-        assert state["state"] == "terminated" and worker.hits == 3
-        operations = [entry["operation"] for entry in worker.audit]
-        assert operations.count("stop_recovered") == 2
-        assert operations.count("late_stop_report") == 2
+        began = time.monotonic()
+        with pytest.raises(LostStop) as failure:
+            wait_for(worker, session)
+        assert time.monotonic() - began < 9 and len(lost) == 1
+        error = classify(failure.value)
+        assert error["code"] == "DEBUGGER_ERROR"
+        assert f"Loop.twice(int) at Loop.java:{line}" in error["message"]
+        assert f"{LOOP_SOURCE}:{line}" in error["message"]
+        # The session is detached, serves nothing, and repeats its error until closed.
+        for operation, extra in (("wait", {"timeout": 2}), ("inspect", {"stop_id": "x"})):
+            with pytest.raises(LostStop) as again:
+                worker.dispatch(operation, {**session, **extra})
+            assert str(again.value) == str(failure.value)
+        report = worker.dispatch("report", session)
+        assert report["state"] == "detached" and report["lost_stop"]["breakpoint"] == (
+            f"{LOOP_SOURCE}:{line}"
+        )
+        assert [entry["operation"] for entry in report["history"]].count("lost_stop") == 1
+        assert any(e["name"] == "lost stop" for e in report["debugger_events"]["trace"])
+        assert worker.hits == 1
+        assert worker.dispatch("close", session) == {"state": "idle"}
     finally:
         worker.close()
     output = process.stdout.read()
@@ -416,7 +404,7 @@ def test_a_session_steps_and_continues_after_recovered_stops_and_counts_each_hit
 
 
 @pytest.mark.timeout(120)
-def test_a_thread_whose_step_ends_on_a_breakpoint_line_is_never_taken_for_a_lost_stop(
+def test_a_step_whose_report_is_lost_on_a_breakpoint_line_is_never_a_lost_stop(
     attached_loop, monkeypatch
 ):
     from peeky.worker import DebugWorker
@@ -424,25 +412,117 @@ def test_a_thread_whose_step_ends_on_a_breakpoint_line_is_never_taken_for_a_lost
     root, target, process, line = attached_loop
     # The step's own report is lost. It ends on a breakpoint line, verified and set by
     # this session, so the thread looks exactly like a lost breakpoint stop.
-    lost = LostStops(monkeypatch, lambda body, count: body.get("reason") == "step")
+    lost = lose_stops(monkeypatch, lambda body: body.get("reason") == "step")
     worker = DebugWorker(root, adapter=target)
     try:
         points = [{"line": line}, {"line": line + 1}]
         started = worker.dispatch("launch", {"program": LOOP_SOURCE, "breakpoints": points})
         session = {"session_id": started["session_id"]}
-        state, _ = wait_for(worker, session)
-        assert (state["hit"], "recovered" in state) == (1, False)
+        state = wait_for(worker, session)
+        assert state["hit"] == 1
         thread = worker.thread_id
         worker.dispatch("step", {**session, "stop_id": state["stop_id"]})
-        deadline = time.monotonic() + 7  # three polls
+        deadline = time.monotonic() + 9  # four polls: more than an error needs
         while time.monotonic() < deadline:
             assert worker.dispatch("wait", {**session, "timeout": 2})["state"] == "running"
         top = worker.dap.request("stackTrace", {"threadId": thread, "levels": 1})["stackFrames"]
-        assert top[0]["line"] == line + 1 and len(lost.lost) == 1
-        assert lost.lost[0][1]["body"]["reason"] == "step"
-        assert not any(entry["operation"] == "stop_recovered" for entry in worker.audit)
-        assert worker.hits == 1
+        assert top[0]["line"] == line + 1 and [body["reason"] for body in lost] == ["step"]
+        assert "lost_stop" not in [entry["operation"] for entry in worker.audit]
     finally:
         worker.close()
     output = process.stdout.read()
     assert process.wait(timeout=30) == 0 and "TOTAL:12" in output
+
+
+STORM_SOURCE = "src/demo/Storm.java"
+STORM = (
+    """package demo;
+
+import java.net.URL;
+import java.net.URLClassLoader;
+
+public class Storm {
+    static final Object LOCK = new Object();
+
+    public static class Gen {
+"""
+    + "".join(f"        static int m{i}(int a) {{ return a + {i}; }}\n" for i in range(800))
+    + """    }
+
+    static void contend() {
+        int local = 42;
+        synchronized (LOCK) {
+            System.out.println("waiter got the lock " + local); // BP
+        }
+    }
+
+    static void hold() {
+        synchronized (LOCK) {
+            try {
+                Thread.sleep(Long.MAX_VALUE);
+            } catch (InterruptedException e) {
+                return;
+            }
+        }
+    }
+
+    public static void main(String[] args) throws Exception {
+        Thread holder = new Thread(Storm::hold, "holder");
+        holder.setDaemon(true);
+        holder.start();
+        Thread.sleep(300);
+        Thread waiter = new Thread(Storm::contend, "waiter");
+        waiter.setDaemon(true);
+        waiter.start();
+        URL url = Storm.class.getProtectionDomain().getCodeSource().getLocation();
+        long end = System.nanoTime() + 10_000_000_000L;
+        int loads = 0;
+        while (System.nanoTime() < end) {
+            try (URLClassLoader loader = new URLClassLoader(new URL[] {url}, null)) {
+                Class.forName("demo.Storm$Gen", true, loader);
+            }
+            loads++;
+        }
+        System.out.println("LOADS:" + loads + " waiter:" + waiter.getState());
+    }
+}
+"""
+)
+
+
+@pytest.mark.timeout(120)
+def test_a_breakpoint_that_never_ran_is_never_a_lost_stop_under_a_class_load_storm(
+    tmp_path, monkeypatch
+):
+    # The review's H1. java-debug's class-load requests for a breakpoint's class and
+    # its nested classes suspend every thread while it looks for the line; a thread
+    # blocked entering `synchronized` then shows the line inside the block. Loading a
+    # nested class with 800 methods over and over keeps that happening.
+    from peeky.dap import DAP
+
+    target, process, line = attach_to(tmp_path, STORM_SOURCE, STORM, "demo.Storm", "// BP")
+    real, seen = DAP.request, []
+
+    def request(dap, command, arguments=None, **options):
+        reply = real(dap, command, arguments, **options)
+        if command == "stackTrace" and options.get("trace") is False:
+            frames = reply.get("stackFrames") or []
+            if frames and frames[0].get("line") == line:
+                seen.append(time.monotonic())
+        return reply
+
+    monkeypatch.setattr(DAP, "request", request)
+    try:
+        result = run_probe(
+            tmp_path, Probe(STORM_SOURCE, line, ("local",), timeout=40), adapter=target
+        )
+        assert (result["status"], result["hits"], result["rows"]) == ("no-stop", 0, [])
+        assert result["error"]["code"] == "NO_STOP"
+        # The hazard was real: polls found the waiter suspended at the breakpoint line.
+        assert len(seen) >= 3, seen
+        output = process.stdout.read()
+        assert process.wait(timeout=30) == 0 and "waiter:BLOCKED" in output
+    finally:
+        if process.poll() is None:
+            process.kill()
+        process.wait(timeout=10)

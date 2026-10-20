@@ -22,7 +22,7 @@ Every Peeky failure, from the HTTP worker, the SDK (`peeky.errors.PeekyError`) o
 | `BUILD_FAILED` | The program did not compile, or its build timed out (with `--old/--new`: the edit does not build); the message has the compiler's output | Fix what the compiler reports and run again; your files were not changed |
 | `PROVENANCE_CHANGED` | Sources, build outputs or tools changed | New session on a fresh build |
 | `TIMEOUT` | A time bound was hit; session discarded | Start again; never blindly retry a mutation |
-| `DEBUGGER_ERROR` | Adapter/debugger failure, including a broken protocol stream (for example a reply over 4 MiB); session discarded | Start again; capture narrower selectors if values are huge |
+| `DEBUGGER_ERROR` | Adapter/debugger failure, including a broken protocol stream (for example a reply over 4 MiB), or an attached JVM's stop the debugger never reported (`Lost stop:`); session discarded | Start again; capture narrower selectors if values are huge; for a lost stop, close the session and keep `debugger_events` |
 | `SESSION_ACTIVE` / `NO_SESSION` | Session lifecycle misuse | Close / start a session |
 | `BUSY` | Another probe is running on this worker | Retry later |
 | `UNSUPPORTED` | Operation or capability not offered | Call `version` |
@@ -34,6 +34,6 @@ Every Peeky failure, from the HTTP worker, the SDK (`peeky.errors.PeekyError`) o
 | `TRANSPORT_LOST` | The connection broke mid-request; outcome unknown | Reconnect, then `inspect`/`wait`; never repeat a mutation blindly |
 | `JOB_LOST` | A `--background` job's process died before finishing | Rerun the command |
 
-A Java stop that the debugger never reported (#27) is not an error. On an attached JVM, Peeky recovers it from the thread suspended at the breakpoint: the stop carries `recovered: true`, the history gets `stop_recovered` (and `late_stop_report` if the report arrives later), and probes add `recovered_stops` and a warning. See [JAVA_ATTACH.md](JAVA_ATTACH.md#lost-stop-events-27). A probe that still times out carries `debugger_events`, whose `trace` shows whether a `stopped` event ever arrived.
+A Java stop that the debugger never reported (#27) ends with `DEBUGGER_ERROR` whose message starts `Lost stop:`. It names the suspended thread, its location, the session's breakpoint and how long the stop has gone unreported. Nothing is served from that stop and Peeky detaches, so the JVM runs on. Later requests on the session repeat the error; `report` still returns the session as it was (`state: detached`, `lost_stop`, `history`, `debugger_events`), and `close` ends it. Keep `debugger_events` (a failed probe carries it too) for #27. See [JAVA_ATTACH.md](JAVA_ATTACH.md#lost-stop-events-27).
 
 `POST /version` returns the protocol version, supported operations and the error codes. Every HTTP response carries `X-Peeky-Protocol: 1`.

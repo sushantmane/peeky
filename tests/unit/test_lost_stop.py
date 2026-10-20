@@ -1,33 +1,36 @@
-"""#27: recovering an attached JVM's breakpoint stop whose `stopped` event was lost."""
+"""#27: an attached JVM's breakpoint stop whose `stopped` event was lost fails fast,
+with a diagnosis; nothing is ever served from it."""
 
 import time
 
 import pytest
 
 import peeky.worker as worker_module
-from peeky.worker import RECOVERED_NOTE, DebugWorker
+from peeky.errors import classify
+from peeky.worker import DebugWorker, LostStop
+
+JVM = {2: "Reference Handler", 3: "Finalizer", 4: "Signal Dispatcher", 5: "Common-Cleaner"}
 
 
-def at(path, line, name="Demo.twice"):
+def at(path, line, name="Demo.twice(int)"):
     return {"id": 100, "name": name, "line": line, "source": {"path": str(path)}}
 
 
 class PausedDap:
-    """java-debug as the worker sees it: threads, one-frame stacks of suspended threads
-    (none for running ones), and the stop reports that did arrive."""
+    """java-debug as the worker sees it: threads, and one-frame stacks of the threads
+    the debugger suspended (none for running ones). A frame may be a callable, asked
+    on every request, for a thread whose state changes during a poll."""
 
-    def __init__(self, frames):
-        self.frames, self.events, self.calls = dict(frames), [], []
+    def __init__(self, frames, names=None):
+        self.frames = {**{thread: None for thread in JVM}, **frames}
+        self.names = {**JVM, **(names or {})}
+        self.events, self.calls, self.closed = [], [], None
         self.during_stack = self.fail = None
 
     def add(self, event, **body):
+        cursor = max((e["cursor"] for e in self.events), default=0) + 1
         self.events.append(
-            {
-                "event": event,
-                "cursor": self.event_cursor() + 1,
-                "received": time.monotonic(),
-                "body": body,
-            }
+            {"event": event, "cursor": cursor, "received": time.monotonic(), "body": body}
         )
 
     def wait_event(self, names, after, timeout):
@@ -41,16 +44,20 @@ class PausedDap:
         if self.fail:
             raise self.fail
         if command == "threads":
-            return {"threads": [{"id": thread, "name": f"t{thread}"} for thread in self.frames]}
+            return {
+                "threads": [
+                    {"id": thread, "name": f"Thread [{self.names.get(thread, f't{thread}')}]"}
+                    for thread in self.frames
+                ]
+            }
         if command == "stackTrace":
             if self.during_stack:
                 self.during_stack, during = None, self.during_stack
                 during()
             frame = self.frames.get(args["threadId"])
+            frame = frame() if callable(frame) else frame
             return {"stackFrames": [frame] if frame else [], "totalFrames": int(bool(frame))}
         if command in ("continue", "next"):
-            # java-debug resumes only the given thread.
-            self.frames[args["threadId"]] = None
             return {"allThreadsContinued": False}
         raise AssertionError(command)
 
@@ -66,34 +73,46 @@ class PausedDap:
                 return event["received"], event["body"].get("reason")
         return None
 
-    def close(self, *args, **kwargs):
-        pass
+    def snapshot_output(self):
+        return "partial output\n", False
+
+    def recent_events(self):
+        return {"recent": [], "ignored": {}, "trace": [{"dir": "peeky", "name": "lost-stop poll"}]}
+
+    def close(self, terminate=True):
+        self.closed = {"terminate": terminate}
 
 
 class AttachLike:
-    recovers_lost_stops = True
+    detects_lost_stops = True
+    terminate_debuggee = False
+    manifest_id = "m"
+
+    def __init__(self):
+        self.closed = False
 
     def assert_current(self):
         pass
 
     def close(self):
-        pass
+        self.closed = True
 
 
 class LaunchLike(AttachLike):
-    recovers_lost_stops = False
+    detects_lost_stops = False
 
 
 @pytest.fixture
 def source(tmp_path):
-    path = tmp_path / "Demo.java"
+    path = tmp_path / "src" / "Demo.java"
+    path.parent.mkdir()
     path.write_text("class Demo {}\n")
     return path
 
 
-def paused_worker(source, frames, runtime=None, verified=True, lines=(5,)):
-    worker = DebugWorker(source.parent)
-    worker.dap, worker.runtime = PausedDap(frames), runtime or AttachLike()
+def paused_worker(source, frames, runtime=None, verified=True, lines=(5,), names=None):
+    worker = DebugWorker(source.parent.parent)
+    worker.dap, worker.runtime = PausedDap(frames, names), runtime or AttachLike()
     worker.session, worker.state, worker.cursor = "session", "running", 0
     worker.note_placed(
         source,
@@ -109,8 +128,11 @@ def paused_worker(source, frames, runtime=None, verified=True, lines=(5,)):
     return worker
 
 
-def poll(worker):
-    worker.lost_stop_polled = 0.0  # as if the poll interval passed since the last one
+def poll(worker, elapsed=worker_module.LOST_STOP_POLL_S):
+    """One `wait` whose poll is due, as if ``elapsed`` seconds passed since the last."""
+    worker.lost_stop_polled = 0.0
+    if worker.candidate:
+        worker.candidate["since"] -= elapsed
     return worker.dispatch("wait", {"session_id": "session", "timeout": 0.1})
 
 
@@ -118,51 +140,140 @@ def operations(worker):
     return [entry["operation"] for entry in worker.audit]
 
 
-def test_a_thread_paused_at_a_verified_breakpoint_in_two_polls_is_a_recovered_stop(source):
-    worker = paused_worker(source, {7: at(source, 5), 8: None})
-    assert poll(worker) == {"state": "running", "timed_out": True}
-    state = poll(worker)
-    assert state["state"] == "stopped" and state["recovered"] is True
-    assert (state["reason"], state["hit"], state["numbered"]) == ("breakpoint", 1, True)
-    assert state["location"] == f"{source}:5" and worker.thread_id == 7
-    assert state["event"]["body"] == {
-        "reason": "breakpoint",
-        "threadId": 7,
-        "allThreadsStopped": False,
-        "peeky": RECOVERED_NOTE,
-    }
-    # No event was consumed: the cursor stays, and one late report is now expected.
-    assert worker.cursor == 0 and worker.owed == {7: 1}
-    recovery = next(e for e in worker.audit if e["operation"] == "stop_recovered")
-    assert recovery["result"]["thread"] == 7 and recovery["result"]["location"] == f"{source}:5"
-    # Poll one: threads and both stacks; poll two confirms the suspect first.
-    assert worker.dap.calls[:6] == [
-        "threads",
-        "stackTrace",
-        "stackTrace",
-        "threads",
-        "stackTrace",
-        "stackTrace",
-    ]
-    # Waiting again shows the same stop; a repeat is never a new one.
-    again = worker.dispatch("wait", {"session_id": "session", "timeout": 0.1})
-    assert again["stop_id"] == state["stop_id"] and again["recovered"] is True
+def test_a_thread_alone_at_a_verified_breakpoint_for_three_polls_over_four_seconds_fails_fast(
+    source,
+):
+    worker = paused_worker(source, {7: at(source, 5), 8: None}, names={7: "main"})
+    dap, runtime = worker.dap, worker.runtime
+    for samples in (1, 2):
+        assert poll(worker) == {"state": "running", "timed_out": True}
+        assert worker.candidate["samples"] == samples
+    with pytest.raises(LostStop) as failure:
+        poll(worker)
+    message = str(failure.value)
+    assert message.startswith("Lost stop: java-debug never reported a stop it made")
+    for evidence in ("'main' (id 7)", "Demo.twice(int) at Demo.java:5", "src/Demo.java:5"):
+        assert evidence in message
+    assert "suspended for 4.0 s" in message and "3 checks" in message
+    error = classify(failure.value)
+    assert (error["code"], error["session_closed"]) == ("DEBUGGER_ERROR", True)
+    assert "did not report a stop it made" in error["hint"] and "close" in error["hint"]
+    # Nothing was served; Peeky detached (an attached JVM is not terminated).
+    assert worker.hits == 0 and worker.stop_id is None and "lost_stop" in operations(worker)
+    assert dap.closed == {"terminate": False} and runtime.closed and worker.dap is None
 
 
-def test_the_pause_counts_from_the_first_sighting(source):
+def test_the_failed_session_repeats_its_error_reports_and_closes(source):
+    worker = paused_worker(source, {7: at(source, 5)}, names={7: "main"})
+    poll(worker), poll(worker)
+    with pytest.raises(LostStop) as failure:
+        poll(worker)
+    session = {"session_id": "session"}
+    for operation, extra in (
+        ("wait", {"timeout": 1}),
+        ("inspect", {"stop_id": "any"}),
+        ("continue", {"stop_id": "any"}),
+        ("step", {"stop_id": "any"}),
+    ):
+        with pytest.raises(LostStop) as again:
+            worker.dispatch(operation, {**session, **extra})
+        assert str(again.value) == str(failure.value)
+    report = worker.dispatch("report", session)
+    assert report["state"] == "detached" and report["output"] == "partial output\n"
+    assert report["lost_stop"]["breakpoint"] == "src/Demo.java:5"
+    assert [e["operation"] for e in report["history"]][-1] == "lost_stop"
+    assert report["debugger_events"]["trace"]
+    assert worker.dispatch("close", session) == {"state": "idle"}
+    with pytest.raises(ValueError, match="Missing or stale session_id"):
+        worker.dispatch("wait", {**session, "timeout": 1})
+
+
+def test_a_new_session_clears_a_failed_one(source):
     worker = paused_worker(source, {7: at(source, 5)})
-    poll(worker)
-    first = worker.suspects[7]["since"]
-    state = poll(worker)
-    assert state["event"]["received"] == first and worker.stopped_at == first
+    worker.failed = {"session": "old", "message": "Lost stop: x", "report": {}}
+    with pytest.raises(ValueError):
+        worker.dispatch("launch", {"program": "missing.java", "breakpoints": []})
+    assert worker.failed is None
 
 
-def test_a_suspect_that_moves_must_be_seen_twice_at_its_new_breakpoint(source):
-    worker = paused_worker(source, {7: at(source, 5)}, lines=(5, 9))
-    poll(worker)
-    worker.dap.frames[7] = at(source, 9)
-    assert poll(worker)["state"] == "running"
-    assert poll(worker)["location"] == f"{source}:9"
+def test_three_samples_must_span_four_seconds(source):
+    worker = paused_worker(source, {7: at(source, 5)})
+    for _ in range(4):
+        assert poll(worker, elapsed=1.0)["state"] == "running"
+    assert worker.candidate["samples"] == 4  # 3 s so far: not yet evidence
+    with pytest.raises(LostStop):
+        poll(worker, elapsed=1.0)
+
+
+def test_two_samples_are_never_enough_however_far_apart(source):
+    worker = paused_worker(source, {7: at(source, 5)})
+    for _ in range(2):
+        assert poll(worker, elapsed=10.0)["state"] == "running"
+    with pytest.raises(LostStop):
+        poll(worker, elapsed=10.0)
+
+
+def jvm_suspended_on(calls):
+    """A JVM thread suspended (a suspend-all event) only on its ``calls``-th check."""
+    seen = []
+
+    def frame():
+        seen.append(1)
+        return at("/jdk/Object.java", 1, "Object.wait(long)") if len(seen) in calls else None
+
+    return frame
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "a JVM thread suspended",
+        "a JVM thread suspended at the last check",
+        "a JVM thread suspended after a recheck",
+        "another thread suspended",
+        "another thread at the breakpoint too",
+        "the suspect running at a recheck",
+    ],
+)
+def test_any_other_suspended_thread_makes_a_poll_no_evidence_and_restarts_the_count(source, case):
+    worker = paused_worker(source, {7: at(source, 5), 8: None})
+    poll(worker), poll(worker)
+    assert worker.candidate["samples"] == 2
+    dap = worker.dap
+    if case == "a JVM thread suspended":
+        dap.frames[2] = at("/jdk/Reference.java", 1, "Reference.waitForReferencePendingList()")
+    elif case == "a JVM thread suspended at the last check":
+        dap.frames[3] = jvm_suspended_on({2})  # before the window: running; after: not
+    elif case == "a JVM thread suspended after a recheck":
+        dap.frames[5] = jvm_suspended_on({3})
+    elif case == "another thread suspended":
+        dap.frames[8] = at(source.parent / "Other.java", 3, "Other.run()")
+    elif case == "another thread at the breakpoint too":
+        dap.frames[8] = at(source, 5)
+    else:
+        checks = []
+        dap.frames[7] = lambda: checks.append(1) or (at(source, 5) if len(checks) < 3 else None)
+    assert poll(worker) == {"state": "running", "timed_out": True}
+    assert worker.candidate is None and "lost_stop" not in operations(worker)
+    if case.startswith("another"):
+        dap.frames[8] = None
+    else:
+        dap.frames = {**dap.frames, 2: None, 3: None, 5: None, 7: at(source, 5)}
+    for samples in (1, 2):
+        assert poll(worker)["state"] == "running" and worker.candidate["samples"] == samples
+    with pytest.raises(LostStop):
+        poll(worker)
+
+
+def test_a_class_load_storm_never_counts(source):
+    # The review's H1: java-debug's class-load requests suspend every thread, and a
+    # thread blocked entering `synchronized` shows the breakpoint line inside it.
+    waiting = {7: at(source, 5, "Storm.contend()"), 9: at("/jdk/Thread.java", 1, "sleep")}
+    worker = paused_worker(source, {1: at("/jdk/Class.java", 1, "forName0"), **waiting})
+    worker.dap.frames.update({2: at("/jdk/R.java", 1), 3: at("/jdk/O.java", 1)})
+    for _ in range(8):
+        assert poll(worker) == {"state": "running", "timed_out": True}
+    assert worker.candidate is None and "lost_stop" not in operations(worker)
 
 
 @pytest.mark.parametrize(
@@ -173,21 +284,21 @@ def test_a_suspect_that_moves_must_be_seen_twice_at_its_new_breakpoint(source):
         "other file",
         "running",
         "stepping",
+        "a JVM thread",
         "breakpoints removed",
         "launched",
     ],
 )
-def test_nothing_else_is_ever_taken_for_a_lost_breakpoint_stop(source, case):
+def test_nothing_else_is_ever_evidence(source, case):
     other = source.parent / "Other.java"
     other.write_text("class Other {}\n")
-    frame = {
-        "other line": at(source, 6),
-        "other file": at(other, 5),
-        "running": None,
-    }.get(case, at(source, 5))
+    frame = {"other line": at(source, 6), "other file": at(other, 5), "running": None}.get(
+        case, at(source, 5)
+    )
+    thread = 3 if case == "a JVM thread" else 7
     worker = paused_worker(
         source,
-        {7: frame},
+        {thread: frame},
         runtime=LaunchLike() if case == "launched" else None,
         verified=case != "unverified",
     )
@@ -195,20 +306,40 @@ def test_nothing_else_is_ever_taken_for_a_lost_breakpoint_stop(source, case):
         worker.stepping.add(7)
     if case == "breakpoints removed":
         worker.note_placed(source, [], {"breakpoints": []})
-    for _ in range(4):
+    for _ in range(5):
         assert poll(worker) == {"state": "running", "timed_out": True}
-    assert "stop_recovered" not in operations(worker) and not worker.owed
+    assert worker.candidate is None and "lost_stop" not in operations(worker)
     if case in ("launched", "unverified", "breakpoints removed"):
         assert worker.dap.calls == []  # nothing to look for: no poll at all
 
 
 def test_only_the_breakpoint_the_thread_is_at_must_be_verified(source):
-    # Line 9's breakpoint is verified; line 5's is still pending (its class not loaded).
     worker = paused_worker(source, {7: at(source, 5)}, lines=(5, 9))
     worker.placed[str(source.resolve())][0]["verified"] = False
-    for _ in range(3):
-        assert poll(worker) == {"state": "running", "timed_out": True}
-    assert worker.dap.calls.count("threads") == 3 and not worker.suspects
+    for _ in range(4):
+        assert poll(worker)["state"] == "running"
+    assert worker.dap.calls.count("threads") == 4 and worker.candidate is None
+
+
+def test_threads_with_a_step_in_flight_are_neither_suspects_nor_witnesses(source):
+    # A step whose report was lost may sit anywhere, a breakpoint line included.
+    worker = paused_worker(source, {7: at(source, 5), 9: at(source, 6)})
+    worker.stepping.add(9)
+    poll(worker), poll(worker)
+    with pytest.raises(LostStop):
+        poll(worker)
+
+
+def test_a_step_marks_its_thread_until_that_thread_reports_a_stop(source):
+    worker = paused_worker(source, {7: at(source, 5)})
+    worker.dap.add("stopped", reason="breakpoint", threadId=7)
+    state = worker.dispatch("wait", {"session_id": "session", "timeout": 0.1})
+    worker.dispatch("step", {"session_id": "session", "stop_id": state["stop_id"]})
+    assert worker.stepping == {7}
+    for _ in range(5):
+        assert poll(worker)["state"] == "running"  # its report was lost: never evidence
+    worker.dap.add("stopped", reason="step", threadId=7)
+    assert poll(worker)["reason"] == "step" and not worker.stepping
 
 
 def test_a_breakpoint_verified_when_its_class_loads_becomes_eligible(source):
@@ -217,86 +348,32 @@ def test_a_breakpoint_verified_when_its_class_loads_becomes_eligible(source):
     worker.dap.add(
         "breakpoint", reason="changed", breakpoint={"id": 1, "verified": True, "line": 5}
     )
-    assert poll(worker)["breakpoint_events"]
-    assert poll(worker)["recovered"] is True
-
-
-def test_a_real_report_arriving_during_the_poll_wins(source):
-    worker = paused_worker(source, {7: at(source, 5)})
+    assert poll(worker)["breakpoint_events"] and worker.candidate["samples"] == 1
     poll(worker)
+    with pytest.raises(LostStop):
+        poll(worker)
+
+
+def test_a_real_report_wins_and_is_served_as_usual(source):
+    worker = paused_worker(source, {7: at(source, 5)})
+    poll(worker), poll(worker)
     worker.dap.during_stack = lambda: worker.dap.add("stopped", reason="breakpoint", threadId=7)
     state = poll(worker)
-    assert state["state"] == "stopped" and "recovered" not in state and state["hit"] == 1
-    assert worker.cursor == 1 and not worker.owed
-    assert "stop_recovered" not in operations(worker)
+    assert state["state"] == "stopped" and state["hit"] == 1 and worker.cursor == 1
+    assert worker.candidate is None and "lost_stop" not in operations(worker)
 
 
-def recovered(worker):
-    poll(worker)
-    state = poll(worker)
-    assert state["recovered"] is True
-    return {"session_id": "session", "stop_id": state["stop_id"]}
-
-
-def test_a_late_report_after_the_thread_resumed_is_absorbed_never_a_second_stop(source):
+def test_a_report_between_polls_is_served_and_restarts_the_count(source):
     worker = paused_worker(source, {7: at(source, 5)})
-    worker.dispatch("continue", recovered(worker))
-    worker.dap.add("stopped", reason="breakpoint", threadId=7)  # the lost report, late
-    assert poll(worker) == {"state": "running", "timed_out": True}
-    assert worker.hits == 1 and worker.cursor == 1 and not worker.owed
-    assert operations(worker).count("late_stop_report") == 1
-    # The next report is a real new stop.
-    worker.dap.frames[7] = at(source, 5)
+    poll(worker), poll(worker)
     worker.dap.add("stopped", reason="breakpoint", threadId=7)
     state = poll(worker)
-    assert (state["hit"], "recovered" in state, worker.cursor) == (2, False, 2)
-
-
-def test_a_late_report_while_the_recovered_stop_is_current_waits_for_the_next_wait(source):
-    worker = paused_worker(source, {7: at(source, 5)})
-    stop = recovered(worker)
-    worker.dap.add("stopped", reason="breakpoint", threadId=7)
-    # The stop stays the recovered one; the report is consumed only once running again.
-    assert (
-        worker.dispatch("wait", {"session_id": "session", "timeout": 0.1})["stop_id"]
-        == (stop["stop_id"])
-    )
-    worker.dispatch("continue", stop)
-    assert poll(worker)["state"] == "running" and worker.hits == 1
-
-
-def test_a_late_report_of_another_thread_never_blocks_a_step(source):
-    worker = paused_worker(source, {8: at(source, 5)})
-    worker.dispatch("continue", recovered(worker))  # thread 8, recovered and resumed
-    worker.dap.frames[7] = at(source, 5)
-    worker.dap.add("stopped", reason="breakpoint", threadId=7)
-    state = poll(worker)
-    assert worker.thread_id == 7 and "recovered" not in state
-    worker.dap.add("stopped", reason="breakpoint", threadId=8)  # 8's late report
-    assert not worker.pending_stop_elsewhere()
-    worker.dap.add("stopped", reason="breakpoint", threadId=8)  # a real new stop of 8
-    assert worker.pending_stop_elsewhere()
-
-
-def test_a_report_with_another_reason_means_the_late_one_never_comes(source):
-    worker = paused_worker(source, {7: at(source, 5)})
-    worker.dispatch("step", recovered(worker))
-    assert worker.stepping == {7}
-    worker.dap.frames[7] = at(source, 6)
-    worker.dap.add("stopped", reason="step", threadId=7)
-    state = poll(worker)
-    assert state["reason"] == "step" and not worker.owed and not worker.stepping
-    assert "late_stop_report" not in operations(worker)
-
-
-def test_a_step_from_a_recovered_stop_survives_its_late_report(source):
-    worker = paused_worker(source, {7: at(source, 5)})
-    worker.dispatch("step", recovered(worker))
-    worker.dap.add("stopped", reason="breakpoint", threadId=7)  # late, before the step's
-    worker.dap.frames[7] = at(source, 6)
-    worker.dap.add("stopped", reason="step", threadId=7)
-    state = poll(worker)
-    assert (state["reason"], worker.cursor, worker.hits) == ("step", 2, 1)
+    assert (state["state"], state["hit"], worker.candidate) == ("stopped", 1, None)
+    worker.dispatch("continue", {"session_id": "session", "stop_id": state["stop_id"]})
+    for _ in range(2):
+        assert poll(worker)["state"] == "running"
+    with pytest.raises(LostStop):
+        poll(worker)
 
 
 def test_polls_wait_after_a_resume_and_run_at_most_once_per_interval(source):
@@ -311,81 +388,90 @@ def test_polls_wait_after_a_resume_and_run_at_most_once_per_interval(source):
     assert worker.dap.calls.count("threads") == 1
 
 
-def test_each_poll_checks_a_bounded_rotating_window_of_threads(source, monkeypatch):
+def test_each_poll_checks_a_bounded_rotating_window_and_the_jvms_own_threads(source, monkeypatch):
     monkeypatch.setattr(worker_module, "LOST_STOP_THREADS", 4)
-    frames = {thread: None for thread in range(1, 11)}
-    frames[10] = at(source, 5)
+    frames = {thread: None for thread in range(10, 20)}
+    frames[19] = at(source, 5)
     worker = paused_worker(source, frames)
     counts = []
     for _ in range(3):
         before = len(worker.dap.calls)
         assert poll(worker)["state"] == "running"
         counts.append(worker.dap.calls[before:].count("stackTrace"))
-    assert counts == [4, 4, 4] and 10 in worker.suspects  # threads 9, 10, 1, 2
-    assert poll(worker)["recovered"] is True
+    # Four JVM threads before and after four others; the suspect, rechecked twice with
+    # the JVM threads after each recheck, is found in the third window.
+    assert counts == [12, 12, 12 + 2 * 5] and worker.candidate["thread"] == 19
+    poll(worker)
+    with pytest.raises(LostStop):
+        poll(worker)
 
 
 def test_a_poll_never_outlives_its_time_budget(source, monkeypatch):
     monkeypatch.setattr(worker_module, "LOST_STOP_BUDGET_S", 0.0)
     worker = paused_worker(source, {7: at(source, 5)})
-    for _ in range(3):
+    for _ in range(4):
         assert poll(worker)["state"] == "running"
-    assert set(worker.dap.calls) == {"threads"}
+    assert set(worker.dap.calls) == {"threads"} and worker.candidate is None
 
 
 @pytest.mark.parametrize("failure", [TimeoutError("slow"), RuntimeError("error reply")])
 def test_a_slow_or_failed_poll_is_no_evidence_and_never_closes(source, failure):
     worker = paused_worker(source, {7: at(source, 5)})
-    poll(worker)
+    poll(worker), poll(worker)
     worker.dap.fail = failure
     assert poll(worker) == {"state": "running", "timed_out": True}
-    assert worker.dap is not None and worker.session == "session" and not worker.suspects
+    assert worker.dap is not None and worker.session == "session" and worker.candidate is None
     worker.dap.fail = None
-    assert poll(worker)["state"] == "running"  # two fresh sightings are needed again
-    assert poll(worker)["recovered"] is True
+    poll(worker), poll(worker)
+    with pytest.raises(LostStop):
+        poll(worker)
 
 
-def test_an_unobserved_lost_stop_is_recovered_and_auto_resumed_by_the_pause_budget(source):
+def test_an_unattended_session_with_a_pause_budget_detaches_on_a_lost_stop(source, capsys):
     worker = paused_worker(source, {7: at(source, 5)})
-    worker.max_pause = 10
+    dap, worker.max_pause = worker.dap, 10
+    for _ in range(2):
+        worker.lost_stop_polled = 0.0
+        worker.guard_pause()
+        worker.candidate["since"] -= 2
     worker.lost_stop_polled = 0.0
     worker.guard_pause()
-    assert worker.state == "running" and 7 in worker.suspects
-    worker.lost_stop_polled = 0.0
-    worker.guard_pause()
-    assert worker.state == "stopped" and worker.stop_recovered
-    worker.guard_pause()
-    assert worker.state == "stopped"  # paused for less than the budget
-    worker.stopped_at -= 10
-    worker.guard_pause()
-    assert worker.state == "running" and worker.dap.calls[-1] == "continue"
-    assert worker.auto_resumed[-1]["reason"] == "breakpoint"
+    assert dap.closed == {"terminate": False} and worker.failed["session"] == "session"
+    assert "Lost stop" in capsys.readouterr().err
+    with pytest.raises(LostStop):
+        worker.dispatch("wait", {"session_id": "session", "timeout": 1})
 
 
 def test_nothing_carries_over_into_the_next_session(source):
     worker = paused_worker(source, {7: at(source, 5)})
-    worker.dispatch("continue", recovered(worker))
+    poll(worker)
     worker.stepping.add(9)
     worker.close()
-    assert (worker.placed, worker.owed, worker.stepping, worker.suspects) == ({}, {}, set(), {})
-    assert not worker.stop_recovered
+    assert (worker.placed, worker.stepping, worker.candidate) == ({}, set(), None)
 
 
 def test_only_attached_jvms_opt_in():
     from peeky.java import JavaSession
     from peeky.java_attach import JavaAttachSession
 
-    assert JavaAttachSession.recovers_lost_stops is True
-    assert getattr(JavaSession, "recovers_lost_stops", False) is False
+    assert JavaAttachSession.detects_lost_stops is True
+    assert getattr(JavaSession, "detects_lost_stops", False) is False
 
 
-class ScriptedWorker:
-    """One stop at the breakpoint (recovered or reported), then the program's exit."""
+def test_the_diagnosis_is_a_debugger_error_whatever_its_text_mentions():
+    # The message names a breakpoint and a time: never INVALID_BREAKPOINT or TIMEOUT.
+    error = classify(LostStop("Lost stop: thread 'main' at the breakpoint, timed out after 4 s"))
+    assert error["code"] == "DEBUGGER_ERROR" and not error["retryable"]
 
-    def __init__(self, recovered):
-        self.recovered, self.waits = recovered, 0
+
+class FailingWorker:
+    """A probe's worker whose wait meets a lost stop (#27)."""
+
+    def __init__(self):
+        self.calls = []
 
     def dispatch(self, operation, args):
+        self.calls.append(operation)
         if operation == "launch":
             return {
                 "session_id": "s",
@@ -395,42 +481,29 @@ class ScriptedWorker:
                 "source_sha256": "x",
             }
         if operation == "wait":
-            self.waits += 1
-            if self.waits > 1:
-                return {"state": "terminated"}
-            stop = {"state": "stopped", "stop_id": "t", "event": {"body": {"reason": "breakpoint"}}}
-            return {**stop, "recovered": True} if self.recovered else stop
-        if operation == "inspect":
-            frame = {"source": {"path": "/w/Main.java"}, "line": 8}
-            variable = {"name": "x", "value": "1", "variablesReference": 0}
-            return {
-                "frames": [frame],
-                "scopes": [{"name": "Locals", "reference": 1, "variables": [variable]}],
-            }
+            raise LostStop("Lost stop: java-debug never reported a stop it made")
         if operation == "report":
-            return {"output": "", "output_truncated": False}
-        return {}
+            return {
+                "state": "detached",
+                "output": "so far\n",
+                "output_truncated": False,
+                "lost_stop": {"thread": 1},
+                "debugger_events": {"trace": [{"name": "lost stop"}]},
+            }
+        raise AssertionError(operation)
 
     def close(self):
-        pass
+        self.calls.append("close")
 
 
-@pytest.mark.parametrize("recovered", [True, False])
-def test_probes_count_recovered_stops_and_warn(monkeypatch, recovered):
+def test_a_probe_fails_with_the_diagnosis_and_its_debugger_events(monkeypatch):
     import peeky.probe as probe_module
     from peeky.probe import Probe
 
-    worker = ScriptedWorker(recovered)
+    worker = FailingWorker()
     monkeypatch.setattr(probe_module, "DebugWorker", lambda *args, **kwargs: worker)
     result = probe_module.run_probe("/w", Probe("Main.java", 8, ("x",)))
-    assert result["status"] == "completed" and result["rows"][0]["value"] == "1"
-    warned = any("never reported 1 stop(s)" in warning for warning in result["warnings"])
-    assert (result.get("recovered_stops"), warned) == ((1, True) if recovered else (None, False))
-
-
-def test_session_states_say_a_stop_was_recovered():
-    from peeky.cli import _state_text
-
-    state = {"state": "stopped", "location": "Demo.java:5", "reason": "breakpoint"}
-    assert "never reported" not in _state_text(state)
-    assert "never reported this stop" in _state_text({**state, "recovered": True})
+    assert result["status"] == "failed" and result["hits"] == 0 and result["rows"] == []
+    assert (result["error"]["code"], result["error"]["session_closed"]) == ("DEBUGGER_ERROR", True)
+    assert result["debugger_events"]["trace"] == [{"name": "lost stop"}]
+    assert result["output"] == "so far\n" and worker.calls[-1] == "close"

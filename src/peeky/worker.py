@@ -45,19 +45,24 @@ OPERATIONS = frozenset(
 # user's own steps. Crashes, exceptions and signals stay stopped for inspection.
 RESUMABLE_STOPS = frozenset({"breakpoint", "step"})
 STEPS = {"over": "next", "in": "stepIn", "out": "stepOut"}
-# Lost `stopped` events on attached JVMs (#27). java-debug reports a breakpoint stop
-# within milliseconds; a poll looks only after LOST_STOP_POLL_S without one, polls at
-# most that often, and a stop is recovered only when two consecutive polls (so at
-# least that far apart) find the same thread suspended at the same verified breakpoint
-# with no report. Each poll is one `threads` request plus at most LOST_STOP_THREADS
-# one-frame `stackTrace` requests, all within LOST_STOP_BUDGET_S.
+# Lost `stopped` events on attached JVMs (#27): see find_lost_stop. java-debug reports a
+# breakpoint stop within milliseconds. Polls start LOST_STOP_POLL_S after a resume and
+# run at most that often. Each is one `threads` request and one-frame `stackTrace`
+# requests: at most LOST_STOP_THREADS threads, the JVM's own threads and rechecks of a
+# suspect, all within LOST_STOP_BUDGET_S. Evidence needs LOST_STOP_SAMPLES clean
+# sightings in a row spanning LOST_STOP_SPAN_S.
 LOST_STOP_POLL_S = 2.0
 LOST_STOP_THREADS = 256
 LOST_STOP_BUDGET_S = 1.0
-RECOVERED_NOTE = (
-    "recovered: the debugger never reported this stop; its thread is suspended at the "
-    "session's verified breakpoint"
-)
+LOST_STOP_SAMPLES = 3
+LOST_STOP_SPAN_S = 4.0
+# Threads every JVM runs with Java frames: suspended only when every thread is (a
+# class-load or other suspend-all event), never by a line breakpoint of the session.
+JVM_THREADS = frozenset({"Reference Handler", "Finalizer", "Common-Cleaner", "Signal Dispatcher"})
+
+
+class LostStop(RuntimeError):
+    """The debugger made a stop it never reported (#27); the session was detached."""
 
 
 # Debugger placeholders for a local that has no value at this point (optimized out,
@@ -154,6 +159,8 @@ class DebugWorker:
         self.own_lines, self.own_ids, self.temporary_lines = set(), set(), set()
         self.stop_outside = self.stop_returns = self.co_served = False
         self.reset_lost_stops()
+        # A session that failed on a lost stop (#27): its id, error and final report.
+        self.failed = None
         # The single absolute launch budget, below Client.call's 45 s HTTP timeout.
         # Preparation (supports_deadline adapters: builds, symbols, module identity)
         # and every DAP launch phase receive only the remaining time, so a launch
@@ -247,23 +254,21 @@ class DebugWorker:
         return self.empty_thread_replies >= 2
 
     def reset_lost_stops(self):
-        """Forget everything lost-stop recovery (#27) knows; every session starts clean.
+        """Forget what lost-stop detection (#27) knows; every session starts clean.
 
         ``placed``: the session's breakpoints per resolved source path, as the adapter
         placed them (line, id, verified). ``stepping``: threads with a step in flight.
-        ``owed``: per thread, recovered stops whose own `stopped` event may still arrive.
-        ``suspects``: threads the last poll found suspended at a placed breakpoint.
+        ``candidate``: the thread the last polls found alone suspended at a breakpoint.
         """
-        self.placed, self.stepping, self.owed, self.suspects = {}, set(), {}, {}
+        self.placed, self.stepping, self.candidate = {}, set(), None
         self.lost_stop_polled = time.monotonic()
         self.lost_stop_offset = 0
-        self.stop_recovered = False
 
     def mark_resumed(self):
         """The program runs again: restart the liveness and lost-stop clocks."""
         self.resumed_at = self.lost_stop_polled = time.monotonic()
         self.empty_thread_replies = 0
-        self.suspects = {}
+        self.candidate = None
 
     def note_placed(self, source, requested, reply):
         """Record where the adapter placed one source's breakpoints (DAP `setBreakpoints`
@@ -304,24 +309,24 @@ class DebugWorker:
                 )
 
     def placed_breakpoint(self, frame):
-        """Whether a frame is exactly at one of the session's verified breakpoints: the
-        same resolved source file and line."""
+        """The session's verified breakpoint (resolved source path, line) that a frame is
+        exactly at, else None."""
         path, line = (frame.get("source") or {}).get("path"), frame.get("line")
         if not isinstance(path, str) or not path or type(line) is not int:
-            return False
+            return None
         try:
             key = str(Path(path).resolve())
         except (OSError, ValueError):
-            return False
-        return any(
-            entry["verified"] and entry["line"] == line for entry in self.placed.get(key, ())
-        )
+            return None
+        if any(entry["verified"] and entry["line"] == line for entry in self.placed.get(key, ())):
+            return key, line
+        return None
 
     def lost_stop_due(self, runtime=None):
         """Whether a lost-stop poll (see find_lost_stop) may run now."""
         runtime = runtime or self.runtime
         return bool(
-            getattr(runtime, "recovers_lost_stops", False)
+            getattr(runtime, "detects_lost_stops", False)
             and self.dap
             and self.state == "running"
             and time.monotonic() - self.lost_stop_polled >= LOST_STOP_POLL_S
@@ -329,161 +334,168 @@ class DebugWorker:
         )
 
     def find_lost_stop(self, runtime):
-        """A breakpoint stop whose `stopped` event the debugger never sent (#27).
+        """Evidence that java-debug made a breakpoint stop and never reported it (#27).
 
-        Only for runtimes that opt in (an attached JVM through java-debug), while
-        running. java-debug lists frames only for a thread the debugger suspended,
-        and Peeky's Java adapter suspends threads only for the session's own
-        breakpoints and steps (no pause, exception or function breakpoints). So a
-        thread that is not stepping, whose top frame sits exactly at one of the
-        session's verified breakpoints in two consecutive polls with no report in
-        between, is stopped at that breakpoint and its event was lost.
+        Only for runtimes that opt in (an attached JVM), while running with nothing
+        reported. java-debug lists frames only for threads the debugger suspended. The
+        session's breakpoints and steps suspend one thread; but java-debug's own
+        class-load requests (`Breakpoint.install`) suspend every thread for a moment,
+        and a thread blocked entering `synchronized` then shows the block's first line.
+        So a poll is a sighting only when exactly one thread that is not stepping is
+        suspended, at a verified session breakpoint's exact source and line, while every
+        other thread checked runs: the JVM's own threads (before and after the rest),
+        the window of other threads, and the JVM's own threads again after each of two
+        re-checks of that thread. Evidence is the same thread and place in
+        LOST_STOP_SAMPLES consecutive sightings spanning LOST_STOP_SPAN_S, with no
+        report in between.
 
-        Returns a synthetic `stopped` event; "event" when a real stop or exit arrived
-        during the check (it wins); else None. A slow or failed check is no evidence.
+        Returns the evidence (a dict); "event" when a real stop or exit arrived during
+        the check (it wins); else None. A slow, failed or unclean poll is no evidence
+        and starts the count again. Nothing here ever serves a stop.
         """
         if not self.lost_stop_due(runtime):
             return None
         started = time.monotonic()
         self.lost_stop_polled = started
         deadline = started + LOST_STOP_BUDGET_S
-        previous, self.suspects = self.suspects, {}
-        found, checked = None, 0
+        previous, self.candidate = self.candidate, None
+        suspended, checked, sighting = {}, [0], None
+
+        def top(thread):
+            """The thread's top frame if the debugger has it suspended, else None."""
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("lost-stop poll budget spent")
+            checked[0] += 1
+            reply = self.dap.request(
+                "stackTrace",
+                {"threadId": thread, "levels": 1},
+                timeout=remaining,
+                **self.untraced(),
+            )
+            frames = reply.get("stackFrames") if isinstance(reply, dict) else None
+            if not isinstance(frames, list) or not frames:
+                return None
+            return frames[0] if isinstance(frames[0], dict) else {}
+
         try:
             listed = self.dap.request("threads", {}, timeout=LOST_STOP_BUDGET_S, **self.untraced())
             listed = listed.get("threads") if isinstance(listed, dict) else None
-            ids = [
-                thread["id"]
-                for thread in (listed if isinstance(listed, list) else [])
-                if isinstance(thread, dict) and type(thread.get("id")) is int
-            ]
-            ids = [thread for thread in dict.fromkeys(ids) if thread not in self.stepping]
-            # Last poll's suspects first (to confirm them), then a rotating window.
-            known = [thread for thread in ids if thread in previous]
-            others = [thread for thread in ids if thread not in previous]
+            names = {}
+            for thread in listed if isinstance(listed, list) else []:
+                if isinstance(thread, dict) and type(thread.get("id")) is int:
+                    name = str(thread.get("name") or "")
+                    names[thread["id"]] = name[8:-1] if name.startswith("Thread [") else name
+            ids = [thread for thread in names if thread not in self.stepping]
+            witnesses = [thread for thread in ids if names[thread] in JVM_THREADS]
+            known = [t for t in ids if previous and t == previous["thread"] and t not in witnesses]
+            others = [t for t in ids if t not in witnesses and t not in known]
             if others:
                 start = self.lost_stop_offset % len(others)
                 others = others[start:] + others[:start]
-            window = others[: max(0, LOST_STOP_THREADS - len(known))]
+            window = others[:LOST_STOP_THREADS]
             self.lost_stop_offset += len(window)
-            for thread in known + window:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    break
-                checked += 1
-                frames = self.dap.request(
-                    "stackTrace",
-                    {"threadId": thread, "levels": 1},
-                    timeout=remaining,
-                    **self.untraced(),
-                )
-                frames = frames.get("stackFrames") if isinstance(frames, dict) else None
-                frame = frames[0] if isinstance(frames, list) and frames else None
-                if not isinstance(frame, dict) or not self.placed_breakpoint(frame):
-                    continue
-                where = ((frame.get("source") or {}).get("path"), frame.get("line"))
-                seen = previous.get(thread)
-                if seen and seen["where"] == where:
-                    self.suspects[thread] = seen
-                    found = thread
-                    break
-                self.suspects[thread] = {"where": where, "since": time.monotonic()}
+            # The JVM's own threads before and after: a suspend-all event in between
+            # leaves its mark on them or on another thread checked.
+            for thread in witnesses + known + window + witnesses:
+                if (frame := top(thread)) is not None:
+                    suspended[thread] = frame
+            if len(suspended) == 1:
+                ((thread, frame),) = suspended.items()
+                where = None if thread in witnesses else self.placed_breakpoint(frame)
+                # Twice more, each followed by the JVM's own threads: a thread a
+                # suspend-all event caught for a moment is running again by then.
+                for _ in range(2):
+                    if where is None:
+                        break
+                    again = top(thread)
+                    if again is None or self.placed_breakpoint(again) != where:
+                        where = None
+                    elif any(top(witness) is not None for witness in witnesses):
+                        where = None
+                if where is not None:
+                    sighting = {
+                        "thread": thread,
+                        "name": names[thread],
+                        "frame": frame,
+                        "at": where,
+                    }
         except (TimeoutError, RuntimeError):
-            self.suspects = {}
+            sighting = None
+        if sighting:
+            same = previous and (previous["thread"], previous["at"]) == (
+                sighting["thread"],
+                sighting["at"],
+            )
+            self.candidate = {
+                **sighting,
+                "since": previous["since"] if same else started,
+                "samples": previous["samples"] + 1 if same else 1,
+            }
+        if annotate := getattr(self.dap, "annotate", None):
+            annotate(
+                "lost-stop poll",
+                checked=checked[0],
+                suspended=sorted(suspended)[:8],
+                candidate=self.candidate and self.candidate["thread"],
+                samples=self.candidate and self.candidate["samples"],
+            )
+        evidence = self.candidate
+        if not evidence or evidence["samples"] < LOST_STOP_SAMPLES:
             return None
-        finally:
-            if annotate := getattr(self.dap, "annotate", None):
-                annotate(
-                    "lost-stop poll",
-                    checked=checked,
-                    suspects=sorted(self.suspects),
-                    recovered=found,
-                )
-        if found is None:
+        if started - evidence["since"] < LOST_STOP_SPAN_S:
             return None
         try:
             self.dap.wait_event({"stopped", "terminated"}, self.cursor, 0)
             return "event"
         except TimeoutError:
             pass
-        seen = self.suspects.pop(found)
-        self.owed[found] = self.owed.get(found, 0) + 1
-        path, line = seen["where"]
-        self.record(
-            {
-                "time": time.time(),
-                "operation": "stop_recovered",
-                "arguments": {},
-                "result": {
-                    "thread": found,
-                    "location": f"{_display_path(runtime, path)}:{line}",
-                    "unreported_s": round(time.monotonic() - seen["since"], 2),
-                },
-            }
-        )
-        return {
-            "event": "stopped",
-            "cursor": self.cursor,
-            # From the first sighting: the thread was already paused then.
-            "received": seen["since"],
-            "body": {
-                "reason": "breakpoint",
-                "threadId": found,
-                "allThreadsStopped": False,
-                "peeky": RECOVERED_NOTE,
-            },
+        return evidence
+
+    def fail_lost_stop(self, runtime, evidence):
+        """Record the evidence, detach (an attached JVM resumes) and keep the session as
+        a failed one: every later request on it gets the same error, `report` the
+        state at failure, and `close` ends it. Raises LostStop."""
+        frame = evidence["frame"]
+        source = (frame.get("source") or {}).get("path") or ""
+        path, line = evidence["at"]
+        try:
+            shown = Path(path).relative_to(self.root).as_posix()
+        except ValueError:
+            shown = _display_path(runtime, path)
+        diagnosis = {
+            "thread": evidence["thread"],
+            "thread_name": evidence["name"],
+            "function": str(frame.get("name") or "")[:300] or None,
+            "location": f"{Path(source).name}:{frame.get('line')}",
+            "breakpoint": f"{shown}:{line}",
+            "unreported_s": round(time.monotonic() - evidence["since"], 1),
+            "samples": evidence["samples"],
         }
+        message = (
+            "Lost stop: java-debug never reported a stop it made (issue #27). Thread "
+            f"{diagnosis['thread_name']!r} (id {diagnosis['thread']}) has been suspended for "
+            f"{diagnosis['unreported_s']} s in {diagnosis['function']} at "
+            f"{diagnosis['location']}, this session's verified breakpoint "
+            f"{diagnosis['breakpoint']}, with no other thread suspended in "
+            f"{diagnosis['samples']} checks, and no `stopped` event arrived. Nothing was "
+            "served from this stop, and Peeky detached from the program"
+        )
+        self.record(
+            {"time": time.time(), "operation": "lost_stop", "arguments": {}, "result": diagnosis}
+        )
+        if annotate := getattr(self.dap, "annotate", None):
+            annotate("lost stop", **diagnosis)
+        report = self.report(runtime)
+        report.update(state="detached", lost_stop=diagnosis)
+        session = self.session
+        self.close()
+        self.failed = {"session": session, "message": message, "report": report}
+        raise LostStop(message)
 
     def untraced(self):
         """Keep lost-stop poll traffic out of the bounded DAP trace (its diagnostics)."""
         return {"trace": False} if getattr(self.dap, "annotate", None) else {}
-
-    def late_reports(self, events):
-        """Cursors of `stopped` events that are late reports of stops Peeky recovered.
-
-        java-debug reports one thread's stops in order, at most once each, so the first
-        `stopped` event for a thread after its recovered stop is that stop's own late
-        report, or a new stop if the report was lost for good. A breakpoint report is
-        taken as the late one: never counted twice, and if it was really a new stop,
-        the thread is still suspended at the breakpoint for the next poll to recover.
-        Any other reason (a step) means the late report never came.
-        """
-        owed, late = dict(self.owed), set()
-        for event in events:
-            body = event.get("body") or {}
-            thread = body.get("threadId")
-            if event.get("event") != "stopped" or not owed.get(thread):
-                continue
-            if body.get("reason") == "breakpoint":
-                owed[thread] -= 1
-                late.add(event["cursor"])
-            else:
-                owed[thread] = 0
-        return late
-
-    def absorb_late_report(self, event):
-        """Consume one `stopped` event if it is a late report (see ``late_reports``)."""
-        body = event.get("body") or {}
-        thread = body.get("threadId")
-        if event.get("event") != "stopped" or not self.owed.get(thread):
-            return False
-        if body.get("reason") != "breakpoint":
-            self.owed.pop(thread, None)
-            return False
-        self.owed[thread] -= 1
-        if not self.owed[thread]:
-            self.owed.pop(thread)
-        # A late report cancels a step java-debug had in flight on that thread.
-        self.stepping.discard(thread)
-        self.record(
-            {
-                "time": time.time(),
-                "operation": "late_stop_report",
-                "arguments": {},
-                "result": {"thread": thread, "cursor": event.get("cursor")},
-            }
-        )
-        return True
 
     def read_location(self):
         """Best-effort top-frame location for display; never evidence, never fatal.
@@ -525,9 +537,6 @@ class DebugWorker:
             # A step that left the program (into a library, past main): nothing to read.
             where["outside_program"] = True
             where["returns_to_program"] = self.stop_returns
-        if self.stop_id and self.stop_recovered:
-            # The debugger never reported this stop (#27); Peeky found it (see find_lost_stop).
-            where["recovered"] = True
         return {**where, "reason": self.stop_reason} if self.stop_id else where
 
     def pause_status(self):
@@ -587,6 +596,11 @@ class DebugWorker:
                         "result": {**entry, "max_pause": self.max_pause},
                     }
                 )
+            except LostStop as exc:
+                # Already detached; requests on the session get the same error.
+                import sys
+
+                print(f"peeky: {exc}", file=sys.stderr)
             except Exception:
                 import sys
                 import traceback
@@ -598,12 +612,24 @@ class DebugWorker:
     def dispatch(self, operation, args):
         self.validate(operation, args)
         with self.lock:
+            failed = self.failed
+            if operation != "launch" and failed and args.get("session_id") == failed["session"]:
+                # A session that failed on a lost stop (#27) is already detached: it only
+                # reports what it knew, closes, or repeats its error. Nothing is served.
+                if operation == "close":
+                    self.failed = None
+                    return {"state": "idle"}
+                if operation == "report":
+                    return failed["report"]
+                raise LostStop(failed["message"])
             if operation != "launch":
                 if not self.dap or args.get("session_id") != self.session:
                     raise ValueError("Missing or stale session_id")
             # Activity counts from both ends of an operation, so a long operation is never
             # mistaken for idleness the moment it returns; rejected requests do not count.
             self.last_used = time.monotonic()
+            if operation == "launch":
+                self.failed = None
             try:
                 result = self._dispatch(operation, args)
             except (TimeoutError, RuntimeError, OSError):
@@ -660,12 +686,9 @@ class DebugWorker:
         cursor = getattr(self.dap, "event_cursor", None)
         if not (events_between and cursor):
             return False
-        events = events_between(self.cursor, cursor(), {"stopped"})
-        # A late report of a stop Peeky recovered (#27) is nothing to serve.
-        late = self.late_reports(events)
         return any(
-            event["cursor"] not in late and event.get("body", {}).get("threadId") != self.thread_id
-            for event in events
+            event["event"] == "stopped" and event.get("body", {}).get("threadId") != self.thread_id
+            for event in events_between(self.cursor, cursor(), {"stopped"})
         )
 
     def record_own_points(self, requested, placed):
@@ -771,7 +794,6 @@ class DebugWorker:
 
     def forget_stop(self):
         self.stop_outside = self.stop_returns = False
-        self.stop_recovered = False
         self.stop_hit = self.stop_line = None
         self.state = "running"
         self.stopped_at = None
@@ -1086,7 +1108,6 @@ class DebugWorker:
                     **updates,
                 }
             deadline = time.monotonic() + timeout
-            recovered = None
             while True:
                 try:
                     event = self.dap.wait_event(
@@ -1118,19 +1139,15 @@ class DebugWorker:
                             }
                         )
                         break
-                    found = self.find_lost_stop(runtime)
-                    if found == "event":
+                    evidence = self.find_lost_stop(runtime)
+                    if evidence == "event":
                         # A real stop or exit arrived during the check: it wins.
                         continue
-                    if found is not None:
-                        recovered = event = found
-                        break
+                    if evidence is not None:
+                        # Never served: a stop java-debug did not report is not trusted.
+                        self.fail_lost_stop(runtime, evidence)
                     return {"state": self.state, "timed_out": True, **updates}
                 self.cursor = event["cursor"]
-                if self.absorb_late_report(event):
-                    if time.monotonic() >= deadline:
-                        return {"state": self.state, "timed_out": True, **updates}
-                    continue
                 if event["event"] != "breakpoint":
                     break
                 self.breakpoint_events.append(event.get("body", {}))
@@ -1156,10 +1173,9 @@ class DebugWorker:
             self.stop_all_threads = event.get("body", {}).get("allThreadsStopped") is True
             self.stop_reason = event.get("body", {}).get("reason") if self.stop_id else None
             self.stop_function = self.stop_line = self.stop_hit = None
-            self.stop_recovered = recovered is not None and event is recovered
             # This thread's step (if any) has ended; the next poll starts afresh.
             self.stepping.discard(self.thread_id)
-            self.suspects = {}
+            self.candidate = None
             self.stop_location = self.read_location() if self.stop_id else None
             # Counted like a probe's hits: every stop at the session's breakpoints,
             # including other threads' stops served one by one; never `--to` lines.
@@ -1454,26 +1470,29 @@ class DebugWorker:
             self.forget_stop()
             return {"state": self.state}
         if operation == "report":
-            output, truncated = self.dap.snapshot_output()
-            return {
-                "session_id": self.session,
-                "state": self.state,
-                "output": output,
-                "output_truncated": truncated,
-                **(
-                    {"exit_code": code}
-                    if type(code := getattr(self.dap, "exit_code", None)) is int
-                    else {}
-                ),
-                "history": [e for e in self.audit if e["operation"] != "report"],
-                "artifact_manifest_id": runtime.manifest_id,
-                "breakpoint_events": list(self.breakpoint_events),
-                "debugger_events": self.dap.recent_events(),
-            }
+            return self.report(runtime)
         if operation == "close":
             self.close()
             return {"state": self.state}
         raise ValueError("Unknown operation")
+
+    def report(self, runtime):
+        output, truncated = self.dap.snapshot_output()
+        return {
+            "session_id": self.session,
+            "state": self.state,
+            "output": output,
+            "output_truncated": truncated,
+            **(
+                {"exit_code": code}
+                if type(code := getattr(self.dap, "exit_code", None)) is int
+                else {}
+            ),
+            "history": [e for e in self.audit if e["operation"] != "report"],
+            "artifact_manifest_id": runtime.manifest_id,
+            "breakpoint_events": list(self.breakpoint_events),
+            "debugger_events": self.dap.recent_events(),
+        }
 
     @staticmethod
     def scope_identity(scope):

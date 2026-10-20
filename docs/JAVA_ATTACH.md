@@ -82,7 +82,7 @@ Verified on 2026-10-15. Each run captured both data-provider invocations, return
 | `ControllerClient.java:594` (client library, inside `createNewStore`) | `storeName`, `owner` | 145–153 ms | 18.3 s |
 | `CreateStore.java:64` (controller HTTP handler, on a Jetty thread) | `clusterName`, `storeName`, `owner`, `isSystemStore=false` | 178–186 ms | 21.4 s |
 
-In one earlier run, the worker received no `stopped` event for about 200 s while the test thread sat at the breakpoint, so both tests timed out. This did not reproduce in two identical attempts. Peeky now recovers such a stop within a few seconds ([Lost stop events](#lost-stop-events-27)). `session report` includes `debugger_events` (recent lifecycle events, counts of ignored events and a DAP trace), and `session close` keeps the worker log as `<name>.last.log` for diagnosis.
+In one earlier run, the worker received no `stopped` event for about 200 s while the test thread sat at the breakpoint, so both tests timed out. This did not reproduce in two identical attempts. Peeky now detects such a stop within seconds and fails with a diagnosis ([Lost stop events](#lost-stop-events-27)). `session report` includes `debugger_events` (recent lifecycle events, counts of ignored events and a DAP trace), and `session close` keeps the worker log as `<name>.last.log` for diagnosis.
 
 ## Dropped exit events (#27)
 
@@ -102,35 +102,42 @@ An attached JVM's lost `stopped` event is handled separately, below.
 
 ## Lost stop events (#27)
 
-java-debug occasionally never sends `stopped` for an **attached** JVM, although the thread sits suspended at the breakpoint. This was seen once on Venice and twice in this repository's attach tests under heavy machine load; it never reproduced on demand. A probe or session then waited out its whole timeout (60 s or more). Peeky now recovers the stop.
+java-debug occasionally never sends `stopped` for an **attached** JVM, although the thread sits suspended at the breakpoint. This was seen once on Venice and twice in this repository's attach tests under heavy machine load; it never reproduced on demand. A probe or session then waited out its whole timeout (60 s or more). Peeky now detects this and **fails fast with `DEBUGGER_ERROR`**, naming the evidence. It never serves such a stop: a stop the debugger did not report cannot be trusted, and serving it led to wrong hits in review.
 
-- **Why the evidence is sound:**
-  - java-debug lists stack frames only for a thread the debugger suspended (a running thread's `stackTrace` is empty).
-  - Peeky's Java adapter suspends threads only for the session's own line breakpoints and steps. It refuses `pause`, exception and function breakpoints, conditions and log points, and a JVM accepts one debugger at a time.
-  - So a thread that is not stepping, whose top frame is exactly at one of the session's breakpoints, was stopped by that breakpoint.
-- **Exact criteria:** a thread is taken for a lost breakpoint stop only when all of these hold:
+- **What java-debug suspends.** java-debug lists stack frames only for threads the debugger suspended (a running thread's `stackTrace` is empty). Two things suspend threads:
+  - the session's line breakpoints and steps suspend one thread each;
+  - java-debug's own class-load requests (`Breakpoint.install`, for the breakpoint's class and its nested classes) suspend **every** thread while java-debug looks for the line. A thread blocked entering `synchronized` then shows the line inside the block, even though that line never ran.
+
+  Nothing else does: Peeky's Java adapter refuses `pause`, exception and function breakpoints, conditions and log points, and a JVM accepts one debugger at a time.
+- **Exact criteria.** A poll is a *sighting* only when all of these hold:
   - the session is running, and the debugger has reported no stop or exit that Peeky has not consumed;
-  - the thread has no step in flight. A step that ends on a breakpoint line is reported as a step, so a lost step report must never become a breakpoint hit;
-  - its top frame's resolved source path and line equal those of a breakpoint the session set, and the debugger **verified** that breakpoint (in its `setBreakpoints` reply or a later `breakpoint` event);
-  - two consecutive polls, at least 2 s apart, find it there, and no report arrived in between.
+  - exactly one thread without a step in flight is suspended. Threads with a step in flight are ignored: a step that ends on a breakpoint line is reported as a step, so a lost step report must never look like a breakpoint stop;
+  - that thread's top frame is at the resolved source path and line of a breakpoint the session set, and the debugger **verified** it (in its `setBreakpoints` reply or a later `breakpoint` event);
+  - every other thread checked is running. The checks cover the JVM's own threads (Reference Handler, Finalizer, Common-Cleaner, Signal Dispatcher) before and after the rest, every other thread in the poll's window, and the suspect twice more, each time followed by the JVM's own threads again. Any other suspended thread means a suspend-all event, and the poll is no evidence.
+
+  Evidence is the same thread at the same place in **3 consecutive sightings spanning at least 4 s**, with no report in between. A real report that arrives meanwhile, even during a poll, is served as usual and starts the count again; so does a poll that is not a sighting.
 - **Polling bounds:**
-  - Polls start 2 s after a resume and run at most every 2 s, and only while a verified breakpoint exists.
-  - Each poll is one `threads` request plus at most 256 one-frame `stackTrace` requests (a rotating window in larger JVMs), all within 1 s. With about 300 threads, a poll took 40–90 ms.
-  - A slow or failed poll is no evidence: the session keeps waiting.
-- **Why 2 s:** a real report arrives within milliseconds of the stop (an attached probe takes about 0.2 s end to end), so polls never run during a normal stop. A recovered stop's report is always at least 2 s overdue. Recovery takes 2–4 s after the stop.
-- **The recovered stop** is an ordinary stop:
-  - It gets a new `stop_id` and reason `breakpoint`, and it is numbered like any hit. `inspect`, `set`, `continue` and `step` work as usual.
-  - It carries `recovered: true`, and the event body's `peeky` field says why. The history gets a `stop_recovered` entry, and probes add `recovered_stops` and a warning.
-  - Its pause (`paused_s`, `pauses_ms`, `--max-pause`) counts from the first poll that saw it.
-- **Races:**
-  - A real report that arrives during a poll wins over the recovery.
-  - A report that arrives after the stop was recovered is consumed and recorded in the history as `late_stop_report`; it is never served as a second stop. java-debug reports each thread's stops in order and once each, so that thread's next breakpoint report is the late one.
-  - If that report was really a new stop (the earlier one's report was lost for good), the thread is still suspended at the breakpoint, and the next polls recover it. A report with another reason (a step) means the late one will not come.
-- **Unattended sessions:** with a pause budget (`--max-pause`, the default for attached JVMs), the worker polls even when no client is waiting, so a lost stop is still auto-resumed.
-- **Launched JVMs are not polled.** The same evidence would hold there, but the loss has only been seen on attach.
-- **Diagnostics:** the polls stay out of `debugger_events.trace`. A single merged `lost-stop poll` note there gives the number of polls (`times`), the threads checked and the suspects.
+  - Polls start 2 s after a resume, run at most every 2 s, and only while a verified breakpoint exists.
+  - Each poll is one `threads` request plus one-frame `stackTrace` requests: at most 256 threads (a rotating window in larger JVMs), the JVM's own threads and the rechecks, all within 1 s. With about 300 threads, a poll took 40–90 ms.
+  - A slow or failed poll is no evidence. Launched JVMs are not polled: the loss has only been seen on attach.
+  - This fails closed: while java-debug keeps suspending every thread (heavy class loading of the breakpoint's nested classes), a truly lost stop may never get 3 clean sightings, and the run times out as it did before.
+- **Timing.** A real report arrives within milliseconds of the stop (an attached probe takes about 0.2 s end to end), so polls never run during a normal stop. A stop counts as lost only after at least 4 s without its report; the error comes 4–8 s after the stop (6.6 s for an attached probe whose first stop is lost).
+- **The error** is `DEBUGGER_ERROR`. Its message names:
+  - the thread (name and id);
+  - where it is suspended (`Loop.twice(int) at Loop.java:5`);
+  - the session's breakpoint (`src/demo/Loop.java:5`);
+  - how long the stop has gone unreported, and how many checks saw it.
+
+  Its hint says that java-debug did not report a stop it made, that the session's state cannot be trusted, and to close and retry.
+- **What happens to the run:**
+  - Peeky records the diagnosis (history entry `lost_stop`, and a `lost stop` note in `debugger_events.trace`) and detaches, so the JVM resumes and runs on.
+  - **Probe:** fails with the error and carries `debugger_events`.
+  - **Session:** the `wait` returns the error (`peeky session continue` and `step` wait too). Every later request on that session returns the same error, except `report`, which returns the session as it was at the failure (`state: detached`, `lost_stop`, `history`, `debugger_events`), and `close`, which ends it.
+- **Unattended sessions:** with a pause budget (`--max-pause`, the default for attached JVMs), the worker polls even when no client is waiting, so a lost stop still ends in a detach.
+- **Diagnostics:** the polls stay out of `debugger_events.trace`. A single merged `lost-stop poll` note there gives the number of polls (`times`), the threads checked, those suspended, and the suspect.
 
 Tests drop the `stopped` event at Peeky's DAP client (`tests/java/test_java_attach.py`, `tests/unit/test_lost_stop.py`):
-- an attached probe still reads and changes values within a few seconds;
-- a session steps and continues after recovered stops, absorbs late reports (both while the stop is current and after the thread runs again), and counts each hit once;
-- a step that ends on a verified breakpoint line, with its report lost, is never taken for a breakpoint stop.
+- an attached probe fails in about 6.6 s with the diagnosis, and the JVM runs to completion unchanged;
+- a session fails the same way after a served hit, repeats its error, reports and closes, and the JVM completes;
+- a step whose lost report ends on a verified breakpoint line never produces the error;
+- under a class-load storm, a breakpoint that never ran is seen at its line in every poll but never produces the error, and the probe ends normally with 0 hits.

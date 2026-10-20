@@ -1106,11 +1106,6 @@ def _state_text(state):
         text += f"\n{_OPTIMIZED_NOTE.format(state['optimized'])}"
     if state.get("exit_inferred"):
         text += "\nnote: the debugger never reported the exit; Peeky inferred it (no threads left)"
-    if state.get("recovered"):
-        text += (
-            "\nnote: the debugger never reported this stop; Peeky found the thread paused at "
-            "your breakpoint and recovered it"
-        )
     if state.get("note"):
         text += f"\nnote: {state['note']}"
     for warning in state.get("warnings", []):

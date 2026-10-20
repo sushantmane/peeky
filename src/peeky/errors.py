@@ -53,6 +53,15 @@ _RULES = (
         False,
     ),
     (
+        r"^Lost stop: ",
+        "DEBUGGER_ERROR",
+        "java-debug did not report a stop it made (issue #27), so this session's state cannot "
+        "be trusted: Peeky served nothing from it and detached, and the JVM runs on. Close the "
+        "session (`peeky session close`) and retry. To help #27, first keep `peeky session "
+        "report --json` (its `debugger_events`) or the probe's `debugger_events`.",
+        False,
+    ),
+    (
         r"^Job [0-9a-f]{16} was lost",
         "JOB_LOST",
         "The background job process died; rerun the command. The message has its log.",
