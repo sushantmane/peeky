@@ -58,7 +58,7 @@ LOST_STOP_SAMPLES = 3
 LOST_STOP_SPAN_S = 4.0
 # Threads every JVM runs with Java frames: suspended only when every thread is (a
 # class-load or other suspend-all event), never by a line breakpoint of the session.
-JVM_THREADS = frozenset({"Reference Handler", "Finalizer", "Common-Cleaner", "Signal Dispatcher"})
+JVM_THREADS = frozenset({"Reference Handler", "Finalizer", "Common-Cleaner"})
 
 
 class LostStop(RuntimeError):
@@ -259,8 +259,11 @@ class DebugWorker:
         ``placed``: the session's breakpoints per resolved source path, as the adapter
         placed them (line, id, verified). ``stepping``: threads with a step in flight.
         ``candidate``: the thread the last polls found alone suspended at a breakpoint.
+        ``sighted``: the latest such sighting whose stop was never reported, kept so an
+        exit after it is not mistaken for a line that never ran (then ``unreported``).
         """
-        self.placed, self.stepping, self.candidate = {}, set(), None
+        self.placed, self.stepping, self.candidate, self.sighted = {}, set(), None, None
+        self.unreported = None
         self.lost_stop_polled = time.monotonic()
         self.lost_stop_offset = 0
 
@@ -427,7 +430,7 @@ class DebugWorker:
                 sighting["thread"],
                 sighting["at"],
             )
-            self.candidate = {
+            self.candidate = self.sighted = {
                 **sighting,
                 "since": previous["since"] if same else started,
                 "samples": previous["samples"] + 1 if same else 1,
@@ -452,10 +455,8 @@ class DebugWorker:
             pass
         return evidence
 
-    def fail_lost_stop(self, runtime, evidence):
-        """Record the evidence, detach (an attached JVM resumes) and keep the session as
-        a failed one: every later request on it gets the same error, `report` the
-        state at failure, and `close` ends it. Raises LostStop."""
+    def diagnose(self, runtime, evidence):
+        """What a sighting of an unreported stop shows, for messages and records."""
         frame = evidence["frame"]
         source = (frame.get("source") or {}).get("path") or ""
         path, line = evidence["at"]
@@ -463,7 +464,7 @@ class DebugWorker:
             shown = Path(path).relative_to(self.root).as_posix()
         except ValueError:
             shown = _display_path(runtime, path)
-        diagnosis = {
+        return {
             "thread": evidence["thread"],
             "thread_name": evidence["name"],
             "function": str(frame.get("name") or "")[:300] or None,
@@ -472,6 +473,12 @@ class DebugWorker:
             "unreported_s": round(time.monotonic() - evidence["since"], 1),
             "samples": evidence["samples"],
         }
+
+    def fail_lost_stop(self, runtime, evidence):
+        """Record the evidence, detach (an attached JVM resumes) and keep the session as
+        a failed one: every later request on it gets the same error, `report` the
+        state at failure, and `close` ends it. Raises LostStop."""
+        diagnosis = self.diagnose(runtime, evidence)
         message = (
             "Lost stop: java-debug never reported a stop it made (issue #27). Thread "
             f"{diagnosis['thread_name']!r} (id {diagnosis['thread']}) has been suspended for "
@@ -1107,6 +1114,7 @@ class DebugWorker:
                 return {
                     "state": self.state,
                     "stop_id": self.stop_id,
+                    **({"unreported_stop": self.unreported} if self.unreported else {}),
                     **self.location(),
                     **self.pause_status(),
                     **updates,
@@ -1180,6 +1188,19 @@ class DebugWorker:
             # This thread's step (if any) has ended; the next poll starts afresh.
             self.stepping.discard(self.thread_id)
             self.candidate = None
+            if self.stop_id and self.sighted and self.sighted["thread"] == self.thread_id:
+                self.sighted = None  # it was reported after all
+            if self.state == "terminated" and self.sighted:
+                # The program ended while a stop it made was never reported (#27).
+                self.unreported = self.diagnose(runtime, self.sighted)
+                self.record(
+                    {
+                        "time": time.time(),
+                        "operation": "unreported_stop",
+                        "arguments": {},
+                        "result": self.unreported,
+                    }
+                )
             self.stop_location = self.read_location() if self.stop_id else None
             # Counted like a probe's hits: every stop at the session's breakpoints,
             # including other threads' stops served one by one; never `--to` lines.
@@ -1193,6 +1214,7 @@ class DebugWorker:
                 "stop_id": self.stop_id,
                 "event": event,
                 **({"exit_inferred": True} if self.exit_inferred else {}),
+                **({"unreported_stop": self.unreported} if self.unreported else {}),
                 **self.location(),
                 **self.pause_status(),
                 **updates,

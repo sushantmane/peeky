@@ -11,7 +11,7 @@ Breakpoints may start pending until the class loads; the adapter verifies them w
 
 ## Venice walkthrough (verified 2026-10-14, Apple Silicon, JDK 17)
 
-1. Build the adapter once: `python scripts/setup_java_adapter.py --output "$PWD/work/java-adapter"` (use an absolute path).
+1. Build the adapter once: `python scripts/setup_java_adapter.py --output "$PWD/work/java-adapter"` (use an absolute path). Bundles built before the #27 fix are refused; rebuild them into a new directory.
 2. Apple Silicon without Rosetta: grpc-java ships only x86_64 macOS code generators. Build one natively (requires Homebrew `protobuf` and `abseil`):
    ```sh
    scripts/venice/native-grpc.sh            # writes ~/.peeky/venice/native-grpc.init.gradle
@@ -82,7 +82,7 @@ Verified on 2026-10-15. Each run captured both data-provider invocations, return
 | `ControllerClient.java:594` (client library, inside `createNewStore`) | `storeName`, `owner` | 145–153 ms | 18.3 s |
 | `CreateStore.java:64` (controller HTTP handler, on a Jetty thread) | `clusterName`, `storeName`, `owner`, `isSystemStore=false` | 178–186 ms | 21.4 s |
 
-In one earlier run, the worker received no `stopped` event for about 200 s while the test thread sat at the breakpoint, so both tests timed out. This did not reproduce in two identical attempts. Peeky now detects such a stop within seconds and fails with a diagnosis ([Lost stop events](#lost-stop-events-27)). `session report` includes `debugger_events` (recent lifecycle events, counts of ignored events and a DAP trace), and `session close` keeps the worker log as `<name>.last.log` for diagnosis.
+In one earlier run, the worker received no `stopped` event for about 200 s while the test thread sat at the breakpoint, so both tests timed out. This did not reproduce in two identical attempts. The cause was java-debug's event thread dying ([root cause](#root-cause-java-debugs-event-thread-died)); the adapter is now patched, and Peeky fails fast with a diagnosis if it happens anyway ([Lost stop events](#lost-stop-events-27)). `session report` includes `debugger_events` (recent lifecycle events, counts of ignored events and a DAP trace), and `session close` keeps the worker log as `<name>.last.log` for diagnosis.
 
 ## Dropped exit events (#27)
 
@@ -102,7 +102,24 @@ An attached JVM's lost `stopped` event is handled separately, below.
 
 ## Lost stop events (#27)
 
-java-debug occasionally never sends `stopped` for an **attached** JVM, although the thread sits suspended at the breakpoint. This was seen once on Venice and twice in this repository's attach tests under heavy machine load; it never reproduced on demand. A probe or session then waited out its whole timeout (60 s or more). Peeky now detects this and **fails fast with `DEBUGGER_ERROR`**, naming the evidence. It never serves such a stop: a stop the debugger did not report cannot be trusted, and serving it led to wrong hits in review.
+java-debug sometimes never sent `stopped` for an **attached** JVM, although the thread sat suspended at the breakpoint. This was seen once on Venice and twice in this repository's attach tests under heavy machine load. A probe or session then waited out its whole timeout (60 s or more).
+
+### Root cause: java-debug's event thread died
+
+The second adversarial review of PR #123 reproduced it naturally and found the cause (repros in the workspace's `work/vr27/churn/`).
+- java-debug's "Event Hub" thread turns every JDI event into DAP stops, steps, thread and exit events. For each event it ran `logger.fine("JDI Event: " + event)` (`EventHub.java:71`), building the string even with FINE logging off.
+- Building it calls `thread.name()`. For a short-lived thread the JVM had already collected, that throws `ObjectCollectedException`. Only `VMDisconnectedException` was caught, so the thread died: `Exception in thread "Event Hub" com.sun.jdi.ObjectCollectedException` on the adapter's stderr.
+- From then on no JVM event was processed: no `stopped`, `breakpoint`, `thread`, `exited` or `terminated`. This probably explains the lost exits of launched JVMs too (#29).
+- Under sustained churn, events backed up past 10,000, threads blocked in the JDWP agent, and a pending suspend-all class-load event froze the whole JVM.
+- Two threads starting short-lived threads in a 32 MB heap with constant garbage reproduce it within half a second (`tests/java/test_java_attach.py`, `CHURN`).
+
+**The fix.** `scripts/setup_java_adapter.py` patches the pinned `EventHub.java` before compiling (`eventhub-log-guard`): it logs only when FINE is loggable, and catches any `RuntimeException` around the log call. The patch fails loudly if the code it changes is not found exactly once. It is recorded in `adapter.json` (`patches`), and Peeky refuses a bundle without it (`UNSUPPORTED`, with the rebuild command). With the patch, the review's churn runs completed 18 of 18 times, with stops reported in 16–812 ms. The CI lanes build a fresh bundle with the script, so they use the patched adapter.
+
+### Two detectors fail fast if it happens anyway
+
+**A dead event thread.** Peeky keeps the adapter's stderr (the last 16 KiB, in `debugger_events.stderr`). When it shows `Exception in thread "Event Hub"`, from an unpatched bundle or an exception escaping one of java-debug's event handlers, any wait ends at once with `DEBUGGER_ERROR`: `java-debug's event thread died (<the line> at <java-debug's own frame>); it reports no more stops, steps or exits, so the session cannot continue: close it and retry`. The session closes as on any debugger failure, so an attached JVM is detached and a launched one ended. This applies to launched and attached JVMs. It also covers what the poll below cannot: several threads stopped at once, or threads blocked in the JDWP agent.
+
+**A stop left unreported** (attached JVMs). Peeky detects a stop java-debug made but never reported and **fails fast with `DEBUGGER_ERROR`**, naming the evidence. It never serves such a stop: a stop the debugger did not report cannot be trusted, and serving it led to wrong hits in the first review.
 
 - **What java-debug suspends.** java-debug lists stack frames only for threads the debugger suspended (a running thread's `stackTrace` is empty). Two things suspend threads:
   - the session's line breakpoints and steps suspend one thread each;
@@ -113,7 +130,7 @@ java-debug occasionally never sends `stopped` for an **attached** JVM, although 
   - the session is running, and the debugger has reported no stop or exit that Peeky has not consumed;
   - exactly one thread without a step in flight is suspended. Threads with a step in flight are ignored: a step that ends on a breakpoint line is reported as a step, so a lost step report must never look like a breakpoint stop;
   - that thread's top frame is at the resolved source path and line of a breakpoint the session set, and the debugger **verified** it (in its `setBreakpoints` reply or a later `breakpoint` event);
-  - every other thread checked is running. The checks cover the JVM's own threads (Reference Handler, Finalizer, Common-Cleaner, Signal Dispatcher) before and after the rest, every other thread in the poll's window, and the suspect twice more, each time followed by the JVM's own threads again. Any other suspended thread means a suspend-all event, and the poll is no evidence.
+  - every other thread checked is running. The checks cover the JVM's own threads with Java frames (Reference Handler, Finalizer, Common-Cleaner; Signal Dispatcher has none) before and after the rest, every other thread in the poll's window, and the suspect twice more, each time followed by the JVM's own threads again. Any other suspended thread means a suspend-all event, and the poll is no evidence.
 
   Evidence is the same thread at the same place in **3 consecutive sightings spanning at least 4 s**, with no report in between. A real report that arrives meanwhile, even during a poll, is served as usual and starts the count again; so does a poll that is not a sighting.
 - **Polling bounds:**
@@ -134,10 +151,17 @@ java-debug occasionally never sends `stopped` for an **attached** JVM, although 
   - **Probe:** fails with the error and carries `debugger_events`.
   - **Session:** the `wait` returns the error (`peeky session continue` and `step` wait too). Every later request on that session returns the same error, except `report`, which returns the session as it was at the failure (`state: detached`, `lost_stop`, `history`, `debugger_events`), and `close`, which ends it.
 - **Unattended sessions:** with a pause budget (`--max-pause`, the default for attached JVMs), the worker polls even when no client is waiting, so a lost stop still ends in a detach.
+- **Pause.** A lost stop holds its thread for about 4–8 s, until the detach, whatever `--max-pause` says: the budget can only resume stops that were reported.
+- **Seen, then the program ended.** If a poll saw a thread alone at the breakpoint and the program then ended before the evidence was complete, the line did run. A probe then fails with `DEBUGGER_ERROR` (`The program ended after thread 'main' was seen paused at …`), or warns if it captured other hits; it never reports `NO_STOP`. A session's final state carries `unreported_stop`, and the history gets an `unreported_stop` entry.
 - **Diagnostics:** the polls stay out of `debugger_events.trace`. A single merged `lost-stop poll` note there gives the number of polls (`times`), the threads checked, those suspended, and the suspect.
 
-Tests drop the `stopped` event at Peeky's DAP client (`tests/java/test_java_attach.py`, `tests/unit/test_lost_stop.py`):
+The lost-stop tests drop the `stopped` event at Peeky's DAP client (`tests/java/test_java_attach.py`, `tests/unit/test_lost_stop.py`):
 - an attached probe fails in about 6.6 s with the diagnosis, and the JVM runs to completion unchanged;
 - a session fails the same way after a served hit, repeats its error, reports and closes, and the JVM completes;
 - a step whose lost report ends on a verified breakpoint line never produces the error;
 - under a class-load storm, a breakpoint that never ran is seen at its line in every poll but never produces the error, and the probe ends normally with 0 hits.
+
+The event-thread tests (`tests/unit/test_adapter_stderr.py`, `tests/java/test_java_attach.py`):
+- a fake java-debug that prints the death ends a waiting session in under 2 s, attached (detached) or launched (terminated);
+- the churn scenario against the real, patched adapter reports the stop normally;
+- with `PEEKY_JAVA_ADAPTER_UNPATCHED` set to a bundle built before the patch, the same scenario fails with the event-thread error in under 5 s, and the JVM runs on after the detach.

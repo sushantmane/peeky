@@ -12,6 +12,8 @@ Build the local adapter using JDK 17 and Python 3.11+:
 python scripts/setup_java_adapter.py --output "$PWD/work/java-adapter"
 ```
 
+The script builds java-debug from its pinned, checksummed source, plus Peeky's launcher, and applies Peeky's source patches to java-debug before compiling. It records them in the bundle's `adapter.json` (`patches`). Today there is one patch, `eventhub-log-guard`: without it, java-debug's event thread could die and stop reporting every stop and exit (#27, see [JAVA_ATTACH.md](JAVA_ATTACH.md#root-cause-java-debugs-event-thread-died)). Peeky refuses a bundle built without a required patch (`UNSUPPORTED`, with the rebuild command), so rebuild older bundles into a new directory.
+
 The bundled example can then be started with `peeky-worker --root examples/java --java-config examples/java/target.json`; set DEBUG_TOKEN first as shown below. Its branch is on line 6. At that stop, change `timeoutMs` from `0` to `5000` and continue to observe `ready` instead of `timed out`.
 
 Create a trusted startup JSON file, for example `work/java-target.json`:

@@ -398,9 +398,10 @@ def test_each_poll_checks_a_bounded_rotating_window_and_the_jvms_own_threads(sou
         before = len(worker.dap.calls)
         assert poll(worker)["state"] == "running"
         counts.append(worker.dap.calls[before:].count("stackTrace"))
-    # Four JVM threads before and after four others; the suspect, rechecked twice with
-    # the JVM threads after each recheck, is found in the third window.
-    assert counts == [12, 12, 12 + 2 * 5] and worker.candidate["thread"] == 19
+    # The three JVM threads with Java frames before and after four others (Signal
+    # Dispatcher, which has none, is one of them); the suspect, rechecked twice with the
+    # JVM threads after each recheck, is found in the third window.
+    assert counts == [10, 10, 10 + 2 * 4] and worker.candidate["thread"] == 19
     poll(worker)
     with pytest.raises(LostStop):
         poll(worker)
@@ -507,3 +508,104 @@ def test_a_probe_fails_with_the_diagnosis_and_its_debugger_events(monkeypatch):
     assert (result["error"]["code"], result["error"]["session_closed"]) == ("DEBUGGER_ERROR", True)
     assert result["debugger_events"]["trace"] == [{"name": "lost stop"}]
     assert result["output"] == "so far\n" and worker.calls[-1] == "close"
+
+
+def test_a_sighting_then_the_programs_exit_is_an_unreported_stop_not_a_line_never_run(source):
+    worker = paused_worker(source, {7: at(source, 5)}, names={7: "main"})
+    assert poll(worker)["state"] == "running" and worker.candidate["samples"] == 1
+    worker.dap.frames[7] = None
+    worker.dap.add("terminated")
+    state = poll(worker)
+    assert state["state"] == "terminated"
+    unreported = state["unreported_stop"]
+    assert (unreported["thread_name"], unreported["breakpoint"]) == ("main", "src/Demo.java:5")
+    assert unreported["location"] == "Demo.java:5" and "unreported_stop" in operations(worker)
+    # Repeated waits say the same; a new session starts clean.
+    assert worker.dispatch("wait", {"session_id": "session"})["unreported_stop"] == unreported
+    worker.close()
+    assert worker.unreported is None and worker.sighted is None
+
+
+def test_a_sighting_whose_report_then_arrives_is_not_unreported(source):
+    worker = paused_worker(source, {7: at(source, 5)})
+    poll(worker)
+    worker.dap.add("stopped", reason="breakpoint", threadId=7)
+    state = poll(worker)
+    worker.dispatch("continue", {"session_id": "session", "stop_id": state["stop_id"]})
+    worker.dap.add("terminated")
+    state = poll(worker)
+    assert state["state"] == "terminated" and "unreported_stop" not in state
+
+
+class EndingWorker:
+    """A probe's worker: ``hits`` reported stops, then the program ends after a sighting
+    of a stop the debugger never reported."""
+
+    def __init__(self, hits):
+        self.stops = hits
+
+    def dispatch(self, operation, args):
+        if operation == "launch":
+            return {
+                "session_id": "s",
+                "breakpoints": [{"id": 1, "verified": True, "line": 8}],
+                "artifact_manifest_id": None,
+                "target_identity": None,
+                "source_sha256": "x",
+            }
+        if operation == "wait":
+            if self.stops:
+                self.stops -= 1
+                body = {"reason": "breakpoint"}
+                return {"state": "stopped", "stop_id": "t", "event": {"body": body}}
+            unreported = {
+                "thread_name": "main",
+                "breakpoint": "Main.java:8",
+                "function": "Main.main(String[])",
+                "location": "Main.java:8",
+            }
+            return {"state": "terminated", "unreported_stop": unreported}
+        if operation == "inspect":
+            frame = {"source": {"path": "/w/Main.java"}, "line": 8}
+            variable = {"name": "x", "value": "1", "variablesReference": 0}
+            scope = {"name": "Locals", "reference": 1, "variables": [variable]}
+            return {"frames": [frame], "scopes": [scope]}
+        if operation == "report":
+            return {
+                "state": "terminated",
+                "output": "",
+                "output_truncated": False,
+                "debugger_events": {"trace": [{"name": "lost-stop poll"}]},
+            }
+        return {}
+
+    def close(self):
+        pass
+
+
+@pytest.mark.parametrize("hits", [0, 1])
+def test_a_probe_whose_stop_was_seen_but_never_reported_never_says_no_stop(monkeypatch, hits):
+    import peeky.probe as probe_module
+    from peeky.probe import Probe
+
+    monkeypatch.setattr(probe_module, "DebugWorker", lambda *a, **k: EndingWorker(hits))
+    result = probe_module.run_probe("/w", Probe("Main.java", 8, ("x",), hits=2))
+    assert result["debugger_events"]["trace"]
+    seen = "thread 'main' was seen paused at Main.java:8 (in Main.main(String[]) at Main.java:8)"
+    if hits:
+        assert result["status"] == "completed" and result["hits"] == 1
+        assert any(seen in warning for warning in result["warnings"])
+    else:
+        assert result["status"] == "failed" and result["error"]["code"] == "DEBUGGER_ERROR"
+        assert result["error"]["message"].startswith(f"The program ended after {seen}")
+        assert "describe" not in result["error"]["message"] + result["error"]["hint"]
+
+
+def test_session_states_name_an_unreported_stop():
+    from peeky.cli import _state_text
+
+    state = {"state": "terminated"}
+    unreported = {"thread_name": "main", "breakpoint": "src/Demo.java:5"}
+    assert "never reported" not in _state_text(state)
+    text = _state_text({**state, "unreported_stop": unreported})
+    assert "thread 'main' was seen paused at src/Demo.java:5" in text
