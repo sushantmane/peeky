@@ -1073,6 +1073,12 @@ class DebugWorker:
                 ),
                 **self.pause_status(),
                 **({"optimized": level} if (level := self.optimized()) else {}),
+                # C++ string keys: whether LLDB's summary of a std::string is all of it.
+                **(
+                    {"whole_string_summaries": True}
+                    if getattr(runtime, "whole_string_summaries", False) is True
+                    else {}
+                ),
             }
             if index:
                 # Where the program is stopped, which a caller frame's location is not.

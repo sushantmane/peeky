@@ -733,7 +733,8 @@ def _resolve(worker, stop, snapshot, segments, pointers=False):
             if kind is None and _unplaced(variable) and _map_like(first_page(handle)["variables"]):
                 kind = "unresolved"
             if kind is not None:
-                variable = _entry(worker, stop, variable, path, segment, kind, first_page)
+                whole = _whole_strings(snapshot)
+                variable = _entry(worker, stop, variable, path, segment, kind, first_page, whole)
                 path += segment
                 continue
             if entry:
@@ -1286,7 +1287,11 @@ def _capture(
             if children and variable.get("variablesReference"):
                 try:
                     try:
-                        row.update(_children(worker, stop, selector, variable, pointers))
+                        row.update(
+                            _children(
+                                worker, stop, selector, variable, pointers, _whole_strings(snapshot)
+                            )
+                        )
                     except ValueError as exc:
                         if not _BUDGET.search(str(exc)):
                             raise
@@ -1295,11 +1300,20 @@ def _capture(
                         variable = _resolve(
                             worker, stop, snapshot, parse_selector(selector), pointers
                         )
-                        row.update(_children(worker, stop, selector, variable, pointers))
+                        row.update(
+                            _children(
+                                worker, stop, selector, variable, pointers, _whole_strings(snapshot)
+                            )
+                        )
                 except ValueError as exc:
                     row["children_error"] = str(exc)
         rows.append(row)
     return rows
+
+
+def _whole_strings(snapshot):
+    """Whether LLDB's summary of a std::string shows all of it at this stop (libc++)."""
+    return snapshot.get("whole_string_summaries") is True
 
 
 def _roots(selectors):
@@ -1717,11 +1731,12 @@ def _key_kind(first):
     return kind or "unknown", None
 
 
-def _entry(worker, stop, variable, path, segment, kind, first_page):
+def _entry(worker, stop, variable, path, segment, kind, first_page, whole=False):
     """What `segment` names in a C++ map or set (#119). LLDB lists the entries as
     [0], [1], ... in iteration order, where C++'s `m[k]` is the value for key k: so
     `[#N]` is the Nth entry, `[k]` the value for key k (a map with unique keys that
-    Peeky compares exactly), and anything else is refused, never read by position."""
+    Peeky compares exactly), and anything else is refused, never read by position.
+    ``whole``: LLDB's summary of a std::string shows all of it (libc++)."""
     label = f"{path} ({variable.get('type')})"
     if segment.startswith("[#"):
         position = int(segment[2:-1])
@@ -1748,7 +1763,7 @@ def _entry(worker, stop, variable, path, segment, kind, first_page):
         raise ValueError(
             f"{segment} not read: {label} is {what}; {how} and read its .first and .second"
         )
-    return _value_for_key(worker, stop, variable, path, segment, first_page, how)
+    return _value_for_key(worker, stop, variable, path, segment, first_page, how, whole)
 
 
 def _summary_size(variable):
@@ -1808,13 +1823,36 @@ def _order(variable):
     return None
 
 
+def _string_bytes(worker, stop, first, whole):
+    """How much of a std::string key LLDB's summary shows: True for all of it (libc++,
+    whose summary LLDB prints from the string's size, a NUL as `\\0`), else its length in
+    bytes from libstdc++'s `_M_string_length` (that summary is a C string, which ends at
+    the first NUL), or None where neither can be read."""
+    if whole:
+        return True
+    if not first.get("variablesReference"):
+        return None
+    shown = worker.dispatch("expand", {**stop, "handle": first["variablesReference"], "start": 0})[
+        "variables"
+    ]
+    length = next((field for field in shown if field["name"] == "_M_string_length"), None)
+    if length is not None:
+        value = str(length.get("value"))
+        return int(value) if re.fullmatch(r"[0-9]{1,12}", value) else None
+    if shown and not any(field["name"].startswith("_M_") for field in shown):
+        # No libstdc++ member: LLDB's quoted summary came from its libc++ formatter.
+        return True
+    return None
+
+
 _LISTED_KEYS = 20
 
 
-def _value_for_key(worker, stop, variable, path, segment, first_page, how):
+def _value_for_key(worker, stop, variable, path, segment, first_page, how, whole=False):
     """The value for one key of a C++ map with unique keys: the `second` of the one
-    entry whose `first` the debugger shows as exactly that key. A std::map with integer
-    keys in a standard order is bisected; any other map is read entry by entry."""
+    entry whose `first` the debugger shows as exactly that key (a std::string key also
+    of its length). A std::map with integer keys in a standard order is bisected; any
+    other map is read entry by entry."""
     key = _key(segment)
     wanted = _literal(key) if key is not None else int(segment[1:-1])
     shown = f'"{wanted}"' if key is not None else str(wanted)
@@ -1860,16 +1898,18 @@ def _value_for_key(worker, stop, variable, path, segment, first_page, how):
             f"({named}), so C++ would convert it to another key"
         )
 
-    def key_of(child, shown=None):
-        value = (shown or _entry_part(worker, stop, child, "first", path)).get("value")
+    def key_of(child, shown_first=None):
+        """(the key as compared, as shown, its `first`)."""
+        part = shown_first or _entry_part(worker, stop, child, "first", path)
+        value = part.get("value")
         if (
             compared == "integer"
             and isinstance(value, str)
             and re.fullmatch(r"-?[0-9]{1,20}", value)
         ):
-            return int(value), value
+            return int(value), value, part
         if compared == "string" and isinstance(value, str) and _STRING_SUMMARY.fullmatch(value):
-            return value, value
+            return value, value, part
         raise ValueError(
             f"{written} not read: the debugger shows the key of {path}[#{child['name'][1:-1]}] "
             f"as {value!r}, which Peeky cannot compare; {how}"
@@ -1921,8 +1961,21 @@ def _value_for_key(worker, stop, variable, path, segment, first_page, how):
                     f"{written} not read: comparing the keys of {path}'s {size} entries reads "
                     f"{2 * size} nodes, beyond the bounded inspection window (512 nodes); {how}",
                 )
-        number, value = key_of(child, first if checked == 0 else None)
+        number, value, part = key_of(child, first if checked == 0 else None)
         checked += 1
+        if number == target and compared == "string":
+            # libstdc++'s summary ends at a NUL: "a\0b" shows as "a" (review of #119).
+            length = _string_bytes(worker, stop, part, whole)
+            if length is None:
+                raise ValueError(
+                    f"{written} not read: the key of {path}[#{child['name'][1:-1]}] shows as "
+                    f"{value}, but the debugger shows this build's std::string only up to its "
+                    "first NUL byte, and Peeky cannot read this key's length (at the "
+                    f"inspection depth limit, or not shown); {how}"
+                )
+            if length is not True and length != len(wanted):
+                keys.append(f"{value} ({length} bytes)")
+                continue
         if number == target:
             return value_of(child)
         keys.append(value)
@@ -1934,6 +1987,8 @@ def _value_for_key(worker, stop, variable, path, segment, first_page, how):
     listed = ", ".join(keys[:_LISTED_KEYS]) + (
         f", ... ({len(keys)} total)" if len(keys) > _LISTED_KEYS else ""
     )
+    if compared == "string" and not whole:
+        listed += "; each as the debugger shows it, up to a NUL byte"
     raise ValueError(
         f"{written} not found: {path} has no key {shown} (keys: {listed}); in C++, "
         f"{path}{written} would insert it with a default value"
@@ -1966,10 +2021,11 @@ _ENTRY_NOTES = {
 }
 
 
-def _keyed_child(worker, stop, base, child):
-    """A map entry listed by the selector that reads its value (`m[2]`, `m["a"]`) when
-    its key is one Peeky compares exactly; None when this entry's is not, and False when
-    the map's key type is not one Peeky compares."""
+def _keyed_child(worker, stop, base, child, whole):
+    """The key selector (`[2]`, `["a"]`) that reads a map entry's value, with that value,
+    when its key is one Peeky compares exactly; None when this entry's is not, and False
+    when the map's key type is not one Peeky compares.
+    ``whole``: LLDB's summary of a std::string shows all of it (libc++)."""
     if not child.get("variablesReference"):
         return None
     shown = worker.dispatch("expand", {**stop, "handle": child["variablesReference"], "start": 0})[
@@ -1990,6 +2046,7 @@ def _keyed_child(worker, stop, base, child):
         and len(value) >= 2
         and value[0] == value[-1] == '"'
         and _PLAIN_KEY.fullmatch(value[1:-1])
+        and _string_bytes(worker, stop, first, whole) in (True, len(value) - 2)
     ):
         segment = f'["{value[1:-1]}"]'
     else:
@@ -2003,23 +2060,30 @@ def _keyed_child(worker, stop, base, child):
     return entry
 
 
-def _entry_children(worker, stop, selector, variable, page):
+def _positional_child(base, child):
+    position = child["name"][1:-1]
+    entry = {"name": f"[#{position}]", "type": child.get("type"), "value": child.get("value")}
+    if child.get("unavailable"):
+        entry.update(unavailable=True, reason=child.get("reason"))
+    entry["selector"] = f"{base}[#{position}]"
+    if child.get("variablesReference"):
+        entry["expandable"] = True
+    return entry
+
+
+def _entry_children(worker, stop, selector, variable, page, whole=False):
     """A C++ map's or set's first page of entries (#119), each with the selector that
     reads it: `m[K]` (the value for key K) for a map whose keys Peeky compares, else
     `m[#N]` (the Nth entry in iteration order), never `m[N]`, which is key N in C++.
-    None for any other value."""
-    base, kind = selector, _associative(variable)
+    None for any other value. ``whole``: LLDB's summary of a std::string shows all of
+    it (libc++)."""
+    base, container, kind = selector, variable, _associative(variable)
     pointee = _c_pointee(variable)
     if kind is None and pointee is not None and _pointee(variable, page["variables"]) is None:
         # A pointer lists what it points at (#102): its entries are p[0][...].
-        base, kind = f"{selector}[0]", _associative(_pointee_type(variable, pointee))
-        if (
-            kind is None
-            and _unplaced(_pointee_type(variable, pointee))
-            and _map_like(page["variables"])
-        ):
-            kind = "unresolved"
-    elif kind is None and _unplaced(variable) and _map_like(page["variables"]):
+        base, container = f"{selector}[0]", _pointee_type(variable, pointee)
+        kind = _associative(container)
+    if kind is None and _unplaced(container) and _map_like(page["variables"]):
         kind = "unresolved"
     entries = [child for child in page["variables"] if child["name"] not in _GROUPS]
     if kind is None or not all(_ENTRY_NAME.fullmatch(child["name"]) for child in entries):
@@ -2027,22 +2091,15 @@ def _entry_children(worker, stop, selector, variable, page):
         return None
     listed, keys = [], kind in _KEYED
     for child in entries:
-        keyed = _keyed_child(worker, stop, base, child) if keys else None
+        keyed = _keyed_child(worker, stop, base, child, whole) if keys else None
         if keyed is False:
             keys, keyed = False, None
-        if keyed is None:
-            position = child["name"][1:-1]
-            keyed = {
-                "name": f"[#{position}]",
-                "type": child.get("type"),
-                "value": child.get("value"),
-            }
-            if child.get("unavailable"):
-                keyed.update(unavailable=True, reason=child.get("reason"))
-            keyed["selector"] = f"{base}[#{position}]"
-            if child.get("variablesReference"):
-                keyed["expandable"] = True
-        listed.append(keyed)
+        listed.append(keyed or _positional_child(base, child))
+    # One label, one entry: two keys a selector cannot tell apart are listed by position.
+    labels = [entry["selector"] for entry in listed]
+    for at, (entry, child) in enumerate(zip(listed, entries)):
+        if labels.count(entry["selector"]) > 1:
+            listed[at] = _positional_child(base, child)
     note = (
         ("keyed" if keys else "uncompared")
         if kind in _KEYED
@@ -2101,8 +2158,9 @@ def _list_children(worker, stop, selector, backing, size):
     return {"children": listed, **({"children_truncated": True} if size > len(listed) else {})}
 
 
-def _children(worker, stop, selector, variable, pointers=False):
-    """One page (64) of a value's children, for a person or agent deciding what to read."""
+def _children(worker, stop, selector, variable, pointers=False, whole_strings=False):
+    """One page (64) of a value's children, for a person or agent deciding what to read.
+    ``whole_strings``: LLDB's summary of a std::string shows all of it (libc++)."""
     page = worker.dispatch("expand", {**stop, "handle": variable["variablesReference"], "start": 0})
     if listed := java_list(variable, page["variables"]):
         try:
@@ -2111,7 +2169,9 @@ def _children(worker, stop, selector, variable, pointers=False):
             if "exceeds bounded expansion" not in str(exc):
                 raise
             # A backing array over 512 slots: its fields (size, elementData) instead.
-    if pointers and (entries := _entry_children(worker, stop, selector, variable, page)):
+    if pointers and (
+        entries := _entry_children(worker, stop, selector, variable, page, whole_strings)
+    ):
         return entries
     listed, grouped = [], []
     # A container's groups hold its type's methods and dunders: named only for objects.

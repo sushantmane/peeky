@@ -1291,14 +1291,16 @@ def _session_rows(main, capsys, *selectors):
 
 
 @contextlib.contextmanager
-def _maps_session(tmp_path, capsys, monkeypatch, marker="// OBSERVE"):
-    """A session on MAPS stopped at ``marker``; yields `session get` as {selector: row}."""
+def _maps_session(tmp_path, capsys, monkeypatch, marker="// OBSERVE", program=None):
+    """A session on MAPS (or ``program``) stopped at ``marker``; yields `session get` as
+    {selector: row}."""
     from peeky.cli import main
 
+    program = program or MAPS
     monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
     source = tmp_path / "maps.cpp"
-    source.write_text(MAPS)
-    line = next(i for i, text in enumerate(MAPS.splitlines(), 1) if marker in text)
+    source.write_text(program)
+    line = next(i for i, text in enumerate(program.splitlines(), 1) if marker in text)
     assert main(["session", "start", str(source), "--at", str(line)]) == 0
     capsys.readouterr()
     try:
@@ -1428,6 +1430,100 @@ def test_cpp_sequences_index_as_before(tmp_path, native_config, capsys, monkeypa
             (raw,) = children
             selector = f"{raw['selector']}[1]"
             assert get(selector)[selector]["value"] == "8"
+
+
+KEYS = """#include <cctype>
+#include <cstdio>
+#include <map>
+#include <set>
+#include <string>
+#include <unordered_map>
+struct ByAbs { bool operator()(int a, int b) const { return (a < 0 ? -a : a) < (b < 0 ? -b : b); } };
+struct Mod10 { bool operator()(int a, int b) const { return a % 10 < b % 10; } };
+struct NoCase {
+    bool operator()(const std::string &a, const std::string &b) const {
+        for (size_t i = 0; i < a.size() && i < b.size(); i++) {
+            int x = std::tolower(a[i]), y = std::tolower(b[i]);
+            if (x != y) return x < y;
+        }
+        return a.size() < b.size();
+    }
+};
+struct LowerHash {
+    size_t operator()(const std::string &s) const {
+        size_t h = 0;
+        for (char c : s) h = h * 31 + std::tolower(c);
+        return h;
+    }
+};
+struct LowerEq {
+    bool operator()(const std::string &a, const std::string &b) const {
+        if (a.size() != b.size()) return false;
+        for (size_t i = 0; i < a.size(); i++)
+            if (std::tolower(a[i]) != std::tolower(b[i])) return false;
+        return true;
+    }
+};
+template <class T> struct Holder { using M = std::map<int, T>; using S = std::set<int>; M m; S s; };
+struct Config { std::map<std::string, int> opts; };
+int main() {
+    std::map<std::string, int> sso{{std::string("a\\0b", 3), 3}, {"zz", 9}};
+    std::map<std::string, int> heap{{std::string("abcdefghijklmnopqrstuvwxyz\\0tail", 31), 31}};
+    std::map<std::string, int> trail{{std::string("q\\0", 2), 2}};
+    std::unordered_map<std::string, int> hnul{{std::string("id\\0x", 4), 4}};
+    std::map<std::string, int> both{{"a", 1}, {std::string("a\\0", 2), 2}};
+    Config cfg{{{"k", 1}, {std::string("k\\0x", 3), 2}}};
+    std::map<int, int> plain{{2, 20}, {1, 10}};
+    std::map<int, int, ByAbs> am{{2, 20}, {-1, -10}, {5, 50}, {-3, -30}};
+    std::map<int, int, Mod10> mod{{13, 1}, {7, 2}};
+    std::map<int, int, ByAbs> bigabs;
+    for (int i = 1; i <= 30; i++) bigabs[i % 2 ? -i : i] = i;
+    std::map<std::string, int, NoCase> ci{{"Alpha", 1}, {"beta", 2}};
+    std::unordered_map<std::string, int, LowerHash, LowerEq> hci{{"Alpha", 1}, {"beta", 2}};
+    Holder<std::string> h{{{1, "one"}, {4, "four"}}, {5, 6, 7}};
+    Holder<int> hi{{{3, 30}}, {1}};
+    Holder<std::string>::M hm2 = h.m;
+    Holder<std::string>::S hs2 = h.s;
+    std::map<int, std::set<int>>::mapped_type mt{10, 20, 30};
+    std::map<long, int> ids{{1234567, 7}, {42, 1}};
+    std::map<const char *, int> cpm{{"al", 1}};
+    int n = (int)(sso.size() + heap.size() + trail.size() + hnul.size() + both.size());
+    n += cfg.opts["k"] + plain[1] + am[1] + mod[3] + bigabs[4] + ci["alpha"] + hci["ALPHA"];
+    n += (int)hm2[4].size() + (int)hs2.size() + (int)hi.m.size() + (int)mt.size() + ids[42];
+    std::printf("%d %d\\n", n, (int)cpm.size()); // OBSERVE
+    return 0;
+}
+"""
+
+
+def test_a_string_key_matches_only_a_string_of_its_length(
+    tmp_path, native_config, capsys, monkeypatch
+):
+    # Review of #119 (PR #127): libstdc++'s std::string summary stops at the first NUL,
+    # so on Linux `sso["a"]` read the entry whose key is "a\0b" (3), where C++ has no key
+    # "a". A key now matches only a string of its own length: libstdc++'s
+    # `_M_string_length`, or libc++'s summary, which shows every byte (a NUL as \0).
+    with _maps_session(tmp_path, capsys, monkeypatch, program=KEYS) as get:
+        rows = get(
+            *('sso["a"]', 'sso["zz"]', 'heap["abcdefghijklmnopqrstuvwxyz"]', 'trail["q"]'),
+            *('hnul["id"]', 'both["a"]', 'cfg.opts["k"]', "both", "cfg.opts"),
+        )
+        for selector in ('sso["a"]', 'heap["abcdefghijklmnopqrstuvwxyz"]', 'trail["q"]'):
+            assert "value" not in rows[selector], rows[selector]
+        assert "value" not in rows['hnul["id"]'], rows['hnul["id"]']
+        assert rows['sso["zz"]']["value"] == "9" and rows['both["a"]']["value"] == "1"
+        # Never two entries under one label: "a\0" is no `both["a"]`.
+        labels = [child["selector"] for child in rows["both"]["children"]]
+        assert labels == ['both["a"]', "both[#1]"], labels
+        # A key at the depth limit shows no length: read only where the summary is whole.
+        if sys.platform == "darwin":
+            assert rows['cfg.opts["k"]']["value"] == "1"
+            labels = [child["selector"] for child in rows["cfg.opts"]["children"]]
+            assert labels == ['cfg.opts["k"]', "cfg.opts[#1]"], labels
+        else:
+            assert "length" in rows['cfg.opts["k"]']["error"], rows['cfg.opts["k"]']
+            labels = [child["selector"] for child in rows["cfg.opts"]["children"]]
+            assert labels == ["cfg.opts[#0]", "cfg.opts[#1]"], labels
 
 
 TYPEDEF_NAMED = """#include <cstdio>

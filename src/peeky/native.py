@@ -1930,6 +1930,15 @@ class NativeSession:
             return None
         return self.typedefs.get(f"::{parts[-2]}::{parts[-1]}")
 
+    @property
+    def whole_string_summaries(self):
+        """Whether LLDB's summary of this build's std::string values shows every byte.
+        LLDB reads a libc++ string's size and prints a NUL as `\\0`; its libstdc++ summary
+        is the `_M_dataplus._M_p` C string, which ends at the first NUL (#119). Told by the
+        standard library's namespaces in the debug information: libc++'s `std::__1`,
+        libstdc++'s `std::__cxx11`."""
+        return "namespace::__1" in self.typedefs and "namespace::__cxx11" not in self.typedefs
+
     def aliased_type(self, kind):
         """The class a typedef'd value's type names (`Index`, `const Index &` for
         `using Index = std::map<int, int>`), as lldb-dap would show it, or None: a map or

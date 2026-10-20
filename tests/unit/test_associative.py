@@ -73,8 +73,11 @@ def local(name, kind, handle, size, **more):
     }
 
 
-def snapshot(*variables):
-    return {"scopes": [{"name": "Locals", "variables": list(variables)}]}
+def snapshot(*variables, whole=True):
+    """A stop's locals. ``whole``: the worker says LLDB's std::string summaries show all
+    of each string (libc++)."""
+    shown = {"scopes": [{"name": "Locals", "variables": list(variables)}]}
+    return {**shown, "whole_string_summaries": True} if whole else shown
 
 
 # The issue's map, `std::map<int, int> m{{2, 20}, {1, 10}, {5, 50}}`, as LLDB lists it.
@@ -280,7 +283,7 @@ def test_a_maps_children_are_listed_by_key_and_a_sets_by_position():
         ("v", ["v[0]", "v[1]", "v[2]"]),
     ):
         variable = next(v for v in LOCALS["scopes"][0]["variables"] if v["name"] == name)
-        shown = _children(Lldb(TREE), {}, name, variable, pointers=True)
+        shown = _children(Lldb(TREE), {}, name, variable, pointers=True, whole_strings=True)
         assert [child["selector"] for child in shown["children"]] == selectors, shown
         # Every selector listed reads the value its row shows.
         for child in shown["children"]:
@@ -355,3 +358,98 @@ def test_a_pointer_to_a_typedef_reads_by_the_class_behind_it():
     assert "its entries are isp[0][#N]" in refused("isp[1]", TREE, scopes)
     shown = _children(Lldb(TREE), {}, "isp", pointer, pointers=True)
     assert [c["selector"] for c in shown["children"]] == ["isp[0][#0]", "isp[0][#1]", "isp[0][#2]"]
+
+
+def strings(handle, keys, depth_limited=False):
+    """A std::map<std::string, int> as lldb-dap shows libstdc++'s: each key's summary is
+    its C string, up to the first NUL, and `_M_string_length` its length."""
+    tree = {handle: []}
+    for position, (text, length, value) in enumerate(keys):
+        child = handle * 1000 + position + 1
+        kind = "std::pair<const std::basic_string<char>, int>"
+        tree[handle].append(
+            {"name": f"[{position}]", "type": kind, "value": kind, "variablesReference": child}
+        )
+        string = 0 if depth_limited else child * 10
+        tree[child] = [
+            {
+                "name": "first",
+                "type": "const std::basic_string<char>",
+                "value": f'"{text}"',
+                "variablesReference": string,
+                **({"depth_limited": True} if depth_limited else {}),
+            },
+            {"name": "second", "type": "int", "value": value, "variablesReference": 0},
+        ]
+        if string:
+            tree[string] = [
+                {
+                    "name": "_M_dataplus",
+                    "type": "_Alloc_hider",
+                    "value": "",
+                    "variablesReference": 0,
+                },
+                {"name": "_M_string_length", "type": "size_type", "value": str(length)},
+                {"name": "", "type": "(anonymous union)", "value": "", "variablesReference": 0},
+            ]
+    return tree
+
+
+# Review of #119 (PR #127): {"a\0b": 3, "zz": 9}, {"a": 1, "a\0": 2}.
+NULS = {**strings(9, [("a", 3, "3"), ("zz", 2, "9")]), **strings(8, [("a", 1, "1"), ("a", 2, "2")])}
+LIBSTDCXX = snapshot(
+    local("sso", "std::map<std::string, int>", 9, 2),
+    local("both", "std::map<std::string, int>", 8, 2),
+    whole=False,
+)
+
+
+def test_a_string_key_matches_only_a_string_of_its_own_length():
+    # libstdc++'s summary of "a\0b" is "a": `sso["a"]` read 3 where C++ has no key "a".
+    message = refused('sso["a"]', NULS, LIBSTDCXX)
+    assert 'sso has no key "a" (keys: "a" (3 bytes), "zz"; each as the debugger shows' in message
+    assert read('sso["zz"]', NULS, LIBSTDCXX)["value"] == "9"
+    assert read('both["a"]', NULS, LIBSTDCXX)["value"] == "1"
+    shown = _children(Lldb(NULS), {}, "both", LIBSTDCXX["scopes"][0]["variables"][1], True)
+    assert [c["selector"] for c in shown["children"]] == ['both["a"]', "both[#1]"]
+
+
+def test_a_string_key_whose_length_cannot_be_read_is_refused():
+    deep = strings(9, [("k", 3, "2"), ("k", 1, "1")], depth_limited=True)
+    message = refused(
+        'm["k"]', deep, snapshot(local("m", "std::map<std::string, int>", 9, 2), whole=False)
+    )
+    assert "cannot read this key's length" in message and "m[#N]" in message
+    variable = local("m", "std::map<std::string, int>", 9, 2)
+    shown = _children(Lldb(deep), {}, "m", variable, True)
+    assert [c["selector"] for c in shown["children"]] == ["m[#0]", "m[#1]"]
+    # Where the worker says the summaries show whole strings (libc++: "k\0x" is shown so),
+    # they are compared as they are.
+    libcxx = strings(9, [("k", 1, "1"), ("k\\0x", 3, "2")], depth_limited=True)
+    whole = snapshot(variable, whole=True)
+    assert read('m["k"]', libcxx, whole)["value"] == "1"
+    shown = _children(Lldb(libcxx), {}, "m", variable, True, whole_strings=True)
+    assert [c["selector"] for c in shown["children"]] == ['m["k"]', "m[#1]"]
+    # Two entries showing one key are never both given its label.
+    shown = _children(Lldb(deep), {}, "m", variable, True, whole_strings=True)
+    assert [c["selector"] for c in shown["children"]] == ["m[#0]", "m[#1]"]
+
+
+def test_libcxx_string_members_say_the_summary_is_whole():
+    from peeky.probe import _string_bytes
+
+    libcxx = Lldb(
+        {5: [{"name": "", "type": "(anonymous struct)", "value": "", "variablesReference": 0}]}
+    )
+    first = {
+        "name": "first",
+        "type": "const std::basic_string<char>",
+        "value": '"a"',
+        "variablesReference": 5,
+    }
+    assert _string_bytes(libcxx, {}, first, False) is True
+    old_abi = Lldb(
+        {5: [{"name": "_M_dataplus", "type": "_Alloc_hider", "value": "", "variablesReference": 0}]}
+    )
+    assert _string_bytes(old_abi, {}, first, False) is None
+    assert _string_bytes(old_abi, {}, {**first, "variablesReference": 0}, True) is True
