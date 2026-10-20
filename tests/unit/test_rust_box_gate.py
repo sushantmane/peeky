@@ -225,3 +225,21 @@ def test_values_that_own_no_memory(mir):
 def test_values_that_may_own_memory(mir):
     # A struct's name lists no fields: it may hold a Box.
     assert _may_own(mir)
+
+
+@pytest.mark.parametrize(
+    "mir, generics",
+    [
+        ("i64", ("i64",)),
+        ("(i8, i8)", ("i8",)),
+        ("[u64; 2]", ("u64",)),
+        ("i64", None),
+        ("(i64, char)", None),
+    ],
+)
+def test_a_generic_bodys_primitive_names_may_be_type_parameters(mir, generics):
+    # Review of #106: `fn keep<i64>(h: i64)` called with a struct owning a Box.
+    assert _may_own(mir) is False
+    assert _may_own(mir, generics)
+    # A reference never owns, whatever it points at.
+    assert not _may_own(f"&{mir}", generics)
