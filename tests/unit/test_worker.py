@@ -698,3 +698,46 @@ def test_a_tainted_locals_children_are_tainted_and_marked(tmp_path):
         "variables"
     ]
     assert "view" not in b and b["variablesReference"] and "stale" not in n
+
+
+def test_a_string_the_runtime_shows_keeps_its_handle_and_never_overrides_no_value(tmp_path):
+    # #128: a libstdc++ string's text is the runtime's (read from memory, or noted); the
+    # worker keeps its handle to the raw members, reads memory only where the debugger
+    # can, and never gives a value to one LLDB has none for (optimized out).
+    from types import SimpleNamespace
+
+    from peeky.worker import DebugWorker
+
+    calls = []
+
+    def string_value(variable, fetch, read):
+        calls.append((variable["name"], read))
+        return {"value": '"a\\0b"', "view": "memory", "string_length": 3}
+
+    runtime = SimpleNamespace(
+        assert_current=lambda: None, reports_unavailable_as_text=True, string_value=string_value
+    )
+    worker = DebugWorker(tmp_path)
+    worker.runtime, worker.state, worker.stop_id = runtime, "stopped", "stop1"
+    shown, gone = worker.expose_variables(
+        [
+            {"name": "s", "type": "std::string", "value": '"a"', "variablesReference": 7},
+            {"name": "t", "type": "std::string", "value": "<error: optimized out>"},
+        ],
+        {"id": 1},
+        ("Locals",),
+        (),
+    )
+    assert shown["value"] == '"a\\0b"' and shown["view"] == "memory" and shown["string_length"] == 3
+    assert shown["variablesReference"]
+    assert gone["unavailable"] and gone["value"] is None and "view" not in gone
+    # Without readMemory the runtime gets no reader.
+    assert calls == [("s", None)]
+    worker.capabilities["supports_read_memory"] = True
+    worker.expose_variables(
+        [{"name": "s", "type": "std::string", "value": '"a"', "variablesReference": 7}],
+        {"id": 1},
+        ("Locals",),
+        (),
+    )
+    assert calls[-1][1] == worker.view_read

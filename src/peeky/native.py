@@ -36,6 +36,7 @@ from peeky.build import (
     real_tool,
 )
 from peeky.c_source import Statements, unsafe_macros
+from peeky.cxx_strings import libstdcxx_string
 from peeky.digest import sha256_file
 from peeky.names import unicode_escape
 
@@ -1960,10 +1961,21 @@ class NativeSession:
     def whole_string_summaries(self):
         """Whether LLDB's summary of this build's std::string values shows every byte.
         LLDB reads a libc++ string's size and prints a NUL as `\\0`; its libstdc++ summary
-        is the `_M_dataplus._M_p` C string, which ends at the first NUL (#119). Told by the
-        standard library's namespaces in the debug information: libc++'s `std::__1`,
-        libstdc++'s `std::__cxx11`."""
-        return "namespace::__1" in self.typedefs and "namespace::__cxx11" not in self.typedefs
+        is the `_M_dataplus._M_p` C string, which ends at the first NUL (#119), so the
+        worker shows those itself (``string_value``). Told by the standard library's
+        namespaces in the debug information: libc++'s `std::__1`, libstdc++'s
+        `std::__cxx11`."""
+        typedefs = getattr(self, "typedefs", {})
+        return "namespace::__1" in typedefs and "namespace::__cxx11" not in typedefs
+
+    def string_value(self, variable, fetch, read):
+        """How to show a libstdc++ `std::basic_string` (see ``cxx_strings``): its bytes,
+        read from memory, where the debugger's summary ends at a NUL or fails; else that
+        summary with a note. None for anything else, and for libc++'s strings, which
+        LLDB shows whole (#128)."""
+        if self.whole_string_summaries:
+            return None
+        return libstdcxx_string(variable, fetch, read)
 
     def aliased_type(self, kind):
         """The class a typedef'd value's type names (`Index`, `const Index &` for

@@ -1617,6 +1617,9 @@ _STD_STRING = re.compile(r"(?:::)?std::(?:__\w+::)*(?:string|basic_string<\s*cha
 # Keys compared as text: what LLDB shows of such a std::string is `"` + the key + `"`.
 _PLAIN_KEY = re.compile(r"[ !#-\[\]-~]{0,256}")
 _STRING_SUMMARY = re.compile(r'"(?:[^"\\]|\\.)*"(?:\.\.\.)?', re.S)
+# A libstdc++ string the worker could not read whole (#128): the debugger's text, then a
+# note (`"a" (shown up to a NUL at byte 1 of 3)`). It equals no key a selector writes.
+_NOTED_STRING = re.compile(r'"(?:[^"\\]|\\.)*"(?:\.\.\.)? \(.+\)', re.S)
 # GCC's spellings of the integer types (`long unsigned int`) as LLDB's.
 _GCC_INTEGERS = {
     "short unsigned int": "unsigned short",
@@ -1911,8 +1914,12 @@ def _string_bytes(worker, stop, first, whole):
     whose summary LLDB prints from the string's size, a NUL as `\\0`), else its length in
     bytes from libstdc++'s `_M_string_length` (that summary is a C string, which ends at
     the first NUL), or None where neither can be read."""
-    if whole:
+    if whole or first.get("view") == "memory":
+        # A libstdc++ string the worker read from memory is shown whole too (#128).
         return True
+    if type(first.get("string_length")) is int:
+        # One whose summary the worker checked against its `_M_string_length` (#128).
+        return first["string_length"]
     if not first.get("variablesReference"):
         return None
     shown = worker.dispatch("expand", {**stop, "handle": first["variablesReference"], "start": 0})[
@@ -1992,7 +1999,11 @@ def _value_for_key(worker, stop, variable, path, segment, first_page, how, whole
             and re.fullmatch(r"-?[0-9]{1,20}", value)
         ):
             return int(value), value, part
-        if compared == "string" and isinstance(value, str) and _STRING_SUMMARY.fullmatch(value):
+        if (
+            compared == "string"
+            and isinstance(value, str)
+            and (_STRING_SUMMARY.fullmatch(value) or _NOTED_STRING.fullmatch(value))
+        ):
             return value, value, part
         raise ValueError(
             f"{written} not read: the debugger shows the key of {path}[#{child['name'][1:-1]}] "

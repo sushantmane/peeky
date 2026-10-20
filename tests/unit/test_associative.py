@@ -555,3 +555,20 @@ def test_a_key_type_is_named_without_its_own_qualifiers(kind, shown):
     from peeky.probe import _unqualified
 
     assert _unqualified(kind) == shown
+
+
+def test_a_string_key_the_worker_notes_or_reads_whole_is_compared_as_shown():
+    # #128: where the debugger cannot read memory, the worker shows a libstdc++ key cut at
+    # a NUL with a note; where it can, the key's bytes (`"k\0x"`, `view: memory`).
+    noted = strings(9, [("k", 3, "1"), ("zz", 2, "2")])
+    noted[9001][0]["value"] = '"k" (shown up to a NUL at byte 1 of 3)'
+    scopes = snapshot(local("m", "std::map<std::string, int>", 9, 2), whole=False)
+    assert read('m["zz"]', noted, scopes)["value"] == "2"
+    message = refused('m["k"]', noted, scopes)
+    assert 'no key "k" (keys: "k" (shown up to a NUL at byte 1 of 3), "zz"' in message
+    shown = _children(Lldb(noted), {}, "m", scopes["scopes"][0]["variables"][0], True)
+    assert [c["selector"] for c in shown["children"]] == ["m[#0]", 'm["zz"]']
+    # Read from memory, a key is whole without its members' help.
+    read_whole = strings(9, [("k", 1, "1")], depth_limited=True)
+    read_whole[9001][0]["view"] = "memory"
+    assert read('m["k"]', read_whole, scopes)["value"] == "1"
