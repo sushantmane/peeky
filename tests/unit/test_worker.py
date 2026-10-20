@@ -625,3 +625,76 @@ def test_decoded_elements_get_worker_owned_handles_that_never_authorize_writes(t
         {"name": "[1]", "type": "i32", "value": "1", "variablesReference": 0, "view": "memory"}
     ]
     assert page["truncated"] is False
+
+
+def test_a_tainted_locals_children_are_tainted_and_marked(tmp_path):
+    # #108: what the runtime says of a top-level aggregate passes to its children, and to
+    # theirs; a pointer inside shows only its address; scalars are marked stale.
+    from types import SimpleNamespace
+
+    from peeky.worker import DebugWorker
+
+    seen = []
+
+    def view_variable(variable, fetch, read, *, top=False, taint=None, siblings=None, **_):
+        seen.append((variable["name"], top, taint))
+        if taint and variable["type"].endswith("*"):
+            return {"value": "0x10", "rust_view": "unproven"}
+        return None
+
+    levels = {"h": "stale", "c": "pointers", "f": None}
+    runtime = SimpleNamespace(
+        assert_current=lambda: None,
+        view_variable=view_variable,
+        aggregate_taint=lambda variable, frame, innermost=False: levels[variable["name"]],
+    )
+    children = {
+        7: [
+            {"name": "b", "type": "Pt *", "value": "0x10", "variablesReference": 9},
+            {"name": "n", "type": "long", "value": "9", "variablesReference": 0},
+            {"name": "v", "type": "Vec", "value": "Vec @ 0x20", "variablesReference": 8},
+        ],
+        8: [{"name": "len", "type": "unsigned long", "value": "3", "variablesReference": 0}],
+    }
+    worker = DebugWorker(tmp_path)
+    worker.runtime, worker.state, worker.stop_id = runtime, "stopped", "stop1"
+    worker.innermost_frame = 1
+    worker.walk = lambda record, runtime: (record[0], record[1], record[2], 7, None)
+    worker.bounded_variables = lambda reference, indexed=None: children[reference]
+    top = worker.expose_variables(
+        [
+            {"name": name, "type": "S", "value": "S @ 0x30", "variablesReference": 7}
+            for name in levels
+        ],
+        {"id": 1},
+        ("Locals",),
+        (),
+    )
+    assert [shown.get("stale") for shown in top] == [True, None, None]
+    assert ("h", True, None) in seen
+    stale = worker.expand({"stop_id": "stop1", "handle": top[0]["variablesReference"]}, runtime)
+    b, n, v = stale["variables"]
+    assert b == {
+        "name": "b",
+        "type": "Pt *",
+        "value": "0x10",
+        "variablesReference": 0,
+        "view": "unproven",
+    }
+    assert n["value"] == "9" and n["stale"] and v["stale"] and v["variablesReference"]
+    worker.walk = lambda record, runtime: (record[0], record[1], record[2], 8, None)
+    [length] = worker.expand({"stop_id": "stop1", "handle": v["variablesReference"]}, runtime)[
+        "variables"
+    ]
+    assert length["value"] == "3" and length["stale"] and ("len", False, "stale") in seen
+    worker.walk = lambda record, runtime: (record[0], record[1], record[2], 7, None)
+    # A caller's proven local: its fields read, its pointers do not.
+    b, n, v = worker.expand({"stop_id": "stop1", "handle": top[1]["variablesReference"]}, runtime)[
+        "variables"
+    ]
+    assert b["view"] == "unproven" and "stale" not in n and "stale" not in v
+    # A proven one reads whole.
+    b, n, v = worker.expand({"stop_id": "stop1", "handle": top[2]["variablesReference"]}, runtime)[
+        "variables"
+    ]
+    assert "view" not in b and b["variablesReference"] and "stale" not in n

@@ -88,7 +88,8 @@ TABLES = {
             "(write num * 1.0 / k), and SUM fails past 64 bits (TOTAL(num) does not)",
             "unavailable": "1 when the debugger has no value here (optimized out, not live)",
             "error": "Why there is no value (unknown name, unreadable, ...), else NULL",
-            "view": "Qualified value view (e.g. a Rust Option), else NULL",
+            "view": "Qualified value view (e.g. a Rust Option); 'stale' for a value in a Rust "
+            "local that may be moved or dropped (the bytes it left, #108); else NULL",
             "identity": "Python: which object the value is, an INTEGER (debugpy's number for "
             "the object, not an address; the object keeps it if its class is reassigned). "
             "Within one hit, equal means the same object (an alias), different means "
@@ -693,7 +694,7 @@ def record(path, result, *, language=None, target=None, label=None, worker=None)
                     _number(row.get("value")),
                     1 if row.get("unavailable") else 0,
                     row.get("error"),
-                    _text(row.get("view")),
+                    _text(row.get("view") or ("stale" if row.get("stale") else None)),
                     row["identity"] if type(row.get("identity")) is int else None,
                     "globals" if row.get("scope") == "globals" else None,
                 )
