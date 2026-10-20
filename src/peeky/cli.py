@@ -1201,6 +1201,10 @@ def _variables_text(snapshot, name="default"):
                 f"  {variable['name']}: {variable.get('type', '')} = "
                 f"{'<no value>' if variable.get('unavailable') else variable['value']}{view}{more}"
             )
+            if variable.get("note") and not variable.get("unavailable"):
+                # A value shown though Peeky cannot vouch for it (a line a loop returns
+                # to; initialization not judged).
+                lines.append(f"    note: {variable['note']}")
         if scope.get("truncated"):
             lines.append(
                 f"  ... and {scope['total'] - len(scope['variables'])} more, not listed (at "
@@ -1337,6 +1341,11 @@ def session(args):
             raise ValueError(
                 "This worker cannot list module globals (it predates --globals); update "
                 "Peeky on the worker host"
+            )
+        if snapshot.get("optimized"):
+            # As the text says: a run-level warning, not a note on each row.
+            snapshot["warning"] = _OPTIMIZED_NOTE.format(snapshot["optimized"]).removeprefix(
+                "warning: "
             )
         _emit(snapshot, args.json, lambda shown: _variables_text(shown, args.name))
     elif args.action == "get":

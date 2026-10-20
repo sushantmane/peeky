@@ -881,3 +881,71 @@ def test_cpp_fields_are_marked_only_in_objects_the_frame_holds(directory, capsys
     code = main(["probe", str(path), "--at", at, "--capture", ",".join(marked), "--json"])
     rows = {row["selector"]: row for row in json.loads(capsys.readouterr().out)["rows"]}
     assert code == 0 and {name: rows[name].get("settable") for name in marked} == marked, rows
+
+
+NOTED = """#include <stdio.h>
+
+struct pt { long a; long b; };
+
+__attribute__((noinline)) static long twice(long v) { return v * 2; }
+
+static long labelled(int n) {
+    long total = 0;
+    int tries = 0;
+again:
+    total += twice(tries);  // LABEL
+    struct pt q = { twice(total), 1 };
+    if (++tries < n) goto again;
+    return total + q.a;
+}
+
+int main(void) {
+    long total = 0;
+    int x = 0;
+    do {
+        struct pt y = { 1, 2 };  // DO_STRUCT
+        y.a += twice(x);
+        total += y.a + y.b;
+        x++;
+    } while (x < 3);
+    printf("%ld %ld\\n", total, labelled(2));
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(240)
+def test_c_marks_agree_with_the_refusals_of_locals_with_a_note_or_withheld(directory, capsys):
+    # Merge of #140 into the sixth evaluation's fixes: a local shown with a note that its
+    # declaration runs after the stop (a `do` body's first line), and one withheld as
+    # maybe not initialized (a label lets control return above it), refuse `set`, their
+    # fields too; their rows and their fields' rows must never say [settable].
+    start_at(directory, capsys, "noted.c", NOTED, "DO_STRUCT")
+    try:
+        # A later pass, as at the first: the loop returns to the line's first instruction.
+        assert main(["session", "continue"]) == 0
+        capsys.readouterr()
+        assert main(["session", "get", "y", "y.a", "--json"]) == 0
+        rows = {row["selector"]: row for row in json.loads(capsys.readouterr().out)}
+        assert "may be the last pass's value" in rows["y"].get("note", ""), rows["y"]
+        assert rows["y"]["settable"] is False and rows["y.a"]["settable"] is False, rows
+        assert all(child.get("settable") is False for child in rows["y"]["children"]), rows
+        refused(capsys, "y.a=5", "runs after this stop")
+        assert main(["session", "inspect", "--json"]) == 0
+        snapshot = json.loads(capsys.readouterr().out)
+        marked = {v["name"]: v.get("settable") for s in snapshot["scopes"] for v in s["variables"]}
+        assert marked["y"] is False and marked["x"] is True, marked
+        code, result = change(capsys, "x=0")
+        assert code == 0, result
+    finally:
+        main(["session", "close"])
+    start_at(directory, capsys, "noted.c", NOTED, "LABEL")
+    try:
+        # A row with no value: `get` exits 1.
+        assert main(["session", "get", "q", "--json"]) == 1
+        [row] = json.loads(capsys.readouterr().out)
+        assert "may not be initialized" in row.get("error", ""), row
+        assert row.get("settable") is not True and not row.get("children"), row
+        refused(capsys, "q.a=5", "may not be initialized")
+    finally:
+        main(["session", "close"])

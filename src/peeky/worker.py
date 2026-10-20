@@ -2019,15 +2019,20 @@ class DebugWorker:
                 self.inspection_nodes += 1
                 continue
             pending = getattr(self.runtime, "not_yet_declared", None) if not ancestry else None
-            if pending and (
-                reason := pending(
+            reason = (
+                pending(
                     variable,
                     frame,
                     innermost=frame.get("id") == self.innermost_frame,
                     stack=getattr(self, "listed_frames", None),
                     deeper=self.deeper_stack,
                 )
-            ):
+                if pending
+                else None
+            )
+            # A value shown though the runtime cannot vouch for it: a note on its row.
+            note = getattr(reason, "note", None)
+            if reason and note is None:
                 # Indeterminate here: never shown as a value, expanded or offered for set.
                 output = {
                     "name": name,
@@ -2058,10 +2063,15 @@ class DebugWorker:
                     and self.has_memory_location(variable)
                     and bool(check(variable, frame))
                 )
-                if settable and mid and (reason := mid(variable, frame, self.stop_reason)):
-                    # Why it is not, for inspect's note (finding 8).
+                # Not a value shown with a note whose declaration still runs here (#140),
+                # nor one a statement under way may hold a copy of (#105); why, for
+                # inspect's note (sixth evaluation, finding 8).
+                if settable and getattr(reason, "refuses", False):
                     settable = False
-                    self.unsettable_reasons.append((name, reason))
+                    self.unsettable_reasons.append((name, str(reason)))
+                elif settable and mid and (why := mid(variable, frame, self.stop_reason)):
+                    settable = False
+                    self.unsettable_reasons.append((name, why))
             elif ancestry and member_rule is not None:
                 # A field or element `set` would change (#105), judged as `set` judges it
                 # (sixth evaluation, finding 7); never one reached through a pointer.
@@ -2109,6 +2119,8 @@ class DebugWorker:
                 output["unavailable"] = True
                 output["reason"] = output["value"][1:-1][:300]
                 output["value"] = None
+            elif isinstance(note, str):
+                output["note"] = note[:500]
             if kind is not None:
                 output["type"] = kind
             resolve = getattr(self.runtime, "typedef_kind", None)

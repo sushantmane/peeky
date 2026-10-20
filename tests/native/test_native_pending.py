@@ -605,13 +605,18 @@ int main() {
 
 
 @pytest.mark.timeout(120)
-def test_a_backward_goto_keeps_the_local_live_above_its_declaration(bucket, capsys):
-    # Review of #81: on later passes `x` holds its value from the previous pass.
+def test_a_local_a_backward_goto_can_keep_live_above_its_declaration_is_withheld(bucket, capsys):
+    # Review of #81: on later passes `x` holds its value from the previous pass, and it
+    # was shown, but on the first it holds leftovers, which were shown too (only later
+    # passes were checked). Peeky cannot tell the passes apart, so it withholds every
+    # one (sixth agent evaluation: never a value it cannot vouch for).
     program = bucket.with_name("goto.c")
     program.write_text(GOTO)
     code, result = probe(capsys, program, "--at", "5", "--capture", "x", "--hits", "3")
     assert code == 0, result.get("error")
-    assert [row.get("value") for row in result["rows"]][1:] == ["7", "17"]
+    assert len(result["rows"]) == 3, result["rows"]
+    for row in result["rows"]:
+        assert "value" not in row and "a `goto` return above it" in row["error"], row
 
 
 @pytest.mark.timeout(120)

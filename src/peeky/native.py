@@ -1158,12 +1158,17 @@ def local_declarations(info, line_text, workspace, declared):
             for (source, line), found in addresses.get(root, {}).items()
             for address in found
         )
+        visible = {}
         for body in (*entry["bodies"], root):
             for name, where, scope in _declared(dies, body, files, workspace):
                 if name is None:
                     jumps = True
                     continue
                 names.setdefault(name, set()).add(where)
+                # Where the debugger lists it: the code of the block declaring it.
+                visible.setdefault((name, *where), set()).update(
+                    _code_ranges(dies[scope]) if scope in dies else ()
+                )
                 source, line, automatic = where
                 if not automatic or scope not in dies:
                     continue
@@ -1215,6 +1220,9 @@ def local_declarations(info, line_text, workspace, declared):
                 "classes": classes.get(root, ()),
                 "types": local_types(dies, entry["bodies"]),
                 "inlined": inlined,
+                # (name, source, line, automatic) -> the code ranges of the block declaring
+                # it (the function's for a parameter): where lldb-dap lists that local.
+                "visible": {key: tuple(sorted(ranges)) for key, ranges in visible.items()},
             }
         )
     return table
@@ -1366,59 +1374,140 @@ _CONSTRUCTOR_NAME = re.compile(
 MAX_STATEMENT_SOURCE = 8_000_000
 
 
-def declared_below(table, name, source, line, through=None):
-    """The line a C/C++ local shown at ``source:line`` is declared on, when control
-    cannot have reached that declaration on this pass, else None.
+def shown_declaration(table, name, pc):
+    """The declaration lldb-dap lists under ``name`` (`x`, or `x @ file:line` when it is
+    shadowed) at ``pc`` (unslid): ``(function, (source, line, automatic))``, an
+    automatic local or parameter of the function running ``pc`` (the narrowest holding
+    it) whose block's code holds ``pc``, the innermost such block where several do.
+    Another function's (a lambda's parameter), a block out of scope there (an earlier
+    loop's) or a static is not it.
 
-    Only when every local of that name in every function owning code of the line is
-    an automatic variable declared in this source below it, and all of that
-    function's code of this line comes before any code of the declaration's line:
-    its value is then indeterminate here (C11 6.2.4). Line numbers alone do not say
-    that: clang runs a struct's default member initializer in its caller on the
-    struct's line, and GCC runs a `cleanup` at its variable's line when the block
-    ends. Never in a function with a label (`goto` can return above a declaration
-    with the local live). lldb-dap names a shadowed local `x @ file:line`, and that
-    line picks among them.
+    None if that function declares none of that name (nothing of it to judge); False if
+    the one shown cannot be singled out: ``pc`` unknown or in no function of the table,
+    a declaration's block unknown, none of them in scope, or two in one block."""
+    if pc is None:
+        return False
+    holding = [
+        (high - low, index)
+        for index, function in enumerate(table)
+        for low, high in function.get("ranges", ())
+        if low <= pc < high
+    ]
+    if not holding:
+        return False
+    function = table[min(holding)[1]]
+    shown = _SHADOWED.fullmatch(name)
+    base = shown[1] if shown else name
+    # lldb-dap lists a frame's automatic locals and parameters as its locals; a static
+    # (clang may declare it in the function's scope, whatever block it is in) is listed
+    # among globals.
+    places = {
+        where
+        for where in function["locals"].get(base, ())
+        if where[2] or where[0] is None and where[1] is None
+    }
+    if shown:
+        places = {where for where in places if where[1] == int(shown[2])}
+    if not places:
+        return None
+    visible = function.get("visible")
+    if visible is None:
+        return False
+    found = []
+    for where in places:
+        ranges = visible.get((base, *where))
+        if ranges is None:
+            return False
+        if spans := [high - low for low, high in ranges if low <= pc < high]:
+            found.append((min(spans), where))
+    found.sort(key=lambda pair: pair[0])
+    if not found or (len(found) > 1 and found[0][0] == found[1][0]):
+        return False
+    return function, found[0][1]
+
+
+def declared_below(table, name, source, line, through=None, address=None, pc=None):
+    """``(line, why)`` for a C/C++ local shown at ``source:line`` that is declared
+    below it, on ``line``; else None.
+
+    The declaration judged is the one the debugger shows (``shown_declaration`` at the
+    frame's ``pc``, unslid): an automatic variable declared in this source below the
+    line. Above its declaration, in the block that declares it, a local's value is
+    indeterminate (C11 6.2.4): the block was entered anew (a loop's body each pass), and
+    its storage holds leftovers. Another declaration of the name elsewhere (an earlier
+    loop's, a static in another block, a lambda's parameter) changes nothing; where the
+    one shown cannot be singled out, any of the name declared below withholds it.
+
+    ``why`` is None when control cannot have reached the declaration on this pass:
+    ``address`` (the stop's, unslid, when the line is the frame's own) comes before any
+    code of the declaration's line, or all of the function's code of this line does.
+    Line numbers alone do not say that. Where Peeky cannot tell, ``why`` says what
+    stands in the way, and the local is withheld all the same (sixth agent evaluation):
+    "after", the line has code placed after the declaration's and the stop is not
+    before it (a temporary's destructor in an exception handler, which clang attributes
+    to the line of `std::string name = f(entry.substr(0, colon));`; GCC's `cleanup` at
+    its variable's line when the block ends; clang's default member initializer of a
+    struct, run in its caller on the struct's line); "label", a label lets `goto`
+    return above the declaration with the local live; "no code", the declaration's line
+    has no code of its own and its statement's end is not known (a caller frame's);
+    "unknown", the declaration shown cannot be singled out. A stop past the declaration
+    there is in code after it, where the local may be live, destroyed or not reached:
+    never shown.
 
     A declaration line with no code of its own (an aggregate stored element by element
     on its elements' lines) counts by the code of its statement's lines, to where
-    ``through(source, line, name)`` says it ends; with that unknown, it counts as below.
+    ``through(source, line, name)`` says it ends.
     """
     shown = _SHADOWED.fullmatch(name)
+    base = shown[1] if shown else name
     here = (source, line)
-    # Every function with code on the line, whatever file it is defined in: the one
-    # stopped in is among them.
-    owners = [function for function in table if here in function["rows"]]
-    if any(function["jumps"] for function in owners):
+    found = shown_declaration(table, name, pc)
+    if found is None:
         return None
-    candidates = [
-        (function, where)
-        for function in owners
-        for where in function["locals"].get(shown[1] if shown else name, ())
-    ]
-    if shown:
-        candidates = [pair for pair in candidates if pair[1][1] == int(shown[2])]
-    if not candidates:
+    if found is False:
+        # Any declaration of the name, in any function with code on the line, declared
+        # below it may be the one shown: withheld.
+        below = [
+            at
+            for function in table
+            if here in function["rows"]
+            for declared_in, at, automatic in function["locals"].get(base, ())
+            if automatic
+            and declared_in == source
+            and type(at) is int
+            and at > line
+            and (not shown or at == int(shown[2]))
+        ]
+        return (min(below), "unknown") if below else None
+    function, (declared_in, at, automatic) = found
+    if not automatic or declared_in != source or type(at) is not int or at <= line:
         return None
-    for function, (declared_in, at, automatic) in candidates:
-        if not automatic or declared_in != source or type(at) is not int or at <= line:
-            return None
-        rows = function["rows"]
-        if (source, at) in rows:
-            first = rows[source, at][0]
-        elif through is None:
-            return None
-        else:
-            end = through(source, at, shown[1] if shown else name)
-            starts = [
-                rows[source, number][0]
-                for number in range(at, (end or at) + 1)
-                if end is not None and (source, number) in rows
-            ]
-            first = min(starts) if starts else None
-        if first is not None and not rows[here][1] < first:
-            return None
-    return min(where[1] for _, where in candidates)
+    # A backward `goto` can return above the declaration with the local live.
+    why = "label" if function["jumps"] else None
+    rows = function["rows"]
+    if (source, at) in rows:
+        first = rows[source, at][0]
+    elif through is None:
+        why, first = why or "no code", None
+    else:
+        end = through(source, at, base)
+        starts = [
+            rows[source, number][0]
+            for number in range(at, (end or at) + 1)
+            if end is not None and (source, number) in rows
+        ]
+        first = min(starts) if starts else None
+        if end is None:
+            why = why or "no code"
+    if first is not None and not (here in rows and rows[here][1] < first):
+        # Some code of the stop's line comes after the declaration's first code: only a
+        # stop before that code is proven to be above it.
+        inside = address is not None and any(
+            low <= address < high for low, high in function.get("ranges", ())
+        )
+        if not (inside and address < first):
+            why = why or "after"
+    return at, why
 
 
 def declared_unfinished(table, name, source, line, address, ends=None):
@@ -1588,39 +1677,45 @@ def declared_skipped(table, name, source, line, address, skipped):
 
 
 def declared_on_line(table, name, source, line, address):
-    """The stop line, when the C/C++ local shown there is declared on it and the stop is
-    where control enters that line in the block declaring it (``address``, unslid; see
-    local_declarations ``starts``): the declaration has not run on this pass, so the
-    local holds leftovers. Else None.
+    """``(line, why)``, when the C/C++ local shown at the stop line is declared on it
+    and the stop is where control enters that line in the block declaring it
+    (``address``, unslid; see local_declarations ``starts``): the declaration has not
+    run on this pass, so the local holds leftovers. Else None.
 
     Only there: a one-line loop, or a return from a call (`step --out`), stops
-    mid-line, where the local is live. Only when every local of that name in the
-    function is an automatic variable declared on this line, and never in a function
-    with a label. The caller also rules out an address a loop branches back to.
+    mid-line, where the local is live. The declaration judged is the one the debugger
+    shows (``shown_declaration``): an automatic variable declared on this line. ``why``
+    is None; "label" in a function with a label: a `goto` may have returned above the
+    line with the local live, or this is its first pass, which Peeky cannot tell apart,
+    so it is withheld all the same (sixth agent evaluation); "unknown" where the
+    declaration shown cannot be singled out and one of the name starts here. The caller
+    also rules out an address a loop branches back to.
     """
-    shown = _SHADOWED.fullmatch(name)
-    here = (source, line)
-    owners = [
-        function
-        for function in table
-        if here in function["rows"]
-        and function["rows"][here][0] <= address <= function["rows"][here][1]
-    ]
-    if len(owners) != 1 or owners[0]["jumps"]:
+    if address is None:
         return None
+    shown = _SHADOWED.fullmatch(name)
     base = shown[1] if shown else name
-    places = owners[0]["locals"].get(base, ())
-    if shown:
-        places = {where for where in places if where[1] == int(shown[2])}
-    if (
-        places
-        and all(
-            automatic and declared_in == source and at == line
-            for declared_in, at, automatic in places
+    found = shown_declaration(table, name, address)
+    if found is None:
+        return None
+    if found is False:
+        starting = any(
+            address in function.get("starts", {}).get((base, source, line), ())
+            and any(
+                automatic and declared_in == source and at == line
+                for declared_in, at, automatic in function["locals"].get(base, ())
+            )
+            for function in table
         )
-        and address in owners[0].get("starts", {}).get((base, source, line), ())
+        return (line, "unknown") if starting else None
+    function, (declared_in, at, automatic) = found
+    if (
+        automatic
+        and declared_in == source
+        and at == line
+        and address in function.get("starts", {}).get((base, source, line), ())
     ):
-        return line
+        return line, "label" if function["jumps"] else None
     return None
 
 
@@ -2021,7 +2116,7 @@ class NativeTarget:
                 prepared.workspace,
                 self.sources + self.headers,
             )
-            typedefs, fields = {}, None
+            typedefs, fields, unjudged = {}, None, None
             try:
                 info = _metadata(
                     dwarfdump,
@@ -2033,19 +2128,22 @@ class NativeTarget:
                 )
                 with _reusing_dies():
                     typedefs = typedef_kinds(info)
-                    declarations = (
-                        None
-                        if has_nonlocal_jumps(binary)
+                    nonlocal_jumps = (
+                        has_nonlocal_jumps(binary)
                         or mentions_nonlocal_jumps(
                             prepared.workspace / name for name in self.sources + self.headers
                         )
                         # A header outside the workspace can hide the builtin in a macro;
                         # the SDK's own setjmp.h names `setjmp`, so only the builtin counts.
                         or mentions_nonlocal_jumps(external, (b"__builtin_setjmp",))
-                        else local_declarations(
-                            info, text, prepared.workspace, self.sources + self.headers
-                        )
                     )
+                    declarations = local_declarations(
+                        info, text, prepared.workspace, self.sources + self.headers
+                    )
+                    if nonlocal_jumps:
+                        # Not judged, and said so on the rows that would be: the table
+                        # only tells them (automatic locals) apart.
+                        unjudged, declarations = ("setjmp", None, declarations), None
                     if declarations is not None:
                         from peeky.fields import CPP_LIBRARIES, type_graph
 
@@ -2060,10 +2158,12 @@ class NativeTarget:
                             },
                             CPP_LIBRARIES,
                         )
-            except (RuntimeError, ValueError, OSError):
-                # Display aid only: without it, values show as the debugger reads them
-                # (and no field or element can be changed).
+            except (RuntimeError, ValueError, OSError) as exc:
+                # Without it, values show as the debugger reads them, each local with a
+                # note that its initialization is not judged (and no field or element
+                # can be changed).
                 declarations, fields = None, None
+                unjudged = ("unreadable", str(exc)[:120] or type(exc).__name__, None)
             session = NativeSession(
                 self,
                 prepared,
@@ -2076,6 +2176,7 @@ class NativeTarget:
                 declarations=declarations,
                 typedefs=typedefs,
                 fields=fields,
+                unjudged=unjudged,
             )
             session.assert_current()
             return session
@@ -2164,6 +2265,33 @@ def _writable_integer(variable):
     )
 
 
+class ValueNote(str):
+    """What ``not_yet_declared`` gives for a local it shows, though it cannot vouch for
+    the value: the row carries ``note``. As a string, why a change there is refused,
+    where ``refuses`` (a declaration still to run on the stop line overwrites it)."""
+
+    def __new__(cls, reason, note, refuses):
+        made = super().__new__(cls, reason)
+        made.note, made.refuses = note, refuses
+        return made
+
+
+# Initialization is not judged in a program that can jump back above a declaration
+# through setjmp/longjmp (or a context switch), nor where the build's debug information
+# could not be read: the rows that would be judged say so.
+_UNJUDGED = {
+    "setjmp": (
+        "Peeky does not judge whether this local is initialized here: the program uses "
+        "setjmp/longjmp (or a context switch), which can return above a declaration, so "
+        "it may hold leftovers"
+    ),
+    "unreadable": (
+        "Peeky does not judge whether this local is initialized here: it could not read "
+        "the build's debug information ({}), so it may hold leftovers"
+    ),
+}
+
+
 class NativeSession:
     # lldb-dap reports optimized-out/not-live locals as `<error: ...>` text.
     reports_unavailable_as_text = True
@@ -2190,10 +2318,14 @@ class NativeSession:
         declarations=None,
         typedefs=None,
         fields=None,
+        unjudged=None,
     ):
         self.target, self.prepared = target, prepared
-        # local_declarations of the build; None (unknown) never withholds a value.
+        # local_declarations of the build; None (unknown) never withholds a value, and
+        # ``unjudged`` says why: (_UNJUDGED's key, its detail, the build's
+        # local_declarations if read, to tell which rows are automatic locals).
         self.declarations = declarations
+        self.unjudged = unjudged
         # fields.type_graph of the locals' types; None (unknown) changes no field.
         self.fields = fields
         # typedef_kinds of the build: {} (unknown) resolves no typedef.
@@ -2379,6 +2511,8 @@ class NativeSession:
         line = (frame or {}).get("line")
         if name == "this" and (building := self._under_construction(frame, stack, deeper)):
             return building
+        if not self.declarations and self.__dict__.get("unjudged") and isinstance(name, str):
+            return self._unjudged(name, frame)
         if not self.declarations or not isinstance(name, str) or not isinstance(path, str):
             return None
         try:
@@ -2457,12 +2591,38 @@ class NativeSession:
             )
         address = self._unslid(frame)
         below = declared_below(
-            self.declarations, name, here, line, through=self._through if innermost else None
+            self.declarations,
+            name,
+            here,
+            line,
+            through=self._through if innermost else None,
+            # The stop's own place, where the line is its own; a caller frame's return
+            # address, or a line remapped from another, says nothing of this line.
+            address=address if innermost and (here, line) == (stopped, raw_line) else None,
+            # Which declaration of the name the debugger shows there.
+            pc=address,
         )
         if below is not None:
+            at, why = below
+            if why is None:
+                return (
+                    f"declared at line {at}, below this stop, so not initialized yet: its "
+                    f"storage holds leftovers; stop after line {at} to read it"
+                )
+            reason = {
+                "label": "a label in the function lets a `goto` return above it, so this "
+                "may be a later pass",
+                "no code": f"line {at} has no code of its own, and Peeky cannot tell where "
+                "its declaration ends, to place this frame before it",
+                "after": f"code of line {line} also runs after its declaration's (as a "
+                "temporary's cleanup does), and Peeky cannot place this stop before it",
+                "unknown": "the function declares more than one of that name, and Peeky "
+                "cannot tell which one the debugger shows here",
+            }[why]
             return (
-                f"declared at line {below}, below this stop, so not initialized yet: its "
-                f"storage holds leftovers; stop after line {below} to read it"
+                f"declared at line {at}, below this stop's line, and Peeky cannot prove the "
+                f"stop comes before its declaration ({reason}), so it may not be "
+                f"initialized: its storage may hold leftovers; stop after line {at} to read it"
             )
         if innermost and (
             running := declared_running(
@@ -2532,10 +2692,39 @@ class NativeSession:
         # A loop that branches back to this address can bring control here with the
         # local live (x86-64 puts `while ((x = next()) > 0)`'s test first): only an
         # address the disassembly shows no loop returns to is withheld.
-        if (
-            declared_on_line(self.declarations, name, here, line, address) is not None
-            and getattr(self, "loop_targets", {}).get(address) is False
-        ):
+        on_line = declared_on_line(self.declarations, name, here, line, address)
+        if on_line is not None and getattr(self, "loop_targets", {}).get(address) is not False:
+            # A loop returns to this first instruction (a `do` body's first line), or
+            # Peeky cannot tell: on a later pass the local holds the last pass's value,
+            # on the first its leftovers. Shown, with a note on the row.
+            return ValueNote(
+                f"declared on line {line}, which runs after this stop on every pass (a loop "
+                "can return to its first instruction)",
+                "may be the last pass's value, or leftovers on the first pass: "
+                + (
+                    "this line is reached again by the loop"
+                    if getattr(self, "loop_targets", {}).get(address)
+                    else "Peeky cannot tell whether a loop returns to this line"
+                )
+                + ", before its declaration runs; read it on the next line",
+                refuses=True,
+            )
+        if on_line is not None:
+            if on_line[1] == "label":
+                return (
+                    f"declared on line {line}, at whose first instruction this stop is, and "
+                    "a label in the function lets a `goto` return here with it live, or this "
+                    "is its first pass, which Peeky cannot tell apart: it may not be "
+                    f"initialized, and its storage may hold leftovers; stop after line {line} "
+                    "to read it"
+                )
+            if on_line[1] == "unknown":
+                return (
+                    f"declared on line {line}, at whose first instruction this stop is, or "
+                    "another local of that name is shown, which Peeky cannot tell apart: it "
+                    "may not be initialized, and its storage may hold leftovers; stop after "
+                    f"line {line} to read it"
+                )
             return (
                 f"declared on line {line}, which has not run yet at this stop (its first "
                 "instruction), so not initialized: its storage holds leftovers; step once, "
@@ -2911,8 +3100,31 @@ class NativeSession:
             return None
         return int(pointer, 16) - bias
 
+    def _unjudged(self, name, frame):
+        """The note for a root local whose initialization Peeky does not judge (setjmp,
+        unread debug information): an automatic local of the frame's function where the
+        build's declarations tell (a parameter or static never needs one), any where
+        they do not."""
+        kind, detail, table = self.unjudged
+        if table:
+            address = self._unslid(frame)
+            holding = [
+                (high - low, index)
+                for index, function in enumerate(table)
+                for low, high in function.get("ranges", ())
+                if address is not None and low <= address < high
+            ]
+            if holding:
+                function = table[min(holding)[1]]
+                shown = _SHADOWED.fullmatch(name)
+                places = function["locals"].get(shown[1] if shown else name, ())
+                if places and not any(automatic for _, _, automatic in places):
+                    return None
+        text = _UNJUDGED[kind].format(detail)
+        return ValueNote(text, text, refuses=False)
+
     def validate_mutation_target(self, variable, frame):
-        if reason := self.not_yet_declared(variable, frame):
+        if (reason := self.not_yet_declared(variable, frame)) and getattr(reason, "refuses", True):
             raise ValueError(
                 f"{variable.get('name')!r} is {reason}; its declaration would overwrite a "
                 "change made here"
@@ -3079,7 +3291,9 @@ class NativeSession:
         (#120, #121)."""
         from peeky.fields import Unsettable
 
-        if reason := self.not_yet_declared(root, frame, stack=stack, deeper=deeper):
+        if (reason := self.not_yet_declared(root, frame, stack=stack, deeper=deeper)) and getattr(
+            reason, "refuses", True
+        ):
             raise Unsettable(
                 f"`{root.get('name')}` is {reason}; its declaration would overwrite a change "
                 "made here"
