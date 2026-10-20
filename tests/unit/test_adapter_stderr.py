@@ -21,10 +21,13 @@ DEATH = (
 )
 
 # A minimal java-debug stand-in: answers every request, and after `configurationDone`
-# (or at once, with "now") writes its stderr script: "die" prints the Event Hub's death.
+# (or at once, with "now") writes the given text to its stderr. "lines:N" makes it write
+# N log lines itself: Linux caps one argument at 128 KiB (MAX_ARG_STRLEN).
 FAKE_ADAPTER = r"""
 import json, sys, threading, time
 mode, stderr = sys.argv[1], sys.argv[2]
+if stderr.startswith("lines:"):
+    stderr = "".join(f"line {n:06d} " + "x" * 90 + "\n" for n in range(int(stderr[6:])))
 def read():
     headers = {}
     while True:
@@ -126,7 +129,7 @@ def test_other_stderr_never_ends_the_session(stderr, fatal):
 
 
 def test_the_stderr_tail_is_bounded():
-    dap = adapter("".join(f"line {n:06d} " + "x" * 90 + "\n" for n in range(2000)))
+    dap = adapter("lines:2000")  # about 200 KB, written by the adapter itself
     try:
         deadline = time.monotonic() + 5
         while "line 001999" not in dap.recent_events()["stderr"] and time.monotonic() < deadline:
