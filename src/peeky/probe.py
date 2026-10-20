@@ -1603,7 +1603,15 @@ _GCC_INTEGERS = {
     "long unsigned int": "unsigned long",
     "long long unsigned int": "unsigned long long",
 }
-_UNQUALIFIED = re.compile(r"^(?:(?:const|volatile)\s+)+|(?:\s+(?:const|volatile))+$")
+
+
+def _unqualified(kind):
+    """A type without its own `const` and `volatile` (`const int` is `int`, `char *const`
+    is `char *`), keeping a pointee's (`const char *`)."""
+    kind = re.sub(r"(?:\s*\b(?:const|volatile)\b)+\s*$", "", str(kind or "").strip())
+    if not re.search(r"[*&]", kind):
+        kind = re.sub(r"^(?:(?:const|volatile)\s+)+", "", kind)
+    return kind
 
 
 def _associative(variable):
@@ -1659,7 +1667,7 @@ def _map_entry(kind):
     """Whether a type is what LLDB lists as a map's entry: `std::pair<const K, V>` (GCC's
     debug information spells it `std::pair<K const, V>`), or libc++'s
     `std::__value_type<K, V>` in older LLDBs."""
-    kind = _UNQUALIFIED.sub("", str(kind or "").strip())
+    kind = _unqualified(kind)
     if _template_arguments(kind, "__value_type") is not None:
         return True
     arguments = _template_arguments(kind, "pair")
@@ -1746,7 +1754,7 @@ def _key_kind(first):
     (the key's type, None)."""
     from peeky.native import INTEGER_RANGES
 
-    kind = _UNQUALIFIED.sub("", str(first.get("type") or "").strip())
+    kind = _unqualified(first.get("type"))
     if (span := INTEGER_RANGES.get(_GCC_INTEGERS.get(kind, kind))) is not None:
         return "integer", span
     if _STD_STRING.fullmatch(kind):
@@ -1933,7 +1941,7 @@ def _value_for_key(worker, stop, variable, path, segment, first_page, how, whole
         )
     first = _entry_part(worker, stop, found, "first", path)
     compared, span = _key_kind(first)
-    named = _UNQUALIFIED.sub("", str(first.get("type") or "").strip()) or "unknown"
+    named = _unqualified(first.get("type")) or "unknown"
     if compared not in ("integer", "string"):
         raise ValueError(
             f"{written} not read: {path}'s keys are {compared}, which Peeky does not compare "
@@ -2090,8 +2098,8 @@ _ENTRY_NOTES = {
 
 def _keyed_child(worker, stop, base, child, whole):
     """The key selector (`[2]`, `["a"]`) that reads a map entry's value, with that value,
-    when its key is one Peeky compares exactly; None when this entry's is not, and False
-    when the map's key type is not one Peeky compares.
+    when its key is one Peeky compares and a selector can write exactly; None when this
+    entry's is not, and False when the map's key type is not one Peeky compares.
     ``whole``: LLDB's summary of a std::string shows all of it (libc++)."""
     if not child.get("variablesReference"):
         return None
@@ -2106,7 +2114,8 @@ def _keyed_child(worker, stop, base, child, whole):
     value = str(first.get("value"))
     if compared not in ("integer", "string"):
         return False
-    if compared == "integer" and re.fullmatch(r"-?[0-9]{1,20}", value):
+    # The selector grammar's own bounds: six digits, a quoted key of plain characters.
+    if compared == "integer" and re.fullmatch(r"-?[0-9]{1,6}", value):
         segment = f"[{int(value)}]"
     elif (
         compared == "string"
@@ -2167,6 +2176,12 @@ def _entry_children(worker, stop, selector, variable, page, whole=False):
     for at, (entry, child) in enumerate(zip(listed, entries)):
         if labels.count(entry["selector"]) > 1:
             listed[at] = _positional_child(base, child)
+    for entry in listed:
+        try:
+            parse_selector(entry["selector"])
+        except ValueError:
+            # Past the selector grammar's bounds (16 steps, 512 characters).
+            del entry["selector"]
     note = (
         ("keyed" if keys else "uncompared")
         if kind in _KEYED

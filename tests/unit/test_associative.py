@@ -529,3 +529,29 @@ def test_types_peeky_cannot_place(kind, unplaced):
     from peeky.probe import _unplaced
 
     assert _unplaced({"type": kind, "value": "size=3"}) is unplaced
+
+
+def test_a_key_no_selector_can_write_is_listed_by_position():
+    # Review of #119: `ids[1234567]` is past the grammar's six digits.
+    tree = entries(
+        9, [("42", "1"), ("1234567", "7"), ("-999999", "9")], kind="std::pair<const long, int>"
+    )
+    variable = local("ids", "std::map<long, int>", 9, 3)
+    shown = _children(Lldb(tree), {}, "ids", variable, True)
+    assert [c["selector"] for c in shown["children"]] == ["ids[42]", "ids[#1]", "ids[-999999]"]
+
+
+@pytest.mark.parametrize(
+    "kind, shown",
+    [
+        ("const int", "int"),
+        ("int const", "int"),
+        ("const char *const", "const char *"),
+        ("const std::basic_string<char>", "std::basic_string<char>"),
+        ("volatile unsigned long", "unsigned long"),
+    ],
+)
+def test_a_key_type_is_named_without_its_own_qualifiers(kind, shown):
+    from peeky.probe import _unqualified
+
+    assert _unqualified(kind) == shown

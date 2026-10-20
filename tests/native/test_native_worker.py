@@ -1574,6 +1574,20 @@ def test_a_set_or_map_behind_a_member_typedef_is_not_indexed_by_position(
             assert labels == [f"{name}[#0]", f"{name}[#1]", f"{name}[#2]"], labels
 
 
+def test_a_key_no_selector_can_write_is_listed_by_position(
+    tmp_path, native_config, capsys, monkeypatch
+):
+    # Review of #119 (PR #127): `session get ids` listed `ids[1234567]`, which the
+    # selector grammar (six digits) cannot read back; `const char *` keys were named
+    # `char *const`.
+    with _maps_session(tmp_path, capsys, monkeypatch, program=KEYS) as get:
+        rows = get("ids", 'cpm["al"]')
+        shown = {c["selector"]: c["value"] for c in rows["ids"]["children"]}
+        assert shown == {"ids[42]": "1", "ids[#1]": rows["ids"]["children"][1]["value"]}
+        assert get("ids[#1].first")["ids[#1].first"]["value"] == "1234567"
+        assert "cpm's keys are const char *," in rows['cpm["al"]']["error"]
+
+
 TYPEDEF_NAMED = """#include <cstdio>
 #include <vector>
 typedef std::vector<int> &P;
