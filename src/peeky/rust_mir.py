@@ -206,6 +206,7 @@ class Body:
     _alias_edges: dict | None = None
     _dropped: set | None = None
     _offset: int | None = None
+    _copies: dict | None = None
 
     @property
     def name(self):
@@ -731,6 +732,64 @@ class Body:
                 resumed = (self.resumes[number],) if number in self.resumes else ()
                 pending.extend((successor, 0) for successor in (*block.successors, *resumed))
         return False
+
+    def copies_of(self, local):
+        """The temporaries (locals no variable names, other than the return place) that
+        may hold a value read from ``local``'s storage, which a later change to it does
+        not reach (#105): one assigned from a read of it (`_4 = copy (_1.0: i32)`, not a
+        borrow of it), from a read through any pointer (which may point into it), from a
+        call given a pointer that may (`get(&s)`), or from such a temporary. A pointer
+        into it is not a copy (reads through it see the change), but makes what a call
+        returns one. The program's own variables are not counted: a copy one holds is
+        the program's (`let a = s.x;`)."""
+        if self._copies is None:
+            self._copies = {}
+        if local in self._copies:
+            return self._copies[local]
+        named = {
+            binding[0]
+            for bindings in self.bindings.values()
+            for binding in bindings
+            if binding[0] is not None
+        }
+        assignments = []
+        for block in self.blocks.values():
+            for text, _, _ in block.statements:
+                text = _STRING.sub('""', text)
+                found = _WHOLE_ASSIGNMENT.match(text) or (
+                    None if re.match(r"\(+\*_", text) else _PART_ASSIGNMENT.match(text)
+                )
+                if found and int(found[1]) not in named and int(found[1]) not in (0, local):
+                    assignments.append((int(found[1]), found[2]))
+        holds, points = set(), set()
+        for _ in range(len(assignments) + 1):
+            changed = False
+            for target, value in assignments:
+                mentioned = {int(n) for n in _MENTIONED.findall(value)}
+                through = bool(re.search(r"\(\*[(_]", value))
+                pointing = any(
+                    n in points
+                    or (n in named and n != local and _BORROWING.search(self.types.get(n, "&")))
+                    for n in mentioned
+                )
+                if re.match(r"&(?:mut |raw const |raw mut |fake \w+ )?", value):
+                    hold = bool(mentioned & holds)
+                    point = local in mentioned or through or pointing
+                else:
+                    call = "->" in value and not _NOT_A_CALL.match(value)
+                    hold = local in mentioned or through or bool(mentioned & holds)
+                    hold = hold or (call and pointing)
+                    point = pointing
+                if hold and target not in holds:
+                    holds.add(target)
+                    changed = True
+                if point and target not in points:
+                    points.add(target)
+                    changed = True
+            if not changed:
+                break
+        self._copies[local] = frozenset(holds)
+        return self._copies[local]
 
     def used_before(self, local, start):
         """True if every path into ``start`` passes a use of ``local`` (or its assignment)
@@ -2387,6 +2446,46 @@ class OwnedLocals:
         local = self._local(site[0], variable_name, line, path)
         return local is not None and self._initialized(site, local, line)
 
+    def copied_in_progress(
+        self,
+        hashed,
+        variable_name,
+        line,
+        path,
+        breakpoint=False,
+        column=None,
+        block=None,
+        stepped=False,
+    ):
+        """For the frame's local ``variable_name``: False if, from every place the stop
+        can be on ``line`` of ``path``, no temporary that may hold a value read from it
+        (``Body.copies_of``) is used again: a statement under way has not read it yet,
+        so a change made here reaches what the program reads of it from now on. True if
+        one may be (`let t = s.a + f();` back from `f`: `s.a` is in a temporary); None if
+        not understood. ``breakpoint``, ``column`` and ``block`` as for
+        ``reference_valid``; a line breakpoint stops before the line's first code in its
+        lexical block. ``stepped``: a step's stop, at the start of the line's code in a
+        MIR block (a step over enters a line where its code starts, and a step out
+        returns to the start of the block after its call). Any other stop (a pause) can
+        be at any place of the line."""
+        site = self._site(hashed, line, path)
+        if site is None:
+            return None
+        body, function = site[0], site[1]
+        if not body.supported:
+            return None
+        local = self._local(body, variable_name, line, path, block, site)
+        if local is None:
+            return None
+        facts = self._facts(function, line, column) if breakpoint and not function.copies else None
+        positions = self._positions(site, line, facts, block)
+        if not positions:
+            return None
+        if (breakpoint or stepped) and not function.inline_only:
+            positions = _first_places(body, function, positions, stepped)
+        held = body.copies_of(local)
+        return any(body.used_ahead(temp, position) for temp in held for position in positions)
+
     def reference_valid(
         self, hashed, variable_name, line, path, breakpoint=False, column=None, block=None
     ):
@@ -2739,6 +2838,33 @@ class OwnedLocals:
             shared,
             foreign=may_invoke_macro(self.texts.get(function.file), line),
         )
+
+
+def _first_places(body, function, positions, stepped=False):
+    """Of the places a line breakpoint's stop can be, the first in each lexical block
+    by address (``Body._address_order``): LLDB stops at the line's lowest address in
+    each, before the line's first code there. A temporary a statement before it sets
+    without code of its own (`_4 = copy _9`) copies one that is used there, so it is
+    judged. A block whose places' order is not known keeps them all. ``stepped``: of a
+    step's places, the first in each MIR block instead."""
+    groups = {}
+    for position in positions:
+        number, index = position
+        if stepped:
+            groups.setdefault(number, []).append(position)
+            continue
+        scope = _scope(body.blocks[number], index) if number in body.blocks else None
+        groups.setdefault(None if scope is None else body.lexical(scope), []).append(position)
+    if stepped:
+        return sorted(min(members) for members in groups.values())
+    kept = []
+    for scope, members in groups.items():
+        orders = [(body._address_order(position, function), position) for position in members]
+        if scope is None or any(order is None for order, _ in orders):
+            kept += members
+        else:
+            kept.append(min(orders)[1])
+    return sorted(kept)
 
 
 def _same_path(body, function):

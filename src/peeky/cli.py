@@ -2499,7 +2499,9 @@ def main(argv=None, _job=False, _edits=None):
             "... as `session inspect --json` lists `frames` (at most 10)",
         )
     actions.choices["set"].add_argument(
-        "assignment", help="name=value (Java also current.end=10, xs[0]=1)"
+        "assignment",
+        help="name=value: a root local, or a scalar field or array element (Java, Rust, C, "
+        "C++: current.end=10, xs[0]=1, t.__0=3)",
     )
     actions.choices["close"].add_argument(
         "--forget",

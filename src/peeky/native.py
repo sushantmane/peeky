@@ -1502,6 +1502,23 @@ def declared_mid_line(table, name, source, line, address, settled):
     return None
 
 
+def _line_start(function, source, line, address):
+    """Whether ``address`` (unslid) is where control enters ``source:line`` in the
+    function (a declarations entry): the line's lowest address, as a line breakpoint
+    and a step stop there; or, on its first line, after the prologue (only that line's
+    code runs before it)."""
+    span = function.get("rows", {}).get((source, line))
+    if span is None:
+        return False
+    if address == span[0]:
+        return True
+    order = function.get("order", ())
+    if not any(row == (address, source, line) for row in order):
+        return False
+    earlier = [row for row in order if row[0] < address]
+    return bool(earlier) and all(row[1:] == (source, line) for row in earlier)
+
+
 def declared_skipped(table, name, source, line, address, skipped):
     """``(at, label)`` for a C/C++ local of that name declared above a frame at
     ``source:line`` when a jump may have skipped its declaration: a label between the
@@ -1978,7 +1995,7 @@ class NativeTarget:
                         )
                     )
                     if declarations is not None:
-                        from peeky.fields import type_graph
+                        from peeky.fields import CPP_LIBRARIES, type_graph
 
                         # The types field and element changes walk (#105).
                         fields = type_graph(
@@ -1987,8 +2004,9 @@ class NativeTarget:
                                 kind
                                 for function in declarations
                                 for kinds in (function["types"] or {}).values()
-                                for kind, _ in kinds
+                                for kind, _, _ in kinds
                             },
+                            CPP_LIBRARIES,
                         )
             except (RuntimeError, ValueError, OSError):
                 # Display aid only: without it, values show as the debugger reads them
@@ -2796,6 +2814,40 @@ class NativeSession:
                 "change made here"
             )
 
+    def mid_statement(self, variable, frame, stop=None):
+        """Why a change to the root local ``variable`` of the stopped ``frame`` may not
+        reach a statement under way at the stop, or None (#105). Part-way through a
+        statement, what it has already read may be held in a register or a temporary
+        (`long t = s.a + f();`, back from `f` with `step --out`). So the stop must be on
+        one of its function's own lines, at that line's first instruction, and the line
+        must start a statement (Statements.begins), not continue one (`+ f();` under
+        `long t = s.a`); anything Peeky cannot tell counts as part-way. ``stop``: the
+        stop's reason (unused here)."""
+        place, function, address = self._place(frame), self._function_at(frame), None
+        if function is not None:
+            address = self._unslid(frame)
+        if place is None or function is None or address is None:
+            return "Peeky cannot place the stop among its function's statements"
+        source, line = place
+        if self._own_line(function, source, line) is not True:
+            return (
+                f"the stop is on {source}:{line}, outside its function's own lines (a "
+                "class's member initializer, or code an `#include` brings in), part-way "
+                "through the statement that runs it"
+            )
+        if not _line_start(function, source, line, address):
+            return (
+                f"the stop is part-way through line {line} (back from a call on it, as after "
+                "`step --out`)"
+            )
+        statements = self._statements(source)
+        begins = statements.begins(line) if statements is not None else None
+        if begins is False:
+            return f"line {line} continues a statement that an earlier line starts"
+        if begins is None:
+            return f"Peeky cannot tell from the source whether line {line} starts a statement"
+        return None
+
     def validate_member(self, frame, root, steps, variable, value, stack=None, deeper=None):
         """Refuse (ValueError) unless `--set` can change ``variable``, the field or
         element ``steps`` (the debugger's child names) reach from the root local
@@ -2809,9 +2861,14 @@ class NativeSession:
         name = str(root.get("name"))
         selector = name + "".join(step if step.startswith("[") else f".{step}" for step in steps)
         try:
-            kind, graph = self._root_type(frame, root)
+            kind, framed, graph = self._root_type(frame, root)
             # What the path reaches first (a pointer, a union...), then the local's state.
             signed, bits, names = settable_member(graph, kind, name, steps)
+            if not framed:
+                raise Unsettable(
+                    f"`{name}` is not kept in this frame's own memory (a static, or a value "
+                    "the debug information places in registers)"
+                )
             self._root_holds(frame, root, stack=stack, deeper=deeper)
             low, high = integer_range(signed, bits)
             shown, debugger = variable.get("value"), variable.get("type")
@@ -2848,8 +2905,9 @@ class NativeSession:
             )
 
     def _root_type(self, frame, root):
-        """(type offset, type graph) of the root local of a field or element change;
-        raises fields.Unsettable unless it is one local the frame keeps in its memory."""
+        """(type offset, whether the frame keeps it in its own memory, type graph) of
+        the root local of a field or element change; raises fields.Unsettable unless it
+        is one local of one type."""
         from peeky.fields import Unsettable
 
         function = self._function_at(frame) if self.fields is not None else None
@@ -2858,7 +2916,7 @@ class NativeSession:
                 "Peeky cannot match this frame to the build's debug information (it reads "
                 "it when the session starts; a program using setjmp has none)"
             )
-        return self._declared_type(function["types"], root.get("name")), self.fields
+        return (*self._declared_type(function["types"], root.get("name")), self.fields)
 
     def _root_holds(self, frame, root, stack=None, deeper=None):
         """Raise fields.Unsettable unless the root local holds its value at the stop:
@@ -2874,12 +2932,19 @@ class NativeSession:
 
     @staticmethod
     def _declared_type(types, name):
+        """(type offset, whether every declaration is an automatic or a parameter in the
+        frame's memory) of the local ``name`` (`s`, or `s @ main.rs:81` as LLDB names one
+        of several) in a function's ``types`` (fields.local_types)."""
         from peeky.fields import Unsettable
 
-        declared = types.get(name)
+        shown = re.fullmatch(r"(.+) @ ([^:]+):([0-9]+)", str(name))
+        declared = types.get(shown[1] if shown else name)
+        if declared and shown:
+            # LLDB names a local by where it is declared when several share its name.
+            declared = {each for each in declared if each[2] == (shown[2], int(shown[3]))}
         if not declared:
             raise Unsettable(f"the debug information declares no local `{name}` in this function")
-        kinds = {kind for kind, _ in declared}
+        kinds = {kind for kind, _, _ in declared}
         if None in kinds:
             raise Unsettable(f"the debug information gives the local `{name}` no type")
         if len(kinds) != 1:
@@ -2887,12 +2952,8 @@ class NativeSession:
                 f"this function declares several locals named `{name}` of different types, "
                 "and Peeky cannot tell which one the debugger shows"
             )
-        if {storage for _, storage in declared} - {"automatic", "parameter"}:
-            raise Unsettable(
-                f"`{name}` is not kept in this frame's own memory (a static, or a value the "
-                "debug information places in registers)"
-            )
-        return next(iter(declared))[0]
+        framed = not {storage for _, storage, _ in declared} - {"automatic", "parameter"}
+        return next(iter(declared))[0], framed
 
     def source_path(self, original):
         relative = (

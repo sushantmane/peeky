@@ -41,3 +41,16 @@ def test_field_sets_where_no_rule_allows_them_are_refused_before_any_build(tmp_p
     for language in ("c", "cpp", "rust", "java"):
         _member_sets(["s.end=10", "xs[2] = 1", "t.__0=3"], language)
     _member_sets(["n = 3", " x=1"], "python")
+
+
+def test_session_set_help_names_every_language_that_changes_fields(capsys):
+    # Review of #105: `session set --help` still said "(Java also current.end=10, ...)".
+    import pytest
+
+    from peeky.cli import main
+
+    with pytest.raises(SystemExit):
+        main(["session", "set", "--help"])
+    text = " ".join(capsys.readouterr().out.split())
+    assert "Java also" not in text
+    assert "(Java, Rust, C, C++: current.end=10, xs[0]=1, t.__0=3)" in text

@@ -189,3 +189,138 @@ def test_an_optimized_rust_build_refuses_field_changes(crate):
     error = result.get("error") or {}
     assert error.get("code") == "MUTATION_REJECTED", result
     assert "refused in an optimized build (opt-level=1)" in error["message"], error
+
+
+MID = """#[derive(Debug, Clone, Copy)]
+struct Tri {
+    a: i32,
+    b: i32,
+    c: i32,
+}
+
+#[inline(never)]
+fn f() -> i32 {
+    1000
+}
+
+fn temp_out() {
+    let mut s = Tri { a: 1, b: 2, c: 3 };
+    let mut x = 1i32;
+    s.c += 1;
+    x += 0;
+    let t = x + s.a + f(); // TEMP_OUT
+    println!("tempout {} {} {}", t, s.a, x);
+}
+
+fn temp_across() {
+    let mut s = Tri { a: 1, b: 2, c: 3 };
+    s.c += 1;
+    let t = s.a
+        + f(); // TEMP_SECOND
+    println!("temp {} {}", t, s.a);
+}
+
+fn shadow() {
+    let mut s = Tri { a: 1, b: 2, c: 3 }; // OUTER
+    s.a += 1;
+    let mut s = Tri { a: 10, b: 20, c: 30 }; // INNER
+    s.a += 1; // SHADOW
+    println!("shadow {:?}", s);
+}
+
+fn big() {
+    let mut a = [0u32; 1000];
+    for i in 0..1000 {
+        a[i] = i as u32;
+    }
+    a[0] += 1; // BIG
+    println!("big {} {}", a[257], a[999]);
+}
+
+fn main() {
+    temp_out();
+    temp_across();
+    shadow();
+    big();
+}
+"""
+
+
+def mid_line(marker):
+    return next(i for i, line in enumerate(MID.splitlines(), 1) if marker in line)
+
+
+def settable(capsys, name):
+    assert main(["session", "inspect", "--json"]) == 0
+    snapshot = json.loads(capsys.readouterr().out)
+    rows = [v for s in snapshot["scopes"] for v in s["variables"] if v["name"] == name]
+    return rows[0].get("settable")
+
+
+def start_mid(crate, capsys, marker):
+    (crate / "src/main.rs").write_text(MID)
+    at = f"src/main.rs:{mid_line(marker)}"
+    assert main(["session", "start", str(crate), "--at", at]) == 0
+    capsys.readouterr()
+
+
+def finish(capsys):
+    assert main(["session", "continue", "--to-exit"]) == 0
+    capsys.readouterr()
+    assert main(["session", "report", "--json"]) == 0
+    text = json.loads(capsys.readouterr().out)["output"]
+    assert main(["session", "close"]) == 0
+    return text
+
+
+@pytest.mark.timeout(400)
+def test_rust_a_change_part_way_through_a_statement_is_refused(crate, capsys):
+    # Review of #105: back from `f` (`step --out`), `t = x + s.a + f()` already held
+    # `s.a` in a temporary, and a change reported `1 -> 50` while the program printed
+    # `1001`; so did a breakpoint on `+ f();` under `let t = s.a`.
+    start_mid(crate, capsys, "// TEMP_OUT")
+    # At the statement's start nothing is read yet: the change reaches it.
+    assert settable(capsys, "x") is True
+    code, result = change(capsys, "s.a=40")
+    assert code == 0 and result["after"] == "40", result
+    assert main(["session", "step", "--into"]) == 0
+    assert main(["session", "step", "--out"]) == 0
+    capsys.readouterr()
+    assert settable(capsys, "x") is False
+    refused(capsys, "s.a=50", "cannot be changed here", "already read it into a temporary")
+    refused(capsys, "x=7", "cannot be changed here", "would not see the change")
+    # A step onto a line starts it: nothing of the line is read yet.
+    assert main(["session", "step"]) == 0
+    capsys.readouterr()
+    code, result = change(capsys, "s.a=45")
+    assert code == 0 and result["after"] == "45", result
+    # A breakpoint on a line that continues a statement an earlier line started.
+    assert main(["session", "continue", "--to", str(mid_line("// TEMP_SECOND"))]) == 0
+    capsys.readouterr()
+    refused(capsys, "s.a=60", "already read it into a temporary")
+    text = finish(capsys)
+    # Only the changes made where a statement started reached the program.
+    assert "tempout 1041 45 1" in text and "temp 1001 1" in text, text
+
+
+@pytest.mark.timeout(400)
+def test_rust_a_shadowed_root_is_selected_by_where_it_is_declared(crate, capsys):
+    # Review of #105: lldb-dap names `s @ main.rs:N` for each of the two `s` (as in
+    # `let mut w = w;`), which no selector could name, and plain `s` is not listed.
+    start_mid(crate, capsys, "// SHADOW")
+    inner, outer = mid_line("// INNER"), mid_line("// OUTER")
+    code, result = change(capsys, f"s @ main.rs:{inner}.b=50")
+    assert code == 0 and result["after"] == "50", result
+    code, result = change(capsys, f"s@main.rs:{outer}.b=40")
+    assert code == 0 and result["after"] == "40", result
+    assert "shadow Tri { a: 11, b: 50, c: 30 }" in finish(capsys)
+
+
+@pytest.mark.timeout(400)
+def test_rust_an_element_of_a_large_array_local_is_changed(crate, capsys):
+    # Review of #105: `a[257]` of a 1,000-element local exhausted the expansion
+    # budget (arrays inside structs worked); the element is now fetched alone.
+    start_mid(crate, capsys, "// BIG")
+    code, result = change(capsys, "a[257]=9")
+    assert code == 0 and result["after"] == "9", result
+    assert "big 9 999" in finish(capsys)

@@ -7,7 +7,14 @@ from copy import deepcopy
 import pytest
 
 from peeky.errors import classify
-from peeky.fields import Unsettable, local_types, settable_member, type_graph
+from peeky.fields import (
+    CPP_LIBRARIES,
+    RUST_LIBRARIES,
+    Unsettable,
+    local_types,
+    settable_member,
+    type_graph,
+)
 from peeky.native import NativeSession, _parse_dies
 from peeky.worker import DebugWorker
 
@@ -122,7 +129,7 @@ INFO = dump(
     (0x160, 1, "DW_TAG_const_type", {"DW_AT_type": "0x00000060"}),
 )
 ROOTS = (0x70, 0x40, 0x44, 0x90, 0xA0, 0xB0, 0xC0, 0xD0, 0xF4, 0x110, 0x120, 0x130, 0x140)
-GRAPH = type_graph(_parse_dies(INFO), (*ROOTS, 0x150, 0x160))
+GRAPH = type_graph(_parse_dies(INFO), (*ROOTS, 0x150, 0x160), CPP_LIBRARIES)
 
 
 @pytest.mark.parametrize(
@@ -211,15 +218,40 @@ DECLARED = dump(
 
 
 def test_a_declared_class_is_read_from_its_one_definition_and_a_vla_is_refused():
-    graph = type_graph(_parse_dies(DECLARED), (0x24, 0x28, 0x60, 0x70))
+    graph = type_graph(_parse_dies(DECLARED), (0x24, 0x28, 0x60, 0x70), CPP_LIBRARIES)
     # clang's -fno-standalone-debug declares a class whose definition another unit has.
     assert settable_member(graph, 0x24, "w", ["n"]) == (True, 32, ("int",))
     # Two definitions of one name (an ODR violation): neither is chosen.
     with pytest.raises(Unsettable, match="no definition of Twice"):
         settable_member(graph, 0x28, "t", ["n"])
-    with pytest.raises(Unsettable, match="whose size the debug information omits"):
+    # Review of #105: named as what it is, not as a value kept outside the frame.
+    with pytest.raises(Unsettable, match="`vla` is a variable-length array"):
         settable_member(graph, 0x60, "vla", ["[0]"])
     assert settable_member(graph, 0x70, "big", ["[65535]"]) == (True, 32, ("int",))
+
+
+NAMESPACES = dump(
+    (0x0B, 0, "DW_TAG_compile_unit", {"DW_AT_name": '"a.cpp"'}),
+    (0x10, 1, "DW_TAG_base_type", base("int", "DW_ATE_signed", "0x04")),
+    (0x20, 1, "DW_TAG_namespace", {"DW_AT_name": '"core"'}),
+    (0x24, 2, "DW_TAG_structure_type", {"DW_AT_name": '"Config"', "DW_AT_byte_size": "0x04"}),
+    (0x28, 3, "DW_TAG_member", member("level", 0x10, 0)),
+    (0x30, 1, "DW_TAG_namespace", {"DW_AT_name": '"alloc"'}),
+    (0x34, 2, "DW_TAG_structure_type", {"DW_AT_name": '"Pool"', "DW_AT_byte_size": "0x04"}),
+    (0x38, 3, "DW_TAG_member", member("size", 0x10, 0)),
+)
+
+
+def test_a_cpp_namespace_named_core_or_alloc_is_the_programs_own():
+    # Review of #105: `core::Config cfg; --set cfg.level=60` was refused as std's.
+    dies = _parse_dies(NAMESPACES)
+    graph = type_graph(dies, (0x24, 0x34), CPP_LIBRARIES)
+    assert settable_member(graph, 0x24, "cfg", ["level"]) == (True, 32, ("int",))
+    assert settable_member(graph, 0x34, "pool", ["size"]) == (True, 32, ("int",))
+    # In Rust they are the standard library's crates.
+    graph = type_graph(dies, (0x24, 0x34), RUST_LIBRARIES)
+    with pytest.raises(Unsettable, match="standard-library type"):
+        settable_member(graph, 0x24, "cfg", ["level"])
 
 
 def test_a_derived_classs_own_field_is_settable():
@@ -230,11 +262,13 @@ def test_a_type_the_graph_did_not_reach_is_refused():
     with pytest.raises(Unsettable, match="did not read the type"):
         settable_member({}, 0x70, "s", ["end"])
     # The walk stops at pointers: what one points at is never read.
-    assert 0x60 in GRAPH and type_graph(_parse_dies(INFO), (0x3C,)).keys() == {0x3C}
+    assert 0x60 in GRAPH and type_graph(_parse_dies(INFO), (0x3C,), CPP_LIBRARIES).keys() == {0x3C}
 
 
-def NAMED(name):
-    return {"DW_AT_name": f'"{name}"', "DW_AT_type": "0x00000010"}
+def NAMED(name, line=None):
+    return {"DW_AT_name": f'"{name}"', "DW_AT_type": "0x00000010"} | (
+        {"DW_AT_decl_file": '"/w/src/t.c"', "DW_AT_decl_line": str(line)} if line else {}
+    )
 
 
 FUNCTION = dump(
@@ -242,12 +276,12 @@ FUNCTION = dump(
     (0x10, 1, "DW_TAG_base_type", base("int", "DW_ATE_signed", "0x04")),
     (0x20, 1, "DW_TAG_subprogram", {"DW_AT_name": '"f"', "DW_AT_low_pc": "0x1000"}),
     (0x22, 2, "DW_TAG_formal_parameter", {"DW_AT_location": "DW_OP_fbreg -8"} | NAMED("p")),
-    (0x24, 2, "DW_TAG_variable", {"DW_AT_location": "DW_OP_fbreg -16"} | NAMED("a")),
+    (0x24, 2, "DW_TAG_variable", {"DW_AT_location": "DW_OP_fbreg -16"} | NAMED("a", 3)),
     (0x26, 2, "DW_TAG_variable", {"DW_AT_location": "DW_OP_addr 0x4000"} | NAMED("kept")),
     (0x28, 2, "DW_TAG_variable", {"DW_AT_location": "DW_OP_reg0 W0"} | NAMED("held")),
     (0x2A, 2, "DW_TAG_variable", NAMED("nowhere")),
     (0x2C, 2, "DW_TAG_lexical_block", {}),
-    (0x2E, 3, "DW_TAG_variable", {"DW_AT_location": "DW_OP_breg31 WSP+8"} | NAMED("a")),
+    (0x2E, 3, "DW_TAG_variable", {"DW_AT_location": "DW_OP_breg31 WSP+8"} | NAMED("a", 9)),
     (
         0x30,
         3,
@@ -263,31 +297,43 @@ def test_locals_are_listed_with_their_type_and_where_the_frame_keeps_them():
     dies = _parse_dies(FUNCTION)
     types = local_types(dies, [0x20])
     assert types == {
-        "p": frozenset({(0x10, "parameter")}),
-        # Two `a` in nested blocks, both in the frame: one type.
-        "a": frozenset({(0x10, "automatic")}),
-        "big": frozenset({(0x10, "automatic")}),
-        "kept": frozenset({(0x10, "other")}),
-        "held": frozenset({(0x10, "other")}),
-        "nowhere": frozenset({(0x10, "other")}),
+        "p": frozenset({(0x10, "parameter", None)}),
+        # Two `a` in nested blocks, both in the frame: one type, each where it is declared.
+        "a": frozenset({(0x10, "automatic", ("t.c", 3)), (0x10, "automatic", ("t.c", 9))}),
+        "big": frozenset({(0x10, "automatic", None)}),
+        "kept": frozenset({(0x10, "other", None)}),
+        "held": frozenset({(0x10, "other", None)}),
+        "nowhere": frozenset({(0x10, "other", None)}),
     }
     # A call inlined into the function keeps its own locals.
     assert "inlined" not in types
 
 
+A, B = ("main.rs", 79), ("main.rs", 81)
+
+
 @pytest.mark.parametrize(
-    "declared, words",
+    "declared, name, words",
     [
-        ({}, "declares no local `s`"),
-        ({"s": frozenset({(0x60, "automatic"), (0x70, "automatic")})}, "of different types"),
-        ({"s": frozenset({(0x60, "automatic"), (0x60, "other")})}, "not kept in this frame"),
-        ({"s": frozenset({(None, "automatic")})}, "gives the local `s` no type"),
+        ({}, "s", "declares no local `s`"),
+        ({"s": frozenset({(0x60, "automatic", A), (0x70, "automatic", B)})}, "s", "different"),
+        ({"s": frozenset({(None, "automatic", A)})}, "s", "gives the local `s` no type"),
+        ({"s": frozenset({(0x60, "automatic", A)})}, "s @ main.rs:80", "no local `s @ main"),
     ],
 )
-def test_a_root_must_be_one_local_the_frame_keeps_in_its_memory(declared, words):
+def test_a_root_must_be_one_local_of_one_type(declared, name, words):
     with pytest.raises(Unsettable, match=words):
-        NativeSession._declared_type(declared, "s")
-    assert NativeSession._declared_type({"s": frozenset({(0x60, "parameter")})}, "s") == 0x60
+        NativeSession._declared_type(declared, name)
+
+
+def test_a_shadowed_root_is_told_apart_by_where_it_is_declared():
+    # Review of #105: LLDB names `s @ main.rs:81` when several `s` are in scope.
+    both = {"s": frozenset({(0x60, "automatic", A), (0x70, "automatic", B)})}
+    assert NativeSession._declared_type(both, "s @ main.rs:81") == (0x70, True)
+    assert NativeSession._declared_type(both, "s @ main.rs:79") == (0x60, True)
+    static = {"s": frozenset({(0x60, "automatic", A), (0x60, "other", B)})}
+    assert NativeSession._declared_type(static, "s") == (0x60, False)
+    assert NativeSession._declared_type(static, "s @ main.rs:79") == (0x60, True)
 
 
 class Backend:

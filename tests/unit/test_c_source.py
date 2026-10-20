@@ -495,3 +495,86 @@ def test_a_class_extent_runs_from_its_head_to_its_closing_brace():
     # A declaration only, an object of a class, a lambda: none.
     for line in (5, 11, 12, 99):
         assert statements.class_extent(line) is None, line
+
+
+BEGINS = """#include <stdio.h>
+struct S { long a; long b; };
+static long f(void) { return 1000; }
+int main(void) {
+    struct S s = { 1, 2 };
+    long t = s.a
+        + f();
+    if (s.a)
+        s.b = 3;
+    switch (s.a) {
+    case 1:
+        s.b = 4;
+        break;
+    default: {
+        s.b = 5;
+    }
+    }
+    for (int i = 0;
+         i < 3;
+         i++) {
+        s.a += i;
+    }
+    long u = g(s.a,
+               f());
+    struct S w = {
+        s.a,
+        f() };
+    long v = ({ long q = f();
+        q; });
+#ifdef X
+    s.a = 9;
+#endif
+    x = c ? s.a :
+        f();
+out:
+    s.a = 1;
+    auto lam = [&](int v) -> int {
+        return v;
+    }
+    (3);
+    return 0;
+}
+struct Cfg { long a = f();
+    long b = f(); };
+int Klass::get() const {
+    return 1;
+}
+"""
+
+
+def test_a_line_continuing_a_statement_is_told_from_one_starting_it():
+    # Review of #105: a stop on `+ f();` under `long t = s.a` is part-way through the
+    # statement, which already read `s.a`.
+    statements = Statements(BEGINS)
+    starting, continuing, unknown = [], [], []
+    for number, text in enumerate(BEGINS.splitlines(), 1):
+        verdict = statements.begins(number)
+        {True: starting, False: continuing, None: unknown}[verdict].append(text.strip())
+    assert continuing == [
+        "+ f();",
+        "i < 3;",
+        "i++) {",
+        "f());",
+        "s.a,",
+        "f() };",
+        "q; });",
+        "f();",
+        "(3);",
+        "long b = f(); };",
+    ]
+    assert unknown == ["#include <stdio.h>", "#ifdef X", "#endif"]
+    for text in ("long t = s.a", "s.b = 3;", "s.b = 4;", "s.b = 5;", "s.a += i;", "s.a = 1;"):
+        assert text in starting
+    assert "return v;" in starting and "return 1;" in starting  # a lambda's, a method's
+
+
+def test_begins_is_unknown_where_the_compiler_may_read_the_text_otherwise():
+    assert Statements("int f(void) {\n  int a = 1 + \\\n  2;\n}\n").begins(3) is None
+    assert Statements("int f(void) {\n  int a = (1;\n}\n").begins(2) is None
+    hidden = Statements("int f(void) {\n  OPEN 1;\n  g();\n}\n", macros={"OPEN"})
+    assert hidden.begins(3) is None

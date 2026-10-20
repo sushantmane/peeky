@@ -50,11 +50,17 @@ _STEP = re.compile(
     rf"|\[(?P<key>{_KEY_LITERAL})\]"
 )
 _NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,127}")
+# A local LLDB shows with where it is declared, when several of that name are in scope
+# (`s @ main.rs:81`, `p @ s1.c:38`): the spaces around `@` may be left out.
+_SHADOWED_ROOT = re.compile(
+    r"([A-Za-z_][A-Za-z0-9_]{0,127}) ?@ ?([^\s:@\[\]'\"]{1,255}):([0-9]{1,9})"
+)
 
 
 def parse_selector(text):
     """`request.page` -> ['request', 'page']; `args[0]` -> ['args', '[0]'];
-    `order['id']` -> ['order', "['id']"]; `m[#0]` -> ['m', '[#0]'].
+    `order['id']` -> ['order', "['id']"]; `m[#0]` -> ['m', '[#0]']; `s @ main.rs:81.a`
+    -> ['s @ main.rs:81', 'a'] (a local LLDB names by its declaration, shadowing).
 
     Negative indexes (`items[-1]`) count from the end of a sequence whose elements
     all fit in the bounded inspection window. A quoted key reads one entry of a
@@ -63,10 +69,11 @@ def parse_selector(text):
     """
     if not isinstance(text, str) or not text or len(text) > 512:
         raise ValueError("Selectors must be nonempty dotted paths")
-    first = _NAME.match(text)
+    first = _SHADOWED_ROOT.match(text) or _NAME.match(text)
     if not first:
         raise ValueError(f"Invalid selector: {text}{_SELECTOR_HELP}")
-    segments, position = [first[0]], first.end()
+    root = f"{first[1]} @ {first[2]}:{int(first[3])}" if first.re is _SHADOWED_ROOT else first[0]
+    segments, position = [root], first.end()
     while position < len(text):
         step = _STEP.match(text, position)
         if not step:
@@ -105,7 +112,8 @@ def parse_selector(text):
 
 _SELECTOR_HELP = (
     " (selectors are paths, never expressions: name, a.b, a[0], a[-1], a['key'] or a[\"key\"];"
-    " a[#0] is a C++ map's or set's first entry)"
+    " a[#0] is a C++ map's or set's first entry; 's @ main.rs:81.a' starts at a local the"
+    " debugger names with where it is declared)"
 )
 
 
@@ -1394,6 +1402,8 @@ def apply_set(worker, stop, name, value):
     segments = parse_selector(name)
     snapshot = worker.dispatch("inspect", {**stop, "names": [segments[0]]})
     if len(segments) == 1:
+        # As LLDB names it (`s @ main.rs:81` however written).
+        name = segments[0]
         own = [scope for scope in snapshot["scopes"] if not scope.get("globals")]
         # Listed directly, or in a group of debugpy's (a local holding a function).
         found, scope = _scope_lookup(worker, stop, snapshot, own, name)

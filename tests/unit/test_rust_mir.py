@@ -1945,3 +1945,55 @@ def test_a_macro_s_own_stops_judge_the_references_of_their_block(tmp_path):
     # The macro's own `args` of the stop's block, set there.
     assert judged("args", True, 0xE50) is True
     assert judged("v", True, 0xE60) is True
+
+
+def test_temporaries_holding_a_copy_of_a_local_are_found_and_judged_live():
+    # Review of #105: `let t = s.a + f();` copies `s.a` into `_4` before calling `f`;
+    # back from `f`, a change to `s.a` misses `t`.
+    bindings = "debug s => _1;   // in scope 1 at src/main.rs:2:9: 2:10\n"
+    bindings += "debug t => _3;   // in scope 1 at src/main.rs:3:9: 3:10\n"
+    bindings += "debug r => _9;   // in scope 1 at src/main.rs:4:9: 4:10\n"
+    body = mir(
+        {
+            0: [
+                "_4 = copy (_1.0: i32);",
+                "_5 = f() -> [return: bb1, unwind continue];",
+            ],
+            1: [
+                "_6 = AddWithOverflow(copy _4, copy _5);",
+                "_3 = move (_6.0: i32);",
+                "_7 = &(_1.0: i32);",  # a pointer to it is no copy
+                "_8 = (move _7,);",
+                "_10 = copy ((*_9).0: i32);",  # read through a pointer that may alias it
+                "_11 = g(move _8) -> [return: bb2, unwind continue];",  # given a pointer
+                "_12 = h() -> [return: bb2, unwind continue];",  # given nothing
+                "_13 = copy _3;",  # a copy the program's own `t` holds
+            ],
+            2: ["StorageDead(_4);", "return;"],
+        },
+        bindings=bindings,
+    )
+    assert body.copies_of(1) == frozenset({4, 6, 10, 11})
+    # Live back from `f` (bb1's start), not at the statement's start (before `_4 = ...`).
+    assert body.used_ahead(4, (1, 0)) and not body.used_ahead(4, (0, 0))
+
+
+def test_a_line_breakpoint_stops_before_its_lines_first_code_in_each_block():
+    from peeky.rust_mir import _first_places
+
+    class Body:
+        blocks = {1: type("B", (), {"scopes": [3, 3, 3]})(), 2: type("B", (), {"scopes": [5]})()}
+
+        @staticmethod
+        def lexical(scope):
+            return scope
+
+        @staticmethod
+        def _address_order(position, function):
+            return None if position[0] == 2 and function == "unknown" else (0, *position)
+
+    places = [(1, 1), (1, 2), (2, 0)]
+    assert _first_places(Body, "ir", places) == [(1, 1), (2, 0)]
+    # A step: the first place of each MIR block (a step out returns to a block's start).
+    assert _first_places(Body, "ir", [(1, 2), (2, 0)], stepped=True) == [(1, 2), (2, 0)]
+    assert _first_places(Body, "ir", places, stepped=True) == [(1, 1), (2, 0)]

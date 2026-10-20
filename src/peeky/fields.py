@@ -26,8 +26,10 @@ _RECORDS = {
     "DW_TAG_class_type": "class",
     "DW_TAG_union_type": "union",
 }
-# The outermost namespace of a standard library's types (C++ and Rust).
-_LIBRARIES = frozenset({"std", "core", "alloc", "__gnu_cxx", "__cxxabiv1"})
+# The outermost namespace of a standard library's types: C++'s (a program may name its
+# own namespace `core`), and Rust's crates.
+CPP_LIBRARIES = frozenset({"std", "__gnu_cxx", "__gnu_debug", "__cxxabiv1"})
+RUST_LIBRARIES = frozenset({"std", "core", "alloc"})
 # Integer-encoded character types: a debugger shows their values as characters.
 _CHARACTERS = frozenset({"wchar_t", "char8_t", "char16_t", "char32_t"})
 _SELECTABLE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
@@ -53,11 +55,13 @@ def _number(value):
 
 
 def local_types(dies, bodies):
-    """{name: frozenset((type offset, storage))} for the parameters and variables of a
-    function's code (``bodies``: its concrete DIEs; nested blocks, but not the calls
-    inlined into it). ``storage``: "automatic" (a variable in the frame's memory),
-    "parameter" (a parameter there) or "other" (a static, a register, a location list,
-    none). None if there are too many to list them all."""
+    """{name: frozenset((type offset, storage, (file name, line)))} for the parameters
+    and variables of a function's code (``bodies``: its concrete DIEs; nested blocks,
+    but not the calls inlined into it). ``storage``: "automatic" (a variable in the
+    frame's memory), "parameter" (a parameter there) or "other" (a static, a register,
+    a location list, none); the file name (no directory) and line it is declared on, as
+    LLDB names a local when several of its name are in scope (`s @ main.rs:81`), or
+    None. None if there are too many to list them all."""
     found, pending, seen = {}, [child for body in bodies for child in dies[body]["children"]], 0
     while pending:
         child = pending.pop()
@@ -81,12 +85,16 @@ def local_types(dies, bodies):
         storage = "other"
         if framed:
             storage = "parameter" if die["tag"] == "DW_TAG_formal_parameter" else "automatic"
-        found.setdefault(name, set()).add((_target(_first(dies, chain, "DW_AT_type")), storage))
+        file = _text(_first(dies, chain, "DW_AT_decl_file"))
+        line = _number(_first(dies, chain, "DW_AT_decl_line"))
+        where = (file.replace("\\", "/").rpartition("/")[2], line) if file and line else None
+        kind = _target(_first(dies, chain, "DW_AT_type"))
+        found.setdefault(name, set()).add((kind, storage, where))
     return {name: frozenset(kinds) for name, kinds in found.items()}
 
 
-def _library(dies, offset):
-    """The outermost namespace holding a record, if a standard library's."""
+def _library(dies, offset, libraries):
+    """The outermost namespace holding a record, if one of ``libraries``."""
     outer, parent = None, dies[offset]["parent"]
     for _ in range(64):
         die = dies.get(parent)
@@ -95,13 +103,13 @@ def _library(dies, offset):
         if die["tag"] == "DW_TAG_namespace":
             outer = _text(die["attrs"].get("DW_AT_name"))
         parent = die["parent"]
-    return outer if outer in _LIBRARIES else None
+    return outer if outer in libraries else None
 
 
 def _bound(dies, value):
-    """A subrange's count or bound, or None if it is not a constant: a variable-length
-    array's names a DIE (an artificial variable, `__vla_expr0`), printed as an 8-digit
-    reference, or is an expression."""
+    """A subrange's count or bound, or None if it is not a constant; and whether it is
+    a variable-length array's, which names a DIE (an artificial variable,
+    `__vla_expr0`, printed as an 8-digit reference) or is an expression."""
     number = _number(value)
     text = (value or "").strip()
     if number is not None and re.fullmatch(r"0x[0-9a-fA-F]{8}", text):
@@ -112,8 +120,8 @@ def _bound(dies, value):
             "DW_TAG_member",
             "DW_TAG_dwarf_procedure",
         ):
-            return None
-    return number
+            return None, True
+    return number, bool(text) and number is None
 
 
 def _definitions(dies):
@@ -126,10 +134,12 @@ def _definitions(dies):
     return found
 
 
-def type_graph(dies, offsets, limit=MAX_TYPES):
+def type_graph(dies, offsets, libraries, limit=MAX_TYPES):
     """{offset: node} for the given types and every type they hold by value (through
     typedefs, qualifiers, arrays and record members, not pointers or references). A
-    type the walk did not reach is absent, which ``settable_member`` refuses. A class
+    type the walk did not reach is absent, which ``settable_member`` refuses. A record
+    in a namespace of ``libraries`` (`CPP_LIBRARIES`, `RUST_LIBRARIES`) is the
+    library's, whose layout Peeky does not change. A class
     declared without its definition (clang's `-fno-standalone-debug`) stands for the
     one definition of its qualified name, if there is exactly one."""
     graph, pending, definitions = {}, [offset for offset in offsets if offset is not None], None
@@ -171,19 +181,20 @@ def type_graph(dies, offsets, limit=MAX_TYPES):
         elif tag == "DW_TAG_enumeration_type":
             graph[offset] = ("enum", name, size)
         elif tag == "DW_TAG_array_type":
-            counts = []
+            counts, variable = [], False
             for child in die["children"]:
                 bound = dies[child]
                 if bound["tag"] != "DW_TAG_subrange_type":
                     continue
-                count = _bound(dies, bound["attrs"].get("DW_AT_count"))
-                upper = _bound(dies, bound["attrs"].get("DW_AT_upper_bound"))
-                lower = _bound(dies, bound["attrs"].get("DW_AT_lower_bound") or "0")
+                count, counted = _bound(dies, bound["attrs"].get("DW_AT_count"))
+                upper, bounded = _bound(dies, bound["attrs"].get("DW_AT_upper_bound"))
+                lower, _ = _bound(dies, bound["attrs"].get("DW_AT_lower_bound") or "0")
+                variable = variable or counted or bounded
                 if count is None and upper is not None and lower == 0:
                     count = upper + 1
                 counts.append(count if lower == 0 else None)
             known = bool(counts) and None not in counts
-            graph[offset] = ("array", name, target, tuple(counts) if known else None)
+            graph[offset] = ("array", name, target, tuple(counts) if known else None, variable)
             pending.append(target)
         elif tag in _RECORDS:
             members, holds, variant = [], [], False
@@ -221,7 +232,7 @@ def type_graph(dies, offsets, limit=MAX_TYPES):
                 tuple(holds),
                 variant,
                 "DW_AT_declaration" in attrs,
-                _library(dies, offset),
+                _library(dies, offset, libraries),
             )
             pending.extend(kind for kind in holds if kind is not None)
         else:
@@ -363,6 +374,10 @@ def settable_member(graph, root, name, steps):
             if node[0] != "array":
                 raise Unsettable(f"`{path}` has no fields or elements Peeky can change")
             element, counts = node[2], node[3]
+            if counts is None and node[4]:
+                raise Unsettable(
+                    f"`{path}` is a variable-length array, whose elements Peeky does not change"
+                )
             if counts is None:
                 raise Unsettable(f"`{path}` is an array whose size the debug information omits")
         index = _INDEX.fullmatch(step)

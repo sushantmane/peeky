@@ -181,8 +181,6 @@ def test_c_fields_and_elements_change_and_the_program_sees_them(directory, capsy
 
 @pytest.mark.timeout(240)
 def test_cpp_fields_change_only_in_objects_the_frame_holds(directory, capsys):
-    if not os.environ.get("PEEKY_NATIVE_CXX"):
-        pytest.skip("set PEEKY_NATIVE_CXX to enable C++ conformance")
     path = directory / "fields.cpp"
     path.write_text(CPP_SOURCE)
     assert main(["session", "start", str(path), "--at", str(line_of(CPP_SOURCE, "STOP"))]) == 0
@@ -245,3 +243,161 @@ def test_a_probe_changes_a_field_and_an_optimized_build_refuses(directory):
     error = optimized.get("error") or {}
     assert error.get("code") == "MUTATION_REJECTED", optimized
     assert "optimized build (-O1)" in error["message"], error
+
+
+MID_SOURCE = """#include <stdio.h>
+
+struct tri { int a, b, c; };
+
+__attribute__((noinline)) static int f(void) {
+    return 1000;
+}
+
+static void temp_out(void) {
+    struct tri s = { 1, 2, 3 };
+    int x = 1;
+    s.c += 1;
+    int t = x + s.a + f();  // TEMP_OUT
+    printf("tempout %d %d %d\\n", t, s.a, x);
+}
+
+static void temp_across(void) {
+    struct tri s = { 1, 2, 3 };
+    s.c += 1;
+    int t = s.a
+        + f();  // TEMP_SECOND
+    printf("temp %d %d\\n", t, s.a);
+}
+
+int main(void) {
+    temp_out();
+    temp_across();
+    return 0;
+}
+"""
+
+
+def settable(capsys, name):
+    assert main(["session", "inspect", "--json"]) == 0
+    snapshot = json.loads(capsys.readouterr().out)
+    rows = [v for s in snapshot["scopes"] for v in s["variables"] if v["name"] == name]
+    return rows[0].get("settable")
+
+
+@pytest.mark.timeout(240)
+@pytest.mark.parametrize("language", ["c", "cpp"])
+def test_a_change_part_way_through_a_statement_is_refused(directory, capsys, language):
+    # Review of #105: back from `f` (`step --out`), `t = x + s.a + f()` already holds
+    # `s.a`, and a change reported `1 -> 50` while the program printed `1001`.
+    path = directory / ("mid.c" if language == "c" else "mid.cpp")
+    path.write_text(MID_SOURCE)
+    at = line_of(MID_SOURCE, "TEMP_OUT")
+    assert main(["session", "start", str(path), "--at", str(at)]) == 0
+    capsys.readouterr()
+    # At the statement's start nothing is read yet: the change reaches it.
+    assert settable(capsys, "x") is True
+    code, result = change(capsys, "s.a=40")
+    assert code == 0 and result["after"] == "40", result
+    assert main(["session", "step", "--into"]) == 0
+    assert main(["session", "step", "--out"]) == 0
+    capsys.readouterr()
+    assert settable(capsys, "x") is False
+    refused(capsys, "s.a=50", "cannot be changed here", f"part-way through line {at}")
+    refused(capsys, "x=7", "cannot be changed here", "would not see the change")
+    # A line that continues a statement an earlier line started.
+    second = line_of(MID_SOURCE, "TEMP_SECOND")
+    assert main(["session", "continue", "--to", str(second)]) == 0
+    capsys.readouterr()
+    refused(capsys, "s.a=60", f"line {second} continues a statement")
+    text = output(capsys)
+    # Only the change made where the statement started reached the program.
+    assert "tempout 1041 40 1" in text and "temp 1001 1" in text, text
+
+
+@pytest.mark.timeout(240)
+def test_cpp_a_namespace_named_core_or_alloc_is_the_programs_own(directory, capsys):
+    # Review of #105: `core::Config cfg; --set cfg.level=60` was refused as std's.
+    source = """#include <cstdio>
+
+namespace core {
+struct Config { int level; int depth; };
+}
+namespace alloc {
+struct Pool { long size; };
+}
+
+int main() {
+    core::Config cfg{1, 2};
+    alloc::Pool pool{3};
+    std::printf("cfg %d %ld\\n", cfg.level, pool.size);  // STOP
+    return 0;
+}
+"""
+    path = directory / "ns.cpp"
+    path.write_text(source)
+    assert main(["session", "start", str(path), "--at", str(line_of(source, "STOP"))]) == 0
+    capsys.readouterr()
+    for assignment in ("cfg.level=60", "pool.size=70"):
+        code, result = change(capsys, assignment)
+        assert code == 0, (assignment, result)
+    assert "cfg 60 70" in output(capsys)
+
+
+SHADOWED = """#include <stdio.h>
+
+struct pair { long x, y; };
+
+int main(int argc, char **argv) {
+    struct pair p = { 1, 2 };
+    int big[1000];
+    for (int i = 0; i < 1000; i++) big[i] = i;
+    int n = argc + 2;
+    int vla[n];
+    for (int i = 0; i < n; i++) vla[i] = i;
+    {
+        struct pair p = { 3, 4 };
+        p.x += 0;  // INNER
+        printf("inner %ld %d\\n", p.x, vla[1]);
+    }
+    printf("outer %ld %d\\n", p.x, big[700]);
+    return 0;
+}
+"""
+
+
+def start_shadowed(directory, capsys):
+    path = directory / "s.c"
+    path.write_text(SHADOWED)
+    assert main(["session", "start", str(path), "--at", str(line_of(SHADOWED, "INNER"))]) == 0
+    capsys.readouterr()
+
+
+@pytest.mark.timeout(240)
+def test_c_a_shadowed_root_is_selected_by_where_it_is_declared(directory, capsys):
+    # Review of #105: lldb-dap names both `p @ s.c:13` and `p @ s.c:6`, which no
+    # selector could name, and plain `p` is not listed.
+    start_shadowed(directory, capsys)
+    inner, outer = line_of(SHADOWED, "{ 3, 4 }"), line_of(SHADOWED, "{ 1, 2 }")
+    for assignment, after in ((f"p @ s.c:{inner}.x=30", "30"), (f"p@s.c:{outer}.x=20", "20")):
+        code, result = change(capsys, assignment)
+        assert code == 0 and result["after"] == after, (assignment, result)
+    text = output(capsys)
+    assert "inner 30 1" in text and "outer 20 700" in text, text
+
+
+@pytest.mark.timeout(240)
+def test_c_an_element_of_a_large_array_local_is_changed(directory, capsys):
+    # Review of #105: `big[700]` of a 1,000-element local exhausted the expansion
+    # budget; the element is now fetched alone.
+    start_shadowed(directory, capsys)
+    code, result = change(capsys, "big[700]=7000")
+    assert code == 0 and result["after"] == "7000", result
+    assert "outer 1 7000" in output(capsys)
+
+
+@pytest.mark.timeout(240)
+def test_c_a_variable_length_array_is_refused_as_one(directory, capsys):
+    # Review of #105: it said the VLA was "not kept in this frame's own memory".
+    start_shadowed(directory, capsys)
+    refused(capsys, "vla[1]=5", "`vla` is a variable-length array")
+    assert "inner 3 1" in output(capsys)

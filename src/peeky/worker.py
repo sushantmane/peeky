@@ -1606,6 +1606,9 @@ class DebugWorker:
                     raise ValueError("Inspect the scope before changing variables")
                 runtime.validate_stop(frame)
                 validate_debugger(self.dap, frame)
+            self.refuse_mid_statement(
+                runtime, variable, self.reference_frames.get(ref), args["name"]
+            )
             before = variable.get("value")
             literal = getattr(runtime, "mutation_literal", None)
             try:
@@ -1996,12 +1999,14 @@ class DebugWorker:
             if not ancestry and (check := getattr(self.runtime, "settable", None)):
                 # Root locals `set` can change, so agents need not try and be refused;
                 # optimized builds refuse every change.
+                mid = getattr(self.runtime, "mid_statement", None)
                 settable = (
                     self.capabilities.get("supports_set_variable", False) is True
                     and innermost
                     and not self.optimized()
                     and self.has_memory_location(variable)
                     and bool(check(variable, frame))
+                    and not (mid and mid(variable, frame, self.stop_reason))
                 )
             elif ancestry and (member := getattr(self.runtime, "member_settable", None)):
                 settable = (
@@ -2091,6 +2096,27 @@ class DebugWorker:
             result.append(output)
             self.inspection_nodes += 1
         return result
+
+    def named_children(self, reference, indexed, name, runtime):
+        """The children named ``name`` of the value ``reference`` names. An element LLDB
+        names `[N]` of an array with more children than one bounded listing holds is
+        fetched alone (`start` N, `count` 1), as reads index it; anything else from the
+        bounded listing."""
+        validate_children = getattr(runtime, "validate_children", None)
+        index = re.fullmatch(r"\[(0|[1-9][0-9]{0,9})\]", str(name))
+        if index and type(indexed) is int and indexed > 512 and type(reference) is int:
+            if int(index[1]) >= indexed:
+                return []
+            variables = self.dap.request(
+                "variables", {"variablesReference": reference, "start": int(index[1]), "count": 1}
+            ).get("variables", [])
+            if not isinstance(variables, list) or len(variables) > 1:
+                raise ValueError("Variable collection exceeds bounded expansion limit")
+        else:
+            variables = self.bounded_variables(reference, indexed)
+        if validate_children:
+            validate_children(variables)
+        return [v for v in variables if v.get("name") == name]
 
     def bounded_variables(self, reference, indexed=None):
         if type(reference) is not int or reference <= 0:
@@ -2235,10 +2261,7 @@ class DebugWorker:
         frame, _, ancestry, reference, indexed = self.walk(record, runtime, trail)
 
         def member():
-            variables = self.bounded_variables(reference, indexed)
-            if validate_children := getattr(runtime, "validate_children", None):
-                validate_children(variables)
-            return [v for v in variables if v.get("name") == name]
+            return self.named_children(reference, indexed, name, runtime)
 
         matches = member()
         if len(matches) != 1:
@@ -2308,6 +2331,10 @@ class DebugWorker:
                     f"{shown!r} has no memory location here (a computed value): {name!r} "
                     "cannot be changed, as a change would not reach the program"
                 )
+        selector = ancestry[0][0] + "".join(
+            step if step.startswith("[") else f".{step}" for step in steps
+        )
+        self.refuse_mid_statement(runtime, root, frame, selector)
         before = variable.get("value")
         literal = getattr(runtime, "mutation_literal", None)
         try:
@@ -2327,7 +2354,7 @@ class DebugWorker:
         # Read back from a fresh walk (new scopes, new children), not the debugger's echo.
         try:
             _, _, _, reread, indexed = self.walk(record, runtime)
-            found = [v for v in self.bounded_variables(reread, indexed) if v.get("name") == name]
+            found = self.named_children(reread, indexed, name, runtime)
         except Exception as exc:
             found = [str(exc)[:200]]
         if (
@@ -2345,6 +2372,19 @@ class DebugWorker:
         # Exactly the value asked, or an error: never a change reported that is not made.
         runtime.confirm_mutation(name, value, before, after)
         return {"name": name, "before": before, "after": after}
+
+    def refuse_mid_statement(self, runtime, root, frame, selector):
+        """Refuse a change to the root local ``root`` (or what ``selector`` reaches in it)
+        where the runtime says a statement under way at the stop may hold a copy of its
+        old value (#105): the change would miss that statement. The session is kept."""
+        check = getattr(runtime, "mid_statement", None)
+        if check and (reason := check(root, frame or {}, self.stop_reason)):
+            raise ValueError(
+                f"{selector!r} cannot be changed here: {reason}, so that statement may "
+                "already hold a copy of the old value and would not see the change. Change "
+                "it where a statement starts: at a breakpoint on the statement's first line "
+                "(`session continue --to LINE`, a probe's `--at`), or a `session step` onto it"
+            )
 
     def walk(self, record, runtime, trail=None):
         """The value an expansion handle names, found again from its frame and scope by
@@ -2371,12 +2411,8 @@ class DebugWorker:
             raise ValueError("Expansion scope is missing or ambiguous")
         reference = matches[0].get("variablesReference")
         indexed = matches[0].get("indexedVariables")
-        validate_children = getattr(runtime, "validate_children", None)
         for name, kind in ancestry:
-            variables = self.bounded_variables(reference, indexed)
-            if validate_children:
-                validate_children(variables)
-            matches = [v for v in variables if v.get("name") == name]
+            matches = self.named_children(reference, indexed, name, runtime)
             if len(matches) != 1 or matches[0].get("type") != kind:
                 raise ValueError("Expansion ancestry changed or is ambiguous")
             reference = matches[0].get("variablesReference")
@@ -2426,14 +2462,22 @@ _CALLER_SET = (
 
 
 def _name_list(value):
-    """A request's list of at most 32 Python-style names."""
+    """A request's list of at most 32 Python-style names, or names LLDB gives a local
+    with where it is declared (`s @ main.rs:81`, when several of that name are in
+    scope)."""
     return (
         isinstance(value, list)
         and len(value) <= 32
         and all(
-            isinstance(name, str) and len(name) <= 128 and name.isidentifier() for name in value
+            isinstance(name, str)
+            and len(name) <= 400
+            and (name.isidentifier() or bool(_SHADOWED_NAME.fullmatch(name)))
+            for name in value
         )
     )
+
+
+_SHADOWED_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,127} @ [^\s:@\[\]'\"]{1,255}:[0-9]{1,9}")
 
 
 def _display_path(runtime, path):
