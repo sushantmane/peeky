@@ -116,6 +116,12 @@ _BOX_POINTER = re.compile(
 _BOX_COPY = re.compile(
     r"^_([0-9]+) = copy (\(.*: (?:std::boxed::|alloc::boxed::)?Box<.*>\)|_[0-9]+);$"
 )
+# A drop through a pointer: `drop((*_1))`, `drop(((*_8).1: T))`.
+_DROP_THROUGH = re.compile(r"^drop\(\(*\*\(*_([0-9]+)\b")
+# Types whose values hold no pointer, so are never an alias.
+_POINTERLESS = re.compile(
+    r"[iu](?:8|16|32|64|128|size)|f32|f64|bool|char|\(\)|(?:std|alloc)::string::String"
+)
 # A move or drop through a pointer: `move ((*_23).1: T)`, `drop(((*_23).1: T))`.
 _THROUGH = re.compile(r"(?:\bmove\s+|^drop\()\(*\*_([0-9]+)\b")
 _WRITABLE_BORROW = re.compile(r"&(?:mut |raw const |raw mut )\(*_([0-9]+)\b")
@@ -166,6 +172,8 @@ class Body:
     _box_paths: dict | None = None
     _replaced: dict | None = None
     _alias_cache: dict | None = None
+    _alias_edges: dict | None = None
+    _dropped: set | None = None
     _offset: int | None = None
 
     @property
@@ -787,22 +795,38 @@ class Body:
             self._alias_cache = {}
         if local in self._alias_cache:
             return self._alias_cache[local]
-        found, changed = {local}, True
-        while changed:
-            changed = False
+        if self._alias_edges is None:
+            # {local: the locals assigned from it}. Anything made from it, whole or in
+            # part: a reborrow, a copy, a struct holding it (`Ctx { v: move _5 }`), a
+            # call's result; not a value that cannot hold a pointer (`v.len()`).
+            edges = {}
             for block in self.blocks.values():
                 for text, _, _ in block.statements:
-                    # Anything made from it, whole or in part: a reborrow, a copy, a
-                    # struct holding it (`Ctx { v: move _5 }`), a call's result.
                     assigned = _WHOLE_ASSIGNMENT.match(text) or _PART_ASSIGNMENT.match(text)
-                    if not assigned or int(assigned[1]) in found:
+                    if not assigned or _POINTERLESS.fullmatch(self.types.get(int(assigned[1]), "")):
                         continue
-                    used = {int(n) for n in _MENTIONED.findall(_STRING.sub('""', assigned[2]))}
-                    if used & found:
-                        found.add(int(assigned[1]))
-                        changed = True
+                    for used in _MENTIONED.findall(_STRING.sub('""', assigned[2])):
+                        edges.setdefault(int(used), set()).add(int(assigned[1]))
+            self._alias_edges = edges
+        found, pending = {local}, [local]
+        while pending:
+            for made in self._alias_edges.get(pending.pop(), ()):
+                if made not in found:
+                    found.add(made)
+                    pending.append(made)
         self._alias_cache[local] = found
         return found
+
+    def drops_through(self, local):
+        """True if the body drops what ``local`` or an alias of it points at anywhere
+        (`drop((*_1))`, `drop(((*_8).1: T))`)."""
+        if self._dropped is None:
+            self._dropped = {
+                int(found[1])
+                for block in self.blocks.values()
+                if (found := _DROP_THROUGH.match(block.terminator))
+            }
+        return bool(self._dropped & self._aliases(local))
 
     def dropped_through(self, local, start):
         """True if some path into ``start`` (block, index) drops what ``local`` points at
@@ -810,10 +834,10 @@ class Body:
         its target is a dropped value there."""
         # Drops and stores through a reborrow or a copy of it (`let w = &mut *v;`) count.
         names = "|".join(str(alias) for alias in sorted(self._aliases(local)))
+        if not self.drops_through(local):
+            return False
         dropped = re.compile(rf"^drop\(\(*\*\(*_(?:{names})\b")
         written = re.compile(rf"^\(+\*\(*_(?:{names})\b[^=]*= |^_{local} = ")
-        if not any(dropped.match(block.terminator) for block in self.blocks.values()):
-            return False
         predecessors = self.predecessors()
         pending, seen = [start], set()
         while pending:
@@ -1448,12 +1472,24 @@ class OwnedLocals:
                     if (owners := self._owners.get((function.file, number)))
                 )
                 if foreign or not function.labeled() <= set(candidates[0].blocks):
-                    candidates = []
+                    # A twin: the one generated from it has spans on those lines.
+                    candidates = [
+                        *candidates,
+                        *(
+                            self.bodies[index]
+                            for number in function.lines()
+                            for index in sorted(self._owners.get((function.file, number), ()))
+                            if self.bodies[index].name == function.name
+                        ),
+                    ]
             found = candidates[0] if len(candidates) == 1 else None
             if found is not None and not _covered(found, function):
                 # Identified, but its layout or dataflow is not understood.
-                self._unanalyzed[hashed] = found
+                self._unanalyzed[hashed] = [found]
                 found = None
+            elif len(candidates) > 1:
+                # Twins (a macro's methods): one of them, not told apart.
+                self._unanalyzed[hashed] = list({id(body): body for body in candidates}.values())
         self._matched[hashed] = found
         return found
 
@@ -1600,38 +1636,36 @@ class OwnedLocals:
         return None
 
     def _elsewhere(self, hashed, variable_name, path):
-        """False where the stop is in another of the crate's files than its function's
-        (a `macro_rules!` from another module, `include!`d code), or anywhere in a
-        function whose body was identified but not analyzed (a dataflow past its
-        budget), and the name's bindings may borrow: no line can place the stop; else
-        None."""
+        """For a stop no line of the function's own can place: in another of the crate's
+        files than its function's (a `macro_rules!` from another module, `include!`d
+        code), at a line its IR does not explain, or anywhere in a function whose body
+        was identified but not analyzed (a dataflow past its budget) or not told apart
+        from its twins (a macro's methods). False if a binding of the name may borrow,
+        else None. A reference parameter never reassigned, written through or dropped
+        through (`*v = new`, `*cell.borrow_mut() = new`) is the caller's, so exempt."""
         body, function = self.body(hashed), self.functions.get(hashed)
-        unanalyzed = body is None and hashed in self._unanalyzed
-        if unanalyzed:
-            body = self._unanalyzed[hashed]
-        if body is None or function is None:
+        bodies = [body] if body is not None else self._unanalyzed.get(hashed, [])
+        if not bodies or function is None:
             return None
         shown = str(path or "").replace("\\", "/")
-        sources = [source for source in self.sources if shown.endswith("/" + source)]
-        if not sources or (sources == [function.file] and not unanalyzed):
+        if not any(shown.endswith("/" + source) for source in self.sources):
             return None
         name = str(variable_name).partition(" @ ")[0]
-        for local, _, _, projected, _ in body.bindings.get(name, ()):
-            kind = body.types.get(local) if local is not None else projected
-            if not kind or not _BORROWING.search(kind) or _FN_POINTER.match(kind):
-                continue
-            # A reference parameter never reassigned or written through: the caller's
-            # (unanalyzed, only a shared one: nothing tells a `&mut`'s replacement).
-            if (
-                local in body.arguments
-                and kind.startswith("&")
-                and not (unanalyzed and kind.startswith("&mut "))
-                and not _RAW_POINTER.search(kind)
-                and local not in body._assignments()
-                and local not in body._written_through()
-            ):
-                continue
-            return False
+        for body in bodies:
+            for local, _, _, projected, _ in body.bindings.get(name, ()):
+                kind = body.types.get(local) if local is not None else projected
+                if not kind or not _BORROWING.search(kind) or _FN_POINTER.match(kind):
+                    continue
+                if (
+                    local in body.arguments
+                    and kind.startswith("&")
+                    and not _RAW_POINTER.search(kind)
+                    and local not in body._assignments()
+                    and local not in body._written_through()
+                    and not body.drops_through(local)
+                ):
+                    continue
+                return False
         return None
 
     def _judge(self, site, local, line, facts):

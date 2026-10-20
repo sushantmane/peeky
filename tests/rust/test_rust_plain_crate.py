@@ -2285,9 +2285,9 @@ fn main() {
 """.replace("BRANCHES", BRANCHES)
 
 
-def _stepped_out_to(plain, capsys, at, continues, line):
-    """The variables at ``line`` after stopping at ``at``, continuing ``continues``
-    times and stepping out until there."""
+def _stepped_out_to(plain, capsys, at, continues, line, file="main.rs"):
+    """The variables at ``line`` of ``file`` after stopping at ``at``, continuing
+    ``continues`` times and stepping out until there."""
     assert main(["session", "start", str(plain), "--at", at]) == 0
     capsys.readouterr()
     try:
@@ -2298,9 +2298,9 @@ def _stepped_out_to(plain, capsys, at, continues, line):
         for _ in range(8):
             main(["session", "step", "--out", "--json"])
             state = json.loads(capsys.readouterr().out)
-            if str(state.get("location")).endswith(f"main.rs:{line}"):
+            if str(state.get("location")).endswith(f"{file}:{line}"):
                 break
-        assert str(state.get("location")).endswith(f"main.rs:{line}"), state
+        assert str(state.get("location")).endswith(f"{file}:{line}"), state
         assert main(["session", "inspect", "--json"]) == 0
         snapshot = json.loads(capsys.readouterr().out)
     finally:
@@ -2339,3 +2339,132 @@ def test_references_through_nested_boxes_struct_fields_calls_and_big_functions(
     rows = result["rows"]
     assert [row.get("view") for row in rows][:1] == ["unproven"], rows
     assert rows[1].get("value") == "7", rows
+
+
+TWINS_AND_CELLS = """use std::cell::RefCell;
+#[macro_use]
+mod macros;
+
+#[derive(Debug, Clone, Copy)]
+pub struct Pt {
+    x: i64,
+    y: i64,
+}
+
+#[derive(Debug)]
+pub struct Res {
+    x: i64,
+}
+
+impl Drop for Res {
+    fn drop(&mut self) {
+        churn(); // M8_IN_DROP
+    }
+}
+
+#[inline(never)]
+fn churn() -> i64 {
+    Box::leak(Box::new(Pt { x: 777, y: 888 })).x + Box::leak(Box::new([777i64; 4]))[0]
+}
+
+#[inline(never)]
+fn consume(b: Box<Pt>) -> i64 {
+    b.y
+}
+
+macro_rules! imp {
+    ($t:ident) => {
+        impl $t {
+            fn get(&self) -> i64 {
+                let b = Box::new(Pt { x: 5, y: 6 });
+                let r: &Pt = &*b;
+                let k = r.x;
+                let n = consume(b);
+                let z = churn() + n;
+                z + k // M8_IMPL_TWIN
+            }
+        }
+    };
+}
+
+struct A;
+struct B;
+imp!(A);
+imp!(B);
+
+pub struct Holder {
+    tag: i64,
+    data: Box<Res>,
+}
+
+fn other_file_reset(h: &mut Holder, n: i64) -> i64 {
+    let k = h.data.x;
+    reset!(h, n);
+    k
+}
+
+fn other_file_cell(c: &RefCell<Vec<Res>>, n: i64) -> i64 {
+    let k = c.borrow()[0].x;
+    swap_in!(c, n);
+    k
+}
+
+fn same_file_cell(c: &RefCell<Vec<Res>>, n: i64) -> i64 {
+    let k = c.borrow()[0].x;
+    *c.borrow_mut() = vec![Res { x: n }]; // M8_SAME_CELL
+    k
+}
+
+fn main() {
+    let mut h = Holder { tag: 1, data: Box::new(Res { x: 5 }) };
+    let a = RefCell::new(vec![Res { x: 5 }]);
+    let b = RefCell::new(vec![Res { x: 5 }]);
+    println!("{}", other_file_reset(&mut h, 9));
+    println!("{}", other_file_cell(&a, 9));
+    println!("{}", same_file_cell(&b, 9));
+    println!("{} {}", A.get(), B.get());
+    std::mem::forget(h);
+    std::mem::forget(a);
+    std::mem::forget(b);
+}
+"""
+
+CELL_MACROS = """macro_rules! reset {
+    ($v:expr, $n:expr) => {
+        *$v = crate::Holder { tag: $n, data: Box::new(crate::Res { x: $n }) } // M8_RESET
+    };
+}
+
+macro_rules! swap_in {
+    ($c:expr, $n:expr) => {
+        *$c.borrow_mut() = vec![crate::Res { x: $n }] // M8_SWAP
+    };
+}
+"""
+
+
+@pytest.mark.timeout(600)
+def test_references_in_macro_twins_and_parameters_dropped_through_in_other_files(plain, capsys):
+    # Verification of #110 (round 8): methods a macro generates are not told apart, so
+    # their references read as before; and a reference parameter dropped through in a
+    # macro from another file (`*h = new`, `*c.borrow_mut() = new` through a shared
+    # `&RefCell`) read its dropped value between the drop and the store.
+    (plain / "src/main.rs").write_text(TWINS_AND_CELLS)
+    (plain / "src/macros.rs").write_text(CELL_MACROS)
+    at = f"src/main.rs:{line_of(TWINS_AND_CELLS, '// M8_IMPL_TWIN')}"
+    code, result = run(
+        capsys, "probe", str(plain), "--at", at, "--capture", "r", "--hits", "2", "--quiet"
+    )
+    rows = result["rows"]
+    assert len(rows) == 2 and all(row.get("view") == "unproven" for row in rows), rows
+    at = f"src/main.rs:{line_of(TWINS_AND_CELLS, '// M8_IN_DROP')}"
+    for continues, (file, marker), name in (
+        (0, ("macros.rs", "M8_RESET"), "h"),
+        (1, ("macros.rs", "M8_SWAP"), "c"),
+        (2, ("main.rs", "M8_SAME_CELL"), "c"),
+    ):
+        text = CELL_MACROS if file == "macros.rs" else TWINS_AND_CELLS
+        variables = _stepped_out_to(
+            plain, capsys, at, continues, line_of(text, "// " + marker), file
+        )
+        assert variables[name].get("view") == "unproven", (marker, variables[name])

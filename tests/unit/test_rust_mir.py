@@ -1027,3 +1027,50 @@ def test_comments_are_told_from_strings_where_collapse_is_looked_for(text, kept)
     from peeky.rust import without_comments
 
     assert ("collapse_debuginfo" in without_comments(text)) is kept
+
+
+def test_aliases_follow_values_that_can_hold_a_pointer_and_find_drops_through_them():
+    text = "\n".join(
+        [
+            "// MIR for `f` after PreCodegen",
+            "",
+            "fn f(_1: &RefCell<Vec<i32>>) -> () {",
+            "    let mut _0: ();                      // return place in scope 0 at src/main.rs:1:10: 1:10",
+            "    let _2: usize;                       // in scope 0 at src/main.rs:2:9: 2:10",
+            "    let _3: std::string::String;         // in scope 0 at src/main.rs:2:9: 2:10",
+            "    let mut _4: std::cell::RefMut<'_, Vec<i32>>; // in scope 0 at src/main.rs:2:9: 2:10",
+            "    let mut _5: &mut std::cell::RefMut<'_, Vec<i32>>; // in scope 0 at src/main.rs:2:9: 2:10",
+            "    let _6: &mut Vec<i32>;               // in scope 0 at src/main.rs:2:9: 2:10",
+            "",
+            "    bb0: {",
+            "        _2 = Vec::<i32>::len(copy _1) -> [return: bb1, unwind continue];  // scope 0 at src/main.rs:3:5: 3:9",
+            "    }",
+            "",
+            "    bb1: {",
+            "        _3 = format(copy _2) -> [return: bb2, unwind continue];  // scope 0 at src/main.rs:4:5: 4:9",
+            "    }",
+            "",
+            "    bb2: {",
+            "        _4 = RefCell::<Vec<i32>>::borrow_mut(copy _1) -> [return: bb3, unwind continue];  // scope 0 at src/main.rs:5:5: 5:9",
+            "    }",
+            "",
+            "    bb3: {",
+            "        _5 = &mut _4;                    // scope 0 at src/main.rs:6:5: 6:9",
+            "        _6 = <RefMut<'_, Vec<i32>> as DerefMut>::deref_mut(move _5) -> [return: bb4, unwind continue];  // scope 0 at src/main.rs:6:5: 6:9",
+            "    }",
+            "",
+            "    bb4: {",
+            "        drop((*_6)) -> [return: bb5, unwind continue];  // scope 0 at src/main.rs:7:5: 7:9",
+            "    }",
+            "",
+            "    bb5: {",
+            "        return;                          // scope 0 at src/main.rs:8:2: 8:2",
+            "    }",
+            "}",
+            "",
+        ]
+    )
+    body = parse_body(text)
+    assert body.supported
+    assert body._aliases(1) == {1, 4, 5, 6}  # not the length or the String made from it
+    assert body.drops_through(1) and not body.drops_through(2)
