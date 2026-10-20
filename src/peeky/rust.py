@@ -47,7 +47,7 @@ from peeky.native import (
 from peeky.rust_ir import ir_locals
 from peeky.rust_lexer import without_comments
 from peeky.rust_manifest import assert_cargo_ancestry_clear, validate_cargo_inputs
-from peeky.rust_mir import OwnedLocals, frame_shape, ir_functions, load_bodies
+from peeky.rust_mir import OwnedLocals, frame_shape, ir_functions, load_bodies, stop_block
 from peeky.rust_symbols import (
     OWNED_CONTAINERS,
     RUST_METADATA,
@@ -634,7 +634,7 @@ class RustTarget:
                     self.sources,
                 )
             env = dict(prepared.manifest.effective_environment)
-            lines, layouts, units = application_symbols(
+            lines, layouts, units, blocks = application_symbols(
                 dwarfdump,
                 symbols,
                 prepared.workspace,
@@ -666,6 +666,7 @@ class RustTarget:
             session.test_binary = test_binary
             session.test_target = prepared.workspace / uplift
             session.units = tuple(units)
+            session.code_blocks = blocks
             session.assert_current()
             return session
         except BaseException as exc:
@@ -959,6 +960,8 @@ class RustSession(NativeSession):
         return json.loads(self._layouts_data)
 
     units = ()
+    # {legacy hash: the function's CodeBlocks} (rust_symbols.code_blocks; #115).
+    code_blocks = {}
 
     def function_scopes(self):
         """Functions of the application units only, as `prepare` read them: the whole
@@ -1183,6 +1186,13 @@ class RustSession(NativeSession):
         shown_path = ((frame or {}).get("source") or {}).get("path")
         verdict = []
 
+        def block():
+            # #115: the DWARF lexical block the innermost frame's pc is in, which tells
+            # apart a line's stops in a macro's own blocks (`println!`'s `args`).
+            if not innermost or not hashed:
+                return None
+            return stop_block(self.code_blocks.get(hashed[1]), self._unslid(frame))
+
         def reference_valid():
             # #110, once per variable: True, False or None (see OwnedLocals).
             if not verdict:
@@ -1196,6 +1206,7 @@ class RustSession(NativeSession):
                         # rule): more places can only make the verdict stricter.
                         breakpoint=innermost and stop == "breakpoint",
                         column=(frame or {}).get("column"),
+                        block=block(),
                     )
                 )
             return verdict[0]
@@ -1286,6 +1297,7 @@ class RustSession(NativeSession):
                             shown_path,
                             breakpoint=stop == "breakpoint",
                             column=(frame or {}).get("column"),
+                            block=block(),
                         ),
                         variable,
                         siblings,

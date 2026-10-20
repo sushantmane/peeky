@@ -22,7 +22,7 @@ import math
 import re
 import struct
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from fractions import Fraction
 from pathlib import Path
 
@@ -69,6 +69,8 @@ class _Die:
     unit: dict | None = None
     depth: int = 0
     closed: bool = False
+    # {attribute: its continuation rows} (a `DW_AT_ranges` list's `[low, high)` rows).
+    continued: dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -124,6 +126,7 @@ def parse_dies(text, *, units):
     if len(text.encode()) > RUST_METADATA:
         raise ValueError("Rust debug information exceeds limit")
     roots, stack, pending, last, seen, count = [], [], None, None, False, 0
+    attribute = None
     for raw in text.splitlines():
         if not raw.strip():
             continue
@@ -185,8 +188,10 @@ def parse_dies(text, *, units):
             if match[2] in last.attributes:
                 raise ValueError("Duplicate DWARF attribute")
             last.attributes[match[2]] = match[3]
+            attribute = match[2]
             continue
         if last is not None and last.attributes and _CONTINUATION.fullmatch(raw):
+            last.continued.setdefault(attribute, []).append(raw.strip())
             continue
         raise ValueError("Unrecognized DWARF entry output")
     if pending is not None or not roots:
@@ -750,10 +755,11 @@ def _composite_layout(struct, kind, element, by_offset):
     }
 
 
-def container_layouts(text, unit):
+def container_layouts(text, unit, root=None):
     """Layouts of the qualified containers (`Vec<i32>`, `&[i32]`, `String`, `&str`) that
-    one application unit defines, validated member by member; anything else refuses."""
-    (root,) = parse_dies(text, units=False)
+    one application unit defines, validated member by member; anything else refuses.
+    ``root``: the unit's entries, if already parsed from ``text``."""
+    (root,) = parse_dies(text, units=False) if root is None else (root,)
     if root.offset != unit.die or root.tag != "DW_TAG_compile_unit":
         raise ValueError("Rust debug information does not match its application unit")
     by_offset = {}
@@ -788,9 +794,10 @@ def container_layouts(text, unit):
     return layouts
 
 
-def enum_layouts(text, unit):
-    """Map qualified names of data-carrying enums in one application unit to layouts."""
-    (root,) = parse_dies(text, units=False)
+def enum_layouts(text, unit, root=None):
+    """Map qualified names of data-carrying enums in one application unit to layouts.
+    ``root``: the unit's entries, if already parsed from ``text``."""
+    (root,) = parse_dies(text, units=False) if root is None else (root,)
     if root.offset != unit.die or root.tag != "DW_TAG_compile_unit":
         raise ValueError("Rust debug information does not match its application unit")
     by_offset = {}
@@ -826,7 +833,8 @@ def enum_layouts(text, unit):
 def application_symbols(
     dwarfdump, symbols, workspace, env, *, entrypoint, crate, declared, budget=SYMBOL_DEADLINE_S
 ):
-    """Return declared-source lines and enum layouts from application units only."""
+    """Return declared-source lines, enum layouts, the application units and their
+    functions' lexical blocks (``code_blocks``) from application units only."""
     workspace = Path(workspace).resolve(strict=True)
     if type(budget) not in (int, float) or not 0 < budget <= SYMBOL_DEADLINE_S:
         raise ValueError("Rust symbol extraction has no remaining time budget")
@@ -847,7 +855,7 @@ def application_symbols(
 
     index = dump(["--debug-info", "--recurse-depth=0", str(symbols)])
     units = application_units(index, workspace, entrypoint=entrypoint, crate=crate)
-    tables, layouts = [], {}
+    tables, layouts, blocks = [], {}, {}
     for unit in units:
         table = dump([f"--debug-line=0x{unit.stmt_list:08x}", str(symbols)])
         offsets = re.findall(r"^debug_line\[0x([0-9a-f]{8,16})\]$", table, re.MULTILINE)
@@ -855,13 +863,120 @@ def application_symbols(
             raise ValueError("Rust line table does not match its application unit")
         tables.append(table)
         info = dump([f"--debug-info=0x{unit.die:08x}", "--show-children", str(symbols)])
-        found = {**enum_layouts(info, unit), **container_layouts(info, unit)}
+        (root,) = parse_dies(info, units=False)
+        found = {**enum_layouts(info, unit, root), **container_layouts(info, unit, root)}
         for name, layout in found.items():
             if layouts.get(name, layout) != layout:
                 layout = {"kind": "unqualified"}
             layouts[name] = layout
+        try:
+            functions = code_blocks(root, unit)
+        except ValueError:
+            # Only a refinement (#115): without them every stop of a line counts.
+            functions = {}
+        for hashed, function in functions.items():
+            blocks[hashed] = None if hashed in blocks else function
     lines = parse_lines("\n".join(tables), workspace, declared, limit=RUST_METADATA)
-    return lines, layouts, units
+    return lines, layouts, units, blocks
+
+
+_LEGACY_HASH = re.compile(r"17(h[0-9a-f]{16})E$")
+_RANGE = re.compile(r"\[(0x[0-9a-f]+), (0x[0-9a-f]+)\)")
+# Linkers write these for discarded code (COMDAT copies, dead functions).
+_TOMBSTONE = 0xFFFF_FFFF_0000_0000
+
+
+@dataclass(frozen=True)
+class CodeBlock:
+    """A function's own scope, one of its DWARF lexical blocks, or an inlined call in
+    it: where its code is, and the names of the variables it declares (#115)."""
+
+    parent: int | None  # the enclosing block's index; None for the function's own
+    ranges: tuple  # ((low, high), ...), addresses as the symbols number them
+    names: tuple  # sorted
+    inlined: bool = False
+
+
+def code_blocks(root, unit):
+    """{legacy hash: (CodeBlock, ...)} for the functions an application unit's code
+    defines, each function's own scope first, then its lexical blocks and inlined calls
+    in DWARF order (an inlined call's own blocks are left out). A block whose code
+    cannot be read gives the function none (an empty tuple)."""
+    if root.offset != unit.die or root.tag != "DW_TAG_compile_unit":
+        raise ValueError("Rust debug information does not match its application unit")
+    found, by_offset = {}, {}
+
+    def index(die):
+        by_offset[die.offset] = die
+        for child in die.children:
+            index(child)
+
+    index(root)
+
+    def visit(die):
+        for child in die.children:
+            if child.tag == "DW_TAG_subprogram":
+                linkage = child.attributes.get("DW_AT_linkage_name")
+                if linkage is None and "DW_AT_specification" in child.attributes:
+                    # A method's code completes its declaration in its type.
+                    declared = by_offset.get(_reference(child.attributes["DW_AT_specification"])[0])
+                    linkage = declared and declared.attributes.get("DW_AT_linkage_name")
+                hashed = _LEGACY_HASH.search(_string(linkage)) if linkage else None
+                if hashed and "DW_AT_low_pc" in child.attributes:
+                    blocks = []
+                    if not _code_block(child, None, blocks):
+                        blocks = []
+                    found[hashed[1]] = None if hashed[1] in found else tuple(blocks)
+            elif child.tag in ("DW_TAG_namespace", "DW_TAG_structure_type"):
+                visit(child)
+
+    visit(root)
+    return found
+
+
+def _code_block(die, parent, blocks):
+    """Add ``die`` and the blocks in it to ``blocks``; False if its code is not read."""
+    ranges = _code_ranges(die)
+    if not ranges:
+        return False
+    inlined = die.tag == "DW_TAG_inlined_subroutine"
+    names = []
+    if not inlined:
+        for child in die.children:
+            if child.tag in ("DW_TAG_variable", "DW_TAG_formal_parameter"):
+                name = child.attributes.get("DW_AT_name")
+                if name is not None:
+                    names.append(_string(name))
+    index = len(blocks)
+    blocks.append(CodeBlock(parent, ranges, tuple(sorted(names)), inlined))
+    if inlined:
+        return True
+    return all(
+        _code_block(child, index, blocks)
+        for child in die.children
+        if child.tag in ("DW_TAG_lexical_block", "DW_TAG_inlined_subroutine")
+    )
+
+
+def _code_ranges(die):
+    attributes = die.attributes
+    if "DW_AT_low_pc" in attributes and "DW_AT_high_pc" in attributes:
+        low = attributes["DW_AT_low_pc"].removesuffix(")")
+        high = attributes["DW_AT_high_pc"].removesuffix(")")
+        if not re.fullmatch(r"0x[0-9a-f]{16}", low) or not re.fullmatch(r"0x[0-9a-f]{1,16}", high):
+            return ()
+        # llvm-dwarfdump prints an address with all its 16 digits, and DWARF 4's high_pc
+        # as the end it computes; one it cannot compute stays the size (a constant).
+        end = int(high, 16) if len(high) == 18 else int(low, 16) + int(high, 16)
+        spans = [(int(low, 16), end)]
+    elif "DW_AT_ranges" in attributes:
+        rows = [attributes["DW_AT_ranges"], *die.continued.get("DW_AT_ranges", ())]
+        spans = [(int(low, 16), int(high, 16)) for row in rows for low, high in _RANGE.findall(row)]
+    else:
+        return ()
+    if any(not 0 < low < high or high >= _TOMBSTONE for low, high in spans):
+        return ()
+    return tuple(spans)
 
 
 def _named(values, names):
