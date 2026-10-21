@@ -762,6 +762,13 @@ _HASH_IN = re.compile(r"17(h[0-9a-f]{16})E")
 _SETTABLE_RUST = frozenset({"i16", "i32", "i64", "u16", "u32", "u64", "isize", "usize"})
 
 
+def _never_rank(why):
+    """Which of a name's reasons `describe` gives where a generic's instances differ:
+    first the ones no edit to the binding itself helps."""
+    starts = ("async state", "inlined", "another binding")
+    return next((rank for rank, start in enumerate(starts) if why.startswith(start)), 3)
+
+
 def _state_held(body, name):
     """True if every binding of ``name`` in the MIR ``body`` of an async body is kept in
     its state: a local the coroutine layout saves across an `.await` (``saved``), or a
@@ -1060,23 +1067,41 @@ class RustSession(NativeSession):
 
     def _register_names(self, linkages, names):
         """For `describe` (#138): of a function's integer locals (``names``: {name:
-        types}), those no stop can change, and why: `register` where the build's IR keeps
-        one in a register, `async state` where an async body keeps it across an `.await`
-        in its state (see never_settable)."""
+        types}), those no stop can change, and why, as their rows say (see
+        never_settable_row): `async state` where an async body keeps one across an
+        `.await` in its state; `inlined` where only a copy of the function inlined where
+        it is called keeps it out of memory; `another binding in a register (line N)`
+        where a binding of the name has a slot but the one declared on line N has none
+        (the IR's proof is per name); else `register`."""
         if self._optimized() or not self.memory:
             return {}
-        hashes = {found[1] for linkage in linkages if (found := _HASH_IN.search(linkage or ""))}
+        hashes = sorted(
+            {found[1] for linkage in linkages if (found := _HASH_IN.search(linkage or ""))}
+        )
         if not hashes:
             return {}
         proofs = getattr(self, "owned", None)
-        bodies = [proofs.body(hashed) if proofs is not None else None for hashed in hashes]
-        return {
-            name: ("async state" if all(_state_held(body, name) for body in bodies) else "register")
-            for name, kinds in names.items()
-            if kinds
-            and set(kinds) <= _SETTABLE_RUST
-            and all(self.memory.get((hashed, name)) is not True for hashed in hashes)
-        }
+        bodies = {hashed: proofs.body(hashed) if proofs is not None else None for hashed in hashes}
+
+        def why(hashed, name):
+            if _state_held(bodies[hashed], name):
+                return "async state"
+            kind, lines = self._not_in_memory(hashed, name)
+            if kind == "inlined":
+                return "inlined"
+            if kind in ("other", "some"):
+                return f"another binding in a register (line {', '.join(map(str, lines))})"
+            return "register"
+
+        found = {}
+        for name, kinds in names.items():
+            if not kinds or not set(kinds) <= _SETTABLE_RUST:
+                continue
+            if any(self.memory.get((hashed, name)) is True for hashed in hashes):
+                continue
+            whys = {why(hashed, name) for hashed in hashes}
+            found[name] = min(whys, key=lambda each: (_never_rank(each), each))
+        return found
 
     def _macro_binding(self):
         """For `describe`, which bindings the DWARF declares are a macro's own (sixth

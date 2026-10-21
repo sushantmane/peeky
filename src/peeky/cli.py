@@ -719,15 +719,30 @@ def _describe_text(manifest):
     whys = {
         "register": "kept in a register (a candidate edit with `std::hint::black_box(&mut x)` "
         "keeps one in memory, COOKBOOK 6.6)",
+        "another binding": "another binding of the name, on the line given, is kept in a "
+        "register (a candidate edit black-boxing that `let` keeps every one in memory, "
+        "COOKBOOK 6.6)",
+        "inlined": "a local of a function inlined where it is called (`#[inline(always)]`: no "
+        "edit to it helps; change the value in the caller)",
         "async state": "held in an async body's state across an `.await` (change what it is "
         "computed from, or copy it into a local after the `.await`)",
     }
     for why, label in whys.items():
-        never = [
-            f"{scope['scope']}: {', '.join(names)}"
-            for scope in manifest.get("scopes", ())
-            if (names := [n for n, w in (scope.get("never_settable") or {}).items() if w == why])
-        ]
+        never = []
+        for scope in manifest.get("scopes", ()):
+            names = []
+            for name, given in (scope.get("never_settable") or {}).items():
+                if given == why:
+                    names.append(name)
+                elif why == "another binding" and (
+                    blocking := re.fullmatch(
+                        r"another binding in a register (\(line [^)]+\))", str(given)
+                    )
+                ):
+                    # `another binding in a register (line 4)`: `x (line 4)`.
+                    names.append(f"{name} {blocking[1]}")
+            if names:
+                never.append(f"{scope['scope']}: {', '.join(names)}")
         if never:
             mutable += (
                 f". Never settable, {label}: "

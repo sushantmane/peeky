@@ -992,3 +992,20 @@ def test_a_name_not_proven_in_memory_says_which_binding_or_copy_is_why():
     assert "after the `let` on line 4" in advice
     rule, advice = RustSession._register_text("app::far", "y", ("inlined", None))
     assert "inlined where it is called" in rule and advice.startswith("Inlining prevents")
+    # `describe` gives each name the reason its rows give (review round 3).
+    session.memory = {("h0123456789abcdef", name): False for name in ("x", "y", "far", "k")}
+    session.declarations_ir = {
+        ("h0123456789abcdef", name): found for (_, name), found in session.declarations_ir.items()
+    }
+    # `k`: a local an async body keeps in its state across an `.await`.
+    body.bindings["k"] = [(5, "src/main.rs", 12, None, 0)]
+    body.saved, body.coroutine, body.places = {5}, 1, {}
+    session.owned = SimpleNamespace(body=lambda hashed: body)
+    linkages = {"_ZN3app1f17h0123456789abcdefE"}
+    names = {"x": {"u64"}, "y": {"u32"}, "far": {"u64"}, "k": {"u64"}, "s": {"String"}}
+    assert session._register_names(linkages, names) == {
+        "x": "another binding in a register (line 4)",
+        "y": "register",
+        "far": "inlined",
+        "k": "async state",
+    }
