@@ -140,6 +140,11 @@ class DAP:
             if processes.session_id(self.process.pid) == self.process.pid
             else None,
         )
+        # Without os.waitid (macOS before Python 3.13), the adapter's start tells it from
+        # a process that took its pid once something else reaped it (_adapter_state).
+        self.adapter_start = (
+            None if hasattr(os, "waitid") else processes.start_time(self.process.pid)
+        )
         self.announcing = []
         self.family_wake = threading.Event()
         # What close() did about the processes the session started (#143).
@@ -557,28 +562,43 @@ class DAP:
         self.announcing.append(thread)
         thread.start()
 
-    def _adapter_running(self, table=None):
-        """Whether the adapter still runs, asked without reaping it (#170). Unreaped, a
-        dead adapter stays a zombie, which keeps its pid, and so its process group's and
-        its session's ids, from naming anyone else's: the session rule and the group kill
+    def _adapter_state(self, table=None):
+        """The adapter's state, asked without reaping it (#170): "running", "exited" (a
+        zombie Peeky has not reaped yet), "reaped" or "unknown". Unreaped, a dead adapter
+        stays a zombie, which keeps its pid, and so its process group's and its
+        session's ids, from naming anyone else's: the session rule and the group kill
         are safe until close() reaps it, last. (`Popen.poll()` would reap it, and a new
-        session leader could then take its pid.)"""
+        session leader could then take its pid.) "reaped": reaped before that, by a
+        caller, or by the kernel where SIGCHLD is ignored (`returncode` then stays None),
+        so its ids may be another's. "unknown": no `os.waitid` and no process table;
+        neither signalled as the adapter's nor taken for gone."""
         if self.process.returncode is not None:
-            return False
+            return "reaped"
+        pid = self.process.pid
         waitid = getattr(os, "waitid", None)  # macOS: Python 3.13 and later
         if waitid is not None:
             try:
                 flags = os.WEXITED | os.WNOHANG | os.WNOWAIT
-                return waitid(os.P_PID, self.process.pid, flags) is None
+                return "running" if waitid(os.P_PID, pid, flags) is None else "exited"
             except ChildProcessError:
-                return False
+                # No child of Peeky's any more: someone else reaped it.
+                return "reaped"
             except OSError:
                 pass
         if table is None:
             table = processes.table()
-        # Its own entry: a zombie ("Z") has exited. Unreadable: taken for running, which
-        # frees nothing.
-        return table is None or processes.alive(table.get(self.process.pid))
+        if table is None:
+            return "unknown"
+        entry = table.get(pid)
+        if entry is None or (self.adapter_start is not None and entry[2] != self.adapter_start):
+            # Gone, or its pid is another process's now.
+            return "reaped"
+        # A zombie ("Z") has exited.
+        return "running" if processes.alive(entry) else "exited"
+
+    def _adapter_running(self, table=None):
+        """Whether the adapter may still run (see _adapter_state)."""
+        return self._adapter_state(table) in ("running", "unknown")
 
     def _list_family(self):
         """List the session's processes: ({pid: entry} still running, the adapter ran),
@@ -587,14 +607,16 @@ class DAP:
         # Asked after the table was read: still running then, it was running while the
         # table was read, and its children had not been handed to another parent yet
         # (an exiting adapter closes its pipes first, and is a zombie only after).
-        running = self._adapter_running(table)
+        state = self._adapter_state(table)
+        running = state in ("running", "unknown")
         if (
-            self.process.returncode is not None
+            state == "reaped"
             and self.family.session is not None
             and not (table and self.family.holds(table, session=self.family.session))
         ):
-            # Reaped before close() (never by Peeky), and none of the session's processes
-            # Peeky knows is left in its session: that id may now be another's.
+            # Reaped before close() (never by Peeky: by a caller, or the kernel where
+            # SIGCHLD is ignored), and none of the session's processes Peeky knows is
+            # left in its session: that id may now be another's.
             self.family.session = None
         if table is None:
             return None, running
@@ -645,15 +667,16 @@ class DAP:
     def _kill_group(self, sig=signal.SIGKILL):
         """Signal the adapter's own process group (macOS: EPERM once only zombies). Only
         while its id is still the adapter's group's (#170): the adapter is unreaped, or a
-        process Peeky recorded is still in that group."""
-        if self.process.returncode is not None:
+        process Peeky recorded is still in that group. Returns whether it was signalled."""
+        if self._adapter_state() in ("reaped", "unknown"):
             table = processes.table()
             if not (table and self.family.holds(table, group=self.process.pid)):
-                return
+                return False
         try:
             os.killpg(self.process.pid, sig)
         except (ProcessLookupError, PermissionError):
             pass
+        return True
 
     def _end_owned(self, owned, ran, before):
         """End what the session started and the adapter left running: SIGTERM, then
@@ -663,9 +686,14 @@ class DAP:
         that one was made. Returns what happened."""
         adapter = self.process.pid
         if owned is None:
-            self._kill_group()
+            if self._kill_group():
+                return (
+                    "could not read the process table; only the debugger's own process "
+                    "group was ended"
+                )
             return (
-                "could not read the process table; only the debugger's own process group was ended"
+                "could not read the process table, nor tell that the debugger's process "
+                "group was still its own: nothing was ended"
             )
         # The debuggee and what it started: announced by the adapter, or outside the
         # adapter's group (debugpy's launcher puts the program in a group of its own).

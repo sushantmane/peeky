@@ -10,6 +10,7 @@ groups.
 """
 
 import os
+import signal
 import subprocess
 import threading
 import time
@@ -39,6 +40,21 @@ def _ps(*arguments):
                 return None
     except OSError:
         return None
+
+
+def keep_children_waitable():
+    """Undo an inherited ignored SIGCHLD (#170): with it, the kernel reaps every child
+    as it exits, behind `Popen`, so a dead adapter's pid, and its process group's and
+    session's ids, are free for another's while Peeky still names them. Called first by
+    every command that starts adapters (`peeky`, `peeky-worker`, `peeky-probe`,
+    `peeky-agent`); only Python's main thread can set it, so a no-op elsewhere."""
+    if threading.current_thread() is not threading.main_thread():
+        return
+    try:
+        if signal.getsignal(signal.SIGCHLD) == signal.SIG_IGN:
+            signal.signal(signal.SIGCHLD, signal.SIG_DFL)
+    except (AttributeError, OSError, ValueError):
+        pass
 
 
 def session_id(pid):

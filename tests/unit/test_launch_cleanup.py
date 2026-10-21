@@ -295,6 +295,92 @@ def test_an_adapter_reaped_elsewhere_proves_no_session_and_signals_no_group(tmp_
         member.wait()
 
 
+@pytest.mark.parametrize("waitid", [True, False])
+def test_an_adapter_the_kernel_reaped_proves_no_session_and_signals_no_group(monkeypatch, waitid):
+    # Review of PR #170 (round 2): with SIGCHLD ignored (inherited), the kernel reaps the
+    # adapter as it exits, behind Popen: `returncode` stays None and `waitid` fails, so
+    # the guards above did not apply, and a new session leader at its pid (Docker) had
+    # itself and its child ended by close(). Without os.waitid (macOS before Python
+    # 3.13), the process table tells: the adapter is gone, or its pid has another start.
+    from peeky.dap import DAP
+
+    if not waitid:
+        monkeypatch.delattr(os, "waitid", raising=False)
+    signalled = []
+    previous = signal.signal(signal.SIGCHLD, signal.SIG_IGN)
+    try:
+        dap = DAP(command=(sys.executable, "-c", "pass"))
+        pid = dap.process.pid
+        until(lambda: (processes.table() or {}).get(pid) is None)
+        monkeypatch.setattr(os, "killpg", lambda group, sig: signalled.append(group))
+        dap._list_family()
+        dap._kill_group()
+        assert dap.family.session is None and signalled == []
+        assert dap.process.returncode is None and dap._adapter_state() == "reaped"
+        dap.close()
+        assert signalled == []
+    finally:
+        signal.signal(signal.SIGCHLD, previous)
+    if not waitid:
+        # Its pid taken by another process (another start): reaped too.
+        dap = DAP(command=(sys.executable, "-c", "import time; time.sleep(30)"))
+        try:
+            pid, start = dap.process.pid, dap.adapter_start
+            assert start is not None
+            other = {pid: (1, pid, "another start", "S", pid)}
+            assert dap._adapter_state(other) == "reaped"
+            assert dap._adapter_state({pid: (1, pid, start, "Z", pid)}) == "exited"
+            assert dap._adapter_state({pid: (1, pid, start, "S", pid)}) == "running"
+            # No table at all: neither signalled as the adapter's nor taken for gone.
+            monkeypatch.setattr(processes, "table", lambda: None)
+            assert dap._adapter_state() == "unknown" and dap._adapter_running()
+            cleanup = dap._end_owned(None, True, None)
+            assert "nothing was ended" in cleanup and signalled == []
+        finally:
+            monkeypatch.undo()
+            dap.process.kill()
+            dap.close()
+
+
+CHILD_STATUS = """
+import runpy, signal, sys
+sys.argv = [sys.argv[1], "--help"]
+try:
+    runpy.run_module(sys.argv[0], run_name="__main__")
+except SystemExit:
+    pass
+print(signal.getsignal(signal.SIGCHLD) == signal.SIG_DFL, file=sys.stderr)
+"""
+
+
+@pytest.mark.parametrize("entry", ["peeky.cli", "peeky.worker", "peeky.probe", "peeky.agent"])
+def test_every_command_that_starts_adapters_reaps_its_own_children(entry):
+    # Review of PR #170 (round 2): a SIGCHLD ignored by the parent is inherited, and the
+    # kernel then reaps adapters behind Peeky. Each command sets it back first.
+    ignoring = (
+        "import os, signal, sys; signal.signal(signal.SIGCHLD, signal.SIG_IGN); "
+        "os.execv(sys.executable, [sys.executable, *sys.argv[1:]])"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", ignoring, "-c", CHILD_STATUS, entry],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.stderr.strip().splitlines()[-1:] == ["True"], result.stderr[-2000:]
+    # Only the main thread can set it: elsewhere, a no-op.
+    previous = signal.signal(signal.SIGCHLD, signal.SIG_IGN)
+    try:
+        thread = threading.Thread(target=processes.keep_children_waitable)
+        thread.start()
+        thread.join()
+        assert signal.getsignal(signal.SIGCHLD) == signal.SIG_IGN
+        processes.keep_children_waitable()
+        assert signal.getsignal(signal.SIGCHLD) == signal.SIG_DFL
+    finally:
+        signal.signal(signal.SIGCHLD, previous)
+
+
 def test_an_attached_program_is_never_ended(tmp_path, leftovers):
     program = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(600)"])
     leftovers.append(program.pid)
