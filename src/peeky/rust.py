@@ -697,7 +697,13 @@ class RustTarget:
             session.declarations_ir = declarations
             # Unsafe code can free what safe code shows owned (#156 review): where the
             # crate has any, no owned container, field container or frozen borrow reads.
-            session.unsafe_code = unsafe_source(texts, rust)
+            # Only the files the debugged executable is built from count (rustc's
+            # dependency file): an integration test's code never runs in it.
+            built = {relative for _, relative in _dependencies(binary, prepared.workspace)}
+            session.unsafe_code = unsafe_source(
+                {name: text for name, text in texts.items() if name in built},
+                tuple(name for name in rust if name in built),
+            )
             if owned is not None:
                 owned.unsafe_code = session.unsafe_code
             session.assert_current()
@@ -740,22 +746,30 @@ def owned_locals(workspace, artifacts, crate, ir, sources):
     )
 
 
+def _dependencies(executable, workspace):
+    """[(path, its workspace-relative name or None outside it)] of each file rustc read to
+    build ``executable``, from its dependency file."""
+    root = Path(workspace).resolve()
+    depfile = executable.with_name(executable.name + ".d")
+    if not depfile.is_file():
+        raise ValueError(f"Cargo wrote no dependency file for {executable.name}")
+    found = []
+    for dependency in dependency_paths(depfile.read_text(), root):
+        try:
+            found.append((dependency, dependency.resolve().relative_to(root).as_posix()))
+        except (OSError, ValueError):
+            found.append((dependency, None))
+    return found
+
+
 def _require_declared_dependencies(executables, workspace, inputs):
     """Every file the compiler read (rustc's dependency files) must be declared.
 
     `#[path = "/elsewhere"] mod x;`, `include!` and `include_str!` would otherwise
     compile bytes that no provenance check covers.
     """
-    root = Path(workspace).resolve()
     for executable in executables:
-        depfile = executable.with_name(executable.name + ".d")
-        if not depfile.is_file():
-            raise ValueError(f"Cargo wrote no dependency file for {executable.name}")
-        for dependency in dependency_paths(depfile.read_text(), root):
-            try:
-                relative = dependency.resolve().relative_to(root).as_posix()
-            except (OSError, ValueError):
-                relative = None
+        for dependency, relative in _dependencies(executable, workspace):
             if relative not in inputs:
                 raise ValueError(
                     f"The Rust build read {dependency}, which is not a declared source; "
@@ -789,27 +803,38 @@ _FIELD_CONTAINER = re.compile(
 _UNSAFE_CRATE = (
     "the crate has unsafe code (in {source}), which can free a buffer without Peeky seeing it"
 )
+_UNREAD_CRATE = (
+    "Peeky cannot rule out unsafe code in {source} ({why}), and unsafe code can free a "
+    "buffer without Peeky seeing it"
+)
 # Where a crate's own code can do what safe Rust cannot: an `unsafe` block, function,
 # impl, trait or extern block, an `#[unsafe(...)]` attribute, and the attributes that
 # are unsafe without saying so before the 2024 edition (a `#[no_mangle]` function can
-# replace `free`). `r#unsafe` is an identifier.
-_UNSAFE_CODE = re.compile(r"(?<![\w#])(?:unsafe|no_mangle|export_name|link_section)\b")
+# replace `free`), and `global_asm!`, which needs no `unsafe` but can define `free`
+# too (`asm!` and `naked_asm!` need it, but count anyway). `r#unsafe` is an identifier.
+_UNSAFE_CODE = re.compile(
+    r"(?<![\w#])(?:unsafe|no_mangle|export_name|link_section|global_asm|naked_asm)\b"
+    r"|(?<![\w#])asm\s*!"
+)
 
 
 def unsafe_source(texts, rust):
-    """The first of the crate's files (``texts``: {name: text} of every file the build
-    may read; ``rust``: the Rust sources and tests among them) with unsafe code, or None.
-    Rust sources are read without their comments and strings (a source that does not
-    lex counts); any other file a macro could `include!`, as plain text."""
-    from peeky.rust_lexer import code_only
+    """Why the crate may have unsafe code, or None: ``texts`` ({name: text}) are the files
+    the debugged executable is built from, ``rust`` the Rust sources among them. Rust
+    sources are read without their comments and strings, and one Peeky cannot be sure it
+    reads as rustc does (rust_lexer.scan) counts; any other file a macro could
+    `include!`, as plain text."""
+    from peeky.rust_lexer import scan
 
     for name in rust:
-        code = code_only(texts.get(name, ""))
-        if code is None or _UNSAFE_CODE.search(code):
-            return name
+        code, why = scan(texts.get(name, ""))
+        if code is None:
+            return _UNREAD_CRATE.format(source=name, why=why)
+        if _UNSAFE_CODE.search(code):
+            return _UNSAFE_CRATE.format(source=name)
     for name, text in texts.items():
         if name not in rust and _UNSAFE_CODE.search(text):
-            return name
+            return _UNSAFE_CRATE.format(source=name)
     return None
 
 
@@ -1086,7 +1111,7 @@ class RustSession(NativeSession):
     units = ()
     # {legacy hash: the function's CodeBlocks} (rust_symbols.code_blocks; #115).
     code_blocks = {}
-    # The first crate source with unsafe code, or None (``unsafe_source``; #156 review).
+    # Why the crate may have unsafe code, or None (``unsafe_source``; #156 review).
     unsafe_code = None
 
     def function_scopes(self):
@@ -2177,7 +2202,7 @@ class RustSession(NativeSession):
             return {**view, "value": UNVERIFIED, "rust_view": "opaque"}
         if view is None and lent and (REFERENCE_PARAMETERS.get(lent) or _composite_parameter(lent)):
             # A reference parameter's contents, left raw in a crate with unsafe code.
-            return {"raw_reason": _UNSAFE_CRATE.format(source=getattr(self, "unsafe_code", None))}
+            return {"raw_reason": getattr(self, "unsafe_code", None)}
         if view is None and top and not parameter and kind in OWNED_CONTAINERS:
             # Why an owned Vec or String stays raw, for its row's note (#156).
             why = self._owned_raw(variable, frame, innermost, owned)
@@ -2206,7 +2231,7 @@ class RustSession(NativeSession):
                 "be moved, dropped or not yet assigned around it (#53)"
             )
         if getattr(self, "unsafe_code", None):
-            return _UNSAFE_CRATE.format(source=getattr(self, "unsafe_code", None))
+            return getattr(self, "unsafe_code", None)
         if not isinstance(variable.get("memoryReference"), str):
             return _NO_MEMORY
         return None
@@ -2242,7 +2267,7 @@ class RustSession(NativeSession):
         if not hashed or proofs is None:
             return {"raw_reason": "Peeky cannot match this frame to the build's MIR"}
         if getattr(self, "unsafe_code", None):
-            return {"raw_reason": _UNSAFE_CRATE.format(source=getattr(self, "unsafe_code", None))}
+            return {"raw_reason": getattr(self, "unsafe_code", None)}
         place = frame or {}
         line, path = place.get("line"), (place.get("source") or {}).get("path")
         proof = self.parameters.get((hashed[1], root))

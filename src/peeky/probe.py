@@ -1046,7 +1046,7 @@ _UNPROVEN_RUST = (
     "innermost frame of an unoptimized build. Here it "
     "may be moved or dropped, or the MIR cannot say (a generic `T`, `Self` or `impl "
     "Trait`, an `async fn`'s parameter, a closure's capture, an unmangled `#[no_mangle]` "
-    "function), or the crate has unsafe code, which can free it without Peeky seeing it "
+    "function), or the crate may have unsafe code, which can free it without Peeky seeing it "
     "(#156), so "
     "its pointer can reach freed memory (#101, #108, #110). A plain function's own local reads "
     "on a line where it is live; otherwise capture what it holds where it is created"

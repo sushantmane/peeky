@@ -713,3 +713,126 @@ def test_nothing_unsafe_code_may_have_freed_is_read_in_its_crate(tmp_path, state
     crate = crate_at(tmp_path, "shadowed", SHADOWED)
     [row] = probe(capsys, crate, SHADOWED, "// SHADOWED", "s")["rows"]
     assert row["view"] == "unproven", row
+
+
+# Review of #156, round 3: what the scan for unsafe code misread or missed.
+HOLDER = """
+struct W {
+    values: Vec<i64>,
+    k: usize,
+}
+"""
+# rustc skips a shebang line; read as code, its `"` opened a string up to the comment's,
+# which hid both `unsafe` blocks, and the freed buffers read (`[4356, 3, 0]`).
+SHEBANG = (
+    '#!/usr/bin/env -S echo "\n'
+    + HOLDER
+    + """
+fn main() {
+    let w = W { values: vec![1, 2, 3], k: 7 };
+    let v = vec![4i64, 5, 6];
+    unsafe { drop(std::ptr::read(&w.values)) };
+    unsafe { drop(std::ptr::read(&v)) };
+    let n = std::hint::black_box(w.k); // STOP "
+    std::mem::forget(w);
+    std::mem::forget(v);
+    println!("{n}");
+}
+"""
+)
+# Frontmatter (a nightly feature; Peeky's builds allow them) is not read: the crate
+# counts as having unsafe code.
+FRONTMATTER = """---
+x = "
+---
+#![feature(frontmatter)]
+fn main() {
+    let v = vec![4i64, 5, 6];
+    unsafe { drop(std::ptr::read(&v)) };
+    let n = std::hint::black_box(1); // STOP "
+    std::mem::forget(v);
+    println!("{n}");
+}
+"""
+# `global_asm!` needs no `unsafe`, and can define `free` as `#[no_mangle]` can.
+GLOBAL_ASM = (
+    'std::arch::global_asm!("nop");\n'
+    + HOLDER
+    + """
+fn main() {
+    let w = W { values: vec![1, 2, 3], k: 7 };
+    let n = std::hint::black_box(w.k); // STOP
+    println!("{n} {:?}", w.values);
+}
+"""
+)
+# Unsafe code only in an integration test, which never runs in the debugged binary
+# (rustc's dependency file for the binary does not list it).
+TEST_ONLY = GLOBAL_ASM.split("\n", 1)[1]
+TEST_ONLY_TEST = """#[test]
+fn freed() {
+    let v = vec![1i64];
+    unsafe { drop(std::ptr::read(&v)) };
+    std::mem::forget(v);
+}
+"""
+# 8,000 macro calls in one statement: the check for names the crate gives its own items
+# took 13 s on the first inspection, and the view budget ran out ("<Rust enum view
+# budget exhausted>" for a `&str`).
+MACRO_CALLS = """macro_rules! m {
+    ($x:expr) => {
+        $x
+    };
+}
+
+fn main() {
+    let s = String::from("a,b");
+    let v: &str = s.as_str();
+    let n = std::hint::black_box(v.len()); // STOP
+    let a = [CALLS];
+    println!("{n} {}", a.len());
+}
+""".replace("CALLS", ", ".join(f"m!({index})" for index in range(8000)))
+
+
+@pytest.mark.timeout(400)
+def test_the_scan_for_unsafe_code_skips_a_shebang_and_not_frontmatter(tmp_path, state, capsys):
+    crate = crate_at(tmp_path, "shebang", SHEBANG)
+    rows = {
+        row["selector"]: row
+        for row in probe(capsys, crate, SHEBANG, "// STOP", "w.values,v,w.k")["rows"]
+    }
+    raw(rows["w.values"], UNSAFE_CRATE)
+    raw(rows["v"], UNSAFE_CRATE)
+    assert rows["w.k"]["value"] == "7", rows
+    crate = crate_at(tmp_path, "frontmatter", FRONTMATTER)
+    [row] = probe(capsys, crate, FRONTMATTER, "// STOP", "v")["rows"]
+    raw(row, "Peeky cannot rule out unsafe code in src/main.rs (it opens with a `---` frontmatter")
+
+
+@pytest.mark.timeout(400)
+def test_global_asm_counts_as_unsafe_code(tmp_path, state, capsys):
+    crate = crate_at(tmp_path, "asm", GLOBAL_ASM)
+    [row] = probe(capsys, crate, GLOBAL_ASM, "// STOP", "w.values")["rows"]
+    raw(row, UNSAFE_CRATE)
+
+
+@pytest.mark.timeout(400)
+def test_unsafe_code_only_in_an_integration_test_does_not_count(tmp_path, state, capsys):
+    crate = crate_at(tmp_path, "testonly", TEST_ONLY)
+    (crate / "tests").mkdir()
+    (crate / "tests/freed.rs").write_text(TEST_ONLY_TEST)
+    [row] = probe(capsys, crate, TEST_ONLY, "// STOP", "w.values")["rows"]
+    if reads(row):
+        assert row["value"] == "[1, 2, 3]" and row["view"] == "memory", row
+    else:
+        raw(row, NO_MEMORY)
+
+
+@pytest.mark.timeout(400)
+def test_many_macro_calls_leave_the_view_budget_to_the_debugger(tmp_path, state, capsys):
+    crate = crate_at(tmp_path, "macros", MACRO_CALLS)
+    [row] = probe(capsys, crate, MACRO_CALLS, "// STOP", "v")["rows"]
+    assert "budget" not in row["value"] and row.get("view") != "budget-exhausted", row
+    if reads(row):
+        assert row["value"] == '"a,b"' and row["view"] == "memory", row

@@ -50,7 +50,15 @@ QUALIFIED_OPTIONS = {"core::option::Option<i32>": ("i32", "int")}
 DISCRIMINANT_TYPES = {"u32": "unsigned int"}
 UNQUALIFIED = "<unqualified Rust enum layout>"
 UNVERIFIED = "<unverified Rust enum value>"
-BUDGET = "<Rust enum view budget exhausted; expand or inspect a narrower scope>"
+BUDGET = "<Rust value view budget exhausted; expand or inspect a narrower scope>"
+
+
+def _budget(exc):
+    """What a view the worker's budget stopped shows: which limit ran out (#156 review:
+    Peeky's own checks once took its whole time, and a `&str` blamed an enum's view)."""
+    cause = str(exc).partition(": ")[2]
+    return BUDGET.replace("exhausted;", f"exhausted ({cause});") if cause else BUDGET
+
 
 _UNIT = re.compile(
     r"0x([0-9a-f]{8,16}): ([A-Za-z ]{1,32}) Unit: (.{1,512}) \(next unit at 0x([0-9a-f]{8,16})\)"
@@ -1102,8 +1110,8 @@ def active_variant(variable, fetch, layouts):
         return {**view, "value": UNQUALIFIED, "rust_view": "opaque"}
     try:
         value = _option_value(variable, fetch, layout, kind)
-    except ViewBudgetExhausted:
-        return {**view, "value": BUDGET, "rust_view": "budget-exhausted"}
+    except ViewBudgetExhausted as exc:
+        return {**view, "value": _budget(exc), "rust_view": "budget-exhausted"}
     except ValueError:
         return {**view, "value": UNVERIFIED, "rust_view": "opaque"}
     return {**view, "value": value, "rust_view": "active-variant"}
@@ -1675,7 +1683,7 @@ def container_view(
             "length": length,
             "children": sizes + children,
         }
-    except ViewBudgetExhausted:
-        return {**view, "value": BUDGET, "rust_view": "budget-exhausted"}
+    except ViewBudgetExhausted as exc:
+        return {**view, "value": _budget(exc), "rust_view": "budget-exhausted"}
     except (ValueError, UnicodeDecodeError):
         return {**view, "value": UNVERIFIED_CONTAINER, "rust_view": "opaque"}

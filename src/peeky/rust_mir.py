@@ -1952,20 +1952,74 @@ _FROZEN_NAMES = (
 )
 
 
-def _macro_bodies(code):
-    """The bodies of the `macro_rules!` definitions in ``code`` (comments and strings
-    blanked), each from its opening bracket to the matching close."""
-    found = []
-    for start in re.finditer(r"\bmacro_rules!\s*(?:r#)?\w+\s*([({\[])", code):
-        depth, at = 0, start.end(1) - 1
-        for at in range(start.end(1) - 1, len(code)):
-            if code[at] in "({[":
-                depth += 1
-            elif code[at] in ")}]":
-                depth -= 1
-                if depth == 0:
-                    break
-        found.append(code[start.end(1) : at])
+# One pass over a source's code (comments and strings blanked) for the names it may
+# give its own items (OwnedLocals._untrusted_names): a statement's end, a macro's
+# opening (`mk!(`, `#![`), a word (`r#Vec` is `Vec`), a `macro_rules!` body's opening.
+_NAMING = re.compile(r"(;)|(!\s*[(\[{])|(?:r#)?(\w+)")
+_DECLARING = frozenset({"struct", "enum", "union", "type", "trait", "mod"})
+_MACRO_NAME = re.compile(r"\s*!\s*(?:r#)?(\w+)(?:\s*([({\[]))?")
+# One space (more count as another crate's, as the per-name search had it).
+_STD_USE = re.compile(r"\s(?:::)?(?:std|core|alloc)::")
+_TYPE_FOLLOWS = re.compile(r"\s*(?:::|<|\()")
+
+
+def _closings(code):
+    """{an opening bracket's index: its closing one's} in ``code`` (one pass; brackets
+    not closed run to its end)."""
+    closing, opened = {}, []
+    for bracket in re.finditer(r"[()\[\]{}]", code):
+        if bracket[0] in "([{":
+            opened.append(bracket.start())
+        elif opened:
+            closing[opened.pop()] = bracket.start()
+    return closing
+
+
+def _named_own(code, names):
+    """Which of ``names`` the source ``code`` (comments and strings blanked) may give an
+    item of its own (see OwnedLocals._untrusted_names), in one pass over its words."""
+    closing, found = _closings(code), set()
+    # A `use` up to its `;` (and whether it imports from std, core or alloc); a macro's
+    # arguments up to the next `;`; the end of the `macro_rules!` body a word is in.
+    using = std_use = macro = False
+    body_end, previous = -1, None
+    for token in _NAMING.finditer(code):
+        if token[1]:
+            using = macro = False
+            previous = None
+            continue
+        if token[2]:
+            macro = True
+            previous = None
+            continue
+        word, start, end = token[3], token.start(), token.end()
+        # `r#Vec` counts as bare even after a path's `::`.
+        before = "#" if token[0].startswith("r#") else code[start - 1] if start else ""
+        if word in names:
+            gap = code[previous[1] : start] if previous else ""
+            if (
+                (previous and previous[0] in _DECLARING and gap.strip() == "" and gap)
+                or (using and previous and previous[0] == "as" and gap.strip() == "" and gap)
+                or (using and not std_use)
+                or (
+                    macro
+                    and word in ("Vec", "String", "Box")
+                    and before != ":"
+                    and not _TYPE_FOLLOWS.match(code, end)
+                )
+                or (start < body_end and before not in (":", "$"))
+            ):
+                found.add(word)
+        if word == "use" and token[0] == "use":
+            # A `use` from elsewhere counts until the `;`, whatever follows it.
+            std_use = bool(_STD_USE.match(code, end)) and (std_use or not using)
+            using = True
+        elif word == "macro_rules" and (named := _MACRO_NAME.match(code, end)):
+            if named[1] in names:
+                found.add(named[1])
+            if named[2]:
+                body_end = max(body_end, closing.get(named.start(2), len(code)))
+        previous = (word, end)
     return found
 
 
@@ -3016,8 +3070,8 @@ def _file(meta, scope):
 class OwnedLocals:
     """Proofs that an owned local is initialized at a stop (see the module docstring)."""
 
-    # Where the crate's own sources have unsafe code (`src/main.rs`; set by `prepare`):
-    # the frozen-owner rule does not apply (#156 review).
+    # Why the crate may have unsafe code (rust.unsafe_source; set by `prepare`): the
+    # frozen-owner rule does not apply (#156 review).
     unsafe_code = None
 
     def __init__(self, bodies, functions, sources=(), *, precise=True, texts=None):
@@ -3811,30 +3865,13 @@ class OwnedLocals:
         if "_untrusted_known" not in self.__dict__:
             from peeky.rust_lexer import code_only
 
-            names, untrusted = _FROZEN_NAMES, set()
+            names, untrusted = frozenset(_FROZEN_NAMES), set()
             for source in self.sources:
                 code = code_only(self.texts[source]) if source in self.texts else None
                 if code is None:
                     untrusted = set(names)
                     break
-                for name in names:
-                    ident = rf"(?:r#)?{name}\b"
-                    declared = re.compile(
-                        rf"\b(?:struct|enum|union|type|trait|mod|macro_rules!)\s+{ident}"
-                        rf"|\buse\b[^;]*\bas\s+{ident}"
-                        rf"|\buse\s+(?!(?:::)?(?:std|core|alloc)::)[^;]*\b{ident}"
-                    )
-                    passed = name in ("Vec", "String", "Box") and re.search(
-                        rf"!\s*[(\[{{][^;]*?(?<![\w:]){ident}(?!\s*(?:::|<|\())", code
-                    )
-                    if (
-                        declared.search(code)
-                        or passed
-                        or any(
-                            re.search(rf"(?<![\w:$]){ident}", body) for body in _macro_bodies(code)
-                        )
-                    ):
-                        untrusted.add(name)
+                untrusted |= _named_own(code, names)
             self._untrusted_known = frozenset(untrusted)
         return self._untrusted_known
 

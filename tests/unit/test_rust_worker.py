@@ -708,6 +708,26 @@ def test_value_view_time_budget_degrades_to_opaque(worker, monkeypatch):
     assert variables["some"]["view"] == "budget-exhausted" and worker.view_fetches == 0
 
 
+def test_a_spent_value_view_budget_says_which_limit_ran_out(worker, monkeypatch):
+    # Review of #156, round 3: Peeky's own checks took the whole time, and a `&str` said
+    # "<Rust enum view budget exhausted>"; the row names the limit, and how much of the
+    # time the debugger took.
+    worker.dap.roots = [raw(f"some{index}", OPTION, 10) for index in range(30)]
+    views = call(worker, "inspect")["scopes"][0]["variables"]
+    assert {view["value"] for view in views[25:]} == {
+        "<Rust value view budget exhausted (128 debugger reads); expand or inspect a "
+        "narrower scope>"
+    }
+    monkeypatch.setattr("peeky.worker.VIEW_SECONDS", 0)
+    worker.dap.roots = [raw("some", OPTION, 10)]
+    [view] = call(worker, "inspect")["scopes"][0]["variables"]
+    assert view["value"] == (
+        "<Rust value view budget exhausted (its 0 s ran out, 0.0 s of them waiting for the "
+        "debugger's reads, the rest listing values and in Peeky's own checks); expand or "
+        "inspect a narrower scope>"
+    )
+
+
 def test_each_expansion_gets_a_fresh_value_view_budget(worker):
     worker.dap.roots = [raw("holder", "app::Holder", 30)] + [
         raw(f"some{index}", OPTION, 10) for index in range(30)
@@ -1025,11 +1045,21 @@ def test_a_name_not_proven_in_memory_says_which_binding_or_copy_is_why():
         ({"src/main.rs": "#[no_mangle] pub fn free() {}"}, "src/main.rs"),
         ({"src/main.rs": 'unsafe extern "C" { fn getpid() -> i32; }'}, "src/main.rs"),
         ({"src/main.rs": "macro_rules! m { () => { unsafe { 1 } }; }"}, "src/main.rs"),
+        # Review of #156, round 3: `global_asm!` needs no `unsafe`, and can define `free`.
+        ({"src/main.rs": 'std::arch::global_asm!(".globl free");'}, "src/main.rs"),
+        ({"src/main.rs": "use std::arch::global_asm as g;"}, "src/main.rs"),
+        ({"src/main.rs": 'fn f() { asm!("nop") }'}, "src/main.rs"),
         # Not code: a comment, a string, a raw identifier, a lint's name.
         ({"src/main.rs": '// unsafe\nfn f() -> &\'static str { "unsafe" }'}, None),
         ({"src/main.rs": "fn r#unsafe() {}\n#![forbid(unsafe_code)]"}, None),
-        # A source that does not lex counts; any other file is read as text.
-        ({"src/main.rs": 'fn f() { "unterminated }'}, "src/main.rs"),
+        ({"src/main.rs": "fn asm() {} fn naked() {}"}, None),
+        # A shebang is no code (rustc skips it), so its `"` opens no string.
+        (
+            {"src/main.rs": '#!/usr/bin/env -S echo "\nfn f() { unsafe { g() } } // "'},
+            "src/main.rs",
+        ),
+        ({"src/main.rs": '#!/bin/run "\nfn f() {}'}, None),
+        # Any other file the build reads is read as text.
         ({"src/main.rs": "fn main() {}", "inc.txt": "unsafe { x() }"}, "inc.txt"),
     ],
 )
@@ -1040,4 +1070,35 @@ def test_the_crates_unsafe_code_is_found_in_any_of_its_files(texts, found):
     from peeky.rust import unsafe_source
 
     rust = tuple(name for name in texts if name.endswith(".rs"))
-    assert unsafe_source(texts, rust) == found
+    why = unsafe_source(texts, rust)
+    if found is None:
+        assert why is None
+    else:
+        assert why == (
+            f"the crate has unsafe code (in {found}), which can free a buffer without Peeky "
+            "seeing it"
+        )
+
+
+@pytest.mark.parametrize(
+    "text,why",
+    [
+        ('fn f() { "unterminated }', "a comment, string or char literal does not end"),
+        # Review of #156, round 3: frontmatter is not read; a comment after `#!` is not
+        # judged; brackets that do not pair up show a literal misread.
+        (
+            '---\nx = "\n---\nfn f() { unsafe { g() } } // "',
+            "it opens with a `---` frontmatter block",
+        ),
+        ("\n  ---cargo\n---\nfn main() {}", "it opens with a `---` frontmatter block"),
+        ("#! // c\n[allow(x)] fn f() {}", "a comment follows its `#!`"),
+        ("fn f() { (1 }", "its brackets do not pair up"),
+        ("fn f() { 1 ", "its brackets do not pair up"),
+    ],
+)
+def test_a_source_peeky_cannot_be_sure_it_reads_counts_as_unsafe(text, why):
+    from peeky.rust import unsafe_source
+
+    found = unsafe_source({"src/main.rs": text}, ("src/main.rs",))
+    assert found.startswith("Peeky cannot rule out unsafe code in src/main.rs (" + why), found
+    assert found.endswith("and unsafe code can free a buffer without Peeky seeing it")

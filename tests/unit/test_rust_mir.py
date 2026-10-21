@@ -1488,6 +1488,47 @@ def test_rust_comments_and_literals_are_found_by_one_lexer(text, spans, complete
         assert len(blanked) == len(text) and blanked.count("\n") == text.count("\n")
 
 
+@pytest.mark.parametrize(
+    "text, spans, complete",
+    [
+        # Review of #156, round 3: rustc skips a shebang line, so its `"` opens no string
+        # (which hid the `unsafe` below it).
+        ('#!/usr/bin/env -S echo "\nlet a = "x";', [(0, 24, True), (33, 36, False)], True),
+        ('\ufeff#!/bin/sh "\nfn f() {}', [(0, 12, True)], True),
+        # `#!` and `[` (whitespace between) are an inner attribute.
+        ("#![allow(x)]\nfn f() {}", [], True),
+        ("#!\n [allow(x)] fn f() {}", [], True),
+        ("#!\u200e[allow(x)]", [], True),
+        # Not judged: a comment after `#!`, and frontmatter.
+        ("#! /* c */ [allow(x)]", [], False),
+        ('---\nx = "\n---\nfn f() {} // "', [], False),
+        ("#!/bin/sh\n\n---\n---\nfn f() {}", [], False),
+    ],
+)
+def test_a_shebang_is_skipped_as_rustc_skips_it(text, spans, complete):
+    from peeky.rust_lexer import lexemes
+
+    assert lexemes(text) == (spans, complete)
+
+
+@pytest.mark.parametrize(
+    "text, why",
+    [
+        ("fn f() { (1 }", "its brackets do not pair up"),
+        ("fn f() { [1] ", "its brackets do not pair up"),
+        ("fn f() { 1 } }", "its brackets do not pair up"),
+        ("fn f() { let c = '}'; let s = \"{\"; }", None),
+    ],
+)
+def test_code_whose_brackets_do_not_pair_up_is_not_read(text, why):
+    # Every source rustc accepts pairs its brackets (its tokens are trees): ones that do
+    # not, once comments and literals are blanked, mean Peeky misread a literal.
+    from peeky.rust_lexer import code_only, scan
+
+    assert scan(text)[1] == why
+    assert (code_only(text) is None) is (why is not None)
+
+
 BOXED = "std::boxed::Box<Pt>"
 
 
@@ -2898,3 +2939,19 @@ def test_a_short_type_name_is_trusted_only_where_the_crate_names_no_other(code, 
     # A function's header prints types by short names (`&Vec<String>`).
     owned = OwnedLocals([], {}, ("src/main.rs",), texts={"src/main.rs": code})
     assert owned._untrusted_names() == untrusted
+
+
+def test_the_names_a_crate_gives_its_own_items_are_found_in_one_pass():
+    # Review of #156, round 3: each macro call's arguments were searched to the next `;`,
+    # per name: 8,000 calls in one statement took 22 s (the inspection's whole budget).
+    import time
+
+    calls = ", ".join(f"m!({index})" for index in range(8000))
+    code = f"macro_rules! m {{ ($x:expr) => {{ $x }} }}\nfn main() {{ let a = [{calls}]; }}"
+    owned = OwnedLocals([], {}, ("src/main.rs",), texts={"src/main.rs": code})
+    started = time.monotonic()
+    assert owned._untrusted_names() == frozenset()
+    assert time.monotonic() - started < 1
+    passed = code.replace("m!(7999)", "m!(String)")
+    owned = OwnedLocals([], {}, ("src/main.rs",), texts={"src/main.rs": passed})
+    assert owned._untrusted_names() == {"String"}
