@@ -209,7 +209,7 @@ hit  phase     line  function  selector   type  value
 **Common cases**
 
 - `--hits N` captures N stops; `--hits all` every stop, up to 100, and needs the program to exit. `queries hits` shows one selector across hits, with `changed`.
-- **A line can stop several times per pass** (a macro's code, a one-line loop's body, a range `for`): the probe warns, and each row's `stop` says which location. For one row per pass, keep the location every pass reaches, which `peeky sql "SELECT stop, COUNT(DISTINCT hit) AS hits FROM last_run WHERE phase = 'observed' GROUP BY stop ORDER BY hits DESC"` lists first, then filter on it (`WHERE stop = 2`). Which one it is depends on the line: C and C++ one-line loops and range `for`s stop 1, 2, 2, 2 (location 1 runs once, before the loop), a Rust one-line `for` 1, 2, 3, 3, 3, and a macro's code 1, 2, 1, 2 (each location repeats: any will do).
+- **To get one row per pass, put `--at` on a plain statement line inside the loop's body** (not the header, and not a line with several stops). A line with a macro's code, a one-line loop or a range `for` can stop several times per pass, and the probe warns: there, read every row with its `stop` label; don't filter by a stop number.
 - **A loop header may stop only once, before its loop:** the probe warns; put `--at` on the first line of the body.
 - Different functions on one line (a closure, a lambda) are told apart by each row's `function`.
 
@@ -247,9 +247,16 @@ hit  stop  phase     line  function      selector  type  value
 4    1/3   observed  29    movavg::main  mean      f64   4.5
 ```
 
-To read one row per pass, keep one location: `peeky sql "SELECT hit, value FROM last_run WHERE stop = 1"` (hits 1, 4, 7 and 10 above); to change the second pass, `--set-hit 4`. A change says which stop its hit was (`set x: 0 -> 100  (--set-at line 9@2, stop 2 of 3, in s1::main)`: the first pass's second location, not the second pass), as do `interventions.stop`, `queries set_effect` and `queries wide`'s `sets` (`line 9, hit 2, stop 2`).
+In this example every pass runs location 1, so to read one row per pass, keep that location: `peeky sql "SELECT hit, value FROM last_run WHERE stop = 1"` (hits 1, 4, 7 and 10 above); to change the second pass, `--set-hit 4`. A change says which stop its hit was (`set x: 0 -> 100  (--set-at line 9@2, stop 2 of 3, in s1::main)`: the first pass's second location, not the second pass), as do `interventions.stop`, `queries set_effect` and `queries wide`'s `sets` (`line 9, hit 2, stop 2`).
 
-Pick it from the rows, not by its number alone: a loop header's first location runs once, before the loop (a C++ range `for`: `stop` 1, then 2 at every pass), and a branch can skip one (`if (v[i] > v[i + 1]) SWAP(...)` stops at 2 only when it swaps). For the same reasons Peeky has no `--first-stop` (stop once per pass): breakpoints alone cannot tell where a pass starts. Whether the frame left the line between two stops is not something a stop says, and a call that returns between two locations looks like one pass.
+Pick it from the rows, not by its number alone: a loop header's first location runs once, before the loop (a C++ range `for`: `stop` 1, then 2 at every pass), and a branch can skip one (`if (v[i] > v[i + 1]) SWAP(...)` stops at 2 only when it swaps). For the same reasons Peeky has no `--first-stop` (stop once per pass): breakpoints alone cannot tell where a pass starts.
+
+**Finding the location each pass reaches.** `peeky sql "SELECT stop, COUNT(DISTINCT hit) AS hits FROM last_run WHERE phase = 'observed' GROUP BY stop ORDER BY hits DESC, stop DESC"` counts each location's hits:
+
+- **The per-pass location** is the one with a count above 1. A C or C++ one-line loop whose body declares a local, and a range `for`, stop 1, 2, 2, 2 (location 1 runs once, before the loop); a Rust one-line `for` stops 1, 2, 3, 3, 3; a macro's code 1, 2, 1, 2, where each location repeats.
+- **Every count 1:** the loop ran at most once, or no location runs at every pass (`if (v[i] > v[i + 1]) SWAP(...)` stops 1, 2 over three passes). Read all the rows, or probe a statement line in the body. An empty loop still stops before it (C++ `1`, Rust `1, 2`), with no pass at all.
+- **One location:** a one-line C or C++ loop whose body declares no local (`for (...) { total += i; }`) has one location and stops once, however many passes run.
+- **Ties** (a loop of one pass) come out in `stop DESC` order, the later location first. Whether the frame left the line between two stops is not something a stop says, and a call that returns between two locations looks like one pass.
 
 A line with one location stops at most once per pass, however many statements it has (`a = twice(i); b = a + 1;`), and no warning is given. Different functions on one line (a closure, a lambda, a generator expression, a generic's instances) are a separate case: rows' `function` tells them apart, with a warning of its own. A function inlined into its callers (`#[inline(always)]`, a C `static inline` at `-O0` with `always_inline`) has a copy of its code at each call: each copy is a call of its own, and its line stops at that copy's locations, so `format!` in a function inlined twice stops 3 times at each call, 6 in all, and says so once (`stop` counts within a copy).
 
