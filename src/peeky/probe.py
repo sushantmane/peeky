@@ -3840,6 +3840,9 @@ def _own_set_at(program, where, assignment):
 
 
 def main(argv=None):
+    from peeky.processes import keep_children_waitable
+
+    keep_children_waitable()  # #170: an inherited ignored SIGCHLD reaps adapters
     parser = argparse.ArgumentParser(
         prog="peeky-probe",
         description="One-shot stateless probe: stop at a line, capture values, optionally "

@@ -1859,8 +1859,11 @@ def test_what_a_program_started_is_ended_when_its_debugger_dies(native_worker, t
         while not set(children) <= set(worker.dap.family.kin):
             assert time.monotonic() < deadline
             time.sleep(0.05)
-        worker.dap.process.kill()
-        worker.dap.process.wait(timeout=3)
+        # `kill -9`, unreaped as a crash leaves it: Peeky reaps it at close (PR #170).
+        os.kill(worker.dap.process.pid, signal.SIGKILL)
+        while worker.dap._adapter_running():
+            assert time.monotonic() < deadline + 5
+            time.sleep(0.05)
         with pytest.raises(HTTPError) as caught:
             client.call("inspect", **session, stop_id=stop["stop_id"])
         error = json.load(caught.value)["error"]
