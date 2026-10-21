@@ -1652,6 +1652,176 @@ def test_a_generic_bodys_primitive_named_types_may_hold_pointers():
     assert body._aliases(1) == {1, 2, 3}
 
 
+# #132: `async fn work(n: u32)` with a local the future does not keep across its `.await`
+# (`tmp`) and one it does (`before`): lines 1-6 are the fn line, `let tmp = n + 100;`,
+# `let before = n * 2;`, `Yield.await;`, `before + 1` and `}`.
+SCALARS = "\n".join(
+    [
+        "fn work::{closure#0}(_1: Pin<&mut {async fn body of work()}>, _2: &mut Context<'_>) -> Poll<u32> {",
+        "    debug _task_context => _2;           // in scope 0 at src/main.rs:1:30: 6:2",
+        "    debug n => ((*_9).0: u32);           // in scope 0 at src/main.rs:1:15: 1:16",
+        "    let mut _0: std::task::Poll<u32>;    // return place in scope 0 at src/main.rs:1:30: 6:2",
+        "    let _3: u32;                         // in scope 0 at src/main.rs:1:15: 1:16",
+        "    let _4: u32;                         // in scope 1 at src/main.rs:2:9: 2:12",
+        "    let mut _5: bool;                    // in scope 0 at src/main.rs:4:5: 4:15",
+        "    let mut _6: u32;                     // in scope 0 at src/main.rs:5:5: 5:11",
+        "    let mut _8: u32;                     // in scope 0 at src/main.rs:1:30: 6:2",
+        "    let mut _9: &mut {async fn body of work()}; // in scope 0 at src/main.rs:1:30: 6:2",
+        "    scope 1 {",
+        "        debug n => _3;                   // in scope 1 at src/main.rs:1:15: 1:16",
+        "        scope 2 {",
+        "            debug tmp => _4;             // in scope 2 at src/main.rs:2:9: 2:12",
+        "            scope 3 {",
+        "                debug before => (((*_9) as variant#3).0: u32); // in scope 3 at src/main.rs:3:9: 3:15",
+        "            }",
+        "        }",
+        "    }",
+        "",
+        "    bb0: {",
+        "        _9 = copy (_1.0: &mut {async fn body of work()}); // scope 0 at src/main.rs:1:30: 6:2",
+        "        _8 = discriminant((*_9));        // scope 0 at src/main.rs:1:30: 6:2",
+        "        switchInt(move _8) -> [0: bb1, 1: bb6, 2: bb6, 3: bb5, otherwise: bb6]; // scope 0 at src/main.rs:1:30: 6:2",
+        "    }",
+        "",
+        "    bb1: {",
+        "        StorageLive(_3);                 // scope 0 at src/main.rs:1:15: 1:16",
+        "        _3 = copy ((*_9).0: u32);        // scope 0 at src/main.rs:1:15: 1:16",
+        "        StorageLive(_4);                 // scope 1 at src/main.rs:2:9: 2:12",
+        "        _4 = Add(copy _3, const 100_u32); // scope 1 at src/main.rs:2:15: 2:22",
+        "        (((*_9) as variant#3).0: u32) = Mul(copy _3, const 2_u32); // scope 2 at src/main.rs:3:18: 3:23",
+        "        goto -> bb8;                     // scope 3 at src/main.rs:4:5: 4:15",
+        "    }",
+        "",
+        "    bb8: {",
+        "        _5 = poll() -> [return: bb3, unwind continue]; // scope 3 at src/main.rs:4:5: 4:15",
+        "    }",
+        "",
+        "    bb3: {",
+        "        switchInt(move _5) -> [0: bb7, otherwise: bb4]; // scope 3 at src/main.rs:4:5: 4:15",
+        "    }",
+        "",
+        "    bb4: {",
+        "        _6 = copy (((*_9) as variant#3).0: u32); // scope 3 at src/main.rs:5:5: 5:11",
+        "        _0 = Poll::<u32>::Ready(move _6); // scope 0 at src/main.rs:6:2: 6:2",
+        "        discriminant((*_9)) = 1;         // scope 0 at src/main.rs:6:2: 6:2",
+        "        return;                          // scope 0 at src/main.rs:6:2: 6:2",
+        "    }",
+        "",
+        "    bb5: {",
+        "        StorageLive(_3);                 // scope 0 at src/main.rs:1:30: 6:2",
+        "        StorageLive(_4);                 // scope 0 at src/main.rs:1:30: 6:2",
+        "        goto -> bb8;                     // scope 3 at src/main.rs:4:5: 4:15",
+        "    }",
+        "",
+        "    bb6: {",
+        "        unreachable;                     // scope 0 at src/main.rs:1:30: 6:2",
+        "    }",
+        "",
+        "    bb7: {",
+        "        _0 = Poll::<u32>::Pending;       // scope 3 at src/main.rs:4:10: 4:15",
+        "        StorageDead(_4);                 // scope 3 at src/main.rs:4:10: 4:15",
+        "        StorageDead(_3);                 // scope 3 at src/main.rs:4:10: 4:15",
+        "        discriminant((*_9)) = 3;         // scope 3 at src/main.rs:4:10: 4:15",
+        "        return;                          // scope 3 at src/main.rs:4:10: 4:15",
+        "    }",
+        "}",
+        "",
+    ]
+)
+
+
+def scalars(text=SCALARS):
+    body = parse_body(text)
+    blocks = {"start": {1}}
+    for number, block in body.blocks.items():
+        if number:
+            blocks[f"bb{number}"] = {line for _, _, line in block.statements}
+    function = IrFunction(
+        "{async_fn#0}", "work", "src/main.rs", blocks, {}, 1, ancestors=("app", "work")
+    )
+    lines = "async fn work(n: u32) -> u32 {\n    let tmp = n + 100;\n    let before = n * 2;\n"
+    lines += "    Yield.await;\n    before + 1\n}\n"
+    return body, OwnedLocals([body], {"h": function}, SOURCES, texts={"src/main.rs": lines})
+
+
+def test_a_resumed_poll_leaves_what_the_future_does_not_keep_unassigned():
+    body, owned = scalars()
+    assert body.supported and body.saved == {10} and body.resumes == {7: 5}
+    # The poll's copy of `n` and `tmp`: assigned in the first poll, never after a resume.
+    assert body.unassigned_at(3, (4, 0)) and body.unassigned_at(4, (4, 0))
+    assert body.unassigned_at(3, (4, 0), resumed=False) is False
+    assert body.unassigned_at(10, (4, 0)) is False  # `before`, in the state
+    assert owned.unassigned("h", "n @ main.rs:1", 5, MAIN) == (2, {1: "suspended"})
+    assert owned.unassigned("h", "tmp", 5, MAIN) == (1, {0: "suspended"})
+    assert owned.unassigned("h", "before", 5, MAIN) is None
+    assert owned.unassigned("h", "_task_context", 5, MAIN) is None
+    # A caller frame inside the `.await`'s poll: everywhere on the line, so withheld.
+    assert owned.unassigned("h", "tmp", 4, MAIN, caller=True) == (1, {0: "suspended"})
+    # Before the `.await` only the first poll runs: assigned.
+    assert owned.unassigned("h", "n @ main.rs:1", 3, MAIN) is None
+    assert owned.unassigned("h", "tmp", 3, MAIN) is None
+    # Not yet assigned on its own line (lldb-dap shows it only inside its scope).
+    assert owned.unassigned("h", "before", 3, MAIN) is None
+
+
+def test_a_parameter_the_body_reassigns_is_not_what_the_futures_field_holds():
+    # `mut n; n += 1` before the `.await`: the field holds what the caller passed.
+    text = SCALARS.replace(
+        "        (((*_9) as variant#3).0: u32) = Mul(",
+        "        _3 = Add(copy _3, const 1_u32);  // scope 2 at src/main.rs:3:5: 3:11\n"
+        "        (((*_9) as variant#3).0: u32) = Mul(",
+    )
+    _, owned = scalars(text)
+    assert owned.unassigned("h", "n @ main.rs:1", 5, MAIN) == (2, {0: "passed", 1: "suspended"})
+    # Out of the copy's scope, the field alone.
+    assert owned.unassigned("h", "n", 6, MAIN) == (1, {0: "passed"})
+    _, plain = scalars()
+    assert plain.unassigned("h", "n", 6, MAIN) is None
+    # Before the reassignment can run, the field is the parameter; on the fn line a later
+    # poll's start (its dispatch, its resume) runs after it.
+    assert owned.unassigned("h", "n @ main.rs:1", 2, MAIN) is None
+    assert owned.unassigned("h", "n", 1, MAIN) == (1, {0: "passed"})
+
+
+def test_a_let_without_a_value_is_unassigned_until_assigned_and_joins_take_their_edge():
+    body = parse_body(
+        "fn main() -> () {\n"
+        "    let mut _0: ();  // return place in scope 0 at src/main.rs:1:10: 1:10\n"
+        "    scope 1 {\n"
+        "        debug late => _1;  // in scope 1 at src/main.rs:2:9: 2:13\n"
+        "        debug v => _2;  // in scope 1 at src/main.rs:3:9: 3:10\n"
+        "    }\n"
+        "    bb0: {\n"
+        "        StorageLive(_1);  // scope 0 at src/main.rs:2:9: 2:13\n"
+        "        _2 = make() -> [return: bb1, unwind: bb4];  // scope 1 at src/main.rs:3:13: 3:19\n"
+        "    }\n"
+        "    bb1: {\n"
+        "        _1 = const 5_u32;  // scope 1 at src/main.rs:4:5: 4:13\n"
+        "        drop(_2) -> [return: bb2, unwind: bb3];  // scope 1 at src/main.rs:5:1: 5:2\n"
+        "    }\n"
+        "    bb2: {\n"
+        "        return;  // scope 0 at src/main.rs:5:2: 5:2\n"
+        "    }\n"
+        "    bb3 (cleanup): {\n"
+        "        drop(_9) -> [return: bb4, unwind terminate(cleanup)];  // scope 1 at src/main.rs:5:1: 5:2\n"
+        "    }\n"
+        "    bb4 (cleanup): {\n"
+        "        resume;  // scope 0 at src/main.rs:1:1: 5:2\n"
+        "    }\n"
+        "}\n"
+    )
+    assert body.unassigned_at(1, (0, 1)) and body.unassigned_at(1, (1, 0))
+    assert body.unassigned_at(1, (1, 1)) is False
+    # bb4 joins the unwind from `make()` (before `late` is assigned) with the cleanup
+    # drop on line 5: a stop after that drop comes through its edge only.
+    assert body.unassigned_at(1, (4, 0))
+    assert body.returned_into(4, 5, "src/main.rs", False, {1, 3}) == [3]
+    assert body.unassigned_after(1, 4, [3]) is False
+    # A call's own result is assigned on its return edge.
+    assert body.unassigned_after(2, 1, [0]) is False
+    assert body.returned_into(1, 4, "src/main.rs", False, {1}) is None
+
+
 # #115: `let k = r.x; println!("k = {}", k);`: `format_args!` declares `args` twice, so
 # LLDB stops three times on the line, once per lexical block (k's, then each `args`'s).
 PRINTED = r"""
@@ -2235,3 +2405,176 @@ def test_an_alias_graph_is_built_again_when_the_type_parameters_become_known():
     assert body._aliases(1) == {1}
     body.generics = ("u64",)
     assert body._aliases(1) == {1, 2, 3}
+
+
+def test_an_unassigned_local_is_judged_where_its_stop_block_and_rows_put_the_pc(tmp_path):
+    # #132 with #115: `k` assigned only inside `println!`'s blocks (a synthetic body): a
+    # stop told apart by its lexical block, or whose rows lldb-dap lists there (`args`,
+    # bound only in those blocks), is judged at that block's places alone.
+    def kay(assigned_before):
+        text = PRINTED.replace(
+            "        _5 = copy ((*_2).0: i64);        // scope 1 at src/main.rs:18:13: 18:16\n", ""
+        ).replace(
+            assigned_before,
+            "        _5 = copy ((*_2).0: i64);        // scope 3 at src/main.rs:18:13: 18:16\n"
+            + assigned_before,
+        )
+        return OwnedLocals(
+            [parse_body(text)],
+            {"h": printed_function(tmp_path)},
+            SOURCES,
+            texts={"src/main.rs": PRINTED_TEXT},
+        )
+
+    blocks = kay_blocks()
+    inner = kay("        StorageDead(_13);                // scope 3 at src/main.rs:19:20: 19:21\n")
+    for pc, verdict in ((None, (1, {0: "unassigned"})), (0xE44, (1, {0: "unassigned"}))):
+        within = None if pc is None else stop_block(blocks, pc)
+        assert inner.unassigned("h", "k", 19, MAIN, True, 5, block=within) == verdict
+    assert inner.unassigned("h", "k", 19, MAIN, True, 5, block=stop_block(blocks, 0xE50))
+    assert inner.unassigned("h", "k", 19, MAIN, True, 5, block=stop_block(blocks, 0xE60)) is None
+    outer = kay("        _20 = copy (_9.0: &i64);         // scope 3 at src/main.rs:19:24: 19:25\n")
+    rows = ["v", "r", "k"]
+    assert outer.unassigned("h", "k", 19, MAIN, True, 5, shown=rows) == (1, {0: "unassigned"})
+    assert outer.unassigned("h", "k", 19, MAIN, True, 5, shown=[*rows, "args"]) is None
+    assert outer.unassigned("h", "k", 19, MAIN, False, shown=[*rows, "args", "args"]) is None
+
+
+def test_a_places_assigned_state_is_its_blocks_entry_and_each_locals_last_event():
+    # #132's dataflow takes a block at a time (each block's events read once): every
+    # place of a body reads as replaying its block statement by statement does.
+    import re
+
+    begins = re.compile(r"^(?:StorageLive|Deinit)\(_([0-9]+)\);$")
+    assigns = re.compile(r"^_([0-9]+) = ")
+
+    def replayed(body, resumed):
+        # The flow statement by statement, to its fixpoint.
+        def flows(number):
+            return () if not resumed and number in body.resumes else body._flows(number)
+
+        entry, work = {0: sum(1 << n for n in body.arguments)}, [0]
+        kept = sum(1 << n for n in body.saved | body.arguments)
+        while work:
+            number = work.pop()
+            block, state = body.blocks[number], entry[number]
+            for text, _, _ in block.statements[:-1]:
+                if found := begins.match(text):
+                    state &= ~(1 << int(found[1]))
+                elif found := assigns.match(text):
+                    state |= 1 << int(found[1])
+            for target in flows(number):
+                out = state & kept if number in body.resumes else state
+                if target == block.returns:
+                    out |= 1 << int(assigns.match(block.terminator)[1])
+                merged = out if target not in entry else entry[target] & out
+                if entry.get(target) != merged:
+                    entry[target] = merged
+                    work.append(target)
+        return entry
+
+    for body in (parse_body(SCALARS), parse_body(PRINTED), parse_body(COROUTINE)):
+        locals_ = range(1 + max(body.types, default=0))
+        for resumed in (True, False):
+            entry = body._assigned_flow(resumed)
+            assert entry == replayed(body, resumed)
+            for number, state in entry.items():
+                statements = body.blocks[number].statements
+                for index in range(len(statements)):
+                    for local in locals_:
+                        assert body.unassigned_at(local, (number, index), resumed) == (
+                            not state >> local & 1
+                        ), (number, index, local)
+                    text = statements[index][0]
+                    if index < len(statements) - 1:
+                        if found := begins.match(text):
+                            state &= ~(1 << int(found[1]))
+                        elif found := assigns.match(text):
+                            state |= 1 << int(found[1])
+
+
+def test_a_stops_places_are_kept_apart_by_its_kind_even_without_a_column(tmp_path):
+    # #132's per-stop memo: a line breakpoint's places (its facts, here without a column)
+    # are fewer than a step's on the same line, whichever stop is judged first.
+    owned = OwnedLocals(
+        [parse_body(PRINTED)],
+        {"h": printed_function(tmp_path)},
+        SOURCES,
+        texts={"src/main.rs": PRINTED_TEXT},
+    )
+    site = owned._site("h", 17, MAIN)
+    facts = owned._facts(site[1], 17, None)
+    assert facts.column is None
+    for _ in range(2):
+        assert owned._positions(site, 17, None) == [(0, 3), (0, 4), (1, 0), (1, 1)]
+        assert owned._positions(site, 17, facts) == [(0, 3), (0, 4)]
+
+
+def test_what_is_live_ahead_of_a_place_is_what_used_ahead_finds_for_each_local():
+    # #105's copies are judged at once, by a backward dataflow (``live_ahead``): every
+    # local at every place of a body reads as ``used_ahead``'s search from there does.
+    bodies = [OWNERS, CONTINUED, INLINED, COROUTINE, SCALARS, PRINTED, TUPLE_FIRST]
+    for text in bodies:
+        body = parse_body(text)
+        locals_ = range(2 + max(body.types, default=0))
+        for number, block in body.blocks.items():
+            for index in range(len(block.statements) + 1):
+                live = body.live_ahead((number, index))
+                for local in locals_:
+                    used = body.used_ahead(local, (number, index))
+                    assert bool(live >> local & 1) == used, (number, index, local)
+    assert parse_body(OWNERS).live_ahead((99, 0)) == 0
+
+
+def test_a_locals_copies_are_what_passes_over_every_assignment_find():
+    # #105's copies follow only what mentions each temporary found (``copies_of``): they
+    # are what passes over every assignment to a temporary, until none changes, find.
+    import re
+
+    from peeky.rust_mir import (
+        _BORROWING,
+        _MENTIONED,
+        _NOT_A_CALL,
+        _PART_ASSIGNMENT,
+        _STRING,
+        _WHOLE_ASSIGNMENT,
+    )
+
+    def passes(body, local):
+        named = {b[0] for bs in body.bindings.values() for b in bs if b[0] is not None}
+        found = []
+        for block in body.blocks.values():
+            for text, _, _ in block.statements:
+                text = _STRING.sub('""', text)
+                part = _WHOLE_ASSIGNMENT.match(text) or (
+                    None if re.match(r"\(+\*_", text) else _PART_ASSIGNMENT.match(text)
+                )
+                if part and int(part[1]) not in named and int(part[1]) not in (0, local):
+                    mentioned = {int(n) for n in _MENTIONED.findall(part[2])}
+                    found.append((int(part[1]), part[2], mentioned))
+        holds, points, changed = set(), set(), True
+        while changed:
+            changed = False
+            for target, value, mentioned in found:
+                through = bool(re.search(r"\(\*[(_]", value))
+                pointing = any(
+                    n in points
+                    or (n in named and n != local and _BORROWING.search(body.types.get(n, "&")))
+                    for n in mentioned
+                )
+                if value.startswith("&"):
+                    hold, point = bool(mentioned & holds), local in mentioned or through or pointing
+                else:
+                    call = "->" in value and not _NOT_A_CALL.match(value)
+                    hold = local in mentioned or through or bool(mentioned & holds)
+                    hold, point = hold or (call and pointing), pointing
+                for flag, into in ((hold, holds), (point, points)):
+                    if flag and target not in into:
+                        into.add(target)
+                        changed = True
+        return frozenset(holds)
+
+    for text in (OWNERS, CONTINUED, INLINED, COROUTINE, SCALARS, PRINTED, TUPLE_FIRST):
+        body = parse_body(text)
+        for local in range(2 + max(body.types, default=0)):
+            assert body.copies_of(local, formatting=False) == passes(body, local), local
