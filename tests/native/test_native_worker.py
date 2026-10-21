@@ -6,6 +6,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -138,11 +139,13 @@ def fail_http(code, client, operation, **args):
 
 
 def gone(pid):
+    from peeky import processes
+
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline:
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
+        # Exited, whether reaped yet or not: on macOS, launchd never reaps a program
+        # whose debugserver died, and leaves it a zombie.
+        if not processes.alive((processes.table() or {pid: (0, 0, "", "R")}).get(pid)):
             return
         time.sleep(0.05)
     pytest.fail(f"native target {pid} survived close")
@@ -312,11 +315,66 @@ def test_native_adapter_death_reaps_stopped_target(native_worker):
     adapter = worker.dap.process
     adapter.kill()
     adapter.wait(timeout=3)
-    fail_http(500, client, "inspect", **context)
+    with pytest.raises(HTTPError) as caught:
+        client.call("inspect", **context)
+    # Apple's debugserver outlives lldb-dap and keeps the program stopped: Peeky ends both,
+    # as it listed them (#143). Linux's lldb-server ends its tracee itself.
+    cleanup = json.load(caught.value)["error"]["cleanup"]
+    assert "; the debugger was gone: a process the program started in the last " in cleanup
+    assert str(pid) in cleanup or cleanup.startswith("nothing Peeky could identify was still")
     assert worker.session is None
     assert not runtime.prepared.workspace.exists()
     gone(pid)
     fail_http(400, client, "report", **session)
+
+
+BLOCKED = """#include <stdio.h>
+#include <unistd.h>
+
+int main(void) {
+    int value = 7;
+    sleep(600);
+    printf("after %d\\n", value); /* BREAK */
+    return 0;
+}
+"""
+
+
+def test_a_launch_whose_debugger_hangs_ends_the_running_program(
+    native_worker, tmp_path, monkeypatch
+):
+    from peeky.dap import DAP
+
+    start, _, _, _ = native_worker
+    (tmp_path / "blocked.c").write_text(BLOCKED)
+    line = next(i for i, text in enumerate(BLOCKED.splitlines(), 1) if "BREAK" in text)
+    client, worker = start(sources=("blocked.c",))
+    real, hung = DAP.request, []
+
+    def hang_once_running(dap, command, arguments=None, **options):
+        result = real(dap, command, arguments, **options)
+        if command == "configurationDone":
+            deadline = time.monotonic() + 10
+            while not dap.process_pid and time.monotonic() < deadline:
+                time.sleep(0.05)
+            time.sleep(0.3)
+            # The program now blocks before its breakpoint, and lldb-dap stops
+            # answering: the launch's next request times out.
+            os.kill(dap.process.pid, signal.SIGSTOP)
+            hung.append(dap.process_pid)
+            real(dap, "threads", timeout=1)
+        return result
+
+    monkeypatch.setattr(DAP, "request", hang_once_running)
+    with pytest.raises(HTTPError) as caught:
+        client.call("launch", program="blocked.c", breakpoints=[{"line": line}])
+    error = json.load(caught.value)["error"]
+    assert error["code"] == "TIMEOUT" and error["session_closed"] is True
+    # lldb-dap never answered `disconnect`: Peeky ended the program it had announced.
+    assert hung and str(hung[0]) in error["cleanup"]
+    assert error["cleanup"].startswith("terminated pid")
+    assert worker.session is None
+    gone(hung[0])
 
 
 def test_native_arguments_are_literal_and_keep_empty_values(native_worker):
@@ -1746,3 +1804,67 @@ int main(void) {
     return 0;
 }
 """
+
+
+# The program starts a child in its process group and one in a session of its own, then
+# loops at the breakpoint (PR #147 review, `c2/hang.c`).
+FAMILY = """#define _DEFAULT_SOURCE
+#include <stdio.h>
+#include <unistd.h>
+
+int main(void) {
+    pid_t same = fork();
+    if (same == 0) { for (;;) sleep(1); }
+    pid_t own = fork();
+    if (own == 0) { setsid(); for (;;) sleep(1); }
+    FILE *record = fopen("RECORD", "w");
+    fprintf(record, "same-group %d\\nsetsid %d\\n", (int)same, (int)own);
+    fclose(record);
+    long total = 0;
+    for (long i = 0;; i++) {
+        total += i; /* STOP */
+        usleep(1000);
+        if (total < 0) break;
+    }
+    return (int)(total & 1);
+}
+"""
+
+
+def test_what_a_program_started_is_ended_when_its_debugger_dies(native_worker, tmp_path):
+    start, _, _, _ = native_worker
+    record = tmp_path / "children.txt"
+    (tmp_path / "family.c").write_text(FAMILY.replace("RECORD", str(record)))
+    line = next(i for i, text in enumerate(FAMILY.splitlines(), 1) if "STOP" in text)
+    client, worker = start(sources=("family.c",))
+    started = client.call("launch", program="family.c", breakpoints=[{"line": line}])
+    session = {"session_id": started["session_id"]}
+    children = []
+    try:
+        stop = wait(client, session, "stopped")
+        children = [int(text.split()[1]) for text in record.read_text().splitlines()]
+        program = worker.dap.process_pid
+        deadline = time.monotonic() + 5
+        # Listed at the stop, while their ancestry still led to lldb-dap.
+        while not set(children) <= set(worker.dap.family.kin):
+            assert time.monotonic() < deadline
+            time.sleep(0.05)
+        worker.dap.process.kill()
+        worker.dap.process.wait(timeout=3)
+        with pytest.raises(HTTPError) as caught:
+            client.call("inspect", **session, stop_id=stop["stop_id"])
+        error = json.load(caught.value)["error"]
+        # Before, both children outlived lldb-dap 18 on Linux, and the one in a session
+        # of its own outlived Apple's: `cleanup` said otherwise.
+        for pid in (*children, program):
+            gone(pid)
+        assert error["code"] == "DEBUGGER_ERROR"
+        assert all(str(pid) in error["cleanup"] for pid in children)
+        assert (
+            "; the debugger was gone: a process the program started in the last "
+            in (error["cleanup"])
+        )
+    finally:
+        for pid in children:
+            with contextlib.suppress(OSError):
+                os.kill(pid, signal.SIGKILL)

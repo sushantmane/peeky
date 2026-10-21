@@ -2986,7 +2986,10 @@ def run_probe(root, probe, *, adapter=None, progress=None):
                 # The evidence for #27: the last DAP messages, the polls, the adapter's log.
                 result["debugger_events"] = events
     finally:
-        worker.close()
+        cleanup = worker.close()
+    if cleanup and isinstance(result.get("error"), dict) and "cleanup" not in result["error"]:
+        # What became of the program once the probe failed or timed out (#143).
+        result["error"] = {**result["error"], "cleanup": cleanup}
     if level := optimization_level(result.get("target_identity")):
         result["optimized"] = level
         warnings.append(
@@ -3148,6 +3151,8 @@ def _table(result):
     if error := result.get("error"):
         lines.append(f"error [{error['code']}]: {error['message']}")
         lines.append(f"hint: {error['hint']}")
+        if error.get("cleanup"):
+            lines.append(f"cleanup: {error['cleanup']}")
     if result.get("output"):
         complete = result.get("output_complete", True)
         lines.append(

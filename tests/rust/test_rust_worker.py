@@ -1,9 +1,11 @@
 """Real Cargo + LLDB Rust worker conformance; optional locally, required in the Rust CI lane."""
 
+import json
 import os
 import shutil
 import tempfile
 import threading
+import time
 from pathlib import Path
 from urllib.error import HTTPError
 
@@ -180,3 +182,30 @@ def test_rust_compile_failure_and_frozen_test_edit_leave_no_workspace(
             root / "src/main.rs", root, edit=SourceEdit("tests/pagination.rs", "1", "2")
         )
     assert list(private.glob("peeky-rust-*")) == []
+
+
+@pytest.mark.timeout(120)
+def test_rust_program_stopped_when_its_debugger_dies_is_ended(rust_worker):
+    from peeky import processes
+
+    client, worker, root, line = rust_worker
+    launch = client.call("launch", program="src/main.rs", breakpoints=[{"line": line}])
+    session = {"session_id": launch["session_id"]}
+    stop = stopped(client, session)
+    pid = worker.dap.process_pid
+    assert pid and processes.alive(processes.table().get(pid))
+    worker.dap.process.kill()
+    worker.dap.process.wait(timeout=3)
+    with pytest.raises(HTTPError) as failed:
+        client.call("inspect", **session, stop_id=stop["stop_id"])
+    error = json.load(failed.value)["error"]
+    # Apple's debugserver outlives lldb-dap and keeps the program stopped: Peeky ends both,
+    # as it listed them (#143). Linux's lldb-server ends its tracee itself.
+    assert error["code"] == "DEBUGGER_ERROR"
+    cleanup = error["cleanup"]
+    assert "; the debugger was gone: a process the program started in the last " in cleanup
+    assert str(pid) in cleanup or cleanup.startswith("nothing Peeky could identify was still")
+    deadline = time.monotonic() + 5
+    while processes.alive(processes.table().get(pid)) and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert not processes.alive(processes.table().get(pid))

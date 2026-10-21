@@ -1480,9 +1480,9 @@ def session(args):
     elif args.action == "close":
         from peeky.client import TransportLost, WorkerUnreachable
 
-        keep = False
+        keep, closed = False, {}
         try:
-            client.call("close", session_id=record["session_id"])
+            closed = client.call("close", session_id=record["session_id"])
         except (WorkerUnreachable, TransportLost):
             # The remote worker may still hold the session: keep the record so the close
             # can be retried once the tunnel is back.
@@ -1505,7 +1505,13 @@ def session(args):
                 if log.is_file() and not log.is_symlink():
                     # Kept for post-mortem diagnosis until the next session of this name.
                     os.replace(log, _state_dir() / f"{args.name}.last.log")
-        _emit({"closed": args.name}, args.json, lambda r: f"closed {r['closed']}")
+        # What became of the program the session started (#143).
+        cleanup = closed.get("cleanup") if isinstance(closed, dict) else None
+        _emit(
+            {"closed": args.name, **({"cleanup": cleanup} if cleanup else {})},
+            args.json,
+            lambda r: f"closed {r['closed']}" + (f"\ncleanup: {r['cleanup']}" if cleanup else ""),
+        )
     return 0
 
 
@@ -2729,6 +2735,8 @@ def main(argv=None, _job=False, _edits=None):
             print(json.dumps({"error": payload}, indent=2))
         print(f"peeky: [{payload.get('code')}] {payload.get('message')}", file=sys.stderr)
         print(f"  hint: {payload.get('hint', '')}", file=sys.stderr)
+        if payload.get("cleanup"):
+            print(f"  cleanup: {payload['cleanup']}", file=sys.stderr)
         return 2
 
 
