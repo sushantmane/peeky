@@ -176,6 +176,13 @@ _RULES = (
         False,
     ),
     (
+        r"^Inline assembly that can read a file",
+        "UNSUPPORTED",
+        "Take the directive (or assembler macro) out of the inline assembly; data it "
+        "embeds can go in a declared source or header, as an array.",
+        False,
+    ),
+    (
         r"C\+\+ targets need clang\+\+",
         "UNSUPPORTED",
         "Install clang and point PEEKY_NATIVE_CXX (or the target's `compiler`) at its "
