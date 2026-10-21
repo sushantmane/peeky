@@ -216,6 +216,31 @@ f([1, 2])
         4,
         "0",
     ),
+    # Round 3: the builtins reached by name replace the function as `exec` did.
+    "replaced_by_name": (
+        """\
+def f(xs):
+    x = 0
+    for t in xs:
+        print(t)
+        print(t)
+        x = t
+        print(x)
+
+
+REPLACEMENT = "def f(xs):\\n    x = 0\\n    for t in xs:\\n        x = t * 10\\n        print(t)\\n        print(x)\\n"
+b = globals()["__builtins__"]
+run, build = (
+    (b["ex" + "ec"], b["comp" + "ile"])
+    if isinstance(b, dict)
+    else (getattr(b, "ex" + "ec"), getattr(b, "comp" + "ile"))
+)
+run(build(REPLACEMENT, __file__, "ex" + "ec"))
+f([1, 2])
+""",
+        5,
+        "20",
+    ),
     # Round 2: a `with` whose `__exit__` swallows the exception rejoins the pass
     # without the store.
     "suppressed": (
@@ -318,3 +343,34 @@ def test_a_loop_bodys_last_line_is_noted_where_a_breakpoint_stops(tmp_path, monk
         and "every path through the rest of the pass assigns it (line 5)" in second["note"]
     )
     assert third["value"] == "2" and "before the loop at line 4" in third["note"]
+
+
+def test_a_handled_exceptions_assignment_is_named_too(tmp_path, monkeypatch, capsys):
+    # Review of PR #185 (round 3): the note named only the `try` body's `x = 1`; where
+    # `fail()` raises, `except ValueError:` assigns it.
+    monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
+    path = tmp_path / "handled.py"
+    path.write_text(
+        "def fail():\n"
+        "    raise ValueError('no')\n"
+        "\n"
+        "\n"
+        "def f(items):\n"
+        "    x = 0\n"
+        "    for item in items:\n"
+        "        try:\n"
+        "            print(item)\n"
+        "            fail()\n"
+        "            x = 1\n"
+        "        except ValueError:\n"
+        "            x = 2\n"
+        "        print(x)\n"
+        "\n"
+        "\n"
+        "f([1, 2])\n"
+    )
+    code, out = run(capsys, "probe", path, "--at", 9, "--capture", "x", "--hits", 2, "--json")
+    assert code == 0, out.err
+    second = json.loads(out.out)["rows"][1]
+    assert second["value"] == "2", second
+    assert "every path through the rest of the pass assigns it (lines 11, 13)" in second["note"]

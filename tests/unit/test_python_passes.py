@@ -238,6 +238,18 @@ def suppressed(items):
         print("next")
 
 
+def handled_store(items):
+    x = 0
+    for item in items:
+        try:
+            print(item)  # stale: x
+            fail()
+            x = 1
+        except ValueError:
+            x = 2
+        print(x)
+
+
 async def agen(n):
     for i in range(n):
         yield i
@@ -254,6 +266,7 @@ async def drains(items):
 
 def main():
     suppressed([1, 2])
+    handled_store([1, 2])
     asyncio.run(drains([0, 0, 1]))
     group(["Hello World", "Hello, World!", "x y"])
     whiles(3)
@@ -335,6 +348,11 @@ def test_the_note_names_the_loop_and_the_assignment(cases):
     # Two assignments, one on each path: both named.
     line = next(n for n, text in enumerate(CASES.splitlines(), 1) if "if t > 1:  #" in text)
     assert "(lines " in stale_note(cases, "branch_before", line, "y").note
+    # Review of PR #185 (round 3): a handled exception's path assigns it too.
+    lines = CASES.splitlines()
+    stop = next(n for n, text in enumerate(lines, 1) if "print(item)  # stale: x" in text)
+    assert stale_pass(cases, "handled_store", stop, "x") == (stop - 2, (stop + 2, stop + 4))
+    assert f"(lines {stop + 2}, {stop + 4})" in stale_note(cases, "handled_store", stop, "x").note
 
 
 def test_what_cannot_be_read_proves_nothing(cases, tmp_path):
@@ -417,6 +435,11 @@ def f(xs):
         ("from types import FunctionType as F\n", "FunctionType"),
         ("import inspect as i\n", "inspect"),
         ("import marshal as m\n", "marshal"),
+        # Round 3: a builtin reached by a computed name.
+        ("table = globals()\n", "globals"),
+        ("key = '__builtins__'\n", "__builtins__"),
+        ("name = 'exec'\n", "exec"),
+        ("owner = len.__self__\n", "__self__"),
         ("breakpoint()\n", "breakpoint"),
     ],
 )
@@ -428,6 +451,17 @@ def test_a_module_that_may_run_other_code_or_reach_frames_gets_no_note(tmp_path,
     assert stale_pass(str(path), "f", 3, "x") == (2, (4,))
     path.write_text(LOOP + extra)
     assert opaque(ast.parse(path.read_text())) == why
+    assert stale_pass(str(path), "f", 3, "x") is None
+
+
+def test_a_builtin_reached_by_its_name_leaves_the_module_unjudged(tmp_path):
+    # Review of PR #185 (round 3): `globals()["__builtins__"]` and a string gave `exec`.
+    from peeky.python_passes import opaque
+
+    path = tmp_path / "m.py"
+    reached = "b = globals()['__builtins__']\nrun = getattr(b, 'exec')\n"
+    assert opaque(ast.parse(LOOP + reached)) is not None
+    path.write_text(LOOP + reached)
     assert stale_pass(str(path), "f", 3, "x") is None
 
 

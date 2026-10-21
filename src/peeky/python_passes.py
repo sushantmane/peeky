@@ -96,8 +96,9 @@ _REACHES = frozenset(
 # Modules whose use does either: any name of theirs is reached through an alias too
 # (`import builtins as b; b.exec(...)`).
 _MODULES = frozenset({"inspect", "marshal", "builtins"})
-# Ways to reach a module or a builtin by a computed name.
-_DYNAMIC = frozenset({"__builtins__", "__import__", "import_module"})
+# Ways to reach a module or a builtin by a computed name (`globals()["__builtins__"]`,
+# `len.__self__` is the builtins module).
+_DYNAMIC = frozenset({"__builtins__", "__import__", "import_module", "globals", "__self__"})
 # Interpreters checked to compile as this one does: {path: bool}.
 _COMPILERS = {}
 
@@ -179,6 +180,21 @@ class Flow:
         self.returns = {
             number for number, each in enumerate(instructions) if each.opname.startswith("RETURN_")
         }
+        # Where every path that runs no further exception ends in a raise: an `except`
+        # that does not match re-raises, as does a `with` whose `__exit__` does not
+        # swallow the exception (round 3: such a branch leaves the pass abnormally).
+        self.dooms = {
+            number
+            for number, each in enumerate(instructions)
+            if each.opname in ("RAISE_VARARGS", "RERAISE")
+        }
+        grown = True
+        while grown:
+            grown = False
+            for number, following in enumerate(self.normal):
+                if number not in self.dooms and following and set(following) <= self.dooms:
+                    self.dooms.add(number)
+                    grown = True
         # Where a line begins, as the interpreter reports a line (a breakpoint stops
         # there): an instruction of another line than the one before it, a jump's
         # target, or an exception handler.
@@ -345,34 +361,40 @@ class Flow:
             if not following or any(each == head or each not in body for each in following):
                 return None
             pending.extend(following)
-        if self._escapes(head, positions, name):
+        caught = self._caught_stores(head, positions, name)
+        if caught is None:
             return None
-        return stores
+        # Each path's first store, a handled exception's included (round 3).
+        return stores | caught
 
-    def _escapes(self, head, positions, name):
-        """Whether an exception can end the pass without a store of ``name`` and still
-        let it go on: a path from ``positions`` that stores nothing, through a handler in
-        the loop (a `with` whose `__exit__` swallows the exception, an `except` that
-        falls through, an `async for`'s end), back to the head, out of the loop or to a
-        return (review of PR #185, round 2). An exception into a handler outside the
-        loop, or one re-raised out of it, ends the pass abnormally: it proves nothing
-        either way, and its paths are not followed."""
-        body, seen, pending = self.loops[head], set(), list(positions)
+    def _caught_stores(self, head, positions, name):
+        """The lines of the first stores of ``name`` on the paths from ``positions``
+        through a handler in the loop as well (a `with` whose `__exit__` swallows the
+        exception, an `except` that falls through, an `async for`'s end); None where one
+        of them ends the pass without a store and lets it go on: back to the head, out of
+        the loop or to a return (review of PR #185, round 2). An exception into a handler
+        outside the loop, or one re-raised out of it, ends the pass abnormally: it proves
+        nothing either way, and its paths are not followed."""
+        body, stores, seen, pending = self.loops[head], set(), set(), list(positions)
         while pending:
             node = pending.pop()
             if node in seen:
                 continue
             seen.add(node)
             if self._effect(node, name) == "store":
+                stores.add(self.lines[node])
                 continue
             if node in self.returns:
-                return True
+                return None
             for each in self.normal[node]:
+                if each not in body and each in self.dooms:
+                    # The exception goes on out of the loop: the pass ends abnormally.
+                    continue
                 if each == head or each not in body:
-                    return True
+                    return None
                 pending.append(each)
             pending.extend(each for each in self.handlers[node] if each in body and each != head)
-        return False
+        return stores
 
 
 def opaque(tree):
@@ -381,7 +403,9 @@ def opaque(tree):
     `__code__`, `marshal`, the `builtins` module), so a frame may not run the code on
     disk, or may read or change a frame's locals other than by its own code (`locals()`,
     `vars()`, `dir()`, `sys._getframe`, `f_locals`, `f_back`, a tracer, the `inspect`
-    module). Names are read whatever a module is imported as (`import sys as s;
+    module), or reach a builtin by a computed name (`globals()`, `__builtins__`, a
+    string naming one: `getattr(b, "exec")`). Names are read whatever a module is
+    imported as (`import sys as s;
     s._getframe(1)`): an attribute's name is checked, not what it is read from."""
     # `vars(x)` and `dir(x)` read an object, not the frame: only a call with exactly one
     # argument, not starred (`vars(*args)` is `vars()` where `args` is empty), and no
@@ -416,8 +440,11 @@ def opaque(tree):
                 if module.split(".")[0] in _MODULES:
                     return module.split(".")[0]
         elif isinstance(node, ast.Constant) and isinstance(node.value, str):
-            # `getattr(sys, "_getframe")`, `importlib.import_module("builtins")`.
+            # `getattr(sys, "_getframe")`, `importlib.import_module("builtins")`,
+            # `getattr(b, "exec")`, `globals()["__builtins__"]` (round 3).
             if node.value in _REACHES or node.value in _MODULES:
+                return node.value
+            if node.value in _DYNAMIC or node.value in _RUNS:
                 return node.value
     return None
 
