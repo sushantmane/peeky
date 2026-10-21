@@ -199,6 +199,15 @@ _RULES = (
         False,
     ),
     (
+        r"^The debuggee did not start",
+        "TIMEOUT",
+        "The debuggee did not start: check that it can read its own path and every directory "
+        "above it (a hung or slow file system, or a pending macOS privacy prompt, blocks it "
+        "before it reaches the debugger), then retry. `cleanup` says whether Peeky ended the "
+        "process it started.",
+        False,
+    ),
+    (
         r"deadline|timed out|did not stop|HTTP cap",
         "TIMEOUT",
         "The operation hit its time bound; the session was discarded. Start again; never "
@@ -357,7 +366,19 @@ class Refused(ValueError):
 
 
 def classify(exc, *, session_closed=None):
-    """Map an exception to the protocol error object."""
+    """Map an exception to the protocol error object.
+
+    An error that ended a session says what became of the processes it started
+    (``cleanup``, #143): "terminated pid N", "nothing Peeky could identify was still running", or
+    why not.
+    """
+    payload = _classify(exc, session_closed)
+    if isinstance(cleanup := getattr(exc, "cleanup", None), str) and "cleanup" not in payload:
+        payload = {**payload, "cleanup": cleanup[:300]}
+    return payload
+
+
+def _classify(exc, session_closed):
     message = str(exc) or type(exc).__name__
     if isinstance(exc, PeekyError):
         return exc.payload

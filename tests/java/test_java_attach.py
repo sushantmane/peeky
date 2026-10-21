@@ -152,6 +152,30 @@ def test_attached_session_close_detaches_and_the_jvm_finishes_normally(
     assert "fresh build" in capsys.readouterr().err
 
 
+@pytest.mark.timeout(120)
+def test_a_failed_attach_detaches_and_never_ends_the_jvm(attached, monkeypatch):
+    from peeky.errors import classify
+    from peeky.java import JavaSession
+    from peeky.worker import DebugWorker
+
+    root, target, process, line = attached
+
+    def expire(self, program, points):
+        raise TimeoutError("Launch exceeded its deadline; session discarded")
+
+    # The attach times out once java-debug is attached to the JVM.
+    monkeypatch.setattr(JavaSession, "check_breakpoint_lines", expire)
+    worker = DebugWorker(root, adapter=target)
+    with pytest.raises(TimeoutError) as caught:
+        worker.dispatch("launch", {"program": SOURCE, "breakpoints": [{"line": line}]})
+    error = classify(caught.value)
+    # Peeky did not start this JVM (#143): it detaches, and the JVM runs on to its end.
+    assert error["code"] == "TIMEOUT" and "did not start" not in error["message"]
+    assert error["cleanup"] == "detached; the attached program keeps running"
+    output = process.stdout.read()
+    assert process.wait(timeout=30) == 0 and "PAGE:[40, 50, 60]" in output
+
+
 def test_attach_configuration_is_loopback_only_and_bounded(tmp_path):
     from peeky.java_attach import JavaAttachTarget
 
@@ -384,19 +408,22 @@ def test_a_session_whose_stop_is_never_reported_fails_and_serves_nothing_more(
         assert error["code"] == "DEBUGGER_ERROR"
         assert f"Loop.twice(int) at Loop.java:{line}" in error["message"]
         assert f"{LOOP_SOURCE}:{line}" in error["message"]
+        detached = "detached; the attached program keeps running"
+        assert error["cleanup"] == detached
         # The session is detached, serves nothing, and repeats its error until closed.
         for operation, extra in (("wait", {"timeout": 2}), ("inspect", {"stop_id": "x"})):
             with pytest.raises(LostStop) as again:
                 worker.dispatch(operation, {**session, **extra})
             assert str(again.value) == str(failure.value)
+            assert classify(again.value)["cleanup"] == detached
         report = worker.dispatch("report", session)
         assert report["state"] == "detached" and report["lost_stop"]["breakpoint"] == (
             f"{LOOP_SOURCE}:{line}"
         )
         assert [entry["operation"] for entry in report["history"]].count("lost_stop") == 1
         assert any(e["name"] == "lost stop" for e in report["debugger_events"]["trace"])
-        assert worker.hits == 1
-        assert worker.dispatch("close", session) == {"state": "idle"}
+        assert worker.hits == 1 and report["cleanup"] == detached
+        assert worker.dispatch("close", session) == {"state": "idle", "cleanup": detached}
     finally:
         worker.close()
     output = process.stdout.read()

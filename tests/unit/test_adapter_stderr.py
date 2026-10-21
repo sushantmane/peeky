@@ -214,7 +214,11 @@ def test_a_dead_event_hub_ends_the_wait_and_closes_the_session_as_errors_do(
     assert report["state"] == "closed" and report["adapter_failure"] == str(failure.value)
     assert "EventHub.java:71" in report["debugger_events"]["stderr"]
     assert [e["operation"] for e in report["history"]][-1] == "adapter_failed"
-    assert worker.dispatch("close", session) == {"state": "idle"}
+    # What ending it did to the program (#143) comes with the repeated error and `close`.
+    if mode == "attach":
+        assert report["cleanup"] == "detached; the attached program keeps running"
+    assert classify(again.value)["cleanup"] == report["cleanup"]
+    assert worker.dispatch("close", session) == {"state": "idle", "cleanup": report["cleanup"]}
     with pytest.raises(ValueError, match="Missing or stale session_id"):
         worker.dispatch("wait", {**session, "timeout": 1})
 
@@ -423,4 +427,6 @@ def test_a_failure_the_pause_guard_itself_meets_reaches_the_client_not_no_sessio
     report = worker.dispatch("report", session)
     assert (report["state"], report["failure"]) == ("closed", "Debugger adapter closed")
     assert report["history"][-1]["operation"] == "session_failed"
-    assert worker.dispatch("close", session) == {"state": "idle"}
+    # Its `cleanup` comes with the repeated error and with `close` (PR #147 review 2).
+    assert error["cleanup"] == report["cleanup"]
+    assert worker.dispatch("close", session) == {"state": "idle", "cleanup": report["cleanup"]}
