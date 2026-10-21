@@ -58,6 +58,54 @@ def _tool(name):
     return str(real_tool(path))
 
 
+# What each compiler's `--version` says it is (#167): {(path, mtime, size): family}.
+_FAMILIES = {}
+_FAMILIES_LOCK = threading.Lock()
+CPP_COMPILER_REFUSAL = (
+    "C++ targets need clang++ (Peeky's C++ rules are checked against clang's debug "
+    "info); set PEEKY_NATIVE_CXX to clang++"
+)
+
+
+def compiler_family(path):
+    """ "clang", "gcc" or "unknown": what ``<path> --version`` says the compiler is,
+    asked once per compiler file (its path, modification time and size), never guessed
+    from its name (`c++` and `g++` are often clang, `clang++` a wrapper)."""
+    try:
+        stat = os.stat(path)
+    except OSError:
+        return "unknown"
+    key = (str(path), stat.st_mtime_ns, stat.st_size)
+    with _FAMILIES_LOCK:
+        if key in _FAMILIES:
+            return _FAMILIES[key]
+    try:
+        done = subprocess.run(
+            [str(path), "--version"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            errors="replace",
+            timeout=10,
+            env={**os.environ, "LC_ALL": "C"},
+            check=False,
+        )
+        said = f"{done.stdout}\n{done.stderr}"
+    except (OSError, subprocess.SubprocessError):
+        said = ""
+    if re.search(r"\bclang version\b", said):
+        family = "clang"
+    elif re.search(
+        r"Free Software Foundation|\((?:GCC|[^)]*\bGCC\b[^)]*)\)|^g\+\+|^gcc", said, re.M
+    ):
+        family = "gcc"
+    else:
+        family = "unknown"
+    with _FAMILIES_LOCK:
+        _FAMILIES[key] = family
+    return family
+
+
 def _path_name(name, suffix):
     if (
         not isinstance(name, str)
@@ -2138,10 +2186,24 @@ class NativeTarget:
     supports_edits = True
 
     def _compile_flags(self):
-        """(driver, every flag a source is compiled with, the sysroot, its resolved SDK)."""
-        # The compiler path is resolved (clang++ is a symlink to clang), and clang picks
-        # its language from the name it runs as; keep C++ mode so libc++ is linked.
-        driver = ("--driver-mode=g++",) if self.language == "cpp" else ()
+        """(driver, every flag a source is compiled with, the sysroot, its resolved SDK).
+        A C++ target's compiler must be clang (#167): refused before anything runs."""
+        driver = ()
+        if self.language == "cpp":
+            compiler = _tool(self.compiler)
+            if (family := compiler_family(compiler)) != "clang":
+                refused = ValueError(
+                    f"{CPP_COMPILER_REFUSAL} ({compiler} is "
+                    + ("GCC" if family == "gcc" else "not clang, by its --version")
+                    + ")"
+                )
+                # Nothing was built or run: no run is kept as evidence.
+                refused.before_launch = True
+                raise refused
+            # The compiler path is resolved (clang++ is a symlink to clang), and clang
+            # picks its language from the name it runs as; keep C++ mode so libc++ is
+            # linked. A clang-only option.
+            driver = ("--driver-mode=g++",)
         flags = [*driver, *self.compiler_options]
         # Without an explicit sysroot, use the SDK the /usr/bin xcrun stub would have
         # supplied; it is part of the recorded build commands either way.
@@ -2171,8 +2233,9 @@ class NativeTarget:
                 if self.language == "c"
                 else "Native candidate edits require a declared C++ source"
             )
-        compiler, adapter, dwarfdump = map(_tool, (self.compiler, self.adapter, self.dwarfdump))
+        # The compiler is judged first: a C++ target refuses GCC before anything runs.
         driver, flags, sysroot, sdk = self._compile_flags()
+        compiler, adapter, dwarfdump = map(_tool, (self.compiler, self.adapter, self.dwarfdump))
         # Keep objects until dsymutil finishes; single-step clang removes its
         # temporary objects and a subsequent dsymutil can erase valid symbols.
         objects = tuple(f"peeky-object-{index}.o" for index in range(len(self.sources)))
