@@ -44,8 +44,14 @@ _PARAMETERS = {
 _CHARACTERS = frozenset({"wchar_t", "char8_t", "char16_t", "char32_t"})
 _SELECTABLE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _INDEX = re.compile(r"\[(0|[1-9][0-9]{0,9})\]")
-# A location that is one offset in the frame, nothing more: a local's own storage.
-_PLAIN_FRAME = re.compile(r"\(?\s*DW_OP_(?:fbreg|breg[0-9]+)\b[^,()]*\)?\s*")
+# A location that is one offset in the frame, nothing more but constants added to it
+# (a by-value structured binding's `DW_OP_breg31 WSP+16, DW_OP_plus_uconst 0x8`): a
+# local's own storage.
+_PLAIN_FRAME = re.compile(
+    r"\(?\s*DW_OP_(?:fbreg|breg[0-9]+)\b[^,()]*(?:,\s*DW_OP_plus_uconst\s+[^,()]+)*\)?\s*"
+)
+# A location read through a pointer.
+_DEREF = re.compile(r"\bDW_OP_(?:GNU_)?x?deref")
 
 
 class Unsettable(ValueError):
@@ -93,12 +99,15 @@ def referred_locals(dies, bodies):
     return frozenset(found)
 
 
-def local_types(dies, bodies):
+def local_types(dies, bodies, through=False):
     """{name: frozenset((type offset, storage, (file name, line)))} for the parameters
     and variables of a function's code (``bodies``: its concrete DIEs; nested blocks,
     but not the calls inlined into it). ``storage``: "automatic" (a variable in the
     frame's memory), "parameter" (a parameter there), "register" (a register only, no
     memory of its own), "static" (a fixed address) or "other" (a location list, none);
+    with ``through`` (C, C++), "through" for a variable the frame reaches through a
+    pointer (`DW_OP_fbreg -16, DW_OP_deref`: a C++ structured binding of a reference, a
+    named return value, a C `__block` variable), which a change would write through;
     the file name (no directory) and line it is declared on, as
     LLDB names a local when several of its name are in scope (`s @ main.rs:81`), or
     None. None if there are too many to list them all."""
@@ -123,7 +132,17 @@ def local_types(dies, bodies):
             r"DW_OP_(?:addr|piece|reg[0-9]|regx|entry_value|stack_value)", location
         )
         storage = "other"
-        if framed:
+        if (
+            framed
+            and through
+            and _DEREF.search(location)
+            and die["tag"] != "DW_TAG_formal_parameter"
+        ):
+            # A parameter read through a pointer is one the ABI passes by a hidden
+            # pointer to the call's own copy (a struct over 16 bytes on arm64, a class
+            # with a destructor): the parameter itself, as any other.
+            storage = "through"
+        elif framed:
             storage = "parameter" if die["tag"] == "DW_TAG_formal_parameter" else "automatic"
         elif re.fullmatch(r"\(?\s*DW_OP_(?:reg[0-9]+|regx)\b[^,]*\)?\s*", location):
             storage = "register"

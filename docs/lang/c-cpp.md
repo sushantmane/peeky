@@ -23,7 +23,7 @@ What is particular to C and C++ targets, one rule per line, each with the [COOKB
 - `--set` changes a 16- to 64-bit integer local, or such a field or element of a struct or array local the stopped frame owns (`--set s.end=10`), at a statement's first line; rows mark it `[settable]`, and an 8-bit `char` is refused ([7.1](../COOKBOOK.md#71-c-and-c)).
 - A text in double quotes (`--set 'name="apple"'`) goes into a `char[N]` or `std::string` local within its size, never reallocating; not through a `char *` or a reference, nor into a const one. lldb-dap 21 (macOS) writes every case, older ones fewer ([7.1](../COOKBOOK.md#71-c-and-c)).
 - Every `std::string` change warns that a `string_view`, `c_str()` or `data()` pointer or iterator taken from it before keeps the old size: Peeky cannot see those ([7.1](../COOKBOOK.md#71-c-and-c)).
-- A field through a pointer (`r->tail` in `push(struct ring *r)`, `this.count`) cannot be set: set it in the frame that owns the struct, before the call; in C, when the program calls the function once, the refusal names that call ([7.1](../COOKBOOK.md#71-c-and-c)).
+- A field through a pointer (`r->tail` in `push(struct ring *r)`, `this.count`), or a structured binding of a reference (`auto &[at, n] = *owner`: `n`, `at.x`), cannot be set: set it in the frame that owns the struct, before the call; in C, when the program calls the function once, the refusal names that call ([7.1](../COOKBOOK.md#71-c-and-c)).
 
 ## Returns
 

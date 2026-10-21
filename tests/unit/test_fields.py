@@ -779,3 +779,84 @@ def test_locals_the_frame_reaches_through_a_pointer():
     assert {k: {s for _, s, _ in v} for k, v in local_types(dies, [0x20]).items()}["items"] == {
         "automatic"
     }
+
+
+THROUGH = dump(
+    (0x0B, 0, "DW_TAG_compile_unit", {"DW_AT_name": '"t.cpp"'}),
+    (0x10, 1, "DW_TAG_base_type", base("int", "DW_ATE_signed", "0x04")),
+    (0x14, 1, "DW_TAG_array_type", {"DW_AT_type": "0x00000010"}),
+    (0x20, 1, "DW_TAG_subprogram", {"DW_AT_name": '"f"'}),
+    (
+        0x24,
+        2,
+        "DW_TAG_formal_parameter",
+        NAMED("big") | {"DW_AT_location": "DW_OP_fbreg +8, DW_OP_deref"},
+    ),
+    (
+        0x28,
+        2,
+        "DW_TAG_variable",
+        NAMED("dropped")
+        | {"DW_AT_location": "DW_OP_fbreg -16, DW_OP_deref, DW_OP_plus_uconst 0x18"},
+    ),
+    (
+        0x2C,
+        2,
+        "DW_TAG_variable",
+        NAMED("b") | {"DW_AT_location": "DW_OP_breg31 WSP+16, DW_OP_plus_uconst 0x4"},
+    ),
+    (
+        0x30,
+        2,
+        "DW_TAG_variable",
+        {
+            "DW_AT_name": '"vla"',
+            "DW_AT_type": "0x00000014",
+            "DW_AT_location": "DW_OP_fbreg -32, DW_OP_deref",
+        },
+    ),
+)
+
+
+def test_a_variable_read_through_a_pointer_is_stored_through_it():
+    # #186's review, after round 1: `dropped` of `auto &[at, dropped] = *owner` was an
+    # "automatic", so `--set dropped=50` wrote `o.dropped` through the reference. A
+    # by-value parameter the ABI passes by a hidden pointer is the call's own copy, and
+    # a by-value binding's constant offset is the frame's own storage.
+    dies = _parse_dies(THROUGH)
+    storages = {
+        name: {storage for _, storage, _ in kinds}
+        for name, kinds in local_types(dies, [0x20], through=True).items()
+    }
+    assert storages == {
+        "big": {"parameter"},
+        "dropped": {"through"},
+        "b": {"automatic"},
+        "vla": {"through"},
+    }
+    # Rust's walk keeps its own storages.
+    assert {s for _, s, _ in local_types(dies, [0x20])["dropped"]} == {"automatic"}
+    assert referred_locals(dies, [0x20]) == {"big", "dropped", "vla"}
+
+
+def test_a_local_read_through_a_pointer_is_refused_as_a_root_and_by_its_fields():
+    from peeky.errors import _MUTATION_HINTS
+    from peeky.native import Everywhere, _not_framed
+
+    session = NativeSession.__new__(NativeSession)
+    dies = _parse_dies(THROUGH)
+    types = local_types(dies, [0x20], through=True)
+    session.fields = type_graph(dies, {0x10, 0x14}, CPP_LIBRARIES)
+    session.declarations = [{"types": types}]
+    session._function_at = lambda frame: session.declarations[0]
+    session._shown_where = lambda name, pc: None
+    session._unslid = lambda frame: None
+    reason = session.mid_statement({"name": "dropped"}, {"id": 1})
+    assert isinstance(reason, Everywhere) and "is reached through a pointer or reference" in reason
+    assert reason == _not_framed("dropped", {"through"})
+    assert session.never_settable_row({"name": "dropped"}, {"id": 1}, member=True) == "reference"
+    # A variable-length array's elements are refused as such, never as a reference.
+    assert session.never_settable_row({"name": "vla"}, {"id": 1}, member=True) is None
+    assert "static" in _not_framed("g", {"static"})
+    hint = next(hint for pattern, hint in _MUTATION_HINTS if re.search(pattern, reason))
+    assert "structured binding" in hint, hint
