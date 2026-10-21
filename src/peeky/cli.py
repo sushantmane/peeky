@@ -997,10 +997,22 @@ def _keep_evidence(args, result, root, language):
         try:
             # The unedited source as the run read it (the candidate's own is the edit's).
             before = evidence.baseline(path, run_id, result.get("source_sha256"))
+            apart = evidence.stops_apart(path, before, run_id) if before is not None else None
         except Exception:
             return
         result["evidence"]["compare"] = (
             {"run": before, "command": f"peeky queries diff --param a={before} --param b={run_id}"}
+            if before is not None and apart is None
+            # Its hits are at other breakpoint locations of the line (#157): the edit
+            # changed how often the line stops per pass, or it predates stop labels.
+            else {
+                "run": None,
+                "hint": f"run {before} is this probe without the edit, but at hit "
+                f"{apart['hit']} it was at {evidence.stop_text(apart['stop_a'])} of the line "
+                f"and this run at {evidence.stop_text(apart['stop_b'])}, so hits do not pair "
+                "by number: pair them by a value, `peeky queries join --param "
+                f"a={before} --param b={run_id} --param key=<selector>`",
+            }
             if before is not None
             else {
                 "run": None,
@@ -1249,6 +1261,9 @@ def _state_text(state):
         where += f" in {display_function(state['function'])}"
     if where and type(state.get("hit")) is int:
         where += f", hit {state['hit']}"
+    if where and type(state.get("place")) is int and type(state.get("places")) is int:
+        # One of the line's several breakpoint locations in this function (#157).
+        where += f", stop {state['place']} of {state['places']}"
     hint = ""
     if state["state"] == "running":
         hint = " (still running; run `peeky session wait`)"
@@ -1317,6 +1332,8 @@ def _variables_text(snapshot, name="default"):
         where += f" in {display_function(function)}"
     if type(snapshot.get("hit")) is int:
         where += f", hit {snapshot['hit']}"
+    if type(snapshot.get("place")) is int and type(snapshot.get("places")) is int:
+        where += f", stop {snapshot['place']} of {snapshot['places']}"
     lines = [f"stopped at {where}" + _pause_text(snapshot)]
     if index:
         lines.append(_frame_text(snapshot))

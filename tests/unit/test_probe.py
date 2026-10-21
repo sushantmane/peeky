@@ -1509,8 +1509,8 @@ def test_generic_instances_and_a_shared_line_are_told_apart(monkeypatch):
     result = probe_module.run_probe("/w", request)
     assert (
         "Line 8 stopped in 2 functions: rc::tf::h0000000000000001 (hits 1, 3); "
-        "rc::tf::h0000000000000002 (hit 2). --hits and --set-hit count every stop; the "
-        "function column says which is which." in result["warnings"]
+        "rc::tf::h0000000000000002 (hit 2). --hits, --set-hit and --set-at's @HIT count every "
+        "stop; the function column says which is which." in result["warnings"]
     )
     assert any(
         w.startswith(f"--set-at line 9 stopped in 2 functions: {a} (stop 1); {b} (stop 2).")

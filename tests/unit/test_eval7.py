@@ -276,16 +276,18 @@ def store(tmp_path):
 
 
 def saved(store, rows, hits=None, requested="all", **probe):
-    """Record a run of (hit, phase, selector, value) rows that stopped ``hits`` times
-    (default: its last hit) of the ``requested``; the probe asked for exactly the
-    selectors it captured."""
+    """Record a run of (hit, phase, selector, value[, stop]) rows that stopped ``hits``
+    times (default: its last hit) of the ``requested``; the probe asked for exactly the
+    selectors it captured. A row's stop is which of its line's 2 breakpoint locations
+    it was at (#157)."""
     from peeky import evidence
 
     recorded = probe_result()
     recorded["probe"]["hits"] = requested
     recorded["rows"] = [
         dict(hit=hit, phase=phase, line=36, selector=selector, value=value)
-        for hit, phase, selector, value in rows
+        | ({"stop": stop[0], "stops": 2} if stop else {})
+        for hit, phase, selector, value, *stop in rows
     ]
     recorded["probe"].update(capture=list(dict.fromkeys(row[2] for row in rows)), **probe)
     recorded["hits"] = hits if hits is not None else max([row[0] for row in rows], default=0)
@@ -417,6 +419,89 @@ def test_diff_says_when_the_runs_hits_do_not_line_up(store, capsys):
     assert "notes" not in evidence.run_query(store, "diff")
 
 
+def test_diff_pairs_hits_at_the_same_stop_where_both_runs_label_them(store):
+    # Merge of #160 (#157): a line with several breakpoint locations stops at each, and
+    # a hit at another location than the other run's is another row, not the same
+    # moment with another value.
+    from peeky import evidence
+
+    saved(store, [(1, "observed", "x", "1", 1), (2, "observed", "x", "2", 2)])
+    saved(store, [(1, "observed", "x", "1", 1), (2, "observed", "x", "5", 1)])
+    result = evidence.run_query(store, "diff")
+    assert [(r["hit"], r["value_a"], r["value_b"], r["note"]) for r in result["rows"]] == [
+        (2, "2", None, "missing in run b (run a: stop 2)"),
+        (2, None, "5", "missing in run a (run b: stop 1)"),
+    ]
+    (note,) = result["notes"]
+    assert note.startswith("at hit 2 run 1 was at stop 2 of its line and run 2 at stop 1"), note
+    assert "peeky queries join --param a=1 --param b=2 --param key=<selector>" in note
+    # The same stops pair as before; a run with no labels pairs by hit and says so.
+    saved(store, [(1, "observed", "x", "1", 1), (2, "observed", "x", "7", 2)])
+    result = evidence.run_query(store, "diff", {"a": 1, "b": 3})
+    assert [(r["hit"], r["note"]) for r in result["rows"]] == [(2, None)], result
+    assert "notes" not in result, result
+    saved(store, [(1, "observed", "x", "1"), (2, "observed", "x", "7")])
+    result = evidence.run_query(store, "diff")
+    assert result["rows"] == [] and "run 4 at an unlabelled stop" in result["notes"][0]
+
+
+def test_diff_collapses_address_only_rows_per_stop(store):
+    # Finding 9 with #160's stops: one address-only row per selector and stop.
+    from peeky import evidence
+
+    for base in (0x16B43EDB0, 0x16D17EDB0):
+        address = f"Vec<long> @ 0x{base:012x}"
+        saved(store, [(hit, "observed", "p", address, 2 - hit % 2) for hit in (1, 2, 3, 4)])
+    rows = evidence.run_query(store, "diff")["rows"]
+    assert [(r["hit"], r["note"]) for r in rows] == [
+        (1, "addresses only, at 2 hits at stop 1 (one row per selector and stop: its first hit)"),
+        (2, "addresses only, at 2 hits at stop 2 (one row per selector and stop: its first hit)"),
+    ]
+
+
+def test_compare_names_no_run_whose_hits_are_at_other_stops(cli, capsys):
+    # Merge of #160 (#157): an edit that changes how often the `--at` line stops per
+    # pass moves every later hit to another breakpoint location; such a run pairs by
+    # value, not by `diff`'s hit number.
+    import hashlib
+
+    def run(candidate=False, stop=1):
+        result = probe_result()
+        result["probe"].update(program="a.py", line=1, capture=["i"])
+        result["rows"][0].update(stop=stop, stops=2)
+        if candidate:
+            result["candidate"] = {"sha256": hashlib.sha256(b"x = 2\n").hexdigest()}
+        edit = ["--old", "x = 1", "--new", "x = 2"] if candidate else []
+        return cli(result, "--capture", "i", *edit, "--json")
+
+    assert run() == 0  # run 1
+    capsys.readouterr()
+    assert run(candidate=True) == 0  # run 2: the same stops
+    assert json.loads(capsys.readouterr().out)["evidence"]["compare"]["run"] == 1
+    assert run(candidate=True, stop=2) == 0  # run 3: hit 1 at another stop
+    compare = json.loads(capsys.readouterr().out)["evidence"]["compare"]
+    assert compare["run"] is None, compare
+    assert compare["hint"] == (
+        "run 1 is this probe without the edit, but at hit 1 it was at stop 1 of the line "
+        "and this run at stop 2, so hits do not pair by number: pair them by a value, "
+        "`peeky queries join --param a=1 --param b=3 --param key=<selector>`"
+    )
+
+
+def test_the_per_pass_warning_is_said_every_time_the_short_name_note_once(cli, capsys):
+    # Finding 8 with #160: the warning that a line stops several times per pass changes
+    # what hits count, so it is never once-only or quiet; the note on names is.
+    warning = "Line 3 stops up to 2 times per pass in trim_left (2 breakpoint locations)"
+    result = probe_result(warnings=[warning])
+    result["rows"][0].update(stop=1, stops=2)
+    note = "note: function shows short frame names"
+    for flags, noted in ((["--quiet"], False), ([], True), ([], False)):
+        assert cli(dict(result), *flags) == 0
+        out = capsys.readouterr().out
+        assert f"warning: {warning}" in out and (note in out) == noted, out
+        assert out.startswith("hit  stop  phase") and "\n1    1/2   observed" in out, out
+
+
 def test_a_candidate_probe_names_the_run_to_compare_it_with(cli, tmp_path, capsys):
     # Finding 12: after a candidate probe, a plain `queries diff` compares it with the
     # latest run, which may have other arguments or a `--set`; nothing named the run
@@ -474,7 +559,7 @@ def test_the_guide_lists_session_wait_and_program_arguments_up_front():
     session = next(row for row in table.splitlines() if row.startswith("| `peeky session inspect`"))
     assert "/ `wait` /" in session and "`wait` waits for a running one to stop" in session
     probe = next(row for row in table.splitlines() if row.startswith("| `peeky probe <target>"))
-    assert "[-- ARGS]" in probe and "after `--`, or repeatable `--arg`" in probe, probe
+    assert "[-- ARGS]" in probe and "after `--` or repeated `--arg`" in probe, probe
     # Review of PR #165: exit 3 is not only a background job's.
     assert (
         "3 not there yet (a background job still running; a session's `--to`, `--count` or "

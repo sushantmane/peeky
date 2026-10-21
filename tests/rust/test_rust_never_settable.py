@@ -590,8 +590,8 @@ def test_a_generics_instances_are_named_with_their_type_arguments(tmp_path, stat
     assert code == 0, result.get("error")
     assert (
         f"Line {add} stopped in 2 functions: gen::tf<gen::A> (hits 1, 3); gen::tf<gen::B> "
-        "(hits 2, 4). --hits and --set-hit count every stop; the function column says which "
-        "is which." in result["warnings"]
+        "(hits 2, 4). --hits, --set-hit and --set-at's @HIT count every stop; the function "
+        "column says which is which." in result["warnings"]
     ), result["warnings"]
     # A refusal before the run names the instances once, with the reason and advice once.
     code, result = probe(capsys, crate, call, "--set-at", f"{add}@1", "n=9")
