@@ -3645,12 +3645,14 @@ def test_struct_and_tuple_locals_preview_as_rust_prints_them(plain, capsys):
         "mixed.f": ("0.1", "f32"),
         "mixed.u": ("255", "u8"),
         "small.b": ("-2", "i8"),
-        "rect.a.end": ("3", "unsigned long"),
+        # A raw field's Rust type too, from the debug information (seventh evaluation, 18).
+        "rect.a.end": ("3", "usize"),
         "tok.end": ("3", "u32"),
         "named.n": ("1", "i32"),
     }
-    # A raw field keeps LLDB's name beside the Rust one; a previewed one has its DWARF type.
-    assert rows["named.n"]["debugger_type"] == "int" and "debugger_type" not in rows["s.start"]
+    # A field keeps LLDB's name beside the Rust one, raw or previewed (review of PR #165).
+    assert rows["named.n"]["debugger_type"] == "int"
+    assert rows["s.start"]["debugger_type"] == "unsigned long", rows["s.start"]
     # Not yet assigned (`later` on its assignment's line): no preview.
     rows = _preview_rows(plain, capsys, "PV_LATER", "later,s")
     assert "view" not in rows["later"] and rows["s"]["view"] == "memory", rows

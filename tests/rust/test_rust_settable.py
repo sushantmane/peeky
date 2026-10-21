@@ -42,9 +42,12 @@ def test_rows_say_whether_set_can_change_a_local_and_a_refusal_lists_those_it_ca
     # said so (sixth evaluation's PR, review: fields carry `settable` too).
     assert rows["counts.len"]["settable"] is False, rows["counts.len"]
     code, refused = probe(capsys, crate, "--capture", "idx", "--set", "counts.len=1")
-    assert code == 1 and refused["error"]["code"] == "MUTATION_REJECTED", refused
+    # Refused before the run, a refusal exits 2 (seventh evaluation, finding 14).
+    assert code == (2 if refused.get("refused_before_launch") else 1), refused
+    assert refused["error"]["code"] == "MUTATION_REJECTED", refused
     code, result = probe(capsys, crate, "--capture", "idx", "--set", "idx=0")
-    if code == 1:
+    if code != 0:
+        assert code == (2 if result.get("refused_before_launch") else 1), result
         assert result["error"]["code"] == "MUTATION_REJECTED"
         listed = [name for name, row in rows.items() if row.get("settable")]
         expected = "settable here: " + (", ".join(listed) if listed else "none")

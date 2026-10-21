@@ -175,6 +175,13 @@ _RULES = (
         False,
     ),
     (
+        r"C\+\+ targets need clang\+\+",
+        "UNSUPPORTED",
+        "Install clang and point PEEKY_NATIVE_CXX (or the target's `compiler`) at its "
+        "clang++; C targets build with GCC as well.",
+        False,
+    ),
+    (
         r"Stepping is not supported",
         "UNSUPPORTED",
         "Use `peeky session continue --to LINE` to stop at another line.",
@@ -294,6 +301,11 @@ _MUTATION_HINTS = (
         r"in a caller's frame",
         "Change it in its own frame, before the call under way: `probe --at <its line> "
         "--hits N --set-hit N`, N counting that line's stops (`--capture <x> --hits all`).",
+    ),
+    (
+        r"has one caller: \S+:[0-9]+ in ",
+        "Change the value where it is owned, before the call the message names: as it "
+        "says where the value is settable there, else at a statement's first line before it.",
     ),
     (
         r"is a (?:pointer|reference)\b(?!;)",

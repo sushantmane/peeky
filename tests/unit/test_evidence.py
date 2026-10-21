@@ -539,8 +539,8 @@ def test_diff_puts_the_first_real_divergence_first(store):
         (3, "words", "missing in run b"),
         (3, "in_word", "missing in run b"),
         (3, "text", "missing in run b"),
-        (1, "text", "addresses only"),
-        (2, "text", "addresses only"),
+        # Seventh evaluation, finding 9: one row per selector, saying at how many hits.
+        (1, "text", "addresses only, at 2 hits (one row per selector: its first hit)"),
         # Eval 5 (C): these rows showed NULL values, which read as "no value"; each
         # now shows its selector's first hit.
         (1, "totals", "only in run a (one row per selector: its first hit)"),

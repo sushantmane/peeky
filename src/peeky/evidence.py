@@ -68,7 +68,11 @@ TABLES = {
             "artifact_manifest_id": "Identity of the build the values came from",
             "source_sha256": "SHA-256 of the breakpoint's source file as it ran: for a candidate "
             "run, the edited text",
-            "target_identity": "JSON target identity (toolchain, flags)",
+            "target_identity": "JSON target identity (toolchain, flags), with inputs_sha256: "
+            "a digest of every source and header the run read (C/C++: the build's sources "
+            "and headers; Rust: the crate's sources, Cargo.toml and Cargo.lock; Java: its "
+            "sources; Python: the root's .py files), as they were on disk, a candidate's "
+            "before its edit; without it for a run saved before Peeky recorded it",
             "edit": "For a candidate run (probe --old/--new), the unified diff of the edit the "
             "build had; NULL otherwise. Values never come from your files when this is set",
             "notes_kept": "1 where the run's notes are in captures.note (schema 9 on); NULL "
@@ -354,20 +358,43 @@ def _shown(alias=""):
 # Selectors a run asked for (runs.capture), whether or not it reached a capture.
 _ASKED = "(SELECT value FROM json_each((SELECT capture FROM runs WHERE run_id = {})))"
 _LANGUAGE = "(SELECT language FROM runs WHERE run_id = {})"
-_PAIR = f"""WITH a AS (SELECT hit, phase, selector, {_shown()} AS v, type AS t, rowid AS pos,
-    {_caveat()} AS c FROM captures WHERE run_id = {_A}),
-  b AS (SELECT hit, phase, selector, {_shown()} AS v, type AS t, rowid AS pos,
-    {_caveat()} AS c FROM captures WHERE run_id = {_B}),
-  k AS (SELECT hit, phase, selector FROM a UNION SELECT hit, phase, selector FROM b),
-  kinds AS (SELECT k.hit, k.phase, k.selector, a.v AS value_a, b.v AS value_b,
+# An after-set value equal to the same run's observed value at that hit (the
+# intervention did not touch it): `same` is 1 (seventh evaluation, finding 10).
+_SAME = (
+    "s.phase = 'after-set' AND {shown} IS (SELECT {observed} FROM captures o WHERE "
+    "o.run_id = s.run_id AND o.hit = s.hit AND o.stop IS s.stop AND o.selector = "
+    "s.selector AND o.phase = 'observed' ORDER BY o.rowid LIMIT 1)"
+).format(shown=_shown("s"), observed=_shown("o"))
+# Where both runs label their stops (#157: a line with several breakpoint locations in a
+# function), a hit is also its stop: the same hit at another stop is another row.
+_STOPPED = "EXISTS (SELECT 1 FROM captures WHERE run_id = {} AND stop IS NOT NULL)"
+_BOTH_STOPPED = f"({_STOPPED.format(_A)} AND {_STOPPED.format(_B)})"
+# A row's stop, or its hit's (a `(return)` row has none of its own, #155: the observed
+# rows of its hit say where the call began).
+_HIT_STOP = (
+    "COALESCE(s.stop, (SELECT MIN(o.stop) FROM captures o WHERE o.run_id = s.run_id AND "
+    "o.hit = s.hit))"
+)
+
+
+_PAIR = f"""WITH a AS (SELECT hit, phase, selector, {_shown("s")} AS v, type AS t, rowid AS pos,
+    {_caveat("s")} AS c, {_SAME} AS same, CASE WHEN {_BOTH_STOPPED} THEN {_HIT_STOP} END AS st
+    FROM captures s WHERE run_id = {_A}),
+  b AS (SELECT hit, phase, selector, {_shown("s")} AS v, type AS t, rowid AS pos,
+    {_caveat("s")} AS c, {_SAME} AS same, CASE WHEN {_BOTH_STOPPED} THEN {_HIT_STOP} END AS st
+    FROM captures s WHERE run_id = {_B}),
+  k AS (SELECT hit, phase, selector, st FROM a UNION SELECT hit, phase, selector, st FROM b),
+  kinds AS (SELECT k.hit, k.phase, k.selector, k.st, a.v AS value_a, b.v AS value_b,
     a.v IS NOT b.v AS differs, COALESCE(a.pos, b.pos) AS pos,
     CASE
       WHEN k.selector NOT IN {_ASKED.format(_B)} THEN 'only in run a'
       WHEN k.selector NOT IN {_ASKED.format(_A)} THEN 'only in run b'
       WHEN k.phase = 'after-set' AND b.pos IS NULL THEN 'intervention only in run a'
+        || COALESCE(' (run a: stop ' || k.st || ')', '')
       WHEN k.phase = 'after-set' AND a.pos IS NULL THEN 'intervention only in run b'
-      WHEN b.pos IS NULL THEN 'missing in run b'
-      WHEN a.pos IS NULL THEN 'missing in run a'
+        || COALESCE(' (run b: stop ' || k.st || ')', '')
+      WHEN b.pos IS NULL THEN 'missing in run b' || COALESCE(' (run a: stop ' || k.st || ')', '')
+      WHEN a.pos IS NULL THEN 'missing in run a' || COALESCE(' (run b: stop ' || k.st || ')', '')
       WHEN a.v IS NOT b.v AND a.t IS NOT NULL AND b.t IS NOT NULL AND a.t IS NOT b.t
         THEN 'type ' || a.t || ' -> ' || b.t
       WHEN a.v IS NOT b.v AND no_addresses(a.v, {_LANGUAGE.format(_A)})
@@ -376,8 +403,12 @@ _PAIR = f"""WITH a AS (SELECT hit, phase, selector, {_shown()} AS v, type AS t, 
     CASE WHEN a.c IS NOT NULL OR b.c IS NOT NULL THEN 'qualified (' || CASE
       WHEN a.c IS NOT NULL AND b.c IS NOT NULL THEN 'run a: ' || a.c || ', run b: ' || b.c
       WHEN a.c IS NOT NULL THEN 'run a: ' || a.c ELSE 'run b: ' || b.c END
-      || '): not evidence by itself; queries run shows why' END AS qualified
-    FROM k LEFT JOIN a USING (hit, phase, selector) LEFT JOIN b USING (hit, phase, selector)),
+      || '): not evidence by itself; queries run shows why' END AS qualified,
+    k.phase = 'after-set' AND COALESCE(a.same, 1) AND COALESCE(b.same, 1) AS unchanged
+    FROM k LEFT JOIN a ON a.hit = k.hit AND a.phase = k.phase AND a.selector = k.selector
+      AND a.st IS k.st
+    LEFT JOIN b ON b.hit = k.hit AND b.phase = k.phase AND b.selector = k.selector
+      AND b.st IS k.st),
   -- Whatever else a row says, a qualified value says so too (review 3 of #139).
   pair AS (SELECT *, CASE WHEN qualified IS NULL THEN kind WHEN kind IS NULL THEN qualified
     ELSE kind || '; ' || qualified END AS note FROM kinds)"""
@@ -396,18 +427,28 @@ _PAIR_ORDER = " ORDER BY hit, phase = 'after-set', pos"
 # on a `do` body's first line, a moved Rust local's bytes: review of #139), whatever else
 # their note says (`missing in run b; qualified (run a: note)`); then values
 # that differ only in memory addresses; last, one row per selector only one run asked
-# for. Nothing is dropped: an address-only or qualified difference may still be real.
+# for. Nothing is dropped: an address-only or qualified difference may still be real;
+# but an after-set value equal to its run's observed value at that hit, in each run
+# with one, is no difference of its own (the observed row has any: seventh evaluation,
+# finding 10), and one selector's address-only rows are one row, its first hit's, that
+# says how many hits there were (finding 9), one for each stop where both runs label them.
 _DIFF = f"""{_PAIR}
 SELECT {_PAIR_COLUMNS} FROM (
   SELECT 10 AS rank, hit, phase, selector, value_a, value_b, differs, note, pos FROM pair
-    WHERE differs AND qualified IS NULL
+    WHERE differs AND qualified IS NULL AND NOT unchanged
     AND (kind IS NULL OR kind LIKE 'missing%' OR kind LIKE 'type %')
   UNION ALL SELECT 11, hit, phase, selector, value_a, value_b, differs, note, pos FROM pair
-    WHERE qualified IS NULL AND kind LIKE 'intervention only%'
+    WHERE qualified IS NULL AND kind LIKE 'intervention only%' AND NOT unchanged
   UNION ALL SELECT 12, hit, phase, selector, value_a, value_b, differs, note, pos FROM pair
     WHERE differs AND qualified IS NOT NULL AND (kind IS NULL OR kind NOT LIKE 'only in%')
-  UNION ALL SELECT 13, hit, phase, selector, value_a, value_b, differs, note, pos FROM pair
-    WHERE qualified IS NULL AND kind = 'addresses only'
+    AND NOT unchanged
+  -- hit and the values are those of the MIN(pos) row (SQLite's bare columns).
+  UNION ALL SELECT 13, hit, phase, selector, value_a, value_b, differs,
+    CASE WHEN COUNT(*) > 1 THEN 'addresses only, at ' || COUNT(*) || ' hits'
+      || COALESCE(' at stop ' || st || ' (one row per selector and stop', ' (one row per '
+      || 'selector') || ': its first hit)' ELSE note END, MIN(pos) FROM pair
+    WHERE qualified IS NULL AND kind = 'addresses only' AND NOT unchanged
+    GROUP BY selector, phase, st
   -- hit, the values and qualified are those of the MIN(pos) row (SQLite's bare columns).
   UNION ALL SELECT 14, hit, phase, selector, value_a, value_b, 1,
     kind || ' (one row per selector: its first hit)' || COALESCE('; ' || qualified, ''),
@@ -593,10 +634,14 @@ WINDOW w AS (PARTITION BY selector ORDER BY hit) ORDER BY selector, hit""",
         "(source), (line), (args) and (sets) rows when the runs' outcomes, outputs, edits, "
         "source, stop lines, program arguments or interventions differ; then real "
         "differences in hit and capture order (the first is the first divergence); then "
-        "values only one run's intervention changed; then values a view or a note "
-        "qualifies in either run (note: qualified (run a: note), not evidence by itself: "
-        "leftovers, a moved Rust local's bytes); then address-only differences; last, "
-        "selectors only one run captured",
+        "values only one run's intervention changed (an after-set value equal to its "
+        "hit's observed one is left out); then values a view or a note qualifies in "
+        "either run (note: qualified (run a: note), not evidence by itself: leftovers, a "
+        "moved Rust local's bytes); then address-only differences, one row per selector "
+        "(and stop); last, selectors only one run captured. Hits pair by number, and by "
+        "stop where both runs label them (a line with several breakpoint locations): "
+        "where the runs stopped a different number of times, or a hit at another stop, a "
+        "note names `join`, which pairs by value",
         _DIFF,
         _PAIR_PARAMS,
         (),
@@ -890,7 +935,13 @@ def record(path, result, *, language=None, target=None, label=None, worker=None)
         "artifact_manifest_id": result.get("artifact_manifest_id"),
         # A candidate's values came from the edited text, never from the file on disk.
         "source_sha256": _text(candidate.get("sha256") if edited else result.get("source_sha256")),
-        "target_identity": _text(result.get("target_identity")),
+        # With the digest of every source the run read (a candidate's before its edit).
+        "target_identity": _text(
+            {**(result.get("target_identity") or {}), "inputs_sha256": result["inputs_sha256"]}
+            if isinstance(result.get("inputs_sha256"), str)
+            and isinstance(result.get("target_identity") or {}, dict)
+            else result.get("target_identity")
+        ),
         "edit": candidate.get("diff") if edited else None,
         "notes_kept": 1,
     }
@@ -967,6 +1018,29 @@ def record(path, result, *, language=None, target=None, label=None, worker=None)
     finally:
         connection.close()
     return run_id
+
+
+def baseline(path, run_id, source_sha256):
+    """The newest run before ``run_id`` that is the same probe without its edit, to
+    compare a candidate run with (seventh evaluation, finding 12): the same target,
+    file, line, captures, program arguments and Python entry; the same build and the
+    same sources (its target identity: compiler options, optimization, and the digest of
+    every source and header it read, the candidate's before its edit); the `--at`
+    file's unedited text (``source_sha256``); no edit, no `--set` or `--set-at`. None
+    where none is, or the candidate's sources are not known."""
+    found = query(
+        path,
+        "SELECT b.run_id FROM runs c JOIN runs b ON b.run_id < c.run_id AND b.target IS "
+        "c.target AND b.language IS c.language AND b.program IS c.program AND b.line IS "
+        "c.line AND b.capture IS c.capture AND b.args IS c.args AND b.entry IS c.entry AND "
+        "b.target_identity = c.target_identity AND b.source_sha256 = :source AND "
+        "b.edit IS NULL AND COALESCE(b.sets, '[]') = '[]' WHERE c.run_id = :run AND "
+        "json_valid(c.target_identity) AND "
+        "json_extract(c.target_identity, '$.inputs_sha256') IS NOT NULL "
+        "ORDER BY b.run_id DESC LIMIT 1",
+        {"run": run_id, "source": source_sha256},
+    )["rows"]
+    return found[0]["run_id"] if found else None
 
 
 _ALLOWED = {
@@ -1487,7 +1561,86 @@ def run_query(path, name, params=None, *, limit=DEFAULT_ROWS):
     else:
         result, notes = query(path, sql, bound, limit=limit), []
     notes = _unmarked(path, name, bound) + notes
+    if name == "diff":
+        notes += _unaligned(path, bound)
     return {**result, "notes": notes} if notes else result
+
+
+def _unaligned(path, params):
+    """For `diff`, which pairs hits by number: a note where the two runs stopped at
+    their line a different number of times, so that their hits need not line up (a sort's
+    comparator called on other pairs: seventh evaluation, finding 20), naming `join`,
+    which pairs them by a value instead."""
+    found = query(
+        path,
+        f"SELECT ra.run_id AS a, rb.run_id AS b, ra.hits AS ha, rb.hits AS hb FROM runs ra, "
+        f"runs rb WHERE ra.run_id = {_A} AND rb.run_id = {_B} AND ra.program IS rb.program "
+        "AND ra.line IS rb.line AND ra.hits_requested IS rb.hits_requested",
+        {"a": params.get("a"), "b": params.get("b")},
+    )["rows"]
+    if not found or not found[0]["ha"] or not found[0]["hb"]:
+        return []
+    run = found[0]
+    if run["ha"] == run["hb"]:
+        apart = stops_apart(path, run["a"], run["b"])
+        if apart is None:
+            return _unplaced_returns(path, run)
+        return [
+            f"at hit {apart['hit']} run {run['a']} was at {stop_text(apart['stop_a'])} of "
+            f"its line and run {run['b']} at {stop_text(apart['stop_b'])}, so a hit need not "
+            "be the same moment in both: pair them by a value instead, `peeky queries join "
+            f"--param a={run['a']} --param b={run['b']} --param key=<selector>`"
+        ]
+    return [
+        f"run {run['a']} stopped {run['ha']} times at its line and run {run['b']} "
+        f"{run['hb']}, so a hit need not be the same moment in both (a sort's comparator "
+        "is called on other pairs once one answer differs), and pairing by hit number can "
+        "show every later hit as a difference: pair them by a value instead, `peeky queries "
+        f"join --param a={run['a']} --param b={run['b']} --param key=<selector>`"
+    ]
+
+
+def _unplaced_returns(path, run):
+    """A note where a run's line stops several times per pass (#157's warning) and its
+    `(return)` rows (#155) have no observed row at their hit to say at which stop their
+    call began (`--capture return` alone): pairing them by hit number cannot be checked."""
+    found = query(
+        path,
+        "SELECT r.run_id FROM runs r WHERE r.run_id IN (:a, :b) AND r.warnings LIKE "
+        "'%times per pass%' AND EXISTS (SELECT 1 FROM captures c WHERE c.run_id = r.run_id "
+        "AND c.phase = 'returned' AND NOT EXISTS (SELECT 1 FROM captures o WHERE o.run_id "
+        "= c.run_id AND o.hit = c.hit AND o.stop IS NOT NULL)) ORDER BY r.run_id LIMIT 1",
+        {"a": run["a"], "b": run["b"]},
+    )["rows"]
+    if not found:
+        return []
+    return [
+        f"run {found[0]['run_id']}'s line stops several times per pass, and its `(return)` "
+        "rows do not say at which stop their call began (nothing else was captured there), "
+        "so a hit need not be the same call in both runs: capture a selector with `return` "
+        "to pair them by stop, or pair them by a value, `peeky queries join --param "
+        f"a={run['a']} --param b={run['b']} --param key=<selector>`"
+    ]
+
+
+def stops_apart(path, a, b):
+    """{hit, stop_a, stop_b} for the first hit both runs ``a`` and ``b`` captured whose
+    stop labels (#157: which of the line's breakpoint locations it was at) differ, a
+    label missing in one included (a run saved before Peeky labelled stops), else None."""
+    found = query(
+        path,
+        "SELECT o.hit, x.stop AS stop_a, o.stop AS stop_b FROM captures o JOIN captures x "
+        "ON x.run_id = :a AND x.hit = o.hit AND x.phase = 'observed' WHERE o.run_id = :b "
+        "AND o.phase = 'observed' AND x.stop IS NOT o.stop ORDER BY o.hit LIMIT 1",
+        {"a": a, "b": b},
+    )["rows"]
+    return found[0] if found else None
+
+
+def stop_text(stop):
+    """`stop 2`, or for a hit with no label (a line with one breakpoint location, or a
+    run saved before Peeky labelled stops) `an unlabelled stop`."""
+    return f"stop {stop}" if stop is not None else "an unlabelled stop"
 
 
 # The runs each canned query shows values of, for `_unmarked`.

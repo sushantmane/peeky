@@ -1233,3 +1233,40 @@ def test_what_braces_in_a_statement_declare_hides_nothing_in_its_block():
     # A binding with a use on its line declares it, so its scope can be read.
     assert statements.scope_lines(5, "t") == (5, 5)
     assert statements.block_storage(5, "t", 2) == ("binding", 5)
+
+
+RANGE_LAMBDA_SOURCE = """int f() {
+    long t = 1;
+    for (auto [t, u] : make([&] { long t = 40; return id(t); })) {
+        use(t);
+    }
+    for (auto [t, u] : make([&] { return id(t); })) { use(t); }
+    for (auto [t, u] : make([&] { return id(t); }, [&] { long t = 2; return t; })) {
+    }
+    for (auto [t, u] : c ? a : b) {
+    }
+    return t;
+}
+"""
+
+
+def test_a_range_for_binding_names_nothing_in_its_range_or_a_lambda_there():
+    # #169: the header's binding hid a lambda's own `t` in the range's expression.
+    statements = Statements(RANGE_LAMBDA_SOURCE, raw_strings=True)
+    # In the lambda's frame (a function wholly on the line): only its body counts.
+    assert statements.block_storage(3, "t", 3, True, body=True) is False
+    assert statements.block_storage(6, "t", None, True, body=True) is False
+    # Read as the enclosing function's line, the binding is named there.
+    assert statements.block_storage(3, "t", 2, True) == ("binding", 3)
+    # Two bodies open on the line: it is read as any other.
+    assert statements.block_storage(7, "t", 2, True, body=True) == ("binding", 7)
+    # The binding's own row, declared on a line where a lambda declares a `t` too.
+    assert statements.block_storage(4, "t", 3, True) is False
+    # At the line's first instruction, the range's expression runs first: the binding
+    # is not declared yet, unless the loop's body has code on the line, or a `?` makes
+    # the `:` uncertain.
+    assert statements.block_storage(3, "t", 2, True, entering=True) is False
+    assert statements.block_storage(6, "t", 2, True, entering=True) == ("binding", 6)
+    assert statements.block_storage(9, "t", 2, True, entering=True) == ("binding", 9)
+    # In the loop's body, the binding is named.
+    assert statements.block_storage(4, "t", 2, True, entering=True) == ("binding", 3)
