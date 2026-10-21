@@ -687,6 +687,14 @@ def test_rust_a_standard_library_types_internals_are_never_marked(crate, capsys)
         "t.__1.vec.len": False,
         "t.__1.vec": False,
     }
+    code = main(["probe", str(crate), "--at", at, "--capture", "h.v,t.__1", "--json"])
+    decoded = all(
+        row.get("view") == "memory" for row in json.loads(capsys.readouterr().out)["rows"]
+    )
+    if decoded:
+        # Read from memory (#156): their internals are not listed; the view's own
+        # `len` is not settable either.
+        marked = {"h.n": True, "t.__0": True, "h.v.len": False, "t.__1.len": False}
     code = main(["probe", str(crate), "--at", at, "--capture", ",".join(marked), "--json"])
     rows = {row["selector"]: row for row in json.loads(capsys.readouterr().out)["rows"]}
     assert code == 0 and {name: rows[name].get("settable") for name in marked} == marked, rows
@@ -699,7 +707,8 @@ def test_rust_a_standard_library_types_internals_are_never_marked(crate, capsys)
         assert all(child.get("settable") is not True for child in row["children"]), row
         for name, settable in marked.items():
             if not settable and name.endswith(".len"):
-                refused(capsys, f"{name}=0", "is a standard-library type")
+                why = "inside a value Peeky decodes itself" if decoded else "standard-library"
+                refused(capsys, f"{name}=0", why)
         code, result = change(capsys, "h.n=9")
         assert code == 0 and result["after"] == "9", result
     finally:

@@ -934,6 +934,31 @@ _OWNED_RUST = (
     "line (#53). Capture `.len` for the length, probe a line where it is live, or read it "
     "where it is passed as &Vec, &[T], &String or &str."
 )
+_FIELD_RUST = (
+    "This Rust Vec or String field shows its raw fields: Peeky reads a field's contents "
+    "only where a reference parameter the build's IR proves live (a `&mut` one in the "
+    "innermost frame) or a local the MIR proves initialized at the stop line, in the "
+    "innermost frame, holds it through plain struct and tuple fields (#156). Capture "
+    "`.len` for the length."
+)
+
+
+def _raw_rust(variable, selector):
+    """The note of a Rust container left as LLDB shows it, with the worker's reason."""
+    kind = _lldb_type(variable)
+    if kind.startswith("alloc::string::String"):
+        what, length = "String", "vec.len"
+    elif kind.startswith("alloc::vec::Vec<"):
+        what, length = "Vec", "len"
+    else:
+        what, length = kind, "length"
+    return (
+        f"This Rust {what} shows LLDB's summary (its type and address), not its contents: "
+        f"{variable['raw_reason']}. Capture {selector}.{length} for the length, and check "
+        "contents with `peeky verify`."
+    )
+
+
 _COMPOSITE_RUST = (
     "This Rust container of tuples or structs shows LLDB's summary, not its elements. "
     "Peeky reads them only when every field is an integer, bool, float or char (the "
@@ -1062,9 +1087,9 @@ def _absence(variable, segment, children, path=None, pointers=False):
             f"(children: {shown or 'none'})"
         )
         length = next((name for name in ("len", "length") if name in names), None)
+        shown_path = path or variable["name"]
         if pointers and names == [f"*{variable['name']}"]:
             # A C/C++ pointer: the debugger knows what it points at, never how many.
-            shown_path = path or variable["name"]
             message += (
                 f"; {shown_path} is a pointer, which carries no length: {shown_path}[0] "
                 "reads what it points at; index the array where it is declared (in the "
@@ -1078,8 +1103,7 @@ def _absence(variable, segment, children, path=None, pointers=False):
                 f"; Peeky does not read {kind}'s elements: it reads Rust contents only for "
                 "String, &str and containers of integer, bool, float and char elements, "
                 "or of tuples, and structs your crate defines, whose fields are all such "
-                "scalars"
-                + (f". Capture {variable['name']}.{length} for the length" if length else "")
+                "scalars" + (f". Capture {shown_path}.{length} for the length" if length else "")
             )
         elif _rust_composite(_lldb_type(variable)):
             message += (
@@ -1087,21 +1111,29 @@ def _absence(variable, segment, children, path=None, pointers=False):
                 "struct is an integer, bool, float or char (the build's debug info decides), "
                 "and an owned Vec only where the build's MIR proves it initialized at the stop "
                 "line (innermost frame), with a debugger that supports readMemory"
-                + (f". Capture {variable['name']}.{length} for the length" if length else "")
+                + (f". Capture {shown_path}.{length} for the length" if length else "")
+                + ", and check contents with `peeky verify`"
+            )
+        elif isinstance(variable.get("raw_reason"), str):
+            # Why the worker left it raw (#156).
+            message += (
+                f"; Peeky shows LLDB's summary of it, not its contents: {variable['raw_reason']}"
+                + (f". Capture {shown_path}.{length} for the length" if length else "")
                 + ", and check contents with `peeky verify`"
             )
         elif _lldb_type(variable).startswith(_RUST_CONTAINERS):
             message += (
                 "; Peeky reads Rust contents only for reference parameters (&[T], &str, "
-                "&Vec<T>, &String, or &mut) and for owned Vec<T>/String locals the "
-                "build's MIR proves initialized at the stop line (innermost frame), where "
+                "&Vec<T>, &String, or &mut), for owned Vec<T>/String locals the "
+                "build's MIR proves initialized at the stop line (innermost frame), and for "
+                "such fields of what those hold (#156), where "
                 "T is an integer, bool, float or char type (or a tuple, or a struct your "
                 "crate defines, of them), "
                 "with a "
                 "debugger that supports readMemory (lldb-dap from LLVM 20). This one stays "
                 "raw: a moved, dropped or not-yet-assigned local can still point at freed "
                 "memory"
-                + (f". Capture {variable['name']}.{length} for the length" if length else "")
+                + (f". Capture {shown_path}.{length} for the length" if length else "")
                 + ", and check contents with `peeky verify`"
             )
         return message
@@ -1373,12 +1405,18 @@ def _capture(
                         shown = None
                     if shown:
                         row["value"] = shown
+                owned_type = "view" not in variable and _lldb_type(variable) in _OWNED_RUST_TYPES
                 if variable.get("view") == "unproven":
                     row["note"] = _UNPROVEN_RUST[0].upper() + _UNPROVEN_RUST[1:] + "."
-                elif "view" not in variable and _lldb_type(variable) in _OWNED_RUST_TYPES:
+                elif isinstance(variable.get("raw_reason"), str):
+                    # Why a Rust Vec or String stays raw here (#156).
+                    row["note"] = _raw_rust(variable, selector)
+                elif owned_type and len(parse_selector(selector)) == 1:
                     row["note"] = _OWNED_RUST
                 elif variable.get("stale"):
                     row["note"] = _STALE_RUST + "."
+                elif owned_type:
+                    row["note"] = _FIELD_RUST
                 elif "view" not in variable and _unread_rust(_lldb_type(variable)):
                     row["note"] = _UNREAD_RUST
                 elif "view" not in variable and _rust_composite(_lldb_type(variable)):
@@ -2512,6 +2550,9 @@ def _children(worker, stop, selector, variable, pointers=False, whole_strings=Fa
             entry["settable"] = child["settable"]
         if isinstance(child.get("not_settable"), str):
             entry["not_settable"] = child["not_settable"]
+        if isinstance(child.get("raw_reason"), str):
+            # Why a Rust Vec or String field stays raw (#156).
+            entry["raw_reason"] = child["raw_reason"]
         path = _child_selector(selector, child["name"])
         if pointers and path is None and _pointee(variable, page["variables"]) is child:
             path = f"{selector}[0]"
@@ -2900,7 +2941,14 @@ def run_probe(root, probe, *, adapter=None, progress=None):
             "is which."
         )
     unproven = _UNPROVEN_RUST[0].upper() + _UNPROVEN_RUST[1:] + "."
-    for note in (_OWNED_RUST, _UNREAD_RUST, _COMPOSITE_RUST, unproven, _STALE_RUST + "."):
+    for note in (
+        _OWNED_RUST,
+        _FIELD_RUST,
+        _UNREAD_RUST,
+        _COMPOSITE_RUST,
+        unproven,
+        _STALE_RUST + ".",
+    ):
         if any(row.get("note") == note for row in rows):
             warnings.append(note)
     # Any other row's note, once per selector: rows marked `[note]` in the table. What
@@ -2952,7 +3000,7 @@ def _by_hit(rows):
 def _rust_notes():
     """The Rust rows' notes, each said once among a probe's warnings, unmarked."""
     unproven = _UNPROVEN_RUST[0].upper() + _UNPROVEN_RUST[1:] + "."
-    return {_OWNED_RUST, _UNREAD_RUST, _COMPOSITE_RUST, unproven, _STALE_RUST + "."}
+    return {_OWNED_RUST, _FIELD_RUST, _UNREAD_RUST, _COMPOSITE_RUST, unproven, _STALE_RUST + "."}
 
 
 def _table(result):

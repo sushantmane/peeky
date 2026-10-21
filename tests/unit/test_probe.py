@@ -401,6 +401,37 @@ def test_rust_container_indexes_explain_what_is_unsupported():
     assert "shown whole, not by element" in message and "reference parameters" not in message
 
 
+def test_a_raw_rust_field_s_index_says_why_and_names_its_whole_selector():
+    # Seventh evaluation (#156): `self.values[0]` was "not found ... Capture values.len",
+    # with the owned local's reason (#53) for a field reached through `&mut self`.
+    from peeky.probe import _raw_rust, _resolve
+
+    reason = "`self` is a `&mut` parameter of a caller frame"
+    values = {
+        "name": "values",
+        "type": "alloc::vec::Vec<long, alloc::alloc::Global>",
+        "value": "alloc::vec::Vec<long, alloc::alloc::Global> @ 0x10",
+        "variablesReference": 2,
+        "raw_reason": reason,
+    }
+    fields = [
+        {"name": "buf", "type": "RawVec", "value": "", "variablesReference": 3},
+        {"name": "len", "type": "unsigned long", "value": "3", "variablesReference": 0},
+    ]
+    root = {"name": "self", "type": "Window *", "value": "0x10", "variablesReference": 1}
+    tree = Tree({1: [values], 2: fields})
+    with pytest.raises(ValueError) as caught:
+        _resolve(tree, {}, snapshot(root), parse_selector("self.values[0]"))
+    message = str(caught.value)
+    assert reason in message and "Capture self.values.len for the length" in message, message
+    assert "MIR proves initialized" not in message, message
+    note = _raw_rust(values, "self.values")
+    assert note.startswith("This Rust Vec shows LLDB's summary (its type and address)"), note
+    assert reason in note and "Capture self.values.len" in note, note
+    text = {**values, "type": "alloc::string::String", "name": "name"}
+    assert "Capture self.name.vec.len" in _raw_rust(text, "self.name")
+
+
 def test_depth_limited_values_say_so():
     from peeky.probe import _resolve
 

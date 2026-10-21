@@ -231,6 +231,7 @@ class Body:
     _copies: dict | None = None
     _live: tuple | None = None
     _copy_reads: tuple | None = None
+    _moved_cache: set | None = None
 
     @property
     def name(self):
@@ -975,6 +976,18 @@ class Body:
                 for number in _DIRECT_BORROW.findall(text)
             }
         return self._direct
+
+    def _moved(self):
+        """Locals moved out of somewhere, whole or in part (`move _3`, `move (_3.0: T)`),
+        not through a pointer they hold (`move (*_3)`)."""
+        if self._moved_cache is None:
+            self._moved_cache = {
+                int(number)
+                for block in self.blocks.values()
+                for text, _, _ in block.statements
+                for number in re.findall(r"\bmove \(*_([0-9]+)\b", _STRING.sub('""', text))
+            }
+        return self._moved_cache
 
     def _written_through(self):
         """Locals borrowed `&mut` or raw somewhere (`&mut _3`, `&raw const _3`): what
@@ -1894,6 +1907,178 @@ class LineFacts:
 # Where a macro's path starts (`println!(`, `std::vec![`); `if !(x)` too, which only
 # widens what a column can be.
 _MACRO_CALL = re.compile(r"(?<![\w:])((?:::)?(?:\w+::)*\w+)\s*!\s*[(\[{]")
+
+
+# A type nothing can change behind a shared reference, holding no reference of its own
+# (#156): integers, floats, bools, chars, `str`, `String`, and `Vec`s, `Box`es, arrays,
+# slices and tuples of them.
+_FROZEN_LEAF = r"(?:[iu](?:8|16|32|64|128|size)|f32|f64|bool|char|str|std::string::String)"
+_FROZEN_TYPE = re.compile(
+    rf"(?:std::vec::Vec<|std::boxed::Box<|\[|\()*"
+    rf"{_FROZEN_LEAF}(?:(?:, {_FROZEN_LEAF})*,?\)|; [0-9_a-z]+\]|\]|>)*"
+)
+_CALL = re.compile(r"([^()]+)\((.*)\) -> \[return: bb[0-9]+(?:, unwind: [^\]]+)?\]")
+_ITERATOR_NEXT = re.compile(r"<.+ as (?:(?:std|core)::iter::)?Iterator>::next$")
+
+
+def _place_base(place):
+    """(the local a MIR place starts from, how many pointers it goes through) for a
+    place (`((_25 as Some).0: &str)`, `(*_18)`, `(*_20)[_5]`), or None for a cast or a
+    place naming several locals."""
+    text = re.sub(r" as \w+\)", ")", place)
+    if " as " in text:
+        return None
+    mentioned = _MENTIONED.findall(re.sub(r"\[_[0-9]+\]", "", text))
+    return (int(mentioned[0]), text.count("(*")) if len(mentioned) == 1 else None
+
+
+def _frozen_sources(body, local, seen, iterator):
+    """{(owner, whether it is a shared reference argument)} whose storage (or, for an
+    argument, whose referent) holds everything ``local``'s values may point into, or
+    None where a value is made otherwise (see OwnedLocals._borrows_frozen)."""
+    if local in seen:
+        return set()
+    seen.add(local)
+    if local in body.arguments and local not in body._assignments():
+        return {(local, True)} if OwnedLocals._shared_argument(body, local) else None
+    values = body._assignments().get(local)
+    if not values:
+        return None
+    if local in body._written_through() and not _only_iterated(body, local, iterator):
+        return None
+    found = set()
+    for value in values:
+        value = _STRING.sub('""', value)
+        if call := _CALL.fullmatch(value):
+            more = _call_sources(body, call, seen, iterator)
+        elif value.startswith(("&mut ", "&raw ", "&fake ")):
+            return None
+        elif value.startswith("&") and (place := _place_base(value[1:])) is not None:
+            base, through = place
+            kind = body.types.get(base, "")
+            if through == 0 and not _BORROWING.search(kind):
+                # Into the variable's own storage (or what its Box holds).
+                more = {(base, False)}
+            elif through == 1 and value[1:].count(f"(*_{base})") == 1:
+                if kind.startswith("&") and not kind.startswith("&mut "):
+                    more = _frozen_sources(body, base, seen, iterator)
+                elif re.match(r"std::boxed::Box<", kind):
+                    more = {(base, False)}
+                else:
+                    return None
+            else:
+                return None
+        elif (copied := re.fullmatch(r"(?:copy|move) (.+)", value)) and (
+            place := _place_base(copied[1])
+        ):
+            if place[1]:
+                return None
+            more = _frozen_sources(body, place[0], seen, iterator)
+        else:
+            return None
+        if more is None:
+            return None
+        found |= more
+    return found
+
+
+def _call_sources(body, call, seen, iterator):
+    """What a call's result may point into: what its borrowing operands do. An operand
+    borrowed `&mut` is allowed only as `Iterator::next`'s iterator, whose items borrow
+    what the iterator does, never the iterator."""
+    # A char constant (`const ','`) holds no separator.
+    operands = _top_level(re.sub(r"const '(?:\\[^']*|[^'\\])'", "const 'c'", call[2]))
+    if call[1].startswith(("move ", "copy ", "(")):
+        return None  # a closure or a function pointer called
+    found = set()
+    for operand in operands:
+        if operand.startswith("const "):
+            continue
+        moved = re.fullmatch(r"(?:copy|move) _([0-9]+)", operand)
+        if moved is None:
+            return None
+        number = int(moved[1])
+        kind = body.types.get(number)
+        if kind is None:
+            return None
+        if kind.startswith("&mut "):
+            if not (iterator and _ITERATOR_NEXT.match(call[1]) and len(operands) == 1):
+                return None
+            iterated = _iterated(body, number)
+            if iterated is None:
+                return None
+            more = _frozen_sources(body, iterated, seen, iterator)
+        elif _BORROWING.search(kind):
+            if _RAW_POINTER.search(kind):
+                return None
+            more = _frozen_sources(body, number, seen, iterator)
+        else:
+            continue
+        if more is None:
+            return None
+        found |= more
+    return found
+
+
+def _iterated(body, local):
+    """The iterator a `&mut` operand of `Iterator::next` reborrows (`_26 = &mut (*_27)`,
+    `_27 = &mut _22`: `_22`), or None."""
+    for _ in range(8):
+        values = body._assignments().get(local, [])
+        if len(values) != 1:
+            return None
+        if found := re.fullmatch(r"&mut \(\*_([0-9]+)\)", values[0]):
+            local = int(found[1])
+            continue
+        found = re.fullmatch(r"&mut _([0-9]+)", values[0])
+        return int(found[1]) if found else None
+    return None
+
+
+def _only_iterated(body, local, iterator):
+    """True if ``local`` is borrowed `&mut` only for `Iterator::next` (`_27 = &mut _22;
+    _26 = &mut (*_27); _25 = <… as Iterator>::next(move _26)`): each such borrow, and
+    each reborrow of it, mentioned nowhere else, so no `&mut` to it outlives a call."""
+    if not iterator:
+        return False
+    chain, pending = set(), [local]
+    while pending:
+        target = pending.pop()
+        for number, values in body._assignments().items():
+            if any(re.fullmatch(rf"&mut (?:_{target}|\(\*_{target}\))", value) for value in values):
+                if len(values) != 1 or number in chain:
+                    return False
+                chain.add(number)
+                pending.append(number)
+    for block in body.blocks.values():
+        for text, _, _ in block.statements:
+            for number in map(int, _MENTIONED.findall(_STRING.sub('""', text))):
+                if number not in chain:
+                    continue
+                if (
+                    _NO_CODE.match(text)
+                    or re.match(rf"_{number} = &mut ", text)
+                    or re.fullmatch(rf"_[0-9]+ = &mut \(\*_{number}\);", text)
+                    or (
+                        (call := _CALL.fullmatch(text.removesuffix(";")))
+                        and _ITERATOR_NEXT.match(call[1].partition(" = ")[2])
+                        and call[2] == f"move _{number}"
+                    )
+                ):
+                    continue
+                return False
+    # The iterator itself: assigned whole, never moved, partly assigned or borrowed
+    # otherwise.
+    return (
+        local not in body._moved()
+        and len(body._assignments().get(local, ())) == 1
+        and not any(
+            re.search(rf"&(?:mut |raw \w+ |fake \w+ )?\(*_{local}\b", _STRING.sub('""', text))
+            and not re.fullmatch(rf"_[0-9]+ = &mut _{local};", text)
+            for block in body.blocks.values()
+            for text, _, _ in block.statements
+        )
+    )
 
 
 def _binding_scopes(body, local):
@@ -3441,10 +3626,85 @@ class OwnedLocals:
             return True
         if free and assigned and all(self._frozen(site, local, value, line) for value in assigned):
             return True
+        if free and self._borrows_frozen(site, local, line):
+            return True
         return all(
             body.used_ahead(local, position) or body.used_before(local, position)
             for position in positions
         )
+
+    def _borrows_frozen(self, site, local, line):
+        """True if the shared reference ``local`` (`&str`) points only into what frozen
+        owners hold (#156): its every value is made from shared borrows of them, through
+        shared reborrows, copies, and calls whose borrowing operands are those (`&_1`,
+        `<Vec<String> as Index<usize>>::index(move _21, 2)`, `<String as
+        Deref>::deref`, `split`, `into_iter`; and `Iterator::next` on an iterator only
+        ever borrowed `&mut` by `next`, whose items never borrow the iterator itself).
+        A frozen owner is a variable whose scope encloses the reference's, assigned
+        once (or a by-value argument never assigned), never moved, partly assigned or
+        borrowed `&mut` or raw, initialized at the stop, of a type with no interior
+        mutability and no references of its own (a `Vec<String>`, a `String`, integers,
+        arrays and tuples of them); or a shared reference argument to such a type (the
+        caller's loan freezes it for the call). An async body is not judged so.
+        Nothing can then change or free what it holds while the reference is in scope,
+        though the borrow checker no longer holds it after its last use (`for v in
+        args[2].split(',')`: `v` past the call it was last used in)."""
+        body = site[0]
+        kind = body.types.get(local, "")
+        if (
+            not kind.startswith("&")
+            or kind.startswith("&mut ")
+            or _RAW_POINTER.search(kind)
+            # An async body's later poll holds what its state saved (#116, #132): not
+            # judged here.
+            or body.coroutine is not None
+        ):
+            return False
+        owners = _frozen_sources(body, local, set(), self._std_iterator())
+        if not owners:
+            return False
+        scopes = _binding_scopes(body, local)
+        if len(scopes) != 1:
+            return False
+        assigned = body._assignments()
+        for owner, argument in owners:
+            if argument:
+                if not _FROZEN_TYPE.fullmatch(body.types.get(owner, "")[1:]):
+                    return False
+                continue
+            theirs = _binding_scopes(body, owner)
+            if (
+                len(theirs) != 1
+                or not _encloses(body, theirs[0], scopes[0])
+                or not _FROZEN_TYPE.fullmatch(body.types.get(owner, ""))
+                or owner in body._written_through()
+                or owner in body._moved()
+                # Assigned once, or a by-value argument never assigned.
+                or len(assigned.get(owner, ())) != (0 if owner in body.arguments else 1)
+                or not self._initialized(site, owner, line)
+            ):
+                return False
+        return True
+
+    def _std_iterator(self):
+        """Whether a call the dump names `<T as Iterator>::next` is the standard
+        library's: the crate's code names `Iterator` only as the prelude's (`impl
+        Iterator`, `dyn Iterator`, `T: Iterator`, `std::iter::Iterator`), never as an
+        item or an import of its own, which would also be named `Iterator`."""
+        if "_std_iterator_known" not in self.__dict__:
+            from peeky.rust_lexer import code_only
+
+            codes = [
+                code_only(self.texts[source]) if source in self.texts else None
+                for source in self.sources
+            ]
+            allowed = re.compile(r"(?:\bimpl|\bdyn|:|\+|<|(?:std|core)::iter::)\s*Iterator\b")
+            self._std_iterator_known = bool(codes) and all(
+                code is not None
+                and len(re.findall(r"\bIterator\b", code)) == len(allowed.findall(code))
+                for code in codes
+            )
+        return self._std_iterator_known
 
     def _frozen(self, site, local, value, line):
         """True if ``local`` assigned ``value`` points where nothing can move or free

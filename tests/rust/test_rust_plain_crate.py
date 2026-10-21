@@ -3409,7 +3409,10 @@ def test_a_moved_or_dropped_aggregate_reads_nothing_through_its_pointers(plain, 
     expected = {"h.b.x": "5", "h.n": "10", "t.__0.x": "5", "t.__1": "4", "arr[1].b.x": "7"}
     assert {name: rows[name].get("value") for name in expected} == expected, rows
     assert rows["w.n"]["value"] == "3" and rows["w.label.length"]["value"] == "8", rows
-    assert not any(row.get("stale") or row.get("view") for row in rows.values()), rows
+    # (A `Box<str>` field of a proven local is read from memory where it can be, #156.)
+    assert not any(
+        row.get("stale") or row.get("view") not in (None, "memory") for row in rows.values()
+    ), rows
 
 
 @pytest.mark.timeout(600)
@@ -3471,9 +3474,7 @@ def test_a_field_reassigned_in_place_leaves_its_struct_whole(plain, capsys):
     # Review of #108: `h.b = new` drops the old Box in place (`drop((_1.1: Box<Pt>))`),
     # then stores the new one there; the drop alone left `h` stale after the store.
     (plain / "src/main.rs").write_text(AGGREGATES)
-    capture = (
-        "h,h.b.x,h.b.y,h.n,w,w.n,w.v.len,w.s.vec.len,w.label.length,arr[0].b.x,arr[1].b.x,arr[1].n"
-    )
+    capture = "h,h.b.x,h.b.y,h.n,w,w.n,w.v.len,w.s,w.label.length,arr[0].b.x,arr[1].b.x,arr[1].n"
     rows = _rows_at(plain, capsys, "AG_REASSIGNED", capture)
     expected = {
         "h.b.x": "8",
@@ -3481,14 +3482,18 @@ def test_a_field_reassigned_in_place_leaves_its_struct_whole(plain, capsys):
         "h.n": "2",
         "w.n": "3",
         "w.v.len": "1",
-        "w.s.vec.len": "7",
         "w.label.length": "10",
         "arr[0].b.x": "5",
         "arr[1].b.x": "8",
         "arr[1].n": "12",
     }
     assert {name: rows[name].get("value") for name in expected} == expected, rows
-    assert not any(row.get("stale") or row.get("view") for row in rows.values()), rows
+    # The String field of a proven local is read from memory where it can be (#156).
+    if rows["w.s"].get("view") == "memory":
+        assert rows["w.s"]["value"] == '"changed"', rows
+    assert not any(
+        row.get("stale") or row.get("view") not in (None, "memory") for row in rows.values()
+    ), rows
     # A field moved out first: replacing another leaves the struct partly moved.
     rows = _rows_at(plain, capsys, "AG_PARTLY_REPLACED", "h,h.b,h.b.x,h.n,h.v.len")
     assert _hidden(rows["h.b.x"]) and rows["h.b"]["view"] == "unproven", rows

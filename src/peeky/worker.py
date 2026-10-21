@@ -2132,15 +2132,21 @@ class DebugWorker:
                     self.view_read,
                     frame=frame,
                     top=not ancestry,
-                    innermost=not ancestry and frame.get("id") == self.innermost_frame,
+                    innermost=frame.get("id") == self.innermost_frame,
                     stop=self.stop_reason,
                     # The scope's other variables: rows a debugger shows under one name.
                     siblings=None if ancestry else variables,
                     **({"taint": taint} if taint else {}),
+                    # A field's way from its root local (#156).
+                    **({"ancestry": ancestry} if ancestry else {}),
                 )
                 if view_variable
                 else None
             )
+            raw_reason = None
+            if view is not None and "rust_view" not in view:
+                # Left as the debugger shows it, with why (a Rust Vec or String, #156).
+                raw_reason, view = view.get("raw_reason"), None
             if view is not None:
                 # Interpreted values never carry expansion handles to raw storage. Their
                 # decoded elements get a worker-owned handle that never reaches the
@@ -2366,6 +2372,8 @@ class DebugWorker:
             if own == "stale":
                 # Not proven initialized: the bytes a move or drop left (#108).
                 output["stale"] = True
+            if isinstance(raw_reason, str) and not output.get("unavailable"):
+                output["raw_reason"] = raw_reason[:500]
             result.append(output)
             self.inspection_nodes += 1
         return result

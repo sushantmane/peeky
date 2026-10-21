@@ -671,9 +671,9 @@ def _describe_text(manifest):
         lines.append(f"qualified enum views: {', '.join(enums) or 'none'}")
         if containers:
             lines.append(
-                "read from memory (debuggers with readMemory): reference parameters, and owned "
-                "Vec<T>/String locals where the build's MIR proves them initialized: "
-                + ", ".join(containers)
+                "read from memory (debuggers with readMemory): reference parameters, owned "
+                "Vec<T>/String locals where the build's MIR proves them initialized, and such "
+                "fields of either (self.values): " + ", ".join(containers)
             )
         if composites:
             lines.append(
@@ -1340,6 +1340,14 @@ def _get_lines(row):
         lines.append(f"  <children: {row['children_error']}>")
     if row.get("note"):
         lines.append(f"  note: {row['note']}")
+    raw = {}
+    for child in row.get("children", []):
+        if isinstance(child.get("raw_reason"), str):
+            raw.setdefault(child["raw_reason"], []).append(child.get("selector") or child["name"])
+    for reason, names in raw.items():
+        # Why a Rust Vec or String field shows LLDB's summary, not its contents (#156).
+        verb = "shows" if len(names) == 1 else "show"
+        lines.append(f"  note: {', '.join(names)} {verb} LLDB's summary, not contents: {reason}")
     return lines
 
 

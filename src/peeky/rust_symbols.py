@@ -458,6 +458,8 @@ QUALIFIED_CONTAINERS = {
     "alloc::string::String": ("string", ("u8", 1, "DW_ATE_unsigned")),
     "&str": ("str", ("u8", 1, "DW_ATE_unsigned")),
     "&mut str": ("str", ("u8", 1, "DW_ATE_unsigned")),
+    # Read only as a field (#156): a `Box<str>` local is the Box gate's (#101).
+    "alloc::boxed::Box<str, alloc::alloc::Global>": ("str", ("u8", 1, "DW_ATE_unsigned")),
 }
 # Reference parameters whose contents Peeky reads, by their declared (DWARF/IR) type:
 # (LLDB's names for the parameter's type, qualified container, read through a pointer).
@@ -1552,14 +1554,16 @@ def struct_view(variable, read, layouts, *, parameter=None, owned=False, declare
 
 
 def container_view(
-    variable, read, layouts, *, optimized, parameter=None, owned=False, declared=None
+    variable, read, layouts, *, optimized, parameter=None, owned=False, declared=None, field=None
 ):
     """A proven container read from memory, or None to leave it raw.
 
     ``parameter`` is the declared type of a parameter whose liveness the compiler's IR
     proves (rust_ir); ``owned`` says the compiler's MIR proves this owned local
-    initialized at the stop (rust_mir). Anything else stays raw: a moved, dropped or
-    not-yet-initialized local can hold a pointer into freed memory.
+    initialized at the stop (rust_mir); ``field`` is the qualified (DWARF) type of a
+    field the caller proved held by such a value (#156), which picks its layout.
+    Anything else stays raw: a moved, dropped or not-yet-initialized local can hold a
+    pointer into freed memory.
     ``read(address, count)`` returns exactly ``count`` bytes or raises. The container
     is read at its compiler-validated offsets, then its first MAX_ELEMENTS elements (or
     MAX_TEXT_BYTES of text). A length above the capacity, or a null or misaligned
@@ -1567,7 +1571,12 @@ def container_view(
     """
     reference_type = REFERENCE_PARAMETERS.get(parameter)
     composite = None if reference_type else _composite_parameter(parameter)
-    if reference_type is not None and variable.get("type") in reference_type[0]:
+    if field is not None:
+        # LLDB's name only confirms the DWARF's (`Vec<long>` is `Vec<i64>`).
+        if _lossy(variable.get("type")) != _lossy(field):
+            return None
+        layout, thin = layouts.get(field), False
+    elif reference_type is not None and variable.get("type") in reference_type[0]:
         _, name, thin = reference_type
         layout = layouts.get(name)
     elif composite is not None and _lossy(variable.get("type")) == composite[0]:

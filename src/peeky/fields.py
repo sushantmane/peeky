@@ -245,6 +245,9 @@ def type_graph(dies, offsets, libraries, limit=MAX_TYPES):
                 _library(dies, offset, libraries),
                 # Its base classes, in order (#136).
                 tuple(bases),
+                # Its qualified name (`alloc::vec::Vec<i64, alloc::alloc::Global>`), which
+                # picks a Rust container's layout (#156).
+                _qualified(dies, offset) or name,
             )
             pending.extend(kind for kind in holds if kind is not None)
         else:
@@ -366,6 +369,75 @@ def debugger_steps(graph, root, name, steps):
         pending = (element, counts[1:]) if counts and len(counts) > 1 else None
         offset = element
     return found
+
+
+def held_container(graph, root, name, steps, dereference=False):
+    """The qualified type name of the record (a Rust `Vec`, `String`, `&str`) that
+    ``steps`` (the debugger's child names: `values`, `__1`, `[2]`) reach from the local
+    ``name`` of type ``root`` (#156), held in that local's own storage or, with
+    ``dereference``, in what the local (a reference or a Box) points at. On the way:
+    fields of plain structs and tuples and elements of fixed-size arrays only; never a
+    pointer, a reference, a union, an enum (which variant it holds is not read), a
+    packed record or a standard-library type (a `RefCell`'s, a `Mutex`'s contents change
+    behind a shared reference). Raises Unsettable with the reason."""
+    offset, node, _ = _strip(graph, root, name)
+    if dereference:
+        if node[0] not in ("pointer", "reference") or node[2] is None:
+            raise Unsettable(f"the debug information gives `{name}` no type it points at")
+        offset = node[2]
+    elif node[0] in ("pointer", "reference"):
+        raise Unsettable(f"`{name}` is a {node[0]} Peeky does not read through here")
+    path, pending = name, None
+    for step in steps:
+        if pending is not None:
+            element, counts = pending
+        else:
+            offset, node, _ = _strip(graph, offset, path)
+            if node[0] in ("pointer", "reference"):
+                raise Unsettable(f"`{path}` is a {node[0]}, which Peeky does not read through here")
+            if node[0] == "record":
+                _, record, kind, _, _, members, _, variant, incomplete, library = node[:10]
+                shown = record or f"an unnamed {kind}"
+                if library:
+                    raise Unsettable(
+                        f"`{path}` is a standard-library type ({shown}), whose contents Peeky "
+                        "does not read into"
+                    )
+                if kind == "union":
+                    raise Unsettable(f"`{path}` is a union")
+                if variant:
+                    raise Unsettable(
+                        f"`{path}` is an enum ({shown}): which variant it holds is not read here"
+                    )
+                if incomplete:
+                    raise Unsettable(
+                        f"the debug information has no definition of {shown}, the type of `{path}`"
+                    )
+                if _packed(graph, node):
+                    raise Unsettable(f"`{path}` is a packed {kind} ({shown})")
+                found = [member for member in members if member[0] == step]
+                if len(found) != 1 or not _SELECTABLE.fullmatch(step):
+                    raise Unsettable(
+                        f"the debug information lists no field `{step}` in {shown}, the "
+                        f"type of `{path}`"
+                    )
+                offset, path = found[0][1], f"{path}.{step}"
+                continue
+            if node[0] != "array" or node[3] is None:
+                raise Unsettable(f"`{path}` has no fields or elements Peeky reads into")
+            element, counts = node[2], node[3]
+        index = _INDEX.fullmatch(step)
+        if index is None or int(index[1]) >= counts[0]:
+            raise Unsettable(f"`{path}` has no element {step}")
+        path = f"{path}{step}"
+        pending = (element, counts[1:]) if len(counts) > 1 else None
+        offset = element
+    if pending is not None:
+        raise Unsettable(f"`{path}` is an array")
+    offset, node, _ = _strip(graph, offset, path)
+    if node[0] != "record" or len(node) < 12 or node[2] == "union" or node[7] or node[8]:
+        raise Unsettable(f"`{path}` is not a container Peeky reads")
+    return node[11]
 
 
 def settable_member(graph, root, name, steps):
