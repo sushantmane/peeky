@@ -377,3 +377,17 @@ def test_a_rust_string_changes_within_its_capacity():
     listed, layout = rust(fake, b"apple ", 16)
     with pytest.raises(ValueError, match="cannot write memory"):
         change(listed(), "pear", fake.interface(), listed, "rust", layout)
+
+
+def test_a_rust_string_keeps_its_old_length_utf8_for_a_borrowed_str():
+    # A `&str` taken before the change still reads the old length: "é" is two bytes, and
+    # "a" there would leave its second byte alone, cut from the first.
+    fake = Fake()
+    listed, layout = rust(fake, "éé".encode(), 16)
+    with pytest.raises(ValueError, match="a character cut in two"):
+        change(listed(), "a", fake.interface(), listed, "rust", layout)
+    with pytest.raises(ValueError, match="a character cut in two"):
+        change(listed(), "abcé", fake.interface(), listed, "rust", layout)
+    assert fake.get(0x9000, 4) == "éé".encode() and not fake.writes
+    change(listed(), "ab", fake.interface(), listed, "rust", layout)
+    assert fake.get(0x9000, 4) == b"ab" + "é".encode()

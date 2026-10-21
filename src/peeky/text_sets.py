@@ -306,6 +306,8 @@ def _libstdcxx(variable, data, writer, relist):
         writer.failed(f"its text is on the heap, and {_NO_WRITE}")
     old = writer.read(pointer, min(length, 1024))
     payload = data + b"\0"
+    # The buffer must read before it is written: a pointer to nothing is refused.
+    writer.read(pointer, len(payload))
     if writer.can_write:
         writer.write(pointer, payload)
     else:
@@ -393,6 +395,8 @@ def _libcxx(variable, data, writer, relist):
         writer.failed(f"its text is on the heap, and {_NO_WRITE}")
     payload = data + b"\0"
     if writer.can_write and writer.can_read:
+        # The buffer must read before it is written: a pointer to nothing is refused.
+        writer.read(shape["data"], len(payload))
         writer.write(shape["data"], payload)
     else:
         writer.put(shape["buffer"], payload)
@@ -500,6 +504,19 @@ def _rust(variable, text, writer, relist, layout):
             "edit to the source"
         )
     old = writer.read(pointer, min(length, MAX_TEXT_BYTES))
+    # A `&str` borrowed from it still reads its old length: those bytes must stay UTF-8,
+    # so the new text must end where a character of the old one starts, and the old
+    # length must end where one of the new text starts.
+    # (Read up to the longer of the two, within its capacity: the buffer must read.)
+    ahead = writer.read(pointer, max(len(data), length))
+    if (len(data) < length and 0x80 <= ahead[len(data)] < 0xC0) or (
+        length < len(data) and 0x80 <= data[length] < 0xC0
+    ):
+        writer.failed(
+            "a `&str` borrowed from its old text would read a character cut in two (not "
+            "UTF-8): end the new text where a character of the old one starts, or change "
+            "its length so the old length falls between two characters of the new text"
+        )
     vectors = [
         row
         for row in writer.children(variable.get("variablesReference"))
