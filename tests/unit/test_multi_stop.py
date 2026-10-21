@@ -4,6 +4,8 @@ warning, each stop's place, and where rows and the evidence keep it."""
 import sqlite3
 from types import SimpleNamespace
 
+import pytest
+
 from peeky import evidence
 from peeky.native import breakpoint_locations
 from peeky.probe import _table
@@ -90,8 +92,8 @@ def test_a_line_with_several_locations_in_one_function_warns_and_names_each_stop
     (warning,) = worker.place_warnings()
     assert warning.startswith(
         "Line 29 stops up to 3 times per pass in movavg::main (3 breakpoint locations): "
-        "--hits and --set-hit count stops, not passes (as do session hit numbers); each hit's "
-        "stop (1 to 3"
+        "--hits, --set-hit and --set-at's @HIT count stops, not passes (as do session hit "
+        "numbers); each hit's stop (1 to 3"
     ), warning
     worker.stop_reason = "breakpoint"
 
@@ -114,12 +116,19 @@ def test_a_line_with_several_locations_in_one_function_warns_and_names_each_stop
 
 
 def test_locations_placed_before_the_program_loaded_are_asked_again_once(tmp_path):
-    # lldb-dap 18 places them before the launch slides the program: the first stop's pc
-    # names none of them, so they are asked again, once.
+    # Review of #160: before the program loads, LLDB lists each location at the module's
+    # address (`address = movavg[0x…], unresolved`, as `breakpoint list` prints it then),
+    # which was left out, so nothing was asked again. The count holds already; the first
+    # stop's pc names none of them, so they are asked again, once.
+    unloaded = LISTING.replace("address = 0x", "address = movavg[0x").replace(
+        ", resolved, hit count", "], unresolved, hit count"
+    )
+    assert "address = movavg[0x0000000100000edc], unresolved, hit count = 0" in unloaded
     slid = LISTING.replace("0x00000001000", "0x00000001048")
-    worker, runtime, asked = _worker(tmp_path, [LISTING, slid])
+    worker, runtime, asked = _worker(tmp_path, [unloaded, slid])
     placed = {"breakpoints": [{"id": 1, "line": 29, "verified": True}]}
     worker.note_places(runtime, [{"line": 29}], placed)
+    assert worker.place_warnings()[0].startswith("Line 29 stops up to 3 times per pass")
     worker.stop_reason = "breakpoint"
     frame = {"line": 29, "instructionPointerReference": "0x104800ee4"}
     assert worker.place_of(frame) == (2, 3) and len(asked) == 2
@@ -180,7 +189,9 @@ def test_the_evidence_keeps_each_hits_stop(tmp_path):
     assert {row["stop"] for row in evidence.run_query(store, "run")["rows"]} == {None}
 
 
-def test_a_schema_9_store_gains_stops(tmp_path):
+@pytest.mark.parametrize("version", [13, 9])
+def test_an_older_store_gains_stops(tmp_path, version):
+    # Schema 14 adds captures.stop: a store of #151's schema 13, or of 9 through the chain.
     store = tmp_path / "evidence.db"
     probe = {
         "probe": {"program": "a.c", "line": 8, "capture": ["k"], "set": []},
@@ -190,18 +201,26 @@ def test_a_schema_9_store_gains_stops(tmp_path):
     }
     evidence.record(store, probe, language="c")
     connection = sqlite3.connect(store)
+    dropped = ["captures DROP COLUMN stop"]
+    if version == 9:
+        dropped += ["captures DROP COLUMN instance"] + [
+            f"interventions DROP COLUMN {column}"
+            for column in ("line", "capture_hit", "function", "instance")
+        ]
+    instance = "c.instance, " if version == 13 else ""
     connection.executescript(
-        """
-        DROP VIEW last_run; DROP VIEW evidence;
-        ALTER TABLE captures DROP COLUMN stop;
+        "DROP VIEW last_run; DROP VIEW evidence;"
+        + "".join(f"ALTER TABLE {change};" for change in dropped)
+        + f"""
         CREATE VIEW evidence AS SELECT c.run_id, r.started_at, r.label, r.program,
-            c.line, r.status, c.hit, c.phase, c.function, c.selector, c.type, c.value, c.num,
-            c.unavailable, c.error, c.view, c.note, c.identity, c.scope, r.args, r.sets,
-            r.artifact_manifest_id, r.source_sha256, r.edit IS NOT NULL AS candidate,
-            r.language FROM captures c JOIN runs r ON r.run_id = c.run_id;
+            c.line, r.status, c.hit, c.phase, c.function, {instance}c.selector, c.type,
+            c.value, c.num, c.unavailable, c.error, c.view, c.note, c.identity, c.scope,
+            r.args, r.sets, r.artifact_manifest_id, r.source_sha256,
+            r.edit IS NOT NULL AS candidate, r.language
+            FROM captures c JOIN runs r ON r.run_id = c.run_id;
         CREATE VIEW last_run AS SELECT * FROM evidence
             WHERE run_id = (SELECT MAX(run_id) FROM runs);
-        PRAGMA user_version = 9;
+        PRAGMA user_version = {version};
         """
     )
     connection.close()
@@ -210,8 +229,68 @@ def test_a_schema_9_store_gains_stops(tmp_path):
     ]
     probe["rows"][0].update(stop=2, stops=2)
     evidence.record(store, probe, language="c")
-    assert evidence.query(store, "SELECT selector, stop FROM last_run")["rows"] == [
-        {"selector": "k", "stop": 2}
+    assert evidence.query(store, "SELECT selector, stop, instance FROM last_run")["rows"] == [
+        {"selector": "k", "stop": 2, "instance": None}
     ]
     connection = sqlite3.connect(store)
     assert connection.execute("PRAGMA user_version").fetchone() == (evidence.SCHEMA_VERSION,)
+    assert evidence.SCHEMA_VERSION == 14
+
+
+# lldb-dap 18's listing of `format!("[{}]", v)` in an `#[inline(always)]` function that
+# `uses_inl` calls twice (review of #160): each copy's offset follows `[inlined] …`.
+INLINED = """1: file = '/w/src/main.rs', line = 15, exact_match = 0, locations = 6, resolved = 6, hit count = 0
+  1.1: where = r1-e54d9bd28bd92cce`r1::uses_inl::h26e77cb29e85dc8e + 60 [inlined] r1::fmt_inl::h7b23c0d2657465aa at main.rs:15:5, address = 0x0000aaaaaaaa9180, resolved, hit count = 0 
+  1.2: where = r1-e54d9bd28bd92cce`r1::uses_inl::h26e77cb29e85dc8e + 72 [inlined] r1::fmt_inl::h7b23c0d2657465aa + 12 at main.rs:15:5, address = 0x0000aaaaaaaa918c, resolved, hit count = 0 
+  1.3: where = r1-e54d9bd28bd92cce`r1::uses_inl::h26e77cb29e85dc8e + 92 [inlined] r1::fmt_inl::h7b23c0d2657465aa + 32 at main.rs:15:5, address = 0x0000aaaaaaaa91a0, resolved, hit count = 0 
+  1.4: where = r1-e54d9bd28bd92cce`r1::uses_inl::h26e77cb29e85dc8e + 168 [inlined] r1::fmt_inl::h7b23c0d2657465aa at main.rs:15:5, address = 0x0000aaaaaaaa91ec, resolved, hit count = 0 
+  1.5: where = r1-e54d9bd28bd92cce`r1::uses_inl::h26e77cb29e85dc8e + 176 [inlined] r1::fmt_inl::h7b23c0d2657465aa + 8 at main.rs:15:5, address = 0x0000aaaaaaaa91f4, resolved, hit count = 0 
+  1.6: where = r1-e54d9bd28bd92cce`r1::uses_inl::h26e77cb29e85dc8e + 204 [inlined] r1::fmt_inl::h7b23c0d2657465aa + 36 at main.rs:15:5, address = 0x0000aaaaaaaa9210, resolved, hit count = 0 
+"""
+
+
+def test_each_inlined_copy_is_a_call_of_its_own_with_its_own_stops(tmp_path):
+    # Review of #160: each location was taken for a copy of its own, so `format!` inlined
+    # twice stopped 3 times per call (6 for 2 calls) with no warning and no stop.
+    places = {f["place"] for f in breakpoint_locations(INLINED, {1})}
+    assert places == {"inlined at 0xaaaaaaaa9180", "inlined at 0xaaaaaaaa91ec"}
+    worker, runtime, _ = _worker(tmp_path, [INLINED])
+    placed = {"breakpoints": [{"id": 1, "line": 15, "verified": True}]}
+    worker.note_places(runtime, [{"line": 15}], placed)
+    # Both copies read alike: said once.
+    (warning,) = worker.place_warnings()
+    assert warning.startswith("Line 15 stops up to 3 times per pass in r1::fmt_inl (3 breakpoint")
+    worker.stop_reason = "breakpoint"
+    stops = [
+        worker.place_of({"line": 15, "instructionPointerReference": pc})
+        for pc in ("0xaaaaaaaa9180", "0xaaaaaaaa918c", "0xaaaaaaaa91a0", "0xaaaaaaaa91f4")
+    ]
+    assert stops == [(1, 3), (2, 3), (3, 3), (2, 3)]
+
+
+def test_generic_instances_are_named_apart(tmp_path):
+    # Review of #160: two instances of `gener` each warned as `r1::gener`, alike.
+    text = "".join(
+        f"  1.{n}: where = r1`r1::gener::h{hashed} + {4 * n} at main.rs:8:9, "
+        f"address = 0x{base + 4 * n:x}, resolved, hit count = 0\n"
+        for hashed, base in (("aaaaaaaaaaaaaaaa", 0x1000), ("bbbbbbbbbbbbbbbb", 0x2000))
+        for n in (1, 2, 3)
+    )
+    worker, runtime, _ = _worker(tmp_path, [text])
+    instances = {"aaaaaaaaaaaaaaaa": "r1::gener<i32>", "bbbbbbbbbbbbbbbb": "r1::gener<&str>"}
+    worker.runtime = SimpleNamespace(
+        instance_name=lambda frame: instances[frame["name"].rsplit("::h", 1)[1]]
+    )
+    placed = {"breakpoints": [{"id": 1, "line": 8, "verified": True}]}
+    worker.note_places(runtime, [{"line": 8}], placed)
+    warnings = worker.place_warnings()
+    assert [w.split(" (")[0] for w in warnings] == [
+        "Line 8 stops up to 3 times per pass in r1::gener<i32>",
+        "Line 8 stops up to 3 times per pass in r1::gener<&str>",
+    ]
+    # Where the build cannot name them, the debugger's whole names tell them apart.
+    worker.runtime = None
+    assert [w.split(" (")[0].rsplit(" ", 1)[1] for w in worker.place_warnings()] == [
+        "r1::gener::haaaaaaaaaaaaaaaa",
+        "r1::gener::hbbbbbbbbbbbbbbbb",
+    ]

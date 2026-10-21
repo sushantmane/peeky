@@ -921,7 +921,11 @@ class DebugWorker:
 
     def place_warnings(self):
         """A warning for each line that stops more than once per pass in a function
-        (#157): --hits and --set-hit count stops."""
+        (#157): --hits, --set-hit and --set-at's @HIT count stops. Inlined copies of one
+        function, which read alike, are said once."""
+        labels = self.place_labels(
+            function for groups in self.places.values() for function, _ in groups
+        )
         notes = []
         for line in sorted(self.places):
             for function, addresses in self.places[line]:
@@ -929,12 +933,32 @@ class DebugWorker:
                     count = len(addresses)
                     notes.append(
                         f"Line {line} stops up to {count} times per pass in "
-                        f"{display_function(function)[:200]} ({count} breakpoint locations): "
-                        "--hits and --set-hit count stops, not passes (as do session hit "
-                        f"numbers); each hit's stop (1 to {count}, in address order) says which "
-                        "location."
+                        f"{labels[function][:200]} ({count} breakpoint locations): --hits, "
+                        "--set-hit and --set-at's @HIT count stops, not passes (as do session "
+                        f"hit numbers); each hit's stop (1 to {count}, in address order) says "
+                        "which location."
                     )
-        return notes[:5]
+        return list(dict.fromkeys(notes))[:5]
+
+    def place_labels(self, names):
+        """{debugger function name: how a warning names it}: as tables show it, a Rust
+        generic's instance with its type arguments (`r1::gener<i32>`, #151) where the
+        shortened names would read alike; the whole name where that still does."""
+        names = list(dict.fromkeys(names))
+        shown = {name: display_function(name) for name in names}
+        alike = [name for name in names if list(shown.values()).count(shown[name]) > 1]
+        named = getattr(self.runtime, "instance_name", None)
+        for name in alike:
+            try:
+                instance = named({"name": name}) if named else None
+            except Exception:
+                instance = None
+            if instance:
+                shown[name] = instance
+        return {
+            name: label if list(shown.values()).count(label) == 1 or name not in alike else name
+            for name, label in shown.items()
+        }
 
     def classify_hit(self):
         """Number this stop if it is at one of the session's own breakpoints.

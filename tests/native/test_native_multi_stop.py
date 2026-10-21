@@ -66,8 +66,8 @@ def test_a_line_with_a_blocks_own_code_says_it_stops_more_than_once_per_pass(swa
     assert result["hits"] == 4
     (warning,) = per_pass(result)
     assert warning.startswith(
-        f"Line {line} stops up to 2 times per pass in main (2 breakpoint locations): --hits "
-        "and --set-hit count stops, not passes"
+        f"Line {line} stops up to 2 times per pass in main (2 breakpoint locations): --hits, "
+        "--set-hit and --set-at's @HIT count stops, not passes"
     ), warning
     # i = 1 swaps 3 and 2: its pass stops at the condition, then inside SWAP's block.
     seen = [

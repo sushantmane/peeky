@@ -102,7 +102,7 @@ def test_formats_line_says_it_stops_three_times_per_pass(movavg, capsys):
     line = where.split(":")[1]
     assert warning.startswith(
         f"Line {line} stops up to 3 times per pass in movavg::main (3 breakpoint locations): "
-        "--hits and --set-hit count stops, not passes"
+        "--hits, --set-hit and --set-at's @HIT count stops, not passes"
     ), warning
     rows = [(row["stop"], row["stops"], row["value"]) for row in result["rows"]]
     assert rows == [(stop, 3, mean) for mean in ("3.0", "4.5", "7.5", "10.5") for stop in (1, 2, 3)]
@@ -123,3 +123,64 @@ def test_a_for_header_has_two_locations_both_before_the_loop(movavg, capsys):
     result = probe(movavg, capsys, at("PUSH"), "--hits", "all")
     assert result["hits"] == 4 and not per_pass(result)
     assert not any("stop" in row for row in result["rows"])
+
+
+SHAPES = """#[inline(never)]
+fn gener<T: std::fmt::Display + Copy>(xs: &[T]) -> Vec<String> {
+    let mut out = Vec::new();
+    for x in xs {
+        out.push(format!("<{}>", x)); // GEN
+    }
+    out
+}
+
+#[inline(always)]
+fn fmt_inl(v: i32) -> String {
+    format!("[{}]", v) // INL
+}
+
+#[inline(never)]
+fn uses_inl(a: i32) -> String {
+    fmt_inl(a) + &fmt_inl(a + 1)
+}
+
+fn main() {
+    let a = gener(&[1, 2]);
+    let b = gener(&["x", "y"]);
+    println!("{:?} {:?} {}", a, b, uses_inl(5));
+}
+"""
+
+
+@pytest.mark.timeout(600)
+def test_inlined_copies_and_generic_instances_are_told_apart(movavg, capsys):
+    # Review of #160: `format!` in an `#[inline(always)]` function called twice stopped 6
+    # times for 2 calls with no warning (each location taken for a copy of its own); two
+    # instances of a generic warned twice as `shapes::gener`, alike.
+    (movavg / "src/main.rs").write_text(SHAPES)
+    (movavg / "Cargo.toml").write_text(MANIFEST.replace("movavg", "shapes"))
+    (movavg / "Cargo.lock").write_text(LOCK.replace("movavg", "shapes"))
+
+    def run(marker):
+        line = next(i for i, text in enumerate(SHAPES.splitlines(), 1) if f"// {marker}" in text)
+        command = ["probe", str(movavg), "--at", f"src/main.rs:{line}", "--capture", "x"]
+        assert main([*command, "--hits", "all", "--json", "--quiet"]) == 0
+        result = json.loads(capsys.readouterr().out)
+        assert result["status"] == "completed" and "[5][6]" in result["output"], result
+        return line, result
+
+    line, result = run("INL")
+    assert result["hits"] == 6
+    (warning,) = per_pass(result)
+    assert warning.startswith(
+        f"Line {line} stops up to 3 times per pass in shapes::fmt_inl (3 breakpoint locations)"
+    ), warning
+    assert [row["stop"] for row in result["rows"]] == [1, 2, 3, 1, 2, 3]
+    line, result = run("GEN")
+    assert result["hits"] == 12
+    # One per instance, in the order of their code.
+    assert sorted(w.split(" (")[0] for w in per_pass(result)) == [
+        f"Line {line} stops up to 3 times per pass in shapes::gener<&str>",
+        f"Line {line} stops up to 3 times per pass in shapes::gener<i32>",
+    ], result["warnings"]
+    assert any(w.startswith(f"Line {line} stopped in 2 functions") for w in result["warnings"])

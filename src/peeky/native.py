@@ -2350,16 +2350,20 @@ def _writable_integer(variable):
 
 
 # One location of LLDB's `breakpoint list` (#157): `  1.2: where = movavg`movavg::main::h…
-# + 1008 at main.rs:29:18, address = 0x0000000100000ee4, resolved, hit count = 0`. An
-# unresolved location has no address and is left out.
+# + 1008 at main.rs:29:18, address = 0x0000000100000ee4, resolved, hit count = 0`. Before
+# the program loads, its address is the module's: `address = m[0x0000000100000558],
+# unresolved`.
 _BREAKPOINT_LOCATION = re.compile(
-    r"^ *([0-9]{1,9})\.[0-9]{1,9}: where = (.*), address = (0x[0-9a-fA-F]{1,16})(?:,.*)?[ \t]*$",
+    r"^ *([0-9]{1,9})\.[0-9]{1,9}: where = (.*), address = (?:[^\s,\[\]]+\[)?"
+    r"(0x[0-9a-fA-F]{1,16})\]?(?:,.*)?[ \t]*$",
     re.MULTILINE,
 )
-# Its `where`: module`function, its offset there, the function inlined at it, file:line.
+# Its `where`: module`function, its offset there, then for inlined code the function
+# inlined at it and its offset in that copy (`uses_inl + 72 [inlined] fmt_inl + 12`), and
+# file:line.
 _LOCATION_WHERE = re.compile(
-    r"(?:[^`]*`)?(.+?)(?: \+ ([0-9]{1,12}))?(?: \[inlined\] (.+?))? at [^:]+:([0-9]{1,9})"
-    r"(?::[0-9]{1,9})?"
+    r"(?:[^`]*`)?(.+?)(?: \+ ([0-9]{1,12}))?(?: \[inlined\] (.+?)(?: \+ ([0-9]{1,12}))?)?"
+    r" at [^:]+:([0-9]{1,9})(?::[0-9]{1,9})?"
 )
 MAX_LOCATIONS = 256
 
@@ -2368,10 +2372,10 @@ def breakpoint_locations(text, ids):
     """Where LLDB placed the breakpoints ``ids`` (#157), from its `breakpoint list` text:
     [{"id", "line", "address", "function", "place"}], each location with the function
     that holds it. ``place`` names the code it is in: the function's start (its address
-    less its offset), or, for code inlined there, the location itself, since two
-    inlined copies of a function are two calls (each stops once) that LLDB's text cannot
-    tell apart from one copy with two locations. Unreadable lines are left out; None
-    past MAX_LOCATIONS, where a count would fall short."""
+    less its offset), or, for code inlined there, that inlined copy's start (less its
+    offset in the copy): two copies are two calls, each stopping at its own locations.
+    Unreadable lines are left out; None past MAX_LOCATIONS, where a count would fall
+    short."""
     found = []
     for match in _BREAKPOINT_LOCATION.finditer(text):
         if int(match[1]) not in ids:
@@ -2381,15 +2385,18 @@ def breakpoint_locations(text, ids):
             continue
         address = int(match[3], 16)
         offset = int(where[2]) if where[2] else 0
-        if offset > address:
+        inner = int(where[4]) if where[4] else 0
+        if offset > address or inner > address:
             continue
         found.append(
             {
                 "id": int(match[1]),
-                "line": int(where[4]),
+                "line": int(where[5]),
                 "address": address,
                 "function": where[3] or where[1],
-                "place": f"inlined at 0x{address:x}" if where[3] else f"0x{address - offset:x}",
+                "place": (
+                    f"inlined at 0x{address - inner:x}" if where[3] else f"0x{address - offset:x}"
+                ),
             }
         )
         if len(found) > MAX_LOCATIONS:
