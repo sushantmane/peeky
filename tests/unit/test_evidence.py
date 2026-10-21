@@ -1511,3 +1511,51 @@ def test_masking_leaves_quoted_text_alone(store):
     assert evidence._no_addresses('"x at 0x00000001deadbeef"', "java") == (
         '"x at 0x00000001deadbeef"'
     )
+
+
+def test_a_qualified_value_says_so_whatever_else_its_diff_row_says(store):
+    # Review 3 of #139 (PR #145): one note per row, and `missing in run b`, `intervention
+    # only in run a` and `type …` won over `qualified`, so a noted leftover read plain
+    # (and came first).
+    def run(hits, extra=False, typed="int", sets=False):
+        rows = []
+        for hit in range(1, hits + 1):
+            k = str(hit * 7 + (typed == "long"))
+            rows += [(hit, "observed", "n", str(hit)), (hit, "observed", "k", k)]
+        if extra:
+            rows.append((1, "observed", "extra", "5"))
+        if sets:
+            rows += [(2, "after-set", "n", "1"), (2, "after-set", "k", "0")]
+        recorded = captured(rows, set=[["n", "1"]] if sets else [])
+        for row in recorded["rows"]:
+            row["type"] = typed if row["selector"] == "k" else "int"
+            if row["selector"] in ("k", "extra"):
+                row["note"] = "may be the last pass's value, or leftovers on the first pass"
+        return recorded
+
+    evidence.record(store, run(3, extra=True))
+    evidence.record(store, run(2, typed="long"))
+    qualified = "qualified (run a: note): not evidence by itself; queries run shows why"
+    diff = evidence.run_query(store, "diff")["rows"]
+    shown = [(row["hit"], row["selector"], row["note"]) for row in diff]
+    assert shown == [
+        (3, "n", "missing in run b"),
+        (1, "k", "type int -> long; " + qualified.replace("a: note", "a: note, run b: note")),
+        (2, "k", "type int -> long; " + qualified.replace("a: note", "a: note, run b: note")),
+        (3, "k", "missing in run b; " + qualified),
+        (1, "extra", "only in run a (one row per selector: its first hit); " + qualified),
+    ], shown
+    compare = evidence.run_query(store, "compare")["rows"]
+    assert {(row["hit"], row["selector"]): row["note"] for row in compare}[3, "k"] == (
+        "missing in run b; " + qualified
+    )
+
+    evidence.record(store, run(2, sets=True))
+    evidence.record(store, run(2))
+    diff = evidence.run_query(store, "diff")["rows"]
+    shown = [(row["hit"], row["phase"], row["selector"], row["note"]) for row in diff]
+    assert shown == [
+        (None, None, "(sets)", "the runs made different interventions (--set)"),
+        (2, "after-set", "n", "intervention only in run a"),
+        (2, "after-set", "k", "intervention only in run a; " + qualified),
+    ], shown

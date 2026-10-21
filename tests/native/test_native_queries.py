@@ -198,9 +198,9 @@ def test_diff_hits_and_values_never_count_leftovers_or_quoted_hex(bins, capsys):
         for marker in ("FIRST", "TEXT")
     }
 
-    def probe(marker, capture, seed):
+    def probe(marker, capture, seed, *extra):
         argv = ["probe", str(bins), "--at", f"bins.c:{lines[marker]}", "--capture", capture]
-        assert main([*argv, "--hits", "all", "--quiet", "--", seed]) == 0
+        assert main([*argv, "--hits", "all", *extra, "--quiet", "--", seed]) == 0
         capsys.readouterr()
 
     probe("FIRST", "k,v,n", "1000")
@@ -234,3 +234,16 @@ def test_diff_hits_and_values_never_count_leftovers_or_quoted_hex(bins, capsys):
         "buf": None,
         "name": None,
     }
+
+    # Review 3: a noted value's row said only `missing in run b` (fewer hits) or
+    # `intervention only in run a` (a --set), and came first.
+    probe("FIRST", "k,v,n", "1000", "--hits", "2")
+    probe("FIRST", "k,v,n", "1000", "--set", "n=1", "--set-hit", "2")
+    for a, b, said in ((1, 5, "missing in run b"), (6, 1, "intervention only in run a")):
+        diff = queried(capsys, "diff", "--param", f"a={a}", "--param", f"b={b}")["rows"]
+        values = [row for row in diff if not row["selector"].startswith("(")]
+        noted = [row for row in values if row["selector"] in ("k", "v")]
+        # A plain value's row first (`n`: a hit one run did not reach).
+        assert values[0]["selector"] == "n" and "qualified" not in values[0]["note"], diff
+        assert any(row["note"].startswith(said + "; qualified (run a: note") for row in noted)
+        assert all("qualified (" in (row["note"] or "") for row in noted), diff

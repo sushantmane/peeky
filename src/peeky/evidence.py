@@ -297,7 +297,7 @@ _PAIR = f"""WITH a AS (SELECT hit, phase, selector, {_shown()} AS v, type AS t, 
   b AS (SELECT hit, phase, selector, {_shown()} AS v, type AS t, rowid AS pos,
     {_caveat()} AS c FROM captures WHERE run_id = {_B}),
   k AS (SELECT hit, phase, selector FROM a UNION SELECT hit, phase, selector FROM b),
-  pair AS (SELECT k.hit, k.phase, k.selector, a.v AS value_a, b.v AS value_b,
+  kinds AS (SELECT k.hit, k.phase, k.selector, a.v AS value_a, b.v AS value_b,
     a.v IS NOT b.v AS differs, COALESCE(a.pos, b.pos) AS pos,
     CASE
       WHEN k.selector NOT IN {_ASKED.format(_B)} THEN 'only in run a'
@@ -308,14 +308,17 @@ _PAIR = f"""WITH a AS (SELECT hit, phase, selector, {_shown()} AS v, type AS t, 
       WHEN a.pos IS NULL THEN 'missing in run a'
       WHEN a.v IS NOT b.v AND a.t IS NOT NULL AND b.t IS NOT NULL AND a.t IS NOT b.t
         THEN 'type ' || a.t || ' -> ' || b.t
-      WHEN a.c IS NOT NULL OR b.c IS NOT NULL THEN 'qualified (' || CASE
-        WHEN a.c IS NOT NULL AND b.c IS NOT NULL THEN 'run a: ' || a.c || ', run b: ' || b.c
-        WHEN a.c IS NOT NULL THEN 'run a: ' || a.c ELSE 'run b: ' || b.c END
-        || '): not evidence by itself; queries run shows why'
       WHEN a.v IS NOT b.v AND no_addresses(a.v, {_LANGUAGE.format(_A)})
         IS no_addresses(b.v, {_LANGUAGE.format(_B)}) THEN 'addresses only'
-    END AS note
-    FROM k LEFT JOIN a USING (hit, phase, selector) LEFT JOIN b USING (hit, phase, selector))"""
+    END AS kind,
+    CASE WHEN a.c IS NOT NULL OR b.c IS NOT NULL THEN 'qualified (' || CASE
+      WHEN a.c IS NOT NULL AND b.c IS NOT NULL THEN 'run a: ' || a.c || ', run b: ' || b.c
+      WHEN a.c IS NOT NULL THEN 'run a: ' || a.c ELSE 'run b: ' || b.c END
+      || '): not evidence by itself; queries run shows why' END AS qualified
+    FROM k LEFT JOIN a USING (hit, phase, selector) LEFT JOIN b USING (hit, phase, selector)),
+  -- Whatever else a row says, a qualified value says so too (review 3 of #139).
+  pair AS (SELECT *, CASE WHEN qualified IS NULL THEN kind WHEN kind IS NULL THEN qualified
+    ELSE kind || '; ' || qualified END AS note FROM kinds)"""
 _PAIR_COLUMNS = (
     f"{_A} AS run_a, {_B} AS run_b, hit, phase, selector, value_a, value_b, differs, note"
 )
@@ -328,22 +331,25 @@ _PAIR_ORDER = " ORDER BY hit, phase = 'after-set', pos"
 # for selectors only one run captured). Then real divergences, in hit and capture order
 # (a hit only one run reached is one); then values changed by an intervention only one
 # run made; then values a view or a note qualifies in either run (a C local's leftovers
-# on a `do` body's first line, a moved Rust local's bytes: review of #139); then values
+# on a `do` body's first line, a moved Rust local's bytes: review of #139), whatever else
+# their note says (`missing in run b; qualified (run a: note)`); then values
 # that differ only in memory addresses; last, one row per selector only one run asked
 # for. Nothing is dropped: an address-only or qualified difference may still be real.
 _DIFF = f"""{_PAIR}
 SELECT {_PAIR_COLUMNS} FROM (
   SELECT 10 AS rank, hit, phase, selector, value_a, value_b, differs, note, pos FROM pair
-    WHERE differs AND (note IS NULL OR note LIKE 'missing%' OR note LIKE 'type %')
+    WHERE differs AND qualified IS NULL
+    AND (kind IS NULL OR kind LIKE 'missing%' OR kind LIKE 'type %')
   UNION ALL SELECT 11, hit, phase, selector, value_a, value_b, differs, note, pos FROM pair
-    WHERE note LIKE 'intervention only%'
+    WHERE qualified IS NULL AND kind LIKE 'intervention only%'
   UNION ALL SELECT 12, hit, phase, selector, value_a, value_b, differs, note, pos FROM pair
-    WHERE differs AND note LIKE 'qualified%'
+    WHERE differs AND qualified IS NOT NULL AND (kind IS NULL OR kind NOT LIKE 'only in%')
   UNION ALL SELECT 13, hit, phase, selector, value_a, value_b, differs, note, pos FROM pair
-    WHERE note = 'addresses only'
+    WHERE qualified IS NULL AND kind = 'addresses only'
+  -- hit, the values and qualified are those of the MIN(pos) row (SQLite's bare columns).
   UNION ALL SELECT 14, hit, phase, selector, value_a, value_b, 1,
-    note || ' (one row per selector: its first hit)', MIN(pos) FROM pair
-    WHERE note LIKE 'only in%' GROUP BY selector, note
+    kind || ' (one row per selector: its first hit)' || COALESCE('; ' || qualified, ''),
+    MIN(pos) FROM pair WHERE kind LIKE 'only in%' GROUP BY selector, kind
   UNION ALL SELECT 0, NULL, NULL, '(status)', ra.status, rb.status, 1, 'outcome differs', 0
     FROM runs ra, runs rb WHERE ra.run_id = {_A} AND rb.run_id = {_B}
     AND ra.status IS NOT rb.status

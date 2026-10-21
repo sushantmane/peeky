@@ -297,7 +297,7 @@ run_a  run_b  hit   phase     selector  value_a                        value_b  
 1. **What the runs did and how they differed**, one row each where it applies: `(status)` and `(output)` when the runs' outcomes or outputs differ; `(edit)` when one run built a candidate edit; `(source)` when two runs that are not candidates ran different source text (another copy of the file); `(line)` when the runs stopped at different lines (their values then differ partly because of where they were read); `(args)` when they ran with different program arguments; `(sets)` when they made different interventions. Check these rows before crediting an edit with a difference.
 2. **Real differences**, in hit order and then in `--capture` order: the first of them is the first divergence.
 3. Values that only one run's `--set` changed (`intervention only in run b`).
-4. Values a view or a note qualifies in either run (`note: qualified (run a: note, run b: note): not evidence by itself`): a C local's leftovers on a `do` body's first line, a moved Rust local's bytes (`stale`). Two runs' leftovers differ with anything that touched the stack before, so such a row is not a divergence of the program; `queries run` shows each note.
+4. Values a view or a note qualifies in either run (`note: qualified (run a: note, run b: note): not evidence by itself`): a C local's leftovers on a `do` body's first line, a moved Rust local's bytes (`stale`). Two runs' leftovers differ with anything that touched the stack before, so such a row is not a divergence of the program; `queries run` shows each note. Whatever else a row says, a qualified value's note says so too, and the row ranks here: `missing in run b; qualified (run a: note)`, `intervention only in run a; qualified (run a: note)`.
 5. Values that differ only in heap or stack addresses (`note: addresses only`, for example a C string's pointer; NULL is never treated as an address). Text inside quotes is the program's data, never an address: `"0x00000001deadbeef"` in a `char[32]` is a real difference.
 6. Last, one row per selector that only one run asked for (`only in run a`, with its first hit's value).
 
@@ -325,9 +325,11 @@ peeky queries set_effect
 ```
 
 ```
-hit  selector  observed  after_set  interventions
-1    start     3         0          start: 3 -> 0
+hit  selector  observed  after_set  caveat_observed  caveat_after_set  interventions
+1    start     3         0          NULL             NULL              start: 3 -> 0
 ```
+
+`caveat_observed` and `caveat_after_set` name a view or `note` that qualifies either value, as `hits` does.
 
 Pass `--param a=<run> --param b=<run>` to `diff`, `compare`, `outputs` and `join` to pick specific runs.
 
