@@ -1872,3 +1872,44 @@ def test_a_function_s_lexical_blocks_name_their_variables_and_code(tmp_path):
     # A block without code gives its function no blocks: none is told apart.
     (root,) = parse_dies(blocks_dump(ranges=False), units=False)
     assert code_blocks(root, RustUnit(0, 0x0B, 0x1000, 0, APP))["h8491af1d40105d89"] == ()
+
+
+def test_describe_lists_the_locals_no_stop_can_change_per_function():
+    # #138: the `mutable:` line names each function's locals kept in a register.
+    from peeky.cli import _describe_text
+
+    text = _describe_text(
+        {
+            "language": "rust",
+            "root": "/crate",
+            "breakpoint_lines": {},
+            "scopes": [
+                {"scope": "limiter::allow", "lines": [9, 20], "names": ["limit", "now", "w"]}
+                | {"never_settable": {"limit": "register", "now": "register"}}
+                | {"source": "src/main.rs"},
+                {"scope": "app::aw::{{closure}}", "lines": [86, 94], "names": ["k"]}
+                | {"never_settable": {"k": "async state"}, "source": "src/main.rs"},
+                {"scope": "limiter::main", "lines": [22, 35], "names": ["w"]}
+                | {"source": "src/main.rs"},
+                {"scope": "bind::shadow", "lines": [3, 9], "names": ["n", "x"]}
+                | {
+                    "never_settable": {
+                        "n": "register",
+                        "x": "another binding in a register (line 4)",
+                    }
+                }
+                | {"source": "src/main.rs"},
+                {"scope": "bind::other::far", "lines": [3, 5], "names": ["a", "y"]}
+                | {"never_settable": {"a": "inlined", "y": "inlined"}, "source": "src/other.rs"},
+            ],
+            "mutable_types": "integer root locals",
+            "commands": {},
+            "timing": {"advice": "fast"},
+        }
+    )
+    [line] = [line for line in text.splitlines() if line.startswith("mutable:")]
+    assert "COOKBOOK 6.6): limiter::allow: limit, now; bind::shadow: n. Never settable, a" in line
+    # Review round 3: as the rows say, the binding to black-box, and inlining.
+    assert "every one in memory, COOKBOOK 6.6): bind::shadow: x (line 4). Never" in line
+    assert "change the value in the caller): bind::other::far: a, y. Never settable, held" in line
+    assert line.endswith("a local after the `.await`): app::aw::{{closure}}: k"), line

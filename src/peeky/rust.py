@@ -628,7 +628,8 @@ class RustTarget:
                 prepared.workspace,
                 cargo_inputs.inputs,
             )
-            memory, parameters = ir_locals(binary.with_name(binary.name + ".ll"))
+            declarations = {}
+            memory, parameters = ir_locals(binary.with_name(binary.name + ".ll"), declarations)
             owned = None
             if wrapper is not None:
                 owned = owned_locals(
@@ -683,6 +684,8 @@ class RustTarget:
             session.test_target = prepared.workspace / uplift
             session.units = tuple(units)
             session.code_blocks = blocks
+            # Each local's IR declarations, to say why a name is not in memory (#138).
+            session.declarations_ir = declarations
             session.assert_current()
             return session
         except BaseException as exc:
@@ -751,6 +754,36 @@ def _require_declared_dependencies(executables, workspace, inputs):
 RUST_INTEGERS = frozenset(
     {"short", "unsigned short", "int", "unsigned int", "long", "unsigned long"}
 )
+
+
+_HASH_IN = re.compile(r"17(h[0-9a-f]{16})E")
+
+# The MIR's names for the integers `set` changes (as RUST_INTEGERS are LLDB's).
+_SETTABLE_RUST = frozenset({"i16", "i32", "i64", "u16", "u32", "u64", "isize", "usize"})
+
+
+def _never_rank(why):
+    """Which of a name's reasons `describe` gives where a generic's instances differ:
+    first the ones no edit to the binding itself helps."""
+    starts = ("async state", "inlined", "another binding")
+    return next((rank for rank, start in enumerate(starts) if why.startswith(start)), 3)
+
+
+def _state_held(body, name):
+    """True if every binding of ``name`` in the MIR ``body`` of an async body is kept in
+    its state: a local the coroutine layout saves across an `.await` (``saved``), or a
+    field of the state (a parameter's, `debug n => ((*_36).0: i32)`). The poll reaches
+    it through a pointer at every stop."""
+    if body is None or body.coroutine is None:
+        return False
+    state = re.compile(rf"\(+\*_{body.coroutine}\)")
+    bindings = body.bindings.get(name, ())
+    return bool(bindings) and all(
+        binding[0] in body.saved
+        if binding[0] is not None
+        else bool(state.match(body.places.get((name, *binding[1:3], binding[4]), "")))
+        for binding in bindings
+    )
 
 
 def _plain(name):
@@ -1029,7 +1062,46 @@ class RustSession(NativeSession):
             workspace,
             tuple(self.lines),
             hidden=self._macro_binding(),
+            never=self._register_names,
         )
+
+    def _register_names(self, linkages, names):
+        """For `describe` (#138): of a function's integer locals (``names``: {name:
+        types}), those no stop can change, and why, as their rows say (see
+        never_settable_row): `async state` where an async body keeps one across an
+        `.await` in its state; `inlined` where only a copy of the function inlined where
+        it is called keeps it out of memory; `another binding in a register (line N)`
+        where a binding of the name has a slot but the one declared on line N has none
+        (the IR's proof is per name); else `register`."""
+        if self._optimized() or not self.memory:
+            return {}
+        hashes = sorted(
+            {found[1] for linkage in linkages if (found := _HASH_IN.search(linkage or ""))}
+        )
+        if not hashes:
+            return {}
+        proofs = getattr(self, "owned", None)
+        bodies = {hashed: proofs.body(hashed) if proofs is not None else None for hashed in hashes}
+
+        def why(hashed, name):
+            if _state_held(bodies[hashed], name):
+                return "async state"
+            kind, lines = self._not_in_memory(hashed, name)
+            if kind == "inlined":
+                return "inlined"
+            if kind in ("other", "some"):
+                return f"another binding in a register (line {', '.join(map(str, lines))})"
+            return "register"
+
+        found = {}
+        for name, kinds in names.items():
+            if not kinds or not set(kinds) <= _SETTABLE_RUST:
+                continue
+            if any(self.memory.get((hashed, name)) is True for hashed in hashes):
+                continue
+            whys = {why(hashed, name) for hashed in hashes}
+            found[name] = min(whys, key=lambda each: (_never_rank(each), each))
+        return found
 
     def _macro_binding(self):
         """For `describe`, which bindings the DWARF declares are a macro's own (sixth
@@ -1123,6 +1195,34 @@ class RustSession(NativeSession):
                 "read, so a change made here would have no effect"
             )
         hashed = _frame_hash(frame)
+        proofs = getattr(self, "owned", None)
+        if (
+            hashed
+            and self.memory.get((hashed[1], _plain(name))) is not True
+            and _state_held(proofs.body(hashed[1]) if proofs is not None else None, _plain(name))
+        ):
+            where = display_function((frame or {}).get("name")) or "this frame"
+            raise ValueError(
+                f"Rust mutation requires a local the program keeps in memory; {name!r} in "
+                f"{where} is held in the async body's state across an `.await` (a field of "
+                "the future, which the poll reaches through a pointer Peeky never writes), "
+                "at every stop of the body. Change what it is computed from before it is "
+                "assigned, or copy it into a local of the poll's own after the `.await` with "
+                "a candidate edit, in the same probe"
+            )
+        if hashed and self.memory.get((hashed[1], _plain(name))) is not True:
+            place = frame or {}
+            why = self._not_in_memory(
+                hashed[1], name, place.get("line"), (place.get("source") or {}).get("path")
+            )
+            if why[0] != "own":
+                # Another binding of the name, or an inlined copy, is what the proof lacks.
+                where = display_function(place.get("name")) or "this frame"
+                rule, advice = self._register_text(where, _plain(name), why)
+                raise ValueError(
+                    f"Rust mutation requires a local the program keeps in memory; {rule}. "
+                    + advice.replace(", with this `--set`", ", with `--set` in the same probe")
+                )
         if not hashed or self.memory.get((hashed[1], _plain(name))) is not True:
             where = display_function((frame or {}).get("name")) or "this frame"
             raise ValueError(
@@ -1133,6 +1233,332 @@ class RustSession(NativeSession):
                 "(`std::hint::black_box(&mut x);` after its `let`, with `--set x=…` in the same "
                 "probe); otherwise edit the source and run verify"
             )
+
+    def never_settable_row(self, variable, frame, member=False):
+        """`register` where no stop of this build can change the row (#138): the build's
+        IR keeps its local (for ``member``, the local holding the field or element) only
+        in a register in the frame's function, so the debugger shows a copy. A root row
+        only when it is an integer, which nothing else would rule out. Else None."""
+        if self._optimized():
+            return None
+        kind = str(variable.get("type") or "")
+        if not member and (kind not in RUST_INTEGERS or not _writable_integer(variable)):
+            return None
+        if member and (kind.endswith("*") or kind.startswith("&")):
+            # A reference's fields are refused for that (never written through).
+            return None
+        hashed = _frame_hash(frame)
+        if not hashed or not self.memory:
+            return None
+        plain = _plain(variable.get("name"))
+        if self.memory.get((hashed[1], plain)) is True:
+            return None
+        proofs = getattr(self, "owned", None)
+        if _state_held(proofs.body(hashed[1]) if proofs is not None else None, plain):
+            return "async state"
+        place = frame or {}
+        kind, lines = self._not_in_memory(
+            hashed[1],
+            variable.get("name"),
+            place.get("line"),
+            (place.get("source") or {}).get("path"),
+        )
+        if kind == "inlined":
+            return "inlined"
+        if kind in ("other", "some"):
+            return f"another binding in a register (line {', '.join(map(str, lines))})"
+        return "register"
+
+    def _not_in_memory(self, hashed, name, line=None, path=None):
+        """Why the IR proves no memory for ``name`` (as LLDB names it: `x @ main.rs:5`
+        too) in the function ``hashed``, a proof that covers every binding of its name
+        there (rust_ir): ("own", None) where the binding asked for (the one in scope at
+        ``line`` of ``path``) is itself kept in a register, or the IR does not say;
+        ("other", [lines]) where it has a slot but other bindings of its name, declared
+        on those lines, are kept in a register; ("inlined", None) where every binding
+        without a slot is in a copy of the function inlined where it is called."""
+        plain, _, at = str(name).partition(" @ ")
+        found = (getattr(self, "declarations_ir", None) or {}).get((hashed, plain), [])
+        unproven = [(number, kind) for number, kind in found if kind != "slot"]
+        if not unproven:
+            return ("own", None)
+        if all(kind == "inlined" for _, kind in unproven):
+            return ("inlined", None)
+        asked = at.rpartition(":")[2]
+        asked = int(asked) if asked.isdigit() else self._binding_line(hashed, plain, line, path)
+        copies = sorted({number for number, kind in unproven if kind == "copy" and number})
+        own = [kind for number, kind in found if asked is not None and number == asked]
+        if own and all(kind == "slot" for kind in own) and copies:
+            return ("other", copies)
+        if (
+            asked is None
+            and copies
+            and any(kind == "slot" for _, kind in found)
+            and len({number for number, _ in found}) > 1
+        ):
+            # Which binding is asked for is not told (several in scope): name the ones
+            # kept in a register.
+            return ("some", copies)
+        return ("own", None)
+
+    def _binding_line(self, hashed, name, line, path):
+        """The line the binding of ``name`` in scope at ``line`` of ``path`` is declared
+        on, in the MIR body of ``hashed``; None where that is not one binding."""
+        proofs = getattr(self, "owned", None)
+        body = proofs.body(hashed) if proofs is not None else None
+        if body is None:
+            return None
+        bindings = body.bindings.get(name, ())
+        if len(bindings) == 1:
+            return bindings[0][2]
+        if line is None:
+            return None
+        local = proofs._local(body, name, line, path)
+        lines = {binding[2] for binding in bindings if local is not None and binding[0] == local}
+        return lines.pop() if len(lines) == 1 else None
+
+    @staticmethod
+    def _register_text(function, name, why, parameter=False):
+        """The rule and its way around for a local the IR proves no memory for (see
+        _not_in_memory), in ``function``: (the rule, the advice)."""
+        kind, lines = why
+        if kind == "inlined":
+            return (
+                f"in {function}, `{name}` is a local of a function inlined where it is "
+                "called (`#[inline(always)]`): Peeky proves no slot for a local of an "
+                "inlined copy, so a change would not reach the program",
+                "Inlining prevents the change: drop `#[inline(always)]` with a candidate "
+                "edit, or change the value where it comes from, in the caller",
+            )
+        if kind in ("other", "some"):
+            listed = ", ".join(map(str, lines))
+            some = "line" if len(lines) == 1 else "lines"
+            return (
+                (
+                    f"in {function}, `{name}` has a slot of its own, but another binding of "
+                    f"`{name}` (declared on {some} {listed}) is kept in a register"
+                    if kind == "other"
+                    else f"in {function}, the binding of `{name}` declared on {some} {listed} "
+                    "is kept in a register (the debugger only shows a copy of it)"
+                )
+                + ", and Peeky proves a name in memory only when every binding of it is",
+                f"A candidate edit keeps that one in memory too, in the same probe "
+                f"(COOKBOOK 6.6): `std::hint::black_box(&mut {name});` after the `let` on "
+                f"{some} {listed} (declared `let mut`), or a new name for one of them",
+            )
+        what = "parameter" if parameter else "local"
+        keep = (
+            f"`mut {name}` in the signature and `std::hint::black_box(&mut {name});` as "
+            "the function's first statement"
+            if parameter
+            else f"`std::hint::black_box(&mut {name});` after its `let` (declared `let mut`)"
+        )
+        return (
+            f"in {function}, `{name}` is a {what} kept in a register (the debugger only "
+            "shows a copy of it, so a change would not affect the program)",
+            f"A candidate edit keeps it in memory, in the same probe (COOKBOOK 6.6): {keep}, "
+            "by `--old`/`--new`, with this `--set`",
+        )
+
+    def _line_functions(self, source, line):
+        """[(hash, IrFunction)] of every function that can stop at ``line`` of
+        ``source``: one with code of its own there, one inlined there (`copies`), or one
+        whose call there LLVM inlined. Empty when the IR was not read."""
+        proofs = getattr(self, "owned", None)
+        found = []
+        for hashed, function in sorted((proofs.functions if proofs else {}).items()):
+            if function.file != source:
+                continue
+            own = any(line in lines for lines in function.blocks.values())
+            if own or line in function.copies or line in function.inlined:
+                found.append((hashed, function))
+        return found
+
+    def never_settable(self, program, lines, names):
+        """Why a probe's `--set` of one of ``names`` can change nothing at any stop of
+        ``lines`` of ``program`` in this build (#138): the refusal, as (code, message)
+        where no such local exists there, else as its message; or None. Only what the
+        build fixes counts, and only where it fails in every function that can stop there (a
+        closure, a generic's instances, an inlined copy): the IR keeping the local in a
+        register (or no such local), its MIR type for a root, and for a field or element
+        the debug information's types on the way (#105). What depends on the stop (a
+        statement under way, an initialization) is judged there."""
+        from peeky.fields import Unsettable
+        from peeky.probe import parse_selector
+
+        proofs = getattr(self, "owned", None)
+        if not self.memory or proofs is None or not getattr(proofs, "precise", True):
+            # The IR was not read (too large): nothing is known to be in a register. A
+            # crate's `#[collapse_debuginfo]` macro can put another file's function on
+            # the line: which functions stop there is not known.
+            return None
+        try:
+            source = Path(program).resolve().relative_to(self.prepared.source_root).as_posix()
+        except (OSError, ValueError):
+            return None
+        stops = set(self.lines.get(source, ()))
+        for name in names:
+            try:
+                root, *steps = parse_selector(name)
+            except ValueError:
+                continue
+            for line in lines:
+                functions = self._line_functions(source, line)
+                if line not in stops or not functions:
+                    # The debugger moves such a breakpoint; where it stops is not known.
+                    continue
+                failures = []
+                for hashed, function in functions:
+                    try:
+                        why = self._never_in(hashed, root, steps, source, line)
+                    except Unsettable:
+                        why = None
+                    if why is None:
+                        break
+                    failures.append((self._function_name(function), why))
+                else:
+                    return self._never_message(name, root, steps, source, line, failures)
+        return None
+
+    @staticmethod
+    def _function_name(function):
+        return "::".join((*function.ancestors, function.name))
+
+    def _never_in(self, hashed, root, steps, source, line):
+        """Why ``root`` (and the path ``steps`` into it) can never change in the function
+        ``hashed``: (kind, detail), or None. Raises fields.Unsettable when the debug
+        information Peeky needs could not be read (nothing is ruled out then)."""
+        from peeky.fields import Unsettable, debugger_steps, settable_member
+
+        plain = _plain(root)
+        proofs = getattr(self, "owned", None)
+        body = proofs.body(hashed) if proofs is not None else None
+        kept = self.memory.get((hashed, plain))
+        if kept is None and body is not None and plain not in body.bindings:
+            return ("absent", f"has no local `{plain}`")
+        # Its type first, as `set` judges it.
+        if not steps:
+            declared = proofs.declared_type(hashed, root, line, source) if proofs else None
+            if declared is not None and declared not in _SETTABLE_RUST:
+                return (
+                    "type",
+                    f"`{root}` is a {declared}; only integer locals (i16 to i64, u16 to u64, "
+                    "isize, usize) can be changed",
+                )
+        else:
+            functions, graph = self._field_types()
+            types = functions.get(hashed)
+            if types is None:
+                return ("type", "Peeky cannot match it to the build's debug information")
+            try:
+                kind, framed = self._declared_type(types, root)
+                # As the stop's walk reads the selector (`sp[-1]`, `sp[01]` are `sp[1]`).
+                named = debugger_steps(graph, kind, root, steps)
+                if named is None:
+                    return None
+                settable_member(graph, kind, root, named)
+                if not framed:
+                    raise Unsettable(
+                        f"`{root}` is not kept in this frame's own memory (a static, or a "
+                        "value the debug information places in registers)"
+                    )
+            except Unsettable as exc:
+                return ("type", str(exc))
+        if kept is True:
+            return None
+        if _state_held(body, plain):
+            return ("state", plain)
+        if kept is None and body is None:
+            return ("unproven", plain)
+        parameter = body is not None and any(
+            binding[0] in body.arguments for binding in body.bindings.get(plain, ())
+        )
+        return ("register", (parameter, self._not_in_memory(hashed, root, line, source)))
+
+    def _never_message(self, name, root, steps, source, line, failures):
+        """The refusal for a `--set` that ``failures`` [(function, (kind, detail))] rule
+        out in every function at ``line``, naming each rule and what to do instead."""
+        plain = _plain(root)
+        parts, registers, states = [], set(), False  # registers: the advice for each
+        for function, (kind, detail) in failures:
+            if kind == "register":
+                parameter, why = detail
+                rule, advice = self._register_text(function, plain, why, parameter)
+                parts.append(rule)
+                registers.add(advice)
+            elif kind == "state":
+                states = True
+                parts.append(
+                    f"in {function}, `{plain}` is held in the async body's state across an "
+                    "`.await` (a field of the future, which the poll reaches through a pointer "
+                    "Peeky never writes) at every stop of the body"
+                )
+            elif kind == "absent":
+                parts.append(f"{function} {detail}")
+            elif kind == "unproven":
+                registers.add(self._register_text(function, plain, ("own", None))[1])
+                parts.append(
+                    f"in {function}, the build's IR gives `{plain}` no memory slot of its own "
+                    "(a register, or no such local), so a change would not affect the program"
+                )
+            else:
+                parts.append(f"in {function}, {detail}")
+        text = (
+            f"`{name}` cannot be changed at {source}:{line}, at any stop of this build: "
+            + "; ".join(dict.fromkeys(parts))
+            + ". Refused before the program runs: nothing ran"
+        )
+        if all(kind == "absent" for _, (kind, _) in failures):
+            # No function that can stop there has such a local, as `set` would find.
+            listed = self._settable_names(source, line)
+            return (
+                "NOT_FOUND",
+                text + self._settable_here(listed),
+            )
+        for advice in sorted(registers):
+            text += f". {advice}"
+        if states:
+            text += (
+                ". Change what it is computed from before it is assigned, or copy it into a "
+                "local of the poll's own after the `.await` with a candidate edit, in the "
+                f"same probe (`let mut {plain}2 = {plain}; std::hint::black_box(&mut "
+                f"{plain}2);` on a line before the stop's, then use and set `{plain}2`)"
+            )
+        listed = self._settable_names(source, line)
+        return text + self._settable_here(listed)
+
+    def _settable_names(self, source, line):
+        """The integer locals the build keeps in memory, bound in scopes of ``line``:
+        those `set` may change there once assigned (the stop decides the rest), as
+        selectors name them: `z @ main.rs:10` where several of the name are in scope,
+        as LLDB shows them."""
+        proofs = getattr(self, "owned", None)
+        found = set()
+        for hashed, _ in self._line_functions(source, line):
+            body = proofs.body(hashed) if proofs is not None else None
+            visible = body.visible_scopes(line, source) if body is not None else None
+            if visible is None:
+                continue
+            for name, bindings in body.bindings.items():
+                if self.memory.get((hashed, name)) is not True:
+                    continue
+                shown = [binding for binding in bindings if binding[4] in visible]
+                for binding in shown:
+                    if binding[0] is None or body.types.get(binding[0]) not in _SETTABLE_RUST:
+                        continue
+                    where = f"{Path(binding[1]).name}:{binding[2]}"
+                    found.add(name if len(shown) == 1 else f"{name} @ {where}")
+        return sorted(found)[:20]
+
+    @staticmethod
+    def _settable_here(listed):
+        """The end of a refusal before the run: what may be set at its line instead."""
+        if not listed:
+            return "; settable here: no root locals (fields where rows mark them [settable])"
+        return (
+            f"; settable here: {', '.join(listed)} (root locals; fields too where rows mark "
+            "them [settable])"
+        )
 
     def _stop_block(self, hashed, frame):
         """#115: the lexical block the frame's pc is in (``stop_block``), once per function

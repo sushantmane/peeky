@@ -998,7 +998,7 @@ def _macro_rules_lines(text):
     return lines
 
 
-def function_scopes(info, line_text, workspace, declared, hidden=None):
+def function_scopes(info, line_text, workspace, declared, hidden=None, never=None):
     """Each function in a declared source: qualified name, source, line span, locals.
 
     Display only (`describe`). A line-table row belongs to the innermost function or
@@ -1010,6 +1010,10 @@ def function_scopes(info, line_text, workspace, declared, hidden=None):
     and the (source, name, line) of every parameter and variable its debug information
     declares (source None for another file), a test (source, name, line) of which are
     left out as a macro's own bindings (Rust: `println!`'s `args`), or None.
+
+    ``never(linkages, names)``: of a copy's locals (``names``: {name: types}), those no
+    stop can change, and why (#138: {name: `register`}, a Rust local kept in a
+    register); a scope lists the ones never settable in every copy (``never_settable``).
     """
     replaced = set()
     dies, functions, lines, (inputs, sources), _, addresses = _function_entries(
@@ -1041,6 +1045,12 @@ def function_scopes(info, line_text, workspace, declared, hidden=None):
         test = hidden(linkages, declared_here)
         return None if test is None else (lambda offset: test(*position(offset)))
 
+    def linkages_of(entry, root):
+        return {
+            _text(_first(dies, _chain(dies, body), "DW_AT_linkage_name"))
+            for body in (*entry["bodies"], root)
+        }
+
     found, macros = {}, {}
     for root, entry in functions.items():
         source = entry["source"]
@@ -1067,9 +1077,18 @@ def function_scopes(info, line_text, workspace, declared, hidden=None):
         # Instantiations of one generic function (Rust's names drop the generic
         # arguments) are one scope; their types join (`&[i32] or &[char]`), and so do
         # their blocks' lines (code a constant condition removes differs between them).
-        merged = found.setdefault(json.dumps(scope, sort_keys=True), (scope, {}, {}, set()))
+        merged = found.setdefault(json.dumps(scope, sort_keys=True), (scope, {}, {}, set(), [None]))
         for local, kinds in names.items():
             merged[1].setdefault(local, set()).update(kinds)
+        if never is not None:
+            # Never settable in the scope only if in every copy (a generic's instances).
+            unchanged = dict(never(linkages_of(entry, root), names) or {})
+            held = merged[4][0]
+            merged[4][0] = (
+                unchanged
+                if held is None
+                else {name: why for name, why in held.items() if name in unchanged}
+            )
         # Rows a later row at their address replaces run no code.
         ran = {
             key: [address for address in found if (address, *key) not in replaced]
@@ -1093,7 +1112,7 @@ def function_scopes(info, line_text, workspace, declared, hidden=None):
             merged[2].setdefault(local, set()).update(spans)
         merged[3].update(blocks[1])
     scopes = []
-    for scope, kinds, spans, everywhere in found.values():
+    for scope, kinds, spans, everywhere, unchanged in found.values():
         # Two blocks may declare one name with different types (`int or long`).
         types = {local: " or ".join(sorted(k)) for local, k in sorted(kinds.items()) if k}
         spans = {
@@ -1102,7 +1121,12 @@ def function_scopes(info, line_text, workspace, declared, hidden=None):
             if local not in everywhere and None not in everywhere
         }
         scopes.append(
-            {**scope, **({"types": types} if types else {}), **({"spans": spans} if spans else {})}
+            {
+                **scope,
+                **({"types": types} if types else {}),
+                **({"spans": spans} if spans else {}),
+                **({"never_settable": dict(sorted(unchanged[0].items()))} if unchanged[0] else {}),
+            }
         )
     scopes.sort(key=lambda s: (s["source"], s["lines"][0], s["scope"]))
     if len(scopes) > MAX_SCOPES:
@@ -1230,6 +1254,8 @@ def local_declarations(info, line_text, workspace, declared):
         table.append(
             {
                 "source": entry["source"],
+                # Its qualified name, for messages (#138).
+                "name": _qualified(dies, entry["bodies"][0]),
                 "rows": {number: tuple(span) for number, span in rows.items()},
                 "locals": names,
                 "jumps": jumps,
@@ -3253,6 +3279,123 @@ class NativeSession:
             cache[address] = self.declarations[min(holding)[1]] if holding else None
         return cache[address]
 
+    def _line_entries(self, source, line):
+        """The declarations entries a stop on ``line`` of ``source`` can be in: for each
+        address of the line's code, the narrowest function holding it, as _function_at
+        finds a frame's. Empty when the build's declarations were not read."""
+        found, table = {}, self.declarations or ()
+        addresses = {
+            address
+            for function in table
+            for address, where, number in function.get("order", ())
+            if where == source and number == line
+        }
+        for address in sorted(addresses):
+            holding = [
+                (high - low, index)
+                for index, function in enumerate(table)
+                for low, high in function.get("ranges", ())
+                if low <= address < high
+            ]
+            if holding:
+                index = min(holding)[1]
+                found[index] = table[index]
+        return list(found.values())
+
+    def _relative(self, program):
+        try:
+            return Path(program).resolve().relative_to(self.prepared.source_root).as_posix()
+        except (OSError, ValueError):
+            return None
+
+    def never_settable(self, program, lines, names):
+        """Why a probe's `--set` of one of ``names`` can change nothing at any stop of
+        ``lines`` of ``program`` in this build (#138), or None: a field or element whose
+        path the debug information rules out (#105: through a pointer, in a union, a
+        bitfield, a root not in the frame's own memory) in every function a stop there
+        can be in. A root local is judged at the stop (its type as the debugger names
+        it, its declaration's progress)."""
+        from peeky.fields import Unsettable, debugger_steps, settable_member
+        from peeky.probe import parse_selector
+
+        source = self._relative(program)
+        if source is None or self.fields is None or not self.declarations:
+            return None
+        stops = set(self.lines.get(source, ()))
+        for name in names:
+            try:
+                root, *steps = parse_selector(name)
+            except ValueError:
+                continue
+            if not steps:
+                continue
+            for line in lines:
+                entries = self._line_entries(source, line)
+                if line not in stops or not entries:
+                    continue
+                failures = []
+                for entry in entries:
+                    try:
+                        if entry.get("types") is None:
+                            raise Unsettable(
+                                "Peeky cannot match it to the build's debug information"
+                            )
+                        kind, framed = self._declared_type(entry["types"], root)
+                        # As the stop's walk reads the selector (`sp[-1]` is `sp[1]`).
+                        named = debugger_steps(self.fields, kind, root, steps)
+                        if named is None:
+                            break
+                        settable_member(self.fields, kind, root, named)
+                        if not framed:
+                            raise Unsettable(
+                                f"`{root}` is not kept in this frame's own memory (a static, "
+                                "or a value the debug information places in registers)"
+                            )
+                    except Unsettable as exc:
+                        failures.append((entry.get("name") or "this function", str(exc)))
+                        continue
+                    break
+                else:
+                    reasons = "; ".join(
+                        dict.fromkeys(f"in {function}, {why}" for function, why in failures)
+                    )
+                    return (
+                        f"`{name}` cannot be changed at {source}:{line}, at any stop of this "
+                        f"build: {reasons}. Refused before the program runs: nothing ran"
+                    )
+        return None
+
+    def storage_note(self, program, lines, name):
+        """For an optimized build's refusal (#138): that the debug information gives the
+        local ``name`` no stack slot at ``lines`` (a register or a location list), in
+        every function with code there; else ""."""
+        from peeky.probe import parse_selector
+
+        source = self._relative(program)
+        try:
+            root = parse_selector(name)[0]
+        except ValueError:
+            return ""
+        shown = re.fullmatch(r"(.+) @ ([^:]+):([0-9]+)", root)
+        plain = shown[1] if shown else root
+        entries = [
+            entry
+            for line in lines
+            if source is not None
+            for entry in self._line_entries(source, line)
+        ]
+        storages = [
+            storage
+            for entry in entries
+            for _, storage, _ in (entry.get("types") or {}).get(plain, ())
+        ]
+        if storages and all(storage in ("register", "other") for storage in storages):
+            return (
+                f"; here the debug information gives `{plain}` no stack slot (a register "
+                "or a location list), so a change could not reach every copy"
+            )
+        return ""
+
     def _place(self, frame):
         """(source relative to the workspace, line) of a frame, or None."""
         path = ((frame or {}).get("source") or {}).get("path")
@@ -3756,6 +3899,28 @@ class NativeSession:
     # even bitfield bindings one, set to their value): confirm_mutation's read-back is
     # what guarantees every reported change, on every adapter.
     requires_memory_location = True
+
+    def never_settable_row(self, variable, frame, member=False):
+        """Why no stop changes a field or element (``member``) of the root local
+        ``variable`` (#138: `set` refuses a member of a root outside the frame's memory,
+        as the check before the run does): `register` where the debug information gives
+        it no stack slot in the frame's function (a register or a location list), `static`
+        where it is a static; else None. A root itself is left to the stop (the debugger
+        writes a register), as is an optimized build, where every change is refused."""
+        target = getattr(self, "target", None)
+        if not member or self.fields is None or getattr(target, "optimization", "O0") != "O0":
+            return None
+        function = self._function_at(frame)
+        if function is None or not function.get("types"):
+            return None
+        shown = re.fullmatch(r"(.+) @ ([^:]+):([0-9]+)", str(variable.get("name")))
+        declared = function["types"].get(shown[1] if shown else variable.get("name"), ())
+        if shown:
+            declared = [each for each in declared if each[2] == (shown[2], int(shown[3]))]
+        storages = {storage for _, storage, _ in declared}
+        if storages and storages <= {"register", "other"}:
+            return "register"
+        return "static" if storages == {"static"} else None
 
     def settable(self, variable, frame=None):
         """Whether a root local is a writable integer of a type Peeky can change."""

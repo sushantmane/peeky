@@ -1020,6 +1020,25 @@ class DebugWorker:
             if not isinstance(args["args"], list):
                 raise ValueError("args must be a list of strings")
             _check_args(tuple(args["args"]))
+        if operation == "launch" and args.get("sets") is not None:
+            # Each change with the line whose stops make it (#137: a --set-at's own).
+            changes = args["sets"]
+            if (
+                not isinstance(changes, list)
+                or len(changes) > 8
+                or not all(
+                    isinstance(change, dict)
+                    and set(change) == {"line", "name"}
+                    and type(change["line"]) is int
+                    and change["line"] > 0
+                    and isinstance(change["name"], str)
+                    and 0 < len(change["name"]) <= 1000
+                    for change in changes
+                )
+            ):
+                raise ValueError(
+                    "sets must be a list of at most 8 {line, name} changes (a positive line)"
+                )
         if operation == "launch" and args.get("max_pause") is not None:
             value = args["max_pause"]
             if type(value) not in (int, float) or not math.isfinite(value) or not 0 < value <= 300:
@@ -1182,6 +1201,8 @@ class DebugWorker:
                     raise RuntimeError(
                         "Provenance: the staged candidate differs from the requested edit; nothing ran"
                     )
+                if args.get("sets"):
+                    self.refuse_never_settable(runtime, program, args["sets"])
                 left()
                 self.dap = DAP(
                     command=runtime.command,
@@ -2209,6 +2230,14 @@ class DebugWorker:
             if ancestry and settable and noted and noted[1]:
                 # Inside a local whose change is refused (#140): so is a change to this.
                 settable = False
+            # A value no stop of this build can change (#138: a Rust local the IR keeps in
+            # a register), and why, so no probe waits for a hit to learn it.
+            never = None
+            if settable is False and (rule := getattr(self.runtime, "never_settable_row", None)):
+                if not ancestry:
+                    never = rule(variable, frame)
+                elif root is not None:
+                    never = rule(root, frame, member=True)
             path = (*ancestry, (name, kind))
             # A debugger's grouping node (debugpy's `special variables`) is not a level.
             depth = sum(1 for step in path if not (step[0] in groups and not step[1]))
@@ -2341,6 +2370,8 @@ class DebugWorker:
                 output["identity"] = identity
             if settable is not None:
                 output["settable"] = settable
+            if never:
+                output["not_settable"] = never
             if own == "stale":
                 # Not proven initialized: the bytes a move or drop left (#108).
                 output["stale"] = True
@@ -2411,6 +2442,13 @@ class DebugWorker:
                 1 if "index" in args else min(args.get("count", 64), 512 - self.inspection_nodes)
             )
             settable = self.preview_settable(record, runtime, elements[start : start + count])
+            # Fields of a preview whose root no stop can change (#138), and why; a nested
+            # preview's keep its root's.
+            source = record[2] if len(record) > 2 else None
+            never = record[3] if len(record) > 3 else None
+            if source and (rule := getattr(runtime, "never_settable_row", None)):
+                name, kind = source[2][0]
+                never = rule({"name": name, "type": kind}, source[0], member=True)
             noted = self.notes.get(args["handle"])
             page = []
             for element in elements[start : start + count]:
@@ -2419,7 +2457,10 @@ class DebugWorker:
                     # A tuple's or struct's decoded fields, like its elements: worker-owned.
                     self.reference_counter += 1
                     handle = self.reference_counter
-                    self.children[handle] = ("view", list(element["children"][:512]))
+                    nested = list(element["children"][:512])
+                    self.children[handle] = (
+                        ("view", nested, None, never) if never else ("view", nested)
+                    )
                     if noted:
                         self.notes[handle] = noted
                 shown = {key: value for key, value in element.items() if key != "children"}
@@ -2431,6 +2472,8 @@ class DebugWorker:
                     page[-1]["settable"] = settable(element.get("name")) and not (
                         noted and noted[1]
                     )
+                if never and not page[-1].get("settable"):
+                    page[-1]["not_settable"] = never
             self.inspection_nodes += len(page)
             return {
                 "variables": page,
@@ -2923,6 +2966,44 @@ class DebugWorker:
                 f"but as {str(shown[0].get('value'))[:80] if len(shown) == 1 else 'nothing'} "
                 "from memory: the program's state is unknown, so the session is closed"
             )
+
+    def refuse_never_settable(self, runtime, program, changes):
+        """Refuse, before the program runs, a probe's change ({line, name}: a `--set` at
+        its `--at` line, a `--set-at` at its own, #137) that no stop of its line can make
+        in this build (#138): every change in an optimized build, and what the runtime's
+        build facts rule out in every function with code on that line
+        (``never_settable``: a Rust local the IR keeps in a register, a field reached
+        through a pointer). What depends on the stop (a statement under way, a local not
+        yet initialized) is judged there."""
+        from peeky.errors import Refused
+
+        refusal = None
+        if level := self.optimized():
+            note = getattr(runtime, "storage_note", None)
+            first = changes[0]
+            refusal = (
+                f"`{first['name']}` cannot be changed: changing values is refused in an "
+                f"optimized build ({level}), where the program may keep using other copies of "
+                "a value"
+                + ((note(program, [first["line"]], first["name"]) or "") if note else "")
+                + ". Refused before the program runs: nothing ran. Use an unoptimized build"
+            )
+        elif check := getattr(runtime, "never_settable", None):
+            lines = {}
+            for change in changes:
+                lines.setdefault(change["line"], []).append(change["name"])
+            for line, names in lines.items():
+                # Each change judged against its own line's functions only.
+                if refusal := check(program, [line], names):
+                    break
+        if refusal:
+            # (code, message), or a message: a change no stop allows.
+            code, refusal = (
+                refusal if isinstance(refusal, tuple) else ("MUTATION_REJECTED", refusal)
+            )
+            refused = Refused(code, refusal)
+            refused.before_launch = True
+            raise refused
 
     def refuse_mid_statement(self, runtime, root, frame, selector):
         """Refuse a change to the root local ``root`` (or what ``selector`` reaches in it)

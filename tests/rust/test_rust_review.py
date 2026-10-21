@@ -116,6 +116,23 @@ def test_memory_locals_follow_the_declared_storage(tmp_path):
     assert found[(inner, "inlined")] is False and found[(inner, "slot")] is False
 
 
+def test_each_declaration_says_why_its_name_is_not_in_memory(tmp_path):
+    # Review of #138: the proof covers every binding of a name, so a refusal names the
+    # binding kept in a register (a `.dbg.spill` copy), or the inlined copies, by line.
+    path = tmp_path / "demo.ll"
+    path.write_text(IR)
+    declarations = {}
+    memory, _ = ir_locals(path, declarations)
+    function, inner = "h0123456789abcdef", "hfedcba9876543210"
+    assert memory == memory_locals(path)
+    assert declarations[(function, "kept")] == [(3, "slot")]
+    assert declarations[(function, "copy")] == [(4, "copy")]
+    assert sorted(declarations[(function, "twice")]) == [(6, "copy"), (7, "slot")]
+    assert declarations[(inner, "inlined")] == [(21, "inlined")]
+    assert declarations[(inner, "slot")] == [(22, "inlined")]
+    assert (function, "ssa") not in declarations
+
+
 PARAMETERS_IR = """
 define internal i64 @_ZN4demo3sum17h1111111111111111E() !dbg !40 {
 start:

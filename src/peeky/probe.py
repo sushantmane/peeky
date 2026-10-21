@@ -19,7 +19,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from peeky.errors import Refused, classify
-from peeky.java import JAVA_ARRAY, JAVA_LIST, java_list, java_preview
+from peeky.java import _JAVA_OBJECT, JAVA_ARRAY, JAVA_LIST, java_list, java_preview
 from peeky.names import display_function, function_labels, shortened_note
 from peeky.worker import (
     DebugWorker,
@@ -1444,6 +1444,9 @@ def _capture(
                 # Whether --set can change this value here: a local (C, C++, Rust, Java),
                 # or a Java field or array element.
                 row["settable"] = variable["settable"]
+            if isinstance(variable.get("not_settable"), str):
+                # Why no stop of this build can change it (#138: `register`).
+                row["not_settable"] = variable["not_settable"]
             if variable.get("debugger_type"):
                 row["debugger_type"] = variable["debugger_type"]
             if children and variable.get("variablesReference"):
@@ -1551,6 +1554,27 @@ class _Coded:
             raise Refused(_code(exc), str(exc)) from None
 
 
+def _element(worker, stop, snapshot, segments, target, negative):
+    """The debugger's name (`[3]`) of the element a selector whose last index is not
+    plain (`xs[03]`, `xs[-1]`) reads, which `set` changes as the read shows it."""
+    try:
+        element = _resolve(worker, stop, snapshot, segments)
+    except Refused as exc:
+        raise Refused(exc.code, f"{target}: {exc}") from None
+    except ValueError as exc:
+        raise Refused(
+            "MUTATION_REJECTED" if negative else "NOT_FOUND", f"{target}: {exc}"
+        ) from None
+    name = str(element.get("name"))
+    if not re.fullmatch(r"\[(?:0|[1-9][0-9]{0,9})\]", name):
+        raise Refused(
+            "MUTATION_REJECTED",
+            f"{target}: {segments[-1]} reads {name!r}, not an element of "
+            f"{''.join(segments[:-1])} the debugger lists by index",
+        )
+    return name
+
+
 def apply_set(worker, stop, name, value):
     """Apply one `--set name=value` at this stop: a root local, or a field or array
     element a selector names (Java: `current.end`, `this.count`, `xs[0]`, `xs[-1]`; C,
@@ -1619,20 +1643,27 @@ def apply_set(worker, stop, name, value):
                 f"changed; change a field of one ({name}.field), or an array's element",
             )
         array = JAVA_ARRAY.fullmatch(str(parent.get("value")))
-        if index < 0 and not array:
+        java = array or _JAVA_OBJECT.fullmatch(str(parent.get("value")))
+        if index < 0 and not array and java:
             raise Refused(
                 "MUTATION_REJECTED",
                 f"{target}: a negative index can be changed only in a Java array",
             )
+        if not java and (index < 0 or last != f"[{index}]"):
+            # The element a read of the selector shows, and marks [settable] (review of
+            # #138): `[03]` is `[3]`, and `[-1]` counts from the end of a sequence whose
+            # length the debugger states; the debugger names it `[N]`.
+            member = _element(worker, stop, snapshot, segments, target, negative=index < 0)
         if array and not -int(array[1]) <= index < int(array[1]):
             raise Refused(
                 "INVALID_REQUEST",
                 f"{target}: {last} is out of range: the array has {array[1]} elements",
             )
-        if index < 0:
+        if array and index < 0:
             index += int(array[1])
         # java-debug names an element by its index; LLDB as `[2]`.
-        member = str(index) if array else last
+        if array:
+            member = str(index)
     if not parent.get("variablesReference"):
         if parent.get("unavailable"):
             raise Refused(
@@ -2523,6 +2554,8 @@ def _children(worker, stop, selector, variable, pointers=False, whole_strings=Fa
             entry["note"] = child["note"]
         if type(child.get("settable")) is bool:
             entry["settable"] = child["settable"]
+        if isinstance(child.get("not_settable"), str):
+            entry["not_settable"] = child["not_settable"]
         path = _child_selector(selector, child["name"])
         if pointers and path is None and _pointee(variable, page["variables"]) is child:
             path = f"{selector}[0]"
@@ -2656,6 +2689,16 @@ def run_probe(root, probe, *, adapter=None, progress=None):
                 **({"entry": probe.entry} if probe.entry else {}),
                 **({"args": list(probe.args)} if probe.args else {}),
                 **({"expect_sha256": dict(probe.expect_sha256)} if probe.expect_sha256 else {}),
+                # What no stop of the build can change is refused before it runs (#138).
+                # Each with the line whose stops make it: a --set-at's own (#137).
+                **(
+                    {
+                        "sets": [{"line": line, "name": name} for name, _ in probe.set]
+                        + [{"line": p["build_line"], "name": p["name"]} for p in points]
+                    }
+                    if probe.set or points
+                    else {}
+                ),
             },
         )
         session = {"session_id": launch["session_id"]}
@@ -3023,6 +3066,9 @@ def run_probe(root, probe, *, adapter=None, progress=None):
         from peeky.errors import classify
 
         result.update(status="failed", error=classify(exc, session_closed=True))
+        if getattr(exc, "before_launch", False):
+            # Nothing ran (#138): no run to keep as evidence.
+            result["refused_before_launch"] = True
         if session is not None:
             # What the program printed before the failure says how far it got.
             try:
@@ -3198,6 +3244,7 @@ def _table(result):
             row.get("value", "<" + row.get("error", "") + ">")
             + (f"  [{row['view']}]" if row.get("view") else "")
             + ("  [settable]" if row.get("settable") else "")
+            + (f"  [not settable: {row['not_settable']}]" if row.get("not_settable") else "")
             + (f"  [id {row['identity']}]" if row.get("identity") else "")
             + ("  [module global]" if row.get("scope") == "globals" else "")
             + ("  [note]" if row.get("note") and row["note"] not in _rust_notes() else ""),
