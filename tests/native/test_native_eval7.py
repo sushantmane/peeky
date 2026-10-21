@@ -122,7 +122,7 @@ def test_a_pointer_parameters_one_caller_is_named(c_program, capsys):
     )
     assert (
         "push has one caller: ring.c:36 in main, which passes `&r`, where `r.tail` is "
-        "settable: a probe `--at 36 --set r.tail=<value>`"
+        "settable: a probe's `--set-at 36@N r.tail=<value>`"
     ) in out, out
     assert code == 2, out
     assert "hint: Change the value at that call, where it is owned" in out, out
@@ -196,3 +196,32 @@ def test_describe_says_which_locals_have_settable_fields(c_program, capsys):
     (main_scope,) = [s for s in json.loads(out)["scopes"] if s["scope"] == "main"]
     # A union, a pointer and a scalar have no settable fields; a typedef'd struct does.
     assert main_scope["settable_parts"] == {"arr": "elements", "b": "fields", "t": "fields"}
+
+
+@pytest.mark.timeout(240)
+def test_a_set_at_refused_before_the_run_names_the_caller_and_shows_no_table(c_program, capsys):
+    # Findings 13 and 14 with #151's `--set-at`: judged at its own line before the run,
+    # the refusal names push's one caller, prints no table and exits 2.
+    source = c_program("ring.c", RING)
+    code, out = run(
+        capsys, "probe", source, "--at", "36", "--capture", "r.tail",
+        "--set-at", "15@2", "r.tail=0", *OPS,
+    )  # fmt: skip
+    assert out.startswith("error [MUTATION_REJECTED]: `r.tail` cannot be changed at ring.c:15")
+    assert (
+        "push has one caller: ring.c:36 in main, which passes `&r`, where `r.tail` is "
+        "settable: a probe's `--set-at 36@N r.tail=<value>`"
+    ) in out, out
+    assert "hit  phase" not in out and "status:" not in out, out
+    assert code == 2, out
+    # The advice holds: at line 36's 2nd stop, a --set-at changes `r.tail` before push
+    # reads it.
+    code, out = run(
+        capsys, "probe", source, "--at", "15", "--capture", "r.tail", "--hits", "2",
+        "--set-at", "36@2", "r.tail=3", "--json", *OPS,
+    )  # fmt: skip
+    result = json.loads(out)
+    assert code == 0 and [(i["before"], i["after"]) for i in result["interventions"]] == [
+        ("1", "3")
+    ], result
+    assert [row["value"] for row in result["rows"]] == ["0", "3"], result["rows"]

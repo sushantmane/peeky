@@ -1180,6 +1180,216 @@ def test_a_numbered_field_selector_says_how_rust_names_tuple_fields():
         parse_selector("runs[0].0")
 
 
+def test_set_at_locations_parse_with_a_hit_and_are_bounded():
+    from peeky.probe import MAX_SET_AT_HIT, parse_set_at
+
+    assert parse_set_at("stock.cpp:22@3", "colon=6") == ("stock.cpp", 22, 3, "colon", "6")
+    assert parse_set_at("23", "w.start = 0") == (None, 23, 1, "w.start", "0")
+    assert parse_set_at("src/main.rs:5@12", "x=a=b") == ("src/main.rs", 5, 12, "x", "a=b")
+    for where, assignment in (("22@0", "x=1"), ("x@3", "x=1"), ("22@", "x=1"), ("22", "x")):
+        with pytest.raises(ValueError, match="--set-at"):
+            parse_set_at(where, assignment)
+    ok = Probe("a.c", 3, set_at=((4, 2, "x", "1"),))
+    assert ok.set_at == ((4, 2, "x", "1"),)
+    for set_at in (
+        ((4, 0, "x", "1"),),
+        ((4, MAX_SET_AT_HIT + 1, "x", "1"),),
+        ((0, 1, "x", "1"),),
+        ((4, 1, "x", 1),),
+        ((4, 1, "x()", "1"),),
+        (("4", 1, "x", "1"),),
+        ((4, 1, "x", "1"),) * 9,
+    ):
+        with pytest.raises(ValueError):
+            Probe("a.c", 3, set_at=set_at)
+    # --set and --set-at share the bound on interventions.
+    with pytest.raises(ValueError, match="--set and --set-at together"):
+        Probe("a.c", 3, set=(("x", "1"),) * 4, set_at=((4, 1, "x", "1"),) * 5)
+    with pytest.raises(Exception, match="map and dict entries cannot be changed"):
+        Probe("a.c", 3, set_at=((4, 1, "m['k']", "1"),))
+    # One set of after-set rows per captured stop with changes, in the row budget.
+    many = tuple(f"a{i}" for i in range(20))
+    assert Probe("a.c", 3, many, hits="all", set_at=((3, 2, "a", "1"),)).limit == 99
+    assert Probe("a.c", 3, many, hits="all", set_at=((4, 2, "a", "1"),)).limit == 100
+
+
+class Lines(FakeWorker):
+    """Stops at lines 8 and 9 of main.py in turn, `stops` times each, then ends."""
+
+    def __init__(self, stops=3, moved=None, names=None):
+        super().__init__()
+        self.order = [line for _ in range(stops) for line in (8, 9)]
+        self.moved, self.placed, self.previews = moved, [], []
+        # {line: the function of each of its stops}, else `main`.
+        self.names, self.name = {line: list(n) for line, n in (names or {}).items()}, "main"
+        # {frame name: the generic instance the worker names for it}.
+        self.instances = {}
+
+    def dispatch(self, operation, args):
+        if operation == "launch":
+            self.calls.append(operation)
+            self.placed.append([point["line"] for point in args["breakpoints"]])
+            # Only the lines with breakpoints stop.
+            asked = {point["line"] for point in args["breakpoints"]}
+            self.order = [line for line in self.order if line in asked]
+            replies = [
+                {"id": index, "verified": True, "line": self.moved.get(p["line"], p["line"])}
+                if self.moved
+                else {"id": index, "verified": True, "line": p["line"]}
+                for index, p in enumerate(args["breakpoints"], 1)
+            ]
+            return {
+                "session_id": "s",
+                "breakpoints": replies,
+                "artifact_manifest_id": None,
+                "target_identity": None,
+                "source_sha256": "x",
+            }
+        if operation == "breakpoints":
+            self.calls.append(operation)
+            self.placed.append([point["line"] for point in args["breakpoints"]])
+            lines = {point["line"] for point in args["breakpoints"]}
+            self.order = [line for line in self.order if line in lines]
+            return {"breakpoints": [{"line": p["line"]} for p in args["breakpoints"]]}
+        if operation == "wait":
+            self.calls.append(operation)
+            if not self.order:
+                return {"state": "terminated"}
+            self.line = self.order.pop(0)
+            self.name = (self.names.get(self.line) or ["main"]).pop(0)
+            return {
+                "state": "stopped",
+                "stop_id": "t",
+                "event": {"body": {"reason": "breakpoint"}},
+                "location": f"main.py:{self.line}",
+            }
+        if operation == "inspect":
+            self.previews.append((self.line, args.get("previews")))
+            listed = super().dispatch(operation, args)
+            listed["frames"][0]["name"] = self.name
+            if self.name in self.instances:
+                listed["instance"] = self.instances[self.name]
+            return listed
+        if operation == "set_variable":
+            self.calls.append(operation)
+            return {"name": args["name"], "before": "1", "after": args["value"]}
+        return super().dispatch(operation, args)
+
+
+def test_set_at_applies_each_change_at_its_own_stop_and_reports_the_rest(monkeypatch):
+    import peeky.probe as probe_module
+
+    # Line 9's second stop is in a lambda on that line: it counts (#151 review).
+    worker = Lines(names={9: ["main", "<lambda>", "main"]})
+    monkeypatch.setattr(probe_module, "DebugWorker", lambda *args, **kwargs: worker)
+    request = Probe(
+        "main.py", 8, ("x",), set_at=((9, 2, "x", "5"), (8, 3, "x", "6"), (9, 4, "x", "7"))
+    )
+    result = probe_module.run_probe("/w", request)
+    assert result["status"] == "completed" and result["hits"] == 1
+    # Line 8 is captured once; its 3rd stop (kept for its --set-at) is not.
+    assert {(row["hit"], row["phase"]) for row in result["rows"]} == {(1, "observed")}
+    assert [
+        (change["after"], change["line"], change["hit"], change["at"], change["capture_hit"])
+        for change in result["interventions"]
+    ] == [("5", 9, 2, "9@2", 1), ("6", 8, 3, "8@3", 1)]
+    assert [change["function"] for change in result["interventions"]] == ["<lambda>", "main"]
+    assert (
+        "--set-at line 9 stopped in 2 functions: main (stops 1, 3); <lambda> (stop 2). @HIT "
+        "counts every stop of the line, in any function; each change says which function's "
+        "variable it changed." in result["warnings"]
+    )
+    # Line 8 stopped in one function only: no such warning for it.
+    assert not any(w.startswith("--set-at line 8 stopped") for w in result["warnings"])
+    text = probe_module._table(result)
+    assert "set x: 1 -> 5  (--set-at line 9@2, in <lambda>)" in text
+    assert "status: completed (1 requested change not made)  hits: 1" in text
+    # A breakpoint is kept only while a later stop needs it.
+    assert worker.placed == [[8, 9], [9]]
+    assert result["unapplied"] == [
+        {"option": "--set-at", "at": "9@4", "name": "x", "value": "7", "stops": 3}
+    ]
+    assert any("9@4 x=7 was not applied: line 9 stopped 3 time(s)" in w for w in result["warnings"])
+    # The other five stops only counted or changed.
+    assert len(result["pauses_ms"]) == 1 and len(result["set_pauses_ms"]) == 5
+    # Previews (#136) only where values are captured: line 8's first stop.
+    assert [previews for line, previews in worker.previews if previews] == [["x"]]
+    assert worker.previews[0] == (8, ["x"])
+    assert not any("Interventions are applied once" in w for w in result["warnings"])
+
+
+def test_a_set_at_line_the_debugger_moves_is_refused(monkeypatch):
+    import peeky.probe as probe_module
+
+    worker = Lines(moved={9: 10})
+    monkeypatch.setattr(probe_module, "DebugWorker", lambda *args, **kwargs: worker)
+    result = probe_module.run_probe("/w", Probe("main.py", 8, ("x",), set_at=((9, 1, "x", "5"),)))
+    assert result["status"] == "failed" and result["error"]["code"] == "INVALID_REQUEST"
+    assert (
+        "line 9 has no code of its own (the debugger moved its breakpoint to line 10)"
+        in (result["error"]["message"])
+    )
+    assert "set_variable" not in worker.calls and "wait" not in worker.calls
+
+
+def test_the_http_probe_passes_set_at_and_refuses_malformed_ones(tmp_path, monkeypatch):
+    import subprocess
+    import threading
+
+    from peeky import worker as worker_module
+    from peeky.client import Client
+
+    seen = {}
+
+    class Process:
+        pid = 0
+
+        def __init__(self, command, **kwargs):
+            seen["command"] = command
+
+        def communicate(self, timeout=None):
+            return b'{"status": "completed"}', b""
+
+    monkeypatch.setattr(subprocess, "Popen", Process)
+    request = Probe("x.c", 3, set_at=((4, 2, "w.start", "9"), (5, 1, "n", "a b")))
+    assert worker_module._run_probe_process(tmp_path, request, None, 60) == {"status": "completed"}
+    command = seen["command"]
+    at = [index for index, part in enumerate(command) if part == "--set-at"]
+    assert [command[i + 1 : i + 3] for i in at] == [["4@2", "w.start=9"], ["5@1", "n=a b"]]
+
+    server = worker_module.make_server(tmp_path, "unit-test-secret-token-1234", 0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        client = Client(f"http://127.0.0.1:{server.server_port}", "unit-test-secret-token-1234")
+        for set_at in ([[4, 2, "x"]], [["4", 2, "x", "1"]], [[4, 2, "x", 1]], {"x": 1}):
+            with pytest.raises(Exception, match="set_at"):
+                client.call("probe", at="x.c:1", set_at=set_at)
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=3)
+
+
+def test_a_set_whose_hit_never_comes_is_unapplied_like_a_set_at(monkeypatch):
+    # #151 review: a requested change that never happened is reported the same way for
+    # --set as for --set-at (`unapplied`; the CLI exits with 4).
+    import peeky.probe as probe_module
+
+    worker = FakeWorker()
+    monkeypatch.setattr(probe_module, "DebugWorker", lambda *args, **kwargs: worker)
+    request = Probe("main.py", 8, ("x",), (("x", "2"),), hits=2, set_hit=2)
+    result = probe_module.run_probe("/w", request)
+    assert result["status"] == "completed" and result["interventions"] == []
+    assert result["unapplied"] == [
+        {"option": "--set", "at": "8@2", "name": "x", "value": "2", "stops": 1}
+    ]
+    assert (
+        "--set x=2 was not applied: the program stopped 1 time(s) at line 8, before hit 2."
+        in (result["warnings"])
+    )
+
+
 def test_a_set_no_stop_allows_is_refused_before_launch_and_never_saved(
     monkeypatch, tmp_path, capsys
 ):
@@ -1203,7 +1413,8 @@ def test_a_set_no_stop_allows_is_refused_before_launch_and_never_saved(
     worker = Refusing()
     monkeypatch.setattr(probe_module, "DebugWorker", lambda *args, **kwargs: worker)
     result = probe_module.run_probe("/w", Probe("main.py", 8, ("x",), (("x", "2"),)))
-    assert worker.calls[0] == ("launch", ["x"]) and worker.calls[-1] == "close"
+    assert worker.calls[0] == ("launch", [{"line": 8, "name": "x"}])
+    assert worker.calls[-1] == "close"
     assert result["status"] == "failed" and result["refused_before_launch"] is True
     assert result["error"]["code"] == "MUTATION_REJECTED" and result["hits"] == 0
     assert "black_box" in result["error"]["hint"]
@@ -1241,3 +1452,174 @@ def test_rows_say_why_no_stop_can_change_them():
         {"rows": rows, "status": "completed", "hits": 1, "seconds": 0, "interventions": []}
     )
     assert "10  [not settable: register]" in text and "0  [settable]" in text
+
+
+def test_the_launch_names_each_change_with_its_own_line(monkeypatch):
+    # #137 with #138: the worker judges a --set at the --at line and each --set-at at its
+    # own line before the program runs.
+    import peeky.probe as probe_module
+
+    launched = {}
+
+    class Recording(Lines):
+        def dispatch(self, operation, args):
+            if operation == "launch":
+                launched.update(args)
+            return super().dispatch(operation, args)
+
+    worker = Recording()
+    monkeypatch.setattr(probe_module, "DebugWorker", lambda *args, **kwargs: worker)
+    request = Probe("main.py", 8, ("x",), (("x", "2"),), set_at=((9, 1, "w.start", "5"),))
+    probe_module.run_probe("/w", request)
+    assert launched["sets"] == [{"line": 8, "name": "x"}, {"line": 9, "name": "w.start"}]
+    assert launched["breakpoints"] == [{"line": 8}, {"line": 9}]
+
+
+def test_a_set_at_made_beside_an_unmade_set_names_only_the_set(monkeypatch):
+    # #151 review 2: "No intervention was applied" was said while a --set-at was made.
+    import peeky.probe as probe_module
+
+    worker = Lines()
+    monkeypatch.setattr(probe_module, "DebugWorker", lambda *args, **kwargs: worker)
+    request = Probe(
+        "main.py", 8, ("x",), (("x", "5"),), hits="all", set_hit=9, set_at=((9, 2, "x", "7"),)
+    )
+    result = probe_module.run_probe("/w", request)
+    assert [change["at"] for change in result["interventions"]] == ["9@2"]
+    assert not any("No intervention" in warning for warning in result["warnings"])
+    assert (
+        "--set x=5 was not applied: the program stopped 3 time(s) at line 8, before hit 9."
+        in (result["warnings"])
+    )
+    assert result["unapplied"] == [
+        {"option": "--set", "at": "8@9", "name": "x", "value": "5", "stops": 3}
+    ]
+    assert probe_module.probe_exit_code(result) == 4
+
+
+def test_generic_instances_and_a_shared_line_are_told_apart(monkeypatch):
+    # #151 review 2: a Rust generic's instances differ only in their symbol's hash, which
+    # the warning's names dropped (`tf::<A>`, `tf::<B>`: no warning).
+    import peeky.probe as probe_module
+
+    a, b = "rc::tf::h0000000000000001", "rc::tf::h0000000000000002"
+    worker = Lines(names={8: [a, b, a], 9: [a, b, a]})
+    monkeypatch.setattr(probe_module, "DebugWorker", lambda *args, **kwargs: worker)
+    request = Probe("main.py", 8, ("x",), hits="all", set_at=((9, 2, "x", "5"),))
+    result = probe_module.run_probe("/w", request)
+    assert (
+        "Line 8 stopped in 2 functions: rc::tf::h0000000000000001 (hits 1, 3); "
+        "rc::tf::h0000000000000002 (hit 2). --hits and --set-hit count every stop; the "
+        "function column says which is which." in result["warnings"]
+    )
+    assert any(
+        w.startswith(f"--set-at line 9 stopped in 2 functions: {a} (stop 1); {b} (stop 2).")
+        for w in result["warnings"]
+    ), result["warnings"]
+    # With the instances the worker names (their type arguments), and --at a --set-at line
+    # too: one warning for the line.
+    worker = Lines(names={8: [a, b, a], 9: [a, b, a]})
+    worker.instances = {a: "rc::tf<rc::A>", b: "rc::tf<rc::B>"}
+    monkeypatch.setattr(probe_module, "DebugWorker", lambda *args, **kwargs: worker)
+    request = Probe("main.py", 8, ("x",), hits="all", set_at=((8, 2, "x", "5"),))
+    result = probe_module.run_probe("/w", request)
+    stopped = [w for w in result["warnings"] if "stopped in 2 functions" in w]
+    assert stopped == [
+        "Line 8 stopped in 2 functions: rc::tf<rc::A> (stops 1, 3); rc::tf<rc::B> (stop 2). "
+        "--hits, --set-hit and --set-at's @HIT count every stop of the line, in any "
+        "function; the function column and each change say which is which."
+    ], result["warnings"]
+    (change,) = result["interventions"]
+    assert change["instance"] == "rc::tf<rc::B>"
+    assert "set x: 1 -> 5  (--set-at line 8@2, in rc::tf<rc::B>)" in probe_module._table(result)
+
+
+def test_peeky_probe_exits_as_peeky_probe_does(monkeypatch, capsys):
+    # #151 review 2: the `peeky-probe` script exited 0 where `peeky probe` exits 4.
+    import peeky.probe as probe_module
+
+    for result, code in (
+        ({"status": "completed"}, 0),
+        ({"status": "completed", "unapplied": [{"at": "9@3"}]}, 4),
+        ({"status": "failed", "unapplied": [{"at": "9@3"}]}, 1),
+    ):
+        shown = {"rows": [], "interventions": [], "hits": 0, "seconds": 0, **result}
+        monkeypatch.setattr(probe_module, "run_probe", lambda *args, **kwargs: shown)
+        assert probe_module.main(["--at", "main.py:8", "--json"]) == code
+        capsys.readouterr()
+
+
+def test_a_refusal_names_the_functions_sharing_a_reason_once():
+    from peeky.fields import FUNCTION, by_function
+
+    reasons = [
+        ("fc", f"in {FUNCTION}, `a.pp` is a pointer"),
+        ("fd", f"in {FUNCTION}, `a.pp` is a pointer"),
+        ("fe", f"{FUNCTION} has no local `a`"),
+        ("fg", f"in {FUNCTION}, `a.pp` is a pointer"),
+    ]
+    assert by_function(reasons) == "in fc, fd and fg, `a.pp` is a pointer; fe has no local `a`"
+    reasons.append(("fh", f"{FUNCTION} has no local `a`"))
+    assert by_function(reasons).endswith("; fe and fh have no local `a`")
+
+
+def test_instances_that_read_alike_are_told_apart_by_their_hash(monkeypatch):
+    # #151 review 3: two instances whose names were cut at the same 300 characters got
+    # the same label on both changes; the cut was not marked.
+    import peeky.probe as probe_module
+    from peeky.rust_mir import _instance
+
+    long = "tf<" + "core::iter::Map<" * 30 + "i64" + ">" * 31
+    assert len(_instance(long)) == 300 and _instance(long).endswith("…")
+    assert _instance("tf<u8>") == "tf<u8>" and _instance("main") == ""
+    a, b = "lg::tf::h0000000000000001", "lg::tf::h0000000000000002"
+    worker = Lines(names={9: [a, b, a]})
+    cut = "lg::" + _instance(long)
+    worker.instances = {a: cut, b: cut}
+    monkeypatch.setattr(probe_module, "DebugWorker", lambda *args, **kwargs: worker)
+    request = Probe("main.py", 8, ("x",), set_at=((9, 1, "x", "5"), (9, 2, "x", "6")))
+    result = probe_module.run_probe("/w", request)
+    labels = [change["instance"] for change in result["interventions"]]
+    assert labels == [f"{cut} (h0000000000000001)", f"{cut} (h0000000000000002)"], labels
+    text = probe_module._table(result)
+    assert f"in {cut} (h0000000000000001))" in text and f"in {cut} (h0000000000000002))" in text
+    assert any(f"{cut} (h0000000000000002) (stop 2)" in w for w in result["warnings"])
+
+
+def test_python_code_the_debugger_names_alike_is_said_not_merged(tmp_path, monkeypatch):
+    # #151 review 3: two lambdas on one line are both `<lambda>`, and debugpy's frames
+    # give no column, so their stops were listed as one function's.
+    import peeky.probe as probe_module
+
+    assert probe_module._python_alike(
+        "def main():\n    f = lambda v: v + 1; g = lambda v: v * 2\n", [2]
+    ) == {2: {"<lambda>": 2}}
+    assert probe_module._python_alike("x = (lambda: 1)()\n", [1]) == {}
+    lines = ["x = 0"] * 7 + ["x = 1", "f = lambda v: v + 1; g = lambda v: v * 2"]
+    (tmp_path / "main.py").write_text("\n".join(lines) + "\n")
+    worker = Lines(names={9: ["main", "<lambda>", "<lambda>"]})
+    monkeypatch.setattr(probe_module, "DebugWorker", lambda *args, **kwargs: worker)
+    request = Probe("main.py", 8, ("x",), set_at=((9, 3, "x", "5"),))
+    result = probe_module.run_probe(tmp_path, request)
+    assert (
+        "--set-at line 9 stopped in 2 functions: main (stop 1); <lambda> (stops 2, 3; 2 on "
+        "the line, which the debugger names alike, so their stops are counted together). @HIT"
+        in " ".join(result["warnings"])
+    ), result["warnings"]
+    (change,) = result["interventions"]
+    assert change["alike"] == 2
+    text = probe_module._table(result)
+    assert "(--set-at line 9@3, in <lambda>, one of 2 on the line the debugger names alike)" in (
+        text
+    )
+
+
+def test_a_warning_says_how_many_functions_it_does_not_list():
+    # #151 review 3: "stopped in 6 functions" listed 4.
+    from peeky.probe import _stops_by_function
+
+    functions = {f"f{i}": [i] for i in range(10)}
+    shown = _stops_by_function(functions, {name: name for name in functions}, "stop")
+    assert shown.startswith("f0 (stop 0); f1 (stop 1)") and shown.endswith(
+        "f7 (stop 7); and 2 more"
+    )

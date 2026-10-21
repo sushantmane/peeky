@@ -3498,8 +3498,10 @@ class NativeSession:
                         continue
                     break
                 else:
-                    reasons = "; ".join(
-                        dict.fromkeys(f"in {function}, {why}" for function, why in failures)
+                    from peeky.fields import FUNCTION, by_function
+
+                    reasons = by_function(
+                        (function, f"in {FUNCTION}, {why}") for function, why in failures
                     )
                     return (
                         f"`{name}` cannot be changed at {source}:{line}, at any stop of this "
@@ -3988,14 +3990,15 @@ class NativeSession:
             )
             return (
                 f"{named} has one caller: {at} in {caller.get('name')}, which passes "
-                f"`{argument}`, where `{selector}` is settable: a probe `--at {line} --set "
-                f"{selector}=<value>` with `--hits N --set-hit N`, N counting line {line}'s "
-                f"own stops (`--capture {selector} --hits all` there)"
+                f"`{argument}`, where `{selector}` is settable: a probe's `--set-at {line}@N "
+                f"{selector}=<value>`, N counting line {line}'s own stops (find N with `--at "
+                f"{line} --capture {selector} --hits all`)"
             )
         return (
             f"{named} has one caller: {at} in {caller.get('name')}; change the value where "
-            f"it is owned, before that call: a probe `--at {line}` with `--hits N --set-hit "
-            f"N`, N counting line {line}'s own stops (`--capture <argument> --hits all` there)"
+            f"it is owned, before that call: a probe's `--set-at {line}@N <name>=<value>`, N "
+            f"counting line {line}'s own stops (find N with `--at {line} --capture <argument> "
+            "--hits all`)"
         )
 
     def _single_call(self, function, parameter):

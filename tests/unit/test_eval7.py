@@ -85,6 +85,40 @@ def test_the_short_name_note_is_said_once_per_state_directory(cli, capsys):
     assert note in capsys.readouterr().out
 
 
+def test_the_instance_note_follows_the_same_rule(cli, capsys):
+    # Finding 8, after #151: a probe table's instance labels (`instance = '...'`) are part
+    # of the same note, said once per state directory and never with --quiet.
+    closure = probe_result(function="cz::main::{{closure}}::h0123456789abcdef")
+    closure["rows"][0]["instance"] = "cz::main::{closure#0}"
+    assert cli(closure, "--quiet") == 0
+    assert "note:" not in capsys.readouterr().out
+    assert cli(closure) == 0
+    first = capsys.readouterr().out
+    assert "instance = 'cz::main::{closure#0}'" in first and " cz::main::{closure#0} " in first
+    assert cli(closure) == 0
+    again = capsys.readouterr().out
+    assert "note:" not in again and " cz::main::{closure#0} " in again, again
+    # `peeky sql --help` keeps it.
+    from peeky.cli import main
+
+    with pytest.raises(SystemExit):
+        main(["sql", "--help"])
+    assert "instance = 'cz::main::{closure#0}'" in " ".join(capsys.readouterr().out.split())
+
+
+def test_the_probe_exit_codes():
+    # Finding 14 with #151: 2 for a probe refused before it ran, 4 for a completed probe
+    # with a change not made, 1 for any other probe that did not complete.
+    from peeky.probe import probe_exit_code
+
+    refused = {"status": "failed", "refused_before_launch": True}
+    assert probe_exit_code(refused) == 2
+    assert probe_exit_code({"status": "completed", "unapplied": [{"name": "x"}]}) == 4
+    for status in ("failed", "no-stop", "timeout"):
+        assert probe_exit_code({"status": status}) == 1
+    assert probe_exit_code({"status": "completed"}) == 0
+
+
 def test_a_probe_refused_before_launch_shows_no_table_and_exits_2(monkeypatch, capsys):
     # Finding 14: the console script too printed an empty table header and exited 1.
     import peeky.probe as probe_module
@@ -200,11 +234,35 @@ def test_diff_leaves_out_after_set_values_the_intervention_left(store):
     )
     rows = evidence.run_query(store, "diff")["rows"]
     assert [(r["phase"], r["selector"], r["note"]) for r in rows] == [
-        (None, "(sets)", "the runs made different interventions (--set)"),
+        (None, "(sets)", "the runs made different interventions (--set, --set-at)"),
+        ("after-set", "r.tail", "intervention only in run b"),
+    ]
+    # A `--set-at` at the captured line's 4th stop (#137) gets the same after-set rows.
+    at_rows = [
+        (4, "observed", "r.tail", "0"),
+        (4, "observed", "r.buf", "[1, 2, 3, 0]"),
+        (4, "after-set", "r.tail", "3"),
+        (4, "after-set", "r.buf", "[1, 2, 3, 0]"),
+    ]
+    saved(store, at_rows[:2])
+    saved(store, at_rows, set_at=[[36, 4, "r.tail", "3"]])
+    rows = evidence.run_query(store, "diff")["rows"]
+    assert [(r["phase"], r["selector"], r["note"]) for r in rows] == [
+        (None, "(sets)", "the runs made different interventions (--set, --set-at)"),
         ("after-set", "r.tail", "intervention only in run b"),
     ]
     # Both runs set something: an after-set value equal to its run's observed value is
     # no difference of its own; the observed row has any.
+    saved(
+        store,
+        [
+            (4, "observed", "r.tail", "0"),
+            (4, "observed", "r.buf", "[1, 2, 3, 0]"),
+            (4, "after-set", "r.tail", "3"),
+            (4, "after-set", "r.buf", "[1, 2, 3, 0]"),
+        ],
+        set=[["r.tail", "3"]],
+    )
     saved(
         store,
         [
@@ -319,8 +377,14 @@ def test_a_candidate_probe_names_the_run_to_compare_it_with(cli, tmp_path, capsy
     assert run(("i",), (), (), True, "--json") == 0
     compare = json.loads(capsys.readouterr().out)["evidence"]["compare"]
     assert compare == {"run": 1, "command": "peeky queries diff --param a=1 --param b=7"}
-    assert run() == 0
+    assert run() == 0  # run 8
     assert "compare:" not in capsys.readouterr().out
+    # A run with a `--set-at` (#137) changed a value too: it is no baseline.
+    changed = probe_result()
+    changed["probe"].update(program="a.py", line=1, capture=["i"], set_at=[[1, 2, "i", "3"]])
+    assert cli(changed, "--capture", "i", "--set-at", "1@2", "i=3") == 0  # run 9
+    assert run(("i",), (), (), True) == 0  # run 10
+    assert "compare: peeky queries diff --param a=8 --param b=10" in capsys.readouterr().out
 
 
 def test_the_guide_lists_session_wait_and_program_arguments_up_front():

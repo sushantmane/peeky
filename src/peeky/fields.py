@@ -565,5 +565,28 @@ def member_base(graph, root, steps):
     return None
 
 
+# Where a reason names its function (`in \x00, ...`).
+FUNCTION = "\x00"
+
+
+def by_function(reasons):
+    """A refusal's reasons, [(function, reason with FUNCTION where it is named)], each
+    given once for the functions it holds in (`in fc and fd, `a.pp` is a pointer: ...`),
+    in order (#138: a line several functions share)."""
+    grouped = {}
+    for function, reason in reasons:
+        named = grouped.setdefault(reason, [])
+        if function not in named:
+            named.append(function)
+    shown = []
+    for reason, names in grouped.items():
+        joined = names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
+        if len(names) > 1 and reason.startswith(FUNCTION + " has "):
+            # `fe and fg have no local `a``.
+            reason = FUNCTION + " have " + reason[len(FUNCTION) + len(" has ") :]
+        shown.append(reason.replace(FUNCTION, joined))
+    return "; ".join(shown)
+
+
 def integer_range(signed, bits):
     return (-(2 ** (bits - 1)), 2 ** (bits - 1) - 1) if signed else (0, 2**bits - 1)

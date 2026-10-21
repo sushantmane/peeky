@@ -1246,6 +1246,26 @@ class RustSession(NativeSession):
                 "probe); otherwise edit the source and run verify"
             )
 
+    def instance_name(self, frame):
+        """The frame's function as the build's debug information names it, where its
+        symbol's hash is all that tells it apart: a generic's instance with its type
+        arguments (`rc::tf<rc::A>`), a closure or async body by its number
+        (`cl::main::{closure#1}`, where LLDB shows `{{closure}}` for each). None for any
+        other frame. One past 300 characters is cut and ends with `…`."""
+        hashed = _frame_hash(frame)
+        proofs = getattr(self, "owned", None)
+        functions = getattr(proofs, "functions", None) if proofs is not None else None
+        function = functions.get(hashed[1]) if hashed and isinstance(functions, dict) else None
+        if function is None:
+            return None
+        own = getattr(function, "instance", "") or (
+            function.name if str(function.name).startswith("{") else ""
+        )
+        if not own:
+            return None
+        named = "::".join((*function.ancestors, own))
+        return named if len(named) <= 300 else named[:299] + "…"
+
     def never_settable_row(self, variable, frame, member=False):
         """`register` where no stop of this build can change the row (#138): the build's
         IR keeps its local (for ``member``, the local holding the field or element) only
@@ -1434,7 +1454,9 @@ class RustSession(NativeSession):
 
     @staticmethod
     def _function_name(function):
-        return "::".join((*function.ancestors, function.name))
+        # A generic's instance with its type arguments (`tf<gen::A>`), so a refusal names
+        # each instance it holds in.
+        return "::".join((*function.ancestors, getattr(function, "instance", "") or function.name))
 
     def _never_in(self, hashed, root, steps, source, line):
         """Why ``root`` (and the path ``steps`` into it) can never change in the function
@@ -1490,34 +1512,45 @@ class RustSession(NativeSession):
     def _never_message(self, name, root, steps, source, line, failures):
         """The refusal for a `--set` that ``failures`` [(function, (kind, detail))] rule
         out in every function at ``line``, naming each rule and what to do instead."""
+        from peeky.fields import FUNCTION, by_function
+
         plain = _plain(root)
+        # (function, rule naming it as FUNCTION): the functions sharing a rule are named
+        # together, each rule once (a generic's instances, a closure on the line).
         parts, registers, states = [], set(), False  # registers: the advice for each
         for function, (kind, detail) in failures:
             if kind == "register":
                 parameter, why = detail
-                rule, advice = self._register_text(function, plain, why, parameter)
-                parts.append(rule)
+                rule, advice = self._register_text(FUNCTION, plain, why, parameter)
+                parts.append((function, rule))
                 registers.add(advice)
             elif kind == "state":
                 states = True
                 parts.append(
-                    f"in {function}, `{plain}` is held in the async body's state across an "
-                    "`.await` (a field of the future, which the poll reaches through a pointer "
-                    "Peeky never writes) at every stop of the body"
+                    (
+                        function,
+                        f"in {FUNCTION}, `{plain}` is held in the async body's state across "
+                        "an `.await` (a field of the future, which the poll reaches through "
+                        "a pointer Peeky never writes) at every stop of the body",
+                    )
                 )
             elif kind == "absent":
-                parts.append(f"{function} {detail}")
+                parts.append((function, f"{FUNCTION} {detail}"))
             elif kind == "unproven":
                 registers.add(self._register_text(function, plain, ("own", None))[1])
                 parts.append(
-                    f"in {function}, the build's IR gives `{plain}` no memory slot of its own "
-                    "(a register, or no such local), so a change would not affect the program"
+                    (
+                        function,
+                        f"in {FUNCTION}, the build's IR gives `{plain}` no memory slot of its "
+                        "own (a register, or no such local), so a change would not affect the "
+                        "program",
+                    )
                 )
             else:
-                parts.append(f"in {function}, {detail}")
+                parts.append((function, f"in {FUNCTION}, {detail}"))
         text = (
             f"`{name}` cannot be changed at {source}:{line}, at any stop of this build: "
-            + "; ".join(dict.fromkeys(parts))
+            + by_function(parts)
             + ". Refused before the program runs: nothing ran"
         )
         if all(kind == "absent" for _, (kind, _) in failures):

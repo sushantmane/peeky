@@ -494,3 +494,220 @@ def test_a_previews_fields_say_their_root_is_kept_in_a_register(tmp_path, state,
     code, result = probe(capsys, crate, at, "--set", "m.v=9")
     assert code == 2
     assert "`m` is a parameter kept in a register" in refused_before_launch(result)
+
+
+@pytest.mark.timeout(400)
+def test_a_set_at_is_judged_before_the_run_against_its_own_lines_functions(tmp_path, state, capsys):
+    # #137 with #138: each --set-at is judged before the run at its own line, by the same
+    # rules as --set at the --at line, and a --set at the --at line only there.
+    crate = crate_at(tmp_path, "scale", SCALE)
+    loop, call = line_of(SCALE, "// LOOP"), line_of(SCALE, "// CALL")
+    # `offset` is a parameter of `scale` kept in a register: no stop of LOOP changes it.
+    code, result = probe(
+        capsys, crate, call, "--capture", "s.end", "--set-at", f"{loop}@2", "offset=3"
+    )
+    assert code == 2
+    message = refused_before_launch(result)
+    assert message.startswith(f"`offset` cannot be changed at src/main.rs:{loop},"), message
+    assert "in scale::scale, `offset` is a parameter kept in a register" in message, message
+    # `s.end` is settable at CALL (main's own struct), but scale has no `s`; `total` is
+    # settable at LOOP, but main has no `total`: each is judged at its own line only.
+    code, result = probe(
+        capsys,
+        crate,
+        call,
+        "--capture",
+        "s.end",
+        "--set",
+        "s.end=5",
+        "--set-at",
+        f"{loop}@2",
+        "total=100",
+    )
+    assert code == 0, result.get("error")
+    applied = [(c["name"], c["after"], c["line"]) for c in result["interventions"]]
+    assert applied == [("s.end", "5", call), ("total", "100", loop)], applied
+    assert "SCALED 135" in result["output"] and "SPAN Span { start: 1, end: 5 }" in result["output"]
+
+
+GENERIC = """trait Zed {
+    fn zed(&self) -> i64;
+}
+struct A {
+    z: i64,
+}
+struct B {
+    z: i64,
+    w: i64,
+}
+impl Zed for A {
+    fn zed(&self) -> i64 {
+        self.z
+    }
+}
+impl Zed for B {
+    fn zed(&self) -> i64 {
+        self.z + self.w
+    }
+}
+
+#[inline(never)]
+fn tf<T: Zed>(a: T, n: i64) -> i64 {
+    let mut k = a.zed();
+    k += n; // ADD
+    k
+}
+
+fn main() {
+    let mut total = 0i64;
+    for i in 0..2i64 {
+        total += tf(A { z: i }, 1) + tf(B { z: i, w: 100 }, 2); // CALL
+    }
+    println!("TOTAL:{}", total);
+}
+"""
+
+
+@pytest.mark.timeout(400)
+def test_a_generics_instances_are_named_with_their_type_arguments(tmp_path, state, capsys):
+    # #151 review 2: `tf::<A>` and `tf::<B>` stop on line ADD in turn, and their frames
+    # differ only in a symbol hash, which the warning dropped (no warning at all).
+    crate = crate_at(tmp_path, "gen", GENERIC)
+    add, call = line_of(GENERIC, "// ADD"), line_of(GENERIC, "// CALL")
+    sets = ("--set-at", f"{add}@1", "k=500", "--set-at", f"{add}@2", "k=600")
+    code, result = probe(capsys, crate, call, "--capture", "total", *sets)
+    assert code == 0, result.get("error")
+    named = [(c["after"], c["instance"]) for c in result["interventions"]]
+    assert named == [("500", "gen::tf<gen::A>"), ("600", "gen::tf<gen::B>")], named
+    assert (
+        f"--set-at line {add} stopped in 2 functions: gen::tf<gen::A> (stop 1); "
+        "gen::tf<gen::B> (stop 2). @HIT counts every stop of the line, in any function; "
+        "each change says which function's variable it changed." in result["warnings"]
+    ), result["warnings"]
+    assert "TOTAL:1208" in result["output"], result["output"]
+    # The capture line's own warning tells them apart too.
+    code, result = probe(capsys, crate, add, "--capture", "k", "--hits", "all")
+    assert code == 0, result.get("error")
+    assert (
+        f"Line {add} stopped in 2 functions: gen::tf<gen::A> (hits 1, 3); gen::tf<gen::B> "
+        "(hits 2, 4). --hits and --set-hit count every stop; the function column says which "
+        "is which." in result["warnings"]
+    ), result["warnings"]
+    # A refusal before the run names the instances once, with the reason and advice once.
+    code, result = probe(capsys, crate, call, "--set-at", f"{add}@1", "n=9")
+    message = refused_before_launch(result)
+    assert message.count("is a parameter kept in a register") == 1, message
+    assert message.count("A candidate edit keeps it in memory") == 1, message
+    for instance in ("gen::tf<gen::A>", "gen::tf<gen::B>"):
+        assert instance in message.split("`n` is a parameter")[0], message
+
+
+LONG = """#[inline(never)]
+fn tf<T: Iterator<Item = i64>>(t: T) -> i64 {
+    let mut k = 0i64;
+    k += 1; // BUMP
+    k + t.sum::<i64>()
+}
+fn base(v: &[i64]) -> impl Iterator<Item = i64> + '_ {
+    v.iter().map(|x| x + 1).filter(|x| *x > 0).map(|x| x * 2).filter(|x| *x > 1).map(|x| x - 1).map(|x| x * 1).filter(|x| *x > -5)
+}
+fn main() {
+    let v = vec![1i64, 2, 3];
+    let mut total = 0i64;
+    total += tf(base(&v).map(|x| x + 3));
+    total += tf(base(&v).map(|x| x + 4)); // CALL
+    println!("TOTAL:{}", total);
+}
+"""
+CLOSURES = """fn main() {
+    let mut total = 0i64;
+    for i in 0..2i64 {
+        let f = |v: i64| { let mut w = v + 1; w += 1; w }; let g = |v: i64| { let mut w = v * 2; w += 1; w }; total += f(i) + g(i); // BOTH
+    }
+    println!("TOTAL:{}", total); // END
+}
+"""
+
+
+@pytest.mark.timeout(400)
+def test_long_instances_and_closures_are_labelled_apart(tmp_path, state, capsys):
+    # #151 review 3: two instances whose names were cut at the same 300 characters got
+    # the same label, with no mark of the cut; closures showed escaped symbol names.
+    crate = crate_at(tmp_path, "lg", LONG)
+    bump, call = line_of(LONG, "// BUMP"), line_of(LONG, "// CALL")
+    sets = ("--set-at", f"{bump}@1", "k=10", "--set-at", f"{bump}@2", "k=20")
+    code, result = probe(capsys, crate, call, "--capture", "total", *sets)
+    assert code == 0, result.get("error")
+    first, second = (change["instance"] for change in result["interventions"])
+    assert first != second and "…" in first and "…" in second, (first, second)
+    assert first.split("…")[0] == second.split("…")[0]
+    assert main(["sql", "SELECT instance FROM interventions", "--json"]) == 0
+    stored = [row["instance"] for row in json.loads(capsys.readouterr().out)["rows"]]
+    assert stored == [first, second]
+
+    crate = crate_at(tmp_path, "cl", CLOSURES)
+    both, end = line_of(CLOSURES, "// BOTH"), line_of(CLOSURES, "// END")
+    code, result = probe(capsys, crate, both, "--capture", "i", "--hits", "5")
+    assert code == 0, result.get("error")
+    shown = [row.get("instance") for row in result["rows"]]
+    assert shown[1:] == ["cl::main::{closure#0}"] * 2 + ["cl::main::{closure#1}"] * 2, shown
+    # A refusal at a stop names the closure, as the warning does.
+    code, result = probe(capsys, crate, end, "--set-at", f"{both}@4", "w=1")
+    assert code == 1 and not result.get("refused_before_launch"), result
+    assert "(in cl::main::{closure#1})" in result["error"]["message"], result["error"]
+    assert any("cl::main::{closure#0} (stops 2, 3)" in w for w in result["warnings"]), result
+
+
+LABELLED = """#[inline(never)]
+fn gen_apply<T: Copy + Into<i64>>(t: T) -> i64 {
+    let tag: i64 = t.into(); // TAG
+    tag + 1
+}
+fn main() {
+    let mut total = 0i64;
+    for i in 0..2i64 {
+        let f = |v: i64| { let mut w = v + 1; w += 1; w }; let g = |v: i64| { let mut w = v * 2; w += 1; w }; total += f(i) + g(i); // BOTH
+        total += gen_apply(i as i32) + gen_apply(i as i16 + 50);
+    }
+    println!("TOTAL:{}", total);
+}
+"""
+
+
+def latest_rows(capsys, sql):
+    assert main(["sql", sql.replace("RUN", "(SELECT MAX(run_id) FROM runs)"), "--json"]) == 0
+    return json.loads(capsys.readouterr().out)["rows"]
+
+
+@pytest.mark.timeout(400)
+def test_closure_and_instance_labels_are_found_in_sql(tmp_path, state, capsys):
+    # #151 review 4: the table showed `cz::main::{closure#0}` and `{closure#1}`, but the
+    # store kept no instance for captures, and its note's short_function(function) gives
+    # both closures one name (`cz::main::{{closure}}`); generic instances lost their types.
+    crate = crate_at(tmp_path, "cz", LABELLED)
+    both, tag = line_of(LABELLED, "// BOTH"), line_of(LABELLED, "// TAG")
+    # The note comes with the state directory's first such table, never with --quiet
+    # (seventh evaluation, finding 8).
+    at = ["probe", str(crate), "--at", f"src/main.rs:{both}", "--capture", "i"]
+    assert main([*at, "--hits", "5", "--quiet", "--no-save"]) == 0
+    assert "note:" not in capsys.readouterr().out
+    assert main([*at, "--hits", "5"]) == 0
+    text = capsys.readouterr().out
+    assert "cz::main::{closure#1}" in text, text
+    assert "instance = 'cz::main::{closure#0}'" in text, text
+    sql = "SELECT instance, COUNT(*) AS n FROM captures WHERE run_id = RUN GROUP BY instance"
+    counts = {row["instance"]: row["n"] for row in latest_rows(capsys, sql)}
+    assert counts == {None: 1, "cz::main::{closure#0}": 2, "cz::main::{closure#1}": 2}, counts
+    sql = "SELECT COUNT(*) AS n FROM captures WHERE instance = 'cz::main::{closure#0}'"
+    assert latest_rows(capsys, sql) == [{"n": 2}]
+
+    code, result = probe(capsys, crate, tag, "--capture", "t", "--hits", "all")
+    assert code == 0, result.get("error")
+    shown = [row.get("instance") for row in result["rows"]]
+    assert shown == ["cz::gen_apply<i32>", "cz::gen_apply<i16>"] * 2, shown
+    sql = (
+        "SELECT COUNT(DISTINCT short_function(function)) AS names, COUNT(DISTINCT instance) "
+        "AS instances, SUM(instance = 'cz::gen_apply<i16>') AS i16 FROM captures "
+        "WHERE run_id = RUN"
+    )
+    assert latest_rows(capsys, sql) == [{"names": 1, "instances": 2, "i16": 2}]

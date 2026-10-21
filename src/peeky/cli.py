@@ -41,6 +41,8 @@ from peeky.probe import (
     combine_edits,
     parse_hits,
     parse_selector,
+    parse_set_at,
+    probe_exit_code,
     run_probe,
     split_selectors,
 )
@@ -541,7 +543,7 @@ def describe(args):
         "program": program,
         "commands": {
             "probe": f"peeky probe {target} --at {program}:<line>{run} --capture <a,b.c> "
-            "[--set name=value] [--set-hit N] [--hits N] [--json]",
+            "[--set name=value] [--set-hit N] [--set-at LINE@HIT name=value] [--hits N] [--json]",
             "session": f"peeky session start {target} --at {program}:<line>{run} [--hit N]; then "
             "peeky session inspect | get <a.b> | set <name>=<value> | step [--into|--out] | "
             "continue [--count N|--to LINE|--to-exit] | "
@@ -800,7 +802,8 @@ def probe(args):
     if line is None:
         raise ValueError("probe requires --at <path>:<line>")
     edit, original = _probe_edit(args, root, program, line, language)
-    _member_sets(args.set, language)
+    set_at = _set_at(args, root, program)
+    _member_sets([*args.set, *(f"{name}={value}" for _, _, name, value in set_at)], language)
     request = Probe(
         program,
         line,
@@ -816,6 +819,7 @@ def probe(args):
         args=tuple(args.arg),
         expect_sha256=tuple(tuple(item.split("=", 1)) for item in args.expect_sha256),
         edit=edit,
+        set_at=set_at,
     )
     progress = (
         None
@@ -837,11 +841,8 @@ def probe(args):
         # A probe refused before it ran (#138) leaves no run to compare.
         _keep_evidence(args, result, root, language)
     _emit(result, args.json, lambda shown: _probe_text(shown, quiet=args.quiet))
-    if result.get("refused_before_launch"):
-        # Refused, as any request Peeky turns down: exit 2, nothing ran (seventh
-        # evaluation, finding 14).
-        return 2
-    return 0 if result["status"] == "completed" else 1
+    # 2 for a probe refused before it ran (finding 14), 4 for a change not made (#151).
+    return probe_exit_code(result)
 
 
 def _misplaced_options(args):
@@ -855,6 +856,21 @@ def _misplaced_options(args):
         f"Everything after `--` goes to the program, including {', '.join(found[:4])}, which "
         "Peeky also takes: put Peeky's options before `--`"
     )
+
+
+def _set_at(args, root, program):
+    """`--set-at [<path>:]<line>[@<hit>] name=value` as Probe.set_at: in the --at file,
+    where the probe's breakpoints are (#137)."""
+    points = []
+    for where, assignment in getattr(args, "set_at", None) or ():
+        path, line, hit, name, value = parse_set_at(where, assignment)
+        if path is not None and _confined(root, path) != program:
+            raise ValueError(
+                f"--set-at {where}: a probe stops in one source file, the --at one "
+                f"({program}); give a line of it (--set-at {line}@{hit} {assignment})"
+            )
+        points.append((line, hit, name, value))
+    return tuple(points)
 
 
 def _member_sets(sets, language):
@@ -979,12 +995,13 @@ def _first_time(name):
 
 
 def _probe_text(result, quiet=False):
-    from peeky.names import function_labels, shortened_note
+    from peeky.probe import _short_note
 
-    # The note on short frame names, once per state directory and never with --quiet
-    # (seventh evaluation, finding 8): `peeky sql --help` and query tables say it too.
-    functions = function_labels(row.get("function") for row in result.get("rows") or ())
-    short_names = not quiet and shortened_note(functions) is not None and _first_time("short-names")
+    # The note on short frame names and instance labels, once per state directory and
+    # never with --quiet (seventh evaluation, finding 8): `peeky sql --help`, `--schema`
+    # and query tables say it too.
+    noted = not result.get("refused_before_launch") and _short_note(result) is not None
+    short_names = not quiet and noted and _first_time("short-names")
     text = _table(result, short_names=short_names)
     if result.get("refused_before_launch"):
         return text
@@ -1719,6 +1736,7 @@ def _probe_remote(args, root, request):
         # The worker refuses before launching when its sources differ.
         expect_sha256=expected,
         edit=request.edit,
+        set_at=request.set_at,
     )
     # A worker whose probe child was killed (its cap) or crashed early answers with
     # only status/error; give every result the same complete shape.
@@ -1734,7 +1752,14 @@ def _probe_remote(args, root, request):
         ("seconds", 0),
         ("output", ""),
         ("output_truncated", False),
-        ("probe", {**asdict(request), "set": [list(change) for change in request.set]}),
+        (
+            "probe",
+            {
+                **asdict(request),
+                "set": [list(change) for change in request.set],
+                "set_at": [list(point) for point in request.set_at],
+            },
+        ),
     ):
         result.setdefault(key, default)
     if result["status"] != "completed" and not isinstance(result.get("error"), dict):
@@ -2636,6 +2661,19 @@ def main(argv=None, _job=False, _edits=None):
         "--set-hit", type=int, default=1, help="Which hit gets the --set interventions (default 1)"
     )
     sub.add_argument(
+        "--set-at",
+        nargs=2,
+        action="append",
+        default=[],
+        metavar=("[PATH:]LINE[@HIT]", "NAME=VALUE"),
+        help="Change a value at its own stop: at hit HIT (default 1) of LINE, counting that "
+        "line's own stops, in the --at file, whether or not values are captured there. "
+        "Repeatable, at several lines and hits (shorten at 22@3, restore at 23@3); each is "
+        "applied once. HIT counts every stop of LINE, in any function (a lambda or closure "
+        "on the line, a recursive call); each change says which function's variable it "
+        "changed. One the program never reaches is reported, and the probe exits with 4",
+    )
+    sub.add_argument(
         "--run", help="Python: script to run when --at is in a module it imports (e.g. main.py)"
     )
     sub.add_argument(
@@ -2690,7 +2728,9 @@ def main(argv=None, _job=False, _edits=None):
         help="Read-only SQL over saved probe evidence",
         description="Read-only SQL over saved probe evidence. Tables show a C++ or Rust "
         "frame's short name (trim_left); the store keeps the debugger's whole name, which "
-        "SQL compares: match it with short_function(function) = 'trim_left'.",
+        "SQL compares: match it with short_function(function) = 'trim_left', and a closure "
+        "or generic instance as a probe's table shows it with instance = "
+        "'cz::main::{closure#0}'.",
     )
     common(sub, target=False)
     sub.add_argument("query", nargs="?", help='One SELECT, e.g. "SELECT * FROM last_run"')

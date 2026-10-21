@@ -290,8 +290,8 @@ _MUTATION_HINTS = (
     ),
     (
         r"has one caller: \S+:[0-9]+ in ",
-        "Change the value at that call, where it is owned: `probe --at <its line> --hits N "
-        "--set-hit N`, N counting that line's stops (`--capture <x> --hits all` there).",
+        "Change the value at that call, where it is owned: `--set-at <its line>@N`, N "
+        "counting that line's own stops (`--at <its line> --capture <x> --hits all` finds N).",
     ),
     (
         r"is a (?:pointer|reference)\b(?!;)",
