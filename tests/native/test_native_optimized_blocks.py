@@ -77,3 +77,42 @@ def test_a_blocks_own_declaration_withholds_the_outer_local(tmp_path, optimizati
     for row in found:
         # Before: `n` showed the outer local's value (argc) as what line 8 reads.
         assert "value" not in row and reason in row["error"], row
+
+
+STATIC_SOURCE = """#include <stdio.h>
+__attribute__((noinline)) long id(long v) { return v; }
+int main(int argc, char **argv) {
+    long t = id(argc) * 3;
+    printf("A=%ld\\n", t);
+    {
+        static long t = 50;
+        printf("B=%ld\\n", t + 0 * argc); /* STATIC */
+    }
+    printf("C=%ld\\n", t);
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(180)
+@pytest.mark.parametrize("optimization", ["O1", "O2"])
+def test_a_blocks_static_kept_as_a_constant_is_shown_where_the_code_names_it(
+    tmp_path, optimization
+):
+    # Review of PR #175: clang keeps a `static` never changed as a constant, which
+    # lldb-dap lists as a local, `t @ blocks.c:7`. Before: that row was withheld as the
+    # outer local, and the outer one's said the static was not listed.
+    adapter = target(optimization)
+    (tmp_path / "blocks.c").write_text(STATIC_SOURCE)
+    line = next(i for i, row in enumerate(STATIC_SOURCE.splitlines(), 1) if "STATIC" in row)
+    selectors = ("t @ blocks.c:7", "t @ blocks.c:4")
+    result = run_probe(tmp_path, Probe("blocks.c", line, selectors), adapter=adapter)
+    assert result["status"] == "completed", result.get("error")
+    rows = {row["selector"]: row for row in result["rows"] if row.get("phase") == "observed"}
+    assert rows["t @ blocks.c:7"].get("value") == "50", rows
+    outer = rows["t @ blocks.c:4"]
+    assert "value" not in outer, outer
+    assert (
+        "the block's `static` `t` (line 7), listed separately as `t @ blocks.c:7`"
+        in (outer["error"])
+    )
