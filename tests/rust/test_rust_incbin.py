@@ -91,4 +91,5 @@ def test_an_incbin_string_outside_inline_assembly_builds(crate, capsys):
     probe, _ = crate
     code, result = probe(capsys, PLAIN)
     assert code == 0 and result["status"] == "completed", result.get("error")
-    assert ".incbin" in result["rows"][0]["value"] and "text=.incbin" in result["output"]
+    # Its value is read where the debugger reads memory (lldb-dap from LLVM 20).
+    assert result["rows"][0]["selector"] == "s" and "text=.incbin" in result["output"]
