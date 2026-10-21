@@ -36,15 +36,46 @@ _FIELD = {
     "scope_line": re.compile(r"(?:^|, )scopeLine: ([0-9]+)"),
     "type": re.compile(r"(?:^|, )type: (![0-9]+)"),
 }
+# A local's IR name: plain (`%x.dbg.spill`), or quoted where it holds another character
+# (`%"gr\C3\B6\C3\9Fe"` for `größe`, its bytes in hex; #191).
+_POINTER = r'%([-\w.$]+|"(?:[^"\\]|\\[0-9A-Fa-f]{2})*")'
 # (pointer, variable, location); the location is the record's last operand.
 _DECLARES = (
-    re.compile(r"#dbg_declare\(ptr %([-\w.$]+), (![0-9]+), .*, (![0-9]+)\)\s*$"),
+    re.compile(rf"#dbg_declare\(ptr {_POINTER}, (![0-9]+), .*, (![0-9]+)\)\s*$"),
     re.compile(
-        r"@llvm\.dbg\.declare\(metadata ptr %([-\w.$]+), metadata (![0-9]+), .*\), "
+        rf"@llvm\.dbg\.declare\(metadata ptr {_POINTER}, metadata (![0-9]+), .*\), "
         r"!dbg (![0-9]+)"
     ),
 )
 _SPILL = re.compile(r"\.dbg\.spill")
+# What LLVM IR writes as it is in a string: printable ASCII but `"` and `\\`.
+_IR_PLAIN = re.compile(r"[ !#-\[\]-~]*")
+_IR_ESCAPE = re.compile(r"\\([0-9A-Fa-f]{2})")
+
+
+def ir_string(text):
+    """An LLVM IR string's text (without its quotes), or None where it is none LLVM
+    writes: LLVM writes a quote, a backslash and every unprintable byte (any non-ASCII
+    one) as `\\` and two hex digits (`src/x\\E2\\80\\A8y.rs`, a variable
+    `gr\\C3\\B6\\C3\\9Fe`; #179), so any other `\\` (`\\q`), anything else unescaped, and
+    bytes that are not UTF-8 (`\\FF`) are refused, never read as another name (#188
+    review)."""
+    found, at = bytearray(), 0
+    while True:
+        plain = _IR_PLAIN.match(text, at)
+        found += plain[0].encode("ascii")
+        if (at := plain.end()) == len(text):
+            break
+        if (escape := _IR_ESCAPE.match(text, at)) is None:
+            return None
+        found.append(int(escape[1], 16))
+        at = escape.end()
+    try:
+        return found.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+
+
 _HASH = re.compile(r"17(h[0-9a-f]{16})E$")
 
 
@@ -74,22 +105,34 @@ def ir_locals(path, declarations=None):
     if path.stat().st_size > MAX_IR_BYTES:
         return {}, {}
     entries, declares = {}, []
-    with path.open(encoding="utf-8", errors="replace") as stream:
+    # Bytes not UTF-8 stay apart (surrogates ir_string refuses), never one `\ufffd`.
+    with path.open(encoding="utf-8", errors="surrogateescape", newline="") as stream:
         for line in stream:
             if line.startswith("!"):
                 match = _ENTRY.match(line)
                 if match:
                     fields = {key: pattern.search(match[3]) for key, pattern in _FIELD.items()}
+                    values = {
+                        key: ir_string(found[1]) if key in ("name", "linkage") else found[1]
+                        for key, found in fields.items()
+                        if found
+                    }
+                    # A name LLVM does not write proves nothing (#188 review).
                     entries[match[1]] = (
                         match[2],
-                        {key: found[1] for key, found in fields.items() if found},
+                        {key: value for key, value in values.items() if value is not None},
                     )
                 continue
             if "dbg" not in line:
                 continue
             for pattern in _DECLARES:
                 if found := pattern.search(line):
-                    declares.append((found[1], found[2], found[3]))
+                    pointer = found[1]
+                    if pointer.startswith('"'):
+                        # As its source names it; a name LLVM does not write, none.
+                        pointer = ir_string(pointer[1:-1])
+                    if pointer is not None:
+                        declares.append((pointer, found[2], found[3]))
                     break
     memory, parameters = {}, {}
     for pointer, variable, location in declares:
