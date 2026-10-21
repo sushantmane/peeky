@@ -464,7 +464,7 @@ class JavaSession:
             except (OSError, ValueError, KeyError, TypeError, AttributeError):
                 count = None
             if count:
-                notes.append(loop_header_note(line, count))
+                notes.append(loop_header_note(line, *count))
         return notes
 
     @property

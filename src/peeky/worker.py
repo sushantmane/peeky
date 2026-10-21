@@ -941,7 +941,8 @@ class DebugWorker:
         for line, count in sorted(self.loop_lines.items()):
             if line not in self.places:
                 continue
-            note = loop_header_note(line, count)
+            count, exact = count
+            note = loop_header_note(line, count, exact)
             if count > 1:
                 note += f" (each hit's stop, 1 to {count}, says which)"
             notes.append(note + ".")

@@ -192,3 +192,39 @@ def test_lines_at_each_pass_of_a_loop_around_them_get_no_note(loops, capsys):
     assert main([*command, "--capture", "total", "--hits", "all", "--json", "--quiet"]) == 0
     result = json.loads(capsys.readouterr().out)
     assert result["hits"] == 1 and [w for w in result["warnings"] if "is a loop header" in w]
+
+
+# Review 2 of #166: a location that runs only under a condition (`if (z) { int w = 5;
+# ... }` has a block of its own on the line) made "stops 3 times" stop twice.
+CONDITIONAL = """#include <stdio.h>
+int main(int argc, char **argv) {
+    int total = 0, z = argc - 1;
+    if (z) { int w = 5; total += w; } for (int i = 0; i < 2; i++) { // CONDLOC
+        total += i;
+    }
+    printf("total=%d\\\\n", total);
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(300)
+def test_a_location_that_may_not_run_makes_the_count_an_upper_bound(loops, capsys):
+    compiler, root, config = loops
+    (root / "loops.c").write_text(CONDITIONAL)
+    line = next(i for i, text in enumerate(CONDITIONAL.splitlines(), 1) if "// CONDLOC" in text)
+
+    def run(*args):
+        command = ["probe", str(root), "--config", str(config), "--at", f"loops.c:{line}"]
+        command += ["--capture", "total", "--hits", "all", "--json", "--quiet", "--", *args]
+        assert main(command) == 0
+        result = json.loads(capsys.readouterr().out)
+        assert result["status"] == "completed", result
+        return result["hits"], [w for w in result["warnings"] if "is a loop header" in w]
+
+    without, notes = run()
+    with_block, _ = run("z")
+    (note,) = notes
+    most = with_block
+    assert f"Line {line} is a loop header: it stops up to {most} times each time its loop" in note
+    assert without < most, (without, most, note)

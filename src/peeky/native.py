@@ -2582,9 +2582,10 @@ class NativeSession:
         return breakpoint_locations(text, set(ids))
 
     def loop_header_stops(self, dap, source, line, groups, cache):
-        """How many times ``line`` of ``source`` stops each time its loop starts, before
-        its first pass, where it is that loop's header alone in each function holding
-        it (#161: `for (int i = 0; ...)` binds `i = 0`, never the condition); else None.
+        """(stops, exact): how many times ``line`` of ``source`` stops each time its loop
+        starts, before its first pass (at most, unless ``exact``), where it is that
+        loop's header alone in each function holding it (#161: `for (int i = 0; ...)`
+        binds `i = 0`, never the condition); else None.
         ``groups``: its breakpoint locations, by the code holding them. From LLDB's
         disassembly of each function and the file's line table (`source info`), both
         read-only and kept in ``cache`` for the launch; see ``loop_headers``. Only a line
@@ -2641,7 +2642,9 @@ class NativeSession:
             if any(not listed[0][0] <= address <= listed[-1][0] for address in addresses):
                 return None
             counts.add(stops_before_loop(listed, table, line, list(addresses)))
-        return counts.pop() if len(counts) == 1 else None
+        if None in counts or len({count for count, _ in counts}) != 1:
+            return None
+        return next(iter(counts))[0], all(exact for _, exact in counts)
 
     def function_scopes(self):
         """Each function in the declared sources, its line span and locals (for describe)."""

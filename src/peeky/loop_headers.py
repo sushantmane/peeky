@@ -151,9 +151,10 @@ def _blocks(instructions, handlers=()):
 
 def natural_loops(instructions, handlers=()):
     """{loop header block: blocks of the loop} of a function's instructions (the first
-    is its entry), with ({address: block}, successors), or None where the flow cannot
-    be read as natural loops: an indirect jump, or a cycle whose entry does not
-    dominate it (irreducible flow)."""
+    is its entry), with {address: block}, successors and ``dominates(a, b)`` (every path
+    from the entry to block b passes through block a), or None where the flow cannot be
+    read as natural loops: an indirect jump, or a cycle whose entry does not dominate it
+    (irreducible flow)."""
     if not instructions or any(kind == "indirect" for _, kind, _ in instructions):
         return None
     successors, starts, owner = _blocks(instructions, handlers)
@@ -209,7 +210,7 @@ def natural_loops(instructions, handlers=()):
         while True:
             if a == b:
                 return True
-            if b == entry:
+            if b == entry or b not in idom:
                 return False
             b = idom[b]
 
@@ -225,7 +226,7 @@ def natural_loops(instructions, handlers=()):
                 continue
             body.add(block)
             pending.extend(predecessors[block])
-    return loops, owner, successors
+    return loops, owner, successors, dominates
 
 
 def _located(table):
@@ -245,14 +246,17 @@ def _located(table):
 
 
 def stops_before_loop(instructions, table, line, locations, handlers=()):
-    """How many of ``locations`` (a line's breakpoint addresses in this function) the
-    line stops at each time its loop starts, before the first pass, where the line is
-    that loop's header alone (see the module); else None. ``table``: which line each
-    range of code is (``line_table``)."""
+    """(stops, exact): how many of ``locations`` (a line's breakpoint addresses in this
+    function) the line stops at each time its loop starts, before the first pass, where
+    the line is that loop's header alone (see the module); else None. Each stops at most
+    once per start; ``exact`` where every one is on every path into the loop (it
+    dominates the loop's header), else some may not run (`if (z) { int w = 5; ... } for
+    (...)`: review 2 of #166), so it is at most so many. ``table``: which line each range
+    of code is (``line_table``)."""
     analysed = natural_loops(instructions, handlers)
     if analysed is None or not locations or not table:
         return None
-    loops, owner, successors = analysed
+    loops, owner, successors, dominates = analysed
     at = _located(table)
     code = {}
     for address, kind, _ in instructions:
@@ -283,7 +287,8 @@ def stops_before_loop(instructions, table, line, locations, handlers=()):
                 return None
             seen.add(current)
             pending.extend(successors.get(current, ()))
-    return len(locations)
+    exact = all(dominates(owner[location], header) for location in locations for header in headers)
+    return len(locations), exact
 
 
 def _own_code(headers, loops, code, successors, ours):
@@ -453,10 +458,12 @@ def java_line_table(lines, size):
     ]
 
 
-def loop_header_note(line, count):
-    """The note for a loop header that stops ``count`` times each time its loop starts,
-    before its first pass (see ``stops_before_loop``)."""
+def loop_header_note(line, count, exact=True):
+    """The note for a loop header that stops ``count`` times (at most, unless ``exact``)
+    each time its loop starts, before its first pass (see ``stops_before_loop``)."""
     times = {1: "once", 2: "twice"}.get(count, f"{count} times")
+    if not exact:
+        times = "at most once" if count == 1 else f"up to {count} times"
     return (
         f"Line {line} is a loop header: it stops {times} each time its loop starts, before "
         "the first pass, never at the passes; put --at (or --set-at) on the first line of "

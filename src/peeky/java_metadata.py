@@ -335,8 +335,8 @@ def java_scopes(mapping, classes_dir, workspace, limit=300):
 
 
 def loop_header_stops(mapping, classes_dir, source, line):
-    """How many times java-debug stops at ``line`` of ``source`` each time its loop
-    starts, where the line is a loop header whose breakpoint is bound before the loop
+    """(stops, exact) of java-debug at ``line`` of ``source`` each time its loop
+    starts (see ``loop_headers.stops_before_loop``), where the line is a loop header whose breakpoint is bound before the loop
     (#161: `for (int i = 0; ...)` binds `i = 0`, a for-each its array or iterator); else
     None (no loop of the line, a stop at each pass, or unclear: the line in several
     classes, bytecode that does not decode). java-debug binds a line breakpoint to the
