@@ -275,7 +275,7 @@ It decides from the build's code, never from the source's shape: the function's 
 - **Headers that run at each pass:** A header whose first code is the condition the loop returns to stops at every pass and gets no note: a Java `while (k < n)`, `for (; j < n; j++)` and `do`'s `while`, a C or C++ `do`'s `while`, a C++ range `for` (its element is bound at each pass) and Rust's `while let`.
 - **When it cannot tell:** Where Peeky cannot read the flow (a jump table, flow into the middle of a loop, an architecture other than arm64 or x86-64), it says nothing; nor does it look at a line that names no loop (no `for`, `while`, `loop`, `do`, a name with one in it, or a macro's capitals), or one in more than 8 functions or inlined copies. It asks the debugger once, at launch: one line table per file and one disassembly per function, never again when a probe re-arms its breakpoints.
 - **GCC:** GCC gives `for (;;)` and `do {` no code of their own, so LLDB moves their breakpoint into the body, which stops at each pass (`moved` says so).
-- **Python and Java:** Python stops once per pass at a line (a `for` header once per pass and once more when the loop ends); Java and Python have no `stop`.
+- **Python and Java:** Python stops once per pass at a line (a `for` header once per pass and once more when the loop ends); Java and Python have no `stop`. A Python local the pass assigns below the stop shows an earlier pass's value, with a `note` (5.1).
 - **`describe`:** `describe` does not mark these lines: for C, C++ and Rust it would need the debugger's locations, which only a run has.
 
 ### 2.3 Test a Hypothesis by Changing a Value
@@ -816,6 +816,16 @@ closed default
 `session get` reads a Python name missing from the locals from the module's globals (`[module global]`, `scope: globals`) only when Peeky proves, from the function's own scoping in its source (`symtable`), that the function reads that name from its globals; only then are the globals read. A source it cannot parse, or one changed since the program started (by mtime or ctime, so `cp -p` counts), proves nothing, and the error says the name may be such a global.
 
 In `def shadow(): print(LIMIT); LIMIT = 1`, stopped at the `print`, `get LIMIT` says `LIMIT` is a local with no value there yet (Python raises `UnboundLocalError`), not the module's `LIMIT`; a local of an enclosing function, a closure variable, a comprehension's variable or a type parameter is named as such. debugpy files functions, classes and `__dunder__` names under groups; their members are selected by name (`add_tag.__defaults__`), and so is a local holding a function (`session set callback=None` changes it). `[id 6]` is the object's identity (see 4.6).
+
+**A pass's own value.** Stopped in a loop, a Python local that the pass assigns below the stop still holds an earlier pass's value, or one from before the loop: back in `group` with `step --out` on `key = slug(title)`, `key` is the previous title's key. Peeky shows the value with a `note`, in `get`, `inspect` and probe rows, and refuses to `set` it (the code overwrites it before reading it):
+
+```
+key: str = 'hello-world'
+  note: an earlier pass's value (or one from before the loop at line 20): this pass has not assigned it yet, and the code assigns it again (line 21) before reading it; stop after that to see this pass's value
+```
+
+- **How:** Peeky reads the function's bytecode, compiled from its source by the interpreter that runs the program (plain and as `-O` compiles it; both must agree). The debugger gives a line, not an instruction, so every instruction of the line must be in the same innermost loop (a `for` or `while` around the line), no path from the loop's head to the line may store the local, and none from the line may read or `del` it before storing it, while the rest of the pass does store it.
+- **No note:** a loop's header line (its code also runs before and after the loop), a local a closure shares, a function that may read its locals another way (`locals()`, `vars()`, `eval`, `exec`, `dir()`, frame objects), module-level code, and a source changed since the program started. The module global of that name (`--globals`) is never noted.
 
 **Caller frames.** `--frame N` reads frame N of the stack, as `session inspect --json` lists `frames` (0, the default, is where the program stopped; 1 its caller; at most 10):
 

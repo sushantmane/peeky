@@ -190,8 +190,10 @@ def _size(index):
     )
 
 
-def _index(path, loaded_by=None):
-    """``(index, None)`` for a source file, or ``(None, reason)``."""
+def source_key(path, loaded_by=None):
+    """``(key, None)``: what identifies a source file's current content (its path, inode,
+    size and times), or ``(None, reason)`` where it cannot be read, is too large, or
+    changed after ``loaded_by`` (a time.time()), so may not be the code running."""
     try:
         status = os.stat(path)
     except OSError as exc:
@@ -201,24 +203,40 @@ def _index(path, loaded_by=None):
         return None, "its source file changed after the program started"
     if status.st_size > MAX_SOURCE_BYTES:
         return None, "its source file is too large to analyze"
-    key = (
+    return (
         str(path),
         status.st_dev,
         status.st_ino,
         status.st_size,
         status.st_mtime_ns,
         status.st_ctime_ns,
-    )
-    if key in _INDEX:
-        _INDEX.move_to_end(key)
-        return _INDEX[key][0], None
+    ), None
+
+
+def read_source(path, key):
+    """``(bytes, None)``: the source ``key`` (``source_key``) names, or ``(None, reason)``
+    where it changed while read."""
     try:
         with open(path, "rb") as stream:
             data = stream.read(MAX_SOURCE_BYTES + 1)
-            if os.fstat(stream.fileno()).st_ctime_ns != status.st_ctime_ns:
+            if os.fstat(stream.fileno()).st_ctime_ns != key[-1]:
                 return None, "its source file changed while Peeky read it"
     except OSError as exc:
         return None, f"its source could not be read ({type(exc).__name__})"
+    return data, None
+
+
+def _index(path, loaded_by=None):
+    """``(index, None)`` for a source file, or ``(None, reason)``."""
+    key, reason = source_key(path, loaded_by)
+    if key is None:
+        return None, reason
+    if key in _INDEX:
+        _INDEX.move_to_end(key)
+        return _INDEX[key][0], None
+    data, reason = read_source(path, key)
+    if data is None:
+        return None, reason
     try:
         index = _build(importlib.util.decode_source(data), str(path))
     except (SyntaxError, ValueError, UnicodeDecodeError, RecursionError, MemoryError):

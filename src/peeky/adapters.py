@@ -1002,6 +1002,41 @@ class PythonAdapter:
             return None
         return reference
 
+    # The worker passes when the program started (`loaded_by`, a time.time()) to the
+    # rules that read its sources: a source changed after it proves nothing.
+    judges_sources = True
+
+    def not_yet_declared(
+        self,
+        variable,
+        frame,
+        innermost=True,
+        stack=None,
+        deeper=None,
+        siblings=None,
+        stop=None,
+        loaded_by=None,
+    ):
+        """A local shown with a note (#182): one the current pass of the loop around the
+        frame's line has not assigned yet, and the code assigns again before reading
+        it, so its value is an earlier pass's (see python_passes); else None. Its
+        string says why a change to it is refused."""
+        from peeky.python_passes import stale_note
+
+        frame = frame or {}
+        return stale_note(
+            (frame.get("source") or {}).get("path"),
+            str(frame.get("name") or ""),
+            frame.get("line"),
+            variable.get("name"),
+            loaded_by=loaded_by,
+        )
+
+    def validate_mutation_target(self, variable, frame, loaded_by=None):
+        """Refuse a change the code overwrites before reading it (#182)."""
+        if (stale := self.not_yet_declared(variable, frame, loaded_by=loaded_by)) is not None:
+            raise ValueError(f"{variable.get('name')!r} cannot be changed at this stop: {stale}")
+
     @staticmethod
     def globals_proof(frame, listed, names, loaded_by=None):
         """How the frame's function sees each of ``names``, missing from its locals:
