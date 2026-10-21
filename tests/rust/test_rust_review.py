@@ -351,7 +351,7 @@ def test_a_line_shared_with_a_closure_names_each_function_it_stops_in(crate, cap
     assert code == 1 and result["error"]["code"] == "MUTATION_REJECTED", result
     assert "'score' in peeky_pagination::ranked::{{closure}}" in result["error"]["message"]
     # An owned container live at the line is read (#53); without readMemory it stays
-    # raw and says why, and how to read it.
+    # raw and says why (that, not a move: #156), and how to read it.
     at = next(i for i, line in enumerate(lines, 1) if "// BEST" in line)
     code, result = probe(capsys, crate, "--at", at, "--capture", "best,best.len")
     assert code == 0, result.get("error")
@@ -359,8 +359,10 @@ def test_a_line_shared_with_a_closure_names_each_function_it_stops_in(crate, cap
     if os.environ.get("PEEKY_EXPECT_READ_MEMORY") or rows["best"].get("view") == "memory":
         assert rows["best"]["value"] == "[9, 5, 1]" and rows["best"]["view"] == "memory"
     else:
-        assert "(#53)" in rows["best"]["note"]
-        assert any("#53" in warning for warning in result["warnings"])
+        note = rows["best"]["note"]
+        assert "the debugger gives no memory address for it" in note, note
+        assert "Capture best.len for the length" in note and "(#53)" not in note, note
+        assert any("best: This Rust Vec shows" in warning for warning in result["warnings"])
     assert rows["best.len"]["value"] == "3" and "note" not in rows["best.len"]
 
 

@@ -184,6 +184,8 @@ class DebugWorker:
         self.view_items = 0
         self.view_bytes = 0
         self.view_deadline = 0.0
+        # Seconds the value views spent waiting for the debugger's replies (#156 review).
+        self.view_waited = 0.0
         self.view_timed_out = False
         self.audit, self.audit_sizes, self.audit_bytes = [], [], 0
         self.breakpoint_events = []
@@ -1871,8 +1873,7 @@ class DebugWorker:
             self.taints.clear()
             self.notes.clear()
             self.inspection_nodes = 0
-            self.view_fetches = self.view_items = self.view_bytes = 0
-            self.view_deadline = time.monotonic() + VIEW_SECONDS
+            self.reset_views()
             self.view_timed_out = False
             self.reset_previews()
             # C and C++ previews (#136): of every root, none, or the roots named.
@@ -2482,6 +2483,32 @@ class DebugWorker:
         references = {self.scope_identity(s): s["variablesReference"] for s in fresh}
         return [references[identity] for identity in original]
 
+    def reset_views(self):
+        """A fresh value-view budget, for one inspection or expansion."""
+        self.view_fetches = self.view_items = self.view_bytes = 0
+        self.view_waited = 0.0
+        self.view_deadline = time.monotonic() + VIEW_SECONDS
+
+    def view_exhausted(self, why=None):
+        """The budget's error, saying which limit ran out (#156 review: Peeky's own checks
+        once took the whole time, and the rows blamed an enum's view)."""
+        if why is None and self.view_fetches >= 128:
+            why = "128 debugger reads"
+        elif why is None:
+            why = (
+                f"its {VIEW_SECONDS} s ran out, {self.view_waited:.1f} s of them waiting for "
+                "the debugger's reads, the rest listing values and in Peeky's own checks"
+            )
+        return ViewBudgetExhausted(f"Value view budget exhausted: {why}")
+
+    def view_request(self, command, arguments, remaining):
+        """One debugger request of a value view, its wait counted (view_exhausted)."""
+        started = time.monotonic()
+        try:
+            return self.dap.request(command, arguments, timeout=remaining)
+        finally:
+            self.view_waited += time.monotonic() - started
+
     def view_fetch(self, reference):
         """Bounded raw reads used only by a runtime's trusted value-view hook.
 
@@ -2490,26 +2517,24 @@ class DebugWorker:
         """
         remaining = self.view_deadline - time.monotonic()
         if self.view_fetches >= 128 or remaining <= 0:
-            raise ViewBudgetExhausted("Value view budget exhausted")
+            raise self.view_exhausted()
         self.view_fetches += 1
         if type(reference) is not int or reference <= 0:
             raise ValueError("Variable is not expandable")
         try:
-            values = self.dap.request(
-                "variables",
-                {"variablesReference": reference, "start": 0, "count": 65},
-                timeout=remaining,
+            values = self.view_request(
+                "variables", {"variablesReference": reference, "start": 0, "count": 65}, remaining
             ).get("variables", [])
         except ResponseTimeout as exc:
             # The read was written completely; only its reply missed the view budget.
             self.view_timed_out = True
-            raise ViewBudgetExhausted("Value view budget exhausted") from exc
+            raise self.view_exhausted("the debugger did not answer in the time left") from exc
         if not isinstance(values, list) or len(values) > 64:
             raise ValueError("Value view child collection exceeds limit")
         self.view_items += len(values)
         self.view_bytes += len(json.dumps(values, default=str))
         if self.view_items > 1024 or self.view_bytes > 1024 * 1024:
-            raise ViewBudgetExhausted("Value view budget exhausted")
+            raise self.view_exhausted("1,024 values or 1 MiB read")
         return values
 
     def reset_previews(self):
@@ -2548,7 +2573,7 @@ class DebugWorker:
         the inspection's view budgets with view_fetch."""
         remaining = self.view_deadline - time.monotonic()
         if self.view_fetches >= 128 or remaining <= 0:
-            raise ViewBudgetExhausted("Value view budget exhausted")
+            raise self.view_exhausted()
         self.view_fetches += 1
         if not self.capabilities.get("supports_read_memory"):
             raise ValueError("The debugger cannot read memory")
@@ -2557,14 +2582,14 @@ class DebugWorker:
         if type(count) is not int or not 0 < count <= 4096:
             raise ValueError("Memory read exceeds limit")
         if self.view_bytes + count > 1024 * 1024:
-            raise ViewBudgetExhausted("Value view budget exhausted")
+            raise self.view_exhausted("1 MiB read")
         try:
-            reply = self.dap.request(
-                "readMemory", {"memoryReference": reference, "count": count}, timeout=remaining
+            reply = self.view_request(
+                "readMemory", {"memoryReference": reference, "count": count}, remaining
             )
         except ResponseTimeout as exc:
             self.view_timed_out = True
-            raise ViewBudgetExhausted("Value view budget exhausted") from exc
+            raise self.view_exhausted("the debugger did not answer in the time left") from exc
         except RequestFailed as exc:
             raise ValueError(f"The debugger refused the memory read: {exc}") from None
         try:
@@ -2686,15 +2711,21 @@ class DebugWorker:
                     self.view_read,
                     frame=frame,
                     top=not ancestry,
-                    innermost=not ancestry and frame.get("id") == self.innermost_frame,
+                    innermost=frame.get("id") == self.innermost_frame,
                     stop=self.stop_reason,
                     # The scope's other variables: rows a debugger shows under one name.
                     siblings=None if ancestry else variables,
                     **({"taint": taint} if taint else {}),
+                    # A field's way from its root local (#156).
+                    **({"ancestry": ancestry} if ancestry else {}),
                 )
                 if view_variable
                 else None
             )
+            raw_reason = None
+            if view is not None and "rust_view" not in view:
+                # Left as the debugger shows it, with why (a Rust Vec or String, #156).
+                raw_reason, view = view.get("raw_reason"), None
             if view is not None:
                 # Interpreted values never carry expansion handles to raw storage. Their
                 # decoded elements get a worker-owned handle that never reaches the
@@ -2934,6 +2965,8 @@ class DebugWorker:
             if own == "stale":
                 # Not proven initialized: the bytes a move or drop left (#108).
                 output["stale"] = True
+            if isinstance(raw_reason, str) and not output.get("unavailable"):
+                output["raw_reason"] = raw_reason[:500]
             result.append(output)
             self.inspection_nodes += 1
         return result
@@ -3059,8 +3092,7 @@ class DebugWorker:
             if validate_children := getattr(runtime, "validate_children", None):
                 validate_children(variables)
         # Each expansion is its own bounded request with a fresh value-view budget.
-        self.view_fetches = self.view_items = self.view_bytes = 0
-        self.view_deadline = time.monotonic() + VIEW_SECONDS
+        self.reset_views()
         self.reset_previews()
         # Previews of the page's values only where asked: a listing shows them, a
         # selector walking to a field needs none (its value is previewed alone).
@@ -3105,8 +3137,7 @@ class DebugWorker:
         steps = [step for step, _ in ancestry]
         self.reset_previews()
         # Its strings' memory reads (#128) count as an expansion's.
-        self.view_fetches = self.view_items = self.view_bytes = 0
-        self.view_deadline = time.monotonic() + VIEW_SECONDS
+        self.reset_views()
         reads = self.view_read if self.capabilities.get("supports_read_memory") else None
         if self.placeholders() and is_unavailable(variable.get("value")):
             return {}
@@ -3659,8 +3690,7 @@ class DebugWorker:
         trail = []
         try:
             frame, _, path, _, _ = self.walk(record, runtime, trail)
-            self.view_fetches = self.view_items = self.view_bytes = 0
-            self.view_deadline = time.monotonic() + VIEW_SECONDS
+            self.reset_views()
             view = runtime.view_variable(
                 trail[-1],
                 self.view_fetch,
