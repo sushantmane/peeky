@@ -204,7 +204,12 @@ def test_a_cpp_frames_signature_does_not_widen_the_table(cpp, capsys):
     text = capsys.readouterr().out
     assert "twice(int)" in text and "twice(std::string const&)" in text, text
     assert "basic_string" not in text, text
-    # The note's example is what short_function gives: both overloads' rows.
+    # A probe's table says the note once per state directory (seventh evaluation,
+    # finding 8); a query's table always does. Its example is what short_function
+    # gives: both overloads' rows.
+    assert "note: function shows short frame names" not in text, text
+    assert main(["queries", "run"]) == 0
+    text = capsys.readouterr().out
     assert "short_function(function) = 'twice'" in text, text
     query = "SELECT count(*) AS n FROM last_run WHERE short_function(function) = 'twice'"
     assert main(["sql", query, "--json"]) == 0

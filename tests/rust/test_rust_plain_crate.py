@@ -3645,7 +3645,8 @@ def test_struct_and_tuple_locals_preview_as_rust_prints_them(plain, capsys):
         "mixed.f": ("0.1", "f32"),
         "mixed.u": ("255", "u8"),
         "small.b": ("-2", "i8"),
-        "rect.a.end": ("3", "unsigned long"),
+        # A raw field's Rust type too, from the debug information (seventh evaluation, 18).
+        "rect.a.end": ("3", "usize"),
         "tok.end": ("3", "u32"),
         "named.n": ("1", "i32"),
     }

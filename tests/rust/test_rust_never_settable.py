@@ -135,7 +135,8 @@ def test_a_register_parameter_is_refused_before_the_run_and_marked(tmp_path, sta
     code, result = probe(
         capsys, crate, at, *run, "--hits", "3", "--set", "width=9", "--set-hit", "3"
     )
-    assert code == 1
+    # A refusal exits 2 (seventh evaluation, finding 14).
+    assert code == 2
     message = refused_before_launch(result)
     assert "in limiter::allow, `width` is a parameter kept in a register" in message, message
     assert "only shows a copy" in message and "COOKBOOK 6.6" in message, message
@@ -491,5 +492,5 @@ def test_a_previews_fields_say_their_root_is_kept_in_a_register(tmp_path, state,
     assert field["value"] == "3" and field["settable"] is True, kept
     assert "not_settable" not in field, kept
     code, result = probe(capsys, crate, at, "--set", "m.v=9")
-    assert code == 1
+    assert code == 2
     assert "`m` is a parameter kept in a register" in refused_before_launch(result)
