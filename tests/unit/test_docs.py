@@ -1,5 +1,6 @@
 """The agent guide is read whole: agents' file viewers commonly return at most 20 KB."""
 
+import re
 from pathlib import Path
 
 DOCS = Path(__file__).resolve().parents[2] / "docs"
@@ -11,11 +12,36 @@ def test_the_agent_guide_fits_one_read():
 
 
 def test_the_guide_links_resolve():
+    # Eighth evaluation, L23: agents given the guide, COOKBOOK and ERRORS could not
+    # follow its pointer into RUST_AGENT.md; M7: it links a page per language.
     guide = (DOCS / "AGENT_GUIDE.md").read_text()
-    for name in ("ERRORS.md", "REMOTE.md", "RUST_AGENT.md#reading-rust-values"):
+    names = (
+        "ERRORS.md",
+        "REMOTE.md",
+        *(f"lang/{n}.md" for n in ("python", "java", "c-cpp", "rust")),
+    )
+    for name in names:
         assert f"]({name})" in guide
-        assert (DOCS / name.split("#")[0]).is_file()
-    assert "## Reading Rust values" in (DOCS / "RUST_AGENT.md").read_text()
+        assert (DOCS / name).is_file()
+    assert "RUST_AGENT.md" not in guide
+
+
+def _anchor(heading):
+    """GitHub's anchor for a Markdown heading."""
+    text = re.sub(r"[^\w\- ]", "", heading.strip().lower())
+    return text.replace(" ", "-")
+
+
+def test_the_language_pages_links_resolve():
+    # M7: each page points into the COOKBOOK by section; every link must land.
+    for page in sorted((DOCS / "lang").glob("*.md")):
+        for target in re.findall(r"\]\(([^)\s]+)\)", page.read_text()):
+            path, _, anchor = target.partition("#")
+            linked = (page.parent / path).resolve()
+            assert linked.is_file(), (page.name, target)
+            if anchor:
+                headings = re.findall(r"^#+ (.+)$", linked.read_text(), flags=re.M)
+                assert anchor in {_anchor(h) for h in headings}, (page.name, target)
 
 
 def test_the_docs_say_reading_any_global_lists_and_reprs_them_all(capsys):

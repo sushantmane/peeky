@@ -1561,9 +1561,38 @@ def run_query(path, name, params=None, *, limit=DEFAULT_ROWS):
     else:
         result, notes = query(path, sql, bound, limit=limit), []
     notes = _unmarked(path, name, bound) + notes
+    if name in ("compare", "diff"):
+        notes += _labels(path, bound)
     if name == "diff":
         notes += _unaligned(path, bound)
+    if "stop" in result["columns"] and all(row.get("stop") is None for row in result["rows"]):
+        # No row was at one of several breakpoint locations of its line (Python and Java
+        # never are): the column would be empty (eighth evaluation, L7).
+        result = {
+            **result,
+            "columns": [column for column in result["columns"] if column != "stop"],
+            "rows": [{k: v for k, v in row.items() if k != "stop"} for row in result["rows"]],
+        }
     return {**result, "notes": notes} if notes else result
+
+
+def _labels(path, params):
+    """The two runs' labels, where either has one (eighth evaluation, L17): a pair's rows
+    name runs by number only."""
+    rows = query(
+        path,
+        f"SELECT run_id, label FROM runs WHERE run_id IN ({_A}, {_B}) ORDER BY run_id",
+        {"a": params.get("a"), "b": params.get("b")},
+    )["rows"]
+    if len(rows) != 2 or not any(row["label"] for row in rows):
+        return []
+    named = [
+        f"run {row['run_id']} is {row['label']!r}"
+        if row["label"]
+        else f"run {row['run_id']} has no label"
+        for row in rows
+    ]
+    return ["labels: " + "; ".join(named)]
 
 
 def _unaligned(path, params):
@@ -1584,7 +1613,7 @@ def _unaligned(path, params):
     if run["ha"] == run["hb"]:
         apart = stops_apart(path, run["a"], run["b"])
         if apart is None:
-            return _unplaced_returns(path, run)
+            return _structure_apart(path, run) or _unplaced_returns(path, run)
         return [
             f"at hit {apart['hit']} run {run['a']} was at {stop_text(apart['stop_a'])} of "
             f"its line and run {run['b']} at {stop_text(apart['stop_b'])}, so a hit need not "
@@ -1598,6 +1627,139 @@ def _unaligned(path, params):
         "show every later hit as a difference: pair them by a value instead, `peeky queries "
         f"join --param a={run['a']} --param b={run['b']} --param key=<selector>`"
     ]
+
+
+def _structure_apart(path, run):
+    """A note where two runs stopped as often but their hits may not be the same moments
+    (eighth evaluation, M6; its review), so that pairing by hit number may compare
+    different calls. In order:
+
+    - where each run stopped (function, instance, line) does not pair one to one across
+      hits (a renamed function, or lines an edit moved, pair consistently);
+    - a selector's values, addresses and Java object numbers masked, line up better
+      other than hit by hit (`[A, B, C]` against `[A, C, D]`; the same values in another
+      order);
+    - the hits' values differ at most of them, so they cannot show that the hits pair."""
+    rows = query(
+        path,
+        "SELECT c.run_id, c.hit, c.line, c.function, c.instance, c.selector, c.value, "
+        "r.language FROM captures c JOIN runs r ON r.run_id = c.run_id WHERE c.run_id IN "
+        "(:a, :b) AND c.phase = 'observed' ORDER BY c.run_id, c.hit, c.rowid",
+        {"a": run["a"], "b": run["b"]},
+        limit=MAX_ROWS,
+    )["rows"]
+    a, b = run["a"], run["b"]
+    places, values, captured = {a: {}, b: {}}, {a: {}, b: {}}, {a: set(), b: set()}
+    for row in rows:
+        places[row["run_id"]].setdefault(
+            row["hit"], (row["function"], row["instance"], row["line"])
+        )
+        captured[row["run_id"]].add(row["selector"])
+        if row["value"] is not None:
+            masked = _no_addresses(row["value"], row["language"])
+            values[row["run_id"]].setdefault(row["selector"], {})[row["hit"]] = (
+                masked,
+                row["value"],
+            )
+    join = (
+        "if so, pair hits by a value that names the call and that the edit leaves alone (an "
+        f"argument, an index): `peeky queries join --param a={a} --param b={b} "
+        "--param key=<selector>`"
+    )
+    common = sorted(set(places[a]) & set(places[b]))
+    # Each place of one run pairs with one place of the other, and the pair's first hit.
+    forward, backward = {}, {}
+    for hit in common:
+        here_a, here_b = places[a][hit], places[b][hit]
+        if (
+            forward.get(here_a, (here_b,))[0] == here_b
+            and backward.get(here_b, (here_a,))[0] == here_a
+        ):
+            forward.setdefault(here_a, (here_b, hit))
+            backward.setdefault(here_b, (here_a, hit))
+            continue
+        if here_a in forward:
+            then, earlier = (here_a, forward[here_a][0]), forward[here_a][1]
+        else:
+            then, earlier = (backward[here_b][0], here_b), backward[here_b][1]
+        return [
+            f"at hit {hit} run {a} stopped {_place(here_a)} and run {b} {_place(here_b)}, "
+            f"but at hit {earlier} run {a} {_place(then[0])} paired with run {b} "
+            f"{_place(then[1])}: a hit need not be the same moment in both; {join}"
+        ]
+    for selector, seen_a in values[a].items():
+        seen_b = values[b].get(selector)
+        if not seen_b:
+            continue
+        hits_a, hits_b = sorted(seen_a), sorted(seen_b)
+        order_a = [seen_a[hit][0] for hit in hits_a]
+        order_b = [seen_b[hit][0] for hit in hits_b]
+        if len(set(order_a)) < 2 or len(set(order_b)) < 2:
+            continue
+        same = sum(1 for hit in set(hits_a) & set(hits_b) if seen_a[hit][0] == seen_b[hit][0])
+        pairs = _aligned(order_a, order_b)
+        if len(pairs) <= same:
+            continue
+        i, j = next((i, j) for i, j in pairs if hits_a[i] != hits_b[j])
+        hit_a, hit_b = hits_a[i], hits_b[j]
+        if order_a != order_b and sorted(order_a) == sorted(order_b):
+            found = f"runs {a} and {b} saw the same values of `{selector}` in another order"
+        else:
+            found = f"runs {a} and {b} saw `{selector}`'s values at other hits"
+        return [
+            f"{found} (run {b}'s hit {hit_b} matches run {a}'s hit {hit_a}: "
+            f"{seen_b[hit_b][1]}): the calls may have come in another order or number, so "
+            f"a hit need not be the same moment in both; {join}"
+        ]
+    # Each selector's value at a hit, by name: `left=A, right=B` against `left=B, right=A`
+    # differs (review 2 of PR #189). Only selectors both runs captured (`diff` lists the
+    # others once); one with no value at a hit is `missing`, which no text equals.
+    missing = object()
+    selectors = captured[a] & captured[b]
+    differ = [
+        hit
+        for hit in common
+        if any(
+            values[a].get(selector, {}).get(hit, (missing,))[0]
+            != values[b].get(selector, {}).get(hit, (missing,))[0]
+            for selector in selectors
+        )
+    ]
+    if len(differ) >= 2 and 2 * len(differ) > len(common):
+        return [
+            f"the runs' values differ at {len(differ)} of {len(common)} hits, so they cannot "
+            "show that a hit is the same moment in both; if the edit changed which calls "
+            f"reach the line, {join[len('if so, ') :]}"
+        ]
+    return []
+
+
+def _place(place):
+    """Where a stop was, for a note: `in f at line 24`, an instance by its label."""
+    function, instance, line = place
+    return f"in {instance or function} at line {line}"
+
+
+def _aligned(a, b):
+    """A longest common subsequence of sequences ``a`` and ``b``: their index pairs."""
+    lengths = [[0] * (len(b) + 1) for _ in range(len(a) + 1)]
+    for i in range(len(a) - 1, -1, -1):
+        for j in range(len(b) - 1, -1, -1):
+            lengths[i][j] = (
+                lengths[i + 1][j + 1] + 1
+                if a[i] == b[j]
+                else max(lengths[i + 1][j], lengths[i][j + 1])
+            )
+    pairs, i, j = [], 0, 0
+    while i < len(a) and j < len(b):
+        if a[i] == b[j]:
+            pairs.append((i, j))
+            i, j = i + 1, j + 1
+        elif lengths[i + 1][j] >= lengths[i][j + 1]:
+            i += 1
+        else:
+            j += 1
+    return pairs
 
 
 def _unplaced_returns(path, run):
