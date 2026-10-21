@@ -1048,7 +1048,9 @@ def test_describe_lists_the_reference_parameters_it_reads_from_memory():
     )
     [line] = [line for line in text.splitlines() if line.startswith("read from memory")]
     assert line.endswith(f": &[i32], &{VEC_NAME}, &mut {VEC_NAME}")
-    assert "reference parameters, and owned" in line and "MIR proves" in line
+    assert "reference parameters, owned" in line and "MIR proves" in line
+    # And such fields of either (#156).
+    assert "such fields of either (self.values)" in line
 
 
 @pytest.mark.parametrize(
