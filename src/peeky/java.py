@@ -506,6 +506,21 @@ class JavaSession:
             raise ValueError("Source is not part of the prepared Java target")
         return self.prepared.workspace / relative
 
+    @staticmethod
+    def return_entry(variable):
+        """The method's name where java-debug lists what the method a step left returned
+        (`⎯►name()` on macOS and Windows, `->name()` elsewhere), else None (#155). JDI
+        reports the value itself, exactly, whatever its type."""
+        found = re.fullmatch(r"(?:\u23af\u25ba|->)([^\s()]+)\(\)", str(variable.get("name") or ""))
+        return found[1] if found else None
+
+    # JDI gives no value for a method that returns nothing or ends by an exception, and
+    # java-debug does not say which.
+    no_return = (
+        "java-debug listed no returned value: the method returns nothing, or it ended by "
+        "an exception"
+    )
+
     def local_scopes(self, scopes):
         return [scope for scope in scopes if not scope.get("expensive")]
 

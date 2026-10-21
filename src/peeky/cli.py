@@ -1188,7 +1188,12 @@ def _state_text(state):
             else " (outside the program's sources, and your code is no longer on the stack: "
             "`session continue`)"
         )
-    if reason and reason not in ("breakpoint", "step"):
+    if reason == "interrupted":
+        where += (
+            " [the step was interrupted here: another thread stopped at the same time; "
+            "`session continue` serves its stop]"
+        )
+    elif reason and reason not in ("breakpoint", "step"):
         where += f" [reason: {reason}; not auto-resumed, inspect it or `session report`]"
     text = f"state: {state['state']}{where}{_pause_text(state)}{hint}"
     if state.get("optimized"):
@@ -1294,6 +1299,12 @@ def _variables_text(snapshot, name="default"):
                 f"  ... and {scope['total'] - len(scope['variables'])} more, not listed (at "
                 "most 50 per scope): `session get NAME` reads one by name"
             )
+    if returned := snapshot.get("returned"):
+        # What the function the step left returned (#155), apart from the locals.
+        lines.append("[Returned]")
+        lines.append(f"  {_returned_text(returned)}  (session get return)")
+    if snapshot.get("library_frame"):
+        lines.append(f"note: {snapshot['library_frame']}")
     if str(snapshot.get("globals", "listed")) != "listed":
         lines.append(f"note: module globals {str(snapshot['globals'])[:300]}")
     if snapshot.get("optimized"):
@@ -1311,6 +1322,16 @@ def _variables_text(snapshot, name="default"):
             )
         )
     return "\n".join(lines)
+
+
+def _returned_text(returned):
+    """`before(Task const&, Task const&) returned bool = false`, or why it is withheld."""
+    from peeky.names import display_function
+
+    who = display_function(returned.get("function")) or "the function"
+    if returned.get("unavailable"):
+        return f"{who} returned: <withheld: {returned.get('reason')}>"
+    return f"{who} returned: {returned.get('type') or ''} = {returned.get('value')}"
 
 
 def _require_stepping(record, client):
@@ -1443,10 +1464,12 @@ def session(args):
             )
         _emit(snapshot, args.json, lambda shown: _variables_text(shown, args.name))
     elif args.action == "get":
+        from peeky.probe import returns
+
         rows = _capture(
             _Remote(client),
             _stop(record),
-            tuple(args.selectors),
+            tuple(returns(selector) for selector in args.selectors),
             0,
             "observed",
             children=True,
@@ -2531,7 +2554,12 @@ def main(argv=None, _job=False, _edits=None):
     probe_parser = sub
     common(sub)
     sub.add_argument("--at", required=True, help="<line> or <path>:<line>")
-    sub.add_argument("--capture", default="", help="Comma-separated selectors, e.g. a,b.c,d[0]")
+    sub.add_argument(
+        "--capture",
+        default="",
+        help="Comma-separated selectors, e.g. a,b.c,d[0]; `return`: what the function holding "
+        "the line returns, each call (C, C++, Rust, Java)",
+    )
     sub.add_argument(
         "--set",
         action="append",
@@ -2679,7 +2707,11 @@ def main(argv=None, _job=False, _edits=None):
             help="Seconds this command waits (default 30). A program still "
             "running is left running: `session wait` again",
         )
-    actions.choices["get"].add_argument("selectors", nargs="+")
+    actions.choices["get"].add_argument(
+        "selectors",
+        nargs="+",
+        help="Selectors; `return`: what the function a step just left returned",
+    )
     actions.choices["inspect"].add_argument(
         "--globals",
         action="store_true",

@@ -623,8 +623,17 @@ def test_native_sessions_step_and_report_leaving_the_program(
             break
     assert state["state"] == "stopped" and state["outside_program"] is True
     assert state["returns_to_program"] is False
-    assert main(["session", "inspect"]) == 2
-    assert "outside the program's sources" in capsys.readouterr().err
+    code = main(["session", "inspect", "--json"])
+    shown = capsys.readouterr()
+    if code == 2:
+        # macOS: the step went on into dyld, past main's return.
+        assert "outside the program's sources" in shown.err
+    else:
+        # Linux: one frame up, in libc: only what main returned is read there (#155).
+        snapshot = json.loads(shown.out)
+        assert snapshot["scopes"] == [] and snapshot["returned"]["function"] == "main"
+        # A plain step left main: LLDB records a return only for a step out.
+        assert "only after `step --out`" in snapshot["returned"]["reason"]
     code = main(["session", "step", "--out", "--json"])
     reply = json.loads(capsys.readouterr().out)
     if code == 2:

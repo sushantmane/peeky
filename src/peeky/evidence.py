@@ -80,7 +80,9 @@ TABLES = {
         {
             "run_id": "-> runs.run_id",
             "hit": "Hit number, from 1",
-            "phase": "observed, or after-set (the value after that hit's interventions)",
+            "phase": "observed, after-set (the value after that hit's interventions), or "
+            "returned (the `(return)` row: what the call returned, read where it returned "
+            "to; line is that line, function the function that returned)",
             "line": "Line where the program actually stopped (a candidate run's own numbering; "
             "runs.line is the requested line in the original file)",
             "function": "Function (frame) name, as the debugger names it (C++: its "
@@ -572,7 +574,8 @@ QUERIES = {
     OR LAG({_caveat()}) OVER w IS NOT NULL THEN NULL
     ELSE value IS NOT LAG(value) OVER w END AS changed
 FROM captures
-WHERE run_id = {_RUN} AND phase = 'observed' AND (:selector IS NULL OR selector = :selector)
+WHERE run_id = {_RUN} AND phase IN ('observed', 'returned')
+  AND (:selector IS NULL OR selector = :selector)
 WINDOW w AS (PARTITION BY selector ORDER BY hit) ORDER BY selector, hit""",
         {**_RUN_PARAM, "selector": "Only this selector (default: all)"},
         (),
@@ -642,7 +645,8 @@ ORDER BY seq, pos""",
         "evidence by themselves), and values are ordered by their other sightings",
         f"SELECT program, line, value, COUNT(*) AS seen, SUM(({_caveat()}) IS NOT NULL) AS "
         "qualified, COUNT(DISTINCT run_id) AS runs, MIN(run_id) AS first_run, MAX(run_id) "
-        "AS last_run FROM evidence WHERE selector = :selector AND phase = 'observed' AND "
+        "AS last_run FROM evidence WHERE selector = :selector AND phase IN ('observed', "
+        "'returned') AND "
         "NOT candidate GROUP BY program, line, value ORDER BY seen - qualified DESC, seen "
         "DESC, value",
         {"selector": "Selector, e.g. request.page (required)"},
@@ -660,7 +664,10 @@ ORDER BY seq, pos""",
         "it, never as plain values. --json gives the generated SQL too (`sql`), to refine "
         "with peeky sql",
         lambda path, params: _wide(path, params),
-        {**_RUN_PARAM, "phase": "observed or after-set (default: both, after-set after)"},
+        {
+            **_RUN_PARAM,
+            "phase": "observed, after-set or returned (default: all, in that order)",
+        },
         (),
     ),
     "join": (
@@ -676,7 +683,7 @@ ORDER BY seq, pos""",
         {
             **_PAIR_PARAMS,
             "key": "Selector whose value links the runs, e.g. v (required)",
-            "phase": "observed (default) or after-set",
+            "phase": "observed (default), after-set or returned",
             "masked": "1: match key values with addresses masked (no_addresses), for a "
             "pointer or a C string; any address then matches any other",
         },
@@ -1212,7 +1219,7 @@ def _identifier(name):
     return '"' + str(name).replace('"', '""') + '"'
 
 
-_PHASES = ("observed", "after-set")
+_PHASES = ("observed", "after-set", "returned")
 # Each run's cells: names whose value is NULL, with why, and names whose value something
 # qualifies, with what: JSON objects, so no reason or selector text can be misread as a
 # separator. NULL where there are none.
@@ -1236,7 +1243,9 @@ def _cells(where):
 def _phase(params, default=None):
     phase = params.get("phase", default)
     if phase is not None and phase not in _PHASES:
-        raise ValueError(f"Evidence query failed: phase is observed or after-set, not {phase!r}")
+        raise ValueError(
+            f"Evidence query failed: phase is observed, after-set or returned, not {phase!r}"
+        )
     return phase
 
 
@@ -1353,7 +1362,8 @@ def _wide(path, params):
         f"SELECT hit,{' MIN(stop) AS stop,' if stops else ''} phase, MIN(line) AS line,"
         f"{_picked(selectors, names, '  ')}\n"
         f"  {_NO_VALUE} AS no_value,\n  {_CAVEATS} AS caveats\n"
-        f"FROM ({_cells(where)})\nGROUP BY hit, phase) w ORDER BY w.hit, w.phase = 'after-set'"
+        f"FROM ({_cells(where)})\nGROUP BY hit, phase) w ORDER BY w.hit, "
+        "CASE w.phase WHEN 'after-set' THEN 1 WHEN 'returned' THEN 2 ELSE 0 END"
     )
     return sql, {}, []
 
