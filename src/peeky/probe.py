@@ -3047,9 +3047,8 @@ def run_probe(root, probe, *, adapter=None, progress=None):
             result["candidate"]["sha256"] = launch.get("candidate_sha256")
         if "program_args" in launch:
             result["program_args"] = launch["program_args"]
-        for note in launch.get("warnings", []):
-            warnings.append(note)
-            say(note)
+        # Shown with the result, not as progress too.
+        warnings.extend(launch.get("warnings", []))
         if launch.get("entry_sha256"):
             result["entry_sha256"] = launch["entry_sha256"]
         point = result["breakpoint"]
@@ -3093,8 +3092,9 @@ def run_probe(root, probe, *, adapter=None, progress=None):
                 returning.clear()
                 if state.get("exit_inferred"):
                     warnings.append(
-                        "The debugger never reported the program's exit; Peeky inferred it "
-                        "because no threads were left (java-debug, issue #27)."
+                        "The debugger never reported the program's exit (java-debug #27); "
+                        "with no threads left, it has ended, but its exit code is unknown. "
+                        "The captured hits stand: nothing to do."
                     )
                 # A thread was seen paused at the breakpoint, but the debugger never
                 # reported that stop (#27): the line did run.
@@ -3760,6 +3760,26 @@ def _table(result, short_names=True):
     # double the table's width; Rust's ends with a symbol hash. JSON keeps the name whole.
     functions = function_labels(row.get("function") for row in result["rows"])
     short_instance = _short_instance
+    # An after-set value equal to its hit's observed one, of a selector no change named:
+    # the intervention left it as it was (eighth evaluation, L16). JSON keeps every row.
+    observed = {
+        (row["hit"], row["selector"]): row.get("value")
+        for row in result["rows"]
+        if row["phase"] == "observed" and "value" in row
+    }
+    targets = {
+        (change.get("capture_hit", change.get("hit")), change.get("name"))
+        for change in result.get("interventions", ())
+    }
+    kept = [
+        row
+        for row in result["rows"]
+        if row["phase"] != "after-set"
+        or "value" not in row
+        or (row["hit"], row["selector"]) in targets
+        or observed.get((row["hit"], row["selector"]), row) != row["value"]
+    ]
+    left_out = len(result["rows"]) - len(kept)
     rows = [
         (
             str(row["hit"]),
@@ -3777,12 +3797,17 @@ def _table(result, short_names=True):
             + ("  [module global]" if row.get("scope") == "globals" else "")
             + ("  [note]" if row.get("note") and row["note"] not in _rust_notes() else ""),
         )
-        for row in result["rows"]
+        for row in kept
     ]
     widths = [max(len(item[i]) for item in [header, *rows]) for i in range(len(header) - 1)]
     for item in [header, *rows]:
         lines.append(
             "  ".join(text.ljust(width) for text, width in zip(item, widths)) + "  " + item[-1]
+        )
+    if left_out:
+        lines.append(
+            f"after-set: {left_out} row(s) equal to the hit's observed value left out "
+            "(`--json` has every row)"
         )
     if short_names and (note := _short_note(result)):
         lines.append(note)

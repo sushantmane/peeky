@@ -41,7 +41,7 @@ from peeky.build import (
 from peeky.c_source import Preprocessed, Statements, macro_hazards, returning_twice
 from peeky.cxx_strings import libstdcxx_string, shows_text, string_class, text_like, tidy
 from peeky.digest import sha256_file
-from peeky.names import unicode_escape
+from peeky.names import standard_type, unicode_escape
 from peeky.text_sets import text_kind
 
 MAX_METADATA = 2 * 1024 * 1024
@@ -800,6 +800,12 @@ def _locals(dies, offset, hidden=None):
             if hidden and hidden(child):
                 continue
             chain = _chain(dies, child)
+            # A compiler's own variable (a range `for`'s `__range1`, `__begin1`); `this`,
+            # an artificial parameter, stays.
+            if die["tag"] == "DW_TAG_variable" and any(
+                "DW_AT_artificial" in dies[at]["attrs"] for at in chain
+            ):
+                continue
             name = _text(_first(dies, chain, "DW_AT_name"))
             # `$`-prefixed names are debugger-synthesized storage, not program locals.
             if name and not name.startswith("$"):
@@ -1329,7 +1335,11 @@ def function_scopes(info, line_text, workspace, declared, hidden=None, never=Non
     scopes = []
     for scope, kinds, spans, everywhere, unchanged, parts in found.values():
         # Two blocks may declare one name with different types (`int or long`).
-        types = {local: " or ".join(sorted(k)) for local, k in sorted(kinds.items()) if k}
+        types = {
+            local: " or ".join(sorted({standard_type(kind) for kind in k}))
+            for local, k in sorted(kinds.items())
+            if k
+        }
         spans = {
             local: _tidy_spans(found_spans)
             for local, found_spans in sorted(spans.items())

@@ -1561,9 +1561,38 @@ def run_query(path, name, params=None, *, limit=DEFAULT_ROWS):
     else:
         result, notes = query(path, sql, bound, limit=limit), []
     notes = _unmarked(path, name, bound) + notes
+    if name in ("compare", "diff"):
+        notes += _labels(path, bound)
     if name == "diff":
         notes += _unaligned(path, bound)
+    if "stop" in result["columns"] and all(row.get("stop") is None for row in result["rows"]):
+        # No row was at one of several breakpoint locations of its line (Python and Java
+        # never are): the column would be empty (eighth evaluation, L7).
+        result = {
+            **result,
+            "columns": [column for column in result["columns"] if column != "stop"],
+            "rows": [{k: v for k, v in row.items() if k != "stop"} for row in result["rows"]],
+        }
     return {**result, "notes": notes} if notes else result
+
+
+def _labels(path, params):
+    """The two runs' labels, where either has one (eighth evaluation, L17): a pair's rows
+    name runs by number only."""
+    rows = query(
+        path,
+        f"SELECT run_id, label FROM runs WHERE run_id IN ({_A}, {_B}) ORDER BY run_id",
+        {"a": params.get("a"), "b": params.get("b")},
+    )["rows"]
+    if len(rows) != 2 or not any(row["label"] for row in rows):
+        return []
+    named = [
+        f"run {row['run_id']} is {row['label']!r}"
+        if row["label"]
+        else f"run {row['run_id']} has no label"
+        for row in rows
+    ]
+    return ["labels: " + "; ".join(named)]
 
 
 def _unaligned(path, params):
@@ -1584,7 +1613,7 @@ def _unaligned(path, params):
     if run["ha"] == run["hb"]:
         apart = stops_apart(path, run["a"], run["b"])
         if apart is None:
-            return _unplaced_returns(path, run)
+            return _structure_apart(path, run) or _unplaced_returns(path, run)
         return [
             f"at hit {apart['hit']} run {run['a']} was at {stop_text(apart['stop_a'])} of "
             f"its line and run {run['b']} at {stop_text(apart['stop_b'])}, so a hit need not "
@@ -1598,6 +1627,62 @@ def _unaligned(path, params):
         "show every later hit as a difference: pair them by a value instead, `peeky queries "
         f"join --param a={run['a']} --param b={run['b']} --param key=<selector>`"
     ]
+
+
+def _structure_apart(path, run):
+    """A note where two runs stopped as often but their hits are not the same moments
+    (eighth evaluation, M6: an edit that changes how calls nest): at some hit one run was
+    in another function, or at another line relative to its first hit (a candidate's lines
+    shift as a whole), or a selector saw the same values in another order (the calls came
+    in another order). Pairing by hit number then compares different calls."""
+    rows = query(
+        path,
+        "SELECT run_id, hit, line, function, selector, value FROM captures WHERE run_id IN "
+        "(:a, :b) AND phase = 'observed' ORDER BY run_id, hit, rowid",
+        {"a": run["a"], "b": run["b"]},
+        limit=MAX_ROWS,
+    )["rows"]
+    places, values = {run["a"]: {}, run["b"]: {}}, {run["a"]: {}, run["b"]: {}}
+    for row in rows:
+        places[row["run_id"]].setdefault(row["hit"], (row["line"], row["function"]))
+        if row["value"] is not None:
+            values[row["run_id"]].setdefault(row["selector"], []).append((row["hit"], row["value"]))
+    join = (
+        "pair them by a value instead, `peeky queries join "
+        f"--param a={run['a']} --param b={run['b']} --param key=<selector>`"
+    )
+    a, b = places[run["a"]], places[run["b"]]
+    if a and b:
+        first_a, first_b = a[min(a)][0], b[min(b)][0]
+        for hit in sorted(set(a) & set(b)):
+            (line_a, function_a), (line_b, function_b) = a[hit], b[hit]
+            moved = None not in (line_a, line_b, first_a, first_b) and (
+                line_a - first_a != line_b - first_b
+            )
+            if moved or (None not in (function_a, function_b) and function_a != function_b):
+                return [
+                    f"at hit {hit} run {run['a']} stopped in {function_a} at line {line_a} and "
+                    f"run {run['b']} in {function_b} at line {line_b}, so a hit need not be "
+                    f"the same moment in both: {join}"
+                ]
+    for selector, seen_a in values[run["a"]].items():
+        seen_b = values[run["b"]].get(selector)
+        order_a, order_b = [v for _, v in seen_a], [v for _, v in seen_b or ()]
+        if (
+            seen_b is not None
+            and len(set(order_a)) > 1
+            and sorted(order_a) == sorted(order_b)
+            and order_a != order_b
+        ):
+            hit, value_a, value_b = next(
+                (ha, va, vb) for (ha, va), (_, vb) in zip(seen_a, seen_b) if va != vb
+            )
+            return [
+                f"runs {run['a']} and {run['b']} saw the same values of `{selector}` in "
+                f"another order (from hit {hit}: {value_a} and {value_b}), so the calls came "
+                f"in another order and a hit need not be the same moment in both: {join}"
+            ]
+    return []
 
 
 def _unplaced_returns(path, run):
