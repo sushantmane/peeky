@@ -3012,6 +3012,13 @@ def run_probe(root, probe, *, adapter=None, progress=None):
                     # Which function's variable: the line's stops may be in several.
                     "function": frame.get("name"),
                     **({"instance": snapshot["instance"]} if snapshot.get("instance") else {}),
+                    # Which of the line's breakpoint locations there (#157): @HIT and
+                    # --set-hit count each.
+                    **(
+                        {"stop": state["place"], "stops": state["places"]}
+                        if type(state.get("place")) is int and type(state.get("places")) is int
+                        else {}
+                    ),
                 }
                 if point is not None:
                     change["at"] = f"{point['line']}@{hit}"
@@ -3253,8 +3260,8 @@ def run_probe(root, probe, *, adapter=None, progress=None):
         warnings.append(
             f"Line {line} stopped in {len(functions)} function{'s' if len(functions) > 1 else ''}: "
             + _stops_by_function(functions, labels, "hit", alike.get(line))
-            + ". --hits and --set-hit count every stop; the function column says which "
-            "is which."
+            + ". --hits, --set-hit and --set-at's @HIT count every stop; the function column "
+            "says which is which."
         )
     unproven = _UNPROVEN_RUST[0].upper() + _UNPROVEN_RUST[1:] + "."
     for note in (_OWNED_RUST, _UNREAD_RUST, _COMPOSITE_RUST, unproven, _STALE_RUST + "."):
@@ -3438,11 +3445,15 @@ def _table(result):
         where = change.get("instance") or named.get(change.get("function"), change.get("function"))
         if change.get("alike"):
             where = f"{where}, one of {change['alike']} on the line the debugger names alike"
+        # Which of the line's breakpoint locations the stop was at, where it has several.
+        stop = f", stop {change['stop']} of {change['stops']}" if change.get("stops") else ""
         lines.append(
             f"set {change['name']}: {change['before']} -> {change['after']}"
             + (
-                f"  (--set-at line {change['at']}" + (f", in {where})" if where else ")")
+                f"  (--set-at line {change['at']}{stop}" + (f", in {where})" if where else ")")
                 if change.get("at")
+                else f"  ({stop[2:]})"
+                if stop
                 else ""
             )
         )

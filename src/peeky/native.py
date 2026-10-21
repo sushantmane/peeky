@@ -2355,8 +2355,8 @@ def _writable_integer(variable):
 # the program loads, its address is the module's: `address = m[0x0000000100000558],
 # unresolved`.
 _BREAKPOINT_LOCATION = re.compile(
-    r"^ *([0-9]{1,9})\.[0-9]{1,9}: where = (.*), address = (?:[^\s,\[\]]+\[)?"
-    r"(0x[0-9a-fA-F]{1,16})\]?(?:,.*)?[ \t]*$",
+    r"^ *([0-9]{1,9})\.[0-9]{1,9}: where = (.*), address = ([^\s,\[\]]+\[)?"
+    r"(0x[0-9a-fA-F]{1,16})\]?(,.*)?[ \t]*$",
     re.MULTILINE,
 )
 # Its `where`: module`function, its offset there, then for inlined code the function
@@ -2373,12 +2373,13 @@ _LOOP_MACHINES = frozenset(("arm64", "aarch64", "x86_64", "amd64"))
 
 def breakpoint_locations(text, ids):
     """Where LLDB placed the breakpoints ``ids`` (#157), from its `breakpoint list` text:
-    [{"id", "line", "address", "function", "place"}], each location with the function
-    that holds it. ``place`` names the code it is in: the function's start (its address
-    less its offset), or, for code inlined there, that inlined copy's start (less its
-    offset in the copy): two copies are two calls, each stopping at its own locations.
-    Unreadable lines are left out; None past MAX_LOCATIONS, where a count would fall
-    short."""
+    [{"id", "line", "address", "function", "place", "resolved"}], each location with the
+    function that holds it. ``place`` names the code it is in: the function's start (its
+    address less its offset), or, for code inlined there, that inlined copy's start (less
+    its offset in the copy): two copies are two calls, each stopping at its own locations.
+    ``resolved`` is False for one listed before the program loaded (`m[0x…], unresolved`),
+    whose address is the module's. Unreadable lines are left out; None past
+    MAX_LOCATIONS, where a count would fall short."""
     found = []
     for match in _BREAKPOINT_LOCATION.finditer(text):
         if int(match[1]) not in ids:
@@ -2386,7 +2387,7 @@ def breakpoint_locations(text, ids):
         where = _LOCATION_WHERE.fullmatch(match[2].strip())
         if where is None:
             continue
-        address = int(match[3], 16)
+        address = int(match[4], 16)
         offset = int(where[2]) if where[2] else 0
         inner = int(where[4]) if where[4] else 0
         if offset > address or inner > address:
@@ -2400,6 +2401,9 @@ def breakpoint_locations(text, ids):
                 "place": (
                     f"inlined at 0x{address - inner:x}" if where[3] else f"0x{address - offset:x}"
                 ),
+                # Listed before the program loaded: the module's own address, which the
+                # program may not have once it runs (macOS slides it).
+                "resolved": not match[3] and "unresolved" not in (match[5] or ""),
             }
         )
         if len(found) > MAX_LOCATIONS:
