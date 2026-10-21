@@ -3050,6 +3050,14 @@ def run_probe(root, probe, *, adapter=None, progress=None):
                 returning.clear()
                 worker.dispatch("continue", stop)
                 continue
+            if wants_return and reason == "interrupted":
+                # Another thread's stop caught the step out mid-way (LLDB): it is over,
+                # and that thread's stop is served next.
+                for call in reversed(returning):
+                    rows.append(_never_returned(call, _OTHER_THREADS))
+                returning.clear()
+                worker.dispatch("continue", stop)
+                continue
             if returning and reason == "step":
                 # The innermost pending call's step out ended: what it returned (#155).
                 row = _returned_by(worker, stop, returning[-1])
@@ -3298,6 +3306,11 @@ def run_probe(root, probe, *, adapter=None, progress=None):
                 )
             elif captured and hits >= probe.limit:
                 say("all requested hits captured; waiting for the --set-at stops")
+        if status == "timeout":
+            # Still being stepped out of when time ran out: no return came (#162).
+            for call in reversed(returning):
+                rows.append(_never_returned(call, "the probe timed out before it returned"))
+            returning.clear()
         report = worker.dispatch("report", session)
         result.update(
             status=status,

@@ -4191,7 +4191,8 @@ class NativeSession:
     def discard_steps(dap, thread_id):
         """Drop what is left of a step a stop interrupted on a thread (a breakpoint hit
         during `step --out`): LLDB keeps the step and would end it at some later
-        `continue`, as a step stop no one asked for. Best effort."""
+        `continue`, as a step stop no one asked for. After a step that ended, nothing is
+        left. Returns whether something was. Best effort."""
 
         def command(text):
             return str(
@@ -4201,6 +4202,7 @@ class NativeSession:
                 or ""
             )
 
+        discarded = False
         try:
             threads = command("thread list")
             index = {
@@ -4211,16 +4213,18 @@ class NativeSession:
             }
             selected = re.search(r"^\*\s*thread #(\d+)", threads, re.M)
             if int(thread_id) not in index:
-                return
+                return False
             ours = index[int(thread_id)]
             if selected is None or selected[1] != ours:
                 command(f"thread select {ours}")
             # Index 0 is the thread's base plan; 1 and above are what steps left.
-            command("thread plan discard 1")
+            # Nothing there: "error: Could not find User thread plan with index 1."
+            discarded = "error" not in command("thread plan discard 1").lower()
             if selected is not None and selected[1] != ours:
                 command(f"thread select {selected[1]}")
         except Exception:
             pass
+        return discarded
 
     def normalize_capabilities(self, raw):
         return {

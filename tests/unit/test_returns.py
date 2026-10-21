@@ -1,6 +1,8 @@
 """What a function returned (#155): shown only where Peeky can tie it to the function a
 step left, and captured by probes once per call (`--capture return`)."""
 
+import time
+
 import pytest
 
 from peeky.errors import classify
@@ -300,12 +302,17 @@ class Scripted:
                 "source_sha256": "0" * 64,
             }
         if operation == "wait":
+            if self.script[0] == ("running",):
+                # Still running when the probe's time is up.
+                time.sleep(0.05)
+                return {"state": "running", "timed_out": True}
             self.current = self.script.pop(0)
             if self.current[0] == "end":
                 return {"state": "terminated", "stop_id": None}
             kind, last = self.current[0], self.current[-1]
             thread = last["thread"] if isinstance(last, dict) and "thread" in last else 1
-            body = {"reason": "step" if kind == "step" else "breakpoint", "threadId": thread}
+            reason = kind if kind in ("step", "interrupted") else "breakpoint"
+            body = {"reason": reason, "threadId": thread}
             return {"state": "stopped", "stop_id": "x", "event": {"body": body}}
         if operation == "inspect":
             depth = self.current[1]
@@ -416,6 +423,29 @@ def test_a_return_into_another_frame_is_never_credited(monkeypatch, tmp_path):
     script = [("hit", 4), ("hit", 3), ("step", 2, value("5")), ("end",)]
     _, returns, _ = probe_with(monkeypatch, tmp_path, script)
     assert "frame was gone" in returns[1]["error"] and returns[2]["value"] == "5"
+
+
+def test_a_step_out_another_threads_stop_interrupted_is_withheld(monkeypatch, tmp_path):
+    # The worker reports the step as interrupted (#162 round 3): the probe withholds
+    # that call and goes on to serve the other thread's stop.
+    script = [
+        ("hit", 3),
+        ("interrupted", 3),
+        ("hit", 3, {"thread": 2}),
+        ("step", 2, value("7"), {"thread": 2}),
+        ("end",),
+    ]
+    result, returns, resumed = probe_with(monkeypatch, tmp_path, script)
+    assert result["status"] == "completed" and returns[2]["value"] == "7"
+    assert "another thread" in returns[1]["error"] and resumed[:2] == ["step", "continue"]
+
+
+def test_a_return_still_awaited_when_the_probe_times_out_is_withheld(monkeypatch, tmp_path):
+    # #162 round 3: a program that ends gave its pending calls a row; one that
+    # outlasted the probe's --timeout gave them none.
+    result, returns, _ = probe_with(monkeypatch, tmp_path, [("hit", 3), ("running",)], timeout=0.5)
+    assert result["status"] == "timeout" and returns[1]["unavailable"]
+    assert returns[1]["error"] == "withheld: the probe timed out before it returned"
 
 
 def test_optimized_builds_capture_no_returns(monkeypatch, tmp_path):
@@ -625,3 +655,60 @@ def test_a_step_out_is_watched_only_where_a_value_could_be_shown(tmp_path, optim
     worker.dispatch("step", {"session_id": "s1", "stop_id": "stop1", "kind": "out"})
     # An optimized build's returns are withheld whatever happens: no watch is paid for.
     assert bool(calls) is watched
+
+
+class TwoReports:
+    """lldb-dap's report of one stop as two `stopped` events: the stepping thread first,
+    with reason `step` (LLDB caught it mid-step), then the other thread's breakpoint."""
+
+    def __init__(self):
+        self.events = [
+            {"event": "stopped", "cursor": 1, "body": {"reason": "step", "threadId": 1}},
+            {
+                "event": "stopped",
+                "cursor": 2,
+                "body": {"reason": "breakpoint", "threadId": 2, "allThreadsStopped": True},
+            },
+        ]
+
+    def wait_event(self, names, cursor, timeout):
+        for event in self.events:
+            if event["cursor"] > cursor and event["event"] in names:
+                return {**event, "received": time.monotonic()}
+        raise TimeoutError("no event")
+
+    def request(self, command, arguments=None, **_):
+        frame = {"id": 5, "name": "usleep", "line": 1, "source": {"path": "/usr/lib/libc.c"}}
+        return {"stackFrames": [frame]} if command == "stackTrace" else {}
+
+
+class Stepping:
+    def __init__(self, left):
+        self.left, self.discarded = left, []
+
+    def assert_current(self):
+        pass
+
+    def discard_steps(self, dap, thread):
+        self.discarded.append(thread)
+        return self.left
+
+
+@pytest.mark.parametrize("left, reason", [(True, "interrupted"), (False, "step")])
+def test_a_step_still_under_way_at_another_threads_stop_is_interrupted(tmp_path, left, reason):
+    # #162 round 3 (`th/t2.c`): lldb-dap reported the stepping thread first, as a step's
+    # end inside `usleep`; Peeky took it for one and kept LLDB's step, which a later
+    # `continue` ended. Every stepping thread's step is discarded at every stop, and a
+    # step that LLDB still had is reported as interrupted, not ended.
+    runtime = Stepping(left)
+    worker = DebugWorker(tmp_path)
+    worker.dap, worker.runtime, worker.session = TwoReports(), runtime, "s"
+    worker.state, worker.cursor, worker.thread_id = "running", 0, 1
+    worker.stepping = {1}
+    state = worker.dispatch("wait", {"session_id": "s", "timeout": 1})
+    assert (state["state"], state["reason"]) == ("stopped", reason)
+    assert runtime.discarded == [1] and worker.stepping == set()
+    from peeky.cli import _state_text
+
+    if left:
+        assert "the step was interrupted here" in _state_text(state)

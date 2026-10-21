@@ -48,7 +48,10 @@ OPERATIONS = frozenset(
 )
 # Stops the pause budget (--max-pause) may auto-resume: Peeky's own breakpoints and the
 # user's own steps. Crashes, exceptions and signals stay stopped for inspection.
-RESUMABLE_STOPS = frozenset({"breakpoint", "step"})
+RESUMABLE_STOPS = frozenset({"breakpoint", "step", "interrupted"})
+# Stops where a user's step left the thread, maybe outside the program's sources: its
+# end, or (LLDB) the point another thread's stop at the same time caught it (#162).
+STEP_STOPS = frozenset({"step", "interrupted"})
 STEPS = {"over": "next", "in": "stepIn", "out": "stepOut"}
 # The frames a step's start is compared by with the stop it returns to (#155).
 ORIGIN_LEVELS = 10
@@ -640,13 +643,13 @@ class DebugWorker:
         so a failed read here only omits the location.
         """
         try:
-            levels = 20 if self.stop_reason == "step" else 1
+            levels = 20 if self.stop_reason in STEP_STOPS else 1
             stack = self.dap.request(
                 "stackTrace", {"threadId": self.thread_id, "levels": levels}, timeout=2
             )
             frames = stack.get("stackFrames") or [{}]
             frame = frames[0]
-            self.stop_outside = self.stop_reason == "step" and not _in_program_sources(
+            self.stop_outside = self.stop_reason in STEP_STOPS and not _in_program_sources(
                 self.runtime, frame, self.root
             )
             self.stop_returns = self.stop_outside and any(
@@ -1640,12 +1643,17 @@ class DebugWorker:
                 watch, self.return_watch = self.return_watch, None
                 self.end_return_watch(runtime, watch, event)
             if self.stop_id and (discard := getattr(runtime, "discard_steps", None)):
-                # A step this stop interrupted is over: LLDB would end it at a later
-                # `continue`, with a step stop no one asked for (#162).
+                # Every step under way at this stop is over (#162): LLDB keeps one a stop
+                # interrupted, and would end it at a later `continue` with a step stop no
+                # one asked for. A step that ended left nothing to discard.
                 for thread in list(was_stepping):
-                    if thread != self.thread_id or self.stop_reason != "step":
-                        discard(self.dap, thread)
-                        self.stepping.discard(thread)
+                    left = discard(self.dap, thread)
+                    self.stepping.discard(thread)
+                    if left and thread == self.thread_id and self.stop_reason == "step":
+                        # lldb-dap called it the step's end, but the step was still under
+                        # way: another thread's stop came at the same time and caught this
+                        # one mid-step (inside `usleep`).
+                        self.stop_reason = "interrupted"
             if self.stop_id and self.sighted and self.sighted["thread"] == self.thread_id:
                 self.sighted = None  # it was reported after all
             if self.state == "terminated" and self.sighted:
@@ -1725,7 +1733,7 @@ class DebugWorker:
                     "cannot be read"
                 )
             selected_frame = frames[index]
-            if self.stop_reason == "step" and not _in_program_sources(
+            if self.stop_reason in STEP_STOPS and not _in_program_sources(
                 runtime, selected_frame, self.root
             ):
                 if index == 0 and (shown := self.library_stop(runtime, frames)) is not None:
@@ -1734,8 +1742,12 @@ class DebugWorker:
                 # The user's own step left the program (into a library, or out of main):
                 # nothing there is read or changed, and the session stays usable.
                 raise ValueError(
-                    f"The step stopped outside the program's sources (in "
-                    f"{selected_frame.get('name')}); "
+                    (
+                        "Another thread's stop interrupted the step"
+                        if self.stop_reason == "interrupted"
+                        else "The step stopped"
+                    )
+                    + f" outside the program's sources (in {selected_frame.get('name')}); "
                     + (
                         "`session step --out` returns to your code, or `session continue`"
                         if self.stop_returns

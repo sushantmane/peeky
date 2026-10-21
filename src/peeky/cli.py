@@ -1164,7 +1164,12 @@ def _state_text(state):
             else " (outside the program's sources, and your code is no longer on the stack: "
             "`session continue`)"
         )
-    if reason and reason not in ("breakpoint", "step"):
+    if reason == "interrupted":
+        where += (
+            " [the step was interrupted here: another thread stopped at the same time; "
+            "`session continue` serves its stop]"
+        )
+    elif reason and reason not in ("breakpoint", "step"):
         where += f" [reason: {reason}; not auto-resumed, inspect it or `session report`]"
     text = f"state: {state['state']}{where}{_pause_text(state)}{hint}"
     if state.get("optimized"):
