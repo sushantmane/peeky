@@ -1215,10 +1215,16 @@ def test_a_set_no_stop_allows_is_refused_before_launch_and_never_saved(
     (tmp_path / "main.py").write_text("x = 1\n")
     monkeypatch.setattr(cli_module, "run_probe", lambda *args, **kwargs: dict(result))
     command = ["probe", str(tmp_path), "--at", "main.py:1", "--set", "x=2", "--json"]
-    assert cli_module.main(command) == 1
+    # Seventh evaluation, finding 14: a refusal exits 2, as any request Peeky turns down.
+    assert cli_module.main(command) == 2
     shown = json.loads(capsys.readouterr().out)
     assert "evidence" not in shown and shown["refused_before_launch"] is True
     assert not (tmp_path / "state" / "evidence" / "evidence.db").exists()
+    # Its text has no empty table, status or timing: only why, and what to do.
+    assert cli_module.main(command[:-1]) == 2
+    text = capsys.readouterr().out
+    assert text.splitlines()[0].startswith("error [MUTATION_REJECTED]: `x` is kept"), text
+    assert "hint: " in text and "hit  phase" not in text and "status:" not in text, text
 
 
 def test_rows_say_why_no_stop_can_change_them():

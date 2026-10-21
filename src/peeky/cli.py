@@ -823,7 +823,11 @@ def probe(args):
     if not args.no_save and not result.get("refused_before_launch"):
         # A probe refused before it ran (#138) leaves no run to compare.
         _keep_evidence(args, result, root, language)
-    _emit(result, args.json, _probe_text)
+    _emit(result, args.json, lambda shown: _probe_text(shown, quiet=args.quiet))
+    if result.get("refused_before_launch"):
+        # Refused, as any request Peeky turns down: exit 2, nothing ran (seventh
+        # evaluation, finding 14).
+        return 2
     return 0 if result["status"] == "completed" else 1
 
 
@@ -927,10 +931,50 @@ def _keep_evidence(args, result, root, language):
         "store": str(path),
         "next": f"peeky queries run --param run={run_id}",
     }
+    if result.get("candidate"):
+        # A plain `queries diff` compares with the run before, whatever it was: name the
+        # run that is this probe without the edit (seventh evaluation, finding 12).
+        try:
+            before = evidence.baseline(path, run_id)
+        except Exception:
+            return
+        result["evidence"]["compare"] = (
+            {"run": before, "command": f"peeky queries diff --param a={before} --param b={run_id}"}
+            if before is not None
+            else {
+                "run": None,
+                "hint": "no saved run is this probe without the edit (the same --at, "
+                "--capture and program arguments, no --set): run it without --old/--new, "
+                "then `peeky queries diff`",
+            }
+        )
 
 
-def _probe_text(result):
-    text = _table(result)
+def _first_time(name):
+    """True the first time ``name`` is asked for in this state directory (then never
+    again): a note worth reading once, not on every command."""
+    try:
+        marker = _private_dir("notes") / name
+        descriptor = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        return False
+    except (OSError, ValueError):
+        # No state to remember it in: said every time rather than never.
+        return True
+    os.close(descriptor)
+    return True
+
+
+def _probe_text(result, quiet=False):
+    from peeky.names import function_labels, shortened_note
+
+    # The note on short frame names, once per state directory and never with --quiet
+    # (seventh evaluation, finding 8): `peeky sql --help` and query tables say it too.
+    functions = function_labels(row.get("function") for row in result.get("rows") or ())
+    short_names = not quiet and shortened_note(functions) is not None and _first_time("short-names")
+    text = _table(result, short_names=short_names)
+    if result.get("refused_before_launch"):
+        return text
     if candidate := result.get("candidate"):
         ran = result.get("hits") or result.get("rows") or result.get("output")
         python = str((result.get("probe") or {}).get("program") or "").endswith(".py")
@@ -951,6 +995,13 @@ def _probe_text(result):
             f"\nevidence: saved as run {saved['run_id']}; query it with `{saved['next']}` or "
             "`peeky sql` (see `peeky sql --schema`)"
         )
+        if compare := saved.get("compare"):
+            text += (
+                f"\ncompare: {compare['command']} (run {compare['run']}: this probe without "
+                "the edit)"
+                if compare.get("run") is not None
+                else f"\ncompare: {compare['hint']}"
+            )
     return text
 
 
@@ -1112,6 +1163,8 @@ def _wait(record, client, timeout):
             "wait", session_id=record["session_id"], timeout=min(2, deadline - time.monotonic())
         )
     record["state"], record["stop_id"] = state["state"], state.get("stop_id")
+    # Where it stopped, for messages about this stop (`session get`).
+    record["location"], record["function"] = state.get("location"), state.get("function")
     _save(record)
     state.pop("event", None)
     return state
@@ -1279,6 +1332,24 @@ def _require_stepping(record, client):
         )
 
 
+def _stop_place(record, row):
+    """`main at sched.cpp:30`: the function and place of the session's stop, the file
+    relative to the target's root where it is under it."""
+    from peeky.names import display_function
+
+    path, _, line = str(record.get("location") or "").rpartition(":")
+    if not path or not line.isdigit():
+        path, line = None, row.get("line")
+    elif os.path.isabs(path):
+        try:
+            path = Path(path).relative_to(Path(record.get("root") or "/")).as_posix()
+        except ValueError:
+            path = Path(path).name
+    where = f"{path}:{line}" if path else f"line {line}" if line is not None else "an unknown line"
+    function = record.get("function") or row.get("function")
+    return f"{display_function(function)} at {where}" if function else where
+
+
 def _read_frame(row):
     """`frame 1: tags (app.py:12)`: which caller frame `get --frame` read."""
     from peeky.names import display_function
@@ -1415,12 +1486,21 @@ def session(args):
         rows = [{key: v for key, v in row.items() if key != "hit"} for row in rows]
         if level := record.get("optimized"):
             rows = [{**row, "optimized": level} for row in rows]
+        unresolved = [row for row in rows if "value" not in row and not row.get("unavailable")]
+        place = None
+        if unresolved and not args.frame:
+            # A name read at the wrong stop (a caller's, a callee's): say which stop this
+            # is (seventh evaluation, finding 15). `--frame N` names its frame already.
+            place = _stop_place(record, unresolved[0])
+            for row in unresolved:
+                row.setdefault("location", record.get("location"))
         _emit(
             rows,
             args.json,
             lambda rows: "\n".join(
                 [_read_frame(rows[0])] * bool(args.frame and rows)
                 + [line for row in rows for line in _get_lines(row)]
+                + ([f"note: this stop is in {place}"] if place else [])
                 + ([_OPTIMIZED_NOTE.format(record["optimized"])] if record.get("optimized") else [])
             ),
         )
@@ -1475,6 +1555,8 @@ def session(args):
                     if state["state"] == "stopped"
                     else f"the program is still running (stop {args.count}); `peeky session wait`"
                 )
+        if args.to is not None:
+            complete = _reached_line(state, args.to)
         finished = 0
         while args.to_exit and state["state"] == "stopped" and state.get("reason") == "step":
             # LLDB completes a step that a breakpoint interrupted before running on.
@@ -1917,6 +1999,31 @@ def _run_on(record, client, state, more, deadline, target):
     return state, reached, False
 
 
+def _reached_line(state, line):
+    """Whether `continue --to LINE` stopped at LINE; if not, a note says where it stopped
+    first, as `--count` and `--hit` do (seventh evaluation, finding 5): the `--to` line
+    is removed at the next stop, whatever it is, so the session's own breakpoint can
+    come first."""
+    if state["state"] == "stopped":
+        at = str(state.get("location") or "").rpartition(":")[2]
+        if state.get("reason") == "breakpoint" and at == str(line):
+            return True
+        if _counted(state):
+            state["note"] = (
+                f"stopped at the session's breakpoint (line {at}, hit {state['hit']}) before "
+                f"reaching line {line}; `session continue --to {line}` again"
+            )
+        else:
+            state["note"] = f"stopped for another reason before line {line} (shown above)"
+    elif state["state"] == "terminated":
+        state["note"] = f"the program exited without reaching line {line}"
+    else:
+        state["note"] = (
+            f"the program is still running (line {line} not reached yet); `peeky session wait`"
+        )
+    return False
+
+
 def _until_hit(record, client, hit, timeout):
     """Wait for the first stop, then continue to the session's Nth breakpoint stop
     (`session start --hit N`), all within one --timeout. Returns (state, complete)."""
@@ -2121,6 +2228,8 @@ def verify(args):
         # toolchain probes, it is several KB an agent rarely needs).
         for key in ("descriptor", "build_manifest"):
             result.pop(key, None)
+    if not result["passed"] and (reason := _verify_reason(result)):
+        result["reason"] = reason
 
     _emit(result, args.json, lambda shown: _verify_text(shown, args.keep))
     return 0 if result["passed"] else 1
@@ -2137,13 +2246,8 @@ def _verify_text(result, keep=False):
         lines.append(
             "compiled tests: none (the crate has no integration test; the checker decides)"
         )
-    if not result["passed"]:
-        reason = result.get("diagnostic") or (result.get("checker") or {}).get("error")
-        # A build's own timeout is in its diagnostic (`The build failed: clang timed out`).
-        if result.get("timed_out") and result.get("stage") != "build":
-            reason = "checker timed out"
-        if reason:
-            lines.append(f"reason: {reason}")
+    if not result["passed"] and (reason := result.get("reason") or _verify_reason(result)):
+        lines.append(f"reason: {reason}")
     lines.append(f"checker exit: {result.get('exit_code')}")
     output = [(result.get(key) or "")[-2000:] for key in ("stdout", "stderr")]
     if any(output):
@@ -2165,6 +2269,36 @@ def _verify_text(result, keep=False):
     else:
         lines.append("diff:\n" + result["diff"])
     return "\n".join(line for line in lines if line)
+
+
+# What the checker's output streams keep (agent.execute's `retain`): a stream this long
+# may end part-way through a line.
+_RETAINED_BYTES = 16000
+
+
+def _verify_reason(result):
+    """Why a verify did not pass, in one line: the build's diagnostic, a timeout, or the
+    checker's error; for a checker that exited with a status alone (`sys.exit(1)`), its
+    last non-empty output line (`FAIL [...]`) instead, as the output shows it, stdout
+    then stderr (seventh evaluation, finding 11). The status stays in `checker exit`
+    (and `checker.error`), and in the reason where it is not that exit code."""
+    checker = str((result.get("checker") or {}).get("error") or "")
+    reason = result.get("diagnostic") or checker
+    # A build's own timeout is in its diagnostic (`The build failed: clang timed out`).
+    if result.get("timed_out") and result.get("stage") != "build":
+        return "checker timed out"
+    status = re.fullmatch(r"SystemExit: (-?[0-9]+)", checker)
+    if result.get("diagnostic") or status is None or status[1] == "0":
+        return reason or None
+    streams = [result.get(key) or "" for key in ("stdout", "stderr")]
+    if any(len(stream.encode()) >= _RETAINED_BYTES for stream in streams):
+        # Cut short: its last line may be part of one.
+        return reason
+    lines = [line.strip() for stream in streams for line in stream.splitlines() if line.strip()]
+    if not lines:
+        return reason
+    last = lines[-1][:500]
+    return last if status[1] == str(result.get("exit_code")) else f"{last} ({checker})"
 
 
 def _rejected(result):
@@ -2518,7 +2652,9 @@ def main(argv=None, _job=False, _edits=None):
         help="exit: run to completion for output; hits: end right after the last hit "
         "(auto: hits for attached JVMs, else exit)",
     )
-    sub.add_argument("--quiet", action="store_true", help="No progress messages on stderr")
+    sub.add_argument(
+        "--quiet", action="store_true", help="No progress messages on stderr, nor one-time notes"
+    )
     sub.add_argument("--label", help="Tag this run in the evidence store (e.g. input=empty)")
     sub.add_argument(
         "--no-save", action="store_true", help="Do not record this run in the evidence store"
@@ -2536,7 +2672,13 @@ def main(argv=None, _job=False, _edits=None):
     edit_options(sub)
     evidence_store(sub)
     background(sub)
-    sub = commands.add_parser("sql", help="Read-only SQL over saved probe evidence")
+    sub = commands.add_parser(
+        "sql",
+        help="Read-only SQL over saved probe evidence",
+        description="Read-only SQL over saved probe evidence. Tables show a C++ or Rust "
+        "frame's short name (trim_left); the store keeps the debugger's whole name, which "
+        "SQL compares: match it with short_function(function) = 'trim_left'.",
+    )
     common(sub, target=False)
     sub.add_argument("query", nargs="?", help='One SELECT, e.g. "SELECT * FROM last_run"')
     sub.add_argument(
@@ -2644,7 +2786,8 @@ def main(argv=None, _job=False, _edits=None):
         "--to",
         type=int,
         metavar="LINE",
-        help="Also stop at LINE of the session's file, once (removed at the next stop)",
+        help="Also stop at LINE of the session's file, once (removed at the next stop: "
+        "another stop first, such as the session's breakpoint, says so and exits 3)",
     )
     stepping = actions.choices["step"].add_mutually_exclusive_group()
     stepping.add_argument("--into", action="store_true", help="Step into the call on this line")

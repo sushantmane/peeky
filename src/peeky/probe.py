@@ -2955,8 +2955,18 @@ def _rust_notes():
     return {_OWNED_RUST, _UNREAD_RUST, _COMPOSITE_RUST, unproven, _STALE_RUST + "."}
 
 
-def _table(result):
+def _table(result, short_names=True):
     lines = []
+    if result.get("refused_before_launch"):
+        # Nothing ran (#138): no rows, hits or timing to show, only why (seventh
+        # evaluation, finding 14).
+        lines.extend(f"warning: {warning}" for warning in result.get("warnings", ()))
+        error = result.get("error") or {}
+        lines.append(f"error [{error.get('code')}]: {error.get('message')}")
+        lines.append(f"hint: {error.get('hint')}")
+        if error.get("cleanup"):
+            lines.append(f"cleanup: {error['cleanup']}")
+        return "\n".join(lines)
     header = ("hit", "phase", "line", "function", "selector", "type", "value")
     # A C++ frame's signature (`trim_left(std::__1::basic_string<...> const&)`) would
     # double the table's width; Rust's ends with a symbol hash. JSON keeps the name whole.
@@ -2984,7 +2994,7 @@ def _table(result):
         lines.append(
             "  ".join(text.ljust(width) for text, width in zip(item, widths)) + "  " + item[-1]
         )
-    if note := shortened_note(functions):
+    if short_names and (note := shortened_note(functions)):
         lines.append(note)
     for change in result["interventions"]:
         lines.append(f"set {change['name']}: {change['before']} -> {change['after']}")
@@ -3083,6 +3093,9 @@ def main(argv=None):
         parser.error(str(exc))
     result = run_probe(args.root, probe, adapter=adapter)
     print(json.dumps(result, indent=2) if args.json else _table(result))
+    if result.get("refused_before_launch"):
+        # A refusal, as for any request Peeky turns down: nothing ran.
+        return 2
     return 0 if result["status"] == "completed" else 1
 
 

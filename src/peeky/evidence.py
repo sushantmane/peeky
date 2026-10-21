@@ -292,10 +292,17 @@ def _shown(alias=""):
 # Selectors a run asked for (runs.capture), whether or not it reached a capture.
 _ASKED = "(SELECT value FROM json_each((SELECT capture FROM runs WHERE run_id = {})))"
 _LANGUAGE = "(SELECT language FROM runs WHERE run_id = {})"
-_PAIR = f"""WITH a AS (SELECT hit, phase, selector, {_shown()} AS v, type AS t, rowid AS pos,
-    {_caveat()} AS c FROM captures WHERE run_id = {_A}),
-  b AS (SELECT hit, phase, selector, {_shown()} AS v, type AS t, rowid AS pos,
-    {_caveat()} AS c FROM captures WHERE run_id = {_B}),
+# An after-set value equal to the same run's observed value at that hit (the
+# intervention did not touch it): `same` is 1 (seventh evaluation, finding 10).
+_SAME = (
+    "s.phase = 'after-set' AND {shown} IS (SELECT {observed} FROM captures o WHERE "
+    "o.run_id = s.run_id AND o.hit = s.hit AND o.selector = s.selector AND o.phase = "
+    "'observed' ORDER BY o.rowid LIMIT 1)"
+).format(shown=_shown("s"), observed=_shown("o"))
+_PAIR = f"""WITH a AS (SELECT hit, phase, selector, {_shown("s")} AS v, type AS t, rowid AS pos,
+    {_caveat("s")} AS c, {_SAME} AS same FROM captures s WHERE run_id = {_A}),
+  b AS (SELECT hit, phase, selector, {_shown("s")} AS v, type AS t, rowid AS pos,
+    {_caveat("s")} AS c, {_SAME} AS same FROM captures s WHERE run_id = {_B}),
   k AS (SELECT hit, phase, selector FROM a UNION SELECT hit, phase, selector FROM b),
   kinds AS (SELECT k.hit, k.phase, k.selector, a.v AS value_a, b.v AS value_b,
     a.v IS NOT b.v AS differs, COALESCE(a.pos, b.pos) AS pos,
@@ -314,7 +321,8 @@ _PAIR = f"""WITH a AS (SELECT hit, phase, selector, {_shown()} AS v, type AS t, 
     CASE WHEN a.c IS NOT NULL OR b.c IS NOT NULL THEN 'qualified (' || CASE
       WHEN a.c IS NOT NULL AND b.c IS NOT NULL THEN 'run a: ' || a.c || ', run b: ' || b.c
       WHEN a.c IS NOT NULL THEN 'run a: ' || a.c ELSE 'run b: ' || b.c END
-      || '): not evidence by itself; queries run shows why' END AS qualified
+      || '): not evidence by itself; queries run shows why' END AS qualified,
+    k.phase = 'after-set' AND COALESCE(a.same, 1) AND COALESCE(b.same, 1) AS unchanged
     FROM k LEFT JOIN a USING (hit, phase, selector) LEFT JOIN b USING (hit, phase, selector)),
   -- Whatever else a row says, a qualified value says so too (review 3 of #139).
   pair AS (SELECT *, CASE WHEN qualified IS NULL THEN kind WHEN kind IS NULL THEN qualified
@@ -334,18 +342,27 @@ _PAIR_ORDER = " ORDER BY hit, phase = 'after-set', pos"
 # on a `do` body's first line, a moved Rust local's bytes: review of #139), whatever else
 # their note says (`missing in run b; qualified (run a: note)`); then values
 # that differ only in memory addresses; last, one row per selector only one run asked
-# for. Nothing is dropped: an address-only or qualified difference may still be real.
+# for. Nothing is dropped: an address-only or qualified difference may still be real;
+# but an after-set value equal to its run's observed value at that hit, in each run
+# with one, is no difference of its own (the observed row has any: seventh evaluation,
+# finding 10), and one selector's address-only rows are one row, its first hit's, that
+# says how many hits there were (finding 9).
 _DIFF = f"""{_PAIR}
 SELECT {_PAIR_COLUMNS} FROM (
   SELECT 10 AS rank, hit, phase, selector, value_a, value_b, differs, note, pos FROM pair
-    WHERE differs AND qualified IS NULL
+    WHERE differs AND qualified IS NULL AND NOT unchanged
     AND (kind IS NULL OR kind LIKE 'missing%' OR kind LIKE 'type %')
   UNION ALL SELECT 11, hit, phase, selector, value_a, value_b, differs, note, pos FROM pair
-    WHERE qualified IS NULL AND kind LIKE 'intervention only%'
+    WHERE qualified IS NULL AND kind LIKE 'intervention only%' AND NOT unchanged
   UNION ALL SELECT 12, hit, phase, selector, value_a, value_b, differs, note, pos FROM pair
     WHERE differs AND qualified IS NOT NULL AND (kind IS NULL OR kind NOT LIKE 'only in%')
-  UNION ALL SELECT 13, hit, phase, selector, value_a, value_b, differs, note, pos FROM pair
-    WHERE qualified IS NULL AND kind = 'addresses only'
+    AND NOT unchanged
+  -- hit and the values are those of the MIN(pos) row (SQLite's bare columns).
+  UNION ALL SELECT 13, hit, phase, selector, value_a, value_b, differs,
+    CASE WHEN COUNT(*) > 1 THEN 'addresses only, at ' || COUNT(*) || ' hits (one row per '
+      || 'selector: its first hit)' ELSE note END, MIN(pos) FROM pair
+    WHERE qualified IS NULL AND kind = 'addresses only' AND NOT unchanged
+    GROUP BY selector, phase
   -- hit, the values and qualified are those of the MIN(pos) row (SQLite's bare columns).
   UNION ALL SELECT 14, hit, phase, selector, value_a, value_b, 1,
     kind || ' (one row per selector: its first hit)' || COALESCE('; ' || qualified, ''),
@@ -529,10 +546,12 @@ WINDOW w AS (PARTITION BY selector ORDER BY hit) ORDER BY selector, hit""",
         "(source), (line), (args) and (sets) rows when the runs' outcomes, outputs, edits, "
         "source, stop lines, program arguments or interventions differ; then real "
         "differences in hit and capture order (the first is the first divergence); then "
-        "values only one run's intervention changed; then values a view or a note "
-        "qualifies in either run (note: qualified (run a: note), not evidence by itself: "
-        "leftovers, a moved Rust local's bytes); then address-only differences; last, "
-        "selectors only one run captured",
+        "values only one run's intervention changed (an after-set value equal to its "
+        "hit's observed one is left out); then values a view or a note qualifies in "
+        "either run (note: qualified (run a: note), not evidence by itself: leftovers, a "
+        "moved Rust local's bytes); then address-only differences, one row per selector; "
+        "last, selectors only one run captured. Hits pair by number: where the runs "
+        "stopped a different number of times, a note names `join`, which pairs by value",
         _DIFF,
         _PAIR_PARAMS,
         (),
@@ -849,6 +868,23 @@ def record(path, result, *, language=None, target=None, label=None, worker=None)
     finally:
         connection.close()
     return run_id
+
+
+def baseline(path, run_id):
+    """The newest run before ``run_id`` that is the same probe without its edit (the
+    same target, file, line, captures, program arguments and Python entry; no edit, no
+    `--set`), to compare a candidate run with (seventh evaluation, finding 12); else
+    None."""
+    found = query(
+        path,
+        "SELECT b.run_id FROM runs c JOIN runs b ON b.run_id < c.run_id AND b.target IS "
+        "c.target AND b.language IS c.language AND b.program IS c.program AND b.line IS "
+        "c.line AND b.capture IS c.capture AND b.args IS c.args AND b.entry IS c.entry AND "
+        "b.edit IS NULL AND COALESCE(b.sets, '[]') = '[]' WHERE c.run_id = :run "
+        "ORDER BY b.run_id DESC LIMIT 1",
+        {"run": run_id},
+    )["rows"]
+    return found[0]["run_id"] if found else None
 
 
 _ALLOWED = {
@@ -1345,7 +1381,33 @@ def run_query(path, name, params=None, *, limit=DEFAULT_ROWS):
     else:
         result, notes = query(path, sql, bound, limit=limit), []
     notes = _unmarked(path, name, bound) + notes
+    if name == "diff":
+        notes += _unaligned(path, bound)
     return {**result, "notes": notes} if notes else result
+
+
+def _unaligned(path, params):
+    """For `diff`, which pairs hits by number: a note where the two runs stopped at
+    their line a different number of times, so that their hits need not line up (a sort's
+    comparator called on other pairs: seventh evaluation, finding 20), naming `join`,
+    which pairs them by a value instead."""
+    found = query(
+        path,
+        f"SELECT ra.run_id AS a, rb.run_id AS b, ra.hits AS ha, rb.hits AS hb FROM runs ra, "
+        f"runs rb WHERE ra.run_id = {_A} AND rb.run_id = {_B} AND ra.program IS rb.program "
+        "AND ra.line IS rb.line AND ra.hits_requested IS rb.hits_requested",
+        {"a": params.get("a"), "b": params.get("b")},
+    )["rows"]
+    if not found or not found[0]["ha"] or not found[0]["hb"] or found[0]["ha"] == found[0]["hb"]:
+        return []
+    run = found[0]
+    return [
+        f"run {run['a']} stopped {run['ha']} times at its line and run {run['b']} "
+        f"{run['hb']}, so a hit need not be the same moment in both (a sort's comparator "
+        "is called on other pairs once one answer differs), and pairing by hit number can "
+        "show every later hit as a difference: pair them by a value instead, `peeky queries "
+        f"join --param a={run['a']} --param b={run['b']} --param key=<selector>`"
+    ]
 
 
 # The runs each canned query shows values of, for `_unmarked`.

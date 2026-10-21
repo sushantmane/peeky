@@ -1,0 +1,323 @@
+"""The seventh agent evaluation's findings that need no debugger: CLI text, exit codes,
+verify's reason and the evidence store's comparisons."""
+
+import json
+
+import pytest
+
+WHOLE = (
+    "trim_left(std::__1::basic_string<char, std::__1::char_traits<char>, "
+    "std::__1::allocator<char>> const&)"
+)
+
+
+def probe_result(function=WHOLE, **extra):
+    return {
+        "probe": {
+            "program": "a.cpp",
+            "line": 3,
+            "capture": ["i"],
+            "set": [],
+            "hits": 1,
+            "set_hit": 1,
+            "args": [],
+        },
+        "status": "completed",
+        "hits": 1,
+        "seconds": 0.5,
+        "pauses_ms": [1.0],
+        "rows": [
+            {
+                "hit": 1,
+                "phase": "observed",
+                "line": 3,
+                "function": function,
+                "selector": "i",
+                "type": "int",
+                "value": "1",
+            }
+        ],
+        "by_hit": [],
+        "interventions": [],
+        "warnings": [],
+        "output": "",
+        **extra,
+    }
+
+
+@pytest.fixture
+def cli(tmp_path, monkeypatch):
+    """`peeky probe` on a fake run (``set_result``) in a fresh state directory."""
+    import peeky.cli as cli_module
+
+    monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
+    (tmp_path / "a.py").write_text("x = 1\n")
+    shown = {}
+    monkeypatch.setattr(cli_module, "run_probe", lambda *args, **kwargs: dict(shown["result"]))
+
+    def probe(result, *extra):
+        shown["result"] = result
+        return cli_module.main(["probe", str(tmp_path / "a.py"), "--at", "1", *extra])
+
+    return probe
+
+
+def test_the_short_name_note_is_said_once_per_state_directory(cli, capsys):
+    # Finding 8: every probe repeated `note: function shows short frame names; ...`,
+    # even with --quiet.
+    note = "note: function shows short frame names"
+    assert cli(probe_result(), "--quiet") == 0
+    assert note not in capsys.readouterr().out
+    assert cli(probe_result()) == 0
+    first = capsys.readouterr().out
+    assert note in first and "short_function(function) = 'trim_left'" in first, first
+    assert cli(probe_result()) == 0
+    again = capsys.readouterr().out
+    assert note not in again and "trim_left " in again, again
+    # The SQL text says it where SQL is used: `peeky sql --help` and query tables.
+    from peeky.cli import main
+
+    with pytest.raises(SystemExit):
+        main(["sql", "--help"])
+    help_text = " ".join(capsys.readouterr().out.split())
+    assert "short_function(function) = 'trim_left'" in help_text, help_text
+    assert main(["queries", "run"]) == 0
+    assert note in capsys.readouterr().out
+
+
+def test_a_probe_refused_before_launch_shows_no_table_and_exits_2(monkeypatch, capsys):
+    # Finding 14: the console script too printed an empty table header and exited 1.
+    import peeky.probe as probe_module
+
+    refused = probe_result(
+        status="failed",
+        rows=[],
+        hits=0,
+        refused_before_launch=True,
+        error={
+            "code": "MUTATION_REJECTED",
+            "message": "`r.tail` cannot be changed. Refused before the program runs",
+            "hint": "Change the value where it is owned.",
+        },
+    )
+    monkeypatch.setattr(probe_module, "run_probe", lambda *args, **kwargs: refused)
+    assert probe_module.main(["--at", "a.py:1", "--set", "x=1"]) == 2
+    text = capsys.readouterr().out
+    assert text.splitlines() == [
+        "error [MUTATION_REJECTED]: `r.tail` cannot be changed. Refused before the program runs",
+        "hint: Change the value where it is owned.",
+    ]
+
+
+CHECKER = """import json, subprocess, sys
+print("checking 3 cases")
+print("FAIL ['+1', '-']: got 'POPPED:' want 'POPPED:1'")
+sys.exit({status})
+"""
+
+
+@pytest.mark.parametrize("status", [1, 3])
+def test_a_failed_checks_reason_is_its_last_output_line(tmp_path, monkeypatch, capsys, status):
+    # Finding 11: `verify --baseline` gave `reason: SystemExit: 1`; the useful line, the
+    # checker's `FAIL ...`, was only in `output`.
+    from peeky.cli import main
+
+    monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
+    (tmp_path / "app.py").write_text("print('POPPED:')\n")
+    (tmp_path / "check.py").write_text(CHECKER.format(status=status))
+    command = ["verify", str(tmp_path / "app.py"), "--check", str(tmp_path / "check.py")]
+    assert main([*command, "--baseline", "--json"]) == 1
+    result = json.loads(capsys.readouterr().out)
+    fail = "FAIL ['+1', '-']: got 'POPPED:' want 'POPPED:1'"
+    # The status stays where it was: the checker's error and its exit code.
+    assert result["checker"]["error"] == f"SystemExit: {status}" and result["exit_code"] == 1
+    assert result["reason"] == (fail if status == 1 else f"{fail} (SystemExit: {status})")
+    assert main([*command, "--baseline"]) == 1
+    text = capsys.readouterr().out
+    assert f"reason: {result['reason']}\nchecker exit: 1\n" in text, text
+    assert "the checker rejects it, as it should reject the bug" in text, text
+
+
+def test_a_reason_the_output_cannot_give_stays_the_checkers():
+    from peeky.cli import _verify_reason
+
+    def failed(error, **extra):
+        return {"passed": False, "stage": "verification", "exit_code": 1,
+                "checker": {"error": error}, **extra}  # fmt: skip
+
+    # No output, an assertion's own message, or an exit with no status to explain.
+    assert _verify_reason(failed("SystemExit: 1")) == "SystemExit: 1"
+    assert (
+        _verify_reason(failed("AssertionError: 3 != 4", stdout="x\n")) == "AssertionError: 3 != 4"
+    )
+    assert _verify_reason(failed("SystemExit: 0", stdout="ok\n")) == "SystemExit: 0"
+    # Output cut short may end part-way through a line.
+    long = "y" * 16000 + "\nFAIL tail"
+    assert _verify_reason(failed("SystemExit: 1", stdout=long)) == "SystemExit: 1"
+    # stderr shows after stdout: its last line is the output's last.
+    both = failed("SystemExit: 1", stdout="case 1 ok\n", stderr="FAIL case 2\n\n")
+    assert _verify_reason(both) == "FAIL case 2"
+    assert _verify_reason(failed("SystemExit: 1", timed_out=True)) == "checker timed out"
+
+
+@pytest.fixture
+def store(tmp_path):
+    return tmp_path / "evidence" / "evidence.db"
+
+
+def saved(store, rows, hits=None, requested="all", **probe):
+    """Record a run of (hit, phase, selector, value) rows that stopped ``hits`` times
+    (default: its last hit) of the ``requested``; the probe asked for exactly the
+    selectors it captured."""
+    from peeky import evidence
+
+    recorded = probe_result()
+    recorded["probe"]["hits"] = requested
+    recorded["rows"] = [
+        dict(hit=hit, phase=phase, line=36, selector=selector, value=value)
+        for hit, phase, selector, value in rows
+    ]
+    recorded["probe"].update(capture=list(dict.fromkeys(row[2] for row in rows)), **probe)
+    recorded["hits"] = hits if hits is not None else max([row[0] for row in rows], default=0)
+    return evidence.record(store, recorded, language="c")
+
+
+def test_diff_leaves_out_after_set_values_the_intervention_left(store):
+    # Finding 10: `r.buf`, which `--set r.tail=3` never touched, was listed as a
+    # difference (`intervention only in run b`) because only run b has after-set rows.
+    from peeky import evidence
+
+    saved(store, [(4, "observed", "r.tail", "0"), (4, "observed", "r.buf", "[1, 2, 3, 0]")])
+    saved(
+        store,
+        [
+            (4, "observed", "r.tail", "0"),
+            (4, "observed", "r.buf", "[1, 2, 3, 0]"),
+            (4, "after-set", "r.tail", "3"),
+            (4, "after-set", "r.buf", "[1, 2, 3, 0]"),
+        ],
+        set=[["r.tail", "3"]],
+    )
+    rows = evidence.run_query(store, "diff")["rows"]
+    assert [(r["phase"], r["selector"], r["note"]) for r in rows] == [
+        (None, "(sets)", "the runs made different interventions (--set)"),
+        ("after-set", "r.tail", "intervention only in run b"),
+    ]
+    # Both runs set something: an after-set value equal to its run's observed value is
+    # no difference of its own; the observed row has any.
+    saved(
+        store,
+        [
+            (4, "observed", "r.tail", "1"),
+            (4, "observed", "r.buf", "[1, 2, 3, 4]"),
+            (4, "after-set", "r.tail", "3"),
+            (4, "after-set", "r.buf", "[1, 2, 3, 4]"),
+        ],
+        set=[["r.tail", "3"]],
+    )
+    rows = evidence.run_query(store, "diff")["rows"]
+    assert [(r["phase"], r["selector"], r["note"]) for r in rows] == [
+        ("observed", "r.tail", None),
+        ("observed", "r.buf", None),
+    ]
+    # `compare` still shows every value.
+    compared = evidence.run_query(store, "compare")["rows"]
+    assert ("after-set", "r.buf") in [(r["phase"], r["selector"]) for r in compared]
+
+
+def test_diff_gives_one_address_only_row_per_selector(store):
+    # Finding 9: `queries diff` repeated an address-only row for the same selector once
+    # per hit.
+    from peeky import evidence
+
+    def vec(address):
+        return f"alloc::vec::Vec<long, alloc::alloc::Global> @ 0x{address:012x}"
+
+    for base in (0x16B43EDB0, 0x16D17EDB0):
+        rows = [(hit, "observed", "self.values", vec(base)) for hit in (1, 2, 3, 4)]
+        saved(store, rows + [(hit, "observed", "v", "3") for hit in (1, 2, 3, 4)])
+    rows = evidence.run_query(store, "diff")["rows"]
+    assert [(r["hit"], r["selector"], r["note"]) for r in rows] == [
+        (1, "self.values", "addresses only, at 4 hits (one row per selector: its first hit)")
+    ]
+    assert rows[0]["value_a"] == vec(0x16B43EDB0) and rows[0]["value_b"] == vec(0x16D17EDB0)
+    # A single hit keeps the plain note.
+    saved(store, [(1, "observed", "p", vec(0x16B43EDB0))])
+    saved(store, [(1, "observed", "p", vec(0x16D17EDB0))])
+    (row,) = evidence.run_query(store, "diff")["rows"]
+    assert row["note"] == "addresses only"
+
+
+def test_diff_says_when_the_runs_hits_do_not_line_up(store, capsys):
+    # Finding 20: diff pairs rows by hit number, so for a sort comparator every hit
+    # after the first different answer showed as a difference.
+    from peeky import evidence
+    from peeky.cli import main
+
+    pairs_a = [("test", "build"), ("deploy", "test"), ("lint", "deploy"), ("lint", "test")]
+    pairs_b = [("test", "build"), ("deploy", "test"), ("deploy", "build"), ("lint", "deploy")]
+    for pairs in (pairs_a, pairs_b + [("lint", "test")]):
+        saved(
+            store,
+            [
+                row
+                for hit, (a, b) in enumerate(pairs, 1)
+                for row in ((hit, "observed", "a.name", a), (hit, "observed", "b.name", b))
+            ],
+        )
+    result = evidence.run_query(store, "diff")
+    (note,) = result["notes"]
+    assert note.startswith("run 1 stopped 4 times at its line and run 2 5,"), note
+    assert "peeky queries join --param a=1 --param b=2 --param key=<selector>" in note
+    assert main(["queries", "diff", "--store", str(store)]) == 0
+    assert "note: run 1 stopped 4 times" in capsys.readouterr().out
+    # The same number of stops: no note.
+    saved(store, [(1, "observed", "x", "1")])
+    saved(store, [(1, "observed", "x", "2")])
+    assert "notes" not in evidence.run_query(store, "diff")
+    # Nor where the runs asked for different numbers of hits.
+    saved(store, [(1, "observed", "x", "1")])
+    saved(store, [(1, "observed", "x", "1"), (2, "observed", "x", "2")], hits=2)
+    assert "notes" in evidence.run_query(store, "diff")
+    saved(store, [(1, "observed", "x", "1")], requested=1)
+    assert "notes" not in evidence.run_query(store, "diff")
+
+
+def test_a_candidate_probe_names_the_run_to_compare_it_with(cli, tmp_path, capsys):
+    # Finding 12: after a candidate probe, a plain `queries diff` compares it with the
+    # latest run, which may have other arguments or a `--set`; nothing named the run
+    # that is the same probe without the edit.
+    import hashlib
+
+    def run(capture=("i",), args=(), sets=(), candidate=False, *flags):
+        result = probe_result()
+        result["probe"].update(
+            program="a.py", line=1, capture=list(capture), args=list(args), set=list(sets)
+        )
+        if candidate:
+            result["candidate"] = {"sha256": hashlib.sha256(b"x = 2\n").hexdigest()}
+        extra = ["--capture", ",".join(capture), *[f"--set={'='.join(s)}" for s in sets]]
+        extra += ["--old", "x = 1", "--new", "x = 2"] if candidate else []
+        return cli(result, *extra, *flags, *(["--", *args] if args else []))
+
+    assert run() == 0  # run 1: the baseline
+    assert run(("i",), (), [("i", "3")]) == 0  # run 2: an intervention
+    assert run(("i",), ["other"]) == 0  # run 3: another input
+    capsys.readouterr()
+    assert run(("i",), (), (), True) == 0  # run 4
+    text = capsys.readouterr().out
+    assert (
+        "compare: peeky queries diff --param a=1 --param b=4 (run 1: this probe without the edit)"
+    ) in text, text
+    assert run(("i",), ["other"], (), True) == 0  # run 5: run 3 is its baseline
+    assert "compare: peeky queries diff --param a=3 --param b=5" in capsys.readouterr().out
+    assert run(("j",), (), (), True) == 0  # run 6: none matches
+    text = capsys.readouterr().out
+    assert "compare: no saved run is this probe without the edit" in text, text
+    assert "run it without --old/--new, then `peeky queries diff`" in text, text
+    # JSON says the same, and a probe without an edit says nothing.
+    assert run(("i",), (), (), True, "--json") == 0
+    compare = json.loads(capsys.readouterr().out)["evidence"]["compare"]
+    assert compare == {"run": 1, "command": "peeky queries diff --param a=1 --param b=7"}
+    assert run() == 0
+    assert "compare:" not in capsys.readouterr().out
