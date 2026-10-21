@@ -3051,9 +3051,8 @@ def run_probe(root, probe, *, adapter=None, progress=None):
             result["candidate"]["sha256"] = launch.get("candidate_sha256")
         if "program_args" in launch:
             result["program_args"] = launch["program_args"]
-        for note in launch.get("warnings", []):
-            warnings.append(note)
-            say(note)
+        # Shown with the result, not as progress too.
+        warnings.extend(launch.get("warnings", []))
         if launch.get("entry_sha256"):
             result["entry_sha256"] = launch["entry_sha256"]
         point = result["breakpoint"]
@@ -3097,8 +3096,9 @@ def run_probe(root, probe, *, adapter=None, progress=None):
                 returning.clear()
                 if state.get("exit_inferred"):
                     warnings.append(
-                        "The debugger never reported the program's exit; Peeky inferred it "
-                        "because no threads were left (java-debug, issue #27)."
+                        "The debugger never reported the program's exit (java-debug #27); "
+                        "with no threads left, it has ended, but its exit code is unknown. "
+                        "The captured hits stand: nothing to do."
                     )
                 # A thread was seen paused at the breakpoint, but the debugger never
                 # reported that stop (#27): the line did run.
@@ -3742,6 +3742,27 @@ def _short_note(result):
     )
 
 
+# A value shown whole that holds nothing else: a number, a boolean or null, a character,
+# or a quoted text with no cut (`…`, `...`). A pointer (`0x…`), a preview or summary of
+# an aggregate (`{a = 1, ...}`, `size=3`), or anything cut short may hide a change.
+_WHOLE_SCALAR = re.compile(
+    r"-?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?|-?(?:inf|nan|NaN|infinity)"
+    r"|true|false|True|False|None|null|nullptr"
+    r"|\"(?:(?!\.\.\.)[^\"\\…]|\\.)*\"|'(?:(?!\.\.\.)[^'\\…]|\\.)*'"
+)
+
+
+_JAVA_PRIMITIVES = frozenset(("byte", "short", "int", "long", "float", "double", "boolean", "char"))
+
+
+def _holds(selector, target):
+    """Whether ``selector`` names ``target`` or a value that holds it (`s` for `s.ninth`,
+    `d` for `d['k']`, `this` for `this.count`)."""
+    return target == selector or (
+        target.startswith(selector) and target[len(selector) : len(selector) + 1] in (".", "[")
+    )
+
+
 def _table(result, short_names=True):
     """A probe result as text; ``short_names``: with the note on short frame names
     (`_short_note`), which `peeky probe` gives once per state directory."""
@@ -3764,6 +3785,34 @@ def _table(result, short_names=True):
     # double the table's width; Rust's ends with a symbol hash. JSON keeps the name whole.
     functions = function_labels(row.get("function") for row in result["rows"])
     short_instance = _short_instance
+    # An after-set value equal to its hit's observed one, shown whole, of a selector that
+    # neither a change named nor holds what one changed: the intervention left it as it
+    # was (eighth evaluation, L16). JSON keeps every row.
+    # A Java value other than a primitive is an object: a String set through an alias
+    # (`b = a`, then `a[0]="x"`) is a new object with the same text, so its text alone
+    # never shows it unchanged. A Python value's identity must match too.
+    java = ((result.get("target_identity") or {}).get("language") or "").startswith("java")
+    observed = {
+        (row["hit"], row["selector"]): (row.get("value"), row.get("identity"))
+        for row in result["rows"]
+        if row["phase"] == "observed" and "value" in row
+    }
+    targets = {}
+    for change in result.get("interventions", ()):
+        hit = change.get("capture_hit", change.get("hit"))
+        targets.setdefault(hit, []).append(str(change.get("name")))
+    kept = [
+        row
+        for row in result["rows"]
+        if row["phase"] != "after-set"
+        or "value" not in row
+        or row.get("note")
+        or not _WHOLE_SCALAR.fullmatch(str(row["value"]))
+        or (java and row.get("type") not in _JAVA_PRIMITIVES)
+        or any(_holds(row["selector"], name) for name in targets.get(row["hit"], ()))
+        or observed.get((row["hit"], row["selector"])) != (row["value"], row.get("identity"))
+    ]
+    left_out = len(result["rows"]) - len(kept)
     rows = [
         (
             str(row["hit"]),
@@ -3781,12 +3830,18 @@ def _table(result, short_names=True):
             + ("  [module global]" if row.get("scope") == "globals" else "")
             + ("  [note]" if row.get("note") and row["note"] not in _rust_notes() else ""),
         )
-        for row in result["rows"]
+        for row in kept
     ]
     widths = [max(len(item[i]) for item in [header, *rows]) for i in range(len(header) - 1)]
     for item in [header, *rows]:
         lines.append(
             "  ".join(text.ljust(width) for text, width in zip(item, widths)) + "  " + item[-1]
+        )
+    if left_out:
+        lines.append(
+            f"after-set: {left_out} row{'s' if left_out > 1 else ''} equal to the hit's "
+            "observed value left out "
+            "(`--json` has every row)"
         )
     if short_names and (note := _short_note(result)):
         lines.append(note)

@@ -1,6 +1,6 @@
 # Peeky Cookbook
 
-Recipes for debugging running programs from your terminal. Each one is copy-paste ready from the repository root and shows real output (macOS, Python 3.13, recorded 2026-10-16). Agents use the same commands; see [AGENT_GUIDE.md](AGENT_GUIDE.md).
+Recipes for debugging running programs from your terminal. Each one is copy-paste ready from the repository root and shows real output (macOS, Python 3.13, recorded 2026-10-16). Agents use the same commands; see [AGENT_GUIDE.md](AGENT_GUIDE.md). Each language's rules, with pointers into this book: [Python](lang/python.md), [Java](lang/java.md), [C and C++](lang/c-cpp.md), [Rust](lang/rust.md).
 
 **The loop:** ask a question, keep the answer, check the fix.
 
@@ -129,7 +129,7 @@ C, C++ and Rust list the same from the build's debug information: each function 
 - **In SQL:** SQL compares the whole name, so `WHERE function = 'trim_left'` finds nothing: a query's table that shows short names says so in a note, as does `peeky sql --help`; a probe's table says it once per state directory (never with `--quiet`). Match a frame with `short_function(function) = 'trim_left'` or with its whole name. `short_function` drops the parameters of every overload and a Rust symbol's hash, so overloads share one name (`operator+` for `operator+(V, V)` and `operator+(W, W)`; `G::get` for `get() &` and `get() &&`), and so do a Rust function's closures (`cz::main::{{closure}}` for `{closure#0}` and `{closure#1}`) and a generic's instances (`cz::gen_apply` for `gen_apply<i32>` and `gen_apply<i16>`): a `GROUP BY` or join on it combines them, and it is not always what a table shows (a table keeps the parameters of overloads that would read alike).
 - **Closures, lambdas and generic instances:** A probe table shows a closure or instance as the build names it (`cz::main::{closure#0}`, `cz::gen_apply<i32>`); the `instance` column of `captures` (and of `evidence`, `interventions`) keeps that label, so `WHERE instance = 'cz::main::{closure#0}'` finds one closure's rows, and the table's note says so. Closures and lambdas are listed under their function.
 - **Inlined functions:** A function inlined into another (`#[inline(always)]`, `always_inline`) keeps its own lines.
-- **Types:** Each name shows its type; in C a struct, union or enum that no typedef names is written with its tag, as C code names it (`r (struct ring *)`, `c (enum color)`; a typedef's name stays: `t (box_t)`).
+- **Types:** Each name shows its type; in C a struct, union or enum that no typedef names is written with its tag, as C code names it (`r (struct ring *)`, `c (enum color)`; a typedef's name stays: `t (box_t)`). C++ writes the standard library's types as code and probe tables do (`parts (std::vector<std::string>)`, `p (const std::string &, lines 6-7)`), and lists none of the compiler's own locals (a range `for`'s `__range1`, `__begin1` and `__end1`).
 - **Block lines:** A local declared only inside nested blocks also shows those blocks' lines, where it is visible: `i (int, lines 23, 28)` is two one-line `for` loops' `i`, not a name of the whole function. A block that also runs another file's code (an `#include` inside it) gives none (a local macro's expansion, on its definition's lines, does not count), and past eight blocks one span covers them all.
 - **Rust:** In Rust every `let` opens a block, so a local shows the lines after its `let`, where it is visible (#107). Bindings a macro from another crate declares (`println!`'s `args`, `core::fmt::rt::Argument[1]`) are left out: the build's MIR places them in the macro's own file. A macro of your crate's keeps its bindings, `#[collapse_debuginfo(yes)]` too.
 - **Spans:** Lines between a block's own where only code outside the block runs are left out, so one block can give several spans. In C++ a block's cleanup code, which runs when an exception leaves the block, is on the function's closing line: `name (std::string, lines 22-25, 35)` is an `if` block's local, visible on its lines and, while an exception unwinds, at the closing `}`, not on the lines between. A span is never narrower than where the debugger can show the local, so lines without code (comments, a lone `}`) inside it are kept.
@@ -291,7 +291,7 @@ hit  phase      line  function  selector  type  value
 1    observed   8     get_page  start     int   3
 1    observed   8     get_page  items[1]  int   20
 1    after-set  8     get_page  start     int   0
-1    after-set  8     get_page  items[1]  int   20
+after-set: 1 row equal to the hit's observed value left out (`--json` has every row)
 set start: 3 -> 0
 status: completed  hits: 1  seconds: 1.004  max pause: 10.0 ms
 output:
@@ -304,6 +304,7 @@ output:
 - **Values:** Python takes literals, including lists and dicts (`0`, `'x'`, `None`, `[]`, `{'k': 1}`), and refuses fields before the program runs. Expressions, names and calls (`min(xs)`, `float('inf')`) are `MUTATION_REJECTED`, never evaluated. `-1e309` is negative infinity. C and C++ take integers of 16 to 64 bits (`int`, `long`, `size_t`, `int64_t`, …) within the local's range; Java takes scalars of the target's type. Rust takes integer locals (`i16` to `i64`, `u16` to `u64`, `isize`, `usize`) that the program keeps in memory; any other change is refused, because it would not reach the program.
 - **Text:** A value in double quotes is a text, written as JSON writes a string and quoted for the shell: `--set 'name="apple"'` (`"say \"hi\""`, `"caf\u00e9"`). C and C++ write it into a `char[N]` local (the text and a NUL, if both fit) or a `std::string` local (in place, within its capacity, never reallocating); Rust into a `String` local (within its capacity, while no borrow of it is used after the stop, in a crate without `unsafe` code); Java makes a new String for a variable declared String; Python evaluates it as a Python literal. Never through a pointer or a reference (`char *`, `&str`, `const std::string &`), and never into a field or element in C, C++ and Rust. See 7.1, 7.2 and 7.3; 2.8 has a `--set-at` example.
 - **Marks:** For C, C++ and Rust, rows mark what a change would reach with `[settable]`: locals in `session inspect`, and fields and elements in probe rows and `session get` listings. When a rule leaves nothing settable at a stop, `session inspect` says why in a note. In JSON every root, field and element row a change could name carries `settable: true` or `false` (Java's too); `false` includes the internals of a standard-library type (`h.v.len` of a `Vec` field, raw where no view reads it) and what Peeky decodes from memory (a `Vec`'s elements and `len`), both of which `set` refuses.
+- **`after-set` rows:** After a change, each selector is read again (`after-set`). The table leaves out an `after-set` row equal to its hit's `observed` one only when its value is shown whole and holds nothing else (a number, a boolean or null, or a quoted text with no `…` or `...` cut) and its selector is neither a change's target nor holds one (`s` when `s.ninth` changed), as `items[1]` above; a footer counts them. A pointer, a preview or summary of an aggregate, a cut value, a row with a note, a Java value other than a primitive (a String set through an alias is a new object with the same text) and a Python value whose identity changed stay, since they may hide a change. `--json` has every row.
 - **Read back:** Every change is read back: one the debugger refuses or cannot store (a computed value, such as a structured binding of a bitfield) is refused and the session kept, and a value stored differently from the one asked for (a type redefined as a float) closes the session. A refusal (`MUTATION_REJECTED`) names the local and the rule, and its hint the one way around it.
 
 ### 2.4 Change the Value at a Later Hit
@@ -398,14 +399,18 @@ peeky probe stock --at stock.cpp:22 --capture colon,entry --hits all \
 
 ```
 hit  phase      line  function  selector  type         value
-3    observed   22    main      colon     size_t       7  [settable]
-3    observed   22    main      entry     std::string  " apple :4"
-3    after-set  22    main      colon     size_t       6  [settable]
 ...
-set colon: 7 -> 6  (--set-at line 22@3)
-set colon: 6 -> 7  (--set-at line 23@3)
-set colon: 5 -> 4  (--set-at line 22@4)
-set colon: 4 -> 5  (--set-at line 23@4)
+3    observed   22    main      colon     size_t       7  [settable]
+3    observed   22    main      entry     std::string  " apple :4"  [settable]
+3    after-set  22    main      colon     size_t       6  [settable]
+4    observed   22    main      colon     size_t       5  [settable]
+4    observed   22    main      entry     std::string  "pear :1"  [settable]
+4    after-set  22    main      colon     size_t       4  [settable]
+after-set: 2 rows equal to the hit's observed value left out (`--json` has every row)
+set colon: 7 -> 6  (--set-at line 22@3, in main)
+set colon: 6 -> 7  (--set-at line 23@3, in main)
+set colon: 5 -> 4  (--set-at line 22@4, in main)
+set colon: 4 -> 5  (--set-at line 23@4, in main)
 output:
   STOCK:apple=7,pear=3
 ```
@@ -443,8 +448,8 @@ output:
 
 - `--capture return` with `--hits all` gives one `(return)` row per call of the `--at` line's function, a library's calls included: probe its first line.
 - A value is shown only when exact: C and C++ integers, `bool`, characters, floats and pointers, Rust integers, `bool` and floats, Java any type; a struct, a string or any return in an optimized build is withheld, saying why.
-- After `session step --out`, `session inspect` shows the return under `[Returned]` and `session get return` reads it.
-- Python's returns cannot be captured.
+- After `session step --out`, the state shows what the function returned (`(return): int = 42`; `returned` in JSON), or a withheld row saying why (the rules below; an exception, `longjmp` or panic that ended the call included); nothing where another stop interrupted the step first, or the program ended. `session inspect` lists it under `[Returned]` and `session get return` reads it.
+- Python's returns cannot be captured: capture what the caller stores, on the caller's next line (for `r = f(x)` on line 20, `--at 21 --capture r`).
 
 ```sh
 peeky probe sched.cpp --at 16 --capture "a.name,b.name,return" --hits all -- "build:2:30,test:2:10,deploy:1:5,lint:3:50"
@@ -474,7 +479,7 @@ A call that never returns gets no value.
 - **Threads:** A probe follows one thread's returns at a time: a call another thread's stop comes before (or with: LLDB stops threads together) is withheld (`another thread stopped at a breakpoint before it returned`), and the probe goes on with every hit's rows.
 - **A `--set-at` inside the function:** A `--set-at` line inside the function stops before the return, which still comes and is that call's (the probe checks that it comes back to the frame that made the call).
 
-A session shows the same after `session step --out`: `session inspect` lists it under `[Returned]`, apart from the locals (`returned` in JSON), labelled with the function that returned, and `session get return` reads it. A step that stops outside your sources (`outside the program's sources`, in `sort.h` or libc) still shows what your function returned; the library's own locals are not read. A `step --out` of a call that throws (C, C++, Rust) stops where its caller goes on without it, at the next call from the same place or a jump back to it, and `[Returned]` says the function never returned.
+A session shows the same after `session step --out`: the step's state shows it (`(return): long = 1`; `returned` in JSON; nothing where another stop interrupted the step first), `session inspect` lists it under `[Returned]`, apart from the locals (`returned` in JSON), labelled with the function that returned, and `session get return` reads it. A step that stops outside your sources (`outside the program's sources`, in `sort.h` or libc) still shows what your function returned; the library's own locals are not read. A `step --out` of a call that throws (C, C++, Rust) stops where its caller goes on without it, at the next call from the same place or a jump back to it, and `[Returned]` says the function never returned.
 
 Shown only when exact. LLDB reads a returned value from the return register, so C and C++ show integers, `bool`, characters, `float`/`double` and pointers, and Rust its integers (a `u8` as Rust prints it, `65`), `bool` and floats.
 
@@ -496,7 +501,7 @@ Every probe is saved with a run id (`--no-save` skips that). `--label` tags a ru
 - Probe each input once (`--label` each), then `peeky queries diff`: it compares the last two runs unless you name them (`--param a=1 --param b=5`).
 - Read the `(status)`, `(output)`, `(edit)`, `(source)`, `(line)`, `(args)` and `(sets)` rows first: they say how the runs differed before you credit an edit.
 - Then come real divergences, the first one first; address-only and qualified values come after them.
-- Hits pair by number: where the runs stopped a different number of times (a sort's comparator), use `queries join` (3.5).
+- Hits pair by number: where the runs stopped a different number of times (a sort's comparator), or as often but where hits may not be the same moments (an edit that changes the calls), a `note:` says so: use `queries join` (3.5) with a value that names the call.
 
 ```sh
 p() { peeky probe examples/real/ipaddress_mapped --at ipaddress39.py:2008 --run classify.py --capture self,self._ip "$@"; }
@@ -515,19 +520,24 @@ run_a  run_b  hit   phase     selector  value_a                        value_b  
 
 `diff` keeps only the rows that differ, in this order:
 
-1. **What the runs did and how they differed**, one row each where it applies: `(status)` and `(output)` when the runs' outcomes or outputs differ; `(edit)` when one run built a candidate edit; `(source)` when two runs that are not candidates ran different source text (another copy of the file); `(line)` when the runs stopped at different lines (their values then differ partly because of where they were read); `(args)` when they ran with different program arguments; `(sets)` when they made different interventions. Check these rows before crediting an edit with a difference.
+1. **What the runs did and how they differed**, one row each where it applies: `(status)` and `(output)` when the runs' outcomes or outputs differ; `(edit)` when one run built a candidate edit; `(source)` when two runs that are not candidates ran different source text (another copy of the file); `(line)` when the probes' `--at` lines differ (their values then differ partly because of where they were read; a candidate's `--at` keeps the original's numbering, so `--at 33` is the same line where the candidate's rows show its line 34); `(args)` when they ran with different program arguments; `(sets)` when they made different interventions. Check these rows before crediting an edit with a difference.
 2. **Real differences**, in hit order and then in `--capture` order: the first of them is the first divergence.
 3. Values that only one run's `--set` changed (`intervention only in run b`). An `after-set` value equal to its run's `observed` value at that hit, in each run that has one, is left out: the intervention did not touch it (`r.buf` when only `r.tail` was set), and the `observed` row shows any difference.
 4. Values a view or a note qualifies in either run (`note: qualified (run a: note, run b: note): not evidence by itself`): a C local's leftovers on a `do` body's first line, a moved Rust local's bytes (`stale`). Two runs' leftovers differ with anything that touched the stack before, so such a row is not a divergence of the program; `queries run` shows each note. Whatever else a row says, a qualified value's note says so too, and the row ranks here: `missing in run b; qualified (run a: note)`, `intervention only in run a; qualified (run a: note)`.
 5. Values that differ only in heap or stack addresses (`note: addresses only`, for example a C string's pointer; NULL is never treated as an address), one row per selector: its first hit's, saying at how many hits (`addresses only, at 4 hits (one row per selector: its first hit)`), and per stop where both runs label stops (`at 2 hits at stop 1 (one row per selector and stop: its first hit)`). Text inside quotes is the program's data, never an address: `"0x00000001deadbeef"` in a `char[32]` is a real difference.
 6. Last, one row per selector that only one run asked for (`only in run a`, with its first hit's value).
 
-The `(output)` row shows each output from just before the first character that differs (`output differs at line 4, column 13`, counted from 1), so after a `--set` it shows the intervention's effect. Hits that one run never reached say `missing in run b`. A value whose type changed (an edit to `long long`) says `type unsigned int -> long long`.
+The `(output)` row shows up to 200 characters of each output, from 60 before the first character that differs (from the start when it differs within its first 60; `…` marks a cut), and says where (`output differs at line 4, column 13`, counted from 1), so after a `--set` it shows the intervention's effect. Hits that one run never reached say `missing in run b`. A value whose type changed (an edit to `long long`) says `type unsigned int -> long long`.
 
 - **Which runs:** `diff` compares the last two runs unless you name them: `--param a=1 --param b=5`. Comparing needs two saved runs; with fewer, the query says so.
-- **Pairing by hit:** `diff` pairs hits by number: where the runs stopped at their line a different number of times, the hits need not line up (a sort's comparator is called on other pairs once one answer differs, so every later hit shows as a difference), and a `note:` line says so and names `queries join` (3.5), which pairs them by a selector's value instead (`--param key=a.name`).
+- **Pairing by hit:** `diff` pairs hits by number: where the runs stopped at their line a different number of times, the hits need not line up (a sort's comparator is called on other pairs once one answer differs, so every later hit shows as a difference), and a `note:` line says so and names `queries join` (3.5), which pairs them by a selector's value instead (`--param key=a.name`). Where both stopped as often, an edit can still change which call a hit is (eighth evaluation, M6), and the note gives the first sign it finds:
+  - **Places:** each hit's function, instance (a closure, a generic's copy) and line in one run must pair with one place in the other at every hit. A function renamed, or lines an edit moved, pair the same way at every hit and count as the same place. Otherwise: `at hit 3 run 2 stopped in f at line 24 and run 3 in g at line 24, but at hit 1 run 2 in f at line 24 paired with run 3 in f at line 24`.
+  - **Values at other hits:** a selector's values (addresses and Java object numbers masked, as `no_addresses` does) line up better at other hits than hit by hit: the same values in another order (a calculator's recursive `parseExpr` against a loop: ``runs 1 and 2 saw the same values of `op` in another order (run 2's hit 4 matches run 1's hit 5: -)``), or `[A, B, C]` against `[A, C, D]` (``saw `k`'s values at other hits``). The note says the calls *may* have come in another order or number: a fix that changes which value each moment sees gives the same, so read the rows.
+  - **Nothing to tell:** where the hits' values differ, selector by selector (those both runs captured), at more than half of them (at least 2), they cannot show that the hits pair, and the note says so (`the runs' values differ at 4 of 5 hits, so they cannot show that a hit is the same moment in both`).
+
+  Each note names `queries join` with a value that names the call and that the edit leaves alone (an argument, an index), not one the edit changed. No note does not prove the hits line up.
 - **Stops:** On a line with several breakpoint locations (#157), where both runs label their stops, a hit pairs only with the other run's hit at the same stop: one at another stop is two rows (`missing in run b (run a: stop 2)`, `missing in run a (run b: stop 1)`), and where the stops part (an edit that changes how often the line stops per pass, or a run saved before stops were labelled), the note says at which hit and names `join`. A `(return)` row pairs by its hit's stop, which that hit's observed rows give; with `--capture return` alone on such a line, nothing says where a call began, and the note says pairing by hit cannot be checked.
-- **Other queries:** `queries compare` shows every value side by side with the same notes. Labels are free text, stored as given. A run saved before Peeky kept notes (`runs.notes_kept` NULL) may show such values unmarked, and every query showing its values says so in a `note:` line (`notes` in JSON).
+- **Other queries:** `queries compare` shows every value side by side with the same notes. Labels are free text, stored as given: `diff` and `compare` name them in a `note:` line (`labels: run 1 is 'mapped-public'; run 2 has no label`), and they never change which runs are compared, nor which run a candidate's `compare:` line names. A run saved before Peeky kept notes (`runs.notes_kept` NULL) may show such values unmarked, and every query showing its values says so in a `note:` line (`notes` in JSON).
 
 ### 3.2 Inputs, Outcomes and Outputs of the Last Two Runs
 
@@ -751,7 +761,7 @@ hit  argument                    name     unchanged
 3    0x000000016d78b298 "fig "   "fig "   1
 ```
 
-`substr(value, instr(value, ' ') + 1)` is the text after the address: an address has no space, while the text may have several (`" pear"`), so take only the first. Use it only on a reference's or pointer's value (one that starts with `0x`); on a plain string it would cut the text at its first space. `no_addresses(value)` gives `0x… "apple"`: enough to compare two references, or one across runs, but still not equal to `"apple"`. A text Peeky could not check whole carries a note after it (`"v" (shown up to a NUL at byte 1 of 3)`, libstdc++ with lldb-dap 18; 7.1), so it never equals a plain string either.
+`substr(value, instr(value, ' ') + 1)` is the text after the address: an address has no space, while the text may have several (`" pear"`), so take only the first. Use it only on a reference's or pointer's value (one that starts with `0x`); on a plain string it would cut the text at its first space. `no_addresses(value)` gives `0x… "apple"`: enough to compare two references, or one across runs, but still not equal to `"apple"`. Group and count such values by it, not by `value` (`GROUP BY no_addresses(value)`): two references to the same text at different addresses are then one group. A text Peeky could not check whole carries a note after it (`"v" (shown up to a NUL at byte 1 of 3)`, libstdc++ with lldb-dap 18; 7.1), so it never equals a plain string either.
 
 ---
 
@@ -880,6 +890,7 @@ state: terminated (program exited; `peeky session report` shows output)
 - **Hit numbers:** State lines number the stops at the session's breakpoint (`…:8 in get_page, hit 3`), and say which of the line's breakpoint locations a stop is at where it has several in the function (`hit 4, stop 1 of 3`; see `--hits` in 2.2). `session start --hit 5` runs on to the 5th stop, and `session continue --count 3` to the 3rd breakpoint stop from here, each within one `--timeout`. They never run past anything else: a crash, a finished step or the program's exit ends them there, with a note saying why and the last hit reached, and exit status 3 (as when `--timeout` ends them first).
 - **`continue --to`:** `peeky session continue --to 9` stops once at line 9 of the session's file (the extra breakpoint is removed at the next stop), then the session's own breakpoint applies again. If another stop comes first, such as the session's own breakpoint in a loop, the state says so and the exit status is 3 (`note: stopped at the session's breakpoint (line 30, hit 2) before reaching line 17; `session continue --to 17` again`); so does a program that exits first (`the program exited without reaching line 17`). There is no option to skip the session's breakpoint: repeating `--to` reaches the line with every stop counted. `continue --to` refuses a line the debugger would move (no code there) and keeps the stop.
 - **Leaving your sources:** A step can leave your sources, for example into a library, into Rust's standard library, or past the end of `main`. The state then says `outside the program's sources`, and nothing there is read or changed, except what your function returned when the step left it (2.9). In C, C++ and Rust, `step --out` leaves one frame at a time, also in a library. While your code is still on the stack, `step --out` returns to it; past `main`, the state says so and `continue` finishes.
+- **The session's breakpoint during a step:** A step whose code reaches the session's breakpoint first (a recursive call on the line, or the rest of the function under `step --out`) stops there, and the state says so (`hit 2` and `note: the session's breakpoint (hit 2) stopped the step before it ended, and the step is over`); `step --out` then shows no return, since the function has not returned.
 - **Threads:** When other threads are stopped at the breakpoint too (LLDB stops them together; Java stops each one separately), `step` waits until `continue` has served them. A step that a breakpoint (or a crash) stops first is over: in C, C++ and Rust, the next `continue` runs to the next breakpoint, not to where the step would have ended. When another thread's stop catches the stepping thread mid-step (LLDB may report it as a step's end anywhere it was, inside `usleep`), the state says `the step was interrupted here` and `continue` serves that thread's stop.
 - **Java:** For Java, `--into` and `--out` skip JDK classes (`java.*`, `javax.*`, `jdk.*`, `sun.*`, `com.sun.*`), so `step --into` on a line that calls `Math.min` stays in your code and reaches lambda bodies. A plain `step` at the end of a method that JDK code called (a `Runnable`, a comparator) stops outside your sources; `continue` from there. Java adapter bundles built before stepping are refused with a hint to rebuild them.
 
@@ -988,7 +999,7 @@ Each `--old` quotes the original file and must match it exactly once; the edits 
 
 ### 6.5 Writing a Checker
 
-A checker is a trusted script, run as `python checker.py <candidate-path>`. It exits 0 only when the behavior is right. Test the general rule, not the one input from the bug report (see `examples/verify_pagination.py`). For C, C++, Rust and Java its argument is the path of a JSON descriptor of the fresh build: run each case as `[*spec["command"], *case_arguments]` with `env=spec["environment"]` (`spec["language"]` names the language; see `examples/c/verify_pagination.py` and [NATIVE_AGENT.md](NATIVE_AGENT.md)). For Rust, the crate's integration test, when it has one, must pass too.
+A checker is a trusted script, run as `python checker.py <candidate-path>`. It exits 0 only when the behavior is right. Test the general rule, not the one input from the bug report (see `examples/verify_pagination.py`). For C, C++, Rust and Java its argument is the path of a JSON descriptor of the fresh build: run each case as `[*spec["command"], *case_arguments]` with `env=spec["environment"]` (`spec["language"]` names the language; see `examples/c/verify_pagination.py`; optional background: [NATIVE_AGENT.md](NATIVE_AGENT.md)). For Rust, the crate's integration test, when it has one, must pass too.
 
 ### 6.6 See What a Fix Does Before Making It
 
@@ -1041,7 +1052,7 @@ run_a  run_b  hit   phase     selector  value_a           value_b               
   - `queries runs` marks the run `(candidate)`, and the `evidence` and `last_run` views have a `candidate` column. Captured `line`s are in the candidate's own numbering.
   - `queries values` leaves candidate runs out, so they never mix with values the real program produced.
   - `queries diff` pairs values by hit and selector, so a candidate whose lines moved still compares.
-  - A plain `queries diff` compares the newest run with the one before it, whatever that was. So after a candidate probe a `compare:` line names the newest saved run that is the same probe without the edit (the same target, `--at`, `--capture` and program arguments; the same build, by its target identity: compiler options, optimization, sources; every source the build read as it was when the edit was made, headers, `Cargo.toml` and `Cargo.lock` too, and in Python every `.py` file under the target; no edit, no `--set` or `--set-at`): `compare: peeky queries diff --param a=1 --param b=2 (run 1: this probe without the edit)`, or says how to make one (`evidence.compare` in JSON).
+  - A plain `queries diff` compares the newest run with the one before it, whatever that was. So after a candidate probe a `compare:` line names the newest saved run that is the same probe without the edit (the same target, `--at`, `--capture` and program arguments; the same build, by its target identity: compiler options, optimization, sources; every source the build read as it was when the edit was made, headers, `Cargo.toml` and `Cargo.lock` too, and in Python every `.py` file under the target; no edit, no `--set` or `--set-at`; a `--label` does not count): `compare: peeky queries diff --param a=1 --param b=2 (run 1: this probe without the edit)`, or says how to make one (after a candidate with `--set` or `--set-at`, run it without them too) (`evidence.compare` in JSON).
   - A run whose hits are at other breakpoint locations of the line (#157: `stop` differs at a hit both reached, as when the edit changes how often the line stops per pass) is not named: the line says so and names `queries join`, which pairs by value. Runs saved before Peeky recorded what they read are never named, nor are any where it cannot tell (a Python tree past 4096 `.py` files or 16 MB): run the probe without the edit then.
 - **Not a verification:** this is evidence about one run. Only `peeky verify` checks a fix.
 - **Intervening where no local can be set:** in Java, Rust, C and C++, `--set` changes a scalar field or element directly (`--set s.end=10` where `s` is a struct local; see 7.1 and 7.2 for which ones). `--set` also works in the same probe as `--old`/`--new`. Where the value you want to change cannot be set (a Python field, or one reached through a pointer, a reference or a `Box`, as `last.end` is when `last` is a `&mut Span`), add a local holding it with the edit, on an earlier line (a local is visible only after its declaration), and set that local. In Rust, at the line `last.end = s.end;` that follows `if s.start <= last.end {`:
@@ -1075,7 +1086,11 @@ run_a  run_b  hit   phase     selector  value_a           value_b               
   - Pure caches (`__pycache__`, `.mypy_cache`, `.ruff_cache`) are left out. Environments (`.venv`, `venv`, `.tox`, `.nox`, `node_modules`, `site-packages`, `.eggs`) are directories of links to the originals' entries: the interpreter uses them from either tree.
   - A directory nobody can open (another user's `pgdata`) is an empty one with its mode. One that can be entered but not listed is refused.
 
-  Nothing above the target root is copied, and no reading of the source can tell whether a program reaches there. So the result notes it unless the root is a project's (it holds `.git`, `pyproject.toml`, `setup.py` or `setup.cfg`) and no repository above it holds it (a monorepo's package). If the program reads or imports anything from above, give the project directory as the target (`peeky probe proj --at scripts/run.py:14`). `--run` entry scripts are refused.
+  Nothing above the target root is copied, and in general no reading of the source can tell whether a program reaches there. So the result notes it unless the root is a project's (it holds `.git`, `pyproject.toml`, `setup.py` or `setup.cfg`) and no repository above it holds it (a monorepo's package).
+
+  Nor does it when the edited script is self-contained: it imports only standard modules that open no file, start no process and reach no network (`abc`, `array`, `bisect`, `cmath`, `collections`, `copy`, `dataclasses`, `decimal`, `enum`, `fractions`, `functools`, `heapq`, `itertools`, `json`, `math`, `numbers`, `random`, `re`, `statistics`, `string`, `textwrap`, `typing`, `unicodedata`; of `sys` only `argv`, the standard streams, `exit`, `maxsize` and the recursion limit), and names nothing that could reach one (`open`, `exec`, `eval`, `getattr`, `vars`, a frame's globals, `__file__` or another dunder but `__name__` and `__init__`, a module's private names or submodules).
+
+  Text shows the note once per root and state directory, never with `--quiet`; `--json` always has it. If the program reads or imports anything from above, give the project directory as the target (`peeky probe proj --at scripts/run.py:14`). `--run` entry scripts are refused.
 
 ---
 
@@ -1133,11 +1148,11 @@ peeky probe examples/c/pagination_bug.c --at 25 --capture 'start,page,items[1]' 
 
 ```
 hit  phase      line  function  selector  type  value
-1    observed   25    main      start     int   3
-1    observed   25    main      page      int   1
-1    observed   25    main      items[1]  int   20
-1    after-set  25    main      start     int   0
-...
+1    observed   25    main      start     int   3  [settable]
+1    observed   25    main      page      int   1  [settable]
+1    observed   25    main      items[1]  int   20  [settable]
+1    after-set  25    main      start     int   0  [settable]
+after-set: 2 rows equal to the hit's observed value left out (`--json` has every row)
 set start: 3 -> 0
 status: completed  hits: 1  seconds: 0.745
 output:
@@ -1333,9 +1348,9 @@ output:
 ```
 
 - **Decoding:** Values Peeky cannot decode with certainty show as `<unverified ...>` or as opaque enums; they are never guessed (`describe` counts them as "other enum types").
-- **Changing values:** Only integer locals (`i16` to `i64`, `u16` to `u64`, `isize`, `usize`) that the program keeps in memory can be changed, and `String` locals to a text (see the quick start); `session inspect` marks them `[settable]`. So can such integer fields and elements of a struct, tuple or array local kept in memory that the build's MIR proves initialized at the stop (`--set s.end=10`, `t.__0=3`, `arr[2]=7`): never through a reference or a `Box`, nor inside an enum, a `#[repr(packed)]` struct or a standard-library type, and only at a line breakpoint, or a step that ends at its line's start, where the MIR shows no statement under way has read the local into a temporary (so never back from `f` in `let t = s.a + f();`, nor after a step back onto `let arr = [s.a,` from its later lines), which also holds for integer locals (see [RUST_AGENT.md](RUST_AGENT.md#changing-fields-and-elements-105)).
+- **Changing values:** Only integer locals (`i16` to `i64`, `u16` to `u64`, `isize`, `usize`) that the program keeps in memory can be changed, and `String` locals to a text (see the quick start); `session inspect` marks them `[settable]`. So can such integer fields and elements of a struct, tuple or array local kept in memory that the build's MIR proves initialized at the stop (`--set s.end=10`, `t.__0=3`, `arr[2]=7`): never through a reference or a `Box`, nor inside an enum, a `#[repr(packed)]` struct or a standard-library type, and only at a line breakpoint, or a step that ends at its line's start, where the MIR shows no statement under way has read the local into a temporary (so never back from `f` in `let t = s.a + f();`, nor after a step back onto `let arr = [s.a,` from its later lines), which also holds for integer locals (optional background: [RUST_AGENT.md](RUST_AGENT.md#changing-fields-and-elements-105)).
 - **Reference parameters:** Reference parameters (`&[T]`, `&str`, `&Vec<T>`, `&String`, shared or `&mut`, for `T` any integer type, `bool`, `f32`, `f64` or `char`) are read from memory at offsets checked against the build's debug information (`describe` lists them). Elements print as Rust's `{:?}` does, floats included (`[0.30000000000000004, 1e16, -0.0, NaN]`), so they can be compared with the program's own output. In `fn median(values: &[i32], label: &str)`, `--capture 'values,values[0],values[-1],values.length,label'` shows `[5, 1, 3]`, `5`, `3`, `3` and `"größe"`. Their type column shows the Rust type (`&mut limiter::Window`), not LLDB's (`limiter::Window *`), which `debugger_type` keeps.
-- **Tuples and structs:** Tuples, and structs your crate defines, of those scalars are read too: `runs` (`Vec<(char, usize)>`) shows `[('a', 3), ('b', 1)]`, and `runs[0].__0` and `spans[1].start` select fields (LLDB's names: `__0` for a tuple's first). A tuple or struct local of them, or a reference parameter to one, previews the same way under the same proofs (`request` above: `Request { page: 1, page_size: 3, total: 8 }`), and its fields stay selectable (#106). See [RUST_AGENT.md](RUST_AGENT.md#reading-rust-values).
+- **Tuples and structs:** Tuples, and structs your crate defines, of those scalars are read too: `runs` (`Vec<(char, usize)>`) shows `[('a', 3), ('b', 1)]`, and `runs[0].__0` and `spans[1].start` select fields (LLDB's names: `__0` for a tuple's first). A tuple or struct local of them, or a reference parameter to one, previews the same way under the same proofs (`request` above: `Request { page: 1, page_size: 3, total: 8 }`), and its fields stay selectable (#106). Optional background: [RUST_AGENT.md](RUST_AGENT.md#reading-rust-values).
 - **Owned `Vec` and `String`:** Owned `Vec<T>` and `String` locals are read as well, in the innermost frame of a crate with no unsafe code, wherever the compiler's own MIR proves them initialized at the stop line: Peeky builds the binary crate with `-Zmir-opt-level=0` and dumps its MIR, so every move, drop and assignment is explicit. A local that may be moved, dropped or not yet assigned around the line (`drop(ordered)`, `consume(v)`, the old `s` in `let s = s + "x"`, a deferred `let label: String;`) keeps its raw fields (`ordered.len`) with a note, since its pointer can reach reused memory and its contents would be a guess (#53). A `&str` or slice local reads where #110 shows its target still standing (`v` of `for v in args[2].split(',')`, whose `args` nothing changes); other reference locals keep their raw fields.
 - **Fields holding a `Vec`, `String`, `&str` or `Box<str>`** read from memory too (#156), reached through plain struct and tuple fields and fixed-size array elements:
   - through a reference parameter: `self.values` in `fn push(&mut self, v: i64)` shows `[3, 6]`, and `self.values[0]`, `self.values[-1]` and `self.values.len` select from it. A `&mut self` reads only in the innermost frame (in a caller, the call under way may be changing it); a `&self` in any frame;
@@ -1347,7 +1362,7 @@ output:
   - raw, with the reason ("the crate has unsafe code (in src/main.rs), which can free a buffer without Peeky seeing it"): a reference parameter's contents and a struct preview through a reference, an owned `Vec` or `String` local, a `&str` or slice local, a container field; a Box shows only its pointer (`[unproven]`);
   - no `String` takes a text (`--set 'name="x"'`), with the same reason: a raw pointer, or an address kept as an integer (`s.as_ptr() as usize`), can read its bytes at their old length where no borrow shows it;
   - still read, as LLDB reads them: scalar locals, a struct's scalar fields in the frame or behind a reference parameter (`w.k`), a by-value struct's preview, an enum's variant;
-  - what counts: an `unsafe` block, function, impl, trait or extern block, `#[unsafe(...)]`, `#[no_mangle]`, `#[export_name]`, `#[link_section]` or `global_asm!` in any of the crate's files (`tests/` too; `macro_rules!` bodies included, comments and strings not); a nightly feature (`#![feature(...)]`: "the crate enables nightly features"); and a source Peeky cannot read as rustc does (frontmatter, an unclosed literal: "Peeky cannot rule out unsafe code in …"). Details: [RUST_AGENT.md](RUST_AGENT.md#reading-rust-values).
+  - what counts: an `unsafe` block, function, impl, trait or extern block, `#[unsafe(...)]`, `#[no_mangle]`, `#[export_name]`, `#[link_section]` or `global_asm!` in any of the crate's files (`tests/` too; `macro_rules!` bodies included, comments and strings not); a nightly feature (`#![feature(...)]`: "the crate enables nightly features"); and a source Peeky cannot read as rustc does (frontmatter, an unclosed literal: "Peeky cannot rule out unsafe code in …"). Optional background: [RUST_AGENT.md](RUST_AGENT.md#reading-rust-values).
 - **Long values:** Long values show their first elements with `(first k of N)`, and up to 256 elements stay selectable.
 - **Debugger:** This needs a debugger with `readMemory` (lldb-dap from LLVM 20); older debuggers keep the raw fields, with an error that names the length field.
 
@@ -1398,7 +1413,7 @@ hit  phase      line  function                 selector  type               valu
 2    observed   26    MergeBug.main(String[])  current   MergeBug$Interval  MergeBug$Interval@57 {end=5, start=1}
 2    observed   26    MergeBug.main(String[])  next      MergeBug$Interval  MergeBug$Interval@63 {end=14, start=12}
 2    after-set  26    MergeBug.main(String[])  current   MergeBug$Interval  MergeBug$Interval@57 {end=10, start=1}
-2    after-set  26    MergeBug.main(String[])  next      MergeBug$Interval  MergeBug$Interval@63 {end=14, start=12}
+after-set: 1 row equal to the hit's observed value left out (`--json` has every row)
 set current.end: 5 -> 10
 output:
   MERGED:[[1,10], [12,14]]
@@ -1460,6 +1475,7 @@ peeky job list
 
 `--background` works for `probe` and `verify`. Other bounds:
 - `--timeout S`: per probe (default 60 s, at most 300);
+- a `session` command's `--timeout S` (`session start` included): how long it waits for the program (default 30 s, at most 300); a program still running is left running, and `session wait` waits again;
 - `--hits N`: at most 100 (`--hits all` captures every stop up to 100);
 - `--until hits`: skips waiting for the program to exit.
 
@@ -1502,6 +1518,7 @@ Errors carry a stable `code`, a `hint`, and whether retrying can help (`--json` 
 | `TIMEOUT` / `DEBUGGER_ERROR` | A bound was hit, or the debugger failed; the session is closed | Start again; never repeat a `set` blindly |
 | `UNREACHABLE` / `TRANSPORT_LOST` | The worker or the SSH tunnel is down / broke mid-request | Restore the tunnel; after `TRANSPORT_LOST`, `inspect` before anything else |
 | `INVALID_QUERY` | Bad SQL, or a write | `peeky sql --schema` |
+| A path you did not type (`/private/tmp/case/app.py` for `/tmp/case/app.py`) | Peeky prints real paths: on macOS `/tmp` is a link to `/private/tmp`, so both name the same file | Match files by the part after `/tmp` |
 
 All codes are listed in [ERRORS.md](ERRORS.md). If you suspect a filesystem with unreliable timestamps, `PEEKY_NO_DIGEST_CACHE=1` rehashes every file on every check.
 

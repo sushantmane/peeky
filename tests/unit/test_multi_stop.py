@@ -186,7 +186,8 @@ def test_the_evidence_keeps_each_hits_stop(tmp_path):
         del row["stop"], row["stops"]
     evidence.record(store, probe, language="rust")
     assert evidence.run_query(store, "wide")["columns"][:3] == ["hit", "phase", "line"]
-    assert {row["stop"] for row in evidence.run_query(store, "run")["rows"]} == {None}
+    # No stop labels: `queries run` leaves the empty column out (eighth evaluation, L7).
+    assert "stop" not in evidence.run_query(store, "run")["columns"]
 
 
 @pytest.mark.parametrize("version", [13, 9])
