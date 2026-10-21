@@ -238,3 +238,62 @@ def test_a_blocks_locals_are_not_listed_on_lines_outside_it(cpp, capsys):
     text = capsys.readouterr().out
     assert "lines 22-35" not in text and "lines 17-35" not in text, text
     assert ", lines 22-2" in text, text
+
+
+@pytest.mark.timeout(240)
+def test_a_value_shortened_at_one_line_is_restored_at_the_next_in_one_probe(cpp, capsys):
+    # #137 (sixth evaluation, `stock`): the agent shortened `colon` at line 22 for the
+    # names with a trailing space and restored it at line 23, so `std::stol` still read
+    # the quantity: 14 session calls, as one `--set colon=` crashed at line 23.
+    source = cpp("stock.cpp", STOCK)
+    name = line_of(STOCK, "std::string name = trim_left")
+    qty = line_of(STOCK, "long qty = ")
+    sets = []
+    for hit, short, whole in ((3, 6, 7), (4, 4, 5)):
+        sets += ["--set-at", f"stock.cpp:{name}@{hit}", f"colon={short}"]
+        sets += ["--set-at", f"stock.cpp:{qty}@{hit}", f"colon={whole}"]
+    argv = ["probe", str(source), "--at", str(name), "--capture", "colon", "--hits", "all"]
+    code = main([*argv, *sets, "--json", "--quiet", "--", "apple:3, pear:2, apple :4,pear :1"])
+    result = json.loads(capsys.readouterr().out)
+    assert code == 0, result.get("error")
+    assert "STOCK:apple=7,pear=3" in result["output"], result["output"]
+    assert [
+        (change["before"], change["after"], change["line"], change["hit"])
+        for change in result["interventions"]
+    ] == [("7", "6", name, 3), ("6", "7", qty, 3), ("5", "4", name, 4), ("4", "5", qty, 4)]
+
+
+LAMBDA = """#include <cstdio>
+int main() {
+    long total = 0;
+    for (long i = 0; i < 3; i++) {
+        long v = i * 10;
+        auto f = [](long v) { return v + 1; }; total += f(v); // BOTH
+    }
+    std::printf("T %ld\\n", total); // END
+}
+"""
+
+
+@pytest.mark.timeout(240)
+def test_a_set_at_line_that_stops_in_a_lambda_says_whose_variable_changed(cpp, capsys):
+    # #151 review: line BOTH stops in `main` and in the lambda it declares, and @HIT counts
+    # both, so `6@2` changed the lambda's `v`; nothing said so.
+    source = cpp("lam.cpp", LAMBDA)
+    both, end = line_of(LAMBDA, "BOTH"), line_of(LAMBDA, "END")
+    argv = ["probe", str(source), "--at", str(end), "--capture", "total"]
+    assert main([*argv, "--set-at", f"{both}@2", "v=100", "--quiet"]) == 0
+    text = capsys.readouterr().out
+    assert f"set v: 0 -> 100  (--set-at line {both}@2, in main::$_0::operator())" in text, text
+    assert f"warning: --set-at line {both} stopped in 2 functions: main (stop 1); main::" in text
+    assert "T 133" in text
+    assert main(["sql", "SELECT name, line, hit, function FROM interventions", "--json"]) == 0
+    (stored,) = json.loads(capsys.readouterr().out)["rows"]
+    assert stored["line"] == both and stored["hit"] == 2
+    assert stored["function"].startswith("main::$_0::operator()"), stored
+    # main's own `v` on the second pass is that line's third stop.
+    assert main([*argv, "--set-at", f"{both}@3", "v=100", "--json", "--quiet"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    (change,) = result["interventions"]
+    assert change["function"] == "main" and change["before"] == "10", change
+    assert "T 123" in result["output"], result["output"]
