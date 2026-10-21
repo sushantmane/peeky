@@ -25,8 +25,11 @@ from peeky.worker import DebugWorker, make_server
 # argv: how, record. "hang": a launcher starts the program (and the program a child of
 # its own) and nothing ever initializes; "stubborn": the same, and the program ignores
 # SIGTERM; "announce-die": the adapter starts the program, announces its pid (`process`
-# event) and dies; "attach": the adapter announces a program it did not start (pid in
-# argv 3). Every process started writes "role pid" to the record.
+# event) and dies, and Peeky reads the end of its output only once it has exited (a
+# holder keeps the pipe open until the adapter's children are handed on, #168: else
+# Peeky could list them while the adapter was still exiting); "attach": the adapter
+# announces a program it did not start (pid in argv 3). Every process started writes
+# "role pid" to the record.
 FAKE_ADAPTER = r"""
 import json, os, subprocess, sys, time
 # The program's standard streams are never the adapter's DAP pipes.
@@ -44,6 +47,11 @@ time.sleep(600)
 LAUNCHER = '''
 import subprocess, sys, time
 subprocess.Popen([sys.executable, "-c", sys.argv[1], sys.argv[2], sys.argv[3]]).wait()
+'''
+HOLDER = '''
+import os, sys, time
+while os.getppid() == int(sys.argv[1]):
+    time.sleep(0.01)
 '''
 def read():
     headers = {}
@@ -81,6 +89,7 @@ while True:
             write({"seq": 0, "type": "event", "event": "process",
                    "body": {"name": "app", "systemProcessId": started()}})
             time.sleep(0.5)
+            subprocess.Popen([sys.executable, "-c", HOLDER, str(os.getpid())], stdin=subprocess.DEVNULL)
             os._exit(1)
         subprocess.Popen([sys.executable, "-c", LAUNCHER, PROGRAM, record, how], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
         started()
@@ -157,10 +166,31 @@ def test_a_program_whose_adapter_died_is_ended_by_its_announced_pid(tmp_path, le
     error, _ = launch(tmp_path, target("announce-die", record), deadline=10)
     pids = started(record)
     leftovers.extend(pids.values())
-    # Reparented once the adapter died: listed (as the adapter announced the program)
-    # while their ancestry still led to it, they are known by pid and start time.
+    # Reparented once the adapter died: the program is known by the pid the adapter
+    # announced and its start, its child by the program's group, both still in the
+    # adapter's session.
     assert not running(pids["program"]) and not running(pids["child"])
     assert error["code"] == "DEBUGGER_ERROR" and "adapter closed" in error["message"]
+    listed = ", ".join(map(str, sorted(pids.values())))
+    assert error["cleanup"].startswith(f"terminated pids {listed}; the debugger was gone")
+
+
+def test_a_program_no_listing_saw_before_its_adapter_died_is_ended_with_its_child(
+    tmp_path, leftovers, monkeypatch
+):
+    # #168: under load, the listing the announcement asks for can come only after the
+    # adapter died, when no ancestry leads to the program any more. It was then ended
+    # by its announced pid alone, and the child in its group outlived it. Here no
+    # listing runs before the end: what proves them the session's is the adapter's
+    # session, which a process can only inherit.
+    from peeky.dap import DAP
+
+    monkeypatch.setattr(DAP, "_watch_family", lambda self: None)
+    record = tmp_path / "started.txt"
+    error, _ = launch(tmp_path, target("announce-die", record), deadline=10)
+    pids = started(record)
+    leftovers.extend(pids.values())
+    assert not running(pids["program"]) and not running(pids["child"])
     listed = ", ".join(map(str, sorted(pids.values())))
     assert error["cleanup"].startswith(f"terminated pids {listed}; the debugger was gone")
 
@@ -208,6 +238,7 @@ def test_the_process_table_names_each_process_once_by_its_start():
     table = processes.table()
     me = table[os.getpid()]
     assert me[:2] == (os.getppid(), os.getpgid(0)) and processes.alive(me)
+    assert me[4] == os.getsid(0) == processes.session_id(os.getpid())
     # The identity close() compares: one process's start, as the whole table reads it.
     assert processes.start_time(os.getpid()) == me[2]
     assert processes.start_time(2**22 + 12345) is None
@@ -370,10 +401,7 @@ def test_what_the_program_started_is_ended_after_its_debugger_dies(tmp_path, lef
     listed = ", ".join(map(str, sorted(pids.values())))
     assert error["code"] == "DEBUGGER_ERROR"
     assert error["cleanup"].startswith(f"terminated pids {listed}; the debugger was gone: ")
-    assert (
-        "in a process group of its own and whose parent had exited, may survive"
-        in (error["cleanup"])
-    )
+    assert "in a session of its own and whose parent had exited, may survive" in error["cleanup"]
 
 
 def test_children_a_program_left_behind_end_with_its_session(tmp_path, leftovers):
@@ -433,6 +461,28 @@ def test_the_family_is_known_by_ancestry_identity_and_group():
     found, groups = family.record(reused, root_running=False)
     assert set(found) == {201, 302} and groups == {200}
     assert family.groups([202, 203], reused) == set()
+
+
+def test_what_stays_in_the_adapters_session_is_the_sessions_whatever_its_ancestry():
+    own = os.getsid(0)
+    family = processes.Family(root=100, session=100)
+    table = {
+        100: (1, 100, "s100", "Z", 100),  # the adapter, exiting
+        200: (1, 200, "s200", "S", 100),  # the debuggee, handed to init, never listed
+        201: (200, 200, "s201", "S", 100),  # its child, in its group
+        202: (1, 202, "s202", "S", 202),  # left the session (setsid), parent gone: unknown
+        203: (201, 203, "s203", "S", 203),  # left it too, but started by a member
+        300: (1, 300, "s300", "S", 300),  # someone else's
+        301: (1, 301, "s301", "S", own),  # in Peeky's own session
+        302: (1, 302, "s302", "Z", 100),  # exited
+    }
+    found, groups = family.record(table, root_running=False)
+    assert set(found) == {200, 201, 203} and groups == {200, 203}
+    # Peeky's own session never counts (an adapter that could not lead its own), and
+    # neither does an unknown one.
+    for session in (own, None):
+        family = processes.Family(root=100, session=session)
+        assert family.record(table, root_running=False) == ({}, set())
 
 
 def test_a_session_failed_with_no_request_in_flight_keeps_its_cleanup(tmp_path, leftovers):

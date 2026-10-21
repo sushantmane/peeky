@@ -132,7 +132,14 @@ class DAP:
         # Every process the session started, listed while their ancestry still shows
         # it, and the debuggees the adapter announced (`process`, `processid`): close()
         # ends them even once their parents are gone, never a reused pid (#143).
-        self.family = processes.Family(self.process.pid)
+        # The adapter leads a session of its own (start_new_session): what is still in
+        # it was started from it, even once its parents are gone (#168).
+        self.family = processes.Family(
+            self.process.pid,
+            session=self.process.pid
+            if processes.session_id(self.process.pid) == self.process.pid
+            else None,
+        )
         self.announcing = []
         self.family_wake = threading.Event()
         # What close() did about the processes the session started (#143).
@@ -541,9 +548,12 @@ class DAP:
     def _list_family(self):
         """List the session's processes: ({pid: entry} still running, the adapter ran),
         or (None, ran) if the process table cannot be read."""
-        # Unreaped, the adapter's pid cannot name another process (a zombie keeps it).
-        running = self.process.poll() is None
         table = processes.table()
+        # Asked after the table was read: still running then, it was running while the
+        # table was read, and its children had not been handed to another parent yet
+        # (an exiting adapter closes its pipes first, and is a zombie only after). Unreaped,
+        # the adapter's pid cannot name another process (a zombie keeps it).
+        running = self.process.poll() is None
         if table is None:
             return None, running
         return self.family.record(table, running)[0], running
@@ -568,7 +578,7 @@ class DAP:
     def _signal(self, pids, sig, table):
         """Send ``sig`` to each of ``pids`` that is still the process listed, and to the
         process groups they prove the session's. The adapter's group is ended apart."""
-        for pid, (_, _, start, _) in pids.items():
+        for pid, (_, _, start, *_) in pids.items():
             entry = table.get(pid)
             if processes.alive(entry) and entry[2] == start:
                 try:
@@ -640,13 +650,12 @@ class DAP:
             done = "nothing Peeky could identify was still running"
         if ran:
             return done
-        # Its tree is gone: a process started after the last listing, in a group of its
-        # own, whose parent has exited, cannot be told from anyone else's.
+        # Its tree is gone: a process started after the last listing, in a session of
+        # its own, whose parent has exited, cannot be told from anyone else's.
         age = time.monotonic() - (before or self.started)
         return (
             f"{done}; the debugger was gone: a process the program started in the last "
-            f"{age:.1f} s, in a process group of its own and whose parent had exited, may "
-            "survive"
+            f"{age:.1f} s, in a session of its own and whose parent had exited, may survive"
         )
 
     def snapshot_output(self):
