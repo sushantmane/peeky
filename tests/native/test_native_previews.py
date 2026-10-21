@@ -7,6 +7,8 @@ agent listed eight selectors by hand to read the bins' bounds.
 import contextlib
 import json
 import os
+import shutil
+import subprocess
 
 import pytest
 
@@ -206,7 +208,7 @@ def test_structs_unions_and_arrays_preview_without_guessing(c_program, capsys):
 
 OPTIMIZED = """#include <stdio.h>
 struct bin { int lo; int hi; int count; };
-struct pair { long a; long b; };
+struct trip { int x; int y; int z; };
 __attribute__((noinline)) void fill(struct bin *b, int n) {
     for (int i = 0; i < n; i++) { b[i].lo = i; b[i].hi = i + 1; b[i].count = 0; }
 }
@@ -218,42 +220,142 @@ __attribute__((noinline)) int total(const struct bin *b, int n) {
 int main(int argc, char **argv) {
     struct bin bins[3];
     fill(bins, 3);
-    struct pair p = {argc, argc * 2};
-    int t = total(bins, 3); // HERE
-    printf("%d %ld\\n", t, p.a + p.b);
+    struct trip t = {argc + 4, argc + 5, argc + 6};
+    int s = total(bins, 3); // HERE
+    printf("%d %d %d %d\\n", s, t.x, t.y, t.z);
     return 0;
 }
 """
 
 
-@pytest.mark.timeout(120)
-def test_an_optimized_build_previews_only_what_has_an_address(c_program, tmp_path, capsys):
-    # A struct in memory is read as at -O0; one the build keeps in registers (pieces of
-    # a location, no address) keeps the debugger's text: no preview is made of pieces.
-    c_program("opt.c", OPTIMIZED)
-    config = tmp_path / "native.json"
+def _gcc():
+    gcc = shutil.which("gcc")
+    version = subprocess.run([gcc, "--version"], capture_output=True, text=True) if gcc else None
+    return gcc if version is not None and "Free Software Foundation" in version.stdout else None
+
+
+def configured(tmp_path, name, compiler, optimization="O0"):
+    config = tmp_path / f"{name}-{optimization}.json"
     config.write_text(
         json.dumps(
             {
                 "language": "c",
-                "sources": ["opt.c"],
-                "compiler": os.environ.get("PEEKY_NATIVE_CC", "clang"),
+                "sources": [name],
+                "compiler": compiler,
                 "adapter": os.environ["PEEKY_NATIVE_DAP"],
                 "dwarfdump": os.environ.get("PEEKY_NATIVE_DWARFDUMP", "llvm-dwarfdump"),
                 "dsymutil": os.environ.get("PEEKY_NATIVE_DSYMUTIL"),
-                "sysroot": os.environ.get("PEEKY_NATIVE_SYSROOT"),
-                "optimization": "O2",
+                "sysroot": os.environ.get("PEEKY_NATIVE_SYSROOT") if compiler != _gcc() else None,
+                "optimization": optimization,
             }
         )
     )
+    return config
+
+
+@pytest.mark.timeout(240)
+@pytest.mark.parametrize("compiler", ["clang", "gcc"])
+@pytest.mark.parametrize("optimization", ["O1", "O2"])
+def test_an_optimized_build_previews_nothing(c_program, tmp_path, capsys, compiler, optimization):
+    # Review of #136: at -O1 and -O2 a struct with an address previewed values the
+    # optimizer had not stored yet (GCC: `t = {x = 64, y = 0, z = 0}` where the program
+    # printed {5, 6, 7}). As for Rust, an optimized build shows the debugger's `T @ 0x…`.
+    built = os.environ.get("PEEKY_NATIVE_CC", "clang") if compiler == "clang" else _gcc()
+    if built is None:
+        pytest.skip("needs GCC")
+    c_program("opt.c", OPTIMIZED)
+    config = configured(tmp_path, "opt.c", built, optimization)
     line = line_of(OPTIMIZED, "// HERE")
     command = ["probe", str(tmp_path), "--config", str(config), "--at", f"opt.c:{line}"]
-    assert main([*command, "--capture", "bins,p", "--json"]) == 0
+    assert main([*command, "--capture", "bins,t,bins[1]", "--json"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert any("optimized build" in warning for warning in result["warnings"]), result
+    for row in result["rows"]:
+        if not row.get("unavailable"):
+            assert not str(row.get("value")).startswith(("{", "[")), row
+
+
+ROUND1 = """#include <stdbool.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <wchar.h>
+struct opaque;
+struct node { int v; struct node *next; };
+struct flex { int n; int data[]; };
+enum mode { M0, M1, M2, M3 };
+struct b2 { signed char sc : 3; unsigned char uc : 3; int : 0; char pc : 4; bool flag : 1; enum mode md : 2; short sh : 5; };
+typedef int Row[3];
+struct rec { Row r; int tail; };
+int main(int argc, char **argv) {
+    int k = argc + 2;
+    int a[k];
+    int b[k + 3];
+    for (int i = 0; i < k; i++) a[i] = 10 + i;
+    for (int i = 0; i < k + 3; i++) b[i] = 20 + i;
+    int backing[4] = {1, 2, 3, 4};
+    struct opaque *op = (struct opaque *)backing;
+    struct node n2 = {2, NULL}, n1 = {1, &n2};
+    struct node *np = &n1;
+    struct node **npp = &np;
+    struct flex *fx = malloc(sizeof(struct flex) + 3 * sizeof(int));
+    fx->n = 3; fx->data[0] = 10; fx->data[1] = 11; fx->data[2] = 12;
+    struct b2 bt = {-3, 6, -2, true, M3, -9};
+    wchar_t w[4] = {L'a', 0, L'b', 0};
+    Row r = {1, 2, 3};
+    struct rec rc = {{7, 8, 9}, 4};
+    printf("pc=%d %d %d %p %d %d %d %d %d\\n", bt.pc, a[k - 1], b[k + 2], (void *)op, (*npp)->v, fx->n, (int)w[2], r[2], rc.tail); // HERE
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(240)
+@pytest.mark.parametrize("compiler", ["clang", "gcc"])
+def test_what_the_debug_information_cannot_vouch_for_is_not_previewed(
+    c_program, tmp_path, capsys, compiler
+):
+    # Review of #136, with clang and GCC: a variable-length array previewed another's
+    # length (clang: `a = [10, 11, 12, 0, -1882931200, 1]`) or a wrong one (GCC: `b` as
+    # `int[5]`, holding 6); `npp[0]` on a pointer to a pointer previewed the struct where
+    # the pointer belongs; `op[0]` on a pointer to an incomplete type showed `{}`; a
+    # char-typed bitfield read as an unsigned character (`sc = '\\x05'` for -3); a wide
+    # character array ended at its first NUL (`L"a"`); an unnamed bitfield LLDB adds
+    # showed as `0`; a typedef'd array as `{[0] = 1, …}`.
+    built = os.environ.get("PEEKY_NATIVE_CC", "clang") if compiler == "clang" else _gcc()
+    if built is None:
+        pytest.skip("needs GCC")
+    c_program("round1.c", ROUND1)
+    config = configured(tmp_path, "round1.c", built)
+    line = line_of(ROUND1, "// HERE")
+    selectors = "a,b,op[0],npp[0],npp[0][0],fx[0],bt,bt.sc,bt.uc,bt.pc,w,r,rc"
+    command = ["probe", str(tmp_path), "--config", str(config), "--at", f"round1.c:{line}"]
+    assert main([*command, "--capture", selectors, "--json"]) == 0
     result = json.loads(capsys.readouterr().out)
     rows = {row["selector"]: row for row in result["rows"]}
-    assert result["warnings"] and any("optimized build" in w for w in result["warnings"]), result
-    bins = rows["bins"]
-    expected = "[{lo = 0, hi = 1, count = 0}, {lo = 1, hi = 2, count = 0}, "
-    assert bins.get("value") == expected + "{lo = 2, hi = 3, count = 0}]", bins
-    pair = rows["p"]
-    assert pair.get("unavailable") or not str(pair.get("value")).startswith("{"), pair
+    # No constant bound: the debugger's text, never a length it guessed.
+    for name in ("a", "b"):
+        assert " @ 0x" in rows[name]["value"] and "[1" not in rows[name]["value"], rows[name]
+    # A flexible array member has no length either.
+    assert rows["fx[0]"]["value"] == "{n = 3, data = […]}", rows["fx[0]"]
+    # Declared, never defined: no members to show.
+    assert " @ 0x" in rows["op[0]"]["value"] and "{" not in rows["op[0]"]["value"]
+    # `npp[0]` is a pointer, shown as its address; `npp[0][0]` what it points at.
+    assert rows["npp[0]"]["value"].startswith("0x") and "{" not in rows["npp[0]"]["value"]
+    assert rows["npp[0][0]"]["value"].startswith("{v = 1, next = 0x"), rows["npp[0][0]"]
+    # A plain `char` is signed or not as the platform's ABI says: the program's own
+    # output tells which.
+    pc = result["output"].split("pc=", 1)[1].split()[0]
+    assert pc in ("-2", "14"), result["output"]
+    expected = f"{{sc = -3, uc = 6, pc = {pc}, flag = true, md = M3, sh = -9}}"
+    assert rows["bt"]["value"] == expected, rows["bt"]
+    # The member rows too, where LLDB showed `'\\x05'`.
+    assert (rows["bt.sc"]["value"], rows["bt.uc"]["value"], rows["bt.pc"]["value"]) == (
+        "-3",
+        "6",
+        pc,
+    )
+    assert rows["w"]["value"] == "[L'a', L'\\0', L'b', L'\\0']", rows["w"]
+    assert rows["r"]["value"] == "[1, 2, 3]" and rows["rc"]["value"] == "{r = [7, 8, 9], tail = 4}"
+    # The evidence store keeps what the row shows.
+    assert main(["sql", "SELECT value FROM last_run WHERE selector = 'npp[0]'", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["rows"][0]["value"].startswith("0x")

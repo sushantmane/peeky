@@ -1997,6 +1997,7 @@ class DebugWorker:
         display_value = getattr(self.runtime, "display_value", None)
         string_value = getattr(self.runtime, "string_value", None)
         preview = getattr(self.runtime, "preview_value", None)
+        member_value = getattr(self.runtime, "member_value", None)
         identify = getattr(self.runtime, "object_identity", None)
         groups = getattr(self.runtime, "variable_groups", frozenset())
         for variable in variables:
@@ -2197,6 +2198,14 @@ class DebugWorker:
                 output["value"] = None
             elif isinstance(note, str):
                 output["note"] = note[:500]
+            if (
+                ancestry
+                and member_value
+                and not output.get("unavailable")
+                and (fixed := member_value(variable, frame, [s for s, _ in ancestry] + [name]))
+            ):
+                # A field LLDB reads wrongly (a char-typed bitfield, #136).
+                output["value"] = fixed
             wanted = self.previewing
             if (
                 preview
@@ -2212,8 +2221,9 @@ class DebugWorker:
                 # A C or C++ struct or array, shown by its members (#136); its fields
                 # stay selectable through the same handle.
                 reads = self.view_read if self.capabilities.get("supports_read_memory") else None
+                steps = [step for step, _ in ancestry] + [name]
                 try:
-                    shown = preview(variable, self.preview_fetch, reads)
+                    shown = preview(variable, self.preview_fetch, reads, frame=frame, steps=steps)
                 except ValueError:
                     # The budget is spent: the value stays as the debugger shows it.
                     shown = None
@@ -2407,10 +2417,11 @@ class DebugWorker:
         if hook is None or record[0] == "view":
             return {}
         trail = []
-        self.walk(record, runtime, trail)
+        frame, _, ancestry, _, _ = self.walk(record, runtime, trail)
         if not trail:
             return {}
         variable = trail[-1]
+        steps = [step for step, _ in ancestry]
         self.reset_previews()
         # Its strings' memory reads (#128) count as an expansion's.
         self.view_fetches = self.view_items = self.view_bytes = 0
@@ -2419,12 +2430,16 @@ class DebugWorker:
         if self.placeholders() and is_unavailable(variable.get("value")):
             return {}
         try:
-            if args.get("pointee") is True:
-                # What a pointer points at (`p[0]`), as a selector asked: lldb-dap lists
-                # it as the pointer's own children.
-                shown = hook(variable, self.preview_fetch, reads, pointee=True)
-            else:
-                shown = hook(variable, self.preview_fetch, reads)
+            # With `pointee`, what a pointer points at (`p[0]`), as a selector asked:
+            # lldb-dap lists it as the pointer's own children.
+            shown = hook(
+                variable,
+                self.preview_fetch,
+                reads,
+                pointee=args.get("pointee") is True,
+                frame=frame,
+                steps=steps,
+            )
         except ValueError:
             shown = None
         runtime.assert_current()

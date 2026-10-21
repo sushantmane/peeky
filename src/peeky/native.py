@@ -525,47 +525,6 @@ def typedef_kinds(info):
     return found
 
 
-def union_names(info):
-    """Every name lldb-dap may show for a union, or for a typedef of one (through
-    qualifiers and other typedefs): its own name, its qualified one and the one
-    lldb-dap shows (``_displayed``; an unnamed union by the typedef that names it). A
-    union's value has no preview (#136): lldb-dap shows it by its name alone, as a
-    struct's, but only one member holds what was stored."""
-    dies, found = _dies(info), set()
-    named = _typedef_named(dies)
-
-    def names(offset):
-        die = dies[offset]
-        return (
-            _text(die["attrs"].get("DW_AT_name")),
-            _qualified(dies, offset),
-            _displayed(dies, offset, named),
-        )
-
-    for offset, die in dies.items():
-        if die["tag"] == "DW_TAG_union_type":
-            found.update(name for name in names(offset) if name)
-        elif die["tag"] == "DW_TAG_typedef":
-            target = die["attrs"].get("DW_AT_type")
-            for _ in range(16):
-                reference = _REFERENCE.fullmatch(target or "")
-                inner = dies.get(int(reference[1], 16)) if reference else None
-                if inner is None:
-                    break
-                if inner["tag"] in (
-                    "DW_TAG_typedef",
-                    "DW_TAG_const_type",
-                    "DW_TAG_volatile_type",
-                    "DW_TAG_atomic_type",
-                ):
-                    target = inner["attrs"].get("DW_AT_type")
-                    continue
-                if inner["tag"] == "DW_TAG_union_type":
-                    found.update(name for name in names(offset) if name)
-                break
-    return frozenset(found)
-
-
 # A C++ map or set template, its arguments left out (`std::__1::map`, `std::set`).
 _ASSOCIATIVE_CLASS = re.compile(
     r"(?:::)?std::(?:__\w+::|pmr::)*(?:unordered_|flat_)?(?:multi)?(?:map|set)"
@@ -2181,7 +2140,7 @@ class NativeTarget:
                 prepared.workspace,
                 self.sources + self.headers,
             )
-            typedefs, fields, unjudged, unions = {}, None, None, None
+            typedefs, fields, unjudged = {}, None, None
             try:
                 info = _metadata(
                     dwarfdump,
@@ -2193,7 +2152,6 @@ class NativeTarget:
                 )
                 with _reusing_dies():
                     typedefs = typedef_kinds(info)
-                    unions = union_names(info)
                     nonlocal_jumps = (
                         has_nonlocal_jumps(binary)
                         or mentions_nonlocal_jumps(
@@ -2224,6 +2182,19 @@ class NativeTarget:
                             },
                             CPP_LIBRARIES,
                         )
+                        # And, one level down, what their pointers and references reach:
+                        # previews of `p[0]` and of a reference (#136). Changes never
+                        # walk through either, so these types change nothing.
+                        aimed = {
+                            node[2]
+                            for node in fields.values()
+                            if node[0] in ("pointer", "reference") and node[2] is not None
+                        } - set(fields)
+                        if aimed:
+                            for offset, node in type_graph(
+                                _dies(info), aimed, CPP_LIBRARIES
+                            ).items():
+                                fields.setdefault(offset, node)
             except (RuntimeError, ValueError, OSError) as exc:
                 # Without it, values show as the debugger reads them, each local with a
                 # note that its initialization is not judged (and no field or element
@@ -2243,7 +2214,6 @@ class NativeTarget:
                 typedefs=typedefs,
                 fields=fields,
                 unjudged=unjudged,
-                unions=unions,
             )
             session.assert_current()
             return session
@@ -2393,12 +2363,8 @@ class NativeSession:
         typedefs=None,
         fields=None,
         unjudged=None,
-        unions=None,
     ):
         self.target, self.prepared = target, prepared
-        # union_names of the build; None (unread) previews no struct (#136): a union is
-        # shown by its name alone, as a struct is.
-        self.unions = unions
         # local_declarations of the build; None (unknown) never withholds a value, and
         # ``unjudged`` says why: (_UNJUDGED's key, its detail, the build's
         # local_declarations if read, to tell which rows are automatic locals).
@@ -2548,40 +2514,42 @@ class NativeSession:
             return shown
         return {**(shown or {}), **tidied}
 
-    def preview_value(self, variable, fetch, read, pointee=False):
+    def preview_value(self, variable, fetch, read, pointee=False, frame=None, steps=None):
         """A C or C++ struct's, class's or fixed-size array's preview (#136,
-        ``native_previews``), or None to keep the debugger's text. ``fetch(reference,
-        count)`` lists a value's first children within the worker's preview budget;
-        ``read`` reads memory (or is None), for the strings among its members. With
-        ``pointee``, the preview of what the pointer ``variable`` points at, which a
-        selector asked for (`p[0]`): lldb-dap lists it as the pointer's children."""
+        ``native_previews``), or None to keep the debugger's text. ``frame`` and
+        ``steps`` (the root local's name, then each child's the debugger gives) locate
+        the value, whose type the build's debug information gives; without it there is
+        no preview, nor in an optimized build (a struct with an address may hold values
+        the optimizer has not stored yet). ``fetch(reference, count)`` lists a value's
+        first children within the worker's preview budget; ``read`` reads memory (or is
+        None), for the strings among its members. With ``pointee``, the preview of
+        what the pointer ``variable`` points at, which a selector asked for (`p[0]`):
+        lldb-dap lists it as the pointer's children."""
         from peeky.native_previews import preview
 
         if getattr(getattr(self, "target", None), "language", None) not in ("c", "cpp"):
             return None
-        if getattr(self, "unions", None) is None:
-            # Without the build's debug information a union cannot be told from a struct.
+        typed = self._typed(frame, steps)
+        if typed is None:
+            return None
+        if getattr(self.target, "optimization", "O0") != "O0" and not (
+            not pointee
+            and typed.kind() == "array"
+            and not typed.narrow()
+            and not re.fullmatch(r".+ @ 0x[0-9a-fA-F]+", str(variable.get("value") or ""))
+        ):
+            # An optimized build's struct may hold values the optimizer has not stored
+            # yet: none is previewed. Only an array LLDB shows as text it ends at a NUL
+            # (a wide character array) is shown element by element, as it reads them.
             return None
         if pointee:
-            kind, value = str(variable.get("type") or ""), str(variable.get("value") or "")
-            address = re.match(r"0x[0-9a-fA-F]+(?=\s|$)", value)
-            aimed = re.fullmatch(r"(.+?)\s*\*\s*(?:(?:const|volatile|restrict)\s*)*", kind)
-            resolved = self.typedef_kind(kind)
-            target = (
-                aimed[1]
-                if aimed
-                else resolved[1]
-                if resolved and resolved[0] == "pointer"
-                else None
-            )
-            if (
-                self.preview_kind(kind) != "pointer"
-                or not address
-                or not target
-                or int(address[0], 16) == 0
-            ):
+            address = re.match(r"0x[0-9a-fA-F]+(?=\s|$)", str(variable.get("value") or ""))
+            if typed.kind() != "pointer" or not address or int(address[0], 16) == 0:
                 return None
-            variable = {**variable, "type": target, "value": f"{target} @ {address[0]}"}
+            typed = typed.target()
+            if typed is None or typed.kind() in ("pointer", "reference"):
+                return None
+            variable = {**variable, "value": f"{variable.get('type')} @ {address[0]}"}
 
         def text(child):
             shown = self.string_value(child, lambda reference: fetch(reference, 64), read)
@@ -2589,41 +2557,42 @@ class NativeSession:
                 return None
             return shown["value"] if shown and "value" in shown else child.get("value")
 
-        return preview(variable, fetch, self.preview_kind, text)
+        return preview(variable, fetch, typed, text)
 
-    def preview_kind(self, kind):
-        """What a C or C++ type name is for a preview (#136): "pointer" or "reference"
-        (never followed inside one; a reference local is previewed after its address),
-        "union" (never previewed: one member holds what was stored), "library" (a
-        standard-library type keeps its own view), "unknown" (a typedef the debug
-        information gives two meanings), or None (a struct, class, array or scalar)."""
-        text = str(kind or "").strip()
-        if re.search(r"(?:\*|\(\*|\(\^|::\*)\s*(?:(?:const|volatile|restrict)\s*)*$", text) or (
-            "(*" in text or "(^" in text
-        ):
-            return "pointer"
-        if referent := re.fullmatch(r"(.+?)\s*&{1,2}\s*", text):
-            # Previewed after its address only where what it refers to would be.
-            return "reference" if self.preview_kind(referent[1]) is None else "pointer"
-        bare = re.sub(r"^(?:(?:const|volatile)\s+)+|(?:\s+(?:const|volatile))+$", "", text)
-        if bare.startswith("union "):
-            return "union"
-        bare = re.sub(r"^(?:struct|class|enum)\s+", "", bare)
-        resolved = self.typedef_kind(bare)
-        if resolved is not None and resolved[0] == "reference":
-            return (
-                "reference" if resolved[1] and self.preview_kind(resolved[1]) is None else "pointer"
-            )
-        if resolved is not None and resolved[0] in ("pointer", "unknown"):
-            return resolved[0]
-        names = {bare, self.aliased_type(bare) or ""} - {""}
-        if names & (getattr(self, "unions", None) or frozenset()) or re.search(
-            r"\((?:anonymous|unnamed) union\b", text
-        ):
-            return "union"
-        if any(re.match(r"(?:::)?(?:std|__gnu_cxx|__gnu_debug)::", name) for name in names):
-            return "library"
-        return None
+    def member_value(self, variable, frame, steps):
+        """A field's text where LLDB's is wrong, or None to keep it (#136): a char-typed
+        bitfield LLDB reads as an unsigned character (`'\\x05'` for `signed char sc:3`
+        holding -3) shows as the number its bits hold, sign-extended where signed."""
+        from peeky.native_previews import bitfield_text
+
+        if getattr(getattr(self, "target", None), "language", None) not in ("c", "cpp"):
+            return None
+        typed = self._typed(frame, steps)
+        return bitfield_text(variable.get("value"), typed) if typed is not None else None
+
+    def _typed(self, frame, steps):
+        """``native_previews.Typed`` of the value ``steps`` name in ``frame`` (its root
+        local, then the debugger's child names), from the build's debug information, or
+        None where it cannot be told (no debug information read, a name declared twice
+        with two types, a child the type does not have)."""
+        from peeky.fields import Unsettable
+        from peeky.native_previews import Typed
+
+        if getattr(self, "fields", None) is None or not steps or frame is None:
+            return None
+        function = self._function_at(frame)
+        if function is None or function.get("types") is None:
+            return None
+        try:
+            offset, _ = self._declared_type(function["types"], steps[0])
+        except Unsettable:
+            return None
+        typed = Typed(self.fields, offset)
+        for step in steps[1:]:
+            typed = typed.child(step)
+            if typed is None:
+                return None
+        return typed
 
     def _string_class(self, kind):
         """``cxx_strings.string_class`` of a type, also through a typedef the build's

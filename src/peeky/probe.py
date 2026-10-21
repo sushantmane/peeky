@@ -1255,8 +1255,10 @@ def _previewed(worker, stop, variable):
     if variable.get("unavailable") or type(handle) is not int or handle <= 0:
         return variable
     # What a pointer points at (`p[0]`, #102), which lldb-dap lists as the pointer's
-    # children: the selector asked for it, so it is read as the pointer's target.
-    pointee = {"pointee": True} if str(variable.get("name", "")).startswith("*") else {}
+    # children: the selector asked for it, so it is read as the pointer's target. Only
+    # a value `_dereferenced` made: lldb-dap's own `*pp` child is a value of its own (a
+    # pointer, where `pp` is a pointer to one), and never a pointee's preview.
+    pointee = {"pointee": True} if variable.get("dereferenced") is True else {}
     from peeky.errors import PeekyError
 
     try:
@@ -1701,6 +1703,8 @@ def _dereferenced(variable, pointee):
         "value": summary or f"{pointee or '*' + variable['name']} @ {address[0]}",
         "type": pointee or None,
         "variablesReference": variable["variablesReference"],
+        # Its handle is the pointer's: a preview reads what that points at (#136).
+        "dereferenced": True,
     }
     if variable.get("pointee_aliased_type"):
         shown["aliased_type"] = variable["pointee_aliased_type"]

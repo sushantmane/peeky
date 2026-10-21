@@ -68,7 +68,6 @@ EXPECTED = {
     "pts": "[{x = 1, y = 1}, {x = 2, y = 2}, {x = 3, y = 3}]",
     "pts[1]": "{x = 2, y = 2}",
     "pp[0]": "{x = 1, y = 2}",
-    "mp[1]": "{x = 5, y = 6}",
 }
 
 
@@ -105,7 +104,7 @@ def session(source, line, capsys):
 @pytest.mark.timeout(120)
 def test_classes_previews_follow_lldb_and_never_guess(cpp, capsys):
     with session(cpp, line_of(SHAPES, "// HERE"), capsys) as get:
-        rows = get(*EXPECTED, "num", "line", "mixed", "rp", "pp", "vp", "mp", "later")
+        rows = get(*EXPECTED, "num", "line", "mixed", "rp", "pp", "vp", "mp", "mp[1]", "later")
         for selector, value in EXPECTED.items():
             assert rows[selector].get("value") == value, (selector, rows[selector])
         # A union is not previewed: lldb-dap names it as it names a struct.
@@ -122,6 +121,9 @@ def test_classes_previews_follow_lldb_and_never_guess(cpp, capsys):
         # Standard-library values keep their own views (#119, #128): a vector's or map's
         # summary, a string's checked text.
         assert rows["vp"]["value"] == "size=2" and rows["mp"]["value"] == "size=1"
+        # A value inside one is reached through the library's own children, which the
+        # debug information does not type: not previewed (review of #136).
+        assert " @ 0x" in rows["mp[1]"]["value"], rows["mp[1]"]
         mixed = rows["mixed"]["value"]
         tail = ", v = size=2, ratio = 0.5, ok = true, c = 'z'}"
         assert mixed in ('{s = "hi"' + tail, "{s = <no value>" + tail), mixed
@@ -160,7 +162,9 @@ int main() {
 
 
 @pytest.mark.timeout(120)
-def test_an_optimized_cpp_build_previews_its_memory(cpp, tmp_path, capsys):
+def test_an_optimized_cpp_build_previews_nothing(cpp, tmp_path, capsys):
+    # Review of #136: an optimized build's structs may hold values the optimizer has
+    # not stored yet; as for Rust, they keep the debugger's `T @ 0x…`.
     (tmp_path / "opt.cpp").write_text(OPTIMIZED)
     config = tmp_path / "native.json"
     config.write_text(
@@ -183,5 +187,64 @@ def test_an_optimized_cpp_build_previews_its_memory(cpp, tmp_path, capsys):
     result = json.loads(capsys.readouterr().out)
     (row,) = result["rows"]
     assert any("optimized build" in warning for warning in result["warnings"]), result
-    expected = "[{lo = 0, hi = 1, count = 0}, {lo = 1, hi = 2, count = 0}, "
-    assert row.get("value") == expected + "{lo = 2, hi = 3, count = 0}]", row
+    assert " @ 0x" in row.get("value", ""), row
+
+
+TEMPLATES = """#include <cstdio>
+template <class T> struct Hold { T v; int tag; };
+template <int N> struct Fixed { int data[N]; };
+typedef int Row[3];
+struct Bits { signed char sc : 3; unsigned char uc : 3; int : 0; char pc : 4; int x; };
+int main() {
+    Hold<int[1]> hs[5];
+    for (int i = 0; i < 5; i++) { hs[i].v[0] = i * 10; hs[i].tag = i; }
+    Hold<char[2]> hc[3] = {{"a", 1}, {"b", 2}, {"c", 3}};
+    Fixed<2> fx[2] = {{{1, 2}}, {{3, 4}}};
+    Hold<int[1]> grid[2][3] = {};
+    Row rows[2] = {{1, 2, 3}, {4, 5, 6}};
+    Bits bits{-3, 6, (char)-2, 9};
+    wchar_t w[4] = {L'a', 0, L'b', 0};
+    char16_t u[3] = {u'x', 0, u'y'};
+    char32_t U[3] = {U'q', 0, U'r'};
+    std::printf("pc=%d %d %d %d %d %d\\n", bits.pc, hs[4].tag, hc[2].tag, fx[1].data[1], grid[1][2].tag, rows[1][2] + (int)w[2] + (int)u[2] + (int)U[2]); // HERE
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(120)
+def test_types_the_debug_information_gives_never_the_names(cpp, tmp_path, capsys):
+    # Review of #136: `Hold<int[1]> hs[5]` previewed one element (the count was the type
+    # name's first `[1]`), `Hold<char[2]> hc[3]` two; a typedef'd array read
+    # `{[0] = 1, …}`; a char-typed bitfield `'\\x05'`; a wide or UTF-16/32 array ended at
+    # its first NUL (`L"a"`); an unnamed bitfield LLDB adds showed as `0`.
+    (tmp_path / "templates.cpp").write_text(TEMPLATES)
+    line = line_of(TEMPLATES, "// HERE")
+    selectors = "hs,hc,fx,grid,rows,bits,bits.sc,w,u,U"
+    assert (
+        main(
+            [
+                "probe",
+                str(tmp_path / "templates.cpp"),
+                "--at",
+                str(line),
+                "--capture",
+                selectors,
+                "--json",
+            ]
+        )
+        == 0
+    )
+    result = json.loads(capsys.readouterr().out)
+    rows = {row["selector"]: row["value"] for row in result["rows"]}
+    tags = ", ".join(f"{{v = […], tag = {i}}}" for i in range(5))
+    assert rows["hs"] == f"[{tags}]", rows["hs"]
+    assert rows["hc"] == '[{v = "a", tag = 1}, {v = "b", tag = 2}, {v = "c", tag = 3}]', rows
+    assert rows["fx"] == "[{data = […]}, {data = […]}]", rows["fx"]
+    assert rows["grid"] == "[[{…}, {…}, {…}], [{…}, {…}, {…}]]", rows["grid"]
+    assert rows["rows"] == "[[1, 2, 3], [4, 5, 6]]", rows["rows"]
+    pc = result["output"].split("pc=", 1)[1].split()[0]
+    assert rows["bits"] == f"{{sc = -3, uc = 6, pc = {pc}, x = 9}}", rows["bits"]
+    assert rows["bits.sc"] == "-3"
+    assert rows["w"] == "[L'a', L'\\0', L'b', L'\\0']", rows["w"]
+    assert (rows["u"], rows["U"]) == ("[u'x', u'\\0', u'y']", "[U'q', U'\\0', U'r']"), rows

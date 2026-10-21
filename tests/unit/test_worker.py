@@ -801,7 +801,11 @@ def test_previews_are_made_only_where_asked_and_within_their_budget(tmp_path):
 
     from peeky.worker import PREVIEW_FETCHES, DebugWorker
 
-    def preview_value(variable, fetch, read):
+    located = []
+
+    def preview_value(variable, fetch, read, frame=None, steps=None):
+        # Where the value is: its frame, and the path of names its type is found by.
+        located.append((frame, steps))
         listed = fetch(variable["variablesReference"], 64)
         return "{" + ", ".join(f"{c['name']} = {c['value']}" for c in listed) + "}"
 
@@ -824,6 +828,7 @@ def test_previews_are_made_only_where_asked_and_within_their_budget(tmp_path):
 
     p, q, gone = expose(True)
     assert p["value"] == "{x = 1}" and q["value"] == "{y = 2}" and p["variablesReference"]
+    assert located[:2] == [({"id": 1}, ["p"]), ({"id": 1}, ["q"])]
     # No value, no preview.
     assert gone["unavailable"] and gone["value"] is None
     assert [arguments["variablesReference"] for _, arguments in worker.dap.requests] == [7, 8]
