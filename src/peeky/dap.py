@@ -557,15 +557,41 @@ class DAP:
         self.announcing.append(thread)
         thread.start()
 
+    def _adapter_running(self, table=None):
+        """Whether the adapter still runs, asked without reaping it (#170). Unreaped, a
+        dead adapter stays a zombie, which keeps its pid, and so its process group's and
+        its session's ids, from naming anyone else's: the session rule and the group kill
+        are safe until close() reaps it, last. (`Popen.poll()` would reap it, and a new
+        session leader could then take its pid.)"""
+        if self.process.returncode is not None:
+            return False
+        waitid = getattr(os, "waitid", None)  # macOS: Python 3.13 and later
+        if waitid is not None:
+            try:
+                flags = os.WEXITED | os.WNOHANG | os.WNOWAIT
+                return waitid(os.P_PID, self.process.pid, flags) is None
+            except ChildProcessError:
+                return False
+            except OSError:
+                pass
+        if table is None:
+            table = processes.table()
+        # Its own entry: a zombie ("Z") has exited. Unreadable: taken for running, which
+        # frees nothing.
+        return table is None or processes.alive(table.get(self.process.pid))
+
     def _list_family(self):
         """List the session's processes: ({pid: entry} still running, the adapter ran),
         or (None, ran) if the process table cannot be read."""
         table = processes.table()
         # Asked after the table was read: still running then, it was running while the
         # table was read, and its children had not been handed to another parent yet
-        # (an exiting adapter closes its pipes first, and is a zombie only after). Unreaped,
-        # the adapter's pid cannot name another process (a zombie keeps it).
-        running = self.process.poll() is None
+        # (an exiting adapter closes its pipes first, and is a zombie only after).
+        running = self._adapter_running(table)
+        if self.process.returncode is not None:
+            # Reaped before close() (never by Peeky): its pid may name another process,
+            # so its session proves nothing any more.
+            self.family.session = None
         if table is None:
             return None, running
         return self.family.record(table, running)[0], running
@@ -613,7 +639,10 @@ class DAP:
         return left, table
 
     def _kill_group(self, sig=signal.SIGKILL):
-        """Signal the adapter's own process group (macOS: EPERM once only zombies)."""
+        """Signal the adapter's own process group (macOS: EPERM once only zombies). Only
+        while the adapter is unreaped: its group id is then still its own (#170)."""
+        if self.process.returncode is not None:
+            return
         try:
             os.killpg(self.process.pid, sig)
         except (ProcessLookupError, PermissionError):
@@ -695,7 +724,7 @@ class DAP:
                     owned, ran = self._list_family()
                 except Exception:
                     owned = None
-            if self.process.poll() is None:
+            if self._adapter_running():
                 try:
                     seq = self.send("disconnect", {"terminateDebuggee": terminate}, timeout=0.25)
                     self.response(seq, timeout=1)
@@ -713,6 +742,7 @@ class DAP:
                 self.cleanup = "detached; the attached program keeps running"
             # Always reap the owned group, including children surviving adapter exit.
             self._kill_group()
+            # Reaped only now, after everything that names its pid, group or session.
             self.process.wait(timeout=3)
             self.reader.join(timeout=3)
             if stderr_reader := getattr(self, "stderr_reader", None):

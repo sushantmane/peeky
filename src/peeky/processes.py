@@ -135,8 +135,10 @@ class Family:
     its kin. A process whose parent dies is reparented and leaves that tree, but never
     its process group, so every member of a kin process's group is kin too: a group
     lives on while any member does, and its id is never reused meanwhile. The debuggee
-    the adapter announced counts as itself only, until a listing shows it descended
-    from the adapter.
+    the adapter announced counts with its process group (it may have left the
+    adapter's session: `setsid`), while it is the same process (its start), but its
+    other descendants count only once a listing shows them descended from the adapter
+    or from a kin process.
 
     ``session`` is the adapter's own session, when it leads one (Peeky starts it so):
     a process can only inherit its session, never join one, so every process still in
@@ -182,23 +184,32 @@ class Family:
             roots = same | ({self.root} if root_running else set())
             found = {pid for pid in descendants(table, roots) | same if alive(table[pid])}
             found.discard(self.root)
-            groups = self._groups(found, table)
-            found |= {
+            announced = {pid for pid, start in self.announced.items() if _same(table, pid, start)}
+            groups = self._groups(found | announced, table)
+            members = {
                 pid
                 for pid, entry in table.items()
                 if entry[1] in groups and alive(entry) and pid != self.root
             }
-            for pid in found:
+            # The announced debuggee itself stays announced only, unless found otherwise.
+            for pid in (found | members) - (announced - found):
                 self.kin[pid] = table[pid][2]
             self.listed = time.monotonic()
-            found |= {pid for pid, start in self.announced.items() if _same(table, pid, start)}
+            found |= members | announced
             return {pid: table[pid] for pid in found}, groups
 
     def groups(self, pids, table):
-        """The process groups of those ``pids`` that are still the kin listed."""
+        """The process groups of those ``pids`` that are still the kin listed, or the
+        debuggee the adapter announced."""
         with self.lock:
             return self._groups(
-                (pid for pid in pids if _same(table, pid, self.kin.get(pid))), table
+                (
+                    pid
+                    for pid in pids
+                    if _same(table, pid, self.kin.get(pid))
+                    or _same(table, pid, self.announced.get(pid))
+                ),
+                table,
             )
 
 

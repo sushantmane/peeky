@@ -25,7 +25,9 @@ from peeky.worker import DebugWorker, make_server
 # argv: how, record. "hang": a launcher starts the program (and the program a child of
 # its own) and nothing ever initializes; "stubborn": the same, and the program ignores
 # SIGTERM; "announce-die": the adapter starts the program, announces its pid (`process`
-# event) and dies, and Peeky reads the end of its output only once it has exited (a
+# event) and dies ("announce-setsid": the program starts a session of its own, so only
+# the announcement shows it is the session's), and Peeky reads the end of its output only
+# once it has exited (a
 # holder keeps the pipe open until the adapter's children are handed on, #168: else
 # Peeky could list them while the adapter was still exiting); "attach": the adapter
 # announces a program it did not start (pid in argv 3). Every process started writes
@@ -36,7 +38,8 @@ import json, os, subprocess, sys, time
 how, record = sys.argv[1], sys.argv[2]
 PROGRAM = r'''
 import os, signal, subprocess, sys, time
-os.setpgrp()
+# "announce-setsid": the program leaves the adapter's session; else only its group.
+os.setsid() if sys.argv[2] == "announce-setsid" else os.setpgrp()
 if sys.argv[2] == "stubborn":
     signal.signal(signal.SIGTERM, signal.SIG_IGN)
 child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(600)"])
@@ -84,7 +87,7 @@ while True:
             write({"seq": 0, "type": "event", "event": "process",
                    "body": {"name": "app", "systemProcessId": int(sys.argv[3])}})
             continue
-        if how == "announce-die":
+        if how in ("announce-die", "announce-setsid"):
             subprocess.Popen([sys.executable, "-c", PROGRAM, record, how], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
             write({"seq": 0, "type": "event", "event": "process",
                    "body": {"name": "app", "systemProcessId": started()}})
@@ -193,6 +196,78 @@ def test_a_program_no_listing_saw_before_its_adapter_died_is_ended_with_its_chil
     assert not running(pids["program"]) and not running(pids["child"])
     listed = ", ".join(map(str, sorted(pids.values())))
     assert error["cleanup"].startswith(f"terminated pids {listed}; the debugger was gone")
+
+
+def test_a_program_only_its_announcement_shows_is_ended_with_its_group(
+    tmp_path, leftovers, monkeypatch
+):
+    # PR #170 review: the program leaves the adapter's session (`setsid`) and no listing
+    # runs before the adapter dies, so only its announced pid (and start) says it is the
+    # session's. Its child, in its group, outlived it: the announced program's group is
+    # ended too.
+    from peeky.dap import DAP
+
+    monkeypatch.setattr(DAP, "_watch_family", lambda self: None)
+    record = tmp_path / "started.txt"
+    error, _ = launch(tmp_path, target("announce-setsid", record), deadline=10)
+    pids = started(record)
+    leftovers.extend(pids.values())
+    assert not running(pids["program"]) and not running(pids["child"])
+    listed = ", ".join(map(str, sorted(pids.values())))
+    assert error["cleanup"].startswith(f"terminated pids {listed}; the debugger was gone")
+
+
+def test_without_its_announcement_such_a_program_is_not_known(tmp_path, leftovers, monkeypatch):
+    # The property the test above relies on: with the announcement ignored, nothing else
+    # names the program (it left the adapter's session, and no listing saw its ancestry).
+    from peeky.dap import DAP
+
+    monkeypatch.setattr(DAP, "_watch_family", lambda self: None)
+    monkeypatch.setattr(processes.Family, "announce", lambda self, pid, start: None)
+    record = tmp_path / "started.txt"
+    error, _ = launch(tmp_path, target("announce-setsid", record), deadline=10)
+    pids = started(record)
+    leftovers.extend(pids.values())
+    assert running(pids["program"]) and running(pids["child"])
+    assert error["cleanup"].startswith("nothing Peeky could identify was still running")
+
+
+def test_a_dead_adapter_stays_unreaped_until_close(tmp_path):
+    # PR #170 review (High): `poll()` reaped the dead adapter at the next listing, and
+    # its pid, and so its group and session ids, could then name an unrelated session's
+    # leader, whose processes the session rule and close() would end. Unreaped, a zombie
+    # keeps the pid; only close() reaps it, after its last signal.
+    from peeky.dap import DAP
+
+    dap = DAP(command=(sys.executable, "-c", "import time; time.sleep(0.2)"))
+    pid = dap.process.pid
+    polled = []
+    real_poll = dap.process.poll
+    dap.process.poll = lambda: polled.append(1) or real_poll()
+    try:
+        assert dap.family.session == pid
+        until(lambda: (processes.table() or {}).get(pid, (0, 0, "", "R"))[3].startswith("Z"))
+        dap.family_wake.set()
+        time.sleep(1.5)  # listings after its death
+        entry = processes.table()[pid]
+        assert entry[3].startswith("Z") and dap.process.returncode is None
+        assert dap.family.session == pid and not polled
+    finally:
+        dap.close()
+    assert dap.process.returncode is not None and pid not in (processes.table() or {})
+
+
+def test_an_adapter_reaped_elsewhere_proves_no_session_and_signals_no_group(tmp_path, monkeypatch):
+    from peeky.dap import DAP
+
+    dap = DAP(command=(sys.executable, "-c", "pass"))
+    dap.process.wait(timeout=10)  # reaped by someone else than close()
+    signalled = []
+    monkeypatch.setattr(os, "killpg", lambda group, sig: signalled.append(group))
+    dap._list_family()
+    dap._kill_group()
+    assert dap.family.session is None and signalled == []
+    dap.close()
 
 
 def test_an_attached_program_is_never_ended(tmp_path, leftovers):
@@ -381,9 +456,15 @@ def start_running(tmp_path, how, leftovers, roles, **options):
     return worker, {"session_id": started_session["session_id"]}, pids, record
 
 
+def kill_adapter(dap):
+    """`kill -9` of the adapter, left unreaped as a crash leaves it: Peeky reaps it only
+    at close (PR #170 review)."""
+    os.kill(dap.process.pid, signal.SIGKILL)
+    until(lambda: not dap._adapter_running())
+
+
 def fail_after_adapter_death(worker, session):
-    worker.dap.process.kill()
-    worker.dap.process.wait(timeout=3)
+    kill_adapter(worker.dap)
     with pytest.raises(RuntimeError) as failure:
         for _ in range(10):
             worker.dispatch("wait", {**session, "timeout": 1})
@@ -440,7 +521,9 @@ def test_the_family_is_known_by_ancestry_identity_and_group():
     }
     family.announce(302, "s302")
     found, groups = family.record(table, root_running=True)
-    assert set(found) == {101, 200, 201, 202, 302} and groups == {200, 202}
+    # The announced debuggee counts with its group (PR #170 review: it may have left
+    # the adapter's session).
+    assert set(found) == {101, 200, 201, 202, 302} and groups == {200, 202, 302}
     # The adapter and the debuggee die: the children are reparented, and one more is
     # started in the debuggee's group after the listing (never listed itself).
     later = {
@@ -451,16 +534,22 @@ def test_the_family_is_known_by_ancestry_identity_and_group():
         300: (1, 300, "s300", "S"),
         301: (1, own, "s301", "S"),
         302: (1, 302, "s302", "S"),
-        305: (302, 302, "s305", "S"),  # the announced process's group is no proof
+        305: (302, 302, "s305", "S"),  # in the announced process's group
     }
     found, groups = family.record(later, root_running=False)
-    assert set(found) == {201, 202, 203, 302} and groups == {200, 202}
-    assert family.groups([201, 302], later) == {200}
+    assert set(found) == {201, 202, 203, 302, 305} and groups == {200, 202, 302}
+    assert family.groups([201, 302], later) == {200, 302}
     # A pid reused by another process (another start) is no longer the session's.
     reused = {**later, 202: (1, 202, "another start", "S"), 203: (1, 200, "s203", "Z")}
     found, groups = family.record(reused, root_running=False)
-    assert set(found) == {201, 302} and groups == {200}
+    assert set(found) == {201, 302, 305} and groups == {200, 302}
     assert family.groups([202, 203], reused) == set()
+    # An announced pid that names another process now: neither it nor its group.
+    family = processes.Family(root=100)
+    family.announce(302, "s302")
+    other = {302: (1, 302, "another start", "S"), 306: (302, 302, "s306", "S")}
+    assert family.record(other, root_running=False) == ({}, set())
+    assert family.groups([302], other) == set()
 
 
 def test_what_stays_in_the_adapters_session_is_the_sessions_whatever_its_ancestry():
@@ -492,8 +581,7 @@ def test_a_session_failed_with_no_request_in_flight_keeps_its_cleanup(tmp_path, 
         tmp_path, "stop", leftovers, {"program"}, max_pause=0.2
     )
     until(lambda: worker.dap.pending_stop(worker.cursor) is not None)
-    worker.dap.process.kill()
-    worker.dap.process.wait(timeout=3)
+    kill_adapter(worker.dap)
     time.sleep(0.3)
     # The pause guard, with no client waiting, fails resuming the stop: the session is
     # kept as a failed one, and ended (PR #147 review 2: `--max-pause`, `kill -9`).
