@@ -112,11 +112,14 @@ def test_java_runtime_intervention(bundle, tmp_path, nested):
                 "columnsStartAt1": True,
             },
         )
+        launcher = Path(os.environ["PEEKY_JAVA_ADAPTER"]) / "classes" / "PeekyJavaAdapter.class"
         assert caps == {
             "supportsConfigurationDoneRequest": True,
             "supportsSetVariable": True,
             "peekySteps": True,
             "peekyFieldSet": True,
+            # A launcher from #137 on: a String takes a text (older bundles say to rebuild).
+            **({"peekyTextSet": True} if b"peekyTextSet" in launcher.read_bytes() else {}),
         }
         # Steps are allowed with a positive integer thread only; step-in targets, step back
         # and goto are not.

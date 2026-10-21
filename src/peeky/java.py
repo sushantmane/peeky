@@ -21,6 +21,7 @@ from peeky.build import ArtifactSpec, BuildRecipe, Command, assert_current, prep
 from peeky.digest import sha256_file, tree_fingerprint
 from peeky.java_metadata import loop_header_stops
 from peeky.loop_headers import loop_header_note
+from peeky.text_sets import parse_text
 
 MAX_BUNDLE_FILES = 4096
 MAX_BUNDLE_FILE_BYTES = 256 * 1024 * 1024
@@ -125,6 +126,17 @@ def java_preview(variable, fetch):
         return None
     shown = ", ".join(f"{field['name']}={_brief(field)}" for field in fields[:PREVIEW_ITEMS])
     return f"{value} {{{shown}{', …' if len(fields) > PREVIEW_ITEMS else ''}}}"
+
+
+# A String (#137): java-debug makes a new one of a text, and the variable refers to it.
+_STRING_DESCRIPTOR = "Ljava/lang/String;"
+_JAVA_STRINGS = ("String", "java.lang.String")
+_JAVA_SETTABLE = ("boolean", "float", "double", *_JAVA_STRINGS)
+
+
+def _settable_kinds(session):
+    """The non-integer types `--set` changes: a String only where the launcher allows it."""
+    return _JAVA_SETTABLE if getattr(session, "text_set", False) else _JAVA_SETTABLE[:3]
 
 
 SCALAR = re.compile(r"(?:true|false|[+-]?[0-9]+(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?)\Z")
@@ -524,12 +536,17 @@ class JavaSession:
         return [scope for scope in scopes if not scope.get("expensive")]
 
     def normalize_capabilities(self, raw):
+        if self is not None:
+            # A String takes a text only through a launcher that allows it (#137).
+            self.text_set = raw.get("peekyTextSet") is True
         return {
             "supports_set_variable": raw.get("supportsSetVariable") is True,
             # Launcher bundles built before stepping lack the marker: refuse cleanly.
             "supports_stepping": raw.get("peekySteps") is True,
             # Bundles whose launcher refuses a field name a hiding static field shares.
             "supports_member_set": raw.get("peekyFieldSet") is True,
+            # Bundles whose launcher changes a String to a text (#137).
+            "supports_text_set": raw.get("peekyTextSet") is True,
             "supports_conditional_breakpoints": False,
             "supports_hit_conditional_breakpoints": False,
             "supports_logpoints": False,
@@ -541,20 +558,178 @@ class JavaSession:
         self.target.validate_breakpoints(points)
 
     def validate_value(self, value):
+        if isinstance(value, str) and parse_text(value) is not None:
+            return
         if not isinstance(value, str) or not SCALAR.fullmatch(value):
-            raise ValueError("Java mutation requires a numeric or boolean scalar literal")
+            raise ValueError(
+                "Java mutation requires a numeric or boolean scalar literal, or text in "
+                "double quotes for a String"
+            )
+
+    def mutation_literal(self, value):
+        """What java-debug is sent: a text (#137) between plain quotes, which it takes
+        off and keeps everything between as the new String (it unescapes nothing)."""
+        text = parse_text(value)
+        return value if text is None else f'"{text}"'
+
+    def confirm_mutation(self, name, value, before, after):
+        """A String (#137) must read back as the text asked, as java-debug shows one
+        (between quotes, nothing escaped): else the change is not reported."""
+        text = parse_text(value)
+        if text is not None and after != f'"{text}"':
+            raise RuntimeError(
+                f"java-debug stored {str(after)[:80]} in {name!r}, not the text asked: the "
+                "change did not reach the program as stated, so the session is closed"
+            )
 
     def settable(self, variable, frame=None):
         """Whether `--set` can change this root local: a scalar of a type it accepts, named
-        as a selector can name it (not java-debug's `->compute()` return value entry)."""
-        return bool(
-            variable.get("type") in (*_JAVA_INTEGER_BITS, "boolean", "float", "double")
-            and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", str(variable.get("name")))
-        )
+        as a selector can name it (not java-debug's `->compute()` return value entry),
+        that the program reads (not a constant javac folds into its uses, #164); a
+        String only where the class file declares it one (java-debug names the type of
+        the value it holds: `Object o = "x"` shows `String`)."""
+        name, kind = str(variable.get("name")), variable.get("type")
+        if not (
+            kind in (*_JAVA_INTEGER_BITS, *_settable_kinds(self))
+            and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name)
+        ):
+            return False
+        declared = self.declared_local(frame, name) if frame else None
+        if declared and not all(read for _, read in declared):
+            return False
+        if kind in _JAVA_STRINGS:
+            return bool(declared) and all(each == _STRING_DESCRIPTOR for each, _ in declared)
+        return True
 
-    def member_settable(self, variable):
+    def validate_mutation_target(self, variable, frame):
+        """Refuse a local the program never reads (#164): javac folds a constant local
+        (`final` with a constant initializer: `final int k = 5;`, `final String s =
+        "x";`) into the code that uses it, so a change to it would never be seen."""
+        name = str(variable.get("name"))
+        declared = self.declared_local(frame, name) if frame else None
+        if declared and not all(read for _, read in declared):
+            raise ValueError(
+                f"{name!r} cannot be changed: the program never reads it (javac compiles a "
+                "constant local, one declared `final` with a constant initializer, into the "
+                "code that uses it), so a change would never be seen. Change what the code "
+                "computes from it with a candidate edit (`--old`/`--new`)"
+            )
+
+    def _declared(self):
+        """The prepared classes' declarations (java_metadata.java_declarations), once;
+        {} where they cannot be read (nothing is then known of declared types)."""
+        found = getattr(self, "_declarations", None)
+        if found is None:
+            from peeky.java_metadata import java_declarations
+
+            try:
+                classes, workspace = self.declaration_roots()
+                found = java_declarations(self.mapping, classes, workspace)
+            except (AttributeError, OSError, ValueError, KeyError):
+                found = {}
+            self._declarations = found
+        return found
+
+    def declaration_roots(self):
+        """(classes directory, workspace) of the prepared classes, as `describe` reads
+        them."""
+        workspace = Path(self.prepared.workspace)
+        return workspace / "classes", workspace
+
+    def declared_local(self, frame, name):
+        """[(descriptor, whether the code reads it)] for each declaration of the local
+        ``name`` the stopped frame's method has in scope on its line, from the class
+        files (#164); None where the method is not found."""
+        found = self._frame_method(frame)
+        if found is None:
+            return None
+        method, line = found
+        return [
+            (descriptor, read)
+            for local, descriptor, lines, read in method["locals"]
+            if local == name and line in lines
+        ]
+
+    def read_after(self, variable, frame, stop):
+        """Whether the program may read the root local ``variable`` after this stop
+        (#164): False where no path from where the stop's line begins reads its slot
+        before storing into it again, so a change would never be seen (a lambda or
+        inner class captured its value before; a constant javac compiled into its
+        uses); True where one may; None where that cannot be told (another kind of
+        stop, a method or code not understood)."""
+        from peeky.java_metadata import reads_after
+
+        found = self._frame_method(frame) if stop in ("breakpoint", "step") else None
+        if found is None:
+            return None
+        method, line = found
+        name = str(variable.get("name"))
+        verdicts = [
+            reads_after(method, slot, method["line_pcs"].get(line, ()))
+            for (local, _, lines, _), (_, slot, _, _) in zip(method["locals"], method["slots"])
+            if local == name and line in lines
+        ]
+        if not verdicts or None in verdicts:
+            return None
+        return any(verdicts)
+
+    def _frame_method(self, frame):
+        """(the class files' record of the stopped frame's method, its line), or None
+        where it is not found (#164)."""
+        try:
+            path = Path(frame["source"]["path"]).resolve()
+            workspace = Path(self.declaration_roots()[1]).resolve()
+            source = (
+                path.relative_to(workspace).as_posix()
+                if path.is_relative_to(workspace)
+                else path.relative_to(Path(self.prepared.source_root).resolve()).as_posix()
+            )
+            line = frame["line"]
+            method = str(frame["name"]).split("(", 1)[0].rsplit(".", 1)[-1]
+        except (AttributeError, KeyError, TypeError, ValueError, OSError):
+            return None
+        methods = [
+            each
+            for declarations in self._declared().values()
+            if declarations.get("source") == source
+            for each in declarations.get("methods", ())
+            if each["name"] == method and each["first"] <= line <= each["last"]
+        ]
+        if len(methods) != 1:
+            return None
+        return methods[0], line
+
+    def declared_member(self, parent, name):
+        """The descriptor a field or element is declared with (#164): an array's
+        component type, from its own type as java-debug names it (`String[]`); a field's
+        from the class files of the object's class and its superclasses. None where that
+        is not known."""
+        parent = str(parent or "")
+        if parent.endswith("[]"):
+            element = parent[:-2]
+            return _STRING_DESCRIPTOR if element in _JAVA_STRINGS else f"L{element};"
+        declared = self._declared()
+        found = [
+            internal
+            for internal in declared
+            if internal == parent.replace(".", "/") or internal.rsplit("/", 1)[-1] == parent
+        ]
+        current = found[0] if len(found) == 1 else None
+        for _ in range(64):
+            if current is None or current not in declared:
+                return None
+            fields = declared[current].get("fields", {})
+            if name in fields:
+                return fields[name]
+            current = declared[current].get("super")
+        return None
+
+    def member_settable(self, variable, parent=None, proven=False):
         """None if `--set` can change this field or array element, else why not: a scalar
-        of a type it accepts, an instance field (not final or static) or an element."""
+        of a type it accepts, an instance field (not final or static) or an element. A
+        String only where it is declared one (the field's or the array's type, #164;
+        ``parent``: the type of what holds it, as java-debug names it); ``proven``, for
+        its `[settable]` mark: only where that is known."""
         name, kind = str(variable.get("name")), variable.get("type")
         hint = variable.get("presentationHint")
         attributes = hint.get("attributes") if isinstance(hint, dict) else None
@@ -565,11 +740,23 @@ class JavaSession:
             return "it is final"
         if "static" in attributes:
             return "it is static (shared by every instance)"
-        if kind not in (*_JAVA_INTEGER_BITS, "boolean", "float", "double"):
+        if kind not in (*_JAVA_INTEGER_BITS, *_settable_kinds(self)):
+            strings = getattr(self, "text_set", False)
             return (
-                f"it is {kind}; only byte, short, int, long, boolean, float and double "
-                "values can be changed"
+                f"it is {kind}; only byte, short, int, long, boolean, float"
+                + (", double and String" if strings else " and double")
+                + " values can be changed"
             )
+        if kind in _JAVA_STRINGS:
+            declared = self.declared_member(parent, name)
+            if declared is not None and declared != _STRING_DESCRIPTOR:
+                shown = declared[1:-1].replace("/", ".") if declared.startswith("L") else declared
+                return (
+                    f"it is declared {shown} and holds a String; a text changes only a "
+                    "variable declared String"
+                )
+            if declared is None and proven:
+                return "Peeky cannot tell whether it is declared a String"
         return None
 
     def validate_variable(self, variable, value):
@@ -580,6 +767,20 @@ class JavaSession:
         """
         self.validate_value(value)
         name, kind = variable.get("name"), variable.get("type")
+        text = parse_text(value)
+        if kind in _JAVA_STRINGS:
+            if text is None:
+                raise ValueError(
+                    f"Java mutation requires text in double quotes for String {name} "
+                    f"(--set '{name}=\"apple\"'): the local then refers to a new String; "
+                    "other references keep the old one"
+                )
+            return
+        if text is not None:
+            raise ValueError(
+                f"Java mutation requires a literal of {name}'s type ({kind}); text in double "
+                "quotes changes a String"
+            )
         if kind in _JAVA_INTEGER_BITS:
             # java-debug parses with Long.decode: a leading 0 means octal.
             if not re.fullmatch(r"[+-]?(?:0|[1-9][0-9]{0,19})", value):
@@ -605,8 +806,8 @@ class JavaSession:
                 raise ValueError(f"Java mutation is outside the {kind} range for {name}")
         else:
             raise ValueError(
-                "Only byte, short, int, long, boolean, float and double locals support Java "
-                f"mutation; {name} is {kind}"
+                "Only byte, short, int, long, boolean, float, double and String locals support "
+                f"Java mutation; {name} is {kind}"
             )
 
     def _line_key(self, program):

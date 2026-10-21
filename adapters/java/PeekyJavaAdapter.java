@@ -5,9 +5,14 @@ import com.microsoft.java.debug.core.adapter.*;
 import com.microsoft.java.debug.core.protocol.Messages;
 import com.microsoft.java.debug.core.adapter.variables.VariableProxy;
 import com.microsoft.java.debug.core.protocol.Types;
+import com.microsoft.java.debug.core.adapter.variables.StackFrameReference;
+import com.sun.jdi.AbsentInformationException;
 import com.sun.jdi.ArrayReference;
+import com.sun.jdi.ArrayType;
+import com.sun.jdi.LocalVariable;
 import com.sun.jdi.ObjectReference;
 import com.sun.jdi.ReferenceType;
+import com.sun.jdi.StackFrame;
 import java.lang.reflect.Proxy;
 import java.net.URI;
 import java.nio.file.*;
@@ -92,9 +97,13 @@ public final class PeekyJavaAdapter extends ProtocolServer {
             }
             if (request.command.equals("setVariable")) {
                 String value=args.get("value").getAsString();
-                if (!value.matches("(?:true|false|[+-]?[0-9]+(?:\\.[0-9]+)?(?:[eE][+-]?[0-9]+)?)"))
-                    throw new IllegalArgumentException("only numeric or boolean scalar literals supported");
+                // A text between plain quotes (Peeky #137): java-debug takes them off and makes
+                // a new String of the rest, for a String variable only (checked below).
+                boolean text=value.length()>=2 && value.startsWith("\"") && value.endsWith("\"");
+                if (!text && !value.matches("(?:true|false|[+-]?[0-9]+(?:\\.[0-9]+)?(?:[eE][+-]?[0-9]+)?)"))
+                    throw new IllegalArgumentException("only numeric or boolean scalar literals, or text for a String, supported");
                 checkFieldTarget(args.get("variablesReference").getAsInt(), args.get("name").getAsString());
+                if (text) checkTextTarget(args.get("variablesReference").getAsInt(), args.get("name").getAsString());
             }
             super.dispatchRequest(request);
         } catch (Exception error) {
@@ -124,6 +133,34 @@ public final class PeekyJavaAdapter extends ProtocolServer {
                 + "another field of " + type.name() + "; it cannot be changed");
     }
 
+    /**
+     * java-debug turns a quoted value into a String for a String variable, but parses it as
+     * false for a boolean and keeps its first character for a char: allow text only where
+     * the variable's declared type is java.lang.String (a local, a field or an element).
+     */
+    private void checkTextTarget(int reference, String name) throws ReflectiveOperationException {
+        IDebugAdapterContext context=debugContext();
+        Object container=context.getRecyclableIdPool().getObjectById(reference);
+        Object value=container instanceof VariableProxy ? ((VariableProxy) container).getProxiedVariable() : null;
+        String type=null;
+        try {
+            if (value instanceof StackFrameReference) {
+                StackFrame frame=context.getStackFrameManager().getStackFrame((StackFrameReference) value);
+                LocalVariable local=frame==null ? null : frame.visibleVariableByName(name);
+                type=local==null ? null : local.typeName();
+            } else if (value instanceof ArrayReference) {
+                type=((ArrayType) ((ArrayReference) value).referenceType()).componentTypeName();
+            } else if (value instanceof ObjectReference) {
+                com.sun.jdi.Field field=((ObjectReference) value).referenceType().fieldByName(name);
+                type=field==null ? null : field.typeName();
+            }
+        } catch (AbsentInformationException error) {
+            type=null;
+        }
+        if (!"java.lang.String".equals(type))
+            throw new IllegalArgumentException("text changes only a String; " + name + " is " + type);
+    }
+
     private IDebugAdapterContext debugContext() throws ReflectiveOperationException {
         java.lang.reflect.Field adapter=ProtocolServer.class.getDeclaredField("debugAdapter");
         adapter.setAccessible(true);
@@ -143,6 +180,8 @@ public final class PeekyJavaAdapter extends ProtocolServer {
             caps.addProperty("peekySteps", true);
             // And refuses a field write whose name a hiding or second field shares.
             caps.addProperty("peekyFieldSet", true);
+            // And changes a String to a text (#137), only where it is declared a String.
+            caps.addProperty("peekyTextSet", true);
             response.body=caps;
         }
         super.sendResponse(response);

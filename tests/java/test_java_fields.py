@@ -54,6 +54,12 @@ def fields(tmp_path, monkeypatch):
     return root, config, f"demo/Fields.java:{line}"
 
 
+def texts(fields):
+    """Whether the bundle's launcher changes a String to a text (#137)."""
+    bundle = json.loads(fields[1].read_text())["bundle"]
+    return b"peekyTextSet" in (Path(bundle) / "classes" / "PeekyJavaAdapter.class").read_bytes()
+
+
 def probe(capsys, root, config, at, *options):
     code = main(
         ["probe", str(root), "--config", str(config), "--at", at, *options, "--json", "--quiet"]
@@ -84,12 +90,12 @@ def test_set_changes_java_fields_and_array_elements_the_program_then_uses(fields
         "11",
         "30",
     ]
-    # Rows say which values --set can change: a final field, a String and a list's
-    # boxed element cannot.
+    # Rows say which values --set can change: a final field and a list's boxed element
+    # cannot; a String can, to a text (#137), where the adapter's launcher allows it.
     assert {s: after[s]["settable"] for s in capture.split(",")} == {
         "current.end": True,
         "current.id": False,
-        "current.label": False,
+        "current.label": texts(fields),
         "this.count": True,
         "arr[0]": True,
         "arr[2]": True,
@@ -109,7 +115,7 @@ def test_set_changes_java_fields_and_array_elements_the_program_then_uses(fields
     "assignment, code, message",
     [
         ("current.id=1", "MUTATION_REJECTED", "'id' cannot be changed: it is final"),
-        ("current.label=1", "MUTATION_REJECTED", "'label' cannot be changed: it is String"),
+        ("current.label=1", "MUTATION_REJECTED", "label"),
         ("xs[0]=1", "MUTATION_REJECTED", "an ArrayList's elements are objects (boxed)"),
         ("current.end=1.5", "MUTATION_REJECTED", "requires an integer literal for int end"),
         ("current.end=3000000000", "MUTATION_REJECTED", "outside the int range for end"),
@@ -123,6 +129,13 @@ def test_set_refuses_java_members_it_cannot_change_exactly(
     root, config, at = fields
     status, result = probe(capsys, root, config, at, "--set", assignment, "--no-save")
     assert status == 1 and result["error"]["code"] == code, result["error"]
+    if message == "label":
+        # A String takes a text (#137), not a number; a bundle predating that, nothing.
+        message = (
+            "requires text in double quotes for String label"
+            if texts(fields)
+            else "'label' cannot be changed: it is String"
+        )
     assert message in result["error"]["message"]
 
 
