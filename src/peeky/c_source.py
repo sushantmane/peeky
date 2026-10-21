@@ -603,6 +603,79 @@ class Statements:
             return None
         return found
 
+    def scope_lines(self, line, name):
+        """``(first, last)``: the lines on which the declaration of ``name`` on ``line``
+        is in scope, as C and C++ read it: from ``line`` to the `}` closing the block
+        around it, or, for one a statement's header declares (`while (long t = f())`,
+        `switch (short t = g(); t)`, `if (auto p = f())`, a `for`'s, a range-`for`'s, a
+        `catch`'s), to the end of that statement: its body, and an `if`'s `else`. None
+        if unknown (see ``declaration``; a body Peeky does not read: a `do` loop's)."""
+        found = self.declaration(line, name)
+        code, pairs = self._code()
+        if found is None or pairs is None:
+            return None
+        position, depth, header, _ = found
+        starts = self.starts
+        if not header:
+            around = [
+                opened
+                for opened, closed in pairs.items()
+                if opened < position < closed and code.startswith(("{", "<%"), opened)
+            ]
+            if not around:
+                return None
+            return line, bisect.bisect_right(starts, pairs[max(around)])
+        if depth == 0:
+            closing, opening = position, self._opening(position)
+        else:
+            inside = [
+                opened
+                for opened, closed in pairs.items()
+                if opened < position < closed and code.startswith("(", opened)
+            ]
+            opening = max(inside) if inside else None
+            closing = pairs.get(opening) if opening is not None else None
+        if opening is None or closing is None:
+            return None
+        keyword = self._word_before(opening)
+        if keyword == "constexpr":
+            before = self._before(opening)
+            keyword = self._word_before(before[1]) if before else None
+        end = self._controlled(closing + 1, keyword)
+        if end is None:
+            return None
+        return min(line, bisect.bisect_right(starts, opening)), bisect.bisect_right(starts, end)
+
+    def _controlled(self, start, keyword=None):
+        """Where the statement a header controls, from ``start``, ends (its `;` or `}`),
+        an `if`'s `else` included (``keyword`` "if"); None if Peeky cannot tell."""
+        code, pairs = self._code()
+        token = _WORDS.search(code, start)
+        if token is None:
+            return None
+        word = token[0]
+        if word in ("{", "<%"):
+            end = pairs.get(token.start())
+        elif word in _HEADERS:
+            opening = _WORDS.search(code, token.end())
+            if opening is not None and opening[0] == "constexpr":
+                opening = _WORDS.search(code, opening.end())
+            closing = pairs.get(opening.start()) if opening and opening[0] == "(" else None
+            end = None if closing is None else self._controlled(closing + 1, word)
+        elif word in ("do", "try", "else") or word in ("}", "%>"):
+            return None
+        elif word == ";":
+            end = token.start()
+        else:
+            end = self._statement(token.start())
+        if end is None or keyword != "if":
+            return end
+        following = _WORDS.search(code, end + 1)
+        if following is None or following[0] != "else":
+            return end
+        # `else if (...)` is read as an `if`, with its own `else`.
+        return self._controlled(following.end())
+
     def _statement(self, start):
         """Where the plain statement at ``start`` ends (its `;`), or None."""
         depth = 0

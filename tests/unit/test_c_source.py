@@ -1076,3 +1076,43 @@ def test_c_gives_enumerators_anywhere_in_a_block_its_scope_and_cpp_a_class_name(
     for raw_strings in (False, True):
         found = Statements(returning, raw_strings=raw_strings).block_storage(5, "use2", 2)
         assert found == ("function", 4)
+
+
+SCOPES = """int f(int k) {
+    int t = 1;
+    if (int a = k; a > 1) {
+        return a;
+    } else if (k) {
+        return 2;
+    } else
+        return 3;
+    for (const int &r : {1, 2}) k += r;
+    while (long w = k--) {
+        k++;
+    }
+    switch (short s = k; s) { case 1: break; }
+    try { k++; } catch (int &e) { k = e; }
+    do {
+        long d = k;
+    } while (--k);
+    return t;
+}
+"""
+
+
+def test_a_declarations_scope_ends_with_its_block_or_its_header_statement():
+    # Review of PR #159: clang gives a `while`'s or a `switch`'s condition variable no
+    # block of its own, so the source says where its scope ends: with its statement.
+    statements = Statements(SCOPES, raw_strings=True)
+    expected = {
+        (2, "t"): (2, 19),  # to the function's `}`
+        (3, "a"): (3, 8),  # an `if` with its `else if` and `else`
+        (9, "r"): (9, 9),  # a range-`for` with no braces
+        (10, "w"): (10, 12),
+        (13, "s"): (13, 13),
+        (14, "e"): (14, 14),
+        (16, "d"): (16, 17),  # a `do` body's block
+    }
+    for (line, name), scope in expected.items():
+        assert statements.scope_lines(line, name) == scope, (line, name)
+    assert statements.scope_lines(4, "nothing") is None

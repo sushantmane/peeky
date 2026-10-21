@@ -766,9 +766,9 @@ def _describe_text(manifest):
                 ". Locals of one name with different types ("
                 + "; ".join(twice[:12])
                 + (f"; and {len(twice) - 12} more functions" if len(twice) > 12 else "")
-                + "): a change to a field or element follows the one the debugger shows at "
-                "the stop, declared in the innermost block holding it, and is refused only "
-                "where that cannot be told"
+                + "): a plain name means the declaration the code names at the stop, and a "
+                "change follows it; where Peeky cannot tell which, it refuses, and the "
+                "debugger lists them as `name @ file:line`, which select"
             )
     lines.append(f"mutable: {mutable}")
     lines.extend(f"{name}: {usage}" for name, usage in manifest["commands"].items())

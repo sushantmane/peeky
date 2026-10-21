@@ -1436,6 +1436,9 @@ class DebugWorker:
             self.listed_frames = list(frames)
             self.deeper_frames = None
             self.innermost_frame = frames[0].get("id") if frames else None
+            if listed := getattr(runtime, "frames_listed", None):
+                # Which frame is innermost: a caller's address is where its call returns.
+                listed(frames)
             if "frame" in args:
                 # An index into `frames` as this reply lists them (0 is the innermost).
                 if args["frame"] >= len(frames):
@@ -3022,6 +3025,8 @@ class DebugWorker:
         frames = self.dap.request("stackTrace", {"threadId": self.thread_id, "levels": 10}).get(
             "stackFrames", []
         )[:10]
+        if listed := getattr(runtime, "frames_listed", None):
+            listed(frames)
         matches = [f for f in frames if f.get("id") == original_frame.get("id")]
         if len(matches) != 1 or self.frame_identity(matches[0]) != self.frame_identity(
             original_frame
