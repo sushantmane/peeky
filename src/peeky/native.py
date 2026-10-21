@@ -123,7 +123,7 @@ def _metadata(tool, arguments, workspace, env, *, max_bytes=MAX_METADATA, timeou
         return read(output) if read else output.read_text(encoding="utf-8")
 
 
-def _line_rows(text, workspace, declared, limit=MAX_METADATA, replaced=None):
+def _line_rows(text, workspace, declared, limit=MAX_METADATA, replaced=None, epilogues=None):
     """Rows of the LLVM DWARF4 line-table dump for declared sources: (address, name, line).
 
     Unrecognized rows fail closed. Rows outside the declared sources (SDK and system
@@ -131,6 +131,7 @@ def _line_rows(text, workspace, declared, limit=MAX_METADATA, replaced=None):
     address (GCC -O2), LLDB keeps the last: each earlier one of another line or file
     runs no code. It is skipped if it is not a statement; a statement row is kept,
     since a breakpoint can be set on its line, and added to ``replaced`` when given.
+    ``epilogues``, when given, gets the address of each row that begins an epilogue.
     """
     if len(text.encode()) > limit:
         raise ValueError("Native line metadata exceeds limit")
@@ -211,6 +212,8 @@ def _line_rows(text, workspace, declared, limit=MAX_METADATA, replaced=None):
                 raise ValueError("Unresolved native line source") from exc
             address, name = int(fields[0], 16), resolved[file_id]
             ending = "end_sequence" in fields or number == 0
+            if epilogues is not None and "epilogue_begin" in fields and not ending:
+                epilogues.add(address)
             if name is not None and not ending and not 0 < number <= counts[name]:
                 raise ValueError("Native line exceeds declared source length")
             if group and group[0][0] != address:
@@ -885,7 +888,7 @@ def _code_ranges(die):
     return [(lo, hi) for lo, hi in spans if 0 < lo < hi and lo < _TOMBSTONE]
 
 
-def _function_entries(info, line_text, workspace, declared, replaced=None):
+def _function_entries(info, line_text, workspace, declared, replaced=None, epilogues=None):
     """(dies, {root: entry}, {root: {line: span}}, files, {root: {(source, line): span}})
     for functions in declared sources; see function_scopes. ``replaced``: see
     _line_rows. A span is the lowest and
@@ -896,7 +899,9 @@ def _function_entries(info, line_text, workspace, declared, replaced=None):
 
     workspace = Path(workspace).resolve()
     inputs = {str((workspace / name).resolve()): name for name in declared}
-    rows = sorted(_line_rows(line_text, workspace, declared, replaced=replaced))
+    rows = sorted(
+        _line_rows(line_text, workspace, declared, replaced=replaced, epilogues=epilogues)
+    )
     addresses = [row[0] for row in rows]
     dies = _dies(info)
     owner = [None] * len(rows)
@@ -1139,12 +1144,14 @@ def function_scopes(info, line_text, workspace, declared, hidden=None, never=Non
 _AUTOMATIC = re.compile(r"DW_OP_(?:fbreg|breg[0-9]+)\b")
 
 
-def _declared(dies, offset, files, workspace):
+def _declared(dies, offset, files, workspace, parameters=None):
     """(name, (source, line, automatic), scope) for each parameter and variable of one
     function body, including nested blocks but not calls inlined into it; ``scope`` is
     the DIE of the block (or body) declaring it. Parameters, statics and anything
     without a frame location are not automatic. A label is listed as (None, None,
-    None): `goto` can return above a declaration with the local still live."""
+    None): `goto` can return above a declaration with the local still live.
+    ``parameters``, when given, gets each parameter's name -> {(source, line)} (#158:
+    LLDB names one shadowed by a local `t @ param.c:3`)."""
     found, pending = [], list(dies[offset]["children"])
     while pending and len(found) < 4096:
         child = pending.pop()
@@ -1161,10 +1168,15 @@ def _declared(dies, offset, files, workspace):
         name = _text(_first(dies, chain, "DW_AT_name"))
         if not name or name.startswith("$"):
             continue
+        inputs, cache = files
         if die["tag"] == "DW_TAG_formal_parameter":
             found.append((name, (None, None, False), die["parent"]))
+            if parameters is not None:
+                where = _source_of(_first(dies, chain, "DW_AT_decl_file"), inputs, workspace, cache)
+                number = _first(dies, chain, "DW_AT_decl_line")
+                if where is not None and number and number.isdigit():
+                    parameters.setdefault(name, set()).add((where, int(number)))
             continue
-        inputs, cache = files
         source = _source_of(_first(dies, chain, "DW_AT_decl_file"), inputs, workspace, cache)
         line = _first(dies, chain, "DW_AT_decl_line")
         location = die["attrs"].get("DW_AT_location") or ""
@@ -1192,8 +1204,9 @@ def local_declarations(info, line_text, workspace, declared):
     ``types``: fields.local_types, the type and storage of each local (#105)."""
     from peeky.fields import local_types
 
+    epilogues = set()
     dies, functions, _, files, runs, addresses = _function_entries(
-        info, line_text, workspace, declared
+        info, line_text, workspace, declared, epilogues=epilogues
     )
     workspace = Path(workspace).resolve()
     classes = _local_classes(dies)
@@ -1211,9 +1224,9 @@ def local_declarations(info, line_text, workspace, declared):
             for (source, line), found in addresses.get(root, {}).items()
             for address in found
         )
-        visible = {}
+        visible, parameters = {}, {}
         for body in (*entry["bodies"], root):
-            for name, where, scope in _declared(dies, body, files, workspace):
+            for name, where, scope in _declared(dies, body, files, workspace, parameters):
                 if name is None:
                     jumps = True
                     continue
@@ -1245,6 +1258,16 @@ def local_declarations(info, line_text, workspace, declared):
                 if found[0] in entries and (later := [a for a in found if a > found[0]]):
                     first.add(later[0])
                 starts.setdefault((name, source, line), set()).update(first)
+        # Where the function's code after its return starts: its last epilogue's row ends
+        # there, and what follows (clang's exception landing pads and cleanups at -O0)
+        # runs only when an exception unwinds through it. None without an epilogue row.
+        ended = [
+            address for address in epilogues if any(low <= address < high for low, high in ranges)
+        ]
+        returned = None
+        if ended:
+            later = bisect.bisect_right(ordered, (max(ended), "\U0010ffff", 1 << 62))
+            returned = ordered[later][0] if later < len(ordered) else None
         constructor, enclosing, defined, initializer = _class_role(dies, entry["chain"])
         inlined = _inlined_calls(dies, (*entry["bodies"], root), files, workspace)
         first_line = _first(dies, entry["chain"], "DW_AT_decl_line")
@@ -1278,6 +1301,10 @@ def local_declarations(info, line_text, workspace, declared):
                 # (name, source, line, automatic) -> the code ranges of the block declaring
                 # it (the function's for a parameter): where lldb-dap lists that local.
                 "visible": {key: tuple(sorted(ranges)) for key, ranges in visible.items()},
+                # Each parameter's name -> {(source, line)} (#158).
+                "parameters": parameters,
+                # Rows at or after this address run only as an exception unwinds (#158).
+                "returned": returned,
             }
         )
     return table
@@ -1407,7 +1434,37 @@ def has_nonlocal_jumps(binary):
     return False
 
 
+# The functions a signal handler returns through (macOS, glibc's x86-64 and older ones,
+# the arm64 and 32-bit Linux vDSO's; GDB's name for the frame): the frame above one was
+# interrupted at an instruction, not suspended in a call.
+_TRAMPOLINES = frozenset(
+    (
+        "_sigtramp",
+        "sigtramp",
+        "__restore_rt",
+        "__restore",
+        "__kernel_rt_sigreturn",
+        "__kernel_sigreturn",
+        "<signal handler called>",
+    )
+)
+
+
+def _trampoline(name):
+    """Whether a frame's name (`_sigtramp`, `libsystem_platform.dylib`_sigtramp`,
+    `__restore_rt()`) is a signal trampoline's."""
+    if not isinstance(name, str):
+        return False
+    name = name.strip()
+    if name in _TRAMPOLINES:
+        return True
+    bare = name.rpartition("`")[2].split("(", 1)[0].strip()
+    return bare in _TRAMPOLINES
+
+
 _SHADOWED = re.compile(r"(.+) @ [^:]+:([0-9]+)")
+# The same, with the file: (name, file, line).
+_NAMED_AT = re.compile(r"(.+) @ ([^:]+):([0-9]+)")
 
 
 def _is_object(variable):
@@ -1565,7 +1622,7 @@ def declared_below(table, name, source, line, through=None, address=None, pc=Non
     return at, why
 
 
-def declared_unfinished(table, name, source, line, address, ends=None):
+def declared_unfinished(table, name, source, line, address, ends=None, chosen=None):
     """For a caller frame at ``source:line``, inside a call that returns to ``address``
     (unslid; None if unknown): ``(line, why, detail)`` for a C/C++ local of that name
     whose declaration may not have run yet, else None. ``why`` is `file` (``detail``: the
@@ -1586,7 +1643,11 @@ def declared_unfinished(table, name, source, line, address, ends=None):
     function unknown, every declaration at or above the line counts. And so does one whose
     statement, as the source writes it (``ends``), still runs on the frame's line:
     `struct trio t = { seed,` / `{ twice(3), ... } };` has code of its first line, all of
-    it before the call."""
+    it before the call.
+
+    ``chosen``: (source, line) of the declaration the name means there, where Peeky
+    can tell (#158: `_named_where`); only it is judged then, not every one of the name
+    in the function (another block's `long t;` with no code withheld this one)."""
     shown = _SHADOWED.fullmatch(name)
     base = shown[1] if shown else name
     owners = [function for function in table if (source, line) in function["rows"]]
@@ -1607,6 +1668,8 @@ def declared_unfinished(table, name, source, line, address, ends=None):
             if not automatic or type(at) is not int:
                 continue
             if shown and at != int(shown[2]):
+                continue
+            if chosen is not None and (declared_in, at) != chosen:
                 continue
             if declared_in != source:
                 return at, "file", declared_in
@@ -2731,7 +2794,8 @@ class NativeSession:
         if function is None or function.get("types") is None:
             return None
         try:
-            offset, _ = self._declared_type(function["types"], steps[0])
+            shown = self._shown_where(steps[0], self._block_pc(frame))
+            offset, _ = self._declared_type(function["types"], steps[0], shown)
         except Unsettable:
             return None
         typed = Typed(self.fields, offset)
@@ -2831,6 +2895,7 @@ class NativeSession:
                 line,
                 self._unslid(frame),
                 ends=lambda at, local: self._statement_end(here, at, local),
+                chosen=self._chosen(name, frame),
             )
         ):
             at, why, detail = unfinished
@@ -2883,7 +2948,7 @@ class NativeSession:
             # address, or a line remapped from another, says nothing of this line.
             address=address if innermost and (here, line) == (stopped, raw_line) else None,
             # Which declaration of the name the debugger shows there.
-            pc=address,
+            pc=self._block_pc(frame),
         )
         if below is not None and (jump := self._setjmp_above(frame, line)) is not None:
             return self._setjmp_note(below[0], jump, "declared at line {}, below this stop")
@@ -2957,7 +3022,7 @@ class NativeSession:
         if building := self._foreign_line(variable, frame, stopped, raw_line):
             return building
         if skipped := declared_skipped(
-            self.declarations, name, here, line, address, self._jumped_past
+            self.declarations, name, here, line, self._block_pc(frame), self._jumped_past
         ):
             at, label = skipped
             return (
@@ -3343,7 +3408,7 @@ class NativeSession:
     def _function_at(self, frame):
         """The declarations entry of the function a frame runs (the narrowest whose code
         holds its address), or None."""
-        address = self._unslid(frame)
+        address = self._block_pc(frame)
         if address is None or not self.declarations:
             return None
         cache = self.__dict__.setdefault("functions_at", {})
@@ -3361,6 +3426,11 @@ class NativeSession:
         """The declarations entries a stop on ``line`` of ``source`` can be in: for each
         address of the line's code, the narrowest function holding it, as _function_at
         finds a frame's. Empty when the build's declarations were not read."""
+        return [entry for entry, _ in self._line_places(source, line)]
+
+    def _line_places(self, source, line):
+        """(declarations entry, the addresses of the line's code it holds) for each
+        function a stop on ``line`` of ``source`` can be in (see _line_entries)."""
         found, table = {}, self.declarations or ()
         addresses = {
             address
@@ -3376,9 +3446,148 @@ class NativeSession:
                 if low <= address < high
             ]
             if holding:
-                index = min(holding)[1]
-                found[index] = table[index]
-        return list(found.values())
+                found.setdefault(min(holding)[1], []).append(address)
+        return [(table[index], held) for index, held in found.items()]
+
+    def selected_as(self, variable, frame, siblings=()):
+        """The plain name a selector reads this root local by (#158), where LLDB names it
+        with where it is declared (`t @ two.c:20`) because another local of its name is
+        in scope there too (an outer block's `t @ two.c:18`): the name, for the one the
+        code at the stop names (``_named_where``); else None. None too where the debugger
+        lists that plain name itself, or another of the name that is no automatic local
+        or parameter of the function (a block's `thread_local`), or Peeky cannot tell
+        which one the code names: then `t` is refused, and the rows' names select."""
+        shown = _NAMED_AT.fullmatch(str(variable.get("name")))
+        if shown is None or not self.declarations:
+            return None
+        base, names = shown[1], [str(sibling.get("name")) for sibling in siblings]
+        function = self._function_at(frame)
+        if base in names or function is None:
+            return None
+        known = {
+            (Path(str(where)).name, at)
+            for where, at, framed in function["locals"].get(base, ())
+            if framed and where is not None
+        }
+        parameters = {
+            (Path(str(where)).name, at)
+            for where, at in function.get("parameters", {}).get(base, ())
+        }
+        for name in names:
+            other = _NAMED_AT.fullmatch(name)
+            if other and other[1] == base and (other[2], int(other[3])) not in known | parameters:
+                return None
+        where = self._named_where(base, self._block_pc(frame))
+        if not where:
+            return None
+        if where[0] is None:
+            # A parameter: where it is declared, if the build says so once.
+            if len(parameters) != 1:
+                return None
+            place = next(iter(parameters))
+        else:
+            place = (Path(str(where[0])).name, where[1])
+        return base if place == (shown[2], int(shown[3])) else None
+
+    def _named_where(self, name, pc):
+        """(source, line, automatic) of the declaration of the local ``name`` the code at
+        ``pc`` (unslid) names, as C and C++ scope it (#158), or None where Peeky cannot
+        tell or none is in scope. ``name @ file:line`` names its own (``_shown_where``).
+
+        Of the declarations of the name whose block holds the pc (the function's
+        automatic locals and parameters: the ones the debugger lists there), the one
+        alone, else the innermost whose scope, read from the source as the compiler
+        preprocessed it (``_scope_holds``), holds the pc's line: none declared below
+        the line (`t` names an outer one until its declaration), and none a statement's
+        header declares past that statement (clang gives a `while`'s or a `switch`'s
+        no block of its own, so its block holds the code after the statement). None
+        if a source cannot be read so, two are as inner, or a declaration is in
+        another file than the line."""
+        if pc is None or not self.declarations:
+            return None
+        if _SHADOWED.fullmatch(name):
+            return self._shown_where(name, pc)
+        holding = [
+            (high - low, index)
+            for index, function in enumerate(self.declarations)
+            for low, high in function.get("ranges", ())
+            if low <= pc < high
+        ]
+        if not holding:
+            return None
+        function = self.declarations[min(holding)[1]]
+        visible = function.get("visible")
+        if visible is None:
+            return None
+        found = []
+        for where in function["locals"].get(name, ()):
+            if not (where[2] or where[0] is None and where[1] is None):
+                continue
+            ranges = visible.get((name, *where))
+            if ranges is None:
+                return None
+            if spans := [high - low for low, high in ranges if low <= pc < high]:
+                found.append((min(spans), where))
+        if len(found) <= 1:
+            return found[0][1] if found else None
+        order = function.get("order", ())
+        index = bisect.bisect_right([row[0] for row in order], pc) - 1
+        if index < 0:
+            return None
+        _, source, line = order[index]
+        kept = []
+        for span, where in found:
+            if where[0] is None:
+                # A parameter: in scope in the whole function.
+                kept.append((span, where))
+                continue
+            if where[0] != source:
+                return None
+            holds = self._scope_holds(source, where[1], name, line)
+            if holds is None:
+                return None
+            if holds:
+                kept.append((span, where))
+        kept.sort(key=lambda pair: pair[0])
+        if not kept or (len(kept) > 1 and kept[0][0] == kept[1][0]):
+            return None
+        return kept[0][1]
+
+    def _scope_holds(self, source, declared, name, line):
+        """Whether the declaration of ``name`` on ``source:declared`` is in scope on
+        ``source:line`` (Statements.scope_lines), read from each translation unit
+        holding the source as the compiler preprocessed it, so that a macro's statement
+        reads as its expansion (`WHILE_DECL(long t = f())` is a `while`'s header); None
+        where any of them cannot tell, or they disagree."""
+        verdicts = set()
+        for unit in self._units(source):
+            read = self._preprocessed(unit)
+            if isinstance(read, str):
+                return None
+            preprocessed, statements = read
+            if source not in preprocessed.files:
+                continue
+            at, here = preprocessed.line(source, declared), preprocessed.line(source, line)
+            scope = statements.scope_lines(at, name) if at and here else None
+            if scope is None:
+                return None
+            verdicts.add(scope[0] <= here <= scope[1])
+        return verdicts.pop() if len(verdicts) == 1 else None
+
+    def _chosen(self, name, frame):
+        """(source, line) of the automatic local ``name`` means in ``frame``
+        (``_named_where``), or None where Peeky cannot tell or it is a parameter."""
+        where = self._named_where(name, self._block_pc(frame))
+        return (where[0], where[1]) if where and where[0] is not None else None
+
+    def _shown_where(self, name, pc):
+        """(source, line, automatic) of the declaration of the local ``name`` the
+        debugger shows at ``pc`` (unslid; shown_declaration: the one whose block holds
+        it, the innermost), or None where that cannot be singled out or none is."""
+        if pc is None or not self.declarations:
+            return None
+        found = shown_declaration(self.declarations, name, pc)
+        return found[1] if found else None
 
     def _relative(self, program):
         try:
@@ -3408,17 +3617,25 @@ class NativeSession:
             if not steps:
                 continue
             for line in lines:
-                entries = self._line_entries(source, line)
-                if line not in stops or not entries:
+                # Each function a stop there can be in, and in it the declaration of the
+                # root the code names where the line's breakpoint stops: its lowest address
+                # that runs before the function returns (not an exception's landing pad,
+                # where no stop is made). With none, none is singled out (#158).
+                places = []
+                for entry, addresses in self._line_places(source, line):
+                    returned = entry.get("returned")
+                    normal = [a for a in addresses if returned is None or a < returned]
+                    places.append((entry, self._named_where(root, min(normal)) if normal else None))
+                if line not in stops or not places:
                     continue
                 failures = []
-                for entry in entries:
+                for entry, shown in places:
                     try:
                         if entry.get("types") is None:
                             raise Unsettable(
                                 "Peeky cannot match it to the build's debug information"
                             )
-                        kind, framed = self._declared_type(entry["types"], root)
+                        kind, framed = self._declared_type(entry["types"], root, shown)
                         # As the stop's walk reads the selector (`sp[-1]` is `sp[1]`).
                         named = debugger_steps(self.fields, kind, root, steps)
                         if named is None:
@@ -3498,6 +3715,48 @@ class NativeSession:
         except OSError:
             return None
 
+    def frames_listed(self, frames):
+        """The worker lists a stop's frames (innermost first): which one is innermost,
+        and which ones a signal interrupted (each just above a signal trampoline: a
+        frame of that name outside the program's sources, not a function of the
+        program's named so)."""
+        self.innermost_id = frames[0].get("id") if frames else None
+        self.interrupted_ids = {
+            frames[index + 1].get("id")
+            for index, frame in enumerate(frames[:-1])
+            if _trampoline(frame.get("name")) and not self._in_program(frame)
+        }
+
+    def _in_program(self, frame):
+        """Whether ``frame`` runs a line of the program's own sources or headers."""
+        path = ((frame or {}).get("source") or {}).get("path")
+        if not isinstance(path, str) or not path:
+            return False
+        try:
+            relative = Path(path).resolve().relative_to(self.prepared.workspace.resolve())
+        except (OSError, ValueError):
+            return False
+        inputs = {str(each) for each in getattr(self.target, "verification_inputs", ())}
+        return relative.as_posix() in inputs
+
+    def _block_pc(self, frame):
+        """Where ``frame`` runs, as blocks and lines are matched against it: its address
+        (unslid), less one in a frame above the innermost, whose address is where its
+        call returns to, maybe past the call's block and line (#158), as LLDB reads it.
+        Not in one a signal interrupted (above a signal trampoline): its address is the
+        instruction it stopped at, as LLDB reads it too. None if unknown."""
+        address = self._unslid(frame)
+        innermost = getattr(self, "innermost_id", None)
+        identity = (frame or {}).get("id")
+        if (
+            address is not None
+            and innermost is not None
+            and identity != innermost
+            and identity not in getattr(self, "interrupted_ids", ())
+        ):
+            return address - 1
+        return address
+
     def _unslid(self, frame):
         """The frame's instruction address in the executable's own numbering, or None."""
         pointer = (frame or {}).get("instructionPointerReference")
@@ -3520,7 +3779,7 @@ class NativeSession:
         of the source is what is read; withheld where Peeky cannot read it. ``stop``:
         the (file, line) the frame runs, where ``source:line`` is an `#include` line
         that brings it in (the preprocessed text has its lines there instead)."""
-        found = shown_declaration(self.declarations, name, self._unslid(frame))
+        found = shown_declaration(self.declarations, name, self._block_pc(frame))
         if found is None:
             return None
         base = (_SHADOWED.fullmatch(name) or [None, name])[1]
@@ -3576,6 +3835,7 @@ class NativeSession:
             "function": f"the function `{base}` the block declares ({place})",
             "typedef": f"the type `{base}` the block's `typedef` names ({place})",
             "class": f"the type `{base}` the block declares ({place})",
+            "binding": f"the structured binding `{base}` ({place})",
             "thread_local": f"the block's `thread_local` `{base}` ({place}), listed "
             f"separately as {listed}",
             "_Thread_local": f"the block's `_Thread_local` `{base}` ({place}), listed "
@@ -3704,7 +3964,7 @@ class NativeSession:
         they do not."""
         kind, detail, table = self.unjudged
         if table:
-            address = self._unslid(frame)
+            address = self._block_pc(frame)
             holding = [
                 (high - low, index)
                 for index, function in enumerate(table)
@@ -3954,7 +4214,9 @@ class NativeSession:
                 or "Peeky cannot match this frame to the build's debug information (it reads "
                 "it when the session starts)"
             )
-        return (*self._declared_type(function["types"], root.get("name")), self.fields)
+        name = root.get("name")
+        shown = self._shown_where(name, self._unslid(frame))
+        return (*self._declared_type(function["types"], name, shown), self.fields)
 
     def _root_holds(self, frame, root, stack=None, deeper=None):
         """Raise fields.Unsettable unless the root local holds its value at the stop:
@@ -3972,10 +4234,13 @@ class NativeSession:
             )
 
     @staticmethod
-    def _declared_type(types, name):
+    def _declared_type(types, name, where=None):
         """(type offset, whether every declaration is an automatic or a parameter in the
         frame's memory) of the local ``name`` (`s`, or `s @ main.rs:81` as LLDB names one
-        of several) in a function's ``types`` (fields.local_types)."""
+        of several) in a function's ``types`` (fields.local_types). ``where``: the
+        (source, line, ...) of the declaration of it the debugger shows at the stop
+        (shown_declaration), which alone counts where the function declares several
+        (#158: a loop's `Task t`, and a later block's `const Task &t`)."""
         from peeky.fields import Unsettable
 
         shown = re.fullmatch(r"(.+) @ ([^:]+):([0-9]+)", str(name))
@@ -3983,12 +4248,22 @@ class NativeSession:
         if declared and shown:
             # LLDB names a local by where it is declared when several share its name.
             declared = {each for each in declared if each[2] == (shown[2], int(shown[3]))}
+        place = None
+        if declared and where is not None and len(declared) > 1:
+            place = (Path(str(where[0])).name, where[1])
+            declared = {each for each in declared if each[2] == place} or declared
         if not declared:
             raise Unsettable(f"the debug information declares no local `{name}` in this function")
         kinds = {kind for kind, _, _ in declared}
         if None in kinds:
             raise Unsettable(f"the debug information gives the local `{name}` no type")
         if len(kinds) != 1:
+            if place is not None and {each[2] for each in declared} == {place}:
+                # The debug information tells those declarations apart by their line only.
+                raise Unsettable(
+                    f"this function declares several locals named `{name}` of different "
+                    f"types on line {place[1]}, which Peeky cannot tell apart"
+                )
             raise Unsettable(
                 f"this function declares several locals named `{name}` of different types, "
                 "and Peeky cannot tell which one the debugger shows"
