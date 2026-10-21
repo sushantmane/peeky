@@ -2739,6 +2739,9 @@ def _job_text(spec, out):
 
 
 def main(argv=None, _job=False, _edits=None):
+    from peeky.processes import keep_children_waitable
+
+    keep_children_waitable()  # #170: an inherited ignored SIGCHLD reaps adapters
     argv = list(sys.argv[1:] if argv is None else argv)
     if "--" in argv and (argv[:1] == ["probe"] or argv[:2] == ["session", "start"]):
         # `peeky probe t --at 5 -- a b c` passes a, b and c to the program.

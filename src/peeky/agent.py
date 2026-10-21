@@ -530,6 +530,9 @@ class Investigation:
 
 
 def main():
+    from peeky.processes import keep_children_waitable
+
+    keep_children_waitable()  # #170: an inherited ignored SIGCHLD reaps adapters
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", help="Model override; otherwise uses saved Codex model")
     parser.add_argument("--program", default="examples/pagination_bug.py")

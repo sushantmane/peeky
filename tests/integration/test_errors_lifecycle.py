@@ -259,8 +259,11 @@ def test_what_a_python_program_started_is_ended_when_its_debugger_dies(worker):
         while not set(children) <= set(dap.family.kin):
             assert time.monotonic() < deadline
             time.sleep(0.05)
-        dap.process.kill()
-        dap.process.wait(timeout=3)
+        # `kill -9`, unreaped as a crash leaves it: Peeky reaps it at close (PR #170).
+        os.kill(dap.process.pid, signal.SIGKILL)
+        while dap._adapter_running():
+            assert time.monotonic() < deadline + 5
+            time.sleep(0.05)
         failure = error(lambda: client.call("inspect", **session, stop_id=stop["stop_id"]))
         # debugpy's launcher ends the program's group when the adapter dies; before, the
         # child in a session of its own survived, and `cleanup` said nothing was left.
