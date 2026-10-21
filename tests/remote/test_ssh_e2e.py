@@ -320,7 +320,9 @@ def test_a_session_survives_a_dropped_tunnel(host, capsys, program):
     assert code == 0 and "PAGE: [10, 20, 30]" in result["output"]
     host.records[-1]["result"] = {"output": result["output"].strip()}
     code, result = run(host, capsys, "session close", "session", "close", "--json")
-    assert code == 0 and result == {"closed": "default"}
+    # The program ran to its end, so cleanup finds nothing left (#143).
+    assert code == 0 and result.get("closed") == "default", result
+    assert result.get("cleanup", "nothing").startswith("nothing"), result
 
 
 def test_a_different_source_on_the_host_is_refused_before_it_runs(host, capsys, program):
