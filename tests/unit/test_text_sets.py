@@ -331,11 +331,12 @@ def test_a_libcxx_string_changes_within_its_capacity():
         change(listed(), "x" * 23, fake.interface(), listed, "std")
     fake = Fake()
     listed = libcxx(fake, b"a fairly long string that is on the heap", heap=0x9000, cap=72)
-    change(listed(), "y" * 70, fake.interface(), listed, "std")
-    assert fake.get(0x9000, 71) == b"y" * 70 + b"\0"
-    assert fake.get(0x3008, 8) == (70).to_bytes(8, "little")
-    with pytest.raises(ValueError, match="its heap buffer, with room for 70 bytes"):
-        change(listed(), "y" * 71, fake.interface(), listed, "std")
+    # `__cap_` is the allocation (72) in the alternate layout: capacity() is 71 (#164).
+    change(listed(), "y" * 71, fake.interface(), listed, "std")
+    assert fake.get(0x9000, 72) == b"y" * 71 + b"\0"
+    assert fake.get(0x3008, 8) == (71).to_bytes(8, "little")
+    with pytest.raises(ValueError, match="its heap buffer, with room for 71 bytes"):
+        change(listed(), "y" * 72, fake.interface(), listed, "std")
     # A short form whose bits disagree is no layout Peeky knows: nothing written.
     fake = Fake()
     listed = libcxx(fake, b"apple")
@@ -391,3 +392,31 @@ def test_a_rust_string_keeps_its_old_length_utf8_for_a_borrowed_str():
     assert fake.get(0x9000, 4) == "éé".encode() and not fake.writes
     change(listed(), "ab", fake.interface(), listed, "rust", layout)
     assert fake.get(0x9000, 4) == b"ab" + "é".encode()
+
+
+def test_libcxx_standard_layout_keeps_half_the_allocation_in_cap():
+    # libc++'s standard layout (x86-64, Linux) puts the size byte first, the short
+    # buffer at +1, and keeps half the allocation in `__cap_` (its low bit is the long
+    # bit): `__cap_` 36 is a 72-byte buffer, capacity() 71.
+    fake = Fake()
+    listed = libcxx(fake, b"a fairly long string that is on the heap", heap=0x9000, cap=36)
+    fake.trees[22] = lambda: [
+        {
+            "name": "__data_",
+            "type": "value_type[23]",
+            "memoryReference": "0x3001",
+            "variablesReference": 24,
+        },
+        {"name": "__size_", "value": "'\\0'"},
+        {"name": "__is_long_", "value": "'\\x01'"},
+    ]
+    fake.trees[23] = lambda: [
+        {"name": "__data_", "value": "0x0000000000009000"},
+        {"name": "__size_", "value": str(int.from_bytes(fake.get(0x3008, 8), "little"))},
+        {"name": "__cap_", "value": "36"},
+        {"name": "__is_long_", "value": "1"},
+    ]
+    change(listed(), "z" * 71, fake.interface(), listed, "std")
+    assert fake.get(0x9000, 72) == b"z" * 71 + b"\0"
+    with pytest.raises(ValueError, match="with room for 71 bytes"):
+        change(listed(), "z" * 72, fake.interface(), listed, "std")

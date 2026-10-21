@@ -127,6 +127,7 @@ def java_preview(variable, fetch):
 
 
 # A String (#137): java-debug makes a new one of a text, and the variable refers to it.
+_STRING_DESCRIPTOR = "Ljava/lang/String;"
 _JAVA_STRINGS = ("String", "java.lang.String")
 _JAVA_SETTABLE = ("boolean", "float", "double", *_JAVA_STRINGS)
 
@@ -557,15 +558,120 @@ class JavaSession:
 
     def settable(self, variable, frame=None):
         """Whether `--set` can change this root local: a scalar of a type it accepts, named
-        as a selector can name it (not java-debug's `->compute()` return value entry)."""
-        return bool(
-            variable.get("type") in (*_JAVA_INTEGER_BITS, *_settable_kinds(self))
-            and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", str(variable.get("name")))
-        )
+        as a selector can name it (not java-debug's `->compute()` return value entry),
+        that the program reads (not a constant javac folds into its uses, #164); a
+        String only where the class file declares it one (java-debug names the type of
+        the value it holds: `Object o = "x"` shows `String`)."""
+        name, kind = str(variable.get("name")), variable.get("type")
+        if not (
+            kind in (*_JAVA_INTEGER_BITS, *_settable_kinds(self))
+            and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name)
+        ):
+            return False
+        declared = self.declared_local(frame, name) if frame else None
+        if declared and not all(read for _, read in declared):
+            return False
+        if kind in _JAVA_STRINGS:
+            return bool(declared) and all(each == _STRING_DESCRIPTOR for each, _ in declared)
+        return True
 
-    def member_settable(self, variable):
+    def validate_mutation_target(self, variable, frame):
+        """Refuse a local the program never reads (#164): javac folds a constant local
+        (`final` with a constant initializer: `final int k = 5;`, `final String s =
+        "x";`) into the code that uses it, so a change to it would never be seen."""
+        name = str(variable.get("name"))
+        declared = self.declared_local(frame, name) if frame else None
+        if declared and not all(read for _, read in declared):
+            raise ValueError(
+                f"{name!r} cannot be changed: the program never reads it (javac compiles a "
+                "constant local, one declared `final` with a constant initializer, into the "
+                "code that uses it), so a change would never be seen. Change what the code "
+                "computes from it with a candidate edit (`--old`/`--new`)"
+            )
+
+    def _declared(self):
+        """The prepared classes' declarations (java_metadata.java_declarations), once;
+        {} where they cannot be read (nothing is then known of declared types)."""
+        found = getattr(self, "_declarations", None)
+        if found is None:
+            from peeky.java_metadata import java_declarations
+
+            try:
+                classes, workspace = self.declaration_roots()
+                found = java_declarations(self.mapping, classes, workspace)
+            except (AttributeError, OSError, ValueError, KeyError):
+                found = {}
+            self._declarations = found
+        return found
+
+    def declaration_roots(self):
+        """(classes directory, workspace) of the prepared classes, as `describe` reads
+        them."""
+        workspace = Path(self.prepared.workspace)
+        return workspace / "classes", workspace
+
+    def declared_local(self, frame, name):
+        """[(descriptor, whether the code reads it)] for each declaration of the local
+        ``name`` the stopped frame's method has in scope on its line, from the class
+        files (#164); None where the method is not found."""
+        try:
+            path = Path(frame["source"]["path"]).resolve()
+            workspace = Path(self.declaration_roots()[1]).resolve()
+            source = (
+                path.relative_to(workspace).as_posix()
+                if path.is_relative_to(workspace)
+                else path.relative_to(Path(self.prepared.source_root).resolve()).as_posix()
+            )
+            line = frame["line"]
+            method = str(frame["name"]).split("(", 1)[0].rsplit(".", 1)[-1]
+        except (AttributeError, KeyError, TypeError, ValueError, OSError):
+            return None
+        methods = [
+            each
+            for declarations in self._declared().values()
+            if declarations.get("source") == source
+            for each in declarations.get("methods", ())
+            if each["name"] == method and each["first"] <= line <= each["last"]
+        ]
+        if len(methods) != 1:
+            return None
+        return [
+            (descriptor, read)
+            for local, descriptor, lines, read in methods[0]["locals"]
+            if local == name and line in lines
+        ]
+
+    def declared_member(self, parent, name):
+        """The descriptor a field or element is declared with (#164): an array's
+        component type, from its own type as java-debug names it (`String[]`); a field's
+        from the class files of the object's class and its superclasses. None where that
+        is not known."""
+        parent = str(parent or "")
+        if parent.endswith("[]"):
+            element = parent[:-2]
+            return _STRING_DESCRIPTOR if element in _JAVA_STRINGS else f"L{element};"
+        declared = self._declared()
+        found = [
+            internal
+            for internal in declared
+            if internal == parent.replace(".", "/") or internal.rsplit("/", 1)[-1] == parent
+        ]
+        current = found[0] if len(found) == 1 else None
+        for _ in range(64):
+            if current is None or current not in declared:
+                return None
+            fields = declared[current].get("fields", {})
+            if name in fields:
+                return fields[name]
+            current = declared[current].get("super")
+        return None
+
+    def member_settable(self, variable, parent=None, proven=False):
         """None if `--set` can change this field or array element, else why not: a scalar
-        of a type it accepts, an instance field (not final or static) or an element."""
+        of a type it accepts, an instance field (not final or static) or an element. A
+        String only where it is declared one (the field's or the array's type, #164;
+        ``parent``: the type of what holds it, as java-debug names it); ``proven``, for
+        its `[settable]` mark: only where that is known."""
         name, kind = str(variable.get("name")), variable.get("type")
         hint = variable.get("presentationHint")
         attributes = hint.get("attributes") if isinstance(hint, dict) else None
@@ -583,6 +689,16 @@ class JavaSession:
                 + (", double and String" if strings else " and double")
                 + " values can be changed"
             )
+        if kind in _JAVA_STRINGS:
+            declared = self.declared_member(parent, name)
+            if declared is not None and declared != _STRING_DESCRIPTOR:
+                shown = declared[1:-1].replace("/", ".") if declared.startswith("L") else declared
+                return (
+                    f"it is declared {shown} and holds a String; a text changes only a "
+                    "variable declared String"
+                )
+            if declared is None and proven:
+                return "Peeky cannot tell whether it is declared a String"
         return None
 
     def validate_variable(self, variable, value):

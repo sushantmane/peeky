@@ -20,7 +20,7 @@ from peeky.dap import DAP, RequestFailed, ResponseTimeout
 from peeky.errors import _RULES, PROTOCOL_VERSION, classify
 from peeky.text_sets import Memory as TextMemory
 from peeky.text_sets import change as change_text
-from peeky.text_sets import parse_text, text_kind
+from peeky.text_sets import held_in_place, parse_text, text_kind
 
 VIEW_SECONDS = 10
 # C and C++ previews (#136): their own budget per inspection or expansion, so that
@@ -1735,13 +1735,13 @@ class DebugWorker:
                     "as a bitfield binding): a change would not reach the program"
                 )
             if text is not None:
-                kind = text_kind(variable, runtime.text_language)
+                kind, shape = self.text_storage(runtime, variable, self.reference_frames.get(ref))
             elif validate_variable := getattr(runtime, "validate_variable", None):
                 validate_variable(variable, args["value"])
             if validate_target := getattr(runtime, "validate_mutation_target", None):
                 validate_target(variable, self.reference_frames.get(ref))
             if text is not None and (check := getattr(runtime, "validate_text_target", None)):
-                check(variable, self.reference_frames.get(ref))
+                check(variable, self.reference_frames.get(ref), self.stop_reason)
             if validate_debugger := getattr(runtime, "validate_debugger", None):
                 frame = self.reference_frames.get(ref)
                 if frame is None:
@@ -1752,7 +1752,7 @@ class DebugWorker:
                 runtime, variable, self.reference_frames.get(ref), args["name"]
             )
             if text is not None:
-                return self.set_text(runtime, variable, adapter_ref, kind, text)
+                return self.set_text(runtime, variable, adapter_ref, kind, text, shape)
             before = variable.get("value")
             literal = getattr(runtime, "mutation_literal", None)
             try:
@@ -2257,7 +2257,7 @@ class DebugWorker:
                     innermost
                     and self.member_set()
                     and not self.optimized()
-                    and member(variable) is None
+                    and member(variable, parent=ancestry[-1][1], proven=True) is None
                 )
             if ancestry and settable and noted and noted[1]:
                 # Inside a local whose change is refused (#140): so is a change to this.
@@ -2860,7 +2860,7 @@ class DebugWorker:
             return self._set_scalar_member(
                 record, runtime, frame, ancestry, trail, reference, variable, args, previewed
             )
-        if reason := check(variable):
+        if reason := check(variable, parent=ancestry[-1][1] if ancestry else None):
             raise ValueError(f"{name!r} cannot be changed: {reason}")
         runtime.validate_variable(variable, value)
         before = variable.get("value")
@@ -2968,31 +2968,50 @@ class DebugWorker:
             self._confirm_preview(record, runtime, name, after)
         return {"name": name, "before": before, "after": after}
 
+    def text_storage(self, runtime, variable, frame):
+        """(kind, shape) of the root string a text change (#137) writes: the runtime's,
+        where it reads the build's debug information, else text_sets.text_kind's by the
+        debugger's type name; ValueError naming why it is none."""
+        hook = getattr(runtime, "text_storage", None)
+        if hook is not None:
+            return hook(variable, frame)
+        return text_kind(variable, runtime.text_language), None
+
     def text_settable(self, variable, frame):
         """Whether a text change (#137) could be made to this root string here, for its
         `[settable]` mark: a char array always (by element where the debugger cannot
-        write memory); a std::string or Rust String where it reads and writes memory."""
-        language = getattr(self.runtime, "text_language", None)
+        write memory); a std::string where the debugger writes memory, or where it reads
+        it and the text is in the string's own buffer; a Rust String where it reads and
+        writes memory."""
+        if not getattr(self.runtime, "text_language", None):
+            return False
         try:
-            kind = text_kind(variable, language) if language else None
+            kind = self.text_storage(self.runtime, variable, frame)[0]
         except ValueError:
             return False
-        if kind in (None, "array"):
-            return kind == "array"
-        if not (
-            self.capabilities.get("supports_read_memory")
-            and self.capabilities.get("supports_write_memory")
-        ):
-            return False
         check = getattr(self.runtime, "text_settable", None)
-        return check is None or bool(check(variable, frame))
+        if kind is None or (check is not None and not check(variable, frame, self.stop_reason)):
+            return False
+        reads = self.capabilities.get("supports_read_memory")
+        if kind == "array" or (reads and self.capabilities.get("supports_write_memory")):
+            return True
+        if kind != "std" or not reads:
+            return False
+        # lldb-dap 20 changes a string in its own short buffer, element by element.
+        memory = TextMemory(
+            lambda parent, count=None: self.view_fetch(parent),
+            None,
+            lambda address, count: self.view_read(f"0x{address:x}", count),
+        )
+        return held_in_place(variable, memory)
 
     def view_settable(self, variable, frame):
         """The `[settable]` mark of a root string a runtime's view shows (a Rust String,
         #137), as for a root listed as the debugger shows it; None for other values."""
-        language = getattr(self.runtime, "text_language", None)
+        if not getattr(self.runtime, "text_language", None):
+            return None
         try:
-            text_kind(variable, language)
+            self.text_storage(self.runtime, variable, frame)
         except ValueError:
             return None
         mid = getattr(self.runtime, "mid_statement", None)
@@ -3005,7 +3024,7 @@ class DebugWorker:
             and not (mid and mid(variable, frame, self.stop_reason))
         )
 
-    def set_text(self, runtime, variable, reference, kind, text):
+    def set_text(self, runtime, variable, reference, kind, text, shape=None):
         """Write ``text`` into the string ``variable``, a root local listed under the
         scope ``reference`` (#137, see text_sets): only within its storage, and read
         back. A refusal (ValueError) changed nothing; anything written that cannot be
@@ -3059,10 +3078,13 @@ class DebugWorker:
             read if capabilities.get("supports_read_memory") else None,
             write if capabilities.get("supports_write_memory") else None,
         )
-        layout = getattr(runtime, "text_layout", lambda kind: None)(kind)
-        changed = change_text(variable, text, memory, relist, kind, layout)
+        changed = change_text(variable, text, memory, relist, kind, shape)
         runtime.assert_current()
-        return {"name": name, "before": changed["before"], "after": changed["after"]}
+        result = {"name": name, "before": changed["before"], "after": changed["after"]}
+        if kind == "std":
+            # What the program took from it before cannot be seen, nor changed (#164).
+            result["note"] = STRING_VIEW_NOTE
+        return result
 
     def _confirm_preview(self, record, runtime, name, after):
         """After a change to a field of a value shown as a preview read from memory (#106),
@@ -3244,6 +3266,13 @@ class DebugWorker:
 _CALLER_SET = (
     "{name} is in a caller's frame, whose values cannot be changed: only the stopped "
     "(innermost) frame's can, which `session set` and probes change"
+)
+# A std::string's text changes in place (#164): a view the program took before the
+# change keeps the old size.
+STRING_VIEW_NOTE = (
+    "a std::string_view, c_str() or data() pointer or iterator the program took from the "
+    "string before the change still has its old size, and reads a mix of old and new text "
+    "(Peeky cannot see those)"
 )
 # C, C++ and Rust (#137): a text changes a string local, not a field or element.
 _TEXT_MEMBER = (

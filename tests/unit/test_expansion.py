@@ -371,7 +371,7 @@ class MemberBackend(Backend):
 
 
 class MemberRuntime(Runtime):
-    def member_settable(self, variable):
+    def member_settable(self, variable, parent=None, proven=False):
         return "it is final" if variable["name"] == "nested" else None
 
 

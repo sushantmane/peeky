@@ -92,9 +92,12 @@ def text_kind(variable, language):
                 "the String where it is owned"
             )
         raise ValueError(f"{refused}; a text changes a Rust String")
+    found = string_class(kind)
+    qualified = re.search(r"\b(?:const|volatile)\b", kind)
+    if qualified and not (found and found[2]) and (found or _CHAR_ARRAY.search(kind)):
+        raise ValueError(f"{refused}: {qualifier_reason(qualified[0])}")
     if _CHAR_ARRAY.fullmatch(kind):
         return "array"
-    found = string_class(kind)
     if found is not None and found[2]:
         raise ValueError(
             f"{refused}, and Peeky does not write through a reference or pointer (the string "
@@ -111,6 +114,34 @@ def text_kind(variable, language):
     raise ValueError(f"{refused}; a text changes a char array (char[N]) or a std::string")
 
 
+def qualifier_reason(qualifier):
+    """Why a const or volatile string is never changed (#164)."""
+    if qualifier == "const":
+        return (
+            "a const object, which the program may never change (the compiler may keep "
+            "using what it held, or have placed it in read-only memory)"
+        )
+    return (
+        f"a {qualifier} object, which the program may read in ways a debugger's write "
+        "does not reach as a plain store"
+    )
+
+
+def held_in_place(variable, memory):
+    """Whether a `std::string`'s text is in its own short buffer, as its members and
+    memory tell (no write): a debugger without writeMemory (lldb-dap 20) changes it
+    there, element by element, so its row is marked `[settable]`. False where any read
+    fails or nothing checks out."""
+    writer = _Writer(memory, f"`{variable.get('name')}`")
+    try:
+        members = _members(writer, variable)
+        if "_M_dataplus" in members or "_M_string_length" in members:
+            return bool(_libstdcxx_shape(variable, writer)["local"])
+        return not _libcxx_shape(variable, writer)["long"]
+    except ValueError:
+        return False
+
+
 def change(variable, text, memory, relist, kind, layout=None):
     """Write ``text`` into the string ``variable`` (a root local's DAP variable) of the
     ``kind`` ``text_kind`` gives; ``relist()`` lists it again (fresh references).
@@ -120,7 +151,7 @@ def change(variable, text, memory, relist, kind, layout=None):
     writer = _Writer(memory, f"`{variable.get('name')}`")
     data = text.encode("utf-8")
     if kind == "array":
-        return _array(variable, data, writer, relist)
+        return _array(variable, data, writer, relist, layout)
     if kind == "rust":
         return _rust(variable, text, writer, relist, layout)
     members = _members(writer, variable)
@@ -252,9 +283,12 @@ def _word(raw, offset):
     return int.from_bytes(raw[offset : offset + 8], "little")
 
 
-def _array(variable, data, writer, relist):
+def _array(variable, data, writer, relist, shape=None):
     name, kind = writer.name, str(variable.get("type"))
-    size = int(_CHAR_ARRAY.fullmatch(kind.strip())[1])
+    # Its count from the build's debug information (a typedef's name tells none), else
+    # from the debugger's type.
+    named = _CHAR_ARRAY.fullmatch(kind.strip())
+    size = (shape or {}).get("count") or int(named[1])
     if b"\0" in data:
         writer.failed("a NUL in the text would end the C string before the text does")
     if len(data) + 1 > size:
@@ -435,28 +469,35 @@ def _libcxx_shape(variable, writer):
     address = _address(variable.get("memoryReference"))
     if bits not in ((0, 0), (1, 1)) or address is None:
         writer.failed("the debugger's view of its form does not check out")
+    buffer = shorts.get("__data_") or {}
+    found = _COUNT.fullmatch(str(buffer.get("type") or ""))
+    start = _address(buffer.get("memoryReference"))
+    count = int(found[1]) if found else 0
+    # The short buffer is inside the string's three words: first in libc++'s alternate
+    # layout (macOS arm64), after the size byte in its standard one. Where it is tells
+    # the layout, and so what `__cap_` holds (little-endian): the allocation's size in
+    # the alternate layout, half of it in the standard one (libc++'s `__endian_factor`).
+    factor = {0: 1, 1: 2}.get(start - address) if start is not None else None
+    if not (found and factor and start + count <= address + 24):
+        writer.failed("its short form is not laid out as libc++'s is")
     if bits == (0, 0):
-        buffer = shorts.get("__data_") or {}
-        found = _COUNT.fullmatch(str(buffer.get("type") or ""))
-        start = _address(buffer.get("memoryReference"))
         size = parse_char(_value(shorts, "__size_"))
-        count = int(found[1]) if found else 0
-        # The short buffer is inside the string's three words, as libc++ lays it out.
-        if not (found and start is not None and address <= start and start + count <= address + 24):
-            writer.failed("its short form is not laid out as libc++'s is")
         shape = {"data": start, "size": size, "capacity": count - 1, "form": short}
         shape.update(where="its own buffer", buffer=buffer.get("variablesReference"))
     else:
         pointer = _POINTER.fullmatch(str(_value(longs, "__data_") or ""))
         start = int(pointer[1], 16) if pointer else 0
         size, cap = _decimal(_value(longs, "__size_")), _decimal(_value(longs, "__cap_"))
-        if not start or address <= start < address + 24 or size is None:
+        if (
+            not start
+            or address <= start < address + 24
+            or size is None
+            or cap is None
+            or not 0 < cap < 2**40
+        ):
             writer.failed("its long form does not read as libc++'s does")
-        # `__cap_` is the allocation's size, or half of it (libc++'s standard layout,
-        # whose low bit is the long bit): two less leaves room for text and NUL in both,
-        # as the current size and its NUL always do.
-        room = cap - 2 if cap is not None and cap <= 2**40 else 0
-        shape = {"data": start, "size": size, "capacity": max(size, room), "form": long}
+        # capacity() is the allocation less the NUL's place.
+        shape = {"data": start, "size": size, "capacity": cap * factor - 1, "form": long}
         shape.update(where="its heap buffer", buffer=None)
     shape["form"] = shape["form"].get("variablesReference")
     if shape["size"] is None or shape["size"] > shape["capacity"]:

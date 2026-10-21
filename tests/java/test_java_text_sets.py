@@ -14,6 +14,7 @@ GREET = """package demo;
 
 public class Greet {
     private String label = "old";
+    private Object held = "held";
     private int count = 1;
 
     public static void main(String[] args) {
@@ -21,7 +22,12 @@ public class Greet {
         String alias = name;
         Greet g = new Greet();
         String[] names = {"a", "b"};
-        System.out.println("NAME:[" + name + "] ALIAS:[" + alias + "] " + g.label + " " + names[1]);
+        Object o = "obj";
+        CharSequence cs = "cs";
+        Object[] objs = {"x"};
+        final String fc = "const";
+        final int fk = 5;
+        System.out.println("NAME:[" + name + "] ALIAS:[" + alias + "] " + g.label + " " + names[1] + " " + o + cs + objs[0] + g.held + " FC:" + fc + " FK:" + fk);
     }
 }
 """
@@ -56,7 +62,8 @@ def greet(tmp_path, monkeypatch):
 def probe(capsys, greet, *argv):
     root, config, _ = greet
     at = ["probe", str(root), "--config", str(config), "--at", f"demo/Greet.java:{OBSERVE}"]
-    code = main([*at, "--capture", "name,alias,g.label", *argv, "--json", "--no-save", "--quiet"])
+    capture = "name,alias,g.label,o,cs,objs[0],g.held,fc,fk"
+    code = main([*at, "--capture", capture, *argv, "--json", "--no-save", "--quiet"])
     return code, json.loads(capsys.readouterr().out)
 
 
@@ -92,3 +99,39 @@ def test_a_text_changes_only_a_string(greet, capsys):
     code, result = probe(capsys, greet, "--set", "name=5")
     assert code == 1 and result["error"]["code"] == "MUTATION_REJECTED", result
     assert "requires text in double quotes for String name" in result["error"]["message"]
+
+
+@pytest.mark.timeout(180)
+def test_marks_follow_the_declared_type_and_a_constant_local_is_never_changed(greet, capsys):
+    # #164 review: `Object o = "obj"` and `CharSequence cs` were marked [settable] from
+    # the type of the String they hold, though the launcher refuses them (and javac's
+    # constant locals, `final String fc = "const"` and `final int fk = 5`, were changed
+    # and reported, while the program printed the constants it had compiled in).
+    code, result = probe(capsys, greet)
+    assert code == 0, result.get("error")
+    marks = {row["selector"]: row.get("settable") for row in result["rows"]}
+    assert marks == {
+        "name": greet[2],
+        "alias": greet[2],
+        "g.label": greet[2],
+        "o": False,
+        "cs": False,
+        "objs[0]": False,
+        "g.held": False,
+        "fc": False,
+        "fk": False,
+    }, marks
+    for assignment in ('fc="x"', "fk=9"):
+        code, result = probe(capsys, greet, "--set", assignment)
+        assert code == 1 and result["error"]["code"] == "MUTATION_REJECTED", result
+        message = result["error"]["message"]
+        if assignment.startswith("fk") or greet[2]:
+            assert "the program never reads it (javac compiles a constant local" in message
+        assert "FC:const FK:5" not in (result.get("output") or ""), result
+    if greet[2]:
+        for assignment, declared in (("g.held", "java.lang.Object"), ("objs[0]", "Object")):
+            code, result = probe(capsys, greet, "--set", f'{assignment}="y"')
+            assert code == 1 and result["error"]["code"] == "MUTATION_REJECTED", result
+            assert f"it is declared {declared} and holds a String" in result["error"]["message"]
+        code, result = probe(capsys, greet, "--set", 'o="y"')
+        assert code == 1 and "o is java.lang.Object" in result["error"]["message"], result

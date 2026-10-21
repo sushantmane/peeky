@@ -1459,7 +1459,14 @@ def session(args):
                 "set changes a local, or a field or array element (Java, Rust, C, C++)",
             )
         changed = apply_set(_Remote(client), stop, name, value)
-        _emit(changed, args.json, lambda c: f"set {c['name']}: {c['before']} -> {c['after']}")
+        _emit(
+            changed,
+            args.json,
+            lambda c: (
+                f"set {c['name']}: {c['before']} -> {c['after']}"
+                + (f"\nnote: {c['note']}" if c.get("note") else "")
+            ),
+        )
     elif args.action == "continue":
         # Argument errors first, whatever state the program is in.
         if args.to is not None and args.to_exit:

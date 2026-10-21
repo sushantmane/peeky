@@ -3251,6 +3251,14 @@ def run_probe(root, probe, *, adapter=None, progress=None):
             + ". --hits and --set-hit count every stop; the function column says which "
             "is which."
         )
+    # A change's own caveat (a std::string's text, #164), once for the names it covers.
+    caveats = {}
+    for change in changes:
+        if change.get("note"):
+            caveats.setdefault(change["note"], []).append(change["name"])
+    for note, names in caveats.items():
+        named = ", ".join(f"`{name}`" for name in dict.fromkeys(names))
+        warnings.append(f"Changed {named}: {note}")
     unproven = _UNPROVEN_RUST[0].upper() + _UNPROVEN_RUST[1:] + "."
     for note in (_OWNED_RUST, _UNREAD_RUST, _COMPOSITE_RUST, unproven, _STALE_RUST + "."):
         if any(row.get("note") == note for row in rows):

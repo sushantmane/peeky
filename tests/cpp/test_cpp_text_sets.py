@@ -105,3 +105,76 @@ def test_a_std_string_never_grows_past_its_capacity_or_through_a_reference(texts
     assert "S:[" not in (result.get("output") or ""), result
     code, result = probe(capsys, texts, "--set", 'ref="x"')
     refusal(code, result, "`ref` cannot be changed to a text", "does not write through a reference")
+
+
+VIEWS = """#include <cstdio>
+#include <string>
+#include <string_view>
+typedef const std::string CStr;
+using Name = std::string;
+int main() {
+  std::string s;
+  s.reserve(40);
+  s = "hello world";
+  std::string_view sv = s;
+  const std::string cs = "konst";
+  CStr ct = "ctype";
+  Name nm = "named";
+  std::printf("SV:%zu S:[%s] CS:[%s] CT:[%s] NM:[%s] CAP:%zu\\n", sv.size(), s.c_str(), cs.c_str(), ct.c_str(), nm.c_str(), s.capacity()); // LOOK
+  return 0;
+}
+"""
+
+
+@pytest.mark.timeout(300)
+def test_a_const_string_is_never_changed_and_a_change_warns_of_earlier_views(texts, capsys):
+    # #164 review: `const std::string cs` was changed and marked [settable] (undefined
+    # behavior); a string_view taken before a change keeps the old size, unseen.
+    source = texts.parent / "views.cpp"
+    source.write_text(VIEWS)
+    look = next(i for i, text in enumerate(VIEWS.splitlines(), 1) if "// LOOK" in text)
+    at = ["probe", str(source), "--at", str(look), "--capture", "s,cs,ct,nm"]
+    assert main([*at, "--json", "--quiet"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    reads = sys.platform == "darwin" or any(row.get("view") == "memory" for row in result["rows"])
+    marks = {row["selector"]: row.get("settable") for row in result["rows"]}
+    # A string in its own buffer is changed element by element where the debugger reads
+    # but does not write memory (lldb-dap 20): `nm`; `s` is on the heap.
+    assert marks == {
+        "s": sys.platform == "darwin",
+        "cs": False,
+        "ct": False,
+        "nm": reads,
+    }, marks
+    for name in ("cs", "ct"):
+        code = main([*at, "--set", f'{name}="x"', "--json", "--quiet"])
+        result = json.loads(capsys.readouterr().out)
+        assert code == 1 and result["error"]["code"] == "MUTATION_REJECTED", result
+        assert (
+            f"`{name}` cannot be changed to a text: a const object" in (result["error"]["message"])
+        ), result["error"]
+    code = main([*at, "--set", 'nm="renamed"', "--json", "--quiet"])
+    result = json.loads(capsys.readouterr().out)
+    if not reads:
+        assert code == 1 and "cannot read memory" in result["error"]["message"], result
+        return
+    assert code == 0 and "NM:[renamed]" in result["output"], result
+    if sys.platform != "darwin":
+        return
+    code = main([*at, "--set", 's="bye"', "--json", "--quiet"])
+    result = json.loads(capsys.readouterr().out)
+    assert code == 0, result.get("error")
+    # The view taken before keeps the old size: the program says so, and so does Peeky.
+    assert "SV:11 S:[bye]" in result["output"], result["output"]
+    note = result["interventions"][0]["note"]
+    assert "std::string_view" in note and "old size" in note, note
+    assert f"Changed `s`: {note}" in result["warnings"], result["warnings"]
+    # libc++ keeps the allocation's size in `__cap_`: capacity() 47 for reserve(40),
+    # all of it usable (one byte short before #164's review).
+    assert "CAP:47" in result["output"], result["output"]
+    code = main([*at, "--set", f's="{"c" * 47}"', "--json", "--quiet"])
+    result = json.loads(capsys.readouterr().out)
+    assert code == 0 and f"S:[{'c' * 47}]" in result["output"], result
+    code = main([*at, "--set", f's="{"c" * 48}"', "--json", "--quiet"])
+    result = json.loads(capsys.readouterr().out)
+    assert code == 1 and "with room for 47 bytes" in result["error"]["message"], result

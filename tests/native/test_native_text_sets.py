@@ -112,3 +112,43 @@ def test_a_text_is_refused_where_it_does_not_fit_or_is_not_a_char_array(texts, c
     code, result = probe(capsys, texts, "--set", 'name="open')
     assert code == 1 and result["error"]["code"] == "INVALID_REQUEST", result
     assert "write text in double quotes as JSON writes a string" in result["error"]["message"]
+
+
+QUALIFIED = """#include <stdio.h>
+typedef char Tag[8];
+typedef const char Fixed[8];
+int main(void) {
+  Tag tag = "tag";
+  Fixed fixed = "fixed";
+  const char konst[8] = "konst";
+  volatile char shared[8] = "shared";
+  printf("TAG:%s FIXED:%s KONST:%s SHARED:%s\\n", tag, fixed, konst, (char *)shared); // SEE
+  return 0;
+}
+"""
+
+
+@pytest.mark.timeout(240)
+def test_a_const_or_volatile_array_is_never_changed_and_a_typedef_is_judged_by_its_type(
+    texts, capsys
+):
+    # #164 review: a const object was changed (and marked [settable]): undefined
+    # behavior. What the array is comes from the debug information, under any typedef.
+    (texts / "texts.c").write_text(QUALIFIED)
+    see = next(i for i, text in enumerate(QUALIFIED.splitlines(), 1) if "// SEE" in text)
+    at = ["probe", str(texts), "--at", f"texts.c:{see}", "--capture", "tag,fixed,konst,shared"]
+    assert main([*at, "--json", "--quiet"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    marks = {row["selector"]: row.get("settable") for row in result["rows"]}
+    assert marks == {"tag": True, "fixed": False, "konst": False, "shared": False}, marks
+    assert main([*at, "--set", 'tag="new"', "--json", "--quiet"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert "TAG:new FIXED:fixed" in result["output"], result
+    for name, qualifier in (("fixed", "const"), ("konst", "const"), ("shared", "volatile")):
+        code = main([*at, "--set", f'{name}="x"', "--json", "--quiet"])
+        result = json.loads(capsys.readouterr().out)
+        assert code == 1 and result["error"]["code"] == "MUTATION_REJECTED", result
+        assert (
+            f"`{name}` cannot be changed to a text: a {qualifier} object"
+            in (result["error"]["message"])
+        ), result["error"]

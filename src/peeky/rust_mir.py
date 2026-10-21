@@ -134,6 +134,16 @@ _BOX_COPY = re.compile(
 _DROP_THROUGH = re.compile(r"^drop\(\(*\*\(*_([0-9]+)\b")
 # A call's arguments (`f(move _7, copy _8) -> [return: ...]`).
 _CALL_ARGUMENTS = re.compile(r"^(?:.*? = )?[^ (][^(]*?\((.*)\) -> ")
+# Types a shared reference can still change through (#164), and the words of a type
+# name: a primitive, or a path in the standard library.
+_INTERIOR = re.compile(r"Cell<|Mutex<|RwLock<|Atomic|Once|Lazy|UnsafeCell<|Rc<|Arc<")
+_TYPE_WORDS = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*")
+_LIFETIME = re.compile(r"'[A-Za-z_]+")
+_PRIMITIVE_WORDS = frozenset(
+    "str bool char i8 i16 i32 i64 i128 isize u8 u16 u32 u64 u128 usize f32 f64 mut const "
+    "dyn".split()
+)
+_STD_PATHS = ("std::", "core::", "alloc::")
 _NOT_A_CALL = re.compile(
     r"(?:drop|assert|switchInt|goto|falseEdge|falseUnwind|yield|return|resume|unreachable)\b"
 )
@@ -231,6 +241,7 @@ class Body:
     _copies: dict | None = None
     _live: tuple | None = None
     _copy_reads: tuple | None = None
+    _lent_from: dict | None = None
 
     @property
     def name(self):
@@ -879,6 +890,105 @@ class Body:
                             work.append(other)
         self._copies[local, formatting] = frozenset(holds)
         return self._copies[local, formatting]
+
+    def lent_from(self, local, generics=None):
+        """The locals that may hold a pointer into ``local``'s storage or into what it
+        owns (#164: a String's buffer): one assigned a borrow of it or of a place of it
+        (`&_1`, `&mut (_1.0: T)`, `&raw const _1`), or a value that mentions such a local
+        (what a call returns from one, `deref`, `index`, `as_str`, `chars`; a copy, a
+        struct, a closure holding one); and what a call given one may store it into: what
+        another pointer it is given points at (`v.push(&s)` stores it in `v`), through a
+        `&mut` or raw pointer, or a shared one to what may hide a `Cell` (#164). Only
+        locals whose type can hold a pointer count (a reference, a raw pointer, a
+        lifetime, a closure or coroutine, a type parameter of ``generics``, or a type not
+        known); a `usize` from `s.len()` holds none."""
+        if self._lent_from is None:
+            self._lent_from = {}
+        key = (local, generics)
+        if key in self._lent_from:
+            return self._lent_from[key]
+        assignments, borrows, sources = [], {}, {}
+        for block in self.blocks.values():
+            for text, _, _ in block.statements:
+                text = _STRING.sub('""', text)
+                whole = _WHOLE_ASSIGNMENT.match(text)
+                found = whole or _PART_ASSIGNMENT.match(text)
+                if not found:
+                    continue
+                target, value = int(found[1]), found[2]
+                lent = {int(n) for n in _DIRECT_BORROW.findall(value)}
+                mentioned = {int(n) for n in _MENTIONED.findall(value)}
+                borrows.setdefault(target, set()).update(lent)
+                sources.setdefault(target, set()).update(mentioned - lent)
+                call = "->" in value and not _NOT_A_CALL.match(value)
+                # `(*_9).0 = …` stores into what `_9` points at.
+                through = whole is None and text.lstrip("(").startswith("*")
+                assignments.append((target, mentioned, local in lent, call, through))
+
+        def kind(number):
+            return self.types.get(number)
+
+        def pointing(number):
+            found = kind(number)
+            return (
+                found is None
+                or bool(_BORROWING.search(found))
+                or generics is None
+                or mentions(found, generics)
+            )
+
+        def hidden_cell(number):
+            # What a shared reference may still change: a `Cell`, a lock, a type of the
+            # crate's own (it may hold one), a type parameter, a type not known.
+            found = kind(number)
+            return (
+                found is None
+                or generics is None
+                or mentions(found, generics)
+                or bool(_INTERIOR.search(found))
+                or any(
+                    not (word in _PRIMITIVE_WORDS or word.startswith(_STD_PATHS))
+                    for word in _TYPE_WORDS.findall(_LIFETIME.sub("", found))
+                )
+            )
+
+        def referents(number, shared, seen):
+            """What the pointer ``number`` may point at, and could have a pointer stored
+            in: through a `&mut` or raw pointer anything; through shared ones only what
+            ``hidden_cell`` allows."""
+            found = set()
+            if number in seen:
+                return found
+            seen.add(number)
+            mutable = re.match(r"&mut |\*mut ", kind(number) or "&mut ")
+            shared = shared and not mutable
+            for target in borrows.get(number, ()):
+                if target != local and (not shared or hidden_cell(target)):
+                    found.add(target)
+                found |= referents(target, shared, seen)
+            for source in sources.get(number, ()):
+                if pointing(source):
+                    found |= referents(source, shared, seen)
+            return found
+
+        held, changed = set(), True
+        while changed:
+            changed = False
+            for target, mentioned, direct, call, through in assignments:
+                if not (direct or mentioned & held):
+                    continue
+                into = {target} if target != local else set()
+                if through:
+                    into |= referents(target, False, set())
+                for other in mentioned if call else ():
+                    if other != local and other not in held:
+                        into |= referents(other, True, set())
+                for number in into:
+                    if number != local and number not in held and pointing(number):
+                        held.add(number)
+                        changed = True
+        self._lent_from[key] = frozenset(held)
+        return self._lent_from[key]
 
     def _copy_parts(self):
         """``copies_of``'s reading of each assignment to a temporary, once per body:
@@ -3012,6 +3122,36 @@ class OwnedLocals:
             positions = _first_places(body, function, positions)
         held = _mask(body.copies_of(local, formatting=self._formatting()))
         return any(body.live_ahead(position) & held for position in positions)
+
+    def borrow_live(
+        self, hashed, variable_name, line, path, breakpoint=False, column=None, block=None
+    ):
+        """For the frame's owned local ``variable_name`` (a String a text change writes,
+        #164): False if, from every place the stop can be on ``line`` of ``path``, no
+        local that may hold a pointer into it (``Body.lent_from``: a `&str` of it, an
+        iterator over it, anything built from one) is used again; True if one may be;
+        None if not understood. A borrow still in use would read the new bytes with the
+        old length: a mix of texts, or bytes that are not UTF-8. ``breakpoint``,
+        ``column`` and ``block`` as for ``copied_in_progress``."""
+        site = self._site(hashed, line, path)
+        if site is None:
+            return None
+        body, function = site[0], site[1]
+        if not body.supported:
+            return None
+        local = self._local(body, variable_name, line, path, block, site)
+        if local is None:
+            return None
+        facts = self._facts(function, line, column) if breakpoint and not function.copies else None
+        if breakpoint and (facts is None or facts.column is None):
+            breakpoint, facts = False, None
+        positions = self._positions(site, line, facts, block)
+        if not positions:
+            return None
+        if breakpoint and not function.inline_only:
+            positions = _first_places(body, function, positions)
+        lent = _mask(body.lent_from(local, self.type_parameters(hashed)))
+        return any(body.live_ahead(position) & lent for position in positions)
 
     def _formatting(self):
         """Whether a call that reads like `format_args!`'s constructors (and returns

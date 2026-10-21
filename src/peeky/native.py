@@ -3656,6 +3656,60 @@ class NativeSession:
             )
         return None
 
+    def text_storage(self, variable, frame):
+        """(kind, shape) of the storage a text (#137) is written in, for text_sets: the
+        build's debug information decides, under any typedef (`using S = std::string`,
+        `typedef char Tag[8]`): a `char[N]` array (shape {"count": N}) or a std::string
+        of char; and refuses one const or volatile (#164: a `const std::string`, a typedef
+        of one, an array of `const char`), as it refuses what is neither. ValueError
+        naming why; also where the debug information cannot be read."""
+        from peeky.fields import Unsettable, _strip
+        from peeky.text_sets import qualifier_reason
+
+        name = variable.get("name")
+        try:
+            kind, refusal = text_kind(variable, "c"), None
+        except ValueError as exc:
+            kind, refusal = None, exc
+
+        def refused(reason):
+            return ValueError(f"`{name}` cannot be changed to a text: {reason}")
+
+        try:
+            offset, _, graph = self._root_type(frame, variable)
+            _, node, _ = _strip(graph, offset, name)
+            declared = None
+            if node[0] == "array" and node[3] is not None and len(node[3]) == 1:
+                # Its elements' own qualifiers count too (`const char[8]`).
+                _, element, _ = _strip(graph, node[2], name)
+                if element[0] == "base" and element[1] == "char" and element[3] == 1:
+                    declared = ("array", {"count": node[3][0]})
+            elif (
+                node[0] == "record" and node[9] and re.fullmatch(r"basic_string<char\b.*", node[1])
+            ):
+                declared = ("std", None)
+        except Unsettable as exc:
+            found = re.search(r"is (const|volatile|atomic)\b", str(exc))
+            if found:
+                raise refused(qualifier_reason(found[1])) from None
+            if refusal is not None:
+                raise refusal from None
+            raise refused(str(exc)) from None
+        if declared is None:
+            if refusal is not None:
+                raise refusal
+            raise refused(
+                f"the build's debug information does not show it as a {variable.get('type')}"
+            )
+        if kind is not None and declared[0] != kind:
+            raise refused(
+                f"the debugger shows it as a {variable.get('type')}, which its declared type "
+                "does not match"
+            )
+        if kind == "array" and f"[{declared[1]['count']}]" not in str(variable.get("type")):
+            raise refused("the debugger and the debug information give it different sizes")
+        return declared
+
     def validate_mutation_target(self, variable, frame):
         reason = self.not_yet_declared(variable, frame)
         if refusal := getattr(reason, "refusal", None):

@@ -110,3 +110,85 @@ def test_borrowed_moved_or_other_values_take_no_text(crate, capsys):
     code, result = probe(capsys, crate, "--set", 'moved="x"')
     refusal(code, result, "the build's MIR does not prove it initialized here")
     assert "NAME:" not in (result.get("output") or ""), result
+
+
+BORROWS = """use std::cell::RefCell;
+#[inline(never)]
+fn keep<'a>(out: &mut Vec<&'a str>, s: &'a str) { out.push(s); }
+#[inline(never)]
+fn check(tag: &str, t: &str) { println!("{}=[{}] utf8={}", tag, t, std::str::from_utf8(t.as_bytes()).is_ok()); }
+fn main() {
+    let mut s = String::with_capacity(16);
+    s.push_str("abcdefghij");
+    let head: &str = &s[..2];
+    let tail: &str = &s[2..];
+    check("head", head); // HEAD
+    check("tail", tail);
+    check("s", &s); // AFTER
+    let mut a = String::with_capacity(16);
+    a.push_str("alpha");
+    let mut b = String::with_capacity(16);
+    b.push_str("bravo");
+    let mut c = String::with_capacity(16);
+    c.push_str("charlie");
+    let mut d = String::with_capacity(16);
+    d.push_str("delta");
+    let mut e = String::with_capacity(16);
+    e.push_str("echo");
+    let mut chars = a.chars();
+    let first = chars.next();
+    let mut v: Vec<&str> = Vec::new();
+    keep(&mut v, &b);
+    let cell: RefCell<Vec<&str>> = RefCell::new(Vec::new());
+    cell.borrow_mut().push(c.as_str());
+    let shout = || d.len();
+    let n = e.len();
+    let copy = e.clone();
+    println!("{:?} {:?}", first, v); // MANY
+    println!("{:?} {:?} {} {} {} {}", chars.next(), cell.borrow(), shout(), n, copy, e);
+}
+"""
+
+
+@pytest.mark.timeout(400)
+def test_a_string_a_live_borrow_reads_is_never_changed(crate, capsys):
+    # #164 review: with `head = &s[..2]` and `tail = &s[2..]` still to be used, a change
+    # to `s` left both reading new bytes at old lengths (`[61, c3]`, `[a9, ...]`: not
+    # UTF-8, undefined behavior), and `t = &s` read `byelo world`. Refused wherever the
+    # MIR shows a borrow of the String used after the stop; made after its last use.
+    (crate / "src/main.rs").write_text(BORROWS)
+
+    def line(marker):
+        return next(i for i, text in enumerate(BORROWS.splitlines(), 1) if marker in text)
+
+    def change(marker, name):
+        at = ["probe", str(crate), "--at", f"src/main.rs:{line(marker)}"]
+        code = main([*at, "--set", f'{name}="xé"', "--json", "--quiet"])
+        return code, json.loads(capsys.readouterr().out)
+
+    refused = "a borrow of it (a `&str` of its text, a reference, an iterator over it) is "
+    # `head` and `tail`; an iterator; a `&str` pushed into a Vec, or into a RefCell's;
+    # a closure that borrows it.
+    for marker, name in (("// HEAD", "s"), *(("// MANY", each) for each in "abcd")):
+        code, result = change(marker, name)
+        refusal(code, result, f"`{name}` cannot be changed to a text at this stop: {refused}")
+        assert "utf8=false" not in (result.get("output") or ""), result
+    # After their last use; a `len()` and a clone keep no borrow.
+    for marker, name in (("// AFTER", "s"), ("// MANY", "e")):
+        code, result = change(marker, name)
+        if not WRITES:
+            refusal(code, result, "cannot write memory")
+            continue
+        assert code == 0, result.get("error")
+        assert "utf8=false" not in result["output"], result["output"]
+    if WRITES:
+        assert "s=[xé] utf8=true" in main_output(crate, capsys, line("// AFTER"), "s")
+
+
+def main_output(crate, capsys, at, name):
+    code = main(
+        ["probe", str(crate), "--at", f"src/main.rs:{at}", "--set", f'{name}="xé"', "--json"]
+    )
+    result = json.loads(capsys.readouterr().out)
+    assert code == 0, result.get("error")
+    return result["output"]

@@ -67,6 +67,7 @@ from peeky.rust_symbols import (
     struct_view,
     without_numbered_structs,
 )
+from peeky.text_sets import text_kind
 
 DEPS = "target/debug/deps"
 MIR_DIR = "target/peeky-mir"
@@ -1183,36 +1184,61 @@ class RustSession(NativeSession):
 
     text_language = "rust"
 
-    def text_layout(self, kind):
-        """A Rust String's layout from the build's debug information, for text_sets."""
-        return self.layouts.get("alloc::string::String") if kind == "rust" else None
+    def text_storage(self, variable, frame):
+        """(kind, shape) for text_sets: a String, with its layout from the build's debug
+        information; ValueError for anything else (#137)."""
+        return text_kind(variable, "rust"), self.layouts.get("alloc::string::String")
 
-    def validate_text_target(self, variable, frame):
+    def validate_text_target(self, variable, frame, stop=None):
         """A String's buffer is written only where the MIR proves the local initialized
         at the stop (#108): a moved or dropped String's pointer may point into freed
-        memory, and a String not yet assigned holds whatever its slot held."""
+        memory, and a String not yet assigned holds whatever its slot held. And only
+        where no borrow of it is used after the stop (#164): a `&str` taken before the
+        change keeps the old length, so it would read a mix of old and new text, or bytes
+        that are not UTF-8 (undefined behavior). ``stop``: the stop's reason."""
         name = variable.get("name")
         hashed = _frame_hash(frame)
         proofs = getattr(self, "owned", None)
         place = frame or {}
-        if not (
-            hashed
-            and proofs is not None
-            and proofs.proven(
-                hashed[1], name, place.get("line"), (place.get("source") or {}).get("path")
-            )
-        ):
+        line, path = place.get("line"), (place.get("source") or {}).get("path")
+        if not (hashed and proofs is not None and proofs.proven(hashed[1], name, line, path)):
             raise ValueError(
                 f"`{name}` cannot be changed at this stop: the build's MIR does not prove it "
                 "initialized here (it may be moved, dropped or not yet assigned), and a "
                 "String's buffer may then be freed memory"
             )
+        # Before the line's first code (as `mid_statement` requires), or anywhere on it.
+        start = stop == "breakpoint" or (stop == "step" and self._line_start(frame))
+        lent = proofs.borrow_live(
+            hashed[1],
+            name,
+            line,
+            path,
+            breakpoint=start,
+            column=place.get("column"),
+            block=self._stop_block(hashed[1], frame),
+        )
+        if lent is not False:
+            raise ValueError(
+                f"`{name}` cannot be changed to a text at this stop: "
+                + (
+                    "a borrow of it (a `&str` of its text, a reference, an iterator over it) "
+                    "is still used after the stop"
+                    if lent
+                    else "Peeky cannot tell from the build's MIR whether a borrow of it (a "
+                    "`&str` of its text, a reference, an iterator) is still used after the "
+                    "stop"
+                )
+                + ", and it would keep the old length: it would read a mix of old and new "
+                "text, or bytes that are not UTF-8. Change it before such a borrow is taken, "
+                "or after its last use"
+            )
 
-    def text_settable(self, variable, frame):
+    def text_settable(self, variable, frame, stop=None):
         """Whether a text change could be made to this String here (for `[settable]`)."""
         try:
             self.validate_mutation_target(variable, frame)
-            self.validate_text_target(variable, frame)
+            self.validate_text_target(variable, frame, stop)
         except ValueError:
             return False
         return True
