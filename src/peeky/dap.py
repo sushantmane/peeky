@@ -588,9 +588,13 @@ class DAP:
         # table was read, and its children had not been handed to another parent yet
         # (an exiting adapter closes its pipes first, and is a zombie only after).
         running = self._adapter_running(table)
-        if self.process.returncode is not None:
-            # Reaped before close() (never by Peeky): its pid may name another process,
-            # so its session proves nothing any more.
+        if (
+            self.process.returncode is not None
+            and self.family.session is not None
+            and not (table and self.family.holds(table, session=self.family.session))
+        ):
+            # Reaped before close() (never by Peeky), and none of the session's processes
+            # Peeky knows is left in its session: that id may now be another's.
             self.family.session = None
         if table is None:
             return None, running
@@ -640,9 +644,12 @@ class DAP:
 
     def _kill_group(self, sig=signal.SIGKILL):
         """Signal the adapter's own process group (macOS: EPERM once only zombies). Only
-        while the adapter is unreaped: its group id is then still its own (#170)."""
+        while its id is still the adapter's group's (#170): the adapter is unreaped, or a
+        process Peeky recorded is still in that group."""
         if self.process.returncode is not None:
-            return
+            table = processes.table()
+            if not (table and self.family.holds(table, group=self.process.pid)):
+                return
         try:
             os.killpg(self.process.pid, sig)
         except (ProcessLookupError, PermissionError):

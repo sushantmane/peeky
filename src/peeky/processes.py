@@ -198,6 +198,19 @@ class Family:
             found |= members | announced
             return {pid: table[pid] for pid in found}, groups
 
+    def holds(self, table, group=None, session=None):
+        """Whether a process the session recorded, still the same one, is in ``group``
+        (or ``session``): a group's or a session's id is never another's while it has
+        members, so the id still names the adapter's own."""
+        with self.lock:
+            known = {**self.announced, **self.kin}
+            return any(
+                _same(table, pid, start)
+                and (group is None or table[pid][1] == group)
+                and (session is None or (len(table[pid]) > 4 and table[pid][4] == session))
+                for pid, start in known.items()
+            )
+
     def groups(self, pids, table):
         """The process groups of those ``pids`` that are still the kin listed, or the
         debuggee the adapter announced."""

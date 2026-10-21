@@ -268,6 +268,31 @@ def test_an_adapter_reaped_elsewhere_proves_no_session_and_signals_no_group(tmp_
     dap._kill_group()
     assert dap.family.session is None and signalled == []
     dap.close()
+    # Unless a process Peeky recorded is still in its group and session: their ids are
+    # then still the adapter's, never reused while they have members (a launched JVM
+    # shares java-debug's group).
+    member = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(30)"], start_new_session=False
+    )
+    try:
+        dap = DAP(command=(sys.executable, "-c", "import time; time.sleep(30)"))
+        group = dap.process.pid
+        table = {
+            group: (1, group, "s", "S", group),
+            member.pid: (1, group, "m", "S", group),
+        }
+        monkeypatch.setattr(processes, "table", lambda: table)
+        dap.family.kin[member.pid] = "m"
+        dap.process.kill()
+        dap.process.wait(timeout=10)
+        dap._list_family()
+        dap._kill_group(signal.SIGTERM)
+        assert dap.family.session == group and signalled == [group]
+        monkeypatch.undo()
+        dap.close()
+    finally:
+        member.kill()
+        member.wait()
 
 
 def test_an_attached_program_is_never_ended(tmp_path, leftovers):
