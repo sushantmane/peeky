@@ -776,6 +776,11 @@ _FIELD_CONTAINER = re.compile(
     r"alloc::vec::Vec<.+>|alloc::string::String|&(?:mut )?str|&(?:mut )?\[.+\]"
     r"|alloc::boxed::Box<str, alloc::alloc::Global>"
 )
+_RAW_EXPOSED = (
+    "this function takes a raw pointer to `{name}` (or to a part of it, or through it), "
+    "through which unsafe code may free, move out of or overwrite what it holds where "
+    "the build's MIR cannot see (`ptr::read`, `ptr::drop_in_place`)"
+)
 _NO_MEMORY = (
     "the debugger gives no memory address for it (lldb-dap from LLVM 20 reads memory, "
     "with readMemory)"
@@ -2007,6 +2012,8 @@ class RustSession(NativeSession):
                 line,
                 ((frame or {}).get("source") or {}).get("path"),
             )
+            # Nor where unsafe code may have freed what it owns through a raw pointer.
+            and not proofs.raw_exposed(hashed[1], variable.get("name"), line, shown_path)
         )
         layouts = self.layouts
         container = container_view(
@@ -2065,7 +2072,9 @@ class RustSession(NativeSession):
             pointer = _holds_data_pointers(kind)
             provable = innermost and unoptimized and hashed
             gated = (owning or (pointer and not plain)) and not (
-                provable and proofs.proven(hashed[1], variable.get("name"), line, shown_path)
+                provable
+                and proofs.proven(hashed[1], variable.get("name"), line, shown_path)
+                and not proofs.raw_exposed(hashed[1], variable.get("name"), line, shown_path)
             )
             # Judged in every frame (`--frame N` reads callers): only proofs that make a
             # value readable (an owned container, a Box) are the innermost frame's.
@@ -2119,8 +2128,14 @@ class RustSession(NativeSession):
                 f"`{name}` is a local of a caller frame, which the call under way may be "
                 "changing; Peeky reads it in the innermost frame"
             )
-        if _frame_hash(frame) is None or getattr(self, "owned", None) is None:
+        hashed, proofs = _frame_hash(frame), getattr(self, "owned", None)
+        if hashed is None or proofs is None:
             return "Peeky cannot match this frame to the build's MIR"
+        place = frame or {}
+        if proofs.raw_exposed(
+            hashed[1], name, place.get("line"), (place.get("source") or {}).get("path")
+        ):
+            return _RAW_EXPOSED.format(name=name)
         if not owned:
             return (
                 f"the build's MIR does not prove `{name}` initialized at this line: it may "
@@ -2162,6 +2177,8 @@ class RustSession(NativeSession):
             return {"raw_reason": "Peeky cannot match this frame to the build's MIR"}
         place = frame or {}
         line, path = place.get("line"), (place.get("source") or {}).get("path")
+        if proofs.raw_exposed(hashed[1], root, line, path):
+            return {"raw_reason": _RAW_EXPOSED.format(name=root)}
         proof = self.parameters.get((hashed[1], root))
         verdict, declared = [], None
 
@@ -2290,15 +2307,25 @@ class RustSession(NativeSession):
         match). The worker passes the result to ``view_variable`` for everything inside
         it."""
         proofs, kind = getattr(self, "owned", None), variable.get("type")
-        if proofs is None or _holds_data_pointers(kind) or _is_wide_box(kind):
-            # A pointer at the top is the Box and reference gates' (view_variable).
-            return None
-        if not re.fullmatch(r"[^\W\d]\w*(?: @ .+)?", str(variable.get("name"))):
+        if proofs is None or not re.fullmatch(r"[^\W\d]\w*(?: @ .+)?", str(variable.get("name"))):
             # LLDB's own values, not a local the code moves: an async body's `<null>`
             # (its `Pin<&mut>` self), the `(Return Value)` a step out shows.
             return None
+        hashed, place = _frame_hash(frame), frame or {}
+        exposed = bool(
+            hashed
+            and proofs.raw_exposed(
+                hashed[1],
+                variable.get("name"),
+                place.get("line"),
+                (place.get("source") or {}).get("path"),
+            )
+        )
+        if _holds_data_pointers(kind) or _is_wide_box(kind):
+            # A pointer at the top is the Box and reference gates' (view_variable); what
+            # the function took a raw pointer to (`self`) shows its pointers' addresses.
+            return "pointers" if exposed else None
         types = self._binding_types(variable, frame)
-        hashed = _frame_hash(frame)
         # An unmangled function (`#[no_mangle]`) is never generic.
         generics = proofs.type_parameters(hashed[1]) if hashed else ()
         if types and not any(_may_own(each, generics) for each in types):
@@ -2316,7 +2343,8 @@ class RustSession(NativeSession):
             )
         )
         if proven:
-            return None if innermost else "pointers"
+            # Unsafe code may have freed what it owns through a raw pointer (#156 review).
+            return None if innermost and not exposed else "pointers"
         return "stale"
 
     def display_type(self, variable, frame, top=True):

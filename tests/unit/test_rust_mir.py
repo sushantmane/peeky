@@ -2790,6 +2790,15 @@ fn main() -> () {
 """
 
 
+def frozen_with(after, *statements):
+    """FROZEN with ``statements`` added after the one starting ``after``, each with its
+    span comment (parse_body keeps only statements that have one)."""
+    line = next(line for line in FROZEN.splitlines() if line.strip().startswith(after))
+    comment = line[line.index("//") :]
+    added = "".join(f"\n        {statement} {comment}" for statement in statements)
+    return FROZEN.replace(line, line + added, 1)
+
+
 def test_a_borrow_made_only_from_frozen_owners_is_traced_to_them():
     # Seventh evaluation (Low, #156): `v` of `for v in args[0].split('/')` past its last
     # use and a call was unproven, though it points into `args`, which nothing changes:
@@ -2803,7 +2812,7 @@ def test_a_borrow_made_only_from_frozen_owners_is_traced_to_them():
     # Where `Iterator` may be the crate's own, `next` may return into the iterator.
     assert _frozen_sources(body, 21, set(), False) is None
     # An iterator borrowed otherwise too (`iter.size_hint()`) may hold anything.
-    other = FROZEN.replace("_18 = &mut _13;", "_18 = &mut _13;\n        _24 = &_13;")
+    other = frozen_with("_18 = &mut _13;", "_24 = &_13;")
     assert _frozen_sources(parse_body(other), 21, set(), True) is None
     # A call the borrow passes through with a `&mut` operand: not traced.
     other = FROZEN.replace("index(move _12, const 0_usize)", "index(move _17, const 0_usize)")
@@ -2833,3 +2842,69 @@ def test_a_borrow_made_only_from_frozen_owners_is_traced_to_them():
 def test_next_is_the_standard_librarys_only_where_the_crate_names_no_other(code, std):
     owned = OwnedLocals([], {}, ("src/main.rs",), texts={"src/main.rs": code})
     assert owned._std_iterator() is std
+
+
+def test_a_raw_pointer_made_from_a_local_unfreezes_and_exposes_it():
+    # Review of #156: `ptr::read(&w.values)`, `drop_in_place(&mut self.values)` and a
+    # pointer cast from `&s` reach the local through a reference temp (`_6 =
+    # &(_1.1: Vec<i64>); _5 = &raw const (*_6)`), so no `&mut` or raw borrow of the
+    # local itself shows. The built MIR's own deref of a Box is not one.
+    from peeky.rust_mir import _frozen_owners
+
+    def parsed(text):
+        body = parse_body(text)
+        body.generics = ()  # matched to its IR function: not generic
+        return body
+
+    body = parsed(FROZEN)
+    assert body._raw_exposed() == frozenset()
+    assert _frozen_owners(body, 21, True) == {(2, False)}
+    for made in (
+        "_28 = &raw const (*_12);",
+        "_28 = copy _12 as *const std::vec::Vec<std::string::String> (PtrToPtr);",
+    ):
+        body = parsed(frozen_with("_12 = &_2;", made))
+        assert 2 in body._raw_exposed() and _frozen_owners(body, 21, True) is None, made
+    # A twin a macro generates (its type parameters unknown) is never judged so.
+    assert _frozen_owners(parse_body(FROZEN), 21, True) is None
+    # A Box's deref (and its alignment check) exposes nothing; a raw pointer the
+    # program makes through it exposes the Box.
+    deref = (
+        "_28 = copy ((_2.0: std::ptr::Unique<Inner>).0: std::ptr::NonNull<Inner>) as "
+        "*const Inner (Transmute);",
+        "_24 = copy _28 as *const () (PtrToPtr);",
+    )
+    assert parse_body(frozen_with("_12 = &_2;", *deref))._raw_exposed() == frozenset()
+    made = (*deref, "_25 = &raw mut (*_28);")
+    assert 2 in parse_body(frozen_with("_12 = &_2;", *made))._raw_exposed()
+
+
+@pytest.mark.parametrize(
+    "edge", ["unwind continue", "unwind unreachable", "unwind terminate(abi)", "unwind: bb9"]
+)
+def test_a_call_is_read_whatever_its_unwind_edge(edge):
+    # Review of #156: calls with no cleanup of their own print `unwind continue`, which
+    # left a reference argument's borrows untraced.
+    from peeky.rust_mir import _CALL
+
+    call = _CALL.fullmatch(f"<String as Deref>::deref(move _8) -> [return: bb2, {edge}]")
+    assert call and (call[1], call[2]) == ("<String as Deref>::deref", "move _8")
+
+
+@pytest.mark.parametrize(
+    "code,std",
+    [
+        ('fn f() { let v: Vec<String> = vec![]; println!("{}", v.len() as usize); }', True),
+        ("use std::string::String;", True),
+        ('fn f(x: &str) { assert_eq!(x, String::from("a")); }', True),
+        ("struct String;", False),
+        ("use crate::m::Vec;", False),
+        ("use std::vec::Vec as Box;", False),
+        ("mk!(String);", False),
+        ("type u8 = i32;", False),
+    ],
+)
+def test_a_frozen_owners_type_is_the_standard_librarys_only_where_no_other_is_named(code, std):
+    # A function's header prints its arguments' types by short names (`&Vec<String>`).
+    owned = OwnedLocals([], {}, ("src/main.rs",), texts={"src/main.rs": code})
+    assert owned._std_names() is std

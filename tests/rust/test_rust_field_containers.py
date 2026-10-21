@@ -149,6 +149,28 @@ BORROWS = """fn tally(n: usize) -> usize {
     n * 2
 }
 
+#[inline(never)]
+fn by_ref(args: &Vec<String>) -> usize {
+    let mut total = 0;
+    for v in args[1].split('/') {
+        total += tally(v.len());
+        total += 1; // BY_REF
+    }
+    total
+}
+
+#[inline(never)]
+fn mutated() -> usize {
+    let s = String::from("short");
+    let v: &str = s.as_str();
+    let n = v.len();
+    // Undefined behaviour, which the program never relies on: through a pointer cast
+    // from `&s`, the String it borrows grows (and moves) under `v`.
+    let p = &s as *const String as *mut String;
+    unsafe { (*p).push_str(" and now much longer than before, to move its buffer") };
+    std::hint::black_box(n) // MUTATED
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let mut owned = format!("a{},b", args.len());
@@ -161,7 +183,43 @@ fn main() {
     total += tally(w.len());
     owned.push_str(" and more text, to grow it past its capacity");
     total += owned.len(); // THAWED
-    println!("TOTAL {}", total);
+    println!("TOTAL {} {} {}", total, by_ref(&args), mutated());
+}
+"""
+# Unsafe code that frees what a field owns behind the MIR's back, soundly: the field is
+# never used while it dangles (`ptr::read` then `mem::forget`; `drop_in_place` then
+# `ptr::write`).
+UNSAFE = """use std::hint::black_box;
+
+struct W {
+    values: Vec<i64>,
+    k: usize,
+}
+
+impl W {
+    #[inline(never)]
+    fn rebuild(&mut self) -> usize {
+        unsafe { std::ptr::drop_in_place(&mut self.values) };
+        let n = black_box(self.k); // DROPPED_IN_PLACE
+        unsafe { std::ptr::write(&mut self.values, vec![1]) };
+        n
+    }
+}
+
+#[inline(never)]
+fn read_out() -> usize {
+    let mut w = W { values: vec![1, 2, 3], k: 2 };
+    black_box(&mut w);
+    let copy: Vec<i64> = unsafe { std::ptr::read(&w.values) };
+    drop(copy);
+    let n = black_box(w.k); // READ_OUT
+    std::mem::forget(w);
+    n
+}
+
+fn main() {
+    let mut w = W { values: vec![1, 2, 3], k: 4 };
+    println!("{} {}", w.rebuild(), read_out());
 }
 """
 
@@ -375,3 +433,38 @@ def test_a_borrow_of_a_local_nothing_changes_reads_past_its_last_use(tmp_path, s
     # use: what it pointed at may have been reallocated, so it is never read (#110).
     result = probe(capsys, crate, BORROWS, "// THAWED", "w", "--arg", "ab/cd")
     assert result["rows"][0]["view"] == "unproven", result["rows"]
+    # Review of #156: into what a shared reference argument points at too, though its
+    # calls print `unwind continue` (no cleanup of their own).
+    result = probe(capsys, crate, BORROWS, "// BY_REF", "v", "--arg", "ab/cd", "--hits", "2")
+    rows = result["rows"]
+    assert [row.get("view") != "unproven" for row in rows] == [True, True], rows
+    if reads(rows[0]):
+        assert [row["value"] for row in rows] == ['"ab"', '"cd"'], rows
+    # A pointer cast from `&s` may write `s` (undefined behaviour, but cheap to rule
+    # out): `v` is not read past its last use.
+    result = probe(capsys, crate, BORROWS, "// MUTATED", "v", "--arg", "ab/cd")
+    assert result["rows"][0]["view"] == "unproven", result["rows"]
+
+
+@pytest.mark.timeout(400)
+def test_what_unsafe_code_may_have_freed_through_a_raw_pointer_is_never_read(
+    tmp_path, state, capsys
+):
+    # Review of #156: `ptr::read(&w.values)` (its copy dropped), or `drop_in_place(&mut
+    # self.values)`, frees the buffer the field still points at, which the MIR shows
+    # initialized; the field read the freed memory (`[3, 4356, 0]`).
+    crate = crate_at(tmp_path, "unsafe", UNSAFE)
+    why = "this function takes a raw pointer to `{}` (or to a part of it, or through it)"
+    rows = {
+        row["selector"]: row
+        for row in probe(capsys, crate, UNSAFE, "// DROPPED_IN_PLACE", "self.values,self.k")["rows"]
+    }
+    raw(rows["self.values"], why.format("self"))
+    assert rows["self.k"]["value"] == "4", rows
+    rows = {
+        row["selector"]: row
+        for row in probe(capsys, crate, UNSAFE, "// READ_OUT", "w.values,w.values.len,w.k")["rows"]
+    }
+    raw(rows["w.values"], why.format("w"))
+    # Its own fields still read, as the bytes the struct holds.
+    assert (rows["w.values.len"]["value"], rows["w.k"]["value"]) == ("3", "2"), rows
