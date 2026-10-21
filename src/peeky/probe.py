@@ -32,6 +32,8 @@ from peeky.worker import (
 MAX_SELECTORS = 32
 MAX_SETS = 8
 MAX_HITS = 100
+# The highest hit a --set-at may name: its line's stops are counted, not captured.
+MAX_SET_AT_HIT = 1000
 MAX_ROWS = 2000
 MAX_SECONDS = 300
 # HTTP probes must finish inside Client.call's 45 s timeout.
@@ -287,6 +289,25 @@ def parse_location(text):
     return program, int(line)
 
 
+_SET_AT = re.compile(r"(?:(?P<path>.+):)?(?P<line>[1-9][0-9]{0,6})(?:@(?P<hit>[1-9][0-9]{0,6}))?")
+
+
+def parse_set_at(where, assignment):
+    """`--set-at [<path>:]<line>[@<hit>] <name>=<value>` -> (path or None, line, hit,
+    name, value); the hit defaults to 1 and counts that line's own stops."""
+    found = _SET_AT.fullmatch(where or "")
+    if not found:
+        raise ValueError(
+            f"--set-at expects [<path>:]<line>[@<hit>] then name=value, got {where!r} "
+            "(e.g. --set-at stock.cpp:22@3 colon=6)"
+        )
+    name, separator, value = (assignment or "").partition("=")
+    if not separator or not name.strip():
+        raise ValueError(f"--set-at {where} expects name=value, got {assignment!r}")
+    hit = int(found["hit"] or 1)
+    return found["path"], int(found["line"]), hit, name.strip(), value.strip()
+
+
 @dataclass(frozen=True)
 class Probe:
     program: str
@@ -309,6 +330,10 @@ class Probe:
     # A candidate fix: (old, new) applied once to `program` in a fresh build; `line` is
     # in the original's numbering. The files on disk are never changed.
     edit: tuple[str, str] | None = None
+    # Interventions at their own stops (#137): (line, hit, selector, value), each applied
+    # once at that hit of that line of `program` (its own stops counted, in the original's
+    # numbering), whether or not it is the capture line; `set`/`set_hit` stay as they are.
+    set_at: tuple[tuple[int, int, str, str], ...] = ()
 
     @property
     def limit(self):
@@ -319,7 +344,10 @@ class Probe:
         """
         if self.hits != "all":
             return self.hits
-        after_set = len(self.capture) if self.set else 0
+        # One set of after-set rows per captured stop that gets interventions.
+        stops = {self.set_hit} if self.set else set()
+        stops |= {hit for line, hit, _, _ in self.set_at if line == self.line}
+        after_set = len(self.capture) * len(stops)
         return max(1, min(MAX_HITS, (MAX_ROWS - after_set) // max(1, len(self.capture))))
 
     def __post_init__(self):
@@ -334,9 +362,25 @@ class Probe:
         if len(set(self.capture)) != len(self.capture):
             # A repeated selector adds no evidence and would multiply rows in comparisons.
             object.__setattr__(self, "capture", tuple(dict.fromkeys(self.capture)))
-        if not isinstance(self.set, tuple) or len(self.set) > MAX_SETS:
-            raise ValueError(f"At most {MAX_SETS} interventions")
-        for change in self.set:
+        if not isinstance(self.set, tuple) or not isinstance(self.set_at, tuple):
+            raise ValueError("Interventions are tuples")
+        if len(self.set) + len(self.set_at) > MAX_SETS:
+            raise ValueError(f"At most {MAX_SETS} interventions (--set and --set-at together)")
+        for point in self.set_at:
+            if (
+                not isinstance(point, tuple)
+                or len(point) != 4
+                or type(point[0]) is not int
+                or not 1 <= point[0] <= 9_999_999
+                or type(point[1]) is not int
+                or not 1 <= point[1] <= MAX_SET_AT_HIT
+                or not all(isinstance(part, str) for part in point[2:])
+            ):
+                raise ValueError(
+                    "A --set-at intervention is (line, hit, selector, value): a positive "
+                    f"line, a hit within 1..{MAX_SET_AT_HIT}, and strings"
+                )
+        for change in (*self.set, *(point[2:] for point in self.set_at)):
             if (
                 not isinstance(change, tuple)
                 or len(change) != 2
@@ -2550,6 +2594,120 @@ def _children(worker, stop, selector, variable, pointers=False, whole_strings=Fa
     }
 
 
+# A probe that completed, but whose requested change (--set, --set-at) never came: its
+# values are evidence, but the experiment asked for did not happen (#137).
+UNAPPLIED_EXIT = 4
+
+
+def probe_exit_code(result):
+    """`peeky probe`'s and `peeky-probe`'s exit code: 0, 1 for a probe that did not
+    complete, or UNAPPLIED_EXIT."""
+    if result.get("status") != "completed":
+        return 1
+    return UNAPPLIED_EXIT if result.get("unapplied") else 0
+
+
+_HASHED = re.compile(r"::(h[0-9a-f]{16})$")
+# What Python's debugger names alike, by the node making the code: two lambdas on a line
+# are both `<lambda>`, and its frames give no column (debugpy reports 1).
+_PYTHON_ALIKE = {
+    ast.Lambda: "<lambda>",
+    ast.GeneratorExp: "<genexpr>",
+    ast.ListComp: "<listcomp>",
+    ast.SetComp: "<setcomp>",
+    ast.DictComp: "<dictcomp>",
+}
+
+
+def _function_labels(names, instances):
+    """{frame name: label} for warnings and changes: a frame by the function its build
+    names (`instances`: a generic's instance, a Rust closure's number) where known, else
+    as `display_function` shows it; where two different frames would read alike (an
+    instance cut short, overloads), the label with the frame's symbol hash, else the
+    frame's whole name."""
+    labels = {name: instances.get(name) or display_function(name) for name in names}
+    shown = list(labels.values())
+    distinct = {}
+    for name, label in labels.items():
+        if shown.count(label) > 1:
+            hashed = _HASHED.search(str(name))
+            label = f"{label} ({hashed[1]})" if hashed and instances.get(name) else str(name)
+        distinct[name] = label
+    return distinct
+
+
+def _python_alike(text, lines):
+    """{line: {code name: how many}} of the code on ``lines`` of a Python source that
+    Python's debugger names alike (two lambdas on one line), whose stops it cannot tell
+    apart; {} where none, or the source does not parse."""
+    try:
+        tree = ast.parse(text)
+    except (SyntaxError, ValueError):
+        return {}
+    found = {}
+    for node in ast.walk(tree):
+        name = _PYTHON_ALIKE.get(type(node))
+        if name is None:
+            continue
+        for number in set(range(node.lineno, (node.end_lineno or node.lineno) + 1)) & set(lines):
+            counts = found.setdefault(number, {})
+            counts[name] = counts.get(name, 0) + 1
+    return {
+        number: {name: count for name, count in counts.items() if count > 1}
+        for number, counts in found.items()
+        if any(count > 1 for count in counts.values())
+    }
+
+
+def _stops_by_function(functions, labels, word, alike=None):
+    """`main (stops 1, 3); tf<rc::A> (stop 2)` for {frame name: [stops]}, each frame by
+    its label (`_function_labels`); `alike`: {code name: how many} the line has that the
+    debugger names alike, whose stops are counted together."""
+    shown = []
+    for name, numbers in list(functions.items())[:8]:
+        many = (alike or {}).get(name)
+        shown.append(
+            f"{labels.get(name) or '?'} ({word}{'s' if len(numbers) > 1 else ''} "
+            f"{', '.join(map(str, numbers[:8]))}{', ...' if len(numbers) > 8 else ''}"
+            + (
+                f"; {many} on the line, which the debugger names alike, so their stops are "
+                "counted together"
+                if many
+                else ""
+            )
+            + ")"
+        )
+    if len(functions) > 8:
+        shown.append(f"and {len(functions) - 8} more")
+    return "; ".join(shown)
+
+
+def _moved(placed, state):
+    """Apply this wait's `breakpoint` events to the placed breakpoints with their ids."""
+    for update in state.get("breakpoint_events", []):
+        point = update.get("breakpoint") or {}
+        if point.get("id") is None:
+            continue
+        for number, known in placed.items():
+            if known.get("id") == point["id"]:
+                placed[number] = {**known, **point}
+
+
+def _set_at_moved(points, placed, program):
+    """Refuse a --set-at whose line the debugger moved (no code of its own there): a
+    change is made where it was asked, never at a line nearby."""
+    for point in points:
+        number = point["build_line"]
+        where = (placed.get(number) or {}).get("line", number)
+        if point["change"] is None and type(where) is int and where != number:
+            raise Refused(
+                "INVALID_REQUEST",
+                f"--set-at {program}:{point['line']}@{point['hit']}: line {number} has no "
+                f"code of its own (the debugger moved its breakpoint to line {where}); a "
+                "change is made only where it is asked. Choose a line from `peeky describe`",
+            )
+
+
 def _expected_line(breakpoint, state, requested):
     """The adapter-resolved breakpoint line, including later breakpoint updates."""
     line = breakpoint.get("line", requested)
@@ -2569,13 +2727,35 @@ def run_probe(root, probe, *, adapter=None, progress=None):
     worker = DebugWorker(root, adapter=adapter)
     started = time.monotonic()
     deadline = started + probe.timeout
-    result = {"probe": {**asdict(probe), "set": [list(change) for change in probe.set]}}
+    result = {
+        "probe": {
+            **asdict(probe),
+            "set": [list(change) for change in probe.set],
+            "set_at": [list(point) for point in probe.set_at],
+        }
+    }
     # The edit's texts are not evidence of the run; the CLI adds the diff.
     result["probe"].pop("edit")
     rows, changes, hits, warnings, relocated, pauses = [], [], 0, [], False, []
+    # Pauses at stops that only apply a --set-at (no capture there).
+    set_pauses = []
     unreported = None
     # The breakpoint line in the build that runs: the candidate's numbering with an edit.
     line = probe.line
+    # Each --set-at, with its line in the build that runs (#137).
+    points = [
+        {"line": at, "build_line": at, "hit": hit, "name": name, "value": value, "change": None}
+        for at, hit, name, value in probe.set_at
+    ]
+    # Stops seen per breakpoint line (the build's numbering): a --set-at's hit counts its
+    # own line's stops, in any function.
+    seen = {}
+    # {--set-at line: {function: [its stops]}}: a lambda, closure or recursive call on
+    # the line stops there too, and its stops count. Keyed, like `functions`, by the
+    # frame's whole name: a Rust generic's instances differ only in its symbol's hash.
+    set_functions = {}
+    # {frame name: a generic's instance with its type arguments} (Rust: `tf<rc::A>`).
+    instances = {}
     # {function: [hits]}: a line shared by a function and a closure or lambda stops in each.
     functions = {}
     last_said = 0.0
@@ -2584,23 +2764,39 @@ def run_probe(root, probe, *, adapter=None, progress=None):
         if probe.edit:
             text = worker.path(probe.program).read_text()
             line = candidate_line(text, probe.edit, probe.line)
+            for point in points:
+                point["build_line"] = candidate_line(text, probe.edit, point["line"])
             # The worker builds one edit with the same effect as every pair.
             old, new = combine_edits(text, probe.edit)
             result["candidate"] = {"line": line, "original_line": probe.line}
+        # The capture line first, then each --set-at line, each once.
+        lines = list(dict.fromkeys([line, *(point["build_line"] for point in points)]))
         launch = worker.dispatch(
             "launch",
             {
                 "program": probe.program,
-                "breakpoints": [{"line": line}],
+                "breakpoints": [{"line": number} for number in lines],
                 **({"edit": {"old": old, "new": new}} if probe.edit else {}),
                 **({"entry": probe.entry} if probe.entry else {}),
                 **({"args": list(probe.args)} if probe.args else {}),
                 **({"expect_sha256": dict(probe.expect_sha256)} if probe.expect_sha256 else {}),
                 # What no stop of the build can change is refused before it runs (#138).
-                **({"sets": [name for name, _ in probe.set]} if probe.set else {}),
+                # Each with the line whose stops make it: a --set-at's own (#137).
+                **(
+                    {
+                        "sets": [{"line": line, "name": name} for name, _ in probe.set]
+                        + [{"line": p["build_line"], "name": p["name"]} for p in points]
+                    }
+                    if probe.set or points
+                    else {}
+                ),
             },
         )
         session = {"session_id": launch["session_id"]}
+        # Where the debugger placed each line's breakpoint (later `breakpoint` events
+        # update it): {build line: DAP breakpoint}.
+        placed = dict(zip(lines, [*(launch["breakpoints"] or []), *([{}] * len(lines))]))
+        active = list(lines)
         result.update(
             breakpoint=(launch["breakpoints"] or [{}])[0],
             artifact_manifest_id=launch["artifact_manifest_id"],
@@ -2613,7 +2809,8 @@ def run_probe(root, probe, *, adapter=None, progress=None):
         previews = identity.get("language") == "java" and identity.get("mode") != "attach"
         pointers = identity.get("language") in ("c", "cpp")
         if not launch.get("supports_member_set") and any(
-            len(parse_selector(name)) > 1 for name, _ in probe.set
+            len(parse_selector(name)) > 1
+            for name, _ in (*probe.set, *((p["name"], p["value"]) for p in points))
         ):
             raise ValueError(
                 "--set changes only the stopped function's own locals here; "
@@ -2639,21 +2836,33 @@ def run_probe(root, probe, *, adapter=None, progress=None):
             f"started; breakpoint {probe.program}:{point.get('line', line)} "
             + ("in the candidate " if probe.edit else "")
             + ("verified" if verified else "pending until its class or module loads")
+            + (
+                f", and {len(lines) - 1} more for --set-at"
+                if len(lines) > 1
+                else " (with --set-at)"
+                if points
+                else ""
+            )
         )
+        _set_at_moved(points, placed, probe.program)
         say("waiting for the program to reach it...")
         status, noted = "timeout", time.monotonic()
         while (remaining := deadline - time.monotonic()) > 0:
             state = worker.dispatch("wait", {**session, "timeout": min(2, remaining)})
             if not verified and any(
                 update.get("breakpoint", {}).get("verified") is True
+                and update.get("breakpoint", {}).get("id") == point.get("id")
                 for update in state.get("breakpoint_events", [])
             ):
                 verified = True
                 say("breakpoint verified")
+            _moved(placed, state)
+            _set_at_moved(points, placed, probe.program)
             if state["state"] == "running":
                 if time.monotonic() - noted >= 10:
                     noted = time.monotonic()
-                    phase = "for the next stop" if hits < probe.limit else "for the program to exit"
+                    pending = hits < probe.limit or any(p["change"] is None for p in points)
+                    phase = "for the next stop" if pending else "for the program to exit"
                     say(f"still waiting {phase} ({int(noted - started)} s elapsed)")
                 continue
             if state["state"] == "terminated":
@@ -2671,66 +2880,144 @@ def run_probe(root, probe, *, adapter=None, progress=None):
             # From the moment the stop arrived, so debugger reads before capture count too.
             paused = state.get("event", {}).get("received", time.monotonic())
             stop = {**session, "stop_id": state["stop_id"]}
-            # Only the requested breakpoint counts; a crash, signal or other stop fails
+            # Only the requested breakpoints count; a crash, signal or other stop fails
             # closed before any capture or intervention.
-            expected = _expected_line(result["breakpoint"], state, line)
-            roots = _roots(probe.capture)
-            # Previews (#136) of the captured roots only: each costs debugger requests.
+            # Every line placed counts: another thread's stop at a line whose breakpoint
+            # was just removed may still be served (LLDB stops all threads together).
+            expected = {number: _expected_line(placed[number], state, number) for number in lines}
+            roots = _roots([*probe.capture, *(p["name"] for p in points if p["change"] is None)])
+            # Previews (#136) of the captured roots only: each costs debugger requests. A
+            # stop the wait places at another line (a --set-at's) reads none.
+            where = str(state.get("location") or "").rpartition(":")[2]
+            capturing = hits < probe.limit and (not where.isdigit() or int(where) == expected[line])
             snapshot = worker.dispatch(
-                "inspect", {**stop, **({"names": roots} if roots else {}), "previews": roots}
+                "inspect",
+                {
+                    **stop,
+                    **({"names": roots} if roots else {}),
+                    "previews": _roots(probe.capture) if capturing else False,
+                },
             )
             frame = snapshot["frames"][0] if snapshot["frames"] else {}
             reason = state.get("event", {}).get("body", {}).get("reason")
             path = str(frame.get("source", {}).get("path", "")).replace("\\", "/")
+            matched = [number for number in lines if expected[number] == frame.get("line")]
             if (
                 reason not in (None, "breakpoint")
-                or frame.get("line") != expected
+                or not matched
                 or not (path == probe.program or path.endswith("/" + probe.program))
             ):
+                wanted = ", ".join(str(expected[number]) for number in lines)
                 raise ValueError(
                     f"Stopped at {path}:{frame.get('line')} ({reason}), not the requested "
-                    f"{probe.program}:{expected}"
+                    f"{probe.program}:{wanted}"
                 )
-            hits += 1
-            functions.setdefault(display_function(frame.get("name")), []).append(hits)
-            if expected != line and not relocated:
-                relocated = True
-                warnings.append(
-                    f"The debugger moved the breakpoint from line {line} to line "
-                    f"{expected} (line {line} has no code of its own); values are from "
-                    f"line {expected}"
-                    + (" of the candidate" if probe.edit else "")
-                    + ". Choose a line from `peeky describe`."
+            if snapshot.get("instance"):
+                instances[frame.get("name")] = snapshot["instance"]
+            for number in matched:
+                seen[number] = seen.get(number, 0) + 1
+                if any(p["build_line"] == number for p in points):
+                    named = set_functions.setdefault(number, {})
+                    named.setdefault(frame.get("name"), []).append(seen[number])
+            # A stop of the capture line is captured until --hits are; later ones (kept
+            # for a --set-at on that line) only apply it.
+            captured = line in matched and hits < probe.limit
+            if captured:
+                hits += 1
+                functions.setdefault(frame.get("name"), []).append(hits)
+                if expected[line] != line and not relocated:
+                    relocated = True
+                    warnings.append(
+                        f"The debugger moved the breakpoint from line {line} to line "
+                        f"{expected[line]} (line {line} has no code of its own); values are "
+                        f"from line {expected[line]}"
+                        + (" of the candidate" if probe.edit else "")
+                        + ". Choose a line from `peeky describe`."
+                    )
+                    say(warnings[-1])
+                if _report_hit(hits, probe.limit, last_said):
+                    last_said = time.monotonic()
+                    of = (
+                        f" (all, up to {probe.limit})" if probe.hits == "all" else f"/{probe.limit}"
+                    )
+                    say(f"hit {hits}{of} at {probe.program}:{expected[line]}; capturing")
+                # Which of the line's breakpoint locations in this function the stop is at,
+                # where it has several (#157): each pass stops at each.
+                place = (
+                    {"stop": state["place"], "stops": state["places"]}
+                    if type(state.get("place")) is int and type(state.get("places")) is int
+                    else {}
                 )
-                say(warnings[-1])
-            if _report_hit(hits, probe.limit, last_said):
-                last_said = time.monotonic()
-                of = f" (all, up to {probe.limit})" if probe.hits == "all" else f"/{probe.limit}"
-                say(f"hit {hits}{of} at {probe.program}:{expected}; capturing")
-            # Which of the line's breakpoint locations in this function the stop is at, where
-            # it has several (#157): each pass stops at each.
-            place = (
-                {"stop": state["place"], "stops": state["places"]}
-                if type(state.get("place")) is int and type(state.get("places")) is int
-                else {}
-            )
-            first = len(rows)
-            # The stop-validation inspection is reused for the first selectors.
-            rows.extend(
-                _capture(
-                    worker,
-                    stop,
-                    probe.capture,
-                    hits,
-                    "observed",
-                    snapshot,
-                    preview=previews,
-                    pointers=pointers,
+                first = len(rows)
+                # The stop-validation inspection is reused for the first selectors.
+                rows.extend(
+                    _capture(
+                        worker,
+                        stop,
+                        probe.capture,
+                        hits,
+                        "observed",
+                        snapshot,
+                        preview=previews,
+                        pointers=pointers,
+                    )
                 )
-            )
-            if hits == probe.set_hit and probe.set:
-                for name, value in probe.set:
-                    changes.append(apply_set(worker, stop, name, value))
+            # This stop's interventions, in order: --set at its --set-hit, then each
+            # --set-at whose line stopped its hit-th time here.
+            due = []
+            if captured and hits == probe.set_hit and probe.set:
+                due += [(name, value, hits, None) for name, value in probe.set]
+            for point in points:
+                number = point["build_line"]
+                if point["change"] is None and number in matched and seen[number] == point["hit"]:
+                    due.append((point["name"], point["value"], point["hit"], point))
+            for name, value, hit, point in due:
+                if point is not None:
+                    say(
+                        f"--set-at {probe.program}:{point['line']}@{hit}: setting {name}"
+                        + (
+                            f" (line {point['build_line']} of the candidate)"
+                            if point["build_line"] != point["line"]
+                            else ""
+                        )
+                    )
+                try:
+                    applied = apply_set(worker, stop, name, value)
+                except Refused as exc:
+                    if point is None:
+                        raise
+                    # One refusal fails the probe, as a --set's does: a linked change
+                    # (shorten, then restore) half applied is not the experiment asked.
+                    raise Refused(
+                        exc.code,
+                        f"--set-at {probe.program}:{point['line']}@{hit} {name}={value} was "
+                        "refused at that stop (in "
+                        + (snapshot.get("instance") or display_function(frame.get("name")) or "?")
+                        + ")"
+                        f": {exc}"
+                        + (
+                            f" ({len(changes)} earlier intervention(s) applied; the run is "
+                            "not the experiment asked for)"
+                            if changes
+                            else ""
+                        ),
+                    ) from None
+                change = {
+                    **applied,
+                    "line": frame.get("line"),
+                    "hit": hit,
+                    # The capture line's hits so far (this one, at a captured stop): where
+                    # the change falls among the captured values.
+                    "capture_hit": hits,
+                    # Which function's variable: the line's stops may be in several.
+                    "function": frame.get("name"),
+                    **({"instance": snapshot["instance"]} if snapshot.get("instance") else {}),
+                }
+                if point is not None:
+                    change["at"] = f"{point['line']}@{hit}"
+                    point["change"] = change
+                changes.append(change)
+            if captured and due:
                 rows.extend(
                     _capture(
                         worker,
@@ -2742,26 +3029,56 @@ def run_probe(root, probe, *, adapter=None, progress=None):
                         pointers=pointers,
                     )
                 )
-            for row in rows[first:]:
-                row.update(place)
+            if captured:
+                for row in rows[first:]:
+                    row.update(place)
+            if captured and snapshot.get("instance"):
+                # The function as the build names it (`tf<rc::A>`, `main::{closure#1}`),
+                # for the table: the frame's own name keeps the symbol hash.
+                for row in rows:
+                    if row["hit"] == hits and row.get("function") == frame.get("name"):
+                        row.setdefault("instance", snapshot["instance"])
             if len(rows) > MAX_ROWS:
                 raise ValueError("Probe row budget exceeded")
-            if hits >= probe.limit:
-                worker.dispatch(
-                    "breakpoints", {**session, "program": probe.program, "breakpoints": []}
+            # Keep only the breakpoints a later stop still needs.
+            needed = [line] if hits < probe.limit else []
+            needed += [p["build_line"] for p in points if p["change"] is None]
+            needed = [number for number in lines if number in needed]
+            if needed != active:
+                answer = worker.dispatch(
+                    "breakpoints",
+                    {
+                        **session,
+                        "program": probe.program,
+                        "breakpoints": [{"line": number} for number in needed],
+                    },
                 )
+                for number, reply in zip(needed, (answer or {}).get("breakpoints") or []):
+                    if isinstance(reply, dict):
+                        placed[number] = reply
+                active = needed
             worker.dispatch("continue", stop)
-            pauses.append(round((time.monotonic() - paused) * 1000, 1))
-            if hits >= probe.limit:
+            (pauses if captured else set_pauses).append(
+                round((time.monotonic() - paused) * 1000, 1)
+            )
+            if not active:
                 if probe.until == "hits":
                     status = "completed"
-                    say("all requested hits captured; ending the probe now")
+                    say(
+                        "all requested hits captured"
+                        + (" and --set-at applied" if points else "")
+                        + "; ending the probe now"
+                    )
                     break
                 say(
                     f"reached the {probe.limit}-hit cap; letting the program finish"
                     if probe.hits == "all"
-                    else "all requested hits captured; letting the program finish"
+                    else "all requested hits captured"
+                    + (" and --set-at applied" if points else "")
+                    + "; letting the program finish"
                 )
+            elif captured and hits >= probe.limit:
+                say("all requested hits captured; waiting for the --set-at stops")
         report = worker.dispatch("report", session)
         result.update(
             status=status,
@@ -2898,14 +3215,44 @@ def run_probe(root, probe, *, adapter=None, progress=None):
             if result.get("optimized")
             else "Some selectors could not be read by the debugger; see each row's reason."
         )
-    if len(functions) > 1:
+    labels = _function_labels(
+        dict.fromkeys(
+            [
+                *functions,
+                *(name for named in set_functions.values() for name in named),
+                *(change.get("function") for change in changes),
+            ]
+        ),
+        instances,
+    )
+    # Python code the debugger names alike on a line (two lambdas), which no frame tells
+    # apart: said, never listed as one function.
+    alike = {}
+    if probe.program.endswith(".py") and (functions or set_functions):
+        try:
+            source = (Path(root) / probe.program).read_text()
+            if probe.edit:
+                old, new = combine_edits(source, probe.edit)
+                source = source.replace(old, new, 1)
+            alike = _python_alike(source, [line, *set_functions])
+        except (OSError, ValueError):
+            alike = {}
+    for change in changes:
+        number = next((p["build_line"] for p in points if p["change"] is change), line)
+        if many := alike.get(number, {}).get(change.get("function")):
+            change["alike"] = many
+        if change.get("instance"):
+            # As the warnings label it: with its hash where another instance reads alike
+            # (a name cut short).
+            change["instance"] = labels.get(change.get("function")) or change["instance"]
+    # The --at line's own warning, unless it is a --set-at line too: one warning then.
+    shared = line in set_functions and (
+        len(set_functions[line]) > 1 or set(alike.get(line, ())) & set(set_functions[line])
+    )
+    if (len(functions) > 1 or set(alike.get(line, ())) & set(functions)) and not shared:
         warnings.append(
-            f"Line {line} stopped in {len(functions)} functions: "
-            + "; ".join(
-                f"{name or '?'} (hit{'s' if len(numbers) > 1 else ''} "
-                f"{', '.join(map(str, numbers[:8]))}{', ...' if len(numbers) > 8 else ''})"
-                for name, numbers in list(functions.items())[:4]
-            )
+            f"Line {line} stopped in {len(functions)} function{'s' if len(functions) > 1 else ''}: "
+            + _stops_by_function(functions, labels, "hit", alike.get(line))
             + ". --hits and --set-hit count every stop; the function column says which "
             "is which."
         )
@@ -2923,20 +3270,83 @@ def run_probe(root, probe, *, adapter=None, progress=None):
     for note, selectors in noted.items():
         names = ", ".join(dict.fromkeys(selectors))
         warnings.append(f"{names}: {note[0].upper()}{note[1:]}.")
-    if changes and probe.limit > 1:
+    if probe.set and any("at" not in change for change in changes) and probe.limit > 1:
         warnings.append(
             f"Interventions are applied once, at hit {probe.set_hit}; other hits observe "
             "without re-applying."
         )
-    elif probe.set and not changes and hits < probe.set_hit and result.get("status") != "failed":
+    elif (
+        probe.set
+        and not any("at" not in change for change in changes)
+        and hits < probe.set_hit
+        and result.get("status") != "failed"
+    ):
+        # Only the --set: a --set-at may have been applied (#151 review).
+        named = ", ".join(f"--set {name}={value}" for name, value in probe.set)
         warnings.append(
-            f"No intervention was applied: the program stopped {hits} time(s), before hit "
-            f"{probe.set_hit}."
+            f"{named} {'was' if len(probe.set) == 1 else 'were'} not applied: the program "
+            f"stopped {hits} time(s) at line {line}, before hit {probe.set_hit}."
         )
+    for number, named in set_functions.items():
+        if len(named) > 1 or set(alike.get(number, ())) & set(named):
+            asked = next(p["line"] for p in points if p["build_line"] == number)
+            warnings.append(
+                (f"Line {line}" if number == line else f"--set-at line {asked}")
+                + f" stopped in {len(named)} function{'s' if len(named) > 1 else ''}: "
+                + _stops_by_function(named, labels, "stop", alike.get(number))
+                + (
+                    ". --hits, --set-hit and --set-at's @HIT count every stop of the line, "
+                    "in any function; the function column and each change say which is "
+                    "which."
+                    if number == line
+                    else ". @HIT counts every stop of the line, in any function; each "
+                    "change says which function's variable it changed."
+                )
+            )
+    unapplied = [point for point in points if point["change"] is None]
+    if probe.set and not any("at" not in change for change in changes) and hits < probe.set_hit:
+        # A --set whose hit never came: reported like a --set-at's (exit code 4).
+        result["unapplied"] = [
+            {
+                "option": "--set",
+                "at": f"{probe.line}@{probe.set_hit}",
+                "name": name,
+                "value": value,
+                "stops": hits,
+            }
+            for name, value in probe.set
+        ]
+    if unapplied:
+        # Never silently: a --set-at whose stop never came (#137).
+        result.setdefault("unapplied", []).extend(
+            {
+                "option": "--set-at",
+                "at": f"{point['line']}@{point['hit']}",
+                "name": point["name"],
+                "value": point["value"],
+                "stops": seen.get(point["build_line"], 0),
+            }
+            for point in unapplied
+        )
+        if result.get("status") != "failed":
+            ended = (
+                "before the probe timed out"
+                if result.get("status") == "timeout"
+                else "before the probe ended"
+            )
+            for point in unapplied:
+                stops = seen.get(point["build_line"], 0)
+                warnings.append(
+                    f"--set-at {probe.program}:{point['line']}@{point['hit']} "
+                    f"{point['name']}={point['value']} was not applied: line "
+                    f"{point['build_line']} stopped {stops} time(s) {ended}, so its hit "
+                    f"{point['hit']} never came."
+                )
     result.update(
         warnings=warnings,
         hits=hits,
         pauses_ms=pauses,
+        **({"set_pauses_ms": set_pauses} if set_pauses else {}),
         by_hit=_by_hit(rows),
         rows=rows,
         interventions=changes,
@@ -2979,13 +3389,22 @@ def _table(result):
     # A C++ frame's signature (`trim_left(std::__1::basic_string<...> const&)`) would
     # double the table's width; Rust's ends with a symbol hash. JSON keeps the name whole.
     functions = function_labels(row.get("function") for row in result["rows"])
+
+    def short_instance(row):
+        # A short instance name (`main::{closure#1}`, `tf<rc::A>`); JSON has every one.
+        return (
+            row["instance"]
+            if len(row.get("instance") or "") <= 60 and row.get("instance")
+            else None
+        )
+
     rows = [
         (
             str(row["hit"]),
             *((f"{row['stop']}/{row['stops']}" if "stops" in row else "",) if stops else ()),
             row["phase"],
             str(row.get("line", "")),
-            functions.get(row.get("function"), ""),
+            short_instance(row) or functions.get(row.get("function"), ""),
             row["selector"],
             row.get("type") or "",
             row.get("value", "<" + row.get("error", "") + ">")
@@ -3003,12 +3422,39 @@ def _table(result):
         lines.append(
             "  ".join(text.ljust(width) for text, width in zip(item, widths)) + "  " + item[-1]
         )
-    if note := shortened_note(functions):
+    # Rows shown by their instance are found in SQL by `instance`, not short_function.
+    shown = next((label for row in result["rows"] if (label := short_instance(row))), None)
+    if note := shortened_note(
+        {
+            row.get("function"): functions.get(row.get("function"))
+            for row in result["rows"]
+            if not short_instance(row)
+        },
+        shown,
+    ):
         lines.append(note)
+    named = function_labels(change.get("function") for change in result["interventions"])
     for change in result["interventions"]:
-        lines.append(f"set {change['name']}: {change['before']} -> {change['after']}")
+        where = change.get("instance") or named.get(change.get("function"), change.get("function"))
+        if change.get("alike"):
+            where = f"{where}, one of {change['alike']} on the line the debugger names alike"
+        lines.append(
+            f"set {change['name']}: {change['before']} -> {change['after']}"
+            + (
+                f"  (--set-at line {change['at']}" + (f", in {where})" if where else ")")
+                if change.get("at")
+                else ""
+            )
+        )
+    unmade = len(result.get("unapplied") or ())
     lines.append(
-        f"status: {result['status']}  hits: {result['hits']}"
+        f"status: {result['status']}"
+        + (
+            f" ({unmade} requested change{'s' if unmade > 1 else ''} not made)"
+            if unmade and result["status"] == "completed"
+            else ""
+        )
+        + f"  hits: {result['hits']}"
         + (
             {"failed": " before it failed", "timeout": " before it timed out"}.get(
                 result["status"],
@@ -3017,7 +3463,11 @@ def _table(result):
         )
         + (f"  exit code: {result['exit_code']}" if result.get("exit_code") else "")
         + f"  seconds: {result['seconds']}"
-        + (f"  max pause: {max(result['pauses_ms'])} ms" if result.get("pauses_ms") else "")
+        + (
+            f"  max pause: {max(paused)} ms"
+            if (paused := [*result.get("pauses_ms", ()), *result.get("set_pauses_ms", ())])
+            else ""
+        )
     )
     for warning in result.get("warnings", ()):
         lines.append(f"warning: {warning}")
@@ -3037,6 +3487,13 @@ def _table(result):
         )
         lines.extend("  " + line for line in result["output"].splitlines()[-20:])
     return "\n".join(lines)
+
+
+def _own_set_at(program, where, assignment):
+    path, line, hit, name, value = parse_set_at(where, assignment)
+    if path is not None and path != program:
+        raise ValueError(f"--set-at {where}: give a line of the --at file ({program})")
+    return line, hit, name, value
 
 
 def main(argv=None):
@@ -3061,6 +3518,14 @@ def main(argv=None):
     parser.add_argument("--timeout", type=float, default=60, help="Overall seconds (default 60)")
     parser.add_argument("--until", choices=("exit", "hits"), default="exit")
     parser.add_argument("--set-hit", type=int, default=1, help="Hit that gets --set (default 1)")
+    parser.add_argument(
+        "--set-at",
+        nargs=2,
+        action="append",
+        default=[],
+        metavar=("LINE[@HIT]", "NAME=VALUE"),
+        help="Intervention at hit HIT (default 1) of LINE of the --at file (repeatable)",
+    )
     parser.add_argument("--run", help="Python script to run when --at is in an imported module")
     parser.add_argument("--arg", action="append", default=[], help="Python program argument")
     parser.add_argument("--expect-sha256", action="append", default=[], help=argparse.SUPPRESS)
@@ -3090,6 +3555,7 @@ def main(argv=None):
             entry=args.run,
             args=tuple(args.arg),
             expect_sha256=tuple(tuple(item.split("=", 1)) for item in args.expect_sha256),
+            set_at=tuple(_own_set_at(program, *item) for item in args.set_at),
         )
         adapter = None
         if args.java_config:
@@ -3102,7 +3568,7 @@ def main(argv=None):
         parser.error(str(exc))
     result = run_probe(args.root, probe, adapter=adapter)
     print(json.dumps(result, indent=2) if args.json else _table(result))
-    return 0 if result["status"] == "completed" else 1
+    return probe_exit_code(result)
 
 
 if __name__ == "__main__":

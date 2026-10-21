@@ -244,17 +244,30 @@ def function_labels(names):
             level[name] += 1
 
 
-def shortened_note(labels):
+def shortened_note(labels, instance=None):
     """The note under a table whose function column ``labels`` ({name: label}, see
     ``function_labels``) shows a name other than the one stored, or None: SQL compares
     the stored name, so `WHERE function = 'trim_left'` finds nothing. Its example is
-    what ``short_function`` gives, which every overload of the name shares."""
+    what ``short_function`` gives, which every overload of the name shares. ``instance``:
+    an instance label the column shows (`cz::main::{closure#0}`, `cz::gen_apply<i32>`),
+    which only the `instance` column matches: ``short_function`` gives every closure of a
+    function, and every instance of a generic, one name."""
     changed = [name for name, label in labels.items() if label != name]
-    if not changed:
+    if not changed and instance is None:
         return None
-    example = short_function(changed[0]).replace("'", "''")
-    return (
+    note = (
         "note: function shows short frame names; the evidence store and --json keep the "
-        f"debugger's whole names, which SQL compares: use short_function(function) = "
-        f"'{example}' (any overload of it) or the whole name"
+        "debugger's whole names, which SQL compares: use "
+    )
+    if changed:
+        example = short_function(changed[0]).replace("'", "''")
+        note += f"short_function(function) = '{example}' (any overload of it) or the whole name"
+    if instance is None:
+        return note
+    shown = instance.replace("'", "''")
+    return (
+        note
+        + ("; " if changed else "")
+        + f"instance = '{shown}' for a closure or generic instance as shown (short_function "
+        "merges a function's closures and a generic's instances)"
     )

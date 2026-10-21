@@ -1108,13 +1108,24 @@ class DebugWorker:
                 raise ValueError("args must be a list of strings")
             _check_args(tuple(args["args"]))
         if operation == "launch" and args.get("sets") is not None:
-            names = args["sets"]
+            # Each change with the line whose stops make it (#137: a --set-at's own).
+            changes = args["sets"]
             if (
-                not isinstance(names, list)
-                or len(names) > 8
-                or not all(isinstance(name, str) and 0 < len(name) <= 1000 for name in names)
+                not isinstance(changes, list)
+                or len(changes) > 8
+                or not all(
+                    isinstance(change, dict)
+                    and set(change) == {"line", "name"}
+                    and type(change["line"]) is int
+                    and change["line"] > 0
+                    and isinstance(change["name"], str)
+                    and 0 < len(change["name"]) <= 1000
+                    for change in changes
+                )
             ):
-                raise ValueError("sets must be a list of at most 8 names")
+                raise ValueError(
+                    "sets must be a list of at most 8 {line, name} changes (a positive line)"
+                )
         if operation == "launch" and args.get("max_pause") is not None:
             value = args["max_pause"]
             if type(value) not in (int, float) or not math.isfinite(value) or not 0 < value <= 300:
@@ -1279,9 +1290,7 @@ class DebugWorker:
                         "Provenance: the staged candidate differs from the requested edit; nothing ran"
                     )
                 if args.get("sets"):
-                    self.refuse_never_settable(
-                        runtime, program, args.get("breakpoints", []), args["sets"]
-                    )
+                    self.refuse_never_settable(runtime, program, args["sets"])
                 left()
                 self.dap = DAP(
                     command=runtime.command,
@@ -1665,6 +1674,14 @@ class DebugWorker:
                     else {}
                 ),
                 "function": str(selected_frame.get("name") or "")[:300],
+                # A generic's instance, with its type arguments (Rust: `tf<rc::A>`), where
+                # only a symbol hash tells instances apart.
+                **(
+                    {"instance": instance}
+                    if (named := getattr(runtime, "instance_name", None))
+                    and (instance := named(selected_frame))
+                    else {}
+                ),
                 # Which frame was read: an index into `frames` (0 is the innermost).
                 "frame": index,
                 # Which stop at the session's breakpoint this is, as state lines say.
@@ -3058,26 +3075,35 @@ class DebugWorker:
                 "from memory: the program's state is unknown, so the session is closed"
             )
 
-    def refuse_never_settable(self, runtime, program, points, names):
-        """Refuse, before the program runs, a probe's `--set` of a value no stop of its
-        breakpoint lines can change in this build (#138): every change in an optimized
-        build, and what the runtime's build facts rule out in every function with code
-        on those lines (``never_settable``: a Rust local the IR keeps in a register, a
-        field reached through a pointer). What depends on the stop (a statement under
-        way, a local not yet initialized) is judged there."""
+    def refuse_never_settable(self, runtime, program, changes):
+        """Refuse, before the program runs, a probe's change ({line, name}: a `--set` at
+        its `--at` line, a `--set-at` at its own, #137) that no stop of its line can make
+        in this build (#138): every change in an optimized build, and what the runtime's
+        build facts rule out in every function with code on that line
+        (``never_settable``: a Rust local the IR keeps in a register, a field reached
+        through a pointer). What depends on the stop (a statement under way, a local not
+        yet initialized) is judged there."""
         from peeky.errors import Refused
 
         refusal = None
         if level := self.optimized():
             note = getattr(runtime, "storage_note", None)
+            first = changes[0]
             refusal = (
-                f"`{names[0]}` cannot be changed: changing values is refused in an optimized "
-                f"build ({level}), where the program may keep using other copies of a value"
-                + ((note(program, [p["line"] for p in points], names[0]) or "") if note else "")
+                f"`{first['name']}` cannot be changed: changing values is refused in an "
+                f"optimized build ({level}), where the program may keep using other copies of "
+                "a value"
+                + ((note(program, [first["line"]], first["name"]) or "") if note else "")
                 + ". Refused before the program runs: nothing ran. Use an unoptimized build"
             )
         elif check := getattr(runtime, "never_settable", None):
-            refusal = check(program, sorted({p["line"] for p in points}), list(names))
+            lines = {}
+            for change in changes:
+                lines.setdefault(change["line"], []).append(change["name"])
+            for line, names in lines.items():
+                # Each change judged against its own line's functions only.
+                if refusal := check(program, [line], names):
+                    break
         if refusal:
             # (code, message), or a message: a change no stop allows.
             code, refusal = (
@@ -3311,8 +3337,18 @@ def make_server(root, token, port=8765, *, adapter=None):
             "args",
             "expect_sha256",
             "edit",
+            "set_at",
         }:
             raise ValueError("Unknown probe field")
+        set_at = args.get("set_at", [])
+        if not isinstance(set_at, list) or not all(
+            isinstance(point, list)
+            and len(point) == 4
+            and all(type(part) is int for part in point[:2])
+            and all(isinstance(part, str) for part in point[2:])
+            for point in set_at
+        ):
+            raise ValueError("Probe set_at must be a list of [line, hit, name, value]")
         edit = args.get("edit")
         # One {old, new} object, or a list of them for several edits.
         edits = edit if isinstance(edit, list) else [edit]
@@ -3352,6 +3388,7 @@ def make_server(root, token, port=8765, *, adapter=None):
             else (edit["old"], edit["new"])
             if isinstance(edit, dict)
             else tuple((item["old"], item["new"]) for item in edits),
+            set_at=tuple(tuple(point) for point in set_at),
         )
         if not probes.acquire(blocking=False):
             raise ValueError("Another probe is running; retry later")
@@ -3480,6 +3517,8 @@ def _run_probe_process(root, request, adapter, cap):
         command += ["--capture", ",".join(request.capture)]
     for name, value in request.set:
         command += ["--set", f"{name}={value}"]
+    for line, hit, name, value in request.set_at:
+        command += ["--set-at", f"{line}@{hit}", f"{name}={value}"]
     with tempfile.TemporaryDirectory(prefix="peeky-probe-") as scratch:
         if request.edit:
             from peeky.probe import edit_pairs

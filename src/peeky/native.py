@@ -3422,8 +3422,10 @@ class NativeSession:
                         continue
                     break
                 else:
-                    reasons = "; ".join(
-                        dict.fromkeys(f"in {function}, {why}" for function, why in failures)
+                    from peeky.fields import FUNCTION, by_function
+
+                    reasons = by_function(
+                        (function, f"in {FUNCTION}, {why}") for function, why in failures
                     )
                     return (
                         f"`{name}` cannot be changed at {source}:{line}, at any stop of this "
