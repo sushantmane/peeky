@@ -165,3 +165,40 @@ def test_describe_gives_declared_types_and_the_settable_kinds(calc, capsys):
     [mutable] = [line for line in out.splitlines() if line.startswith("mutable:")]
     assert "of type byte, short, int, long, char, boolean, float or double" in mutable
     assert "a char takes a char in single quotes ('+') or a code point (43)" in mutable
+
+
+OVER = """package app;
+
+public class Over {
+    static String f(String x) { return x.trim(); } static int f(int x) { return x + 1; } // STRING_FIRST
+    static int g(int x) { return x + 1; } static String g(String x) { return x.trim(); } // INT_FIRST
+
+    public static void main(String[] args) {
+        System.out.println("F:" + f(" a ") + f(1) + " G:" + g(1) + g(" b "));
+    }
+}
+"""
+
+
+@pytest.mark.timeout(300)
+def test_only_the_method_that_gets_the_breakpoint_judges_a_set(calc, capsys):
+    # #192 review: java-debug binds a line two overloads share to the first in the class
+    # file only. `f(int)` took `x=2`, so the probe ran, and `f(String)`, where it
+    # stopped, refused it there.
+    root, config, _ = calc
+    (root / "app" / "Over.java").write_text(OVER)
+    over = json.loads(config.read_text()) | {"sources": ["app/Over.java"], "main_class": "app.Over"}
+    config.write_text(json.dumps(over))
+
+    def run(marker, *argv):
+        line = next(i for i, text in enumerate(OVER.splitlines(), 1) if f"// {marker}" in text)
+        at = ["probe", str(root), "--config", str(config), "--at", f"app/Over.java:{line}"]
+        code = main([*at, "--capture", "x", *argv, "--json", "--no-save", "--quiet"])
+        return code, json.loads(capsys.readouterr().out)
+
+    code, result = run("STRING_FIRST", "--set", "x=2")
+    refused_before_launch(code, result, "requires text in double quotes for String x")
+    # Where the int overload comes first, it gets the stop, and the change is made.
+    code, result = run("INT_FIRST", "--set", "x=2")
+    assert code == 0, result.get("error")
+    assert "G:3b" in result["output"], result

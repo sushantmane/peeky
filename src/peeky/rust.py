@@ -917,6 +917,22 @@ def rust_spelling(name):
     return _PRELUDE_PATH.sub("", _GLOBAL_ARGUMENT.sub("", str(name)))
 
 
+class _Copied(str):
+    """``mid_statement``'s reason where a binding of the program's own holds the copy
+    (#192), with its own ``advice``: no other place on the statement helps."""
+
+    def __new__(cls, reason, advice):
+        made = super().__new__(cls, reason)
+        made.advice = advice
+        return made
+
+
+def _names(names):
+    """`n`, `n` and `m`, `a`, `b` and `c`: names for a message."""
+    shown = [f"`{name}`" for name in names]
+    return shown[0] if len(shown) == 1 else ", ".join(shown[:-1]) + f" and {shown[-1]}"
+
+
 def _line_list(places):
     """`line 60`, `lines 3 and 4`, `lines 3, 4 and 7`: the lines of ``places`` ({(file,
     line)}) for a message; empty if none."""
@@ -1952,6 +1968,16 @@ class RustSession(NativeSession):
         if not held:
             return None
         made = _line_list(proofs.copy_lines(hashed, held))
+        if names := proofs.copy_names(hashed, held):
+            made = _line_list(proofs.copy_lines(hashed, held, named_only=True))
+            # #192: a binding of the program's own holds the old value it goes on with.
+            return (
+                "statement",
+                f"at every place line {line} can stop at, the program has already copied "
+                f"`{plain}` into {_names(names)}" + (f" (at {made})" if made else "") + " and "
+                f"goes on with that copy, replacing or dropping `{plain}` without reading it "
+                "again, so a change there would never be seen",
+            )
         return (
             "statement",
             f"every place line {line} can stop at is inside a statement that has already "
@@ -1988,7 +2014,7 @@ class RustSession(NativeSession):
             elif kind == "absent":
                 parts.append((function, f"{FUNCTION} {detail}"))
             elif kind == "statement":
-                statements = True
+                statements = "copied" if "has already copied" in detail else True
                 parts.append((function, f"in {FUNCTION}, {detail}"))
             elif kind == "unproven":
                 registers.add(self._register_text(function, plain, ("own", None))[1])
@@ -2016,7 +2042,12 @@ class RustSession(NativeSession):
             )
         for advice in sorted(registers):
             text += f". {advice}"
-        if statements:
+        if statements == "copied":
+            text += (
+                ". Change it before the program copies it (`--set-at` an earlier line), or "
+                "change the copy instead"
+            )
+        elif statements:
             text += (
                 ". Change it at the first line of that statement (`--set-at` it), before it "
                 "reads the value"
@@ -2172,9 +2203,20 @@ class RustSession(NativeSession):
             return None
         if found:
             # #183: where the copy was made, not an example of where one may be.
-            made = _line_list(
-                proofs.copy_lines(hashed[1], frozenset().union(*dict(found).values()))
-            )
+            held = frozenset().union(*dict(found).values())
+            made = _line_list(proofs.copy_lines(hashed[1], held))
+            if names := proofs.copy_names(hashed[1], held):
+                # #192: the program's own binding goes on with the old value.
+                made = _line_list(proofs.copy_lines(hashed[1], held, named_only=True))
+                name = variable.get("name")
+                return _Copied(
+                    f"the program has already copied its value into {_names(names)}"
+                    + (f" (at {made})" if made else "")
+                    + f" and goes on with that copy, replacing or dropping `{name}` without "
+                    "reading it again, so the change would never be seen",
+                    f"Change it before {_names(names)} copies it (a stop on an earlier line), "
+                    f"or change {_names(names)} instead",
+                )
             return (
                 "a statement under way at the stop has already read it into a temporary"
                 + (f" (at {made})" if made else "")

@@ -926,8 +926,9 @@ class JavaSession:
     def launch_refusal(self, program, line, name, value=None):
         """Why a probe's `--set` of the local ``name`` (to ``value``, when given) can
         change nothing at any stop of ``line`` of ``program``, judged from the class
-        files before the program runs (#183), or None: in every method with code on the
-        line, it is no local of the method there, a type no change reaches, a value its
+        files before the program runs (#183), or None: in every method that stops on the
+        line (the first holding it in its class, as java-debug binds it), it is no local
+        of the method there, a type no change reaches, a value its
         declared type cannot hold, or a local the code never reads after the line's start
         (where a line breakpoint stops). A field (`this.x`) and an element are judged at
         the stop. (code, message) for a name no method there declares."""
@@ -939,13 +940,19 @@ class JavaSession:
             source = self._line_key(program)
         except (OSError, ValueError):
             return None
-        methods = [
-            method
-            for declarations in self._declared().values()
-            if declarations.get("source") == source
-            for method in declarations.get("methods", ())
-            if line in method.get("line_pcs", {})
-        ]
+        # java-debug binds a line to the first method holding it in its class, in
+        # class-file order (a lambda's on its method's line, overloads on one line): only
+        # that method's stops can make the change (#192 review).
+        methods = []
+        for declarations in self._declared().values():
+            if declarations.get("source") != source:
+                continue
+            holding = [
+                method
+                for method in declarations.get("methods", ())
+                if line in method.get("line_pcs", {})
+            ]
+            methods += holding[:1]
         if not methods:
             return None
         reasons, visible = [], set()

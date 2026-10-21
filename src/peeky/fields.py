@@ -560,57 +560,71 @@ def settable_member(graph, root, name, steps, owner=None):
     raise Unsettable(f"`{path}` is not a single integer; select one of its fields or elements")
 
 
-def settable_parts(graph, root, name, limit=8):
-    """The paths (`board.entries`, `bins[*].hi`, `xs[*]`; `[*]`: any element) of the
-    integer fields of the struct, class or tuple local ``name`` of type ``root`` (or the
-    elements of the array local) that ``settable_member`` allows: a direct one, an
-    element of an array field, or a field of a struct field, at most ``limit``; else
-    None. What `describe` lists, judged by the rules `set` applies to the type (seventh
-    evaluation, finding 16; #183: the paths, not the local). A Rust reference or slice
-    (`&str`, a record the debug information names `&…` or `*…`) is a pointer, whose
-    parts Peeky never changes."""
+def settable_parts(graph, root, name, limit=64, visits=4096):
+    """The paths (`board.entries`, `bins[*].hi`, `board.cells[*].n`, `xs[*]`; `[*]`: any
+    element) of the integer fields and elements of the struct, class, tuple or array
+    local ``name`` of type ``root`` that ``settable_member`` allows, found by a walk
+    through records and fixed-size arrays at any depth (#192 review), each leaf judged
+    by ``settable_member`` as `set` judges it; at most ``limit``, then `… and N more`
+    (`… and more` past ``visits`` types walked); else None. What `describe` lists
+    (seventh evaluation, finding 16; #183: the paths, not the local). A Rust reference
+    or slice (`&str`, a record the debug information names `&…` or `*…`), a union, an
+    enum and a library's type are never walked into: `set` changes nothing there."""
 
-    def elements(offset, path):
+    def stripped(offset, path):
         try:
-            _, node, _ = _strip(graph, offset, path)
+            return _strip(graph, offset, path)[1]
         except Unsettable:
             return None
-        return node
 
-    node = elements(root, name)
+    node = stripped(root, name)
     if node is None or node[0] not in ("record", "array"):
         return None
     if node[0] == "record" and str(node[1]).startswith(("&", "*")):
         return None
-    candidates = []
-    if node[0] == "array":
-        candidates.append(["[0]"] * len(node[3] or (0,)))
-        inner = elements(node[2], name)
-        if inner is not None and inner[0] == "record":
-            candidates.extend([*candidates[0], member[0]] for member in inner[5] if member[0])
-    else:
-        for member in node[5][:64]:
-            field, kind = member[0], member[1]
-            if not field:
-                continue
-            candidates.append([field])
-            inner = elements(kind, f"{name}.{field}")
-            if inner is not None and inner[0] == "array":
-                candidates.append([field, *["[0]"] * len(inner[3] or (0,))])
-            elif inner is not None and inner[0] == "record":
-                candidates.extend([field, sub[0]] for sub in inner[5][:64] if sub[0])
-    found = []
-    for steps in candidates:
-        try:
-            settable_member(graph, root, name, steps)
-        except Unsettable:
-            continue
+    found, extra, walked = [], 0, 0
+    # (type offset, steps from the local, the record offsets on the way: no cycle).
+    pending = [(root, [], frozenset())]
+    while pending:
+        offset, steps, seen = pending.pop()
+        walked += 1
+        if walked > visits:
+            return (*found, "… and more")
         shown = name + "".join("[*]" if step == "[0]" else f".{step}" for step in steps)
-        if shown not in found:
-            found.append(shown)
-        if len(found) >= limit:
-            break
-    return tuple(found) or None
+        node = stripped(offset, shown)
+        if node is None:
+            continue
+        if node[0] == "record":
+            if (
+                offset in seen
+                or node[2] == "union"
+                or node[7]
+                or node[8]
+                or node[9]
+                or str(node[1]).startswith(("&", "*"))
+            ):
+                continue
+            members = [member for member in node[5] if member[0]]
+            pending.extend(
+                (member[1], [*steps, member[0]], seen | {offset}) for member in reversed(members)
+            )
+        elif node[0] == "array":
+            if node[3]:
+                pending.append((node[2], [*steps, *["[0]"] * len(node[3])], seen))
+        elif node[0] == "base" and steps:
+            try:
+                settable_member(graph, root, name, steps)
+            except Unsettable:
+                continue
+            if shown in found:
+                continue
+            if len(found) < limit:
+                found.append(shown)
+            else:
+                extra += 1
+    if not found:
+        return None
+    return (*found, f"… and {extra} more") if extra else tuple(found)
 
 
 def member_base(graph, root, steps):

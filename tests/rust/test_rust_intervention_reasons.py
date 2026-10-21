@@ -180,3 +180,164 @@ def test_describe_lists_the_settable_paths_and_the_edit_for_the_rest(crate, caps
     assert "nor is anything in board::Board::record" in mutable, mutable
     assert mutable.endswith("keeps a local in memory: COOKBOOK 6.6)"), mutable
     assert "board (board::Board, " in out and "names (Vec<String>, " in out, out
+
+
+COPIES = """#[inline(never)]
+fn keep(x: &mut i32) {
+    std::hint::black_box(x);
+}
+
+#[inline(never)]
+fn mark() {}
+
+fn arm() -> i32 {
+    let mut x = 1;
+    x = match x {
+        n => {
+            keep(&mut x);
+            mark(); // ARM
+            n
+        }
+    };
+    x
+}
+
+fn while_let() -> i32 {
+    let mut x = 3;
+    let mut total = 0;
+    while let Some(v) = (x > 0).then_some(x) {
+        keep(&mut x);
+        total += v; // WHILE
+        x = v - 1;
+    }
+    total
+}
+
+fn named() -> i32 {
+    let mut x = 5;
+    let y = x;
+    keep(&mut x);
+    let z = y + 1; // NAMED
+    x = z;
+    x
+}
+
+fn closure() -> i32 {
+    let mut x = 7;
+    let f = move || x;
+    keep(&mut x);
+    f() // CLOSURE
+}
+
+fn read_first() -> i32 {
+    let mut x = 2;
+    let y = x;
+    keep(&mut x);
+    let z = x + 1; // READ_FIRST
+    z + y
+}
+
+#[derive(Clone, Copy)]
+struct Pair {
+    a: i32,
+    b: i32,
+}
+
+#[inline(never)]
+fn keep_pair(p: &mut Pair) {
+    std::hint::black_box(p);
+}
+
+fn partial() -> i32 {
+    let mut s = Pair { a: 1, b: 2 };
+    let o = s;
+    keep_pair(&mut s);
+    let t = o.a + 1; // PARTIAL
+    s.a = t;
+    s = o;
+    s.a + s.b
+}
+
+fn read_later() -> i32 {
+    let mut x = 4;
+    let y = x;
+    keep(&mut x);
+    let a = y * 10; // READ_LATER
+    a + x // READ_AFTER
+}
+
+#[derive(Clone, Copy)]
+struct Cell {
+    n: i32,
+    m: u64,
+}
+
+struct Grid {
+    cells: [Cell; 3],
+    count: u32,
+    inner: Inner,
+}
+
+struct Inner {
+    deep: [[i16; 2]; 2],
+    w: usize,
+}
+
+struct Wide {
+    a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32, i: i32, j: i32,
+}
+
+fn main() {
+    let mut grid = Grid { cells: [Cell { n: 1, m: 2 }; 3], count: 0, inner: Inner { deep: [[0; 2]; 2], w: 0 } };
+    let mut wide = Wide { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8, i: 9, j: 10 };
+    grid.count += 1;
+    wide.a += 1;
+    println!("ARM:{} WHILE:{} NAMED:{} CLOSURE:{} PARTIAL:{} READ:{} LATER:{} GRID:{} WIDE:{}", arm(), while_let(), named(), closure(), partial(), read_first(), read_later(), grid.cells[0].n + grid.count as i32 + grid.inner.w as i32 + grid.inner.deep[1][1] as i32, wide.a + wide.j);
+}
+"""
+
+
+@pytest.mark.timeout(400)
+def test_a_copy_in_the_programs_own_binding_blocks_the_change(crate, capsys):
+    # #192 review: copies into named bindings were not counted. A `match` arm's `n`, a
+    # `while let`'s `v`, `let y = x;` and a `move` closure each hold the old value the
+    # program goes on with, replacing or dropping `x` unread: `set x: … -> 50` was
+    # reported, and the output kept the old. Writing a part (`s.a = t;`) reads none.
+    (crate / "src/main.rs").write_text(COPIES)
+
+    def line(marker):
+        return next(i for i, text in enumerate(COPIES.splitlines(), 1) if f"// {marker}" in text)
+
+    cases = (("ARM", "x", "n"), ("WHILE", "x", "v"), ("NAMED", "x", "y"), ("CLOSURE", "x", "f"))
+    for marker, root, copy in (*cases, ("PARTIAL", "s.b", "o")):
+        at = ["probe", str(crate), "--at", f"src/main.rs:{line(marker)}", "--capture", "x"]
+        code = main([*at, "--set", f"{root}=50", "--json", "--quiet"])
+        result = json.loads(capsys.readouterr().out)
+        assert code == 2 and result.get("refused_before_launch") is True, (marker, result)
+        message = result["error"]["message"]
+        plain = root.split(".")[0]
+        assert f"has already copied `{plain}` into `{copy}`" in message, (marker, message)
+        assert "Change it before the program copies it" in message, message
+    # Where the program reads `x` again, before or after it uses its copy, it sees the
+    # change, and its copy keeps the old value as the program's own (`let a = s.x;`), as
+    # does a temporary taken from that copy (`a` of `a + x`).
+    reads = (("READ_FIRST", "READ:53"), ("READ_LATER", "LATER:90"), ("READ_AFTER", "LATER:90"))
+    for marker, printed in reads:
+        at = ["probe", str(crate), "--at", f"src/main.rs:{line(marker)}", "--capture", "x"]
+        code = main([*at, "--set", "x=50", "--json", "--quiet"])
+        result = json.loads(capsys.readouterr().out)
+        assert code == 0 and printed in result["output"], (marker, result)
+
+
+@pytest.mark.timeout(400)
+def test_describe_walks_arrays_of_records_and_says_how_many_more(crate, capsys):
+    # #192 review: `grid.cells[*].n` (records inside an array field) was not listed, and
+    # a struct with more than 8 integer fields was cut short without a word.
+    (crate / "src/main.rs").write_text(COPIES)
+    assert main(["describe", str(crate)]) == 0
+    [mutable] = [line for line in capsys.readouterr().out.splitlines() if "mutable:" in line]
+    assert (
+        "board::main: grid.cells[*].n, grid.cells[*].m, grid.count, grid.inner.deep[*][*], "
+        "grid.inner.w, wide.a, wide.b, wide.c, wide.d, wide.e, wide.f, wide.g, wide.h, "
+        "… and 2 more."
+    ) in mutable, mutable

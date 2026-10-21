@@ -300,6 +300,11 @@ _FIX_ARGUMENTS = "Fix the request arguments; see `peeky <command> --help`."
 # message names the rule, so the hint need not repeat every rule. First match wins.
 _MUTATION_HINTS = (
     (
+        r"has already copied (?:its value|`[^`]+`) into",
+        "Change it before the program copies it (a stop on an earlier line, or `--set-at` "
+        "there), or change the copy the message names instead.",
+    ),
+    (
         r"cannot be changed here",
         "Change it at the statement's first instruction: a breakpoint on the statement's "
         "first line (`--at`, `session continue --to LINE`), or a `session step` that lands "

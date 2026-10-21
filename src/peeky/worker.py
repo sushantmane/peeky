@@ -3789,6 +3789,9 @@ class DebugWorker:
         old value (#105): the change would miss that statement. The session is kept."""
         check = getattr(runtime, "mid_statement", None)
         if check and (reason := check(root, frame or {}, self.stop_reason)):
+            if advice := getattr(reason, "advice", None):
+                # The program's own binding holds the copy (#192): its own way around.
+                raise ValueError(f"{selector!r} cannot be changed here: {reason}. {advice}")
             if getattr(reason, "everywhere", False):
                 # No stop of this run allows one: no advice to stop elsewhere.
                 raise ValueError(f"{selector!r} cannot be changed: {reason}")

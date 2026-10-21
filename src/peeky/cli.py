@@ -738,7 +738,7 @@ def _describe_text(manifest):
     # The fields and elements of struct and array locals `set` may change, per function
     # (seventh evaluation, finding 16; #183: the paths, `board.entries`, not `board`).
     with_parts = [
-        f"{scope['scope']}: {', '.join(path for paths in scope['settable_parts'].values() for path in paths)}"
+        f"{scope['scope']}: {', '.join(_shown_paths(paths) for paths in scope['settable_parts'].values())}"
         for scope in manifest.get("scopes", ())
         if scope.get("settable_parts")
     ]
@@ -837,6 +837,23 @@ def _describe_text(manifest):
     lines.extend(f"{name}: {usage}" for name, usage in manifest["commands"].items())
     lines.append(f"timing: {manifest['timing']['advice']}")
     return "\n".join(lines)
+
+
+def _shown_paths(paths, limit=8):
+    """A local's settable paths for `describe`'s line: the first ``limit``, then how
+    many more (#192 review: never cut silently)."""
+    paths = list(paths)
+    marked = paths and str(paths[-1]).startswith("… and ")
+    more = paths.pop() if marked else None
+    shown = paths[:limit]
+    rest = len(paths) - len(shown)
+    if more is not None:
+        counted = re.fullmatch(r"… and ([0-9]+) more", more)
+        if not counted:
+            # The walk stopped before it found them all.
+            return ", ".join(shown) + ", … and more"
+        rest += int(counted[1])
+    return ", ".join(shown) + (f", … and {rest} more" if rest else "")
 
 
 def _ranges(numbers):
