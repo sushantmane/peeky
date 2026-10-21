@@ -146,6 +146,9 @@ class DebugWorker:
         # {handle: taint}: values inside a local whose pointers may reach freed memory
         # (a runtime's aggregate_taint), passed on to everything inside them.
         self.taints = {}
+        # {handle: (note, refuses)}: values inside a local shown with a note (#140), which
+        # everything read through it carries (#148).
+        self.notes = {}
         # (name, why) for roots a rule left unmarked in the last inspection (unsettable_here).
         self.unsettable_reasons = []
         # Verdicts behind [settable] marks on fields and elements, by where the program is
@@ -922,6 +925,7 @@ class DebugWorker:
         self.stop_reason = None
         self.children.clear()
         self.taints.clear()
+        self.notes.clear()
         self.stop_id = None
         self.frames.clear()
         self.listed_frames = []
@@ -1308,6 +1312,7 @@ class DebugWorker:
             self.reference_adapter.clear()
             self.children.clear()
             self.taints.clear()
+            self.notes.clear()
             self.stop_id = uuid.uuid4().hex if self.state == "stopped" else None
             self.stopped_at = event.get("received", time.monotonic()) if self.stop_id else None
             self.thread_id = event.get("body", {}).get("threadId")
@@ -1352,6 +1357,7 @@ class DebugWorker:
             self.stopped(args)
             self.children.clear()
             self.taints.clear()
+            self.notes.clear()
             self.inspection_nodes = 0
             self.view_fetches = self.view_items = self.view_bytes = 0
             self.view_deadline = time.monotonic() + VIEW_SECONDS
@@ -1578,6 +1584,7 @@ class DebugWorker:
                 return self.set_member(args, runtime)
             self.children.clear()
             self.taints.clear()
+            self.notes.clear()
             self.marks.clear()
             if not self.capabilities.get("supports_set_variable", False):
                 raise ValueError("Adapter does not support variable mutation")
@@ -1926,12 +1933,16 @@ class DebugWorker:
         self.view_bytes += count
         return data
 
-    def expose_variables(self, variables, frame, scope, ancestry, taint=None, root=None):
+    def expose_variables(
+        self, variables, frame, scope, ancestry, taint=None, root=None, noted=None
+    ):
         """Only worker-issued handles leave the process. A child handle permits a write only
         to a member the runtime allows (Java fields and array elements), checked again
         when the write is made. ``taint`` is the parent's (see ``self.taints``). ``root``:
         the debugger's variable for the root local of ``ancestry``, whose fields and
-        elements are marked settable where `set` would change them (C, C++, Rust)."""
+        elements are marked settable where `set` would change them (C, C++, Rust).
+        ``noted``: the parent's (note, refuses) (see ``self.notes``): every child shows
+        that note, and none is settable where it refuses (#148)."""
         result = []
         member_rule = (
             self.member_rule(self.runtime, frame, root) if ancestry and root is not None else None
@@ -1964,6 +1975,8 @@ class DebugWorker:
                     shown["value"] = "<not shown: type name too long to verify>"
                 elif self.placeholders() and is_unavailable(shown["value"]):
                     shown.update(value=None, unavailable=True, reason=shown["value"][1:-1][:300])
+                elif noted:
+                    shown["note"] = noted[0][:500]
                 result.append(shown)
                 self.inspection_nodes += 1
                 continue
@@ -1982,8 +1995,15 @@ class DebugWorker:
                 if pending
                 else None
             )
-            # A value shown though the runtime cannot vouch for it: a note on its row.
+            # A value shown though the runtime cannot vouch for it: a note on its row, and
+            # on everything read through it (#148), which says through what.
             note = getattr(reason, "note", None)
+            carried = None
+            if isinstance(note, str):
+                refuses = bool(getattr(reason, "refuses", False))
+                carried = (f"read through `{name}`: {note}"[:500], refuses)
+            elif noted:
+                note, carried = noted[0], noted
             if reason and note is None:
                 # Indeterminate here: never shown as a value, expanded or offered for set,
                 # nor read through by a qualified view (a Rust container, enum or Box).
@@ -2042,6 +2062,8 @@ class DebugWorker:
                         else None
                     )
                     self.children[handle] = ("view", list(view["children"][:512]), source)
+                    if carried:
+                        self.notes[handle] = carried
                 output = {
                     "name": name,
                     "value": str(view["value"])[:2000],
@@ -2099,6 +2121,9 @@ class DebugWorker:
                     and not self.optimized()
                     and member(variable) is None
                 )
+            if ancestry and settable and noted and noted[1]:
+                # Inside a local whose change is refused (#140): so is a change to this.
+                settable = False
             path = (*ancestry, (name, kind))
             # A debugger's grouping node (debugpy's `special variables`) is not a level.
             depth = sum(1 for step in path if not (step[0] in groups and not step[1]))
@@ -2114,6 +2139,8 @@ class DebugWorker:
                 self.children[handle] = (dict(frame), scope, path)
                 if own:
                     self.taints[handle] = own
+                if carried:
+                    self.notes[handle] = carried
             output = {
                 "name": name,
                 "value": str(variable.get("value", ""))[:2000],
@@ -2135,6 +2162,7 @@ class DebugWorker:
                         output["text"] = True
                         self.children.pop(handle, None)
                         self.taints.pop(handle, None)
+                        self.notes.pop(handle, None)
                         output["variablesReference"] = handle = 0
             if self.placeholders() and is_unavailable(output["value"]):
                 # The placeholder text is the debugger's reason, never the value.
@@ -2261,6 +2289,7 @@ class DebugWorker:
                 1 if "index" in args else min(args.get("count", 64), 512 - self.inspection_nodes)
             )
             settable = self.preview_settable(record, runtime, elements[start : start + count])
+            noted = self.notes.get(args["handle"])
             page = []
             for element in elements[start : start + count]:
                 handle = 0
@@ -2269,10 +2298,17 @@ class DebugWorker:
                     self.reference_counter += 1
                     handle = self.reference_counter
                     self.children[handle] = ("view", list(element["children"][:512]))
+                    if noted:
+                        self.notes[handle] = noted
                 shown = {key: value for key, value in element.items() if key != "children"}
                 page.append({**shown, "variablesReference": handle, "view": "memory"})
+                if noted and not shown.get("unavailable"):
+                    # Read through a local shown with a note (#148).
+                    page[-1]["note"] = noted[0]
                 if settable is not None:
-                    page[-1]["settable"] = settable(element.get("name"))
+                    page[-1]["settable"] = settable(element.get("name")) and not (
+                        noted and noted[1]
+                    )
             self.inspection_nodes += len(page)
             return {
                 "variables": page,
@@ -2302,6 +2338,7 @@ class DebugWorker:
             ancestry,
             self.taints.get(args["handle"]),
             root=trail[0] if trail else None,
+            noted=self.notes.get(args["handle"]),
         )
         runtime.assert_current()
         return {
@@ -2520,6 +2557,7 @@ class DebugWorker:
         # A change invalidates every handle: the next read or change inspects again.
         self.children.clear()
         self.taints.clear()
+        self.notes.clear()
         self.marks.clear()
         self.references.clear()
         self.reference_frames.clear()
@@ -2791,6 +2829,7 @@ class DebugWorker:
         self.reference_adapter.clear()
         self.children.clear()
         self.taints.clear()
+        self.notes.clear()
         try:
             if adapter:
                 if runtime is not None and getattr(runtime, "terminate_debuggee", True) is False:
