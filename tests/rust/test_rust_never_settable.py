@@ -655,3 +655,54 @@ def test_long_instances_and_closures_are_labelled_apart(tmp_path, state, capsys)
     assert code == 1 and not result.get("refused_before_launch"), result
     assert "(in cl::main::{closure#1})" in result["error"]["message"], result["error"]
     assert any("cl::main::{closure#0} (stops 2, 3)" in w for w in result["warnings"]), result
+
+
+LABELLED = """#[inline(never)]
+fn gen_apply<T: Copy + Into<i64>>(t: T) -> i64 {
+    let tag: i64 = t.into(); // TAG
+    tag + 1
+}
+fn main() {
+    let mut total = 0i64;
+    for i in 0..2i64 {
+        let f = |v: i64| { let mut w = v + 1; w += 1; w }; let g = |v: i64| { let mut w = v * 2; w += 1; w }; total += f(i) + g(i); // BOTH
+        total += gen_apply(i as i32) + gen_apply(i as i16 + 50);
+    }
+    println!("TOTAL:{}", total);
+}
+"""
+
+
+def latest_rows(capsys, sql):
+    assert main(["sql", sql.replace("RUN", "(SELECT MAX(run_id) FROM runs)"), "--json"]) == 0
+    return json.loads(capsys.readouterr().out)["rows"]
+
+
+@pytest.mark.timeout(400)
+def test_closure_and_instance_labels_are_found_in_sql(tmp_path, state, capsys):
+    # #151 review 4: the table showed `cz::main::{closure#0}` and `{closure#1}`, but the
+    # store kept no instance for captures, and its note's short_function(function) gives
+    # both closures one name (`cz::main::{{closure}}`); generic instances lost their types.
+    crate = crate_at(tmp_path, "cz", LABELLED)
+    both, tag = line_of(LABELLED, "// BOTH"), line_of(LABELLED, "// TAG")
+    at = ["probe", str(crate), "--at", f"src/main.rs:{both}", "--capture", "i", "--quiet"]
+    assert main([*at, "--hits", "5"]) == 0
+    text = capsys.readouterr().out
+    assert "cz::main::{closure#1}" in text, text
+    assert "instance = 'cz::main::{closure#0}'" in text, text
+    sql = "SELECT instance, COUNT(*) AS n FROM captures WHERE run_id = RUN GROUP BY instance"
+    counts = {row["instance"]: row["n"] for row in latest_rows(capsys, sql)}
+    assert counts == {None: 1, "cz::main::{closure#0}": 2, "cz::main::{closure#1}": 2}, counts
+    sql = "SELECT COUNT(*) AS n FROM captures WHERE instance = 'cz::main::{closure#0}'"
+    assert latest_rows(capsys, sql) == [{"n": 2}]
+
+    code, result = probe(capsys, crate, tag, "--capture", "t", "--hits", "all")
+    assert code == 0, result.get("error")
+    shown = [row.get("instance") for row in result["rows"]]
+    assert shown == ["cz::gen_apply<i32>", "cz::gen_apply<i16>"] * 2, shown
+    sql = (
+        "SELECT COUNT(DISTINCT short_function(function)) AS names, COUNT(DISTINCT instance) "
+        "AS instances, SUM(instance = 'cz::gen_apply<i16>') AS i16 FROM captures "
+        "WHERE run_id = RUN"
+    )
+    assert latest_rows(capsys, sql) == [{"names": 1, "instances": 2, "i16": 2}]

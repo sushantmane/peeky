@@ -17,7 +17,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import quote
 
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 MAX_RUNS = 500
 DEFAULT_ROWS = 200
 MAX_ROWS = 10000
@@ -83,7 +83,9 @@ TABLES = {
             "phase": "observed, or after-set (the value after that hit's interventions)",
             "line": "Line where the program actually stopped (a candidate run's own numbering; "
             "runs.line is the requested line in the original file)",
-            "function": "Function (frame) name",
+            "function": "Function (frame) name, as the debugger names it (C++: its "
+            "signature; Rust: with its symbol hash, and every closure of a function as "
+            "`{{closure}}`). short_function(function) drops parameters and hashes",
             "selector": "Selector as requested, e.g. request.page or items[0]",
             "type": "Type as the debugger reports it",
             "value": "Value as the debugger displays it; NULL when there is none",
@@ -110,6 +112,12 @@ TABLES = {
             "raw (a C/C++ local a loop returns to, a program using setjmp; a Rust value "
             "shown as LLDB's summary, a pointer it does not follow, a moved local): read "
             "the value with it. NULL for a plain value (and for runs saved before schema 8)",
+            "instance": "That function as the build names it where the frame's name does not "
+            "tell it apart (Rust: a closure, `cz::main::{closure#0}`; a generic's instance "
+            "with its type arguments, `cz::gen_apply<i32>`, cut at 300 characters with `…`), "
+            "as a probe table's function column shows it; else NULL (and for runs saved before schema 13). short_function(function) "
+            "gives every closure of a function, and every instance of a generic, one name: "
+            "instance tells them apart",
         },
     ),
     "interventions": (
@@ -140,7 +148,8 @@ TABLES = {
     ),
 }
 _EVIDENCE_COLUMNS = (
-    "run_id, started_at, label, program, line, status, hit, phase, function, selector, type, "
+    "run_id, started_at, label, program, line, status, hit, phase, function, instance, "
+    "selector, type, "
     "value, num, unavailable, error, view, note, identity, scope, args, sets, "
     "artifact_manifest_id, source_sha256, candidate, language"
 )
@@ -153,7 +162,8 @@ VIEWS = {
     "last_run": "The evidence rows of the newest run",
 }
 _EVIDENCE_VIEW = """CREATE VIEW evidence AS SELECT c.run_id, r.started_at, r.label, r.program,
-        c.line, r.status, c.hit, c.phase, c.function, c.selector, c.type, c.value, c.num,
+        c.line, r.status, c.hit, c.phase, c.function, c.instance, c.selector, c.type, c.value,
+        c.num,
         c.unavailable, c.error, c.view, c.note, c.identity, c.scope, r.args, r.sets,
         r.artifact_manifest_id,
         r.source_sha256, r.edit IS NOT NULL AS candidate, r.language
@@ -166,7 +176,7 @@ _LAST_RUN_VIEW = (
 _CAPTURES = """CREATE TABLE {} (
         run_id INTEGER NOT NULL, hit INTEGER, phase TEXT, line INTEGER, function TEXT,
         selector TEXT, type TEXT, value TEXT, num NUMERIC, unavailable INTEGER NOT NULL,
-        error TEXT, view TEXT, identity INTEGER, scope TEXT, note TEXT)"""
+        error TEXT, view TEXT, identity INTEGER, scope TEXT, note TEXT, instance TEXT)"""
 _CAPTURE_INDEXES = (
     "CREATE INDEX captures_run ON captures (run_id, hit)",
     "CREATE INDEX captures_selector ON captures (selector)",
@@ -201,7 +211,8 @@ _DDL = (
 # (earlier runs' notes were not kept: NULL); version 9 adds runs.notes_kept, 1 for a run
 # saved with its notes, so queries can say which runs' values may be unmarked; version
 # 10 adds interventions.line and capture_hit (an earlier run's --set was at its captured
-# stop); version 11 adds interventions.function, version 12 interventions.instance. Views
+# stop); version 11 adds interventions.function, version 12 interventions.instance, and
+# version 13 captures.instance (a closure's or generic instance's label, NULL before). Views
 # name columns of the newest tables, so earlier steps only drop them and the last creates
 # them.
 _DROP_VIEWS = ("DROP VIEW IF EXISTS last_run", "DROP VIEW IF EXISTS evidence")
@@ -282,12 +293,8 @@ _MIGRATIONS = {
         "interventions.run_id)) WHERE capture_hit IS NULL",
     ),
     10: (*_DROP_VIEWS, _add_columns(("function", "TEXT"), table="interventions")),
-    11: (
-        *_DROP_VIEWS,
-        _add_columns(("instance", "TEXT"), table="interventions"),
-        _EVIDENCE_VIEW,
-        _LAST_RUN_VIEW,
-    ),
+    11: (*_DROP_VIEWS, _add_columns(("instance", "TEXT"), table="interventions")),
+    12: (*_DROP_VIEWS, _add_columns(("instance", "TEXT")), _EVIDENCE_VIEW, _LAST_RUN_VIEW),
 }
 
 _LATEST = "(SELECT MAX(run_id) FROM runs)"
@@ -868,8 +875,8 @@ def record(path, result, *, language=None, target=None, label=None, worker=None)
         ).lastrowid
         connection.executemany(
             "INSERT INTO captures (run_id, hit, phase, line, function, selector, type, value, "
-            "num, unavailable, error, view, identity, scope, note) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "num, unavailable, error, view, identity, scope, note, instance) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [
                 (
                     run_id,
@@ -889,6 +896,7 @@ def record(path, result, *, language=None, target=None, label=None, worker=None)
                     row["identity"] if type(row.get("identity")) is int else None,
                     "globals" if row.get("scope") == "globals" else None,
                     _text(row.get("note")),
+                    _text(row.get("instance")),
                 )
                 for row in result.get("rows") or []
             ],
@@ -1502,9 +1510,13 @@ def schema(path):
             "differs from b",
             "short_function(function)": "A frame name without a C++ signature's parameters, "
             "qualifiers and return type (`trim_left`) or a Rust symbol hash; NULL for NULL. "
-            "Overloads share it (`operator+`, `G::get` for `get() &` and `get() &&`), so "
-            "GROUP BY or a join on it combines them; a table shows it, except that "
-            "overloads in one table keep their parameters there",
+            "Overloads share it (`operator+`, `G::get` for `get() &` and `get() &&`), and so "
+            "do a function's closures (`cz::main::{{closure}}`) and a generic's instances "
+            "(`cz::gen_apply` for `gen_apply<i32>` and `gen_apply<i16>`), so GROUP BY or a "
+            "join on it combines them; captures.instance and interventions.instance tell "
+            "closures and instances apart (`instance = 'cz::main::{closure#0}'`). A table "
+            "shows it, except that overloads in one table keep their parameters there, and "
+            "a probe table shows a short instance instead",
             "object_ref(text)": "The Java object a value is (`Merge$Interval@143`), else NULL: "
             "two values of one run with the same object_ref are the same object (aliasing); "
             "the numbers differ between runs. Python values carry theirs in "

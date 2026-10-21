@@ -3370,15 +3370,21 @@ def _table(result):
     # A C++ frame's signature (`trim_left(std::__1::basic_string<...> const&)`) would
     # double the table's width; Rust's ends with a symbol hash. JSON keeps the name whole.
     functions = function_labels(row.get("function") for row in result["rows"])
+
+    def short_instance(row):
+        # A short instance name (`main::{closure#1}`, `tf<rc::A>`); JSON has every one.
+        return (
+            row["instance"]
+            if len(row.get("instance") or "") <= 60 and row.get("instance")
+            else None
+        )
+
     rows = [
         (
             str(row["hit"]),
             row["phase"],
             str(row.get("line", "")),
-            # A short instance name (`main::{closure#1}`, `tf<rc::A>`); JSON has every one.
-            row["instance"]
-            if len(row.get("instance") or "") <= 60 and row.get("instance")
-            else functions.get(row.get("function"), ""),
+            short_instance(row) or functions.get(row.get("function"), ""),
             row["selector"],
             row.get("type") or "",
             row.get("value", "<" + row.get("error", "") + ">")
@@ -3396,7 +3402,16 @@ def _table(result):
         lines.append(
             "  ".join(text.ljust(width) for text, width in zip(item, widths)) + "  " + item[-1]
         )
-    if note := shortened_note(functions):
+    # Rows shown by their instance are found in SQL by `instance`, not short_function.
+    shown = next((label for row in result["rows"] if (label := short_instance(row))), None)
+    if note := shortened_note(
+        {
+            row.get("function"): functions.get(row.get("function"))
+            for row in result["rows"]
+            if not short_instance(row)
+        },
+        shown,
+    ):
         lines.append(note)
     named = function_labels(change.get("function") for change in result["interventions"])
     for change in result["interventions"]:

@@ -1154,6 +1154,50 @@ def test_the_notes_example_matches_overloads_as_sql_does(store):
     assert evidence.query(store, sql)["rows"] == [{"n": 4}]
 
 
+def test_closures_and_instances_a_table_shows_are_found_by_instance(store):
+    # #151 review 4: the table showed `cz::main::{closure#0}` and `{closure#1}`, and its
+    # note said to use short_function(function), which gives both `cz::main::{{closure}}`.
+    probe = result()
+    labels = ["cz::main::{closure#0}", None, "cz::main::{closure#1}", None]
+    names = ["cz::main::{{closure}}::h1111111111111111", "cz::main::h3333333333333333"]
+    for row, label in zip(probe["rows"], labels):
+        row["function"] = names[0] if label else names[1]
+        if label:
+            row["instance"] = label
+    evidence.record(store, probe, language="rust")
+    sql = "SELECT instance, COUNT(*) AS n FROM captures GROUP BY instance ORDER BY instance"
+    assert evidence.query(store, sql)["rows"] == [
+        {"instance": None, "n": 2},
+        {"instance": "cz::main::{closure#0}", "n": 1},
+        {"instance": "cz::main::{closure#1}", "n": 1},
+    ]
+    sql = "SELECT DISTINCT instance FROM evidence WHERE short_function(function) = ?"
+    merged = evidence.query(store, sql.replace("?", "'cz::main::{{closure}}'"))["rows"]
+    assert len(merged) == 2, merged
+    one = "SELECT COUNT(*) AS n FROM last_run WHERE instance = 'cz::main::{closure#0}'"
+    assert evidence.query(store, one)["rows"] == [{"n": 1}]
+
+
+def test_a_schema_12_store_gains_capture_instances(store):
+    probe = result()
+    probe["rows"][0]["instance"] = "gen::tf<gen::A>"
+    evidence.record(store, probe)
+    connection = sqlite3.connect(store)
+    connection.executescript(
+        "DROP VIEW last_run; DROP VIEW evidence; ALTER TABLE captures DROP COLUMN instance; "
+        "PRAGMA user_version = 12;"
+    )
+    connection.close()
+    rows = evidence.query(store, "SELECT DISTINCT instance FROM evidence")["rows"]
+    assert rows == [{"instance": None}]
+    connection = sqlite3.connect(store)
+    assert connection.execute("PRAGMA user_version").fetchone() == (evidence.SCHEMA_VERSION,)
+    connection.close()
+    evidence.record(store, probe)
+    sql = "SELECT run_id, instance FROM captures WHERE instance IS NOT NULL"
+    assert evidence.query(store, sql)["rows"] == [{"run_id": 2, "instance": "gen::tf<gen::A>"}]
+
+
 def test_wide_gives_one_row_per_hit_with_a_column_per_selector(store):
     # #139 (sixth evaluation): one row per hit took three-way self-joins on captures.
     selectors = ("now", "w.start", "bins[3].hi", 'ages["al"]', "d['k']", "line")
