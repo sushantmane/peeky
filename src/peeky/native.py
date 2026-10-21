@@ -2370,7 +2370,9 @@ def _stack_pointer(dap, frame_id):
     reply = dap.request(
         "evaluate", {"expression": "$sp", "context": "watch", "frameId": frame_id}, timeout=2
     )
-    return _address(str(reply.get("result") or ""))
+    text = str(reply.get("result") or "").strip()
+    # lldb-dap 18 gives it in decimal, later ones in hex.
+    return int(text) if re.fullmatch(r"[0-9]{1,20}", text) else _address(text)
 
 
 def _instruction_kind(mnemonic, operands):

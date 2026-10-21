@@ -236,11 +236,12 @@ int main(void) {
 
 THREADS = """#include <pthread.h>
 #include <stdio.h>
-#include <unistd.h>
 
 static int busy(int n) {
-    usleep(2000); /* BUSY */
-    return n * 11;
+    int r = n * 11; /* BUSY */
+    for (volatile int spin = 0; spin < 200000; spin++) {
+    }
+    return r;
 }
 
 static void *work(void *arg) {

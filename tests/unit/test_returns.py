@@ -474,3 +474,20 @@ def test_older_lldb_dap_returns_come_from_lldbs_own_record():
         )
         is None
     )
+
+
+def test_a_frames_stack_pointer_is_read_as_the_debugger_gives_it():
+    from peeky.native import _stack_pointer
+
+    class Dap:
+        def __init__(self, result):
+            self.result = result
+
+        def request(self, command, arguments, timeout=None):
+            assert arguments["expression"] == "$sp" and arguments["frameId"] == 3
+            return {"result": self.result}
+
+    # lldb-dap 18 prints registers in decimal, later ones in hex.
+    assert _stack_pointer(Dap("281474976709568"), 3) == 281474976709568
+    assert _stack_pointer(Dap("0x000000016f63b290"), 3) == 0x16F63B290
+    assert _stack_pointer(Dap("<error>"), 3) is None
