@@ -904,3 +904,62 @@ def test_rust_the_advice_reaches_the_examined_call_of_a_function_called_from_two
     assert [row["value"] for row in result["rows"] if row["hit"] == hit] == ["1", "1"], result
     # The call at `now=1` saw the change (count 6 > 2), and no other call did.
     assert "SEEN:[true, false, true, true]" in result["output"], result["output"]
+
+
+WINDOW = """#[derive(Debug, Clone, Copy)]
+struct Window {
+    start: u64,
+    count: u32,
+}
+
+fn main() {
+    let mut w = Window { start: 0, count: 0 };
+    let mut seen = Vec::new();
+    for now in [0u64, 1, 10, 11] {
+        w.count += 1; // BUMP
+        let late = now - w.start > 5; // CHECK
+        if late {
+            w.start = now;
+            w.count = 1;
+        }
+        seen.push((now, w.count)); // PUSH
+    }
+    println!("SEEN {:?}", seen);
+}
+"""
+
+
+@pytest.mark.timeout(400)
+def test_rust_a_field_changed_at_one_line_is_restored_at_another_in_one_probe(crate, capsys):
+    # #137: `w.start` moved for one check (line CHECK, 3rd pass) and put back before the
+    # next pass (line PUSH, 3rd stop), in one probe; captured at line BUMP.
+    (crate / "src/main.rs").write_text(WINDOW)
+
+    def at(marker):
+        return next(i for i, text in enumerate(WINDOW.splitlines(), 1) if marker in text)
+
+    def probe(*sets):
+        argv = ["probe", str(crate), "--at", f"src/main.rs:{at('BUMP')}"]
+        code = main([*argv, "--capture", "w.start,w.count", "--hits", "all", *sets, "--json"])
+        return code, json.loads(capsys.readouterr().out)
+
+    change = ("--set-at", f"{at('CHECK')}@3", "w.start=9")
+    code, result = probe(*change, "--set-at", f"src/main.rs:{at('PUSH')}@3", "w.start=0")
+    assert code == 0, result.get("error")
+    assert "SEEN [(0, 1), (1, 2), (10, 3), (11, 1)]" in result["output"], result["output"]
+    applied = [
+        (change["name"], change["before"], change["after"], change["line"], change["hit"])
+        for change in result["interventions"]
+    ]
+    assert applied == [
+        ("w.start", "0", "9", at("CHECK"), 3),
+        ("w.start", "9", "0", at("PUSH"), 3),
+    ]
+    # Left changed, the 4th pass sees it too: the restore is what keeps the run comparable.
+    code, alone = probe(*change)
+    assert code == 0 and "SEEN [(0, 1), (1, 2), (10, 3), (11, 4)]" in alone["output"]
+    assert main(["queries", "set_effect", "--json"]) == 0
+    effect = json.loads(capsys.readouterr().out)["rows"]
+    assert [(row["line"], row["hit"], row["selector"], row["after_set"]) for row in effect] == [
+        (at("CHECK"), 3, "w.start", "9")
+    ]

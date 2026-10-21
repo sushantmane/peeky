@@ -328,7 +328,8 @@ def test_a_line_shared_with_a_closure_names_each_function_it_stops_in(crate, cap
     [warning] = [w for w in result["warnings"] if "stopped in 2 functions" in w]
     # The first call (empty `best`) never runs the closure; later calls stop in it too.
     assert "peeky_pagination::ranked (hits 1, 2, 5)" in warning
-    assert "peeky_pagination::ranked::{{closure}} (hits 3, 4" in warning
+    # The closure as the build's debug information numbers it (#151 review 3).
+    assert "peeky_pagination::ranked::{closure#0} (hits 3, 4" in warning
     # A rejected change names the frame it was tried in.
     code, result = probe(
         capsys,

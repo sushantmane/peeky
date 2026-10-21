@@ -1015,7 +1015,6 @@ def test_a_set_the_build_rules_out_is_refused_before_launch(tmp_path):
     from peeky.worker import DebugWorker
 
     worker = DebugWorker(tmp_path)
-    points = [{"line": 7}]
     asked = []
     runtime = SimpleNamespace(
         target_identity={"optimization": "O1"},
@@ -1024,7 +1023,7 @@ def test_a_set_the_build_rules_out_is_refused_before_launch(tmp_path):
     )
     worker.runtime = runtime
     with pytest.raises(Refused) as refused:
-        worker.refuse_never_settable(runtime, tmp_path / "a.c", points, ["x"])
+        worker.refuse_never_settable(runtime, tmp_path / "a.c", [{"line": 7, "name": "x"}])
     assert refused.value.code == "MUTATION_REJECTED" and refused.value.before_launch is True
     assert "refused in an optimized build (-O1)" in str(refused.value)
     assert "; no slot. Refused before the program runs" in str(refused.value)
@@ -1035,7 +1034,7 @@ def test_a_set_the_build_rules_out_is_refused_before_launch(tmp_path):
         )
         worker.runtime = runtime
         with pytest.raises(Refused) as refused:
-            worker.refuse_never_settable(runtime, tmp_path / "a.c", points, ["x"])
+            worker.refuse_never_settable(runtime, tmp_path / "a.c", [{"line": 7, "name": "x"}])
         assert refused.value.code == code and str(refused.value) == verdict
     runtime = SimpleNamespace(
         target_identity={},
@@ -1043,13 +1042,27 @@ def test_a_set_the_build_rules_out_is_refused_before_launch(tmp_path):
     )
     worker.runtime = runtime
     with pytest.raises(Refused) as refused:
-        worker.refuse_never_settable(runtime, tmp_path / "a.c", points, ["y"])
+        worker.refuse_never_settable(runtime, tmp_path / "a.c", [{"line": 7, "name": "y"}])
     assert refused.value.code == "NOT_FOUND"
     runtime = SimpleNamespace(target_identity={}, never_settable=lambda *args: None)
     worker.runtime = runtime
-    worker.refuse_never_settable(runtime, tmp_path / "a.c", points, ["z"])
-    with pytest.raises(ValueError, match="sets must be a list"):
-        DebugWorker.validate("launch", {"program": "a.c", "sets": "x"})
+    worker.refuse_never_settable(runtime, tmp_path / "a.c", [{"line": 7, "name": "z"}])
+    for sets in ("x", ["x"], [{"line": 0, "name": "x"}], [{"line": 3, "name": ""}]):
+        with pytest.raises(ValueError, match="sets must be a list"):
+            DebugWorker.validate("launch", {"program": "a.c", "sets": sets})
+    # Each change is judged against its own line's functions only (#137: --set-at).
+    judged = []
+    runtime = SimpleNamespace(
+        target_identity={},
+        never_settable=lambda program, lines, names: (
+            judged.append((lines, names)) or ("`w` is kept in a register" if lines == [9] else None)
+        ),
+    )
+    worker.runtime = runtime
+    changes = [{"line": 7, "name": "x"}, {"line": 9, "name": "w"}, {"line": 7, "name": "y"}]
+    with pytest.raises(Refused, match="`w` is kept in a register"):
+        worker.refuse_never_settable(runtime, tmp_path / "a.c", changes)
+    assert judged == [([7], ["x", "y"]), ([9], ["w"])]
 
 
 def test_a_row_no_stop_can_change_says_why(tmp_path):

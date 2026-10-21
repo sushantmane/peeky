@@ -129,3 +129,13 @@ def test_the_note_says_how_sql_matches_a_short_name():
     note = shortened_note(labels)
     assert "short_function(function) = 'twice'" in note and "whole name" in note
     assert "''" in shortened_note({"o'k(int)": "o'k"})
+    # #151 review 4: a closure or generic instance the table shows is matched by
+    # `instance`; short_function merges a function's closures.
+    note = shortened_note({"cz::main::h0123456789abcdef": "cz::main"}, "cz::main::{closure#0}")
+    assert "short_function(function) = 'cz::main'" in note, note
+    assert "instance = 'cz::main::{closure#0}'" in note, note
+    note = shortened_note({}, "cz::gen_apply<i32>")
+    assert note.endswith(
+        "use instance = 'cz::gen_apply<i32>' for a closure or generic instance as shown "
+        "(short_function merges a function's closures and a generic's instances)"
+    ), note
