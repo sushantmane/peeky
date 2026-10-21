@@ -242,7 +242,8 @@ def test_a_pid_announced_then_reused_is_never_ended():
 # group of its own, starts a child in that group and one in a session of its own (as
 # `c2/hang.c` of PR #147's review does); "leave": it starts a child in a session of its
 # own and exits 1.5 s later; "graceful": it stays in the adapter's group (as java-debug's
-# JVM does) and takes 0.3 s to end on SIGTERM. Each writes "role pid" to the record.
+# JVM does) and takes 0.3 s to end on SIGTERM; "stop": the adapter reports a breakpoint
+# stop once configured. Each writes "role pid" to the record.
 RUNNING_PROGRAM = r"""
 import os, signal, sys, time
 how, record = sys.argv[1], sys.argv[2]
@@ -312,6 +313,9 @@ while True:
         body = {"breakpoints": [{"id": 1, "verified": True, "line": p["line"]} for p in points]}
     write({"seq": 0, "type": "response", "request_seq": request["seq"], "success": True,
            "command": command, "body": body})
+    if command == "configurationDone" and how == "stop":
+        write({"seq": 0, "type": "event", "event": "stopped",
+               "body": {"reason": "breakpoint", "threadId": 1}})
 """
 
 
@@ -331,11 +335,13 @@ def until(condition, timeout=10):
         time.sleep(0.05)
 
 
-def start_running(tmp_path, how, leftovers, roles):
+def start_running(tmp_path, how, leftovers, roles, **options):
     record = tmp_path / "started.txt"
     (tmp_path / "main.py").write_text("pass\n")
     worker = DebugWorker(tmp_path, adapter=running_target(how, record))
-    started_session = worker.dispatch("launch", {"program": "main.py", "breakpoints": []})
+    started_session = worker.dispatch(
+        "launch", {"program": "main.py", "breakpoints": [], **options}
+    )
     until(lambda: roles <= set(started(record)))
     pids = started(record)
     leftovers.extend(pids.values())
@@ -427,3 +433,26 @@ def test_the_family_is_known_by_ancestry_identity_and_group():
     found, groups = family.record(reused, root_running=False)
     assert set(found) == {201, 302} and groups == {200}
     assert family.groups([202, 203], reused) == set()
+
+
+def test_a_session_failed_with_no_request_in_flight_keeps_its_cleanup(tmp_path, leftovers):
+    from peeky.worker import SessionFailed
+
+    worker, session, pids, _ = start_running(
+        tmp_path, "stop", leftovers, {"program"}, max_pause=0.2
+    )
+    until(lambda: worker.dap.pending_stop(worker.cursor) is not None)
+    worker.dap.process.kill()
+    worker.dap.process.wait(timeout=3)
+    time.sleep(0.3)
+    # The pause guard, with no client waiting, fails resuming the stop: the session is
+    # kept as a failed one, and ended (PR #147 review 2: `--max-pause`, `kill -9`).
+    worker.guard_pause()
+    assert worker.dap is None and worker.failed and not running(pids["program"])
+    cleanup = worker.dispatch("report", session)["cleanup"]
+    assert cleanup.startswith(f"terminated pid {pids['program']}; the debugger was gone")
+    # Before, the error replayed to the next request, and `close`, said nothing of it.
+    with pytest.raises(SessionFailed) as again:
+        worker.dispatch("inspect", {**session, "stop_id": "any"})
+    assert classify(again.value)["cleanup"] == cleanup
+    assert worker.dispatch("close", session) == {"state": "idle", "cleanup": cleanup}

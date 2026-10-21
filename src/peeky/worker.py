@@ -556,7 +556,8 @@ class DebugWorker:
         report = self.report(runtime)
         report.update(state="detached", lost_stop=diagnosis)
         session = self.session
-        self.close()
+        if cleanup := self.close():
+            report["cleanup"] = cleanup
         self.failed = {"session": session, "message": message, "report": report, "error": LostStop}
         raise LostStop(message)
 
@@ -740,12 +741,17 @@ class DebugWorker:
                 # A session that failed for good (#27: a lost stop, a dead adapter event
                 # thread) is already closed: it only reports what it knew, closes, or
                 # repeats its error. Nothing is served.
+                # What ending it did to the processes it started (#143), as on any error.
+                cleanup = (failed["report"] or {}).get("cleanup")
                 if operation == "close":
                     self.failed = None
-                    return {"state": "idle"}
+                    return {"state": "idle", **({"cleanup": cleanup} if cleanup else {})}
                 if operation == "report":
                     return failed["report"]
-                raise failed["error"](failed["message"])
+                error = failed["error"](failed["message"])
+                if cleanup:
+                    error.cleanup = cleanup
+                raise error
             if operation != "launch":
                 if not self.dap or args.get("session_id") != self.session:
                     raise ValueError("Missing or stale session_id")

@@ -408,19 +408,22 @@ def test_a_session_whose_stop_is_never_reported_fails_and_serves_nothing_more(
         assert error["code"] == "DEBUGGER_ERROR"
         assert f"Loop.twice(int) at Loop.java:{line}" in error["message"]
         assert f"{LOOP_SOURCE}:{line}" in error["message"]
+        detached = "detached; the attached program keeps running"
+        assert error["cleanup"] == detached
         # The session is detached, serves nothing, and repeats its error until closed.
         for operation, extra in (("wait", {"timeout": 2}), ("inspect", {"stop_id": "x"})):
             with pytest.raises(LostStop) as again:
                 worker.dispatch(operation, {**session, **extra})
             assert str(again.value) == str(failure.value)
+            assert classify(again.value)["cleanup"] == detached
         report = worker.dispatch("report", session)
         assert report["state"] == "detached" and report["lost_stop"]["breakpoint"] == (
             f"{LOOP_SOURCE}:{line}"
         )
         assert [entry["operation"] for entry in report["history"]].count("lost_stop") == 1
         assert any(e["name"] == "lost stop" for e in report["debugger_events"]["trace"])
-        assert worker.hits == 1
-        assert worker.dispatch("close", session) == {"state": "idle"}
+        assert worker.hits == 1 and report["cleanup"] == detached
+        assert worker.dispatch("close", session) == {"state": "idle", "cleanup": detached}
     finally:
         worker.close()
     output = process.stdout.read()
