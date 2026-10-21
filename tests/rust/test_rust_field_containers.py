@@ -766,8 +766,9 @@ fn main() {
 }
 """
 )
-# Unsafe code only in an integration test, which never runs in the debugged binary
-# (rustc's dependency file for the binary does not list it).
+# Unsafe code only in an integration test still counts (review of #156, round 4: what
+# Peeky read from rustc's dependency file to leave such files out was not exact for
+# every file name).
 TEST_ONLY = GLOBAL_ASM.split("\n", 1)[1]
 TEST_ONLY_TEST = """#[test]
 fn freed() {
@@ -818,15 +819,12 @@ def test_global_asm_counts_as_unsafe_code(tmp_path, state, capsys):
 
 
 @pytest.mark.timeout(400)
-def test_unsafe_code_only_in_an_integration_test_does_not_count(tmp_path, state, capsys):
+def test_unsafe_code_only_in_an_integration_test_counts(tmp_path, state, capsys):
     crate = crate_at(tmp_path, "testonly", TEST_ONLY)
     (crate / "tests").mkdir()
     (crate / "tests/freed.rs").write_text(TEST_ONLY_TEST)
     [row] = probe(capsys, crate, TEST_ONLY, "// STOP", "w.values")["rows"]
-    if reads(row):
-        assert row["value"] == "[1, 2, 3]" and row["view"] == "memory", row
-    else:
-        raw(row, NO_MEMORY)
+    raw(row, "the crate has unsafe code (in tests/freed.rs)")
 
 
 @pytest.mark.timeout(400)
@@ -836,3 +834,96 @@ def test_many_macro_calls_leave_the_view_budget_to_the_debugger(tmp_path, state,
     assert "budget" not in row["value"] and row.get("view") != "budget-exhausted", row
     if reads(row):
         assert row["value"] == '"a,b"' and row["view"] == "memory", row
+
+
+# Review of #156, round 4: four ways unsafe code (or what does its work) went unseen.
+# The buffer `release` frees, which `w.values` still points at.
+FREED = (
+    HOLDER
+    + """
+fn main() {
+    let w = W { values: vec![1, 2, 3], k: 7 };
+    helper::release(&w.values);
+    let n = std::hint::black_box(w.k); // STOP
+    std::mem::forget(w);
+    println!("{n}");
+}
+"""
+)
+RELEASE = """pub fn release(v: &Vec<i64>) {
+    unsafe { drop(std::ptr::read(v)) };
+}
+"""
+
+
+@pytest.mark.timeout(400)
+def test_unsafe_code_in_a_module_of_any_file_name_counts(tmp_path, state, capsys):
+    # Read from rustc's dependency file, `src/a$$b.rs` was `src/a$b.rs` (make's `$$`, a
+    # decoy's name), and a U+2028 in a name split its line, losing `src/helper.rs`
+    # after it: the unsafe module went unscanned.
+    dollar = '#[path = "a$$b.rs"]\nmod helper;\n' + FREED
+    crate = crate_at(tmp_path, "dollar", dollar)
+    (crate / "src/a$$b.rs").write_text(RELEASE)
+    (crate / "src/a$b.rs").write_text("// Not compiled; only its name matters.\n")
+    [row] = probe(capsys, crate, dollar, "// STOP", "w.values")["rows"]
+    raw(row, "the crate has unsafe code (in src/a$$b.rs)")
+    separator = '#[path = "x.rs\u2028y.rs"]\nmod odd;\nmod helper;\n' + FREED
+    crate = crate_at(tmp_path, "separator", separator)
+    (crate / "src/x.rs\u2028y.rs").write_text("")
+    (crate / "src/x.rs").write_text("// Not compiled; only its name matters.\n")
+    (crate / "src/helper.rs").write_text(RELEASE)
+    # rustc counts lines by `\n` alone; splitlines (line_of) also splits at U+2028.
+    line = separator[: separator.index("// STOP")].count("\n") + 1
+    at = f"src/main.rs:{line}"
+    code = main(["probe", str(crate), "--at", at, "--capture", "w.values", "--json"])
+    result = json.loads(capsys.readouterr().out)
+    assert code == 0, result.get("error")
+    [row] = result["rows"]
+    raw(row, "the crate has unsafe code (in src/helper.rs)")
+
+
+CUSTOM_MIR = (
+    """#![feature(custom_mir, core_intrinsics)]
+#![allow(internal_features)]
+use core::intrinsics::mir::*;
+"""
+    + FREED.replace("helper::release", "release")
+    + """
+#[custom_mir(dialect = "runtime", phase = "optimized")]
+fn release(v: &Vec<i64>) {
+    mir! {
+        {
+            Drop(*v, ReturnTo(bb1), UnwindContinue())
+        }
+        bb1 = {
+            Return()
+        }
+    }
+}
+"""
+)
+
+
+@pytest.mark.timeout(400)
+def test_a_nightly_feature_counts_as_unsafe_code(tmp_path, state, capsys):
+    # Peeky's MIR builds set RUSTC_BOOTSTRAP: custom MIR's `Drop(*v, ...)` frees what a
+    # `&Vec` points at, with no `unsafe` token in the crate.
+    crate = crate_at(tmp_path, "nightly", CUSTOM_MIR)
+    [row] = probe(capsys, crate, CUSTOM_MIR, "// STOP", "w.values")["rows"]
+    raw(row, "the crate enables nightly features (in src/main.rs), which can free a buffer")
+
+
+HASHED = """macro_rules! run {
+    (# $($t:tt)*) => { $($t)* };
+}
+""" + FREED.replace(
+    "helper::release(&w.values);", "run!(#unsafe { drop(std::ptr::read(&w.values)) });"
+)
+
+
+@pytest.mark.timeout(400)
+def test_a_macro_that_drops_a_hash_before_unsafe_hides_nothing(tmp_path, state, capsys):
+    # `run!(#unsafe { ... })` expands to an `unsafe` block; only `r#unsafe` is a name.
+    crate = crate_at(tmp_path, "hashed", HASHED)
+    [row] = probe(capsys, crate, HASHED, "// STOP", "w.values")["rows"]
+    raw(row, UNSAFE_CRATE)

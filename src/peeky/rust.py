@@ -697,13 +697,9 @@ class RustTarget:
             session.declarations_ir = declarations
             # Unsafe code can free what safe code shows owned (#156 review): where the
             # crate has any, no owned container, field container or frozen borrow reads.
-            # Only the files the debugged executable is built from count (rustc's
-            # dependency file): an integration test's code never runs in it.
-            built = {relative for _, relative in _dependencies(binary, prepared.workspace)}
-            session.unsafe_code = unsafe_source(
-                {name: text for name, text in texts.items() if name in built},
-                tuple(name for name in rust if name in built),
-            )
+            # Every declared file counts, an integration test's too (#156 review: what
+            # Peeky reads from rustc's dependency file is not exact for every file name).
+            session.unsafe_code = unsafe_source(texts, rust)
             if owned is not None:
                 owned.unsafe_code = session.unsafe_code
             session.assert_current()
@@ -746,30 +742,22 @@ def owned_locals(workspace, artifacts, crate, ir, sources):
     )
 
 
-def _dependencies(executable, workspace):
-    """[(path, its workspace-relative name or None outside it)] of each file rustc read to
-    build ``executable``, from its dependency file."""
-    root = Path(workspace).resolve()
-    depfile = executable.with_name(executable.name + ".d")
-    if not depfile.is_file():
-        raise ValueError(f"Cargo wrote no dependency file for {executable.name}")
-    found = []
-    for dependency in dependency_paths(depfile.read_text(), root):
-        try:
-            found.append((dependency, dependency.resolve().relative_to(root).as_posix()))
-        except (OSError, ValueError):
-            found.append((dependency, None))
-    return found
-
-
 def _require_declared_dependencies(executables, workspace, inputs):
     """Every file the compiler read (rustc's dependency files) must be declared.
 
     `#[path = "/elsewhere"] mod x;`, `include!` and `include_str!` would otherwise
     compile bytes that no provenance check covers.
     """
+    root = Path(workspace).resolve()
     for executable in executables:
-        for dependency, relative in _dependencies(executable, workspace):
+        depfile = executable.with_name(executable.name + ".d")
+        if not depfile.is_file():
+            raise ValueError(f"Cargo wrote no dependency file for {executable.name}")
+        for dependency in dependency_paths(depfile.read_text(), root):
+            try:
+                relative = dependency.resolve().relative_to(root).as_posix()
+            except (OSError, ValueError):
+                relative = None
             if relative not in inputs:
                 raise ValueError(
                     f"The Rust build read {dependency}, which is not a declared source; "
@@ -811,30 +799,72 @@ _UNREAD_CRATE = (
 # impl, trait or extern block, an `#[unsafe(...)]` attribute, and the attributes that
 # are unsafe without saying so before the 2024 edition (a `#[no_mangle]` function can
 # replace `free`), and `global_asm!`, which needs no `unsafe` but can define `free`
-# too (`asm!` and `naked_asm!` need it, but count anyway). `r#unsafe` is an identifier.
+# too (`asm!` and `naked_asm!` need it, but count anyway). Only `r#unsafe` is an
+# identifier: a macro may drop the `#` of `#unsafe` (#156 review), and `r#asm` is `asm`.
 _UNSAFE_CODE = re.compile(
-    r"(?<![\w#])(?:unsafe|no_mangle|export_name|link_section|global_asm|naked_asm)\b"
-    r"|(?<![\w#])asm\s*!"
+    r"(?<!\w)(?:unsafe|no_mangle|export_name|link_section|global_asm|naked_asm)\b"
+    r"|(?<!\w)asm\s*!"
 )
+_RAW_UNSAFE = re.compile(r"(?<!\w)r#unsafe\b")
+_NIGHTLY_CRATE = (
+    "the crate enables nightly features (in {source}), which can free a buffer without "
+    "Peeky seeing it"
+)
+# An inner attribute (`#![...]`), and a nightly feature it enables, alone or under a
+# `cfg_attr`: Peeky's MIR builds set RUSTC_BOOTSTRAP, so `#![feature(custom_mir)]`
+# works, whose `Drop(*v, ...)` frees what a `&Vec` points at with no `unsafe`.
+_SPACE = "[\\s\u200e\u200f]*"
+_INNER_ATTRIBUTE = re.compile(f"#{_SPACE}!{_SPACE}\\[")
+_FEATURE = re.compile(f"(?<!\\w)(?:r#)?feature{_SPACE}\\(")
+_SQUARE = re.compile(r"[\[\]]")
+
+
+def _unsafe_code(code):
+    """Whether ``code`` (Rust without comments and literals, or another file's text) has
+    unsafe code (_UNSAFE_CODE)."""
+    return any(
+        found.start() < 2 or not _RAW_UNSAFE.match(code, found.start() - 2)
+        for found in _UNSAFE_CODE.finditer(code)
+    )
+
+
+def _nightly(code):
+    """Whether ``code`` has an inner attribute naming `feature(...)` (one not closed runs
+    to the end)."""
+    for attribute in _INNER_ATTRIBUTE.finditer(code):
+        depth = 0
+        for bracket in _SQUARE.finditer(code, attribute.end() - 1):
+            depth += 1 if bracket[0] == "[" else -1
+            if not depth:
+                if _FEATURE.search(code, attribute.end(), bracket.start()):
+                    return True
+                break
+        else:
+            return bool(_FEATURE.search(code, attribute.end()))
+    return False
 
 
 def unsafe_source(texts, rust):
-    """Why the crate may have unsafe code, or None: ``texts`` ({name: text}) are the files
-    the debugged executable is built from, ``rust`` the Rust sources among them. Rust
-    sources are read without their comments and strings, and one Peeky cannot be sure it
-    reads as rustc does (rust_lexer.scan) counts; any other file a macro could
-    `include!`, as plain text."""
+    """Why the crate may have unsafe code, or None: ``texts`` ({name: text}) are the
+    crate's files, ``rust`` the Rust sources among them. Rust sources are read without
+    their comments and strings, and one Peeky cannot be sure it reads as rustc does
+    (rust_lexer.scan) counts; any other file a macro could `include!`, as plain text. A
+    nightly feature counts too: one can free memory without `unsafe`."""
     from peeky.rust_lexer import scan
 
     for name in rust:
         code, why = scan(texts.get(name, ""))
         if code is None:
             return _UNREAD_CRATE.format(source=name, why=why)
-        if _UNSAFE_CODE.search(code):
+        if _unsafe_code(code):
             return _UNSAFE_CRATE.format(source=name)
+        if _nightly(code):
+            return _NIGHTLY_CRATE.format(source=name)
     for name, text in texts.items():
-        if name not in rust and _UNSAFE_CODE.search(text):
+        if name not in rust and _unsafe_code(text):
             return _UNSAFE_CRATE.format(source=name)
+        if name not in rust and _nightly(text):
+            return _NIGHTLY_CRATE.format(source=name)
     return None
 
 

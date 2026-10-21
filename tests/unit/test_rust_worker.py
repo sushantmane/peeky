@@ -1049,6 +1049,17 @@ def test_a_name_not_proven_in_memory_says_which_binding_or_copy_is_why():
         ({"src/main.rs": 'std::arch::global_asm!(".globl free");'}, "src/main.rs"),
         ({"src/main.rs": "use std::arch::global_asm as g;"}, "src/main.rs"),
         ({"src/main.rs": 'fn f() { asm!("nop") }'}, "src/main.rs"),
+        # Review of #156, round 4: a macro may drop the `#` of `#unsafe`; only
+        # `r#unsafe` is an identifier (`r#no_mangle` is `no_mangle`).
+        (
+            {
+                "src/main.rs": "macro_rules! run { (# $($t:tt)*) => { $($t)* }; }\n"
+                "fn main() { run!(#unsafe { f() }); }"
+            },
+            "src/main.rs",
+        ),
+        ({"src/main.rs": "#[r#no_mangle] fn free() {}"}, "src/main.rs"),
+        ({"src/main.rs": "r#unsafe(); fn r#unsafe() {}"}, None),
         # Not code: a comment, a string, a raw identifier, a lint's name.
         ({"src/main.rs": '// unsafe\nfn f() -> &\'static str { "unsafe" }'}, None),
         ({"src/main.rs": "fn r#unsafe() {}\n#![forbid(unsafe_code)]"}, None),
@@ -1077,6 +1088,37 @@ def test_the_crates_unsafe_code_is_found_in_any_of_its_files(texts, found):
         assert why == (
             f"the crate has unsafe code (in {found}), which can free a buffer without Peeky "
             "seeing it"
+        )
+
+
+@pytest.mark.parametrize(
+    "texts,found",
+    [
+        ({"src/main.rs": "#![feature(custom_mir, core_intrinsics)]\nfn main() {}"}, "src/main.rs"),
+        ({"src/main.rs": "#![cfg_attr(all(), feature(custom_mir))]"}, "src/main.rs"),
+        ({"src/main.rs": "# /* c */ ! [ feature (x) ]"}, "src/main.rs"),
+        ({"src/main.rs": "fn main() { #![allow(x)] #![feature(y)] }"}, "src/main.rs"),
+        ({"src/main.rs": "fn main() {}", "src/m.txt": "#![feature(x)]"}, "src/m.txt"),
+        # Not a feature: a Cargo feature's `cfg`, a function of that name, a string.
+        ({"src/main.rs": '#[cfg(feature = "x")]\nfn f() {}'}, None),
+        ({"src/main.rs": "#![allow(dead_code)]\nfn feature(x: i32) {}"}, None),
+        ({"src/main.rs": '#![doc = "feature(x)"]'}, None),
+    ],
+)
+def test_a_nightly_feature_counts_as_unsafe_code(texts, found):
+    # Review of #156, round 4: Peeky's MIR builds set RUSTC_BOOTSTRAP, so
+    # `#![feature(custom_mir)]` works, whose `Drop(*v, ...)` frees what a `&Vec` points
+    # at with no `unsafe` token.
+    from peeky.rust import unsafe_source
+
+    rust = tuple(name for name in texts if name.endswith(".rs"))
+    why = unsafe_source(texts, rust)
+    if found is None:
+        assert why is None
+    else:
+        assert why == (
+            f"the crate enables nightly features (in {found}), which can free a buffer "
+            "without Peeky seeing it"
         )
 
 
