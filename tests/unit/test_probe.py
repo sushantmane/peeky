@@ -1222,11 +1222,16 @@ class Lines(FakeWorker):
         self.moved, self.placed, self.previews = moved, [], []
         # {line: the function of each of its stops}, else `main`.
         self.names, self.name = {line: list(n) for line, n in (names or {}).items()}, "main"
+        # {frame name: the generic instance the worker names for it}.
+        self.instances = {}
 
     def dispatch(self, operation, args):
         if operation == "launch":
             self.calls.append(operation)
             self.placed.append([point["line"] for point in args["breakpoints"]])
+            # Only the lines with breakpoints stop.
+            asked = {point["line"] for point in args["breakpoints"]}
+            self.order = [line for line in self.order if line in asked]
             replies = [
                 {"id": index, "verified": True, "line": self.moved.get(p["line"], p["line"])}
                 if self.moved
@@ -1262,6 +1267,8 @@ class Lines(FakeWorker):
             self.previews.append((self.line, args.get("previews")))
             listed = super().dispatch(operation, args)
             listed["frames"][0]["name"] = self.name
+            if self.name in self.instances:
+                listed["instance"] = self.instances[self.name]
             return listed
         if operation == "set_variable":
             self.calls.append(operation)
@@ -1377,7 +1384,10 @@ def test_a_set_whose_hit_never_comes_is_unapplied_like_a_set_at(monkeypatch):
     assert result["unapplied"] == [
         {"option": "--set", "at": "8@2", "name": "x", "value": "2", "stops": 1}
     ]
-    assert any(w.startswith("No intervention was applied") for w in result["warnings"])
+    assert (
+        "--set x=2 was not applied: the program stopped 1 time(s) at line 8, before hit 2."
+        in (result["warnings"])
+    )
 
 
 def test_a_set_no_stop_allows_is_refused_before_launch_and_never_saved(
@@ -1457,3 +1467,91 @@ def test_the_launch_names_each_change_with_its_own_line(monkeypatch):
     probe_module.run_probe("/w", request)
     assert launched["sets"] == [{"line": 8, "name": "x"}, {"line": 9, "name": "w.start"}]
     assert launched["breakpoints"] == [{"line": 8}, {"line": 9}]
+
+
+def test_a_set_at_made_beside_an_unmade_set_names_only_the_set(monkeypatch):
+    # #151 review 2: "No intervention was applied" was said while a --set-at was made.
+    import peeky.probe as probe_module
+
+    worker = Lines()
+    monkeypatch.setattr(probe_module, "DebugWorker", lambda *args, **kwargs: worker)
+    request = Probe(
+        "main.py", 8, ("x",), (("x", "5"),), hits="all", set_hit=9, set_at=((9, 2, "x", "7"),)
+    )
+    result = probe_module.run_probe("/w", request)
+    assert [change["at"] for change in result["interventions"]] == ["9@2"]
+    assert not any("No intervention" in warning for warning in result["warnings"])
+    assert (
+        "--set x=5 was not applied: the program stopped 3 time(s) at line 8, before hit 9."
+        in (result["warnings"])
+    )
+    assert result["unapplied"] == [
+        {"option": "--set", "at": "8@9", "name": "x", "value": "5", "stops": 3}
+    ]
+    assert probe_module.probe_exit_code(result) == 4
+
+
+def test_generic_instances_and_a_shared_line_are_told_apart(monkeypatch):
+    # #151 review 2: a Rust generic's instances differ only in their symbol's hash, which
+    # the warning's names dropped (`tf::<A>`, `tf::<B>`: no warning).
+    import peeky.probe as probe_module
+
+    a, b = "rc::tf::h0000000000000001", "rc::tf::h0000000000000002"
+    worker = Lines(names={8: [a, b, a], 9: [a, b, a]})
+    monkeypatch.setattr(probe_module, "DebugWorker", lambda *args, **kwargs: worker)
+    request = Probe("main.py", 8, ("x",), hits="all", set_at=((9, 2, "x", "5"),))
+    result = probe_module.run_probe("/w", request)
+    assert (
+        "Line 8 stopped in 2 functions: rc::tf::h0000000000000001 (hits 1, 3); "
+        "rc::tf::h0000000000000002 (hit 2). --hits and --set-hit count every stop; the "
+        "function column says which is which." in result["warnings"]
+    )
+    assert any(
+        w.startswith(f"--set-at line 9 stopped in 2 functions: {a} (stop 1); {b} (stop 2).")
+        for w in result["warnings"]
+    ), result["warnings"]
+    # With the instances the worker names (their type arguments), and --at a --set-at line
+    # too: one warning for the line.
+    worker = Lines(names={8: [a, b, a], 9: [a, b, a]})
+    worker.instances = {a: "rc::tf<rc::A>", b: "rc::tf<rc::B>"}
+    monkeypatch.setattr(probe_module, "DebugWorker", lambda *args, **kwargs: worker)
+    request = Probe("main.py", 8, ("x",), hits="all", set_at=((8, 2, "x", "5"),))
+    result = probe_module.run_probe("/w", request)
+    stopped = [w for w in result["warnings"] if "stopped in 2 functions" in w]
+    assert stopped == [
+        "Line 8 stopped in 2 functions: rc::tf<rc::A> (stops 1, 3); rc::tf<rc::B> (stop 2). "
+        "--hits, --set-hit and --set-at's @HIT count every stop of the line, in any "
+        "function; the function column and each change say which is which."
+    ], result["warnings"]
+    (change,) = result["interventions"]
+    assert change["instance"] == "rc::tf<rc::B>"
+    assert "set x: 1 -> 5  (--set-at line 8@2, in rc::tf<rc::B>)" in probe_module._table(result)
+
+
+def test_peeky_probe_exits_as_peeky_probe_does(monkeypatch, capsys):
+    # #151 review 2: the `peeky-probe` script exited 0 where `peeky probe` exits 4.
+    import peeky.probe as probe_module
+
+    for result, code in (
+        ({"status": "completed"}, 0),
+        ({"status": "completed", "unapplied": [{"at": "9@3"}]}, 4),
+        ({"status": "failed", "unapplied": [{"at": "9@3"}]}, 1),
+    ):
+        shown = {"rows": [], "interventions": [], "hits": 0, "seconds": 0, **result}
+        monkeypatch.setattr(probe_module, "run_probe", lambda *args, **kwargs: shown)
+        assert probe_module.main(["--at", "main.py:8", "--json"]) == code
+        capsys.readouterr()
+
+
+def test_a_refusal_names_the_functions_sharing_a_reason_once():
+    from peeky.fields import FUNCTION, by_function
+
+    reasons = [
+        ("fc", f"in {FUNCTION}, `a.pp` is a pointer"),
+        ("fd", f"in {FUNCTION}, `a.pp` is a pointer"),
+        ("fe", f"{FUNCTION} has no local `a`"),
+        ("fg", f"in {FUNCTION}, `a.pp` is a pointer"),
+    ]
+    assert by_function(reasons) == "in fc, fd and fg, `a.pp` is a pointer; fe has no local `a`"
+    reasons.append(("fh", f"{FUNCTION} has no local `a`"))
+    assert by_function(reasons).endswith("; fe and fh have no local `a`")

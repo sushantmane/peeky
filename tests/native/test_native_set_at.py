@@ -296,3 +296,55 @@ def test_struct_previews_read_at_captures_and_after_set_with_set_at(linked, caps
         (at["SUM"], 2, "10"),
         (at["STEP"], 2, "1"),
     ]
+
+
+THROUGH = """#include <stdio.h>
+struct P { long x; long y; };
+struct Q { struct P *pp; long z; };
+__attribute__((noinline)) long fc(struct Q a) { return a.pp->y; } __attribute__((noinline)) long fd(struct Q a) { return a.pp->x * 3; } // BOTH
+int main(void) {
+  struct P p = {1, 2};
+  long total = 0;
+  struct Q q = {&p, 0};
+  total += fc(q) + fd(q); // CALL
+  printf("T %ld\\n", total);
+  return 0;
+}
+"""
+
+
+@pytest.mark.timeout(240)
+def test_an_unmade_set_beside_a_made_set_at_is_named_and_refusals_group(linked, capsys):
+    # #151 review 2: "No intervention was applied" while a --set-at was made.
+    code, result = probe(
+        capsys,
+        linked,
+        "--capture",
+        "total",
+        "--hits",
+        "all",
+        "--set",
+        "total=5",
+        "--set-hit",
+        "9",
+        "--set-at",
+        f"{ADD}@2",
+        "width=7",
+    )
+    assert code == 4 and [c["at"] for c in result["interventions"]] == [f"{ADD}@2"], result
+    assert not any("No intervention" in warning for warning in result["warnings"])
+    assert (
+        f"--set total=5 was not applied: the program stopped 4 time(s) at line {ADD}, before "
+        "hit 9." in result["warnings"]
+    ), result["warnings"]
+    # A refusal before the run names the functions sharing a reason once (#149's format).
+    (linked / "linked.c").write_text(THROUGH)
+    both = next(i for i, text in enumerate(THROUGH.splitlines(), 1) if "// BOTH" in text)
+    call = next(i for i, text in enumerate(THROUGH.splitlines(), 1) if "// CALL" in text)
+    argv = ["probe", str(linked), "--at", f"linked.c:{call}", "--set-at", f"{both}@1"]
+    assert main([*argv, "a.pp.x=1", "--json", "--quiet"]) == 1
+    message = json.loads(capsys.readouterr().out)["error"]["message"]
+    assert f"cannot be changed at linked.c:{both}, at any stop of this build: in fc and fd, " in (
+        message
+    ), message
+    assert message.count("is a pointer") == 1 and message.count("change the value where") == 1

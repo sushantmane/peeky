@@ -1584,6 +1584,14 @@ class DebugWorker:
                     else {}
                 ),
                 "function": str(selected_frame.get("name") or "")[:300],
+                # A generic's instance, with its type arguments (Rust: `tf<rc::A>`), where
+                # only a symbol hash tells instances apart.
+                **(
+                    {"instance": instance}
+                    if (named := getattr(runtime, "instance_name", None))
+                    and (instance := named(selected_frame))
+                    else {}
+                ),
                 # Which frame was read: an index into `frames` (0 is the innermost).
                 "frame": index,
                 # Which stop at the session's breakpoint this is, as state lines say.

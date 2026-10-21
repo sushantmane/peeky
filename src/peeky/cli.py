@@ -42,6 +42,7 @@ from peeky.probe import (
     parse_hits,
     parse_selector,
     parse_set_at,
+    probe_exit_code,
     run_probe,
     split_selectors,
 )
@@ -827,11 +828,7 @@ def probe(args):
         # A probe refused before it ran (#138) leaves no run to compare.
         _keep_evidence(args, result, root, language)
     _emit(result, args.json, _probe_text)
-    if result["status"] != "completed":
-        return 1
-    # A run whose requested change (--set, --set-at) never came is not the experiment
-    # asked for, though its values are evidence: exit code 4 (#137).
-    return UNAPPLIED_EXIT if result.get("unapplied") else 0
+    return probe_exit_code(result)
 
 
 def _misplaced_options(args):
@@ -845,9 +842,6 @@ def _misplaced_options(args):
         f"Everything after `--` goes to the program, including {', '.join(found[:4])}, which "
         "Peeky also takes: put Peeky's options before `--`"
     )
-
-
-UNAPPLIED_EXIT = 4
 
 
 def _set_at(args, root, program):

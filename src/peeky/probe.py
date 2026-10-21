@@ -2594,6 +2594,34 @@ def _children(worker, stop, selector, variable, pointers=False, whole_strings=Fa
     }
 
 
+# A probe that completed, but whose requested change (--set, --set-at) never came: its
+# values are evidence, but the experiment asked for did not happen (#137).
+UNAPPLIED_EXIT = 4
+
+
+def probe_exit_code(result):
+    """`peeky probe`'s and `peeky-probe`'s exit code: 0, 1 for a probe that did not
+    complete, or UNAPPLIED_EXIT."""
+    if result.get("status") != "completed":
+        return 1
+    return UNAPPLIED_EXIT if result.get("unapplied") else 0
+
+
+def _stops_by_function(functions, instances, word):
+    """`main (stops 1, 3); tf<rc::A> (stop 2)` for {frame name: [stops]}: each frame by
+    its generic instance where known, else as `display_function` shows it, and by its
+    whole name where two would read alike (instances whose type arguments are unknown,
+    overloads)."""
+    labels = {name: instances.get(name) or display_function(name) for name in functions}
+    shown = list(labels.values())
+    return "; ".join(
+        f"{(label if shown.count(label) == 1 else name) or '?'} "
+        f"({word}{'s' if len(numbers) > 1 else ''} "
+        f"{', '.join(map(str, numbers[:8]))}{', ...' if len(numbers) > 8 else ''})"
+        for (name, numbers), label in list(zip(functions.items(), labels.values()))[:4]
+    )
+
+
 def _moved(placed, state):
     """Apply this wait's `breakpoint` events to the placed breakpoints with their ids."""
     for update in state.get("breakpoint_events", []):
@@ -2663,8 +2691,11 @@ def run_probe(root, probe, *, adapter=None, progress=None):
     # own line's stops, in any function.
     seen = {}
     # {--set-at line: {function: [its stops]}}: a lambda, closure or recursive call on
-    # the line stops there too, and its stops count.
+    # the line stops there too, and its stops count. Keyed, like `functions`, by the
+    # frame's whole name: a Rust generic's instances differ only in its symbol's hash.
     set_functions = {}
+    # {frame name: a generic's instance with its type arguments} (Rust: `tf<rc::A>`).
+    instances = {}
     # {function: [hits]}: a line shared by a function and a closure or lambda stops in each.
     functions = {}
     last_said = 0.0
@@ -2821,17 +2852,19 @@ def run_probe(root, probe, *, adapter=None, progress=None):
                     f"Stopped at {path}:{frame.get('line')} ({reason}), not the requested "
                     f"{probe.program}:{wanted}"
                 )
+            if snapshot.get("instance"):
+                instances[frame.get("name")] = snapshot["instance"]
             for number in matched:
                 seen[number] = seen.get(number, 0) + 1
                 if any(p["build_line"] == number for p in points):
                     named = set_functions.setdefault(number, {})
-                    named.setdefault(display_function(frame.get("name")), []).append(seen[number])
+                    named.setdefault(frame.get("name"), []).append(seen[number])
             # A stop of the capture line is captured until --hits are; later ones (kept
             # for a --set-at on that line) only apply it.
             captured = line in matched and hits < probe.limit
             if captured:
                 hits += 1
-                functions.setdefault(display_function(frame.get("name")), []).append(hits)
+                functions.setdefault(frame.get("name"), []).append(hits)
                 if expected[line] != line and not relocated:
                     relocated = True
                     warnings.append(
@@ -2908,6 +2941,7 @@ def run_probe(root, probe, *, adapter=None, progress=None):
                     "capture_hit": hits,
                     # Which function's variable: the line's stops may be in several.
                     "function": frame.get("name"),
+                    **({"instance": snapshot["instance"]} if snapshot.get("instance") else {}),
                 }
                 if point is not None:
                     change["at"] = f"{point['line']}@{hit}"
@@ -3102,14 +3136,12 @@ def run_probe(root, probe, *, adapter=None, progress=None):
             if result.get("optimized")
             else "Some selectors could not be read by the debugger; see each row's reason."
         )
-    if len(functions) > 1:
+    # The --at line's own warning, unless it is a --set-at line too: one warning then.
+    shared = len(set_functions.get(line, ())) > 1
+    if len(functions) > 1 and not shared:
         warnings.append(
             f"Line {line} stopped in {len(functions)} functions: "
-            + "; ".join(
-                f"{name or '?'} (hit{'s' if len(numbers) > 1 else ''} "
-                f"{', '.join(map(str, numbers[:8]))}{', ...' if len(numbers) > 8 else ''})"
-                for name, numbers in list(functions.items())[:4]
-            )
+            + _stops_by_function(functions, instances, "hit")
             + ". --hits and --set-hit count every stop; the function column says which "
             "is which."
         )
@@ -3138,22 +3170,27 @@ def run_probe(root, probe, *, adapter=None, progress=None):
         and hits < probe.set_hit
         and result.get("status") != "failed"
     ):
+        # Only the --set: a --set-at may have been applied (#151 review).
+        named = ", ".join(f"--set {name}={value}" for name, value in probe.set)
         warnings.append(
-            f"No intervention was applied: the program stopped {hits} time(s), before hit "
-            f"{probe.set_hit}."
+            f"{named} {'was' if len(probe.set) == 1 else 'were'} not applied: the program "
+            f"stopped {hits} time(s) at line {line}, before hit {probe.set_hit}."
         )
     for number, named in set_functions.items():
         if len(named) > 1:
             asked = next(p["line"] for p in points if p["build_line"] == number)
             warnings.append(
-                f"--set-at line {asked} stopped in {len(named)} functions: "
-                + "; ".join(
-                    f"{name or '?'} (stop{'s' if len(stops) > 1 else ''} "
-                    f"{', '.join(map(str, stops[:8]))}{', ...' if len(stops) > 8 else ''})"
-                    for name, stops in list(named.items())[:4]
+                (f"Line {line}" if number == line else f"--set-at line {asked}")
+                + f" stopped in {len(named)} functions: "
+                + _stops_by_function(named, instances, "stop")
+                + (
+                    ". --hits, --set-hit and --set-at's @HIT count every stop of the line, "
+                    "in any function; the function column and each change say which is "
+                    "which."
+                    if number == line
+                    else ". @HIT counts every stop of the line, in any function; each "
+                    "change says which function's variable it changed."
                 )
-                + ". @HIT counts every stop of the line, in any function; each change "
-                "says which function's variable it changed."
             )
     unapplied = [point for point in points if point["change"] is None]
     if probe.set and not any("at" not in change for change in changes) and hits < probe.set_hit:
@@ -3260,7 +3297,7 @@ def _table(result):
         lines.append(note)
     named = function_labels(change.get("function") for change in result["interventions"])
     for change in result["interventions"]:
-        where = named.get(change.get("function"), change.get("function"))
+        where = change.get("instance") or named.get(change.get("function"), change.get("function"))
         lines.append(
             f"set {change['name']}: {change['before']} -> {change['after']}"
             + (
@@ -3391,7 +3428,7 @@ def main(argv=None):
         parser.error(str(exc))
     result = run_probe(args.root, probe, adapter=adapter)
     print(json.dumps(result, indent=2) if args.json else _table(result))
-    return 0 if result["status"] == "completed" else 1
+    return probe_exit_code(result)
 
 
 if __name__ == "__main__":

@@ -527,3 +527,75 @@ def test_a_set_at_is_judged_before_the_run_against_its_own_lines_functions(tmp_p
     applied = [(c["name"], c["after"], c["line"]) for c in result["interventions"]]
     assert applied == [("s.end", "5", call), ("total", "100", loop)], applied
     assert "SCALED 135" in result["output"] and "SPAN Span { start: 1, end: 5 }" in result["output"]
+
+
+GENERIC = """trait Zed {
+    fn zed(&self) -> i64;
+}
+struct A {
+    z: i64,
+}
+struct B {
+    z: i64,
+    w: i64,
+}
+impl Zed for A {
+    fn zed(&self) -> i64 {
+        self.z
+    }
+}
+impl Zed for B {
+    fn zed(&self) -> i64 {
+        self.z + self.w
+    }
+}
+
+#[inline(never)]
+fn tf<T: Zed>(a: T, n: i64) -> i64 {
+    let mut k = a.zed();
+    k += n; // ADD
+    k
+}
+
+fn main() {
+    let mut total = 0i64;
+    for i in 0..2i64 {
+        total += tf(A { z: i }, 1) + tf(B { z: i, w: 100 }, 2); // CALL
+    }
+    println!("TOTAL:{}", total);
+}
+"""
+
+
+@pytest.mark.timeout(400)
+def test_a_generics_instances_are_named_with_their_type_arguments(tmp_path, state, capsys):
+    # #151 review 2: `tf::<A>` and `tf::<B>` stop on line ADD in turn, and their frames
+    # differ only in a symbol hash, which the warning dropped (no warning at all).
+    crate = crate_at(tmp_path, "gen", GENERIC)
+    add, call = line_of(GENERIC, "// ADD"), line_of(GENERIC, "// CALL")
+    sets = ("--set-at", f"{add}@1", "k=500", "--set-at", f"{add}@2", "k=600")
+    code, result = probe(capsys, crate, call, "--capture", "total", *sets)
+    assert code == 0, result.get("error")
+    named = [(c["after"], c["instance"]) for c in result["interventions"]]
+    assert named == [("500", "gen::tf<gen::A>"), ("600", "gen::tf<gen::B>")], named
+    assert (
+        f"--set-at line {add} stopped in 2 functions: gen::tf<gen::A> (stop 1); "
+        "gen::tf<gen::B> (stop 2). @HIT counts every stop of the line, in any function; "
+        "each change says which function's variable it changed." in result["warnings"]
+    ), result["warnings"]
+    assert "TOTAL:1208" in result["output"], result["output"]
+    # The capture line's own warning tells them apart too.
+    code, result = probe(capsys, crate, add, "--capture", "k", "--hits", "all")
+    assert code == 0, result.get("error")
+    assert (
+        f"Line {add} stopped in 2 functions: gen::tf<gen::A> (hits 1, 3); gen::tf<gen::B> "
+        "(hits 2, 4). --hits and --set-hit count every stop; the function column says which "
+        "is which." in result["warnings"]
+    ), result["warnings"]
+    # A refusal before the run names the instances once, with the reason and advice once.
+    code, result = probe(capsys, crate, call, "--set-at", f"{add}@1", "n=9")
+    message = refused_before_launch(result)
+    assert message.count("is a parameter kept in a register") == 1, message
+    assert message.count("A candidate edit keeps it in memory") == 1, message
+    for instance in ("gen::tf<gen::A>", "gen::tf<gen::B>"):
+        assert instance in message.split("`n` is a parameter")[0], message

@@ -938,7 +938,11 @@ def test_a_set_is_refused_before_launch_only_where_every_function_on_the_line_fa
     assert judged("total") is None
     assert "`flag` is a bool; only integer locals" in judged("flag")
     code, message = judged("nope")
-    assert code == "NOT_FOUND" and "app::outer has no local `nope`" in message
+    # One reason for both functions, said once (#151 review 2).
+    assert (
+        code == "NOT_FOUND"
+        and "app::outer and app::outer::{closure#0} have no local `nope`" in (message)
+    )
     # A function only inlined on the line (its `copies`) is judged there too.
     assert "`x` is a parameter kept in a register" in judged("x", 9)
     # A line the debugger moves its breakpoint from, or no function's: left to the stop.

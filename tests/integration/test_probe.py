@@ -204,7 +204,7 @@ def test_interventions_can_target_a_later_hit_and_results_group_by_hit(tmp_path)
         tmp_path, Probe("loop.py", 4, ("best",), (("best", "100"),), hits=5, set_hit=5)
     )
     assert result["interventions"] == [] and "BEST 7" in result["output"]
-    assert any("No intervention was applied" in warning for warning in result["warnings"])
+    assert any("--set best=100 was not applied" in warning for warning in result["warnings"])
     with pytest.raises(ValueError, match="set_hit"):
         Probe("loop.py", 4, hits=2, set_hit=3)
 
