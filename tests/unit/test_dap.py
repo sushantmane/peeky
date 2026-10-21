@@ -69,6 +69,24 @@ def test_output_flood_does_not_evict_lifecycle_events():
     assert dap.snapshot_output() == ("x" * 500, True)
 
 
+def test_a_run_of_continued_events_is_one_entry_and_never_evicts_stops():
+    # #162 round 2: LLDB says `continued` after each of its own stops in a step out of a
+    # deep recursion (a breakpoint each deeper call returns past); 2,000 of them evicted
+    # the step's own stop and failed the session.
+    dap = transport()
+    dap._accept({"type": "event", "event": "stopped", "body": {"reason": "breakpoint"}})
+    for _ in range(3 * MAX_CONTROL_EVENTS):
+        dap._accept({"type": "event", "event": "continued"})
+    dap._accept({"type": "event", "event": "stopped", "body": {"reason": "step"}})
+    assert len(dap.events) == 3
+    run = dap.events[1]
+    assert (run["since"], run["cursor"], run["repeated"]) == (2, 3 * MAX_CONTROL_EVENTS + 1, 6000)
+    assert dap.wait_event({"stopped"}, after=1)["body"]["reason"] == "step"
+    # A resume after a consumer's cursor is still seen as one.
+    assert dap.events_between(5, dap.event_sequence, {"continued"}) == [run]
+    assert dap.recent_events()["recent"][1]["repeated"] == 6000
+
+
 def test_control_overflow_is_explicit():
     dap = transport()
     for _ in range(MAX_CONTROL_EVENTS + 1):
