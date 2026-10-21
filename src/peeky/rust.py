@@ -1350,6 +1350,7 @@ class RustSession(NativeSession):
             hidden=self._macro_binding(),
             never=self._register_names,
             settable=(RUST_LIBRARIES, self._kept_in_memory),
+            rust=True,
         )
 
     def _kept_in_memory(self, linkages, name):
@@ -1497,6 +1498,7 @@ class RustSession(NativeSession):
         super().validate_variable(variable, value)
 
     text_language = "rust"
+    rust_lines = True
 
     def text_storage(self, variable, frame):
         """(kind, shape) for text_sets: a String, with its layout from the build's debug
@@ -2151,7 +2153,7 @@ class RustSession(NativeSession):
                         max_bytes=RUST_METADATA,
                     )
                     rows += _line_rows(
-                        table, self.prepared.workspace, tuple(self.lines), RUST_METADATA
+                        table, self.prepared.workspace, tuple(self.lines), RUST_METADATA, rust=True
                     )
                 self.assert_current()
             except (OSError, RuntimeError, ValueError):

@@ -195,7 +195,9 @@ def _metadata(tool, arguments, workspace, env, *, max_bytes=MAX_METADATA, timeou
         return read(output) if read else output.read_bytes().decode("utf-8")
 
 
-def _line_rows(text, workspace, declared, limit=MAX_METADATA, replaced=None, epilogues=None):
+def _line_rows(
+    text, workspace, declared, limit=MAX_METADATA, replaced=None, epilogues=None, rust=False
+):
     """Rows of the LLVM DWARF4 line-table dump for declared sources: (address, name, line).
 
     Unrecognized rows fail closed. Rows outside the declared sources (SDK and system
@@ -209,11 +211,9 @@ def _line_rows(text, workspace, declared, limit=MAX_METADATA, replaced=None, epi
         raise ValueError("Native line metadata exceeds limit")
     workspace = Path(workspace).resolve()
     inputs = {str((workspace / name).resolve()): name for name in declared}
-    # As each compiler counts lines: rustc at `\n` alone, clang at a lone `\r` too (#188).
-    counts = {
-        name: len(source_lines(read_source(workspace / name), name.endswith(".rs")))
-        for name in declared
-    }
+    # As the compiler counts lines (``rust``: rustc, at `\n` alone; else clang, at a lone
+    # `\r` too), told by the caller: a Rust module may have any name (#188 review).
+    counts = {name: len(source_lines(read_source(workspace / name), rust)) for name in declared}
     directories, files, current = {0: str(workspace)}, {}, None
     # {file id: declared name or None} for this table: one resolve per file, not per row.
     resolved = {}
@@ -313,10 +313,10 @@ def _line_string(quoted):
     return name
 
 
-def parse_lines(text, workspace, declared, *, limit=MAX_METADATA):
+def parse_lines(text, workspace, declared, *, limit=MAX_METADATA, rust=False):
     """Parse the LLVM DWARF4 line-table dump; unrecognized rows fail closed."""
     result = {name: set() for name in declared}
-    for _, name, number in _line_rows(text, workspace, declared, limit):
+    for _, name, number in _line_rows(text, workspace, declared, limit, rust=rust):
         result[name].add(number)
     if not any(result.values()):
         raise ValueError("Missing executable native debug symbol line information")
@@ -1088,7 +1088,9 @@ def _code_ranges(die):
     return [(lo, hi) for lo, hi in spans if 0 < lo < hi and lo < _TOMBSTONE]
 
 
-def _function_entries(info, line_text, workspace, declared, replaced=None, epilogues=None):
+def _function_entries(
+    info, line_text, workspace, declared, replaced=None, epilogues=None, rust=False
+):
     """(dies, {root: entry}, {root: {line: span}}, files, {root: {(source, line): span}})
     for functions in declared sources; see function_scopes. ``replaced``: see
     _line_rows. A span is the lowest and
@@ -1100,7 +1102,9 @@ def _function_entries(info, line_text, workspace, declared, replaced=None, epilo
     workspace = Path(workspace).resolve()
     inputs = {str((workspace / name).resolve()): name for name in declared}
     rows = sorted(
-        _line_rows(line_text, workspace, declared, replaced=replaced, epilogues=epilogues)
+        _line_rows(
+            line_text, workspace, declared, replaced=replaced, epilogues=epilogues, rust=rust
+        )
     )
     addresses = [row[0] for row in rows]
     dies = _dies(info)
@@ -1204,7 +1208,9 @@ def _macro_rules_lines(text):
     return lines
 
 
-def function_scopes(info, line_text, workspace, declared, hidden=None, never=None, settable=None):
+def function_scopes(
+    info, line_text, workspace, declared, hidden=None, never=None, settable=None, rust=False
+):
     """Each function in a declared source: qualified name, source, line span, locals.
 
     Display only (`describe`). A line-table row belongs to the innermost function or
@@ -1227,10 +1233,13 @@ def function_scopes(info, line_text, workspace, declared, hidden=None, never=Non
     frame's own memory, and where ``in_memory`` says so (Rust: the IR keeps it there):
     {name: "fields" | "elements"} in every copy (``settable_parts``, seventh
     evaluation, finding 16).
+
+    ``rust``: the program is Rust; its sources' lines are counted as rustc counts them
+    (at `\n` alone), and `macro_rules!` bodies are found in them.
     """
     replaced = set()
     dies, functions, lines, (inputs, sources), _, addresses = _function_entries(
-        info, line_text, workspace, declared, replaced
+        info, line_text, workspace, declared, replaced, rust=rust
     )
     workspace = Path(workspace).resolve()
     graph, typed = None, {}
@@ -1283,7 +1292,7 @@ def function_scopes(info, line_text, workspace, declared, hidden=None, never=Non
         if source not in macros:
             macros[source] = (
                 _macro_rules_lines(read_source(Path(workspace) / source, "replace"))
-                if source.endswith(".rs")
+                if rust
                 else set()
             )
         numbers = _own_lines(dies, entry, lines.get(root), macros[source] or frozenset())
@@ -2970,6 +2979,9 @@ _UNJUDGED = {
 class NativeSession:
     # lldb-dap reports optimized-out/not-live locals as `<error: ...>` text.
     reports_unavailable_as_text = True
+    # Whose rule numbers the program's lines: rustc's (`\n` alone) or clang's (a lone
+    # `\r` too); the session's language says, never a file's name (#188 review).
+    rust_lines = False
     # lldb-dap names an array's elements `[N]` and lists any range of them on request,
     # so one element of a long array can be fetched alone (#105).
     elements_by_index = True
@@ -3116,9 +3128,7 @@ class NativeSession:
             return None
         if ("text", path) not in cache:
             try:
-                cache[("text", path)] = source_lines(
-                    read_source(path, "replace"), path.endswith(".rs")
-                )
+                cache[("text", path)] = source_lines(read_source(path, "replace"), self.rust_lines)
             except OSError:
                 cache[("text", path)] = []
         lines = cache[("text", path)]

@@ -930,7 +930,7 @@ def application_symbols(
             functions = {}
         for hashed, function in functions.items():
             blocks[hashed] = None if hashed in blocks else function
-    lines = parse_lines("\n".join(tables), workspace, declared, limit=RUST_METADATA)
+    lines = parse_lines("\n".join(tables), workspace, declared, limit=RUST_METADATA, rust=True)
     return lines, layouts, units, blocks
 
 

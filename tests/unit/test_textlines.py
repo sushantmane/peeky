@@ -224,10 +224,110 @@ Address Line Column File
 '''
 
     with pytest.raises(ValueError, match="exceeds declared source length"):
-        parse_lines(dump("src/main.rs", 2), tmp_path, ("src/main.rs",))
-    assert parse_lines(dump("src/main.rs", 1), tmp_path, ("src/main.rs",)) == {"src/main.rs": [1]}
+        parse_lines(dump("src/main.rs", 2), tmp_path, ("src/main.rs",), rust=True)
+    assert parse_lines(dump("src/main.rs", 1), tmp_path, ("src/main.rs",), rust=True) == {
+        "src/main.rs": [1]
+    }
     # clang counts the lone `\r`: its second line is real.
     assert parse_lines(dump("main.c", 2), tmp_path, ("main.c",)) == {"main.c": [2]}
+
+
+# `#[path = "module"] mod odd;`: a Rust module may have any name, so whose rule counts
+# its lines is the program's language, never the file's suffix (#188 review, round 2).
+MODULE = b"// one\r// two\nfn f(n: i64) -> i64 {\n    for _ in 0..n {}\n    n\n}\n"
+
+
+def module_table(line):
+    return f"""debug_line[0x00000000]
+version: 4
+file_names[ 1]:
+name: "src/module"
+dir_index: 0
+Address Line Column File
+0x0000000100000400 {line} 1 1 0 0 is_stmt
+0x0000000100000410 {line} 1 1 0 0 end_sequence
+"""
+
+
+def test_a_rust_module_of_any_name_has_its_lines_counted_by_rustc(tmp_path):
+    from peeky.native import parse_lines
+
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src/module").write_bytes(MODULE)
+    declared = ("src/module",)
+    # rustc: 5 lines (the first holds the lone `\r`); clang: 6.
+    assert parse_lines(module_table(5), tmp_path, declared, rust=True) == {"src/module": [5]}
+    with pytest.raises(ValueError, match="exceeds declared source length"):
+        parse_lines(module_table(6), tmp_path, declared, rust=True)
+    assert parse_lines(module_table(6), tmp_path, declared) == {"src/module": [6]}
+
+
+def test_a_loop_header_is_read_from_a_rust_module_of_any_name_by_rustcs_lines(
+    tmp_path, monkeypatch
+):
+    # Line 3 to rustc is the `for`; clang's line 3 (`fn f`) would not even be analysed.
+    import peeky.native as native
+    from peeky.rust import RustSession
+
+    monkeypatch.setattr(native.platform, "machine", lambda: "arm64")
+    path = tmp_path / "module"
+    path.write_bytes(MODULE)
+
+    class Dap:
+        def __init__(self):
+            self.asked = []
+
+        def request(self, command, arguments, timeout):
+            self.asked.append(arguments["expression"])
+            return {}
+
+    for session, rust, asked in (
+        (object.__new__(RustSession), True, True),
+        (object.__new__(native.NativeSession), False, False),
+    ):
+        dap, cache = Dap(), {}
+        assert session.loop_header_stops(dap, path, 3, [[0x400]], cache) is None
+        assert cache[("text", str(path))] == native.source_lines(MODULE.decode(), rust)
+        assert bool(dap.asked) is asked
+
+
+def test_a_rust_module_of_any_name_has_its_macro_rules_lines_found(tmp_path):
+    # Code a local `macro_rules!` expands is on the definition's lines; they are not
+    # the calling function's own, whatever the module's name.
+    from peeky.native import function_scopes
+
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src/module").write_bytes(
+        b"fn f(n: i64) -> i64 {\n    twice!(n)\n}\n"
+        b"macro_rules! twice {\n    ($x:expr) => { $x * 2 };\n}\n"
+    )
+    source = tmp_path / "src/module"
+    info = f"""{tmp_path}/program: file format Mach-O arm64
+
+.debug_info contents:
+0x0000000b: DW_TAG_compile_unit
+              DW_AT_name\t("src/main.rs")
+0x00000020:   DW_TAG_subprogram
+                DW_AT_low_pc\t(0x0000000100000400)
+                DW_AT_high_pc\t(0x0000000100000440)
+                DW_AT_name\t("f")
+                DW_AT_decl_file\t("{source}")
+                DW_AT_decl_line\t(1)
+0x00000030:     DW_TAG_formal_parameter
+                  DW_AT_name\t("n")
+0x00000038:     NULL
+0x00000040:   NULL
+"""
+    rows = [(0x400, 1), (0x410, 2), (0x420, 5), (0x430, 3)]
+    line = 'debug_line[0x00000000]\nversion: 4\nfile_names[ 1]:\nname: "src/module"\n'
+    line += "dir_index: 0\nAddress Line Column File\n"
+    line += "".join(f"0x{0x100000000 + at:016x} {n} 1 1 0 0 is_stmt\n" for at, n in rows)
+    line += "0x0000000100000440 3 1 1 0 0 end_sequence\n"
+    (rust,) = function_scopes(info, line, tmp_path, ("src/module",), rust=True)
+    assert rust["lines"] == [1, 3]
+    # A C program has no `macro_rules!`: its line 5 would be the function's own.
+    (c,) = function_scopes(info, line, tmp_path, ("src/module",))
+    assert c["lines"] == [1, 5]
 
 
 @pytest.mark.parametrize(
