@@ -1178,3 +1178,60 @@ def test_rust_containers_of_tuples_and_structs_are_told_apart(kind, composite, u
 def test_a_numbered_field_selector_says_how_rust_names_tuple_fields():
     with pytest.raises(ValueError, match=r"\.__0, \.__1 in Rust.*: runs\[0\]\.__0$"):
         parse_selector("runs[0].0")
+
+
+def test_a_set_no_stop_allows_is_refused_before_launch_and_never_saved(
+    monkeypatch, tmp_path, capsys
+):
+    # #138: the worker refuses a `--set` its build rules out before the program runs; the
+    # probe fails with that reason, nothing ran, and no run is kept as evidence.
+    import json
+
+    import peeky.cli as cli_module
+    import peeky.probe as probe_module
+    from peeky.errors import Refused
+
+    class Refusing(FakeWorker):
+        def dispatch(self, operation, args):
+            if operation == "launch":
+                self.calls.append(("launch", args.get("sets")))
+                refused = Refused("MUTATION_REJECTED", "`x` is kept in a register. Refused")
+                refused.before_launch = True
+                raise refused
+            return super().dispatch(operation, args)
+
+    worker = Refusing()
+    monkeypatch.setattr(probe_module, "DebugWorker", lambda *args, **kwargs: worker)
+    result = probe_module.run_probe("/w", Probe("main.py", 8, ("x",), (("x", "2"),)))
+    assert worker.calls[0] == ("launch", ["x"]) and worker.calls[-1] == "close"
+    assert result["status"] == "failed" and result["refused_before_launch"] is True
+    assert result["error"]["code"] == "MUTATION_REJECTED" and result["hits"] == 0
+    assert "black_box" in result["error"]["hint"]
+    # Without one, the launch names no sets.
+    plain = FakeWorker()
+    monkeypatch.setattr(probe_module, "DebugWorker", lambda *args, **kwargs: plain)
+    probe_module.run_probe("/w", Probe("main.py", 8, ("x",)))
+    monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
+    (tmp_path / "main.py").write_text("x = 1\n")
+    monkeypatch.setattr(cli_module, "run_probe", lambda *args, **kwargs: dict(result))
+    command = ["probe", str(tmp_path), "--at", "main.py:1", "--set", "x=2", "--json"]
+    assert cli_module.main(command) == 1
+    shown = json.loads(capsys.readouterr().out)
+    assert "evidence" not in shown and shown["refused_before_launch"] is True
+    assert not (tmp_path / "state" / "evidence" / "evidence.db").exists()
+
+
+def test_rows_say_why_no_stop_can_change_them():
+    # #138: `[not settable: register]` beside the value, never with `[settable]`.
+    from peeky.probe import _table
+
+    rows = [
+        {"hit": 1, "phase": "observed", "line": 3, "selector": "width", "type": "u64"}
+        | {"value": "10", "settable": False, "not_settable": "register"},
+        {"hit": 1, "phase": "observed", "line": 3, "selector": "total", "type": "u64"}
+        | {"value": "0", "settable": True},
+    ]
+    text = _table(
+        {"rows": rows, "status": "completed", "hits": 1, "seconds": 0, "interventions": []}
+    )
+    assert "10  [not settable: register]" in text and "0  [settable]" in text

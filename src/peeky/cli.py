@@ -714,6 +714,19 @@ def _describe_text(manifest):
     mutable = manifest["mutable_types"]
     if "root locals" in mutable and "fields" not in mutable:
         mutable += " (root locals: the stopped function's own variables, not fields)"
+    # Locals no stop can change, per function (#138); `probe --set` refuses them at once.
+    never = [
+        f"{scope['scope']}: {', '.join(scope['never_settable'])}"
+        for scope in manifest.get("scopes", ())
+        if scope.get("never_settable")
+    ]
+    if never:
+        mutable += (
+            ". Never settable, kept in a register (a candidate edit with "
+            "`std::hint::black_box(&mut x)` keeps one in memory, COOKBOOK 6.6): "
+            + "; ".join(never[:12])
+            + (f"; and {len(never) - 12} more functions" if len(never) > 12 else "")
+        )
     lines.append(f"mutable: {mutable}")
     lines.extend(f"{name}: {usage}" for name, usage in manifest["commands"].items())
     lines.append(f"timing: {manifest['timing']['advice']}")
@@ -785,7 +798,8 @@ def probe(args):
             result["error"]["hint"] = misplaced + "."
         else:
             result.setdefault("warnings", []).append(misplaced)
-    if not args.no_save:
+    if not args.no_save and not result.get("refused_before_launch"):
+        # A probe refused before it ran (#138) leaves no run to compare.
         _keep_evidence(args, result, root, language)
     _emit(result, args.json, _probe_text)
     return 0 if result["status"] == "completed" else 1
@@ -1195,6 +1209,9 @@ def _variables_text(snapshot, name="default"):
                 view += "  [stale]"
             if variable.get("settable"):
                 view += "  [settable]"
+            elif variable.get("not_settable"):
+                # No stop of this build can change it (#138).
+                view += f"  [not settable: {variable['not_settable']}]"
             if variable.get("identity"):
                 view += f"  [id {variable['identity']}]"
             lines.append(
@@ -1262,6 +1279,7 @@ def _get_lines(row):
             + ("  [module global]" if row.get("scope") == "globals" else "")
             + ("  [stale]" if row.get("stale") else "")
             + ("  [settable]" if row.get("settable") else "")
+            + (f"  [not settable: {row['not_settable']}]" if row.get("not_settable") else "")
         ]
     for child in row.get("children", []):
         name = child.get("selector") or f"{child['name']} [not selectable]"
@@ -1283,6 +1301,8 @@ def _get_lines(row):
             shown += "  [stale]"
         if child.get("settable"):
             shown += "  [settable]"
+        elif child.get("not_settable"):
+            shown += f"  [not settable: {child['not_settable']}]"
         lines.append(f"  {name}: {child.get('type') or ''} = {value}{shown}{more}")
     if row.get("children_truncated"):
         lines.append("  ... more children; select one by name or index")

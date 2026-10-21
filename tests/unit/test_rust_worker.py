@@ -862,3 +862,83 @@ def test_rust_locals_are_settable_only_when_kept_in_memory():
     assert session.settable({"name": "copy", "type": "int"}, frame) is False
     assert session.settable({"name": "index", "type": "unsigned char"}, frame) is False
     assert session.settable({"name": "index", "type": "unsigned long"}, {"name": "f"}) is False
+
+
+def test_a_set_is_refused_before_launch_only_where_every_function_on_the_line_fails(
+    tmp_path,
+):
+    # #138: a closure, a macro's twins or an inlined copy on the line may keep the local
+    # in memory: refused only when every function that can stop there rules it out.
+    import json
+    from types import SimpleNamespace
+
+    from peeky.rust import RustSession
+    from peeky.rust_mir import IrFunction
+
+    def function(name, lines=(), copies=(), ancestors=("app",)):
+        return IrFunction(
+            name,
+            ancestors[-1],
+            "src/main.rs",
+            {"start": set(lines)},
+            {},
+            copies=frozenset(copies),
+            ancestors=ancestors,
+        )
+
+    def body(bindings, arguments=(), types=None):
+        return SimpleNamespace(
+            bindings={name: [(local, "src/main.rs", 3, 1, 0)] for name, local in bindings.items()},
+            arguments=set(arguments),
+            types=types or {},
+            visible_scopes=lambda line, path: {0},
+        )
+
+    functions = {
+        "h1": function("outer", [5]),
+        "h2": function("{closure#0}", [5], ancestors=("app", "outer")),
+        "h3": function("inlined", [], copies=[9]),
+        "h4": function("elsewhere", [7]),
+    }
+    bodies = {
+        "h1": body({"width": 1, "total": 2, "flag": 3}, [1], {1: "u64", 2: "u64", 3: "bool"}),
+        "h2": body({"v": 1}, [1], {1: "&u64"}),
+        "h3": body({"x": 1}, [1], {1: "u32"}),
+    }
+    session = object.__new__(RustSession)
+    session.target = SimpleNamespace(opt_level="0")
+    session.prepared = SimpleNamespace(source_root=tmp_path)
+    session._lines_data = json.dumps({"src/main.rs": [5, 7, 9]})
+    session.memory = {("h1", "total"): True, ("h1", "flag"): True, ("h1", "width"): False}
+    session.memory[("h3", "x")] = False
+    session.owned = SimpleNamespace(
+        functions=functions,
+        body=bodies.get,
+        declared_type=lambda hashed, name, line, path: bodies[hashed].types.get(
+            bodies[hashed].bindings[name][0][0]
+        ),
+    )
+    program = tmp_path / "src/main.rs"
+
+    def judged(name, line=5):
+        return session.never_settable(program, [line], [name])
+
+    message = judged("width")
+    assert "in app::outer, `width` is a parameter kept in a register" in message, message
+    assert "app::outer::{closure#0} has no local `width`" in message, message
+    assert "`mut width` in the signature" in message and message.endswith("settable here: total")
+    assert judged("total") is None
+    assert "`flag` is a bool; only integer locals" in judged("flag")
+    code, message = judged("nope")
+    assert code == "NOT_FOUND" and "app::outer has no local `nope`" in message
+    # A function only inlined on the line (its `copies`) is judged there too.
+    assert "`x` is a parameter kept in a register" in judged("x", 9)
+    # A line the debugger moves its breakpoint from, or no function's: left to the stop.
+    assert judged("width", 6) is None and judged("width", 8) is None
+    session.owned.precise = False
+    assert judged("width") is None
+    session.owned.precise = True
+    session.memory[("h1", "width")] = True
+    assert judged("width") is None
+    session.target.opt_level = "1"
+    assert session.never_settable_row({"name": "x", "type": "int"}, {}) is None

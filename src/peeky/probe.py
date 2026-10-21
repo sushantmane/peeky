@@ -1371,6 +1371,9 @@ def _capture(
                 # Whether --set can change this value here: a local (C, C++, Rust, Java),
                 # or a Java field or array element.
                 row["settable"] = variable["settable"]
+            if isinstance(variable.get("not_settable"), str):
+                # Why no stop of this build can change it (#138: `register`).
+                row["not_settable"] = variable["not_settable"]
             if variable.get("debugger_type"):
                 row["debugger_type"] = variable["debugger_type"]
             if children and variable.get("variablesReference"):
@@ -2429,6 +2432,8 @@ def _children(worker, stop, selector, variable, pointers=False, whole_strings=Fa
             entry["stale"] = True
         if type(child.get("settable")) is bool:
             entry["settable"] = child["settable"]
+        if isinstance(child.get("not_settable"), str):
+            entry["not_settable"] = child["not_settable"]
         path = _child_selector(selector, child["name"])
         if pointers and path is None and _pointee(variable, page["variables"]) is child:
             path = f"{selector}[0]"
@@ -2513,6 +2518,8 @@ def run_probe(root, probe, *, adapter=None, progress=None):
                 **({"entry": probe.entry} if probe.entry else {}),
                 **({"args": list(probe.args)} if probe.args else {}),
                 **({"expect_sha256": dict(probe.expect_sha256)} if probe.expect_sha256 else {}),
+                # What no stop of the build can change is refused before it runs (#138).
+                **({"sets": [name for name, _ in probe.set]} if probe.set else {}),
             },
         )
         session = {"session_id": launch["session_id"]}
@@ -2764,6 +2771,9 @@ def run_probe(root, probe, *, adapter=None, progress=None):
         from peeky.errors import classify
 
         result.update(status="failed", error=classify(exc, session_closed=True))
+        if getattr(exc, "before_launch", False):
+            # Nothing ran (#138): no run to keep as evidence.
+            result["refused_before_launch"] = True
         if session is not None:
             # What the program printed before the failure says how far it got.
             try:
@@ -2876,6 +2886,7 @@ def _table(result):
             row.get("value", "<" + row.get("error", "") + ">")
             + (f"  [{row['view']}]" if row.get("view") else "")
             + ("  [settable]" if row.get("settable") else "")
+            + (f"  [not settable: {row['not_settable']}]" if row.get("not_settable") else "")
             + (f"  [id {row['identity']}]" if row.get("identity") else "")
             + ("  [module global]" if row.get("scope") == "globals" else "")
             + ("  [note]" if row.get("note") and row["note"] not in _rust_notes() else ""),
