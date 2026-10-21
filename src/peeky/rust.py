@@ -760,6 +760,8 @@ _HASH_IN = re.compile(r"17(h[0-9a-f]{16})E")
 
 # The MIR's names for the integers `set` changes (as RUST_INTEGERS are LLDB's).
 _SETTABLE_RUST = frozenset({"i16", "i32", "i64", "u16", "u32", "u64", "isize", "usize"})
+# A String as the MIR names it: what a text (#137) changes.
+_TEXT_RUST = frozenset({"std::string::String", "alloc::string::String", "String"})
 
 
 def _never_rank(why):
@@ -1179,6 +1181,42 @@ class RustSession(NativeSession):
             )
         super().validate_variable(variable, value)
 
+    text_language = "rust"
+
+    def text_layout(self, kind):
+        """A Rust String's layout from the build's debug information, for text_sets."""
+        return self.layouts.get("alloc::string::String") if kind == "rust" else None
+
+    def validate_text_target(self, variable, frame):
+        """A String's buffer is written only where the MIR proves the local initialized
+        at the stop (#108): a moved or dropped String's pointer may point into freed
+        memory, and a String not yet assigned holds whatever its slot held."""
+        name = variable.get("name")
+        hashed = _frame_hash(frame)
+        proofs = getattr(self, "owned", None)
+        place = frame or {}
+        if not (
+            hashed
+            and proofs is not None
+            and proofs.proven(
+                hashed[1], name, place.get("line"), (place.get("source") or {}).get("path")
+            )
+        ):
+            raise ValueError(
+                f"`{name}` cannot be changed at this stop: the build's MIR does not prove it "
+                "initialized here (it may be moved, dropped or not yet assigned), and a "
+                "String's buffer may then be freed memory"
+            )
+
+    def text_settable(self, variable, frame):
+        """Whether a text change could be made to this String here (for `[settable]`)."""
+        try:
+            self.validate_mutation_target(variable, frame)
+            self.validate_text_target(variable, frame)
+        except ValueError:
+            return False
+        return True
+
     def validate_mutation_target(self, variable, frame):
         """Only a local the program keeps in memory can be changed with effect."""
         name = variable.get("name")
@@ -1394,10 +1432,11 @@ class RustSession(NativeSession):
                 found.append((hashed, function))
         return found
 
-    def never_settable(self, program, lines, names):
+    def never_settable(self, program, lines, names, text=False):
         """Why a probe's `--set` of one of ``names`` can change nothing at any stop of
         ``lines`` of ``program`` in this build (#138): the refusal, as (code, message)
-        where no such local exists there, else as its message; or None. Only what the
+        where no such local exists there, else as its message; or None. ``text``: the
+        values are texts (#137), which change a String rather than an integer. Only what the
         build fixes counts, and only where it fails in every function that can stop there (a
         closure, a generic's instances, an inlined copy): the IR keeping the local in a
         register (or no such local), its MIR type for a root, and for a field or element
@@ -1430,7 +1469,7 @@ class RustSession(NativeSession):
                 failures = []
                 for hashed, function in functions:
                     try:
-                        why = self._never_in(hashed, root, steps, source, line)
+                        why = self._never_in(hashed, root, steps, source, line, text)
                     except Unsettable:
                         why = None
                     if why is None:
@@ -1446,7 +1485,7 @@ class RustSession(NativeSession):
         # each instance it holds in.
         return "::".join((*function.ancestors, getattr(function, "instance", "") or function.name))
 
-    def _never_in(self, hashed, root, steps, source, line):
+    def _never_in(self, hashed, root, steps, source, line, text=False):
         """Why ``root`` (and the path ``steps`` into it) can never change in the function
         ``hashed``: (kind, detail), or None. Raises fields.Unsettable when the debug
         information Peeky needs could not be read (nothing is ruled out then)."""
@@ -1459,13 +1498,32 @@ class RustSession(NativeSession):
         if kept is None and body is not None and plain not in body.bindings:
             return ("absent", f"has no local `{plain}`")
         # Its type first, as `set` judges it.
-        if not steps:
+        if not steps and text:
+            declared = proofs.declared_type(hashed, root, line, source) if proofs else None
+            if declared is not None and declared not in _TEXT_RUST:
+                borrowed = declared.lstrip("&*").removeprefix("mut ").removeprefix("const ")
+                return (
+                    "type",
+                    f"`{root}` is a {declared}"
+                    + (
+                        ", text it borrows, which may be read-only (a literal); only a String "
+                        "the frame owns can be changed to a text"
+                        if borrowed in ("str", *_TEXT_RUST)
+                        else "; a text changes a String"
+                    ),
+                )
+        elif not steps:
             declared = proofs.declared_type(hashed, root, line, source) if proofs else None
             if declared is not None and declared not in _SETTABLE_RUST:
                 return (
                     "type",
                     f"`{root}` is a {declared}; only integer locals (i16 to i64, u16 to u64, "
-                    "isize, usize) can be changed",
+                    "isize, usize) can be changed"
+                    + (
+                        f", and a String to a text in double quotes (--set '{root}=\"apple\"')"
+                        if declared in _TEXT_RUST
+                        else ""
+                    ),
                 )
         else:
             functions, graph = self._field_types()

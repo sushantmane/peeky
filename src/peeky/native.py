@@ -40,6 +40,7 @@ from peeky.c_source import Preprocessed, Statements, macro_hazards, returning_tw
 from peeky.cxx_strings import libstdcxx_string, shows_text, string_class, text_like, tidy
 from peeky.digest import sha256_file
 from peeky.names import unicode_escape
+from peeky.text_sets import text_kind
 
 MAX_METADATA = 2 * 1024 * 1024
 # Type-rich C++ units (iostream) carry megabytes of DIEs; read only by `describe`.
@@ -3308,7 +3309,7 @@ class NativeSession:
         except (OSError, ValueError):
             return None
 
-    def never_settable(self, program, lines, names):
+    def never_settable(self, program, lines, names, text=False):
         """Why a probe's `--set` of one of ``names`` can change nothing at any stop of
         ``lines`` of ``program`` in this build (#138), or None: a field or element whose
         path the debug information rules out (#105: through a pointer, in a union, a
@@ -3882,6 +3883,8 @@ class NativeSession:
             "supports_member_set": raw.get("supportsSetVariable") is True,
             # Used only inside the worker, by qualified value views (Rust containers).
             "supports_read_memory": raw.get("supportsReadMemoryRequest") is True,
+            # Used only by text changes (#137: a string's heap buffer, see text_sets).
+            "supports_write_memory": raw.get("supportsWriteMemoryRequest") is True,
             "supports_conditional_breakpoints": False,
             "supports_hit_conditional_breakpoints": False,
             "supports_logpoints": False,
@@ -3892,9 +3895,15 @@ class NativeSession:
     def validate_breakpoints(self, points):
         self.target.validate_breakpoints(points)
 
+    # A `--set` value in double quotes is text, written into a string (text_sets, #137).
+    text_language = "c"
+
     def validate_value(self, value):
         if not isinstance(value, str) or not re.fullmatch(r"[+-]?(?:0|[1-9][0-9]{0,19})", value):
-            raise ValueError("Native mutations require bounded decimal integer literals")
+            raise ValueError(
+                "Native mutations require bounded decimal integer literals, or text in double "
+                "quotes for a string (--set 'name=\"apple\"')"
+            )
 
     # A value lldb-dap gives no memoryReference has no address at all, so a write could
     # only change LLDB's copy. This catches nothing in practice (lldb-dap 20 and 21 give
@@ -3953,6 +3962,15 @@ class NativeSession:
     def validate_variable(self, variable, value):
         self.validate_value(value)
         kind = variable.get("type")
+        try:
+            text_kind(variable, getattr(self, "text_language", "c"))
+        except ValueError:
+            pass
+        else:
+            raise ValueError(
+                f"Native mutation requires a text in double quotes for {variable.get('name')!r}, "
+                f"a {kind} (--set '{variable.get('name')}=\"apple\"')"
+            )
         if not _writable_integer(variable):
             raise ValueError(
                 f"Only writable integer locals of these types support native mutation: "

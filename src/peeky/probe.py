@@ -1575,6 +1575,12 @@ def _element(worker, stop, snapshot, segments, target, negative):
     return name
 
 
+def _launch_set(line, name, value):
+    """A change as the check before the run judges it (#138): its line and name, and
+    whether its value is a text (#137: a string's, not an integer's)."""
+    return {"line": line, "name": name, **({"text": True} if value.startswith('"') else {})}
+
+
 def apply_set(worker, stop, name, value):
     """Apply one `--set name=value` at this stop: a root local, or a field or array
     element a selector names (Java: `current.end`, `this.count`, `xs[0]`, `xs[-1]`; C,
@@ -2784,8 +2790,8 @@ def run_probe(root, probe, *, adapter=None, progress=None):
                 # Each with the line whose stops make it: a --set-at's own (#137).
                 **(
                     {
-                        "sets": [{"line": line, "name": name} for name, _ in probe.set]
-                        + [{"line": p["build_line"], "name": p["name"]} for p in points]
+                        "sets": [_launch_set(line, name, value) for name, value in probe.set]
+                        + [_launch_set(p["build_line"], p["name"], p["value"]) for p in points]
                     }
                     if probe.set or points
                     else {}

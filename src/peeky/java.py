@@ -19,6 +19,7 @@ from pathlib import Path, PurePosixPath
 from peeky.adapters import PythonAdapter
 from peeky.build import ArtifactSpec, BuildRecipe, Command, assert_current, prepare
 from peeky.digest import sha256_file, tree_fingerprint
+from peeky.text_sets import parse_text
 
 MAX_BUNDLE_FILES = 4096
 MAX_BUNDLE_FILE_BYTES = 256 * 1024 * 1024
@@ -123,6 +124,16 @@ def java_preview(variable, fetch):
         return None
     shown = ", ".join(f"{field['name']}={_brief(field)}" for field in fields[:PREVIEW_ITEMS])
     return f"{value} {{{shown}{', …' if len(fields) > PREVIEW_ITEMS else ''}}}"
+
+
+# A String (#137): java-debug makes a new one of a text, and the variable refers to it.
+_JAVA_STRINGS = ("String", "java.lang.String")
+_JAVA_SETTABLE = ("boolean", "float", "double", *_JAVA_STRINGS)
+
+
+def _settable_kinds(session):
+    """The non-integer types `--set` changes: a String only where the launcher allows it."""
+    return _JAVA_SETTABLE if getattr(session, "text_set", False) else _JAVA_SETTABLE[:3]
 
 
 SCALAR = re.compile(r"(?:true|false|[+-]?[0-9]+(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?)\Z")
@@ -498,12 +509,17 @@ class JavaSession:
         return [scope for scope in scopes if not scope.get("expensive")]
 
     def normalize_capabilities(self, raw):
+        if self is not None:
+            # A String takes a text only through a launcher that allows it (#137).
+            self.text_set = raw.get("peekyTextSet") is True
         return {
             "supports_set_variable": raw.get("supportsSetVariable") is True,
             # Launcher bundles built before stepping lack the marker: refuse cleanly.
             "supports_stepping": raw.get("peekySteps") is True,
             # Bundles whose launcher refuses a field name a hiding static field shares.
             "supports_member_set": raw.get("peekyFieldSet") is True,
+            # Bundles whose launcher changes a String to a text (#137).
+            "supports_text_set": raw.get("peekyTextSet") is True,
             "supports_conditional_breakpoints": False,
             "supports_hit_conditional_breakpoints": False,
             "supports_logpoints": False,
@@ -515,14 +531,35 @@ class JavaSession:
         self.target.validate_breakpoints(points)
 
     def validate_value(self, value):
+        if isinstance(value, str) and parse_text(value) is not None:
+            return
         if not isinstance(value, str) or not SCALAR.fullmatch(value):
-            raise ValueError("Java mutation requires a numeric or boolean scalar literal")
+            raise ValueError(
+                "Java mutation requires a numeric or boolean scalar literal, or text in "
+                "double quotes for a String"
+            )
+
+    def mutation_literal(self, value):
+        """What java-debug is sent: a text (#137) between plain quotes, which it takes
+        off and keeps everything between as the new String (it unescapes nothing)."""
+        text = parse_text(value)
+        return value if text is None else f'"{text}"'
+
+    def confirm_mutation(self, name, value, before, after):
+        """A String (#137) must read back as the text asked, as java-debug shows one
+        (between quotes, nothing escaped): else the change is not reported."""
+        text = parse_text(value)
+        if text is not None and after != f'"{text}"':
+            raise RuntimeError(
+                f"java-debug stored {str(after)[:80]} in {name!r}, not the text asked: the "
+                "change did not reach the program as stated, so the session is closed"
+            )
 
     def settable(self, variable, frame=None):
         """Whether `--set` can change this root local: a scalar of a type it accepts, named
         as a selector can name it (not java-debug's `->compute()` return value entry)."""
         return bool(
-            variable.get("type") in (*_JAVA_INTEGER_BITS, "boolean", "float", "double")
+            variable.get("type") in (*_JAVA_INTEGER_BITS, *_settable_kinds(self))
             and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", str(variable.get("name")))
         )
 
@@ -539,10 +576,12 @@ class JavaSession:
             return "it is final"
         if "static" in attributes:
             return "it is static (shared by every instance)"
-        if kind not in (*_JAVA_INTEGER_BITS, "boolean", "float", "double"):
+        if kind not in (*_JAVA_INTEGER_BITS, *_settable_kinds(self)):
+            strings = getattr(self, "text_set", False)
             return (
-                f"it is {kind}; only byte, short, int, long, boolean, float and double "
-                "values can be changed"
+                f"it is {kind}; only byte, short, int, long, boolean, float"
+                + (", double and String" if strings else " and double")
+                + " values can be changed"
             )
         return None
 
@@ -554,6 +593,20 @@ class JavaSession:
         """
         self.validate_value(value)
         name, kind = variable.get("name"), variable.get("type")
+        text = parse_text(value)
+        if kind in _JAVA_STRINGS:
+            if text is None:
+                raise ValueError(
+                    f"Java mutation requires text in double quotes for String {name} "
+                    f"(--set '{name}=\"apple\"'): the local then refers to a new String; "
+                    "other references keep the old one"
+                )
+            return
+        if text is not None:
+            raise ValueError(
+                f"Java mutation requires a literal of {name}'s type ({kind}); text in double "
+                "quotes changes a String"
+            )
         if kind in _JAVA_INTEGER_BITS:
             # java-debug parses with Long.decode: a leading 0 means octal.
             if not re.fullmatch(r"[+-]?(?:0|[1-9][0-9]{0,19})", value):
@@ -579,8 +632,8 @@ class JavaSession:
                 raise ValueError(f"Java mutation is outside the {kind} range for {name}")
         else:
             raise ValueError(
-                "Only byte, short, int, long, boolean, float and double locals support Java "
-                f"mutation; {name} is {kind}"
+                "Only byte, short, int, long, boolean, float, double and String locals support "
+                f"Java mutation; {name} is {kind}"
             )
 
     def _line_key(self, program):
