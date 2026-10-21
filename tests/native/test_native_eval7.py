@@ -59,6 +59,9 @@ int main(int argc, char **argv) {
 }
 """
 OPS = ["--", "+1", "+2", "+3", "-", "-", "+4", "+5", "+6", "-", "-", "-", "-"]
+# The same ring, its line 36 reading the digit without a call (round 3 of PR #165: a
+# call in the arguments, `atoi`'s too, gets no settable claim).
+READING_RING = RING.replace("push(&r, atoi(argv[i] + 1));", "push(&r, argv[i][1] - '0');")
 
 # Callers Peeky cannot single out: twice, through a macro used twice, through a function
 # pointer, and once but with a pointer it does not own.
@@ -117,6 +120,16 @@ def test_a_pointer_parameters_one_caller_is_named(c_program, capsys):
     # Finding 13: `MUTATION_REJECTED` said to change the value "before the call that
     # passed it", but did not name `ring.c:36`, push's one caller.
     source = c_program("ring.c", RING)
+    code, out = run(
+        capsys, "probe", source, "--at", "15", "--capture", "r.tail", "--set", "r.tail=0", *OPS
+    )
+    assert (
+        "push has one caller: ring.c:36 in main, which passes `&r`; change the value where "
+        "it is owned, before that call: Peeky cannot tell that a change at line 36 reaches it"
+    ) in out, out
+    assert code == 2, out
+    # Without the call in its arguments, line 36 is where `r.tail` is settable.
+    source = c_program("ring.c", READING_RING)
     code, out = run(
         capsys, "probe", source, "--at", "15", "--capture", "r.tail", "--set", "r.tail=0", *OPS
     )
@@ -204,7 +217,7 @@ def test_describe_says_which_locals_have_settable_fields(c_program, capsys):
 def test_a_set_at_refused_before_the_run_names_the_caller_and_shows_no_table(c_program, capsys):
     # Findings 13 and 14 with #151's `--set-at`: judged at its own line before the run,
     # the refusal names push's one caller, prints no table and exits 2.
-    source = c_program("ring.c", RING)
+    source = c_program("ring.c", READING_RING)
     code, out = run(
         capsys, "probe", source, "--at", "36", "--capture", "r.tail",
         "--set-at", "15@2", "r.tail=0", *OPS,
@@ -439,10 +452,15 @@ def test_no_settable_claim_where_the_statement_or_an_alias_writes_first(c_progra
 @pytest.mark.parametrize(
     ("declare", "call", "selector", "claimed"),
     [
-        # A library function reaches the program's locals only through its arguments.
-        ("", 'total = push(&r, (int)strlen("ab"));', "r.tail", True),
+        # Reads of an integer field, in the arguments and in an `if`'s condition.
+        ("", "total = push(&r, r.head + 1);", "r.tail", True),
+        ("", "if (push(&r, 1) > r.head) total++;", "r.tail", True),
+        ("", "int fresh = push(&r, 1); total = fresh;", "r.tail", True),
         # peek() reads `x->tail` and `x->buf[i]` only: it keeps no pointer to r.
-        ("peek(&r);", 'total = push(&r, (int)strlen("ab"));', "r.tail", True),
+        ("peek(&r);", "total = push(&r, 1);", "r.tail", True),
+        # Any call in the arguments, a library's too; an array field passes a pointer.
+        ("", 'total = push(&r, (int)strlen("ab"));', "r.tail", False),
+        ("", "total = push(&r, r.buf[0]);", "r.tail", False),
         # A pointer into an array needs no `&`: sscanf may write r.buf[1] through q.
         ("int *q = r.buf;", 'total = push(&r, sscanf("7", "%d", q + 1));', "r.buf[1]", False),
         ("", "total = push(&r, 1);", "r.buf[1]", True),
@@ -459,6 +477,58 @@ def test_the_claim_kept_where_nothing_can_reach_the_value(
     assert code == 2 and f"push has one caller: m.c:{line} in main" in message, out
     claim = f"where `{selector}` is settable: a probe's `--set-at {line}@N"
     assert (claim in message) == claimed, out
+
+
+# Round 3 of PR #165: `buf` is the first field, so `(struct ring *)b` is `r`, and zap,
+# reached through a table, a pointer or a member, changes `r.tail` before push reads it.
+FIRST_FIELD = """#include <stdio.h>
+#include <string.h>
+struct ring { int buf[4]; int head; int tail; };
+static int zap(int *b) { ((struct ring *)b)->tail = 5; return 1; }
+static int (*ops[])(int *) = { zap };
+static int (*fp)(int *) = zap;
+struct vt { int (*fn)(int *); };
+static int push(struct ring *r, int v) {
+    int seen = r->tail + v; /* AT */
+    r->tail++;
+    return seen;
+}
+int main(void) {
+    struct ring r = { { 0 }, 0, 0 };
+    struct ring q = { { 0 }, 0, 3 };
+    struct vt v = { zap };
+    int total = 0;
+    STATEMENT  /* CALL */
+    printf("%d %d %d\\n", total, r.tail, q.tail);
+    return 0;
+}
+"""
+RESHAPED = {
+    "table": "total = push(&r, ops[0](r.buf));",
+    "deref": "total = push(&r, (*fp)(r.buf));",
+    "member": "total = push(&r, v.fn(r.buf));",
+    "library": "total = push(&r, (memset(r.buf, 0, sizeof r), 1));",
+    "root_first": "r = q, push(&r, 1);",
+}
+
+
+@pytest.mark.timeout(240)
+@pytest.mark.parametrize("site", list(RESHAPED))
+def test_no_settable_claim_but_for_a_plain_call_of_reads(c_program, capsys, site):
+    text = FIRST_FIELD.replace("STATEMENT", RESHAPED[site])
+    source = c_program("m.c", text)
+    at, call = line_of(text, "/* AT */"), line_of(text, "/* CALL */")
+    code, out = run(capsys, "probe", source, "--at", at, "--capture", "v", "--set", "r.tail=0")
+    message = out.splitlines()[0]
+    assert code == 2 and f"push has one caller: m.c:{call} in main" in message, out
+    assert "settable" not in message.split("has one caller")[1], out
+    if site == "table":
+        # The claim would have been wrong: push reads zap's 5, not the change.
+        code, out = run(
+            capsys, "probe", source, "--at", at, "--capture", "r.tail", "--set-at",
+            f"{call}@1", "r.tail=3", "--json",
+        )  # fmt: skip
+        assert json.loads(out)["rows"][0]["value"] == "5", out
 
 
 @pytest.mark.timeout(240)
