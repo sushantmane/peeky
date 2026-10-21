@@ -13,7 +13,9 @@ import pytest
 
 from peeky.python_passes import _effects, _loops, stale_note, stale_pass
 
-# `# stale: a, b` marks a line where each name is noted, `# fresh: c` one where it is not.
+# `# stale: a, b` marks a line where each name is noted wherever the stop is on it,
+# `# entered: c` one where it is noted only where the line begins (a breakpoint's stop),
+# `# fresh: d` one where it is not noted.
 CASES = """\
 import re
 
@@ -63,10 +65,20 @@ def branch_before(ts):
     return out
 
 
+def both_branches(ts):
+    for t in ts:
+        slug(str(t))  # stale: p
+        if t:
+            p = 1
+        else:
+            p = 2
+        print(p)
+
+
 def continues(ts):
     out = []
     for t in ts:
-        slug(str(t))  # stale: y
+        slug(str(t))  # fresh: y
         if t % 2:
             continue
         y = t
@@ -87,7 +99,7 @@ def breaks(ts, keep):
 
 def broken(ts):
     for t in ts:
-        slug(str(t))  # stale: y
+        slug(str(t))  # fresh: y
         if t > 2:
             break
         y = t
@@ -107,15 +119,42 @@ def handler(ts):
         print(y)
 
 
+def caught(ts):
+    for t in ts:
+        try:
+            slug(str(t))  # fresh: e
+        except KeyError:
+            e = t
+        print(t)
+
+
+def matched(ts):
+    for t in ts:
+        slug(str(t))  # fresh: m
+        match 0:
+            case 1:
+                m = t
+        print(t)
+
+
 def nested(rows):
     total = 0
     for row in rows:
-        acc = 0  # stale: acc, cell, v
+        acc = 0  # stale: acc  # fresh: cell, v
         for cell in row:
             slug(str(cell))  # stale: v  # fresh: row, acc, cell
-            v = cell * 2
+            v = cell * 2  # stale: v
             acc += v
         total += acc
+    return total
+
+
+def last_line(rows):
+    total = 0
+    for row in rows:
+        for cell in range(2):
+            inner = row + cell  # entered: inner
+        total += inner
     return total
 
 
@@ -138,7 +177,7 @@ def condition_reads(n):
 
 def same_line(ts):
     for t in ts:
-        u = slug(str(t)); print(u)  # fresh: u
+        u = slug(str(t)); print(u)  # entered: u
         u = 2
         print(u)
 
@@ -150,14 +189,6 @@ def closure(ts):
         c = t
         out.append(lambda: c)
     return [f() for f in out]
-
-
-def introspect(ts):
-    for t in ts:
-        slug(str(t))  # fresh: k
-        k = t
-        print(len(locals()))
-        print(k)
 
 
 def multiline(titles):
@@ -188,16 +219,19 @@ def main():
     whiles(3)
     walrus([1, 2, 3])
     branch_before([1, 2, 3])
+    both_branches([0, 1, 0])
     continues([1, 2, 3, 4])
     breaks([1, 2, 3, 4], 0)
     broken([1, 2, 3, 4])
     handler([1, 2, 3])
+    caught([1, 2])
+    matched([1, 2])
     nested([[1, 2], [3, 4], []])
+    last_line([1, 2])
     deletes([1, 2])
     condition_reads(3)
     same_line([1, 2])
     closure([1, 2])
-    introspect([1, 2])
     multiline(["a b", "c"])
     list(gen([1, 2, 3]))
     asserted([1, 2])
@@ -226,34 +260,38 @@ def _function_at(line):
 
 def _marked():
     for number, text in enumerate(CASES.splitlines(), 1):
-        for kind, names in re.findall(r"# (stale|fresh): ([\w, ]+)", text):
+        for kind, names in re.findall(r"# (stale|entered|fresh): ([\w, ]+)", text):
             for name in names.split(","):
                 yield number, kind, name.strip()
 
 
 @pytest.mark.parametrize("line, kind, name", list(_marked()))
-def test_a_local_is_noted_only_where_this_pass_assigns_it_before_reading_it(
+def test_a_local_is_noted_only_where_every_path_of_the_pass_assigns_it_first(
     cases, line, kind, name
 ):
-    found = stale_pass(cases, _function_at(line), line, name)
-    assert (found is not None) == (kind == "stale"), (line, name, found)
+    function = _function_at(line)
+    anywhere = stale_pass(cases, function, line, name)
+    entered = stale_pass(cases, function, line, name, entered=True)
+    assert (anywhere is not None) == (kind == "stale"), (line, name, anywhere)
+    assert (entered is not None) == (kind in ("stale", "entered")), (line, name, entered)
 
 
 def test_the_note_names_the_loop_and_the_assignment(cases):
     line = next(n for n, text in enumerate(CASES.splitlines(), 1) if "key = slug(title)" in text)
     assert stale_pass(cases, "group", line, "key") == (line - 1, (line,))
     note = stale_note(cases, "group", line, "key")
+    # Facts about the code: what ran may differ (a call can write a caller's locals).
     assert note.note == (
-        f"an earlier pass's value (or one from before the loop at line {line - 1}): this "
-        f"pass has not assigned it yet, and the code assigns it again (line {line}) before "
-        "reading it; stop after that to see this pass's value"
+        "this pass's code has not assigned it before this line, and every path through "
+        f"the rest of the pass assigns it (line {line}) before reading it: the value is "
+        f"likely from an earlier pass (or from before the loop at line {line - 1})"
     )
     assert str(note) == (
-        f"the code assigns it again (line {line}) before it reads it, so a change made here "
-        "would never be seen"
+        f"this function's code assigns it again (line {line}) before reading it, so a "
+        "change made here would not reach that code"
     )
     assert note.refuses is True
-    # Two assignments, on two paths: both named.
+    # Two assignments, one on each path: both named.
     line = next(n for n, text in enumerate(CASES.splitlines(), 1) if "if t > 1:  #" in text)
     assert "(lines " in stale_note(cases, "branch_before", line, "y").note
 
@@ -287,6 +325,117 @@ def test_what_cannot_be_read_proves_nothing(cases, tmp_path):
     assert stale_pass(str(twins), "f", 4, "g") is None
 
 
+LOOP = """\
+def f(xs):
+    for t in xs:
+        print(t)
+        x = t
+        print(x)
+"""
+
+
+@pytest.mark.parametrize(
+    "extra, why",
+    [
+        # Review of PR #185: the function that runs may not be the one on disk.
+        (
+            'exec(compile("\\n" * 2 + "    for t in xs:\\n        x = 1; print(t)", '
+            '__file__, "exec"))\n',
+            "exec",
+        ),
+        ("import types\ng = types.FunctionType(f.__code__, {})\n", "FunctionType"),
+        ("f.__code__ = (lambda xs: None).__code__\n", "__code__"),
+        ("from types import CodeType\n", "CodeType"),
+        ("import marshal\n", "marshal"),
+        ("print(eval('1'))\n", "eval"),
+        # A call can read or write its caller's locals (`f_locals` writes through, 3.13).
+        ("import sys\ndef h():\n    sys._getframe(1).f_locals['x'] = 5\n", "f_locals"),
+        ("import sys\ndef h():\n    return sys._getframe(1)\n", "_getframe"),
+        ("def h(frame):\n    return frame.f_back.f_locals\n", "f_locals"),
+        ("def h(frame):\n    return frame.f_back\n", "f_back"),
+        ("import inspect\n", "inspect"),
+        ("from inspect import stack\n", "inspect"),
+        ("import sys\nsys.settrace(None)\n", "settrace"),
+        ("getter = getattr(__import__('sys'), '_getframe')\n", "_getframe"),
+        ("def h():\n    return locals()\n", "locals"),
+        ("def h():\n    return vars()\n", "vars"),
+        ("show = dir\n", "dir"),
+        ("breakpoint()\n", "breakpoint"),
+    ],
+)
+def test_a_module_that_may_run_other_code_or_reach_frames_gets_no_note(tmp_path, extra, why):
+    from peeky.python_passes import opaque
+
+    path = tmp_path / "m.py"
+    path.write_text(LOOP)
+    assert stale_pass(str(path), "f", 3, "x") == (2, (4,))
+    path.write_text(LOOP + extra)
+    assert opaque(ast.parse(path.read_text())) == why
+    assert stale_pass(str(path), "f", 3, "x") is None
+
+
+def test_ordinary_uses_of_those_names_leave_a_module_judged(tmp_path):
+    from peeky.python_passes import opaque
+
+    ordinary = (
+        "import re\n"
+        "pattern = re.compile('a')\n"
+        "class Model:\n"
+        "    def eval(self):\n"
+        "        return vars(self), dir(self)\n"
+        "Model().eval()\n"
+    )
+    assert opaque(ast.parse(ordinary)) is None
+    path = tmp_path / "m.py"
+    path.write_text(LOOP + ordinary)
+    assert stale_pass(str(path), "f", 3, "x") == (2, (4,))
+
+
+def test_only_a_program_interpreter_that_compiles_alike_is_judged(tmp_path, cases):
+    # Review of PR #185: a 3.11 worker read a 3.12 program's inlined comprehension (its
+    # `LOAD_FAST_AND_CLEAR x`) as code that never reads `x`.
+    import importlib.util
+
+    from peeky import python_passes
+    from peeky.adapters import PythonAdapter
+
+    def interpreter(name, magic):
+        script = tmp_path / name
+        script.write_text(f"#!/bin/sh\necho {sys.implementation.name} {magic}\n")
+        script.chmod(0o755)
+        return str(script)
+
+    same = interpreter("same", importlib.util.MAGIC_NUMBER.hex())
+    other = interpreter("other", "00000d0a")
+    assert python_passes.same_compiler(sys.executable) is True
+    assert python_passes.same_compiler(same) is True
+    assert python_passes.same_compiler(other) is False
+    assert python_passes.same_compiler(str(tmp_path / "missing")) is False
+    line = next(n for n, text in enumerate(CASES.splitlines(), 1) if "key = slug(title)" in text)
+    frame = {"source": {"path": cases}, "name": "group", "line": line}
+    variable = {"name": "key", "type": "str", "value": "'a'"}
+    assert PythonAdapter().not_yet_declared(variable, frame) is not None
+    assert PythonAdapter(interpreter=same).not_yet_declared(variable, frame) is not None
+    assert PythonAdapter(interpreter=other).not_yet_declared(variable, frame) is None
+    with pytest.raises(ValueError, match="cannot be changed at this stop"):
+        PythonAdapter().validate_mutation_target(variable, frame)
+    PythonAdapter(interpreter=other).validate_mutation_target(variable, frame)
+
+
+def test_a_breakpoints_stop_is_judged_where_its_line_begins(cases):
+    # Review of PR #185: a loop body's last line also holds the jump back, after its
+    # assignment; a breakpoint never stops there, but a caller's frame may.
+    from peeky.adapters import PythonAdapter
+
+    line = next(n for n, text in enumerate(CASES.splitlines(), 1) if "inner = row" in text)
+    frame = {"source": {"path": cases}, "name": "last_line", "line": line}
+    variable = {"name": "inner", "type": "int", "value": "1"}
+    adapter = PythonAdapter()
+    assert adapter.not_yet_declared(variable, frame, innermost=True, stop="breakpoint")
+    assert adapter.not_yet_declared(variable, frame, innermost=True, stop="step") is None
+    assert adapter.not_yet_declared(variable, frame, innermost=False, stop="breakpoint") is None
+
+
 def test_a_module_level_loop_is_not_judged(tmp_path):
     path = tmp_path / "top.py"
     path.write_text("for t in range(3):\n    key = str(t)\n    print(key)\n")
@@ -294,7 +443,7 @@ def test_a_module_level_loop_is_not_judged(tmp_path):
 
 
 def _run_traced(path, functions):
-    """{frame id: [(line, effects, function)]}: every instruction each frame of
+    """{frame id: [(line, effects, function, offset)]}: every instruction each frame of
     ``functions`` ran, in order."""
     module = compile(CASES, path, "exec", dont_inherit=True)
     pending, codes = [module], []
@@ -314,7 +463,7 @@ def _run_traced(path, functions):
     def record(frame, code, offset):
         instruction = decoded[code].get(offset)
         effects = _effects(instruction) if instruction else ()
-        timelines[id(frame)].append((lines[code].get(offset), effects, code.co_name))
+        timelines[id(frame)].append((lines[code].get(offset), effects, code.co_name, offset))
         frames[id(frame)] = frame
 
     if sys.version_info >= (3, 12):
@@ -365,8 +514,10 @@ def _run_traced(path, functions):
 
 
 def test_every_note_holds_wherever_the_program_runs_its_line(cases, capsys):
-    # Each instruction of a noted line, as the program ran it: since the loop's header
-    # last ran, the local was not stored, and what the frame does to it next is a store.
+    # Each instruction of a noted line as the program ran it (for a note given only where
+    # the line begins, each time the line began): since the loop's header last ran, the
+    # local was not stored; what the frame does to it next is a store; and that store
+    # comes before the pass ends (the header again, or out of the loop).
     loops = _loops(ast.parse(CASES))
     tree = ast.parse(CASES)
     notes = collections.defaultdict(dict)
@@ -377,30 +528,44 @@ def test_every_note_holds_wherever_the_program_runs_its_line(cases, capsys):
             }
             for line in range(node.lineno, node.end_lineno + 1):
                 for name in names:
-                    if found := stale_pass(cases, node.name, line, name):
-                        notes[node.name][(line, name)] = found
-    assert sum(map(len, notes.values())) >= 15, dict(notes)
+                    for entered in (False, True):
+                        if stale_pass(cases, node.name, line, name, entered=entered):
+                            notes[node.name].setdefault((line, name), entered)
+    assert sum(map(len, notes.values())) >= 12, dict(notes)
     timelines = _run_traced(cases, set(notes))
     capsys.readouterr()
     checked = 0
     for timeline in timelines.values():
-        for index, (line, _, function) in enumerate(timeline):
-            for (noted, name), _ in notes[function].items():
+        for index, (line, _, function, offset) in enumerate(timeline):
+            for (noted, name), entered in notes[function].items():
                 if noted != line:
                     continue
-                first, _, start, _ = max(
+                previous = timeline[index - 1] if index else None
+                if entered and previous and previous[0] == line and previous[3] < offset:
+                    # Part-way through the line: a breakpoint does not stop there.
+                    continue
+                first, last, start, _ = max(
                     (loop for loop in loops if loop[2] <= line <= loop[3]),
                     key=lambda loop: loop[2],
                 )
                 header = range(first, max(first, start - 1) + 1)
-                for earlier, effects, _ in reversed(timeline[:index]):
+                for earlier, effects, _, _ in reversed(timeline[:index]):
                     if earlier in header:
                         break
                     assert ("store", name) not in effects, (function, line, name, index)
-                for _, effects, _ in timeline[index:]:
+                for later, effects, _, _ in timeline[index:]:
                     kinds = [kind for kind, local in effects if local == name]
                     if kinds:
                         assert kinds[0] == "store", (function, line, name, index)
                         break
+                    assert later not in header and first <= (later or first) <= last, (
+                        "the pass ended first",
+                        function,
+                        line,
+                        name,
+                        index,
+                    )
+                else:
+                    raise AssertionError(("never stored", function, line, name, index))
                 checked += 1
     assert checked > 100

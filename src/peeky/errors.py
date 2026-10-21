@@ -299,7 +299,7 @@ _FIX_ARGUMENTS = "Fix the request arguments; see `peeky <command> --help`."
 # message names the rule, so the hint need not repeat every rule. First match wins.
 _MUTATION_HINTS = (
     (
-        r"assigns it again \(lines? [0-9, ]+\) before it reads it",
+        r"assigns it again \(lines? [0-9, ]+\) before reading it",
         "Change it after that assignment has run: a later `--at`, or `session continue "
         "--to LINE` to the line after it.",
     ),
