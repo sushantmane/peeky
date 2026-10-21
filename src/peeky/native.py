@@ -1433,6 +1433,34 @@ def has_nonlocal_jumps(binary):
     return False
 
 
+# The functions a signal handler returns through (macOS, glibc's x86-64 and older ones,
+# the arm64 and 32-bit Linux vDSO's; GDB's name for the frame): the frame above one was
+# interrupted at an instruction, not suspended in a call.
+_TRAMPOLINES = frozenset(
+    (
+        "_sigtramp",
+        "sigtramp",
+        "__restore_rt",
+        "__restore",
+        "__kernel_rt_sigreturn",
+        "__kernel_sigreturn",
+        "<signal handler called>",
+    )
+)
+
+
+def _trampoline(name):
+    """Whether a frame's name (`_sigtramp`, `libsystem_platform.dylib`_sigtramp`,
+    `__restore_rt()`) is a signal trampoline's."""
+    if not isinstance(name, str):
+        return False
+    name = name.strip()
+    if name in _TRAMPOLINES:
+        return True
+    bare = name.rpartition("`")[2].split("(", 1)[0].strip()
+    return bare in _TRAMPOLINES
+
+
 _SHADOWED = re.compile(r"(.+) @ [^:]+:([0-9]+)")
 # The same, with the file: (name, file, line).
 _NAMED_AT = re.compile(r"(.+) @ ([^:]+):([0-9]+)")
@@ -3383,12 +3411,13 @@ class NativeSession:
 
         Of the declarations of the name whose block holds the pc (the function's
         automatic locals and parameters: the ones the debugger lists there), the one
-        alone, else the innermost whose scope, read from the source, holds the pc's
-        line: none declared below the line (`t` names an outer one until its
-        declaration), and none a statement's header declares past that statement
-        (clang gives a `while`'s or a `switch`'s no block of its own, so its block
-        holds the code after the statement). None if a source is unreadable, two are
-        as inner, or a declaration is in another file than the line."""
+        alone, else the innermost whose scope, read from the source as the compiler
+        preprocessed it (``_scope_holds``), holds the pc's line: none declared below
+        the line (`t` names an outer one until its declaration), and none a statement's
+        header declares past that statement (clang gives a `while`'s or a `switch`'s
+        no block of its own, so its block holds the code after the statement). None
+        if a source cannot be read so, two are as inner, or a declaration is in
+        another file than the line."""
         if pc is None or not self.declarations:
             return None
         if _SHADOWED.fullmatch(name):
@@ -3429,16 +3458,36 @@ class NativeSession:
                 continue
             if where[0] != source:
                 return None
-            statements = self._statements(source)
-            scope = statements.scope_lines(where[1], name) if statements is not None else None
-            if scope is None:
+            holds = self._scope_holds(source, where[1], name, line)
+            if holds is None:
                 return None
-            if scope[0] <= line <= scope[1]:
+            if holds:
                 kept.append((span, where))
         kept.sort(key=lambda pair: pair[0])
         if not kept or (len(kept) > 1 and kept[0][0] == kept[1][0]):
             return None
         return kept[0][1]
+
+    def _scope_holds(self, source, declared, name, line):
+        """Whether the declaration of ``name`` on ``source:declared`` is in scope on
+        ``source:line`` (Statements.scope_lines), read from each translation unit
+        holding the source as the compiler preprocessed it, so that a macro's statement
+        reads as its expansion (`WHILE_DECL(long t = f())` is a `while`'s header); None
+        where any of them cannot tell, or they disagree."""
+        verdicts = set()
+        for unit in self._units(source):
+            read = self._preprocessed(unit)
+            if isinstance(read, str):
+                return None
+            preprocessed, statements = read
+            if source not in preprocessed.files:
+                continue
+            at, here = preprocessed.line(source, declared), preprocessed.line(source, line)
+            scope = statements.scope_lines(at, name) if at and here else None
+            if scope is None:
+                return None
+            verdicts.add(scope[0] <= here <= scope[1])
+        return verdicts.pop() if len(verdicts) == 1 else None
 
     def _shown_where(self, name, pc):
         """(source, line, automatic) of the declaration of the local ``name`` the
@@ -3576,17 +3625,30 @@ class NativeSession:
             return None
 
     def frames_listed(self, frames):
-        """The worker lists a stop's frames (innermost first): which one is innermost."""
+        """The worker lists a stop's frames (innermost first): which one is innermost,
+        and which ones a signal interrupted (each just above a signal trampoline)."""
         self.innermost_id = frames[0].get("id") if frames else None
+        self.interrupted_ids = {
+            frames[index + 1].get("id")
+            for index, frame in enumerate(frames[:-1])
+            if _trampoline(frame.get("name"))
+        }
 
     def _block_pc(self, frame):
         """Where ``frame`` runs, as blocks and lines are matched against it: its address
         (unslid), less one in a frame above the innermost, whose address is where its
         call returns to, maybe past the call's block and line (#158), as LLDB reads it.
-        None if unknown."""
+        Not in one a signal interrupted (above a signal trampoline): its address is the
+        instruction it stopped at, as LLDB reads it too. None if unknown."""
         address = self._unslid(frame)
         innermost = getattr(self, "innermost_id", None)
-        if address is not None and innermost is not None and (frame or {}).get("id") != innermost:
+        identity = (frame or {}).get("id")
+        if (
+            address is not None
+            and innermost is not None
+            and identity != innermost
+            and identity not in getattr(self, "interrupted_ids", ())
+        ):
             return address - 1
         return address
 

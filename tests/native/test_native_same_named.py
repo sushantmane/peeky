@@ -426,3 +426,101 @@ def test_cpp_a_line_only_an_exception_runs_singles_out_nothing(directory, capsys
     code, result = probed(capsys, path, line_of(CLOSING, "// CLOSING"), "t.deadline=5", "t")
     assert code == 1 and result.get("refused_before_launch") is True, result
     assert "several locals named `t` of different types" in result["error"]["message"]
+
+
+# Review of PR #159 (round 2): a header a macro writes was read as a plain statement,
+# its condition variable scoped to the block's end.
+MACRO_HEADERS = {
+    "while.cpp": """#include <cstdio>
+#define P(tag, v) std::printf("%s=%ld\\n", tag, (long)(v))
+static int next_val(int &n) { return n-- > 0 ? n + 10 : 0; }
+#define WHILE_DECL(decl) while (decl)
+int main(int argc, char **argv) {
+    int t = 1;
+    {
+        int n = 2;
+        WHILE_DECL(long t = next_val(n)) { P("A", t); }
+        n += 1;
+        P("B", t);  // AFTER
+    }
+    return 0;
+}
+""",
+    # The outer `t` a parameter, which no jump skips.
+    "switch.cpp": """#include <cstdio>
+#define P(tag, v) std::printf("%s=%ld\\n", tag, (long)(v))
+#define SWITCH_ON(decl) switch (decl)
+__attribute__((noinline)) static long run(int t) {
+    {
+        SWITCH_ON(short t = (short)(t + 4)) { default: P("A", t); }
+        P("B", t);  // AFTER
+    }
+    return t;
+}
+int main(int argc, char **argv) { return (int)run(argc + 4) - 5; }
+""",
+}
+
+
+@pytest.mark.timeout(300)
+@pytest.mark.parametrize("name", sorted(MACRO_HEADERS))
+def test_cpp_a_macros_header_scopes_its_variable_to_its_statement(directory, capsys, name):
+    # `t` read the dead `long t` (`0`) and `--set t=500` changed it, while the program
+    # printed `B=1`: the scope is read from the preprocessed source now.
+    source = MACRO_HEADERS[name]
+    path = directory / name
+    path.write_text(source)
+    line = line_of(source, "// AFTER")
+    code, result = captured(capsys, path, line, "t")
+    assert code == 0 and result["status"] == "completed", result.get("error")
+    [observed] = result["rows"]
+    assert (observed["type"], observed["value"]) == ("int", "1" if name == "while.cpp" else "5")
+    if name == "while.cpp":
+        # (The `switch` line is refused for a change: the raw source does not show where
+        # the macro's statement ends, so line 7 may continue it.)
+        code, result = captured(capsys, path, line, "t", "--set", "t=500")
+        assert code == 0 and "B=500" in result["output"], result.get("error")
+
+
+SIGNALED = """#define _DEFAULT_SOURCE
+#include <signal.h>
+#include <stdio.h>
+#include <string.h>
+#include <sys/time.h>
+static volatile sig_atomic_t ticks;
+static void on_alarm(int sig) {
+    ticks = ticks + 1;  // HANDLER
+}
+int main(void) {
+    struct sigaction sa;
+    memset(&sa, 0, sizeof sa);
+    sa.sa_handler = on_alarm;
+    sigaction(SIGALRM, &sa, NULL);
+    int t[10] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9};
+    struct itimerval it = {{0, 0}, {0, 1000}};
+    {
+        int t[3] = {7, 7, 7};
+        setitimer(ITIMER_REAL, &it, NULL);
+    }
+    while (!ticks) t[0]++;
+    printf("outer %d %d\\n", t[0], t[9]);
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(300)
+def test_c_a_frame_a_signal_interrupted_is_judged_where_it_stopped(directory, capsys):
+    # Above the signal trampoline, a frame's address is the instruction it was
+    # interrupted at, not a return address: less one, it fell in the block before the
+    # loop, and `t` was judged as that block's `int t[3]`.
+    path = directory / "signaled.c"
+    path.write_text(SIGNALED)
+    assert main(["session", "start", str(path), "--at", str(line_of(SIGNALED, "// HANDLER"))]) == 0
+    capsys.readouterr()
+    try:
+        code, rows = run(capsys, "session", "get", "t[9]", "--frame", "2")
+        assert rows[0]["value"] == "9", rows
+    finally:
+        main(["session", "close"])
+        capsys.readouterr()

@@ -1736,3 +1736,32 @@ def test_members_of_a_root_outside_the_frames_memory_are_never_settable():
     assert row({"name": "r"}, {}) is None
     native.target = SimpleNamespace(optimization="O1")
     assert row({"name": "r"}, {}, member=True) is None
+
+
+def test_a_caller_is_judged_before_its_return_address_unless_a_signal_interrupted_it():
+    # #158, review of PR #159: a caller frame's address is where its call returns, so
+    # blocks are matched one before it, as LLDB reads it; the frame above a signal
+    # trampoline was interrupted at its instruction, which counts as it is.
+    from peeky.native import _trampoline
+
+    session = NativeSession.__new__(NativeSession)
+    session.load_bias = 0
+    frames = [
+        {"id": 1, "name": "on_alarm", "instructionPointerReference": "0x100"},
+        {
+            "id": 2,
+            "name": "libsystem_platform.dylib`_sigtramp",
+            "instructionPointerReference": "0x200",
+        },
+        {"id": 3, "name": "main", "instructionPointerReference": "0x300"},
+        {"id": 4, "name": "start", "instructionPointerReference": "0x400"},
+    ]
+    session.frames_listed(frames)
+    assert [session._block_pc(frame) for frame in frames] == [0x100, 0x1FF, 0x300, 0x3FF]
+    for name in ("_sigtramp", "__restore_rt", "__kernel_rt_sigreturn", "<signal handler called>"):
+        assert _trampoline(name), name
+    assert not _trampoline("sigtramp_helper") and not _trampoline(None)
+    # Before the worker lists a stop's frames, a frame counts as it is.
+    fresh = NativeSession.__new__(NativeSession)
+    fresh.load_bias = 0
+    assert fresh._block_pc(frames[2]) == 0x300
