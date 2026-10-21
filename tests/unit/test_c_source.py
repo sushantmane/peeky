@@ -1076,3 +1076,160 @@ def test_c_gives_enumerators_anywhere_in_a_block_its_scope_and_cpp_a_class_name(
     for raw_strings in (False, True):
         found = Statements(returning, raw_strings=raw_strings).block_storage(5, "use2", 2)
         assert found == ("function", 4)
+
+
+SCOPES = """int f(int k) {
+    int t = 1;
+    if (int a = k; a > 1) {
+        return a;
+    } else if (k) {
+        return 2;
+    } else
+        return 3;
+    for (const int &r : {1, 2}) k += r;
+    while (long w = k--) {
+        k++;
+    }
+    switch (short s = k; s) { case 1: break; }
+    try { k++; } catch (int &e) { k = e; }
+    do {
+        long d = k;
+    } while (--k);
+    return t;
+}
+"""
+
+
+def test_a_declarations_scope_ends_with_its_block_or_its_header_statement():
+    # Review of PR #159: clang gives a `while`'s or a `switch`'s condition variable no
+    # block of its own, so the source says where its scope ends: with its statement.
+    statements = Statements(SCOPES, raw_strings=True)
+    expected = {
+        (2, "t"): (2, 19),  # to the function's `}`
+        (3, "a"): (3, 8),  # an `if` with its `else if` and `else`
+        (9, "r"): (9, 9),  # a range-`for` with no braces
+        (10, "w"): (10, 12),
+        (13, "s"): (13, 13),
+        (14, "e"): (14, 14),
+        (16, "d"): (16, 17),  # a `do` body's block
+    }
+    for (line, name), scope in expected.items():
+        assert statements.scope_lines(line, name) == scope, (line, name)
+    assert statements.scope_lines(4, "nothing") is None
+
+
+SAME_LINE = """int f(int k) {
+    int t = 1;
+    {
+        long t = 11; while (t > 20) t--;
+        t += 1;
+    }
+    {
+        long t = 11; { t += 1; }
+        t += 1;
+    }
+    {
+        long t = 1; t = 2;
+    }
+    {
+        auto [t, u] = g();
+        t += 1;
+    }
+    {
+        long t = 1; { long t = 2; }
+    }
+    return t;
+}
+"""
+
+
+def test_a_scope_is_read_from_the_statement_that_declares_the_name():
+    # Review of PR #159 (round 3): a later statement on the line that only names it (a
+    # header, a block) is not its declaration; two that declare it tell nothing.
+    statements = Statements(SAME_LINE, raw_strings=True)
+    assert statements.scope_lines(4, "t") == (4, 6)
+    assert statements.scope_lines(8, "t") == (8, 10)
+    assert statements.scope_lines(15, "t") == (15, 17)  # a binding, the one naming it
+    assert statements.scope_lines(19, "t") is None
+    # Where it has run still counts the last statement naming it.
+    assert statements.declared_through(12, "t") == 12
+    assert statements.declaration(12, "t") != statements.declaration(12, "t", declaring=True)
+
+
+BODY_SCOPES = """int f(int c) {
+    long t = 1;
+    while (c) long t = 8;
+    do long t = 9; while (0);
+    switch (c) case 1: long t = 4;
+    while (c)
+        long
+          t = 2;
+    {
+        long
+          t = 3;
+        g(t);
+    }
+    again: long u = 1;
+    return t + u;
+}
+"""
+
+
+def test_a_bodys_declaration_without_braces_is_scoped_to_its_statement():
+    # Review of PR #159 (round 4): clang gives a `while`'s, a `do`'s or a `switch`'s
+    # body no block; a declaration that is the whole body ends with its `;`.
+    statements = Statements(BODY_SCOPES, raw_strings=True)
+    assert [statements.scope_lines(line, "t") for line in (3, 4, 5, 8, 11)] == [
+        (3, 3),
+        (4, 4),
+        (5, 5),
+        (8, 8),
+        (11, 13),  # a declaration over lines, in a block
+    ]
+    assert statements.scope_lines(14, "u") == (14, 16)  # a label in a block
+
+
+BINDING_SOURCE = """int f() {
+    long t = 1;
+    for (auto [t, u] : pairs) {
+        use(t);
+    }
+    {
+        const auto& [t, b] = s;
+        use(t);
+    }
+    if (auto [t, v] = g(); t) use(t);
+    return t;
+}
+"""
+
+
+def test_a_structured_binding_hides_an_outer_local_where_it_is_in_scope():
+    # Review of PR #159 (round 4): LLDB may list no binding (clang 18 on Linux).
+    statements = Statements(BINDING_SOURCE, raw_strings=True)
+    assert statements.block_storage(4, "t", 2) == ("binding", 3)
+    assert statements.block_storage(8, "t", 2) == ("binding", 7)
+    assert statements.block_storage(10, "t", 2) == ("binding", 10)
+    assert statements.block_storage(11, "t", 2) is False
+    # The binding's own row (declared on line 3) is not hidden by itself.
+    assert statements.block_storage(4, "t", 3) is False
+
+
+LAMBDA_SOURCE = """int f() {
+    long t = 1;
+    auto lam = [&]() { auto [t, u] = g(); struct t2 {}; return t; };
+    use(t);
+    { auto [t, u] = g(); use(t); }
+    return t;
+}
+"""
+
+
+def test_what_braces_in_a_statement_declare_hides_nothing_in_its_block():
+    # Review of PR #159 (round 5): a lambda's binding hid the function's `t` after it.
+    statements = Statements(LAMBDA_SOURCE, raw_strings=True)
+    assert statements.block_storage(4, "t", 2) is False
+    assert statements.block_storage(4, "t2", 2) is False
+    # A binding with a use on its line declares it, so its scope can be read.
+    assert statements.scope_lines(5, "t") == (5, 5)
+    assert statements.block_storage(5, "t", 2) == ("binding", 5)

@@ -1620,6 +1620,9 @@ class DebugWorker:
             self.listed_frames = list(frames)
             self.deeper_frames = None
             self.innermost_frame = frames[0].get("id") if frames else None
+            if listed := getattr(runtime, "frames_listed", None):
+                # Which frame is innermost: a caller's address is where its call returns.
+                listed(frames)
             if "frame" in args:
                 # An index into `frames` as this reply lists them (0 is the innermost).
                 if args["frame"] >= len(frames):
@@ -2294,6 +2297,10 @@ class DebugWorker:
                 if pending
                 else None
             )
+            # The plain name a selector reads this local by, where the debugger names it
+            # with where it is declared (`t @ two.c:20`, #158).
+            alias = getattr(self.runtime, "selected_as", None) if not ancestry else None
+            plain = alias(variable, frame, variables) if alias else None
             # A value shown though the runtime cannot vouch for it: a note on its row, and
             # on everything read through it (#148), which says through what.
             note = getattr(reason, "note", None)
@@ -2319,6 +2326,8 @@ class DebugWorker:
                 if isinstance(label := getattr(reason, "label", None), str):
                     # Withheld for another reason than a value not set yet.
                     output["withheld_as"] = label[:100]
+                if plain:
+                    output["selected_as"] = plain
                 if kind is not None:
                     output["type"] = kind
                     shown = getattr(self.runtime, "display_type", None)
@@ -2382,6 +2391,8 @@ class DebugWorker:
                     output.update(type=rust, debugger_type=kind)
                 if isinstance(note, str):
                     output["note"] = note[:500]
+                if plain:
+                    output["selected_as"] = plain
                 result.append(output)
                 self.inspection_nodes += 1
                 continue
@@ -2563,6 +2574,8 @@ class DebugWorker:
                 output["identity"] = identity
             if settable is not None:
                 output["settable"] = settable
+            if plain:
+                output["selected_as"] = plain
             if never:
                 output["not_settable"] = never
             if own == "stale":
@@ -3223,6 +3236,8 @@ class DebugWorker:
         frames = self.dap.request("stackTrace", {"threadId": self.thread_id, "levels": 10}).get(
             "stackFrames", []
         )[:10]
+        if listed := getattr(runtime, "frames_listed", None):
+            listed(frames)
         matches = [f for f in frames if f.get("id") == original_frame.get("id")]
         if len(matches) != 1 or self.frame_identity(matches[0]) != self.frame_identity(
             original_frame
