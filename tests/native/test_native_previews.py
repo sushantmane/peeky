@@ -398,6 +398,8 @@ def test_what_is_read_through_a_noted_local_carries_its_note(c_program, capsys):
     # Review 2 of #136: a local Peeky shows but cannot vouch for (declared below a stop
     # after `setjmp`, a `do` body's first line) carried its note, but its preview's
     # fields and its children did not: `late.lo` read `{x = 1073741824, y = 0}`, plain.
+    # #148's notes (read through the local) cover previews too, and the evidence keeps
+    # them with the preview's text.
     source = c_program("noted.c", NOTED)
     for marker, root, fields in (
         ("// STOP", "late", ("late.lo", "late.lo.x", "late.tag")),
@@ -406,12 +408,21 @@ def test_what_is_read_through_a_noted_local_carries_its_note(c_program, capsys):
         line = line_of(NOTED, marker)
         capture = ",".join((root, *fields))
         assert main(["probe", str(source), "--at", str(line), "--capture", capture, "--json"]) == 0
-        rows = {row["selector"]: row for row in json.loads(capsys.readouterr().out)["rows"]}
+        result = json.loads(capsys.readouterr().out)["rows"]
+        rows = {row["selector"]: row for row in result if row["hit"] == 1}
         note = rows[root].get("note")
-        assert note, rows[root]
+        assert note and rows[root]["value"].startswith("{"), rows[root]
+        through = f"read through `{root}`: {note}"
         for field in fields:
-            assert rows[field].get("note") == note, rows[field]
+            assert rows[field].get("note") == through, rows[field]
+        assert rows[fields[0]]["value"].startswith("{" if root == "late" else ""), rows[fields[0]]
+        query = "SELECT selector, value, note FROM last_run WHERE hit = 1"
+        assert main(["sql", query, "--json"]) == 0
+        stored = {row["selector"]: row for row in json.loads(capsys.readouterr().out)["rows"]}
+        for selector in (root, *fields):
+            assert stored[selector]["value"] == rows[selector]["value"], stored[selector]
+            assert stored[selector]["note"] == rows[selector]["note"], stored[selector]
         with session(source, line, capsys) as get:
             shown = get(root)[root]
             assert shown.get("note") == note
-            assert shown["children"] and all(c.get("note") == note for c in shown["children"])
+            assert shown["children"] and all(c.get("note") == through for c in shown["children"])

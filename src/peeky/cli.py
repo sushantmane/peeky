@@ -1283,9 +1283,9 @@ def _get_lines(row):
             shown += "  [stale]"
         if child.get("settable"):
             shown += "  [settable]"
-        if child.get("note") and child["note"] != row.get("note"):
-            # Its own note; one its parent's row shows is said there, once.
-            shown += f"  [note: {child['note']}]"
+        if child.get("note") and not child.get("unavailable"):
+            # Read through a local shown with a note, given below (#148).
+            shown += "  [note]"
         lines.append(f"  {name}: {child.get('type') or ''} = {value}{shown}{more}")
     if row.get("children_truncated"):
         lines.append("  ... more children; select one by name or index")

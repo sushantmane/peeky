@@ -1312,6 +1312,159 @@ def test_locals_of_a_program_using_setjmp_carry_a_note(directory, capsys):
         capsys.readouterr()
 
 
+# #148: a local shown with a note (#140) passed it to nothing read through it: its
+# fields and elements read as plain values. A `do` body's first line, and below a
+# setjmp call; in C and C++.
+NOTED_DO = """#include <stdio.h>
+
+struct pt { long x, y; };
+struct pair { struct pt inner; long z; };
+
+__attribute__((noinline)) long use(struct pt p) { return p.x + p.y; }
+__attribute__((noinline)) void scribble(void) {
+    volatile long junk[64];
+    for (int i = 0; i < 64; i++) junk[i] = 7;
+}
+
+int main(void) {
+    long total = 0;
+    int n = 0;
+    scribble();
+    do {
+        struct pt q = { n, n + 1 }; long arr[3] = { n, n * 2, n * 3 }; struct pair p = { { n, n + 5 }, n }; struct pt *sp = &q;  // STOP
+        total += use(q) + arr[1] + p.inner.y + sp->y;
+        n++;
+    } while (n < 3);
+    printf("%ld\\n", total);
+    return 0;
+}
+"""
+NOTED_JUMP = """#include <setjmp.h>
+#include <stdio.h>
+
+struct pt { long x, y; };
+struct pair { struct pt inner; long z; };
+static jmp_buf env;
+
+__attribute__((noinline)) long use(struct pt p) { return p.x + p.y; }
+
+__attribute__((noinline)) static long run(int n) {
+    volatile int tries = 0;
+    long total = 0;
+    if (setjmp(env) != 0) {
+        total += 100;
+    }
+    long mark = tries;  // STOP
+    struct pt q = { tries, tries + 1 };
+    long arr[3] = { tries, tries * 2, tries * 3 };
+    struct pair p = { { tries, tries + 5 }, tries };
+    struct pt *sp = &q;
+    total += use(q) + arr[1] + p.inner.y + sp->y + mark;
+    tries++;
+    if (tries < n) longjmp(env, 1);
+    return total;
+}
+
+int main(void) {
+    printf("%ld\\n", run(2));
+    return 0;
+}
+"""
+NOTED = {
+    "do.c": NOTED_DO,
+    "do.cpp": NOTED_DO.replace("<stdio.h>", "<cstdio>").replace("(void)", "()"),
+    "jump.c": NOTED_JUMP,
+    "jump.cpp": NOTED_JUMP.replace("<setjmp.h>", "<csetjmp>")
+    .replace("<stdio.h>", "<cstdio>")
+    .replace("(void)", "()"),
+}
+
+
+@pytest.mark.timeout(300)
+@pytest.mark.parametrize("name", sorted(NOTED))
+def test_what_is_read_through_a_noted_local_carries_its_note(directory, capsys, name):
+    source = NOTED[name]
+    path = directory / name
+    path.write_text(source)
+    line = line_of(source, "// STOP")
+    through = ("q.x", "arr[1]", "p.inner.y", "sp[0]", "sp[0].y")
+    result, rows = probed(capsys, path, line, ",".join(("q", "arr", "p", "sp", *through)), 2)
+    for hit in (1, 2):
+        for selector in through:
+            row, root = rows[hit, selector], rows[hit, selector.split(".")[0].split("[")[0]]
+            # At hit 1, `sp` holds a leftover address, which may point nowhere readable.
+            if hit == 2 or not selector.startswith("sp"):
+                assert "value" in row and root["note"], (hit, row, root)
+            if "value" in row:
+                assert row["note"] == f"read through `{root['selector']}`: {root['note']}", row
+            assert row.get("settable") is not True, row
+    # One warning for a local and what is read through it.
+    named = [set(w.split(": ")[0].split(", ")) for w in result["warnings"]]
+    for group in ({"q", "q.x"}, {"p", "p.inner.y"}, {"sp", "sp[0]", "sp[0].y"}):
+        assert any(group <= names for names in named), result["warnings"]
+    assert main(["session", "start", str(path), "--at", str(line)]) == 0
+    capsys.readouterr()
+    try:
+        main(["session", "get", "q", "p.inner", "--json"])
+        q, inner = json.loads(capsys.readouterr().out)
+        for row in (q, inner):
+            assert row["children"] and all(
+                child["note"].startswith(f"read through `{row['selector'][0]}`: ")
+                and child.get("settable") is False
+                for child in row["children"]
+            ), row
+        main(["session", "get", "arr"])
+        text = capsys.readouterr().out
+        assert text.count("  [note]") == 3 and "\n  note: " in text, text
+        for change in ("q.x=5", "arr[1]=5", "p.inner.y=5"):
+            assert main(["session", "set", change, "--json"]) == 2
+            error = json.loads(capsys.readouterr().out)["error"]
+            assert error["code"] == "MUTATION_REJECTED", error
+    finally:
+        main(["session", "close"])
+        capsys.readouterr()
+
+
+NOTED_MAP = """#include <cstdio>
+#include <map>
+
+struct pt { long x, y; };
+
+int main() {
+    long total = 0;
+    int n = 0;
+    do {
+        std::map<long, pt> m = {{n, {n, n + 1}}};  // STOP
+        total += m[n].y;
+        n++;
+    } while (n < 3);
+    std::printf("%ld\\n", total);
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(300)
+def test_a_noted_maps_entries_carry_its_note_beside_how_to_read_them(directory, capsys):
+    # #148: `session get m` replaced the map's own note (#140) with how to read its
+    # entries, and its entries carried none.
+    path = directory / "map.cpp"
+    path.write_text(NOTED_MAP)
+    line = line_of(NOTED_MAP, "// STOP")
+    assert main(["session", "start", str(path), "--at", str(line), "--hit", "2"]) == 0
+    capsys.readouterr()
+    try:
+        main(["session", "get", "m", "m[0].y", "--json"])
+        m, y = json.loads(capsys.readouterr().out)
+        assert m["note"].startswith("may be the last pass's value") and "is a C++ map" in m["note"]
+        [entry] = m["children"]
+        assert entry["selector"] == "m[0]" and entry["note"].startswith("read through `m`: ")
+        assert "value" in y and y["note"].startswith("read through `m`: may be"), y
+    finally:
+        main(["session", "close"])
+        capsys.readouterr()
+
+
 # Review of PR #140: another declaration of the name (an earlier loop's, a static, a
 # lambda's parameter) kept the local declared below the stop shown with leftovers, and
 # settable: only the declaration the debugger shows is judged.

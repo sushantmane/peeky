@@ -709,7 +709,7 @@ def _resolve(worker, stop, snapshot, segments, pointers=False):
             # A pointer to a C++ string, shown with its text (`0x… "apple"`): p[0] is
             # that string, as C++ reads it; the worker lists no members (eval 6).
             if _first_index(segment):
-                variable = _dereferenced(variable, pointee)
+                variable = _dereferenced(variable, pointee, path == segments[0])
                 path += segment
                 continue
             raise ValueError(_beyond_pointee(variable, path, pointee, segment, []))
@@ -733,7 +733,7 @@ def _resolve(worker, stop, snapshot, segments, pointers=False):
                 # pointee and p[1] the one after it, which no pointer's length tells.
                 _readable(variable, path, pointee, listed)
                 if _first_index(segment):
-                    variable = _dereferenced(variable, pointee)
+                    variable = _dereferenced(variable, pointee, path == segments[0])
                     path += segment
                     continue
                 raise ValueError(_beyond_pointee(variable, path, pointee, segment, listed))
@@ -1385,7 +1385,7 @@ def _capture(
                     row["note"] = _COMPOSITE_RUST
                 elif isinstance(variable.get("note"), str):
                     # A value the runtime shows but cannot vouch for (C, C++: a line a loop
-                    # returns to; initialization not judged).
+                    # returns to; initialization not judged), or one read through it (#148).
                     row["note"] = variable["note"]
             if "view" in variable:
                 row["view"] = variable["view"]
@@ -1405,10 +1405,8 @@ def _capture(
             if children and variable.get("variablesReference"):
                 try:
                     try:
-                        row.update(
-                            _children(
-                                worker, stop, selector, variable, pointers, _whole_strings(snapshot)
-                            )
+                        listing = _children(
+                            worker, stop, selector, variable, pointers, _whole_strings(snapshot)
                         )
                     except ValueError as exc:
                         if not _BUDGET.search(str(exc)):
@@ -1418,11 +1416,14 @@ def _capture(
                         variable = _resolve(
                             worker, stop, snapshot, parse_selector(selector), pointers
                         )
-                        row.update(
-                            _children(
-                                worker, stop, selector, variable, pointers, _whole_strings(snapshot)
-                            )
+                        listing = _children(
+                            worker, stop, selector, variable, pointers, _whole_strings(snapshot)
                         )
+                    if row.get("note") and listing.get("note"):
+                        # How to read a map's entries never replaces why the value
+                        # itself may not be current (#148).
+                        listing["note"] = f"{row['note']}; {listing['note']}"
+                    row.update(listing)
                 except ValueError as exc:
                     row["children_error"] = str(exc)
                 listed = row.get("children", ())
@@ -1433,6 +1434,10 @@ def _capture(
                     row["note"] = _STALE_RUST + "."
         rows.append(row)
     return rows
+
+
+# How the worker prefixes the note of what is read through a local shown with one (#148).
+_THROUGH = re.compile(r"^read through `[^`\n]+`: ")
 
 
 def _whole_strings(snapshot):
@@ -1692,8 +1697,10 @@ def _first_index(segment):
     return segment[1] != "-" and int(segment[1:-1]) == 0
 
 
-def _dereferenced(variable, pointee):
-    """`*p` for a C/C++ pointer whose children the debugger lists from its pointee."""
+def _dereferenced(variable, pointee, root=False):
+    """`*p` for a C/C++ pointer whose children the debugger lists from its pointee; it
+    carries the pointer's note (#148), said as read through it where the pointer is a
+    ``root`` local."""
     value = str(variable.get("value") or "")
     address = re.match(r"0x[0-9a-fA-F]+", value)
     # The debugger's summary of the pointee follows the address (`0x… size=3`).
@@ -1717,6 +1724,8 @@ def _dereferenced(variable, pointee):
     for key in ("indexedVariables", "namedVariables", "string_length"):
         if type(variable.get(key)) is int:
             shown[key] = variable[key]
+    if isinstance(note := variable.get("note"), str):
+        shown["note"] = f"read through `{variable['name']}`: {note}" if root else note
     return shown
 
 
@@ -2359,6 +2368,10 @@ def _entry_children(worker, stop, selector, variable, page, whole=False):
     for at, (entry, child) in enumerate(zip(listed, entries)):
         if labels.count(entry["selector"]) > 1:
             listed[at] = _positional_child(base, child)
+    for entry, child in zip(listed, entries):
+        if isinstance(child.get("note"), str) and not entry.get("unavailable"):
+            # Read through a local shown with a note (#148).
+            entry["note"] = child["note"]
     for entry in listed:
         try:
             parse_selector(entry["selector"])
@@ -2461,11 +2474,11 @@ def _children(worker, stop, selector, variable, pointers=False, whole_strings=Fa
             entry["view"] = child["view"]
         if child.get("stale"):
             entry["stale"] = True
+        if isinstance(child.get("note"), str) and not child.get("unavailable"):
+            # Read through a local shown with a note (#148).
+            entry["note"] = child["note"]
         if type(child.get("settable")) is bool:
             entry["settable"] = child["settable"]
-        if isinstance(child.get("note"), str):
-            # Read through a value Peeky cannot vouch for: so is this one (#136, #148).
-            entry["note"] = child["note"]
         path = _child_selector(selector, child["name"])
         if pointers and path is None and _pointee(variable, page["variables"]) is child:
             path = f"{selector}[0]"
@@ -2849,11 +2862,13 @@ def run_probe(root, probe, *, adapter=None, progress=None):
     for note in (_OWNED_RUST, _UNREAD_RUST, _COMPOSITE_RUST, unproven, _STALE_RUST + "."):
         if any(row.get("note") == note for row in rows):
             warnings.append(note)
-    # Any other row's note, once per selector: rows marked `[note]` in the table.
+    # Any other row's note, once per selector: rows marked `[note]` in the table. What
+    # is read through a local shares that local's (#148).
     noted = {}
     for row in rows:
         if row.get("note") and row["note"] not in _rust_notes():
-            noted.setdefault(row["note"], []).append(row["selector"])
+            note = _THROUGH.sub("", row["note"], count=1)
+            noted.setdefault(note, []).append(row["selector"])
     for note, selectors in noted.items():
         names = ", ".join(dict.fromkeys(selectors))
         warnings.append(f"{names}: {note[0].upper()}{note[1:]}.")
