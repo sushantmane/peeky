@@ -4170,6 +4170,9 @@ def load_java_attach_target(path):
 
 
 def main():
+    from peeky.processes import keep_children_waitable
+
+    keep_children_waitable()  # #170: an inherited ignored SIGCHLD reaps adapters
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", default=".")
     parser.add_argument("--port", type=int, default=8765)

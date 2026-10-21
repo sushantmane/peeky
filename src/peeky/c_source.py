@@ -900,6 +900,16 @@ class Statements:
                 return True
         return False
 
+    def _named_once(self, line, name):
+        """Whether ``name`` appears exactly once on ``line`` (outside comments and
+        strings)."""
+        if type(line) is not int or not 1 <= line <= len(self.starts):
+            return False
+        begin = self.starts[line - 1]
+        finish = self.starts[line] if line < len(self.starts) else len(self.blanked)
+        found = _IDENTIFIER.finditer(self.blanked, begin, finish)
+        return sum(word[0] == name for word in found) == 1
+
     def _names(self, start, end, name):
         return any(word[0] == name for word in _IDENTIFIER.finditer(self.blanked, start, end))
 
@@ -1355,7 +1365,9 @@ class Statements:
         )
         return tuple(sorted(lines)), unknown
 
-    def block_storage(self, line, name, after=None, elsewhere=False, body=False, entering=False):
+    def block_storage(
+        self, line, name, after=None, elsewhere=False, body=False, entering=False, own=None
+    ):
         """For the local ``name`` the debugger shows at a stop on ``line`` (declared on
         line ``after``; None for a parameter): ``(kind, its line)`` of a declaration of
         ``name`` the code there names instead, which is not that local: one with
@@ -1381,6 +1393,13 @@ class Statements:
         the line, so none of them has run: a range-`for` there whose header ends the
         line with its body's `{` is about to run its range's expression, where its
         binding is not declared yet (#169), so the binding names nothing at the stop.
+
+        ``own``: the line of the shown local's own declaration where it may be a `static`
+        (or `extern`, or a thread's own): an optimized build keeps a `static` it never
+        changes as a constant, which lldb-dap lists among the frame's locals (#173). A
+        declaration with that storage whose declarator for ``name`` is on that line is
+        then the local itself, not one hiding it; only where ``name`` appears once on
+        the line, so that no other declaration there can be the local.
 
         Peeky reads a translation unit as the compiler preprocessed it
         (``Preprocessed``), where no macro or conditional is left and an `#include`
@@ -1415,6 +1434,8 @@ class Statements:
             self.starts[after - 1] if type(after) is int and 1 <= after <= len(self.starts) else 0
         )
         fresh = self._range_headers(begin, finish) if entering else frozenset()
+        if own is not None and not self._named_once(own, name):
+            own = None
         bodies = [
             opened
             for opened in (pairs if body else ())
@@ -1428,7 +1449,7 @@ class Statements:
             if start >= stop:
                 return False
             return self._storage_declaration(
-                code, start, stop, name, after, opened >= lower, position, fresh
+                code, start, stop, name, after, opened >= lower, position, fresh, own
             )
         # Every block around the line, and every block of statements opening on it
         # before its end (`{ extern long gcount; total += use(gcount); }`, a statement
@@ -1459,7 +1480,7 @@ class Statements:
             # A C++ class declared in the local's own block leaves the local named
             # (the variable hides it); one in a block within it hides the local.
             found = self._storage_declaration(
-                code, start, stop, name, after, opened >= lower, position, fresh
+                code, start, stop, name, after, opened >= lower, position, fresh, own
             )
             if found is not False:
                 return found
@@ -1545,7 +1566,16 @@ class Statements:
         return self.conditions
 
     def _storage_declaration(
-        self, code, start, stop, name, after=None, nested=True, within=None, fresh=frozenset()
+        self,
+        code,
+        start,
+        stop,
+        name,
+        after=None,
+        nested=True,
+        within=None,
+        fresh=frozenset(),
+        own=None,
     ):
         """(kind, line) of the first declaration of ``name`` that hides an outer local
         (see ``block_storage``) among the statements from ``start`` to ``stop`` at their
@@ -1556,7 +1586,8 @@ class Statements:
         class of that name hides it); ``within``: where the stop's line begins (a
         header's structured binding counts only in the statement holding the stop);
         ``fresh``: where range-`for` statements start whose binding is not declared yet
-        at the stop (see ``block_storage``'s ``entering``)."""
+        at the stop (see ``block_storage``'s ``entering``); ``own``: see
+        ``block_storage``."""
         conditions = self._conditions()
         depth, statement, blocks, hidden = 0, [], [], set()
         body = None  # a type's body in the statement: [its depth, enum?, previous, names]
@@ -1576,7 +1607,7 @@ class Statements:
             last = last or bool(statement and within is not None and statement[-1][1] >= within)
             if statement and statement[0][1] in fresh:
                 last = False
-            found = self._storage_of(statement, name, after, code, nested, last)
+            found = self._storage_of(statement, name, after, code, nested, last, own)
             if found:
                 state = conditions.get(found[1])
                 if state == "maybe":
@@ -1678,7 +1709,9 @@ class Statements:
         # The statement the region ends in: the stop's, or the header of a block around it.
         return judged(statement, True)
 
-    def _storage_of(self, statement, name, after=None, code=None, nested=True, last=False):
+    def _storage_of(
+        self, statement, name, after=None, code=None, nested=True, last=False, own=None
+    ):
         """(kind, line) if the tokens of one statement declare ``name`` so that it hides
         an outer local (see ``block_storage``): with static or external storage or as a
         typedef (`static long q = 2`, `extern long a, gcount`), by a C++ `using`
@@ -1688,7 +1721,8 @@ class Statements:
         (`auto [q, r] = s;`; in a header, `for (auto [q, r] : pairs)`, only where the
         statement is ``last``, the one the stop is in; "binding"); else False. Names in
         a function declarator's parameters (`extern long helper(long q);`) are not
-        declared there."""
+        declared there. One whose declarator for ``name`` is on line ``own`` is the
+        local itself (see ``block_storage``)."""
         words = [text for text, _, depth in statement if depth == 0]
         if not words:
             return False
@@ -1720,7 +1754,7 @@ class Statements:
         if storage is not None:
             # Each declarator, without its initializer (`long a = q, q = 2` declares the
             # second) or a function declarator's parameters.
-            declarator, initializing, skipping = [], False, None
+            declarator, initializing, skipping, lines = [], False, None, set()
             for index, (text, position, depth) in enumerate(statement):
                 if skipping is not None:
                     if text in (")", ":>", "]") and depth == skipping - 1:
@@ -1740,7 +1774,14 @@ class Statements:
                         skipping = depth
                         continue
                 declarator.append(text)
-            return (storage, at) if name in declarator else False
+                if text == name:
+                    lines.add(bisect.bisect_right(self.starts, position))
+            if name not in declarator:
+                return False
+            if own is not None and storage != "typedef" and lines == {own}:
+                # The shown local's own declaration (a `static` kept as a constant).
+                return False
+            return (storage, at)
         if at == after or words[0] in _NOT_DECLARING or "=" in words:
             return False
         for index, (text, _, depth) in enumerate(statement):
