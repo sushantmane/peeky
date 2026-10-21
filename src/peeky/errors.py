@@ -352,7 +352,8 @@ def classify(exc, *, session_closed=None):
     """Map an exception to the protocol error object.
 
     An error that ended a session says what became of the processes it started
-    (``cleanup``, #143): "terminated pid N", "nothing was left running", or why not.
+    (``cleanup``, #143): "terminated pid N", "nothing Peeky could identify was still running", or
+    why not.
     """
     payload = _classify(exc, session_closed)
     if isinstance(cleanup := getattr(exc, "cleanup", None), str) and "cleanup" not in payload:

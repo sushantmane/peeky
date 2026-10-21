@@ -199,10 +199,12 @@ def test_rust_program_stopped_when_its_debugger_dies_is_ended(rust_worker):
     with pytest.raises(HTTPError) as failed:
         client.call("inspect", **session, stop_id=stop["stop_id"])
     error = json.load(failed.value)["error"]
-    # Apple's debugserver outlives lldb-dap and keeps the program stopped: Peeky ends it by
-    # the pid lldb-dap announced (#143). Linux's lldb-server ends its tracee itself.
+    # Apple's debugserver outlives lldb-dap and keeps the program stopped: Peeky ends both,
+    # as it listed them (#143). Linux's lldb-server ends its tracee itself.
     assert error["code"] == "DEBUGGER_ERROR"
-    assert error["cleanup"] in (f"terminated pid {pid}", "nothing was left running")
+    cleanup = error["cleanup"]
+    assert "; the debugger was gone: a process the program started in the last " in cleanup
+    assert str(pid) in cleanup or cleanup.startswith("nothing Peeky could identify was still")
     deadline = time.monotonic() + 5
     while processes.alive(processes.table().get(pid)) and time.monotonic() < deadline:
         time.sleep(0.05)

@@ -26,6 +26,10 @@ class ResponseTimeout(TimeoutError):
 
 # Ending a launched debuggee at close: SIGTERM, then SIGKILL after this many seconds.
 TERMINATE_GRACE = 1.0
+# How often the session's processes are listed (#143), and at most how often a stop or
+# an announcement lists them again.
+FAMILY_INTERVAL = 1.0
+FAMILY_MIN_GAP = 0.25
 MAX_HEADER_BYTES = 8192
 MAX_CONTROL_EVENTS = 2000
 # The adapter's own stderr: the last STDERR_TAIL bytes are kept for diagnosis, in lines
@@ -125,10 +129,12 @@ class DAP:
         self.exit_code = None
         # The DAP `process` event's pid (debugpy, lldb-dap): cleanup backstop on close.
         self.process_pid = None
-        # {pid: start} of the debuggees the adapter announced (`process`, `processid`),
-        # so close() ends them even once their ancestry is gone, never a reused pid.
-        self.announced = {}
+        # Every process the session started, listed while their ancestry still shows
+        # it, and the debuggees the adapter announced (`process`, `processid`): close()
+        # ends them even once their parents are gone, never a reused pid (#143).
+        self.family = processes.Family(self.process.pid)
         self.announcing = []
+        self.family_wake = threading.Event()
         # What close() did about the processes the session started (#143).
         self.cleanup = None
         # Set only when a write failed; a read-side failure still allows `disconnect`.
@@ -155,6 +161,8 @@ class DAP:
         self.reader.start()
         self.stderr_reader = threading.Thread(target=self._read_stderr, daemon=True)
         self.stderr_reader.start()
+        self.family_watch = threading.Thread(target=self._watch_family, daemon=True)
+        self.family_watch.start()
 
     def _note(self, direction, body):
         trace = getattr(self, "trace", None)
@@ -235,6 +243,9 @@ class DAP:
                         if type(pid) is int and pid > 1:
                             self.process_pid = pid
                             self._announce(pid)
+                    if body["event"] == "stopped" and (wake := getattr(self, "family_wake", None)):
+                        # What the program has started so far, while its tree shows it.
+                        wake.set()
                     self.event_sequence += 1
                     body["cursor"] = self.event_sequence
                     body["received"] = time.monotonic()
@@ -515,49 +526,58 @@ class DAP:
             return [e for e in self.events if after < e["cursor"] <= upto and e["event"] in names]
 
     def _announce(self, pid):
-        """Remember an announced debuggee's start, off the reader thread (ps on macOS)."""
+        """Remember an announced debuggee's start, off the reader thread (ps on macOS),
+        and list the session's processes while its ancestry still shows them."""
 
         def remember():
             if (start := processes.start_time(pid)) is not None:
-                self.announced.setdefault(pid, start)
+                self.family.announce(pid, start)
+            self.family_wake.set()
 
         thread = threading.Thread(target=remember, daemon=True)
         self.announcing.append(thread)
         thread.start()
 
-    def _owned(self):
-        """{pid: (ppid, pgid, start, state)} of every live process this session started:
-        the adapter's descendants, read before anything ends (a debuggee whose launcher
-        dies is reparented and loses its ancestry), and the announced debuggees that are
-        still the same processes. None if the process table cannot be read."""
-        for thread in list(self.announcing):
-            # A debuggee announced just before the adapter died is still ours to end.
-            thread.join(timeout=1)
+    def _list_family(self):
+        """List the session's processes: ({pid: entry} still running, the adapter ran),
+        or (None, ran) if the process table cannot be read."""
         # Unreaped, the adapter's pid cannot name another process (a zombie keeps it).
         running = self.process.poll() is None
         table = processes.table()
         if table is None:
-            return None
-        family = processes.descendants(table, self.process.pid) if running else ()
-        owned = {pid: table[pid] for pid in family if processes.alive(table[pid])}
-        for pid, start in list(self.announced.items()):
+            return None, running
+        return self.family.record(table, running)[0], running
+
+    def _watch_family(self):
+        """List the session's processes every FAMILY_INTERVAL, and soon after a stop or
+        an announcement: what a program started is known before its parents die."""
+        listed = 0.0
+        while not self.closed:
+            self.family_wake.wait(FAMILY_INTERVAL)
+            if (gap := listed + FAMILY_MIN_GAP - time.monotonic()) > 0:
+                time.sleep(gap)
+            self.family_wake.clear()
+            if self.closed:
+                return
+            try:
+                self._list_family()
+            except Exception:
+                pass
+            listed = time.monotonic()
+
+    def _signal(self, pids, sig, table):
+        """Send ``sig`` to each of ``pids`` that is still the process listed, and to the
+        process groups they prove the session's. The adapter's group is ended apart."""
+        for pid, (_, _, start, _) in pids.items():
             entry = table.get(pid)
             if processes.alive(entry) and entry[2] == start:
-                owned.setdefault(pid, entry)
-        return owned
-
-    def _signal(self, owned, sig, table):
-        """Send ``sig`` to each owned process that is still the same process: to its
-        group when it leads one, or to it alone. The adapter's group is ended apart."""
-        for pid, (_, group, start, _) in owned.items():
-            entry = table.get(pid)
-            if not processes.alive(entry) or entry[2] != start:
-                continue
-            try:
-                if group == pid and group != self.process.pid:
-                    os.killpg(group, sig)
-                else:
+                try:
                     os.kill(pid, sig)
+                except (ProcessLookupError, PermissionError):
+                    pass
+        for group in self.family.groups(pids, table):
+            try:
+                os.killpg(group, sig)
             except (ProcessLookupError, PermissionError):
                 pass
 
@@ -570,52 +590,64 @@ class DAP:
         }
         return left, table
 
-    def _kill_group(self):
-        """SIGKILL the adapter's own process group (macOS: EPERM once only zombies)."""
+    def _kill_group(self, sig=signal.SIGKILL):
+        """Signal the adapter's own process group (macOS: EPERM once only zombies)."""
         try:
-            os.killpg(self.process.pid, signal.SIGKILL)
+            os.killpg(self.process.pid, sig)
         except (ProcessLookupError, PermissionError):
             pass
 
-    def _end_owned(self, owned):
+    def _end_owned(self, owned, ran, before):
         """End what the session started and the adapter left running: SIGTERM, then
-        SIGKILL after TERMINATE_GRACE (the adapter's own group gets SIGKILL at once).
-        ``owned`` is read before `disconnect`. Returns what happened, for the error."""
+        SIGKILL after TERMINATE_GRACE, process groups included (the adapter's too, which
+        a launched JVM shares). ``owned`` was listed before `disconnect`, ``ran`` says
+        whether the adapter was running then, and ``before`` is when the listing before
+        that one was made. Returns what happened."""
         adapter = self.process.pid
-        if not owned:
+        if owned is None:
             self._kill_group()
-            if owned is None:
-                return (
-                    "could not read the process table; only the debugger's own process "
-                    "group was ended"
-                )
-            return "nothing was left running"
+            return (
+                "could not read the process table; only the debugger's own process group was ended"
+            )
         # The debuggee and what it started: announced by the adapter, or outside the
         # adapter's group (debugpy's launcher puts the program in a group of its own).
-        # The adapter's own helpers die with its group and are not named.
-        announced = {*list(self.announced), self.process_pid, self.debuggee_pid}
+        # The adapter's own helpers end with its group and are not named.
+        announced = {*list(self.family.announced), self.process_pid, self.debuggee_pid}
         named = sorted(
             pid for pid, entry in owned.items() if entry[1] != adapter or pid in announced
         )
-        watched = {pid: owned[pid] for pid in named}
-        left, table = self._remaining(watched)
+        left, table = self._remaining({pid: owned[pid] for pid in named})
         self._signal(left, signal.SIGTERM, table)
-        self._kill_group()
+        self._kill_group(signal.SIGTERM)
         for sig, grace in ((signal.SIGKILL, TERMINATE_GRACE), (None, 1.0)):
             deadline = time.monotonic() + grace
             while left and time.monotonic() < deadline:
                 time.sleep(0.05)
                 left, table = self._remaining(left)
-            if not left or sig is None:
+            if sig is None:
+                break
+            self._kill_group(sig)
+            if not left:
                 break
             self._signal(left, sig, table)
         if left:
             listed = ", ".join(map(str, sorted(left)))
             return f"pid {listed} did not exit after SIGKILL (stuck in the kernel?)"
-        if not named:
-            return "nothing was left running"
-        listed = ", ".join(map(str, named))
-        return f"terminated pid{'s' if len(named) > 1 else ''} {listed}"
+        if named:
+            listed = ", ".join(map(str, named))
+            done = f"terminated pid{'s' if len(named) > 1 else ''} {listed}"
+        else:
+            done = "nothing Peeky could identify was still running"
+        if ran:
+            return done
+        # Its tree is gone: a process started after the last listing, in a group of its
+        # own, whose parent has exited, cannot be told from anyone else's.
+        age = time.monotonic() - (before or self.started)
+        return (
+            f"{done}; the debugger was gone: a process the program started in the last "
+            f"{age:.1f} s, in a process group of its own and whose parent had exited, may "
+            "survive"
+        )
 
     def snapshot_output(self):
         with self.condition:
@@ -632,10 +664,15 @@ class DAP:
             if self.closed:
                 return self.cleanup
             self.closed = True
-            try:
-                owned = self._owned() if terminate else {}
-            except Exception:
-                owned = None
+            owned, ran, before = {}, True, self.family.listed
+            if terminate:
+                for thread in list(self.announcing):
+                    # A debuggee announced just before the adapter died is still ours.
+                    thread.join(timeout=1)
+                try:
+                    owned, ran = self._list_family()
+                except Exception:
+                    owned = None
             if self.process.poll() is None:
                 try:
                     seq = self.send("disconnect", {"terminateDebuggee": terminate}, timeout=0.25)
@@ -647,7 +684,7 @@ class DAP:
                 stop.set()
             if terminate:
                 try:
-                    self.cleanup = self._end_owned(owned)
+                    self.cleanup = self._end_owned(owned, ran, before)
                 except Exception as exc:
                     self.cleanup = f"cleanup failed ({type(exc).__name__}: {exc})"[:300]
             else:

@@ -221,3 +221,57 @@ def test_a_python_program_that_never_starts_is_not_left_running(worker, monkeypa
                 os.kill(pid, signal.SIGKILL)
             except OSError:
                 pass
+
+
+# The program starts a child in its process group and one in a session of its own, then
+# loops at the breakpoint (PR #147 review, `py1.py`).
+FAMILY = """import subprocess, time
+same = subprocess.Popen(["sleep", "1001"])
+own = subprocess.Popen(["sleep", "1002"], start_new_session=True)
+with open(RECORD, "w") as record:
+    record.write(f"{same.pid} {own.pid}")
+total = 0
+for i in range(100000):
+    total += i  # STOP
+    time.sleep(0.01)
+"""
+
+
+def test_what_a_python_program_started_is_ended_when_its_debugger_dies(worker):
+    from peeky import processes
+
+    root, client, server = worker
+    record = root / "children.txt"
+    (root / "family.py").write_text(FAMILY.replace("RECORD", repr(str(record))))
+    line = next(i for i, text in enumerate(FAMILY.splitlines(), 1) if "# STOP" in text)
+    session = {
+        "session_id": client.call("launch", program="family.py", breakpoints=[{"line": line}])[
+            "session_id"
+        ]
+    }
+    children = []
+    try:
+        stop = stopped(client, session)
+        children = [int(pid) for pid in record.read_text().split()]
+        dap = server.worker.dap
+        deadline = time.monotonic() + 5
+        # Listed at the stop, while their ancestry still led to the adapter.
+        while not set(children) <= set(dap.family.kin):
+            assert time.monotonic() < deadline
+            time.sleep(0.05)
+        dap.process.kill()
+        dap.process.wait(timeout=3)
+        failure = error(lambda: client.call("inspect", **session, stop_id=stop["stop_id"]))
+        # debugpy's launcher ends the program's group when the adapter dies; before, the
+        # child in a session of its own survived, and `cleanup` said nothing was left.
+        table = processes.table()
+        assert not any(processes.alive(table.get(pid)) for pid in children)
+        assert failure.error_code == "DEBUGGER_ERROR"
+        assert str(children[1]) in failure.payload["cleanup"]
+        assert failure.payload["cleanup"].startswith("terminated pid")
+    finally:
+        for pid in children:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except OSError:
+                pass

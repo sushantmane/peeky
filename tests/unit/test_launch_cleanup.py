@@ -80,7 +80,7 @@ while True:
             subprocess.Popen([sys.executable, "-c", PROGRAM, record, how], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
             write({"seq": 0, "type": "event", "event": "process",
                    "body": {"name": "app", "systemProcessId": started()}})
-            time.sleep(0.2)
+            time.sleep(0.5)
             os._exit(1)
         subprocess.Popen([sys.executable, "-c", LAUNCHER, PROGRAM, record, how], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
         started()
@@ -157,11 +157,12 @@ def test_a_program_whose_adapter_died_is_ended_by_its_announced_pid(tmp_path, le
     error, _ = launch(tmp_path, target("announce-die", record), deadline=10)
     pids = started(record)
     leftovers.extend(pids.values())
-    # Reparented once the adapter died: only the pid the adapter announced, with the
-    # start time it had then, leads to it.
+    # Reparented once the adapter died: listed (as the adapter announced the program)
+    # while their ancestry still led to it, they are known by pid and start time.
     assert not running(pids["program"]) and not running(pids["child"])
     assert error["code"] == "DEBUGGER_ERROR" and "adapter closed" in error["message"]
-    assert error["cleanup"] == f"terminated pid {pids['program']}"
+    listed = ", ".join(map(str, sorted(pids.values())))
+    assert error["cleanup"].startswith(f"terminated pids {listed}; the debugger was gone")
 
 
 def test_an_attached_program_is_never_ended(tmp_path, leftovers):
@@ -228,9 +229,201 @@ def test_a_pid_announced_then_reused_is_never_ended():
         dap = DAP(command=(sys.executable, "-c", "import time; time.sleep(60)"))
         # The adapter announced this pid when it named another process (another start).
         dap.process_pid = other.pid
-        dap.announced[other.pid] = "an earlier process's start"
-        assert dap.close() == "nothing was left running"
+        dap.family.announce(other.pid, "an earlier process's start")
+        assert dap.close() == "nothing Peeky could identify was still running"
         assert other.poll() is None and running(other.pid)
     finally:
         other.kill()
         other.wait()
+
+
+# A fake adapter whose launch runs: it starts the program, answers every request and
+# announces the program (`process`). argv: how, record. "family": the program, in a
+# group of its own, starts a child in that group and one in a session of its own (as
+# `c2/hang.c` of PR #147's review does); "leave": it starts a child in a session of its
+# own and exits 1.5 s later; "graceful": it stays in the adapter's group (as java-debug's
+# JVM does) and takes 0.3 s to end on SIGTERM. Each writes "role pid" to the record.
+RUNNING_PROGRAM = r"""
+import os, signal, sys, time
+how, record = sys.argv[1], sys.argv[2]
+def note(role, pid):
+    with open(record, "a") as out:
+        out.write(f"{role} {pid}\n")
+def graceful(*_):
+    time.sleep(0.3)
+    note("graceful", os.getpid())
+    os._exit(0)
+if how == "graceful":
+    signal.signal(signal.SIGTERM, graceful)
+else:
+    os.setpgrp()
+if how == "family" and (child := os.fork()) == 0:
+    time.sleep(600)
+    os._exit(0)
+if how == "family":
+    note("same-group", child)
+if how in ("family", "leave") and (child := os.fork()) == 0:
+    os.setsid()
+    time.sleep(600)
+    os._exit(0)
+if how in ("family", "leave"):
+    note("setsid", child)
+note("program", os.getpid())
+time.sleep(1.5 if how == "leave" else 600)
+"""
+RUNNING_ADAPTER = r"""
+import json, os, subprocess, sys, time
+how, record, program_source = sys.argv[1], sys.argv[2], sys.argv[3]
+def read():
+    headers = {}
+    while True:
+        line = sys.stdin.buffer.readline()
+        if not line:
+            sys.exit(0)
+        if line == b"\r\n":
+            break
+        key, value = line.decode().split(":", 1)
+        headers[key.lower()] = value.strip()
+    return json.loads(sys.stdin.buffer.read(int(headers["content-length"])))
+def write(body):
+    data = json.dumps(body).encode()
+    sys.stdout.buffer.write(b"Content-Length: %d\r\n\r\n" % len(data) + data)
+    sys.stdout.buffer.flush()
+def program():
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        lines = open(record).read().splitlines() if os.path.exists(record) else []
+        if mine := [l for l in lines if l.startswith("program ")]:
+            return int(mine[0].split()[1])
+        time.sleep(0.02)
+    raise SystemExit("the program never started")
+while True:
+    request = read()
+    command, body = request["command"], {}
+    if command == "launch":
+        subprocess.Popen([sys.executable, "-c", program_source, how, record],
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
+        pid = program()
+        write({"seq": 0, "type": "event", "event": "initialized", "body": {}})
+        write({"seq": 0, "type": "event", "event": "process",
+               "body": {"name": "app", "systemProcessId": pid}})
+    if command == "setBreakpoints":
+        points = request["arguments"].get("breakpoints", [])
+        body = {"breakpoints": [{"id": 1, "verified": True, "line": p["line"]} for p in points]}
+    write({"seq": 0, "type": "response", "request_seq": request["seq"], "success": True,
+           "command": command, "body": body})
+"""
+
+
+def running_target(how, record):
+    class Runtime(PythonAdapter):
+        @property
+        def command(self):
+            return (sys.executable, "-c", RUNNING_ADAPTER, how, str(record), RUNNING_PROGRAM)
+
+    return Runtime()
+
+
+def until(condition, timeout=10):
+    deadline = time.monotonic() + timeout
+    while not condition():
+        assert time.monotonic() < deadline, "timed out"
+        time.sleep(0.05)
+
+
+def start_running(tmp_path, how, leftovers, roles):
+    record = tmp_path / "started.txt"
+    (tmp_path / "main.py").write_text("pass\n")
+    worker = DebugWorker(tmp_path, adapter=running_target(how, record))
+    started_session = worker.dispatch("launch", {"program": "main.py", "breakpoints": []})
+    until(lambda: roles <= set(started(record)))
+    pids = started(record)
+    leftovers.extend(pids.values())
+    # The session's processes were listed while their ancestry still showed them.
+    until(lambda: set(pids.values()) <= set(worker.dap.family.kin))
+    return worker, {"session_id": started_session["session_id"]}, pids, record
+
+
+def fail_after_adapter_death(worker, session):
+    worker.dap.process.kill()
+    worker.dap.process.wait(timeout=3)
+    with pytest.raises(RuntimeError) as failure:
+        for _ in range(10):
+            worker.dispatch("wait", {**session, "timeout": 1})
+    return classify(failure.value)
+
+
+def test_what_the_program_started_is_ended_after_its_debugger_dies(tmp_path, leftovers):
+    worker, session, pids, _ = start_running(
+        tmp_path, "family", leftovers, {"program", "same-group", "setsid"}
+    )
+    error = fail_after_adapter_death(worker, session)
+    # Before, the child in a session of its own outlived the program's group; now every
+    # process listed is ended, and the message says what may have escaped the listing.
+    assert not any(running(pid) for pid in pids.values())
+    listed = ", ".join(map(str, sorted(pids.values())))
+    assert error["code"] == "DEBUGGER_ERROR"
+    assert error["cleanup"].startswith(f"terminated pids {listed}; the debugger was gone: ")
+    assert (
+        "in a process group of its own and whose parent had exited, may survive"
+        in (error["cleanup"])
+    )
+
+
+def test_children_a_program_left_behind_end_with_its_session(tmp_path, leftovers):
+    worker, session, pids, _ = start_running(tmp_path, "leave", leftovers, {"program", "setsid"})
+    until(lambda: not running(pids["program"]))
+    # Reparented once the program exited: no ancestry leads to it any more.
+    assert running(pids["setsid"])
+    closed = worker.dispatch("close", session)
+    assert closed["cleanup"] == f"terminated pid {pids['setsid']}"
+    assert not running(pids["setsid"])
+
+
+def test_a_program_in_the_adapters_group_gets_its_grace(tmp_path, leftovers):
+    worker, session, pids, record = start_running(tmp_path, "graceful", leftovers, {"program"})
+    began = time.monotonic()
+    error = fail_after_adapter_death(worker, session)
+    # A launched JVM shares java-debug's group: SIGTERM, then SIGKILL only after the
+    # grace, so its shutdown hooks run.
+    assert started(record).get("graceful") == pids["program"]
+    assert error["cleanup"].startswith(f"terminated pid {pids['program']}; ")
+    assert not running(pids["program"]) and time.monotonic() - began < 3
+
+
+def test_the_family_is_known_by_ancestry_identity_and_group():
+    family = processes.Family(root=100)
+    own = os.getpgrp()
+    table = {
+        100: (1, 100, "s100", "S"),  # the adapter
+        101: (100, 100, "s101", "S"),  # its helper, in its group
+        200: (101, 200, "s200", "S"),  # the debuggee, in a group of its own
+        201: (200, 200, "s201", "S"),  # its child, same group
+        202: (200, 202, "s202", "S"),  # its child, in a session of its own
+        300: (1, 300, "s300", "S"),  # unrelated
+        301: (1, own, "s301", "S"),  # unrelated, in Peeky's own group
+        302: (1, 302, "s302", "S"),  # announced, but never seen descended from the adapter
+    }
+    family.announce(302, "s302")
+    found, groups = family.record(table, root_running=True)
+    assert set(found) == {101, 200, 201, 202, 302} and groups == {200, 202}
+    # The adapter and the debuggee die: the children are reparented, and one more is
+    # started in the debuggee's group after the listing (never listed itself).
+    later = {
+        201: (1, 200, "s201", "S"),
+        202: (1, 202, "s202", "S"),
+        203: (1, 200, "s203", "S"),
+        204: (1, 204, "s204", "S"),  # its own group, parent gone: cannot be told apart
+        300: (1, 300, "s300", "S"),
+        301: (1, own, "s301", "S"),
+        302: (1, 302, "s302", "S"),
+        305: (302, 302, "s305", "S"),  # the announced process's group is no proof
+    }
+    found, groups = family.record(later, root_running=False)
+    assert set(found) == {201, 202, 203, 302} and groups == {200, 202}
+    assert family.groups([201, 302], later) == {200}
+    # A pid reused by another process (another start) is no longer the session's.
+    reused = {**later, 202: (1, 202, "another start", "S"), 203: (1, 200, "s203", "Z")}
+    found, groups = family.record(reused, root_running=False)
+    assert set(found) == {201, 302} and groups == {200}
+    assert family.groups([202, 203], reused) == set()
