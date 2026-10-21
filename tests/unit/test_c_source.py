@@ -1270,3 +1270,50 @@ def test_a_range_for_binding_names_nothing_in_its_range_or_a_lambda_there():
     assert statements.block_storage(9, "t", 2, True, entering=True) == ("binding", 9)
     # In the loop's body, the binding is named.
     assert statements.block_storage(4, "t", 2, True, entering=True) == ("binding", 3)
+
+
+OWN_STATIC = """long work(long a) {
+    long t = a * 3;
+    {
+        static long t = 50;
+        use(t);
+        {
+            use(t);
+            extern long t;
+            use(t);
+        }
+    }
+    {
+        long t = a; { static long u = 1,
+            t = 2;
+            use(t);
+        }
+    }
+    long r = 1; { static long r = 2; use(r); }
+    {
+        typedef long q;
+        use(q);
+    }
+    return t;
+}
+"""
+
+
+def test_a_static_kept_as_a_constant_is_its_own_rows_declaration():
+    # Review of PR #175: at -O1 lldb-dap lists a block's `static` it keeps as a constant
+    # as a local (`t @ oc.c:4`); its own declaration does not hide it.
+    statements = Statements(OWN_STATIC, raw_strings=False)
+    assert statements.block_storage(5, "t", 4) == ("static", 4)
+    assert statements.block_storage(5, "t", 4, own=4) is False
+    assert statements.block_storage(7, "t", 4, own=4) is False
+    # A later declaration there still hides it.
+    assert statements.block_storage(9, "t", 4, own=4) == ("extern", 8)
+    # The outer local's row (line 2) is still hidden by the static.
+    assert statements.block_storage(5, "t", 2, own=2) == ("static", 4)
+    # The static's declarator is on the next line: the row declared on line 13 (the
+    # only `t` there) is the block's automatic local, hidden by the static.
+    assert statements.block_storage(15, "t", 13, own=13) == ("static", 13)
+    # Two declarations of `r` on the line: Peeky cannot tell which the row is.
+    assert statements.block_storage(18, "r", 18, own=18) == ("static", 18)
+    # A `typedef` declares no variable: never a row's own.
+    assert statements.block_storage(21, "q", 20, own=20) == ("typedef", 20)

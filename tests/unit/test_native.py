@@ -1711,6 +1711,43 @@ def test_a_hidden_local_is_read_from_the_preprocessed_unit_or_withheld(tmp_path)
     assert session._block_storage("q", frame, "a.c", 5).label == "not what the code reads"
 
 
+OWN_STATIC_UNIT = b"""# 1 "a.c"
+long f(void) {
+    long q = 1;
+    {
+        static long q = 7;
+        return q;
+    }
+}
+"""
+
+
+def test_a_static_kept_as_a_constant_is_shown_where_the_code_names_it(tmp_path):
+    # Review of PR #175: at -O1 lldb-dap lists a block's `static` that clang keeps as a
+    # constant (DW_AT_const_value, no address) as a local, `q @ a.c:4`. Its row is what
+    # the code names; the outer local's says the static is listed apart.
+    frame = {"instructionPointerReference": "0x150"}
+    session = preprocessing_session(tmp_path, {"a.c": OWN_STATIC_UNIT})
+    own = ("a.c", 4, False)
+    function = session.declarations[0]
+    function["locals"]["q"].add(own)
+    function["visible"][("q", *own)] = [(0x100, 0x200)]
+    function["unstored"] = frozenset({("q", "a.c", 4)})
+    assert session._block_storage("q @ a.c:4", frame, "a.c", 5) is None
+    listed = [{"name": "q @ a.c:2"}, {"name": "q @ a.c:4"}]
+    for siblings in (listed, None):
+        found = session._block_storage("q @ a.c:2", frame, "a.c", 5, siblings=siblings)
+        assert found.label == "not what the code reads", found
+        assert "the block's `static` `q` (line 4), listed separately as `q @ a.c:4`" in found
+        assert "does not list" not in found and "does not list" not in found.refusal
+    # Where no row of it is listed (at -O0, it has an address): said so.
+    found = session._block_storage("q @ a.c:2", frame, "a.c", 5, siblings=listed[:1])
+    assert "the block's `static` `q` (line 4), which the debugger does not list" in found
+    function["unstored"] = frozenset()
+    found = session._block_storage("q", frame, "a.c", 5)
+    assert "which the debugger does not list" in found
+
+
 def test_members_of_a_root_outside_the_frames_memory_are_never_settable():
     # #138 with #146: `set` refuses a field or element of a root the debug information
     # keeps in a register (or a location list) or as a static, at every stop; its rows
