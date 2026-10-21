@@ -2729,7 +2729,7 @@ class DebugWorker:
                 if kind is not None:
                     output["type"] = kind
                 shown = getattr(self.runtime, "display_type", None)
-                if shown and (rust := shown(variable, frame, top=not ancestry)):
+                if shown and (rust := shown(variable, frame, **self.typed_at(ancestry, name))):
                     # A reference parameter's Rust type (`&mut Window`), as for plain rows.
                     output.update(type=rust, debugger_type=kind)
                 if isinstance(note, str):
@@ -2897,7 +2897,7 @@ class DebugWorker:
                 # Or behind what a pointer points at (`IntSet *`).
                 output["pointee_aliased_type"] = aliased[:2000]
             shown = getattr(self.runtime, "display_type", None)
-            if shown and (rust := shown(variable, frame, top=not ancestry)):
+            if shown and (rust := shown(variable, frame, **self.typed_at(ancestry, name))):
                 # The language's own name; the debugger's stays alongside.
                 output.update(type=rust, debugger_type=kind)
             if isinstance(variable.get("evaluateName"), str) and variable["evaluateName"]:
@@ -3001,6 +3001,9 @@ class DebugWorker:
                 1 if "index" in args else min(args.get("count", 64), 512 - self.inspection_nodes)
             )
             settable = self.preview_settable(record, runtime, elements[start : start + count])
+            # LLDB's names for the fields of a value read from memory, as a field it lists
+            # raw shows beside the language's (seventh evaluation, review of finding 18).
+            listed = self.preview_kinds(record, runtime)
             # Fields of a preview whose root no stop can change (#138), and why; a nested
             # preview's keep its root's.
             source = record[2] if len(record) > 2 else None
@@ -3024,6 +3027,9 @@ class DebugWorker:
                         self.notes[handle] = noted
                 shown = {key: value for key, value in element.items() if key != "children"}
                 page.append({**shown, "variablesReference": handle, "view": "memory"})
+                kind = listed.get(element.get("name"))
+                if isinstance(kind, str) and kind != shown.get("type"):
+                    page[-1]["debugger_type"] = kind
                 if noted and not shown.get("unavailable"):
                     # Read through a local shown with a note (#148).
                     page[-1]["note"] = noted[0]
@@ -3210,6 +3216,29 @@ class DebugWorker:
             return None
         key = ("root", self.mark_place(), str(root.get("name")), str(root.get("type")))
         return self.remember(key, lambda: mid(root, frame, self.stop_reason))
+
+    def preview_kinds(self, record, runtime):
+        """{field: the type the debugger lists it with} for a value shown as a preview
+        read from memory whose fields the debugger lists too (its own storage: a
+        struct's or tuple's fields), read once per function and value path; {} for what
+        a view decodes alone (a container's elements) or where it cannot be read."""
+        source = record[2] if len(record) > 2 else None
+        if source is None:
+            return {}
+        key = ("kinds", source[0].get("name"), tuple(map(tuple, source[2])))
+
+        def read():
+            try:
+                _, _, _, reference, indexed = self.walk(source, runtime, [])
+                variables = self.bounded_variables(reference, indexed)
+            except ValueError:
+                return {}
+            kinds = {}
+            for variable in variables:
+                kinds.setdefault(variable.get("name"), []).append(variable.get("type"))
+            return {name: types[0] for name, types in kinds.items() if len(types) == 1}
+
+        return self.remember(key, read)
 
     def preview_settable(self, record, runtime, elements):
         """For the fields of a value shown as a preview read from memory (#106): a check
@@ -3656,6 +3685,14 @@ class DebugWorker:
                 f"but as {str(shown[0].get('value'))[:80] if len(shown) == 1 else 'nothing'} "
                 "from memory: the program's state is unknown, so the session is closed"
             )
+
+    @staticmethod
+    def typed_at(ancestry, name):
+        """display_type's arguments for the value ``name`` under ``ancestry``: a root
+        local's, or a field's or element's with its path from the root (finding 18)."""
+        if not ancestry:
+            return {"top": True}
+        return {"top": False, "path": [step for step, _ in ancestry] + [name]}
 
     def refuse_never_settable(self, runtime, program, changes):
         """Refuse, before the program runs, a probe's change ({line, name}: a `--set` at

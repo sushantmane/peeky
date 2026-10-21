@@ -214,7 +214,8 @@ def test_locals_of_one_name_the_debug_information_cannot_tell_apart_are_refused(
     line = line_of(source, "// SAME")
     code, result = probed(capsys, path, line, "s.x=40", "s")
     error = result["error"]
-    assert code == 1 and error["code"] == "MUTATION_REJECTED", result
+    # Refused before the program runs: exit 2, as any refusal (#165, finding 14).
+    assert code == 2 and error["code"] == "MUTATION_REJECTED", result
     assert result.get("refused_before_launch") is True, result
     assert f"several locals named `s` of different types on line {line}" in error["message"]
 
@@ -424,7 +425,7 @@ def test_cpp_a_line_only_an_exception_runs_singles_out_nothing(directory, capsys
     path = directory / "closing.cpp"
     path.write_text(CLOSING)
     code, result = probed(capsys, path, line_of(CLOSING, "// CLOSING"), "t.deadline=5", "t")
-    assert code == 1 and result.get("refused_before_launch") is True, result
+    assert code == 2 and result.get("refused_before_launch") is True, result
     assert "several locals named `t` of different types" in result["error"]["message"]
 
 
@@ -925,7 +926,7 @@ def test_a_multi_stop_lines_refusal_says_its_later_stops_make_no_change(director
     path.write_text(source)
     code, result = probed(capsys, path, line_of(source, "// MULTI"), "t.x=50", "t")
     error = result["error"]
-    assert code == 1 and error["code"] == "MUTATION_REJECTED", result
+    assert code == 2 and error["code"] == "MUTATION_REJECTED", result
     assert result.get("refused_before_launch") is True, result
     assert "`t` has no fields" in error["message"], error
     assert "later stops in main, in other blocks, name another `t`" in error["message"], error

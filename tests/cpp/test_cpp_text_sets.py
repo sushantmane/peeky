@@ -10,6 +10,12 @@ import pytest
 
 from peeky.cli import main
 
+
+def _refused_code(result):
+    # #165: a probe refused before it ran exits 2; a refusal at a stop, 1.
+    return 2 if result.get("refused_before_launch") else 1
+
+
 TEXTS = """#include <cstdio>
 #include <string>
 int main() {
@@ -52,7 +58,7 @@ def debugger(capsys, source):
 
 
 def refusal(code, result, *texts):
-    assert code == 1 and result["error"]["code"] == "MUTATION_REJECTED", result
+    assert code == _refused_code(result) and result["error"]["code"] == "MUTATION_REJECTED", result
     for text in texts:
         assert text in result["error"]["message"], result["error"]
     return result["error"]["message"]
@@ -149,7 +155,9 @@ def test_a_const_string_is_never_changed_and_a_change_warns_of_earlier_views(tex
     for name in ("cs", "ct"):
         code = main([*at, "--set", f'{name}="x"', "--json", "--quiet"])
         result = json.loads(capsys.readouterr().out)
-        assert code == 1 and result["error"]["code"] == "MUTATION_REJECTED", result
+        assert code == _refused_code(result) and result["error"]["code"] == "MUTATION_REJECTED", (
+            result
+        )
         assert (
             f"`{name}` cannot be changed to a text: a const object" in (result["error"]["message"])
         ), result["error"]

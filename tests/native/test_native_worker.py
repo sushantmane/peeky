@@ -836,11 +836,12 @@ def test_describe_leaves_out_types_a_program_cannot_write(tmp_path, native_confi
         "    return 0;\n"
         "}\n"
     )
+    # C names a struct or enum no typedef names by its tag (seventh evaluation, 17).
     named = {
         "plain": "int",
-        "named": "structure",
-        "named_ptr": "structure *",
-        "en": "enumeration",
+        "named": "struct structure",
+        "named_ptr": "struct structure *",
+        "en": "enum enumeration",
         "ct": "class_t",
         "xs": "float[2]",
         "ys": "int[2]",

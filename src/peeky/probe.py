@@ -11,6 +11,7 @@ evidence about one execution, never a verified fix.
 
 import argparse
 import ast
+import hashlib
 import json
 import re
 import sys
@@ -2756,8 +2757,11 @@ UNAPPLIED_EXIT = 4
 
 
 def probe_exit_code(result):
-    """`peeky probe`'s and `peeky-probe`'s exit code: 0, 1 for a probe that did not
-    complete, or UNAPPLIED_EXIT."""
+    """`peeky probe`'s and `peeky-probe`'s exit code: 0; 2 for a probe refused before it
+    ran (nothing ran: a refusal, as for any request Peeky turns down; seventh evaluation,
+    finding 14); 1 for any other probe that did not complete; or UNAPPLIED_EXIT."""
+    if result.get("refused_before_launch"):
+        return 2
     if result.get("status") != "completed":
         return 1
     return UNAPPLIED_EXIT if result.get("unapplied") else 0
@@ -2972,6 +2976,13 @@ def run_probe(root, probe, *, adapter=None, progress=None):
             target_identity=launch["target_identity"],
             source_sha256=launch["source_sha256"],
         )
+        if isinstance(manifest := launch.get("source_manifest"), dict) and manifest:
+            # Every source and header the build read, as they were on disk (a candidate's
+            # before its edit): which runs read the same program (seventh evaluation,
+            # review of finding 12).
+            result["inputs_sha256"] = hashlib.sha256(
+                json.dumps(sorted(manifest.items())).encode()
+            ).hexdigest()
         # A launched JVM's captured objects show their fields; an attached one (often a
         # live service) does not, since every read lengthens its pause.
         identity = launch["target_identity"] if isinstance(launch["target_identity"], dict) else {}
@@ -3657,8 +3668,41 @@ def _rust_notes():
     return {_OWNED_RUST, _UNREAD_RUST, _COMPOSITE_RUST, unproven, _STALE_RUST + "."}
 
 
-def _table(result):
+def _short_instance(row):
+    # A short instance name (`main::{closure#1}`, `tf<rc::A>`); JSON has every one.
+    return row["instance"] if len(row.get("instance") or "") <= 60 and row.get("instance") else None
+
+
+def _short_note(result):
+    """The note under a probe's table where its function column shows another name than
+    the one SQL compares (`names.shortened_note`), or None. Rows shown by their instance
+    are found in SQL by `instance`, not short_function."""
+    functions = function_labels(row.get("function") for row in result["rows"])
+    shown = next((label for row in result["rows"] if (label := _short_instance(row))), None)
+    return shortened_note(
+        {
+            row.get("function"): functions.get(row.get("function"))
+            for row in result["rows"]
+            if not _short_instance(row)
+        },
+        shown,
+    )
+
+
+def _table(result, short_names=True):
+    """A probe result as text; ``short_names``: with the note on short frame names
+    (`_short_note`), which `peeky probe` gives once per state directory."""
     lines = []
+    if result.get("refused_before_launch"):
+        # Nothing ran (#138): no rows, hits or timing to show, only why (seventh
+        # evaluation, finding 14).
+        lines.extend(f"warning: {warning}" for warning in result.get("warnings", ()))
+        error = result.get("error") or {}
+        lines.append(f"error [{error.get('code')}]: {error.get('message')}")
+        lines.append(f"hint: {error.get('hint')}")
+        if error.get("cleanup"):
+            lines.append(f"cleanup: {error['cleanup']}")
+        return "\n".join(lines)
     # Which of a line's breakpoint locations each stop is at, where it has several (#157).
     stops = any("stops" in row for row in result["rows"])
     header = ("hit", *(("stop",) if stops else ()), "phase", "line", "function", "selector")
@@ -3666,15 +3710,7 @@ def _table(result):
     # A C++ frame's signature (`trim_left(std::__1::basic_string<...> const&)`) would
     # double the table's width; Rust's ends with a symbol hash. JSON keeps the name whole.
     functions = function_labels(row.get("function") for row in result["rows"])
-
-    def short_instance(row):
-        # A short instance name (`main::{closure#1}`, `tf<rc::A>`); JSON has every one.
-        return (
-            row["instance"]
-            if len(row.get("instance") or "") <= 60 and row.get("instance")
-            else None
-        )
-
+    short_instance = _short_instance
     rows = [
         (
             str(row["hit"]),
@@ -3699,16 +3735,7 @@ def _table(result):
         lines.append(
             "  ".join(text.ljust(width) for text, width in zip(item, widths)) + "  " + item[-1]
         )
-    # Rows shown by their instance are found in SQL by `instance`, not short_function.
-    shown = next((label for row in result["rows"] if (label := short_instance(row))), None)
-    if note := shortened_note(
-        {
-            row.get("function"): functions.get(row.get("function"))
-            for row in result["rows"]
-            if not short_instance(row)
-        },
-        shown,
-    ):
+    if short_names and (note := _short_note(result)):
         lines.append(note)
     named = function_labels(change.get("function") for change in result["interventions"])
     for change in result["interventions"]:

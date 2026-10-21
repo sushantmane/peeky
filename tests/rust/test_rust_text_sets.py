@@ -10,6 +10,12 @@ import pytest
 
 from peeky.cli import main
 
+
+def _refused_code(result):
+    # #165: a probe refused before it ran exits 2; a refusal at a stop, 1.
+    return 2 if result.get("refused_before_launch") else 1
+
+
 MANIFEST = """[package]
 name = "texts"
 version = "0.1.0"
@@ -64,7 +70,7 @@ def probe(capsys, crate, *argv):
 
 
 def refusal(code, result, *texts):
-    assert code == 1 and result["error"]["code"] == "MUTATION_REJECTED", result
+    assert code == _refused_code(result) and result["error"]["code"] == "MUTATION_REJECTED", result
     for text in texts:
         assert text in result["error"]["message"], result["error"]
     return result

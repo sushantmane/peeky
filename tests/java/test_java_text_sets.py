@@ -10,6 +10,12 @@ import pytest
 
 from peeky.cli import main
 
+
+def _refused_code(result):
+    # #165: a probe refused before it ran exits 2; a refusal at a stop, 1.
+    return 2 if result.get("refused_before_launch") else 1
+
+
 GREET = """package demo;
 
 public class Greet {
@@ -93,13 +99,13 @@ def test_a_string_local_field_or_element_takes_a_text(greet, capsys):
 @pytest.mark.timeout(180)
 def test_a_text_changes_only_a_string(greet, capsys):
     code, result = probe(capsys, greet, "--set", 'g.count="2"')
-    assert code == 1 and result["error"]["code"] == "MUTATION_REJECTED", result
+    assert code == _refused_code(result) and result["error"]["code"] == "MUTATION_REJECTED", result
     expected = (
         "predates String changes" if not greet[2] else "text in double quotes changes a String"
     )
     assert expected in result["error"]["message"], result["error"]
     code, result = probe(capsys, greet, "--set", "name=5")
-    assert code == 1 and result["error"]["code"] == "MUTATION_REJECTED", result
+    assert code == _refused_code(result) and result["error"]["code"] == "MUTATION_REJECTED", result
     assert "requires text in double quotes for String name" in result["error"]["message"]
 
 
@@ -126,7 +132,9 @@ def test_marks_follow_the_declared_type_and_a_constant_local_is_never_changed(gr
     }, marks
     for assignment in ('fc="x"', "fk=9"):
         code, result = probe(capsys, greet, "--set", assignment)
-        assert code == 1 and result["error"]["code"] == "MUTATION_REJECTED", result
+        assert code == _refused_code(result) and result["error"]["code"] == "MUTATION_REJECTED", (
+            result
+        )
         message = result["error"]["message"]
         if assignment.startswith("fk") or greet[2]:
             assert "the program never reads it (javac compiles a constant local" in message
@@ -134,7 +142,9 @@ def test_marks_follow_the_declared_type_and_a_constant_local_is_never_changed(gr
     if greet[2]:
         for assignment, declared in (("g.held", "java.lang.Object"), ("objs[0]", "Object")):
             code, result = probe(capsys, greet, "--set", f'{assignment}="y"')
-            assert code == 1 and result["error"]["code"] == "MUTATION_REJECTED", result
+            assert (
+                code == _refused_code(result) and result["error"]["code"] == "MUTATION_REJECTED"
+            ), result
             assert f"it is declared {declared} and holds a String" in result["error"]["message"]
         code, result = probe(capsys, greet, "--set", 'o="y"')
         assert code == 1 and "o is java.lang.Object" in result["error"]["message"], result
@@ -145,7 +155,7 @@ def test_a_local_the_code_never_reads_after_the_stop_is_never_changed(greet, cap
     # #164 review 2: `cap` was captured by a lambda before the stop, and nothing reads
     # it after: the change was reported, and `lam.get()` still returned `captured`.
     code, result = probe(capsys, greet, "--set", 'cap="X"')
-    assert code == 1 and result["error"]["code"] == "MUTATION_REJECTED", result
+    assert code == _refused_code(result) and result["error"]["code"] == "MUTATION_REJECTED", result
     message = result["error"]["message"]
     if greet[2]:
         assert "the program does not read it after this stop (a lambda or inner class" in message

@@ -9,6 +9,12 @@ import pytest
 
 from peeky.cli import main
 
+
+def _refused_code(result):
+    # #165: a probe refused before it ran exits 2; a refusal at a stop, 1.
+    return 2 if result.get("refused_before_launch") else 1
+
+
 TEXTS = """#include <stdio.h>
 #include <string.h>
 struct Rec { char tag[8]; int n; };
@@ -44,7 +50,7 @@ def probe(capsys, root, *argv):
 
 def refused(capsys, root, *argv):
     code, result = probe(capsys, root, *argv)
-    assert code == 1 and result["error"]["code"] == "MUTATION_REJECTED", result
+    assert code == _refused_code(result) and result["error"]["code"] == "MUTATION_REJECTED", result
     assert "NAME:" not in (result.get("output") or ""), result["output"]
     return result["error"]["message"]
 
@@ -106,7 +112,7 @@ def test_a_text_is_refused_where_it_does_not_fit_or_is_not_a_char_array(texts, c
     assert "a NUL in the text would end the C string" in message, message
     # A field's text is refused before the program runs.
     code, result = probe(capsys, texts, "--set", 'rec.tag="x"')
-    assert code == 1 and result.get("refused_before_launch") is True, result
+    assert code == 2 and result.get("refused_before_launch") is True, result
     assert "not into a field or element" in result["error"]["message"], result
     # A value that is not a JSON string is the request's error.
     code, result = probe(capsys, texts, "--set", 'name="open')
@@ -147,7 +153,9 @@ def test_a_const_or_volatile_array_is_never_changed_and_a_typedef_is_judged_by_i
     for name, qualifier in (("fixed", "const"), ("konst", "const"), ("shared", "volatile")):
         code = main([*at, "--set", f'{name}="x"', "--json", "--quiet"])
         result = json.loads(capsys.readouterr().out)
-        assert code == 1 and result["error"]["code"] == "MUTATION_REJECTED", result
+        assert code == _refused_code(result) and result["error"]["code"] == "MUTATION_REJECTED", (
+            result
+        )
         assert (
             f"`{name}` cannot be changed to a text: a {qualifier} object"
             in (result["error"]["message"])

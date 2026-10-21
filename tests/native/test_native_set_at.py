@@ -140,9 +140,10 @@ def test_a_change_at_one_line_is_restored_at_the_next_in_one_probe(linked, capsy
         (row["hit"], row["phase"], row["selector"], row["value_a"], row["value_b"], row["note"])
         for row in diff[2:]
     ]
+    # `total`'s after-set value is its observed one (the change was to `width`): no
+    # difference of its own (seventh evaluation, finding 10).
     assert shown == [
         (4, "observed", "total", "6", "103", None),
-        (3, "after-set", "total", None, "3", "intervention only in run b"),
         (3, "after-set", "width", None, "100", "intervention only in run b"),
     ], shown
 
@@ -342,7 +343,8 @@ def test_an_unmade_set_beside_a_made_set_at_is_named_and_refusals_group(linked, 
     both = next(i for i, text in enumerate(THROUGH.splitlines(), 1) if "// BOTH" in text)
     call = next(i for i, text in enumerate(THROUGH.splitlines(), 1) if "// CALL" in text)
     argv = ["probe", str(linked), "--at", f"linked.c:{call}", "--set-at", f"{both}@1"]
-    assert main([*argv, "a.pp.x=1", "--json", "--quiet"]) == 1
+    # Refused before it ran: exit 2 (seventh evaluation, finding 14).
+    assert main([*argv, "a.pp.x=1", "--json", "--quiet"]) == 2
     message = json.loads(capsys.readouterr().out)["error"]["message"]
     assert f"cannot be changed at linked.c:{both}, at any stop of this build: in fc and fd, " in (
         message

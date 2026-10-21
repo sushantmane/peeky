@@ -135,7 +135,8 @@ def test_a_register_parameter_is_refused_before_the_run_and_marked(tmp_path, sta
     code, result = probe(
         capsys, crate, at, *run, "--hits", "3", "--set", "width=9", "--set-hit", "3"
     )
-    assert code == 1
+    # A refusal exits 2 (seventh evaluation, finding 14).
+    assert code == 2
     message = refused_before_launch(result)
     assert "in limiter::allow, `width` is a parameter kept in a register" in message, message
     assert "only shows a copy" in message and "COOKBOOK 6.6" in message, message
@@ -491,7 +492,7 @@ def test_a_previews_fields_say_their_root_is_kept_in_a_register(tmp_path, state,
     assert field["value"] == "3" and field["settable"] is True, kept
     assert "not_settable" not in field, kept
     code, result = probe(capsys, crate, at, "--set", "m.v=9")
-    assert code == 1
+    assert code == 2
     assert "`m` is a parameter kept in a register" in refused_before_launch(result)
 
 
@@ -505,7 +506,7 @@ def test_a_set_at_is_judged_before_the_run_against_its_own_lines_functions(tmp_p
     code, result = probe(
         capsys, crate, call, "--capture", "s.end", "--set-at", f"{loop}@2", "offset=3"
     )
-    assert code == 1
+    assert code == 2
     message = refused_before_launch(result)
     assert message.startswith(f"`offset` cannot be changed at src/main.rs:{loop},"), message
     assert "in scale::scale, `offset` is a parameter kept in a register" in message, message
@@ -685,7 +686,11 @@ def test_closure_and_instance_labels_are_found_in_sql(tmp_path, state, capsys):
     # both closures one name (`cz::main::{{closure}}`); generic instances lost their types.
     crate = crate_at(tmp_path, "cz", LABELLED)
     both, tag = line_of(LABELLED, "// BOTH"), line_of(LABELLED, "// TAG")
-    at = ["probe", str(crate), "--at", f"src/main.rs:{both}", "--capture", "i", "--quiet"]
+    # The note comes with the state directory's first such table, never with --quiet
+    # (seventh evaluation, finding 8).
+    at = ["probe", str(crate), "--at", f"src/main.rs:{both}", "--capture", "i"]
+    assert main([*at, "--hits", "5", "--quiet", "--no-save"]) == 0
+    assert "note:" not in capsys.readouterr().out
     assert main([*at, "--hits", "5"]) == 0
     text = capsys.readouterr().out
     assert "cz::main::{closure#1}" in text, text
