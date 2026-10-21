@@ -1375,14 +1375,22 @@ def _settable_parts(graph, types, names, in_memory, linkages):
 _AUTOMATIC = re.compile(r"DW_OP_(?:fbreg|breg[0-9]+)\b")
 
 
-def _declared(dies, offset, files, workspace, parameters=None):
+# A static or thread-local: listed among globals, never a frame's locals.
+_STATIC = re.compile(r"DW_OP_addr\b|DW_OP_(?:GNU_push_tls_address|form_tls_address)\b")
+
+
+def _declared(dies, offset, files, workspace, parameters=None, unstored=None):
     """(name, (source, line, automatic), scope) for each parameter and variable of one
     function body, including nested blocks but not calls inlined into it; ``scope`` is
     the DIE of the block (or body) declaring it. Parameters, statics and anything
     without a frame location are not automatic. A label is listed as (None, None,
     None): `goto` can return above a declaration with the local still live.
     ``parameters``, when given, gets each parameter's name -> {(source, line)} (#158:
-    LLDB names one shadowed by a local `t @ param.c:3`)."""
+    LLDB names one shadowed by a local `t @ param.c:3`). ``unstored``, when given, gets
+    (name, source, line) of each variable that is neither automatic nor a static: one
+    an optimized build keeps in registers, as a constant, or nowhere, which lldb-dap
+    still lists among the frame's locals (#173); a block's `static` it keeps as a
+    constant (`DW_AT_const_value`, no address) is one too, listed as a local."""
     found, pending = [], list(dies[offset]["children"])
     while pending and len(found) < 4096:
         child = pending.pop()
@@ -1414,6 +1422,13 @@ def _declared(dies, offset, files, workspace, parameters=None):
         automatic = bool(_AUTOMATIC.search(location)) and "DW_OP_addr" not in location
         where = (source, int(line) if line and line.isdigit() else None, automatic)
         found.append((name, where, die["parent"]))
+        if (
+            unstored is not None
+            and not automatic
+            and not _STATIC.search(location)
+            and "DW_AT_external" not in die["attrs"]
+        ):
+            unstored.add((name, *where[:2]))
     return found
 
 
@@ -1455,9 +1470,9 @@ def local_declarations(info, line_text, workspace, declared):
             for (source, line), found in addresses.get(root, {}).items()
             for address in found
         )
-        visible, parameters = {}, {}
+        visible, parameters, unstored = {}, {}, set()
         for body in (*entry["bodies"], root):
-            for name, where, scope in _declared(dies, body, files, workspace, parameters):
+            for name, where, scope in _declared(dies, body, files, workspace, parameters, unstored):
                 if name is None:
                     jumps = True
                     continue
@@ -1534,6 +1549,9 @@ def local_declarations(info, line_text, workspace, declared):
                 "visible": {key: tuple(sorted(ranges)) for key, ranges in visible.items()},
                 # Each parameter's name -> {(source, line)} (#158).
                 "parameters": parameters,
+                # (name, source, line) of the locals an optimized build keeps outside
+                # the frame's memory, which lldb-dap lists all the same (#173).
+                "unstored": frozenset(unstored),
                 # Rows at or after this address run only as an exception unwinds (#158).
                 "returned": returned,
             }
@@ -1717,7 +1735,7 @@ _CONSTRUCTOR_NAME = re.compile(
 MAX_STATEMENT_SOURCE = 8_000_000
 
 
-def shown_declaration(table, name, pc):
+def shown_declaration(table, name, pc, unstored=False):
     """The declaration lldb-dap lists under ``name`` (`x`, or `x @ file:line` when it is
     shadowed) at ``pc`` (unslid): ``(function, (source, line, automatic))``, an
     automatic local or parameter of the function running ``pc`` (the narrowest holding
@@ -1727,7 +1745,9 @@ def shown_declaration(table, name, pc):
 
     None if that function declares none of that name (nothing of it to judge); False if
     the one shown cannot be singled out: ``pc`` unknown or in no function of the table,
-    a declaration's block unknown, none of them in scope, or two in one block."""
+    a declaration's block unknown, none of them in scope, or two in one block. With
+    ``unstored``, also a local an optimized build keeps in registers or as a constant
+    (``function["unstored"]``), which lldb-dap lists too (#173)."""
     if pc is None:
         return False
     holding = [
@@ -1747,7 +1767,11 @@ def shown_declaration(table, name, pc):
     places = {
         where
         for where in function["locals"].get(base, ())
-        if where[2] or where[0] is None and where[1] is None
+        if where[2]
+        or where[0] is None
+        and where[1] is None
+        or unstored
+        and (base, *where[:2]) in function.get("unstored", ())
     }
     if shown:
         places = {where for where in places if where[1] == int(shown[2])}
@@ -3298,19 +3322,21 @@ class NativeSession:
                     "frame is back in its own lines"
                 )
             here, line = place
-        # At the first instruction of the line's statements, none has run (#169).
+        # At the first instruction of the line's statements, none has run (#169). In an
+        # optimized build, None: where the stop is in the line cannot be told (#173).
         entering = (
             (
                 lambda: (
-                    getattr(self.target, "optimization", "O0") == "O0"
-                    and self.mid_statement(variable, frame) is None
+                    self.mid_statement(variable, frame) is None
+                    if getattr(self.target, "optimization", "O0") == "O0"
+                    else None
                 )
             )
             if innermost and (here, line) == (stopped, raw_line)
             else None
         )
         if shadowed := self._block_storage(
-            name, frame, here, line, (stopped, raw_line), entering=entering
+            name, frame, here, line, (stopped, raw_line), entering=entering, siblings=siblings
         ):
             return shadowed
         if not innermost and (
@@ -4213,12 +4239,14 @@ class NativeSession:
             return None
         return int(pointer, 16) - bias
 
-    def _block_storage(self, name, frame, source, line, stop=None, entering=None):
+    def _block_storage(self, name, frame, source, line, stop=None, entering=None, siblings=None):
         """Why the root local ``name`` of ``frame`` is not what the code at ``source:line``
         reads, or None: a block around the line declares ``name`` after the local, so
         that the code names that instead: a `static` or an `extern` (lldb-dap does not
         list them among the frame's locals: clang declares a block's static in the
-        function's scope, and a block's `extern` not at all), a `typedef`, an
+        function's scope, and a block's `extern` not at all; but an optimized build's
+        `static` kept as a constant is listed, `t @ file:line`, and a row of it is what
+        the code names, #173), a `typedef`, an
         enumerator, a function, a C++ `using` declaration or class, and the row shows
         the outer local under that name. Read from the translation unit as the
         compiler preprocessed it, so what a macro, a conditional or an `#include` makes
@@ -4227,8 +4255,10 @@ class NativeSession:
         that brings it in (the preprocessed text has its lines there instead).
         ``entering()``: whether the stop is the first instruction of the statements that
         start on the line (None: it is not), where a range-`for`'s binding there is not
-        declared yet."""
-        found = shown_declaration(self.declarations, name, self._block_pc(frame))
+        declared yet. ``siblings``: the frame's rows, when known, to say whether the
+        debugger lists what the code names."""
+        # An optimized build's local in registers is listed all the same (#173).
+        found = shown_declaration(self.declarations, name, self._block_pc(frame), unstored=True)
         if found is None:
             return None
         function = self._function_at(frame)
@@ -4253,15 +4283,25 @@ class NativeSession:
                 # The stop's line, or the local's, is not singled out in it.
                 verdicts.add(None)
                 continue
+            # Neither in the frame's memory nor a parameter: possibly a block's `static`
+            # an optimized build keeps as a constant, listed as a local (#173).
+            own = after if declared[1] is not None and not declared[2] else None
             # A frame whose function is wholly on the line (a lambda there): its body.
             body = bool(
                 function is not None
                 and function.get("source") == source
                 and tuple(function.get("span") or ()) == (line, line)
             )
-            storage = statements.block_storage(at, base, after, True, body)
-            if storage and storage[0] == "binding" and entering is not None and entering():
-                storage = statements.block_storage(at, base, after, True, body, True)
+            storage = statements.block_storage(at, base, after, True, body, own=own)
+            if storage and storage[0] == "binding" and entering is not None:
+                if (entered := entering()) is None:
+                    # An optimized build: whether the stop starts the line, where its
+                    # range is read with the outer local, cannot be told (#173).
+                    before = statements.block_storage(at, base, after, True, body, True, own)
+                    if before != storage:
+                        storage = ("binding-unsure", *storage[1:])
+                elif entered:
+                    storage = statements.block_storage(at, base, after, True, body, True, own)
             if storage:
                 origin = preprocessed.origins[storage[1] - 1]
                 storage = None if origin is None else (storage[0], *origin)
@@ -4286,6 +4326,15 @@ class NativeSession:
         kind, declared_in, at = next(iter(verdicts))
         place = f"line {at}" if declared_in == source else f"{Path(declared_in).name}:{at}"
         listed = f"`{base} @ {Path(declared_in).name}:{at}`"
+        if siblings is not None:
+            # What the frame's rows show: the declaration the code names, listed apart.
+            shown = any(
+                isinstance(row, dict) and row.get("name") == listed[1:-1] for row in siblings
+            )
+        else:
+            # lldb-dap lists a `static` kept as a constant among the frame's locals.
+            shown = (base, declared_in, at) in (function or {}).get("unstored", ())
+        unlisted = f"listed separately as {listed}" if shown else "which the debugger does not list"
         what = {
             "using": f"the `{base}` the block's `using` declaration ({place}) brings in, "
             "which the debugger does not list",
@@ -4294,16 +4343,22 @@ class NativeSession:
             "typedef": f"the type `{base}` the block's `typedef` names ({place})",
             "class": f"the type `{base}` the block declares ({place})",
             "binding": f"the structured binding `{base}` ({place})",
+            "binding-unsure": f"the structured binding `{base}` ({place}), unless the stop "
+            "starts the line, where the loop's range is read with this local (in an "
+            "optimized build Peeky cannot tell which)",
             "thread_local": f"the block's `thread_local` `{base}` ({place}), listed "
             f"separately as {listed}",
             "_Thread_local": f"the block's `_Thread_local` `{base}` ({place}), listed "
             f"separately as {listed}",
             "__thread": f"the block's `__thread` `{base}` ({place}), listed separately as {listed}",
-        }.get(kind, f"the block's `{kind}` `{base}` ({place}), which the debugger does not list")
+        }.get(kind, f"the block's `{kind}` `{base}` ({place}), {unlisted}")
+        names = "may name" if kind == "binding-unsure" else "names"
         return Withholding(
-            f"the code here names {what}: this row is the outer local of that name",
-            "not what the code reads",
-            f"{name!r} cannot be changed here: at line {line} the code names {what}; the "
+            f"the code here {names} {what}: this row is the outer local of that name",
+            "may not be what the code reads"
+            if kind == "binding-unsure"
+            else "not what the code reads",
+            f"{name!r} cannot be changed here: at line {line} the code {names} {what}; the "
             "local this row shows is the outer one, so a change to it would not reach that "
             "code",
         )
