@@ -10,6 +10,8 @@ import json
 import re
 from urllib.error import HTTPError
 
+from peeky.textlines import split_lines
+
 PROTOCOL_VERSION = 1
 
 # (pattern on the message, code, hint, retryable). First match wins.
@@ -234,7 +236,7 @@ _RULES = (
 def _compiler_errors(stdout):
     """rustc's rendered error diagnostics from Cargo's JSON messages, in order."""
     found = []
-    for line in stdout.splitlines():
+    for line in split_lines(stdout):
         if not line.startswith("{"):
             continue
         try:
@@ -270,7 +272,7 @@ def _build_failure(exc):
         # Cargo writes rustc's diagnostics to stdout as JSON and only a footer to stderr.
         footer = [
             line.strip()
-            for line in str(result.get("stderr") or "").splitlines()
+            for line in split_lines(str(result.get("stderr") or ""))
             if line.strip() and not line.strip().startswith("Compiling ")
         ]
         output = "\n".join([*errors, *footer])

@@ -23,6 +23,7 @@ from peeky.adapters import PythonAdapter
 from peeky.errors import Refused, classify
 from peeky.java import _JAVA_OBJECT, JAVA_ARRAY, JAVA_LIST, java_list, java_preview
 from peeky.names import display_function, function_labels, shortened_note
+from peeky.textlines import split_lines
 from peeky.worker import (
     DebugWorker,
     load_java_target,
@@ -3842,7 +3843,7 @@ def _table(result, short_names=True):
             if result.get("status") == "failed"
             else "output so far (the program was still running):"
         )
-        lines.extend("  " + line for line in result["output"].splitlines()[-20:])
+        lines.extend("  " + line for line in split_lines(result["output"])[-20:])
     return "\n".join(lines)
 
 

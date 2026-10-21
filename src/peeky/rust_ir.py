@@ -45,6 +45,17 @@ _DECLARES = (
     ),
 )
 _SPILL = re.compile(r"\.dbg\.spill")
+_IR_ESCAPE = re.compile(rb"\\([0-9A-Fa-f]{2})")
+
+
+def ir_string(text):
+    """An LLVM IR string's text: LLVM writes a quote, a backslash and every unprintable
+    byte (any non-ASCII one) as `\\` and two hex digits (`src/x\\E2\\80\\A8y.rs`, a
+    variable `gr\\C3\\B6\\C3\\9Fe`; #179)."""
+    raw = _IR_ESCAPE.sub(lambda found: bytes([int(found[1], 16)]), text.encode("utf-8"))
+    return raw.decode("utf-8", errors="replace")
+
+
 _HASH = re.compile(r"17(h[0-9a-f]{16})E$")
 
 
@@ -82,7 +93,11 @@ def ir_locals(path, declarations=None):
                     fields = {key: pattern.search(match[3]) for key, pattern in _FIELD.items()}
                     entries[match[1]] = (
                         match[2],
-                        {key: found[1] for key, found in fields.items() if found},
+                        {
+                            key: ir_string(found[1]) if key in ("name", "linkage") else found[1]
+                            for key, found in fields.items()
+                            if found
+                        },
                     )
                 continue
             if "dbg" not in line:

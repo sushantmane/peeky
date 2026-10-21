@@ -30,6 +30,7 @@ from peeky.adapters import ViewBudgetExhausted
 from peeky.native import _metadata, parse_lines
 from peeky.rust_chars import ESCAPED
 from peeky.rust_lexer import code_only
+from peeky.textlines import split_lines
 
 # An application unit's own DWARF: a program using std's collections has megabytes of
 # monomorphized types (4.4 MB for one using HashMap); dumping and parsing it takes
@@ -96,8 +97,9 @@ def _string(raw):
     if not match:
         raise ValueError("Expected a quoted DWARF string attribute")
     try:
-        value = json.loads(match[1])
-    except json.JSONDecodeError as exc:
+        # dwarfdump writes an unprintable byte (any non-ASCII one) in octal (#179).
+        value = codecs.escape_decode(match[1][1:-1].encode())[0].decode("utf-8")
+    except (ValueError, UnicodeDecodeError) as exc:
         raise ValueError("Unsupported DWARF string escape") from exc
     if not isinstance(value, str) or any(ord(char) < 32 for char in value):
         raise ValueError("Unsupported DWARF string attribute")
@@ -136,7 +138,7 @@ def parse_dies(text, *, units):
         raise ValueError("Rust debug information exceeds limit")
     roots, stack, pending, last, seen, count = [], [], None, None, False, 0
     attribute = None
-    for raw in text.splitlines():
+    for raw in split_lines(text):
         if not raw.strip():
             continue
         if not seen and (raw == ".debug_info contents:" or _HEADER.fullmatch(raw)):

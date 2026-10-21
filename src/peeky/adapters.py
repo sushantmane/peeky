@@ -18,6 +18,8 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from peeky.textlines import split_lines
+
 PYTHON_LITERAL_NODES = (
     ast.Expression,
     ast.Constant,
@@ -879,7 +881,7 @@ def _gitdir(path):
     """Where a `.git` file's `gitdir:` line points, resolved; None if it has none."""
     try:
         with open(path, encoding="utf-8") as stream:
-            line = stream.read(4096).splitlines()[0]
+            line = split_lines(stream.read(4096))[0]
     except (OSError, UnicodeDecodeError, IndexError):
         return None
     if not line.startswith("gitdir:") or not line[7:].strip():

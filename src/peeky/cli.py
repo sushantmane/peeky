@@ -46,6 +46,7 @@ from peeky.probe import (
     run_probe,
     split_selectors,
 )
+from peeky.textlines import split_lines
 
 RUST_VERSION = "1.96.0"
 
@@ -2282,7 +2283,7 @@ def _diff(before, after, name):
     import difflib
 
     lines = difflib.unified_diff(
-        before.splitlines(keepends=True), after.splitlines(keepends=True), name, name
+        split_lines(before, keepends=True), split_lines(after, keepends=True), name, name
     )
     text = "".join(lines)
     return text if len(text) <= 8000 else text[:8000] + "\n... (diff truncated)\n"
@@ -2440,7 +2441,7 @@ def _failure_line(stream):
     up to two indented lines after it (`FAIL first case; expected 3; got 2`); for a
     unittest test's header (`FAIL: test_wrap (...)`), with the exception it reports;
     pytest's `E` marker left out."""
-    lines = [line.rstrip() for line in stream.splitlines() if line.strip()]
+    lines = [line.rstrip() for line in split_lines(stream) if line.strip()]
     at = next((i for i, line in enumerate(lines) if _FAILURE.match(line)), None)
     if at is None:
         return None
@@ -2477,7 +2478,7 @@ def _verify_reason(result):
         return reason
     chosen = None
     for stream in streams:
-        lines = [line.strip() for line in stream.splitlines() if line.strip()]
+        lines = [line.strip() for line in split_lines(stream) if line.strip()]
         if lines:
             chosen = _failure_line(stream) or lines[-1]
             break
@@ -2523,7 +2524,7 @@ def _tests_text(tests):
         counts = "no test summary"
     lines = [f"compiled tests: failed ({counts or '0 tests ran'})"]
     for failure in tests.get("failures", []):
-        message = "\n    ".join(_printable(failure["message"]).splitlines())
+        message = "\n    ".join(split_lines(_printable(failure["message"])))
         name = _printable(failure["name"])
         lines.append(f"  {name}: {message}" if message else f"  {name}")
     if tests.get("timed_out"):
@@ -2695,7 +2696,7 @@ def job(args):
     while (state := _job_state(path))["status"] == "running" and time.monotonic() < deadline:
         time.sleep(0.2)
     if state["status"] == "running":
-        log = (path / "log").read_text().splitlines()[-5:] if (path / "log").is_file() else []
+        log = split_lines((path / "log").read_text())[-5:] if (path / "log").is_file() else []
         state.update(progress=log, next=f"peeky job wait {state['job']}")
         _emit(
             state,

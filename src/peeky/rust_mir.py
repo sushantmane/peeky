@@ -39,6 +39,9 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from peeky.rust_ir import ir_string
+from peeky.textlines import split_lines
+
 MAX_MIR_BYTES = 64 * 1024 * 1024
 MAX_ITERATIONS = 10_000
 # The dataflow's budget per reachable block, beyond MAX_ITERATIONS in all.
@@ -2584,7 +2587,7 @@ def _top_level(text):
 
 def parse_body(text):
     """One `-Zdump-mir` body, or None when the file holds no function body."""
-    lines = text.splitlines()
+    lines = split_lines(text)
     start = next((i for i, line in enumerate(lines) if line.startswith("fn ")), None)
     if start is None or not (header := _HEADER.match(lines[start])):
         return None
@@ -2936,7 +2939,8 @@ class IrFunction:
 
 
 def _unquote(value):
-    return value[1:-1] if value and value.startswith('"') else value
+    """A metadata field's value: a quoted string's text (ir_string), else as written."""
+    return ir_string(value[1:-1]) if value and value.startswith('"') else value
 
 
 def ir_functions(path, files):

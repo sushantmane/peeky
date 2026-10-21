@@ -77,6 +77,7 @@ from peeky.rust_symbols import (
     without_numbered_structs,
 )
 from peeky.text_sets import text_kind
+from peeky.textlines import split_lines
 
 DEPS = "target/debug/deps"
 MIR_DIR = "target/peeky-mir"
@@ -238,10 +239,10 @@ def compiler_diagnostic(result, sources):
         return False
     # Cargo's stderr for an ordinary compile failure is only progress and its footer.
     if not all(
-        _CARGO_STDERR.fullmatch(line) for line in stderr.splitlines() if line.strip()
-    ) or not any(line.startswith("error: could not compile") for line in stderr.splitlines()):
+        _CARGO_STDERR.fullmatch(line) for line in split_lines(stderr) if line.strip()
+    ) or not any(line.startswith("error: could not compile") for line in split_lines(stderr)):
         return False
-    lines = stdout.splitlines()
+    lines = split_lines(stdout)
     try:
         final = json.loads(lines[-1])
     except (IndexError, ValueError, RecursionError):
@@ -286,7 +287,7 @@ def compiler_diagnostic(result, sources):
 
 def libtest_summary(result):
     """Interpret one bounded libtest run; anything but an explicit clean pass fails."""
-    lines = [line.strip() for line in result.get("stdout", "").splitlines() if line.strip()]
+    lines = [line.strip() for line in split_lines(result.get("stdout", "")) if line.strip()]
     summaries = [match for line in lines if (match := _SUMMARY.fullmatch(line))]
     # The harness prints its summary last; an earlier or extra summary is forged.
     if summaries and not _SUMMARY.fullmatch(lines[-1]):
@@ -336,7 +337,7 @@ def _libtest_failures(stdout, limit):
         return []
     names = [
         line.strip()
-        for line in listing.split("\n\n", 1)[0].splitlines()
+        for line in split_lines(listing.split("\n\n", 1)[0])
         if line.startswith("    ") and line.strip()
     ][: min(limit, 10)]
     failures = []

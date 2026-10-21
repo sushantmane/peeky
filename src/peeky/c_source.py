@@ -16,6 +16,7 @@ a macro whose expansion may hold an unclosed bracket or a `;` (`unsafe_macros`).
 """
 
 import bisect
+import codecs
 import re
 
 # An identifier, not the tail of a number or of another identifier (`1e5`).
@@ -407,7 +408,12 @@ class Preprocessed:
             if marker:
                 number = int(marker[1])
                 if marker[2] is not None:
-                    path = re.sub(rb"\\(.)", rb"\1", marker[2]).decode("utf-8", "replace")
+                    # clang writes an unprintable byte (any non-ASCII one) in octal,
+                    # `\342\200\250`, gcc as it is; both escape `\` and `"` (#179).
+                    try:
+                        path = codecs.escape_decode(marker[2])[0].decode("utf-8")
+                    except (ValueError, UnicodeDecodeError):
+                        path = "<unread>"
                     if path not in names:
                         names[path] = program(path)
                     name = names[path]

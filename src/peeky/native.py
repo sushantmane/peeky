@@ -44,6 +44,7 @@ from peeky.cxx_strings import libstdcxx_string, shows_text, string_class, text_l
 from peeky.digest import sha256_file
 from peeky.names import unicode_escape
 from peeky.text_sets import text_kind
+from peeky.textlines import split_lines
 
 MAX_METADATA = 2 * 1024 * 1024
 # Type-rich C++ units (iostream) carry megabytes of DIEs; read only by `describe`.
@@ -207,7 +208,7 @@ def _line_rows(text, workspace, declared, limit=MAX_METADATA, replaced=None, epi
         raise ValueError("Native line metadata exceeds limit")
     workspace = Path(workspace).resolve()
     inputs = {str((workspace / name).resolve()): name for name in declared}
-    counts = {name: len((workspace / name).read_text().splitlines()) for name in declared}
+    counts = {name: len(split_lines((workspace / name).read_text())) for name in declared}
     directories, files, current = {0: str(workspace)}, {}, None
     # {file id: declared name or None} for this table: one resolve per file, not per row.
     resolved = {}
@@ -234,7 +235,7 @@ def _line_rows(text, workspace, declared, limit=MAX_METADATA, replaced=None, epi
             rows.append(last[:3])
         group.clear()
 
-    for raw in text.splitlines():
+    for raw in split_lines(text):
         line = raw.strip()
         if line.startswith("debug_line["):
             table_count += 1
@@ -252,7 +253,7 @@ def _line_rows(text, workspace, declared, limit=MAX_METADATA, replaced=None, epi
             key = int(match[1])
             if key in directories and key != 0:
                 raise ValueError("Duplicate line directory")
-            directories[key] = json.loads(match[2])
+            directories[key] = _line_string(match[2])
         elif match := re.fullmatch(r"file_names\[\s*(\d+)\]:", line):
             current = int(match[1])
             if current in files:
@@ -261,7 +262,7 @@ def _line_rows(text, workspace, declared, limit=MAX_METADATA, replaced=None, epi
         elif match := re.fullmatch(r"name:\s*(\".*\")", line):
             if current is None:
                 raise ValueError("Missing line file identity")
-            files[current]["name"] = json.loads(match[1])
+            files[current]["name"] = _line_string(match[1])
         elif match := re.fullmatch(r"dir_index:\s*(\d+)", line):
             if current is None:
                 raise ValueError("Missing line file identity")
@@ -296,6 +297,15 @@ def _line_rows(text, workspace, declared, limit=MAX_METADATA, replaced=None, epi
     if not table_count:
         raise ValueError("Missing executable native debug symbol line information")
     return rows
+
+
+def _line_string(quoted):
+    """A line table's quoted name (`"main\\342\\200\\250x.c"`): dwarfdump escapes a
+    backslash, quote, tab and newline, and writes every other unprintable byte (any
+    non-ASCII one) in octal, which JSON does not read (#179)."""
+    if (name := _text(quoted)) is None:
+        raise ValueError("Unsupported DWARF line table name")
+    return name
 
 
 def parse_lines(text, workspace, declared, *, limit=MAX_METADATA):
@@ -357,7 +367,7 @@ def _dies(text):
 
 def _parse_dies(text):
     dies, stack, ranges = {}, [], None
-    for raw in text.splitlines():
+    for raw in split_lines(text):
         if ranges is not None:
             ranges.extend((int(lo, 16), int(hi, 16)) for lo, hi in _RANGE.findall(raw))
             if raw.rstrip().endswith("))") or not _RANGE.search(raw):
@@ -3062,7 +3072,7 @@ class NativeSession:
             return None
         if ("text", path) not in cache:
             try:
-                cache[("text", path)] = Path(path).read_text(errors="replace").splitlines()
+                cache[("text", path)] = split_lines(Path(path).read_text(errors="replace"))
             except OSError:
                 cache[("text", path)] = []
         lines = cache[("text", path)]
@@ -5427,7 +5437,7 @@ class NativeSession:
         if any(address == ret for address, _, _ in listed):
             cache["read"].append((listed[0][0], listed[-1][0], listed))
             return listed
-        said = next((line.strip() for line in text.splitlines() if "error" in line.lower()), "")
+        said = next((line.strip() for line in split_lines(text) if "error" in line.lower()), "")
         failure = (
             f"LLDB did not disassemble its caller ({said[:200]})"
             if said
