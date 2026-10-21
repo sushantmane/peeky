@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from peeky.adapters import PythonAdapter, locals_only
+from peeky.assembler import ASSEMBLER_REFUSAL, c_refusal
 from peeky.build import (
     ArtifactSpec,
     BuildCommandError,
@@ -2449,12 +2450,21 @@ class NativeTarget:
         # Keep objects until dsymutil finishes; single-step clang removes its
         # temporary objects and a subsequent dsymutil can erase valid symbols.
         objects = tuple(f"peeky-object-{index}.o" for index in range(len(self.sources)))
+        # Each unit preprocessed first (as `preprocess_argv`), so that inline assembly
+        # that can read a file, which no dependency file lists, is refused before
+        # anything is compiled (#180; `before_command`).
+        units = tuple(f"peeky-unit-{index}.i" for index in range(len(self.sources)))
+        commands = [
+            Command((compiler, *flags, "-E", source, "-o", unit))
+            for source, unit in zip(self.sources, units)
+        ]
         # -MD lists every file each compile read: undeclared or outside files must not
         # escape provenance (`#include "/elsewhere/x.h"`, SDK and system headers).
-        commands = [
+        compiles = [
             Command((compiler, *flags, "-MD", "-MF", obj + ".d", "-c", source, "-o", obj))
             for source, obj in zip(self.sources, objects)
         ]
+        commands += compiles
         link_flags = (*driver, *(("-isysroot", str(sdk)) if sysroot is not None else ()))
         if sys.platform == "linux":
             link_flags = (*link_flags, "-Wl,--build-id=sha1")
@@ -2477,6 +2487,25 @@ class NativeTarget:
             probes.append(Command((dsymutil, "--version")))
         elif sys.platform != "linux":
             raise ValueError("Native target supports Linux and macOS hosts only")
+
+        def before_command(workspace, results, command):
+            if command == compiles[0]:
+                for source, unit in zip(self.sources, units):
+                    path = workspace / unit
+                    if path.is_symlink() or not path.is_file():
+                        raise RuntimeError(f"The compiler wrote no preprocessed text of {source}")
+                    if path.stat().st_size > MAX_UNIT:
+                        refused = ValueError(
+                            f"{ASSEMBLER_REFUSAL}: Peeky cannot rule it out in {source}, whose "
+                            f"preprocessed text is over {MAX_UNIT >> 20} MiB"
+                        )
+                        refused.before_launch = True
+                        raise refused
+                    refused = c_refusal(path.read_bytes(), self.language == "cpp")
+                    path.unlink()
+                    if refused is not None:
+                        raise refused
+
         try:
             prepared = prepare(
                 BuildRecipe(
@@ -2489,6 +2518,7 @@ class NativeTarget:
                 root,
                 edit=edit,
                 deadline=deadline,
+                before_command=before_command,
             )
         except BuildCommandError as exc:
             if exc.command not in compile_commands:
@@ -2606,6 +2636,8 @@ class NativeTarget:
 
 
 MAX_EXTERNAL_INPUTS = 4096
+# The most preprocessed text of one unit Peeky reads for inline assembly (#180).
+MAX_UNIT = 64 * 1024 * 1024
 
 
 def external_inputs(depfiles, workspace, declared):
