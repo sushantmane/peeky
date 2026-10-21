@@ -1712,6 +1712,22 @@ def _trampoline(name):
     return bare in _TRAMPOLINES
 
 
+# A function of the C++ standard library, by its name before its parameters (after a
+# function template's return type: `void std::_Destroy<Noisy>(Noisy*)`).
+_LIBRARY_FUNCTION = re.compile(r"(?:^|[\s*&])(?:::)?(?:std|__gnu_cxx|__gnu_debug)::")
+
+
+def _library_frame(frame):
+    """Whether a frame runs a function of the C++ standard library (`std::__1::vector<…>
+    ::clear()`, libstdc++'s `std::_Rb_tree_insert_and_rebalance(…)`, a module's
+    `libc++.1.dylib`std::…`), which may be part-way through changing a container (#181);
+    a frame with no name counts as one."""
+    name = (frame or {}).get("name")
+    if not isinstance(name, str) or not name.strip():
+        return True
+    return bool(_LIBRARY_FUNCTION.search(name.rpartition("`")[2].split("(", 1)[0]))
+
+
 _SHADOWED = re.compile(r"(.+) @ [^:]+:([0-9]+)")
 # The same, with the file: (name, file, line).
 _NAMED_AT = re.compile(r"(.+) @ ([^:]+):([0-9]+)")
@@ -3149,23 +3165,44 @@ class NativeSession:
             return shown
         return {**(shown or {}), **tidied}
 
-    def preview_value(self, variable, fetch, read, pointee=False, frame=None, steps=None):
-        """A C or C++ struct's, class's or fixed-size array's preview (#136,
-        ``native_previews``), or None to keep the debugger's text. ``frame`` and
-        ``steps`` (the root local's name, then each child's the debugger gives) locate
-        the value, whose type the build's debug information gives; without it there is
-        no preview, nor in an optimized build (a struct with an address may hold values
-        the optimizer has not stored yet). ``fetch(reference, count)`` lists a value's
-        first children within the worker's preview budget; ``read`` reads memory (or is
-        None), for the strings among its members. With ``pointee``, the preview of
-        what the pointer ``variable`` points at, which a selector asked for (`p[0]`):
-        lldb-dap lists it as the pointer's children."""
+    def preview_value(
+        self,
+        variable,
+        fetch,
+        read,
+        pointee=False,
+        frame=None,
+        steps=None,
+        stack=None,
+        deeper=None,
+        threads=None,
+    ):
+        """A C or C++ struct's, class's, fixed-size array's or standard container's
+        preview (#136, #181, ``native_previews``), or None to keep the debugger's text.
+        ``frame`` and ``steps`` (the root local's name, then each child's the debugger
+        gives) locate the value, whose type the build's debug information gives; without
+        it there is no preview, nor in an optimized build (a struct with an address may
+        hold values the optimizer has not stored yet). ``fetch(reference, count)`` lists
+        a value's first children within the worker's preview budget; ``read`` reads
+        memory (or is None), for the strings among its members. With ``pointee``, the
+        preview of what the pointer ``variable`` points at, which a selector asked for
+        (`p[0]`): lldb-dap lists it as the pointer's children. ``stack``: the stop's
+        frames as listed (innermost first), ``deeper()`` more of them, ``threads()`` how
+        many threads the program has: a container shows its elements only where no
+        standard-library call may be part-way through changing it
+        (``containers_settled``)."""
         from peeky.native_previews import preview
 
         if getattr(getattr(self, "target", None), "language", None) not in ("c", "cpp"):
             return None
-        typed = self._typed(frame, steps)
-        if typed is None:
+        walked = self._typed(frame, steps, walked=True)
+        if walked is None:
+            return None
+        typed, indirect, contained = walked
+        settled = self.containers_settled(frame, indirect or pointee, stack, deeper, threads)
+        if contained and not settled:
+            # An element of a standard container a library call may be changing (an
+            # element `clear()` has destroyed already): not previewed (#181).
             return None
         if getattr(self.target, "optimization", "O0") != "O0" and not (
             not pointee
@@ -3184,7 +3221,13 @@ class NativeSession:
             typed = typed.target()
             if typed is None or typed.kind() in ("pointer", "reference"):
                 return None
-            variable = {**variable, "value": f"{variable.get('type')} @ {address[0]}"}
+            summary = str(variable.get("value") or "")[address.end() :].strip()
+            if typed.container() is not None and summary:
+                # The debugger's summary of a standard container follows the address
+                # (`0x… size=3`), and it lists the container's elements (#181).
+                variable = {**variable, "value": summary}
+            else:
+                variable = {**variable, "value": f"{variable.get('type')} @ {address[0]}"}
 
         def text(child):
             shown = self.string_value(child, lambda reference: fetch(reference, 64), read)
@@ -3192,7 +3235,35 @@ class NativeSession:
                 return None
             return shown["value"] if shown and "value" in shown else child.get("value")
 
-        return preview(variable, fetch, typed, text)
+        return preview(variable, fetch, typed, text, containers=settled)
+
+    def containers_settled(self, frame, indirect, stack, deeper=None, threads=None):
+        """Whether a standard container a value of ``frame`` holds is whole (#181): the
+        program runs one thread (a stop pauses any other wherever it is, perhaps inside
+        a `push_back` on a container this one shares); no standard-library function is
+        running between the stop and ``frame`` (a `push_back` or `clear` there may be
+        part-way through its change, with an element's constructor or destructor of the
+        program's on top); and, where the value is reached through a pointer or
+        reference (``indirect``) or is no automatic of the frame, none anywhere on the
+        stack (it may be what a caller's `clear` changes). ``stack``: the frames as
+        listed (innermost first); ``deeper()``: up to 64 of them, where the ten listed
+        may not be all; ``threads()``: how many threads the debugger lists."""
+        if threads is None or threads() != 1:
+            return False
+        frames = list(stack or [])
+        ids = [each.get("id") for each in frames]
+        if frame is None or ids.count(frame.get("id")) != 1:
+            return False
+        if any(_library_frame(each) for each in frames[: ids.index(frame.get("id")) + 1]):
+            return False
+        if not indirect:
+            return True
+        if len(frames) >= 10:
+            frames = list(deeper() if deeper else [])
+            if not frames or len(frames) >= 64:
+                # More frames than are read: one of them may be the library's.
+                return False
+        return not any(_library_frame(each) for each in frames)
 
     def member_value(self, variable, frame, steps):
         """How to show a field LLDB reads wrongly, or None to keep its text (#136): a
@@ -3218,11 +3289,14 @@ class NativeSession:
             return {"unavailable": True, "reason": reason}
         return {"value": shown}
 
-    def _typed(self, frame, steps):
+    def _typed(self, frame, steps, walked=False):
         """``native_previews.Typed`` of the value ``steps`` name in ``frame`` (its root
         local, then the debugger's child names), from the build's debug information, or
         None where it cannot be told (no debug information read, a name declared twice
-        with two types, a child the type does not have)."""
+        with two types, a child the type does not have). With ``walked``, (Typed,
+        whether the path goes through a pointer or reference, or starts at a local that
+        is no automatic or parameter of the frame, whether it goes through a standard
+        container's element)."""
         from peeky.fields import Unsettable
         from peeky.native_previews import Typed
 
@@ -3233,14 +3307,19 @@ class NativeSession:
             return None
         try:
             shown = self._shown_where(steps[0], self._block_pc(frame))
-            offset, _ = self._declared_type(function["types"], steps[0], shown)
+            offset, framed = self._declared_type(function["types"], steps[0], shown)
         except Unsettable:
             return None
         typed = Typed(self.fields, offset)
+        indirect, contained = not framed, False
         for step in steps[1:]:
+            indirect = indirect or typed.kind() in ("pointer", "reference")
+            contained = contained or typed.container() is not None
             typed = typed.child(step)
             if typed is None:
                 return None
+        if walked:
+            return typed, indirect or typed.kind() in ("pointer", "reference"), contained
         return typed
 
     def _string_class(self, kind):

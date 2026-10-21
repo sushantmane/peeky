@@ -878,7 +878,7 @@ def test_previews_are_made_only_where_asked_and_within_their_budget(tmp_path):
 
     located = []
 
-    def preview_value(variable, fetch, read, frame=None, steps=None):
+    def preview_value(variable, fetch, read, frame=None, steps=None, **stop):
         # Where the value is: its frame, and the path of names its type is found by.
         located.append((frame, steps))
         listed = fetch(variable["variablesReference"], 64)

@@ -459,3 +459,222 @@ def test_a_selected_field_is_previewed_alone_or_left_as_read():
         "unavailable": True,
     }
     assert _previewed(worker, stop, node("x", "1")) == node("x", "1") and worker.calls == []
+
+
+def container(name, *parameters, members=()):
+    """A standard container's fields.type_graph record: its template arguments as
+    ("type", offset) or ("value", constant)."""
+    rows = tuple((m[0], m[1], 0, False, None, None) for m in members)
+    shown = tuple(
+        ("type", f"_T{i}", p[1], None) if p[0] == "type" else ("value", f"_N{i}", None, p[1])
+        for i, p in enumerate(parameters)
+    )
+    return ("record", name, "class", 24, None, rows, (), False, False, "std", (), name, shown)
+
+
+CONTAINERS = {
+    **GRAPH,
+    50: container("std::__1::vector<int, std::__1::allocator<int> >", ("type", 1), ("type", 99)),
+    51: container("std::vector<Pt, std::allocator<Pt> >", ("type", 10)),
+    52: container("std::map<int, Pt>", ("type", 1), ("type", 10)),
+    53: container("std::__1::set<int>", ("type", 1)),
+    54: container(
+        "std::__1::array<int, 3UL>", ("type", 1), ("value", 3), members=[("__elems_", 18)]
+    ),
+    # libc++'s `std::array<int, 0>` holds bytes, not ints; a `_Size` the array does not have.
+    55: container(
+        "std::__1::array<int, 0UL>", ("type", 1), ("value", 0), members=[("__elems_", 19)]
+    ),
+    56: container("std::array<int, 4UL>", ("type", 1), ("value", 4), members=[("_M_elems", 18)]),
+    57: ("reference", "", 50),
+    58: ("typedef", "Row", 50),
+    59: record("Bag", [("v", 50), ("n", 1)]),
+    60: container("std::multimap<int, int>", ("type", 1), ("type", 1)),
+    61: container("std::vector<std::vector<int> >", ("type", 50)),
+    62: ("pointer", "", 50),
+}
+
+
+def holding(offset):
+    return Typed(CONTAINERS, offset)
+
+
+def elements(*values, at=100):
+    return [node(f"[{i}]", value, "int", 0) for i, value in enumerate(values)]
+
+
+def test_a_vector_shows_its_first_elements_as_its_element_type_says():
+    # #181: `have` showed `size=3`, and only a session read `have[2] = ""`.
+    fetch = Debugger({1: elements("1", "2", "3")})
+    shown = preview(node("v", "size=3", "std::vector<int>", 1), fetch, holding(50), text)
+    assert shown == "size=3 [1, 2, 3]" and fetch.requests == [(1, 3)]
+    # By a typedef's name too; empty; and past ITEMS elements, `…`.
+    assert preview(node("r", "size=0", "Row", 1), Debugger({1: []}), holding(58), text) == (
+        "size=0 []"
+    )
+    many = Debugger({1: elements(*[str(i) for i in range(20)])})
+    shown = preview(node("v", "size=20", "std::vector<int>", 1), many, holding(50), text)
+    assert shown == "size=20 [" + ", ".join(str(i) for i in range(ITEMS)) + ", …]"
+    assert many.requests == [(1, ITEMS)]
+    structs = Debugger({1: [node("[0]", "Pt @ 0x10", "Pt", 2)], 2: PT})
+    shown = preview(node("v", "size=1", "std::vector<Pt>", 1), structs, holding(51), text)
+    assert shown == "size=1 [{x = 1, y = 2}]"
+    nested = Debugger({1: [node("[0]", "size=2", "std::vector<int>", 2)], 2: elements("7", "8")})
+    shown = preview(node("vv", "size=1", "", 1), nested, holding(61), text)
+    assert shown == "size=1 [size=2 [7, 8]]"
+
+
+def test_a_container_the_debugger_lists_otherwise_keeps_its_summary():
+    # Fewer elements than its size says, the class's own members, or no `size=N`.
+    short = Debugger({1: elements("1", "2")})
+    assert preview(node("v", "size=3", "", 1), short, holding(50), text) is None
+    members = Debugger({1: [node("__begin_", "0x10", "int *", 0)]})
+    assert preview(node("v", "size=1", "", 1), members, holding(50), text) is None
+    for value in ("size=1 (capacity 4)", "std::vector<int> @ 0x10", "size=-1"):
+        assert preview(node("v", value, "", 1), Debugger({1: []}), holding(50), text) is None
+    # A struct where the type says a number: not this container's elements.
+    wrong = Debugger({1: [node("[0]", "Pt @ 0x10", "Pt", 2)]})
+    assert preview(node("v", "size=1", "", 1), wrong, holding(50), text) is None
+    # A multimap is not previewed: no key reads one entry of it.
+    entries = Debugger({1: [node("[0]", "pair @ 0x10", "", 2)], 2: [node("first", "1")]})
+    assert preview(node("m", "size=1", "", 1), entries, holding(60), text) is None
+
+
+def test_maps_show_keys_and_values_and_sets_their_elements():
+    fetch = Debugger(
+        {
+            1: [node("[0]", "pair @ 0x10", "", 2), node("[1]", "pair @ 0x20", "", 3)],
+            2: [node("first", "1"), node("second", "Pt @ 0x14", "Pt", 4)],
+            3: [node("first", "5"), node("second", "Pt @ 0x24", "Pt", 4)],
+            4: PT,
+        }
+    )
+    shown = preview(node("m", "size=2", "std::map<int, Pt>", 1), fetch, holding(52), text)
+    assert shown == "size=2 {1: {x = 1, y = 2}, 5: {x = 1, y = 2}}"
+    odd = Debugger({1: [node("[0]", "pair @ 0x10", "", 2)], 2: [node("__cc_", "", "", 3)]})
+    assert preview(node("m", "size=1", "", 1), odd, holding(52), text) is None
+    fetch = Debugger({1: elements("1", "3")})
+    assert preview(node("s", "size=2", "", 1), fetch, holding(53), text) == "size=2 {1, 3}"
+
+
+def test_a_std_array_is_read_by_its_c_array_where_the_debugger_lists_that():
+    fetch = Debugger({1: [node("__elems_", "int[3] @ 0x10", "int[3]", 2)], 2: elements("4", "5")})
+    fetch.children[2].append(node("[2]", "6"))
+    shown = preview(node("a", "std::array<int, 3> @ 0x10", "", 1), fetch, holding(54), text)
+    assert shown == "size=3 [4, 5, 6]"
+    for offset in (55, 56):
+        assert holding(offset).array_member() is None
+        assert preview(node("a", "x @ 0x10", "", 1), fetch, holding(offset), text) is None
+
+
+def test_a_containers_children_are_typed_as_its_arguments_say():
+    assert holding(51).child("[7]").kind() == "record"
+    entry = holding(52).child("[0]")
+    assert entry.kind() == "entry" and entry.child("first").scalar()[0] == "int"
+    assert entry.child("second").kind() == "record" and entry.child("third") is None
+    assert holding(54).child("__elems_").count() == 3 and holding(54).child("_M_elems") is None
+    assert holding(60).child("[0]") is None and holding(50).child("__begin_") is None
+    assert holding(62).child("[1]").scalar()[0] == "int"
+
+
+def test_inside_a_struct_and_through_a_reference():
+    fetch = Debugger(
+        {1: [node("v", "size=2", "std::vector<int>", 2), node("n", "3")], 2: elements("1", "2")}
+    )
+    bag = node("b", "Bag @ 0x10", "Bag", 1)
+    assert preview(bag, fetch, holding(59), text) == "{v = size=2 [1, 2], n = 3}"
+    # Where a library call may be changing it, the summary alone.
+    assert preview(bag, fetch, holding(59), text, containers=False) == "{v = size=2, n = 3}"
+    root = node("v", "size=2", "std::vector<int>", 2)
+    assert preview(root, fetch, holding(50), text, containers=False) is None
+    reference = node("r", "0x0000000000001000 size=2", "std::vector<int> &", 2)
+    assert preview(reference, fetch, holding(57), text) == "0x0000000000001000 size=2 [1, 2]"
+
+
+def stack(*names):
+    return [{"id": i + 1, "name": name} for i, name in enumerate(names)]
+
+
+def one():
+    return 1
+
+
+@pytest.mark.parametrize(
+    "name, library",
+    [
+        ("main", False),
+        ("Noisy::~Noisy()", False),
+        ("void std::_Destroy<Noisy>(Noisy*)", True),
+        ("std::__1::vector<Noisy, std::__1::allocator<Noisy>>::clear[abi:ne180100]()", True),
+        ("libstdc++.so.6`std::_Rb_tree_insert_and_rebalance(bool, ...)", True),
+        ("__gnu_cxx::new_allocator<int>::deallocate(int*, unsigned long)", True),
+        ("sum(std::vector<int> const&)", False),
+        ("void apply<std::vector<int>>(std::vector<int>&)", False),
+        ("", True),
+    ],
+)
+def test_a_standard_library_frame_is_told_by_its_name(name, library):
+    from peeky.native import _library_frame
+
+    assert _library_frame({"name": name}) is library
+
+
+def test_a_container_is_read_only_where_no_library_call_may_be_changing_it():
+    native = session()
+    frames = stack("Noisy::~Noisy()", "void std::_Destroy<Noisy>(Noisy*)", "main", "start")
+    caller, inner = frames[2], frames[0]
+    # Below a library call (`clear()` destroying elements): not in the caller's frame.
+    assert native.containers_settled(caller, False, frames, threads=one) is False
+    # The destructor's own values are its own; through a pointer they may be the vector.
+    assert native.containers_settled(inner, False, frames, threads=one) is True
+    assert native.containers_settled(inner, True, frames, threads=one) is False
+    plain = stack("count(Owner const&)", "main", "start")
+    assert native.containers_settled(plain[0], True, plain, threads=one) is True
+    # No frames, or more than can be read: not read.
+    assert native.containers_settled(inner, False, None, threads=one) is False
+    full = stack(*["f"] * 10)
+    assert native.containers_settled(full[0], True, full, lambda: stack(*["f"] * 64), one) is False
+    assert native.containers_settled(full[0], True, full, lambda: stack(*["f"] * 12), one) is True
+    deep = stack(*["f"] * 11, "std::thread::_State_impl<…>::_M_run()")
+    assert native.containers_settled(full[0], True, full, lambda: deep, one) is False
+    # Another thread may be inside a `push_back` on a container this one shares.
+    assert native.containers_settled(plain[0], False, plain, threads=lambda: 2) is False
+    assert native.containers_settled(plain[0], False, plain, threads=lambda: None) is False
+    assert native.containers_settled(plain[0], False, plain) is False
+
+
+def test_an_element_of_a_container_a_library_call_may_be_changing_is_not_previewed():
+    native = session(fields=CONTAINERS)
+    native.declarations[0]["types"]["vp"] = {(51, "automatic", None)}
+    native.declarations[0]["types"]["v"] = {(50, "automatic", None)}
+    fetch = Debugger({1: PT, 2: elements("1")})
+    element = node("[0]", "Pt @ 0x10", "Pt", 1)
+    frames = stack("Noisy::~Noisy()", "void std::_Destroy<Noisy>(Noisy*)", "main")
+    shown = native.preview_value(element, fetch, None, frame=frames[2], steps=["vp", "[0]"])
+    assert shown is None
+    shown = native.preview_value(
+        element, fetch, None, frame=frames[2], steps=["vp", "[0]"], stack=frames, threads=one
+    )
+    assert shown is None
+    settled = stack("main", "start")
+    shown = native.preview_value(
+        element, fetch, None, frame=settled[0], steps=["vp", "[0]"], stack=settled, threads=one
+    )
+    assert shown == "{x = 1, y = 2}"
+    vector = node("v", "size=1", "std::vector<int>", 2)
+    shown = native.preview_value(
+        vector, fetch, None, frame=settled[0], steps=["v"], stack=settled, threads=one
+    )
+    assert shown == "size=1 [1]"
+    # An optimized build: the summary alone.
+    optimized = session(optimization="O2", fields=CONTAINERS)
+    optimized.declarations = native.declarations
+    shown = optimized.preview_value(
+        vector, fetch, None, frame=settled[0], steps=["v"], stack=settled, threads=one
+    )
+    assert shown is None
+    # Another thread, which may be changing it: the summary alone.
+    shown = native.preview_value(
+        vector, fetch, None, frame=settled[0], steps=["v"], stack=settled, threads=lambda: 3
+    )
+    assert shown is None

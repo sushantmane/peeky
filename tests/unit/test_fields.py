@@ -695,3 +695,51 @@ def test_a_container_field_is_found_only_through_plain_records():
             held_container(graph, 1, "self", list(steps), dereference=True)
     with pytest.raises(Unsettable, match="`self` is a pointer"):
         held_container(graph, 1, "self", ["values"])
+
+
+CONTAINERS = dump(
+    (0x0B, 0, "DW_TAG_compile_unit", {"DW_AT_name": '"c.cpp"'}),
+    (0x10, 1, "DW_TAG_base_type", base("int", "DW_ATE_signed", "0x04")),
+    (0x14, 1, "DW_TAG_structure_type", {"DW_AT_name": '"Pt"', "DW_AT_byte_size": "0x04"}),
+    (0x18, 2, "DW_TAG_member", member("x", 0x10, 0)),
+    (0x20, 1, "DW_TAG_namespace", {"DW_AT_name": '"std"'}),
+    (0x24, 2, "DW_TAG_namespace", {"DW_AT_name": '"__1"'}),
+    (0x28, 3, "DW_TAG_class_type", {"DW_AT_name": '"vector<Pt>"', "DW_AT_byte_size": "0x18"}),
+    (
+        0x2C,
+        4,
+        "DW_TAG_template_type_parameter",
+        {"DW_AT_type": "0x00000014", "DW_AT_name": '"_Tp"'},
+    ),
+    (0x30, 4, "DW_TAG_member", member("__begin_", 0x40, 0)),
+    (0x34, 3, "DW_TAG_class_type", {"DW_AT_name": '"array<int, 3UL>"', "DW_AT_byte_size": "0x0c"}),
+    (
+        0x38,
+        4,
+        "DW_TAG_template_type_parameter",
+        {"DW_AT_type": "0x00000010", "DW_AT_name": '"_Tp"'},
+    ),
+    (
+        0x3C,
+        4,
+        "DW_TAG_template_value_parameter",
+        {"DW_AT_name": '"_Size"', "DW_AT_const_value": "3"},
+    ),
+    (0x40, 1, "DW_TAG_pointer_type", {"DW_AT_type": "0x00000014"}),
+    (0x44, 1, "DW_TAG_structure_type", {"DW_AT_name": '"Hold<Pt>"', "DW_AT_byte_size": "0x04"}),
+    (0x48, 2, "DW_TAG_template_type_parameter", {"DW_AT_type": "0x00000014", "DW_AT_name": '"T"'}),
+    (0x4C, 2, "DW_TAG_member", member("n", 0x10, 0)),
+)
+
+
+def test_a_standard_containers_template_arguments_type_its_elements():
+    # #181: a vector holds its elements through a pointer, so only its `_Tp` reaches them.
+    graph = type_graph(_parse_dies(CONTAINERS), (0x28, 0x34, 0x44), CPP_LIBRARIES)
+    vector, array = graph[0x28], graph[0x34]
+    assert vector[11] == "std::__1::vector<Pt>" and vector[12] == (("type", "_Tp", 0x14, None),)
+    assert array[12] == (("type", "_Tp", 0x10, None), ("value", "_Size", None, 3))
+    assert 0x14 in graph and graph[0x14][0] == "record"
+    # The program's own templates keep their arguments without walking them.
+    assert graph[0x44][12] == (("type", "T", 0x14, None),)
+    alone = type_graph(_parse_dies(CONTAINERS), (0x44,), CPP_LIBRARIES)
+    assert 0x14 not in alone

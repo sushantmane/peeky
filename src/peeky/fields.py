@@ -30,6 +30,16 @@ _RECORDS = {
 # own namespace `core`), and Rust's crates.
 CPP_LIBRARIES = frozenset({"std", "__gnu_cxx", "__gnu_debug", "__cxxabiv1"})
 RUST_LIBRARIES = frozenset({"std", "core", "alloc"})
+# The C++ standard containers Peeky previews by their elements (#181), by qualified name
+# (libc++'s `std::__1::vector<…>`, libstdc++'s `std::vector<…>`, `std::__debug::map<…>`).
+CXX_CONTAINER = re.compile(
+    r"std::(?:__\w+::)*(vector|array|deque|list|map|unordered_map|set|multiset|"
+    r"unordered_set|unordered_multiset)<"
+)
+_PARAMETERS = {
+    "DW_TAG_template_type_parameter": "type",
+    "DW_TAG_template_value_parameter": "value",
+}
 # Integer-encoded character types: a debugger shows their values as characters.
 _CHARACTERS = frozenset({"wchar_t", "char8_t", "char16_t", "char32_t"})
 _SELECTABLE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
@@ -209,11 +219,24 @@ def type_graph(dies, offsets, libraries, limit=MAX_TYPES, pointees=False):
             graph[offset] = ("array", name, target, tuple(counts) if known else None, variable)
             pending.append(target)
         elif tag in _RECORDS:
-            members, holds, variant, bases = [], [], False, []
+            members, holds, variant, bases, parameters = [], [], False, [], []
             for child in die["children"]:
                 member = dies[child]
                 if member["tag"] == "DW_TAG_variant_part":
                     variant = True
+                    continue
+                if member["tag"] in _PARAMETERS:
+                    # A class template's arguments: a standard container's element type
+                    # (#181), the `_Tp` of `std::vector<_Tp, _Allocator>`.
+                    own = member["attrs"]
+                    parameters.append(
+                        (
+                            _PARAMETERS[member["tag"]],
+                            _text(own.get("DW_AT_name")),
+                            _target(own.get("DW_AT_type")),
+                            _number(own.get("DW_AT_const_value")),
+                        )
+                    )
                     continue
                 if member["tag"] == "DW_TAG_inheritance":
                     holds.append(_target(member["attrs"].get("DW_AT_type")))
@@ -253,8 +276,15 @@ def type_graph(dies, offsets, libraries, limit=MAX_TYPES, pointees=False):
                 # Its qualified name (`alloc::vec::Vec<i64, alloc::alloc::Global>`), which
                 # picks a Rust container's layout (#156).
                 _qualified(dies, offset) or name,
+                # Its template arguments: ("type", name, type offset, None) or ("value",
+                # name, type offset, constant) (#181).
+                tuple(parameters),
             )
             pending.extend(kind for kind in holds if kind is not None)
+            if graph[offset][9] and CXX_CONTAINER.match(graph[offset][11]):
+                # A standard container's elements (and a map's keys and values), which
+                # its members reach only through pointers: their previews' types (#181).
+                pending.extend(p[2] for p in parameters[:2] if p[0] == "type" and p[2])
         else:
             graph[offset] = ("other", tag)
     return graph
