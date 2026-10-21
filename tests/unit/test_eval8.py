@@ -169,11 +169,15 @@ def test_diff_compares_each_hits_values_by_selector(store):
     saved(store, [(1, "v", "1"), (2, "v", "1"), (3, "v", "1"), (3, "x", "None")])
     (note,) = evidence.run_query(store, "diff")["notes"]
     assert note.startswith("the runs' values differ at 2 of 3 hits"), note
+    # A selector only one run captured is not a difference at every hit (review 3).
+    saved(store, [(1, "v", "1"), (2, "v", "1"), (3, "v", "1")])
+    saved(store, [(n, s, v) for n in (1, 2, 3) for s, v in (("v", "1"), ("w", "5"))])
+    assert "notes" not in evidence.run_query(store, "diff")
     # The same values in the same order at other hits are not "in another order".
     saved(store, [(1, "x", "2"), (2, "x", "3"), (3, "v", "1")])
     saved(store, [(1, "v", "1"), (2, "x", "2"), (3, "x", "3")])
     (note,) = evidence.run_query(store, "diff")["notes"]
-    assert note.startswith("runs 5 and 6 saw `x`'s values at other hits"), note
+    assert note.startswith("runs 7 and 8 saw `x`'s values at other hits"), note
 
 
 def test_diff_and_compare_name_the_runs_labels(store):

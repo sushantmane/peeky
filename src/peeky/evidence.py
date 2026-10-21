@@ -1649,11 +1649,12 @@ def _structure_apart(path, run):
         limit=MAX_ROWS,
     )["rows"]
     a, b = run["a"], run["b"]
-    places, values = {a: {}, b: {}}, {a: {}, b: {}}
+    places, values, captured = {a: {}, b: {}}, {a: {}, b: {}}, {a: set(), b: set()}
     for row in rows:
         places[row["run_id"]].setdefault(
             row["hit"], (row["function"], row["instance"], row["line"])
         )
+        captured[row["run_id"]].add(row["selector"])
         if row["value"] is not None:
             masked = _no_addresses(row["value"], row["language"])
             values[row["run_id"]].setdefault(row["selector"], {})[row["hit"]] = (
@@ -1711,10 +1712,10 @@ def _structure_apart(path, run):
             f"a hit need not be the same moment in both; {join}"
         ]
     # Each selector's value at a hit, by name: `left=A, right=B` against `left=B, right=A`
-    # differs (review 2 of PR #189). A selector with no value there is `missing`, which
-    # no text equals.
+    # differs (review 2 of PR #189). Only selectors both runs captured (`diff` lists the
+    # others once); one with no value at a hit is `missing`, which no text equals.
     missing = object()
-    selectors = set(values[a]) | set(values[b])
+    selectors = captured[a] & captured[b]
     differ = [
         hit
         for hit in common
