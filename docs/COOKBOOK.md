@@ -155,16 +155,16 @@ peeky queries hits
 ```
 
 ```
-selector  hit  line  value  error  changed
-best      1    6     0      NULL   NULL
-best      2    6     0      NULL   0
-best      3    6     0      NULL   0
-value     1    6     -3     NULL   NULL
-value     2    6     -1     NULL   1
-value     3    6     -2     NULL   1
+selector  hit  line  value  error  caveat  changed
+best      1    6     0      NULL   NULL    NULL
+best      2    6     0      NULL   NULL    0
+best      3    6     0      NULL   NULL    0
+value     1    6     -3     NULL   NULL    NULL
+value     2    6     -1     NULL   NULL    1
+value     3    6     -2     NULL   NULL    1
 ```
 
-A hit where the selector has no value shows NULL with the reason in `error`, and `changed` is NULL next to it: a missing value is never compared as one.
+A hit where the selector has no value shows NULL with the reason in `error`, and `changed` is NULL next to it: a missing value is never compared as one. Nor is a qualified one: `caveat` names a view that qualifies the value (`stale`, `unproven`, `opaque`, `budget-exhausted`) or `note` for a row the probe marked `[note]` (a C local's leftovers on a `do` body's first line; `queries run` shows the note), and `changed` is NULL next to it too.
 
 `best` starts at 0 and never drops to a negative value, so the running maximum of all-negative input is wrong.
 
@@ -297,10 +297,11 @@ run_a  run_b  hit   phase     selector  value_a                        value_b  
 1. **What the runs did and how they differed**, one row each where it applies: `(status)` and `(output)` when the runs' outcomes or outputs differ; `(edit)` when one run built a candidate edit; `(source)` when two runs that are not candidates ran different source text (another copy of the file); `(line)` when the runs stopped at different lines (their values then differ partly because of where they were read); `(args)` when they ran with different program arguments; `(sets)` when they made different interventions. Check these rows before crediting an edit with a difference.
 2. **Real differences**, in hit order and then in `--capture` order: the first of them is the first divergence.
 3. Values that only one run's `--set` changed (`intervention only in run b`).
-4. Values that differ only in heap or stack addresses (`note: addresses only`, for example a C string's pointer; NULL is never treated as an address).
-5. Last, one row per selector that only one run asked for (`only in run a`, with its first hit's value).
+4. Values a view or a note qualifies in either run (`note: qualified (run a: note, run b: note): not evidence by itself`): a C local's leftovers on a `do` body's first line, a moved Rust local's bytes (`stale`). Two runs' leftovers differ with anything that touched the stack before, so such a row is not a divergence of the program; `queries run` shows each note. Whatever else a row says, a qualified value's note says so too, and the row ranks here: `missing in run b; qualified (run a: note)`, `intervention only in run a; qualified (run a: note)`.
+5. Values that differ only in heap or stack addresses (`note: addresses only`, for example a C string's pointer; NULL is never treated as an address). Text inside quotes is the program's data, never an address: `"0x00000001deadbeef"` in a `char[32]` is a real difference.
+6. Last, one row per selector that only one run asked for (`only in run a`, with its first hit's value).
 
-The `(output)` row shows each output from just before the first character that differs (`output differs at line 4, column 13`, counted from 1), so after a `--set` it shows the intervention's effect. Hits that one run never reached say `missing in run b`. A value whose type changed (an edit to `long long`) says `type unsigned int -> long long`. `diff` compares the last two runs unless you name them: `--param a=1 --param b=5`. Comparing needs two saved runs; with fewer, the query says so. `queries compare` shows every value side by side with the same notes. Labels are free text, stored as given.
+The `(output)` row shows each output from just before the first character that differs (`output differs at line 4, column 13`, counted from 1), so after a `--set` it shows the intervention's effect. Hits that one run never reached say `missing in run b`. A value whose type changed (an edit to `long long`) says `type unsigned int -> long long`. `diff` compares the last two runs unless you name them: `--param a=1 --param b=5`. Comparing needs two saved runs; with fewer, the query says so. `queries compare` shows every value side by side with the same notes. Labels are free text, stored as given. A run saved before Peeky kept notes (`runs.notes_kept` NULL) may show such values unmarked, and every query showing its values says so in a `note:` line (`notes` in JSON).
 
 ### 3.2 Inputs, Outcomes and Outputs of the Last Two Runs
 
@@ -324,11 +325,70 @@ peeky queries set_effect
 ```
 
 ```
-hit  selector  observed  after_set  interventions
-1    start     3         0          start: 3 -> 0
+hit  selector  observed  after_set  caveat_observed  caveat_after_set  interventions
+1    start     3         0          NULL             NULL              start: 3 -> 0
 ```
 
-Pass `--param a=<run> --param b=<run>` to `diff`, `compare` and `outputs` to pick specific runs.
+`caveat_observed` and `caveat_after_set` name a view or `note` that qualifies either value, as `hits` does.
+
+Pass `--param a=<run> --param b=<run>` to `diff`, `compare`, `outputs` and `join` to pick specific runs.
+
+### 3.4 One Row per Hit
+
+**What it answers:** What were all the captured values at each hit, side by side?
+
+`bins.c` loops over its arguments, and line 9 reads `total += v * bins[v % 4].hi;`:
+
+```sh
+peeky probe bins --at bins.c:9 --capture 'v,total,bins[3].hi' --hits all -- 2 7 7 8
+peeky queries wide                  # the newest run; --param run=3 for another
+```
+
+```
+hit  phase     line  v  total  bins[3].hi  no_value  caveats
+1    observed  9     2  0      4           NULL      NULL
+2    observed  9     7  6      4           NULL      NULL
+3    observed  9     7  34     4           NULL      NULL
+4    observed  9     8  62     4           NULL      NULL
+```
+
+- **Columns:** one per selector, named exactly as captured, in `--capture` order.
+  - A selector named like a fixed column (`line`) becomes `line (selector)`.
+  - SQLite ignores case in column names, so a selector that differs from an earlier column only by case gets a number: `--capture x,X` gives `x` and `X (2)`.
+  - In your own SQL, quote such names with double quotes: `"bins[3].hi"`, `"X (2)"`.
+- **Cells** are the values exactly as stored (text; use `num` in `captures` to compare numbers).
+- **NULL is never a value.** `no_value` is a JSON object naming each cell with no value (optimized out, withheld, an error) and why: `{"name":"no value yet: declared at line 7, below this stop, …"}`. A selector not captured at that hit is NULL and not named.
+- **`caveats`** is a JSON object naming each cell whose value is qualified. Read such a cell with its caveat, never as a plain value.
+  - `stale`, `unproven`, `opaque` or `budget-exhausted`: the row's view (`peeky sql --schema` explains `view`). `stale` is a moved or dropped Rust local's leftover bytes, whatever view decoded them.
+  - `note`: the probe marked the row `[note]` (for example a C local declared on a `do` body's first line: `{"k":"note"}`, "may be the last pass's value, or leftovers"), or gave it one of the Rust notes among its warnings. `peeky queries run` shows each row's note.
+- **Phases:** a run with `--set` has an `after-set` row after its hit's `observed` row. `--param phase=observed` (or `after-set`) keeps one.
+- **`--json`** also gives the SQL it ran (`sql`): refine it with `peeky sql`, e.g. `SELECT * FROM (<sql>) WHERE "v" = '7'`. Up to 95 selectors fit (100 columns at most); a wider run is refused.
+
+### 3.5 Joining Two Runs by a Value
+
+**What it answers:** For the same value of `v`, what did each run see? `diff` pairs runs by hit number, which says little when the inputs come in a different order.
+
+```sh
+peeky probe bins --at bins.c:9 --capture 'v,total,bins[3].hi' --hits all -- 7 2 5
+peeky probe bins --at bins.c:9 --capture 'v,total,bins[3].hi' --hits all -- 2 7 7 8
+peeky queries join --param key=v    # the last two runs; --param a=3 --param b=4 for others
+```
+
+```
+v  hit_a  hit_b  a:total  a:bins[3].hi  b:total  b:bins[3].hi  no_value_a  no_value_b  caveats_a  caveats_b  matched
+7  1      2      0        4             6        4             NULL        NULL        NULL       NULL       both
+7  1      3      0        4             34       4             NULL        NULL        NULL       NULL       both
+2  2      1      28       4             0        4             NULL        NULL        NULL       NULL       both
+5  3      NULL   34       4             NULL     NULL          NULL        NULL        NULL       NULL       only in run a
+8  NULL   4      NULL     NULL          62       4             NULL        NULL        NULL       NULL       only in run b
+```
+
+- **Matching** is by the key's stored text, exactly. It joins the `observed` rows unless you pass `--param phase=after-set`.
+- **Addresses:** a key whose values carry one (a pointer, a C string `0x16fbcbb1e "apple"`) rarely matches, as addresses differ between runs. The result then says so in a `note:` line (`notes` in JSON). `--param masked=1` matches the keys with addresses masked (`no_addresses`), showing each run's own value as `a:<key>` and `b:<key>`. Masked, any address matches any other, so a bare pointer pairs with every other bare pointer; NULL is not masked, and neither is text inside quotes (`"0x00000001deadbeef"` in a `char[32]` is data).
+- **A repeated key pairs every hit:** a value at 2 hits of run a and 3 of run b gives 6 rows, in run a's hit order and then run b's. Here run b saw `7` twice, so run a's hit 1 appears twice.
+- **Unmatched hits** come last, one row each: `only in run a` (or `b`) when the other run never had that key value, or when the hit has no key value (the key cell is NULL, and `no_value_a` says why).
+- **Columns:** the key, each run's hit, then each run's other selectors as `a:<selector>` and `b:<selector>` (numbered as in `wide` where only case differs), and `no_value`/`caveats` per run as in `wide`. The key's own caveat is among them: a pair made on a value Peeky cannot vouch for says so. Both runs must have captured the key.
+- **`--json`** gives the SQL too (`sql`).
 
 ---
 
@@ -340,13 +400,13 @@ The store is SQLite. Queries are read-only and bounded, and they need no rerun.
 
 ```sh
 peeky sql --schema          # tables, columns, views, canned queries, examples
-peeky queries               # canned questions: runs, run, hits, compare, diff, outputs, set_effect, values, unreadable, failures
+peeky queries               # canned questions: runs, run, hits, compare, diff, outputs, set_effect, values, wide, join, unreadable, failures
 ```
 
 | Table or view | One row per |
 | --- | --- |
 | `runs` | probe run: inputs, interventions, status, output, build identity |
-| `captures` | selector × hit × phase; `num` holds the value as a number |
+| `captures` | selector × hit × phase; `num` holds the value as a number; `view` and `note` qualify a value (read it with them) |
 | `interventions`, `pauses` | applied `--set`, pause per hit |
 | `evidence` (view) | captures joined with their run (with its `language`): no JOIN needed; output is `runs.output` |
 | `last_run` (view) | the evidence rows of the newest run |
@@ -376,7 +436,7 @@ hit  value  num
 ### 4.4 Values Seen Across All Runs
 
 ```sh
-peeky queries values --param selector=start
+peeky queries values --param selector=start   # qualified: how many sightings a view or note qualifies
 peeky sql "SELECT program, COUNT(*) AS runs, SUM(status = 'completed') AS completed FROM runs GROUP BY program"
 ```
 
