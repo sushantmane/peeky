@@ -185,7 +185,7 @@ def test_unchanged_after_set_rows_are_left_out_of_the_table():
     text = _table(result)
     assert "after-set  24    Calc.parseExpr()  path" in text, text
     assert "after-set  24    Calc.parseExpr()  i" not in text, text
-    assert "after-set: 1 row(s) equal to the hit's observed value left out" in text, text
+    assert "after-set: 1 row equal to the hit's observed value left out" in text, text
 
 
 def test_compare_hint_leaves_out_a_candidates_set(tmp_path, monkeypatch, capsys):

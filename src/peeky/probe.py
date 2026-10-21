@@ -3806,7 +3806,8 @@ def _table(result, short_names=True):
         )
     if left_out:
         lines.append(
-            f"after-set: {left_out} row(s) equal to the hit's observed value left out "
+            f"after-set: {left_out} row{'s' if left_out > 1 else ''} equal to the hit's "
+            "observed value left out "
             "(`--json` has every row)"
         )
     if short_names and (note := _short_note(result)):
