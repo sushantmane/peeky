@@ -11,6 +11,8 @@ A Rust candidate passes only when both of these pass on the same fresh build:
 
 Baseline test failure is recorded and does not stop the investigation; the checker must fail on the original. A failed test assertion or checker case is a verification failure that returns to the decision loop. Candidate compile errors are retryable `build` results only when Cargo's JSON messages (`--message-format=json-diagnostic-short`) show every rustc `error` with a primary span in a declared application source. Span-less errors such as linker or driver failures, errors elsewhere, and malformed or possibly truncated messages are fatal. A test-target compile failure, toolchain/probe failure, unexpected artifact, executable drift or source/test/checker change is fatal.
 
+Before anything runs, a crate whose `asm!`, `global_asm!` or `naked_asm!` can read a file (`.incbin`, `.include`, or an assembler macro that could spell one) is refused (`UNSUPPORTED`, #180): rustc's dependency file does not list what the assembler reads. Where a template may come from elsewhere (a `macro_rules!` argument, a renamed asm macro, `include_str!`), such a directive anywhere in the crate counts.
+
 ## The MIR behind owned-local views (#53)
 
 Unoptimized builds also compile the binary crate through a small rustc wrapper (`RUSTC_WORKSPACE_WRAPPER`). It is written into Peeky's own build directory, and its bytes are rechecked before every command. For that crate only, the wrapper adds:

@@ -248,7 +248,8 @@ def test_native_mutation_missing_value_is_uncertain_failure():
         session().mutation_value({})
 
 
-@pytest.mark.parametrize("command_index,retryable", [(0, True), (1, True), (2, False)])
+# The unit's preprocessing (#180), its compile, the link, then dsymutil.
+@pytest.mark.parametrize("command_index,retryable", [(0, True), (1, True), (2, True), (3, False)])
 def test_native_prepare_retries_only_fixed_compile_and_link_commands(
     tmp_path, monkeypatch, command_index, retryable
 ):
@@ -336,9 +337,12 @@ def test_cpp_build_recipe_uses_selected_compiler_for_compile_and_link(tmp_path, 
         assert recipe.language == "cpp"
         assert recipe.inputs == ("main.cpp", "types.hpp")
         assert all(command.argv[0] == "/trusted/clang++-18" for command in recipe.build_commands)
-        assert "-std=c++17" in recipe.build_commands[0].argv
-        assert "-std=c11" not in recipe.build_commands[0].argv
-        assert recipe.build_commands[1].argv[-2:] == ("-o", "program")
+        # The unit is preprocessed first, as it is compiled (#180).
+        assert recipe.build_commands[0].argv[-4:] == ("-E", "main.cpp", "-o", "peeky-unit-0.i")
+        assert recipe.build_commands[0].argv[:-4] == recipe.build_commands[1].argv[:-7]
+        assert "-std=c++17" in recipe.build_commands[1].argv
+        assert "-std=c11" not in recipe.build_commands[1].argv
+        assert recipe.build_commands[2].argv[-2:] == ("-o", "program")
         raise Captured
 
     monkeypatch.setattr("peeky.native.prepare", capture)

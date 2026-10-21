@@ -164,3 +164,12 @@ def test_an_lldb_line_table_row_keeps_a_line_separator_in_its_file():
 
     info = "[0x0000000100000410-0x0000000100000430): /w/u\u2028v.c:3:9\n"
     assert line_table(info) == [(0x100000410, 0x100000430, 3, 9)]
+
+
+def test_an_inline_assembly_refusal_names_its_file_with_any_character():
+    # #179 (with #180's refusal): clang's `-E` markers write the name in octal.
+    from peeky.assembler import c_refusal
+
+    printed = octal("dir/a\u2028b.c")
+    output = f'# 1 "{printed}"\n__asm__(".incbin \\"x\\"");\n'.encode()
+    assert "the asm at dir/a\u2028b.c:1 uses `.incbin`" in str(c_refusal(output, False))

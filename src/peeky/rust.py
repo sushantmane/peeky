@@ -24,6 +24,7 @@ from pathlib import Path
 
 from peeky.adapters import PythonAdapter
 from peeky.agent import BUILD_RETAINED
+from peeky.assembler import rust_refusal
 from peeky.build import (
     ArtifactSpec,
     BuildCommandError,
@@ -545,6 +546,7 @@ class RustTarget:
             ArtifactSpec(uplift, role="cargo-test-target"),
         )
         wrapper = wrapper_text = None
+        judged = []
 
         def validate_workspace(workspace, env):
             # Before every probe and Cargo command: revalidate the exact staged bytes
@@ -553,6 +555,17 @@ class RustTarget:
             staged = validate_cargo_inputs(workspace, sources=self.sources, tests=self.tests)
             if staged != cargo_inputs:
                 raise RuntimeError("Staged Cargo inputs differ from validated preflight")
+            if not judged:
+                # Inline assembly that can read a file, which no dependency file lists,
+                # is refused before anything runs (#180); the staged bytes are rechecked
+                # before each command.
+                texts = {
+                    name: (workspace / name).read_bytes().decode("utf-8", errors="replace")
+                    for name in cargo_inputs.inputs
+                }
+                if (refused := rust_refusal(texts, (*self.sources, *self.tests))) is not None:
+                    raise refused
+                judged.append(True)
             assert_cargo_ancestry_clear(workspace)
             if wrapper is not None and (
                 env.get("RUSTC_WORKSPACE_WRAPPER") != str(wrapper)
