@@ -205,12 +205,19 @@ def test_describe_says_which_locals_have_settable_fields(c_program, capsys):
     source = c_program("ring.c", RING)
     code, out = run(capsys, "describe", source)
     (mutable,) = [line for line in out.splitlines() if line.startswith("mutable:")]
-    assert mutable.endswith(". Locals with such fields or elements: main: r"), mutable
+    # #183: the paths themselves, `[*]` for any element.
+    assert mutable.endswith(
+        ". Such fields and elements (`[*]`: any element): main: r.buf[*], r.head, r.tail, r.count"
+    ), mutable
     source = c_program("callers.c", CALLERS)
     code, out = run(capsys, "describe", source, "--json")
     (main_scope,) = [s for s in json.loads(out)["scopes"] if s["scope"] == "main"]
     # A union, a pointer and a scalar have no settable fields; a typedef'd struct does.
-    assert main_scope["settable_parts"] == {"arr": "elements", "b": "fields", "t": "fields"}
+    assert main_scope["settable_parts"] == {
+        "arr": ["arr[*]"],
+        "b": ["b.n", "b.m"],
+        "t": ["t.n", "t.m"],
+    }
 
 
 @pytest.mark.timeout(240)

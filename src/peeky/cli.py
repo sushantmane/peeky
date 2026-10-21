@@ -602,20 +602,31 @@ def describe(args):
             runtime.close()
         manifest["mutable_types"] = {
             "rust": "integer root locals (i16 to i64, u16 to u64, isize, usize) the program "
-            "keeps in memory; `inspect` marks them [settable]. Also such integer fields and "
-            "elements (s.end, t.__0, xs[2]) of a struct, tuple or array local the MIR proves "
-            "initialized, never through a reference, Box or enum; rows mark them [settable] too",
-            "c": "integer root locals (16 to 64 bits, incl. size_t/int64_t); `inspect` marks "
-            "them [settable]. Also such integer fields and elements (s.end, s.in.lo, xs[2]) "
-            "of a struct or array local, never through a pointer; rows mark them [settable] too",
-            "cpp": "integer root locals (16 to 64 bits, incl. size_t/int64_t); `inspect` marks "
-            "them [settable]. Also such integer fields and elements (s.end, xs[2]) of a "
-            "struct, class or array local, never through a pointer or reference, nor in std "
-            "types; rows mark them [settable] too",
-            "java": "numeric/boolean root locals, and numeric/boolean fields (not final or "
-            "static) and array elements (current.end, xs[0]); rows mark them [settable]",
-            "java-attach": "numeric/boolean root locals, fields and array elements (attached "
-            "JVM; no edit verification)",
+            "keeps in memory, and String root locals to a text in double quotes within their "
+            "capacity (--set 'name=\"apple\"'); `inspect` marks them [settable]. Also such "
+            "integer fields and elements (s.end, t.__0, xs[2]) of a struct, tuple or array "
+            "local the MIR proves initialized, never through a reference, Box or enum; rows "
+            "mark them [settable] too",
+            "c": "integer root locals (16 to 64 bits, incl. size_t/int64_t), and char array "
+            "locals to a text in double quotes that fits (--set 'name=\"apple\"'); `inspect` "
+            "marks them [settable]. Also such integer fields and elements (s.end, s.in.lo, "
+            "xs[2]) of a struct or array local, never through a pointer; rows mark them "
+            "[settable] too",
+            "cpp": "integer root locals (16 to 64 bits, incl. size_t/int64_t), and char array "
+            "and std::string locals to a text in double quotes that fits (--set "
+            "'name=\"apple\"'); `inspect` marks them [settable]. Also such integer fields and "
+            "elements (s.end, xs[2]) of a struct, class or array local, never through a "
+            "pointer or reference, nor in std types; rows mark them [settable] too",
+            "java": "root locals, fields (not final or static) and array elements (current.end, "
+            "xs[0]) of type byte, short, int, long, char, boolean, float or double, and "
+            "String ones; a char takes a char in single quotes ('+') or a code point (43), a "
+            "String a text in double quotes (--set 'name=\"apple\"'); never a boxed value "
+            "(Integer), another object or an ArrayList's elements. char and String changes "
+            "need an adapter bundle built by this version of scripts/setup_java_adapter.py. "
+            "Rows mark what can change [settable]",
+            "java-attach": "root locals, fields and array elements of type byte, short, int, "
+            "long, char, boolean, float or double, and String ones, as for launched Java "
+            "(attached JVM; no edit verification)",
         }[language]
         from peeky.probe import optimization_level
 
@@ -670,12 +681,16 @@ def _describe_text(manifest):
             and name not in QUALIFIED_CONTAINERS
             and not composite_container(name)
         ]
-        lines.append(f"qualified enum views: {', '.join(enums) or 'none'}")
+        from peeky.rust import rust_spelling
+
+        shown = ", ".join(dict.fromkeys(map(rust_spelling, enums)))
+        lines.append(f"qualified enum views: {shown or 'none'}")
         if containers:
             lines.append(
                 "read from memory (debuggers with readMemory): reference parameters, owned "
                 "Vec<T>/String locals where the build's MIR proves them initialized, and such "
-                "fields of either (self.values): " + ", ".join(containers)
+                "fields of either (self.values): "
+                + ", ".join(dict.fromkeys(map(rust_spelling, containers)))
             )
         if composites:
             lines.append(
@@ -686,6 +701,10 @@ def _describe_text(manifest):
         lines.append(f"other enum types (shown opaque, not decoded): {len(opaque)}")
     if reason := manifest.get("scopes_unavailable"):
         lines.append(f"function names: unavailable ({reason})")
+    spell = str
+    if manifest["language"] == "rust":
+        # As the program spells them (#183): `Vec<u32>`, `String`.
+        from peeky.rust import rust_spelling as spell
     for scope in manifest.get("scopes", ()):
         if scope.get("omitted"):
             lines.append(f"... {scope['omitted']} more scopes not listed (first 300 shown)")
@@ -699,7 +718,7 @@ def _describe_text(manifest):
         shown = []
         for name in scope["names"]:
             # A local declared only in nested blocks is visible on their lines alone.
-            parts = [types[name]] if name in types else []
+            parts = [spell(types[name])] if name in types else []
             if name in spans:
                 listed = [f"{a}-{b}" if b > a else str(a) for a, b in spans[name]]
                 single = len(listed) == 1 and "-" not in listed[0]
@@ -716,16 +735,16 @@ def _describe_text(manifest):
     mutable = manifest["mutable_types"]
     if "root locals" in mutable and "fields" not in mutable:
         mutable += " (root locals: the stopped function's own variables, not fields)"
-    # The struct and array locals with such fields and elements, per function (seventh
-    # evaluation, finding 16): `w.k` is settable where `w` is.
+    # The fields and elements of struct and array locals `set` may change, per function
+    # (seventh evaluation, finding 16; #183: the paths, `board.entries`, not `board`).
     with_parts = [
-        f"{scope['scope']}: {', '.join(scope['settable_parts'])}"
+        f"{scope['scope']}: {', '.join(path for paths in scope['settable_parts'].values() for path in paths)}"
         for scope in manifest.get("scopes", ())
         if scope.get("settable_parts")
     ]
     if with_parts and not manifest.get("optimized"):
         mutable += (
-            ". Locals with such fields or elements: "
+            ". Such fields and elements (`[*]`: any element): "
             + "; ".join(with_parts[:12])
             + (f"; and {len(with_parts) - 12} more functions" if len(with_parts) > 12 else "")
         )
@@ -764,6 +783,35 @@ def _describe_text(manifest):
                 + "; ".join(never[:12])
                 + (f"; and {len(never) - 12} more functions" if len(never) > 12 else "")
             )
+    if manifest["language"] == "rust" and not manifest.get("optimized"):
+        # #183: where nothing can change, the way around it (an edit that keeps a local in
+        # memory, or changes what the program computes).
+        settable = ("i16", "i32", "i64", "u16", "u32", "u64", "isize", "usize")
+        settable += ("alloc::string::String",)
+        nothing = [
+            scope["scope"]
+            for scope in manifest.get("scopes", ())
+            if scope.get("names")
+            and not scope.get("settable_parts")
+            and not any(
+                (scope.get("types") or {}).get(name) in settable
+                and name not in (scope.get("never_settable") or {})
+                for name in scope["names"]
+            )
+        ]
+        mutable += (
+            ". A Vec's, String's or Box's contents (`v[0]`, `self.values[1]`) and what a "
+            "reference points at are never settable"
+            + (
+                "; nor is anything in "
+                + ", ".join(nothing[:12])
+                + (f" and {len(nothing) - 12} more functions" if len(nothing) > 12 else "")
+                if nothing
+                else ""
+            )
+            + ": change those with a candidate edit, the program's own code (`--old`/`--new`; "
+            "`std::hint::black_box(&mut x)` after a `let` keeps a local in memory: COOKBOOK 6.6)"
+        )
     if manifest["language"] in ("c", "cpp"):
         # Two blocks declaring one name with different types (#158): a change follows
         # the one in scope at the stop.

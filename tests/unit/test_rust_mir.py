@@ -3093,3 +3093,46 @@ def test_the_names_a_crate_gives_its_own_items_are_found_in_one_pass():
     passed = code.replace("m!(7999)", "m!(String)")
     owned = OwnedLocals([], {}, ("src/main.rs",), texts={"src/main.rs": passed})
     assert owned._untrusted_names() == {"String"}
+
+
+def test_a_temporary_set_before_the_local_took_its_value_holds_no_copy_of_it():
+    # #183: `for entry in args` stops at the body's first line after `entry` was moved
+    # out of `next()`'s result, a temporary a call given a pointer made, which the next
+    # pass reads (`discriminant`). That temporary held an earlier value, never this one:
+    # a change to `entry` there was refused as "a statement under way has read it".
+    bindings = "debug entry => _14;   // in scope 1 at src/main.rs:2:9: 2:10\n"
+    body = mir(
+        {
+            0: [
+                "_11 = &mut _6;",
+                "_10 = &mut (*_11);",
+                "_9 = next(move _10) -> [return: bb1, unwind continue];",
+            ],
+            1: [
+                "_12 = discriminant(_9);",
+                "switchInt(move _12) -> [0: bb5, 1: bb2, otherwise: bb5];",
+            ],
+            2: [
+                "StorageLive(_14);",
+                "_14 = move ((_9 as Some).0: std::string::String);",
+                "_21 = &_14;",
+                "_20 = deref(move _21) -> [return: bb3, unwind continue];",
+            ],
+            3: [
+                "_13 = copy (_14.1: usize);",
+                "drop(_14) -> [return: bb4, unwind continue];",
+            ],
+            4: ["StorageDead(_14);", "_15 = copy _13;", "_16 = discriminant(_9);", "goto -> bb0;"],
+            5: ["return;"],
+        },
+        bindings=bindings,
+    )
+    # Taken as a whole, a call given any pointer may return a copy of it.
+    assert 9 in body.copies_of(14)
+    # In the order the code runs, `entry`'s assignment leaves no copy of its new value.
+    after = (2, 2)
+    assert 9 not in body.copies_at(14, after)
+    assert body.live_ahead(after) >> 9 & 1
+    # What is read from it after that is a copy (`_13`), until its storage ends.
+    assert 13 in body.copies_at(14, (3, 1))
+    assert 13 not in body.copies_at(14, (4, 1)) and 13 not in body.copies_at(14, (2, 2))

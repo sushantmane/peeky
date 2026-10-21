@@ -879,6 +879,42 @@ _NO_MEMORY = (
 _TEXT_RUST = frozenset({"std::string::String", "alloc::string::String", "String"})
 
 
+# The prelude's own types (#183), named as the program names them, and the default
+# allocator's argument, which the program never writes.
+_PRELUDE_PATH = re.compile(
+    r"(?<![\w:])(?:alloc::vec::|alloc::string::|alloc::boxed::|core::option::|core::result::)"
+    r"(?=(?:Vec|String|Box|Option|Result)\b)"
+)
+_GLOBAL_ARGUMENT = re.compile(r",\s*alloc::alloc::Global(?=\s*[,>])")
+
+
+# A primitive LLDB names the C way inside a type's arguments (`Vec<unsigned int>`):
+# which Rust one it is only the debug information can tell (`unsigned long`: u64 or
+# usize).
+_C_NAMED = re.compile(
+    r"[<,(]\s*(?:unsigned |signed )?(?:char|short|int|long|long long|__int128|char32_t)"
+    r"\s*[,>)]"
+)
+
+
+def rust_spelling(name):
+    """A Rust type as the program spells it (#183): `Vec<u32>`, `String`, `Option<i32>`,
+    `Box<T>`, `Result<T, E>`, without the default allocator (`alloc::alloc::Global`).
+    ``name``: as the debug information gives it (Rust's primitives, whole paths)."""
+    return _PRELUDE_PATH.sub("", _GLOBAL_ARGUMENT.sub("", str(name)))
+
+
+def _line_list(places):
+    """`line 60`, `lines 3 and 4`, `lines 3, 4 and 7`: the lines of ``places`` ({(file,
+    line)}) for a message; empty if none."""
+    lines = sorted({number for _, number in places})
+    if not lines:
+        return ""
+    if len(lines) == 1:
+        return f"line {lines[0]}"
+    return "lines " + ", ".join(map(str, lines[:-1])) + f" and {lines[-1]}"
+
+
 def _never_rank(why):
     """Which of a name's reasons `describe` gives where a generic's instances differ:
     first the ones no edit to the binding itself helps."""
@@ -1880,7 +1916,7 @@ class RustSession(NativeSession):
             except Unsettable as exc:
                 return ("type", str(exc))
         if kept is True:
-            return None
+            return self._copied_everywhere(hashed, plain, source, line)
         if _state_held(body, plain):
             return ("state", plain)
         if kept is None and body is None:
@@ -1889,6 +1925,26 @@ class RustSession(NativeSession):
             binding[0] in body.arguments for binding in body.bindings.get(plain, ())
         )
         return ("register", (parameter, self._not_in_memory(hashed, root, line, source)))
+
+    def _copied_everywhere(self, hashed, plain, source, line):
+        """("statement", why) where every place ``line`` can stop at in ``hashed`` is
+        inside a statement that has already read ``plain`` into a temporary it uses again
+        (a statement's later line: `let arr = [s.a,` / `k,` / `s.b];` at `k,`), so no stop
+        there can change it for that statement (#183); else None."""
+        proofs = getattr(self, "owned", None)
+        check = getattr(proofs, "copied_everywhere", None)
+        if check is None or self._optimized():
+            return None
+        held = check(hashed, plain, line, str(Path(self.prepared.source_root) / source))
+        if not held:
+            return None
+        made = _line_list(proofs.copy_lines(hashed, held))
+        return (
+            "statement",
+            f"every place line {line} can stop at is inside a statement that has already "
+            f"read `{plain}` into a temporary" + (f" (at {made})" if made else "") + ", "
+            "which it uses after the stop, so a change there would not reach it",
+        )
 
     def _never_message(self, name, root, steps, source, line, failures):
         """The refusal for a `--set` that ``failures`` [(function, (kind, detail))] rule
@@ -1899,6 +1955,7 @@ class RustSession(NativeSession):
         # (function, rule naming it as FUNCTION): the functions sharing a rule are named
         # together, each rule once (a generic's instances, a closure on the line).
         parts, registers, states = [], set(), False  # registers: the advice for each
+        statements = False
         for function, (kind, detail) in failures:
             if kind == "register":
                 parameter, why = detail
@@ -1917,6 +1974,9 @@ class RustSession(NativeSession):
                 )
             elif kind == "absent":
                 parts.append((function, f"{FUNCTION} {detail}"))
+            elif kind == "statement":
+                statements = True
+                parts.append((function, f"in {FUNCTION}, {detail}"))
             elif kind == "unproven":
                 registers.add(self._register_text(function, plain, ("own", None))[1])
                 parts.append(
@@ -1943,6 +2003,11 @@ class RustSession(NativeSession):
             )
         for advice in sorted(registers):
             text += f". {advice}"
+        if statements:
+            text += (
+                ". Change it at the first line of that statement (`--set-at` it), before it "
+                "reads the value"
+            )
         if states:
             text += (
                 ". Change what it is computed from before it is assigned, or copy it into a "
@@ -2079,9 +2144,9 @@ class RustSession(NativeSession):
                 f"the stop ({stop or 'unknown'}) is not a line breakpoint's or a step's, so "
                 "Peeky cannot tell where it is in its statement"
             )
-        verdict = None
+        found = None
         if hashed and proofs is not None and not self._optimized():
-            verdict = proofs.copied_in_progress(
+            found = proofs.copy_hazards(
                 hashed[1],
                 variable.get("name"),
                 line,
@@ -2090,12 +2155,17 @@ class RustSession(NativeSession):
                 column=place.get("column"),
                 block=self._stop_block(hashed[1], frame),
             )
-        if verdict is False:
+        if found is not None and not any(hazards for _, hazards in found):
             return None
-        if verdict:
+        if found:
+            # #183: where the copy was made, not an example of where one may be.
+            made = _line_list(
+                proofs.copy_lines(hashed[1], frozenset().union(*dict(found).values()))
+            )
             return (
-                "a statement under way at the stop has already read it into a temporary "
-                "(`let t = s.a` / `+ f();`, at its second line)"
+                "a statement under way at the stop has already read it into a temporary"
+                + (f" (at {made})" if made else "")
+                + ", which it uses after the stop"
             )
         return (
             "Peeky cannot tell from the build's MIR whether a statement under way at the "
@@ -2573,8 +2643,9 @@ class RustSession(NativeSession):
         change behind `&self`). A `&str` field borrows: through an owned local, only
         while #110 shows what it borrows still stands; through a reference parameter,
         what it borrows outlives the call. The view, or {"raw_reason": why} where it
-        stays raw; None where this does not apply (another type, elements Peeky does not
-        read, a local not proven initialized, whose row says so: #108)."""
+        stays raw (elements Peeky does not read too: `Vec<String>`, #183); None where this
+        does not apply (another type, a local not proven initialized, whose row says so:
+        #108)."""
         from peeky.fields import Unsettable, held_container
 
         kind = str(variable.get("type") or "")
@@ -2646,8 +2717,13 @@ class RustSession(NativeSession):
             return {"raw_reason": str(exc)}
         layouts = self.layouts
         if name not in layouts or layouts[name].get("kind") == "unread":
-            # Elements Peeky never reads (`Vec<String>`): the row says so.
-            return None
+            # Elements Peeky never reads (`Vec<String>`): said on the field's own row, as
+            # in a listing of what holds it (#183).
+            return {
+                "raw_reason": f"Peeky does not read the elements of a {rust_spelling(name)}: "
+                "it reads a Vec's or slice's elements only where they are integers, bool, "
+                "floats or char, or tuples or structs of your crate of them"
+            }
         if through == "reference" and valid() is False:
             return {
                 "raw_reason": f"what `{root}` points at may be dropped and not yet replaced "
@@ -2773,12 +2849,43 @@ class RustSession(NativeSession):
         if proof and (match := re.fullmatch(r"&(?:mut )?(.+)", proof["type"])):
             # The parameter's only declaration (ir_locals): LLDB's name must spell it.
             if _spelled(f"{match[1]} *", kind):
-                return proof["type"]
+                return rust_spelling(proof["type"])
         if top and hashed and proofs is not None:
             declared = proofs.declared_type(hashed[1], variable.get("name"))
             if kind in RUST_SCALARS.get(declared, ()):
                 return declared
-        return UNIQUE_SCALARS.get(kind)
+        if scalar := UNIQUE_SCALARS.get(kind):
+            return scalar
+        return self._rust_name(frame, [variable.get("name")] if top else path, kind)
+
+    def _rust_name(self, frame, path, kind):
+        """A library type as the program spells it (#183: `Vec<u32>`, not LLDB's
+        `alloc::vec::Vec<unsigned int, alloc::alloc::Global>`; `String`): the name the
+        build's debug information gives the type at ``path`` (the root local's name, then
+        the debugger's child names), where LLDB's ``kind`` spells it; without one, LLDB's
+        own where it names no primitive the C way. None where nothing changes."""
+        from peeky.fields import Unsettable, member_type
+
+        kind = str(kind or "")
+        if not re.search(r"(?<![\w:])(?:alloc|core|std)::", kind):
+            return None
+        name = None
+        hashed = _frame_hash(frame)
+        if hashed and path and all(isinstance(step, str) for step in path):
+            try:
+                functions, _ = self._field_types()
+                root, _ = self._declared_type(functions.get(hashed[1]) or {}, path[0])
+                node = member_type(self._field_cache[2], root, path[1:])
+            except (Unsettable, TypeError, IndexError):
+                node = None
+            if node is not None and node[0] == "record":
+                name = node[11]
+            if name and not _spelled(name, kind):
+                name = None
+        if name is None and not _C_NAMED.search(kind):
+            name = kind
+        shown = rust_spelling(name) if name else None
+        return shown if shown and shown != kind else None
 
     def display_value(self, variable):
         """A scalar as Rust's `{:?}` shows it: `f64`/`f32` (`10.0`, not LLDB's `10`),

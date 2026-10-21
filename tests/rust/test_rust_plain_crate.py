@@ -109,7 +109,8 @@ def test_a_cargo_new_crate_is_probed_and_chars_print_as_rust_does(plain, capsys)
     code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "opts[0]", "--quiet")
     error = result["rows"][0]["error"]
     # The reason is the element type (an enum), not a guess about freed memory.
-    assert "does not read alloc::vec::Vec<core::option::Option<u8>" in error
+    # As the program spells it (#183).
+    assert "does not read Vec<Option<u8>>'s elements" in error, error
     assert "freed" not in error
     # Reference locals of element types Peeky reads (as parameters) get no such note.
     capture = "s,sl,r,r[0],ahom"
@@ -4742,7 +4743,8 @@ def test_reference_parameters_show_their_rust_types(plain, capsys):
         "RT_PEEK": {
             "w": ("&chars::Window", "chars::Window *"),
             "v": (
-                "&alloc::vec::Vec<u64, alloc::alloc::Global>",
+                # As the program spells it (#183).
+                "&Vec<u64>",
                 "alloc::vec::Vec<unsigned long, alloc::alloc::Global> *",
             ),
         },

@@ -1167,7 +1167,7 @@ def _absence(variable, segment, children, path=None, pointers=False):
                 "caller: `peeky session step --out`, or a probe there)"
             )
         elif variable.get("view") == "memory":
-            if kind in _RUST_TEXT:
+            if _lldb_type(variable) in _RUST_TEXT:
                 message += "; text read from memory is shown whole, not by element"
         elif _unread_rust(_lldb_type(variable)):
             message += (
@@ -1239,7 +1239,7 @@ def _declared_length(variable, children):
     if variable.get("view") == "memory" and type(variable.get("length")) is int:
         # A container Peeky read from memory states its own length; text states its
         # length in bytes and has no elements.
-        return None if variable.get("type") in _RUST_TEXT else variable["length"]
+        return None if _lldb_type(variable) in _RUST_TEXT else variable["length"]
     if variable.get("type") in _PY_SEQUENCES:
         for child in children:
             if child["name"] == "len()" and re.fullmatch(r"[0-9]{1,9}", str(child.get("value"))):
@@ -1764,9 +1764,15 @@ def _element(worker, stop, snapshot, segments, target, negative):
 
 
 def _launch_set(line, name, value):
-    """A change as the check before the run judges it (#138): its line and name, and
-    whether its value is a text (#137: a string's, not an integer's)."""
-    return {"line": line, "name": name, **({"text": True} if value.startswith('"') else {})}
+    """A change as the check before the run judges it (#138): its line and name, whether
+    its value is a text (#137: a string's, not an integer's), and the value itself, which
+    a Java local's declared type judges (#183)."""
+    return {
+        "line": line,
+        "name": name,
+        **({"text": True} if value.startswith('"') else {}),
+        "value": value,
+    }
 
 
 def apply_set(worker, stop, name, value):
@@ -3605,7 +3611,8 @@ def run_probe(root, probe, *, adapter=None, progress=None):
             noted.setdefault(note, []).append(row["selector"])
     for note, selectors in noted.items():
         names = ", ".join(dict.fromkeys(selectors))
-        warnings.append(f"{names}: {note[0].upper()}{note[1:]}.")
+        text = note[0].upper() + note[1:]
+        warnings.append(f"{names}: {text if text.endswith('.') else text + '.'}")
     if probe.set and any("at" not in change for change in changes) and probe.limit > 1:
         warnings.append(
             f"Interventions are applied once, at hit {probe.set_hit}; other hits observe "

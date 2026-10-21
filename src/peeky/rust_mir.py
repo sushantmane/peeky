@@ -318,6 +318,9 @@ class Body:
     _copies: dict | None = None
     _live: dict | None = None
     _copy_reads: tuple | None = None
+    # {(local, formatting): {block: (holds, points) on entry}, or None past the budget}
+    # (#183: ``copies_at``).
+    _copy_flows: dict | None = None
     _lent_from: dict | None = None
     _maybe: dict | None = None
     _moved_cache: set | None = None
@@ -951,7 +954,7 @@ class Body:
             self._copies = {}
         if (local, formatting) in self._copies:
             return self._copies[local, formatting]
-        parts, mentions, seeds = self._copy_parts()
+        parts, mentions, seeds, _ = self._copy_parts()
         # From what holds or points with no local given, then along what mentions each
         # temporary found: the least fixpoint, as passes over every assignment reach.
         holds, points = set(), set()
@@ -1092,9 +1095,9 @@ class Body:
                 for binding in bindings
                 if binding[0] is not None
             }
-            parts, mentions, seeds = [], {}, []
-            for block in self.blocks.values():
-                for text, _, _ in block.statements:
+            parts, mentions, seeds, at = [], {}, [], {}
+            for number, block in self.blocks.items():
+                for index, (text, _, _) in enumerate(block.statements):
                     text = _STRING.sub('""', text)
                     found = _WHOLE_ASSIGNMENT.match(text) or (
                         None if re.match(r"\(+\*_", text) else _PART_ASSIGNMENT.match(text)
@@ -1123,12 +1126,102 @@ class Body:
                             pointers,
                         )
                     )
+                    at[number, index] = len(parts) - 1
                     for n in mentioned:
                         mentions.setdefault(n, []).append(len(parts) - 1)
                     if through or pointers:
                         seeds.append(len(parts) - 1)
-            self._copy_reads = (parts, mentions, seeds)
+            self._copy_reads = (parts, mentions, seeds, at)
         return self._copy_reads
+
+    def copies_at(self, local, position, formatting=True):
+        """The temporaries that may hold a value read from ``local``'s current value at
+        ``position`` ((block, index): before that statement), on some path from bb0
+        (#183): ``copies_of``'s reading of each assignment, taken in the order the code
+        runs, where an assignment to ``local`` itself, or the start or end of its
+        storage, leaves none. A temporary set before ``local`` took its current value
+        holds an earlier one, which a change to it does not touch either (`for entry in
+        args`: the iterator's `next` into a temporary, then `entry` moved out of it).
+        ``copies_of`` where the flow is past its budget."""
+        if self._copy_flows is None:
+            self._copy_flows = {}
+        key = (local, formatting)
+        if key not in self._copy_flows:
+            self._copy_flows[key] = self._copy_flow(local, formatting)
+        entry = self._copy_flows[key]
+        number, index = position
+        if entry is None or number not in entry:
+            return self.copies_of(local, formatting)
+        state = entry[number]
+        for at in range(min(index, len(self.blocks[number].statements))):
+            state = self._copy_step(local, formatting, number, at, state)
+        return state[0]
+
+    def _copy_step(self, local, formatting, number, index, state):
+        """``copies_at``'s transfer over one statement: (holds, points) after it."""
+        holds, points = state
+        block = self.blocks[number]
+        text = _STRING.sub('""', block.statements[index][0])
+        whole = _WHOLE_ASSIGNMENT.match(text)
+        if re.match(rf"Storage(?:Live|Dead)\(_{local}\);$", text) or (
+            whole and int(whole[1]) == local
+        ):
+            # Its value starts again: a temporary holds an earlier one, or none.
+            return frozenset(), frozenset()
+        parts, _, _, at = self._copy_parts()
+        found = at.get((number, index))
+        if found is None:
+            return state
+        target, mentioned, through, borrow, called, formats, pointers = parts[found]
+        if target == local:
+            return state
+        pointing = bool(mentioned & points) or any(n != local for n in pointers)
+        if borrow:
+            hold = bool(mentioned & holds)
+            point = local in mentioned or through or pointing
+        else:
+            hold = local in mentioned or through or bool(mentioned & holds)
+            hold = hold or (called and pointing and not (formatting and formats))
+            point = pointing
+        if whole:
+            # Reassigned: what it held before is gone (a call's result: on its return
+            # edge, which is the only one ``_copy_flow`` gives this state).
+            holds, points = holds - {target}, points - {target}
+        return (holds | {target} if hold else holds), (points | {target} if point else points)
+
+    def _copy_flow(self, local, formatting):
+        """{block: (holds, points) on entry} for ``copies_at``: its transfer, merged by
+        union up from nothing (the least fixpoint); None past the budget."""
+        empty = (frozenset(), frozenset())
+        entry = dict.fromkeys(self.blocks, empty)
+        work, queued, steps = [0], {0}, 0
+        limit = max(MAX_ITERATIONS, STEPS_PER_BLOCK * len(self.blocks))
+        while work:
+            steps += 1
+            if steps > limit:
+                return None
+            number = work.pop()
+            queued.discard(number)
+            block = self.blocks.get(number)
+            if block is None:
+                return None
+            state = entry[number]
+            last = len(block.statements) - 1
+            for index in range(last):
+                state = self._copy_step(local, formatting, number, index, state)
+            # A call sets its result on its return edge only; the others leave all as was.
+            after = self._copy_step(local, formatting, number, last, state) if last >= 0 else state
+            for target in self._flows(number):
+                if target not in entry:
+                    continue
+                out = after if block.returns is None or target == block.returns else state
+                merged = (entry[target][0] | out[0], entry[target][1] | out[1])
+                if merged != entry[target]:
+                    entry[target] = merged
+                    if target not in queued:
+                        queued.add(target)
+                        work.append(target)
+        return entry
 
     def used_before(self, local, start):
         """True if every path into ``start`` passes a use of ``local`` (or its assignment)
@@ -3565,13 +3658,24 @@ class OwnedLocals:
     ):
         """For the frame's local ``variable_name``: False if, from every place the stop
         can be on ``line`` of ``path``, no temporary that may hold a value read from it
-        (``Body.copies_of``) is used again: a statement under way has not read it yet,
+        (``Body.copies_at``) is used again: a statement under way has not read it yet,
         so a change made here reaches what the program reads of it from now on. True if
         one may be (`let t = s.a + f();` back from `f`: `s.a` is in a temporary); None if
         not understood. ``breakpoint``, ``column`` and ``block`` as for
         ``reference_valid``: a line breakpoint (or a step that ends at its line's lowest
         address) stops before the line's first code in its lexical block; any other
-        stop can be at any place of the line."""
+        stop can be at any place of the line. Each temporary as ``Body.copies_at``
+        finds it: one set before the local took its current value holds an earlier one."""
+        found = self.copy_hazards(hashed, variable_name, line, path, breakpoint, column, block)
+        return None if found is None else any(hazards for _, hazards in found)
+
+    def copy_hazards(
+        self, hashed, variable_name, line, path, breakpoint=False, column=None, block=None
+    ):
+        """``copied_in_progress``'s finding: [(a place the stop can be, the temporaries
+        that may hold a value read from the local's current value and are used again
+        from there)], or None if not understood (#183: the refusal names where those
+        temporaries were made)."""
         site = self._site(hashed, line, path)
         if site is None:
             return None
@@ -3592,8 +3696,56 @@ class OwnedLocals:
             return None
         if breakpoint and not function.inline_only:
             positions = _first_places(body, function, positions)
-        held = _mask(body.copies_of(local, formatting=self._formatting()))
-        return any(body.live_ahead(position) & held for position in positions)
+        formatting = self._formatting()
+        return [
+            (
+                position,
+                frozenset(
+                    n
+                    for n in body.copies_at(local, position, formatting)
+                    if body.live_ahead(position) >> n & 1
+                ),
+            )
+            for position in positions
+        ]
+
+    def copy_lines(self, hashed, temporaries):
+        """The source lines where the code assigns any of ``temporaries`` in the body of
+        ``hashed`` ({(file, line)}), for a refusal to name (#183)."""
+        body = self.body(hashed)
+        if body is None:
+            return set()
+        parts, _, _, at = body._copy_parts()
+        found = set()
+        for (number, index), part in at.items():
+            if parts[part][0] in temporaries:
+                _, file, number_line = body.blocks[number].statements[index]
+                if file is not None and number_line is not None:
+                    found.add((file, number_line))
+        return found
+
+    def copied_everywhere(self, hashed, variable_name, line, path):
+        """The temporaries (a frozenset) that hold a value read from the frame's local
+        ``variable_name`` at every place of ``line`` and are used again from each, so no
+        stop on the line can change it for the statement under way (#183: refused before
+        the program runs); None where some place has none, or that is not understood."""
+        found = self.copy_hazards(hashed, variable_name, line, path)
+        body = self.body(hashed)
+        if not found or body is None:
+            return None
+        # A stop is never before a statement that emits no code (`StorageDead(_6)` after
+        # the array it ended was built): its address is the next one's.
+        coded = [
+            (position, hazards)
+            for position, hazards in found
+            if not _NO_CODE.match(body.blocks[position[0]].statements[position[1]][0])
+        ]
+        found = coded or found
+        common = frozenset.intersection(*(hazards for _, hazards in found))
+        if not all(hazards for _, hazards in found):
+            return None
+        # What every place shares, or what each place has where they share nothing.
+        return common or frozenset().union(*(hazards for _, hazards in found))
 
     def borrow_live(
         self,

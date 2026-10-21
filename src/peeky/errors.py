@@ -120,7 +120,8 @@ _RULES = (
         r"numeric or boolean scalar|scalar literal|bounded decimal integer|must be a literal"
         r"|has no readable value here|refused in an optimized build|did not change "
         r"|has no memory location|refused to change|would overwrite a change"
-        r"|cannot be changed|can be changed only|changes only the stopped|locals can be changed "
+        r"|cannot be changed|can be changed only|changes only the stopped|values can be changed"
+        r"|locals can be changed "
         r"for this language|predates field and element changes|predates String changes",
         "MUTATION_REJECTED",
         "Observe the value instead, or change the source with a candidate edit "
@@ -348,7 +349,8 @@ _MUTATION_HINTS = (
         "(a later `--at`, or `session continue --to LINE`).",
     ),
     (
-        r"predates field and element changes|predates String changes",
+        r"predates field and element changes|predates String changes"
+        r"|with an adapter bundle built by this version",
         "Rebuild the Java adapter bundle with scripts/setup_java_adapter.py.",
     ),
     (
@@ -365,6 +367,12 @@ _MUTATION_HINTS = (
         r"does not write through",
         "Change the text where it is owned (a char array, std::string or String local), or "
         "change the source with a candidate edit (`--old`/`--new`).",
+    ),
+    (
+        r"Java mutation requires",
+        "Pass a literal of the variable's Java type: an integer, true or false, a number, a "
+        "char in single quotes ('+') or a code point for a char, a text in double quotes for "
+        "a String.",
     ),
     (
         r"literal|bounded decimal integer|numeric or boolean scalar",

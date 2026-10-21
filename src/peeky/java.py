@@ -19,7 +19,7 @@ from pathlib import Path, PurePosixPath
 from peeky.adapters import PythonAdapter
 from peeky.build import ArtifactSpec, BuildRecipe, Command, assert_current, prepare
 from peeky.digest import sha256_file, tree_fingerprint
-from peeky.java_metadata import loop_header_stops
+from peeky.java_metadata import descriptor_name, loop_header_stops
 from peeky.loop_headers import loop_header_note
 from peeky.text_sets import parse_text
 
@@ -131,12 +131,147 @@ def java_preview(variable, fetch):
 # A String (#137): java-debug makes a new one of a text, and the variable refers to it.
 _STRING_DESCRIPTOR = "Ljava/lang/String;"
 _JAVA_STRINGS = ("String", "java.lang.String")
-_JAVA_SETTABLE = ("boolean", "float", "double", *_JAVA_STRINGS)
 
 
 def _settable_kinds(session):
-    """The non-integer types `--set` changes: a String only where the launcher allows it."""
-    return _JAVA_SETTABLE if getattr(session, "text_set", False) else _JAVA_SETTABLE[:3]
+    """The non-integer types `--set` changes: a char and a String only where the
+    launcher allows them (#183, #137)."""
+    kinds = ("boolean", "float", "double")
+    if getattr(session, "char_set", False):
+        kinds += ("char",)
+    if getattr(session, "text_set", False):
+        kinds += _JAVA_STRINGS
+    return kinds
+
+
+# Why a local the code never reads after a line's start cannot be changed there (#164),
+# judged before the program runs too (#183).
+_UNREAD_REASON = (
+    "is never read after a stop at this line's start (a lambda or inner class that "
+    "captured it before keeps its own copy; javac compiles a constant local into its uses), "
+    "so a change would never be seen"
+)
+# A local variable table's descriptors of what `--set` can change (#183).
+_DESCRIPTORS = {
+    "B": "byte",
+    "S": "short",
+    "I": "int",
+    "J": "long",
+    "C": "char",
+    "Z": "boolean",
+    "F": "float",
+    "D": "double",
+    "Ljava/lang/String;": "String",
+}
+
+
+def _descriptor_kind(descriptor):
+    """The Java type `--set` judges a local declared with ``descriptor`` as, or None."""
+    return _DESCRIPTORS.get(str(descriptor))
+
+
+def _fit_reason(name, kind, value):
+    """Why ``value`` does not fit a local ``name`` of the Java type ``kind``, or None."""
+    try:
+        if parse_text(value) is None and not (
+            SCALAR.fullmatch(value) or java_char(value, code_points=False) is not None
+        ):
+            raise ValueError(
+                "Java mutation requires a literal: a number, true or false, a char in single "
+                "quotes ('+'), or a text in double quotes for a String"
+            )
+        _value_fits(name, kind, value)
+    except ValueError as exc:
+        return str(exc)
+    return None
+
+
+def _value_fits(name, kind, value):
+    """Raise ValueError where ``value`` does not fit the Java type ``kind`` of ``name``
+    exactly: java-debug narrows integers, keeps one character of a char and parses any
+    non-"true" boolean as false, then reports success."""
+    text = parse_text(value)
+    if kind == "char":
+        if java_char(value) is None:
+            raise ValueError(
+                f"Java mutation requires a char for char {name}: a char literal in single "
+                "quotes ('+', '\\n', '\\u0041') or a code point from 0 to 65535"
+            )
+        return
+    if kind in _JAVA_STRINGS:
+        if text is None:
+            raise ValueError(
+                f"Java mutation requires text in double quotes for String {name} "
+                f"(--set '{name}=\"apple\"'): the local then refers to a new String; "
+                "other references keep the old one"
+            )
+        return
+    if text is not None or java_char(value, code_points=False) is not None:
+        raise ValueError(
+            f"Java mutation requires a literal of {name}'s type ({kind}); text in double "
+            "quotes changes a String, a char in single quotes a char"
+        )
+    if kind in _JAVA_INTEGER_BITS:
+        # java-debug parses with Long.decode: a leading 0 means octal.
+        if not re.fullmatch(r"[+-]?(?:0|[1-9][0-9]{0,19})", value):
+            raise ValueError(f"Java mutation requires an integer literal for {kind} {name}")
+        bits = _JAVA_INTEGER_BITS[kind]
+        if not -(2 ** (bits - 1)) <= int(value) < 2 ** (bits - 1):
+            raise ValueError(f"Java mutation is outside the {kind} range for {name}")
+    elif kind == "boolean":
+        if value not in ("true", "false"):
+            raise ValueError(f"Java mutation requires true or false for boolean {name}")
+    elif kind in ("float", "double"):
+        if value in ("true", "false"):
+            raise ValueError(f"Java mutation requires a number for {kind} {name}")
+        number = float(value)
+        try:
+            stored = (
+                struct.unpack(">f", struct.pack(">f", number))[0] if kind == "float" else number
+            )
+        except OverflowError:
+            stored = math.inf
+        mantissa = value.lower().split("e")[0]
+        if not math.isfinite(stored) or (stored == 0 and re.search(r"[1-9]", mantissa)):
+            raise ValueError(f"Java mutation is outside the {kind} range for {name}")
+
+
+# A Java char literal's escapes (JLS 3.10.7), and the octal ones (`'\0'` to `'\377'`).
+_CHAR_ESCAPES = {
+    "b": "\b",
+    "s": " ",
+    "t": "\t",
+    "n": "\n",
+    "f": "\f",
+    "r": "\r",
+    '"': '"',
+    "'": "'",
+    "\\": "\\",
+}
+_CHAR_LITERAL = re.compile(
+    r"'(?:([^'\\\n\r])|\\([bstnfr\"'\\])|\\u+([0-9a-fA-F]{4})|\\([0-3]?[0-7]{1,2}))'\Z"
+)
+
+
+def java_char(value, code_points=True):
+    """The char a value names for a char variable (#183): a char literal as Java writes
+    one (`'+'`, `'\n'`, `'\''`, `'\u0041'`, `'\101'`), or, with ``code_points``, a
+    decimal code point from 0 to 65535 (as `char op = 43;` is `'+'`); None if neither.
+    One UTF-16 unit: a character outside the BMP is two chars in Java."""
+    found = _CHAR_LITERAL.fullmatch(str(value))
+    if found:
+        plain, escape, unicode, octal = found.groups()
+        if plain is not None:
+            return plain if len(plain.encode("utf-16-le")) == 2 else None
+        if escape is not None:
+            return _CHAR_ESCAPES[escape]
+        if unicode is not None:
+            return chr(int(unicode, 16))
+        number = int(octal, 8)
+        return chr(number) if number < 256 else None
+    if code_points and re.fullmatch(r"0|[1-9][0-9]{0,4}", str(value)) and int(value) < 65536:
+        return chr(int(value))
+    return None
 
 
 SCALAR = re.compile(r"(?:true|false|[+-]?[0-9]+(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?)\Z")
@@ -539,6 +674,8 @@ class JavaSession:
         if self is not None:
             # A String takes a text only through a launcher that allows it (#137).
             self.text_set = raw.get("peekyTextSet") is True
+            # And a char a quoted char (#183).
+            self.char_set = raw.get("peekyCharSet") is True
         return {
             "supports_set_variable": raw.get("supportsSetVariable") is True,
             # Launcher bundles built before stepping lack the marker: refuse cleanly.
@@ -547,6 +684,8 @@ class JavaSession:
             "supports_member_set": raw.get("peekyFieldSet") is True,
             # Bundles whose launcher changes a String to a text (#137).
             "supports_text_set": raw.get("peekyTextSet") is True,
+            # Bundles whose launcher changes a char to a quoted char (#183).
+            "supports_char_set": raw.get("peekyCharSet") is True,
             "supports_conditional_breakpoints": False,
             "supports_hit_conditional_breakpoints": False,
             "supports_logpoints": False,
@@ -558,23 +697,40 @@ class JavaSession:
         self.target.validate_breakpoints(points)
 
     def validate_value(self, value):
-        if isinstance(value, str) and parse_text(value) is not None:
+        """Only the shape of a literal of some Java type; the variable's own type decides
+        the rest (validate_variable), so a refusal names the real rule (#183)."""
+        if isinstance(value, str) and (
+            parse_text(value) is not None
+            or SCALAR.fullmatch(value)
+            or java_char(value, code_points=False) is not None
+        ):
             return
-        if not isinstance(value, str) or not SCALAR.fullmatch(value):
-            raise ValueError(
-                "Java mutation requires a numeric or boolean scalar literal, or text in "
-                "double quotes for a String"
-            )
+        raise ValueError(
+            "Java mutation requires a literal: a number, true or false, a char in single "
+            "quotes ('+'), or a text in double quotes for a String"
+        )
 
-    def mutation_literal(self, value):
+    def mutation_literal(self, value, variable=None):
         """What java-debug is sent: a text (#137) between plain quotes, which it takes
-        off and keeps everything between as the new String (it unescapes nothing)."""
+        off and keeps everything between as the new String (it unescapes nothing); for a
+        char (#183), the char itself between single quotes, which it takes as that char
+        (a code point or an escape is turned into it here)."""
+        if variable is not None and variable.get("type") == "char":
+            return f"'{java_char(value)}'"
         text = parse_text(value)
         return value if text is None else f'"{text}"'
 
-    def confirm_mutation(self, name, value, before, after):
+    def confirm_mutation(self, name, value, before, after, variable=None):
         """A String (#137) must read back as the text asked, as java-debug shows one
-        (between quotes, nothing escaped): else the change is not reported."""
+        (between quotes, nothing escaped), and a char (#183) as the char itself: else
+        the change is not reported."""
+        if variable is not None and variable.get("type") == "char":
+            if after != java_char(value):
+                raise RuntimeError(
+                    f"java-debug stored {str(after)[:80]!r} in {name!r}, not the char asked: "
+                    "the change did not reach the program as stated, so the session is closed"
+                )
+            return
         text = parse_text(value)
         if text is not None and after != f'"{text}"':
             raise RuntimeError(
@@ -741,12 +897,7 @@ class JavaSession:
         if "static" in attributes:
             return "it is static (shared by every instance)"
         if kind not in (*_JAVA_INTEGER_BITS, *_settable_kinds(self)):
-            strings = getattr(self, "text_set", False)
-            return (
-                f"it is {kind}; only byte, short, int, long, boolean, float"
-                + (", double and String" if strings else " and double")
-                + " values can be changed"
-            )
+            return f"it is {kind}; {self._settable_text(kind)}"
         if kind in _JAVA_STRINGS:
             declared = self.declared_member(parent, name)
             if declared is not None and declared != _STRING_DESCRIPTOR:
@@ -767,48 +918,98 @@ class JavaSession:
         """
         self.validate_value(value)
         name, kind = variable.get("name"), variable.get("type")
-        text = parse_text(value)
-        if kind in _JAVA_STRINGS:
-            if text is None:
-                raise ValueError(
-                    f"Java mutation requires text in double quotes for String {name} "
-                    f"(--set '{name}=\"apple\"'): the local then refers to a new String; "
-                    "other references keep the old one"
+        if kind not in (*_JAVA_INTEGER_BITS, *_settable_kinds(self)):
+            # The type first (#183): `op='+'` on a char named the literal, not the rule.
+            raise ValueError(f"{name} is {kind}; {self._settable_text(kind)}")
+        _value_fits(name, kind, value)
+
+    def launch_refusal(self, program, line, name, value=None):
+        """Why a probe's `--set` of the local ``name`` (to ``value``, when given) can
+        change nothing at any stop of ``line`` of ``program``, judged from the class
+        files before the program runs (#183), or None: in every method with code on the
+        line, it is no local of the method there, a type no change reaches, a value its
+        declared type cannot hold, or a local the code never reads after the line's start
+        (where a line breakpoint stops). A field (`this.x`) and an element are judged at
+        the stop. (code, message) for a name no method there declares."""
+        from peeky.java_metadata import reads_after
+
+        if not re.fullmatch(r"[A-Za-z_$][A-Za-z0-9_$]*", str(name)):
+            return None
+        try:
+            source = self._line_key(program)
+        except (OSError, ValueError):
+            return None
+        methods = [
+            method
+            for declarations in self._declared().values()
+            if declarations.get("source") == source
+            for method in declarations.get("methods", ())
+            if line in method.get("line_pcs", {})
+        ]
+        if not methods:
+            return None
+        reasons, visible = [], set()
+        for method in methods:
+            starts = method["line_pcs"][line]
+            declared = [
+                (descriptor, read, slot)
+                for (local, descriptor, lines, read), (_, slot, _, _) in zip(
+                    method["locals"], method["slots"]
                 )
-            return
-        if text is not None:
-            raise ValueError(
-                f"Java mutation requires a literal of {name}'s type ({kind}); text in double "
-                "quotes changes a String"
+                if line in lines and (visible.add(local) or True) and local == name
+            ]
+            reason = None
+            for descriptor, read, slot in declared:
+                kind = _descriptor_kind(descriptor)
+                if kind is None:
+                    why = (
+                        f"`{name}` is declared {descriptor_name(descriptor)}; only byte, short, "
+                        "int, long, char, boolean, float and double locals can be changed, and "
+                        "a String to a text"
+                    )
+                elif value is not None and (why := _fit_reason(name, kind, value)):
+                    pass
+                elif not read or reads_after(method, slot, starts) is False:
+                    why = f"`{name}` " + _UNREAD_REASON
+                else:
+                    reason = None
+                    break
+                reason = why
+            if not declared:
+                reason = "absent"
+            if reason is None:
+                return None
+            reasons.append(reason)
+        where = f"`{name}` cannot be changed at {source}:{line}, at any stop of this build: "
+        tail = ". Refused before the program runs: nothing ran"
+        if all(reason == "absent" for reason in reasons):
+            listed = ", ".join(sorted(visible)) or "none"
+            return (
+                "NOT_FOUND",
+                where + f"no method with code on line {line} has a local `{name}` there "
+                f"(locals there: {listed}"
+                + (f"; a field is `this.{name}`" if "this" in visible else "")
+                + ")"
+                + tail,
             )
-        if kind in _JAVA_INTEGER_BITS:
-            # java-debug parses with Long.decode: a leading 0 means octal.
-            if not re.fullmatch(r"[+-]?(?:0|[1-9][0-9]{0,19})", value):
-                raise ValueError(f"Java mutation requires an integer literal for {kind} {name}")
-            bits = _JAVA_INTEGER_BITS[kind]
-            if not -(2 ** (bits - 1)) <= int(value) < 2 ** (bits - 1):
-                raise ValueError(f"Java mutation is outside the {kind} range for {name}")
-        elif kind == "boolean":
-            if value not in ("true", "false"):
-                raise ValueError(f"Java mutation requires true or false for boolean {name}")
-        elif kind in ("float", "double"):
-            if value in ("true", "false"):
-                raise ValueError(f"Java mutation requires a number for {kind} {name}")
-            number = float(value)
-            try:
-                stored = (
-                    struct.unpack(">f", struct.pack(">f", number))[0] if kind == "float" else number
-                )
-            except OverflowError:
-                stored = math.inf
-            mantissa = value.lower().split("e")[0]
-            if not math.isfinite(stored) or (stored == 0 and re.search(r"[1-9]", mantissa)):
-                raise ValueError(f"Java mutation is outside the {kind} range for {name}")
-        else:
-            raise ValueError(
-                "Only byte, short, int, long, boolean, float, double and String locals support "
-                f"Java mutation; {name} is {kind}"
+        found = [reason for reason in reasons if reason != "absent"]
+        return where + "; ".join(dict.fromkeys(found)) + tail
+
+    def _settable_text(self, kind=None):
+        """What a Java change can reach with this launcher; for a ``kind`` an older one
+        lacks (a char, #183; a String, #137), that a current bundle changes it."""
+        kinds = ["byte", "short", "int", "long", "boolean", "float", "double"]
+        if getattr(self, "char_set", False):
+            kinds.insert(4, "char")
+        if getattr(self, "text_set", False):
+            kinds.append("String (to a text)")
+        text = f"only {', '.join(kinds[:-1])} and {kinds[-1]} values can be changed"
+        if kind not in kinds and kind in ("char", *_JAVA_STRINGS):
+            text += (
+                f"; a {kind} too with an adapter bundle built by this version of "
+                "scripts/setup_java_adapter.py"
             )
+        return text
 
     def _line_key(self, program):
         return Path(program).resolve(strict=True).relative_to(self.prepared.source_root).as_posix()

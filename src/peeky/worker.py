@@ -1447,8 +1447,10 @@ class DebugWorker:
                 or len(changes) > 8
                 or not all(
                     isinstance(change, dict)
-                    and set(change) in ({"line", "name"}, {"line", "name", "text"})
+                    and {"line", "name"} <= set(change) <= {"line", "name", "text", "value"}
                     and change.get("text", True) is True
+                    and isinstance(change.get("value", ""), str)
+                    and len(change.get("value", "")) <= 10000
                     and type(change["line"]) is int
                     and change["line"] > 0
                     and isinstance(change["name"], str)
@@ -1458,7 +1460,7 @@ class DebugWorker:
             ):
                 raise ValueError(
                     "sets must be a list of at most 8 {line, name} changes (a positive line; "
-                    "text: true for a text)"
+                    "text: true for a text; value: the value, a string)"
                 )
         if operation == "launch" and args.get("max_pause") is not None:
             value = args["max_pause"]
@@ -2237,7 +2239,9 @@ class DebugWorker:
                     {
                         "variablesReference": adapter_ref,
                         "name": args["name"],
-                        "value": literal(args["value"]) if literal else args["value"],
+                        "value": literal(args["value"], variable=variable)
+                        if literal
+                        else args["value"],
                     },
                 )
             except RequestFailed as exc:
@@ -2251,7 +2255,7 @@ class DebugWorker:
             normalize_value = getattr(runtime, "mutation_value", None)
             after = normalize_value(changed) if normalize_value else changed.get("value")
             if confirm := getattr(runtime, "confirm_mutation", None):
-                confirm(args["name"], args["value"], before, after)
+                confirm(args["name"], args["value"], before, after, variable=variable)
             return {
                 "name": args["name"],
                 "before": before,
@@ -3458,7 +3462,7 @@ class DebugWorker:
                 {
                     "variablesReference": reference,
                     "name": name,
-                    "value": literal(value) if literal else value,
+                    "value": literal(value, variable=variable) if literal else value,
                 },
             )
         except RequestFailed as exc:
@@ -3476,7 +3480,7 @@ class DebugWorker:
                 f"{str(reread[0].get('value'))[:80] if len(reread) == 1 else 'nothing'}"
             )
         if confirm := getattr(runtime, "confirm_mutation", None):
-            confirm(name, value, before, after)
+            confirm(name, value, before, after, variable=variable)
         return {"name": name, "before": before, "after": after}
 
     def _set_scalar_member(
@@ -3523,7 +3527,7 @@ class DebugWorker:
                 {
                     "variablesReference": reference,
                     "name": name,
-                    "value": literal(value) if literal else value,
+                    "value": literal(value, variable=variable) if literal else value,
                 },
             )
         except RequestFailed as exc:
@@ -3550,7 +3554,7 @@ class DebugWorker:
             )
         after = found[0]["value"]
         # Exactly the value asked, or an error: never a change reported that is not made.
-        runtime.confirm_mutation(name, value, before, after)
+        runtime.confirm_mutation(name, value, before, after, variable=variable)
         if previewed:
             self._confirm_preview(record, runtime, name, after)
         return {"name": name, "before": before, "after": after}
@@ -3752,6 +3756,11 @@ class DebugWorker:
                 + ((note(program, [first["line"]], first["name"]) or "") if note else "")
                 + ". Refused before the program runs: nothing ran. Use an unoptimized build"
             )
+        elif check := getattr(runtime, "launch_refusal", None):
+            # Java (#183): each change from the class files' declared types, its value too.
+            for change in changes:
+                if refusal := check(program, change["line"], change["name"], change.get("value")):
+                    break
         elif check := getattr(runtime, "never_settable", None):
             lines, texts = {}, {}
             for change in changes:

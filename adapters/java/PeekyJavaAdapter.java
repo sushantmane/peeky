@@ -100,10 +100,14 @@ public final class PeekyJavaAdapter extends ProtocolServer {
                 // A text between plain quotes (Peeky #137): java-debug takes them off and makes
                 // a new String of the rest, for a String variable only (checked below).
                 boolean text=value.length()>=2 && value.startsWith("\"") && value.endsWith("\"");
-                if (!text && !value.matches("(?:true|false|[+-]?[0-9]+(?:\\.[0-9]+)?(?:[eE][+-]?[0-9]+)?)"))
-                    throw new IllegalArgumentException("only numeric or boolean scalar literals, or text for a String, supported");
+                // One UTF-16 unit between single quotes (Peeky #183): java-debug sets a char to
+                // it, for a char variable only (checked below).
+                boolean character=value.length()==3 && value.startsWith("'") && value.endsWith("'");
+                if (!text && !character && !value.matches("(?:true|false|[+-]?[0-9]+(?:\\.[0-9]+)?(?:[eE][+-]?[0-9]+)?)"))
+                    throw new IllegalArgumentException("only numeric or boolean scalar literals, a quoted char for a char, or text for a String, supported");
                 checkFieldTarget(args.get("variablesReference").getAsInt(), args.get("name").getAsString());
-                if (text) checkTextTarget(args.get("variablesReference").getAsInt(), args.get("name").getAsString());
+                if (text) checkDeclaredTarget(args.get("variablesReference").getAsInt(), args.get("name").getAsString(), "java.lang.String", "text changes only a String");
+                if (character) checkDeclaredTarget(args.get("variablesReference").getAsInt(), args.get("name").getAsString(), "char", "a quoted char changes only a char");
             }
             super.dispatchRequest(request);
         } catch (Exception error) {
@@ -136,9 +140,10 @@ public final class PeekyJavaAdapter extends ProtocolServer {
     /**
      * java-debug turns a quoted value into a String for a String variable, but parses it as
      * false for a boolean and keeps its first character for a char: allow text only where
-     * the variable's declared type is java.lang.String (a local, a field or an element).
+     * the variable's declared type is java.lang.String, and a quoted char only where it is
+     * char (a local, a field or an element).
      */
-    private void checkTextTarget(int reference, String name) throws ReflectiveOperationException {
+    private void checkDeclaredTarget(int reference, String name, String wanted, String refusal) throws ReflectiveOperationException {
         IDebugAdapterContext context=debugContext();
         Object container=context.getRecyclableIdPool().getObjectById(reference);
         Object value=container instanceof VariableProxy ? ((VariableProxy) container).getProxiedVariable() : null;
@@ -157,8 +162,8 @@ public final class PeekyJavaAdapter extends ProtocolServer {
         } catch (AbsentInformationException error) {
             type=null;
         }
-        if (!"java.lang.String".equals(type))
-            throw new IllegalArgumentException("text changes only a String; " + name + " is " + type);
+        if (!wanted.equals(type))
+            throw new IllegalArgumentException(refusal + "; " + name + " is " + type);
     }
 
     private IDebugAdapterContext debugContext() throws ReflectiveOperationException {
@@ -182,6 +187,8 @@ public final class PeekyJavaAdapter extends ProtocolServer {
             caps.addProperty("peekyFieldSet", true);
             // And changes a String to a text (#137), only where it is declared a String.
             caps.addProperty("peekyTextSet", true);
+            // And changes a char to a quoted char (#183), only where it is declared a char.
+            caps.addProperty("peekyCharSet", true);
             response.body=caps;
         }
         super.sendResponse(response);

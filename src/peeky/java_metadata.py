@@ -110,6 +110,35 @@ def reads_after(method, slot, starts):
     return False
 
 
+# A field descriptor's primitive types (JVMS 4.3.2).
+_PRIMITIVE_DESCRIPTORS = {
+    "B": "byte",
+    "C": "char",
+    "D": "double",
+    "F": "float",
+    "I": "int",
+    "J": "long",
+    "S": "short",
+    "Z": "boolean",
+}
+
+
+def descriptor_name(descriptor):
+    """A field descriptor as Java writes the type: `int`, `String` (java.lang's classes
+    by their simple names, as java-debug shows them), `int[]`, `app.Calc$Node[][]` (a
+    nested class keeps its binary name)."""
+    text, dims = str(descriptor), 0
+    while text.startswith("["):
+        text, dims = text[1:], dims + 1
+    if text.startswith("L") and text.endswith(";"):
+        base = text[1:-1].replace("/", ".")
+        if re.fullmatch(r"java\.lang\.[\w$]+", base):
+            base = base.removeprefix("java.lang.")
+    else:
+        base = _PRIMITIVE_DESCRIPTORS.get(text, text)
+    return base + "[]" * dims
+
+
 def _class_metadata(data, shared=None, scopes=None, declarations=None, codes=None):
     """(binary internal name, SourceFile, sorted executable lines). With ``scopes`` (a
     list), also appends (method, descriptor, first line, last line, local names) for each
@@ -345,7 +374,16 @@ def _class_metadata(data, shared=None, scopes=None, declarations=None, codes=Non
                     for name in dict.fromkeys(name for _, _, name in sorted(names))
                     if _SELECTABLE.fullmatch(name)
                 ]
-                scopes.append((method_name, descriptor, first, max(found), ordered, flags, found))
+                # Each name's declared type (#183), as Java writes it.
+                kinds = {}
+                for local, descriptor_of, _, _, _ in declared:
+                    kinds.setdefault(local, set()).add(descriptor_name(descriptor_of))
+                types = {
+                    local: " or ".join(sorted(kinds[local])) for local in ordered if local in kinds
+                }
+                scopes.append(
+                    (method_name, descriptor, first, max(found), ordered, flags, found, types)
+                )
             for line in sorted(set(method_lines.values())):
                 # Class-file order, which is the order java-debug considers them in.
                 line_methods.setdefault(line, []).append((method_name, descriptor))
@@ -384,13 +422,13 @@ def _own_constructor_lines(scopes):
     static initializer, end on their last field initializer: end them before the next
     method declared after them, so they never span methods between fields. Synthetic
     methods (a lambda) do not count."""
-    starts = sorted(first for _, _, first, _, _, flags, _ in scopes if not flags & 0x1000)
-    for index, (method, descriptor, first, last, names, flags, found) in enumerate(scopes):
+    starts = sorted(first for _, _, first, _, _, flags, _, _ in scopes if not flags & 0x1000)
+    for index, (method, descriptor, first, last, names, flags, found, types) in enumerate(scopes):
         following = [start for start in starts if start > first]
         if method in ("<init>", "<clinit>") and following:
             own = [line for line in found if line < following[0]]
             last = max(own) if own else last
-        scopes[index] = (method, descriptor, first, last, names)
+        scopes[index] = (method, descriptor, first, last, names, types)
 
 
 def java_declarations(mapping, classes_dir, workspace):
@@ -430,13 +468,15 @@ def java_scopes(mapping, classes_dir, workspace, limit=300):
             else source.name
         )
         owner = internal.rsplit("/", 1)[-1]
-        for method, _, first, last, names in methods:
+        for method, _, first, last, names, types in methods:
             found.append(
                 {
                     "scope": f"{owner}.{method}",
                     "source": source,
                     "lines": [first, last],
                     "names": names,
+                    # Declared types, as other languages' scopes give them (#183).
+                    **({"types": types} if types else {}),
                 }
             )
     found.sort(key=lambda scope: (scope["source"], scope["lines"][0], scope["scope"]))

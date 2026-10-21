@@ -1047,7 +1047,8 @@ def test_describe_lists_the_reference_parameters_it_reads_from_memory():
         }
     )
     [line] = [line for line in text.splitlines() if line.startswith("read from memory")]
-    assert line.endswith(f": &[i32], &{VEC_NAME}, &mut {VEC_NAME}")
+    # As the program spells them (#183): `&Vec<i32>`, not the debug information's path.
+    assert line.endswith(": &[i32], &Vec<i32>, &mut Vec<i32>"), line
     assert "reference parameters, owned" in line and "MIR proves" in line
     # And such fields of either (#156).
     assert "such fields of either (self.values)" in line
@@ -1914,4 +1915,7 @@ def test_describe_lists_the_locals_no_stop_can_change_per_function():
     # Review round 3: as the rows say, the binding to black-box, and inlining.
     assert "every one in memory, COOKBOOK 6.6): bind::shadow: x (line 4). Never" in line
     assert "change the value in the caller): bind::other::far: a, y. Never settable, held" in line
-    assert line.endswith("a local after the `.await`): app::aw::{{closure}}: k"), line
+    assert "a local after the `.await`): app::aw::{{closure}}: k. A Vec's" in line, line
+    # #183: where nothing can change, the edit that can (COOKBOOK 6.6).
+    assert "nor is anything in limiter::allow, app::aw::{{closure}}," in line, line
+    assert line.endswith("keeps a local in memory: COOKBOOK 6.6)"), line
