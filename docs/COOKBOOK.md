@@ -209,7 +209,7 @@ hit  phase     line  function  selector   type  value
 **Common cases**
 
 - `--hits N` captures N stops; `--hits all` every stop, up to 100, and needs the program to exit. `queries hits` shows one selector across hits, with `changed`.
-- **A line can stop several times per pass** (a macro's code, a one-line loop's body, a range `for`): the probe warns, each row's `stop` says which location, and `WHERE stop = 1` keeps one row per pass.
+- **A line can stop several times per pass** (a macro's code, a one-line loop's body, a range `for`): the probe warns, and each row's `stop` says which location. Check the rows' `stop` pattern before filtering on it: where every pass runs location 1 (a macro's code: 1, 2, 3, 1, 2, 3), `WHERE stop = 1` keeps one row per pass; a one-line loop's or a range `for`'s location 1 runs once, before the loop (1, 2, 2, 2), so use `stop = 2` there.
 - **A loop header may stop only once, before its loop:** the probe warns; put `--at` on the first line of the body.
 - Different functions on one line (a closure, a lambda) are told apart by each row's `function`.
 
@@ -420,7 +420,7 @@ Shortened alone, line 23 reads `:4` and `std::stol` throws. With `--set` you wou
 **Common cases**
 
 - `--capture return` with `--hits all` gives one `(return)` row per call of the `--at` line's function, a library's calls included: probe its first line.
-- A value is shown only when exact: C and C++ integers, `bool`, characters, floats and pointers, Rust integers, Java any type; a struct, a string or any return in an optimized build is withheld, saying why.
+- A value is shown only when exact: C and C++ integers, `bool`, characters, floats and pointers, Rust integers, `bool` and floats, Java any type; a struct, a string or any return in an optimized build is withheld, saying why.
 - After `session step --out`, `session inspect` shows the return under `[Returned]` and `session get return` reads it.
 - Python's returns cannot be captured.
 
@@ -976,7 +976,7 @@ A checker is a trusted script, run as `python checker.py <candidate-path>`. It e
 
 - Run the same probe twice, once as it is and once with `--old`/`--new`: the second builds a fresh copy with the edit; your files are not changed.
 - `--at` keeps the original's line numbers; a line inside an edit that adds or removes lines is refused.
-- The candidate's `compare:` line names the `queries diff` against the same probe without the edit.
+- The candidate's `compare:` line names the `queries diff` against the same probe without the edit when such a run is saved; otherwise it says how to make one.
 - A Rust local kept in a register can be kept in memory by a candidate edit (`std::hint::black_box(&mut x);`) and set in the same probe.
 - It is evidence, not verification: `verify` checks the fix.
 

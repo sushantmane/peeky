@@ -1,14 +1,14 @@
 # Peeky agent guide
 
-You debug programs with **peeky**, a standalone tool. You decide what to do; peeky runs the debugger safely and returns evidence. Every claim you make must cite a peeky command and its output. This guide is the common path; [COOKBOOK.md](COOKBOOK.md) has recipes and every rule (sections cited below as 7.1 and so on), [ERRORS.md](ERRORS.md) the error codes.
+You debug programs with **peeky**, a standalone tool. You decide what to do; peeky runs the debugger safely and returns evidence. Every claim you make must cite a peeky command and its output. This guide is the common path; [COOKBOOK.md](COOKBOOK.md) has every rule (cited below by section: 7.1), [ERRORS.md](ERRORS.md) the error codes.
 
 ## First 5 minutes
 
 1. **Learn the target:** `peeky describe examples/pagination_bug.py`. Look for `breakpoint lines`, each function's lines and names (`names in get_page (lines 4-9): …`) and `mutable:` (what `--set` can change). Pick a line where the suspicious value has just been computed.
 2. **Watch it:** `peeky probe examples/pagination_bug.py --at 8 --capture start,page --hits all`. One row per stop (`hit`, `value`), `status: completed`, the program's `output`, and every `warning:`.
-3. **Ask follow-ups:** `peeky queries diff` after probing two inputs (`--label` each), or `peeky sql "SELECT hit, num FROM last_run WHERE selector = 'start'"`. No rerun; `diff` lists `(output)`, `(args)`, `(edit)` rows first, then the first divergence.
+3. **Ask follow-ups:** `peeky queries diff` after probing two inputs (`--label` each), or `peeky sql "SELECT hit, num FROM last_run WHERE selector = 'start'"`. No rerun (rule 12).
 4. **Test a hypothesis:** add `--set start=0` to the probe. Look for `set start: 3 -> 0`, the `after-set` rows, and whether the output changed as predicted. It is an experiment, not a fix.
-5. **Try a fix:** add `--old 'start = page * page_size' --new 'start = (page - 1) * page_size'` to the probe. Values come from a fresh build with the edit (Python: an edited copy; your files are unchanged); its `compare:` line names the `queries diff` against the unedited run. Write the general fix, not a special case for the observed input.
+5. **Try a fix:** add `--old 'start = page * page_size' --new 'start = (page - 1) * page_size'` to the probe. Values come from a fresh build with the edit (Python: an edited copy; your files are unchanged); its `compare:` line names the `queries diff` against the unedited run, or says how to make one. Write the general fix, not a special case for the observed input.
 6. **Check the checker:** `peeky verify examples/pagination_bug.py --check examples/verify_pagination.py --baseline` must say `passed: False`; a checker that passes the bug cannot tell a fix from it.
 7. **Verify:** the same with `--old '…' --new '…'` instead of `--baseline`. `passed: True  stage: verification`, or the failing `stage` and `reason`. Only this verifies a fix.
 8. **Several looks at one stop:** `peeky session start <target> --at <file>:<line>`, then `session inspect`, `get`, `step`, `continue`, and always `session close`.
@@ -17,20 +17,20 @@ Report the observation, the intervention and its effect, the edit, and the verif
 
 ## Rules you will hit
 
-1. **A breakpoint stops before its line runs:** to see what a line assigns, stop on the next. Probe only lines `describe` lists; `NO_STOP` means the line never ran (1.1).
+1. **A breakpoint stops before its line runs:** to see what a line assigns, stop on the next. Probe only lines `describe` lists; `NO_STOP` means the line never ran (the COOKBOOK's opening tip; 10).
 2. **Set a field in the frame that owns the struct.** Peeky never writes through a pointer or reference (`r->tail` in `push(struct ring *r)`, `self.k` behind `&mut self`, C++ `this`): change it in the caller, at the call's line (`--set-at LINE@N`, or `--at` it with `--set-hit N`), as the refusal says (7.1, 7.2).
 3. **Changes only where nothing is under way:** C and C++ at a statement's first line, Rust where the MIR proves it, never after `step --out`. Rows mark `[settable]`; a probe whose change its build rules out is refused before it runs (exit 2) (2.3, 7.1, 7.2).
 4. **`--set` applies once, at hit 1** (`--set-hit N` for another); `--set-at LINE@HIT` changes at another line's hit (2.4, 2.8).
 5. **Hits count stops, not passes.** A line with a macro's or a block's code, or a closure, can stop several times per pass: read `warnings`, each row's `stop` and `function`. A loop header may stop only before its loop: probe the body's first line (2.2).
-6. **A `note` or `no value yet:` is not a value**, nor is the error text of `unavailable: true`: read the next line (7.1, 7.2).
+6. **A `note`, `no value yet:` or `unavailable: true` is not a value.** C and C++: read a local below its declaration, and a `note` on a line a loop returns to (a `do` body's first) on the next line; below a `setjmp` call, locals declared at or below the stop keep their `note`. Rust: `[stale]` is a moved local's leftover bytes, and raw fields with a note are contents Peeky could not prove (7.1, 7.2).
 7. **Rust reads owned locals; container fields stay raw.** An owned `Vec`/`String` local or a reference parameter of plain elements is read from memory; a `Vec` or `String` field (`self.values` behind `&mut self`, even `w.values` in its owner) keeps raw fields with a note (7.2).
-8. **Members need `this.`** in C++ and Java (`this.head_`); Python dict entries are `d['key']` (2.1).
+8. **Members need `this.`** in C++ and Java (`this.head_`: 7.1, 7.3); Python dict entries are `d['key']` (2.1).
 9. **`continue --to LINE` does not skip the session's breakpoint:** a stop there comes first (exit 3, with a note); repeat it (5.2).
 10. **Steps land where the code jumps:** a closing `}`, a loop header, back on an `if`'s line. Read a block's locals before stepping past its last statement (1.1, 5.2).
 11. **Sessions need `--name` on every command** (unless `default`) and a `close`; their programs' clocks run while you think, so prefer probes for timed code (5.3, 5.4).
 12. **`queries diff` pairs the last two runs by hit number.** Name runs (`--param a=1 --param b=5`); check the `(output)`, `(args)`, `(edit)` and `(sets)` rows before crediting an edit; after a candidate, run its `compare:` command; when hits do not line up (a sort's comparator), use `queries join` (3.1, 3.5).
-13. **`--old` must match the source exactly once**, with real newlines (`--old-file` for long text), and goes before `--` (6.3, 6.4).
-14. **Same-named locals:** a plain name means the one the code names at the stop; `name @ file:line` selects another (7.1).
+13. **`--old` must match the source exactly once**, with real newlines (`--old-file` for long text: 6.3), and goes before `--`, as everything after it goes to the program (2.5, 10).
+14. **Same-named locals (C, C++):** a plain name means the one the code names at the stop; `name @ file:line` selects another (7.1). Rust lists a shadowed `let` only as `x @ main.rs:6`.
 15. **Respect opaque values.** `<unqualified Rust enum layout>`, `<unverified ...>` or `budget-exhausted` mean peeky refused to guess. Do not invent their contents.
 
 ## Principles
@@ -57,16 +57,16 @@ Report the observation, the intervention and its effect, the edit, and the verif
 
 - **Program arguments:** after `--` or repeated `--arg` (`--arg=-v`), replacing a config's `arguments` (not for attached JVMs); `session start` too.
 - **`--hits all`** captures every stop up to 100 (fewer past 20 selectors); it needs the program to exit. **`--capture return`**: a `(return)` row per call of the line's function (probe its first line; not Python; deep recursion is slow: limit `--hits`).
-- **Output:** every command takes `--json`: stdout is then one JSON object (progress on stderr; `--quiet` silences it).
+- **Output:** every command takes `--json`: stdout is then one JSON value (progress on stderr; `--quiet` silences it).
 - **Sessions:** every session command takes the session's `--name` again (default `default`); a second `session start` with a name in use fails with "exists". A session's worker ends on `close`, when the start fails or is interrupted, or after 5 idle minutes. Session records live in `$PEEKY_STATE_DIR` (default `~/.peeky`): set it per task to keep sessions apart.
 - **In a session:** `get` also lists a value's children, each with the selector that reads it, and exits 1 if any selector failed. `--frame N` reads caller frame N.
 - **Stepping:** `step` runs to the next line (`--into` a call, `--out` of the function; for Java, `--into` and `--out` skip JDK classes). `outside_program: true`: a step left your sources; only the return is read (`get return`); `step --out` or `continue`.
 - **Continuing:** `continue` runs to the next stop (`--count N`: the Nth breakpoint stop); `session start --hit N` starts at the Nth stop; states show `hit N` at the session's breakpoint. `--count` and `--hit` stop at anything else (a crash, a step, the exit) with a note; `--to LINE` also stops once at LINE of the session's file (a stop before it, such as the session's breakpoint, says so: repeat it); `--to-exit` clears the breakpoints and runs to the end.
-- **Candidates:** any target but an attached JVM; Python runs an edited copy. `--at` keeps the original's line numbers (a line inside an edit that adds or removes lines is refused). An edit that does not compile fails with `BUILD_FAILED` (Python: `NO_STOP`, with the `SyntaxError`). Compare with the unedited run through `peeky queries diff`. It is evidence, not verification.
+- **Candidates:** any target but an attached JVM. `--at` keeps the original's line numbers (a line inside an edit that adds or removes lines is refused). An edit that does not compile fails with `BUILD_FAILED` (Python: `NO_STOP`, with the `SyntaxError`). Compare with the unedited run through `peeky queries diff`. It is evidence, not verification.
 
 ### Interventions (`--set name=value`)
 
-- **What:** root locals (the stopped function's own variables); in C, C++ and Rust also integer fields and elements (`s.end`, `xs[2]`, `t.__0`) of a struct, tuple or array local the frame holds itself (Rust: in memory, MIR-proven initialized); in Java scalar fields and array elements reached from locals (`current.end=10`, `workers[1].load=5`; 7.3). Never through a pointer, reference or Box, nor in a union, enum, packed or std type, bitfield or const; a plain name is the local the code names. Values and widths per language: 2.3.
+- **What:** root locals (the stopped function's own variables); in C, C++ and Rust also integer fields and elements (`s.end`, `xs[2]`, `t.__0`) of a struct, tuple or array local the frame holds itself (Rust: in memory, MIR-proven initialized); in Java scalar fields and array elements reached from locals (`current.end=10`, `workers[1].load=5`; 7.3). Never through a pointer, reference or Box, nor in a union, enum, packed or std type, bitfield or const; in C and C++ a plain name is the local the code names (Rust lists shadowed ones as `x @ main.rs:6`). Values and widths per language: 2.3.
 - **Where:** a change writes the variable's storage, which later reads see; copies the program made keep the old value (`let a = s.x;` above, a statement under way), and the stop's line may overwrite it. So C, C++ and Rust allow one only where Peeky proves none is under way (C: at a statement's first instruction; Rust: by MIR), never after `step --out`. Before running, a probe refuses a `--set`/`--set-at` its build rules out: a Rust local kept in a register (`[not settable: register]`; `describe` lists them), a field through a pointer.
 - **When:** `--set` applies once, at hit 1 (`--set-hit N`: later); other hits only observe. `--set-at LINE@HIT x=0` (repeatable) changes at that hit of its own line: change at 22, restore at 23 (2.8). One refusal fails the probe, and ends with the locals settable there (`settable here: total, i`, or `none`).
 - **Checks:** rows mark what `set` would change `[settable]`; `session inspect` notes why when a rule leaves nothing settable. Every change is read back: one the debugger refuses or cannot store is `MUTATION_REJECTED` with the session kept; a value stored differently from the one asked closes the session. Expressions, names and calls are rejected, never evaluated (2.3).
