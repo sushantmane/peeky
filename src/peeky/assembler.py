@@ -24,10 +24,10 @@ ASSEMBLER_REFUSAL = "Inline assembly that can read a file is not supported"
 _READS = re.compile(r"\.(incbin|include)(?![\w$])", re.IGNORECASE)
 # A macro, which can spell one from pieces (`.irpc c,n` then `.incbi\c`).
 _MACRO = re.compile(r"(?<![\w$])\.(macro|irpc|irp)(?![\w$])", re.IGNORECASE)
-# Where an operand may spell a directive's name: inside a dotted word (`.inc%c0`), or
-# starting a statement other than a label (`{} "file"`, a symbol named `.incbin`).
-_GLUED = r"\.[\w.$]*$"
-_STATEMENT = r"(?:^|[\n;])[ \t]*$"
+# Where an operand may spell a directive's name: in a word that starts with a dot
+# (`.inc%c0`), or starting a statement other than a label (`{} "file"`, a symbol named
+# `.incbin`).
+_LABEL = re.compile(r"[ \t]*:")
 _C_OPERAND = re.compile(r"(?<!%)%[a-zA-Z]*(?:[0-9]+|\[[^\]\n]*\])")
 _RUST_OPERAND = re.compile(r"(?<!\{)\{(?!\{)[^{}\n]*\}")
 
@@ -43,9 +43,15 @@ def judged(text, operand=None):
             "that reads a file (`.incbin`)"
         )
     for found in operand.finditer(text) if operand is not None else ():
-        before = text[: found.start()]
-        if re.search(_GLUED, before) or (
-            re.search(_STATEMENT, before) and not re.match(r"[ \t]*:", text[found.end() :])
+        word = found.start()
+        while word and (text[word - 1].isalnum() or text[word - 1] in "_.$"):
+            word -= 1
+        line = word
+        while line and text[line - 1] in " \t":
+            line -= 1
+        statement = word == found.start() and (not line or text[line - 1] in "\n;")
+        if text.startswith(".", word, found.start()) or (
+            statement and not _LABEL.match(text, found.end())
         ):
             return (
                 f"spells a directive's name with an operand (`{found[0]}`), which can make "
