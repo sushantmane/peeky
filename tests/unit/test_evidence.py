@@ -1247,7 +1247,7 @@ def test_wide_gives_one_row_per_hit_with_a_column_per_selector(store):
     assert evidence.run_query(store, "wide")["columns"][3] == "x"
     with pytest.raises(ValueError, match="no saved run 9"):
         evidence.run_query(store, "wide", {"run": 9})
-    with pytest.raises(ValueError, match="phase is observed or after-set"):
+    with pytest.raises(ValueError, match="phase is observed, after-set or returned"):
         evidence.run_query(store, "wide", {"phase": "later"})
     # A cell holds one value: a selector read twice at a hit must have read the same.
     evidence.record(store, captured([(1, "observed", "v", "1"), (1, "observed", "v", "1")]))

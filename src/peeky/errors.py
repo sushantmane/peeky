@@ -181,6 +181,13 @@ _RULES = (
         False,
     ),
     (
+        r"Python return values cannot be captured",
+        "UNSUPPORTED",
+        "Capture the value where the caller keeps it: probe the line after the call with "
+        "--capture of the variable it is assigned to.",
+        False,
+    ),
+    (
         r"cannot verify edits|Attached JVMs cannot",
         "UNSUPPORTED",
         "Verify on a fresh-build target, not an attached JVM.",

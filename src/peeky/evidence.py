@@ -84,7 +84,9 @@ TABLES = {
         {
             "run_id": "-> runs.run_id",
             "hit": "Hit number, from 1",
-            "phase": "observed, or after-set (the value after that hit's interventions)",
+            "phase": "observed, after-set (the value after that hit's interventions), or "
+            "returned (the `(return)` row: what the call returned, read where it returned "
+            "to; line is that line, function the function that returned)",
             "line": "Line where the program actually stopped (a candidate run's own numbering; "
             "runs.line is the requested line in the original file)",
             "function": "Function (frame) name, as the debugger names it (C++: its "
@@ -367,13 +369,19 @@ _SAME = (
 # function), a hit is also its stop: the same hit at another stop is another row.
 _STOPPED = "EXISTS (SELECT 1 FROM captures WHERE run_id = {} AND stop IS NOT NULL)"
 _BOTH_STOPPED = f"({_STOPPED.format(_A)} AND {_STOPPED.format(_B)})"
+# A row's stop, or its hit's (a `(return)` row has none of its own, #155: the observed
+# rows of its hit say where the call began).
+_HIT_STOP = (
+    "COALESCE(s.stop, (SELECT MIN(o.stop) FROM captures o WHERE o.run_id = s.run_id AND "
+    "o.hit = s.hit))"
+)
 
 
 _PAIR = f"""WITH a AS (SELECT hit, phase, selector, {_shown("s")} AS v, type AS t, rowid AS pos,
-    {_caveat("s")} AS c, {_SAME} AS same, CASE WHEN {_BOTH_STOPPED} THEN stop END AS st
+    {_caveat("s")} AS c, {_SAME} AS same, CASE WHEN {_BOTH_STOPPED} THEN {_HIT_STOP} END AS st
     FROM captures s WHERE run_id = {_A}),
   b AS (SELECT hit, phase, selector, {_shown("s")} AS v, type AS t, rowid AS pos,
-    {_caveat("s")} AS c, {_SAME} AS same, CASE WHEN {_BOTH_STOPPED} THEN stop END AS st
+    {_caveat("s")} AS c, {_SAME} AS same, CASE WHEN {_BOTH_STOPPED} THEN {_HIT_STOP} END AS st
     FROM captures s WHERE run_id = {_B}),
   k AS (SELECT hit, phase, selector, st FROM a UNION SELECT hit, phase, selector, st FROM b),
   kinds AS (SELECT k.hit, k.phase, k.selector, k.st, a.v AS value_a, b.v AS value_b,
@@ -607,7 +615,8 @@ QUERIES = {
     OR LAG({_caveat()}) OVER w IS NOT NULL THEN NULL
     ELSE value IS NOT LAG(value) OVER w END AS changed
 FROM captures
-WHERE run_id = {_RUN} AND phase = 'observed' AND (:selector IS NULL OR selector = :selector)
+WHERE run_id = {_RUN} AND phase IN ('observed', 'returned')
+  AND (:selector IS NULL OR selector = :selector)
 WINDOW w AS (PARTITION BY selector ORDER BY hit) ORDER BY selector, hit""",
         {**_RUN_PARAM, "selector": "Only this selector (default: all)"},
         (),
@@ -681,7 +690,8 @@ ORDER BY seq, pos""",
         "evidence by themselves), and values are ordered by their other sightings",
         f"SELECT program, line, value, COUNT(*) AS seen, SUM(({_caveat()}) IS NOT NULL) AS "
         "qualified, COUNT(DISTINCT run_id) AS runs, MIN(run_id) AS first_run, MAX(run_id) "
-        "AS last_run FROM evidence WHERE selector = :selector AND phase = 'observed' AND "
+        "AS last_run FROM evidence WHERE selector = :selector AND phase IN ('observed', "
+        "'returned') AND "
         "NOT candidate GROUP BY program, line, value ORDER BY seen - qualified DESC, seen "
         "DESC, value",
         {"selector": "Selector, e.g. request.page (required)"},
@@ -699,7 +709,10 @@ ORDER BY seq, pos""",
         "it, never as plain values. --json gives the generated SQL too (`sql`), to refine "
         "with peeky sql",
         lambda path, params: _wide(path, params),
-        {**_RUN_PARAM, "phase": "observed or after-set (default: both, after-set after)"},
+        {
+            **_RUN_PARAM,
+            "phase": "observed, after-set or returned (default: all, in that order)",
+        },
         (),
     ),
     "join": (
@@ -715,7 +728,7 @@ ORDER BY seq, pos""",
         {
             **_PAIR_PARAMS,
             "key": "Selector whose value links the runs, e.g. v (required)",
-            "phase": "observed (default) or after-set",
+            "phase": "observed (default), after-set or returned",
             "masked": "1: match key values with addresses masked (no_addresses), for a "
             "pointer or a C string; any address then matches any other",
         },
@@ -1280,7 +1293,7 @@ def _identifier(name):
     return '"' + str(name).replace('"', '""') + '"'
 
 
-_PHASES = ("observed", "after-set")
+_PHASES = ("observed", "after-set", "returned")
 # Each run's cells: names whose value is NULL, with why, and names whose value something
 # qualifies, with what: JSON objects, so no reason or selector text can be misread as a
 # separator. NULL where there are none.
@@ -1304,7 +1317,9 @@ def _cells(where):
 def _phase(params, default=None):
     phase = params.get("phase", default)
     if phase is not None and phase not in _PHASES:
-        raise ValueError(f"Evidence query failed: phase is observed or after-set, not {phase!r}")
+        raise ValueError(
+            f"Evidence query failed: phase is observed, after-set or returned, not {phase!r}"
+        )
     return phase
 
 
@@ -1421,7 +1436,8 @@ def _wide(path, params):
         f"SELECT hit,{' MIN(stop) AS stop,' if stops else ''} phase, MIN(line) AS line,"
         f"{_picked(selectors, names, '  ')}\n"
         f"  {_NO_VALUE} AS no_value,\n  {_CAVEATS} AS caveats\n"
-        f"FROM ({_cells(where)})\nGROUP BY hit, phase) w ORDER BY w.hit, w.phase = 'after-set'"
+        f"FROM ({_cells(where)})\nGROUP BY hit, phase) w ORDER BY w.hit, "
+        "CASE w.phase WHEN 'after-set' THEN 1 WHEN 'returned' THEN 2 ELSE 0 END"
     )
     return sql, {}, []
 
@@ -1568,7 +1584,7 @@ def _unaligned(path, params):
     if run["ha"] == run["hb"]:
         apart = stops_apart(path, run["a"], run["b"])
         if apart is None:
-            return []
+            return _unplaced_returns(path, run)
         return [
             f"at hit {apart['hit']} run {run['a']} was at {stop_text(apart['stop_a'])} of "
             f"its line and run {run['b']} at {stop_text(apart['stop_b'])}, so a hit need not "
@@ -1581,6 +1597,29 @@ def _unaligned(path, params):
         "is called on other pairs once one answer differs), and pairing by hit number can "
         "show every later hit as a difference: pair them by a value instead, `peeky queries "
         f"join --param a={run['a']} --param b={run['b']} --param key=<selector>`"
+    ]
+
+
+def _unplaced_returns(path, run):
+    """A note where a run's line stops several times per pass (#157's warning) and its
+    `(return)` rows (#155) have no observed row at their hit to say at which stop their
+    call began (`--capture return` alone): pairing them by hit number cannot be checked."""
+    found = query(
+        path,
+        "SELECT r.run_id FROM runs r WHERE r.run_id IN (:a, :b) AND r.warnings LIKE "
+        "'%times per pass%' AND EXISTS (SELECT 1 FROM captures c WHERE c.run_id = r.run_id "
+        "AND c.phase = 'returned' AND NOT EXISTS (SELECT 1 FROM captures o WHERE o.run_id "
+        "= c.run_id AND o.hit = c.hit AND o.stop IS NOT NULL)) ORDER BY r.run_id LIMIT 1",
+        {"a": run["a"], "b": run["b"]},
+    )["rows"]
+    if not found:
+        return []
+    return [
+        f"run {found[0]['run_id']}'s line stops several times per pass, and its `(return)` "
+        "rows do not say at which stop their call began (nothing else was captured there), "
+        "so a hit need not be the same call in both runs: capture a selector with `return` "
+        "to pair them by stop, or pair them by a value, `peeky queries join --param "
+        f"a={run['a']} --param b={run['b']} --param key=<selector>`"
     ]
 
 

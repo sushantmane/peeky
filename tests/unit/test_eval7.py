@@ -275,7 +275,7 @@ def store(tmp_path):
     return tmp_path / "evidence" / "evidence.db"
 
 
-def saved(store, rows, hits=None, requested="all", **probe):
+def saved(store, rows, hits=None, requested="all", warnings=(), **probe):
     """Record a run of (hit, phase, selector, value[, stop]) rows that stopped ``hits``
     times (default: its last hit) of the ``requested``; the probe asked for exactly the
     selectors it captured. A row's stop is which of its line's 2 breakpoint locations
@@ -291,6 +291,7 @@ def saved(store, rows, hits=None, requested="all", **probe):
     ]
     recorded["probe"].update(capture=list(dict.fromkeys(row[2] for row in rows)), **probe)
     recorded["hits"] = hits if hits is not None else max([row[0] for row in rows], default=0)
+    recorded["warnings"] = list(warnings)
     return evidence.record(store, recorded, language="c")
 
 
@@ -443,6 +444,56 @@ def test_diff_pairs_hits_at_the_same_stop_where_both_runs_label_them(store):
     saved(store, [(1, "observed", "x", "1"), (2, "observed", "x", "7")])
     result = evidence.run_query(store, "diff")
     assert result["rows"] == [] and "run 4 at an unlabelled stop" in result["notes"][0]
+
+
+def test_a_return_pairs_by_its_hits_stop(store):
+    # Merge of #162 (#155): a `(return)` row has no stop of its own, so with stop-aware
+    # pairing it paired by hit number alone, comparing the returns of calls that began
+    # at different stops. It now takes its hit's stop from the hit's observed rows.
+    from peeky import evidence
+
+    def calls(second_stop, second_return):
+        return [
+            (1, "observed", "x", "1", 1),
+            (1, "returned", "(return)", "5"),
+            (2, "observed", "x", "2", second_stop),
+            (2, "returned", "(return)", second_return),
+        ]
+
+    saved(store, calls(2, "6"))
+    saved(store, calls(1, "9"))
+    rows = evidence.run_query(store, "diff")["rows"]
+    assert [(r["hit"], r["selector"], r["note"]) for r in rows] == [
+        (2, "x", "missing in run b (run a: stop 2)"),
+        (2, "(return)", "missing in run b (run a: stop 2)"),
+        (2, "x", "missing in run a (run b: stop 1)"),
+        (2, "(return)", "missing in run a (run b: stop 1)"),
+    ]
+    # At the same stops, the returns pair and differ as values.
+    saved(store, calls(2, "7"))
+    rows = evidence.run_query(store, "diff", {"a": 1, "b": 3})["rows"]
+    assert [(r["hit"], r["selector"], r["value_a"], r["value_b"]) for r in rows] == [
+        (2, "(return)", "6", "7")
+    ]
+
+
+def test_returns_alone_on_a_line_that_stops_several_times_are_flagged(store):
+    # With `--capture return` alone no observed row says at which stop a call began:
+    # where the line stops several times per pass, diff's note says pairing by hit
+    # cannot be checked.
+    from peeky import evidence
+
+    warning = "Line 36 stops up to 2 times per pass in f (2 breakpoint locations): ..."
+    returns = [(1, "returned", "(return)", "5"), (2, "returned", "(return)", "6")]
+    saved(store, returns, warnings=[warning])
+    saved(store, returns[:1] + [(2, "returned", "(return)", "8")], warnings=[warning])
+    (note,) = evidence.run_query(store, "diff")["notes"]
+    assert note.startswith("run 1's line stops several times per pass, and its `(return)`")
+    assert "peeky queries join --param a=1 --param b=2 --param key=<selector>" in note
+    # A line with one location: no note.
+    saved(store, returns)
+    saved(store, returns)
+    assert "notes" not in evidence.run_query(store, "diff")
 
 
 def test_diff_collapses_address_only_rows_per_stop(store):
