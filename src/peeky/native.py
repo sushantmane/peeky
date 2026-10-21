@@ -1407,6 +1407,8 @@ def has_nonlocal_jumps(binary):
 
 
 _SHADOWED = re.compile(r"(.+) @ [^:]+:([0-9]+)")
+# The same, with the file: (name, file, line).
+_NAMED_AT = re.compile(r"(.+) @ ([^:]+):([0-9]+)")
 
 
 def _is_object(variable):
@@ -2653,7 +2655,8 @@ class NativeSession:
         if function is None or function.get("types") is None:
             return None
         try:
-            offset, _ = self._declared_type(function["types"], steps[0])
+            shown = self._shown_where(steps[0], self._unslid(frame))
+            offset, _ = self._declared_type(function["types"], steps[0], shown)
         except Unsettable:
             return None
         typed = Typed(self.fields, offset)
@@ -3283,6 +3286,11 @@ class NativeSession:
         """The declarations entries a stop on ``line`` of ``source`` can be in: for each
         address of the line's code, the narrowest function holding it, as _function_at
         finds a frame's. Empty when the build's declarations were not read."""
+        return [entry for entry, _ in self._line_places(source, line)]
+
+    def _line_places(self, source, line):
+        """(declarations entry, the addresses of the line's code it holds) for each
+        function a stop on ``line`` of ``source`` can be in (see _line_entries)."""
         found, table = {}, self.declarations or ()
         addresses = {
             address
@@ -3298,9 +3306,48 @@ class NativeSession:
                 if low <= address < high
             ]
             if holding:
-                index = min(holding)[1]
-                found[index] = table[index]
-        return list(found.values())
+                found.setdefault(min(holding)[1], []).append(address)
+        return [(table[index], held) for index, held in found.items()]
+
+    def selected_as(self, variable, frame, siblings=()):
+        """The plain name a selector reads this root local by (#158), where LLDB names it
+        with where it is declared (`t @ two.c:20`) because another local of its name is
+        in scope too (an outer block's `t @ two.c:18`): the name, for the one the code at
+        the stop names (shown_declaration: the declaration whose block holds the pc, the
+        innermost); else None. None too where the debugger lists that plain name itself,
+        or another of the name that is no automatic local or parameter of the function
+        (a block's `thread_local`), or the stop's declaration cannot be singled out."""
+        shown = _NAMED_AT.fullmatch(str(variable.get("name")))
+        if shown is None or not self.declarations:
+            return None
+        base, names = shown[1], [str(sibling.get("name")) for sibling in siblings]
+        if base in names:
+            return None
+        found = shown_declaration(self.declarations, base, self._unslid(frame))
+        if not found:
+            return None
+        function, (source, line, _) = found
+        automatic = {
+            (Path(str(where)).name, at)
+            for where, at, framed in function["locals"].get(base, ())
+            if framed and where is not None
+        }
+        for name in names:
+            other = _NAMED_AT.fullmatch(name)
+            if other and other[1] == base and (other[2], int(other[3])) not in automatic:
+                return None
+        if (Path(str(source)).name, line) != (shown[2], int(shown[3])):
+            return None
+        return base
+
+    def _shown_where(self, name, pc):
+        """(source, line, automatic) of the declaration of the local ``name`` the
+        debugger shows at ``pc`` (unslid; shown_declaration: the one whose block holds
+        it, the innermost), or None where that cannot be singled out or none is."""
+        if pc is None or not self.declarations:
+            return None
+        found = shown_declaration(self.declarations, name, pc)
+        return found[1] if found else None
 
     def _relative(self, program):
         try:
@@ -3330,17 +3377,26 @@ class NativeSession:
             if not steps:
                 continue
             for line in lines:
-                entries = self._line_entries(source, line)
-                if line not in stops or not entries:
+                # Each function a stop there can be in, and in it each declaration of the
+                # root the debugger may show there: that of the block holding each of the
+                # line's addresses (#158).
+                places = [
+                    (entry, shown)
+                    for entry, addresses in self._line_places(source, line)
+                    for shown in dict.fromkeys(
+                        self._shown_where(root, address) for address in addresses
+                    )
+                ]
+                if line not in stops or not places:
                     continue
                 failures = []
-                for entry in entries:
+                for entry, shown in places:
                     try:
                         if entry.get("types") is None:
                             raise Unsettable(
                                 "Peeky cannot match it to the build's debug information"
                             )
-                        kind, framed = self._declared_type(entry["types"], root)
+                        kind, framed = self._declared_type(entry["types"], root, shown)
                         # As the stop's walk reads the selector (`sp[-1]` is `sp[1]`).
                         named = debugger_steps(self.fields, kind, root, steps)
                         if named is None:
@@ -3820,7 +3876,9 @@ class NativeSession:
                 or "Peeky cannot match this frame to the build's debug information (it reads "
                 "it when the session starts)"
             )
-        return (*self._declared_type(function["types"], root.get("name")), self.fields)
+        name = root.get("name")
+        shown = self._shown_where(name, self._unslid(frame))
+        return (*self._declared_type(function["types"], name, shown), self.fields)
 
     def _root_holds(self, frame, root, stack=None, deeper=None):
         """Raise fields.Unsettable unless the root local holds its value at the stop:
@@ -3838,10 +3896,13 @@ class NativeSession:
             )
 
     @staticmethod
-    def _declared_type(types, name):
+    def _declared_type(types, name, where=None):
         """(type offset, whether every declaration is an automatic or a parameter in the
         frame's memory) of the local ``name`` (`s`, or `s @ main.rs:81` as LLDB names one
-        of several) in a function's ``types`` (fields.local_types)."""
+        of several) in a function's ``types`` (fields.local_types). ``where``: the
+        (source, line, ...) of the declaration of it the debugger shows at the stop
+        (shown_declaration), which alone counts where the function declares several
+        (#158: a loop's `Task t`, and a later block's `const Task &t`)."""
         from peeky.fields import Unsettable
 
         shown = re.fullmatch(r"(.+) @ ([^:]+):([0-9]+)", str(name))
@@ -3849,12 +3910,22 @@ class NativeSession:
         if declared and shown:
             # LLDB names a local by where it is declared when several share its name.
             declared = {each for each in declared if each[2] == (shown[2], int(shown[3]))}
+        place = None
+        if declared and where is not None and len(declared) > 1:
+            place = (Path(str(where[0])).name, where[1])
+            declared = {each for each in declared if each[2] == place} or declared
         if not declared:
             raise Unsettable(f"the debug information declares no local `{name}` in this function")
         kinds = {kind for kind, _, _ in declared}
         if None in kinds:
             raise Unsettable(f"the debug information gives the local `{name}` no type")
         if len(kinds) != 1:
+            if place is not None and {each[2] for each in declared} == {place}:
+                # The debug information tells those declarations apart by their line only.
+                raise Unsettable(
+                    f"this function declares several locals named `{name}` of different "
+                    f"types on line {place[1]}, which Peeky cannot tell apart"
+                )
             raise Unsettable(
                 f"this function declares several locals named `{name}` of different types, "
                 "and Peeky cannot tell which one the debugger shows"
