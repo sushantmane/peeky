@@ -16,14 +16,18 @@ bytecode, compiled from its source, and notes a local only where all of these ho
   deletes it) before storing it (exception paths count);
 - every path through the rest of the pass assigns it: on every path from them to the
   pass's end (back to the head, out of the loop, a return or a raise) that runs no
-  exception, a store comes first. An exception's path can only take a note away.
+  exception, a store comes first; and no exception a handler in the loop may swallow (a
+  `with` whose `__exit__` returns true, an `except` that falls through, an `async for`'s
+  end) lets the pass go on without one. An exception's path can only take a note away.
 
 It is compiled by this interpreter, so only where the program runs under one that
-compiles alike (the same implementation and bytecode magic number), both as `python`
+compiles alike (the same implementation, exact version and build, and bytecode magic
+number), both as `python`
 and as `python -O` compile it (an `assert` is left out under -O), which must agree. Not
 judged: a module (the whole file) that may run code other than its source says (`exec`,
-`eval`, `compile`, `types.FunctionType`, `__code__`) or may read or change a frame's
-locals (`locals()`, `sys._getframe`, `f_locals`, `f_back`, the `inspect` module), a local
+`eval`, `compile`, `types.FunctionType`, `__code__`, the `builtins` module) or may read
+or change a frame's locals (`locals()`, `sys._getframe`, `f_locals`, `f_back`, the
+`inspect` module), whatever a module is imported as, a local
 a closure shares, a source changed after the program started. Code in other modules
 that reaches into this frame is not seen: hence the note's "likely". Nothing is
 evaluated in the program.
@@ -33,6 +37,7 @@ import ast
 import dis
 import importlib.util
 import inspect
+import json
 import os
 import subprocess
 import sys
@@ -88,8 +93,11 @@ _REACHES = frozenset(
         "capture_locals",
     }
 )
-# Modules whose use does either.
-_MODULES = frozenset({"inspect", "marshal"})
+# Modules whose use does either: any name of theirs is reached through an alias too
+# (`import builtins as b; b.exec(...)`).
+_MODULES = frozenset({"inspect", "marshal", "builtins"})
+# Ways to reach a module or a builtin by a computed name.
+_DYNAMIC = frozenset({"__builtins__", "__import__", "import_module"})
 # Interpreters checked to compile as this one does: {path: bool}.
 _COMPILERS = {}
 
@@ -152,17 +160,25 @@ class Flow:
                 following.append(index[each.argval])
                 targets.add(index[each.argval])
             normal.append(following)
-        successors = [list(each) for each in normal]
+        handlers = [[] for _ in instructions]
         for entry in dis.Bytecode(code).exception_entries:
             if entry.target not in index:
                 raise Unread("exception table")
             targets.add(index[entry.target])
             for number, each in enumerate(instructions):
                 if entry.start <= each.offset < entry.end:
-                    successors[number].append(index[entry.target])
-        # The paths a run takes without an exception, and every path.
+                    handlers[number].append(index[entry.target])
+        # The paths a run takes without an exception, the handler an exception in each
+        # instruction goes to, and every path.
         self.normal = [tuple(dict.fromkeys(each)) for each in normal]
-        self.successors = [tuple(dict.fromkeys(each)) for each in successors]
+        self.handlers = [tuple(dict.fromkeys(each)) for each in handlers]
+        self.successors = [
+            tuple(dict.fromkeys((*following, *caught)))
+            for following, caught in zip(self.normal, self.handlers)
+        ]
+        self.returns = {
+            number for number, each in enumerate(instructions) if each.opname.startswith("RETURN_")
+        }
         # Where a line begins, as the interpreter reports a line (a breakpoint stops
         # there): an instruction of another line than the one before it, a jump's
         # target, or an exception handler.
@@ -329,64 +345,109 @@ class Flow:
             if not following or any(each == head or each not in body for each in following):
                 return None
             pending.extend(following)
+        if self._escapes(head, positions, name):
+            return None
         return stores
+
+    def _escapes(self, head, positions, name):
+        """Whether an exception can end the pass without a store of ``name`` and still
+        let it go on: a path from ``positions`` that stores nothing, through a handler in
+        the loop (a `with` whose `__exit__` swallows the exception, an `except` that
+        falls through, an `async for`'s end), back to the head, out of the loop or to a
+        return (review of PR #185, round 2). An exception into a handler outside the
+        loop, or one re-raised out of it, ends the pass abnormally: it proves nothing
+        either way, and its paths are not followed."""
+        body, seen, pending = self.loops[head], set(), list(positions)
+        while pending:
+            node = pending.pop()
+            if node in seen:
+                continue
+            seen.add(node)
+            if self._effect(node, name) == "store":
+                continue
+            if node in self.returns:
+                return True
+            for each in self.normal[node]:
+                if each == head or each not in body:
+                    return True
+                pending.append(each)
+            pending.extend(each for each in self.handlers[node] if each in body and each != head)
+        return False
 
 
 def opaque(tree):
     """Why no function of a module (its syntax ``tree``) is judged, or None: it may run
     code other than its source says (`exec`, `eval`, `compile`, `types.FunctionType`,
-    `__code__`, `marshal`), so a frame may not run the code on disk, or may read or change
-    a frame's locals other than by its own code (`locals()`, `vars()`, `dir()`,
-    `sys._getframe`, `f_locals`, `f_back`, a tracer, the `inspect` module)."""
-    # `vars(x)` and `dir(x)` read an object, not the frame: only those calls are left.
+    `__code__`, `marshal`, the `builtins` module), so a frame may not run the code on
+    disk, or may read or change a frame's locals other than by its own code (`locals()`,
+    `vars()`, `dir()`, `sys._getframe`, `f_locals`, `f_back`, a tracer, the `inspect`
+    module). Names are read whatever a module is imported as (`import sys as s;
+    s._getframe(1)`): an attribute's name is checked, not what it is read from."""
+    # `vars(x)` and `dir(x)` read an object, not the frame: only a call with exactly one
+    # argument, not starred (`vars(*args)` is `vars()` where `args` is empty), and no
+    # keywords, is left.
     given = {
         id(node.func)
         for node in ast.walk(tree)
         if isinstance(node, ast.Call)
         and isinstance(node.func, ast.Name)
         and node.func.id in ("vars", "dir")
-        and node.args
+        and len(node.args) == 1
+        and not isinstance(node.args[0], ast.Starred)
+        and not node.keywords
     }
     for node in ast.walk(tree):
         if isinstance(node, ast.Name):
-            if node.id in _RUNS or node.id in _REACHES:
+            if node.id in _RUNS or node.id in _REACHES or node.id in _DYNAMIC:
                 return node.id
             if node.id in ("vars", "dir") and id(node) not in given:
                 return node.id
         elif isinstance(node, ast.Attribute):
-            if node.attr in _REACHES:
-                return node.attr
-            if (
-                node.attr in _RUNS
-                and isinstance(node.value, ast.Name)
-                and node.value.id in ("builtins", "__builtins__")
-            ):
+            if node.attr in _REACHES or node.attr in _DYNAMIC:
                 return node.attr
         elif isinstance(node, (ast.Import, ast.ImportFrom)):
             modules = [alias.name for alias in node.names]
             if isinstance(node, ast.ImportFrom):
                 modules = [node.module or ""]
-                if any(alias.name in _REACHES or alias.name in _RUNS for alias in node.names):
-                    return next(
-                        alias.name
-                        for alias in node.names
-                        if alias.name in _REACHES or alias.name in _RUNS
-                    )
+                for alias in node.names:
+                    if alias.name in _REACHES or alias.name in _RUNS or alias.name in _DYNAMIC:
+                        return alias.name
             for module in modules:
                 if module.split(".")[0] in _MODULES:
                     return module.split(".")[0]
         elif isinstance(node, ast.Constant) and isinstance(node.value, str):
-            # `getattr(sys, "_getframe")`.
-            if node.value in _REACHES:
+            # `getattr(sys, "_getframe")`, `importlib.import_module("builtins")`.
+            if node.value in _REACHES or node.value in _MODULES:
                 return node.value
     return None
 
 
+# What a program's interpreter must report to be taken as compiling as this one does: its
+# implementation, exact version and build (`sys.version`), ABI flags, cache tag and
+# bytecode magic number.
+_IDENTITY = (
+    "import importlib.util, json, sys; print(json.dumps([sys.implementation.name, "
+    "sys.version, getattr(sys, 'abiflags', ''), sys.implementation.cache_tag, "
+    "importlib.util.MAGIC_NUMBER.hex()]))"
+)
+
+
+def _identity():
+    return [
+        sys.implementation.name,
+        sys.version,
+        getattr(sys, "abiflags", ""),
+        sys.implementation.cache_tag,
+        importlib.util.MAGIC_NUMBER.hex(),
+    ]
+
+
 def same_compiler(interpreter):
     """Whether ``interpreter`` (the program's) compiles a source as this one does: the
-    same file, or the same implementation and bytecode magic number, asked once; False
-    where it cannot be asked (review of PR #185: a 3.11 worker read a 3.12 program's
-    inlined comprehension as a loop of its own)."""
+    same file, or the same implementation, exact version and build, ABI flags, cache tag
+    and bytecode magic number, asked once; False where it cannot be asked (review of PR
+    #185: a 3.11 worker read a 3.12 program's inlined comprehension as a loop of its own;
+    round 2: one magic number spans patch versions and builds)."""
     if not isinstance(interpreter, str) or not interpreter:
         return False
     if interpreter not in _COMPILERS:
@@ -394,22 +455,13 @@ def same_compiler(interpreter):
             same = os.path.realpath(interpreter) == os.path.realpath(sys.executable)
             if not same:
                 found = subprocess.run(
-                    [
-                        interpreter,
-                        "-I",
-                        "-c",
-                        "import importlib.util, sys; "
-                        "print(sys.implementation.name, importlib.util.MAGIC_NUMBER.hex())",
-                    ],
+                    [interpreter, "-I", "-c", _IDENTITY],
                     capture_output=True,
                     text=True,
                     timeout=15,
                     check=False,
                 )
-                same = found.returncode == 0 and found.stdout.split() == [
-                    sys.implementation.name,
-                    importlib.util.MAGIC_NUMBER.hex(),
-                ]
+                same = found.returncode == 0 and json.loads(found.stdout) == _identity()
         except (OSError, ValueError, subprocess.SubprocessError):
             same = False
         _COMPILERS[interpreter] = same

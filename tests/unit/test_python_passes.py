@@ -3,6 +3,7 @@
 import ast
 import collections
 import dis
+import json
 import os
 import re
 import sys
@@ -17,6 +18,7 @@ from peeky.python_passes import _effects, _loops, stale_note, stale_pass
 # `# entered: c` one where it is noted only where the line begins (a breakpoint's stop),
 # `# fresh: d` one where it is not noted.
 CASES = """\
+import asyncio
 import re
 
 
@@ -214,7 +216,45 @@ def asserted(ts):
         print(z)
 
 
+class Suppress:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return True
+
+
+def fail():
+    raise ValueError("no")
+
+
+def suppressed(items):
+    x = -1
+    for item in items:
+        with Suppress():
+            print(item)  # fresh: x
+            fail()
+            x = item  # fresh: x
+        print("next")
+
+
+async def agen(n):
+    for i in range(n):
+        yield i
+
+
+async def drains(items):
+    x = -1
+    for item in items:
+        print(item)  # fresh: x
+        async for y in agen(item):
+            x = y  # entered: x
+        print(item)
+
+
 def main():
+    suppressed([1, 2])
+    asyncio.run(drains([0, 0, 1]))
     group(["Hello World", "Hello, World!", "x y"])
     whiles(3)
     walrus([1, 2, 3])
@@ -254,7 +294,8 @@ def _function_at(line):
     return next(
         node.name
         for node in ast.walk(tree)
-        if isinstance(node, ast.FunctionDef) and node.lineno <= line <= node.end_lineno
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.lineno <= line <= node.end_lineno
     )
 
 
@@ -360,6 +401,22 @@ def f(xs):
         ("def h():\n    return locals()\n", "locals"),
         ("def h():\n    return vars()\n", "vars"),
         ("show = dir\n", "dir"),
+        # Review of PR #185 (round 2): `vars(*args)` with no `args` is `vars()`.
+        ("def h(args):\n    return vars(*args)\n", "vars"),
+        ("def h(args):\n    return dir(*args)\n", "dir"),
+        ("def h(o):\n    return vars(o, **{})\n", "vars"),
+        # Aliases: what is read through them is read whatever their name.
+        ("import builtins as b\nb.exec('y = 1')\n", "builtins"),
+        ("from builtins import exec as run\n", "exec"),
+        ("seen = __builtins__\n", "__builtins__"),
+        ("found = __import__('sys')\n", "__import__"),
+        ("import importlib\nfound = importlib.import_module('builtins')\n", "import_module"),
+        ("import sys as s\ngrab = s._getframe\n", "_getframe"),
+        ("from sys import _getframe as grab\n", "_getframe"),
+        ("import types as t\nkind = t.FunctionType\n", "FunctionType"),
+        ("from types import FunctionType as F\n", "FunctionType"),
+        ("import inspect as i\n", "inspect"),
+        ("import marshal as m\n", "marshal"),
         ("breakpoint()\n", "breakpoint"),
     ],
 )
@@ -399,17 +456,24 @@ def test_only_a_program_interpreter_that_compiles_alike_is_judged(tmp_path, case
     from peeky import python_passes
     from peeky.adapters import PythonAdapter
 
-    def interpreter(name, magic):
+    def interpreter(name, says):
         script = tmp_path / name
-        script.write_text(f"#!/bin/sh\necho {sys.implementation.name} {magic}\n")
+        script.write_text(f"#!/bin/sh\ncat <<'EOF'\n{says}\nEOF\n")
         script.chmod(0o755)
         return str(script)
 
-    same = interpreter("same", importlib.util.MAGIC_NUMBER.hex())
-    other = interpreter("other", "00000d0a")
+    identity = python_passes._identity()
+    same = interpreter("same", json.dumps(identity))
+    other = interpreter("other", json.dumps([*identity[:4], "00000d0a"]))
+    # Round 2: one magic number spans patch versions and builds; the exact version and
+    # build must match too.
+    build = interpreter("build", json.dumps([identity[0], identity[1] + "+", *identity[2:]]))
+    magic = interpreter("magic", f"{sys.implementation.name} {importlib.util.MAGIC_NUMBER.hex()}")
     assert python_passes.same_compiler(sys.executable) is True
     assert python_passes.same_compiler(same) is True
     assert python_passes.same_compiler(other) is False
+    assert python_passes.same_compiler(build) is False
+    assert python_passes.same_compiler(magic) is False
     assert python_passes.same_compiler(str(tmp_path / "missing")) is False
     line = next(n for n, text in enumerate(CASES.splitlines(), 1) if "key = slug(title)" in text)
     frame = {"source": {"path": cases}, "name": "group", "line": line}
@@ -522,7 +586,7 @@ def test_every_note_holds_wherever_the_program_runs_its_line(cases, capsys):
     tree = ast.parse(CASES)
     notes = collections.defaultdict(dict)
     for node in ast.walk(tree):
-        if isinstance(node, ast.FunctionDef) and node.name != "main":
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name != "main":
             names = {each.id for each in ast.walk(node) if isinstance(each, ast.Name)} | {
                 each.arg for each in ast.walk(node.args) if isinstance(each, ast.arg)
             }

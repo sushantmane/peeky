@@ -216,6 +216,62 @@ f([1, 2])
         4,
         "0",
     ),
+    # Round 2: a `with` whose `__exit__` swallows the exception rejoins the pass
+    # without the store.
+    "suppressed": (
+        """\
+class Suppress:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return True
+
+
+def fail():
+    raise ValueError("no")
+
+
+def f(items):
+    x = -1
+    for item in items:
+        with Suppress():
+            print(item)
+            fail()
+            x = item
+        print("next")
+
+
+f([1, 2])
+""",
+        18,
+        "-1",
+    ),
+    # Round 2: an `async for` that yields nothing ends through its exception handler.
+    "drained": (
+        """\
+import asyncio
+
+
+async def agen(n):
+    for i in range(n):
+        yield i
+
+
+async def f(items):
+    x = -1
+    for item in items:
+        print(item)
+        async for y in agen(item):
+            x = y
+        print(item)
+
+
+asyncio.run(f([0, 0, 1]))
+""",
+        12,
+        "-1",
+    ),
 }
 
 
