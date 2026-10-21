@@ -69,6 +69,149 @@ _SKIPPED_DIRS = frozenset({"__pycache__", ".mypy_cache", ".ruff_cache"})
 _REPOSITORIES = {".git": "git", ".hg": "Mercurial (`hg`)", ".svn": "Subversion (`svn`)"}
 # A root holding one of these is a project's: the candidate does not note what is above it.
 _PROJECT_MARKERS = (".git", ".hg", "pyproject.toml", "setup.py", "setup.cfg")
+# Standard modules that open no file, start no process and reach no network (`sys` only
+# through _PURE_SYS): a script that imports only these (see _self_contained) reaches
+# nothing above the copied root.
+_PURE_MODULES = frozenset(
+    {
+        "__future__",
+        "abc",
+        "array",
+        "bisect",
+        "cmath",
+        "collections",
+        "collections.abc",
+        "copy",
+        "dataclasses",
+        "decimal",
+        "enum",
+        "fractions",
+        "functools",
+        "heapq",
+        "itertools",
+        "json",
+        "math",
+        "numbers",
+        "random",
+        "re",
+        "statistics",
+        "string",
+        "sys",
+        "textwrap",
+        "typing",
+        "unicodedata",
+    }
+)
+# What a script may use of `sys`: its arguments, standard streams and limits.
+_PURE_SYS = frozenset(
+    {
+        "argv",
+        "stdin",
+        "stdout",
+        "stderr",
+        "exit",
+        "maxsize",
+        "getrecursionlimit",
+        "setrecursionlimit",
+    }
+)
+# Names that reach files, code or attributes by text (`open`, `getattr(json, "codecs")`,
+# `operator.attrgetter`, `string.Formatter().get_field`), or a frame's globals.
+_IMPURE_NAMES = frozenset(
+    {
+        "open",
+        "exec",
+        "eval",
+        "compile",
+        "__import__",
+        "globals",
+        "locals",
+        "vars",
+        "getattr",
+        "setattr",
+        "delattr",
+        "breakpoint",
+        "help",
+        "attrgetter",
+        "methodcaller",
+        "get_field",
+        "get_type_hints",
+        "f_globals",
+        "f_builtins",
+        "f_locals",
+        "f_back",
+        "gi_frame",
+        "cr_frame",
+        "ag_frame",
+        "tb_frame",
+    }
+)
+# The opening of the note on a candidate's copy, which `probe` shows once (L6).
+COPY_NOTE = "This Python candidate ran from a copy of "
+
+
+def _self_contained(text):
+    """True only where the script ``text`` cannot reach anything outside its own file:
+    it imports only _PURE_MODULES (none of their private names or submodules, and of
+    `sys` only _PURE_SYS) and names nothing in _IMPURE_NAMES, `__file__` or another
+    dunder (but `__name__` and `__init__`). False where unsure."""
+    import importlib
+    import types
+
+    try:
+        tree = ast.parse(text)
+    except (SyntaxError, ValueError):
+        return False
+
+    def public(module, name):
+        if name.startswith("_") or name == "*" or name in _IMPURE_NAMES:
+            return False
+        if module == "sys":
+            return name in _PURE_SYS
+        try:
+            found = getattr(importlib.import_module(module), name, None)
+        except ImportError:
+            return False
+        return not isinstance(found, types.ModuleType)
+
+    modules, bases = {}, set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name not in _PURE_MODULES or (alias.asname is None and "." in alias.name):
+                    return False
+                modules[alias.asname or alias.name] = alias.name
+        elif isinstance(node, ast.ImportFrom):
+            if node.level or node.module not in _PURE_MODULES:
+                return False
+            for alias in node.names:
+                if node.module != "__future__" and not public(node.module, alias.name):
+                    return False
+        elif isinstance(node, ast.Attribute):
+            if node.attr in _IMPURE_NAMES or (
+                node.attr.startswith("__") and node.attr not in ("__init__", "__name__")
+            ):
+                return False
+            if isinstance(node.value, ast.Name):
+                bases.add(id(node.value))
+        elif isinstance(node, ast.Name) and (
+            node.id in _IMPURE_NAMES or (node.id.startswith("__") and node.id != "__name__")
+        ):
+            return False
+    for node in ast.walk(tree):
+        # A module is used only as `module.public_name`, never passed or rebound.
+        if isinstance(node, ast.Name) and node.id in modules and id(node) not in bases:
+            return False
+        if (
+            isinstance(node, ast.Attribute)
+            and isinstance(node.value, ast.Name)
+            and node.value.id in modules
+            and not public(modules[node.value.id], node.attr)
+        ):
+            return False
+    return True
+
+
 MAX_COPIED_FILES = 20_000
 MAX_COPIED_BYTES = 256 * 1024 * 1024
 _TOO_LARGE = (
@@ -201,20 +344,21 @@ class PythonCandidate:
         project = _is_git_directory(root) or any(
             os.path.lexists(root / marker) for marker in _PROJECT_MARKERS
         )
-        if above is not None or not project:
+        # A script that reaches nothing outside its own file needs no note (a candidate
+        # runs the --at file itself: launch_args).
+        alone = _self_contained(text.replace(edit.old, edit.new, 1))
+        if (above is not None or not project) and not alone:
             target, at = (above, self.original.relative_to(above)) if above else (None, None)
             self.warnings.append(
-                f"This Python candidate ran from a copy of {root}/ only"
+                f"{COPY_NOTE}{root}/ only"
                 + (
                     f", inside the repository at {above}/"
                     if above
-                    else ", which is not a "
-                    "project root (it holds no .git, pyproject.toml, setup.py or setup.cfg)"
+                    else " (no .git, pyproject.toml, setup.py or setup.cfg there)"
                 )
-                + ". Nothing above it was copied, so anything the program reads, imports or "
-                "runs from above it (git finding the repository) is missing there, and its "
-                "values may differ for that reason, not the edit's. If it uses any, give "
-                "the directory that holds them as the target (`peeky probe "
+                + ". Nothing above it was copied: if the program reads, imports or runs "
+                "anything there (git finding the repository), values may differ for that "
+                "reason, not the edit's; then give that directory as the target (`peeky probe "
                 + (
                     f"{target} --at {at.as_posix()}"
                     if above

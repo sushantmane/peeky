@@ -16,7 +16,7 @@ Every Peeky failure, from the HTTP worker, the SDK (`peeky.errors.PeekyError`) o
 | `INSPECT_REQUIRED` | `inspect` again, use the new reference | Mutation without a fresh scope, or a value-view read still pending |
 | `STALE_HANDLE` | `inspect` again | Expansion handle revoked or frame/scope changed |
 | `NOT_FOUND` | Use a name from the message's `visible:` or `children:` list | Name/selector not visible, or (Python) a name missing from the locals that Peeky could not prove is a global there; before a probe runs, a `--set` name no function at its line declares (Rust). Or list names with `inspect`, `session get <value>`; dict entries are `d['key']`; C++/Java members are `this.x`; a caller's locals need `--frame N` |
-| `MUTATION_REJECTED` | Follow the hint: it names the one way around the rule | Not a root local of the stopped (innermost) frame (Java: nor a scalar field or array element that is not final or static; Rust, C, C++: nor an integer field or element of a local the frame holds itself, reached without a pointer, reference or Box and outside unions, enums, packed and standard-library types; and only where no statement under way may hold a copy, else `cannot be changed here`: in C/C++ at a statement's first instruction, in Rust at a breakpoint or a step to its line's start where the MIR proves none), or the value is not a literal (Python) / scalar (compiled). A text in double quotes (#137) changes only a C `char[N]`, a C++ `std::string`, a Rust `String` local or a Java String: one that does not fit its storage (`the text does not fit`), one for a pointer, reference, `&str` or field (`does not write through`, `not into a field or element`), a Rust `String` the MIR does not prove initialized or that a live borrow reads (`a borrow of it ... is still used after the stop`), any Rust `String` of a crate with unsafe code, a nightly feature or a source Peeky cannot read as rustc does (`the crate has unsafe code (in …)`, `the crate enables nightly features (in …)`, `Peeky cannot rule out unsafe code in …`), a `const` or `volatile` string (`a const object`), a Java variable not declared String, and one this debugger cannot write (`cannot write memory`: lldb-dap 21 can; or `cannot read memory` for a libstdc++ string with lldb-dap 18) are refused, nothing written. A Java bundle built before then says to rebuild it (`predates String changes`). Any Java local the program never reads (a constant javac folds into its uses) is refused (`the program never reads it`), and so is one no path from the stop reads again (`does not read it after this stop`: a lambda or inner class captured it before). A Python local the loop's pass has not assigned yet, which the function's code assigns again before reading it, is refused (`this function's code assigns it again (line N) before reading it`). A probe whose `--set` its build rules out at its line in every function there (any change in an optimized build, a Rust local kept in a register, a field through a pointer or of a type no change reaches) is refused before the program runs: `refused_before_launch`, no hits, no run saved (#138), and exit status 2. The hint names the one action the broken rule leaves (for a register: a candidate edit with `std::hint::black_box`, COOKBOOK 6.6) (stop at the statement's first line, change it in its own frame, pass a value in range, ...); for a field through a C pointer parameter whose function the program calls once, the message names that call (`push has one caller: m.c:15 in main, which passes `&r`, where `r.tail` is settable`); otherwise observe, or edit and `verify` |
+| `MUTATION_REJECTED` | Follow the hint: it names the one way around the rule | A change Peeky cannot make there; nothing was written. The rules, as lists: [MUTATION_REJECTED in detail](#mutation_rejected-in-detail) |
 | `BUDGET_EXHAUSTED` | Narrow the request | A bounded read limit was reached |
 | `INVALID_BREAKPOINT` | Use `peeky describe` lines | Line not executable or unsupported breakpoint field |
 | `NO_STOP` (probe result) | Pick an executed line | Program ended without reaching the line: the line never runs, or the program failed first (`exit_code` when the debugger reports it). After a failure, read the output and check the program's arguments |
@@ -34,6 +34,43 @@ Every Peeky failure, from the HTTP worker, the SDK (`peeky.errors.PeekyError`) o
 | `UNREACHABLE` | Restore the tunnel/worker and retry | No connection reached the worker (tunnel or worker down); nothing was applied. The session is kept |
 | `TRANSPORT_LOST` | Reconnect, then `inspect`/`wait`; never repeat a mutation blindly | The connection broke mid-request; outcome unknown |
 | `JOB_LOST` | Rerun the command | A `--background` job's process died before finishing |
+
+## MUTATION_REJECTED in detail
+
+A refused change writes nothing. The hint names the one action the broken rule leaves (stop at the statement's first line, change it in its own frame, pass a value in range, ...); otherwise observe, or edit and `verify`.
+
+**What can change.** Anything else is refused:
+- a root local of the stopped (innermost) frame;
+- Java: also a scalar field or array element that is not final or static;
+- Rust, C, C++: also an integer field or element of a local the frame holds itself, reached without a pointer, reference or Box and outside unions, enums, packed and standard-library types;
+- the value must be a literal (Python) or a scalar (compiled).
+
+**Where.** Only where no statement under way may hold a copy, else `cannot be changed here`:
+- C and C++: at a statement's first instruction;
+- Rust: at a breakpoint, or a step to its line's start, where the MIR proves none.
+
+**Texts (#137).** A text in double quotes changes only a C `char[N]`, a C++ `std::string`, a Rust `String` local or a Java String. These are refused, nothing written:
+- one that does not fit its storage (`the text does not fit`);
+- one for a pointer, reference, `&str` or field (`does not write through`, `not into a field or element`);
+- a Rust `String` the MIR does not prove initialized, or that a live borrow reads (`a borrow of it ... is still used after the stop`);
+- any Rust `String` of a crate with unsafe code, a nightly feature or a source Peeky cannot read as rustc does (`the crate has unsafe code (in …)`, `the crate enables nightly features (in …)`, `Peeky cannot rule out unsafe code in …`);
+- a `const` or `volatile` string (`a const object`);
+- a Java variable not declared String;
+- one this debugger cannot write (`cannot write memory`: lldb-dap 21 can; or `cannot read memory` for a libstdc++ string with lldb-dap 18).
+
+A Java bundle built before then says to rebuild it (`predates String changes`).
+
+**Java locals the program does not read.**
+- Any Java local the program never reads (a constant javac folds into its uses) is refused (`the program never reads it`).
+- So is one no path from the stop reads again (`does not read it after this stop`: a lambda or inner class captured it before).
+
+**Python locals a loop's pass assigns before reading them (#182).** A local the current pass's code has not assigned before the stop's line, which every path through the rest of the pass assigns before reading it, is refused (`this function's code assigns it again (line N) before reading it`); the hint says to change it after that assignment.
+
+**Refused before the program runs.**
+- A probe whose `--set` its build rules out at its line in every function there (any change in an optimized build, a Rust local kept in a register, a field through a pointer or of a type no change reaches) is refused before the program runs: `refused_before_launch`, no hits, no run saved (#138), and exit status 2.
+- For a register, the hint names a candidate edit with `std::hint::black_box` (COOKBOOK 6.6).
+
+**A field through a C pointer parameter.** When the program calls the function once, the message names that call (``push has one caller: m.c:15 in main, which passes `&r`, where `r.tail` is settable``).
 
 Two Java debugger failures (#27) end with `DEBUGGER_ERROR` at once instead of a timeout; see [JAVA_ATTACH.md](JAVA_ATTACH.md#lost-stop-events-27):
 - **`java-debug's event thread died (…)`.** The adapter's stderr showed its event thread failing, so nothing more can be reported. Peeky detaches or ends the program, as on any debugger failure, and keeps the session as a failed one. Later requests repeat the error. `report` returns its final state (`state: closed`, `adapter_failure`, history `adapter_failed`), and `close` ends it. Its `debugger_events.stderr` keeps the adapter's last 16 KiB of log; a failed probe carries `debugger_events` too.
