@@ -361,6 +361,20 @@ def test_a_shadowed_root_is_told_apart_by_where_it_is_declared():
     assert NativeSession._declared_type(static, "s @ main.rs:79") == (0x60, True)
 
 
+def test_the_declaration_the_debugger_shows_picks_among_types():
+    # #158: one name declared with two types in two blocks: the declaration shown at the
+    # stop (its file and line, as shown_declaration gives it) alone counts; two declared
+    # on one line cannot be told apart, nor can any where none is shown.
+    both = {"s": frozenset({(0x60, "automatic", A), (0x70, "automatic", B)})}
+    assert NativeSession._declared_type(both, "s", ("src/main.rs", 81, True)) == (0x70, True)
+    assert NativeSession._declared_type(both, "s", ("main.rs", 79, True)) == (0x60, True)
+    with pytest.raises(Unsettable, match="Peeky cannot tell which one the debugger shows"):
+        NativeSession._declared_type(both, "s", None)
+    one_line = {"s": frozenset({(0x60, "automatic", A), (0x70, "automatic", A)})}
+    with pytest.raises(Unsettable, match="different types on line 79, which Peeky cannot"):
+        NativeSession._declared_type(one_line, "s", ("main.rs", 79, True))
+
+
 class Backend:
     """An lldb-dap-shaped adapter: `s` (a struct) with `start` and `end`; ``stores``
     says whether a setVariable reaches what later reads show, ``shown`` overrides

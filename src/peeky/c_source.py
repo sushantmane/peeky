@@ -307,12 +307,28 @@ def storage_named(text, name):
             return True
     if re.search(r"\benum\b[^;{}]*\{[^{}]*\b" + escaped + r"\b", text):
         return True
+    # A C++ structured binding: `auto [q, r] = s;`, `for (const auto& [q, r] : m)`.
+    if re.search(r"\bauto\b[^;{}\[]*\[[^\]]*\b" + escaped + r"\b", text):
+        return True
     # A C++ class (or enumeration) a block declares by that name: `struct q { ... };`.
     if re.search(r"\b(?:struct|class|union|enum)\b[^;{}]*?\b" + escaped + r"\b", text):
         return True
     # A function a block declares where an outer local's name is: `long use2(long);`
     # (or after a type's body: `struct S { long v; } use2(long);`).
     return bool(re.search(r"(?:[A-Za-z_]\w*|\})[\s*&]+" + escaped + r"\s*\(", text))
+
+
+def _braced(statement):
+    """For each of a statement's tokens, whether braces in the statement hold it (a
+    lambda's body, an initializer's braces)."""
+    found, braces = [], 0
+    for text, _, _ in statement:
+        if text in ("}", "%>"):
+            braces = max(braces - 1, 0)
+        found.append(braces > 0)
+        if text in ("{", "<%"):
+            braces += 1
+    return found
 
 
 def _class_name(statement, index):
@@ -523,25 +539,32 @@ class Statements:
         found = self.declaration(line, name)
         return None if found is None else bisect.bisect_right(self.starts, found[0])
 
-    def declaration(self, line, name):
+    def declaration(self, line, name, declaring=False):
         """``(position, depth, header, settled)``: where the declaration of ``name`` on
         ``line`` ends (the `;` or `)` after it), how many brackets of its statement are
         open there, whether a statement's header declares it (`for (int i = 0; ...)`),
         and whether that header sets it once, with no call (`_settled`); None if unknown.
         Of the statements starting on the line, the last naming ``name`` counts: a later
-        end only withholds more."""
-        key = ("declaration", line, name)
+        end only withholds more (`long t; t = f();` has run only after the second).
+
+        ``declaring``: the one statement that declares ``name`` instead (`long t = 11;`
+        in `long t = 11; while (t > 20) t--;`, whose header only uses it), for where its
+        scope and its block are; None unless just one does (review of PR #159)."""
+        key = ("declaration", line, name, declaring)
         if key not in self._ends:
-            self._ends[key] = self._declaration(line, name)
+            self._ends[key] = self._declaration(line, name, declaring)
         return self._ends[key]
 
-    def _declaration(self, line, name):
+    def _declaration(self, line, name, declaring=False):
         blanked, starts = self.blanked, self.starts
         if self.unreadable or type(line) is not int or not 1 <= line <= len(starts):
             return None
         first = position = starts[line - 1]
         end_of_line = starts[line] if line < len(starts) else len(blanked)
         found, last = None, first
+        # Each statement on the line that names the name, and each that declares it, as
+        # ``found`` gives them.
+        named, declared = [], []
         while (token := _WORDS.search(blanked, position)) is not None:
             word, start = token[0], token.start()
             if start >= end_of_line:
@@ -573,18 +596,25 @@ class Statements:
                     closing, semicolon = closed
                     last = max(last, closing)
                     if self._names(opening.end(), closing, name):
+                        declares = self._declares(opening.end(), closing, name)
                         if self._declares(closing + 1, end_of_line, name):
                             # Maybe declared again after the header: read it whole.
                             pass
                         elif semicolon is not None and self._names(opening.end(), semicolon, name):
                             settled = self._settled(word, opening.end(), semicolon)
                             found = (semicolon, 1, True, settled)
+                            named.append(found)
+                            if declares:
+                                declared.append(found)
                             position = closing + 1
                             continue
                         else:
                             part = opening.end() if semicolon is None else semicolon + 1
                             settled = self._settled(word, part, closing)
                             found = (closing, 0, True, settled)
+                            named.append(found)
+                            if declares:
+                                declared.append(found)
                             position = closing + 1
                             continue
                     else:
@@ -598,10 +628,178 @@ class Statements:
             # After a header declaring it, its body on the line only uses it.
             if self._names(start, end, name) and not (found is not None and found[2]):
                 found = (end, 0, False, False)
+            if self._names(start, end, name):
+                named.append((end, 0, False, False))
+                # Where each plain statement starts, by its end: what it follows.
+                self.__dict__.setdefault("statement_starts", {})[end] = start
+                if self._declares(start, end, name):
+                    declared.append(named[-1])
             position = end + 1
+        if declaring:
+            # One that reads as a declaration; else the one naming it at all (a structured
+            # binding's `[a, b]`, a macro's argument), the line being where it is declared.
+            found = (
+                declared[0]
+                if len(declared) == 1
+                else named[0]
+                if not declared and len(named) == 1
+                else None
+            )
         if found is None or not self._readable(line, first, max(last, found[0])):
             return None
         return found
+
+    def scope_lines(self, line, name):
+        """``(first, last)``: the lines on which the declaration of ``name`` on ``line``
+        is in scope, as C and C++ read it: from ``line`` to the `}` closing the block
+        around it, or, for one a statement's header declares (`while (long t = f())`,
+        `switch (short t = g(); t)`, `if (auto p = f())`, a `for`'s, a range-`for`'s, a
+        `catch`'s), to the end of that statement: its body, and an `if`'s `else`; for
+        one that is a control statement's whole body, without braces (`while (c) long t
+        = 8;`, `do long t = 9; while (0);`, `switch (c) case 1: long t = 4;`), its own
+        statement. None if unknown (see ``declaration``; a body Peeky does not read: a
+        `do` loop's; what a labelled statement follows)."""
+        found = self.declaration(line, name, declaring=True)
+        code, pairs = self._code()
+        if found is None or pairs is None:
+            return None
+        position, depth, header, _ = found
+        starts = self.starts
+        if not header:
+            sole = self._sole_statement(self.__dict__.get("statement_starts", {}).get(position))
+            if sole is None:
+                return None
+            if sole:
+                # A body of its own: in scope to its `;` (clang gives a `while`'s, a
+                # `do`'s or a `switch`'s no block, so its block runs on after it).
+                return line, bisect.bisect_right(starts, position)
+            around = [
+                opened
+                for opened, closed in pairs.items()
+                if opened < position < closed and code.startswith(("{", "<%"), opened)
+            ]
+            if not around:
+                return None
+            return line, bisect.bisect_right(starts, pairs[max(around)])
+        if depth == 0:
+            closing, opening = position, self._opening(position)
+        else:
+            inside = [
+                opened
+                for opened, closed in pairs.items()
+                if opened < position < closed and code.startswith("(", opened)
+            ]
+            opening = max(inside) if inside else None
+            closing = pairs.get(opening) if opening is not None else None
+        if opening is None or closing is None:
+            return None
+        keyword = self._word_before(opening)
+        if keyword == "constexpr":
+            before = self._before(opening)
+            keyword = self._word_before(before[1]) if before else None
+        end = self._controlled(closing + 1, keyword)
+        if end is None:
+            return None
+        return min(line, bisect.bisect_right(starts, opening)), bisect.bisect_right(starts, end)
+
+    def _sole_statement(self, start):
+        """Whether the statement at ``start`` is a control statement's whole body, with
+        no braces of its own: after a header's `)`, `else` or `do`, or a label there
+        (`switch (c) case 1: long t = 4;`). False after a block's edge or a `;`; None if
+        unknown."""
+        if start is None:
+            return None
+        at = start
+        for _ in range(256):
+            before = self._before(at)
+            if before is None:
+                return False
+            token, position = before
+            if token in ("{", "}", "<%", "%>", ";"):
+                return False
+            if token in ("else", "do"):
+                return True
+            if token == ")":
+                opening = self._opening(position)
+                if opening is None:
+                    return None
+                keyword = self._word_before(opening)
+                if keyword in _HEADERS or keyword == "constexpr":
+                    # A statement after a header's `)` is its body.
+                    return True
+                # Part of the statement (`long (*f)(int)`): back past its brackets.
+                at = opening
+                continue
+            if token == ":":
+                at = self._label_begin(position)
+                if at is None:
+                    return None
+                continue
+            # A word or a punctuator of the statement itself, which may have begun on
+            # an earlier line (`long` / `t = f();`): back to where it begins.
+            at = position
+        return None
+
+    def _label_begin(self, colon):
+        """Where the label whose `:` is at ``colon`` begins (`case 1:`, `default:`,
+        `again:`), or None."""
+        before = self._before(colon)
+        if before is None:
+            return None
+        if before[0] == "default":
+            return before[1]
+        if _WORD.fullmatch(before[0]):
+            previous = self._before(before[1])
+            if previous is None or previous[0] in ("{", "}", "<%", "%>", ";", ")", ":"):
+                return before[1]
+            if previous[0] in ("else", "do"):
+                return before[1]
+        # `case <expression>:`: back to its `case`, past brackets.
+        depth, at = 0, colon
+        for _ in range(64):
+            before = self._before(at)
+            if before is None:
+                return None
+            token, at = before
+            if token in (")", "]", ":>"):
+                depth += 1
+            elif token in ("(", "[", "<:"):
+                depth -= 1
+            elif depth == 0 and token == "case":
+                return at
+            elif depth == 0 and token in ("{", "}", "<%", "%>", ";"):
+                return None
+        return None
+
+    def _controlled(self, start, keyword=None):
+        """Where the statement a header controls, from ``start``, ends (its `;` or `}`),
+        an `if`'s `else` included (``keyword`` "if"); None if Peeky cannot tell."""
+        code, pairs = self._code()
+        token = _WORDS.search(code, start)
+        if token is None:
+            return None
+        word = token[0]
+        if word in ("{", "<%"):
+            end = pairs.get(token.start())
+        elif word in _HEADERS:
+            opening = _WORDS.search(code, token.end())
+            if opening is not None and opening[0] == "constexpr":
+                opening = _WORDS.search(code, opening.end())
+            closing = pairs.get(opening.start()) if opening and opening[0] == "(" else None
+            end = None if closing is None else self._controlled(closing + 1, word)
+        elif word in ("do", "try", "else") or word in ("}", "%>"):
+            return None
+        elif word == ";":
+            end = token.start()
+        else:
+            end = self._statement(token.start())
+        if end is None or keyword != "if":
+            return end
+        following = _WORDS.search(code, end + 1)
+        if following is None or following[0] != "else":
+            return end
+        # `else if (...)` is read as an `if`, with its own `else`.
+        return self._controlled(following.end())
 
     def _statement(self, start):
         """Where the plain statement at ``start`` ends (its `;`), or None."""
@@ -648,11 +846,12 @@ class Statements:
                 semicolon = mark.start()
         return None
 
-    def _declares(self, start, end, name):
+    def _declares(self, start, end, name, bindings=True):
         """Whether ``name`` may be declared between ``start`` and ``end``: not inside an
         expression (after `=`, `?`, or within parentheses or brackets), and following a
         name other than a keyword that only uses it (`int i`, not `return i`), or `*`,
-        `&` or `>` (`T *i`, `vector<int> i`), or a `,` of a declarator list."""
+        `&` or `>` (`T *i`, `vector<int> i`), or a `,` of a declarator list; or, with
+        ``bindings``, in a structured binding's brackets (`auto& [i, j]`)."""
         blanked = self.blanked
         for word in _IDENTIFIER.finditer(blanked, start, end):
             if word[0] != name:
@@ -664,6 +863,14 @@ class Statements:
                     depth += 1
                 elif char in "([":
                     if depth == 0:
+                        if (
+                            bindings
+                            and char == "["
+                            and self.raw_strings
+                            and re.search(r"\bauto\s*&{0,2}\s*$", blanked[max(start, at - 64) : at])
+                        ):
+                            # A structured binding: `auto [i, j]`, `const auto& [i, j]`.
+                            return True
                         # An argument or a subscript.
                         used = True
                         break
@@ -710,7 +917,8 @@ class Statements:
         between."""
         key = ("jumped", line, name, stop, span)
         if key not in self._ends:
-            found = self.declaration(line, name)
+            # From the statement that declares it: a label after it on the line counts.
+            found = self.declaration(line, name, declaring=True)
             self._ends[key] = (
                 None
                 if found is None
@@ -822,7 +1030,7 @@ class Statements:
         """Whether an `#include` may bring code between the declaration of ``name`` on
         ``line`` and the end of its block (a `case` there can skip it): True, False, or
         None if the declaration's end is unknown. Unknown braces reach the file's end."""
-        found = self.declaration(line, name)
+        found = self.declaration(line, name, declaring=True)
         if found is None:
             return None
         blanked, starts = self.blanked, self.starts
@@ -1223,7 +1431,9 @@ class Statements:
                 continue
             # A C++ class declared in the local's own block leaves the local named
             # (the variable hides it); one in a block within it hides the local.
-            found = self._storage_declaration(code, start, stop, name, after, opened >= lower)
+            found = self._storage_declaration(
+                code, start, stop, name, after, opened >= lower, position
+            )
             if found is not False:
                 return found
         return False
@@ -1274,14 +1484,15 @@ class Statements:
             self.conditions = states
         return self.conditions
 
-    def _storage_declaration(self, code, start, stop, name, after=None, nested=True):
+    def _storage_declaration(self, code, start, stop, name, after=None, nested=True, within=None):
         """(kind, line) of the first declaration of ``name`` that hides an outer local
         (see ``block_storage``) among the statements from ``start`` to ``stop`` at their
         own depth: a block closed before ``stop`` is skipped, and an initializer's
         braces and a type's body (`static struct { long v; } q`) are kept in their
         statement; False if none; None if Peeky cannot tell (see ``block_storage``).
         ``nested``: whether they are in a block within the local's own (where a C++
-        class of that name hides it)."""
+        class of that name hides it); ``within``: where the stop's line begins (a
+        header's structured binding counts only in the statement holding the stop)."""
         conditions = self._conditions()
         depth, statement, blocks, hidden = 0, [], [], set()
         body = None  # a type's body in the statement: [its depth, enum?, previous, names]
@@ -1291,12 +1502,15 @@ class Statements:
         # specifier began, until its body opens or it ends.
         enums, specifier = [], None
 
-        def judged(statement):
+        def judged(statement, last=False):
             # A macro given ``name``, or expanding to name it, may declare it.
             given = any(text == name for text, _, _ in statement)
             if any(given or name in self.expansions.get(macro, {name}) for macro in hidden):
                 return None
-            found = self._storage_of(statement, name, after, code, nested)
+            # Whether the stop is in the statement: it reaches the stop's line, or is the
+            # header of a block around it.
+            last = last or bool(statement and within is not None and statement[-1][1] >= within)
+            found = self._storage_of(statement, name, after, code, nested, last)
             if found:
                 state = conditions.get(found[1])
                 if state == "maybe":
@@ -1395,24 +1609,37 @@ class Statements:
                 statement, hidden = [], set()
                 continue
             statement.append((text, token.start(), depth))
-        return judged(statement)
+        # The statement the region ends in: the stop's, or the header of a block around it.
+        return judged(statement, True)
 
-    def _storage_of(self, statement, name, after=None, code=None, nested=True):
+    def _storage_of(self, statement, name, after=None, code=None, nested=True, last=False):
         """(kind, line) if the tokens of one statement declare ``name`` so that it hides
         an outer local (see ``block_storage``): with static or external storage or as a
         typedef (`static long q = 2`, `extern long a, gcount`), by a C++ `using`
         declaration, as a function (`long use2(long);`, not on line ``after``, the
         local's own), or, in C++ and ``nested`` (a block within the local's), as a class
-        or an enumeration (`struct q { ... };`, "class"); else False. Names in a
-        function declarator's parameters (`extern long helper(long q);`) are not
+        or an enumeration (`struct q { ... };`, "class"), or as a structured binding
+        (`auto [q, r] = s;`; in a header, `for (auto [q, r] : pairs)`, only where the
+        statement is ``last``, the one the stop is in; "binding"); else False. Names in
+        a function declarator's parameters (`extern long helper(long q);`) are not
         declared there."""
         words = [text for text, _, depth in statement if depth == 0]
         if not words:
             return False
         at = bisect.bisect_right(self.starts, statement[0][1])
+        if self.raw_strings and (last or words[0] not in _HEADERS):
+            if (bound := self._binding(statement, name, after)) is not None:
+                return ("binding", bound)
+        # A lambda's body (or an initializer's braces) in the statement is a scope of its
+        # own: what it declares names nothing in the block (review of PR #159).
+        braced = _braced(statement)
         if self.raw_strings and nested:
             for index, (text, position, _) in enumerate(statement):
-                if text in _CLASS_KEYS and _class_name(statement, index) == name:
+                if (
+                    not braced[index]
+                    and text in _CLASS_KEYS
+                    and _class_name(statement, index) == name
+                ):
                     return ("class", bisect.bisect_right(self.starts, position))
         if words[0] == "using" and self.raw_strings:
             if len(words) > 1 and words[1] == "namespace":
@@ -1463,6 +1690,31 @@ class Statements:
             ):
                 return ("function", at)
         return False
+
+    def _binding(self, statement, name, after=None):
+        """The line of a structured binding naming ``name`` among a statement's tokens
+        (`auto [q, r]`, `const auto& [q, r]`), or None. One on line ``after`` that is
+        the only declaration of ``name`` there is the local's own."""
+        braced = _braced(statement)
+        for index, (text, position, depth) in enumerate(statement[:-1]):
+            if text != "auto" or statement[index + 1][0] not in ("[", "<:") or braced[index]:
+                continue
+            names = []
+            for following, _, level in statement[index + 2 :]:
+                if following in ("]", ":>") and level == depth:
+                    break
+                if level == depth + 1 and _WORD.fullmatch(following):
+                    names.append(following)
+            if name not in names:
+                continue
+            line = bisect.bisect_right(self.starts, position)
+            if line == after:
+                begin = self.starts[line - 1]
+                finish = self.starts[line] if line < len(self.starts) else len(self.blanked)
+                if not self._declares(begin, finish, name, bindings=False):
+                    continue
+            return line
+        return None
 
     def old_style(self, line):
         """Whether ``line`` is in the body of a K&R-style definition (`long f(a) long a;
