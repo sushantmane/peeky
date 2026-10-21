@@ -31,6 +31,7 @@ from peeky.build import (
     BuildCommandError,
     BuildRecipe,
     Command,
+    UnreadDependencies,
     _digest,
     assert_current,
     default_sdk,
@@ -2625,13 +2626,23 @@ def external_inputs(depfiles, workspace, declared):
     rechecked before every operation like the declared ones.
     """
     root = Path(workspace).resolve()
-    found = {}
+    found, listings = {}, {}
     for depfile in depfiles:
-        for dependency in dependency_paths(depfile.read_text(), root):
-            path = dependency.resolve(strict=True)
+        for dependency in dependency_paths(depfile.read_text(), root, "make"):
+            try:
+                path = dependency.resolve(strict=True)
+            except OSError as exc:
+                raise UnreadDependencies(
+                    f"it lists {dependency}, which Peeky cannot find ({exc.strerror})"
+                ) from None
             try:
                 relative = path.relative_to(root).as_posix()
             except ValueError:
+                if twin := _backslash_twin(dependency, listings):
+                    raise UnreadDependencies(
+                        f"clang prints a backslash in a file name as `/`, so {dependency} "
+                        f"may be {twin}"
+                    ) from None
                 if str(path) not in found:
                     if len(found) >= MAX_EXTERNAL_INPUTS:
                         raise ValueError("The build read too many files outside the workspace")
@@ -2642,6 +2653,30 @@ def external_inputs(depfiles, workspace, declared):
                     f"The build read {relative}, which is not a declared source or header"
                 )
     return dict(sorted(found.items()))
+
+
+def _backslash_twin(path, listings):
+    """A file whose name has a backslash that clang would print as ``path`` (it prints a
+    name's `\\` as `/`, so `/x/a\\b.h` reads as `/x/a/b.h`): an entry of a directory on
+    ``path``'s way named for the next step and a backslash (`a\\...` beside `a`), or one
+    that, its backslashes read as `/`, is ``path`` or a directory on its way (`\\x.h`
+    beside `x.h`; #178 review), or None. ``listings`` caches each directory's backslashed
+    names; one that cannot be listed raises UnreadDependencies."""
+    parts = path.parts
+    for depth in range(1, len(parts)):
+        directory = Path(*parts[:depth])
+        if directory not in listings:
+            try:
+                listings[directory] = [name for name in os.listdir(directory) if "\\" in name]
+            except OSError as exc:
+                raise UnreadDependencies(
+                    f"Peeky cannot list {directory} ({exc.strerror}) to tell which file {path} is"
+                ) from None
+        for name in listings[directory]:
+            printed = Path(str(directory), name.replace("\\", "/").lstrip("/"))
+            if name.split("\\")[0] == parts[depth] or printed == path or printed in path.parents:
+                return directory / name
+    return None
 
 
 def _integer_ranges():
