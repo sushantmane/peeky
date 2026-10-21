@@ -1150,6 +1150,9 @@ def _state_text(state):
         where += f" in {display_function(state['function'])}"
     if where and type(state.get("hit")) is int:
         where += f", hit {state['hit']}"
+    if where and type(state.get("place")) is int and type(state.get("places")) is int:
+        # One of the line's several breakpoint locations in this function (#157).
+        where += f", stop {state['place']} of {state['places']}"
     hint = ""
     if state["state"] == "running":
         hint = " (still running; run `peeky session wait`)"
@@ -1218,6 +1221,8 @@ def _variables_text(snapshot, name="default"):
         where += f" in {display_function(function)}"
     if type(snapshot.get("hit")) is int:
         where += f", hit {snapshot['hit']}"
+    if type(snapshot.get("place")) is int and type(snapshot.get("places")) is int:
+        where += f", stop {snapshot['place']} of {snapshot['places']}"
     lines = [f"stopped at {where}" + _pause_text(snapshot)]
     if index:
         lines.append(_frame_text(snapshot))
