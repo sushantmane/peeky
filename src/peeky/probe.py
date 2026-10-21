@@ -2627,8 +2627,11 @@ def run_probe(root, probe, *, adapter=None, progress=None):
         for at, hit, name, value in probe.set_at
     ]
     # Stops seen per breakpoint line (the build's numbering): a --set-at's hit counts its
-    # own line's stops.
+    # own line's stops, in any function.
     seen = {}
+    # {--set-at line: {function: [its stops]}}: a lambda, closure or recursive call on
+    # the line stops there too, and its stops count.
+    set_functions = {}
     # {function: [hits]}: a line shared by a function and a closure or lambda stops in each.
     functions = {}
     last_said = 0.0
@@ -2777,6 +2780,9 @@ def run_probe(root, probe, *, adapter=None, progress=None):
                 )
             for number in matched:
                 seen[number] = seen.get(number, 0) + 1
+                if any(p["build_line"] == number for p in points):
+                    named = set_functions.setdefault(number, {})
+                    named.setdefault(display_function(frame.get("name")), []).append(seen[number])
             # A stop of the capture line is captured until --hits are; later ones (kept
             # for a --set-at on that line) only apply it.
             captured = line in matched and hits < probe.limit
@@ -2841,7 +2847,8 @@ def run_probe(root, probe, *, adapter=None, progress=None):
                     raise Refused(
                         exc.code,
                         f"--set-at {probe.program}:{point['line']}@{hit} {name}={value} was "
-                        f"refused at that stop: {exc}"
+                        f"refused at that stop (in {display_function(frame.get('name')) or '?'})"
+                        f": {exc}"
                         + (
                             f" ({len(changes)} earlier intervention(s) applied; the run is "
                             "not the experiment asked for)"
@@ -2856,6 +2863,8 @@ def run_probe(root, probe, *, adapter=None, progress=None):
                     # The capture line's hits so far (this one, at a captured stop): where
                     # the change falls among the captured values.
                     "capture_hit": hits,
+                    # Which function's variable: the line's stops may be in several.
+                    "function": frame.get("name"),
                 }
                 if point is not None:
                     change["at"] = f"{point['line']}@{hit}"
@@ -3077,22 +3086,54 @@ def run_probe(root, probe, *, adapter=None, progress=None):
             f"Interventions are applied once, at hit {probe.set_hit}; other hits observe "
             "without re-applying."
         )
-    elif probe.set and not changes and hits < probe.set_hit and result.get("status") != "failed":
+    elif (
+        probe.set
+        and not any("at" not in change for change in changes)
+        and hits < probe.set_hit
+        and result.get("status") != "failed"
+    ):
         warnings.append(
             f"No intervention was applied: the program stopped {hits} time(s), before hit "
             f"{probe.set_hit}."
         )
-    if unapplied := [point for point in points if point["change"] is None]:
-        # Never silently: a --set-at whose stop never came (#137).
+    for number, named in set_functions.items():
+        if len(named) > 1:
+            asked = next(p["line"] for p in points if p["build_line"] == number)
+            warnings.append(
+                f"--set-at line {asked} stopped in {len(named)} functions: "
+                + "; ".join(
+                    f"{name or '?'} (stop{'s' if len(stops) > 1 else ''} "
+                    f"{', '.join(map(str, stops[:8]))}{', ...' if len(stops) > 8 else ''})"
+                    for name, stops in list(named.items())[:4]
+                )
+                + ". @HIT counts every stop of the line, in any function; each change "
+                "says which function's variable it changed."
+            )
+    unapplied = [point for point in points if point["change"] is None]
+    if probe.set and not any("at" not in change for change in changes) and hits < probe.set_hit:
+        # A --set whose hit never came: reported like a --set-at's (exit code 4).
         result["unapplied"] = [
             {
+                "option": "--set",
+                "at": f"{probe.line}@{probe.set_hit}",
+                "name": name,
+                "value": value,
+                "stops": hits,
+            }
+            for name, value in probe.set
+        ]
+    if unapplied:
+        # Never silently: a --set-at whose stop never came (#137).
+        result.setdefault("unapplied", []).extend(
+            {
+                "option": "--set-at",
                 "at": f"{point['line']}@{point['hit']}",
                 "name": point["name"],
                 "value": point["value"],
                 "stops": seen.get(point["build_line"], 0),
             }
             for point in unapplied
-        ]
+        )
         if result.get("status") != "failed":
             ended = (
                 "before the probe timed out"
@@ -3170,13 +3211,26 @@ def _table(result):
         )
     if note := shortened_note(functions):
         lines.append(note)
+    named = function_labels(change.get("function") for change in result["interventions"])
     for change in result["interventions"]:
+        where = named.get(change.get("function"), change.get("function"))
         lines.append(
             f"set {change['name']}: {change['before']} -> {change['after']}"
-            + (f"  (--set-at line {change['at']})" if change.get("at") else "")
+            + (
+                f"  (--set-at line {change['at']}" + (f", in {where})" if where else ")")
+                if change.get("at")
+                else ""
+            )
         )
+    unmade = len(result.get("unapplied") or ())
     lines.append(
-        f"status: {result['status']}  hits: {result['hits']}"
+        f"status: {result['status']}"
+        + (
+            f" ({unmade} requested change{'s' if unmade > 1 else ''} not made)"
+            if unmade and result["status"] == "completed"
+            else ""
+        )
+        + f"  hits: {result['hits']}"
         + (
             {"failed": " before it failed", "timeout": " before it timed out"}.get(
                 result["status"],

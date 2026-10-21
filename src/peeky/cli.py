@@ -791,7 +791,11 @@ def probe(args):
     if not args.no_save:
         _keep_evidence(args, result, root, language)
     _emit(result, args.json, _probe_text)
-    return 0 if result["status"] == "completed" else 1
+    if result["status"] != "completed":
+        return 1
+    # A run whose requested change (--set, --set-at) never came is not the experiment
+    # asked for, though its values are evidence: exit code 4 (#137).
+    return UNAPPLIED_EXIT if result.get("unapplied") else 0
 
 
 def _misplaced_options(args):
@@ -805,6 +809,9 @@ def _misplaced_options(args):
         f"Everything after `--` goes to the program, including {', '.join(found[:4])}, which "
         "Peeky also takes: put Peeky's options before `--`"
     )
+
+
+UNAPPLIED_EXIT = 4
 
 
 def _set_at(args, root, program):
@@ -2481,7 +2488,9 @@ def main(argv=None, _job=False, _edits=None):
         help="Change a value at its own stop: at hit HIT (default 1) of LINE, counting that "
         "line's own stops, in the --at file, whether or not values are captured there. "
         "Repeatable, at several lines and hits (shorten at 22@3, restore at 23@3); each is "
-        "applied once, and one the program never reaches is reported",
+        "applied once. HIT counts every stop of LINE, in any function (a lambda or closure "
+        "on the line, a recursive call); each change says which function's variable it "
+        "changed. One the program never reaches is reported, and the probe exits with 4",
     )
     sub.add_argument(
         "--run", help="Python: script to run when --at is in a module it imports (e.g. main.py)"

@@ -34,7 +34,15 @@ def test_probe_captures_intervenes_and_reports_in_one_call(program):
     assert after["start"]["value"] == "0"
     # Where each change was made (#137): its stop's line and hit, and the captured hits.
     assert result["interventions"] == [
-        {"name": "start", "before": "3", "after": "0", "line": 8, "hit": 1, "capture_hit": 1}
+        {
+            "name": "start",
+            "before": "3",
+            "after": "0",
+            "line": 8,
+            "hit": 1,
+            "capture_hit": 1,
+            "function": "get_page",
+        }
     ]
     assert "PAGE: [10, 20, 30]" in result["output"]
     assert "session_id" not in result and "stop_id" not in str(result["rows"])
@@ -245,3 +253,30 @@ def test_hits_all_captures_every_stop_up_to_the_cap(tmp_path, capsys):
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
+
+
+def test_a_set_at_line_with_a_lambda_says_whose_variable_changed(tmp_path):
+    # #151 review: line 7 stops in `main` and in the lambda it declares; @HIT counts both.
+    (tmp_path / "lam.py").write_text(
+        "def main():\n"
+        "    total = 0\n"
+        "    for i in range(3):\n"
+        "        v = i * 10\n"
+        "        total += v\n"
+        "    total += 1\n"
+        "    f = lambda v: v + 1; total += f(total)\n"
+        "    print('T', total)\n"
+        "\n"
+        "main()\n"
+    )
+    result = run_probe(
+        tmp_path, Probe("lam.py", 8, ("total",), set_at=((7, 2, "v", "100"),), timeout=40)
+    )
+    assert result["status"] == "completed", result.get("error")
+    (change,) = result["interventions"]
+    assert (change["function"], change["before"], change["after"]) == ("<lambda>", "31", "100")
+    assert "T 132" in result["output"]
+    assert any(
+        w.startswith("--set-at line 7 stopped in 2 functions: main (stop 1); <lambda> (stop 2)")
+        for w in result["warnings"]
+    ), result["warnings"]

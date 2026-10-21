@@ -126,8 +126,8 @@ def test_a_change_at_one_line_is_restored_at_the_next_in_one_probe(linked, capsy
     ]
     wide = queried(capsys, "wide", "--param", "run=2")
     sets = {(row["hit"], row["phase"]): row["sets"] for row in wide}
-    assert json.loads(sets[3, "after-set"]) == [f"width: 3 -> 100 (line {ADD}, hit 3)"]
-    assert json.loads(sets[4, "observed"]) == [f"width: 100 -> 3 (line {REUSE}, hit 3)"]
+    assert json.loads(sets[3, "after-set"]) == [f"width: 3 -> 100 (line {ADD}, hit 3, in main)"]
+    assert json.loads(sets[4, "observed"]) == [f"width: 100 -> 3 (line {REUSE}, hit 3, in main)"]
     assert sets[1, "observed"] is None and sets[3, "observed"] is None
     # diff against the run without them: their (sets) row, then their effect.
     diff = queried(capsys, "diff", "--param", "a=1", "--param", "b=2")
@@ -152,9 +152,12 @@ def test_a_set_at_its_line_never_reaches_is_reported_not_dropped(linked, capsys)
     code, result = probe(
         capsys, linked, "--capture", "total", "--hits", "2", "--set-at", f"{REUSE}@7", "width=1"
     )
-    assert code == 0 and result["status"] == "completed" and result["interventions"] == []
+    # Its values are evidence, but the experiment did not happen: exit code 4 (#151).
+    assert code == 4 and result["status"] == "completed" and result["interventions"] == []
     assert "TOTAL:10 W:10,20,30,40" in result["output"]
-    assert result["unapplied"] == [{"at": f"{REUSE}@7", "name": "width", "value": "1", "stops": 4}]
+    assert result["unapplied"] == [
+        {"option": "--set-at", "at": f"{REUSE}@7", "name": "width", "value": "1", "stops": 4}
+    ]
     assert (
         f"--set-at linked.c:{REUSE}@7 width=1 was not applied: line {REUSE} stopped 4 time(s) "
         "before the probe ended, so its hit 7 never came." in result["warnings"]
@@ -186,7 +189,7 @@ def test_one_refused_set_at_fails_the_probe_and_names_its_stop(linked, capsys):
     error = result["error"]
     assert error["code"] == "MUTATION_REJECTED", error
     assert error["message"].startswith(
-        f"--set-at linked.c:{DECLARE}@3 width=9 was refused at that stop: 'width' is "
+        f"--set-at linked.c:{DECLARE}@3 width=9 was refused at that stop (in main): 'width' is "
         f"declared on line {DECLARE}"
     ), error
     assert (

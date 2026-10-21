@@ -17,7 +17,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import quote
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 MAX_RUNS = 500
 DEFAULT_ROWS = 200
 MAX_ROWS = 10000
@@ -125,6 +125,9 @@ TABLES = {
             "capture_hit": "How many hits of the capture line had been captured when it was "
             "applied (its own hit, at a captured stop): it falls after those values and "
             "before the next hit's",
+            "function": "Function (frame) whose variable it changed: a line's stops can be "
+            "in several (a lambda or closure on it, a recursive call), and its hit counts "
+            "them all; NULL where an older run did not say",
         },
     ),
     "pauses": (
@@ -175,7 +178,7 @@ _DDL = (
         source_sha256 TEXT, target_identity TEXT, edit TEXT, notes_kept INTEGER)""",
     _CAPTURES.format("captures"),
     "CREATE TABLE interventions (run_id INTEGER NOT NULL, hit INTEGER, name TEXT, "
-    "before TEXT, after TEXT, line INTEGER, capture_hit INTEGER)",
+    "before TEXT, after TEXT, line INTEGER, capture_hit INTEGER, function TEXT)",
     "CREATE TABLE pauses (run_id INTEGER NOT NULL, hit INTEGER, ms REAL)",
     *_CAPTURE_INDEXES,
     "CREATE INDEX interventions_run ON interventions (run_id)",
@@ -191,11 +194,11 @@ _DDL = (
 # captures.num NUMERIC; version 5 added language to the views; version 6 added
 # captures.identity and captures.scope; version 7 makes identity an INTEGER where an
 # early version 6 stored it as TEXT (`list@7`) without scope; version 8 adds captures.note
-# (earlier runs' notes were not kept: NULL); version 10 adds interventions.line and
-# capture_hit (an earlier run's --set was at its captured stop); version 9 adds
-# runs.notes_kept, 1 for a run
-# saved with its notes, so queries can say which runs' values may be unmarked. Views name
-# columns of the newest tables, so earlier steps only drop them and the last creates them.
+# (earlier runs' notes were not kept: NULL); version 9 adds runs.notes_kept, 1 for a run
+# saved with its notes, so queries can say which runs' values may be unmarked; version
+# 10 adds interventions.line and capture_hit (an earlier run's --set was at its captured
+# stop); version 11 adds interventions.function. Views name columns of the newest
+# tables, so earlier steps only drop them and the last creates them.
 _DROP_VIEWS = ("DROP VIEW IF EXISTS last_run", "DROP VIEW IF EXISTS evidence")
 
 
@@ -272,6 +275,10 @@ _MIGRATIONS = {
         "FROM captures c WHERE c.run_id = interventions.run_id AND c.hit = interventions.hit "
         "AND c.phase = 'after-set'), (SELECT r.line FROM runs r WHERE r.run_id = "
         "interventions.run_id)) WHERE capture_hit IS NULL",
+    ),
+    10: (
+        *_DROP_VIEWS,
+        _add_columns(("function", "TEXT"), table="interventions"),
         _EVIDENCE_VIEW,
         _LAST_RUN_VIEW,
     ),
@@ -574,10 +581,11 @@ WINDOW w AS (PARTITION BY selector ORDER BY hit) ORDER BY selector, hit""",
         "caveat_observed and caveat_after_set name a view or `note` that qualifies a value. "
         "A change at a stop with no capture (a --set-at line) is one row: selector is what "
         "it changed, observed and after_set its value before and after (the set's own "
-        "read-back)",
-        f"""SELECT hit, line, selector, observed, after_set, caveat_observed, caveat_after_set,
-  interventions FROM (
-  SELECT o.hit, o.line, o.selector, {_shown("o")} AS observed, {_shown("s")} AS after_set,
+        "read-back), function whose variable it was",
+        f"""SELECT hit, line, function, selector, observed, after_set, caveat_observed,
+  caveat_after_set, interventions FROM (
+  SELECT o.hit, o.line, o.function, o.selector, {_shown("o")} AS observed,
+    {_shown("s")} AS after_set,
     {_caveat("o")} AS caveat_observed, {_caveat("s")} AS caveat_after_set,
     (SELECT group_concat(name || ': ' || before || ' -> ' || after, '; ') FROM interventions i
       WHERE i.run_id = o.run_id AND i.hit = o.hit AND i.line IS o.line) AS interventions,
@@ -587,7 +595,7 @@ WINDOW w AS (PARTITION BY selector ORDER BY hit) ORDER BY selector, hit""",
     AND s.selector = o.selector AND s.phase = 'after-set'
   WHERE o.run_id = {_RUN} AND o.phase = 'observed'
   UNION ALL
-  SELECT i.hit, i.line, i.name, i.before, i.after, NULL, NULL,
+  SELECT i.hit, i.line, i.function, i.name, i.before, i.after, NULL, NULL,
     i.name || ': ' || i.before || ' -> ' || i.after, i.rowid, 0
   FROM interventions i WHERE i.run_id = {_RUN} AND NOT {_AT_CAPTURE})
 ORDER BY seq, pos""",
@@ -880,8 +888,8 @@ def record(path, result, *, language=None, target=None, label=None, worker=None)
             ],
         )
         connection.executemany(
-            "INSERT INTO interventions (run_id, hit, name, before, after, line, capture_hit) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO interventions (run_id, hit, name, before, after, line, capture_hit, "
+            "function) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             [
                 (
                     run_id,
@@ -894,6 +902,7 @@ def record(path, result, *, language=None, target=None, label=None, worker=None)
                     if type(change.get("line")) is int
                     else _set_line(result, change.get("hit", probe.get("set_hit"))),
                     change.get("capture_hit", change.get("hit", probe.get("set_hit"))),
+                    _text(change.get("function")),
                 )
                 for change in result.get("interventions") or []
             ],
@@ -1287,7 +1296,8 @@ def _wide(path, params):
     # and before this one, for its observed row.
     sets = (
         "(SELECT NULLIF(json_group_array(name || ': ' || COALESCE(before, '?') || ' -> ' || "
-        "COALESCE(after, '?') || ' (line ' || COALESCE(line, '?') || ', hit ' || hit || ')'), "
+        "COALESCE(after, '?') || ' (line ' || COALESCE(line, '?') || ', hit ' || hit || "
+        "COALESCE(', in ' || short_function(function), '') || ')'), "
         f"'[]') FROM (SELECT * FROM interventions i WHERE i.run_id = {run} AND CASE WHEN "
         f"{_AT_CAPTURE} THEN w.phase = 'after-set' AND i.hit = w.hit ELSE w.phase = "
         "'observed' AND i.capture_hit = w.hit - 1 END ORDER BY i.rowid))"

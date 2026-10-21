@@ -1216,10 +1216,12 @@ def test_set_at_locations_parse_with_a_hit_and_are_bounded():
 class Lines(FakeWorker):
     """Stops at lines 8 and 9 of main.py in turn, `stops` times each, then ends."""
 
-    def __init__(self, stops=3, moved=None):
+    def __init__(self, stops=3, moved=None, names=None):
         super().__init__()
         self.order = [line for _ in range(stops) for line in (8, 9)]
         self.moved, self.placed, self.previews = moved, [], []
+        # {line: the function of each of its stops}, else `main`.
+        self.names, self.name = {line: list(n) for line, n in (names or {}).items()}, "main"
 
     def dispatch(self, operation, args):
         if operation == "launch":
@@ -1249,6 +1251,7 @@ class Lines(FakeWorker):
             if not self.order:
                 return {"state": "terminated"}
             self.line = self.order.pop(0)
+            self.name = (self.names.get(self.line) or ["main"]).pop(0)
             return {
                 "state": "stopped",
                 "stop_id": "t",
@@ -1257,6 +1260,9 @@ class Lines(FakeWorker):
             }
         if operation == "inspect":
             self.previews.append((self.line, args.get("previews")))
+            listed = super().dispatch(operation, args)
+            listed["frames"][0]["name"] = self.name
+            return listed
         if operation == "set_variable":
             self.calls.append(operation)
             return {"name": args["name"], "before": "1", "after": args["value"]}
@@ -1266,7 +1272,8 @@ class Lines(FakeWorker):
 def test_set_at_applies_each_change_at_its_own_stop_and_reports_the_rest(monkeypatch):
     import peeky.probe as probe_module
 
-    worker = Lines()
+    # Line 9's second stop is in a lambda on that line: it counts (#151 review).
+    worker = Lines(names={9: ["main", "<lambda>", "main"]})
     monkeypatch.setattr(probe_module, "DebugWorker", lambda *args, **kwargs: worker)
     request = Probe(
         "main.py", 8, ("x",), set_at=((9, 2, "x", "5"), (8, 3, "x", "6"), (9, 4, "x", "7"))
@@ -1279,9 +1286,22 @@ def test_set_at_applies_each_change_at_its_own_stop_and_reports_the_rest(monkeyp
         (change["after"], change["line"], change["hit"], change["at"], change["capture_hit"])
         for change in result["interventions"]
     ] == [("5", 9, 2, "9@2", 1), ("6", 8, 3, "8@3", 1)]
+    assert [change["function"] for change in result["interventions"]] == ["<lambda>", "main"]
+    assert (
+        "--set-at line 9 stopped in 2 functions: main (stops 1, 3); <lambda> (stop 2). @HIT "
+        "counts every stop of the line, in any function; each change says which function's "
+        "variable it changed." in result["warnings"]
+    )
+    # Line 8 stopped in one function only: no such warning for it.
+    assert not any(w.startswith("--set-at line 8 stopped") for w in result["warnings"])
+    text = probe_module._table(result)
+    assert "set x: 1 -> 5  (--set-at line 9@2, in <lambda>)" in text
+    assert "status: completed (1 requested change not made)  hits: 1" in text
     # A breakpoint is kept only while a later stop needs it.
     assert worker.placed == [[8, 9], [9]]
-    assert result["unapplied"] == [{"at": "9@4", "name": "x", "value": "7", "stops": 3}]
+    assert result["unapplied"] == [
+        {"option": "--set-at", "at": "9@4", "name": "x", "value": "7", "stops": 3}
+    ]
     assert any("9@4 x=7 was not applied: line 9 stopped 3 time(s)" in w for w in result["warnings"])
     # The other five stops only counted or changed.
     assert len(result["pauses_ms"]) == 1 and len(result["set_pauses_ms"]) == 5
@@ -1342,3 +1362,19 @@ def test_the_http_probe_passes_set_at_and_refuses_malformed_ones(tmp_path, monke
         server.shutdown()
         server.server_close()
         thread.join(timeout=3)
+
+
+def test_a_set_whose_hit_never_comes_is_unapplied_like_a_set_at(monkeypatch):
+    # #151 review: a requested change that never happened is reported the same way for
+    # --set as for --set-at (`unapplied`; the CLI exits with 4).
+    import peeky.probe as probe_module
+
+    worker = FakeWorker()
+    monkeypatch.setattr(probe_module, "DebugWorker", lambda *args, **kwargs: worker)
+    request = Probe("main.py", 8, ("x",), (("x", "2"),), hits=2, set_hit=2)
+    result = probe_module.run_probe("/w", request)
+    assert result["status"] == "completed" and result["interventions"] == []
+    assert result["unapplied"] == [
+        {"option": "--set", "at": "8@2", "name": "x", "value": "2", "stops": 1}
+    ]
+    assert any(w.startswith("No intervention was applied") for w in result["warnings"])

@@ -92,6 +92,7 @@ def test_a_recorded_probe_is_queryable_with_numbers_and_identity(store):
             "after": "0",
             "line": 8,
             "capture_hit": 1,
+            "function": None,
         }
     ]
     assert evidence.query(store, "SELECT worker FROM runs WHERE run_id = 2")["rows"] == [
@@ -290,6 +291,7 @@ def test_canned_queries_answer_comparisons(store):
         {
             "hit": 1,
             "line": 8,
+            "function": "f",
             "selector": "start",
             "observed": "3",
             "after_set": "0",
@@ -1627,3 +1629,23 @@ def test_a_schema_9_store_gains_intervention_lines(store):
     rows = evidence.query(store, "SELECT hit, line, capture_hit FROM interventions")["rows"]
     assert rows == [{"hit": 1, "line": 8, "capture_hit": 1}]
     assert evidence.run_query(store, "set_effect")["rows"][0]["interventions"] == "start: 3 -> 0"
+
+
+def test_a_schema_10_store_gains_intervention_functions(store):
+    # #151 review: a --set-at line's stops can be in several functions; each change keeps
+    # the one whose variable it changed.
+    recorded = result(sets=[("start", "0")])
+    recorded["interventions"][0]["function"] = "main::$_0::operator()(long) const"
+    evidence.record(store, recorded)
+    rows = evidence.query(store, "SELECT function FROM interventions")["rows"]
+    assert rows == [{"function": "main::$_0::operator()(long) const"}]
+    assert evidence.run_query(store, "wide")["rows"][1]["sets"] == (
+        '["start: 3 -> 0 (line 8, hit 1, in main::$_0::operator())"]'
+    )
+    connection = sqlite3.connect(store)
+    connection.executescript(
+        "ALTER TABLE interventions DROP COLUMN function; PRAGMA user_version = 10;"
+    )
+    connection.close()
+    rows = evidence.query(store, "SELECT function FROM interventions")["rows"]
+    assert rows == [{"function": None}]
