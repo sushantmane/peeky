@@ -63,6 +63,7 @@ from peeky.rust_symbols import (
     STRUCT_PREFIX,
     UNIQUE_SCALARS,
     UNVERIFIED,
+    _composite_parameter,
     _spelled,
     active_variant,
     application_symbols,
@@ -1966,6 +1967,11 @@ class RustSession(NativeSession):
             and (innermost or not proof["type"].startswith("&mut "))
         ):
             parameter = proof["type"]
+        # In a crate with unsafe code, what a reference parameter points into may have
+        # been freed by it (a caller's `ptr::read`): Peeky reads none of it (#156).
+        lent = parameter if getattr(self, "unsafe_code", None) else None
+        if lent:
+            parameter = None
         proofs = getattr(self, "owned", None)
         # An optimized build's line table cannot place a proof (#13): nothing is proven.
         unoptimized = self.target.opt_level == "0"
@@ -2020,7 +2026,7 @@ class RustSession(NativeSession):
                 declared := proofs.declared_type(hashed[1], variable.get("name"), line, shown_path)
             )
             # In a crate with unsafe code, what #110 shows standing may have been freed.
-            and not self.unsafe_code
+            and not getattr(self, "unsafe_code", None)
             and reference_valid() is True
         ):
             # A `&str` or slice local whose target #110 shows still standing (`v` of `for
@@ -2044,7 +2050,7 @@ class RustSession(NativeSession):
                 ((frame or {}).get("source") or {}).get("path"),
             )
             # Nor in a crate with unsafe code, which may have freed what it owns.
-            and not self.unsafe_code
+            and not getattr(self, "unsafe_code", None)
         )
         layouts = self.layouts
         container = container_view(
@@ -2103,7 +2109,10 @@ class RustSession(NativeSession):
             pointer = _holds_data_pointers(kind)
             provable = innermost and unoptimized and hashed
             gated = (owning or (pointer and not plain)) and not (
-                provable and proofs.proven(hashed[1], variable.get("name"), line, shown_path)
+                provable
+                and proofs.proven(hashed[1], variable.get("name"), line, shown_path)
+                # Unsafe code may have freed what a Box holds without moving it.
+                and not getattr(self, "unsafe_code", None)
             )
             # Judged in every frame (`--frame N` reads callers): only proofs that make a
             # value readable (an owned container, a Box) are the innermost frame's.
@@ -2141,6 +2150,9 @@ class RustSession(NativeSession):
             # zero-fills a missing piece without reporting it, so a decoded variant is
             # not trustworthy there.
             return {**view, "value": UNVERIFIED, "rust_view": "opaque"}
+        if view is None and lent and (REFERENCE_PARAMETERS.get(lent) or _composite_parameter(lent)):
+            # A reference parameter's contents, left raw in a crate with unsafe code.
+            return {"raw_reason": _UNSAFE_CRATE.format(source=getattr(self, "unsafe_code", None))}
         if view is None and top and not parameter and kind in OWNED_CONTAINERS:
             # Why an owned Vec or String stays raw, for its row's note (#156).
             why = self._owned_raw(variable, frame, innermost, owned)
@@ -2168,8 +2180,8 @@ class RustSession(NativeSession):
                 f"the build's MIR does not prove `{name}` initialized at this line: it may "
                 "be moved, dropped or not yet assigned around it (#53)"
             )
-        if self.unsafe_code:
-            return _UNSAFE_CRATE.format(source=self.unsafe_code)
+        if getattr(self, "unsafe_code", None):
+            return _UNSAFE_CRATE.format(source=getattr(self, "unsafe_code", None))
         if not isinstance(variable.get("memoryReference"), str):
             return _NO_MEMORY
         return None
@@ -2204,8 +2216,8 @@ class RustSession(NativeSession):
         hashed, proofs = _frame_hash(frame), getattr(self, "owned", None)
         if not hashed or proofs is None:
             return {"raw_reason": "Peeky cannot match this frame to the build's MIR"}
-        if self.unsafe_code:
-            return {"raw_reason": _UNSAFE_CRATE.format(source=self.unsafe_code)}
+        if getattr(self, "unsafe_code", None):
+            return {"raw_reason": _UNSAFE_CRATE.format(source=getattr(self, "unsafe_code", None))}
         place = frame or {}
         line, path = place.get("line"), (place.get("source") or {}).get("path")
         proof = self.parameters.get((hashed[1], root))
@@ -2336,9 +2348,13 @@ class RustSession(NativeSession):
         match). The worker passes the result to ``view_variable`` for everything inside
         it."""
         proofs, kind = getattr(self, "owned", None), variable.get("type")
-        if proofs is None or _holds_data_pointers(kind) or _is_wide_box(kind):
-            # A pointer at the top is the Box and reference gates' (view_variable).
+        if proofs is None:
             return None
+        if _holds_data_pointers(kind) or _is_wide_box(kind):
+            # A pointer at the top is the Box and reference gates' (view_variable); in a
+            # crate with unsafe code, the pointers in what it points at show only their
+            # address (`self.b`, a Box unsafe code may have freed, #156).
+            return "pointers" if getattr(self, "unsafe_code", None) else None
         if not re.fullmatch(r"[^\W\d]\w*(?: @ .+)?", str(variable.get("name"))):
             # LLDB's own values, not a local the code moves: an async body's `<null>`
             # (its `Pin<&mut>` self), the `(Return Value)` a step out shows.
@@ -2362,7 +2378,8 @@ class RustSession(NativeSession):
             )
         )
         if proven:
-            return None if innermost else "pointers"
+            # Unsafe code may have freed what its pointers reach (#156).
+            return None if innermost and not getattr(self, "unsafe_code", None) else "pointers"
         return "stale"
 
     def display_type(self, variable, frame, top=True):

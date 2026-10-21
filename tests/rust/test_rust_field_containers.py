@@ -304,6 +304,55 @@ fn caller_frees() -> usize {
     n
 }
 
+#[derive(Debug, Clone, Copy)]
+struct Span {
+    start: u64,
+    end: u64,
+}
+
+// Each reads only what the caller left valid: a Vec's length, a struct's fields.
+#[inline(never)]
+fn look_vec(v: &Vec<i64>) -> usize {
+    black_box(v.capacity()) // LOOK_VEC
+}
+
+#[inline(never)]
+fn look_text(t: &str) -> usize {
+    black_box(t.len()) // LOOK_TEXT
+}
+
+#[inline(never)]
+fn look_span(s: &Span) -> u64 {
+    black_box(s.start) // LOOK_SPAN
+}
+
+#[inline(never)]
+fn lent_freed() -> usize {
+    let w = mk();
+    unsafe { drop(ptr::read(addr_of!(w.values))) };
+    let n = look_vec(&w.values);
+    mem::forget(w);
+    let s = String::from("some text");
+    let m = look_text(s.as_str()) + look_span(&Span { start: 1, end: 2 }) as usize;
+    n + m
+}
+
+#[derive(Debug)]
+struct Pt {
+    x: i64,
+    y: i64,
+}
+
+#[inline(never)]
+fn boxed() -> i64 {
+    let mut b = Box::new(Pt { x: 1, y: 2 });
+    let p: *mut Pt = &mut *b;
+    unsafe { drop(Box::from_raw(p)) };
+    let n = black_box(3); // BOXED
+    mem::forget(b);
+    n
+}
+
 #[inline(never)]
 fn owned_local() -> usize {
     let mut v = vec![1i64, 2, 3];
@@ -329,7 +378,8 @@ fn mutated() -> usize {
 fn main() {
     let mut w = W { values: vec![1, 2, 3], k: 4 };
     let total = w.rebuild() + closure_free() + callee() + out_param() + slot() + moved_in()
-        + rebound() + caller_frees() + owned_local() + mutated();
+        + rebound() + caller_frees() + owned_local() + mutated() + lent_freed()
+        + boxed() as usize;
     println!("{total}");
 }
 """
@@ -642,6 +692,23 @@ def test_nothing_unsafe_code_may_have_freed_is_read_in_its_crate(tmp_path, state
     # from `&s` (undefined behaviour), the String it borrows moved.
     [row] = probe(capsys, crate, UNSAFE, "// MUTATED", "v")["rows"]
     assert row["view"] == "unproven", row
+    # Nor what a reference parameter points at (a caller freed the Vec's buffer, then
+    # lent it), nor a Box's contents (freed through a second Box): this narrows reads
+    # main makes, for a crate with unsafe code (review of #156, round 3).
+    for marker, name in (("// LOOK_VEC", "v"), ("// LOOK_TEXT", "t")):
+        [row] = probe(capsys, crate, UNSAFE, marker, name)["rows"]
+        assert row.get("view") is None and UNSAFE_CRATE in row.get("note", ""), row
+    rows = {
+        row["selector"]: row
+        for row in probe(capsys, crate, UNSAFE, "// LOOK_SPAN", "s,s.start")["rows"]
+    }
+    # No preview through `&Span`; LLDB's own read of a scalar field stays.
+    assert rows["s"].get("view") is None and rows["s.start"]["value"] == "1", rows
+    rows = {
+        row["selector"]: row for row in probe(capsys, crate, UNSAFE, "// BOXED", "b,b.x")["rows"]
+    }
+    assert rows["b"]["view"] == "unproven" and "unsafe code" in rows["b"]["note"], rows
+    assert "value" not in rows["b.x"], rows
     # The review's `g3`: a crate's own `Vec` (a macro's) is no frozen owner.
     crate = crate_at(tmp_path, "shadowed", SHADOWED)
     [row] = probe(capsys, crate, SHADOWED, "// SHADOWED", "s")["rows"]

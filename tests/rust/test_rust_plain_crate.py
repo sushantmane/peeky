@@ -1135,7 +1135,10 @@ def test_generic_boxes_are_gated_and_non_owning_values_read(plain, capsys):
     # LLDB names with a `*` inside, and an unmangled function's `&Pt` beside a closure,
     # were hidden.
     (plain / "src/macros.rs").write_text(BOX_MACROS)
-    (plain / "src/main.rs").write_text(BOX_GENERIC)
+    # `#[unsafe(no_mangle)]` is unsafe code, after which no Box is read (review of
+    # #156): the live Boxes read in the crate without it, and the unmangled functions'
+    # own cases are checked in the crate with it, below.
+    (plain / "src/main.rs").write_text(BOX_GENERIC.replace("#[unsafe(no_mangle)]", "// mangled"))
     cases = {
         "DROPPED_GENERIC": ("t", None),
         "DROPPED_DEREF": ("p", None),
@@ -1298,6 +1301,22 @@ def test_generic_boxes_are_gated_and_non_owning_values_read(plain, capsys):
     g, hs = result["rows"]
     assert "view" not in g and "px" in str(g.get("value")), result["rows"]
     assert "view" not in hs and "not shown" not in str(hs.get("value")), result["rows"]
+    # The crate with its unmangled functions (`#[unsafe(no_mangle)]`, unsafe code): their
+    # frames read as before, and a live Box shows only its pointer (review of #156).
+    (plain / "src/main.rs").write_text(BOX_GENERIC)
+    for marker, capture, value in (("UNMANGLED", "p.x", "10"), ("CHAINED_EXPORT", "b", None)):
+        at = f"src/main.rs:{line_of(BOX_GENERIC, '// ' + marker)}"
+        code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", capture, "--quiet")
+        row = result["rows"][0]
+        assert row.get("value") == value if value else row["view"] == "unproven", result["rows"]
+    at = f"src/macros.rs:{line_of(BOX_MACROS, '// TOUCH')}"
+    code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "b", "--quiet")
+    assert result["rows"][0].get("view") == "unproven", result["rows"]
+    at = f"src/main.rs:{line_of(BOX_GENERIC, '// LIVE_DEREF')}"
+    code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "p,p.x", "--quiet")
+    whole, field = result["rows"]
+    assert whole["view"] == "unproven" and "unsafe code" in whole["note"], result["rows"]
+    assert "value" not in field, result["rows"]
 
 
 SPANS = """#[derive(Debug, Clone, Copy, PartialEq)]
