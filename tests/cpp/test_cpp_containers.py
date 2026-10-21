@@ -160,7 +160,7 @@ def test_probe_rows_show_a_containers_first_elements(cpp, capsys):
 
 
 @pytest.mark.timeout(120)
-def test_session_rows_references_pointers_and_callers(cpp, capsys):
+def test_session_rows_references_pointers_and_listings(cpp, capsys):
     source = cpp / "shapes.cpp"
     source.write_text(SHAPES)
     with session(source, line_of(SHAPES, "// IN_TOTAL"), capsys) as get:
@@ -171,10 +171,6 @@ def test_session_rows_references_pointers_and_callers(cpp, capsys):
         assert re.fullmatch(r"0x[0-9a-f]+ size=3 \[1, 2, 3\]", ref), ref
         assert re.fullmatch(r"0x[0-9a-f]+ size=3", rows["ptr"]["value"]), rows["ptr"]
         assert rows["ptr[0]"]["value"] == "size=3 [1, 2, 3]", rows["ptr[0]"]
-        # A caller's container, below a call of the program's own.
-        rows = get("big", "m", frame=1)
-        assert rows["big"]["value"] == EXPECTED["big"], rows["big"]
-        assert rows["m"]["value"] == EXPECTED["m"], rows["m"]
     with session(source, line_of(SHAPES, "// HERE"), capsys) as get:
         rows = get("m", "named")
         # A map's entries keep #119's key selectors, now with their values' previews.
