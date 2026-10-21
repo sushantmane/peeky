@@ -292,7 +292,6 @@ def test_canned_queries_answer_comparisons(store):
     assert effect == [
         {
             "hit": 1,
-            "stop": None,
             "line": 8,
             "function": "f",
             "selector": "start",
