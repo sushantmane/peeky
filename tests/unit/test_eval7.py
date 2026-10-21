@@ -321,3 +321,22 @@ def test_a_candidate_probe_names_the_run_to_compare_it_with(cli, tmp_path, capsy
     assert compare == {"run": 1, "command": "peeky queries diff --param a=1 --param b=7"}
     assert run() == 0
     assert "compare:" not in capsys.readouterr().out
+
+
+def test_the_guide_lists_session_wait_and_program_arguments_up_front():
+    # Findings 21 and 22: the command table did not list `session wait`, and passing
+    # program arguments (`--`, `--arg`) was explained only for Python projects.
+    from pathlib import Path
+
+    docs = Path(__file__).resolve().parents[2] / "docs"
+    guide = (docs / "AGENT_GUIDE.md").read_text()
+    table = guide.split("## Commands", 1)[1].split("###", 1)[0]
+    session = next(row for row in table.splitlines() if row.startswith("| `peeky session inspect`"))
+    assert "/ `wait` /" in session and "`wait` waits for a running one to stop" in session
+    probe = next(row for row in table.splitlines() if row.startswith("| `peeky probe <target>"))
+    assert "[-- ARGS]" in probe and "after `--`, or repeatable `--arg`" in probe, probe
+    # Finding 19: a step can land back on an `if`'s line.
+    cookbook = " ".join((docs / "COOKBOOK.md").read_text().split())
+    assert "A step can also land back on an `if`'s line after the last line of its block" in (
+        cookbook
+    )

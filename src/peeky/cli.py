@@ -2559,7 +2559,7 @@ def _job_text(spec, out):
     text = (
         _verify_text(result, spec.get("keep", False))
         if spec["command"] == "verify"
-        else _probe_text(result)
+        else _probe_text(result, quiet="--quiet" in spec.get("argv", ()))
     )
     return text + "\n"
 
