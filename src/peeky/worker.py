@@ -2009,6 +2009,9 @@ class DebugWorker:
                     "withheld": True,
                     "settable": False,
                 }
+                if isinstance(label := getattr(reason, "label", None), str):
+                    # Withheld for another reason than a value not set yet.
+                    output["withheld_as"] = label[:100]
                 if kind is not None:
                     output["type"] = kind
                     shown = getattr(self.runtime, "display_type", None)
