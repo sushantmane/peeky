@@ -1620,3 +1620,89 @@ def test_a_blocks_lines_split_only_where_code_outside_it_runs_between():
     # Lines with no code between two of the block's (a comment, a blank) stay inside.
     assert _runs([17, 18, 22], running) == ((17, 22),)
     assert _runs([35], running) == ((35, 35),)
+
+
+def preprocessing_session(tmp_path, outputs, sources=("a.c",), headers=()):
+    """A NativeSession over ``a.c``'s local `q` (declared on line 2, shown at pc 0x150)
+    whose "compiler" prints ``outputs[unit]`` as its preprocessed text (None: fails)."""
+    import sys
+
+    session = NativeSession.__new__(NativeSession)
+    session.load_bias = 0
+    where = ("a.c", 2, True)
+    session.declarations = [
+        {
+            "ranges": [(0x100, 0x200)],
+            "locals": {"q": {where}},
+            "visible": {("q", *where): [(0x100, 0x200)]},
+        }
+    ]
+
+    def preprocess_argv(unit):
+        if outputs[unit] is None:
+            return str(tmp_path / "missing-compiler"), [unit]
+        code = f"import sys; open(sys.argv[2], 'wb').write({outputs[unit]!r})"
+        return sys.executable, ["-c", code]
+
+    session.target = SimpleNamespace(
+        sources=sources,
+        verification_inputs=sources + headers,
+        language="c",
+        preprocess_argv=preprocess_argv,
+    )
+    session.prepared = SimpleNamespace(
+        workspace=tmp_path, manifest=SimpleNamespace(effective_environment=())
+    )
+    return session
+
+
+UNIT = b"""# 1 "a.c"
+# 1 "/usr/include/stdio.h" 1 3 4
+int printf(const char *, ...);
+# 1 "a.c" 2
+long f(void) {
+    long q = 1;
+    {
+        enum { q = 7 };
+        return q;
+    }
+}
+"""
+
+
+def test_a_hidden_local_is_read_from_the_preprocessed_unit_or_withheld(tmp_path):
+    # Review of PR #144 (round 2): the translation unit is read as the build's compiler
+    # preprocesses it; where it cannot be, the row is withheld, never shown.
+    frame = {"instructionPointerReference": "0x150"}
+    found = preprocessing_session(tmp_path, {"a.c": UNIT})._block_storage("q", frame, "a.c", 5)
+    assert found.label == "not what the code reads" and "enumerator `q` (line 4)" in found
+    plain = UNIT.replace(b"enum { q = 7 };", b"long r = 7;")
+    assert (
+        preprocessing_session(tmp_path, {"a.c": plain})._block_storage("q", frame, "a.c", 5) is None
+    )
+    failed = preprocessing_session(tmp_path, {"a.c": None})._block_storage("q", frame, "a.c", 5)
+    assert failed.label == "may not be what the code reads" and "could not preprocess" in failed
+    assert "cannot be changed" in failed.refusal
+    # Not in the unit's text at all (the markers name another file): not singled out.
+    other = UNIT.replace(b'"a.c"', b'"b.c"')
+    lost = preprocessing_session(tmp_path, {"a.c": other})._block_storage("q", frame, "a.c", 5)
+    assert lost.label == "may not be what the code reads"
+    # A header's function in two units that read it differently: Peeky cannot tell.
+    header = b'# 1 "b.c"\n# 1 "a.c" 1\n' + UNIT.split(b"\n", 1)[1]
+    plain_header = b'# 1 "c.c"\n# 1 "a.c" 1\n' + plain.split(b"\n", 1)[1]
+    (tmp_path / "peeky-object-0.o.d").write_text("b.o: b.c a.c\n")
+    (tmp_path / "peeky-object-1.o.d").write_text("c.o: c.c a.c\n")
+    session = preprocessing_session(
+        tmp_path, {"b.c": header, "c.c": plain_header}, sources=("b.c", "c.c"), headers=("a.c",)
+    )
+    assert session._block_storage("q", frame, "a.c", 5).label == "may not be what the code reads"
+    session = preprocessing_session(
+        tmp_path, {"b.c": header, "c.c": header}, sources=("b.c", "c.c"), headers=("a.c",)
+    )
+    assert session._block_storage("q", frame, "a.c", 5).label == "not what the code reads"
+    # A unit whose dependencies do not name the file is not read.
+    (tmp_path / "peeky-object-1.o.d").write_text("c.o: c.c\n")
+    session = preprocessing_session(
+        tmp_path, {"b.c": header, "c.c": None}, sources=("b.c", "c.c"), headers=("a.c",)
+    )
+    assert session._block_storage("q", frame, "a.c", 5).label == "not what the code reads"

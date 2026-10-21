@@ -1203,15 +1203,19 @@ JUMPED = """#include <setjmp.h>
 
 static jmp_buf env;
 
-__attribute__((noinline)) static long twice(long v) { return v * 2; }
+__attribute__((noinline)) static long twice(long v) {
+    long w = v * 2;  // HELPER
+    return w;
+}
 
 static long run(int n) {
+    long before = twice(3);
     volatile int tries = 0;
     long total = 0;  // TOP
-    if (setjmp(env) != 0) {
+    if (setjmp(env) != 0) {  // CALL
         total += 100;
     }
-    long later = twice(tries);
+    long later = twice(tries);  // AFTER
     tries++;
     if (tries < n) longjmp(env, 1);
     return total + later;
@@ -1265,16 +1269,47 @@ def test_a_local_declared_on_a_line_a_loop_returns_to_carries_a_note(directory, 
 
 @pytest.mark.timeout(300)
 def test_locals_of_a_program_using_setjmp_carry_a_note(directory, capsys):
-    # With setjmp, Peeky does not judge initialization (a longjmp can return above a
-    # declaration with the local live): each automatic local says so; a parameter not.
+    # Below a setjmp call, a `longjmp` can bring control back past a declaration with
+    # the local live, or this is the first pass: the local is shown with a note, and a
+    # change is refused (its declaration may run after it). Review of PR #140: only in
+    # the function that calls setjmp, below the call, and only for what is declared at
+    # or below the stop; elsewhere the usual rules judge it (they withheld nothing in
+    # a program using setjmp, and noted every local, `before` and `tries` included).
     path = directory / "jump.c"
     path.write_text(JUMPED)
-    result, rows = probed(capsys, path, line_of(JUMPED, "// TOP"), "total,later,tries,n", 1)
-    for name in ("total", "later", "tries"):
-        assert "does not judge whether this local is initialized" in rows[1, name]["note"]
-        assert "setjmp" in rows[1, name]["note"]
-    assert "note" not in rows[1, "n"] and rows[1, "n"]["value"] == "2", rows
+    capture = "later,total,before,tries,n"
+    result, rows = probed(capsys, path, line_of(JUMPED, "// AFTER"), capture, 2)
+    for hit in (1, 2):
+        note = rows[hit, "later"]["note"]
+        assert "value" in rows[hit, "later"] and "calls setjmp (line" in note, rows
+        assert rows[hit, "later"]["settable"] is False
+        assert all("note" not in rows[hit, name] for name in ("total", "before", "tries", "n"))
+    assert rows[1, "before"]["value"] == "6" and rows[2, "total"]["value"] == "100", rows
     assert any("setjmp" in warning for warning in result["warnings"]), result["warnings"]
+    # Above the call, the usual rules: `total`, declared on the stop line, is withheld.
+    result, rows = probed(capsys, path, line_of(JUMPED, "// TOP"), "total,later,before", 1)
+    assert withheld(rows[1, "total"], "declared on line") and "note" not in rows[1, "before"]
+    assert withheld(rows[1, "later"], "below this stop"), rows
+    # On the call's own line too (review of PR #144, round 2): a `longjmp` returns past
+    # the call, never to the line's first instruction, where this stop is.
+    result, rows = probed(capsys, path, line_of(JUMPED, "// CALL"), "later,total", 1)
+    assert withheld(rows[1, "later"], "below this stop") and "note" not in rows[1, "later"], rows
+    assert rows[1, "total"]["value"] == "0", rows
+    # A function that makes no setjmp call: judged as usual.
+    result, rows = probed(capsys, path, line_of(JUMPED, "// HELPER"), "w,v", 1)
+    assert withheld(rows[1, "w"], "declared on line") and "note" not in rows[1, "v"], rows
+    assert main(["session", "start", str(path), "--at", str(line_of(JUMPED, "// AFTER"))]) == 0
+    capsys.readouterr()
+    try:
+        assert main(["session", "set", "later=5", "--json"]) == 2
+        error = json.loads(capsys.readouterr().out)["error"]
+        assert error["code"] == "MUTATION_REJECTED" and "longjmp" in error["message"], error
+        # What is certainly current there can be changed.
+        assert main(["session", "set", "before=7", "--json"]) == 0
+        assert json.loads(capsys.readouterr().out)["after"] == "7"
+    finally:
+        main(["session", "close"])
+        capsys.readouterr()
 
 
 # Review of PR #140: another declaration of the name (an earlier loop's, a static, a
@@ -1384,3 +1419,459 @@ def test_a_local_below_the_stop_is_judged_by_the_declaration_shown(
     finally:
         main(["session", "close"])
         capsys.readouterr()
+
+
+# Review of PR #140: in a block declaring a `static` or `extern` (or C++ `using`) of an
+# outer local's name, the code reads that one, which lldb-dap does not list (clang
+# declares a block's static in the function's scope, a block's extern not at all): the
+# outer local was shown, and read and changed, under its name.
+SHADOWS = {
+    "shadow.c": """#include <stdio.h>
+
+long gcount = 1;
+#define KEEP(name) static long name = 5
+__attribute__((noinline)) long use(long v) { return v + 1; }
+
+int main(void) {
+    long gcount = 6;
+    long total = 0;
+    {
+        extern long gcount;
+        total += use(gcount);  // EXTERN
+    }
+    long q = 1;
+    {
+        static long q = 2;
+        total += use(q);  // STATIC
+    }
+    long r = 3;
+    {
+        KEEP(r);
+        total += use(r);  // MACRO
+    }
+    total += use(q) + use(gcount) + use(r);  // AFTER
+    printf("T %ld %ld %ld %ld\\n", total, gcount, q, r);
+    return 0;
+}
+""",
+    "shadow.cpp": """#include <cstdio>
+
+namespace cfg { long level = 3; }
+__attribute__((noinline)) long use(long v) { return v + 1; }
+
+int main() {
+    long level = 1;
+    long total = 0;
+    {
+        using cfg::level;
+        total += use(level);  // USING
+    }
+    {
+        static long hits = 0;
+        long kept = hits;
+        total += use(kept);  // OTHER
+    }
+    std::printf("T %ld %ld\\n", total, level);
+    return 0;
+}
+""",
+}
+
+
+@pytest.mark.timeout(300)
+@pytest.mark.parametrize(
+    "name, marker, local, phrase",
+    [
+        ("shadow.c", "EXTERN", "gcount", "names the block's `extern` `gcount`"),
+        ("shadow.c", "STATIC", "q", "names the block's `static` `q`"),
+        # A macro's static: read as the compiler preprocessed the source (PR #144, round 2).
+        ("shadow.c", "MACRO", "r", "names the block's `static` `r`"),
+        ("shadow.cpp", "USING", "level", "the block's `using` declaration (line"),
+    ],
+)
+def test_an_outer_local_a_blocks_static_or_extern_hides_is_withheld(
+    directory, capsys, name, marker, local, phrase
+):
+    source = SHADOWS[name]
+    path = directory / name
+    path.write_text(source)
+    line = line_of(source, f"// {marker}")
+    rows = shown_at(capsys, path, line, local, "total")
+    assert withheld(rows[local], phrase) and "what the code reads" in rows[local]["error"]
+    assert "value" in rows["total"], rows
+    assert main(["session", "start", str(path), "--at", str(line)]) == 0
+    capsys.readouterr()
+    try:
+        assert main(["session", "set", f"{local}=9", "--json"]) == 2
+        error = json.loads(capsys.readouterr().out)["error"]
+        assert error["code"] == "MUTATION_REJECTED" and "cannot be changed here" in error["message"]
+    finally:
+        main(["session", "close"])
+        capsys.readouterr()
+
+
+@pytest.mark.timeout(300)
+def test_outer_locals_are_read_outside_the_blocks_that_hide_them(directory, capsys):
+    path = directory / "shadow.c"
+    path.write_text(SHADOWS["shadow.c"])
+    rows = shown_at(capsys, path, line_of(SHADOWS["shadow.c"], "// AFTER"), "q", "gcount", "r")
+    assert [rows[local]["value"] for local in ("q", "gcount", "r")] == ["1", "6", "3"], rows
+    path = directory / "shadow.cpp"
+    path.write_text(SHADOWS["shadow.cpp"])
+    rows = shown_at(capsys, path, line_of(SHADOWS["shadow.cpp"], "// OTHER"), "level", "kept")
+    assert rows["level"]["value"] == "1" and rows["kept"]["value"] == "0", rows
+
+
+# Review of PR #144: more shapes that hide an outer local's name, and some that do not.
+HIDING = {
+    "hide.c": """#include <stdio.h>
+
+long gcount = 1;
+#define ONCE static int once_flag = 0
+__attribute__((noinline)) long use(long v) { return v + 1; }
+__attribute__((noinline)) long helper(long q) { return q * 3; }
+
+__attribute__((noinline)) long same_line(void) {
+    long gcount = 6;
+    long total = 0;
+    { extern long gcount; total += use(gcount); }  // SAME_LINE
+    return total;
+}
+__attribute__((noinline)) long multi(void) {
+    long m = 1;
+    long total = 0;
+    {
+        static long a[2] = {1, 2}, m = 3;
+        total += use(m) + a[0];  // MULTI
+    }
+    return total;
+}
+__attribute__((noinline)) long anon(void) {
+    long q = 1;
+    long total = 0;
+    {
+        static struct { long v; } q = { 5 };
+        total += use(q.v);  // ANON
+    }
+    return total;
+}
+__attribute__((noinline)) long enumer(void) {
+    long q = 1;
+    long total = 0;
+    {
+        enum { q = 7 };
+        total += use(q);  // ENUM
+    }
+    return total;
+}
+__attribute__((noinline)) long fdecl(void) {
+    long use2 = 4;
+    long total = 0;
+    {
+        long use2(long);
+        total += (use2 != 0);  // FDECL
+    }
+    return total;
+}
+__attribute__((noinline)) long ifzero(void) {
+    long q = 1;
+    long total = 0;
+    {
+#if 0
+        static long q = 2;
+#endif
+        total += use(q);  // IFZERO
+    }
+    return total;
+}
+__attribute__((noinline)) long ifdef(void) {
+    long q = 1;
+    long total = 0;
+    {
+#ifdef NOT_DEFINED
+        static long q = 2;
+#endif
+        total += use(q);  // IFDEF
+    }
+    return total;
+}
+__attribute__((noinline)) long protoparam(void) {
+    long q = 4;
+    long total = 0;
+    {
+        extern long helper(long q);
+        total += helper(q);  // PROTO
+    }
+    return total;
+}
+__attribute__((noinline)) long once(void) {
+    long q = 2;
+    long total = 0;
+    {
+        ONCE;
+        total += use(q) + once_flag;  // ONCE
+    }
+    return total;
+}
+
+int main(void) {
+    printf("%ld %ld %ld %ld %ld %ld %ld %ld %ld\\n", same_line(), multi(), anon(), enumer(),
+           fdecl(), ifzero(), ifdef(), protoparam(), once());
+    return 0;
+}
+long use2(long v) { return v; }
+""",
+    "hide.cpp": """#include <cstdio>
+
+__attribute__((noinline)) long use(long v) { return v + 1; }
+
+__attribute__((noinline)) long tls() {
+    long q = 6;
+    long total = 0;
+    {
+        static thread_local long q = 8;
+        total += use(q);  // TLS
+    }
+    return total;
+}
+
+int main() {
+    std::printf("%ld\\n", tls());
+    return 0;
+}
+""",
+    # Review of PR #144 (round 2): what a macro or a conditional makes of a block, and an
+    # enum nested in a struct's body (C gives its enumerators the block's scope).
+    "made.c": """#include <stdio.h>
+
+#define MAKE_ENUM enum { q = 7 }
+#define DECL_ENUM(n) enum { n = 8 }
+#define PROTO(n) long n(long)
+#define HAVE_STATIC 1
+__attribute__((noinline)) long use(long v) { return v + 1; }
+
+__attribute__((noinline)) long nested(void) {
+    long q = 1;
+    long total = 0;
+    {
+        struct S { enum { q = 3 } kind; long v; } s = { 0, 2 };
+        total += use(q) + s.v;  // NESTED
+    }
+    return total;
+}
+__attribute__((noinline)) long made(void) {
+    long q = 1;
+    long total = 0;
+    {
+        MAKE_ENUM;
+        total += use(q);  // MADE
+    }
+    return total;
+}
+__attribute__((noinline)) long given(void) {
+    long q = 1;
+    long total = 0;
+    {
+        DECL_ENUM(q);
+        total += use(q);  // GIVEN
+    }
+    return total;
+}
+__attribute__((noinline)) long proto(void) {
+    long use3 = 1;
+    long total = 0;
+    {
+        PROTO(use3);
+        total += (use3 != 0);  // PROTO
+    }
+    return total;
+}
+__attribute__((noinline)) long defined(void) {
+    long q = 1;
+    long total = 0;
+    {
+#ifdef HAVE_STATIC
+        static long q = 2;
+#endif
+        total += use(q);  // DEFINED
+    }
+    return total;
+}
+__attribute__((noinline)) long tag(void) {
+    long q = 1;
+    long total = 0;
+    {
+        struct q { long v; } t = { 4 };
+        total += use(q) + t.v;  // TAG
+    }
+    return total;
+}
+
+int main(void) {
+    printf("%ld %ld %ld %ld %ld %ld\\n", nested(), made(), given(), proto(), defined(), tag());
+    return 0;
+}
+long use3(long v) { return v; }
+""",
+    # A C++ class a block declares hides the outer local; a class's own enumerator does
+    # not.
+    "made.cpp": """#include <cstdio>
+
+__attribute__((noinline)) long use(long v) { return v + 1; }
+
+__attribute__((noinline)) long classes() {
+    long q = 1;
+    long total = 0;
+    {
+        struct q { long v = 5; };
+        total += sizeof(q) + q{}.v;  // CLASS
+    }
+    {
+        struct S { enum { q = 4 }; long v = 2; } s;
+        total += use(q) + s.v + S::q;  // MEMBER
+    }
+    return total;
+}
+
+int main() {
+    std::printf("%ld\\n", classes());
+    return 0;
+}
+""",
+    "multi.c": """#include <stdio.h>
+
+__attribute__((noinline)) long use(long v) { return v + 1; }
+
+__attribute__((noinline)) long multi(void) {
+    long q = 1;
+    long total = 0;
+    {
+        static long a[2] = {1, 2}, q = 3;
+        total += use(q) + a[0];  // MULTI
+    }
+    return total;
+}
+
+int main(void) {
+    printf("%ld\\n", multi());
+    return 0;
+}
+""",
+}
+
+
+@pytest.mark.timeout(300)
+@pytest.mark.parametrize(
+    "name, marker, local, phrase",
+    [
+        # A block opening on the stop line itself.
+        ("hide.c", "SAME_LINE", "gcount", "names the block's `extern` `gcount`"),
+        # A declarator after an initializer's braces (no other such `q` in the file).
+        ("multi.c", "MULTI", "q", "names the block's `static` `q`"),
+        # After a type's body; an enumerator; a function a block declares.
+        ("hide.c", "ANON", "q", "names the block's `static` `q`"),
+        ("hide.c", "ENUM", "q", "names the block's enumerator `q`"),
+        ("hide.c", "FDECL", "use2", "names the function `use2` the block declares"),
+        # Read as the compiler preprocessed it: an enum in a struct's body (C), a
+        # macro's, a function a macro declares, a static a defined `#ifdef` keeps; a
+        # C++ class.
+        ("made.c", "NESTED", "q", "names the block's enumerator `q` (line 13)"),
+        ("made.c", "MADE", "q", "names the block's enumerator `q` (line 22)"),
+        ("made.c", "GIVEN", "q", "names the block's enumerator `q` (line 31)"),
+        ("made.c", "PROTO", "use3", "names the function `use3` the block declares (line 40)"),
+        ("made.c", "DEFINED", "q", "names the block's `static` `q` (line 50)"),
+        ("made.cpp", "CLASS", "q", "names the type `q` the block declares (line 9)"),
+        # A thread's own static is listed, apart: the row says where.
+        ("hide.cpp", "TLS", "q @ hide.cpp:6", "listed separately as `q @ hide.cpp:9`"),
+    ],
+)
+def test_a_name_a_block_declares_otherwise_hides_the_outer_local(
+    directory, capsys, name, marker, local, phrase
+):
+    source = HIDING[name]
+    path = directory / name
+    path.write_text(source)
+    line = line_of(source, f"// {marker}")
+    rows = shown_at(capsys, path, line, local)
+    assert withheld(rows[local], phrase), rows[local]
+    assert main(["session", "start", str(path), "--at", str(line)]) == 0
+    capsys.readouterr()
+    try:
+        assert main(["session", "set", f"{local}=9", "--json"]) == 2
+        assert json.loads(capsys.readouterr().out)["error"]["code"] == "MUTATION_REJECTED"
+    finally:
+        main(["session", "close"])
+        capsys.readouterr()
+
+
+HEADER_HIDING = """#define MAKE_ENUM enum { q = 7 }
+__attribute__((noinline)) static long inhead(void) {
+    long q = 1;
+    long total = 0;
+    {
+        MAKE_ENUM;
+        total += q;  // INHEAD
+    }
+    return total + q;  // AFTER
+}
+"""
+HEADER_HIDING_MAIN = """#include <stdio.h>
+#include "hiding.h"
+
+int main(void) {
+    long q = 2;
+    printf("%ld %ld\\n", inhead(), q);  // CALL
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(300)
+def test_a_header_functions_block_is_read_from_the_unit_including_it(directory, capsys):
+    # Review of PR #144 (round 2): a function in a header is read in the translation
+    # unit that includes it, as the compiler preprocessed it there.
+    (directory / "hiding.h").write_text(HEADER_HIDING)
+    path = directory / "main.c"
+    path.write_text(HEADER_HIDING_MAIN)
+    line = line_of(HEADER_HIDING_MAIN, "// CALL")
+    assert main(["session", "start", str(path), "--at", str(line)]) == 0
+    capsys.readouterr()
+    try:
+        for _ in range(3):
+            assert main(["session", "step", "--into"]) == 0
+        assert f"hiding.h:{line_of(HEADER_HIDING, '// INHEAD')} " in capsys.readouterr().out
+        main(["session", "get", "q", "total", "--json"])
+        rows = {row["selector"]: row for row in json.loads(capsys.readouterr().out)}
+        assert withheld(rows["q"], "names the block's enumerator `q` (line 6)"), rows
+        assert rows["total"]["value"] == "0", rows
+        assert main(["session", "set", "q=9", "--json"]) == 2
+        assert json.loads(capsys.readouterr().out)["error"]["code"] == "MUTATION_REJECTED"
+        assert main(["session", "step"]) == 0
+        capsys.readouterr()
+        main(["session", "get", "q", "--json"])
+        assert json.loads(capsys.readouterr().out)[0]["value"] == "1"
+    finally:
+        main(["session", "close"])
+        capsys.readouterr()
+
+
+@pytest.mark.timeout(300)
+@pytest.mark.parametrize(
+    "name, marker, local, value",
+    [
+        ("hide.c", "IFZERO", "q", "1"),  # an `#if 0` leaves the static out
+        ("hide.c", "IFDEF", "q", "1"),  # so does an `#ifdef` of what is not defined
+        ("hide.c", "PROTO", "q", "4"),  # a prototype's parameter declares nothing here
+        ("hide.c", "ONCE", "q", "2"),  # a macro declaring a static that does not name `q`
+        ("made.c", "TAG", "q", "1"),  # a C struct's tag is no variable's name
+        ("made.cpp", "MEMBER", "q", "1"),  # a class's enumerator is the class's
+    ],
+)
+def test_a_name_a_block_does_not_declare_leaves_the_outer_local_read(
+    directory, capsys, name, marker, local, value
+):
+    source = HIDING[name]
+    path = directory / name
+    path.write_text(source)
+    rows = shown_at(capsys, path, line_of(source, f"// {marker}"), local)
+    assert rows[local].get("value") == value, rows[local]

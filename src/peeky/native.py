@@ -11,6 +11,7 @@ import contextlib
 import hashlib
 import json
 import os
+import posixpath
 import re
 import shutil
 import struct
@@ -35,7 +36,7 @@ from peeky.build import (
     prepare,
     real_tool,
 )
-from peeky.c_source import Statements, macro_hazards
+from peeky.c_source import Preprocessed, Statements, macro_hazards, returning_twice
 from peeky.cxx_strings import libstdcxx_string, shows_text, string_class, text_like, tidy
 from peeky.digest import sha256_file
 from peeky.names import unicode_escape
@@ -69,9 +70,12 @@ def _path_name(name, suffix):
         raise ValueError("Expected a plain relative native input path")
 
 
-def _metadata(tool, arguments, workspace, env, *, max_bytes=MAX_METADATA, timeout=15):
-    """Bound metadata capture; larger engineering probes do not change parser limits."""
-    if type(max_bytes) is not int or not 0 < max_bytes <= 16 * 1024 * 1024:
+def _metadata(tool, arguments, workspace, env, *, max_bytes=MAX_METADATA, timeout=15, read=None):
+    """Bound metadata capture; larger engineering probes do not change parser limits.
+    ``read(path)`` reads a larger output (up to 64 MiB) as it streams, instead of the
+    whole text being returned."""
+    limit = (64 if read else 16) * 1024 * 1024
+    if type(max_bytes) is not int or not 0 < max_bytes <= limit:
         raise ValueError("Invalid native metadata capture limit")
     if type(timeout) not in (int, float) or not 0 < timeout <= 15:
         raise ValueError("Invalid native metadata time limit")
@@ -115,7 +119,7 @@ def _metadata(tool, arguments, workspace, env, *, max_bytes=MAX_METADATA, timeou
             )
         if output.stat().st_size > max_bytes or errors.stat().st_size > 16000:
             raise ValueError("Native symbol metadata exceeds limit")
-        return output.read_text(encoding="utf-8")
+        return read(output) if read else output.read_text(encoding="utf-8")
 
 
 def _line_rows(text, workspace, declared, limit=MAX_METADATA, replaced=None):
@@ -2044,6 +2048,29 @@ class NativeTarget:
     # Candidate probes stage an edit into a fresh build (the worker's launch `edit`).
     supports_edits = True
 
+    def _compile_flags(self):
+        """(driver, every flag a source is compiled with, the sysroot, its resolved SDK)."""
+        # The compiler path is resolved (clang++ is a symlink to clang), and clang picks
+        # its language from the name it runs as; keep C++ mode so libc++ is linked.
+        driver = ("--driver-mode=g++",) if self.language == "cpp" else ()
+        flags = [*driver, *self.compiler_options]
+        # Without an explicit sysroot, use the SDK the /usr/bin xcrun stub would have
+        # supplied; it is part of the recorded build commands either way.
+        sysroot = self.sysroot if self.sysroot is not None else default_sdk()
+        sdk = None
+        if sysroot is not None:
+            sdk = Path(sysroot).resolve(strict=True)
+            if not sdk.is_dir():
+                raise ValueError("Native sysroot must be a directory")
+            flags.extend(("-isysroot", str(sdk)))
+        return driver, flags, sysroot, sdk
+
+    def preprocess_argv(self, source):
+        """The build's own compile of ``source``, preprocessing only (`-E`, keeping its
+        line markers): the text the compiler parsed (#144)."""
+        _, flags, _, _ = self._compile_flags()
+        return _tool(self.compiler), [*flags, "-E", source]
+
     def prepare(self, program, root, *, edit=None, deadline=None):
         root = Path(root).resolve(strict=True)
         relative = Path(program).resolve(strict=True).relative_to(root).as_posix()
@@ -2056,18 +2083,7 @@ class NativeTarget:
                 else "Native candidate edits require a declared C++ source"
             )
         compiler, adapter, dwarfdump = map(_tool, (self.compiler, self.adapter, self.dwarfdump))
-        # The compiler path is resolved (clang++ is a symlink to clang), and clang picks
-        # its language from the name it runs as; keep C++ mode so libc++ is linked.
-        driver = ("--driver-mode=g++",) if self.language == "cpp" else ()
-        flags = [*driver, *self.compiler_options]
-        # Without an explicit sysroot, use the SDK the /usr/bin xcrun stub would have
-        # supplied; it is part of the recorded build commands either way.
-        sysroot = self.sysroot if self.sysroot is not None else default_sdk()
-        if sysroot is not None:
-            sdk = Path(sysroot).resolve(strict=True)
-            if not sdk.is_dir():
-                raise ValueError("Native sysroot must be a directory")
-            flags.extend(("-isysroot", str(sdk)))
+        driver, flags, sysroot, sdk = self._compile_flags()
         # Keep objects until dsymutil finishes; single-step clang removes its
         # temporary objects and a subsequent dsymutil can erase valid symbols.
         objects = tuple(f"peeky-object-{index}.o" for index in range(len(self.sources)))
@@ -2140,7 +2156,7 @@ class NativeTarget:
                 prepared.workspace,
                 self.sources + self.headers,
             )
-            typedefs, fields, unjudged = {}, None, None
+            typedefs, fields, unjudged, returns_twice = {}, None, None, None
             try:
                 info = _metadata(
                     dwarfdump,
@@ -2165,9 +2181,13 @@ class NativeTarget:
                         info, text, prepared.workspace, self.sources + self.headers
                     )
                     if nonlocal_jumps:
-                        # Not judged, and said so on the rows that would be: the table
-                        # only tells them (automatic locals) apart.
-                        unjudged, declarations = ("setjmp", None, declarations), None
+                        # Which functions may call setjmp is read from their source:
+                        # its family's names, or a macro naming one, including those
+                        # of headers outside the program (a TRY macro).
+                        returns_twice = returning_twice(
+                            Path(path).read_bytes().decode("utf-8", errors="replace")
+                            for path in external
+                        )
                     if declarations is not None:
                         from peeky.fields import CPP_LIBRARIES, type_graph
 
@@ -2214,6 +2234,7 @@ class NativeTarget:
                 typedefs=typedefs,
                 fields=fields,
                 unjudged=unjudged,
+                returns_twice=returns_twice,
             )
             session.assert_current()
             return session
@@ -2302,6 +2323,17 @@ def _writable_integer(variable):
     )
 
 
+class Withholding(str):
+    """A reason ``not_yet_declared`` withholds a row for that is not about its value
+    being set yet: ``label`` heads the row's error (in place of `no value yet`), and
+    ``refusal`` is why a change to it is refused."""
+
+    def __new__(cls, reason, label, refusal):
+        made = super().__new__(cls, reason)
+        made.label, made.refusal = label, refusal
+        return made
+
+
 class Everywhere(str):
     """A reason no stop of this run allows a change (mid_statement): no other stop, line
     or step helps, so no advice to stop elsewhere goes with it."""
@@ -2320,15 +2352,9 @@ class ValueNote(str):
         return made
 
 
-# Initialization is not judged in a program that can jump back above a declaration
-# through setjmp/longjmp (or a context switch), nor where the build's debug information
-# could not be read: the rows that would be judged say so.
+# Initialization is not judged where the build's debug information could not be read:
+# the rows that would be judged say so.
 _UNJUDGED = {
-    "setjmp": (
-        "Peeky does not judge whether this local is initialized here: the program uses "
-        "setjmp/longjmp (or a context switch), which can return above a declaration, so "
-        "it may hold leftovers"
-    ),
     "unreadable": (
         "Peeky does not judge whether this local is initialized here: it could not read "
         "the build's debug information ({}), so it may hold leftovers"
@@ -2363,6 +2389,7 @@ class NativeSession:
         typedefs=None,
         fields=None,
         unjudged=None,
+        returns_twice=None,
     ):
         self.target, self.prepared = target, prepared
         # local_declarations of the build; None (unknown) never withholds a value, and
@@ -2370,6 +2397,9 @@ class NativeSession:
         # local_declarations if read, to tell which rows are automatic locals).
         self.declarations = declarations
         self.unjudged = unjudged
+        # In a program that may call setjmp: the macros of headers outside the program
+        # that may expand to it (see _returns_twice); None in one that cannot.
+        self.returns_twice = returns_twice
         # fields.type_graph of the locals' types; None (unknown) changes no field.
         self.fields = fields
         # typedef_kinds of the build: {} (unknown) resolves no typedef.
@@ -2674,6 +2704,8 @@ class NativeSession:
                     "frame is back in its own lines"
                 )
             here, line = place
+        if shadowed := self._block_storage(name, frame, here, line, (stopped, raw_line)):
+            return shadowed
         if not innermost and (
             unfinished := declared_unfinished(
                 self.declarations,
@@ -2736,6 +2768,8 @@ class NativeSession:
             # Which declaration of the name the debugger shows there.
             pc=address,
         )
+        if below is not None and (jump := self._setjmp_above(frame, line)) is not None:
+            return self._setjmp_note(below[0], jump, "declared at line {}, below this stop")
         if below is not None:
             at, why = below
             if why is None:
@@ -2842,6 +2876,10 @@ class NativeSession:
                 )
                 + ", before its declaration runs; read it on the next line",
                 refuses=True,
+            )
+        if on_line is not None and (jump := self._setjmp_above(frame, line)) is not None:
+            return self._setjmp_note(
+                line, jump, "declared on line {}, at whose first instruction this stop is"
             )
         if on_line is not None:
             if on_line[1] == "label":
@@ -3234,6 +3272,195 @@ class NativeSession:
             return None
         return int(pointer, 16) - bias
 
+    def _block_storage(self, name, frame, source, line, stop=None):
+        """Why the root local ``name`` of ``frame`` is not what the code at ``source:line``
+        reads, or None: a block around the line declares ``name`` after the local, so
+        that the code names that instead: a `static` or an `extern` (lldb-dap does not
+        list them among the frame's locals: clang declares a block's static in the
+        function's scope, and a block's `extern` not at all), a `typedef`, an
+        enumerator, a function, a C++ `using` declaration or class, and the row shows
+        the outer local under that name. Read from the translation unit as the
+        compiler preprocessed it, so what a macro, a conditional or an `#include` makes
+        of the source is what is read; withheld where Peeky cannot read it. ``stop``:
+        the (file, line) the frame runs, where ``source:line`` is an `#include` line
+        that brings it in (the preprocessed text has its lines there instead)."""
+        found = shown_declaration(self.declarations, name, self._unslid(frame))
+        if found is None:
+            return None
+        base = (_SHADOWED.fullmatch(name) or [None, name])[1]
+        declared = found[1] if found else (None, None, False)
+        verdicts, failure = set(), None
+        for unit in self._units(source):
+            read = self._preprocessed(unit)
+            if isinstance(read, str):
+                failure = read
+                break
+            preprocessed, statements = read
+            if source not in preprocessed.files:
+                continue
+            at = preprocessed.line(source, line)
+            if at is None and stop is not None and stop[0] in preprocessed.files:
+                at = preprocessed.line(*stop)
+            after = None
+            if declared[1] is not None:
+                after = preprocessed.line(declared[0] or source, declared[1])
+            if not at or after == 0 or (declared[1] is not None and after is None):
+                # The stop's line, or the local's, is not singled out in it.
+                verdicts.add(None)
+                continue
+            storage = statements.block_storage(at, base, after, True)
+            if storage:
+                origin = preprocessed.origins[storage[1] - 1]
+                storage = None if origin is None else (storage[0], *origin)
+            verdicts.add(storage)
+        if failure is None and verdicts == {False}:
+            return None
+        if failure is not None or len(verdicts) != 1 or None in verdicts:
+            why = (
+                f"Peeky could not preprocess the source to read it ({failure})"
+                if failure is not None
+                else "Peeky cannot read that from the source as the compiler preprocessed it"
+            )
+            return Withholding(
+                f"a block around line {line} may declare `{base}` (a `static`, an `extern`, "
+                f"an enumerator, a function or a type), which the code would name instead of "
+                f"this local: {why}",
+                "may not be what the code reads",
+                f"{name!r} cannot be changed here: at line {line} the code may name a "
+                f"`{base}` a block around it declares, not this local ({why}), so a change "
+                "to it may not reach that code",
+            )
+        kind, declared_in, at = next(iter(verdicts))
+        place = f"line {at}" if declared_in == source else f"{Path(declared_in).name}:{at}"
+        listed = f"`{base} @ {Path(declared_in).name}:{at}`"
+        what = {
+            "using": f"the `{base}` the block's `using` declaration ({place}) brings in, "
+            "which the debugger does not list",
+            "enumerator": f"the block's enumerator `{base}` ({place}), a constant",
+            "function": f"the function `{base}` the block declares ({place})",
+            "typedef": f"the type `{base}` the block's `typedef` names ({place})",
+            "class": f"the type `{base}` the block declares ({place})",
+            "thread_local": f"the block's `thread_local` `{base}` ({place}), listed "
+            f"separately as {listed}",
+            "_Thread_local": f"the block's `_Thread_local` `{base}` ({place}), listed "
+            f"separately as {listed}",
+            "__thread": f"the block's `__thread` `{base}` ({place}), listed separately as {listed}",
+        }.get(kind, f"the block's `{kind}` `{base}` ({place}), which the debugger does not list")
+        return Withholding(
+            f"the code here names {what}: this row is the outer local of that name",
+            "not what the code reads",
+            f"{name!r} cannot be changed here: at line {line} the code names {what}; the "
+            "local this row shows is the outer one, so a change to it would not reach that "
+            "code",
+        )
+
+    def _units(self, source):
+        """The program's translation units that may hold ``source``'s lines: itself, and
+        those whose dependencies (`-MD`) may name it (all where they cannot be read)."""
+        cache = self.__dict__.setdefault("units_holding", {})
+        if source not in cache:
+            cache[source] = self._read_units(source)
+        return cache[source]
+
+    def _read_units(self, source):
+        units = []
+        for index, unit in enumerate(self.target.sources):
+            unit = str(unit)
+            if unit != source:
+                try:
+                    depends = (self.prepared.workspace / f"peeky-object-{index}.o.d").read_text(
+                        encoding="utf-8", errors="replace"
+                    )
+                except OSError:
+                    depends = None
+                if depends is not None and Path(source).name not in depends:
+                    continue
+            units.append(unit)
+        return units
+
+    def _preprocessed(self, unit):
+        """(c_source.Preprocessed, its Statements) of the translation unit ``unit`` as
+        the build's compiler preprocesses it (once a session), or why it could not."""
+        cache = self.__dict__.setdefault("preprocessed", {})
+        if unit not in cache:
+            workspace = self.prepared.workspace.resolve()
+            own = {posixpath.normpath(str(each)) for each in self.target.verification_inputs}
+
+            def program(path):
+                if path.startswith("<"):
+                    return None
+                if os.path.isabs(path):
+                    try:
+                        path = Path(path).resolve().relative_to(workspace).as_posix()
+                    except (OSError, ValueError):
+                        return None
+                path = posixpath.normpath(path)
+                return path if path in own else None
+
+            def read(output):
+                with output.open("rb") as lines:
+                    return Preprocessed(lines, program)
+
+            try:
+                tool, arguments = self.target.preprocess_argv(unit)
+                preprocessed = _metadata(
+                    tool,
+                    arguments,
+                    workspace,
+                    dict(self.prepared.manifest.effective_environment),
+                    max_bytes=64 * 1024 * 1024,
+                    read=read,
+                )
+            except (OSError, RuntimeError, ValueError) as exc:
+                detail = " ".join(str(exc).split())[:200]
+                cache[unit] = f"preprocessing {unit} failed: {detail}"
+            else:
+                raw_strings = getattr(self.target, "language", None) == "cpp"
+                statements = Statements(preprocessed.text, raw_strings, trigraphs=False)
+                cache[unit] = (preprocessed, statements)
+        return cache[unit]
+
+    def _setjmp_above(self, frame, line):
+        """The line of a call that may return twice (`setjmp`) above ``line`` in the
+        function ``frame`` runs, 0 if Peeky cannot tell where its calls are, else None
+        (the program has none, or the function makes none above the line). One on the
+        line itself does not count: a `longjmp` returns past the call, never to the
+        line's first instruction, where a stop on the line is."""
+        if self.__dict__.get("returns_twice") is None:
+            return None
+        function = self._function_at(frame)
+        if function is None:
+            return 0
+        cache = self.__dict__.setdefault("returning_lines", {})
+        key = function.get("root")
+        if key not in cache:
+            span, statements = function.get("span"), self._statements(function["source"])
+            if span is None or statements is None:
+                cache[key] = None
+            else:
+                lines, unknown = statements.returns_twice(span[0], span[1], self.returns_twice)
+                cache[key] = None if unknown else lines
+        lines = cache[key]
+        if lines is None:
+            return 0
+        above = [number for number in lines if number < line]
+        return min(above) if above else None
+
+    def _setjmp_note(self, at, jump, declared):
+        """A row shown with a note where its declaration is at or below the stop and a
+        call that may return twice (line ``jump``; 0 unknown) lies above: on the first
+        pass it holds leftovers, after a `longjmp` back there its value from before."""
+        where = f"line {jump}" if jump else "a line Peeky cannot tell"
+        reason = declared.format(at)
+        return ValueNote(
+            f"{reason}, and this function calls setjmp ({where}) above the stop, so a "
+            "`longjmp` can bring control here past its declaration",
+            f"may be leftovers, or its value from before a `longjmp`: {reason}, and this "
+            f"function calls setjmp ({where}) above the stop, so Peeky cannot tell whether "
+            "its declaration has run on this pass; read it after its declaration",
+            refuses=True,
+        )
+
     def _unjudged(self, name, frame):
         """The note for a root local whose initialization Peeky does not judge (setjmp,
         unread debug information): an automatic local of the frame's function where the
@@ -3259,16 +3486,10 @@ class NativeSession:
 
     def _unread_statements(self):
         """Why Peeky reads no function's statements for this run, so that no stop allows a
-        change (an ``Everywhere`` reason), or None: the build's declarations were not
-        read (a program using setjmp has none, as _root_type says; or its debug
-        information could not be read)."""
+        change (an ``Everywhere`` reason), or None: the build's debug information could
+        not be read. (A program using setjmp is read as any other: below a setjmp call,
+        `not_yet_declared` notes, and refuses changes to, what may be re-entered.)"""
         kind, detail, _ = getattr(self, "unjudged", None) or (None, None, None)
-        if kind == "setjmp":
-            return Everywhere(
-                "the program uses setjmp/longjmp (or a context switch), and Peeky reads no "
-                "statements or declarations of a program using setjmp, so no value can be "
-                "changed in this program"
-            )
         if kind == "unreadable":
             return Everywhere(
                 f"Peeky could not read the build's debug information ({detail}), so no "
@@ -3277,7 +3498,10 @@ class NativeSession:
         return None
 
     def validate_mutation_target(self, variable, frame):
-        if (reason := self.not_yet_declared(variable, frame)) and getattr(reason, "refuses", True):
+        reason = self.not_yet_declared(variable, frame)
+        if refusal := getattr(reason, "refusal", None):
+            raise ValueError(refusal)
+        if reason and getattr(reason, "refuses", True):
             raise ValueError(
                 f"{variable.get('name')!r} is {reason}; its declaration would overwrite a "
                 "change made here"
@@ -3438,7 +3662,7 @@ class NativeSession:
             raise Unsettable(
                 self._unread_statements()
                 or "Peeky cannot match this frame to the build's debug information (it reads "
-                "it when the session starts; a program using setjmp has none)"
+                "it when the session starts)"
             )
         return (*self._declared_type(function["types"], root.get("name")), self.fields)
 
@@ -3448,9 +3672,10 @@ class NativeSession:
         (#120, #121)."""
         from peeky.fields import Unsettable
 
-        if (reason := self.not_yet_declared(root, frame, stack=stack, deeper=deeper)) and getattr(
-            reason, "refuses", True
-        ):
+        reason = self.not_yet_declared(root, frame, stack=stack, deeper=deeper)
+        if refusal := getattr(reason, "refusal", None):
+            raise Unsettable(refusal)
+        if reason and getattr(reason, "refuses", True):
             raise Unsettable(
                 f"`{root.get('name')}` is {reason}; its declaration would overwrite a change "
                 "made here"

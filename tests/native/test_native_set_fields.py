@@ -976,23 +976,19 @@ int main(void) {
 
 
 @pytest.mark.timeout(240)
-def test_c_a_program_using_setjmp_says_no_stop_allows_a_change(directory, capsys):
-    # Review 2 of the sixth evaluation's PR: in a program using setjmp no function's
-    # statements are read, so no line accepts a change; the inspect note and `set`
-    # advised `session continue --to LINE`, which can never work.
+def test_c_a_program_using_setjmp_judges_changes_as_any_other(directory, capsys):
+    # Review 2 of the sixth evaluation's PR refused every change in a program using
+    # setjmp, which had no declarations read (#141). Since PR #144 such a program is
+    # read as any other: above the setjmp call (and everywhere in a function making
+    # none), values change where a statement starts; below it, only what is declared at
+    # or below the stop is refused (see test_native_innermost).
     start_at(directory, capsys, "jump.c", JUMPING, "TOP")
-    try:
-        assert main(["session", "inspect"]) == 0
-        text = capsys.readouterr().out
-        note = next(line for line in text.splitlines() if line.startswith("note: nothing"))
-        assert "uses setjmp" in note and "no value can be changed in this program" in note
-        assert "continue --to" not in note and "first instruction" not in note, note
-        for assignment in ("total=5", "n=3", "p.a=7"):
-            code, result = change(capsys, assignment)
-            error = result["error"]
-            assert code == 2 and error["code"] == "MUTATION_REJECTED", result
-            assert "no value can be changed in this program" in error["message"], error
-            assert "continue --to" not in error["message"] + error["hint"], error
-            assert "cannot be changed here" not in error["message"], error
-    finally:
-        main(["session", "close"])
+    assert main(["session", "inspect"]) == 0
+    text = capsys.readouterr().out
+    notes = [line for line in text.splitlines() if line.lstrip().startswith("note:")]
+    assert not notes and "total: long = 0  [settable]" in text, text
+    for assignment, after in (("total=5", "5"), ("n=3", "3"), ("p.a=7", "7")):
+        code, result = change(capsys, assignment)
+        assert code == 0 and result["after"] == after, result
+    # 5 + 7, then 100 on each of the two longjmps back, and p.b.
+    assert "214" in output(capsys)
