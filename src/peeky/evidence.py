@@ -1633,8 +1633,9 @@ def _structure_apart(path, run):
     """A note where two runs stopped as often but their hits are not the same moments
     (eighth evaluation, M6: an edit that changes how calls nest): at some hit one run was
     in another function, or at another line relative to its first hit (a candidate's lines
-    shift as a whole), or a selector saw the same values in another order (the calls came
-    in another order). Pairing by hit number then compares different calls."""
+    shift as a whole), or a selector saw the same values in another order (the calls may
+    have come in another order; a fix that changes which value each moment sees can give
+    that too, hence "may"). Pairing by hit number then may compare different calls."""
     rows = query(
         path,
         "SELECT run_id, hit, line, function, selector, value FROM captures WHERE run_id IN "
@@ -1679,8 +1680,8 @@ def _structure_apart(path, run):
             )
             return [
                 f"runs {run['a']} and {run['b']} saw the same values of `{selector}` in "
-                f"another order (from hit {hit}: {value_a} and {value_b}), so the calls came "
-                f"in another order and a hit need not be the same moment in both: {join}"
+                f"another order (from hit {hit}: {value_a} and {value_b}): the calls may have "
+                f"come in another order, so a hit need not be the same moment in both: {join}"
             ]
     return []
 

@@ -63,7 +63,7 @@ def test_diff_says_when_the_same_values_came_in_another_order(store):
     saved(store, [(n, "op", v) for n, v in enumerate(["'-'", "'-'", "'-'", "'-'", "'+'"], 1)])
     (note,) = evidence.run_query(store, "diff")["notes"]
     assert note.startswith("runs 1 and 2 saw the same values of `op` in another order"), note
-    assert "(from hit 4: '+' and '-')" in note, note
+    assert "(from hit 4: '+' and '-'): the calls may have come in another order" in note, note
     assert "peeky queries join --param a=1 --param b=2 --param key=<selector>" in note
     # The same values in the same order, or other values: no note.
     saved(store, [(n, "op", v) for n, v in enumerate(["'-'", "'-'", "'-'", "'-'", "'+'"], 1)])
