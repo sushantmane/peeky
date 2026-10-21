@@ -1706,3 +1706,33 @@ def test_a_hidden_local_is_read_from_the_preprocessed_unit_or_withheld(tmp_path)
         tmp_path, {"b.c": header, "c.c": None}, sources=("b.c", "c.c"), headers=("a.c",)
     )
     assert session._block_storage("q", frame, "a.c", 5).label == "not what the code reads"
+
+
+def test_members_of_a_root_outside_the_frames_memory_are_never_settable():
+    # #138 with #146: `set` refuses a field or element of a root the debug information
+    # keeps in a register (or a location list) or as a static, at every stop; its rows
+    # say why. Roots, frame locals and optimized builds are left to the stop.
+    native = session()
+    native.fields, native.target = {}, SimpleNamespace(optimization="O0")
+    types = {
+        "r": {(1, "register", ("a.c", 3))},
+        "l": {(1, "other", ("a.c", 4))},
+        "k": {(1, "static", ("a.c", 5))},
+        "s": {(1, "automatic", ("a.c", 6))},
+        "p": {(1, "parameter", ("a.c", 2))},
+        "z": {(1, "register", ("a.c", 7)), (1, "automatic", ("a.c", 9))},
+    }
+    native._function_at = lambda frame: {"types": types}
+    row = native.never_settable_row
+    assert row({"name": "r"}, {}, member=True) == "register"
+    assert row({"name": "l"}, {}, member=True) == "register"
+    assert row({"name": "k"}, {}, member=True) == "static"
+    assert row({"name": "s"}, {}, member=True) is None
+    assert row({"name": "p"}, {}, member=True) is None
+    # LLDB's name for one of several: only that one's storage.
+    assert row({"name": "z @ a.c:7"}, {}, member=True) == "register"
+    assert row({"name": "z @ a.c:9"}, {}, member=True) is None
+    assert row({"name": "z"}, {}, member=True) is None
+    assert row({"name": "r"}, {}) is None
+    native.target = SimpleNamespace(optimization="O1")
+    assert row({"name": "r"}, {}, member=True) is None

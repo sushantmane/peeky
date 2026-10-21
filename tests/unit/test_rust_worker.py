@@ -862,3 +862,150 @@ def test_rust_locals_are_settable_only_when_kept_in_memory():
     assert session.settable({"name": "copy", "type": "int"}, frame) is False
     assert session.settable({"name": "index", "type": "unsigned char"}, frame) is False
     assert session.settable({"name": "index", "type": "unsigned long"}, {"name": "f"}) is False
+
+
+def test_a_set_is_refused_before_launch_only_where_every_function_on_the_line_fails(
+    tmp_path,
+):
+    # #138: a closure, a macro's twins or an inlined copy on the line may keep the local
+    # in memory: refused only when every function that can stop there rules it out.
+    import json
+    from types import SimpleNamespace
+
+    from peeky.rust import RustSession
+    from peeky.rust_mir import IrFunction
+
+    def function(name, lines=(), copies=(), ancestors=("app",)):
+        return IrFunction(
+            name,
+            ancestors[-1],
+            "src/main.rs",
+            {"start": set(lines)},
+            {},
+            copies=frozenset(copies),
+            ancestors=ancestors,
+        )
+
+    def body(bindings, arguments=(), types=None, saved=(), coroutine=None):
+        return SimpleNamespace(
+            bindings={name: [(local, "src/main.rs", 3, 1, 0)] for name, local in bindings.items()},
+            arguments=set(arguments),
+            types=types or {},
+            visible_scopes=lambda line, path: {0},
+            coroutine=coroutine,
+            saved=frozenset(saved),
+            places={},
+        )
+
+    functions = {
+        "h1": function("outer", [5]),
+        "h2": function("{closure#0}", [5], ancestors=("app", "outer")),
+        "h3": function("inlined", [], copies=[9]),
+        "h4": function("elsewhere", [7]),
+        "h5": function("{async_fn#0}", [11], ancestors=("app", "aw")),
+    }
+    bodies = {
+        "h1": body({"width": 1, "total": 2, "flag": 3}, [1], {1: "u64", 2: "u64", 3: "bool"}),
+        "h2": body({"v": 1}, [1], {1: "&u64"}),
+        "h3": body({"x": 1}, [1], {1: "u32"}),
+        "h5": body({"k": 37, "q": 27}, [1], {37: "i32", 27: "i32"}, saved=[37], coroutine=36),
+    }
+    session = object.__new__(RustSession)
+    session.target = SimpleNamespace(opt_level="0")
+    session.prepared = SimpleNamespace(source_root=tmp_path)
+    session._lines_data = json.dumps({"src/main.rs": [5, 7, 9, 11]})
+    session.memory = {("h1", "total"): True, ("h1", "flag"): True, ("h1", "width"): False}
+    session.memory[("h3", "x")] = False
+    session.memory.update({("h5", "k"): False, ("h5", "q"): True})
+    session.owned = SimpleNamespace(
+        functions=functions,
+        body=bodies.get,
+        declared_type=lambda hashed, name, line, path: bodies[hashed].types.get(
+            bodies[hashed].bindings[name][0][0]
+        ),
+    )
+    program = tmp_path / "src/main.rs"
+
+    def judged(name, line=5):
+        return session.never_settable(program, [line], [name])
+
+    message = judged("width")
+    assert "in app::outer, `width` is a parameter kept in a register" in message, message
+    assert "app::outer::{closure#0} has no local `width`" in message, message
+    assert "`mut width` in the signature" in message and message.endswith(
+        "settable here: total (root locals; fields too where rows mark them [settable])"
+    )
+    assert judged("total") is None
+    assert "`flag` is a bool; only integer locals" in judged("flag")
+    code, message = judged("nope")
+    assert code == "NOT_FOUND" and "app::outer has no local `nope`" in message
+    # A function only inlined on the line (its `copies`) is judged there too.
+    assert "`x` is a parameter kept in a register" in judged("x", 9)
+    # A line the debugger moves its breakpoint from, or no function's: left to the stop.
+    assert judged("width", 6) is None and judged("width", 8) is None
+    # Kept in an async body's state across an `.await`: no `black_box` helps there.
+    message = judged("k", 11)
+    assert "`k` is held in the async body's state across an `.await`" in message, message
+    assert "black_box(&mut k)" not in message and message.endswith(
+        "settable here: q (root locals; fields too where rows mark them [settable])"
+    )
+    session.owned.precise = False
+    assert judged("width") is None
+    session.owned.precise = True
+    session.memory[("h1", "width")] = True
+    assert judged("width") is None
+    session.target.opt_level = "1"
+    assert session.never_settable_row({"name": "x", "type": "int"}, {}) is None
+
+
+def test_a_name_not_proven_in_memory_says_which_binding_or_copy_is_why():
+    # Review of #138: the IR's proof covers every binding of a name; the binding asked
+    # for may have its slot while another, or an inlined copy, does not.
+    from types import SimpleNamespace
+
+    from peeky.rust import RustSession
+
+    bindings = {"x": [(1, "src/main.rs", 4, None, 0), (2, "src/main.rs", 6, None, 0)]}
+    bindings["y"] = [(3, "src/main.rs", 9, None, 0)]
+    body = SimpleNamespace(bindings=bindings)
+    session = object.__new__(RustSession)
+    session.owned = SimpleNamespace(
+        body=lambda hashed: body, _local=lambda body, name, line, path: {8: 2}.get(line)
+    )
+    session.declarations_ir = {
+        ("h", "x"): [(4, "copy"), (6, "slot")],
+        ("h", "y"): [(9, "copy")],
+        ("h", "far"): [(3, "inlined"), (3, "inlined")],
+        ("h", "both"): [(5, "copy"), (5, "slot")],
+    }
+    judged = session._not_in_memory
+    assert judged("h", "x @ main.rs:6") == ("other", [4])
+    assert judged("h", "x @ main.rs:4") == ("own", None)
+    assert judged("h", "x", 8, "src/main.rs") == ("other", [4])  # the line's binding
+    assert judged("h", "x", 7, "src/main.rs") == ("some", [4])  # not told which
+    assert judged("h", "y") == ("own", None)
+    assert judged("h", "far") == ("inlined", None)
+    assert judged("h", "both") == ("own", None)
+    assert judged("h", "unknown") == ("own", None)
+    rule, advice = RustSession._register_text("app::f", "x", ("other", [4]))
+    assert "another binding of `x` (declared on line 4)" in rule
+    assert "after the `let` on line 4" in advice
+    rule, advice = RustSession._register_text("app::far", "y", ("inlined", None))
+    assert "inlined where it is called" in rule and advice.startswith("Inlining prevents")
+    # `describe` gives each name the reason its rows give (review round 3).
+    session.memory = {("h0123456789abcdef", name): False for name in ("x", "y", "far", "k")}
+    session.declarations_ir = {
+        ("h0123456789abcdef", name): found for (_, name), found in session.declarations_ir.items()
+    }
+    # `k`: a local an async body keeps in its state across an `.await`.
+    body.bindings["k"] = [(5, "src/main.rs", 12, None, 0)]
+    body.saved, body.coroutine, body.places = {5}, 1, {}
+    session.owned = SimpleNamespace(body=lambda hashed: body)
+    linkages = {"_ZN3app1f17h0123456789abcdefE"}
+    names = {"x": {"u64"}, "y": {"u32"}, "far": {"u64"}, "k": {"u64"}, "s": {"String"}}
+    assert session._register_names(linkages, names) == {
+        "x": "another binding in a register (line 4)",
+        "y": "register",
+        "far": "inlined",
+        "k": "async state",
+    }

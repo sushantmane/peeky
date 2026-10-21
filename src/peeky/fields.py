@@ -58,8 +58,9 @@ def local_types(dies, bodies):
     """{name: frozenset((type offset, storage, (file name, line)))} for the parameters
     and variables of a function's code (``bodies``: its concrete DIEs; nested blocks,
     but not the calls inlined into it). ``storage``: "automatic" (a variable in the
-    frame's memory), "parameter" (a parameter there) or "other" (a static, a register,
-    a location list, none); the file name (no directory) and line it is declared on, as
+    frame's memory), "parameter" (a parameter there), "register" (a register only, no
+    memory of its own), "static" (a fixed address) or "other" (a location list, none);
+    the file name (no directory) and line it is declared on, as
     LLDB names a local when several of its name are in scope (`s @ main.rs:81`), or
     None. None if there are too many to list them all."""
     found, pending, seen = {}, [child for body in bodies for child in dies[body]["children"]], 0
@@ -85,6 +86,10 @@ def local_types(dies, bodies):
         storage = "other"
         if framed:
             storage = "parameter" if die["tag"] == "DW_TAG_formal_parameter" else "automatic"
+        elif re.fullmatch(r"\(?\s*DW_OP_(?:reg[0-9]+|regx)\b[^,]*\)?\s*", location):
+            storage = "register"
+        elif re.fullmatch(r"\(?\s*DW_OP_addr\b[^,]*\)?\s*", location):
+            storage = "static"
         file = _text(_first(dies, chain, "DW_AT_decl_file"))
         line = _number(_first(dies, chain, "DW_AT_decl_line"))
         where = (file.replace("\\", "/").rpartition("/")[2], line) if file and line else None
@@ -318,6 +323,49 @@ def _strip(graph, offset, path):
             continue
         return offset, node, names
     raise Unsettable(f"The type of `{path}` is nested too deeply")
+
+
+def debugger_steps(graph, root, name, steps):
+    """A selector's ``steps`` from the local ``name`` of type ``root`` as the debugger
+    names the children they reach, which is how the stop's walk reads them (#138): an
+    index with leading zeros is that element (`[01]` is `[1]`), and a negative one
+    counts from the end of a fixed-size array (`[-1]` of an `int[3]` is `[2]`). None
+    where that cannot be told here (a negative index into an array whose length the
+    debug information does not fix, or past its start). From a step that is neither a
+    field of a record nor an index of an array on, the steps are kept as they are, for
+    settable_member to judge."""
+    found, offset, path, pending = [], root, name, None
+    for position, step in enumerate(steps):
+        index = re.fullmatch(r"\[(-?[0-9]+)\]", step)
+        if pending is not None:
+            element, counts = pending
+        else:
+            try:
+                offset, node, _ = _strip(graph, offset, path)
+            except Unsettable:
+                return [*found, *steps[position:]]
+            if node[0] == "record" and index is None:
+                members = [member for member in node[5] if member[0] == step]
+                if len(members) != 1:
+                    return [*found, *steps[position:]]
+                found.append(step)
+                offset, path = members[0][1], f"{path}.{step}"
+                continue
+            if node[0] != "array" or index is None:
+                return [*found, *steps[position:]]
+            element, counts = node[2], node[3]
+        if index is None:
+            return [*found, *steps[position:]]
+        number = int(index[1])
+        if number < 0:
+            if not counts or number + counts[0] < 0:
+                return None
+            number += counts[0]
+        found.append(f"[{number}]")
+        path += found[-1]
+        pending = (element, counts[1:]) if counts and len(counts) > 1 else None
+        offset = element
+    return found
 
 
 def settable_member(graph, root, name, steps):

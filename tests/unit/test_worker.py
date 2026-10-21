@@ -1002,3 +1002,86 @@ def test_a_noted_reason_shows_the_value_with_its_note_and_only_others_withhold(t
     )
     assert plain["value"] == "7" and "note" not in plain and plain["settable"] is True
     assert asked == [(name, names) for name in names]
+
+
+def test_a_set_the_build_rules_out_is_refused_before_launch(tmp_path):
+    # #138: an optimized build refuses every change, saying where the local has no stack
+    # slot; otherwise the runtime's build facts decide, as a message or (code, message).
+    from types import SimpleNamespace
+
+    import pytest
+
+    from peeky.errors import Refused
+    from peeky.worker import DebugWorker
+
+    worker = DebugWorker(tmp_path)
+    points = [{"line": 7}]
+    asked = []
+    runtime = SimpleNamespace(
+        target_identity={"optimization": "O1"},
+        storage_note=lambda program, lines, name: asked.append((lines, name)) or "; no slot",
+        never_settable=lambda program, lines, names: pytest.fail("not asked when optimized"),
+    )
+    worker.runtime = runtime
+    with pytest.raises(Refused) as refused:
+        worker.refuse_never_settable(runtime, tmp_path / "a.c", points, ["x"])
+    assert refused.value.code == "MUTATION_REJECTED" and refused.value.before_launch is True
+    assert "refused in an optimized build (-O1)" in str(refused.value)
+    assert "; no slot. Refused before the program runs" in str(refused.value)
+    assert asked == [([7], "x")]
+    for verdict, code in (("`x` is kept in a register", "MUTATION_REJECTED"),):
+        runtime = SimpleNamespace(
+            target_identity={}, never_settable=lambda program, lines, names: verdict
+        )
+        worker.runtime = runtime
+        with pytest.raises(Refused) as refused:
+            worker.refuse_never_settable(runtime, tmp_path / "a.c", points, ["x"])
+        assert refused.value.code == code and str(refused.value) == verdict
+    runtime = SimpleNamespace(
+        target_identity={},
+        never_settable=lambda program, lines, names: ("NOT_FOUND", "no local `y`"),
+    )
+    worker.runtime = runtime
+    with pytest.raises(Refused) as refused:
+        worker.refuse_never_settable(runtime, tmp_path / "a.c", points, ["y"])
+    assert refused.value.code == "NOT_FOUND"
+    runtime = SimpleNamespace(target_identity={}, never_settable=lambda *args: None)
+    worker.runtime = runtime
+    worker.refuse_never_settable(runtime, tmp_path / "a.c", points, ["z"])
+    with pytest.raises(ValueError, match="sets must be a list"):
+        DebugWorker.validate("launch", {"program": "a.c", "sets": "x"})
+
+
+def test_a_row_no_stop_can_change_says_why(tmp_path):
+    # #138: a root (or a field whose root) the runtime says no stop changes is marked
+    # `not_settable`; a settable row never is.
+    from types import SimpleNamespace
+
+    from peeky.worker import DebugWorker
+
+    def never_settable_row(variable, frame, member=False):
+        return "register" if variable["name"] in ("width", "pair") else None
+
+    runtime = SimpleNamespace(
+        assert_current=lambda: None,
+        reports_unavailable_as_text=True,
+        settable=lambda variable, frame: variable["name"] == "total",
+        never_settable_row=never_settable_row,
+    )
+    worker = DebugWorker(tmp_path)
+    worker.runtime, worker.state, worker.stop_id = runtime, "stopped", "stop1"
+    worker.capabilities["supports_set_variable"] = True
+    worker.innermost_frame = 1
+    rows = worker.expose_variables(
+        [
+            {"name": name, "type": "unsigned long", "value": "1"}
+            for name in ("width", "total", "other")
+        ],
+        {"id": 1},
+        ("Locals",),
+        (),
+    )
+    width, total, other = rows
+    assert width["settable"] is False and width["not_settable"] == "register"
+    assert total["settable"] is True and "not_settable" not in total
+    assert "not_settable" not in other
