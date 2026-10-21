@@ -14,7 +14,7 @@ What is particular to C and C++ targets, one rule per line, each with the [COOKB
 - Structs and arrays show their first members (`{lo = 0, hi = 2}`); unions and pointer targets are not read ([7.1](../COOKBOOK.md#71-c-and-c)).
 - **`no value yet`** is a local not initialized at this stop: read it below its declaration (the row says where). A **`note`** is a value Peeky cannot vouch for: on a line a loop returns to (a `do` body's first) the next line reads it; below a `setjmp` call, a local declared at or below the stop shows a `note`, and reads plainly below its declaration ([7.1](../COOKBOOK.md#71-c-and-c)).
 - **Same-named locals:** a plain name is the declaration the code names at the stop; `name @ file:line` selects another ([7.1](../COOKBOOK.md#71-c-and-c)).
-- **Several stops per pass:** a line with a macro's code, a one-line loop whose body declares a local, or a range `for` stops more than once per pass; rows carry `stop`. For one row per pass, put `--at` on a plain statement line in the body; a loop header may stop only once, before its loop ([2.2](../COOKBOOK.md#22-every-iteration-of-a-loop)).
+- **Several stops:** a line with several breakpoint locations stops at each, and rows carry `stop`: a macro's code at each location every pass (1, 2, 1, 2); a one-line loop whose body declares a local, or a range `for`, once before the loop, then once per pass (1, 2, 2, 2); a one-line loop whose body declares no local has one location and stops once in all. For one row per pass, put `--at` on a plain statement line in the body; a loop header may stop only once, before its loop ([2.2](../COOKBOOK.md#22-every-iteration-of-a-loop)).
 - A step can land on a closing `}`, a loop header, or back on an `if`'s line ([1.1](../COOKBOOK.md#11-what-can-i-ask)).
 - A reference or pointer is saved with its address first (`0x000000016d78b298 "apple"`): compare or group such values by `no_addresses(value)`, or take the text after the address ([4.7](../COOKBOOK.md#47-c-references-and-pointers-in-sql)).
 
@@ -28,7 +28,7 @@ What is particular to C and C++ targets, one rule per line, each with the [COOKB
 ## Returns
 
 - `--capture return` shows integers, `bool`, characters, floats and pointers exactly; a struct, a string or any return in an optimized build is withheld, saying why ([2.9](../COOKBOOK.md#29-what-a-function-returned)).
-- `session step --out` shows what the function returned with the stop (`(return): int = 42`); `session get return` reads it again ([2.9](../COOKBOOK.md#29-what-a-function-returned)).
+- `session step --out` shows with the stop what the function returned (`(return): int = 42`), or why it is withheld, as `--capture return` does; nothing where the step did not end at the return (another stop came first, or an exception or `longjmp` ended the call). `session get return` reads it again ([2.9](../COOKBOOK.md#29-what-a-function-returned)).
 
 ## Builds
 

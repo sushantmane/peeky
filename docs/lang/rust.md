@@ -12,7 +12,7 @@ What is particular to Rust targets (a Cargo crate), one rule per line, each with
 - Locals show their Rust types. An owned `String`, or a `Vec` of plain elements (integers, `bool`, floats, `char`, or tuples and crate structs of them), and a reference parameter of such elements (`&[T]`, `&str`), are read from memory (`[memory]`) in an unoptimized build with lldb-dap 20. A `Vec<String>` stays raw ([7.2](../COOKBOOK.md#72-rust-a-cargo-crate)).
 - `Vec` and `String` fields read too: `self.values` behind `&mut self` (innermost frame only; behind `&self`, any frame), and `w.values` in `main`, which owns `w`; a moved struct's stay raw, with a note ([7.2](../COOKBOOK.md#72-rust-a-cargo-crate)).
 - A crate with `unsafe` code or a nightly feature reads no `Vec` or `String` contents, no reference parameter's contents and no such field: each stays raw, with the reason; scalars are still read ([7.2](../COOKBOOK.md#72-rust-a-cargo-crate)).
-- Never guessed: a value Peeky cannot prove (moved, dropped, not yet assigned, in a caller frame, in an optimized build) keeps its raw fields with a note (`[stale]`, `[unproven]`, `<unverified ...>`); an enum Peeky cannot decode with certainty stays opaque ([7.2](../COOKBOOK.md#72-rust-a-cargo-crate)).
+- Never guessed: a value Peeky cannot prove (moved or dropped, in a caller frame, in an optimized build) keeps its raw fields with a note (`[stale]`, `[unproven]`, `<unverified ...>`); a local whose storage may hold leftovers is withheld (`no value yet:` and why): unassigned on a path (`let x;`) or not kept across an `.await`; an enum Peeky cannot decode with certainty stays opaque ([7.2](../COOKBOOK.md#72-rust-a-cargo-crate)).
 - A tuple's fields are `.__0`, `.__1` (`runs[0].__0`) ([7.2](../COOKBOOK.md#72-rust-a-cargo-crate)); a shadowed `let` is listed as `x @ main.rs:6`, which selects it (`s @ main.rs:81.a`) ([guide](../AGENT_GUIDE.md#targets-and-selectors)).
 - A one-line `for` stops at three locations (1, 2, 3, 3, 3 over three passes): rows carry `stop`; for one row per pass, put `--at` on a plain statement line in the body ([2.2](../COOKBOOK.md#22-every-iteration-of-a-loop)).
 
@@ -26,4 +26,4 @@ What is particular to Rust targets (a Cargo crate), one rule per line, each with
 ## Returns
 
 - `--capture return` shows integers, `bool` and floats exactly; an enum or `Option`, a struct, a string or any return in an optimized build is withheld, saying why ([2.9](../COOKBOOK.md#29-what-a-function-returned)).
-- `session step --out` shows what the function returned with the stop; `session get return` reads it again ([2.9](../COOKBOOK.md#29-what-a-function-returned)).
+- `session step --out` shows with the stop what the function returned (`(return): u32 = 42`), or why it is withheld, as `--capture return` does; nothing where the step did not end at the return (another stop came first, or a panic ended the call). `session get return` reads it again ([2.9](../COOKBOOK.md#29-what-a-function-returned)).

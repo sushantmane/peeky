@@ -63,8 +63,10 @@ def test_diff_says_when_the_same_values_came_in_another_order(store):
     saved(store, [(n, "op", v) for n, v in enumerate(["'-'", "'-'", "'-'", "'-'", "'+'"], 1)])
     (note,) = evidence.run_query(store, "diff")["notes"]
     assert note.startswith("runs 1 and 2 saw the same values of `op` in another order"), note
-    assert "(from hit 4: '+' and '-'): the calls may have come in another order" in note, note
+    assert "(run 2's hit 4 matches run 1's hit 5: '-'): the calls may have come" in note, note
     assert "peeky queries join --param a=1 --param b=2 --param key=<selector>" in note
+    # Review of M6 (PR #189): join by a value the edit leaves alone, not `op`.
+    assert "a value that names the call and that the edit leaves alone" in note, note
     # The same values in the same order, or other values: no note.
     saved(store, [(n, "op", v) for n, v in enumerate(["'-'", "'-'", "'-'", "'-'", "'+'"], 1)])
     assert "notes" not in evidence.run_query(store, "diff")
@@ -73,20 +75,84 @@ def test_diff_says_when_the_same_values_came_in_another_order(store):
 
 
 def test_diff_says_when_a_hit_is_in_another_function_or_line(store):
-    # M6: the same hit number at another function, or at another line relative to the
-    # run's first hit, is another moment.
+    # M6: the same hit number at another function or line is another moment, unless the
+    # places pair one to one across hits (review of M6, PR #189: a renamed function, lines
+    # an edit moved).
     from peeky import evidence
 
-    saved(store, [(1, "x", "1", "f", 24), (2, "x", "2", "f", 24)])
-    saved(store, [(1, "x", "1", "f", 24), (2, "x", "3", "g", 24)])
+    saved(store, [(1, "x", "1", "f", 24), (2, "x", "2", "f", 24), (3, "x", "5", "f", 24)])
+    saved(store, [(1, "x", "1", "f", 24), (2, "x", "3", "g", 24), (3, "x", "5", "f", 24)])
     (note,) = evidence.run_query(store, "diff")["notes"]
     assert note.startswith("at hit 2 run 1 stopped in f at line 24 and run 2 in g at line 24"), note
-    # A candidate's lines shift as a whole (line 25 for 24): the same moments.
-    saved(store, [(1, "x", "1", "f", 25), (2, "x", "3", "g", 25)])
-    assert "notes" not in evidence.run_query(store, "diff")
-    saved(store, [(1, "x", "1", "f", 25), (2, "x", "3", "g", 30)])
+    saved(store, [(1, "x", "1", "f", 24), (2, "x", "3", "g", 24), (3, "x", "5", "g", 24)])
     (note,) = evidence.run_query(store, "diff")["notes"]
-    assert "at hit 2 run 3 stopped in g at line 25 and run 4 in g at line 30" in note, note
+    assert note.startswith(
+        "at hit 3 run 2 stopped in f at line 24 and run 3 in g at line 24, but at hit 1 run 2 "
+        "in f at line 24 paired with run 3 in f at line 24"
+    ), note
+    # Renamed and moved, the same way at every hit: the same moments.
+    saved(store, [(1, "x", "1", "f2", 30), (2, "x", "3", "g", 26), (3, "x", "5", "g", 26)])
+    assert "notes" not in evidence.run_query(store, "diff")
+
+
+def test_diff_pairs_places_by_instance_too(store):
+    # Review of M6 (PR #189), (a): Rust closures and generics differ by instance only.
+    from peeky import evidence
+
+    rows = [(1, "x", "1", "f", 24), (2, "x", "2", "f", 24), (3, "x", "3", "f", 24)]
+    saved(store, rows)
+    run = saved(store, rows)
+    import sqlite3
+
+    with sqlite3.connect(store) as db:
+        db.execute("UPDATE captures SET instance = 'f::<u8>' WHERE run_id = ? AND hit = 3", (run,))
+    (note,) = evidence.run_query(store, "diff")["notes"]
+    assert note.startswith("at hit 3 run 1 stopped in f at line 24 and run 2 in f::<u8>"), note
+
+
+def test_diff_compares_orders_without_addresses_or_object_numbers(store):
+    # Review of M6 (PR #189), (b): values carrying addresses or Java object numbers
+    # never matched, so their reorder went unseen.
+    from peeky import evidence
+
+    saved(store, [(1, "s", '0x000000016fdff2a0 "x"'), (2, "s", '0x000000016fdff2c0 "y"')])
+    saved(store, [(1, "s", '0x000000016fdff3a0 "y"'), (2, "s", '0x000000016fdff3c0 "x"')])
+    (note,) = evidence.run_query(store, "diff")["notes"]
+    assert note.startswith("runs 1 and 2 saw the same values of `s` in another order"), note
+    saved(store, [(1, "o", "Item@57 {k=1}"), (2, "o", "Item@58 {k=2}")])
+    saved(store, [(1, "o", "Item@61 {k=2}"), (2, "o", "Item@62 {k=1}")])
+    (note,) = evidence.run_query(store, "diff")["notes"]
+    assert note.startswith("runs 3 and 4 saw the same values of `o` in another order"), note
+
+
+def test_diff_says_when_values_line_up_at_other_hits(store):
+    # Review of M6 (PR #189), (c): a call left out shifts the rest, values changing too.
+    from peeky import evidence
+
+    saved(store, [(1, "k", "'A'"), (2, "k", "'B'"), (3, "k", "'C'")])
+    saved(store, [(1, "k", "'A'"), (2, "k", "'C'"), (3, "k", "'D'")])
+    (note,) = evidence.run_query(store, "diff")["notes"]
+    assert note.startswith(
+        "runs 1 and 2 saw `k`'s values at other hits (run 2's hit 2 matches run 1's hit 3: "
+        "'C'): the calls may have come in another order or number"
+    ), note
+
+
+def test_diff_says_when_values_cannot_show_the_hits_pair(store):
+    # Review of M6 (PR #189): where most hits' values differ and nothing lines them up,
+    # the note says so plainly rather than nothing.
+    from peeky import evidence
+
+    saved(store, [(1, "v", "1"), (2, "v", "2"), (3, "v", "3")])
+    saved(store, [(1, "v", "1"), (2, "v", "7"), (3, "v", "8")])
+    (note,) = evidence.run_query(store, "diff")["notes"]
+    assert note.startswith(
+        "the runs' values differ at 2 of 3 hits, so they cannot show that a hit is the same "
+        "moment in both; if the edit changed which calls reach the line, pair hits by a value"
+    ), note
+    # One hit of three: no note.
+    saved(store, [(1, "v", "1"), (2, "v", "7"), (3, "v", "9")])
+    assert "notes" not in evidence.run_query(store, "diff")
 
 
 def test_diff_and_compare_name_the_runs_labels(store):
@@ -186,6 +252,36 @@ def test_unchanged_after_set_rows_are_left_out_of_the_table():
     assert "after-set  24    Calc.parseExpr()  path" in text, text
     assert "after-set  24    Calc.parseExpr()  i" not in text, text
     assert "after-set: 1 row equal to the hit's observed value left out" in text, text
+
+
+def test_after_set_rows_that_may_hide_a_change_stay():
+    # Review of L16 (PR #189): `s` showed its first fields only, so `s` after `--set
+    # s.ninth=2` looked unchanged and was left out. A row whose selector holds a changed
+    # value, or whose value is not shown whole (a pointer, a preview, a cut text, a note),
+    # stays; only a whole scalar or text equal to before is left out.
+    from peeky.probe import _table
+
+    observed = [
+        (1, "s", "{a = 1, b = 2, c = 3, ...}"),
+        (1, "p", "0x000000016fdff2a0"),
+        (1, "name", '"a long name…"'),
+        (1, "n", "7"),
+        (1, "word", "'apple'"),
+    ]
+    result = recorded(observed)
+    for _, selector, value in observed:
+        result["rows"].append(
+            {**result["rows"][0], "phase": "after-set", "selector": selector, "value": value}
+        )
+    result["interventions"] = [
+        {"hit": 1, "capture_hit": 1, "name": "s.ninth", "before": "0", "after": "2"}
+    ]
+    text = _table(result)
+    for selector in ("s", "p", "name"):
+        assert f"after-set  24    Calc.parseExpr()  {selector} " in text, text
+    for selector in ("n", "word"):
+        assert f"after-set  24    Calc.parseExpr()  {selector} " not in text, text
+    assert "after-set: 2 rows equal to the hit's observed value left out" in text, text
 
 
 def test_compare_hint_leaves_out_a_candidates_set(tmp_path, monkeypatch, capsys):

@@ -3738,6 +3738,24 @@ def _short_note(result):
     )
 
 
+# A value shown whole that holds nothing else: a number, a boolean or null, a character,
+# or a quoted text with no cut (`…`, `...`). A pointer (`0x…`), a preview or summary of
+# an aggregate (`{a = 1, ...}`, `size=3`), or anything cut short may hide a change.
+_WHOLE_SCALAR = re.compile(
+    r"-?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?|-?(?:inf|nan|NaN|infinity)"
+    r"|true|false|True|False|None|null|nullptr"
+    r"|\"(?:(?!\.\.\.)[^\"\\…]|\\.)*\"|'(?:(?!\.\.\.)[^'\\…]|\\.)*'"
+)
+
+
+def _holds(selector, target):
+    """Whether ``selector`` names ``target`` or a value that holds it (`s` for `s.ninth`,
+    `d` for `d['k']`, `this` for `this.count`)."""
+    return target == selector or (
+        target.startswith(selector) and target[len(selector) : len(selector) + 1] in (".", "[")
+    )
+
+
 def _table(result, short_names=True):
     """A probe result as text; ``short_names``: with the note on short frame names
     (`_short_note`), which `peeky probe` gives once per state directory."""
@@ -3760,23 +3778,26 @@ def _table(result, short_names=True):
     # double the table's width; Rust's ends with a symbol hash. JSON keeps the name whole.
     functions = function_labels(row.get("function") for row in result["rows"])
     short_instance = _short_instance
-    # An after-set value equal to its hit's observed one, of a selector no change named:
-    # the intervention left it as it was (eighth evaluation, L16). JSON keeps every row.
+    # An after-set value equal to its hit's observed one, shown whole, of a selector that
+    # neither a change named nor holds what one changed: the intervention left it as it
+    # was (eighth evaluation, L16). JSON keeps every row.
     observed = {
         (row["hit"], row["selector"]): row.get("value")
         for row in result["rows"]
         if row["phase"] == "observed" and "value" in row
     }
-    targets = {
-        (change.get("capture_hit", change.get("hit")), change.get("name"))
-        for change in result.get("interventions", ())
-    }
+    targets = {}
+    for change in result.get("interventions", ()):
+        hit = change.get("capture_hit", change.get("hit"))
+        targets.setdefault(hit, []).append(str(change.get("name")))
     kept = [
         row
         for row in result["rows"]
         if row["phase"] != "after-set"
         or "value" not in row
-        or (row["hit"], row["selector"]) in targets
+        or row.get("note")
+        or not _WHOLE_SCALAR.fullmatch(str(row["value"]))
+        or any(_holds(row["selector"], name) for name in targets.get(row["hit"], ()))
         or observed.get((row["hit"], row["selector"]), row) != row["value"]
     ]
     left_out = len(result["rows"]) - len(kept)

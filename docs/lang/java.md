@@ -11,7 +11,7 @@ What is particular to Java targets, one rule per line, each with the [COOKBOOK](
 ## Reading values
 
 - Objects and arrays show their first fields or elements (`Merge$Interval@143 {end=10, start=1}`), an `ArrayList` its size and first elements; read members through `this` (`this.total`) ([7.3](../COOKBOOK.md#73-java-launched)).
-- Object numbers (`@143`) follow the order the debugger first touched objects: `queries diff` treats them like addresses, and `object_ref(value)` in SQL tells the same object from a copy ([4.6](../COOKBOOK.md#46-same-object-or-a-copy-java-python)).
+- Object numbers (`@143`) follow the order the debugger first touched objects: `queries diff` treats them like addresses, and `object_ref(value)` in SQL tells the same object from a copy within one run (across runs the numbers differ) ([4.6](../COOKBOOK.md#46-same-object-or-a-copy-java-python)).
 - A line several methods share (a lambda on its method's line) stops in only one of them, and the probe says which; Java rows have no `stop` ([7.3](../COOKBOOK.md#73-java-launched), [2.2](../COOKBOOK.md#22-every-iteration-of-a-loop)).
 - A `step` from a block's last statement stops on its closing `}`, where the block's locals are gone; `step --into` and `--out` skip JDK classes ([7.3](../COOKBOOK.md#73-java-launched), [5.2](../COOKBOOK.md#52-stepping-and-running-to-a-line)).
 
@@ -25,7 +25,7 @@ What is particular to Java targets, one rule per line, each with the [COOKBOOK](
 ## Returns
 
 - `--capture return` gives one `(return)` row per call of the `--at` line's function, any type, as JDI reports it; a method that threw has none ([2.9](../COOKBOOK.md#29-what-a-function-returned)).
-- `session step --out` shows what the method returned with the stop (`(return): long = 1`); `session get return` reads it again ([2.9](../COOKBOOK.md#29-what-a-function-returned)).
+- `session step --out` shows with the stop what the method returned (`(return): long = 1`), as `--capture return` does; nothing where the step did not end at the return (another stop came first, or the method threw). `session get return` reads it again ([2.9](../COOKBOOK.md#29-what-a-function-returned)).
 
 ## The debugger's own failures
 
