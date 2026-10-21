@@ -25,7 +25,7 @@ What is particular to Java targets, one rule per line, each with the [COOKBOOK](
 ## Returns
 
 - `--capture return` gives one `(return)` row per call of the `--at` line's function, any type, as JDI reports it; a method that threw has none ([2.9](../COOKBOOK.md#29-what-a-function-returned)).
-- `session step --out` shows with the stop what the method returned (`(return): long = 1`), as `--capture return` does; nothing where the step did not end at the return (another stop came first, or the method threw). `session get return` reads it again ([2.9](../COOKBOOK.md#29-what-a-function-returned)).
+- `session step --out` shows with the stop what the method returned (`(return): long = 1`), or a withheld row saying why, as `--capture return` does (a method that threw included); nothing where another stop interrupted the step first, or the program ended. `session get return` reads it again ([2.9](../COOKBOOK.md#29-what-a-function-returned)).
 
 ## The debugger's own failures
 

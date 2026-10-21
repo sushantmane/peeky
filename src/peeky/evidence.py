@@ -1701,7 +1701,7 @@ def _structure_apart(path, run):
             continue
         i, j = next((i, j) for i, j in pairs if hits_a[i] != hits_b[j])
         hit_a, hit_b = hits_a[i], hits_b[j]
-        if sorted(order_a) == sorted(order_b):
+        if order_a != order_b and sorted(order_a) == sorted(order_b):
             found = f"runs {a} and {b} saw the same values of `{selector}` in another order"
         else:
             found = f"runs {a} and {b} saw `{selector}`'s values at other hits"
@@ -1710,11 +1710,19 @@ def _structure_apart(path, run):
             f"{seen_b[hit_b][1]}): the calls may have come in another order or number, so "
             f"a hit need not be the same moment in both; {join}"
         ]
+    # Each selector's value at a hit, by name: `left=A, right=B` against `left=B, right=A`
+    # differs (review 2 of PR #189). A selector with no value there is `missing`, which
+    # no text equals.
+    missing = object()
+    selectors = set(values[a]) | set(values[b])
     differ = [
         hit
         for hit in common
-        if sorted(str(found.get(hit, (None,))[0]) for found in values[a].values())
-        != sorted(str(found.get(hit, (None,))[0]) for found in values[b].values())
+        if any(
+            values[a].get(selector, {}).get(hit, (missing,))[0]
+            != values[b].get(selector, {}).get(hit, (missing,))[0]
+            for selector in selectors
+        )
     ]
     if len(differ) >= 2 and 2 * len(differ) > len(common):
         return [

@@ -155,6 +155,27 @@ def test_diff_says_when_values_cannot_show_the_hits_pair(store):
     assert "notes" not in evidence.run_query(store, "diff")
 
 
+def test_diff_compares_each_hits_values_by_selector(store):
+    # Review 2 of PR #189: the fallback compared each hit's values as one multiset, so
+    # `left=A, right=B` against `left=B, right=A` at every hit gave no note; and a value
+    # missing from a hit counted as the text "None".
+    from peeky import evidence
+
+    saved(store, [(n, s, v) for n in (1, 2, 3) for s, v in (("left", "'A'"), ("right", "'B'"))])
+    saved(store, [(n, s, v) for n in (1, 2, 3) for s, v in (("left", "'B'"), ("right", "'A'"))])
+    (note,) = evidence.run_query(store, "diff")["notes"]
+    assert note.startswith("the runs' values differ at 3 of 3 hits"), note
+    saved(store, [(1, "v", "1"), (2, "v", "1"), (2, "x", "None"), (3, "v", "1")])
+    saved(store, [(1, "v", "1"), (2, "v", "1"), (3, "v", "1"), (3, "x", "None")])
+    (note,) = evidence.run_query(store, "diff")["notes"]
+    assert note.startswith("the runs' values differ at 2 of 3 hits"), note
+    # The same values in the same order at other hits are not "in another order".
+    saved(store, [(1, "x", "2"), (2, "x", "3"), (3, "v", "1")])
+    saved(store, [(1, "v", "1"), (2, "x", "2"), (3, "x", "3")])
+    (note,) = evidence.run_query(store, "diff")["notes"]
+    assert note.startswith("runs 5 and 6 saw `x`'s values at other hits"), note
+
+
 def test_diff_and_compare_name_the_runs_labels(store):
     # L17: `queries diff` named runs by number only.
     from peeky import evidence
@@ -282,6 +303,34 @@ def test_after_set_rows_that_may_hide_a_change_stay():
     for selector in ("n", "word"):
         assert f"after-set  24    Calc.parseExpr()  {selector} " not in text, text
     assert "after-set: 2 rows equal to the hit's observed value left out" in text, text
+
+
+def test_after_set_objects_stay_where_their_text_cannot_show_them_unchanged():
+    # Review 2 of PR #189: with `b = a`, `a[0]="x"` makes a new Java String, which `b[0]`
+    # shows as the same text: a Java object row stays, a primitive equal to before is
+    # left out. A Python value whose identity changed stays too.
+    from peeky.probe import _table
+
+    observed = [(1, "b[0]", '"x"'), (1, "n", "7")]
+    result = recorded(observed)
+    result["rows"][0]["type"], result["rows"][1]["type"] = "String", "int"
+    for row in list(result["rows"]):
+        result["rows"].append({**row, "phase": "after-set"})
+    result["interventions"] = [
+        {"hit": 1, "capture_hit": 1, "name": "a[0]", "before": '"x"', "after": '"x"'}
+    ]
+    text = _table(result)
+    assert "after-set  24    Calc.parseExpr()  b[0]" in text, text
+    assert "after-set  24    Calc.parseExpr()  n " not in text, text
+
+    result = recorded([(1, "t", "'abc'")], target_identity=None)
+    result["target_identity"] = None
+    result["rows"][0]["identity"] = 6
+    result["rows"].append({**result["rows"][0], "phase": "after-set", "identity": 9})
+    result["interventions"] = [
+        {"hit": 1, "capture_hit": 1, "name": "s", "before": "1", "after": "2"}
+    ]
+    assert "after-set  24    Calc.parseExpr()  t" in _table(result)
 
 
 def test_compare_hint_leaves_out_a_candidates_set(tmp_path, monkeypatch, capsys):

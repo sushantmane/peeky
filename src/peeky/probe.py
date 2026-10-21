@@ -3748,6 +3748,9 @@ _WHOLE_SCALAR = re.compile(
 )
 
 
+_JAVA_PRIMITIVES = frozenset(("byte", "short", "int", "long", "float", "double", "boolean", "char"))
+
+
 def _holds(selector, target):
     """Whether ``selector`` names ``target`` or a value that holds it (`s` for `s.ninth`,
     `d` for `d['k']`, `this` for `this.count`)."""
@@ -3781,8 +3784,12 @@ def _table(result, short_names=True):
     # An after-set value equal to its hit's observed one, shown whole, of a selector that
     # neither a change named nor holds what one changed: the intervention left it as it
     # was (eighth evaluation, L16). JSON keeps every row.
+    # A Java value other than a primitive is an object: a String set through an alias
+    # (`b = a`, then `a[0]="x"`) is a new object with the same text, so its text alone
+    # never shows it unchanged. A Python value's identity must match too.
+    java = ((result.get("target_identity") or {}).get("language") or "").startswith("java")
     observed = {
-        (row["hit"], row["selector"]): row.get("value")
+        (row["hit"], row["selector"]): (row.get("value"), row.get("identity"))
         for row in result["rows"]
         if row["phase"] == "observed" and "value" in row
     }
@@ -3797,8 +3804,9 @@ def _table(result, short_names=True):
         or "value" not in row
         or row.get("note")
         or not _WHOLE_SCALAR.fullmatch(str(row["value"]))
+        or (java and row.get("type") not in _JAVA_PRIMITIVES)
         or any(_holds(row["selector"], name) for name in targets.get(row["hit"], ()))
-        or observed.get((row["hit"], row["selector"]), row) != row["value"]
+        or observed.get((row["hit"], row["selector"])) != (row["value"], row.get("identity"))
     ]
     left_out = len(result["rows"]) - len(kept)
     rows = [
