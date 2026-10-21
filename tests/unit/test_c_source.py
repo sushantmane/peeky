@@ -1213,3 +1213,23 @@ def test_a_structured_binding_hides_an_outer_local_where_it_is_in_scope():
     assert statements.block_storage(11, "t", 2) is False
     # The binding's own row (declared on line 3) is not hidden by itself.
     assert statements.block_storage(4, "t", 3) is False
+
+
+LAMBDA_SOURCE = """int f() {
+    long t = 1;
+    auto lam = [&]() { auto [t, u] = g(); struct t2 {}; return t; };
+    use(t);
+    { auto [t, u] = g(); use(t); }
+    return t;
+}
+"""
+
+
+def test_what_braces_in_a_statement_declare_hides_nothing_in_its_block():
+    # Review of PR #159 (round 5): a lambda's binding hid the function's `t` after it.
+    statements = Statements(LAMBDA_SOURCE, raw_strings=True)
+    assert statements.block_storage(4, "t", 2) is False
+    assert statements.block_storage(4, "t2", 2) is False
+    # A binding with a use on its line declares it, so its scope can be read.
+    assert statements.scope_lines(5, "t") == (5, 5)
+    assert statements.block_storage(5, "t", 2) == ("binding", 5)

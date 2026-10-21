@@ -781,3 +781,67 @@ def test_c_a_caller_frame_judges_only_the_declaration_its_name_means(directory, 
     finally:
         main(["session", "close"])
         capsys.readouterr()
+
+
+# Review of PR #159 (round 5): a lambda's structured binding, or one in any braces
+# inside a statement, named nothing in the enclosing block, and hid its `t` after it.
+LAMBDAS = """#include <cstdio>
+#include <utility>
+int main(int argc, char **argv) {
+    long t = 1;
+    auto lam = [&]() {
+        auto [t, u] = std::pair<long, long>{50, 51};
+        return t + u;
+    };
+    std::printf("MA=%ld\\n", t + 0 * lam());  // MA
+    auto lam2 = [&]() {
+        struct t { long v; };
+        return t{9}.v;
+    };
+    std::printf("MD=%ld\\n", t + 0 * lam2());  // MD
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(300)
+@pytest.mark.parametrize("marker", ["// MA", "// MD"])
+def test_cpp_what_a_lambda_declares_never_hides_the_functions_local(directory, capsys, marker):
+    path = directory / "lambdas.cpp"
+    path.write_text(LAMBDAS)
+    code, result = captured(capsys, path, line_of(LAMBDAS, marker), "t", "--set", "t=77")
+    assert code == 0 and result["status"] == "completed", result.get("error")
+    observed = next(row for row in result["rows"] if row["phase"] == "observed")
+    assert observed["value"] == "1", observed
+    tag = marker[3:]
+    assert f"{tag}=77" in result["output"], result["output"]
+
+
+# Review of PR #159 (round 5): a structured binding shadowing a parameter, with a use
+# on its line, was not read as a declaration, so `t` was not found.
+PARAMETER_BINDING = """#include <cstdio>
+#include <utility>
+struct S2 { long a, b; };
+__attribute__((noinline)) long pf(long t) {
+    { auto [t, u] = std::pair<long, long>{60, 61}; std::printf("EB=%ld\\n", t + 0 * u); }  // EB
+    { auto [t, u] = S2{62, 63}; std::printf("EK=%ld\\n", t + 0 * u); }  // EK
+    return t;
+}
+int main() { return (int)pf(7) - 7; }
+"""
+
+
+@pytest.mark.timeout(300)
+@pytest.mark.parametrize("marker", ["// EB", "// EK"])
+def test_cpp_a_binding_shadowing_a_parameter_is_the_name(directory, capsys, marker):
+    path = directory / "parameter_binding.cpp"
+    path.write_text(PARAMETER_BINDING)
+    line = line_of(PARAMETER_BINDING, marker)
+    code, result = captured(capsys, path, line, "t")
+    assert code == 0 and result["status"] == "completed", result.get("error")
+    [observed] = result["rows"]
+    # The binding, not run yet at its line's first instruction (where the debugger does
+    # not describe it, the parameter's row, withheld for it): never `t` not found.
+    assert "value" not in observed, observed
+    error = observed["error"]
+    assert f"declared on line {line}" in error or "structured binding `t`" in error, error

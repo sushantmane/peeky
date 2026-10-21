@@ -318,6 +318,19 @@ def storage_named(text, name):
     return bool(re.search(r"(?:[A-Za-z_]\w*|\})[\s*&]+" + escaped + r"\s*\(", text))
 
 
+def _braced(statement):
+    """For each of a statement's tokens, whether braces in the statement hold it (a
+    lambda's body, an initializer's braces)."""
+    found, braces = [], 0
+    for text, _, _ in statement:
+        if text in ("}", "%>"):
+            braces = max(braces - 1, 0)
+        found.append(braces > 0)
+        if text in ("{", "<%"):
+            braces += 1
+    return found
+
+
 def _class_name(statement, index):
     """The name a class key (``statement[index]``: `struct`, `class`, `union`, `enum`)
     gives, past `enum class` and attributes (`struct [[deprecated]] q`), or None."""
@@ -833,11 +846,12 @@ class Statements:
                 semicolon = mark.start()
         return None
 
-    def _declares(self, start, end, name):
+    def _declares(self, start, end, name, bindings=True):
         """Whether ``name`` may be declared between ``start`` and ``end``: not inside an
         expression (after `=`, `?`, or within parentheses or brackets), and following a
         name other than a keyword that only uses it (`int i`, not `return i`), or `*`,
-        `&` or `>` (`T *i`, `vector<int> i`), or a `,` of a declarator list."""
+        `&` or `>` (`T *i`, `vector<int> i`), or a `,` of a declarator list; or, with
+        ``bindings``, in a structured binding's brackets (`auto& [i, j]`)."""
         blanked = self.blanked
         for word in _IDENTIFIER.finditer(blanked, start, end):
             if word[0] != name:
@@ -849,6 +863,14 @@ class Statements:
                     depth += 1
                 elif char in "([":
                     if depth == 0:
+                        if (
+                            bindings
+                            and char == "["
+                            and self.raw_strings
+                            and re.search(r"\bauto\s*&{0,2}\s*$", blanked[max(start, at - 64) : at])
+                        ):
+                            # A structured binding: `auto [i, j]`, `const auto& [i, j]`.
+                            return True
                         # An argument or a subscript.
                         used = True
                         break
@@ -1608,9 +1630,16 @@ class Statements:
         if self.raw_strings and (last or words[0] not in _HEADERS):
             if (bound := self._binding(statement, name, after)) is not None:
                 return ("binding", bound)
+        # A lambda's body (or an initializer's braces) in the statement is a scope of its
+        # own: what it declares names nothing in the block (review of PR #159).
+        braced = _braced(statement)
         if self.raw_strings and nested:
             for index, (text, position, _) in enumerate(statement):
-                if text in _CLASS_KEYS and _class_name(statement, index) == name:
+                if (
+                    not braced[index]
+                    and text in _CLASS_KEYS
+                    and _class_name(statement, index) == name
+                ):
                     return ("class", bisect.bisect_right(self.starts, position))
         if words[0] == "using" and self.raw_strings:
             if len(words) > 1 and words[1] == "namespace":
@@ -1666,8 +1695,9 @@ class Statements:
         """The line of a structured binding naming ``name`` among a statement's tokens
         (`auto [q, r]`, `const auto& [q, r]`), or None. One on line ``after`` that is
         the only declaration of ``name`` there is the local's own."""
+        braced = _braced(statement)
         for index, (text, position, depth) in enumerate(statement[:-1]):
-            if text != "auto" or statement[index + 1][0] not in ("[", "<:"):
+            if text != "auto" or statement[index + 1][0] not in ("[", "<:") or braced[index]:
                 continue
             names = []
             for following, _, level in statement[index + 2 :]:
@@ -1681,7 +1711,7 @@ class Statements:
             if line == after:
                 begin = self.starts[line - 1]
                 finish = self.starts[line] if line < len(self.starts) else len(self.blanked)
-                if not self._declares(begin, finish, name):
+                if not self._declares(begin, finish, name, bindings=False):
                     continue
             return line
         return None
