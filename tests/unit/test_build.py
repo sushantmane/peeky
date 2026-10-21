@@ -414,6 +414,10 @@ def test_make_dependency_files_list_every_file_by_its_own_name(tmp_path):
         ("peeky-object-0.o: x\\ \\\n\\ y.h\n", (), "neither ends its rule nor continues it"),
         ("peeky-object-0.o: a.h \\\n", (), "its last line is continued"),
         ("a b.o: a.h\n", (), "target is not a plain name"),
+        # clang prints a name's backslash as `/`: an empty step may be one (#178 review).
+        ("peeky-object-0.o: /w/out//x.h\n", (), "an empty step"),
+        ("peeky-object-0.o: /w/out////x.h\n", (), "an empty step"),
+        ("peeky-object-0.o: /w/out/x.h/\n", (), "an empty step"),
     ],
 )
 def test_a_make_dependency_file_read_two_ways_is_refused(tmp_path, text, made, why):

@@ -671,6 +671,12 @@ def _make_dependencies(text, base):
             raise UnreadDependencies(
                 f"a backslash or tab in {name!r}, which make's escaping leaves ambiguous"
             )
+        if "//" in name or name.endswith("/"):
+            # clang prints a name's backslash as `/`: `/w/\\x.h` reads `/w//x.h`, which a
+            # path would shorten to another file (`/w/x.h`; #178 review).
+            raise UnreadDependencies(
+                f"an empty step in {name!r}, where clang may have printed a backslash"
+            )
         for other in (*others, *((raw,) if raw != name else ())):
             path = Path(other)
             if (path if path.is_absolute() else Path(base) / path).exists():

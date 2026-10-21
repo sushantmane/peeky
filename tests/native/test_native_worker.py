@@ -612,6 +612,16 @@ def test_a_header_clang_names_with_a_slash_for_its_backslash_is_refused(tmp_path
     assert "may be" in str(caught.value) or "backslash" in str(caught.value), caught.value
 
 
+@pytest.mark.parametrize("real", ["\\x.h", "\\\\/x.h"])
+def test_a_header_clang_prints_with_an_empty_step_is_refused(tmp_path, native_config, real):
+    # #178 review: clang prints `/out/\x.h` (and `/out/\\/x.h`) with `//` for the
+    # backslashes, which a path shortens to `/out/x.h`, a decoy: its hash was recorded,
+    # and a change to the header the compiler read went unnoticed.
+    headers = {real: "#define LIMIT 1\n", "x.h": "#define LIMIT 2\n"}
+    with pytest.raises(ValueError, match="unambiguously"):
+        outside_build(tmp_path, native_config, headers, [real])
+
+
 def test_compiled_programs_take_per_run_arguments(tmp_path, native_config, capsys):
     from peeky.cli import main
 

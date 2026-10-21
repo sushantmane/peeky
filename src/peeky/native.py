@@ -2647,9 +2647,10 @@ def external_inputs(depfiles, workspace, declared):
 def _backslash_twin(path, listings):
     """A file whose name has a backslash that clang would print as ``path`` (it prints a
     name's `\\` as `/`, so `/x/a\\b.h` reads as `/x/a/b.h`): an entry of a directory on
-    ``path``'s way named for the next step and a backslash (`a\\...` beside `a`), or None.
-    ``listings`` caches each directory's backslashed names; one that cannot be listed
-    raises UnreadDependencies."""
+    ``path``'s way named for the next step and a backslash (`a\\...` beside `a`), or one
+    that, its backslashes read as `/`, is ``path`` or a directory on its way (`\\x.h`
+    beside `x.h`; #178 review), or None. ``listings`` caches each directory's backslashed
+    names; one that cannot be listed raises UnreadDependencies."""
     parts = path.parts
     for depth in range(1, len(parts)):
         directory = Path(*parts[:depth])
@@ -2661,7 +2662,8 @@ def _backslash_twin(path, listings):
                     f"Peeky cannot list {directory} ({exc.strerror}) to tell which file {path} is"
                 ) from None
         for name in listings[directory]:
-            if name.split("\\")[0] == parts[depth]:
+            printed = Path(str(directory), name.replace("\\", "/").lstrip("/"))
+            if name.split("\\")[0] == parts[depth] or printed == path or printed in path.parents:
                 return directory / name
     return None
 
