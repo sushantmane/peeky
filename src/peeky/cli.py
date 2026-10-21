@@ -1654,7 +1654,14 @@ def session(args):
                 "set changes a local, or a field or array element (Java, Rust, C, C++)",
             )
         changed = apply_set(_Remote(client), stop, name, value)
-        _emit(changed, args.json, lambda c: f"set {c['name']}: {c['before']} -> {c['after']}")
+        _emit(
+            changed,
+            args.json,
+            lambda c: (
+                f"set {c['name']}: {c['before']} -> {c['after']}"
+                + (f"\nnote: {c['note']}" if c.get("note") else "")
+            ),
+        )
     elif args.action == "continue":
         # Argument errors first, whatever state the program is in.
         if args.to is not None and args.to_exit:
@@ -2799,7 +2806,9 @@ def main(argv=None, _job=False, _edits=None):
         action="append",
         default=[],
         help="name=value: a local; in Java, Rust, C and C++ also a scalar field or array "
-        "element (current.end=10, xs[0]=1). Repeatable",
+        "element (current.end=10, xs[0]=1). A value in double quotes is a text, as JSON "
+        "writes a string ('name=\"apple\"'): a char array, std::string, Rust String or Java "
+        "String local takes it within its storage. Repeatable",
     )
     sub.add_argument(
         "--hits",
@@ -2973,7 +2982,8 @@ def main(argv=None, _job=False, _edits=None):
     actions.choices["set"].add_argument(
         "assignment",
         help="name=value: a root local, or a scalar field or array element (Java, Rust, C, "
-        "C++: current.end=10, xs[0]=1, t.__0=3)",
+        "C++: current.end=10, xs[0]=1, t.__0=3); a text in double quotes for a string "
+        "('name=\"apple\"')",
     )
     actions.choices["close"].add_argument(
         "--forget",

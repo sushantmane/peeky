@@ -19,6 +19,9 @@ from peeky.adapters import PythonAdapter, ViewBudgetExhausted
 from peeky.dap import DAP, RequestFailed, ResponseTimeout
 from peeky.errors import _RULES, PROTOCOL_VERSION, classify
 from peeky.names import display_function
+from peeky.text_sets import Memory as TextMemory
+from peeky.text_sets import change as change_text
+from peeky.text_sets import held_in_place, parse_text, text_kind
 
 VIEW_SECONDS = 10
 # C and C++ previews (#136): their own budget per inspection or expansion, so that
@@ -1444,7 +1447,8 @@ class DebugWorker:
                 or len(changes) > 8
                 or not all(
                     isinstance(change, dict)
-                    and set(change) == {"line", "name"}
+                    and set(change) in ({"line", "name"}, {"line", "name", "text"})
+                    and change.get("text", True) is True
                     and type(change["line"]) is int
                     and change["line"] > 0
                     and isinstance(change["name"], str)
@@ -1453,7 +1457,8 @@ class DebugWorker:
                 )
             ):
                 raise ValueError(
-                    "sets must be a list of at most 8 {line, name} changes (a positive line)"
+                    "sets must be a list of at most 8 {line, name} changes (a positive line; "
+                    "text: true for a text)"
                 )
         if operation == "launch" and args.get("max_pause") is not None:
             value = args["max_pause"]
@@ -2129,6 +2134,13 @@ class DebugWorker:
             return self.preview(args, runtime)
         if operation == "set_variable":
             self.stopped(args)
+            if self.capabilities.get("supports_text_set") is False and args["value"].startswith(
+                '"'
+            ):
+                raise ValueError(
+                    "This Java adapter bundle predates String changes (text in double quotes); "
+                    "rebuild it with scripts/setup_java_adapter.py"
+                )
             if "handle" in args:
                 return self.set_member(args, runtime)
             self.children.clear()
@@ -2147,7 +2159,10 @@ class DebugWorker:
             if (self.reference_frames.get(ref) or {}).get("id") != self.innermost_frame:
                 raise ValueError(_CALLER_SET.format(name=repr(args["name"])))
             adapter_ref = self.reference_adapter[ref]
-            runtime.validate_value(args["value"])
+            # Text in double quotes (#137): C, C++ and Rust strings are written in place.
+            text = parse_text(args["value"]) if getattr(runtime, "text_language", None) else None
+            if text is None:
+                runtime.validate_value(args["value"])
             current = self.dap.request("variables", {"variablesReference": adapter_ref}).get(
                 "variables", []
             )
@@ -2187,10 +2202,22 @@ class DebugWorker:
                     f"{args['name']!r} has no memory location here (a computed value, such "
                     "as a bitfield binding): a change would not reach the program"
                 )
-            if validate_variable := getattr(runtime, "validate_variable", None):
+            if text is not None:
+                kind, shape = self.text_storage(runtime, variable, self.reference_frames.get(ref))
+            elif validate_variable := getattr(runtime, "validate_variable", None):
                 validate_variable(variable, args["value"])
             if validate_target := getattr(runtime, "validate_mutation_target", None):
                 validate_target(variable, self.reference_frames.get(ref))
+            unread_note = None
+            if read_after := getattr(runtime, "read_after", None):
+                # Java (#164): a local the code never reads again is never changed.
+                verdict = read_after(variable, self.reference_frames.get(ref), self.stop_reason)
+                if verdict is False:
+                    raise ValueError(_UNREAD.format(name=repr(args["name"])))
+                if verdict is None:
+                    unread_note = _UNREAD_UNKNOWN
+            if text is not None and (check := getattr(runtime, "validate_text_target", None)):
+                check(variable, self.reference_frames.get(ref), self.text_stop())
             if validate_debugger := getattr(runtime, "validate_debugger", None):
                 frame = self.reference_frames.get(ref)
                 if frame is None:
@@ -2200,6 +2227,8 @@ class DebugWorker:
             self.refuse_mid_statement(
                 runtime, variable, self.reference_frames.get(ref), args["name"]
             )
+            if text is not None:
+                return self.set_text(runtime, variable, adapter_ref, kind, text, shape)
             before = variable.get("value")
             literal = getattr(runtime, "mutation_literal", None)
             try:
@@ -2223,7 +2252,12 @@ class DebugWorker:
             after = normalize_value(changed) if normalize_value else changed.get("value")
             if confirm := getattr(runtime, "confirm_mutation", None):
                 confirm(args["name"], args["value"], before, after)
-            return {"name": args["name"], "before": before, "after": after}
+            return {
+                "name": args["name"],
+                "before": before,
+                "after": after,
+                **({"note": unread_note} if unread_note else {}),
+            }
         if operation == "breakpoints":
             runtime.validate_breakpoints(args["breakpoints"])
             self.breakpoint_counts[str(self.path(args["program"]))] = len(args["breakpoints"])
@@ -2731,6 +2765,9 @@ class DebugWorker:
                     output.update(type=rust, debugger_type=kind)
                 if isinstance(note, str):
                     output["note"] = note[:500]
+                if not ancestry and (marked := self.view_settable(variable, frame)) is not None:
+                    # A Rust String's text (#137), shown as read from memory.
+                    output["settable"] = marked
                 if plain:
                     output["selected_as"] = plain
                 result.append(output)
@@ -2748,7 +2785,7 @@ class DebugWorker:
                     and innermost
                     and not self.optimized()
                     and self.has_memory_location(variable)
-                    and bool(check(variable, frame))
+                    and (bool(check(variable, frame)) or self.text_settable(variable, frame))
                 )
                 # Not a value shown with a note whose declaration still runs here (#140),
                 # nor one a statement under way may hold a copy of (#105); why, for
@@ -2759,6 +2796,13 @@ class DebugWorker:
                 elif settable and mid and (why := mid(variable, frame, self.stop_reason)):
                     settable = False
                     self.unsettable_reasons.append((name, why))
+                elif (
+                    settable
+                    and (read_after := getattr(self.runtime, "read_after", None))
+                    and read_after(variable, frame, self.stop_reason) is False
+                ):
+                    settable = False
+                    self.unsettable_reasons.append((name, _UNREAD_WHY))
             elif ancestry and member_rule is not None:
                 # A field or element `set` would change (#105), judged as `set` judges it
                 # (sixth evaluation, finding 7); never one reached through a pointer.
@@ -2769,7 +2813,7 @@ class DebugWorker:
                     innermost
                     and self.member_set()
                     and not self.optimized()
-                    and member(variable) is None
+                    and member(variable, parent=ancestry[-1][1], proven=True) is None
                 )
             if ancestry and settable and noted and noted[1]:
                 # Inside a local whose change is refused (#140): so is a change to this.
@@ -3386,6 +3430,8 @@ class DebugWorker:
                 "unoptimized build"
             )
         name, value = args["name"], args["value"]
+        if getattr(runtime, "text_language", None) and value.startswith('"'):
+            raise ValueError(_TEXT_MEMBER.format(name=name))
         runtime.validate_value(value)
         trail = []
         frame, _, ancestry, reference, indexed = self.walk(record, runtime, trail)
@@ -3401,7 +3447,7 @@ class DebugWorker:
             return self._set_scalar_member(
                 record, runtime, frame, ancestry, trail, reference, variable, args, previewed
             )
-        if reason := check(variable):
+        if reason := check(variable, parent=ancestry[-1][1] if ancestry else None):
             raise ValueError(f"{name!r} cannot be changed: {reason}")
         runtime.validate_variable(variable, value)
         before = variable.get("value")
@@ -3429,6 +3475,8 @@ class DebugWorker:
                 f"{str(after)[:80]}, and the value now reads "
                 f"{str(reread[0].get('value'))[:80] if len(reread) == 1 else 'nothing'}"
             )
+        if confirm := getattr(runtime, "confirm_mutation", None):
+            confirm(name, value, before, after)
         return {"name": name, "before": before, "after": after}
 
     def _set_scalar_member(
@@ -3507,6 +3555,133 @@ class DebugWorker:
             self._confirm_preview(record, runtime, name, after)
         return {"name": name, "before": before, "after": after}
 
+    def text_stop(self):
+        """The stop's reason as a text change judges where in its line the stop is
+        (#164): a breakpoint at a later one of its line's locations in the function
+        (#157: a loop header's) is not before the line's first code, so every place of
+        the line counts."""
+        if self.stop_reason == "breakpoint" and self.stop_place and self.stop_place[0] > 1:
+            return "breakpoint-later"
+        return self.stop_reason
+
+    def text_storage(self, runtime, variable, frame):
+        """(kind, shape) of the root string a text change (#137) writes: the runtime's,
+        where it reads the build's debug information, else text_sets.text_kind's by the
+        debugger's type name; ValueError naming why it is none."""
+        hook = getattr(runtime, "text_storage", None)
+        if hook is not None:
+            return hook(variable, frame)
+        return text_kind(variable, runtime.text_language), None
+
+    def text_settable(self, variable, frame):
+        """Whether a text change (#137) could be made to this root string here, for its
+        `[settable]` mark: a char array always (by element where the debugger cannot
+        write memory); a std::string where the debugger writes memory, or where it reads
+        it and the text is in the string's own buffer; a Rust String where it reads and
+        writes memory."""
+        if not getattr(self.runtime, "text_language", None):
+            return False
+        try:
+            kind = self.text_storage(self.runtime, variable, frame)[0]
+        except ValueError:
+            return False
+        check = getattr(self.runtime, "text_settable", None)
+        if kind is None or (check is not None and not check(variable, frame, self.text_stop())):
+            return False
+        reads = self.capabilities.get("supports_read_memory")
+        if kind == "array" or (reads and self.capabilities.get("supports_write_memory")):
+            return True
+        if kind != "std" or not reads:
+            return False
+        # lldb-dap 20 changes a string in its own short buffer, element by element.
+        memory = TextMemory(
+            lambda parent, count=None: self.view_fetch(parent),
+            None,
+            lambda address, count: self.view_read(f"0x{address:x}", count),
+        )
+        return held_in_place(variable, memory)
+
+    def view_settable(self, variable, frame):
+        """The `[settable]` mark of a root string a runtime's view shows (a Rust String,
+        #137), as for a root listed as the debugger shows it; None for other values."""
+        if not getattr(self.runtime, "text_language", None):
+            return None
+        try:
+            self.text_storage(self.runtime, variable, frame)
+        except ValueError:
+            return None
+        mid = getattr(self.runtime, "mid_statement", None)
+        return bool(
+            self.capabilities.get("supports_set_variable", False) is True
+            and frame.get("id") == self.innermost_frame
+            and not self.optimized()
+            and self.has_memory_location(variable)
+            and self.text_settable(variable, frame)
+            and not (mid and mid(variable, frame, self.stop_reason))
+        )
+
+    def set_text(self, runtime, variable, reference, kind, text, shape=None):
+        """Write ``text`` into the string ``variable``, a root local listed under the
+        scope ``reference`` (#137, see text_sets): only within its storage, and read
+        back. A refusal (ValueError) changed nothing; anything written that cannot be
+        confirmed closes the session."""
+        name = variable.get("name")
+
+        def children(parent, count=None):
+            bounds = {"start": 0, "count": count} if count else {}
+            return self.dap.request("variables", {"variablesReference": parent, **bounds}).get(
+                "variables", []
+            )
+
+        def relist():
+            found = [row for row in children(reference) if row.get("name") == name]
+            if len(found) != 1:
+                raise RuntimeError(
+                    f"{name!r} could not be found again after a change to it: the program's "
+                    "state is unknown, so the session is closed"
+                )
+            return found[0]
+
+        def change(parent, member, value):
+            reply = self.dap.request(
+                "setVariable", {"variablesReference": parent, "name": member, "value": value}
+            )
+            return runtime.mutation_value(reply)
+
+        def read(address, count):
+            if not 0 < count <= 64 * 1024:
+                raise ValueError("Memory read exceeds limit")
+            reply = self.dap.request(
+                "readMemory", {"memoryReference": f"0x{address:x}", "count": count}
+            )
+            data = base64.b64decode(reply.get("data") or "", validate=True)
+            if len(data) != count or reply.get("unreadableBytes"):
+                raise ValueError("Partial memory read")
+            return data
+
+        def write(address, data):
+            reply = self.dap.request(
+                "writeMemory",
+                {"memoryReference": f"0x{address:x}", "data": base64.b64encode(data).decode()},
+            )
+            if reply.get("bytesWritten", len(data)) != len(data):
+                raise RuntimeError(f"wrote {reply.get('bytesWritten')} of {len(data)} bytes")
+
+        capabilities = self.capabilities
+        memory = TextMemory(
+            children,
+            change,
+            read if capabilities.get("supports_read_memory") else None,
+            write if capabilities.get("supports_write_memory") else None,
+        )
+        changed = change_text(variable, text, memory, relist, kind, shape)
+        runtime.assert_current()
+        result = {"name": name, "before": changed["before"], "after": changed["after"]}
+        if kind == "std":
+            # What the program took from it before cannot be seen, nor changed (#164).
+            result["note"] = STRING_VIEW_NOTE
+        return result
+
     def _confirm_preview(self, record, runtime, name, after):
         """After a change to a field of a value shown as a preview read from memory (#106),
         read the preview again as `inspect` and `get` would: the field must show what the
@@ -3560,7 +3735,14 @@ class DebugWorker:
         from peeky.errors import Refused
 
         refusal = None
-        if level := self.optimized():
+        members = [
+            change["name"]
+            for change in changes
+            if change.get("text") and re.search(r"[.\[]", change["name"])
+        ]
+        if members and getattr(runtime, "text_language", None):
+            refusal = _TEXT_MEMBER.format(name=members[0]) + _BEFORE_LAUNCH
+        elif level := self.optimized():
             note = getattr(runtime, "storage_note", None)
             first = changes[0]
             refusal = (
@@ -3571,12 +3753,17 @@ class DebugWorker:
                 + ". Refused before the program runs: nothing ran. Use an unoptimized build"
             )
         elif check := getattr(runtime, "never_settable", None):
-            lines = {}
+            lines, texts = {}, {}
             for change in changes:
-                lines.setdefault(change["line"], []).append(change["name"])
+                # A text (#137) is judged as a string's change, an integer as a number's.
+                group = texts if change.get("text") else lines
+                group.setdefault(change["line"], []).append(change["name"])
             for line, names in lines.items():
                 # Each change judged against its own line's functions only.
                 if refusal := check(program, [line], names):
+                    break
+            for line, names in texts.items() if not refusal else ():
+                if refusal := check(program, [line], names, text=True):
                     break
         if refusal:
             # (code, message), or a message: a change no stop allows.
@@ -3702,6 +3889,33 @@ _CALLER_SET = (
     "{name} is in a caller's frame, whose values cannot be changed: only the stopped "
     "(innermost) frame's can, which `session set` and probes change"
 )
+# Java (#164): a local no path from the stop reads again; or where that is not known.
+_UNREAD_WHY = (
+    "the program does not read it after this stop (a lambda or inner class that captured "
+    "it before keeps its own copy; javac compiles a constant local into its uses)"
+)
+_UNREAD = (
+    "{name} cannot be changed at this stop: " + _UNREAD_WHY + ", so a change would never be seen"
+)
+_UNREAD_UNKNOWN = (
+    "Peeky could not tell whether the program reads it after this stop; a lambda or inner "
+    "class that captured it before keeps its own copy, which the change does not reach"
+)
+# A std::string's text changes in place (#164): a view the program took before the
+# change keeps the old size.
+STRING_VIEW_NOTE = (
+    "a std::string_view, c_str() or data() pointer or iterator the program took from the "
+    "string before the change still has its old size, and reads a mix of old and new text "
+    "(Peeky cannot see those)"
+)
+# C, C++ and Rust (#137): a text changes a string local, not a field or element.
+_TEXT_MEMBER = (
+    "`{name}` cannot be changed to a text: Peeky writes text into a string local the "
+    "stopped frame holds (a char array, std::string or Rust String), not into a field or "
+    "element; copy it into a local with a candidate edit (`--old`/`--new`), or edit the "
+    "source"
+)
+_BEFORE_LAUNCH = ". Refused before the program runs: nothing ran"
 
 
 def _name_list(value):

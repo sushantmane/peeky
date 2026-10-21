@@ -76,6 +76,7 @@ from peeky.rust_symbols import (
     struct_view,
     without_numbered_structs,
 )
+from peeky.text_sets import text_kind
 
 DEPS = "target/debug/deps"
 MIR_DIR = "target/peeky-mir"
@@ -874,6 +875,10 @@ _NO_MEMORY = (
 )
 
 
+# A String as the MIR names it: what a text (#137) changes.
+_TEXT_RUST = frozenset({"std::string::String", "alloc::string::String", "String"})
+
+
 def _never_rank(why):
     """Which of a name's reasons `describe` gives where a generic's instances differ:
     first the ones no edit to the binding itself helps."""
@@ -911,6 +916,157 @@ _CHAR_POINTER = re.compile(
     r"(?:const )?(?:unsigned char|signed char|char|char8_t|char16_t|char32_t)(?: const)? \*"
 )
 _ADDRESS = re.compile(r"(0x[0-9a-fA-F]+)(?:\s|$)")
+
+
+# The standard types whose own fields Peeky does not read (#164): each holds no pointer
+# but what its type arguments hold (as its MIR name, rust_mir._FREE_PATHS).
+_FREE_RECORDS = frozenset(
+    {
+        "alloc::string::String",
+        "alloc::vec::Vec",
+        "alloc::boxed::Box",
+        "alloc::collections::vec_deque::VecDeque",
+        "alloc::collections::btree::map::BTreeMap",
+        "alloc::collections::btree::set::BTreeSet",
+        "alloc::rc::Rc",
+        "alloc::sync::Arc",
+        "alloc::alloc::Global",
+        "core::option::Option",
+        "core::result::Result",
+        "core::cell::Cell",
+        "core::cell::RefCell",
+        "std::collections::hash::map::HashMap",
+        "std::collections::hash::set::HashSet",
+        "std::hash::random::RandomState",
+    }
+)
+
+
+# Of those, the ones that take no type argument.
+_UNARGUED_RECORDS = frozenset(
+    {"alloc::string::String", "alloc::alloc::Global", "std::hash::random::RandomState"}
+)
+_STD_PREFIXES = ("std::", "core::", "alloc::")
+
+
+def free_types(dies):
+    """The names (as the MIR prints them, `Span`, and qualified, `spans::Span`) of the
+    crate's own structs, enums and unions without type parameters that provably hold no
+    pointer, read from the debug information (#164): every field, variant and element,
+    however deep, is a number, a C-like enum, an array, a crate type of the same kind,
+    or a standard container of such (``_FREE_RECORDS``, by their type arguments); a
+    `Box` (which rustc describes as a pointer named for it) by what it owns. A type
+    that holds itself through a `Box` or container (`Rec { next: Option<Box<Rec>> }`)
+    is judged by everything else it holds: owning a value of its own type borrows
+    nothing. Any reference, raw pointer, trait object, function pointer, type not
+    described or other standard type holds one. A name two types share is kept only if
+    both hold none."""
+    from peeky.fields import _target
+    from peeky.native import _qualified, _text
+
+    def target(die):
+        return _target(die["attrs"].get("DW_AT_type"))
+
+    def members(die):
+        for child in die["children"]:
+            tag = dies[child]["tag"]
+            if tag == "DW_TAG_member":
+                yield child
+            elif tag in ("DW_TAG_variant_part", "DW_TAG_variant"):
+                yield from members(dies[child])
+
+    def parameters(die):
+        return [
+            child
+            for child in die["children"]
+            if dies[child]["tag"]
+            in ("DW_TAG_template_type_parameter", "DW_TAG_template_value_parameter")
+        ]
+
+    def held(offset):
+        """The types a value of the type at ``offset`` holds, or None if it may hold a
+        pointer by itself."""
+        die = dies.get(offset)
+        if die is None:
+            return None
+        tag, attrs = die["tag"], die["attrs"]
+        if tag in ("DW_TAG_base_type", "DW_TAG_enumeration_type"):
+            return []
+        if tag in (
+            "DW_TAG_typedef",
+            "DW_TAG_const_type",
+            "DW_TAG_volatile_type",
+            "DW_TAG_array_type",
+        ) or (
+            tag == "DW_TAG_pointer_type"
+            and (_text(attrs.get("DW_AT_name")) or "").startswith("alloc::boxed::Box<")
+        ):
+            return [target(die)]
+        if (
+            tag not in ("DW_TAG_structure_type", "DW_TAG_union_type")
+            or "DW_AT_declaration" in attrs
+        ):
+            return None
+        qualified = _qualified(dies, offset) or ""
+        if qualified.startswith(_STD_PREFIXES):
+            record = qualified.split("<", 1)[0]
+            if record not in _FREE_RECORDS:
+                return None
+            # An enum's type arguments are its variants' (`Option<T>`'s on `Some<T>`).
+            found = [
+                target(dies[child])
+                for each in [die, *(dies.get(target(dies[member])) for member in members(die))]
+                if each is not None and each["tag"] == "DW_TAG_structure_type"
+                for child in parameters(each)
+                if dies[child]["tag"] == "DW_TAG_template_type_parameter"
+            ]
+            return found if found or record in _UNARGUED_RECORDS else None
+        if parameters(die) or (_text(attrs.get("DW_AT_name")) or "").startswith("dyn "):
+            return None
+        return [target(dies[member]) for member in members(die)]
+
+    # Every type the crate's own types reach, then those that reach one holding a
+    # pointer by itself (or not described).
+    edges, unsafe, pending = {}, set(), []
+    names = {}
+    for offset, die in dies.items():
+        if (
+            die["tag"]
+            not in ("DW_TAG_structure_type", "DW_TAG_enumeration_type", "DW_TAG_union_type")
+            or "DW_AT_declaration" in die["attrs"]
+        ):
+            continue
+        qualified = _qualified(dies, offset) or ""
+        name = _text(die["attrs"].get("DW_AT_name")) or ""
+        if not name or "<" in name or qualified.startswith(_STD_PREFIXES):
+            continue
+        names[offset] = {name, qualified} - {""}
+        pending.append(offset)
+    while pending:
+        offset = pending.pop()
+        if offset in edges or offset in unsafe:
+            continue
+        found = held(offset) if offset is not None else None
+        if found is None:
+            unsafe.add(offset)
+            continue
+        edges[offset] = found
+        pending.extend(found)
+    holders = {}
+    for offset, found in edges.items():
+        for each in found:
+            holders.setdefault(each, []).append(offset)
+    tainted, pending = set(unsafe), list(unsafe)
+    while pending:
+        for holder in holders.get(pending.pop(), ()):
+            if holder not in tainted:
+                tainted.add(holder)
+                pending.append(holder)
+    verdicts = {}
+    for offset, each in names.items():
+        for name in each:
+            verdicts[name] = verdicts.get(name, True) and offset not in tainted
+    return frozenset(name for name, verdict in verdicts.items() if verdict)
 
 
 def _frame_hash(frame):
@@ -1326,6 +1482,76 @@ class RustSession(NativeSession):
             )
         super().validate_variable(variable, value)
 
+    text_language = "rust"
+
+    def text_storage(self, variable, frame):
+        """(kind, shape) for text_sets: a String, with its layout from the build's debug
+        information; ValueError for anything else (#137)."""
+        return text_kind(variable, "rust"), self.layouts.get("alloc::string::String")
+
+    def validate_text_target(self, variable, frame, stop=None):
+        """A String's buffer is written only where the MIR proves the local initialized
+        at the stop (#108): a moved or dropped String's pointer may point into freed
+        memory, and a String not yet assigned holds whatever its slot held. And only
+        where no borrow of it is used after the stop (#164): a `&str` taken before the
+        change keeps the old length, so it would read a mix of old and new text, or bytes
+        that are not UTF-8 (undefined behavior). ``stop``: the stop's reason."""
+        name = variable.get("name")
+        hashed = _frame_hash(frame)
+        proofs = getattr(self, "owned", None)
+        place = frame or {}
+        line, path = place.get("line"), (place.get("source") or {}).get("path")
+        if not (hashed and proofs is not None and proofs.proven(hashed[1], name, line, path)):
+            raise ValueError(
+                f"`{name}` cannot be changed at this stop: the build's MIR does not prove it "
+                "initialized here (it may be moved, dropped or not yet assigned), and a "
+                "String's buffer may then be freed memory"
+            )
+        if unsafe := getattr(self, "unsafe_code", None):
+            # #164 review 3: a raw pointer, or an address kept as an integer (`s.as_ptr()
+            # as usize`), holds the String's bytes where no borrow shows it.
+            raise ValueError(
+                f"`{name}` cannot be changed to a text: {unsafe}, or read the String's bytes "
+                "at their old length where no borrow shows it (through a raw pointer, or an "
+                "address kept as an integer: `s.as_ptr() as usize`)"
+            )
+        # Before the line's first code (as `mid_statement` requires), or anywhere on it.
+        start = stop == "breakpoint" or (stop == "step" and self._line_start(frame))
+        lent = proofs.borrow_live(
+            hashed[1],
+            name,
+            line,
+            path,
+            breakpoint=start,
+            column=place.get("column"),
+            block=self._stop_block(hashed[1], frame),
+            free_types=self._free_types(),
+        )
+        if lent is not False:
+            raise ValueError(
+                f"`{name}` cannot be changed to a text at this stop: "
+                + (
+                    "a borrow of it (a `&str` of its text, a reference, an iterator over it) "
+                    "is still used after the stop"
+                    if lent
+                    else "Peeky cannot tell from the build's MIR whether a borrow of it (a "
+                    "`&str` of its text, a reference, an iterator) is still used after the "
+                    "stop"
+                )
+                + ", and it would keep the old length: it would read a mix of old and new "
+                "text, or bytes that are not UTF-8. Change it before such a borrow is taken, "
+                "or after its last use"
+            )
+
+    def text_settable(self, variable, frame, stop=None):
+        """Whether a text change could be made to this String here (for `[settable]`)."""
+        try:
+            self.validate_mutation_target(variable, frame)
+            self.validate_text_target(variable, frame, stop)
+        except ValueError:
+            return False
+        return True
+
     def validate_mutation_target(self, variable, frame):
         """Only a local the program keeps in memory can be changed with effect."""
         name = variable.get("name")
@@ -1541,10 +1767,11 @@ class RustSession(NativeSession):
                 found.append((hashed, function))
         return found
 
-    def never_settable(self, program, lines, names):
+    def never_settable(self, program, lines, names, text=False):
         """Why a probe's `--set` of one of ``names`` can change nothing at any stop of
         ``lines`` of ``program`` in this build (#138): the refusal, as (code, message)
-        where no such local exists there, else as its message; or None. Only what the
+        where no such local exists there, else as its message; or None. ``text``: the
+        values are texts (#137), which change a String rather than an integer. Only what the
         build fixes counts, and only where it fails in every function that can stop there (a
         closure, a generic's instances, an inlined copy): the IR keeping the local in a
         register (or no such local), its MIR type for a root, and for a field or element
@@ -1577,7 +1804,7 @@ class RustSession(NativeSession):
                 failures = []
                 for hashed, function in functions:
                     try:
-                        why = self._never_in(hashed, root, steps, source, line)
+                        why = self._never_in(hashed, root, steps, source, line, text)
                     except Unsettable:
                         why = None
                     if why is None:
@@ -1593,7 +1820,7 @@ class RustSession(NativeSession):
         # each instance it holds in.
         return "::".join((*function.ancestors, getattr(function, "instance", "") or function.name))
 
-    def _never_in(self, hashed, root, steps, source, line):
+    def _never_in(self, hashed, root, steps, source, line, text=False):
         """Why ``root`` (and the path ``steps`` into it) can never change in the function
         ``hashed``: (kind, detail), or None. Raises fields.Unsettable when the debug
         information Peeky needs could not be read (nothing is ruled out then)."""
@@ -1606,13 +1833,32 @@ class RustSession(NativeSession):
         if kept is None and body is not None and plain not in body.bindings:
             return ("absent", f"has no local `{plain}`")
         # Its type first, as `set` judges it.
-        if not steps:
+        if not steps and text:
+            declared = proofs.declared_type(hashed, root, line, source) if proofs else None
+            if declared is not None and declared not in _TEXT_RUST:
+                borrowed = declared.lstrip("&*").removeprefix("mut ").removeprefix("const ")
+                return (
+                    "type",
+                    f"`{root}` is a {declared}"
+                    + (
+                        ", text it borrows, which may be read-only (a literal); only a String "
+                        "the frame owns can be changed to a text"
+                        if borrowed in ("str", *_TEXT_RUST)
+                        else "; a text changes a String"
+                    ),
+                )
+        elif not steps:
             declared = proofs.declared_type(hashed, root, line, source) if proofs else None
             if declared is not None and declared not in _SETTABLE_RUST:
                 return (
                     "type",
                     f"`{root}` is a {declared}; only integer locals (i16 to i64, u16 to u64, "
-                    "isize, usize) can be changed",
+                    "isize, usize) can be changed"
+                    + (
+                        f", and a String to a text in double quotes (--set '{root}=\"apple\"')"
+                        if declared in _TEXT_RUST
+                        else ""
+                    ),
                 )
         else:
             functions, graph = self._field_types()
@@ -1983,6 +2229,19 @@ class RustSession(NativeSession):
         declared = member_base(self._field_cache[2], root, path[1:])
         return declared if kind in RUST_SCALARS.get(declared, ()) else None
 
+    def _free_types(self):
+        """The names of the crate's own types that hold no pointer (#164), for the borrow
+        check of a text change: read from the build's debug information once."""
+        found = self.__dict__.get("_free_cache")
+        if found is None:
+            try:
+                self._field_types()
+            except ValueError:
+                pass
+            found = self.__dict__.get("_free_cache") or frozenset()
+            self._free_cache = found
+        return found
+
     def _read_field_types(self):
         from peeky.fields import RUST_LIBRARIES, local_types, type_graph
         from peeky.native import _chain, _code_ranges, _first, _parse_dies, _text
@@ -2016,6 +2275,7 @@ class RustSession(NativeSession):
             # One hash, two bodies that disagree (never expected): neither is trusted.
             functions[hashed[1]] = types if functions.get(hashed[1], types) == types else None
             kinds.update(kind for each in (types or {}).values() for kind, _, _ in each)
+        self._free_cache = free_types(dies)
         graph = type_graph(dies, kinds, RUST_LIBRARIES)
         # And what a local reference or Box points at, one level down: the fields a
         # reference parameter's target holds (#156). Changes never walk through either.

@@ -53,7 +53,7 @@ Available actions:
 - observe: set line to an executable 1-based line. A NEW process runs until BEFORE
   that line executes. Return its stack and locals. Any previous session is closed.
   Pick a line after a suspected value was assigned and before it is consumed.
-- intervene: variable and value (Python expression, Java numeric/boolean literal, or C/C++ decimal integer literal). Changes an EXISTING local in
+- intervene: variable and value (Python expression, Java numeric/boolean literal, or C/C++ decimal integer literal; a text in double quotes, as JSON writes it, for a string). Changes an EXISTING local in
   the CURRENT stopped frame, clears breakpoints, continues to termination, and
   returns output + before/after evidence. Make a causal experiment, then assess it.
 - finish: explain root cause in reason; old/new are exact source substrings for ONE
