@@ -535,20 +535,151 @@ def assert_current(prepared):
         raise RuntimeError("Prepared build provenance mismatch")
 
 
-def dependency_paths(text, base):
-    """Prerequisites listed in a Makefile-style dependency file (`clang -MD`, rustc)."""
-    joined = re.sub(r"\\\r?\n", " ", text)
+class UnreadDependencies(ValueError):
+    """A compiler's dependency file that Peeky cannot read unambiguously (#177): its
+    provenance check fails rather than skip or misread an entry."""
+
+    def __init__(self, why):
+        super().__init__(f"Peeky cannot read the compiler's dependency file unambiguously: {why}")
+
+
+def dependency_paths(text, base, producer):
+    """Every file a compile read, from its dependency file: ``producer`` "rustc" (rustc's
+    `--emit=dep-info`) or "make" (`clang -MD`, `gcc -MD`), each read by its own escaping.
+    Lines end at `\n` alone (a U+2028 is part of a name). Anything that could be read two
+    ways raises UnreadDependencies (#177)."""
+    names = _rustc_dependencies(text) if producer == "rustc" else _make_dependencies(text, base)
+    return [path if (path := Path(name)).is_absolute() else Path(base) / path for name in names]
+
+
+def _rustc_dependencies(text):
+    r"""rustc writes each output's rule (`out: a.rs b\ c.rs`, a blank line after each),
+    then one `name:` line per file, then, after a blank line, `# env-dep:` notes. It
+    escapes only a space (`\ `), so a backslash before another character is itself.
+    Each file's own line gives its name; every rule must list exactly those, so a name
+    that breaks a line (a newline in it) or starts with `#` cannot pass for others."""
+    lines = text.split("\n")
+    if lines[-1:] == [""]:
+        lines.pop()
+    end = len(lines)
+    while end and lines[end - 1].startswith("#"):
+        end -= 1
+    if end < len(lines):
+        if not end or lines[end - 1] != "":
+            raise UnreadDependencies("its notes do not follow a blank line")
+        end -= 1
+    start = end
+    while start and lines[start - 1] != "":
+        start -= 1
+    files, rules = lines[start:end], lines[:start]
+    if not files or any(not line.endswith(":") or line.startswith("#") for line in files):
+        raise UnreadDependencies("a file's own line is not `name:`")
+    if not rules or len(rules) % 2 or any(rules[1::2]) or not all(rules[::2]):
+        raise UnreadDependencies("its rules are not each followed by a blank line")
+    listed = ": " + " ".join(line[:-1] for line in files)
+    if any(not rule.endswith(listed) or len(rule) == len(listed) for rule in rules[::2]):
+        raise UnreadDependencies("a rule does not list exactly the files named below it")
+    return [line[:-1].replace("\\ ", " ") for line in files]
+
+
+# A continued line's end in a make-style rule, and runs of backslashes and dollars.
+_CONTINUED = " \\"
+_BACKSLASHES = re.compile(r"\\*")
+_DOLLARS = re.compile(r"\$*")
+
+
+def _make_dependencies(text, base):
+    r"""The prerequisites of the one rule in a `-MD` file (`peeky-object-0.o: a.c b\ c.h
+    \`, continued on the next line). clang and gcc (10 and later) escape a space as `\ `
+    (and a space after N backslashes as 2N+1 of them), `#` as `\#` and `$` as `$$`; gcc
+    a tab as `\<tab>`, which clang leaves bare. Neither escapes a backslash ending a name,
+    and clang prints a name's backslash as `/`. So these are refused: a name with a
+    backslash or a tab, an undoubled `$`, a bare `#`, a line that neither ends the rule
+    nor continues it (a name with a newline), and an escaped space where the file the
+    other reading names (one ending in a backslash) exists; as are a `$` where the
+    file with it undoubled exists too (gcc before 10 does not escape `$`)."""
+    lines = text.split("\n")
+    if lines[-1:] == [""]:
+        lines.pop()
+    if not lines:
+        raise UnreadDependencies("it lists no rule")
+    rule = []
+    for index, line in enumerate(lines):
+        if index < len(lines) - 1:
+            # ` \` ends a continued line; its space is a separator (no backslash before).
+            if not line.endswith(_CONTINUED) or line[:-2].endswith("\\"):
+                raise UnreadDependencies(
+                    "a line neither ends its rule nor continues it (a file name with a newline?)"
+                )
+            line = line[:-1]
+        elif line.endswith("\\"):
+            raise UnreadDependencies("its last line is continued")
+        rule.append(line)
+    rule = "".join(rule)
+    target = re.match(r"[^\s\\:#$]+:(?: |$)", rule)
+    if target is None:
+        raise UnreadDependencies("its rule's target is not a plain name")
+    names, name, raw, others = [], [], [], []
+    text, at = rule[target.end() :], 0
+
+    def close():
+        if name:
+            names.append(("".join(name), "".join(raw), list(others)))
+        name.clear(), raw.clear(), others.clear()
+
+    while at < len(text):
+        char = text[at]
+        if char == "\\":
+            run = _BACKSLASHES.match(text, at).end() - at
+            after = text[at + run : at + run + 1]
+            if after == " " and run % 2:
+                if run == 1:
+                    # Or a name ending in a backslash (gcc), then a separator.
+                    others.append("".join(name) + "\\")
+                name.append("\\" * (run // 2) + " "), raw.append("\\" * (run // 2) + " ")
+                at += run + 1
+                continue
+            if after == "#":
+                name.append("\\" * (run - 1) + "#"), raw.append("\\" * (run - 1) + "#")
+                at += run + 1
+                continue
+            name.append("\\" * (run // 2 if after == " " else run))
+            raw.append(name[-1])
+            at += run
+            if after == " ":
+                close()
+                at += 1
+            continue
+        if char == "$":
+            run = _DOLLARS.match(text, at).end() - at
+            if run % 2:
+                raise UnreadDependencies("a `$` is not doubled")
+            name.append("$" * (run // 2)), raw.append("$" * run)
+            at += run
+            continue
+        if char in "#\t":
+            raise UnreadDependencies(f"a bare {'`#`' if char == '#' else 'tab'} in a file name")
+        if char == " ":
+            close()
+        else:
+            name.append(char), raw.append(char)
+        at += 1
+    close()
     found = []
-    for line in joined.splitlines():
-        if line.lstrip().startswith("#"):
-            # rustc's `# env-dep:NAME=value` notes; a literal `#` in a path is `\#`.
-            continue
-        match = re.search(r"(?<!\\):(?:\s|$)", line)
-        if not match:
-            continue
-        rest = line[match.end() :]
-        for item in re.findall(r"(?:\\.|[^\s\\])+", rest):
-            name = re.sub(r"\\(.)", r"\1", item).replace("$$", "$")
-            path = Path(name)
-            found.append(path if path.is_absolute() else Path(base) / path)
+    for name, raw, others in names:
+        if "\\" in name or "\t" in name:
+            raise UnreadDependencies(
+                f"a backslash or tab in {name!r}, which make's escaping leaves ambiguous"
+            )
+        if "//" in name or name.endswith("/"):
+            # clang prints a name's backslash as `/`: `/w/\\x.h` reads `/w//x.h`, which a
+            # path would shorten to another file (`/w/x.h`; #178 review).
+            raise UnreadDependencies(
+                f"an empty step in {name!r}, where clang may have printed a backslash"
+            )
+        for other in (*others, *((raw,) if raw != name else ())):
+            path = Path(other)
+            if (path if path.is_absolute() else Path(base) / path).exists():
+                raise UnreadDependencies(f"{name!r} could also be {other!r}, which exists")
+        found.append(name)
     return found
