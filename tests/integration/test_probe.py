@@ -280,3 +280,29 @@ def test_a_set_at_line_with_a_lambda_says_whose_variable_changed(tmp_path):
         w.startswith("--set-at line 7 stopped in 2 functions: main (stop 1); <lambda> (stop 2)")
         for w in result["warnings"]
     ), result["warnings"]
+
+
+def test_two_lambdas_on_a_set_at_line_are_said_to_read_alike(tmp_path):
+    # #151 review 3: `f = lambda ...; g = lambda ...` stops in two lambdas both named
+    # `<lambda>` (debugpy gives no column), which were listed as one function.
+    (tmp_path / "p2.py").write_text(
+        "def main():\n"
+        "    total = 0\n"
+        "    for i in range(2):\n"
+        "        f = lambda v: v + 1; g = lambda v: v * 2; total += f(i) + g(i)\n"
+        "    print('T', total)\n"
+        "\n"
+        "main()\n"
+    )
+    result = run_probe(
+        tmp_path, Probe("p2.py", 5, ("total",), set_at=((4, 3, "v", "10"),), timeout=40)
+    )
+    assert result["status"] == "completed", result.get("error")
+    (change,) = result["interventions"]
+    assert (change["function"], change["alike"], change["after"]) == ("<lambda>", 2, "10")
+    assert "T 25" in result["output"], result["output"]
+    assert any(
+        "<lambda> (stops 2, 3; 2 on the line, which the debugger names alike, so their stops "
+        "are counted together)" in warning
+        for warning in result["warnings"]
+    ), result["warnings"]

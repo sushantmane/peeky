@@ -2548,8 +2548,11 @@ def ir_functions(path, files):
 
 
 def _instance(name):
-    """A DISubprogram's name where it gives generic arguments (`tf<rc::A>`), else ""."""
-    return name[:300] if isinstance(name, str) and name.endswith(">") else ""
+    """A DISubprogram's name where it gives generic arguments (`tf<rc::A>`), else "";
+    one past 300 characters is cut and ends with `…`."""
+    if not isinstance(name, str) or not name.endswith(">"):
+        return ""
+    return name if len(name) <= 300 else name[:299] + "…"
 
 
 # A const generic's value as rustc names an instantiation (`sum<3>`, `cgt<u8, 2>`).

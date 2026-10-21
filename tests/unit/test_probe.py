@@ -1555,3 +1555,65 @@ def test_a_refusal_names_the_functions_sharing_a_reason_once():
     assert by_function(reasons) == "in fc, fd and fg, `a.pp` is a pointer; fe has no local `a`"
     reasons.append(("fh", f"{FUNCTION} has no local `a`"))
     assert by_function(reasons).endswith("; fe and fh have no local `a`")
+
+
+def test_instances_that_read_alike_are_told_apart_by_their_hash(monkeypatch):
+    # #151 review 3: two instances whose names were cut at the same 300 characters got
+    # the same label on both changes; the cut was not marked.
+    import peeky.probe as probe_module
+    from peeky.rust_mir import _instance
+
+    long = "tf<" + "core::iter::Map<" * 30 + "i64" + ">" * 31
+    assert len(_instance(long)) == 300 and _instance(long).endswith("…")
+    assert _instance("tf<u8>") == "tf<u8>" and _instance("main") == ""
+    a, b = "lg::tf::h0000000000000001", "lg::tf::h0000000000000002"
+    worker = Lines(names={9: [a, b, a]})
+    cut = "lg::" + _instance(long)
+    worker.instances = {a: cut, b: cut}
+    monkeypatch.setattr(probe_module, "DebugWorker", lambda *args, **kwargs: worker)
+    request = Probe("main.py", 8, ("x",), set_at=((9, 1, "x", "5"), (9, 2, "x", "6")))
+    result = probe_module.run_probe("/w", request)
+    labels = [change["instance"] for change in result["interventions"]]
+    assert labels == [f"{cut} (h0000000000000001)", f"{cut} (h0000000000000002)"], labels
+    text = probe_module._table(result)
+    assert f"in {cut} (h0000000000000001))" in text and f"in {cut} (h0000000000000002))" in text
+    assert any(f"{cut} (h0000000000000002) (stop 2)" in w for w in result["warnings"])
+
+
+def test_python_code_the_debugger_names_alike_is_said_not_merged(tmp_path, monkeypatch):
+    # #151 review 3: two lambdas on one line are both `<lambda>`, and debugpy's frames
+    # give no column, so their stops were listed as one function's.
+    import peeky.probe as probe_module
+
+    assert probe_module._python_alike(
+        "def main():\n    f = lambda v: v + 1; g = lambda v: v * 2\n", [2]
+    ) == {2: {"<lambda>": 2}}
+    assert probe_module._python_alike("x = (lambda: 1)()\n", [1]) == {}
+    lines = ["x = 0"] * 7 + ["x = 1", "f = lambda v: v + 1; g = lambda v: v * 2"]
+    (tmp_path / "main.py").write_text("\n".join(lines) + "\n")
+    worker = Lines(names={9: ["main", "<lambda>", "<lambda>"]})
+    monkeypatch.setattr(probe_module, "DebugWorker", lambda *args, **kwargs: worker)
+    request = Probe("main.py", 8, ("x",), set_at=((9, 3, "x", "5"),))
+    result = probe_module.run_probe(tmp_path, request)
+    assert (
+        "--set-at line 9 stopped in 2 functions: main (stop 1); <lambda> (stops 2, 3; 2 on "
+        "the line, which the debugger names alike, so their stops are counted together). @HIT"
+        in " ".join(result["warnings"])
+    ), result["warnings"]
+    (change,) = result["interventions"]
+    assert change["alike"] == 2
+    text = probe_module._table(result)
+    assert "(--set-at line 9@3, in <lambda>, one of 2 on the line the debugger names alike)" in (
+        text
+    )
+
+
+def test_a_warning_says_how_many_functions_it_does_not_list():
+    # #151 review 3: "stopped in 6 functions" listed 4.
+    from peeky.probe import _stops_by_function
+
+    functions = {f"f{i}": [i] for i in range(10)}
+    shown = _stops_by_function(functions, {name: name for name in functions}, "stop")
+    assert shown.startswith("f0 (stop 0); f1 (stop 1)") and shown.endswith(
+        "f7 (stop 7); and 2 more"
+    )

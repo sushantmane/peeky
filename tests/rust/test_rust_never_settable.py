@@ -599,3 +599,59 @@ def test_a_generics_instances_are_named_with_their_type_arguments(tmp_path, stat
     assert message.count("A candidate edit keeps it in memory") == 1, message
     for instance in ("gen::tf<gen::A>", "gen::tf<gen::B>"):
         assert instance in message.split("`n` is a parameter")[0], message
+
+
+LONG = """#[inline(never)]
+fn tf<T: Iterator<Item = i64>>(t: T) -> i64 {
+    let mut k = 0i64;
+    k += 1; // BUMP
+    k + t.sum::<i64>()
+}
+fn base(v: &[i64]) -> impl Iterator<Item = i64> + '_ {
+    v.iter().map(|x| x + 1).filter(|x| *x > 0).map(|x| x * 2).filter(|x| *x > 1).map(|x| x - 1).map(|x| x * 1).filter(|x| *x > -5)
+}
+fn main() {
+    let v = vec![1i64, 2, 3];
+    let mut total = 0i64;
+    total += tf(base(&v).map(|x| x + 3));
+    total += tf(base(&v).map(|x| x + 4)); // CALL
+    println!("TOTAL:{}", total);
+}
+"""
+CLOSURES = """fn main() {
+    let mut total = 0i64;
+    for i in 0..2i64 {
+        let f = |v: i64| { let mut w = v + 1; w += 1; w }; let g = |v: i64| { let mut w = v * 2; w += 1; w }; total += f(i) + g(i); // BOTH
+    }
+    println!("TOTAL:{}", total); // END
+}
+"""
+
+
+@pytest.mark.timeout(400)
+def test_long_instances_and_closures_are_labelled_apart(tmp_path, state, capsys):
+    # #151 review 3: two instances whose names were cut at the same 300 characters got
+    # the same label, with no mark of the cut; closures showed escaped symbol names.
+    crate = crate_at(tmp_path, "lg", LONG)
+    bump, call = line_of(LONG, "// BUMP"), line_of(LONG, "// CALL")
+    sets = ("--set-at", f"{bump}@1", "k=10", "--set-at", f"{bump}@2", "k=20")
+    code, result = probe(capsys, crate, call, "--capture", "total", *sets)
+    assert code == 0, result.get("error")
+    first, second = (change["instance"] for change in result["interventions"])
+    assert first != second and "…" in first and "…" in second, (first, second)
+    assert first.split("…")[0] == second.split("…")[0]
+    assert main(["sql", "SELECT instance FROM interventions", "--json"]) == 0
+    stored = [row["instance"] for row in json.loads(capsys.readouterr().out)["rows"]]
+    assert stored == [first, second]
+
+    crate = crate_at(tmp_path, "cl", CLOSURES)
+    both, end = line_of(CLOSURES, "// BOTH"), line_of(CLOSURES, "// END")
+    code, result = probe(capsys, crate, both, "--capture", "i", "--hits", "5")
+    assert code == 0, result.get("error")
+    shown = [row.get("instance") for row in result["rows"]]
+    assert shown[1:] == ["cl::main::{closure#0}"] * 2 + ["cl::main::{closure#1}"] * 2, shown
+    # A refusal at a stop names the closure, as the warning does.
+    code, result = probe(capsys, crate, end, "--set-at", f"{both}@4", "w=1")
+    assert code == 1 and not result.get("refused_before_launch"), result
+    assert "(in cl::main::{closure#1})" in result["error"]["message"], result["error"]
+    assert any("cl::main::{closure#0} (stops 2, 3)" in w for w in result["warnings"]), result

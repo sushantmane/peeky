@@ -1235,16 +1235,24 @@ class RustSession(NativeSession):
             )
 
     def instance_name(self, frame):
-        """A generic function's instance as the build's debug information names it, with
-        its type arguments (`rc::tf<rc::A>`), for the frame: its symbol's hash is all that
-        tells `tf::<A>`'s frames from `tf::<B>`'s. None for any other frame."""
+        """The frame's function as the build's debug information names it, where its
+        symbol's hash is all that tells it apart: a generic's instance with its type
+        arguments (`rc::tf<rc::A>`), a closure or async body by its number
+        (`cl::main::{closure#1}`, where LLDB shows `{{closure}}` for each). None for any
+        other frame. One past 300 characters is cut and ends with `…`."""
         hashed = _frame_hash(frame)
         proofs = getattr(self, "owned", None)
         functions = getattr(proofs, "functions", None) if proofs is not None else None
         function = functions.get(hashed[1]) if hashed and isinstance(functions, dict) else None
-        if function is None or not getattr(function, "instance", ""):
+        if function is None:
             return None
-        return "::".join((*function.ancestors, function.instance))[:300]
+        own = getattr(function, "instance", "") or (
+            function.name if str(function.name).startswith("{") else ""
+        )
+        if not own:
+            return None
+        named = "::".join((*function.ancestors, own))
+        return named if len(named) <= 300 else named[:299] + "…"
 
     def never_settable_row(self, variable, frame, member=False):
         """`register` where no stop of this build can change the row (#138): the build's

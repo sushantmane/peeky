@@ -93,6 +93,7 @@ def test_a_recorded_probe_is_queryable_with_numbers_and_identity(store):
             "line": 8,
             "capture_hit": 1,
             "function": None,
+            "instance": None,
         }
     ]
     assert evidence.query(store, "SELECT worker FROM runs WHERE run_id = 2")["rows"] == [
@@ -1649,3 +1650,22 @@ def test_a_schema_10_store_gains_intervention_functions(store):
     connection.close()
     rows = evidence.query(store, "SELECT function FROM interventions")["rows"]
     assert rows == [{"function": None}]
+
+
+def test_a_schema_11_store_gains_intervention_instances(store):
+    # #151 review 3: `queries wide` said `in gen::tf` for both instances.
+    recorded = result(sets=[("start", "0")])
+    recorded["interventions"][0].update(
+        function="gen::tf::h0000000000000002", instance="gen::tf<gen::B>"
+    )
+    evidence.record(store, recorded)
+    assert evidence.run_query(store, "wide")["rows"][1]["sets"] == (
+        '["start: 3 -> 0 (line 8, hit 1, in gen::tf<gen::B>)"]'
+    )
+    connection = sqlite3.connect(store)
+    connection.executescript(
+        "ALTER TABLE interventions DROP COLUMN instance; PRAGMA user_version = 11;"
+    )
+    connection.close()
+    rows = evidence.query(store, "SELECT function, instance FROM interventions")["rows"]
+    assert rows == [{"function": "gen::tf::h0000000000000002", "instance": None}]

@@ -2607,19 +2607,79 @@ def probe_exit_code(result):
     return UNAPPLIED_EXIT if result.get("unapplied") else 0
 
 
-def _stops_by_function(functions, instances, word):
-    """`main (stops 1, 3); tf<rc::A> (stop 2)` for {frame name: [stops]}: each frame by
-    its generic instance where known, else as `display_function` shows it, and by its
-    whole name where two would read alike (instances whose type arguments are unknown,
-    overloads)."""
-    labels = {name: instances.get(name) or display_function(name) for name in functions}
+_HASHED = re.compile(r"::(h[0-9a-f]{16})$")
+# What Python's debugger names alike, by the node making the code: two lambdas on a line
+# are both `<lambda>`, and its frames give no column (debugpy reports 1).
+_PYTHON_ALIKE = {
+    ast.Lambda: "<lambda>",
+    ast.GeneratorExp: "<genexpr>",
+    ast.ListComp: "<listcomp>",
+    ast.SetComp: "<setcomp>",
+    ast.DictComp: "<dictcomp>",
+}
+
+
+def _function_labels(names, instances):
+    """{frame name: label} for warnings and changes: a frame by the function its build
+    names (`instances`: a generic's instance, a Rust closure's number) where known, else
+    as `display_function` shows it; where two different frames would read alike (an
+    instance cut short, overloads), the label with the frame's symbol hash, else the
+    frame's whole name."""
+    labels = {name: instances.get(name) or display_function(name) for name in names}
     shown = list(labels.values())
-    return "; ".join(
-        f"{(label if shown.count(label) == 1 else name) or '?'} "
-        f"({word}{'s' if len(numbers) > 1 else ''} "
-        f"{', '.join(map(str, numbers[:8]))}{', ...' if len(numbers) > 8 else ''})"
-        for (name, numbers), label in list(zip(functions.items(), labels.values()))[:4]
-    )
+    distinct = {}
+    for name, label in labels.items():
+        if shown.count(label) > 1:
+            hashed = _HASHED.search(str(name))
+            label = f"{label} ({hashed[1]})" if hashed and instances.get(name) else str(name)
+        distinct[name] = label
+    return distinct
+
+
+def _python_alike(text, lines):
+    """{line: {code name: how many}} of the code on ``lines`` of a Python source that
+    Python's debugger names alike (two lambdas on one line), whose stops it cannot tell
+    apart; {} where none, or the source does not parse."""
+    try:
+        tree = ast.parse(text)
+    except (SyntaxError, ValueError):
+        return {}
+    found = {}
+    for node in ast.walk(tree):
+        name = _PYTHON_ALIKE.get(type(node))
+        if name is None:
+            continue
+        for number in set(range(node.lineno, (node.end_lineno or node.lineno) + 1)) & set(lines):
+            counts = found.setdefault(number, {})
+            counts[name] = counts.get(name, 0) + 1
+    return {
+        number: {name: count for name, count in counts.items() if count > 1}
+        for number, counts in found.items()
+        if any(count > 1 for count in counts.values())
+    }
+
+
+def _stops_by_function(functions, labels, word, alike=None):
+    """`main (stops 1, 3); tf<rc::A> (stop 2)` for {frame name: [stops]}, each frame by
+    its label (`_function_labels`); `alike`: {code name: how many} the line has that the
+    debugger names alike, whose stops are counted together."""
+    shown = []
+    for name, numbers in list(functions.items())[:8]:
+        many = (alike or {}).get(name)
+        shown.append(
+            f"{labels.get(name) or '?'} ({word}{'s' if len(numbers) > 1 else ''} "
+            f"{', '.join(map(str, numbers[:8]))}{', ...' if len(numbers) > 8 else ''}"
+            + (
+                f"; {many} on the line, which the debugger names alike, so their stops are "
+                "counted together"
+                if many
+                else ""
+            )
+            + ")"
+        )
+    if len(functions) > 8:
+        shown.append(f"and {len(functions) - 8} more")
+    return "; ".join(shown)
 
 
 def _moved(placed, state):
@@ -2923,7 +2983,9 @@ def run_probe(root, probe, *, adapter=None, progress=None):
                     raise Refused(
                         exc.code,
                         f"--set-at {probe.program}:{point['line']}@{hit} {name}={value} was "
-                        f"refused at that stop (in {display_function(frame.get('name')) or '?'})"
+                        "refused at that stop (in "
+                        + (snapshot.get("instance") or display_function(frame.get("name")) or "?")
+                        + ")"
                         f": {exc}"
                         + (
                             f" ({len(changes)} earlier intervention(s) applied; the run is "
@@ -2959,6 +3021,12 @@ def run_probe(root, probe, *, adapter=None, progress=None):
                         pointers=pointers,
                     )
                 )
+            if captured and snapshot.get("instance"):
+                # The function as the build names it (`tf<rc::A>`, `main::{closure#1}`),
+                # for the table: the frame's own name keeps the symbol hash.
+                for row in rows:
+                    if row["hit"] == hits and row.get("function") == frame.get("name"):
+                        row.setdefault("instance", snapshot["instance"])
             if len(rows) > MAX_ROWS:
                 raise ValueError("Probe row budget exceeded")
             # Keep only the breakpoints a later stop still needs.
@@ -3136,12 +3204,44 @@ def run_probe(root, probe, *, adapter=None, progress=None):
             if result.get("optimized")
             else "Some selectors could not be read by the debugger; see each row's reason."
         )
+    labels = _function_labels(
+        dict.fromkeys(
+            [
+                *functions,
+                *(name for named in set_functions.values() for name in named),
+                *(change.get("function") for change in changes),
+            ]
+        ),
+        instances,
+    )
+    # Python code the debugger names alike on a line (two lambdas), which no frame tells
+    # apart: said, never listed as one function.
+    alike = {}
+    if probe.program.endswith(".py") and (functions or set_functions):
+        try:
+            source = (Path(root) / probe.program).read_text()
+            if probe.edit:
+                old, new = combine_edits(source, probe.edit)
+                source = source.replace(old, new, 1)
+            alike = _python_alike(source, [line, *set_functions])
+        except (OSError, ValueError):
+            alike = {}
+    for change in changes:
+        number = next((p["build_line"] for p in points if p["change"] is change), line)
+        if many := alike.get(number, {}).get(change.get("function")):
+            change["alike"] = many
+        if change.get("instance"):
+            # As the warnings label it: with its hash where another instance reads alike
+            # (a name cut short).
+            change["instance"] = labels.get(change.get("function")) or change["instance"]
     # The --at line's own warning, unless it is a --set-at line too: one warning then.
-    shared = len(set_functions.get(line, ())) > 1
-    if len(functions) > 1 and not shared:
+    shared = line in set_functions and (
+        len(set_functions[line]) > 1 or set(alike.get(line, ())) & set(set_functions[line])
+    )
+    if (len(functions) > 1 or set(alike.get(line, ())) & set(functions)) and not shared:
         warnings.append(
-            f"Line {line} stopped in {len(functions)} functions: "
-            + _stops_by_function(functions, instances, "hit")
+            f"Line {line} stopped in {len(functions)} function{'s' if len(functions) > 1 else ''}: "
+            + _stops_by_function(functions, labels, "hit", alike.get(line))
             + ". --hits and --set-hit count every stop; the function column says which "
             "is which."
         )
@@ -3177,12 +3277,12 @@ def run_probe(root, probe, *, adapter=None, progress=None):
             f"stopped {hits} time(s) at line {line}, before hit {probe.set_hit}."
         )
     for number, named in set_functions.items():
-        if len(named) > 1:
+        if len(named) > 1 or set(alike.get(number, ())) & set(named):
             asked = next(p["line"] for p in points if p["build_line"] == number)
             warnings.append(
                 (f"Line {line}" if number == line else f"--set-at line {asked}")
-                + f" stopped in {len(named)} functions: "
-                + _stops_by_function(named, instances, "stop")
+                + f" stopped in {len(named)} function{'s' if len(named) > 1 else ''}: "
+                + _stops_by_function(named, labels, "stop", alike.get(number))
                 + (
                     ". --hits, --set-hit and --set-at's @HIT count every stop of the line, "
                     "in any function; the function column and each change say which is "
@@ -3275,7 +3375,10 @@ def _table(result):
             str(row["hit"]),
             row["phase"],
             str(row.get("line", "")),
-            functions.get(row.get("function"), ""),
+            # A short instance name (`main::{closure#1}`, `tf<rc::A>`); JSON has every one.
+            row["instance"]
+            if len(row.get("instance") or "") <= 60 and row.get("instance")
+            else functions.get(row.get("function"), ""),
             row["selector"],
             row.get("type") or "",
             row.get("value", "<" + row.get("error", "") + ">")
@@ -3298,6 +3401,8 @@ def _table(result):
     named = function_labels(change.get("function") for change in result["interventions"])
     for change in result["interventions"]:
         where = change.get("instance") or named.get(change.get("function"), change.get("function"))
+        if change.get("alike"):
+            where = f"{where}, one of {change['alike']} on the line the debugger names alike"
         lines.append(
             f"set {change['name']}: {change['before']} -> {change['after']}"
             + (

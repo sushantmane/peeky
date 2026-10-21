@@ -17,7 +17,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import quote
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 MAX_RUNS = 500
 DEFAULT_ROWS = 200
 MAX_ROWS = 10000
@@ -128,6 +128,10 @@ TABLES = {
             "function": "Function (frame) whose variable it changed: a line's stops can be "
             "in several (a lambda or closure on it, a recursive call), and its hit counts "
             "them all; NULL where an older run did not say",
+            "instance": "That function as the build names it where the frame's name does not "
+            "tell it apart (Rust: a generic's instance with its type arguments, "
+            "`gen::tf<gen::A>`, cut at 300 characters with `…`; a closure, "
+            "`main::{closure#1}`), else NULL",
         },
     ),
     "pauses": (
@@ -178,7 +182,7 @@ _DDL = (
         source_sha256 TEXT, target_identity TEXT, edit TEXT, notes_kept INTEGER)""",
     _CAPTURES.format("captures"),
     "CREATE TABLE interventions (run_id INTEGER NOT NULL, hit INTEGER, name TEXT, "
-    "before TEXT, after TEXT, line INTEGER, capture_hit INTEGER, function TEXT)",
+    "before TEXT, after TEXT, line INTEGER, capture_hit INTEGER, function TEXT, instance TEXT)",
     "CREATE TABLE pauses (run_id INTEGER NOT NULL, hit INTEGER, ms REAL)",
     *_CAPTURE_INDEXES,
     "CREATE INDEX interventions_run ON interventions (run_id)",
@@ -197,8 +201,9 @@ _DDL = (
 # (earlier runs' notes were not kept: NULL); version 9 adds runs.notes_kept, 1 for a run
 # saved with its notes, so queries can say which runs' values may be unmarked; version
 # 10 adds interventions.line and capture_hit (an earlier run's --set was at its captured
-# stop); version 11 adds interventions.function. Views name columns of the newest
-# tables, so earlier steps only drop them and the last creates them.
+# stop); version 11 adds interventions.function, version 12 interventions.instance. Views
+# name columns of the newest tables, so earlier steps only drop them and the last creates
+# them.
 _DROP_VIEWS = ("DROP VIEW IF EXISTS last_run", "DROP VIEW IF EXISTS evidence")
 
 
@@ -276,9 +281,10 @@ _MIGRATIONS = {
         "AND c.phase = 'after-set'), (SELECT r.line FROM runs r WHERE r.run_id = "
         "interventions.run_id)) WHERE capture_hit IS NULL",
     ),
-    10: (
+    10: (*_DROP_VIEWS, _add_columns(("function", "TEXT"), table="interventions")),
+    11: (
         *_DROP_VIEWS,
-        _add_columns(("function", "TEXT"), table="interventions"),
+        _add_columns(("instance", "TEXT"), table="interventions"),
         _EVIDENCE_VIEW,
         _LAST_RUN_VIEW,
     ),
@@ -889,7 +895,7 @@ def record(path, result, *, language=None, target=None, label=None, worker=None)
         )
         connection.executemany(
             "INSERT INTO interventions (run_id, hit, name, before, after, line, capture_hit, "
-            "function) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "function, instance) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [
                 (
                     run_id,
@@ -903,6 +909,7 @@ def record(path, result, *, language=None, target=None, label=None, worker=None)
                     else _set_line(result, change.get("hit", probe.get("set_hit"))),
                     change.get("capture_hit", change.get("hit", probe.get("set_hit"))),
                     _text(change.get("function")),
+                    _text(change.get("instance")),
                 )
                 for change in result.get("interventions") or []
             ],
@@ -1297,7 +1304,7 @@ def _wide(path, params):
     sets = (
         "(SELECT NULLIF(json_group_array(name || ': ' || COALESCE(before, '?') || ' -> ' || "
         "COALESCE(after, '?') || ' (line ' || COALESCE(line, '?') || ', hit ' || hit || "
-        "COALESCE(', in ' || short_function(function), '') || ')'), "
+        "COALESCE(', in ' || COALESCE(instance, short_function(function)), '') || ')'), "
         f"'[]') FROM (SELECT * FROM interventions i WHERE i.run_id = {run} AND CASE WHEN "
         f"{_AT_CAPTURE} THEN w.phase = 'after-set' AND i.hit = w.hit ELSE w.phase = "
         "'observed' AND i.capture_hit = w.hit - 1 END ORDER BY i.rowid))"
