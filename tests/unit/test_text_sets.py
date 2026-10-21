@@ -420,3 +420,17 @@ def test_libcxx_standard_layout_keeps_half_the_allocation_in_cap():
     assert fake.get(0x9000, 72) == b"z" * 71 + b"\0"
     with pytest.raises(ValueError, match="with room for 71 bytes"):
         change(listed(), "z" * 72, fake.interface(), listed, "std")
+
+
+def test_a_later_breakpoint_location_is_not_a_lines_start(tmp_path):
+    # #164 after #160: a line that stops several times per pass (a loop header) stops
+    # past its first code at its later locations, where every place of it counts.
+    from peeky.worker import DebugWorker
+
+    worker = DebugWorker(tmp_path)
+    worker.stop_reason, worker.stop_place = "breakpoint", (2, 2)
+    assert worker.text_stop() == "breakpoint-later"
+    worker.stop_place = (1, 2)
+    assert worker.text_stop() == "breakpoint"
+    worker.stop_reason, worker.stop_place = "step", None
+    assert worker.text_stop() == "step"

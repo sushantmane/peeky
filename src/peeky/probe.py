@@ -2947,6 +2947,14 @@ def run_probe(root, probe, *, adapter=None, progress=None):
                         f" (all, up to {probe.limit})" if probe.hits == "all" else f"/{probe.limit}"
                     )
                     say(f"hit {hits}{of} at {probe.program}:{expected[line]}; capturing")
+                # Which of the line's breakpoint locations in this function the stop is at,
+                # where it has several (#157): each pass stops at each.
+                place = (
+                    {"stop": state["place"], "stops": state["places"]}
+                    if type(state.get("place")) is int and type(state.get("places")) is int
+                    else {}
+                )
+                first = len(rows)
                 # The stop-validation inspection is reused for the first selectors.
                 rows.extend(
                     _capture(
@@ -3010,6 +3018,13 @@ def run_probe(root, probe, *, adapter=None, progress=None):
                     # Which function's variable: the line's stops may be in several.
                     "function": frame.get("name"),
                     **({"instance": snapshot["instance"]} if snapshot.get("instance") else {}),
+                    # Which of the line's breakpoint locations there (#157): @HIT and
+                    # --set-hit count each.
+                    **(
+                        {"stop": state["place"], "stops": state["places"]}
+                        if type(state.get("place")) is int and type(state.get("places")) is int
+                        else {}
+                    ),
                 }
                 if point is not None:
                     change["at"] = f"{point['line']}@{hit}"
@@ -3027,6 +3042,9 @@ def run_probe(root, probe, *, adapter=None, progress=None):
                         pointers=pointers,
                     )
                 )
+            if captured:
+                for row in rows[first:]:
+                    row.update(place)
             if captured and snapshot.get("instance"):
                 # The function as the build names it (`tf<rc::A>`, `main::{closure#1}`),
                 # for the table: the frame's own name keeps the symbol hash.
@@ -3248,8 +3266,8 @@ def run_probe(root, probe, *, adapter=None, progress=None):
         warnings.append(
             f"Line {line} stopped in {len(functions)} function{'s' if len(functions) > 1 else ''}: "
             + _stops_by_function(functions, labels, "hit", alike.get(line))
-            + ". --hits and --set-hit count every stop; the function column says which "
-            "is which."
+            + ". --hits, --set-hit and --set-at's @HIT count every stop; the function column "
+            "says which is which."
         )
     # A change's own caveat (a std::string's text, #164), once for the names it covers.
     caveats = {}
@@ -3365,7 +3383,12 @@ def _by_hit(rows):
     for row in rows:
         entry = grouped.setdefault(
             row["hit"],
-            {"hit": row["hit"], "line": row.get("line"), "function": row.get("function")},
+            {
+                "hit": row["hit"],
+                "line": row.get("line"),
+                "function": row.get("function"),
+                **({"stop": row["stop"], "stops": row["stops"]} if "stops" in row else {}),
+            },
         )
         value = row["value"] if "value" in row else {"error": row.get("error")}
         entry.setdefault(row["phase"], {})[row["selector"]] = value
@@ -3380,7 +3403,10 @@ def _rust_notes():
 
 def _table(result):
     lines = []
-    header = ("hit", "phase", "line", "function", "selector", "type", "value")
+    # Which of a line's breakpoint locations each stop is at, where it has several (#157).
+    stops = any("stops" in row for row in result["rows"])
+    header = ("hit", *(("stop",) if stops else ()), "phase", "line", "function", "selector")
+    header += ("type", "value")
     # A C++ frame's signature (`trim_left(std::__1::basic_string<...> const&)`) would
     # double the table's width; Rust's ends with a symbol hash. JSON keeps the name whole.
     functions = function_labels(row.get("function") for row in result["rows"])
@@ -3396,6 +3422,7 @@ def _table(result):
     rows = [
         (
             str(row["hit"]),
+            *((f"{row['stop']}/{row['stops']}" if "stops" in row else "",) if stops else ()),
             row["phase"],
             str(row.get("line", "")),
             short_instance(row) or functions.get(row.get("function"), ""),
@@ -3432,11 +3459,15 @@ def _table(result):
         where = change.get("instance") or named.get(change.get("function"), change.get("function"))
         if change.get("alike"):
             where = f"{where}, one of {change['alike']} on the line the debugger names alike"
+        # Which of the line's breakpoint locations the stop was at, where it has several.
+        stop = f", stop {change['stop']} of {change['stops']}" if change.get("stops") else ""
         lines.append(
             f"set {change['name']}: {change['before']} -> {change['after']}"
             + (
-                f"  (--set-at line {change['at']}" + (f", in {where})" if where else ")")
+                f"  (--set-at line {change['at']}{stop}" + (f", in {where})" if where else ")")
                 if change.get("at")
+                else f"  ({stop[2:]})"
+                if stop
                 else ""
             )
         )
