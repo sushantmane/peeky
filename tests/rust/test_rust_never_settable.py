@@ -471,16 +471,25 @@ def test_a_previews_fields_say_their_root_is_kept_in_a_register(tmp_path, state,
     assert main(["session", "start", str(crate), "--at", f"src/main.rs:{at}"]) == 0
     capsys.readouterr()
     try:
+        assert main(["session", "get", "m", "--json"]) == 0
+        [shown] = json.loads(capsys.readouterr().out)
+        assert main(["session", "get", "kept", "--json"]) == 0
+        [kept] = json.loads(capsys.readouterr().out)
         assert main(["session", "get", "m"]) == 0
-        shown = capsys.readouterr().out
-        assert main(["session", "get", "kept"]) == 0
-        kept = capsys.readouterr().out
+        text = capsys.readouterr().out
     finally:
         main(["session", "close"])
         capsys.readouterr()
-    assert "m: previewed::Meters = Meters { v: 5 }" in shown, shown
-    assert "m.v: u64 = 5  [not settable: register]" in shown, shown
-    assert "kept.v: u64 = 3  [settable]" in kept, kept
+    # Without memory reads (lldb-dap 18) there is no preview, and the field is the
+    # debugger's own child: marked the same.
+    if os.environ.get("PEEKY_EXPECT_READ_MEMORY") or shown.get("view") == "memory":
+        assert shown["value"] == "Meters { v: 5 }", shown
+    [field] = shown["children"]
+    assert (field["value"], field["settable"], field["not_settable"]) == ("5", False, "register")
+    assert "m.v: " in text and "= 5  [not settable: register]" in text, text
+    [field] = kept["children"]
+    assert field["value"] == "3" and field["settable"] is True, kept
+    assert "not_settable" not in field, kept
     code, result = probe(capsys, crate, at, "--set", "m.v=9")
     assert code == 1
     assert "`m` is a parameter kept in a register" in refused_before_launch(result)
