@@ -772,6 +772,10 @@ RUST_INTEGERS = frozenset(
 
 _HASH_IN = re.compile(r"17(h[0-9a-f]{16})E")
 
+# What a Rust function may return that Peeky shows (#155), as LLDB names it: integers
+# (u8 and i8 as C characters, converted), bool and floats.
+RUST_RETURNS = RUST_INTEGERS | {"bool", "float", "double", "unsigned char", "char", "signed char"}
+
 # The MIR's names for the integers `set` changes (as RUST_INTEGERS are LLDB's).
 _SETTABLE_RUST = frozenset({"i16", "i32", "i64", "u16", "u32", "u64", "isize", "usize"})
 
@@ -1216,6 +1220,27 @@ class RustSession(NativeSession):
 
     def _optimized(self):
         return getattr(getattr(self, "target", None), "opt_level", "0") != "0"
+
+    def return_withheld(self, variable):
+        """Why a Rust return LLDB lists is not shown, or None: integers, bool and floats,
+        which come back in a register; never an enum, Option, struct, reference, String
+        or char (LLDB shows a char as C's, #155)."""
+        kind = str(variable.get("type") or "")
+        if kind in RUST_RETURNS:
+            return None
+        return (
+            f"{kind or 'its type'} is not an integer, bool or float: the debugger may read an "
+            "enum, struct, reference or char from the wrong place, or show it as C would, so "
+            "Peeky shows only scalar returns"
+        )
+
+    @staticmethod
+    def return_shown(variable):
+        """(type, value) as Rust names and prints them: `unsigned char` 'A' is u8 65."""
+        kind, value = variable.get("type"), variable.get("value")
+        if (byte := lldb_byte(value, kind)) is not None:
+            return ("u8" if kind == "unsigned char" else "i8"), byte
+        return UNIQUE_SCALARS.get(kind, kind), value
 
     def settable(self, variable, frame=None):
         """A Rust integer local the program keeps in memory (see validate_mutation_target)."""
