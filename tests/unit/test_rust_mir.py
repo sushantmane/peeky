@@ -2633,6 +2633,8 @@ def test_only_drops_that_cannot_read_a_borrow_are_quiet(kind, quiet):
 
 def test_crate_types_whose_fields_hold_no_pointer_are_free():
     # #164 review 3: `Vec<Span>` with `Span { start: u32, end: u32 }` holds no borrow.
+    # Review 4: nor a `Box` of such (rustc describes it as a pointer named for it), a
+    # C-like enum, a union of such, or a type that holds itself through a Box.
     from peeky.rust import free_types
     from peeky.rust_mir import _pointer_free
 
@@ -2644,10 +2646,31 @@ def test_crate_types_whose_fields_hold_no_pointer_are_free():
             attrs["DW_AT_type"] = f"0x{kind:08x}"
         return {"tag": tag, "attrs": attrs, "children": list(children), "parent": parent}
 
+    def option(at, of, param):
+        # core::option::Option<…>, its type argument on its `Some` variant's struct.
+        return {
+            at: die("DW_TAG_structure_type", f"Option<{of}>", children=[at + 1], parent=51),
+            at + 1: die("DW_TAG_variant_part", children=[at + 2], parent=at),
+            at + 2: die("DW_TAG_variant", children=[at + 3], parent=at + 1),
+            at + 3: die("DW_TAG_member", "Some", kind=at + 4, parent=at + 2),
+            at + 4: die("DW_TAG_structure_type", "Some", children=[at + 5, at + 6], parent=at),
+            at + 5: die("DW_TAG_template_type_parameter", "T", kind=param, parent=at + 4),
+            at + 6: die("DW_TAG_member", "__0", kind=param, parent=at + 4),
+        }
+
+    spans = [10, 20, 30, 40, 80, 90, 100, 110, 120, 130]
     dies = {
-        1: die("DW_TAG_namespace", "spans", children=[10, 20, 30, 40]),
+        1: die("DW_TAG_namespace", "spans", children=spans),
         2: die("DW_TAG_base_type", "u32"),
         3: die("DW_TAG_pointer_type", "*const u8", kind=2),
+        4: die("DW_TAG_pointer_type", "alloc::boxed::Box<u32, alloc::alloc::Global>", kind=2),
+        5: die("DW_TAG_pointer_type", "&u32", kind=2),
+        6: die(
+            "DW_TAG_pointer_type", "alloc::boxed::Box<spans::Rec, alloc::alloc::Global>", kind=90
+        ),
+        7: die(
+            "DW_TAG_pointer_type", "alloc::boxed::Box<spans::Bad, alloc::alloc::Global>", kind=100
+        ),
         10: die("DW_TAG_structure_type", "Span", children=[11, 12], parent=1),
         11: die("DW_TAG_member", "start", kind=2, parent=10),
         12: die("DW_TAG_member", "end", kind=2, parent=10),
@@ -2655,13 +2678,41 @@ def test_crate_types_whose_fields_hold_no_pointer_are_free():
         21: die("DW_TAG_member", "at", kind=3, parent=20),
         30: die("DW_TAG_structure_type", "Pair", children=[31], parent=1),
         31: die("DW_TAG_member", "inner", kind=10, parent=30),
-        # A type that holds itself is not assumed to hold no pointer.
         40: die("DW_TAG_structure_type", "Loop", children=[41], parent=1),
         41: die("DW_TAG_member", "again", kind=40, parent=40),
+        50: die("DW_TAG_namespace", "core", children=[51]),
+        51: die("DW_TAG_namespace", "option", children=[60, 70, 140], parent=50),
+        **option(60, "alloc::boxed::Box<spans::Rec, alloc::alloc::Global>", 6),
+        **option(70, "alloc::boxed::Box<spans::Bad, alloc::alloc::Global>", 7),
+        **option(140, "&u32", 5),
+        # struct Boxed { b: Box<u32> }
+        80: die("DW_TAG_structure_type", "Boxed", children=[81], parent=1),
+        81: die("DW_TAG_member", "b", kind=4, parent=80),
+        # struct Rec { v: u32, next: Option<Box<Rec>> }
+        90: die("DW_TAG_structure_type", "Rec", children=[91, 92], parent=1),
+        91: die("DW_TAG_member", "v", kind=2, parent=90),
+        92: die("DW_TAG_member", "next", kind=60, parent=90),
+        # struct Bad { at: Option<&u32>, next: Option<Box<Bad>> }
+        100: die("DW_TAG_structure_type", "Bad", children=[101, 102], parent=1),
+        101: die("DW_TAG_member", "at", kind=140, parent=100),
+        102: die("DW_TAG_member", "next", kind=70, parent=100),
+        # enum CEnum { A, B }
+        110: die("DW_TAG_enumeration_type", "CEnum", kind=2, parent=1),
+        # union Bits { n: u32, s: Span }, union Raw { p: *const u8 }
+        120: die("DW_TAG_union_type", "Bits", children=[121, 122], parent=1),
+        121: die("DW_TAG_member", "n", kind=2, parent=120),
+        122: die("DW_TAG_member", "s", kind=10, parent=120),
+        130: die("DW_TAG_union_type", "Raw", children=[131], parent=1),
+        131: die("DW_TAG_member", "p", kind=3, parent=130),
     }
     found = free_types(dies)
-    assert {"Span", "spans::Span", "Pair", "spans::Pair"} <= found, found
-    assert not {"Pointing", "Loop"} & found, found
+    free = {"Span", "Pair", "Loop", "Boxed", "Rec", "CEnum", "Bits"}
+    assert free | {f"spans::{name}" for name in free} <= found, found
+    assert not {"Pointing", "Bad", "Raw", "spans::Bad"} & found, found
     assert _pointer_free("std::vec::Vec<Span>", (), found) is True
     assert _pointer_free("std::vec::Vec<Span>", ()) is False
     assert _pointer_free("std::vec::Vec<Pointing>", (), found) is False
+    assert _pointer_free("std::option::Option<Rec>", (), found) is True
+    # An `Option` whose type argument is not found holds what it may.
+    dies[64] = die("DW_TAG_structure_type", "Some", parent=60)
+    assert "Rec" not in free_types(dies)

@@ -687,6 +687,15 @@ class RustTarget:
             session.code_blocks = blocks
             # Each local's IR declarations, to say why a name is not in memory (#138).
             session.declarations_ir = declarations
+            # Unsafe code can read a String's bytes where no borrow shows it (#164 review
+            # 3): where the crate has any, no String takes a text. Only the files the
+            # debugged executable is built from count (rustc's dependency file): an
+            # integration test's code never runs in it.
+            built = {relative for _, relative in _dependencies(binary, prepared.workspace)}
+            session.unsafe_code = unsafe_source(
+                {name: text for name, text in texts.items() if name in built},
+                tuple(name for name in rust if name in built),
+            )
             session.assert_current()
             return session
         except BaseException as exc:
@@ -727,22 +736,30 @@ def owned_locals(workspace, artifacts, crate, ir, sources):
     )
 
 
+def _dependencies(executable, workspace):
+    """[(path, its workspace-relative name or None outside it)] of each file rustc read to
+    build ``executable``, from its dependency file."""
+    root = Path(workspace).resolve()
+    depfile = executable.with_name(executable.name + ".d")
+    if not depfile.is_file():
+        raise ValueError(f"Cargo wrote no dependency file for {executable.name}")
+    found = []
+    for dependency in dependency_paths(depfile.read_text(), root):
+        try:
+            found.append((dependency, dependency.resolve().relative_to(root).as_posix()))
+        except (OSError, ValueError):
+            found.append((dependency, None))
+    return found
+
+
 def _require_declared_dependencies(executables, workspace, inputs):
     """Every file the compiler read (rustc's dependency files) must be declared.
 
     `#[path = "/elsewhere"] mod x;`, `include!` and `include_str!` would otherwise
     compile bytes that no provenance check covers.
     """
-    root = Path(workspace).resolve()
     for executable in executables:
-        depfile = executable.with_name(executable.name + ".d")
-        if not depfile.is_file():
-            raise ValueError(f"Cargo wrote no dependency file for {executable.name}")
-        for dependency in dependency_paths(depfile.read_text(), root):
-            try:
-                relative = dependency.resolve().relative_to(root).as_posix()
-            except (OSError, ValueError):
-                relative = None
+        for dependency, relative in _dependencies(executable, workspace):
             if relative not in inputs:
                 raise ValueError(
                     f"The Rust build read {dependency}, which is not a declared source; "
@@ -765,6 +782,46 @@ RUST_RETURNS = RUST_INTEGERS | {"bool", "float", "double", "unsigned char", "cha
 
 # The MIR's names for the integers `set` changes (as RUST_INTEGERS are LLDB's).
 _SETTABLE_RUST = frozenset({"i16", "i32", "i64", "u16", "u32", "u64", "isize", "usize"})
+
+
+_UNSAFE_CRATE = (
+    "the crate has unsafe code (in {source}), which can free a buffer without Peeky seeing it"
+)
+_UNREAD_CRATE = (
+    "Peeky cannot rule out unsafe code in {source} ({why}), and unsafe code can free a "
+    "buffer without Peeky seeing it"
+)
+# Where a crate's own code can do what safe Rust cannot: an `unsafe` block, function,
+# impl, trait or extern block, an `#[unsafe(...)]` attribute, and the attributes that
+# are unsafe without saying so before the 2024 edition (a `#[no_mangle]` function can
+# replace `free`), and `global_asm!`, which needs no `unsafe` but can define `free`
+# too (`asm!` and `naked_asm!` need it, but count anyway). `r#unsafe` is an identifier.
+_UNSAFE_CODE = re.compile(
+    r"(?<![\w#])(?:unsafe|no_mangle|export_name|link_section|global_asm|naked_asm)\b"
+    r"|(?<![\w#])asm\s*!"
+)
+
+
+def unsafe_source(texts, rust):
+    """Why the crate may have unsafe code, or None: ``texts`` ({name: text}) are the files
+    the debugged executable is built from, ``rust`` the Rust sources among them. Rust
+    sources are read without their comments and strings, and one Peeky cannot be sure it
+    reads as rustc does (rust_lexer.scan) counts; any other file a macro could
+    `include!`, as plain text."""
+    from peeky.rust_lexer import scan
+
+    for name in rust:
+        code, why = scan(texts.get(name, ""))
+        if code is None:
+            return _UNREAD_CRATE.format(source=name, why=why)
+        if _UNSAFE_CODE.search(code):
+            return _UNSAFE_CRATE.format(source=name)
+    for name, text in texts.items():
+        if name not in rust and _UNSAFE_CODE.search(text):
+            return _UNSAFE_CRATE.format(source=name)
+    return None
+
+
 # A String as the MIR names it: what a text (#137) changes.
 _TEXT_RUST = frozenset({"std::string::String", "alloc::string::String", "String"})
 
@@ -832,17 +889,27 @@ _FREE_RECORDS = frozenset(
 )
 
 
+# Of those, the ones that take no type argument.
+_UNARGUED_RECORDS = frozenset(
+    {"alloc::string::String", "alloc::alloc::Global", "std::hash::random::RandomState"}
+)
+_STD_PREFIXES = ("std::", "core::", "alloc::")
+
+
 def free_types(dies):
     """The names (as the MIR prints them, `Span`, and qualified, `spans::Span`) of the
-    crate's own types with no type parameters whose fields, read from the debug
-    information, provably hold no pointer (#164): numbers, arrays and the crate's own
-    such types, and the standard containers of them (``_FREE_RECORDS``, by their type
-    arguments). A name two types share is kept only if both hold none. A type that
-    holds itself (through a `Box`) is not counted: Peeky does not assume its answer."""
+    crate's own structs, enums and unions without type parameters that provably hold no
+    pointer, read from the debug information (#164): every field, variant and element,
+    however deep, is a number, a C-like enum, an array, a crate type of the same kind,
+    or a standard container of such (``_FREE_RECORDS``, by their type arguments); a
+    `Box` (which rustc describes as a pointer named for it) by what it owns. A type
+    that holds itself through a `Box` or container (`Rec { next: Option<Box<Rec>> }`)
+    is judged by everything else it holds: owning a value of its own type borrows
+    nothing. Any reference, raw pointer, trait object, function pointer, type not
+    described or other standard type holds one. A name two types share is kept only if
+    both hold none."""
     from peeky.fields import _target
     from peeky.native import _qualified, _text
-
-    memo, pending = {}, set()
 
     def target(die):
         return _target(die["attrs"].get("DW_AT_type"))
@@ -855,51 +922,97 @@ def free_types(dies):
             elif tag in ("DW_TAG_variant_part", "DW_TAG_variant"):
                 yield from members(dies[child])
 
-    def free(offset, depth=0):
-        if offset in memo:
-            return memo[offset]
-        die = dies.get(offset)
-        if die is None or depth > 64 or offset in pending:
-            return False
-        tag = die["tag"]
-        if tag in ("DW_TAG_typedef", "DW_TAG_const_type", "DW_TAG_volatile_type"):
-            return free(target(die), depth + 1)
-        if tag in ("DW_TAG_base_type", "DW_TAG_enumeration_type"):
-            return True
-        if tag == "DW_TAG_array_type":
-            return free(target(die), depth + 1)
-        if tag != "DW_TAG_structure_type" or "DW_AT_declaration" in die["attrs"]:
-            return False
-        pending.add(offset)
-        qualified = _qualified(dies, offset) or ""
-        params = [
-            target(dies[child])
+    def parameters(die):
+        return [
+            child
             for child in die["children"]
-            if dies[child]["tag"] == "DW_TAG_template_type_parameter"
+            if dies[child]["tag"]
+            in ("DW_TAG_template_type_parameter", "DW_TAG_template_value_parameter")
         ]
-        if qualified.startswith(("std::", "core::", "alloc::")):
-            found = qualified.split("<", 1)[0] in _FREE_RECORDS and all(
-                free(param, depth + 1) for param in params
-            )
-        else:
-            found = not params and all(
-                free(target(dies[member]), depth + 1) for member in members(die)
-            )
-        pending.discard(offset)
-        memo[offset] = found
-        return found
 
-    verdicts = {}
+    def held(offset):
+        """The types a value of the type at ``offset`` holds, or None if it may hold a
+        pointer by itself."""
+        die = dies.get(offset)
+        if die is None:
+            return None
+        tag, attrs = die["tag"], die["attrs"]
+        if tag in ("DW_TAG_base_type", "DW_TAG_enumeration_type"):
+            return []
+        if tag in (
+            "DW_TAG_typedef",
+            "DW_TAG_const_type",
+            "DW_TAG_volatile_type",
+            "DW_TAG_array_type",
+        ) or (
+            tag == "DW_TAG_pointer_type"
+            and (_text(attrs.get("DW_AT_name")) or "").startswith("alloc::boxed::Box<")
+        ):
+            return [target(die)]
+        if (
+            tag not in ("DW_TAG_structure_type", "DW_TAG_union_type")
+            or "DW_AT_declaration" in attrs
+        ):
+            return None
+        qualified = _qualified(dies, offset) or ""
+        if qualified.startswith(_STD_PREFIXES):
+            record = qualified.split("<", 1)[0]
+            if record not in _FREE_RECORDS:
+                return None
+            # An enum's type arguments are its variants' (`Option<T>`'s on `Some<T>`).
+            found = [
+                target(dies[child])
+                for each in [die, *(dies.get(target(dies[member])) for member in members(die))]
+                if each is not None and each["tag"] == "DW_TAG_structure_type"
+                for child in parameters(each)
+                if dies[child]["tag"] == "DW_TAG_template_type_parameter"
+            ]
+            return found if found or record in _UNARGUED_RECORDS else None
+        if parameters(die) or (_text(attrs.get("DW_AT_name")) or "").startswith("dyn "):
+            return None
+        return [target(dies[member]) for member in members(die)]
+
+    # Every type the crate's own types reach, then those that reach one holding a
+    # pointer by itself (or not described).
+    edges, unsafe, pending = {}, set(), []
+    names = {}
     for offset, die in dies.items():
-        if die["tag"] != "DW_TAG_structure_type" or "DW_AT_declaration" in die["attrs"]:
+        if (
+            die["tag"]
+            not in ("DW_TAG_structure_type", "DW_TAG_enumeration_type", "DW_TAG_union_type")
+            or "DW_AT_declaration" in die["attrs"]
+        ):
             continue
         qualified = _qualified(dies, offset) or ""
         name = _text(die["attrs"].get("DW_AT_name")) or ""
-        if not name or "<" in name or qualified.startswith(("std::", "core::", "alloc::")):
+        if not name or "<" in name or qualified.startswith(_STD_PREFIXES):
             continue
-        verdict = free(offset)
-        for each in {name, qualified}:
-            verdicts[each] = verdicts.get(each, True) and verdict
+        names[offset] = {name, qualified} - {""}
+        pending.append(offset)
+    while pending:
+        offset = pending.pop()
+        if offset in edges or offset in unsafe:
+            continue
+        found = held(offset) if offset is not None else None
+        if found is None:
+            unsafe.add(offset)
+            continue
+        edges[offset] = found
+        pending.extend(found)
+    holders = {}
+    for offset, found in edges.items():
+        for each in found:
+            holders.setdefault(each, []).append(offset)
+    tainted, pending = set(unsafe), list(unsafe)
+    while pending:
+        for holder in holders.get(pending.pop(), ()):
+            if holder not in tainted:
+                tainted.add(holder)
+                pending.append(holder)
+    verdicts = {}
+    for offset, each in names.items():
+        for name in each:
+            verdicts[name] = verdicts.get(name, True) and offset not in tainted
     return frozenset(name for name, verdict in verdicts.items() if verdict)
 
 
@@ -1131,6 +1244,8 @@ class RustSession(NativeSession):
     units = ()
     # {legacy hash: the function's CodeBlocks} (rust_symbols.code_blocks; #115).
     code_blocks = {}
+    # Why the crate may have unsafe code, or None (``unsafe_source``; #164 review 3).
+    unsafe_code = None
 
     def function_scopes(self):
         """Functions of the application units only, as `prepare` read them: the whole
@@ -1327,12 +1442,13 @@ class RustSession(NativeSession):
                 "initialized here (it may be moved, dropped or not yet assigned), and a "
                 "String's buffer may then be freed memory"
             )
-        if proofs.unsafe_code:
+        if unsafe := getattr(self, "unsafe_code", None):
+            # #164 review 3: a raw pointer, or an address kept as an integer (`s.as_ptr()
+            # as usize`), holds the String's bytes where no borrow shows it.
             raise ValueError(
-                f"`{name}` cannot be changed to a text: the crate has `unsafe` code, where "
-                "a raw pointer or an address kept as an integer (`s.as_ptr() as usize`) "
-                "can still read the String's bytes at the old length, which no borrow "
-                "shows Peeky"
+                f"`{name}` cannot be changed to a text: {unsafe}; and unsafe code can read "
+                "the String's bytes at the old length through a raw pointer or an address "
+                "kept as an integer (`s.as_ptr() as usize`), which no borrow shows Peeky"
             )
         # Before the line's first code (as `mid_statement` requires), or anywhere on it.
         start = stop == "breakpoint" or (stop == "step" and self._line_start(frame))

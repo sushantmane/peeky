@@ -3252,20 +3252,6 @@ class OwnedLocals:
         held = _mask(body.copies_of(local, formatting=self._formatting()))
         return any(body.live_ahead(position) & held for position in positions)
 
-    @functools.cached_property
-    def unsafe_code(self):
-        """Whether the crate's sources use `unsafe` (#164): a raw pointer, or an address
-        kept as an integer (`s.as_ptr() as usize`), can then read a String's bytes in
-        ways no borrow shows. True where a source does not lex (an unterminated string
-        or comment)."""
-        from peeky.rust_lexer import code_only
-
-        for text in (self.texts or {}).values():
-            code = code_only(text)
-            if code is None or re.search(r"\bunsafe\b", code):
-                return True
-        return False
-
     def borrow_live(
         self,
         hashed,

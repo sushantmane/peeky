@@ -351,5 +351,72 @@ def test_a_crate_with_unsafe_code_takes_no_text(crate, capsys):
     # code read the String through it after a change: bytes that are not UTF-8.
     (crate / "src/main.rs").write_text(UNSAFE)
     code, result = probe_at(crate, capsys, UNSAFE, "ADDR", "s")
-    refusal(code, result, "`s` cannot be changed to a text: the crate has `unsafe` code")
+    refusal(code, result, "`s` cannot be changed to a text: the crate has unsafe code (in src/")
     assert "utf8=false" not in (result.get("output") or ""), result
+
+
+SHEBANG = """#!/usr/bin/env run-it "
+#[inline(never)]
+fn mark() {}
+fn main() {
+    let mut s = String::with_capacity(32);
+    s.push_str("abcdefghij");
+    let addr = s.as_ptr() as usize;
+    let len = s.len();
+    mark(); // SHEBANG
+    let t = unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts((addr + 2) as *const u8, len - 2)) };
+    println!("utf8={}", std::str::from_utf8(t.as_bytes()).is_ok());
+    let q = '"';
+    println!("{}", q);
+    s.push('!');
+}
+"""
+
+
+@pytest.mark.timeout(400)
+def test_a_shebang_line_hides_no_unsafe_code(crate, capsys):
+    # #164 review 4: the shebang's `"` opened a string up to the char literal's, hiding
+    # the `unsafe` block between them; rustc skips a shebang line.
+    (crate / "src/main.rs").write_text(SHEBANG)
+    code, result = probe_at(crate, capsys, SHEBANG, "SHEBANG", "s")
+    refusal(code, result, "`s` cannot be changed to a text: the crate has unsafe code (in src/")
+    assert "utf8=false" not in (result.get("output") or ""), result
+
+
+OWNING = """#[inline(never)]
+fn mark() {}
+struct Boxed { b: Box<u32> }
+#[derive(Clone, Copy)]
+enum CEnum { A, B }
+struct Rec { v: u32, next: Option<Box<Rec>> }
+#[inline(never)]
+fn boxed_of(s: &str) -> Boxed { Boxed { b: Box::new(s.len() as u32) } }
+#[inline(never)]
+fn enum_of(s: &str) -> CEnum { if s.len() > 3 { CEnum::A } else { CEnum::B } }
+#[inline(never)]
+fn rec_of(s: &str) -> Rec { Rec { v: s.len() as u32, next: None } }
+fn main() {
+    let mut s = String::with_capacity(32);
+    s.push_str("abcdefghij");
+    let b = boxed_of(&s);
+    let e = enum_of(&s);
+    let r = rec_of(&s);
+    mark(); // OWNING
+    println!("OWNING:{} {} {} {} {}", s, b.b, matches!(e, CEnum::A), r.v, r.next.is_none());
+    s.push('!');
+}
+"""
+
+
+@pytest.mark.timeout(400)
+def test_crate_types_owning_boxes_enums_or_themselves_hold_no_borrow(crate, capsys):
+    # #164 review 4: `Boxed { b: Box<u32> }` (rustc describes a Box as a pointer) and a
+    # C-like enum counted as maybe holding a borrow of `s`; a type that holds itself
+    # through a Box is judged by what else it holds.
+    (crate / "src/main.rs").write_text(OWNING)
+    code, result = probe_at(crate, capsys, OWNING, "OWNING", "s")
+    if WRITES:
+        assert code == 0, result.get("error")
+        assert "OWNING:aé 10 true 10 true" in result["output"], result
+    else:
+        refusal(code, result, "cannot write memory")

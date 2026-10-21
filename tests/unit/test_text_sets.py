@@ -434,3 +434,27 @@ def test_a_later_breakpoint_location_is_not_a_lines_start(tmp_path):
     assert worker.text_stop() == "breakpoint"
     worker.stop_reason, worker.stop_place = "step", None
     assert worker.text_stop() == "step"
+
+
+def test_a_crate_peeky_cannot_read_as_rustc_does_counts_as_unsafe():
+    # #164 review 4: a shebang's `"` hid an `unsafe` block from the scan.
+    from peeky.rust import unsafe_source
+
+    def why(text, other=None):
+        texts = {"src/main.rs": text, **({"gen.inc": other} if other is not None else {})}
+        return unsafe_source(texts, ("src/main.rs",))
+
+    hidden = "#!/usr/bin/env run-it \"\nfn main() { unsafe { f() }; let q = '\"'; }\n"
+    assert "has unsafe code (in src/main.rs)" in why(hidden)
+    assert why("#!/usr/bin/env run-it \"\nfn main() { let q = '\"'; }\n") is None
+    # `#![...]` is an attribute, not a shebang.
+    assert why("#![allow(dead_code)]\nfn main() {}\n") is None
+    assert "cannot rule out unsafe code" in why('fn main() { let s = "open; }\n')
+    assert "brackets do not pair up" in why("fn main() { let s = ']'; ]\n")
+    assert "frontmatter" in why("---\n[dependencies]\n---\nfn main() {}\n")
+    assert "comment follows" in why("#! // x\nfn main() {}\n")
+    for code in ('global_asm!("")', "#[no_mangle] fn f() {}", "#[unsafe(no_mangle)] fn f() {}"):
+        assert "has unsafe code" in why(f"{code}\nfn main() {{}}\n"), code
+    # Comments and strings are not code; a file `include!` reads is read as text.
+    assert why('// unsafe\nfn main() { let s = "unsafe"; }\n') is None
+    assert "(in gen.inc)" in why("fn main() {}\n", "unsafe { f() }")
