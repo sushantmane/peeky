@@ -17,7 +17,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import quote
 
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 MAX_RUNS = 500
 DEFAULT_ROWS = 200
 MAX_ROWS = 10000
@@ -80,7 +80,9 @@ TABLES = {
         {
             "run_id": "-> runs.run_id",
             "hit": "Hit number, from 1",
-            "phase": "observed, or after-set (the value after that hit's interventions)",
+            "phase": "observed, after-set (the value after that hit's interventions), or "
+            "returned (the `(return)` row: what the call returned, read where it returned "
+            "to; line is that line, function the function that returned)",
             "line": "Line where the program actually stopped (a candidate run's own numbering; "
             "runs.line is the requested line in the original file)",
             "function": "Function (frame) name, as the debugger names it (C++: its "
@@ -118,6 +120,10 @@ TABLES = {
             "as a probe table's function column shows it; else NULL (and for runs saved before schema 13). short_function(function) "
             "gives every closure of a function, and every instance of a generic, one name: "
             "instance tells them apart",
+            "stop": "Which of the line's breakpoint locations in its function the hit was at, "
+            "1 to N in address order, where the line has several there (a macro's or a "
+            "block's own code, a loop header's): a pass stops at each, so hits count stops, "
+            "not passes. NULL for a line with one (and for runs saved before schema 14)",
         },
     ),
     "interventions": (
@@ -140,6 +146,10 @@ TABLES = {
             "tell it apart (Rust: a generic's instance with its type arguments, "
             "`gen::tf<gen::A>`, cut at 300 characters with `…`; a closure, "
             "`main::{closure#1}`), else NULL",
+            "stop": "Which of its line's breakpoint locations in that function the stop was "
+            "at, 1 to N in address order, where the line has several there (#157): hit counts "
+            "every one, so @HIT names a stop, not a pass. NULL for a line with one (and for "
+            "runs saved before schema 14)",
         },
     ),
     "pauses": (
@@ -148,8 +158,8 @@ TABLES = {
     ),
 }
 _EVIDENCE_COLUMNS = (
-    "run_id, started_at, label, program, line, status, hit, phase, function, instance, "
-    "selector, type, "
+    "run_id, started_at, label, program, line, status, hit, stop, phase, function, "
+    "instance, selector, type, "
     "value, num, unavailable, error, view, note, identity, scope, args, sets, "
     "artifact_manifest_id, source_sha256, candidate, language"
 )
@@ -162,8 +172,8 @@ VIEWS = {
     "last_run": "The evidence rows of the newest run",
 }
 _EVIDENCE_VIEW = """CREATE VIEW evidence AS SELECT c.run_id, r.started_at, r.label, r.program,
-        c.line, r.status, c.hit, c.phase, c.function, c.instance, c.selector, c.type, c.value,
-        c.num,
+        c.line, r.status, c.hit, c.stop, c.phase, c.function, c.instance, c.selector,
+        c.type, c.value, c.num,
         c.unavailable, c.error, c.view, c.note, c.identity, c.scope, r.args, r.sets,
         r.artifact_manifest_id,
         r.source_sha256, r.edit IS NOT NULL AS candidate, r.language
@@ -176,7 +186,8 @@ _LAST_RUN_VIEW = (
 _CAPTURES = """CREATE TABLE {} (
         run_id INTEGER NOT NULL, hit INTEGER, phase TEXT, line INTEGER, function TEXT,
         selector TEXT, type TEXT, value TEXT, num NUMERIC, unavailable INTEGER NOT NULL,
-        error TEXT, view TEXT, identity INTEGER, scope TEXT, note TEXT, instance TEXT)"""
+        error TEXT, view TEXT, identity INTEGER, scope TEXT, note TEXT, instance TEXT,
+        stop INTEGER)"""
 _CAPTURE_INDEXES = (
     "CREATE INDEX captures_run ON captures (run_id, hit)",
     "CREATE INDEX captures_selector ON captures (selector)",
@@ -192,7 +203,8 @@ _DDL = (
         source_sha256 TEXT, target_identity TEXT, edit TEXT, notes_kept INTEGER)""",
     _CAPTURES.format("captures"),
     "CREATE TABLE interventions (run_id INTEGER NOT NULL, hit INTEGER, name TEXT, "
-    "before TEXT, after TEXT, line INTEGER, capture_hit INTEGER, function TEXT, instance TEXT)",
+    "before TEXT, after TEXT, line INTEGER, capture_hit INTEGER, function TEXT, instance TEXT, "
+    "stop INTEGER)",
     "CREATE TABLE pauses (run_id INTEGER NOT NULL, hit INTEGER, ms REAL)",
     *_CAPTURE_INDEXES,
     "CREATE INDEX interventions_run ON interventions (run_id)",
@@ -212,9 +224,10 @@ _DDL = (
 # saved with its notes, so queries can say which runs' values may be unmarked; version
 # 10 adds interventions.line and capture_hit (an earlier run's --set was at its captured
 # stop); version 11 adds interventions.function, version 12 interventions.instance, and
-# version 13 captures.instance (a closure's or generic instance's label, NULL before). Views
-# name columns of the newest tables, so earlier steps only drop them and the last creates
-# them.
+# version 13 captures.instance (a closure's or generic instance's label, NULL before);
+# version 14 adds captures.stop and interventions.stop (#157), which of a line's breakpoint
+# locations a hit or a change was at. Views name columns of the newest tables, so earlier steps only drop them and the
+# last creates them.
 _DROP_VIEWS = ("DROP VIEW IF EXISTS last_run", "DROP VIEW IF EXISTS evidence")
 
 
@@ -294,7 +307,14 @@ _MIGRATIONS = {
     ),
     10: (*_DROP_VIEWS, _add_columns(("function", "TEXT"), table="interventions")),
     11: (*_DROP_VIEWS, _add_columns(("instance", "TEXT"), table="interventions")),
-    12: (*_DROP_VIEWS, _add_columns(("instance", "TEXT")), _EVIDENCE_VIEW, _LAST_RUN_VIEW),
+    12: (*_DROP_VIEWS, _add_columns(("instance", "TEXT"))),
+    13: (
+        *_DROP_VIEWS,
+        _add_columns(("stop", "INTEGER")),
+        _add_columns(("stop", "INTEGER"), table="interventions"),
+        _EVIDENCE_VIEW,
+        _LAST_RUN_VIEW,
+    ),
 }
 
 _LATEST = "(SELECT MAX(run_id) FROM runs)"
@@ -537,8 +557,9 @@ QUERIES = {
     ),
     "run": (
         "Every captured value of one run, in capture order; error says why a value is NULL; "
-        "view and note qualify a value (read it with them)",
-        f"SELECT hit, phase, line, function, selector, type, value, {_ERROR} AS error, view, "
+        "view and note qualify a value (read it with them); stop says which of the line's "
+        "breakpoint locations a hit was at, where it has several",
+        f"SELECT hit, stop, phase, line, function, selector, type, value, {_ERROR} AS error, view, "
         f"note FROM captures WHERE run_id = {_RUN} ORDER BY rowid",
         _RUN_PARAM,
         (),
@@ -553,7 +574,8 @@ QUERIES = {
     OR LAG({_caveat()}) OVER w IS NOT NULL THEN NULL
     ELSE value IS NOT LAG(value) OVER w END AS changed
 FROM captures
-WHERE run_id = {_RUN} AND phase = 'observed' AND (:selector IS NULL OR selector = :selector)
+WHERE run_id = {_RUN} AND phase IN ('observed', 'returned')
+  AND (:selector IS NULL OR selector = :selector)
 WINDOW w AS (PARTITION BY selector ORDER BY hit) ORDER BY selector, hit""",
         {**_RUN_PARAM, "selector": "Only this selector (default: all)"},
         (),
@@ -594,10 +616,11 @@ WINDOW w AS (PARTITION BY selector ORDER BY hit) ORDER BY selector, hit""",
         "caveat_observed and caveat_after_set name a view or `note` that qualifies a value. "
         "A change at a stop with no capture (a --set-at line) is one row: selector is what "
         "it changed, observed and after_set its value before and after (the set's own "
-        "read-back), function whose variable it was",
-        f"""SELECT hit, line, function, selector, observed, after_set, caveat_observed,
+        "read-back), function whose variable it was. stop says which of the line's breakpoint "
+        "locations the stop was at, where it has several (hit counts each)",
+        f"""SELECT hit, stop, line, function, selector, observed, after_set, caveat_observed,
   caveat_after_set, interventions FROM (
-  SELECT o.hit, o.line, o.function, o.selector, {_shown("o")} AS observed,
+  SELECT o.hit, o.stop, o.line, o.function, o.selector, {_shown("o")} AS observed,
     {_shown("s")} AS after_set,
     {_caveat("o")} AS caveat_observed, {_caveat("s")} AS caveat_after_set,
     (SELECT group_concat(name || ': ' || before || ' -> ' || after, '; ') FROM interventions i
@@ -608,7 +631,7 @@ WINDOW w AS (PARTITION BY selector ORDER BY hit) ORDER BY selector, hit""",
     AND s.selector = o.selector AND s.phase = 'after-set'
   WHERE o.run_id = {_RUN} AND o.phase = 'observed'
   UNION ALL
-  SELECT i.hit, i.line, i.function, i.name, i.before, i.after, NULL, NULL,
+  SELECT i.hit, i.stop, i.line, i.function, i.name, i.before, i.after, NULL, NULL,
     i.name || ': ' || i.before || ' -> ' || i.after, i.rowid, 0
   FROM interventions i WHERE i.run_id = {_RUN} AND NOT {_AT_CAPTURE})
 ORDER BY seq, pos""",
@@ -622,14 +645,16 @@ ORDER BY seq, pos""",
         "evidence by themselves), and values are ordered by their other sightings",
         f"SELECT program, line, value, COUNT(*) AS seen, SUM(({_caveat()}) IS NOT NULL) AS "
         "qualified, COUNT(DISTINCT run_id) AS runs, MIN(run_id) AS first_run, MAX(run_id) "
-        "AS last_run FROM evidence WHERE selector = :selector AND phase = 'observed' AND "
+        "AS last_run FROM evidence WHERE selector = :selector AND phase IN ('observed', "
+        "'returned') AND "
         "NOT candidate GROUP BY program, line, value ORDER BY seen - qualified DESC, seen "
         "DESC, value",
         {"selector": "Selector, e.g. request.page (required)"},
         ("selector",),
     ),
     "wide": (
-        "One row per hit (and phase) of one run, a column per selector in capture order "
+        "One row per hit (and phase) of one run (with stop, which of the line's breakpoint "
+        "locations it was at, for a line with several), a column per selector in capture order "
         "(a name SQLite would take for an earlier column, ignoring case, gets ` (2)`), each "
         "cell the value as stored. no_value is a JSON object naming the cells with no value "
         "(NULL: unavailable, withheld, an error) and why; a selector not captured at that "
@@ -639,7 +664,10 @@ ORDER BY seq, pos""",
         "it, never as plain values. --json gives the generated SQL too (`sql`), to refine "
         "with peeky sql",
         lambda path, params: _wide(path, params),
-        {**_RUN_PARAM, "phase": "observed or after-set (default: both, after-set after)"},
+        {
+            **_RUN_PARAM,
+            "phase": "observed, after-set or returned (default: all, in that order)",
+        },
         (),
     ),
     "join": (
@@ -655,7 +683,7 @@ ORDER BY seq, pos""",
         {
             **_PAIR_PARAMS,
             "key": "Selector whose value links the runs, e.g. v (required)",
-            "phase": "observed (default) or after-set",
+            "phase": "observed (default), after-set or returned",
             "masked": "1: match key values with addresses masked (no_addresses), for a "
             "pointer or a C string; any address then matches any other",
         },
@@ -875,8 +903,8 @@ def record(path, result, *, language=None, target=None, label=None, worker=None)
         ).lastrowid
         connection.executemany(
             "INSERT INTO captures (run_id, hit, phase, line, function, selector, type, value, "
-            "num, unavailable, error, view, identity, scope, note, instance) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "num, unavailable, error, view, identity, scope, note, instance, stop) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [
                 (
                     run_id,
@@ -897,13 +925,14 @@ def record(path, result, *, language=None, target=None, label=None, worker=None)
                     "globals" if row.get("scope") == "globals" else None,
                     _text(row.get("note")),
                     _text(row.get("instance")),
+                    row["stop"] if type(row.get("stop")) is int else None,
                 )
                 for row in result.get("rows") or []
             ],
         )
         connection.executemany(
             "INSERT INTO interventions (run_id, hit, name, before, after, line, capture_hit, "
-            "function, instance) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "function, instance, stop) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [
                 (
                     run_id,
@@ -918,6 +947,7 @@ def record(path, result, *, language=None, target=None, label=None, worker=None)
                     change.get("capture_hit", change.get("hit", probe.get("set_hit"))),
                     _text(change.get("function")),
                     _text(change.get("instance")),
+                    change["stop"] if type(change.get("stop")) is int else None,
                 )
                 for change in result.get("interventions") or []
             ],
@@ -1189,7 +1219,7 @@ def _identifier(name):
     return '"' + str(name).replace('"', '""') + '"'
 
 
-_PHASES = ("observed", "after-set")
+_PHASES = ("observed", "after-set", "returned")
 # Each run's cells: names whose value is NULL, with why, and names whose value something
 # qualifies, with what: JSON objects, so no reason or selector text can be misread as a
 # separator. NULL where there are none.
@@ -1203,7 +1233,7 @@ def _cells(where):
     other than how it was read, else `note` where the row has a note). A selector
     captured twice at a hit read the same both times (``_captured`` checks): one cell."""
     return (
-        "SELECT hit, phase, selector, MIN(line) AS line, MAX(value) AS value,\n"
+        "SELECT hit, phase, selector, MIN(line) AS line, MIN(stop) AS stop, MAX(value) AS value,\n"
         "    CASE WHEN MAX(value) IS NULL THEN COALESCE(MAX(error), 'no value') END AS reason,\n"
         f"    MAX({_caveat()}) AS caveat\n"
         f"  FROM captures WHERE {where} GROUP BY hit, phase, selector"
@@ -1213,7 +1243,9 @@ def _cells(where):
 def _phase(params, default=None):
     phase = params.get("phase", default)
     if phase is not None and phase not in _PHASES:
-        raise ValueError(f"Evidence query failed: phase is observed or after-set, not {phase!r}")
+        raise ValueError(
+            f"Evidence query failed: phase is observed, after-set or returned, not {phase!r}"
+        )
     return phase
 
 
@@ -1302,7 +1334,14 @@ def _wide(path, params):
     column per selector in capture order. Generated per run: SQL cannot pivot alone."""
     run, phase = _run_id(path, params.get("run")), _phase(params)
     selectors = _captured(path, run, phase)
-    fixed = {"hit", "phase", "line", "no_value", "caveats", "sets"}
+    # Which of the line's breakpoint locations each hit was at (#157), for a run whose
+    # line has several in one function.
+    stops = query(
+        path,
+        "SELECT 1 AS n FROM captures WHERE run_id = :run AND stop IS NOT NULL LIMIT 1",
+        {"run": run},
+    )["rows"]
+    fixed = {"hit", *(("stop",) if stops else ()), "phase", "line", "no_value", "caveats", "sets"}
     names = _columns(selectors, set(fixed), fixed=fixed)
     _too_wide(len(names) + len(fixed), run, "wide")
     where = f"run_id = {run}" + (f" AND phase = {_literal(phase)}" if phase else "")
@@ -1312,6 +1351,7 @@ def _wide(path, params):
     sets = (
         "(SELECT NULLIF(json_group_array(name || ': ' || COALESCE(before, '?') || ' -> ' || "
         "COALESCE(after, '?') || ' (line ' || COALESCE(line, '?') || ', hit ' || hit || "
+        "COALESCE(', stop ' || stop, '') || "
         "COALESCE(', in ' || COALESCE(instance, short_function(function)), '') || ')'), "
         f"'[]') FROM (SELECT * FROM interventions i WHERE i.run_id = {run} AND CASE WHEN "
         f"{_AT_CAPTURE} THEN w.phase = 'after-set' AND i.hit = w.hit ELSE w.phase = "
@@ -1319,9 +1359,11 @@ def _wide(path, params):
     )
     sql = (
         f"SELECT w.*, {sets} AS sets FROM (\n"
-        f"SELECT hit, phase, MIN(line) AS line,{_picked(selectors, names, '  ')}\n"
+        f"SELECT hit,{' MIN(stop) AS stop,' if stops else ''} phase, MIN(line) AS line,"
+        f"{_picked(selectors, names, '  ')}\n"
         f"  {_NO_VALUE} AS no_value,\n  {_CAVEATS} AS caveats\n"
-        f"FROM ({_cells(where)})\nGROUP BY hit, phase) w ORDER BY w.hit, w.phase = 'after-set'"
+        f"FROM ({_cells(where)})\nGROUP BY hit, phase) w ORDER BY w.hit, "
+        "CASE w.phase WHEN 'after-set' THEN 1 WHEN 'returned' THEN 2 ELSE 0 END"
     )
     return sql, {}, []
 

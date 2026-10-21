@@ -18,6 +18,7 @@ from pathlib import Path
 from peeky.adapters import PythonAdapter, ViewBudgetExhausted
 from peeky.dap import DAP, RequestFailed, ResponseTimeout
 from peeky.errors import _RULES, PROTOCOL_VERSION, classify
+from peeky.names import display_function
 
 VIEW_SECONDS = 10
 # C and C++ previews (#136): their own budget per inspection or expansion, so that
@@ -48,8 +49,21 @@ OPERATIONS = frozenset(
 )
 # Stops the pause budget (--max-pause) may auto-resume: Peeky's own breakpoints and the
 # user's own steps. Crashes, exceptions and signals stay stopped for inspection.
-RESUMABLE_STOPS = frozenset({"breakpoint", "step"})
+RESUMABLE_STOPS = frozenset({"breakpoint", "step", "interrupted"})
+# Stops where a user's step left the thread, maybe outside the program's sources: its
+# end, or (LLDB) the point another thread's stop at the same time caught it (#162).
+STEP_STOPS = frozenset({"step", "interrupted"})
 STEPS = {"over": "next", "in": "stepIn", "out": "stepOut"}
+# The frames a step's start is compared by with the stop it returns to (#155).
+ORIGIN_LEVELS = 10
+# Why a step out's function shows no value (#155).
+ABANDONED = (
+    "it never returned: its caller went on without its return (an exception, longjmp or "
+    "panic ended it), so a value the debugger lists would be another call's"
+)
+INLINED = (
+    "it was inlined into its caller: it has no return of its own, so there is no value to read"
+)
 # Lost `stopped` events on attached JVMs (#27): see find_lost_stop. java-debug reports a
 # breakpoint stop within milliseconds. Polls start LOST_STOP_POLL_S after a resume and
 # run at most that often. Each is one `threads` request and one-frame `stackTrace`
@@ -198,6 +212,13 @@ class DebugWorker:
         # adapter ids, and every one-shot `--to` line the session has used.
         self.own_lines, self.own_ids, self.temporary_lines = set(), set(), set()
         self.stop_outside = self.stop_returns = self.co_served = False
+        # Where the last step started (#155): the function it may leave, and the stack
+        # its return must come back to, to tell whose value a debugger lists after it;
+        # and, while a step out runs, what watches its caller (NativeSession.watch_return).
+        self.step_origin = None
+        self.return_watch = None
+        self.forget_places()
+        self.stop_place = None
         self.reset_lost_stops()
         # A session that failed on a lost stop (#27): its id, error and final report.
         self.failed = None
@@ -625,13 +646,13 @@ class DebugWorker:
         so a failed read here only omits the location.
         """
         try:
-            levels = 20 if self.stop_reason == "step" else 1
+            levels = 20 if self.stop_reason in STEP_STOPS else 1
             stack = self.dap.request(
                 "stackTrace", {"threadId": self.thread_id, "levels": levels}, timeout=2
             )
             frames = stack.get("stackFrames") or [{}]
             frame = frames[0]
-            self.stop_outside = self.stop_reason == "step" and not _in_program_sources(
+            self.stop_outside = self.stop_reason in STEP_STOPS and not _in_program_sources(
                 self.runtime, frame, self.root
             )
             self.stop_returns = self.stop_outside and any(
@@ -640,9 +661,237 @@ class DebugWorker:
             path = frame.get("source", {}).get("path")
             self.stop_function = str(frame.get("name") or "")[:300] or None
             self.stop_line = frame.get("line")
+            self.stop_place = self.place_of(frame)
             return f"{_display_path(self.runtime, path)}:{frame.get('line')}" if path else None
         except Exception:
             return None
+
+    def call_origin(self):
+        """Where a step starts (#155): the thread, the function it may leave, and the
+        frames it would return to; None if the debugger does not list them."""
+        try:
+            stack = self.dap.request(
+                "stackTrace", {"threadId": self.thread_id, "levels": ORIGIN_LEVELS}, timeout=2
+            )
+        except Exception:
+            # Best effort: without it, no returned value is shown after this step.
+            return None
+        frames = [
+            _frame_identity(f)
+            for f in (stack.get("stackFrames") if isinstance(stack, dict) else None) or []
+            if isinstance(f, dict)
+        ][:ORIGIN_LEVELS]
+        if not frames or not frames[0][0]:
+            return None
+        listed = [f for f in stack.get("stackFrames") or [] if isinstance(f, dict)]
+        return {
+            "thread": self.thread_id,
+            "function": frames[0][0],
+            "frames": frames,
+            # What a step out's watch reads (frame ids are valid only until it starts).
+            "listed": listed[:2],
+        }
+
+    def left_function(self, frames):
+        """Whether this stop is the step's return to the function it started in: the
+        top frame is the frame that called it, at the same instruction where the
+        debugger names it (where the call returns), and the frames below are the same
+        frames. Not after a step that stayed in the function, or went past its caller
+        (LLDB steps out of libc++'s hidden frames too, and then the value it lists is
+        no longer that function's)."""
+        origin = self.step_origin
+        if not origin or self.stop_reason != "step" or origin["thread"] != self.thread_id:
+            return False
+        before, after = origin["frames"], [_frame_identity(f) for f in frames[:ORIGIN_LEVELS]]
+        if len(before) < 2 or not after:
+            return False
+        if (before[1][0], before[1][1]) != (after[0][0], after[0][1]):
+            return False
+        if len(before) < ORIGIN_LEVELS and len(after) != len(before) - 1:
+            # Both stacks are whole: exactly one frame fewer.
+            return False
+        return all(new == old for new, old in zip(after[1:], before[2:]))
+
+    def returned_value(self, runtime, frames, entry):
+        """What the function a step just left returned (#155), as the debugger lists it in
+        the frame it returned to (`(Return Value)`, java-debug's `->name()`): {function,
+        type, value}, or {function, unavailable, reason} where Peeky cannot vouch for it.
+        None if the stop is not such a return, or the debugger never lists one (debugpy:
+        only by writing it into the program's globals, which Peeky does not ask for)."""
+        if getattr(runtime, "return_entry", None) is None:
+            return None
+        origin = self.step_origin
+        if origin and self.stop_reason == "step" and origin["thread"] == self.thread_id:
+            if origin.get("abandoned"):
+                return {"function": origin["function"], "unavailable": True, "reason": ABANDONED}
+            if origin.get("inlined"):
+                return {"function": origin["function"], "unavailable": True, "reason": INLINED}
+        if not self.left_function(frames):
+            origin = self.step_origin
+            if entry is None or not origin or self.stop_reason != "step":
+                return None
+            if origin["thread"] != self.thread_id:
+                return None
+            # Listed, but not by a return Peeky can tie to a function: never shown.
+            return {
+                "function": self.step_origin["function"],
+                "unavailable": True,
+                "reason": "the step did not stop where this function returned (it went on "
+                f"to {frames[0].get('name') if frames else 'another frame'}), so the value the "
+                "debugger lists may be another function's",
+            }
+        function = self.step_origin["function"]
+        returned = {"function": function}
+        if self.step_origin.get("moved"):
+            return {
+                **returned,
+                "unavailable": True,
+                "reason": "its caller's stack pointer is not where the call left it, so this "
+                "is not that call's return",
+            }
+        if why := self.step_origin.get("unwatched"):
+            return {
+                **returned,
+                "unavailable": True,
+                "reason": f"Peeky could not tell its return from a later call's: {why}",
+            }
+        named = getattr(runtime, "return_entry", lambda variable: None)
+        if entry is None and (by_command := getattr(runtime, "returned_by_command", None)):
+            # lldb-dap before LLVM 21 lists none; LLDB itself still has it.
+            entry = by_command(self.dap, self.thread_id)
+        if entry is None:
+            reason = (
+                getattr(
+                    runtime,
+                    "no_return",
+                    "the debugger reported no value (a function returning nothing, or a "
+                    "value it cannot read)",
+                )
+                if self.step_origin.get("kind", "out") == "out"
+                else "the debugger reports what a function returned only after `step --out`"
+            )
+        elif (name := named(entry)) and name != _method_name(function):
+            reason = f"the debugger lists the value {name!r} returned, not this function's"
+        elif level := self.optimized():
+            reason = (
+                f"optimized build ({level}): the function may have been inlined, and the "
+                "register the debugger reads may not hold what it returned"
+            )
+        elif (why := getattr(runtime, "return_withheld", lambda variable: None)(entry)) is not None:
+            reason = why
+        elif not isinstance(entry.get("value"), str) or (
+            self.placeholders() and is_unavailable(entry["value"])
+        ):
+            reason = f"the debugger could not read it ({str(entry.get('value'))[:200]})"
+        else:
+            kind, value = entry.get("type"), entry["value"]
+            if shown := getattr(runtime, "return_shown", None):
+                # As the language names and prints it (Rust: u8 65, not 'A').
+                kind, value = shown(entry)
+            return {
+                **returned,
+                "value": str(value)[:2000],
+                **({"type": kind[:300]} if isinstance(kind, str) and kind else {}),
+            }
+        return {**returned, "unavailable": True, "reason": reason}
+
+    def end_return_watch(self, runtime, watch, event):
+        """A step out's watch on its caller ends with the step's first stop (#155). A stop
+        at one of its watched instructions, on its thread, in a frame at or above the
+        caller's, means the call never returned: the caller went on without it. That stop
+        ends the step (it is no breakpoint of the session's, unless one of those is there
+        too). A step's end anywhere the stack pointer is not the caller's is not the
+        call's return either."""
+        ids, reason = (event.get("body") or {}).get("hitBreakpointIds"), self.stop_reason
+        # lldb-dap names one breakpoint of those at an address: where it is, decides.
+        seen = runtime.unwatch_return(
+            self.dap,
+            watch,
+            self.thread_id if self.stop_id and reason in ("step", "breakpoint") else None,
+        )
+        origin = self.step_origin
+        if seen is None or not origin or origin["thread"] != self.thread_id:
+            return
+        if reason == "breakpoint" and seen["pc"] in watch["addresses"]:
+            if seen["sp"] >= watch["sp"]:
+                origin["abandoned"] = True
+                if not (isinstance(ids, list) and set(ids) & self.own_ids):
+                    self.stop_reason = "step"
+                return
+        elif reason == "step" and seen["sp"] != watch["sp"]:
+            origin["moved"] = True
+        if traps := seen.get("dropped"):
+            # A recursion through the caller ran its watched instructions that often,
+            # and LLDB dropped the watch to keep the step's cost bounded (#162).
+            origin["unwatched"] = (
+                f"its caller's watched instructions ran over {traps} times in deeper calls "
+                "during the step (a recursion through its caller), so the watch was "
+                "dropped to keep the step's cost bounded"
+            )
+
+    def stack_depth(self):
+        """The number of frames on the stopped thread's stack (every one listed)."""
+        reply = self.dap.request(
+            "stackTrace", {"threadId": self.thread_id, "startFrame": 0, "levels": 0}, timeout=10
+        )
+        return len(reply.get("stackFrames", []))
+
+    def take_returned(self, runtime, variables):
+        """(variables without it, the entry) where a scope lists what a function returned
+        (`(Return Value)`, java-debug's `->name()`); None if it lists none."""
+        named = getattr(runtime, "return_entry", None)
+        if named is None:
+            return None
+        found = [v for v in variables if isinstance(v, dict) and named(v) is not None]
+        if not found:
+            return None
+        return [v for v in variables if not any(v is f for f in found)], found[0]
+
+    def library_stop(self, runtime, frames):
+        """A step's stop in a library frame (outside the program's sources) that returned
+        from the program's function: where it is and what that function returned, never
+        the library's own locals (#155). None if the step returned from nothing."""
+        if not self.step_origin or getattr(runtime, "return_entry", None) is None:
+            return None
+        scopes = self.dap.request("scopes", {"frameId": frames[0]["id"]}).get("scopes", [])
+        entry = None
+        for scope in runtime.local_scopes(scopes)[:16]:
+            variables = self.dap.request(
+                "variables", {"variablesReference": scope["variablesReference"]}
+            ).get("variables", [])
+            if (taken := self.take_returned(runtime, variables)) is not None:
+                entry = taken[1]
+                break
+        returned = self.returned_value(runtime, frames, entry)
+        if returned is None:
+            return None
+        source = (frames[0].get("source") or {}).get("path")
+        return {
+            "stop_id": self.stop_id,
+            **(
+                {"location": f"{_display_path(runtime, source)}:{frames[0].get('line')}"}
+                if isinstance(source, str) and source
+                else {}
+            ),
+            "function": str(frames[0].get("name") or "")[:300],
+            "frame": 0,
+            "frames": frames,
+            "scopes": [],
+            "returned": returned,
+            "outside_program": True,
+            "returns_to_program": self.stop_returns,
+            "library_frame": (
+                "The step stopped outside the program's sources: the library's locals are "
+                "not read. "
+                + (
+                    "`session step --out` returns to your code, or `session continue`"
+                    if self.stop_returns
+                    else "Your code is no longer on the stack: `session continue`"
+                )
+            ),
+            **self.pause_status(),
+            **({"optimized": level} if (level := self.optimized()) else {}),
+        }
 
     def location(self):
         where = {"location": self.stop_location} if self.stop_location else {}
@@ -650,6 +899,10 @@ class DebugWorker:
             where["function"] = self.stop_function
         if self.stop_id and self.stop_hit:
             where["hit"] = self.stop_hit
+        if self.stop_id and self.stop_place:
+            # Which of the line's breakpoint locations in this function the stop is at
+            # (#157): 1 to `places`, in address order.
+            where["place"], where["places"] = self.stop_place
         if self.stop_id:
             # This worker numbers hits (older ones never send `hit`); False once a stop
             # could not be classified.
@@ -850,6 +1103,118 @@ class DebugWorker:
             if reply.get("id") is not None:
                 self.own_ids.add(reply["id"])
 
+    def forget_places(self):
+        # {line: [(function, its locations' addresses, ascending)]}: where the debugger
+        # placed the session program's breakpoints (#157), by the code holding them.
+        self.places = {}
+        # What they were asked from (runtime, request, reply): a stop at an address none
+        # of them names asks once more (placed before the program loaded, unslid).
+        self.places_asked = None
+        self.places_renewed = False
+        # Some were listed before the program loaded (`m[0x…], unresolved`): their counts
+        # hold, but their addresses are the module's, which a stop's pc may match by
+        # chance once the program is slid. No stop is labelled from them (review 2 of
+        # #160): the first stop asks again.
+        self.places_unresolved = False
+
+    def note_places(self, runtime, requested, placed):
+        """Ask the runtime where the debugger placed the session program's breakpoints
+        (#157): a line can have several locations in one function (a macro's or a
+        block's own code, a loop header's), and it stops at each. Best effort: none
+        known means no warning and no `place`, never a failure."""
+        self.forget_places()
+        self.places_asked = (runtime, list(requested), placed)
+        hook = getattr(runtime, "breakpoint_locations", None)
+        replies = (placed.get("breakpoints") or []) if isinstance(placed, dict) else []
+        ids = [
+            reply["id"]
+            for reply in replies
+            if isinstance(reply, dict)
+            and reply.get("verified") is True
+            and type(reply.get("id")) is int
+        ]
+        if hook is None or not ids or self.dap is None:
+            return
+        try:
+            found = hook(self.dap, ids)
+        except Exception:
+            return
+        groups = {}
+        self.places_unresolved = any(location.get("resolved") is False for location in found or ())
+        for location in found or ():
+            group = groups.setdefault(
+                (location["line"], location["place"]), (location["function"], set())
+            )
+            group[1].add(location["address"])
+        for (line, _), (function, addresses) in groups.items():
+            self.places.setdefault(line, []).append((function, tuple(sorted(addresses))))
+
+    def place_of(self, frame):
+        """(index, count) of the breakpoint location a stop's ``frame`` is at among its
+        line's locations in the same code, in address order, where there are several
+        (#157); else None."""
+        if self.stop_reason != "breakpoint" or frame.get("line") not in self.places:
+            return None
+        text = frame.get("instructionPointerReference")
+        if not isinstance(text, str) or not re.fullmatch(r"0x[0-9a-fA-F]{1,16}", text):
+            return None
+        pc = int(text, 16)
+        for _ in range(2):
+            if not self.places_unresolved:
+                for _, addresses in self.places.get(frame.get("line"), ()):
+                    if pc in addresses:
+                        if len(addresses) == 1:
+                            return None
+                        return (addresses.index(pc) + 1, len(addresses))
+            if self.places_renewed or self.places_asked is None:
+                return None
+            # Placed before the program loaded, at addresses it may no longer have (listed
+            # as unresolved, or none matches): asked once more, now that it runs.
+            self.note_places(*self.places_asked)
+            self.places_renewed = True
+        return None
+
+    def place_warnings(self):
+        """A warning for each line that stops more than once per pass in a function
+        (#157): --hits, --set-hit and --set-at's @HIT count stops. Inlined copies of one
+        function, which read alike, are said once."""
+        labels = self.place_labels(
+            function for groups in self.places.values() for function, _ in groups
+        )
+        notes = []
+        for line in sorted(self.places):
+            for function, addresses in self.places[line]:
+                if len(addresses) > 1:
+                    count = len(addresses)
+                    notes.append(
+                        f"Line {line} stops up to {count} times per pass in "
+                        f"{labels[function][:200]} ({count} breakpoint locations): --hits, "
+                        "--set-hit and --set-at's @HIT count stops, not passes (as do session "
+                        f"hit numbers); each hit's stop (1 to {count}, in address order) says "
+                        "which location."
+                    )
+        return list(dict.fromkeys(notes))[:5]
+
+    def place_labels(self, names):
+        """{debugger function name: how a warning names it}: as tables show it, a Rust
+        generic's instance with its type arguments (`r1::gener<i32>`, #151) where the
+        shortened names would read alike; the whole name where that still does."""
+        names = list(dict.fromkeys(names))
+        shown = {name: display_function(name) for name in names}
+        alike = [name for name in names if list(shown.values()).count(shown[name]) > 1]
+        named = getattr(self.runtime, "instance_name", None)
+        for name in alike:
+            try:
+                instance = named({"name": name}) if named else None
+            except Exception:
+                instance = None
+            if instance:
+                shown[name] = instance
+        return {
+            name: label if list(shown.values()).count(label) == 1 or name not in alike else name
+            for name, label in shown.items()
+        }
+
     def classify_hit(self):
         """Number this stop if it is at one of the session's own breakpoints.
 
@@ -880,6 +1245,7 @@ class DebugWorker:
             {"source": {"path": str(runtime.source_path(self.program))}, "breakpoints": unique},
         )
         self.note_placed(runtime.source_path(self.program), unique, placed)
+        self.note_places(runtime, unique, placed)
         self.breakpoint_counts[str(self.program)] = len(unique)
         self.temporary_line = temporary
         if temporary is not None:
@@ -941,7 +1307,8 @@ class DebugWorker:
 
     def forget_stop(self):
         self.stop_outside = self.stop_returns = False
-        self.stop_hit = self.stop_line = None
+        self.step_origin = None
+        self.stop_hit = self.stop_line = self.stop_place = None
         self.state = "running"
         self.stopped_at = None
         self.stop_location = None
@@ -1076,6 +1443,8 @@ class DebugWorker:
         if operation == "inspect" and "globals" in args and type(args["globals"]) is not bool:
             if not _name_list(args["globals"]):
                 raise ValueError("globals must be true, false or a list of at most 32 names")
+        if operation == "inspect" and type(args.get("depth", False)) is not bool:
+            raise ValueError("depth must be true or false")
         if operation == "inspect" and "names" in args and not _name_list(args["names"]):
             raise ValueError("names must be a list of at most 32 names")
         if operation == "inspect" and type(args.get("previews", True)) is not bool:
@@ -1171,8 +1540,10 @@ class DebugWorker:
             self.temporary_line = None
             self.hits, self.stop_hit, self.stop_line = 0, None, None
             self.own_lines, self.own_ids, self.temporary_lines = set(), set(), set()
+            self.forget_places()
             # Nothing about an earlier session's stops carries over on a shared worker.
             self.co_served = self.stop_outside = self.stop_returns = False
+            self.step_origin = self.return_watch = None
             self.stop_all_threads = False
             self.reset_lost_stops()
             self.max_pause = args.get("max_pause")
@@ -1246,6 +1617,7 @@ class DebugWorker:
                 )
                 self.record_own_points(args.get("breakpoints", []), points)
                 self.note_placed(runtime.source_path(program), args.get("breakpoints", []), points)
+                self.note_places(runtime, args.get("breakpoints", []), points)
                 self.dap.request("configurationDone", timeout=left())
                 self.dap.response(launch, timeout=left())
                 runtime.assert_current()
@@ -1295,6 +1667,7 @@ class DebugWorker:
                         if (
                             notes := [
                                 *self.breakpoint_notes(program, args),
+                                *self.place_warnings(),
                                 *(getattr(runtime, "warnings", None) or ()),
                             ]
                         )
@@ -1385,10 +1758,26 @@ class DebugWorker:
             self.thread_id = event.get("body", {}).get("threadId")
             self.stop_all_threads = event.get("body", {}).get("allThreadsStopped") is True
             self.stop_reason = event.get("body", {}).get("reason") if self.stop_id else None
-            self.stop_function = self.stop_line = self.stop_hit = None
+            self.stop_function = self.stop_line = self.stop_hit = self.stop_place = None
             # This thread's step (if any) has ended; the next poll starts afresh.
+            was_stepping = set(self.stepping)
             self.stepping.discard(self.thread_id)
             self.candidate = None
+            if self.return_watch is not None:
+                watch, self.return_watch = self.return_watch, None
+                self.end_return_watch(runtime, watch, event)
+            if self.stop_id and (discard := getattr(runtime, "discard_steps", None)):
+                # Every step under way at this stop is over (#162): LLDB keeps one a stop
+                # interrupted, and would end it at a later `continue` with a step stop no
+                # one asked for. A step that ended left nothing to discard.
+                for thread in list(was_stepping):
+                    left = discard(self.dap, thread)
+                    self.stepping.discard(thread)
+                    if left and thread == self.thread_id and self.stop_reason == "step":
+                        # lldb-dap called it the step's end, but the step was still under
+                        # way: another thread's stop came at the same time and caught this
+                        # one mid-step (inside `usleep`).
+                        self.stop_reason = "interrupted"
             if self.stop_id and self.sighted and self.sighted["thread"] == self.thread_id:
                 self.sighted = None  # it was reported after all
             if self.state == "terminated" and self.sighted:
@@ -1445,6 +1834,9 @@ class DebugWorker:
             self.listed_frames = list(frames)
             self.deeper_frames = None
             self.innermost_frame = frames[0].get("id") if frames else None
+            if listed := getattr(runtime, "frames_listed", None):
+                # Which frame is innermost: a caller's address is where its call returns.
+                listed(frames)
             if "frame" in args:
                 # An index into `frames` as this reply lists them (0 is the innermost).
                 if args["frame"] >= len(frames):
@@ -1468,14 +1860,21 @@ class DebugWorker:
                     "cannot be read"
                 )
             selected_frame = frames[index]
-            if self.stop_reason == "step" and not _in_program_sources(
+            if self.stop_reason in STEP_STOPS and not _in_program_sources(
                 runtime, selected_frame, self.root
             ):
+                if index == 0 and (shown := self.library_stop(runtime, frames)) is not None:
+                    # What the function the step left returned is still shown (#155).
+                    return {**shown, **({"depth": self.stack_depth()} if args.get("depth") else {})}
                 # The user's own step left the program (into a library, or out of main):
                 # nothing there is read or changed, and the session stays usable.
                 raise ValueError(
-                    f"The step stopped outside the program's sources (in "
-                    f"{selected_frame.get('name')}); "
+                    (
+                        "Another thread's stop interrupted the step"
+                        if self.stop_reason == "interrupted"
+                        else "The step stopped"
+                    )
+                    + f" outside the program's sources (in {selected_frame.get('name')}); "
                     + (
                         "`session step --out` returns to your code, or `session continue`"
                         if self.stop_returns
@@ -1511,7 +1910,7 @@ class DebugWorker:
             names = {*(args.get("names") or ()), *(wanted if isinstance(wanted, list) else ())}
             listed = self.frame_scopes(runtime, selected_frame, scopes)
             available = bool(is_global) and any(is_global(scope) for scope in listed)
-            pending, own, proof = [], [], None
+            pending, own, proof, given = [], [], None, None
             # Why a rule left roots unmarked (a stop part-way through a statement).
             self.unsettable_reasons, roots = [], []
             for scope in listed:
@@ -1527,6 +1926,11 @@ class DebugWorker:
                 ).get("variables", [])
                 if validate_children:
                     validate_children(variables)
+                if (taken := self.take_returned(runtime, variables)) is not None:
+                    # Shown apart, as `returned`, and only if it is the function's (#155).
+                    variables, found = taken
+                    if index == 0 and given is None:
+                        given = found
                 if not module:
                     own += [
                         v["name"]
@@ -1596,6 +2000,12 @@ class DebugWorker:
                 "frame": index,
                 # Which stop at the session's breakpoint this is, as state lines say.
                 **({"hit": self.stop_hit} if self.stop_hit else {}),
+                # Which of the line's breakpoint locations in its function (#157).
+                **(
+                    {"place": self.stop_place[0], "places": self.stop_place[1]}
+                    if self.stop_place
+                    else {}
+                ),
                 "frames": frames,
                 "scopes": result,
                 # The object whose members selectors may name without it (C++, Java).
@@ -1613,6 +2023,12 @@ class DebugWorker:
                     else {}
                 ),
             }
+            if index == 0 and (returned := self.returned_value(runtime, frames, given)):
+                snapshot["returned"] = returned
+            if args.get("depth"):
+                # How many frames the thread has: a probe tells a recursive call from
+                # the same call's next stop by it (#155).
+                snapshot["depth"] = self.stack_depth()
             if index:
                 # Where the program is stopped, which a caller frame's location is not.
                 stopped = (frames[0].get("source") or {}).get("path")
@@ -1774,6 +2190,9 @@ class DebugWorker:
             if self.path(args["program"]) == self.program:
                 self.points, self.temporary_line = list(args["breakpoints"]), None
                 self.record_own_points(args["breakpoints"], placed)
+                self.note_places(runtime, args["breakpoints"], placed)
+                if warnings := self.place_warnings():
+                    return {**placed, "warnings": warnings}
             return placed
         if operation == "continue":
             self.stopped(args)
@@ -1795,6 +2214,7 @@ class DebugWorker:
                     {"source": {"path": str(runtime.source_path(self.program))}, "breakpoints": []},
                 )
                 self.note_placed(runtime.source_path(self.program), [], {})
+                self.forget_places()
                 self.breakpoint_counts[str(self.program)] = 0
                 self.points, self.temporary_line = [], None
             elif args.get("to_line") is not None:
@@ -1835,9 +2255,34 @@ class DebugWorker:
             cursor = getattr(self.dap, "event_cursor", None)
             consumed = cursor() if cursor else self.cursor
             kind = args.get("kind", "over")
+            # Only where the debugger lists returns (not debugpy): one request per step.
+            origin = self.call_origin() if getattr(runtime, "return_entry", None) else None
+            listed = origin.pop("listed") if origin else []
+            if origin:
+                origin["kind"] = kind
+            if before_step := getattr(runtime, "before_step", None):
+                # LLDB: a step out leaves one frame, not the library frames above (#155).
+                before_step(self.dap)
+            watch = None
+            if (
+                origin
+                and kind == "out"
+                and (watch_return := getattr(runtime, "watch_return", None))
+                # An optimized build's returns are withheld anyway: nothing to watch for.
+                and not self.optimized()
+            ):
+                watch = watch_return(self.dap, self.thread_id, listed)
+                if watch.get("inlined") or "unwatched" in watch:
+                    origin.update(watch)
+                    watch = None
             try:
                 self.dap.request(STEPS[kind], {"threadId": self.thread_id})
-            except RequestFailed as exc:
+            except Exception as exc:
+                if watch is not None:
+                    # No step runs that it could watch.
+                    runtime.unwatch_return(self.dap, watch)
+                if not isinstance(exc, RequestFailed):
+                    raise
                 # Refused (e.g. stepping out of the outermost frame): nothing moved.
                 raise ValueError(
                     f"The debugger refused to step {kind} here ({exc}); `session continue` instead"
@@ -1852,6 +2297,7 @@ class DebugWorker:
             self.stepping.add(self.thread_id)
             self.mark_resumed()
             self.forget_stop()
+            self.step_origin, self.return_watch = origin, watch
             return {"state": self.state}
         if operation == "report":
             return self.report(runtime)
@@ -2109,6 +2555,10 @@ class DebugWorker:
                 if pending
                 else None
             )
+            # The plain name a selector reads this local by, where the debugger names it
+            # with where it is declared (`t @ two.c:20`, #158).
+            alias = getattr(self.runtime, "selected_as", None) if not ancestry else None
+            plain = alias(variable, frame, variables) if alias else None
             # A value shown though the runtime cannot vouch for it: a note on its row, and
             # on everything read through it (#148), which says through what.
             note = getattr(reason, "note", None)
@@ -2134,6 +2584,8 @@ class DebugWorker:
                 if isinstance(label := getattr(reason, "label", None), str):
                     # Withheld for another reason than a value not set yet.
                     output["withheld_as"] = label[:100]
+                if plain:
+                    output["selected_as"] = plain
                 if kind is not None:
                     output["type"] = kind
                     shown = getattr(self.runtime, "display_type", None)
@@ -2197,6 +2649,8 @@ class DebugWorker:
                     output.update(type=rust, debugger_type=kind)
                 if isinstance(note, str):
                     output["note"] = note[:500]
+                if plain:
+                    output["selected_as"] = plain
                 result.append(output)
                 self.inspection_nodes += 1
                 continue
@@ -2378,6 +2832,8 @@ class DebugWorker:
                 output["identity"] = identity
             if settable is not None:
                 output["settable"] = settable
+            if plain:
+                output["selected_as"] = plain
             if never:
                 output["not_settable"] = never
             if own == "stale":
@@ -3038,6 +3494,8 @@ class DebugWorker:
         frames = self.dap.request("stackTrace", {"threadId": self.thread_id, "levels": 10}).get(
             "stackFrames", []
         )[:10]
+        if listed := getattr(runtime, "frames_listed", None):
+            listed(frames)
         matches = [f for f in frames if f.get("id") == original_frame.get("id")]
         if len(matches) != 1 or self.frame_identity(matches[0]) != self.frame_identity(
             original_frame
@@ -3103,6 +3561,23 @@ class DebugWorker:
             if runtime:
                 runtime.close()
         return self.last_cleanup if adapter else None
+
+
+def _frame_identity(frame):
+    """(name, instruction, line) a frame is told apart by; the instruction where the
+    debugger gives one (LLDB: a caller's is where its call returns)."""
+    return (
+        str(frame.get("name") or "")[:300],
+        frame.get("instructionPointerReference"),
+        frame.get("line"),
+    )
+
+
+def _method_name(function):
+    """A function's own name as debuggers label what it returned: `Ret.twice(int)` ->
+    `twice`, `before(Task const&, Task const&)` -> `before`."""
+    head = str(function or "").split("(", 1)[0].strip()
+    return re.split(r"[.:]", head)[-1] if head else ""
 
 
 _CALLER_SET = (

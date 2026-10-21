@@ -18,6 +18,7 @@ import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from peeky.adapters import PythonAdapter
 from peeky.errors import Refused, classify
 from peeky.java import _JAVA_OBJECT, JAVA_ARRAY, JAVA_LIST, java_list, java_preview
 from peeky.names import display_function, function_labels, shortened_note
@@ -57,6 +58,15 @@ _NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,127}")
 _SHADOWED_ROOT = re.compile(
     r"([A-Za-z_][A-Za-z0-9_]{0,127}) ?@ ?([^\s:@\[\]'\"]{1,255}):([0-9]{1,9})"
 )
+
+
+# The selector for what a function returned (#155): `--capture return` (or `(return)`).
+RETURN = "(return)"
+
+
+def returns(selector):
+    """`(return)` for `return` or `(return)`, else the selector as given."""
+    return RETURN if selector.strip() in ("return", RETURN) else selector
 
 
 def parse_selector(text):
@@ -357,8 +367,13 @@ class Probe:
             raise ValueError("Probe line must be a positive integer")
         if not isinstance(self.capture, tuple) or len(self.capture) > MAX_SELECTORS:
             raise ValueError(f"At most {MAX_SELECTORS} capture selectors")
+        if not all(isinstance(selector, str) for selector in self.capture):
+            raise ValueError("Selectors must be nonempty dotted paths")
+        # `return`: what the function holding the line returns, each call (#155).
+        object.__setattr__(self, "capture", tuple(returns(s) for s in self.capture))
         for selector in self.capture:
-            parse_selector(selector)
+            if selector != RETURN:
+                parse_selector(selector)
         if len(set(self.capture)) != len(self.capture):
             # A repeated selector adds no evidence and would multiply rows in comparisons.
             object.__setattr__(self, "capture", tuple(dict.fromkeys(self.capture)))
@@ -601,8 +616,18 @@ def _groups(snapshot):
 def _scope_lookup(worker, stop, snapshot, scopes, name):
     """``name`` in these scopes: listed directly, or in one of debugpy's groups; with
     the scope it is in. Listed more than once (LLDB names two locals declared on one
-    line alike, `p @ s.c:10`), it is refused: which is which cannot be told."""
+    line alike, `p @ s.c:10`), it is refused: which is which cannot be told. A plain
+    name LLDB lists only with where it is declared (`t @ two.c:20`, an inner block's
+    shadowing an outer `t @ two.c:18`) is the one the worker says the code at the stop
+    names (``selected_as``, #158)."""
     listed = [(v, scope) for scope in scopes for v in scope["variables"] if v["name"] == name]
+    if not listed:
+        listed = [
+            (v, scope)
+            for scope in scopes
+            for v in scope["variables"]
+            if v.get("selected_as") == name
+        ]
     if len(listed) > 1:
         raise Refused(
             "NOT_FOUND",
@@ -1360,6 +1385,13 @@ def _capture(
         fresh = snapshot is None
         if fresh:
             snapshot = inspect()
+        if selector == RETURN:
+            rows.append(_returned_row(row, snapshot))
+            continue
+        if snapshot.get("library_frame"):
+            # A step's stop in a library: only what the program's function returned.
+            rows.append({**row, "error": snapshot["library_frame"]})
+            continue
         index = snapshot.get("frame", 0)
         read = snapshot["frames"][index] if len(snapshot["frames"]) > index else {}
         row["line"] = read.get("line")
@@ -1487,6 +1519,122 @@ def _capture(
 _THROUGH = re.compile(r"^read through `[^`\n]+`: ")
 
 
+def _resume(worker, stop, returning, rows):
+    """Step out of the innermost call whose return is still to come, else continue."""
+    if returning:
+        try:
+            worker.dispatch("step", {**stop, "kind": "out"})
+            return
+        except ValueError as exc:
+            if "Other threads stopped" not in str(exc):
+                raise
+            # Their stops are served first (LLDB stopped every thread): this thread then
+            # runs on unwatched, so none of its calls' returns can be followed.
+            for call in reversed(returning):
+                rows.append(_never_returned(call, _OTHER_THREADS))
+            returning.clear()
+    worker.dispatch("continue", stop)
+
+
+_AGAIN = (
+    "the line ran again at the same depth before this call returned (a loop's next pass, "
+    "or the call ended without returning and another began), so no return is attributed "
+    "to this hit; probe a line that runs once per call, such as the function's first"
+)
+_UNWOUND = "its frame was gone when the step out ended (it did not return normally)"
+_OTHER_THREADS = (
+    "another thread stopped at a breakpoint before it returned; a probe follows one "
+    "thread's returns at a time, so its return is not followed"
+)
+_GONE = "its frame was gone before it returned (it ended by an exception, longjmp or panic)"
+_OPTIMIZED_RETURN = (
+    "optimized build ({}): the function may be inlined, with no return of its own to step out to"
+)
+
+
+def _never_returned(call, why):
+    return {
+        "hit": call["hit"],
+        "phase": "returned",
+        "selector": RETURN,
+        **({"function": call["function"]} if call.get("function") else {}),
+        "unavailable": True,
+        "error": f"withheld: {why}",
+    }
+
+
+def _returned_by(worker, stop, call):
+    """The `(return)` row of a pending call whose step out just ended (#155), with the
+    stack depth it ended at (the caller's: one frame fewer, else withheld)."""
+    row = {"hit": call["hit"], "phase": "returned", "selector": RETURN}
+    try:
+        snapshot = worker.dispatch("inspect", {**stop, "previews": False, "depth": True})
+    except ValueError as exc:
+        # A library stop LLDB lists no return for.
+        return {**row, "unavailable": True, "error": f"withheld: {exc}"[:2000]}
+    row = _returned_row(row, snapshot)
+    if not snapshot.get("returned"):
+        # Its step out ended, but not where a return lands (Java: in the caller's
+        # handler, after an exception).
+        row["error"] = (
+            "withheld: the step out did not end where this call returns (it did not return "
+            "normally, or the debugger did not say what it returned)"
+        )
+        row["unavailable"] = True
+    depth = snapshot.get("depth")
+    why = None
+    if call["depth"] is not None and depth != call["depth"] - 1:
+        why = f"the step out ended {call['depth'] - (depth or 0)} frames up, not in the caller"
+    elif not _same_callers(snapshot.get("frames") or [], call.get("below")):
+        # A step out of another call of it (a --set-at's stop in a later call).
+        why = "the step out ended in another frame than the one this call returns to"
+    if why and "value" in row:
+        row = {key: v for key, v in row.items() if key not in ("value", "type")}
+        row.update(unavailable=True, error=f"withheld: {why}")
+    return {**row, "depth": depth}
+
+
+def _frame_id(frame):
+    return (frame.get("name"), frame.get("instructionPointerReference"), frame.get("line"))
+
+
+def _same_callers(frames, below):
+    """Whether a step out ended in the frame a call returns to: the caller, back where
+    it made the call, and the frames under it as they were at the call's hit (#155). The
+    line is not compared in the caller: LLDB names a caller's line from its call, a
+    stopped frame's from where it stopped."""
+    if below is None:
+        return True
+    after = [_frame_id(frame) for frame in frames]
+    if not after or not below:
+        return False
+    return after[0][:2] == tuple(below[0][:2]) and all(
+        new == tuple(old) for new, old in zip(after[1:], below[1:])
+    )
+
+
+def _returned_row(row, snapshot):
+    """The `(return)` row: what the function a step left returned, read in the frame it
+    returned to (#155); its function and the line it returned to, or why there is none."""
+    returned = snapshot.get("returned")
+    frame = snapshot["frames"][0] if snapshot.get("frames") else {}
+    # The line it returned to (none in a frame without source, a Java lambda's).
+    row = {**row, "line": frame.get("line") or None}
+    if not returned:
+        return {
+            **row,
+            "error": "no returned value here: this stop is not a step's return from a "
+            "function (step out of one, or probe with --capture return)",
+        }
+    row["function"] = returned.get("function")
+    if location := snapshot.get("location"):
+        # Where it returned to: the caller's line, maybe in a library.
+        row["location"] = location
+    if returned.get("unavailable"):
+        return {**row, "unavailable": True, "error": f"withheld: {returned.get('reason')}"}
+    return {**row, "value": returned.get("value"), "type": returned.get("type")}
+
+
 def _whole_strings(snapshot):
     """Whether LLDB's summary of a std::string shows all of it at this stop (libc++)."""
     return snapshot.get("whole_string_summaries") is True
@@ -1603,10 +1751,12 @@ def apply_set(worker, stop, name, value):
                 )
                 + "; only the stopped function's own locals can be changed",
             )
+        # The debugger's own name for it (`t @ two.c:20` for `t`, #158).
+        listed_as = found["name"] if found is not None else name
         try:
             return worker.dispatch(
                 "set_variable",
-                {**stop, "reference": scope["reference"], "name": name, "value": value},
+                {**stop, "reference": scope["reference"], "name": listed_as, "value": value},
             )
         except Refused as exc:
             # Classified by the debugger's reason, never by the names listed after it.
@@ -1614,7 +1764,7 @@ def apply_set(worker, stop, name, value):
     target = f"Intervention target {name!r}"
     for scope in snapshot["scopes"]:
         for row in scope["variables"] if not scope.get("globals") else ():
-            if row.get("name") == segments[0] and row.get("unavailable"):
+            if segments[0] in (row.get("name"), row.get("selected_as")) and row.get("unavailable"):
                 # Withheld (declared below the stop, an initializer still running) or
                 # optimized out: nothing in it holds a value a change could replace.
                 raise Refused(
@@ -2760,7 +2910,20 @@ def run_probe(root, probe, *, adapter=None, progress=None):
     functions = {}
     last_said = 0.0
     session = None
+    # `(return)` (#155): after each call's hit, step out of it and read what it returned.
+    # `returning` holds the calls still to return, innermost last: {hit, depth, thread}.
+    wants_return, returning = RETURN in probe.capture, []
+    selectors = tuple(selector for selector in probe.capture if selector != RETURN)
     try:
+        if wants_return and isinstance(worker.adapter, PythonAdapter):
+            refused = ValueError(
+                "--capture return: Python return values cannot be captured. debugpy shows "
+                "one only by writing it into the program's globals (__pydevd_ret_val_dict), "
+                "which the program could see; capture what the caller stores instead"
+            )
+            # Nothing ran: no run is kept as evidence.
+            refused.before_launch = True
+            raise refused
         if probe.edit:
             text = worker.path(probe.program).read_text()
             line = candidate_line(text, probe.edit, probe.line)
@@ -2866,6 +3029,9 @@ def run_probe(root, probe, *, adapter=None, progress=None):
                     say(f"still waiting {phase} ({int(noted - started)} s elapsed)")
                 continue
             if state["state"] == "terminated":
+                for call in reversed(returning):
+                    rows.append(_never_returned(call, "the program ended before it returned"))
+                returning.clear()
                 if state.get("exit_inferred"):
                     warnings.append(
                         "The debugger never reported the program's exit; Peeky inferred it "
@@ -2880,12 +3046,62 @@ def run_probe(root, probe, *, adapter=None, progress=None):
             # From the moment the stop arrived, so debugger reads before capture count too.
             paused = state.get("event", {}).get("received", time.monotonic())
             stop = {**session, "stop_id": state["stop_id"]}
+            body = state.get("event", {}).get("body", {})
+            # The worker's reason: a step out that ended where its caller went on without
+            # the call's return is a step's end, though a breakpoint stopped it (#155).
+            reason = state.get("reason") or body.get("reason")
+            if (
+                wants_return
+                and reason == "step"
+                and (not returning or returning[-1]["thread"] != body.get("threadId"))
+            ):
+                # A step out of a call already withheld because another thread stopped
+                # in between: nothing to read, and nothing pending can be followed now.
+                for call in reversed(returning):
+                    rows.append(_never_returned(call, _OTHER_THREADS))
+                returning.clear()
+                worker.dispatch("continue", stop)
+                continue
+            if wants_return and reason == "interrupted":
+                # Another thread's stop caught the step out mid-way (LLDB): it is over,
+                # and that thread's stop is served next.
+                for call in reversed(returning):
+                    rows.append(_never_returned(call, _OTHER_THREADS))
+                returning.clear()
+                worker.dispatch("continue", stop)
+                continue
+            if returning and reason == "step":
+                # The innermost pending call's step out ended: what it returned (#155).
+                row = _returned_by(worker, stop, returning[-1])
+                depth = row.pop("depth", None)
+                top = returning[-1]["depth"]
+                if None not in (depth, top) and depth >= top:
+                    # Back in a frame below the call (a --set-at's stop, or a frame of a
+                    # recursion through another function), or in the call's own frame:
+                    # the call itself has not returned yet; step out until it does.
+                    _resume(worker, stop, returning, rows)
+                    continue
+                rows.append(row)
+                returning.pop()
+                while returning and (depth is None or returning[-1]["depth"] > depth):
+                    # Its frame is gone too, without a return Peeky saw.
+                    rows.append(_never_returned(returning.pop(), _UNWOUND))
+                # The next pending call is at this depth (its own frame), or above it (a
+                # recursion through another function, `f` -> `c` -> `f`): step out until
+                # it returns. Each return is checked against its own hit's frames.
+                _resume(worker, stop, returning, rows)
+                pauses.append(round((time.monotonic() - paused) * 1000, 1))
+                if not returning and not active and probe.until == "hits":
+                    status = "completed"
+                    say("all requested hits captured; ending the probe now")
+                    break
+                continue
             # Only the requested breakpoints count; a crash, signal or other stop fails
             # closed before any capture or intervention.
             # Every line placed counts: another thread's stop at a line whose breakpoint
             # was just removed may still be served (LLDB stops all threads together).
             expected = {number: _expected_line(placed[number], state, number) for number in lines}
-            roots = _roots([*probe.capture, *(p["name"] for p in points if p["change"] is None)])
+            roots = _roots([*selectors, *(p["name"] for p in points if p["change"] is None)])
             # Previews (#136) of the captured roots only: each costs debugger requests. A
             # stop the wait places at another line (a --set-at's) reads none.
             where = str(state.get("location") or "").rpartition(":")[2]
@@ -2895,11 +3111,11 @@ def run_probe(root, probe, *, adapter=None, progress=None):
                 {
                     **stop,
                     **({"names": roots} if roots else {}),
-                    "previews": _roots(probe.capture) if capturing else False,
+                    "previews": _roots(selectors) if capturing else False,
+                    **({"depth": True} if wants_return else {}),
                 },
             )
             frame = snapshot["frames"][0] if snapshot["frames"] else {}
-            reason = state.get("event", {}).get("body", {}).get("reason")
             path = str(frame.get("source", {}).get("path", "")).replace("\\", "/")
             matched = [number for number in lines if expected[number] == frame.get("line")]
             if (
@@ -2941,12 +3157,20 @@ def run_probe(root, probe, *, adapter=None, progress=None):
                         f" (all, up to {probe.limit})" if probe.hits == "all" else f"/{probe.limit}"
                     )
                     say(f"hit {hits}{of} at {probe.program}:{expected[line]}; capturing")
+                # Which of the line's breakpoint locations in this function the stop is at,
+                # where it has several (#157): each pass stops at each.
+                place = (
+                    {"stop": state["place"], "stops": state["places"]}
+                    if type(state.get("place")) is int and type(state.get("places")) is int
+                    else {}
+                )
+                first = len(rows)
                 # The stop-validation inspection is reused for the first selectors.
                 rows.extend(
                     _capture(
                         worker,
                         stop,
-                        probe.capture,
+                        selectors,
                         hits,
                         "observed",
                         snapshot,
@@ -3004,6 +3228,13 @@ def run_probe(root, probe, *, adapter=None, progress=None):
                     # Which function's variable: the line's stops may be in several.
                     "function": frame.get("name"),
                     **({"instance": snapshot["instance"]} if snapshot.get("instance") else {}),
+                    # Which of the line's breakpoint locations there (#157): @HIT and
+                    # --set-hit count each.
+                    **(
+                        {"stop": state["place"], "stops": state["places"]}
+                        if type(state.get("place")) is int and type(state.get("places")) is int
+                        else {}
+                    ),
                 }
                 if point is not None:
                     change["at"] = f"{point['line']}@{hit}"
@@ -3014,13 +3245,16 @@ def run_probe(root, probe, *, adapter=None, progress=None):
                     _capture(
                         worker,
                         stop,
-                        probe.capture,
+                        selectors,
                         hits,
                         "after-set",
                         preview=previews,
                         pointers=pointers,
                     )
                 )
+            if captured:
+                for row in rows[first:]:
+                    row.update(place)
             if captured and snapshot.get("instance"):
                 # The function as the build names it (`tf<rc::A>`, `main::{closure#1}`),
                 # for the table: the frame's own name keeps the symbol hash.
@@ -3046,11 +3280,45 @@ def run_probe(root, probe, *, adapter=None, progress=None):
                     if isinstance(reply, dict):
                         placed[number] = reply
                 active = needed
-            worker.dispatch("continue", stop)
+            depth = snapshot.get("depth")
+            thread = body.get("threadId")
+            while returning and (
+                returning[-1]["thread"] != thread
+                or depth is None
+                or returning[-1]["depth"] > depth
+                or (captured and returning[-1]["depth"] == depth)
+            ):
+                # A breakpoint stop (the capture line's, or a --set-at's) before the
+                # call's return: on another thread, above the call's frame (it is gone),
+                # or the line again at its depth (a loop's next pass, or the call ended
+                # without returning and another began; the stack cannot tell which).
+                call = returning.pop()
+                why = (
+                    _OTHER_THREADS
+                    if call["thread"] != thread
+                    else _AGAIN
+                    if depth is not None and call["depth"] == depth
+                    else _GONE
+                )
+                rows.append(_never_returned(call, why))
+            if wants_return and captured:
+                call = {
+                    "hit": hits,
+                    "depth": depth,
+                    "thread": thread,
+                    "function": frame.get("name"),
+                    "below": [_frame_id(caller) for caller in snapshot["frames"][1:]],
+                }
+                if level := snapshot.get("optimized"):
+                    # Inlined calls have no return of their own to step out to.
+                    rows.append(_never_returned(call, _OPTIMIZED_RETURN.format(level)))
+                else:
+                    returning.append(call)
+            _resume(worker, stop, returning, rows)
             (pauses if captured else set_pauses).append(
                 round((time.monotonic() - paused) * 1000, 1)
             )
-            if not active:
+            if not active and not returning:
                 if probe.until == "hits":
                     status = "completed"
                     say(
@@ -3068,6 +3336,11 @@ def run_probe(root, probe, *, adapter=None, progress=None):
                 )
             elif captured and hits >= probe.limit:
                 say("all requested hits captured; waiting for the --set-at stops")
+        if status == "timeout":
+            # Still being stepped out of when time ran out: no return came (#162).
+            for call in reversed(returning):
+                rows.append(_never_returned(call, "the probe timed out before it returned"))
+            returning.clear()
         report = worker.dispatch("report", session)
         result.update(
             status=status,
@@ -3242,8 +3515,8 @@ def run_probe(root, probe, *, adapter=None, progress=None):
         warnings.append(
             f"Line {line} stopped in {len(functions)} function{'s' if len(functions) > 1 else ''}: "
             + _stops_by_function(functions, labels, "hit", alike.get(line))
-            + ". --hits and --set-hit count every stop; the function column says which "
-            "is which."
+            + ". --hits, --set-hit and --set-at's @HIT count every stop; the function column "
+            "says which is which."
         )
     unproven = _UNPROVEN_RUST[0].upper() + _UNPROVEN_RUST[1:] + "."
     for note in (_OWNED_RUST, _UNREAD_RUST, _COMPOSITE_RUST, unproven, _STALE_RUST + "."):
@@ -3346,13 +3619,19 @@ def run_probe(root, probe, *, adapter=None, progress=None):
 
 
 def _by_hit(rows):
-    """The same rows regrouped per hit: {hit, line, observed: {...}, after-set: {...}}."""
+    """The same rows regrouped per hit: {hit, line, observed: {...}, after-set: {...},
+    returned: {"(return)": ...}}; line and function are the stop's, not where the call
+    returned to (a `(return)` row's own line)."""
     grouped = {}
     for row in rows:
-        entry = grouped.setdefault(
-            row["hit"],
-            {"hit": row["hit"], "line": row.get("line"), "function": row.get("function")},
-        )
+        entry = grouped.setdefault(row["hit"], {"hit": row["hit"], "line": None, "function": None})
+        if row["phase"] != "returned" and entry["line"] is None:
+            # The stop's line, function and (#157) which of the line's stops per pass.
+            entry.update(line=row.get("line"), function=row.get("function"))
+            if "stops" in row:
+                entry.update(stop=row["stop"], stops=row["stops"])
+        elif entry["function"] is None:
+            entry["function"] = row.get("function")
         value = row["value"] if "value" in row else {"error": row.get("error")}
         entry.setdefault(row["phase"], {})[row["selector"]] = value
     return list(grouped.values())
@@ -3366,7 +3645,10 @@ def _rust_notes():
 
 def _table(result):
     lines = []
-    header = ("hit", "phase", "line", "function", "selector", "type", "value")
+    # Which of a line's breakpoint locations each stop is at, where it has several (#157).
+    stops = any("stops" in row for row in result["rows"])
+    header = ("hit", *(("stop",) if stops else ()), "phase", "line", "function", "selector")
+    header += ("type", "value")
     # A C++ frame's signature (`trim_left(std::__1::basic_string<...> const&)`) would
     # double the table's width; Rust's ends with a symbol hash. JSON keeps the name whole.
     functions = function_labels(row.get("function") for row in result["rows"])
@@ -3382,6 +3664,7 @@ def _table(result):
     rows = [
         (
             str(row["hit"]),
+            *((f"{row['stop']}/{row['stops']}" if "stops" in row else "",) if stops else ()),
             row["phase"],
             str(row.get("line", "")),
             short_instance(row) or functions.get(row.get("function"), ""),
@@ -3418,11 +3701,15 @@ def _table(result):
         where = change.get("instance") or named.get(change.get("function"), change.get("function"))
         if change.get("alike"):
             where = f"{where}, one of {change['alike']} on the line the debugger names alike"
+        # Which of the line's breakpoint locations the stop was at, where it has several.
+        stop = f", stop {change['stop']} of {change['stops']}" if change.get("stops") else ""
         lines.append(
             f"set {change['name']}: {change['before']} -> {change['after']}"
             + (
-                f"  (--set-at line {change['at']}" + (f", in {where})" if where else ")")
+                f"  (--set-at line {change['at']}{stop}" + (f", in {where})" if where else ")")
                 if change.get("at")
+                else f"  ({stop[2:]})"
+                if stop
                 else ""
             )
         )

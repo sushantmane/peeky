@@ -256,7 +256,17 @@ class DAP:
                     self.event_sequence += 1
                     body["cursor"] = self.event_sequence
                     body["received"] = time.monotonic()
-                    self.events.append(body)
+                    last = self.events[-1] if self.events else None
+                    if body["event"] == "continued" and last and last["event"] == "continued":
+                        # LLDB says `continued` after each of its own stops it resumes from
+                        # (a step out's breakpoint hit by a deeper call, a condition that
+                        # held false): one entry stands for a run of them, from the first
+                        # one's cursor, so a deep step out never evicts the stops (#162).
+                        body["since"] = last.get("since", last["cursor"])
+                        body["repeated"] = last.get("repeated", 1) + 1
+                        self.events[-1] = body
+                    else:
+                        self.events.append(body)
                 else:
                     if body["event"] == "processid":
                         # java-debug announces the launched JVM's pid (liveness, #27).
@@ -481,7 +491,8 @@ class DAP:
                 response = self.responses.get(failed_request)
                 if response is not None and not response.get("success"):
                     raise RuntimeError(response.get("message", "Debugger launch failed"))
-                if self.events and after < self.events[0]["cursor"] - 1:
+                first = self.events[0] if self.events else None
+                if first and after < first.get("since", first["cursor"]) - 1:
                     raise RuntimeError("DAP control event history overflow; session must restart")
                 for event in self.events:
                     if event["cursor"] > after and event["event"] in names:
@@ -502,6 +513,7 @@ class DAP:
                     "event": event["event"],
                     "reason": event.get("body", {}).get("reason"),
                     "thread": event.get("body", {}).get("threadId"),
+                    **({"repeated": event["repeated"]} if "repeated" in event else {}),
                 }
                 for event in list(self.events)[-limit:]
             ]
