@@ -67,11 +67,12 @@ def _code_units(code, width):
     return 1
 
 
-def _lex(text, at=0):
+def _lex(text, at=0, spelled=False):
     """The string literal LLDB prints at ``text[at:]`` (`"a\\tb"`, `L"x"`, `"yyy"...`):
     (prefix, [(spelling, code point or None for a raw byte `\\xNN`, raw)], whether LLDB
     cut it at its length limit, where it ends), or None for other text. ``raw``: written
-    as the character itself, not an escape."""
+    as the character itself, not an escape. ``spelled``: a literal Peeky wrote, which C
+    reads (`\\000` and `\\377` are one character each, see ``tidy``)."""
     found = re.compile(r'(L|u|U)?"').match(text, at)
     if not found:
         return None
@@ -86,7 +87,12 @@ def _lex(text, at=0):
             at += 1
             continue
         escape = text[at + 1 : at + 2]
-        if escape in _SIMPLE:
+        octal = re.compile(r"[0-7]{1,3}").match(text, at + 1) if spelled else None
+        if octal:
+            code = int(octal[0], 8)
+            tokens.append(("\\" + octal[0], code if code < 0x80 else None, False))
+            at = octal.end()
+        elif escape in _SIMPLE:
             code = {"0": 0, "a": 7, "b": 8, "t": 9, "n": 10, "v": 11, "f": 12, "r": 13, "e": 27}
             tokens.append((text[at : at + 2], code.get(escape, ord(escape)), False))
             at += 2
@@ -195,6 +201,25 @@ def tidy(text, spell=True):
     room = _VALUE - start - min(len(note), 200)
     shown = text[:start] + _literal(prefix, tokens, capped, room) + note[:200]
     return None if shown == text else {"value": shown}
+
+
+def shorten(text, room):
+    """``text``, as the worker shows it (a literal spelled as C reads it, after an
+    address, before a note), within ``room`` characters: a literal is cut between
+    characters with LLDB's `...`, its note kept whole; other text is cut with `…`."""
+    text = str(text)
+    if len(text) <= room:
+        return text
+    located = _ADDRESS.match(text)
+    start = located.end() if located else 0
+    lexed = _lex(text, start, spelled=True)
+    if lexed is not None and (not text[lexed[3] :] or text[lexed[3] :].startswith(" (")):
+        prefix, tokens, _, end = lexed
+        note = text[end:]
+        # A note is never cut: the literal keeps a few characters before it.
+        room = max(room - start - len(note), 12 if note else 0)
+        return text[:start] + _literal(prefix, tokens, True, room) + note
+    return text[: max(room - 1, 0)] + "…"
 
 
 def _printable(code):

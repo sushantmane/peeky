@@ -2202,6 +2202,19 @@ class NativeTarget:
                             },
                             CPP_LIBRARIES,
                         )
+                        # And, one level down, what their pointers and references reach:
+                        # previews of `p[0]` and of a reference (#136). Changes never
+                        # walk through either, so these types change nothing.
+                        aimed = {
+                            node[2]
+                            for node in fields.values()
+                            if node[0] in ("pointer", "reference") and node[2] is not None
+                        } - set(fields)
+                        if aimed:
+                            for offset, node in type_graph(
+                                _dies(info), aimed, CPP_LIBRARIES
+                            ).items():
+                                fields.setdefault(offset, node)
             except (RuntimeError, ValueError, OSError) as exc:
                 # Without it, values show as the debugger reads them, each local with a
                 # note that its initialization is not judged (and no field or element
@@ -2530,6 +2543,99 @@ class NativeSession:
         if tidied is None:
             return shown
         return {**(shown or {}), **tidied}
+
+    def preview_value(self, variable, fetch, read, pointee=False, frame=None, steps=None):
+        """A C or C++ struct's, class's or fixed-size array's preview (#136,
+        ``native_previews``), or None to keep the debugger's text. ``frame`` and
+        ``steps`` (the root local's name, then each child's the debugger gives) locate
+        the value, whose type the build's debug information gives; without it there is
+        no preview, nor in an optimized build (a struct with an address may hold values
+        the optimizer has not stored yet). ``fetch(reference, count)`` lists a value's
+        first children within the worker's preview budget; ``read`` reads memory (or is
+        None), for the strings among its members. With ``pointee``, the preview of
+        what the pointer ``variable`` points at, which a selector asked for (`p[0]`):
+        lldb-dap lists it as the pointer's children."""
+        from peeky.native_previews import preview
+
+        if getattr(getattr(self, "target", None), "language", None) not in ("c", "cpp"):
+            return None
+        typed = self._typed(frame, steps)
+        if typed is None:
+            return None
+        if getattr(self.target, "optimization", "O0") != "O0" and not (
+            not pointee
+            and typed.kind() == "array"
+            and not typed.narrow()
+            and not re.fullmatch(r".+ @ 0x[0-9a-fA-F]+", str(variable.get("value") or ""))
+        ):
+            # An optimized build's struct may hold values the optimizer has not stored
+            # yet: none is previewed. Only an array LLDB shows as text it ends at a NUL
+            # (a wide character array) is shown element by element, as it reads them.
+            return None
+        if pointee:
+            address = re.match(r"0x[0-9a-fA-F]+(?=\s|$)", str(variable.get("value") or ""))
+            if typed.kind() != "pointer" or not address or int(address[0], 16) == 0:
+                return None
+            typed = typed.target()
+            if typed is None or typed.kind() in ("pointer", "reference"):
+                return None
+            variable = {**variable, "value": f"{variable.get('type')} @ {address[0]}"}
+
+        def text(child):
+            shown = self.string_value(child, lambda reference: fetch(reference, 64), read)
+            if shown and shown.get("unavailable"):
+                return None
+            return shown["value"] if shown and "value" in shown else child.get("value")
+
+        return preview(variable, fetch, typed, text)
+
+    def member_value(self, variable, frame, steps):
+        """How to show a field LLDB reads wrongly, or None to keep its text (#136): a
+        char-typed bitfield LLDB reads as an unsigned character (`'\\x05'` for
+        `signed char sc:3` holding -3) as {"value": the number its bits hold,
+        sign-extended where signed}; a wide character bitfield, which LLDB reads at other
+        bits than the program's, or a char bitfield whose text is no character, as
+        {"unavailable": True, "reason": ...}."""
+        from peeky.native_previews import WIDE_BITFIELD, bitfield_text
+
+        if getattr(getattr(self, "target", None), "language", None) not in ("c", "cpp"):
+            return None
+        typed = self._typed(frame, steps)
+        shown = bitfield_text(variable.get("value"), typed) if typed is not None else None
+        if shown is None:
+            return None
+        if shown == "<bitfield>":
+            reason = (
+                WIDE_BITFIELD
+                if typed.wide_character()
+                else "a char-typed bitfield whose text from the debugger is no character"
+            )
+            return {"unavailable": True, "reason": reason}
+        return {"value": shown}
+
+    def _typed(self, frame, steps):
+        """``native_previews.Typed`` of the value ``steps`` name in ``frame`` (its root
+        local, then the debugger's child names), from the build's debug information, or
+        None where it cannot be told (no debug information read, a name declared twice
+        with two types, a child the type does not have)."""
+        from peeky.fields import Unsettable
+        from peeky.native_previews import Typed
+
+        if getattr(self, "fields", None) is None or not steps or frame is None:
+            return None
+        function = self._function_at(frame)
+        if function is None or function.get("types") is None:
+            return None
+        try:
+            offset, _ = self._declared_type(function["types"], steps[0])
+        except Unsettable:
+            return None
+        typed = Typed(self.fields, offset)
+        for step in steps[1:]:
+            typed = typed.child(step)
+            if typed is None:
+                return None
+        return typed
 
     def _string_class(self, kind):
         """``cxx_strings.string_class`` of a type, also through a typedef the build's
