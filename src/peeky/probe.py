@@ -602,8 +602,18 @@ def _groups(snapshot):
 def _scope_lookup(worker, stop, snapshot, scopes, name):
     """``name`` in these scopes: listed directly, or in one of debugpy's groups; with
     the scope it is in. Listed more than once (LLDB names two locals declared on one
-    line alike, `p @ s.c:10`), it is refused: which is which cannot be told."""
+    line alike, `p @ s.c:10`), it is refused: which is which cannot be told. A plain
+    name LLDB lists only with where it is declared (`t @ two.c:20`, an inner block's
+    shadowing an outer `t @ two.c:18`) is the one the worker says the code at the stop
+    names (``selected_as``, #158)."""
     listed = [(v, scope) for scope in scopes for v in scope["variables"] if v["name"] == name]
+    if not listed:
+        listed = [
+            (v, scope)
+            for scope in scopes
+            for v in scope["variables"]
+            if v.get("selected_as") == name
+        ]
     if len(listed) > 1:
         raise Refused(
             "NOT_FOUND",
@@ -1604,10 +1614,12 @@ def apply_set(worker, stop, name, value):
                 )
                 + "; only the stopped function's own locals can be changed",
             )
+        # The debugger's own name for it (`t @ two.c:20` for `t`, #158).
+        listed_as = found["name"] if found is not None else name
         try:
             return worker.dispatch(
                 "set_variable",
-                {**stop, "reference": scope["reference"], "name": name, "value": value},
+                {**stop, "reference": scope["reference"], "name": listed_as, "value": value},
             )
         except Refused as exc:
             # Classified by the debugger's reason, never by the names listed after it.
@@ -1615,7 +1627,7 @@ def apply_set(worker, stop, name, value):
     target = f"Intervention target {name!r}"
     for scope in snapshot["scopes"]:
         for row in scope["variables"] if not scope.get("globals") else ():
-            if row.get("name") == segments[0] and row.get("unavailable"):
+            if segments[0] in (row.get("name"), row.get("selected_as")) and row.get("unavailable"):
                 # Withheld (declared below the stop, an initializer still running) or
                 # optimized out: nothing in it holds a value a change could replace.
                 raise Refused(

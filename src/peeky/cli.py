@@ -764,6 +764,27 @@ def _describe_text(manifest):
                 + "; ".join(never[:12])
                 + (f"; and {len(never) - 12} more functions" if len(never) > 12 else "")
             )
+    if manifest["language"] in ("c", "cpp"):
+        # Two blocks declaring one name with different types (#158): a change follows
+        # the one in scope at the stop.
+        twice = [
+            f"{scope['scope']}: {', '.join(names)}"
+            for scope in manifest.get("scopes", ())
+            if (
+                names := [
+                    name for name, kind in (scope.get("types") or {}).items() if " or " in kind
+                ]
+            )
+        ]
+        if twice:
+            mutable += (
+                ". Locals of one name with different types ("
+                + "; ".join(twice[:12])
+                + (f"; and {len(twice) - 12} more functions" if len(twice) > 12 else "")
+                + "): a plain name means the declaration the code names at the stop, and a "
+                "change follows it; where Peeky cannot tell which, it refuses, and the "
+                "debugger lists them as `name @ file:line`, which select"
+            )
     lines.append(f"mutable: {mutable}")
     lines.extend(f"{name}: {usage}" for name, usage in manifest["commands"].items())
     lines.append(f"timing: {manifest['timing']['advice']}")
