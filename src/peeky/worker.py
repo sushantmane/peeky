@@ -866,6 +866,11 @@ class DebugWorker:
         # of them names asks once more (placed before the program loaded, unslid).
         self.places_asked = None
         self.places_renewed = False
+        # Some were listed before the program loaded (`m[0x…], unresolved`): their counts
+        # hold, but their addresses are the module's, which a stop's pc may match by
+        # chance once the program is slid. No stop is labelled from them (review 2 of
+        # #160): the first stop asks again.
+        self.places_unresolved = False
 
     def note_places(self, runtime, requested, placed):
         """Ask the runtime where the debugger placed the session program's breakpoints
@@ -890,6 +895,7 @@ class DebugWorker:
         except Exception:
             return
         groups = {}
+        self.places_unresolved = any(location.get("resolved") is False for location in found or ())
         for location in found or ():
             group = groups.setdefault(
                 (location["line"], location["place"]), (location["function"], set())
@@ -909,12 +915,16 @@ class DebugWorker:
             return None
         pc = int(text, 16)
         for _ in range(2):
-            for _, addresses in self.places.get(frame.get("line"), ()):
-                if pc in addresses:
-                    return (addresses.index(pc) + 1, len(addresses)) if len(addresses) > 1 else None
+            if not self.places_unresolved:
+                for _, addresses in self.places.get(frame.get("line"), ()):
+                    if pc in addresses:
+                        if len(addresses) == 1:
+                            return None
+                        return (addresses.index(pc) + 1, len(addresses))
             if self.places_renewed or self.places_asked is None:
                 return None
-            # Placed before the program loaded, at addresses it no longer has: once more.
+            # Placed before the program loaded, at addresses it may no longer have (listed
+            # as unresolved, or none matches): asked once more, now that it runs.
             self.note_places(*self.places_asked)
             self.places_renewed = True
         return None

@@ -94,6 +94,7 @@ def test_a_recorded_probe_is_queryable_with_numbers_and_identity(store):
             "capture_hit": 1,
             "function": None,
             "instance": None,
+            "stop": None,
         }
     ]
     assert evidence.query(store, "SELECT worker FROM runs WHERE run_id = 2")["rows"] == [
@@ -291,6 +292,7 @@ def test_canned_queries_answer_comparisons(store):
     assert effect == [
         {
             "hit": 1,
+            "stop": None,
             "line": 8,
             "function": "f",
             "selector": "start",

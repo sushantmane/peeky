@@ -144,6 +144,10 @@ TABLES = {
             "tell it apart (Rust: a generic's instance with its type arguments, "
             "`gen::tf<gen::A>`, cut at 300 characters with `…`; a closure, "
             "`main::{closure#1}`), else NULL",
+            "stop": "Which of its line's breakpoint locations in that function the stop was "
+            "at, 1 to N in address order, where the line has several there (#157): hit counts "
+            "every one, so @HIT names a stop, not a pass. NULL for a line with one (and for "
+            "runs saved before schema 14)",
         },
     ),
     "pauses": (
@@ -197,7 +201,8 @@ _DDL = (
         source_sha256 TEXT, target_identity TEXT, edit TEXT, notes_kept INTEGER)""",
     _CAPTURES.format("captures"),
     "CREATE TABLE interventions (run_id INTEGER NOT NULL, hit INTEGER, name TEXT, "
-    "before TEXT, after TEXT, line INTEGER, capture_hit INTEGER, function TEXT, instance TEXT)",
+    "before TEXT, after TEXT, line INTEGER, capture_hit INTEGER, function TEXT, instance TEXT, "
+    "stop INTEGER)",
     "CREATE TABLE pauses (run_id INTEGER NOT NULL, hit INTEGER, ms REAL)",
     *_CAPTURE_INDEXES,
     "CREATE INDEX interventions_run ON interventions (run_id)",
@@ -218,8 +223,8 @@ _DDL = (
 # 10 adds interventions.line and capture_hit (an earlier run's --set was at its captured
 # stop); version 11 adds interventions.function, version 12 interventions.instance, and
 # version 13 captures.instance (a closure's or generic instance's label, NULL before);
-# version 14 adds captures.stop (#157), which of a line's breakpoint locations a hit was
-# at. Views name columns of the newest tables, so earlier steps only drop them and the
+# version 14 adds captures.stop and interventions.stop (#157), which of a line's breakpoint
+# locations a hit or a change was at. Views name columns of the newest tables, so earlier steps only drop them and the
 # last creates them.
 _DROP_VIEWS = ("DROP VIEW IF EXISTS last_run", "DROP VIEW IF EXISTS evidence")
 
@@ -301,7 +306,13 @@ _MIGRATIONS = {
     10: (*_DROP_VIEWS, _add_columns(("function", "TEXT"), table="interventions")),
     11: (*_DROP_VIEWS, _add_columns(("instance", "TEXT"), table="interventions")),
     12: (*_DROP_VIEWS, _add_columns(("instance", "TEXT"))),
-    13: (*_DROP_VIEWS, _add_columns(("stop", "INTEGER")), _EVIDENCE_VIEW, _LAST_RUN_VIEW),
+    13: (
+        *_DROP_VIEWS,
+        _add_columns(("stop", "INTEGER")),
+        _add_columns(("stop", "INTEGER"), table="interventions"),
+        _EVIDENCE_VIEW,
+        _LAST_RUN_VIEW,
+    ),
 }
 
 _LATEST = "(SELECT MAX(run_id) FROM runs)"
@@ -602,10 +613,11 @@ WINDOW w AS (PARTITION BY selector ORDER BY hit) ORDER BY selector, hit""",
         "caveat_observed and caveat_after_set name a view or `note` that qualifies a value. "
         "A change at a stop with no capture (a --set-at line) is one row: selector is what "
         "it changed, observed and after_set its value before and after (the set's own "
-        "read-back), function whose variable it was",
-        f"""SELECT hit, line, function, selector, observed, after_set, caveat_observed,
+        "read-back), function whose variable it was. stop says which of the line's breakpoint "
+        "locations the stop was at, where it has several (hit counts each)",
+        f"""SELECT hit, stop, line, function, selector, observed, after_set, caveat_observed,
   caveat_after_set, interventions FROM (
-  SELECT o.hit, o.line, o.function, o.selector, {_shown("o")} AS observed,
+  SELECT o.hit, o.stop, o.line, o.function, o.selector, {_shown("o")} AS observed,
     {_shown("s")} AS after_set,
     {_caveat("o")} AS caveat_observed, {_caveat("s")} AS caveat_after_set,
     (SELECT group_concat(name || ': ' || before || ' -> ' || after, '; ') FROM interventions i
@@ -616,7 +628,7 @@ WINDOW w AS (PARTITION BY selector ORDER BY hit) ORDER BY selector, hit""",
     AND s.selector = o.selector AND s.phase = 'after-set'
   WHERE o.run_id = {_RUN} AND o.phase = 'observed'
   UNION ALL
-  SELECT i.hit, i.line, i.function, i.name, i.before, i.after, NULL, NULL,
+  SELECT i.hit, i.stop, i.line, i.function, i.name, i.before, i.after, NULL, NULL,
     i.name || ': ' || i.before || ' -> ' || i.after, i.rowid, 0
   FROM interventions i WHERE i.run_id = {_RUN} AND NOT {_AT_CAPTURE})
 ORDER BY seq, pos""",
@@ -913,7 +925,7 @@ def record(path, result, *, language=None, target=None, label=None, worker=None)
         )
         connection.executemany(
             "INSERT INTO interventions (run_id, hit, name, before, after, line, capture_hit, "
-            "function, instance) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "function, instance, stop) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [
                 (
                     run_id,
@@ -928,6 +940,7 @@ def record(path, result, *, language=None, target=None, label=None, worker=None)
                     change.get("capture_hit", change.get("hit", probe.get("set_hit"))),
                     _text(change.get("function")),
                     _text(change.get("instance")),
+                    change["stop"] if type(change.get("stop")) is int else None,
                 )
                 for change in result.get("interventions") or []
             ],
@@ -1329,6 +1342,7 @@ def _wide(path, params):
     sets = (
         "(SELECT NULLIF(json_group_array(name || ': ' || COALESCE(before, '?') || ' -> ' || "
         "COALESCE(after, '?') || ' (line ' || COALESCE(line, '?') || ', hit ' || hit || "
+        "COALESCE(', stop ' || stop, '') || "
         "COALESCE(', in ' || COALESCE(instance, short_function(function)), '') || ')'), "
         f"'[]') FROM (SELECT * FROM interventions i WHERE i.run_id = {run} AND CASE WHEN "
         f"{_AT_CAPTURE} THEN w.phase = 'after-set' AND i.hit = w.hit ELSE w.phase = "

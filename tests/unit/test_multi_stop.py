@@ -201,7 +201,7 @@ def test_an_older_store_gains_stops(tmp_path, version):
     }
     evidence.record(store, probe, language="c")
     connection = sqlite3.connect(store)
-    dropped = ["captures DROP COLUMN stop"]
+    dropped = ["captures DROP COLUMN stop", "interventions DROP COLUMN stop"]
     if version == 9:
         dropped += ["captures DROP COLUMN instance"] + [
             f"interventions DROP COLUMN {column}"
@@ -232,6 +232,8 @@ def test_an_older_store_gains_stops(tmp_path, version):
     assert evidence.query(store, "SELECT selector, stop, instance FROM last_run")["rows"] == [
         {"selector": "k", "stop": 2, "instance": None}
     ]
+    # interventions.stop too (review 2 of #160).
+    assert evidence.query(store, "SELECT COUNT(stop) AS n FROM interventions")["rows"] == [{"n": 0}]
     connection = sqlite3.connect(store)
     assert connection.execute("PRAGMA user_version").fetchone() == (evidence.SCHEMA_VERSION,)
     assert evidence.SCHEMA_VERSION == 14
@@ -294,3 +296,68 @@ def test_generic_instances_are_named_apart(tmp_path):
         "r1::gener::haaaaaaaaaaaaaaaa",
         "r1::gener::hbbbbbbbbbbbbbbbb",
     ]
+
+
+def test_a_listing_from_before_load_never_labels_a_stop(tmp_path):
+    # Review 2 of #160: places listed before the program loaded kept the module's
+    # addresses, and were used while one matched the stop's pc. Once the program is slid,
+    # a pc can equal another location's module address: here the stop is at the slid
+    # first location, 0x100000ee4, which is the second's module address.
+    unloaded = LISTING.replace("address = 0x", "address = movavg[0x").replace(
+        ", resolved, hit count", "], unresolved, hit count"
+    )
+    slid = (
+        LISTING.replace("0x0000000100000f00", "0x0000000100000f08")
+        .replace("0x0000000100000ee4", "0x0000000100000eec")
+        .replace("0x0000000100000edc", "0x0000000100000ee4")
+    )
+    assert all(not f["resolved"] for f in breakpoint_locations(unloaded, {1}))
+    assert all(f["resolved"] for f in breakpoint_locations(slid, {1}))
+    worker, runtime, asked = _worker(tmp_path, [unloaded, slid])
+    placed = {"breakpoints": [{"id": 1, "line": 29, "verified": True}]}
+    worker.note_places(runtime, [{"line": 29}], placed)
+    worker.stop_reason = "breakpoint"
+    frame = {"line": 29, "instructionPointerReference": "0x100000ee4"}
+    # Asked again at the first stop, though an address matched: the first, not the second.
+    assert worker.place_of(frame) == (1, 3) and len(asked) == 2
+    # Still unresolved after asking again (a library not loaded yet): never a label.
+    worker, runtime, asked = _worker(tmp_path, [unloaded, unloaded])
+    worker.note_places(runtime, [{"line": 29}], placed)
+    worker.stop_reason = "breakpoint"
+    assert worker.place_of(frame) is None and len(asked) == 2
+    # Its count still warns before the first stop.
+    assert worker.place_warnings()[0].startswith("Line 29 stops up to 3 times per pass")
+
+
+def test_a_change_says_which_stop_it_was(tmp_path):
+    # Review 2 of #160: a --set-at's record said only its line's hit (`9@2`).
+    store = tmp_path / "evidence.db"
+    probe = {
+        "probe": {"program": "src/main.rs", "line": 9, "capture": ["x"], "set": []},
+        "status": "completed",
+        "hits": 3,
+        "rows": [
+            dict(hit=h, phase=phase, line=9, selector="x", value=v, stop=h, stops=3)
+            for h, phase, v in ((1, "observed", "0"), (2, "observed", "0"), (2, "after-set", "100"))
+        ],
+        "interventions": [
+            {"name": "x", "before": "0", "after": "100", "line": 9, "hit": 2, "capture_hit": 2}
+            | {"function": "s1::main::h0123456789abcdef", "at": "9@2", "stop": 2, "stops": 3}
+        ],
+        "warnings": [],
+        "seconds": 1,
+        "interventions_note": None,
+    }
+    evidence.record(store, probe, language="rust")
+    stored = evidence.query(store, "SELECT hit, stop FROM interventions")["rows"]
+    assert stored == [{"hit": 2, "stop": 2}]
+    sets = [row["sets"] for row in evidence.run_query(store, "wide")["rows"] if row["sets"]]
+    assert sets == ['["x: 0 -> 100 (line 9, hit 2, stop 2, in s1::main)"]']
+    effect = evidence.run_query(store, "set_effect")["rows"]
+    assert [(row["hit"], row["stop"]) for row in effect] == [(2, 2)]
+    shown = _table({**probe, "rows": [], "pauses_ms": [], "output": ""}).splitlines()
+    assert "set x: 0 -> 100  (--set-at line 9@2, stop 2 of 3, in s1::main)" in shown
+    # A plain --set at a stop of several says which too.
+    plain = {key: value for key, value in probe["interventions"][0].items() if key != "at"}
+    shown = _table({**probe, "rows": [], "interventions": [plain], "pauses_ms": [], "output": ""})
+    assert "set x: 0 -> 100  (stop 2 of 3)" in shown.splitlines()

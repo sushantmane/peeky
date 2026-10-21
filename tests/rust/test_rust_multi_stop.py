@@ -184,3 +184,50 @@ def test_inlined_copies_and_generic_instances_are_told_apart(movavg, capsys):
         f"Line {line} stops up to 3 times per pass in shapes::gener<i32>",
     ], result["warnings"]
     assert any(w.startswith(f"Line {line} stopped in 2 functions") for w in result["warnings"])
+
+
+SET_AT = """use std::hint::black_box;
+
+fn main() {
+    let mut out = Vec::new();
+    let mut x: i64 = 0;
+    black_box(&mut x);
+    for i in 0..3i64 {
+        x += i;
+        out.push(format!("{}-{}", x, i)); // MULTI
+        println!("after {} {}", i, x);
+    }
+    println!("{:?}", out);
+}
+"""
+
+
+@pytest.mark.timeout(600)
+def test_a_set_at_says_which_stop_its_hit_was(movavg, capsys):
+    # Review 2 of #160: `--set-at 9@2 x=100` on a `format!` line changed x at the line's
+    # 2nd stop, its first pass's 2nd location, but the change, the JSON, the evidence and
+    # `queries wide` said only `9@2`, as if it were the 2nd pass.
+    (movavg / "src/main.rs").write_text(SET_AT)
+    (movavg / "Cargo.toml").write_text(MANIFEST.replace("movavg", "s1"))
+    (movavg / "Cargo.lock").write_text(LOCK.replace("movavg", "s1"))
+    line = next(i for i, text in enumerate(SET_AT.splitlines(), 1) if "// MULTI" in text)
+    command = ["probe", str(movavg), "--at", f"src/main.rs:{line}", "--capture", "x"]
+    command += ["--hits", "4", "--set-at", f"{line}@2", "x=100"]
+    assert main([*command, "--json", "--quiet"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert "after 0 100" in result["output"], result
+    (change,) = result["interventions"]
+    assert (change["at"], change["stop"], change["stops"]) == (f"{line}@2", 2, 3), change
+    assert main(["sql", "SELECT hit, stop FROM interventions", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["rows"] == [{"hit": 2, "stop": 2}]
+    assert main(["queries", "wide", "--json"]) == 0
+    wide = json.loads(capsys.readouterr().out)["rows"]
+    assert [row["sets"] for row in wide if row["sets"]] == [
+        f'["x: 0 -> 100 (line {line}, hit 2, stop 2, in s1::main)"]'
+    ]
+    assert main(["queries", "set_effect", "--json"]) == 0
+    assert {row["stop"] for row in json.loads(capsys.readouterr().out)["rows"]} == {2}
+    # The table's change line says it too.
+    assert main(command) == 0
+    shown = capsys.readouterr().out
+    assert f"set x: 0 -> 100  (--set-at line {line}@2, stop 2 of 3, in s1::main)" in shown
