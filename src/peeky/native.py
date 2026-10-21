@@ -1621,7 +1621,7 @@ def declared_below(table, name, source, line, through=None, address=None, pc=Non
     return at, why
 
 
-def declared_unfinished(table, name, source, line, address, ends=None):
+def declared_unfinished(table, name, source, line, address, ends=None, chosen=None):
     """For a caller frame at ``source:line``, inside a call that returns to ``address``
     (unslid; None if unknown): ``(line, why, detail)`` for a C/C++ local of that name
     whose declaration may not have run yet, else None. ``why`` is `file` (``detail``: the
@@ -1642,7 +1642,11 @@ def declared_unfinished(table, name, source, line, address, ends=None):
     function unknown, every declaration at or above the line counts. And so does one whose
     statement, as the source writes it (``ends``), still runs on the frame's line:
     `struct trio t = { seed,` / `{ twice(3), ... } };` has code of its first line, all of
-    it before the call."""
+    it before the call.
+
+    ``chosen``: (source, line) of the declaration the name means there, where Peeky
+    can tell (#158: `_named_where`); only it is judged then, not every one of the name
+    in the function (another block's `long t;` with no code withheld this one)."""
     shown = _SHADOWED.fullmatch(name)
     base = shown[1] if shown else name
     owners = [function for function in table if (source, line) in function["rows"]]
@@ -1663,6 +1667,8 @@ def declared_unfinished(table, name, source, line, address, ends=None):
             if not automatic or type(at) is not int:
                 continue
             if shown and at != int(shown[2]):
+                continue
+            if chosen is not None and (declared_in, at) != chosen:
                 continue
             if declared_in != source:
                 return at, "file", declared_in
@@ -2811,6 +2817,7 @@ class NativeSession:
                 line,
                 self._unslid(frame),
                 ends=lambda at, local: self._statement_end(here, at, local),
+                chosen=self._chosen(name, frame),
             )
         ):
             at, why, detail = unfinished
@@ -3489,6 +3496,12 @@ class NativeSession:
             verdicts.add(scope[0] <= here <= scope[1])
         return verdicts.pop() if len(verdicts) == 1 else None
 
+    def _chosen(self, name, frame):
+        """(source, line) of the automatic local ``name`` means in ``frame``
+        (``_named_where``), or None where Peeky cannot tell or it is a parameter."""
+        where = self._named_where(name, self._block_pc(frame))
+        return (where[0], where[1]) if where and where[0] is not None else None
+
     def _shown_where(self, name, pc):
         """(source, line, automatic) of the declaration of the local ``name`` the
         debugger shows at ``pc`` (unslid; shown_declaration: the one whose block holds
@@ -3744,6 +3757,7 @@ class NativeSession:
             "function": f"the function `{base}` the block declares ({place})",
             "typedef": f"the type `{base}` the block's `typedef` names ({place})",
             "class": f"the type `{base}` the block declares ({place})",
+            "binding": f"the structured binding `{base}` ({place})",
             "thread_local": f"the block's `thread_local` `{base}` ({place}), listed "
             f"separately as {listed}",
             "_Thread_local": f"the block's `_Thread_local` `{base}` ({place}), listed "

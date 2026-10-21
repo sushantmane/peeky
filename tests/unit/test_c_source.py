@@ -1154,3 +1154,62 @@ def test_a_scope_is_read_from_the_statement_that_declares_the_name():
     # Where it has run still counts the last statement naming it.
     assert statements.declared_through(12, "t") == 12
     assert statements.declaration(12, "t") != statements.declaration(12, "t", declaring=True)
+
+
+BODY_SCOPES = """int f(int c) {
+    long t = 1;
+    while (c) long t = 8;
+    do long t = 9; while (0);
+    switch (c) case 1: long t = 4;
+    while (c)
+        long
+          t = 2;
+    {
+        long
+          t = 3;
+        g(t);
+    }
+    again: long u = 1;
+    return t + u;
+}
+"""
+
+
+def test_a_bodys_declaration_without_braces_is_scoped_to_its_statement():
+    # Review of PR #159 (round 4): clang gives a `while`'s, a `do`'s or a `switch`'s
+    # body no block; a declaration that is the whole body ends with its `;`.
+    statements = Statements(BODY_SCOPES, raw_strings=True)
+    assert [statements.scope_lines(line, "t") for line in (3, 4, 5, 8, 11)] == [
+        (3, 3),
+        (4, 4),
+        (5, 5),
+        (8, 8),
+        (11, 13),  # a declaration over lines, in a block
+    ]
+    assert statements.scope_lines(14, "u") == (14, 16)  # a label in a block
+
+
+BINDING_SOURCE = """int f() {
+    long t = 1;
+    for (auto [t, u] : pairs) {
+        use(t);
+    }
+    {
+        const auto& [t, b] = s;
+        use(t);
+    }
+    if (auto [t, v] = g(); t) use(t);
+    return t;
+}
+"""
+
+
+def test_a_structured_binding_hides_an_outer_local_where_it_is_in_scope():
+    # Review of PR #159 (round 4): LLDB may list no binding (clang 18 on Linux).
+    statements = Statements(BINDING_SOURCE, raw_strings=True)
+    assert statements.block_storage(4, "t", 2) == ("binding", 3)
+    assert statements.block_storage(8, "t", 2) == ("binding", 7)
+    assert statements.block_storage(10, "t", 2) == ("binding", 10)
+    assert statements.block_storage(11, "t", 2) is False
+    # The binding's own row (declared on line 3) is not hidden by itself.
+    assert statements.block_storage(4, "t", 3) is False

@@ -634,3 +634,150 @@ def test_c_a_programs_function_named_like_a_trampoline_is_a_call(directory, caps
     finally:
         main(["session", "close"])
         capsys.readouterr()
+
+
+# Review of PR #159 (round 4): a declaration that is a control statement's whole body,
+# without braces, is in scope to its `;`; clang gives a `while`'s, a `do`'s or a
+# `switch`'s no block, so the block around it ran on, and its dead `t` was chosen.
+BODIES = """#include <cstdio>
+struct P { long x; long y; };
+int main(int argc, char **argv) {
+    long t = 1;
+    int n = argc;
+    {
+        BODY
+        std::printf("A=%ld\\n", t);  // AFTER
+    }
+    return 0;
+}
+"""
+BODY = {
+    "while": "while (n++ < 2) long t = 8;",
+    "do": "do long t = 9; while (0);",
+    "switch": "switch (argc) case 1: long t = 4;",
+    "if": "if (argc > 0) long t = 5;",
+    "else": "if (argc < 0) {} else long t = 6;",
+    "for": "for (int i = 0; i < 1; i++) long t = 7;",
+}
+
+
+@pytest.mark.timeout(300)
+@pytest.mark.parametrize("body", sorted(BODY))
+def test_cpp_a_bodys_declaration_without_braces_ends_with_its_statement(directory, capsys, body):
+    source = BODIES.replace("BODY", BODY[body])
+    path = directory / "bodies.cpp"
+    path.write_text(source)
+    line = line_of(source, "// AFTER")
+    code, result = captured(capsys, path, line, "t")
+    assert code == 0 and result["status"] == "completed", result.get("error")
+    [observed] = result["rows"]
+    if body == "switch":
+        # The outer `t`, withheld: a `switch` without braces has its label after it, a
+        # jump Peeky does not rule out.
+        assert "value" not in observed and "declared on line 4" in observed["error"]
+        return
+    assert observed["value"] == "1", observed
+    code, result = captured(capsys, path, line, "t", "--set", "t=4242")
+    assert code == 0 and "A=4242" in result["output"], result.get("error")
+
+
+STRUCT_BODY = """#include <cstdio>
+struct P { long x; long y; };
+int main(int argc, char **argv) {
+    P t{1, 2};
+    int n = argc;
+    {
+        while (n++ < 2) long t = 8;
+        std::printf("DA=%ld\\n", t.x);  // DA
+    }
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(300)
+def test_cpp_a_field_of_the_outer_struct_after_a_bodys_declaration_is_set(directory, capsys):
+    # Refused before the run: "`t` has no fields" (the `while`'s `long t` was chosen).
+    path = directory / "struct_body.cpp"
+    path.write_text(STRUCT_BODY)
+    code, result = probed(capsys, path, line_of(STRUCT_BODY, "// DA"), "t.x=50", "t.x")
+    assert code == 0 and result["status"] == "completed", result.get("error")
+    assert "DA=50" in result["output"], result["output"]
+
+
+# Review of PR #159 (round 4): a structured binding hides an outer local of its name;
+# clang 18 on Linux describes none in a range-`for` over pairs, so LLDB listed only the
+# outer `t`, which read 1 (and changed) where the code reads the binding.
+BINDINGS = """#include <cstdio>
+#include <utility>
+int main() {
+    long t = 1;
+    std::pair<long, long> arr[2] = {{5, 6}, {7, 8}};
+    for (auto [t, u] : arr) {
+        std::printf("AA=%ld\\n", t + 0 * u);  // RANGE
+    }
+    struct S { long a, b; } s{30, 40};
+    {
+        auto [t, b] = s;
+        std::printf("AF=%ld\\n", t + 0 * b);  // BLOCK
+    }
+    std::printf("AE=%ld\\n", t);  // AFTER
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(300)
+@pytest.mark.parametrize("marker, value", [("// RANGE", "5"), ("// BLOCK", "30")])
+def test_cpp_a_structured_binding_is_never_read_as_the_outer_local(
+    directory, capsys, marker, value
+):
+    path = directory / "bindings.cpp"
+    path.write_text(BINDINGS)
+    code, result = captured(capsys, path, line_of(BINDINGS, marker), "t")
+    assert code == 0 and result["status"] == "completed", result.get("error")
+    [observed] = result["rows"]
+    # The binding where the debugger describes it (macOS), else the outer `t` withheld.
+    if "value" in observed:
+        assert observed["value"] == value or observed["value"].startswith("0x"), observed
+    else:
+        assert "structured binding `t`" in observed["error"], observed
+    code, result = captured(capsys, path, line_of(BINDINGS, "// AFTER"), "t")
+    assert result["rows"][0]["value"] == "1", result["rows"]
+
+
+# Review of PR #159 (round 4): in a caller frame every declaration of the name was
+# judged, so another block's `long t;` with no code of its own withheld the outer `t`.
+CALLER_NAMESAKE = """#include <stdio.h>
+__attribute__((noinline)) long probe_me(int tag, long x) {
+    return x + 0 * tag;  // PROBE
+}
+int main(int argc, char **argv) {
+    long t = 1;
+    switch (argc) {
+    case 0: ;
+        long t;
+        t = 7;
+        probe_me(8, t);
+        break;
+    }
+    probe_me(14, t);  // OUTER
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(300)
+def test_c_a_caller_frame_judges_only_the_declaration_its_name_means(directory, capsys):
+    path = directory / "namesake.c"
+    path.write_text(CALLER_NAMESAKE)
+    line = line_of(CALLER_NAMESAKE, "// PROBE")
+    assert main(["session", "start", str(path), "--at", str(line)]) == 0
+    capsys.readouterr()
+    try:
+        code, rows = run(capsys, "session", "get", "t", "--frame", "1")
+        assert rows[0]["line"] == line_of(CALLER_NAMESAKE, "// OUTER"), rows
+        assert rows[0]["value"] == "1", rows
+    finally:
+        main(["session", "close"])
+        capsys.readouterr()
