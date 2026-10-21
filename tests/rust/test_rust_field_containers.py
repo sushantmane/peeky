@@ -160,15 +160,14 @@ fn by_ref(args: &Vec<String>) -> usize {
 }
 
 #[inline(never)]
-fn mutated() -> usize {
-    let s = String::from("short");
-    let v: &str = s.as_str();
-    let n = v.len();
-    // Undefined behaviour, which the program never relies on: through a pointer cast
-    // from `&s`, the String it borrows grows (and moves) under `v`.
-    let p = &s as *const String as *mut String;
-    unsafe { (*p).push_str(" and now much longer than before, to move its buffer") };
-    std::hint::black_box(n) // MUTATED
+fn growth() -> usize {
+    let mut v = vec![1i64, 2, 3];
+    for i in 0..2 {
+        v.push(i);
+        let cap = v.capacity(); // GROWTH
+        println!("{cap} {:p}", v.as_ptr());
+    }
+    v.len()
 }
 
 fn main() {
@@ -183,43 +182,197 @@ fn main() {
     total += tally(w.len());
     owned.push_str(" and more text, to grow it past its capacity");
     total += owned.len(); // THAWED
-    println!("TOTAL {} {} {}", total, by_ref(&args), mutated());
+    println!("TOTAL {} {} {}", total, by_ref(&args), growth());
 }
 """
-# Unsafe code that frees what a field owns behind the MIR's back, soundly: the field is
-# never used while it dangles (`ptr::read` then `mem::forget`; `drop_in_place` then
-# `ptr::write`).
+# Unsafe code that frees what a value owns behind the MIR's back, soundly (the value is
+# never used while it dangles), in every place the stopped function cannot see it: in
+# the function, a closure, an `unsafe fn` it calls, through a pointer stored for later,
+# after a move, in a caller.
 UNSAFE = """use std::hint::black_box;
+use std::mem;
+use std::ptr::{self, addr_of};
 
 struct W {
     values: Vec<i64>,
     k: usize,
 }
 
+struct Outer {
+    w: W,
+    k: usize,
+}
+
+fn mk() -> W {
+    W { values: vec![1, 2, 3], k: 2 }
+}
+
 impl W {
     #[inline(never)]
     fn rebuild(&mut self) -> usize {
-        unsafe { std::ptr::drop_in_place(&mut self.values) };
+        unsafe { ptr::drop_in_place(&mut self.values) };
         let n = black_box(self.k); // DROPPED_IN_PLACE
-        unsafe { std::ptr::write(&mut self.values, vec![1]) };
+        unsafe { ptr::write(&mut self.values, vec![1]) };
         n
     }
 }
 
 #[inline(never)]
-fn read_out() -> usize {
-    let mut w = W { values: vec![1, 2, 3], k: 2 };
-    black_box(&mut w);
-    let copy: Vec<i64> = unsafe { std::ptr::read(&w.values) };
-    drop(copy);
-    let n = black_box(w.k); // READ_OUT
-    std::mem::forget(w);
+fn closure_free() -> usize {
+    let mut w = mk();
+    let mut kill = || unsafe { ptr::drop_in_place(&mut w.values) };
+    kill();
+    let n = black_box(w.k); // CLOSURE_FREE
+    mem::forget(w);
     n
+}
+
+/// Safety: the caller must forget `w` or restore `w.values`.
+unsafe fn take_values(w: &mut W) {
+    drop(unsafe { ptr::read(&w.values) });
+}
+
+#[inline(never)]
+fn callee() -> usize {
+    let mut w = mk();
+    unsafe { take_values(&mut w) };
+    let n = black_box(w.k); // CALLEE
+    mem::forget(w);
+    n
+}
+
+fn stash(slot: &mut *mut Vec<i64>, v: &mut Vec<i64>) {
+    *slot = v;
+}
+
+#[inline(never)]
+fn out_param() -> usize {
+    let mut w = mk();
+    let mut p: *mut Vec<i64> = ptr::null_mut();
+    stash(&mut p, &mut w.values);
+    unsafe { ptr::drop_in_place(p) };
+    let n = black_box(w.k); // OUT_PARAM
+    mem::forget(w);
+    n
+}
+
+#[inline(never)]
+fn slot() -> usize {
+    let mut w = mk();
+    let mut slot: Option<&mut Vec<i64>> = None;
+    slot.replace(&mut w.values);
+    let p: *mut Vec<i64> = slot.take().unwrap();
+    unsafe { ptr::drop_in_place(p) };
+    let n = black_box(w.k); // SLOT
+    mem::forget(w);
+    n
+}
+
+#[inline(never)]
+fn moved_in() -> usize {
+    let mut w = mk();
+    let p = w.values.as_mut_ptr();
+    let h = Outer { w, k: 1 };
+    unsafe { drop(Vec::from_raw_parts(p, 3, 3)) };
+    let n = black_box(h.k); // MOVED_IN
+    mem::forget(h);
+    n
+}
+
+#[inline(never)]
+fn rebound() -> usize {
+    let mut w = mk();
+    let p = w.values.as_mut_ptr();
+    let w = w;
+    unsafe { drop(Vec::from_raw_parts(p, 3, 3)) };
+    let n = black_box(w.k); // REBOUND
+    mem::forget(w);
+    n
+}
+
+#[inline(never)]
+fn look(w: &W) -> usize {
+    black_box(w.k) // LOOK
+}
+
+#[inline(never)]
+fn caller_frees() -> usize {
+    let w = mk();
+    unsafe { drop(ptr::read(addr_of!(w.values))) };
+    let n = look(&w);
+    mem::forget(w);
+    n
+}
+
+#[inline(never)]
+fn owned_local() -> usize {
+    let mut v = vec![1i64, 2, 3];
+    let mut kill = || unsafe { ptr::drop_in_place(&mut v) };
+    kill();
+    let n = black_box(1); // OWNED_LOCAL
+    mem::forget(v);
+    n
+}
+
+#[inline(never)]
+fn mutated() -> usize {
+    let s = String::from("short");
+    let v: &str = s.as_str();
+    let n = v.len();
+    // Undefined behaviour, which the program never relies on: through a pointer cast
+    // from `&s`, the String it borrows grows (and moves) under `v`.
+    let p = &s as *const String as *mut String;
+    unsafe { (*p).push_str(" and now much longer than before, to move its buffer") };
+    black_box(n) // MUTATED
 }
 
 fn main() {
     let mut w = W { values: vec![1, 2, 3], k: 4 };
-    println!("{} {}", w.rebuild(), read_out());
+    let total = w.rebuild() + closure_free() + callee() + out_param() + slot() + moved_in()
+        + rebound() + caller_frees() + owned_local() + mutated();
+    println!("{total}");
+}
+"""
+# The review's `g3`: a `Vec` a macro declares, with a buffer `unsafe` code regrows
+# behind a shared reference.
+SHADOWED = """use std::cell::UnsafeCell;
+use std::hint::black_box;
+
+macro_rules! decl {
+    ($name:ident < $t:ident >) => {
+        pub struct $name<$t> {
+            inner: UnsafeCell<std::vec::Vec<$t>>,
+        }
+        impl<$t> $name<$t> {
+            pub fn new(v: std::vec::Vec<$t>) -> Self {
+                $name { inner: UnsafeCell::new(v) }
+            }
+            pub fn as_slice(&self) -> &[$t] {
+                unsafe { (*self.inner.get()).as_slice() }
+            }
+            /// Safety: no slice `as_slice` returned may be used afterwards.
+            pub unsafe fn regrow(&self, x: $t) {
+                let v = unsafe { &mut *self.inner.get() };
+                v.shrink_to_fit();
+                v.push(x);
+            }
+        }
+    };
+}
+
+decl!(Vec<T>);
+
+#[inline(never)]
+fn reader(v: &Vec<i64>) -> usize {
+    let s: &[i64] = v.as_slice();
+    let n = s.len();
+    unsafe { v.regrow(99) };
+    black_box(n) // SHADOWED
+}
+
+fn main() {
+    let v = Vec::new(std::vec![1i64, 2, 3]);
+    println!("{}", reader(&v));
 }
 """
 
@@ -440,31 +593,56 @@ def test_a_borrow_of_a_local_nothing_changes_reads_past_its_last_use(tmp_path, s
     assert [row.get("view") != "unproven" for row in rows] == [True, True], rows
     if reads(rows[0]):
         assert [row["value"] for row in rows] == ['"ab"', '"cd"'], rows
-    # A pointer cast from `&s` may write `s` (undefined behaviour, but cheap to rule
-    # out): `v` is not read past its last use.
-    result = probe(capsys, crate, BORROWS, "// MUTATED", "v", "--arg", "ab/cd")
-    assert result["rows"][0]["view"] == "unproven", result["rows"]
+    # Review of #156: `v.as_ptr()` in safe code (printed with `{:p}`) frees nothing, so
+    # it hides nothing.
+    result = probe(capsys, crate, BORROWS, "// GROWTH", "v", "--arg", "ab/cd", "--hits", "2")
+    rows = result["rows"]
+    if reads(rows[0]):
+        assert [row["value"] for row in rows] == ["[1, 2, 3, 0]", "[1, 2, 3, 0, 1]"], rows
+        assert [row.get("note") for row in rows] == [None, None], rows
+    else:
+        raw(rows[0], NO_MEMORY)
 
 
-@pytest.mark.timeout(400)
-def test_what_unsafe_code_may_have_freed_through_a_raw_pointer_is_never_read(
-    tmp_path, state, capsys
-):
-    # Review of #156: `ptr::read(&w.values)` (its copy dropped), or `drop_in_place(&mut
-    # self.values)`, frees the buffer the field still points at, which the MIR shows
-    # initialized; the field read the freed memory (`[3, 4356, 0]`).
+UNSAFE_CRATE = "the crate has unsafe code (in src/main.rs), which can free a buffer"
+
+
+@pytest.mark.timeout(600)
+def test_nothing_unsafe_code_may_have_freed_is_read_in_its_crate(tmp_path, state, capsys):
+    # Review of #156: sound unsafe code frees the buffer a field (or a Vec local) still
+    # points at where the MIR shows it initialized, and in places the stopped function
+    # cannot see (a closure, a callee, a pointer stored for later, after a move, in a
+    # caller); the field read the freed memory (`[3, 4356, 0]`). In a crate with unsafe
+    # code anywhere, no container is read from what it owns, and no borrow is frozen.
     crate = crate_at(tmp_path, "unsafe", UNSAFE)
-    why = "this function takes a raw pointer to `{}` (or to a part of it, or through it)"
-    rows = {
-        row["selector"]: row
-        for row in probe(capsys, crate, UNSAFE, "// DROPPED_IN_PLACE", "self.values,self.k")["rows"]
+    rebound = f"w @ main.rs:{line_of(UNSAFE, 'let w = w;')}"
+    cases = {
+        "// DROPPED_IN_PLACE": ("self.values", "self.k", "4"),
+        "// CLOSURE_FREE": ("w.values", "w.k", "2"),
+        "// CALLEE": ("w.values", "w.k", "2"),
+        "// OUT_PARAM": ("w.values", "w.k", "2"),
+        "// SLOT": ("w.values", "w.k", "2"),
+        "// MOVED_IN": ("h.w.values", "h.w.k", "2"),
+        # LLDB names the two `w` by where each is declared.
+        "// REBOUND": (f"{rebound}.values", f"{rebound}.k", "2"),
+        "// LOOK": ("w.values", "w.k", "2"),
     }
-    raw(rows["self.values"], why.format("self"))
-    assert rows["self.k"]["value"] == "4", rows
-    rows = {
-        row["selector"]: row
-        for row in probe(capsys, crate, UNSAFE, "// READ_OUT", "w.values,w.values.len,w.k")["rows"]
-    }
-    raw(rows["w.values"], why.format("w"))
-    # Its own fields still read, as the bytes the struct holds.
-    assert (rows["w.values.len"]["value"], rows["w.k"]["value"]) == ("3", "2"), rows
+    for marker, (field, scalar, value) in cases.items():
+        rows = {
+            row["selector"]: row
+            for row in probe(capsys, crate, UNSAFE, marker, f"{field},{scalar}")["rows"]
+        }
+        raw(rows[field], UNSAFE_CRATE)
+        # Its scalar fields are the bytes the struct holds: they still read.
+        assert rows[scalar]["value"] == value, (marker, rows)
+    # An owned Vec local too (#53's reads, before this review).
+    [row] = probe(capsys, crate, UNSAFE, "// OWNED_LOCAL", "v")["rows"]
+    raw(row, UNSAFE_CRATE)
+    # A borrow #110 cannot show still standing is not frozen: through a pointer cast
+    # from `&s` (undefined behaviour), the String it borrows moved.
+    [row] = probe(capsys, crate, UNSAFE, "// MUTATED", "v")["rows"]
+    assert row["view"] == "unproven", row
+    # The review's `g3`: a crate's own `Vec` (a macro's) is no frozen owner.
+    crate = crate_at(tmp_path, "shadowed", SHADOWED)
+    [row] = probe(capsys, crate, SHADOWED, "// SHADOWED", "s")["rows"]
+    assert row["view"] == "unproven", row

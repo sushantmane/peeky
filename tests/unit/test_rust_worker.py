@@ -1013,3 +1013,31 @@ def test_a_name_not_proven_in_memory_says_which_binding_or_copy_is_why():
         "far": "inlined",
         "k": "async state",
     }
+
+
+@pytest.mark.parametrize(
+    "texts,found",
+    [
+        ({"src/main.rs": "fn main() { let v = vec![1]; }"}, None),
+        ({"src/main.rs": "fn main() { unsafe { f() } }"}, "src/main.rs"),
+        ({"src/main.rs": "fn main() {}", "src/m.rs": "unsafe fn g() {}"}, "src/m.rs"),
+        ({"src/main.rs": "#[unsafe(no_mangle)] pub fn f() {}"}, "src/main.rs"),
+        ({"src/main.rs": "#[no_mangle] pub fn free() {}"}, "src/main.rs"),
+        ({"src/main.rs": 'unsafe extern "C" { fn getpid() -> i32; }'}, "src/main.rs"),
+        ({"src/main.rs": "macro_rules! m { () => { unsafe { 1 } }; }"}, "src/main.rs"),
+        # Not code: a comment, a string, a raw identifier, a lint's name.
+        ({"src/main.rs": '// unsafe\nfn f() -> &\'static str { "unsafe" }'}, None),
+        ({"src/main.rs": "fn r#unsafe() {}\n#![forbid(unsafe_code)]"}, None),
+        # A source that does not lex counts; any other file is read as text.
+        ({"src/main.rs": 'fn f() { "unterminated }'}, "src/main.rs"),
+        ({"src/main.rs": "fn main() {}", "inc.txt": "unsafe { x() }"}, "inc.txt"),
+    ],
+)
+def test_the_crates_unsafe_code_is_found_in_any_of_its_files(texts, found):
+    # Review of #156: unsafe code anywhere in the crate (a closure, a callee, a pointer
+    # stored for later) can free what a Vec field still points at; dependencies (std)
+    # are taken as sound.
+    from peeky.rust import unsafe_source
+
+    rust = tuple(name for name in texts if name.endswith(".rs"))
+    assert unsafe_source(texts, rust) == found

@@ -232,10 +232,9 @@ class Body:
     _live: tuple | None = None
     _copy_reads: tuple | None = None
     _moved_cache: set | None = None
-    # #156 review: locals a raw pointer may reach (``_raw_exposed``), each local's
-    # statements (``_mentions``), and the frozen owners of a reference (``_borrows_frozen``)
-    # and iterators only `next` borrows (``_only_iterated``), each found once.
-    _raw_cache: frozenset | None = None
+    # #156 review: each local's statements (``_mentions``), and the frozen owners of a
+    # reference (``_borrows_frozen``) and iterators only `next` borrows
+    # (``_only_iterated``), each found once.
     _mention_index: dict | None = None
     _frozen_cache: dict | None = None
     _iterated_cache: dict | None = None
@@ -1008,52 +1007,6 @@ class Body:
                         index.setdefault(int(number), []).append(text)
             self._mention_index = index
         return self._mention_index
-
-    def _raw_exposed(self):
-        """Locals a raw pointer made in this function may reach (#156 review): what each
-        raw pointer, `&raw` borrow or cast to one (`&raw const (*_6)`, `copy _8 as *mut
-        String (PtrToPtr)`, a call returning one: `v.as_mut_ptr()`) is made from, and
-        everything that is made from, back through references and calls (`_6 =
-        &(_1.1: Vec<i64>)`: `_1`). Unsafe code may free, move out of or overwrite such a
-        local behind the MIR's back (`ptr::read`, `drop_in_place`, `ptr::write`), so
-        nothing it owns is proven. Over-approximated: any raw pointer in the body made
-        from a local counts, wherever the stop is."""
-        if self._raw_cache is None:
-            pending = []
-            pointers = {f"_{n}" for n, kind in self.types.items() if _RAW_POINTER.search(kind)}
-            statements = [
-                _STRING.sub('""', text) if '"' in text else text
-                for block in self.blocks.values()
-                for text, _, _ in block.statements
-            ]
-            # The built MIR's own deref of a Box (`_23 = copy ((_1.0: Unique<T>).0:
-            # NonNull<T>) as *const T (Transmute)`), and the alignment check of what that
-            # points at (`copy _23 as *const () (PtrToPtr)`): no raw pointer of the
-            # program's. One the program makes from it (`&raw mut (*_23)`) still counts,
-            # back through it to the Box.
-            boxed = {f"_{found[1]}" for text in statements if (found := _BOX_POINTER.match(text))}
-            for text in statements:
-                target, _, value = text.partition(" = ")
-                if target in boxed:
-                    continue
-                if "&raw " in text:
-                    pending += map(int, _MENTIONED.findall(text))
-                elif target in pointers or " as *const " in text or " as *mut " in text:
-                    # Assigned a raw pointer, however made (`v.as_mut_ptr()`, a cast).
-                    made = _MENTIONED.findall(value or text)
-                    if made and all(f"_{n}" in boxed for n in made) and "&" not in value:
-                        continue
-                    pending += map(int, made)
-            exposed, assigned = set(), self._assignments()
-            while pending:
-                local = pending.pop()
-                if local in exposed:
-                    continue
-                exposed.add(local)
-                for value in assigned.get(local, ()):
-                    pending += map(int, _MENTIONED.findall(_STRING.sub('""', value)))
-            self._raw_cache = frozenset(exposed)
-        return self._raw_cache
 
     def _written_through(self):
         """Locals borrowed `&mut` or raw somewhere (`&mut _3`, `&raw const _3`): what
@@ -1986,7 +1939,36 @@ _FROZEN_TYPE = re.compile(
     rf"(?:(?:std::vec::)?Vec<|(?:std::boxed::)?Box<|\[|\()*"
     rf"{_FROZEN_LEAF}(?:(?:, {_FROZEN_LEAF})*,?\)|; [0-9_a-z]+\]|\]|>)*"
 )
-_FROZEN_NAMES = r"(?:Vec|String|Box|str|bool|char|f32|f64|[iu](?:8|16|32|64|128|size))"
+_FROZEN_NAMES = (
+    "Vec",
+    "String",
+    "Box",
+    "str",
+    "bool",
+    "char",
+    "f32",
+    "f64",
+    *(f"{sign}{bits}" for sign in "iu" for bits in ("8", "16", "32", "64", "128", "size")),
+)
+
+
+def _macro_bodies(code):
+    """The bodies of the `macro_rules!` definitions in ``code`` (comments and strings
+    blanked), each from its opening bracket to the matching close."""
+    found = []
+    for start in re.finditer(r"\bmacro_rules!\s*(?:r#)?\w+\s*([({\[])", code):
+        depth, at = 0, start.end(1) - 1
+        for at in range(start.end(1) - 1, len(code)):
+            if code[at] in "({[":
+                depth += 1
+            elif code[at] in ")}]":
+                depth -= 1
+                if depth == 0:
+                    break
+        found.append(code[start.end(1) : at])
+    return found
+
+
 # A call and its edges: `-> [return: bb3, unwind: bb9]`, `unwind continue`, `unwind
 # unreachable`, `unwind terminate(abi)`.
 _CALL = re.compile(
@@ -2056,9 +2038,10 @@ def _frozen_sources(body, local, seen, iterator):
     return found
 
 
-def _frozen_owners(body, local, iterator):
+def _frozen_owners(body, local, iterator, untrusted=()):
     """The frozen owners of the reference ``local`` (see OwnedLocals._borrows_frozen),
-    each but whether it is initialized at the stop, or None."""
+    each but whether it is initialized at the stop, or None. ``untrusted``: the short
+    type names (`Vec`) that may be the crate's own (OwnedLocals._untrusted_names)."""
     if body.generics is None:
         # A twin a macro generates: any type name may be a type parameter.
         return None
@@ -2066,15 +2049,11 @@ def _frozen_owners(body, local, iterator):
     scopes = _binding_scopes(body, local)
     if not owners or len(scopes) != 1:
         return None
-    assigned, raw = body._assignments(), body._raw_exposed()
+    assigned = body._assignments()
     for owner, argument in owners:
-        if owner in raw:
-            # A raw pointer to it (or through it) may write it (#156 review: `(*(&s as
-            # *const String as *mut String)).push_str(..)`).
-            return None
         kind = body.types.get(owner, "")
-        if mentions(kind, body.generics):
-            # `fn f<i8>(v: Vec<i8>)` may hold anything.
+        if mentions(kind, body.generics) or mentions(kind, untrusted):
+            # `fn f<i8>(v: Vec<i8>)` may hold anything, as may a `Vec` the crate declares.
             return None
         if argument:
             if not _FROZEN_TYPE.fullmatch(kind[1:]):
@@ -3037,6 +3016,10 @@ def _file(meta, scope):
 class OwnedLocals:
     """Proofs that an owned local is initialized at a stop (see the module docstring)."""
 
+    # Where the crate's own sources have unsafe code (`src/main.rs`; set by `prepare`):
+    # the frozen-owner rule does not apply (#156 review).
+    unsafe_code = None
+
     def __init__(self, bodies, functions, sources=(), *, precise=True, texts=None):
         self.bodies = list(bodies)
         # Statement-level positions rely on local macro code keeping its own lines in
@@ -3794,13 +3777,16 @@ class OwnedLocals:
             or body.coroutine is not None
         ):
             return False
-        if not self._std_names():
+        if self.unsafe_code:
+            # Unsafe code may free or write what an owner holds behind the MIR's back.
             return False
         if body._frozen_cache is None:
             body._frozen_cache = {}
         iterator = self._std_iterator()
         if (local, iterator) not in body._frozen_cache:
-            body._frozen_cache[(local, iterator)] = _frozen_owners(body, local, iterator)
+            body._frozen_cache[(local, iterator)] = _frozen_owners(
+                body, local, iterator, self._untrusted_names()
+            )
         owners = body._frozen_cache[(local, iterator)]
         return bool(owners) and all(
             argument
@@ -3815,52 +3801,42 @@ class OwnedLocals:
             for owner, argument in owners
         )
 
-    def raw_exposed(self, hashed, variable_name, line, path):
-        """True if the frame's function takes a raw pointer to its local ``variable_name``
-        (or to a part of it, or, for a reference argument, to what it points at), or one
-        made through it, anywhere in its body (``Body._raw_exposed``): unsafe code may
-        have freed or overwritten what it owns where the MIR shows it initialized
-        (`ptr::read(&w.values)`, `ptr::drop_in_place(&mut self.values)`). True also
-        where the binding is not one local (a capture), if the body takes any raw
-        pointer; False where no body is matched (nothing is proven there)."""
-        body = self.body(hashed)
-        if body is None:
-            return False
-        exposed = body._raw_exposed()
-        if not exposed:
-            return False
-        local = self._local(body, variable_name, line, path)
-        if local is not None:
-            return local in exposed
-        name = str(variable_name).partition(" @ ")[0]
-        return any(b[0] is None or b[0] in exposed for b in body.bindings.get(name, ()))
-
-    def _std_names(self):
-        """Whether the type names the frozen-owner rule trusts (`Vec`, `String`, `Box`,
-        `str`, the scalars) are the standard library's and the language's: the crate
-        declares no item of those names, imports none under them (`use x::Vec`, `as
-        String`) and passes none bare to a macro (`mk!(String)`, which may declare one).
-        A function's header prints types by short names, which then could be its own."""
-        if "_std_names_known" not in self.__dict__:
+    def _untrusted_names(self):
+        """Which of the type names the frozen-owner rule trusts by their short form
+        (`Vec`, `String`, `Box`, `str`, the scalars: a function's header prints its
+        arguments' types so, `&Vec<String>`) may be the crate's own: one it declares
+        (`struct Vec`), imports under that name (`use x::Vec`, `as String`), passes bare
+        to a macro (`mk!(String)`), or whose `macro_rules!` body names it (a macro may
+        declare it, #156 review). A crate whose sources do not lex trusts none."""
+        if "_untrusted_known" not in self.__dict__:
             from peeky.rust_lexer import code_only
 
-            name = rf"(?:r#)?{_FROZEN_NAMES}\b"
-            # A macro is passed `Vec` to declare one, never a scalar (`as usize` is a cast).
-            library = r"(?:r#)?(?:Vec|String|Box)\b"
-            declared = re.compile(
-                rf"\b(?:struct|enum|union|type|trait|mod|macro_rules!)\s+{name}"
-                rf"|\buse\b[^;]*\bas\s+{name}"
-                rf"|\buse\s+(?!(?:::)?(?:std|core|alloc)::)[^;]*\b{name}"
-                rf"|!\s*[(\[{{][^;]*?(?<![\w:]){library}(?!\s*(?:::|<|\())"
-            )
-            codes = [
-                code_only(self.texts[source]) if source in self.texts else None
-                for source in self.sources
-            ]
-            self._std_names_known = bool(codes) and all(
-                code is not None and not declared.search(code) for code in codes
-            )
-        return self._std_names_known
+            names, untrusted = _FROZEN_NAMES, set()
+            for source in self.sources:
+                code = code_only(self.texts[source]) if source in self.texts else None
+                if code is None:
+                    untrusted = set(names)
+                    break
+                for name in names:
+                    ident = rf"(?:r#)?{name}\b"
+                    declared = re.compile(
+                        rf"\b(?:struct|enum|union|type|trait|mod|macro_rules!)\s+{ident}"
+                        rf"|\buse\b[^;]*\bas\s+{ident}"
+                        rf"|\buse\s+(?!(?:::)?(?:std|core|alloc)::)[^;]*\b{ident}"
+                    )
+                    passed = name in ("Vec", "String", "Box") and re.search(
+                        rf"!\s*[(\[{{][^;]*?(?<![\w:]){ident}(?!\s*(?:::|<|\())", code
+                    )
+                    if (
+                        declared.search(code)
+                        or passed
+                        or any(
+                            re.search(rf"(?<![\w:$]){ident}", body) for body in _macro_bodies(code)
+                        )
+                    ):
+                        untrusted.add(name)
+            self._untrusted_known = frozenset(untrusted)
+        return self._untrusted_known
 
     def _std_iterator(self):
         """Whether a call the dump names `<T as Iterator>::next` is the standard

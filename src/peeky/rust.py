@@ -694,6 +694,11 @@ class RustTarget:
             session.code_blocks = blocks
             # Each local's IR declarations, to say why a name is not in memory (#138).
             session.declarations_ir = declarations
+            # Unsafe code can free what safe code shows owned (#156 review): where the
+            # crate has any, no owned container, field container or frozen borrow reads.
+            session.unsafe_code = unsafe_source(texts, rust)
+            if owned is not None:
+                owned.unsafe_code = session.unsafe_code
             session.assert_current()
             return session
         except BaseException as exc:
@@ -776,11 +781,33 @@ _FIELD_CONTAINER = re.compile(
     r"alloc::vec::Vec<.+>|alloc::string::String|&(?:mut )?str|&(?:mut )?\[.+\]"
     r"|alloc::boxed::Box<str, alloc::alloc::Global>"
 )
-_RAW_EXPOSED = (
-    "this function takes a raw pointer to `{name}` (or to a part of it, or through it), "
-    "through which unsafe code may free, move out of or overwrite what it holds where "
-    "the build's MIR cannot see (`ptr::read`, `ptr::drop_in_place`)"
+_UNSAFE_CRATE = (
+    "the crate has unsafe code (in {source}), which can free a buffer without Peeky seeing it"
 )
+# Where a crate's own code can do what safe Rust cannot: an `unsafe` block, function,
+# impl, trait or extern block, an `#[unsafe(...)]` attribute, and the attributes that
+# are unsafe without saying so before the 2024 edition (a `#[no_mangle]` function can
+# replace `free`). `r#unsafe` is an identifier.
+_UNSAFE_CODE = re.compile(r"(?<![\w#])(?:unsafe|no_mangle|export_name|link_section)\b")
+
+
+def unsafe_source(texts, rust):
+    """The first of the crate's files (``texts``: {name: text} of every file the build
+    may read; ``rust``: the Rust sources and tests among them) with unsafe code, or None.
+    Rust sources are read without their comments and strings (a source that does not
+    lex counts); any other file a macro could `include!`, as plain text."""
+    from peeky.rust_lexer import code_only
+
+    for name in rust:
+        code = code_only(texts.get(name, ""))
+        if code is None or _UNSAFE_CODE.search(code):
+            return name
+    for name, text in texts.items():
+        if name not in rust and _UNSAFE_CODE.search(text):
+            return name
+    return None
+
+
 _NO_MEMORY = (
     "the debugger gives no memory address for it (lldb-dap from LLVM 20 reads memory, "
     "with readMemory)"
@@ -1054,6 +1081,8 @@ class RustSession(NativeSession):
     units = ()
     # {legacy hash: the function's CodeBlocks} (rust_symbols.code_blocks; #115).
     code_blocks = {}
+    # The first crate source with unsafe code, or None (``unsafe_source``; #156 review).
+    unsafe_code = None
 
     def function_scopes(self):
         """Functions of the application units only, as `prepare` read them: the whole
@@ -1990,6 +2019,8 @@ class RustSession(NativeSession):
             and REFERENCE_PARAMETERS.get(
                 declared := proofs.declared_type(hashed[1], variable.get("name"), line, shown_path)
             )
+            # In a crate with unsafe code, what #110 shows standing may have been freed.
+            and not self.unsafe_code
             and reference_valid() is True
         ):
             # A `&str` or slice local whose target #110 shows still standing (`v` of `for
@@ -2012,8 +2043,8 @@ class RustSession(NativeSession):
                 line,
                 ((frame or {}).get("source") or {}).get("path"),
             )
-            # Nor where unsafe code may have freed what it owns through a raw pointer.
-            and not proofs.raw_exposed(hashed[1], variable.get("name"), line, shown_path)
+            # Nor in a crate with unsafe code, which may have freed what it owns.
+            and not self.unsafe_code
         )
         layouts = self.layouts
         container = container_view(
@@ -2072,9 +2103,7 @@ class RustSession(NativeSession):
             pointer = _holds_data_pointers(kind)
             provable = innermost and unoptimized and hashed
             gated = (owning or (pointer and not plain)) and not (
-                provable
-                and proofs.proven(hashed[1], variable.get("name"), line, shown_path)
-                and not proofs.raw_exposed(hashed[1], variable.get("name"), line, shown_path)
+                provable and proofs.proven(hashed[1], variable.get("name"), line, shown_path)
             )
             # Judged in every frame (`--frame N` reads callers): only proofs that make a
             # value readable (an owned container, a Box) are the innermost frame's.
@@ -2132,15 +2161,15 @@ class RustSession(NativeSession):
         if hashed is None or proofs is None:
             return "Peeky cannot match this frame to the build's MIR"
         place = frame or {}
-        if proofs.raw_exposed(
+        if not owned and not proofs.proven(
             hashed[1], name, place.get("line"), (place.get("source") or {}).get("path")
         ):
-            return _RAW_EXPOSED.format(name=name)
-        if not owned:
             return (
                 f"the build's MIR does not prove `{name}` initialized at this line: it may "
                 "be moved, dropped or not yet assigned around it (#53)"
             )
+        if self.unsafe_code:
+            return _UNSAFE_CRATE.format(source=self.unsafe_code)
         if not isinstance(variable.get("memoryReference"), str):
             return _NO_MEMORY
         return None
@@ -2175,10 +2204,10 @@ class RustSession(NativeSession):
         hashed, proofs = _frame_hash(frame), getattr(self, "owned", None)
         if not hashed or proofs is None:
             return {"raw_reason": "Peeky cannot match this frame to the build's MIR"}
+        if self.unsafe_code:
+            return {"raw_reason": _UNSAFE_CRATE.format(source=self.unsafe_code)}
         place = frame or {}
         line, path = place.get("line"), (place.get("source") or {}).get("path")
-        if proofs.raw_exposed(hashed[1], root, line, path):
-            return {"raw_reason": _RAW_EXPOSED.format(name=root)}
         proof = self.parameters.get((hashed[1], root))
         verdict, declared = [], None
 
@@ -2307,25 +2336,15 @@ class RustSession(NativeSession):
         match). The worker passes the result to ``view_variable`` for everything inside
         it."""
         proofs, kind = getattr(self, "owned", None), variable.get("type")
-        if proofs is None or not re.fullmatch(r"[^\W\d]\w*(?: @ .+)?", str(variable.get("name"))):
+        if proofs is None or _holds_data_pointers(kind) or _is_wide_box(kind):
+            # A pointer at the top is the Box and reference gates' (view_variable).
+            return None
+        if not re.fullmatch(r"[^\W\d]\w*(?: @ .+)?", str(variable.get("name"))):
             # LLDB's own values, not a local the code moves: an async body's `<null>`
             # (its `Pin<&mut>` self), the `(Return Value)` a step out shows.
             return None
-        hashed, place = _frame_hash(frame), frame or {}
-        exposed = bool(
-            hashed
-            and proofs.raw_exposed(
-                hashed[1],
-                variable.get("name"),
-                place.get("line"),
-                (place.get("source") or {}).get("path"),
-            )
-        )
-        if _holds_data_pointers(kind) or _is_wide_box(kind):
-            # A pointer at the top is the Box and reference gates' (view_variable); what
-            # the function took a raw pointer to (`self`) shows its pointers' addresses.
-            return "pointers" if exposed else None
         types = self._binding_types(variable, frame)
+        hashed = _frame_hash(frame)
         # An unmangled function (`#[no_mangle]`) is never generic.
         generics = proofs.type_parameters(hashed[1]) if hashed else ()
         if types and not any(_may_own(each, generics) for each in types):
@@ -2343,8 +2362,7 @@ class RustSession(NativeSession):
             )
         )
         if proven:
-            # Unsafe code may have freed what it owns through a raw pointer (#156 review).
-            return None if innermost and not exposed else "pointers"
+            return None if innermost else "pointers"
         return "stale"
 
     def display_type(self, variable, frame, top=True):

@@ -2844,39 +2844,24 @@ def test_next_is_the_standard_librarys_only_where_the_crate_names_no_other(code,
     assert owned._std_iterator() is std
 
 
-def test_a_raw_pointer_made_from_a_local_unfreezes_and_exposes_it():
-    # Review of #156: `ptr::read(&w.values)`, `drop_in_place(&mut self.values)` and a
-    # pointer cast from `&s` reach the local through a reference temp (`_6 =
-    # &(_1.1: Vec<i64>); _5 = &raw const (*_6)`), so no `&mut` or raw borrow of the
-    # local itself shows. The built MIR's own deref of a Box is not one.
+def test_a_frozen_owner_is_never_a_type_the_crate_may_name_itself():
+    # Review of #156: a function's header prints its arguments' types by short names
+    # (`&Vec<String>`), which a crate's own `Vec` (one a macro declares) may also have.
     from peeky.rust_mir import _frozen_owners
 
-    def parsed(text):
-        body = parse_body(text)
-        body.generics = ()  # matched to its IR function: not generic
-        return body
-
-    body = parsed(FROZEN)
-    assert body._raw_exposed() == frozenset()
+    body = parse_body(FROZEN)
+    body.generics = ()  # matched to its IR function: not generic
     assert _frozen_owners(body, 21, True) == {(2, False)}
-    for made in (
-        "_28 = &raw const (*_12);",
-        "_28 = copy _12 as *const std::vec::Vec<std::string::String> (PtrToPtr);",
-    ):
-        body = parsed(frozen_with("_12 = &_2;", made))
-        assert 2 in body._raw_exposed() and _frozen_owners(body, 21, True) is None, made
+    # The owner's type is printed whole (`std::vec::Vec<std::string::String>`): a crate's
+    # own `Vec` is not that.
+    assert _frozen_owners(body, 21, True, frozenset({"Vec"})) == {(2, False)}
+    assert _frozen_owners(body, 21, True, frozenset({"String"})) == {(2, False)}
+    body = parse_body(FROZEN.replace("std::vec::Vec<std::string::String>", "Vec<String>"))
+    body.generics = ()
+    assert _frozen_owners(body, 21, True) == {(2, False)}
+    assert _frozen_owners(body, 21, True, frozenset({"Vec"})) is None
     # A twin a macro generates (its type parameters unknown) is never judged so.
     assert _frozen_owners(parse_body(FROZEN), 21, True) is None
-    # A Box's deref (and its alignment check) exposes nothing; a raw pointer the
-    # program makes through it exposes the Box.
-    deref = (
-        "_28 = copy ((_2.0: std::ptr::Unique<Inner>).0: std::ptr::NonNull<Inner>) as "
-        "*const Inner (Transmute);",
-        "_24 = copy _28 as *const () (PtrToPtr);",
-    )
-    assert parse_body(frozen_with("_12 = &_2;", *deref))._raw_exposed() == frozenset()
-    made = (*deref, "_25 = &raw mut (*_28);")
-    assert 2 in parse_body(frozen_with("_12 = &_2;", *made))._raw_exposed()
 
 
 @pytest.mark.parametrize(
@@ -2892,19 +2877,24 @@ def test_a_call_is_read_whatever_its_unwind_edge(edge):
 
 
 @pytest.mark.parametrize(
-    "code,std",
+    "code,untrusted",
     [
-        ('fn f() { let v: Vec<String> = vec![]; println!("{}", v.len() as usize); }', True),
-        ("use std::string::String;", True),
-        ('fn f(x: &str) { assert_eq!(x, String::from("a")); }', True),
-        ("struct String;", False),
-        ("use crate::m::Vec;", False),
-        ("use std::vec::Vec as Box;", False),
-        ("mk!(String);", False),
-        ("type u8 = i32;", False),
+        ('fn f() { let v: Vec<String> = vec![]; println!("{}", v.len() as usize); }', set()),
+        ("use std::string::String;", set()),
+        ('fn f(x: &str) { assert_eq!(x, String::from("a")); }', set()),
+        ("struct String;", {"String"}),
+        ("use crate::m::Vec;", {"Vec"}),
+        ("use std::vec::Vec as Box;", {"Box"}),
+        ("mk!(String);", {"String"}),
+        ("type u8 = i32;", {"u8"}),
+        # Review of #156: a macro may declare one (`decl!(Vec<T>);`).
+        ("macro_rules! decl { ($n:ident) => { pub struct Vec<T>(T); }; }", {"Vec"}),
+        ("macro_rules! sum { ($($x:expr),*) => { 0 $(+ $x as i64)* }; }", {"i64"}),
+        ("macro_rules! two { () => { 2usize }; }", set()),
+        ('fn f() { let s = "Vec"; } // String', set()),
     ],
 )
-def test_a_frozen_owners_type_is_the_standard_librarys_only_where_no_other_is_named(code, std):
-    # A function's header prints its arguments' types by short names (`&Vec<String>`).
+def test_a_short_type_name_is_trusted_only_where_the_crate_names_no_other(code, untrusted):
+    # A function's header prints types by short names (`&Vec<String>`).
     owned = OwnedLocals([], {}, ("src/main.rs",), texts={"src/main.rs": code})
-    assert owned._std_names() is std
+    assert owned._untrusted_names() == untrusted
