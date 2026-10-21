@@ -1,6 +1,6 @@
 """Captured-evidence store: capture once, query with SQL (ADR 0004, step 4).
 
-`peeky probe` records every run in a local SQLite database (standard library, no
+`peeky probe` records every run not refused before launch in a local SQLite database (standard library, no
 server). Questions about what was already captured are ordinary SQL over that
 database, as heappy queries an exported heap. A new question about the running
 program is a new probe. Queries are read-only, one statement at a time, and bounded

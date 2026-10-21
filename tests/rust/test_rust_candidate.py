@@ -76,7 +76,7 @@ def test_a_candidate_with_many_compile_errors_is_build_failed_with_rustcs_words(
         ]
     )
     result = json.loads(capsys.readouterr().out)
-    # Nothing ran (#190): exit 2, no table.
+    # Refused before the launch request (#190): exit 2, no table.
     assert code == 2 and result["error"]["code"] == "BUILD_FAILED", result["error"]
     assert result["refused_before_launch"] is True
     message = result["error"]["message"]

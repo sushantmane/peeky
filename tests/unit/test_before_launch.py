@@ -1,6 +1,6 @@
-"""Every error before the program starts is a refusal before launch (#190), whatever
-its code: no table, exit 2, `refused_before_launch` in JSON, and no run kept as
-evidence. Before, only the refusals that said so did that; a file outside the worker
+"""Every probe error before the debugger's launch or attach request is sent is a
+refusal before launch (#190), whatever its code: no table, exit 2,
+`refused_before_launch` in JSON, and no run kept as evidence. Before, only the refusals that said so did that; a file outside the worker
 root (`INVALID_REQUEST`), an outdated Java adapter (`UNSUPPORTED`), a build that failed
 or a debugger that never started printed an empty table and exited 1. An error once
 the debugger was asked to start the program is not one: the program may have run."""
@@ -180,7 +180,7 @@ def test_an_outdated_java_adapter_is_refused_before_launch_by_the_cli(
     assert main([*command, "--json"]) == 2
     result = json.loads(capsys.readouterr().out)
     assert result["refused_before_launch"] is True and result["error"]["code"] == "UNSUPPORTED"
-    # Nothing ran: no run is kept as evidence.
+    # Refused before the launch request: no run is kept as evidence.
     assert not (tmp_path / "state" / "evidence" / "evidence.db").exists()
 
 
@@ -194,3 +194,141 @@ def test_a_cli_refusal_before_the_probe_says_so_in_json(tmp_path, monkeypatch, c
     # Other commands' errors are not probes: no such field.
     assert main(["describe", str(tmp_path / "missing.py"), "--json"]) == 2
     assert "refused_before_launch" not in json.loads(capsys.readouterr().out)
+
+
+# A compiler that answers `--version` and never finishes a build.
+SLOW_COMPILER = """#!/bin/sh
+case "$*" in *--version*) echo "clang version 18.1.3"; exit 0;; esac
+exec sleep 20
+"""
+
+
+def slow_build(tmp_path):
+    """A C target whose build outlasts any probe child's budget."""
+    from peeky.native import NativeTarget
+
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    for name, text in (("cc", SLOW_COMPILER), ("dap", "#!/bin/sh\necho dap\n")):
+        (tools / name).write_text(text)
+        (tools / name).chmod(0o755)
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / "a.c").write_text("int main(void) {\n    int x = 1;\n    return x;\n}\n")
+    tool = str(tools / "dap")
+    target = NativeTarget(
+        sources=("a.c",),
+        compiler=str(tools / "cc"),
+        adapter=tool,
+        dwarfdump=tool,
+        dsymutil=tool if sys.platform == "darwin" else None,
+    )
+    return root, target
+
+
+def test_a_remote_build_slower_than_its_budget_answers_before_the_watchdog(tmp_path):
+    # #190 review: the launch had the worker's 40 s, the watchdog fired at 35 s and made
+    # up a failure without `refused_before_launch`: an empty table, exit 1, a saved run.
+    from peeky.worker import _run_probe_process
+
+    root, target = slow_build(tmp_path)
+    # A launch budget of 4 s, a watchdog at 9 s.
+    result = _run_probe_process(root, Probe("a.c", 2, ("x",), timeout=30), target, 14)
+    assert result["error"]["code"] == "TIMEOUT", result
+    assert "HTTP cap" not in result["error"]["message"], result["error"]
+    assert result["refused_before_launch"] is True and probe_exit_code(result) == 2
+
+
+def test_the_watchdog_says_when_the_launch_request_was_not_sent(tmp_path, monkeypatch):
+    from peeky import worker
+
+    root, target = slow_build(tmp_path)
+    # The child's budget outlasts the watchdog (at 3 s).
+    monkeypatch.setattr(worker, "PROBE_LAUNCH_MARGIN_S", 0)
+    result = worker._run_probe_process(root, Probe("a.c", 2, ("x",), timeout=30), target, 8)
+    assert result["status"] == "timeout" and result["error"]["code"] == "TIMEOUT", result
+    message = result["error"]["message"]
+    assert "before the debugger's launch/attach request was sent" in message, message
+    assert result["refused_before_launch"] is True and probe_exit_code(result) == 2
+
+
+def test_the_watchdog_after_the_launch_request_is_no_refusal(tmp_path, monkeypatch):
+    # The program ran: its failure is an ordinary one.
+    from peeky import worker
+
+    (tmp_path / "main.py").write_text("import time\nx = 1\ntime.sleep(60)\n")
+    monkeypatch.setattr(worker, "PROBE_LAUNCH_MARGIN_S", 0)
+    result = worker._run_probe_process(tmp_path, Probe("main.py", 3, ("x",), timeout=30), None, 10)
+    assert result["status"] == "timeout" and "refused_before_launch" not in result, result
+    assert probe_exit_code(result) == 1
+
+
+def answering(status, body):
+    """A loopback worker that answers its version, then every other request with
+    ``status`` and ``body``."""
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    from peeky.errors import PROTOCOL_VERSION
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.rfile.read(int(self.headers.get("Content-Length", 0)))
+            version = self.path == "/version"
+            answer = json.dumps({"protocol": PROTOCOL_VERSION}).encode() if version else body
+            self.send_response(200 if version else status)
+            self.send_header("Content-Length", str(len(answer)))
+            self.end_headers()
+            self.wfile.write(answer)
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
+
+
+@pytest.mark.parametrize(
+    "status, body, code",
+    [
+        # Sent and answered, but not as the worker answers: the outcome is unknown.
+        (200, b"<html>proxy</html>", "TRANSPORT_LOST"),
+        (200, b"[1, 2]", "TRANSPORT_LOST"),
+        (502, b"<html>Bad Gateway</html>", "INVALID_REQUEST"),
+        # The worker's own refusal.
+        (
+            400,
+            json.dumps({"error": {"code": "BUSY", "message": "Another probe is running"}}),
+            "BUSY",
+        ),
+    ],
+)
+def test_only_a_remote_refusal_the_worker_made_is_one_before_launch(
+    tmp_path, monkeypatch, capsys, status, body, code
+):
+    # #190 review: an answer that was not JSON was taken for a refusal before launch.
+    monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("PEEKY_WORKER_TOKEN", "before-launch-token-1234567890")
+    (tmp_path / "main.py").write_text("x = 1\nprint(x)\n")
+    server = answering(status, body if isinstance(body, bytes) else body.encode())
+    try:
+        url = f"http://127.0.0.1:{server.server_port}"
+        argv = ["probe", str(tmp_path / "main.py"), "--at", "2", "--capture", "x"]
+        assert main([*argv, "--worker", url, "--json"]) == 2
+    finally:
+        server.shutdown()
+        server.server_close()
+    shown = json.loads(capsys.readouterr().out)
+    assert shown["error"]["code"] == code, shown
+    assert shown.get("refused_before_launch") is (True if code == "BUSY" else None), shown
+
+
+def test_a_worker_nobody_answers_at_is_one_before_launch(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("PEEKY_WORKER_TOKEN", "before-launch-token-1234567890")
+    (tmp_path / "main.py").write_text("x = 1\nprint(x)\n")
+    argv = ["probe", str(tmp_path / "main.py"), "--at", "2", "--worker", "http://127.0.0.1:1"]
+    assert main([*argv, "--json"]) == 2
+    shown = json.loads(capsys.readouterr().out)
+    assert shown["error"]["code"] == "UNREACHABLE" and shown["refused_before_launch"] is True

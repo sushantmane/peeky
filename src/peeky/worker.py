@@ -164,6 +164,8 @@ class DebugWorker:
         # Whether the current launch has asked the debugger to start (or attach to) the
         # program: an error before that is one before launch (#190).
         self.launch_requested = False
+        # A file written just before that request, for a probe child's watchdog.
+        self.launch_marker = None
         self.reference_frames = {}
         self.reference_adapter = {}
         self.reference_counter = 0
@@ -1052,7 +1054,7 @@ class DebugWorker:
                     # The error says what became of the processes the session started.
                     exc.cleanup = self.last_cleanup
                 if operation == "launch" and not self.launch_requested:
-                    # Nothing ran: the build, its checks or the debugger's start failed
+                    # Before launch: the build, its checks or the debugger's start failed
                     # before the program was asked to start (#190).
                     exc.before_launch = True
                 raise
@@ -1638,7 +1640,7 @@ class DebugWorker:
                 staged = Path(runtime.source_path(program)) if edit else None
                 if edit and hashlib.sha256(staged.read_bytes()).hexdigest() != candidate_sha256:
                     raise RuntimeError(
-                        "Provenance: the staged candidate differs from the requested edit; nothing ran"
+                        "Provenance: the staged candidate differs from the requested edit; the debugger's launch request was not sent"
                     )
                 if args.get("sets"):
                     self.refuse_never_settable(runtime, program, args["sets"])
@@ -1659,6 +1661,8 @@ class DebugWorker:
                 )
                 timeout = left(5)
                 # From here the program may run, even if the request then fails.
+                if self.launch_marker is not None:
+                    Path(self.launch_marker).write_text("requested\n")
                 self.launch_requested = True
                 launch = self.dap.send(
                     getattr(runtime, "dap_request", "launch"), launch_args, timeout=timeout
@@ -3765,7 +3769,7 @@ class DebugWorker:
                 f"optimized build ({level}), where the program may keep using other copies of "
                 "a value"
                 + ((note(program, [first["line"]], first["name"]) or "") if note else "")
-                + ". Refused before the program runs: nothing ran. Use an unoptimized build"
+                + ". Refused before the program runs: the debugger's launch/attach request was not sent. Use an unoptimized build"
             )
         elif check := getattr(runtime, "never_settable", None):
             lines, texts = {}, {}
@@ -3930,7 +3934,9 @@ _TEXT_MEMBER = (
     "element; copy it into a local with a candidate edit (`--old`/`--new`), or edit the "
     "source"
 )
-_BEFORE_LAUNCH = ". Refused before the program runs: nothing ran"
+_BEFORE_LAUNCH = (
+    ". Refused before the program runs: the debugger's launch/attach request was not sent"
+)
 
 
 def _name_list(value):
@@ -4207,6 +4213,11 @@ def make_server(root, token, port=8765, *, adapter=None):
     return server
 
 
+# A probe child's launch budget is the HTTP cap less this, so that a slow launch (a
+# build) ends in the child's own answer, before the watchdog at ``cap - 5`` (#190 review).
+PROBE_LAUNCH_MARGIN_S = 10
+
+
 def _run_probe_process(root, request, adapter, cap):
     import dataclasses
     import signal
@@ -4257,6 +4268,9 @@ def _run_probe_process(root, request, adapter, cap):
             config.write_text(json.dumps(dataclasses.asdict(adapter), default=str))
             config.chmod(0o600)
             command += ["--config", str(config)]
+        marker = Path(scratch) / "launch-requested"
+        command += ["--launch-budget", str(cap - PROBE_LAUNCH_MARGIN_S)]
+        command += ["--launch-marker", str(marker)]
         env = {k: v for k, v in os.environ.items() if k != "DEBUG_TOKEN"}
         process = subprocess.Popen(
             command,
@@ -4277,20 +4291,35 @@ def _run_probe_process(root, request, adapter, cap):
             except subprocess.TimeoutExpired:
                 os.killpg(process.pid, signal.SIGKILL)
                 process.communicate()
-            return _probe_failure("timeout", TimeoutError(f"Probe exceeded the {cap} s HTTP cap"))
+            stdout, stderr = None, b""
+        # Whether the debugger was asked to start the program: an answer made up here
+        # says so (#190 review), as the child's own would.
+        requested = marker.exists()
+    if stdout is None:
+        before = "" if requested else " before the debugger's launch/attach request was sent"
+        return _probe_failure(
+            "timeout", TimeoutError(f"Probe exceeded the {cap} s HTTP cap{before}"), requested
+        )
     if len(stdout) > 16 * 1024 * 1024:
-        return _probe_failure("failed", ValueError("Probe result exceeds limit of 16 MiB"))
+        return _probe_failure(
+            "failed", ValueError("Probe result exceeds limit of 16 MiB"), requested
+        )
     try:
         return json.loads(stdout)
     except json.JSONDecodeError:
         message = stderr[-2000:].decode(errors="replace") or "Probe process failed"
-        return _probe_failure("failed", RuntimeError(message))
+        return _probe_failure("failed", RuntimeError(message), requested)
 
 
-def _probe_failure(status, exc):
+def _probe_failure(status, exc, requested=True):
+    """A probe child's failure as its result; ``requested``: whether the debugger was
+    asked to start the program (if not, it is one before launch)."""
     from peeky.errors import classify
 
-    return {"status": status, "error": classify(exc, session_closed=True)}
+    failure = {"status": status, "error": classify(exc, session_closed=True)}
+    if not requested:
+        failure["refused_before_launch"] = True
+    return failure
 
 
 def load_java_target(path):
