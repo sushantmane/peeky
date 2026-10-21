@@ -85,7 +85,7 @@ LLDB may initially return a pending breakpoint; use verified breakpoint events a
 
 ## Integrity and lifecycle
 
-The fresh-build manifest binds declared sources and headers, compile flags, tool identities and output files. macOS also retains and hashes the generated dSYM; Linux uses the executable's embedded DWARF for the initial configuration. Stop validation checks the prepared source location, and native module validation checks the expected loaded executable identity. Missing debug information and changed original/copied source, executable or symbols fail closed.
+The fresh-build manifest binds declared sources and headers, compile flags, tool identities and output files. macOS also retains and hashes the generated dSYM; Linux uses the executable's embedded DWARF for the initial configuration. Stop validation checks the prepared source location, and native module validation checks the expected loaded executable identity. Missing debug information and changed original/copied source, executable or symbols fail closed. Each source is preprocessed (`-E`) before anything is compiled, and inline assembly that can read a file (`.incbin`, `.include`, or an assembler macro that could spell one), which no dependency file lists, is refused (`UNSUPPORTED`, #180); Peeky builds no `.s`/`.S` file and passes no `-Wa,` option.
 
 The target, compiler, debugger and symbol tools still execute with the user's OS permissions. System headers/libraries and dynamic-loader behavior are not fully hermetic. Do not interpret these checks as a hostile-process attestation or a general guarantee about every loaded library. The initial target is tiny unoptimized code, and symbol/debugger versions remain part of qualification.
 
