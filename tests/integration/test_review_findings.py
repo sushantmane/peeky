@@ -181,7 +181,9 @@ def test_an_interrupted_start_leaves_no_worker_and_frees_the_name(workspace, cap
     monkeypatch.setattr(cli._LocalClient, "call", real_call)
     code, out = run(capsys, "session", "start", workspace / "pagination_bug.py", "--at", "8")
     assert code == 0, out.err
-    assert run(capsys, "session", "close", "--json")[1].out.strip() == '{\n  "closed": "default"\n}'
+    closed = json.loads(run(capsys, "session", "close", "--json")[1].out)
+    # The program, stopped at line 8, ended with its session (#143).
+    assert closed["closed"] == "default" and closed["cleanup"].startswith("terminated pid ")
 
 
 def spawn_worker(root, *extra):

@@ -216,7 +216,11 @@ def test_java_adapter_death_reaps_target(java_worker):
     adapter = worker.dap.process
     adapter.kill()
     adapter.wait(timeout=3)
-    assert_http_error(500, client, "inspect", **context)
+    with pytest.raises(HTTPError) as caught:
+        client.call("inspect", **context)
+    # The error says what became of the JVM the adapter launched and announced (#143).
+    cleanup = json.load(caught.value)["error"]["cleanup"]
+    assert cleanup.startswith(f"terminated pid {pid}; the debugger was gone: a process ")
     assert worker.session is None
     assert not prepared.workspace.exists()
     assert_process_gone(pid)
@@ -529,3 +533,84 @@ def test_java_step_into_reaches_lambda_bodies(java_bundle, tmp_path, capsys, mon
     assert main(["session", "get", "doubled"]) == 0 and "= 8" in capsys.readouterr().out
     assert main(["session", "continue", "--to-exit"]) == 0
     assert main(["session", "close"]) == 0
+
+
+HOOK = """package demo;
+import java.nio.file.*;
+public class Hook {
+  static Path marks;
+  static void note(String what) {
+    try {
+      Files.writeString(marks, what + "\\n",
+          StandardOpenOption.CREATE, StandardOpenOption.APPEND);
+    } catch (Exception e) {
+    }
+  }
+  public static void main(String[] args) throws Exception {
+    marks = Paths.get(args[0]);
+    Runtime.getRuntime().addShutdownHook(new Thread(() -> note("shutdown-hook")));
+    Process child = new ProcessBuilder("sleep", "300").start();
+    note("child " + child.pid());
+    int total = 0;
+    for (int i = 0; i < 600; i++) {
+      total += i; // STOP
+      Thread.sleep(100);
+    }
+    System.out.println(total);
+  }
+}
+"""
+
+
+def test_a_launched_jvm_whose_adapter_dies_runs_its_shutdown_hooks(tmp_path, java_bundle):
+    from peeky import processes
+    from peeky.java import JavaTarget
+
+    source = tmp_path / "demo/Hook.java"
+    source.parent.mkdir()
+    source.write_text(HOOK)
+    line = next(i for i, text in enumerate(HOOK.splitlines(), 1) if "// STOP" in text)
+    marks = tmp_path / "marks.txt"
+    target = JavaTarget(
+        bundle=java_bundle,
+        sources=("demo/Hook.java",),
+        main_class="demo.Hook",
+        arguments=(str(marks),),
+    )
+    server = make_server(tmp_path, "java-test-token-1234567890", port=0, adapter=target)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    client = Client(f"http://127.0.0.1:{server.server_port}", "java-test-token-1234567890")
+    child = None
+    try:
+        launch = client.call("launch", program="demo/Hook.java", breakpoints=[{"line": line}])
+        session = {"session_id": launch["session_id"]}
+        stop = wait(client, session, "stopped")
+        dap = server.worker.dap
+        jvm = dap.debuggee_pid
+        child = int(marks.read_text().split()[1])
+        deadline = time.monotonic() + 5
+        while not {jvm, child} <= set(dap.family.kin):
+            assert time.monotonic() < deadline
+            time.sleep(0.05)
+        dap.process.kill()
+        dap.process.wait(timeout=3)
+        with pytest.raises(HTTPError) as caught:
+            client.call("inspect", **session, stop_id=stop["stop_id"])
+        cleanup = json.load(caught.value)["error"]["cleanup"]
+        # The JVM shares java-debug's process group: SIGTERM, and SIGKILL only after the
+        # grace, so its shutdown hooks run (before, SIGKILL followed at once).
+        assert "shutdown-hook" in marks.read_text().splitlines()
+        assert cleanup.startswith(f"terminated pid {jvm}; the debugger was gone")
+        table = processes.table()
+        assert not processes.alive(table.get(jvm)) and not processes.alive(table.get(child))
+    finally:
+        if child:
+            try:
+                os.kill(child, 9)
+            except OSError:
+                pass
+        server.worker.close()
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=3)
