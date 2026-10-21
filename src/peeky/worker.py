@@ -220,6 +220,9 @@ class DebugWorker:
         self.step_origin = None
         self.return_watch = None
         self.forget_places()
+        # {line: stops}: the launch's breakpoint lines that are loop headers stopping
+        # only before their loop, so many times each time it starts (#161).
+        self.loop_lines = {}
         self.stop_place = None
         self.reset_lost_stops()
         # A session that failed on a lost stop (#27): its id, error and final report.
@@ -1151,6 +1154,47 @@ class DebugWorker:
         for (line, _), (function, addresses) in groups.items():
             self.places.setdefault(line, []).append((function, tuple(sorted(addresses))))
 
+    def loop_headers(self, runtime):
+        """{line: stops} of the session's breakpoint lines that are loop headers whose
+        every location runs once each time the loop starts, before it (#161): a C, C++
+        `for`/`while` header binds its first code, Rust's `for` its two. Asked of the
+        runtime once, at launch, before the program runs (the debugger's disassembly and
+        line table, kept for the launch); never again when breakpoints are set again or
+        their places asked again (review of #166). Best effort."""
+        hook = getattr(runtime, "loop_header_stops", None)
+        if hook is None or self.dap is None or not self.places:
+            return {}
+        try:
+            source = runtime.source_path(self.program)
+        except Exception:
+            return {}
+        found, cache = {}, {}
+        for line in sorted(self.places)[:8]:
+            groups = [addresses for _, addresses in self.places[line]]
+            try:
+                count = hook(self.dap, source, line, groups, cache)
+            except Exception:
+                count = None
+            if count:
+                found[line] = count
+        return found
+
+    def loop_warnings(self):
+        """The note for each breakpoint line that is a loop header stopping only before
+        its loop (#161)."""
+        from peeky.loop_headers import loop_header_note
+
+        notes = []
+        for line, count in sorted(self.loop_lines.items()):
+            if line not in self.places:
+                continue
+            count, exact = count
+            note = loop_header_note(line, count, exact)
+            if count > 1:
+                note += f" (each hit's stop, 1 to {count}, says which)"
+            notes.append(note + ".")
+        return notes[:5]
+
     def place_of(self, frame):
         """(index, count) of the breakpoint location a stop's ``frame`` is at among its
         line's locations in the same code, in address order, where there are several
@@ -1185,6 +1229,9 @@ class DebugWorker:
         )
         notes = []
         for line in sorted(self.places):
+            if line in self.loop_lines:
+                # Its loop note says more: none of those stops is at a pass.
+                continue
             for function, addresses in self.places[line]:
                 if len(addresses) > 1:
                     count = len(addresses)
@@ -1543,6 +1590,7 @@ class DebugWorker:
             self.hits, self.stop_hit, self.stop_line = 0, None, None
             self.own_lines, self.own_ids, self.temporary_lines = set(), set(), set()
             self.forget_places()
+            self.loop_lines = {}
             # Nothing about an earlier session's stops carries over on a shared worker.
             self.co_served = self.stop_outside = self.stop_returns = False
             self.step_origin = self.return_watch = None
@@ -1620,6 +1668,8 @@ class DebugWorker:
                 self.record_own_points(args.get("breakpoints", []), points)
                 self.note_placed(runtime.source_path(program), args.get("breakpoints", []), points)
                 self.note_places(runtime, args.get("breakpoints", []), points)
+                # Once, before the program runs (#161): breakpoints set again later keep it.
+                self.loop_lines = self.loop_headers(runtime)
                 self.dap.request("configurationDone", timeout=left())
                 self.dap.response(launch, timeout=left())
                 runtime.assert_current()
@@ -1669,6 +1719,7 @@ class DebugWorker:
                         if (
                             notes := [
                                 *self.breakpoint_notes(program, args),
+                                *self.loop_warnings(),
                                 *self.place_warnings(),
                                 *(getattr(runtime, "warnings", None) or ()),
                             ]
@@ -2192,7 +2243,7 @@ class DebugWorker:
                 self.points, self.temporary_line = list(args["breakpoints"]), None
                 self.record_own_points(args["breakpoints"], placed)
                 self.note_places(runtime, args["breakpoints"], placed)
-                if warnings := self.place_warnings():
+                if warnings := [*self.loop_warnings(), *self.place_warnings()]:
                     return {**placed, "warnings": warnings}
             return placed
         if operation == "continue":
