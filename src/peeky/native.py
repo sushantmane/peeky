@@ -2394,6 +2394,96 @@ def _integer_ranges():
 
 
 INTEGER_RANGES = _integer_ranges()
+# What a function may return that Peeky shows (#155): LLDB reads it from the return
+# register, exactly. Structs, classes, references and arrays are withheld.
+RETURN_SCALARS = frozenset(INTEGER_RANGES) | {
+    "bool",
+    "_Bool",
+    "char",
+    "signed char",
+    "unsigned char",
+    "wchar_t",
+    "char8_t",
+    "char16_t",
+    "char32_t",
+    "float",
+    "double",
+}
+# A step out's watch on its caller (#162): after this many of the caller's watched
+# instructions ran on the thread during the step (deeper calls of a recursion through
+# the caller each run them), LLDB drops the watch itself and the return is not followed.
+WATCH_TRAPS = 128
+# One instruction as LLDB disassembles it: address, mnemonic, operands (#155).
+_INSTRUCTION = re.compile(
+    r"^\s*(?:->)?\s*(0x[0-9a-fA-F]+)\s*<\+\d+>:\s*([^\s;]*)\s*([^;\n]*)", re.M
+)
+_PREFIXES = {"notrack", "bnd", "lock", "rep", "repz", "repnz", "ds", "cs"}
+_ARM_CALLS = {"bl", "blr", "blraa", "blraaz", "blrab", "blrabz"}
+_ARM_INDIRECT = {"br", "braa", "braaz", "brab", "brabz"}
+_ARM_BRANCHES = {"b", "cbz", "cbnz", "tbz", "tbnz"}
+
+
+def _address(value):
+    """An address the debugger gives as hex text, else None."""
+    if isinstance(value, str) and re.fullmatch(r"0x[0-9a-fA-F]{1,16}", value.strip()):
+        return int(value, 16)
+    return None
+
+
+def _stack_pointer(dap, frame_id):
+    """A frame's stack pointer, as LLDB recovers it for that frame (a caller's is where
+    the call left it); None if not given. (A command in the debug console reads the
+    selected frame's registers, whatever frame is asked for.)"""
+    reply = dap.request(
+        "evaluate", {"expression": "$sp", "context": "watch", "frameId": frame_id}, timeout=2
+    )
+    text = str(reply.get("result") or "").strip()
+    # lldb-dap 18 gives it in decimal, later ones in hex.
+    return int(text) if re.fullmatch(r"[0-9]{1,20}", text) else _address(text)
+
+
+def _instruction_kind(mnemonic, operands):
+    """call, branch (with its target), indirect (a computed jump), or None."""
+    name = mnemonic.lower()
+    if name in _PREFIXES:
+        name, _, operands = operands.strip().partition(" ")
+        name = name.lower()
+    if name in _ARM_CALLS or name.startswith("call"):
+        return "call", None
+    if name in _ARM_INDIRECT:
+        return "indirect", None
+    if name.startswith("j") or name in _ARM_BRANCHES or name.startswith(("b.", "bc.")):
+        targets = re.findall(r"0x[0-9a-fA-F]+", operands)
+        if operands.strip().startswith("*") or not targets:
+            return "indirect", None
+        return "branch", int(targets[-1], 16)
+    return None, None
+
+
+def _instructions(disassembly):
+    """LLDB's disassembly of a function as [(address, kind, branch target)]."""
+    return [
+        (int(address, 16), *_instruction_kind(mnemonic, operands))
+        for address, mnemonic, operands in _INSTRUCTION.findall(disassembly or "")
+    ]
+
+
+def _return_paths(listed, ret):
+    """The instructions a frame can reach address `ret` by other than the return of the
+    call just before it (#155): that call, every branch to `ret`, every computed jump;
+    the call first. None if no call instruction comes just before `ret` (then `ret` is
+    not where a call returns). `listed` is the function's `_instructions`."""
+    addresses = [address for address, _, _ in listed]
+    if ret not in addresses or addresses.index(ret) == 0:
+        return None
+    call, kind, _ = listed[addresses.index(ret) - 1]
+    if kind != "call":
+        return None
+    return [call] + [
+        address
+        for address, kind, target in listed
+        if (kind == "branch" and target == ret) or kind == "indirect"
+    ]
 
 
 def _writable_integer(variable):
@@ -4265,6 +4355,267 @@ class NativeSession:
 
     def local_scopes(self, scopes):
         return locals_only(scopes)
+
+    @staticmethod
+    def return_entry(variable):
+        """ "" where LLDB lists what the function a step left returned, else None (#155)."""
+        return "" if variable.get("name") == "(Return Value)" else None
+
+    def return_withheld(self, variable):
+        """Why a returned value LLDB lists is not shown, or None: only a number, a
+        character, a boolean or a pointer, which LLDB reads from the return register.
+        A struct may come back in registers or through memory LLDB cannot place, and a
+        reference's object may already be gone (#155)."""
+        kind = re.sub(
+            r"^(?:(?:const|volatile)\s+)+|(?:\s+(?:const|volatile))+$",
+            "",
+            str(variable.get("type") or "").strip(),
+        )
+        if kind in RETURN_SCALARS or (kind.endswith("*") and "&" not in kind and "(" not in kind):
+            return None
+        if (self.typedef_kind(kind) or ("",))[0] == "pointer":
+            return None
+        return (
+            f"{kind or 'its type'} is not a number, character, boolean or pointer: the "
+            "debugger may read a struct, class or reference from the wrong place, so "
+            "Peeky shows only scalar returns"
+        )
+
+    @staticmethod
+    def returned_by_command(dap, thread_id):
+        """What LLDB itself recorded the step out returned (`thread info`: "Return value:
+        (bool) $0 = false"), for lldb-dap before LLVM 21, which lists no `(Return
+        Value)`; only for the stopped thread, and only a one-line value. None if none."""
+        try:
+            text = dap.request(
+                "evaluate", {"expression": "`thread info", "context": "repl"}, timeout=2
+            ).get("result", "")
+        except Exception:
+            return None
+        thread = re.search(r"\btid = (0x[0-9a-fA-F]+|[0-9]+)", text or "")
+        if not thread or int(thread[1], 0) != thread_id:
+            return None
+        found = re.search(r"^Return value: \(([^\n]+?)\) \$[0-9]+ = ([^\n]*)$", text, re.M)
+        return {"name": "(Return Value)", "type": found[1], "value": found[2]} if found else None
+
+    def before_step(self, dap):
+        """Once per session, make LLDB's step out stop where the function returns, one
+        frame up (#155). By default it goes on past libc++'s internal frames (its "libc++
+        frame recognizer" hides them) and past code without debug information (libc's
+        qsort), and then the value it lists is not what the function returned, and a
+        probe could not tell one call's return from the next call's stop."""
+        if getattr(self, "_steps_set", False):
+            return
+        self._steps_set = True
+
+        def command(text):
+            return dap.request(
+                "evaluate", {"expression": f"`{text}", "context": "repl"}, timeout=2
+            ).get("result", "")
+
+        try:
+            command(
+                "settings set target.process.thread.step-out-avoids-code-without-debug-info false"
+            )
+            listed = command("frame recognizer list")
+            if found := re.search(r"^(\d+): libc\+\+ frame recognizer", listed or "", re.M):
+                command(f"frame recognizer disable {found[1]}")
+        except Exception:
+            # Without it, a step out that goes further withholds the value (left_function).
+            pass
+
+    def watch_return(self, dap, thread_id, frames):
+        """Before a step out of frames[0] (#155): watch its caller, so a call that never
+        returns is not credited with a later call's value. LLDB's step out waits for the
+        return address in the caller's frame; when the call ends by an exception, a
+        `longjmp` or a panic that its caller survives, that wait stays armed, and the
+        next call from the same place (the same frame, the same stack pointer) ends it,
+        with that call's value. So the step watches every way back to the return
+        address that is not this call's return: the call itself, a branch to it, and
+        any computed jump in the caller, each only on this thread and only in a frame at
+        or above the caller's (its stack pointer at least the caller's, which no frame
+        below the call can have while the call runs). One of them stopping means the
+        call is gone. When the step ends, the stack pointer must be the caller's again
+        (`unwatch_return`).
+
+        Each watched instruction also has a counter (#162): a deeper call of a recursion
+        through the caller runs it too, and each run costs LLDB a stop of its own (the
+        condition holds false). After WATCH_TRAPS of them, the counter's command
+        disables the whole watch inside LLDB (no stop reaches Peeky), and the return is
+        then withheld as not followed. Returns {thread, sp, ids, counters, addresses},
+        or {inlined} / {unwatched: why} when no return can be vouched for."""
+        caller, callee = (frames[1], frames[0]) if len(frames) > 1 else (None, None)
+        ret = _address(caller.get("instructionPointerReference")) if caller else None
+        if ret is None:
+            return {"unwatched": "the debugger did not give the address its call returns to"}
+
+        def command(text):
+            reply = dap.request(
+                "evaluate", {"expression": f"`{text}", "context": "repl"}, timeout=2
+            )
+            return str(reply.get("result") or "")
+
+        ids = []
+
+        def made(text):
+            found = re.search(r"^Breakpoint (\d+):", reply := command(text), re.M)
+            if not found:
+                raise RuntimeError(reply.strip()[:200] or "no breakpoint made")
+            ids.append(int(found[1]))
+            return ids[-1]
+
+        try:
+            listed = self.caller_instructions(command, ret)
+            if isinstance(listed, str):
+                return {"unwatched": listed}
+            paths = _return_paths(listed, ret)
+            if paths is None:
+                if _address(callee.get("instructionPointerReference")) == ret:
+                    # Its caller is the same machine frame at the same instruction.
+                    return {"inlined": True}
+                return {"unwatched": "no call instruction comes before where it returns"}
+            sp = _stack_pointer(dap, caller.get("id"))
+            if sp is None:
+                return {"unwatched": "the debugger did not give its caller's stack pointer"}
+            thread = int(thread_id)
+            for address in paths:
+                made(f"breakpoint set -a {address:#x} -c '$sp >= {sp:#x}' -t {thread}")
+            counters = [
+                made(f"breakpoint set -a {address:#x} -t {thread} -i {WATCH_TRAPS} -G true")
+                for address in paths
+            ]
+            every = " ".join(map(str, ids))
+            reply = command(
+                f"breakpoint command add -o 'breakpoint disable {every}' "
+                + " ".join(map(str, counters))
+            )
+            if "error" in reply.lower():
+                raise RuntimeError(reply.strip()[:200])
+        except Exception as exc:
+            self.unwatch_return(dap, {"ids": ids})
+            return {"unwatched": f"its caller could not be watched ({str(exc)[:200]})"}
+        return {
+            "thread": thread_id,
+            "sp": sp,
+            "ids": ids,
+            "counters": counters,
+            "addresses": paths,
+        }
+
+    def caller_instructions(self, command, ret):
+        """The `_instructions` of the function holding address `ret`, read once per
+        function (a function's call sites share them), or why they could not be read.
+        LLDB refuses a very large function unless forced."""
+        cache = self.__dict__.setdefault("_functions", {"read": [], "failed": {}})
+        for start, end, listed in cache["read"]:
+            if start <= ret <= end:
+                return listed
+        if ret in cache["failed"]:
+            return cache["failed"][ret]
+        text = command(f"disassemble --force -a {ret:#x}")
+        listed = _instructions(text)
+        if any(address == ret for address, _, _ in listed):
+            cache["read"].append((listed[0][0], listed[-1][0], listed))
+            return listed
+        said = next((line.strip() for line in text.splitlines() if "error" in line.lower()), "")
+        failure = (
+            f"LLDB did not disassemble its caller ({said[:200]})"
+            if said
+            else "LLDB's disassembly of its caller does not list where the call returns"
+        )
+        cache["failed"][ret] = failure
+        return failure
+
+    def unwatch_return(self, dap, watch, thread_id=None):
+        """End a step's watch (`watch_return`); with the thread that stopped (the watched
+        one), where it stopped: {pc, sp} of its innermost frame, and whether the watch
+        was dropped on the way (its counters ran out), else None."""
+        watched = thread_id is not None and thread_id == watch.get("thread")
+        dropped = False
+        if watched and (counters := watch.get("counters")):
+            try:
+                listed = dap.request(
+                    "evaluate",
+                    {
+                        "expression": "`breakpoint list " + " ".join(map(str, counters)),
+                        "context": "repl",
+                    },
+                    timeout=2,
+                ).get("result")
+                # Each counter's one location: `3.1: where = …, hit count = 101`.
+                counts = dict(
+                    re.findall(r"^\s*(\d+)\.\d+:[^\n]*?hit count = (\d+)", str(listed or ""), re.M)
+                )
+                # Unreadable counts are not taken for a watch kept.
+                dropped = any(
+                    int(counts.get(str(n), WATCH_TRAPS + 1)) > WATCH_TRAPS for n in counters
+                )
+            except Exception:
+                dropped = True
+        if ids := watch.get("ids"):
+            try:
+                dap.request(
+                    "evaluate",
+                    {
+                        "expression": "`breakpoint delete -f " + " ".join(map(str, ids)),
+                        "context": "repl",
+                    },
+                    timeout=2,
+                )
+            except Exception:
+                # The process is gone (the program ended), and its breakpoints with it.
+                pass
+        if not watched:
+            return None
+        try:
+            stack = dap.request("stackTrace", {"threadId": thread_id, "levels": 1}, timeout=2)
+            frame = (stack.get("stackFrames") or [{}])[0]
+            sp = _stack_pointer(dap, frame["id"])
+        except Exception:
+            return None
+        pc = _address(frame.get("instructionPointerReference"))
+        if None in (pc, sp):
+            return None
+        return {"pc": pc, "sp": sp, **({"dropped": WATCH_TRAPS} if dropped else {})}
+
+    @staticmethod
+    def discard_steps(dap, thread_id):
+        """Drop what is left of a step a stop interrupted on a thread (a breakpoint hit
+        during `step --out`): LLDB keeps the step and would end it at some later
+        `continue`, as a step stop no one asked for. After a step that ended, nothing is
+        left. Returns whether something was. Best effort."""
+
+        def command(text):
+            return str(
+                dap.request(
+                    "evaluate", {"expression": f"`{text}", "context": "repl"}, timeout=2
+                ).get("result")
+                or ""
+            )
+
+        discarded = False
+        try:
+            threads = command("thread list")
+            index = {
+                int(tid, 0): number
+                for number, tid in re.findall(
+                    r"thread #(\d+): tid = (0x[0-9a-fA-F]+|[0-9]+)", threads
+                )
+            }
+            selected = re.search(r"^\*\s*thread #(\d+)", threads, re.M)
+            if int(thread_id) not in index:
+                return False
+            ours = index[int(thread_id)]
+            if selected is None or selected[1] != ours:
+                command(f"thread select {ours}")
+            # Index 0 is the thread's base plan; 1 and above are what steps left.
+            # Nothing there: "error: Could not find User thread plan with index 1."
+            discarded = "error" not in command("thread plan discard 1").lower()
+            if selected is not None and selected[1] != ours:
+                command(f"thread select {selected[1]}")
+        except Exception:
+            pass
+        return discarded
 
     def normalize_capabilities(self, raw):
         return {
