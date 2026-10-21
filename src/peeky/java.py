@@ -19,6 +19,8 @@ from pathlib import Path, PurePosixPath
 from peeky.adapters import PythonAdapter
 from peeky.build import ArtifactSpec, BuildRecipe, Command, assert_current, prepare
 from peeky.digest import sha256_file, tree_fingerprint
+from peeky.java_metadata import loop_header_stops
+from peeky.loop_headers import loop_header_note
 from peeky.text_sets import parse_text
 
 MAX_BUNDLE_FILES = 4096
@@ -466,6 +468,15 @@ class JavaSession:
                     "one of those, put the breakpoint on a line of its own, or `session step "
                     "--into` from this line (a method reference has no line of its own)"
                 )
+            # A loop header bound before its loop stops once per loop, not per pass (#161).
+            prepared = getattr(getattr(self, "prepared", None), "workspace", None)
+            try:
+                classes = Path(prepared) / "classes" if prepared else None
+                count = loop_header_stops(self.mapping, classes, path, line)
+            except (OSError, ValueError, KeyError, TypeError, AttributeError):
+                count = None
+            if count:
+                notes.append(loop_header_note(line, *count))
         return notes
 
     @property

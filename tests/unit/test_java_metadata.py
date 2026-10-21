@@ -241,3 +241,40 @@ def test_reads_after_follows_the_code_from_the_stop():
     # Code that does not decode, or a subroutine: not known.
     assert reads_after(method([0xA8, 0x00, 0x03, 0xB1]), 1, (0,)) is None
     assert reads_after(method([0x15]), 1, (0,)) is None
+
+
+def test_one_bytecode_decoder_serves_loop_headers_and_reads_after():
+    # #161 and #164 share java_bytecode.decode: lengths, branches, switches, slots.
+    from peeky.java_bytecode import decode
+    from peeky.java_metadata import reads_after
+    from peeky.loop_headers import java_instructions
+
+    # 0: iload 5  2: istore_1  3: iinc 1 1  6: wide iload 300  10: wide istore 2
+    # 14: wide iinc 2 1  20: ifeq +6 (26)  23: goto -23 (0)  26: return
+    code = bytes(
+        [0x15, 5, 0x3C, 0x84, 1, 1, 0xC4, 0x15, 1, 44, 0xC4, 0x36, 0, 2]
+        + [0xC4, 0x84, 0, 2, 0, 1, 0x99, 0, 6, 0xA7, 0xFF, 0xE9, 0xB1]
+    )
+    decoded = decode(code)
+    assert [(each.pc, each.reads, each.writes) for each in decoded] == [
+        (0, 5, None),
+        (2, None, 1),
+        (3, 1, 1),
+        (6, 300, None),
+        (10, None, 2),
+        (14, 2, 2),
+        (20, None, None),
+        (23, None, None),
+        (26, None, None),
+    ]
+    assert java_instructions(code) == [(each.pc, each.kind, each.targets) for each in decoded]
+    assert [each.kind for each in decoded][-3:] == ["branch", "jump", "return"]
+    method = {"code": code, "handlers": ()}
+    # The back edge reads slot 5 again; slot 1 is stored before it is read.
+    assert reads_after(method, 5, (20,)) is True
+    assert reads_after(method, 1, (0,)) is False
+    # A wide ret is a subroutine's (where it goes is not decoded); a wide form of
+    # anything but a load, store, iinc or ret does not decode.
+    assert decode(bytes([0xC4, 0xA9, 0, 1]))[0].kind == "indirect"
+    assert reads_after({"code": bytes([0xC4, 0xA9, 0, 1]), "handlers": ()}, 1, (0,)) is None
+    assert decode(bytes([0xC4, 0x60, 0, 1])) is None

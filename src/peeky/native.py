@@ -11,6 +11,7 @@ import contextlib
 import hashlib
 import json
 import os
+import platform
 import posixpath
 import re
 import shutil
@@ -2603,6 +2604,12 @@ _LOCATION_WHERE = re.compile(
     r" at [^:]+:([0-9]{1,9})(?::[0-9]{1,9})?"
 )
 MAX_LOCATIONS = 256
+# Where `loop_headers` reads LLDB's disassembly: its branches are known (#161).
+_LOOP_MACHINES = frozenset(("arm64", "aarch64", "x86_64", "amd64"))
+# A line a loop header note is looked for on: one naming a loop (#161, review of #166:
+# the analysis costs a function's disassembly); and in how many places at most.
+_LOOP_WORD = re.compile(r"(?i:for|each|while|loop|repeat|iter|\bdo\b)|\b[A-Z][A-Z0-9_]*\s*\(")
+MAX_LOOP_PLACES = 8
 
 
 def breakpoint_locations(text, ids):
@@ -2810,6 +2817,71 @@ class NativeSession:
         if not isinstance(text, str) or len(text) > MAX_METADATA:
             return None
         return breakpoint_locations(text, set(ids))
+
+    def loop_header_stops(self, dap, source, line, groups, cache):
+        """(stops, exact): how many times ``line`` of ``source`` stops each time its loop
+        starts, before its first pass (at most, unless ``exact``), where it is that
+        loop's header alone in each function holding it (#161: `for (int i = 0; ...)`
+        binds `i = 0`, never the condition); else None.
+        ``groups``: its breakpoint locations, by the code holding them. From LLDB's
+        disassembly of each function and the file's line table (`source info`), both
+        read-only and kept in ``cache`` for the launch; see ``loop_headers``. Only a line
+        that may hold a loop is analysed (a loop keyword, a name with one in it such as
+        `list_for_each`, or a macro's capitals: `REPEAT(3) {`), in at most
+        MAX_LOOP_PLACES functions or inlined copies."""
+        from peeky.loop_headers import disassembly, line_table, stops_before_loop
+
+        path = str(source)
+        if not groups or len(groups) > MAX_LOOP_PLACES:
+            return None
+        if platform.machine().lower() not in _LOOP_MACHINES:
+            return None
+        if any(character in path for character in '"\\\n`'):
+            return None
+        if ("text", path) not in cache:
+            try:
+                cache[("text", path)] = Path(path).read_text(errors="replace").splitlines()
+            except OSError:
+                cache[("text", path)] = []
+        lines = cache[("text", path)]
+        if not 0 < line <= len(lines) or not _LOOP_WORD.search(lines[line - 1]):
+            return None
+
+        def command(text):
+            reply = dap.request(
+                "evaluate", {"expression": "`" + text, "context": "repl"}, timeout=5
+            )
+            result = reply.get("result") if isinstance(reply, dict) else None
+            return result if isinstance(result, str) and len(result) <= MAX_METADATA else None
+
+        if ("table", path) not in cache:
+            # The whole file's, once: which line (and column) each range of code is.
+            found = command(f'source info -f "{path}" -l 1')
+            cache[("table", path)] = line_table(found) if found is not None else []
+        table = cache[("table", path)]
+        functions = cache.setdefault("functions", [])
+        counts = set()
+        for addresses in groups:
+            listed = next(
+                (
+                    instructions
+                    for instructions in functions
+                    if instructions[0][0] <= min(addresses) <= instructions[-1][0]
+                ),
+                None,
+            )
+            if listed is None:
+                listing = command(f"disassemble -a 0x{min(addresses):x}")
+                listed = disassembly(listing) if listing is not None else None
+                if listed is None:
+                    return None
+                functions.append(listed)
+            if any(not listed[0][0] <= address <= listed[-1][0] for address in addresses):
+                return None
+            counts.add(stops_before_loop(listed, table, line, list(addresses)))
+        if None in counts or len({count for count, _ in counts}) != 1:
+            return None
+        return next(iter(counts))[0], all(exact for _, exact in counts)
 
     def function_scopes(self):
         """Each function in the declared sources, its line span and locals (for describe)."""

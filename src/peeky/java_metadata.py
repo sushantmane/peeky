@@ -13,6 +13,8 @@ ambiguous owners. No nested/anonymous name is guessed from a '$' suffix.
 import re
 from pathlib import Path
 
+from peeky.java_bytecode import decode
+
 MAX_CLASS_BYTES = 4 * 1024 * 1024
 MAX_TOTAL_BYTES = 64 * 1024 * 1024
 MAX_ENTRIES = 16384
@@ -76,134 +78,16 @@ def _modified_utf8(raw):
     return b"".join(units).decode("utf-16-be", errors="surrogatepass")
 
 
-# Each JVM instruction's length by opcode, where fixed (JVMS 6.5); tableswitch (0xaa),
-# lookupswitch (0xab) and wide (0xc4) are measured from their operands.
-_LENGTHS = bytearray([1] * 256)
-for _op in (0x10, 0x12, 0x15, 0x16, 0x17, 0x18, 0x19, 0x36, 0x37, 0x38, 0x39, 0x3A):
-    _LENGTHS[_op] = 2
-for _op in (0xA9, 0xBC):
-    _LENGTHS[_op] = 2
-for _op in (0x11, 0x13, 0x14, 0x84, *range(0x99, 0xA9), *range(0xB2, 0xB9), 0xBB, 0xBD):
-    _LENGTHS[_op] = 3
-for _op in (0xC0, 0xC1, 0xC6, 0xC7):
-    _LENGTHS[_op] = 3
-_LENGTHS[0xC5] = 4
-for _op in (0xB9, 0xBA, 0xC8, 0xC9):
-    _LENGTHS[_op] = 5
-# Instructions that read a local's slot: xload, xload_n, iinc, ret.
-_LOADS = frozenset({0x15, 0x16, 0x17, 0x18, 0x19, 0x84, 0xA9})
-
-
-def _reads(code):
-    """{(slot, pc)} of every instruction in ``code`` that reads a local variable slot
-    (a load, `iinc`, `ret`, their `wide` forms). ValueError where the code does not
-    decode."""
-    found, pc = set(), 0
-    while pc < len(code):
-        op = code[pc]
-        if op in _LOADS:
-            found.add((code[pc + 1], pc))
-        elif 0x1A <= op <= 0x2D:
-            found.add(((op - 0x1A) % 4, pc))
-        if op == 0xC4:
-            inner = code[pc + 1]
-            if inner in _LOADS:
-                found.add((int.from_bytes(code[pc + 2 : pc + 4], "big"), pc))
-            size = 6 if inner == 0x84 else 4
-        elif op in (0xAA, 0xAB):
-            start = (pc + 4) & ~3
-            if start + 12 > len(code):
-                raise ValueError("Truncated switch instruction")
-            if op == 0xAA:
-                low = int.from_bytes(code[start + 4 : start + 8], "big", signed=True)
-                high = int.from_bytes(code[start + 8 : start + 12], "big", signed=True)
-                size = start + 12 + 4 * (high - low + 1) - pc
-            else:
-                pairs = int.from_bytes(code[start + 4 : start + 8], "big", signed=True)
-                size = start + 8 + 8 * pairs - pc
-            if size <= 0:
-                raise ValueError("Invalid switch instruction")
-        else:
-            size = _LENGTHS[op]
-        pc += size
-    if pc != len(code):
-        raise ValueError("Code does not decode into whole instructions")
-    return found
-
-
-# Stores into a local's slot: xstore with an index, xstore_n.
-_STORES = frozenset({0x36, 0x37, 0x38, 0x39, 0x3A})
-
-
-def _instructions(code):
-    """{pc: (reads slot or None, writes slot or None, successors, falls through)}
-    for each instruction of ``code``; None where it does not decode or uses `jsr`/
-    `ret` (subroutines, which modern javac never emits)."""
-    found, pc = {}, 0
-
-    def offset(at, size):
-        return int.from_bytes(code[at : at + size], "big", signed=True)
-
-    try:
-        while pc < len(code):
-            op = code[pc]
-            reads = writes = None
-            targets, falls, size = [], True, _LENGTHS[op]
-            if op in (0xA8, 0xA9, 0xC9):
-                return None
-            if op in _LOADS:
-                reads = code[pc + 1]
-            elif 0x1A <= op <= 0x2D:
-                reads = (op - 0x1A) % 4
-            elif op in _STORES:
-                writes = code[pc + 1]
-            elif 0x3B <= op <= 0x4E:
-                writes = (op - 0x3B) % 4
-            if op == 0xC4:
-                inner, index = code[pc + 1], int.from_bytes(code[pc + 2 : pc + 4], "big")
-                if inner in (0xA9,):
-                    return None
-                reads = index if inner in _LOADS else None
-                writes = index if inner in _STORES else None
-                size = 6 if inner == 0x84 else 4
-            elif 0x99 <= op <= 0xA7 or op in (0xC6, 0xC7):
-                targets.append(pc + offset(pc + 1, 2))
-                falls = op != 0xA7
-            elif op == 0xC8:
-                targets.append(pc + offset(pc + 1, 4))
-                falls = False
-            elif op in (0xAA, 0xAB):
-                start = (pc + 4) & ~3
-                targets.append(pc + offset(start, 4))
-                if op == 0xAA:
-                    low, high = offset(start + 4, 4), offset(start + 8, 4)
-                    targets += [pc + offset(start + 12 + 4 * i, 4) for i in range(high - low + 1)]
-                    size = start + 12 + 4 * (high - low + 1) - pc
-                else:
-                    pairs = offset(start + 4, 4)
-                    targets += [pc + offset(start + 12 + 8 * i, 4) for i in range(pairs)]
-                    size = start + 8 + 8 * pairs - pc
-                falls = False
-            elif 0xAC <= op <= 0xB1 or op == 0xBF:
-                falls = False
-            if size <= 0:
-                return None
-            found[pc] = (reads, writes, targets, falls, pc + size)
-            pc += size
-    except IndexError:
-        return None
-    return found if pc == len(code) else None
-
-
 def reads_after(method, slot, starts):
     """Whether the method's code may read local ``slot`` on some path from any of
     ``starts`` (the pcs where the stop's line begins: a breakpoint or a step stops
     there) before storing into it again: True, False, or None where the code does not
     decode (#164: a change to a local the code never reads again is never seen, as when
     a lambda captured its value before the stop)."""
-    code = _instructions(method["code"])
-    if code is None or not starts:
+    decoded = decode(method["code"])
+    if decoded is None or not starts or any(each.kind == "indirect" for each in decoded):
         return None
+    code = {each.pc: each for each in decoded}
     pending, seen = list(starts), set()
     while pending:
         pc = pending.pop()
@@ -212,23 +96,26 @@ def reads_after(method, slot, starts):
         if pc not in code:
             return None
         seen.add(pc)
-        reads, writes, targets, falls, after = code[pc]
-        if reads == slot:
+        each = code[pc]
+        if each.reads == slot:
             return True
         # Any instruction a handler covers may throw into it.
         pending += [handler for start, end, handler in method["handlers"] if start <= pc < end]
-        if writes == slot:
+        if each.writes == slot:
             continue
-        pending += targets
-        if falls:
-            pending.append(after)
+        if each.kind in ("jump", "branch"):
+            pending += each.targets
+        if each.kind in ("fall", "branch"):
+            pending.append(each.end)
     return False
 
 
-def _class_metadata(data, shared=None, scopes=None, declarations=None):
+def _class_metadata(data, shared=None, scopes=None, declarations=None, codes=None):
     """(binary internal name, SourceFile, sorted executable lines). With ``scopes`` (a
     list), also appends (method, descriptor, first line, last line, local names) for each
-    method with code, its names from the LocalVariableTable (`javac -g`). With ``shared`` (a
+    method with code, its names from the LocalVariableTable (`javac -g`). With ``codes``
+    (a list), also appends (method, descriptor, bytecode, {pc: line}, [(start, end,
+    handler)]) for each method with code, in class-file order (#161). With ``shared`` (a
     dict), also records {line: {"stops": method, "never": [methods]}} for lines that
     several methods of the class share (a lambda body on its enclosing method's line, a
     static initializer's lambda, nested lambdas, a field initializer in each
@@ -386,8 +273,13 @@ def _class_metadata(data, shared=None, scopes=None, declarations=None):
             if not method_lines:
                 raise ValueError("Missing executable line debug information; compile with -g")
             lines.update(method_lines.values())
+            if codes is not None:
+                codes.append((method_name, descriptor, code, dict(method_lines), handlers))
             if declarations is not None:
-                reads = _reads(code)
+                decoded = decode(code)
+                if decoded is None:
+                    raise ValueError("Method code does not decode")
+                reads = {(each.reads, each.pc) for each in decoded if each.reads is not None}
                 starts = sorted(method_lines)
 
                 def lines_of(start, length):
@@ -551,6 +443,38 @@ def java_scopes(mapping, classes_dir, workspace, limit=300):
     if len(found) > limit:
         found = found[:limit] + [{"omitted": len(found) - limit}]
     return found
+
+
+def loop_header_stops(mapping, classes_dir, source, line):
+    """(stops, exact) of java-debug at ``line`` of ``source`` each time its loop
+    starts (see ``loop_headers.stops_before_loop``), where the line is a loop header whose breakpoint is bound before the loop
+    (#161: `for (int i = 0; ...)` binds `i = 0`, a for-each its array or iterator); else
+    None (no loop of the line, a stop at each pass, or unclear: the line in several
+    classes, bytecode that does not decode). java-debug binds a line breakpoint to the
+    first method holding the line, in class-file order, at its first code there."""
+    from peeky.loop_headers import java_instructions, java_line_table, stops_before_loop
+
+    source = Path(source).resolve()
+    holding = []
+    for binary, entry in mapping["classes"].items():
+        if Path(entry["path"]).resolve() != source or line not in entry.get("lines", ()):
+            continue
+        internal = binary.replace(".", "/")
+        path = Path(entry.get("class_file") or Path(classes_dir) / f"{internal}.class")
+        codes = []
+        _class_metadata(path.read_bytes(), codes=codes)
+        holding.append(codes)
+    if len(holding) != 1:
+        return None
+    for _, _, code, lines, handlers in holding[0]:
+        pcs = [pc for pc, number in lines.items() if number == line]
+        if pcs:
+            instructions = java_instructions(code)
+            if instructions is None:
+                return None
+            table = java_line_table(lines, len(code))
+            return stops_before_loop(instructions, table, line, [min(pcs)], handlers)
+    return None
 
 
 def _regular_inside(path, root):

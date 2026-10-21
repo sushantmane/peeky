@@ -22,7 +22,7 @@ You debug programs with **peeky**, a standalone tool. You decide what to do; pee
 | `peeky probe <target> --at <path>:<line> --capture ... --old '<exact text>' --new '<replacement>'` | one build | See what a candidate fix does before you make it (any target but an attached JVM): the same probe on a fresh build, or for Python an edited copy; your files are not changed. `--at` keeps the original's line numbers (a line inside an edit that adds or removes lines is refused). An edit that does not compile fails with `BUILD_FAILED` (Python: `NO_STOP`, with the `SyntaxError`). Compare with the unedited run through `peeky queries diff`. It is evidence, not verification. |
 | `peeky verify <target> [--at <file>] --check <checker.py> --old '<exact text>' --new '<replacement>'` | one build | Verify one candidate edit on a fresh build; repeat `--old`/`--new` for several edits, each quoting the original file (they must not overlap). `--at` names the file to edit when the target is a directory (a Cargo crate, a Python project). |
 
-A second `session start` with a name in use fails with "exists". A session's worker ends on `close`, when the start fails or is interrupted, or after 5 idle minutes. Every command takes `--json`: stdout is then one JSON object (progress on stderr; `--quiet` silences it). Every session command takes the session's `--name` again (default `default`). Session records live in `$PEEKY_STATE_DIR` (default `~/.peeky`), so set it per task to keep sessions apart.
+A second `session start` with a name in use fails with "exists". A session's worker ends on `close`, when the start fails or is interrupted, or after 5 idle minutes. Every command takes `--json`: stdout is then one JSON object (progress on stderr; `--quiet` silences it). Every session command takes the session's `--name` again (default `default`). Session records live in `$PEEKY_STATE_DIR` (default `~/.peeky`): set it per task to keep sessions apart.
 
 ### Interventions (`--set name=value`)
 
@@ -38,7 +38,8 @@ A second `session start` with a name in use fails with "exists". A session's wor
 - `by_hit` groups values per hit: `{hit, line, observed: {selector: value}, after-set: {...}}`. A selector that failed shows `{"error": ...}`. `rows` holds the same, one entry per hit, phase and selector. `phase` is `observed`, `after-set` (after your intervention) or `returned`. `line` is the stop's actual line.
 - Read `warnings` every time. They flag:
   - a breakpoint the debugger moved to another line (values come from that line);
-  - a line that stops several times per pass (a macro's or loop header's code; C, C++, Rust): `--hits`, `--set-hit` and `--set-at` count stops; each row's `stop` says which;
+  - a line that stops several times per pass (a macro's code; C, C++, Rust): `--hits`, `--set-hit`, `--set-at` count stops; `stop` says which;
+  - a loop header that stops only before its loop: `--at` the body's first line;
   - runs that ended before all requested hits;
   - a Java exit Peeky inferred when the debugger dropped its exit event (the result stands).
 - C and C++ structs and arrays show their first members (`{lo = 0, hi = 2}`, `[{…}, …]`); unions and pointer targets are not read.
@@ -94,7 +95,7 @@ If `verify` fails at `stage: build`, read the compiler diagnostics and try again
 
 - **Use `--background` for long calls.** If a call may outlast your tool timeout (JVM startup, compiled builds, slow programs), add `--background` to `probe` or `verify`. It returns `{"job": "<id>"}` at once. Then repeat `peeky job wait <id> [--timeout 20]` until the exit code is not **3**. The final stdout, stderr and exit code are what the foreground command would have produced; `job wait --json` prints JSON however the job was started.
 - **Prefer probes for programs with clocks.** Test timeouts, heartbeats and RPC deadlines keep running while the program is paused. A probe pauses for milliseconds per hit (`pauses_ms`), with no model turn in between.
-- **Sessions can't wait for you on timed programs.** Pass `session start --max-pause S`; attached JVMs default to 10 s. A breakpoint stop older than S is auto-resumed, and your next call on it fails with `STALE_STOP` and says so. Crash and exception stops (`reason` other than `breakpoint`) are never auto-resumed, so you can inspect them. `inspect` shows `paused_s` and `resume_in_s`.
+- **Sessions can't wait for you on timed programs.** Pass `session start --max-pause S`; attached JVMs default to 10 s. A breakpoint stop older than S is auto-resumed; your next call on it fails with `STALE_STOP`. Crash and exception stops (`reason` other than `breakpoint`) are never auto-resumed. `inspect` shows `paused_s` and `resume_in_s`.
 - **`peeky describe` reports this target's timing contract** in its `timing` field.
 
 ## When something fails
