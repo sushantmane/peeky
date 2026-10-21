@@ -18,11 +18,19 @@ __attribute__((noinline)) static int widen(int n, struct span *ps) {
     return total + ps->end;
 }
 
+__attribute__((noinline)) static int arrs(void) {
+    struct span sp[2] = { { 1, 2 }, { 3, 4 } };
+    int grid[2][2] = { { 1, 2 }, { 3, 4 } };
+    int r = sp[1].end + grid[1][0];  /* ARR */
+    return r;
+}
+
 int main(int argc, char **argv) {
     struct span s = { 1, 2 };
     int x = argc * 3;
     int y = widen(x, &s);  /* CALL */
     printf("Y %d %d\\n", y, x);
+    printf("ARRS %d\\n", arrs());
     return 0;
 }
 """
@@ -82,3 +90,21 @@ def test_sets_no_stop_allows_are_refused_before_the_run(tmp_path, language):
     assert changed["status"] == "completed", changed.get("error")
     assert [i["after"] for i in changed["interventions"]] == ["5"]
     assert "Y 12 3" in changed["output"], changed["output"]
+
+
+@pytest.mark.timeout(240)
+@pytest.mark.parametrize("language", ["c", "cpp"])
+def test_an_index_is_judged_as_the_stop_reads_it(tmp_path, language):
+    # Review of #138: `sp[-1].end` and `sp[01].end` change `sp[1].end` at the stop (the
+    # walk counts `-1` from the array's end and reads `01` as 1), but were refused before
+    # the run ("`sp` is an array: select an element as `sp[0]`").
+    name = f"reg.{'cpp' if language == 'cpp' else 'c'}"
+    (tmp_path / name).write_text(SOURCE)
+    debug, at = target(language, "O0"), line_of("ARR")
+    for selector in ("sp[-1].end", "sp[01].end"):
+        result = run_probe(tmp_path, Probe(name, at, ("r",), ((selector, "9"),)), adapter=debug)
+        assert result["status"] == "completed", (selector, result.get("error"))
+        assert "ARRS 12" in result["output"], (selector, result["output"])
+    # A field the element's type lacks is still refused before the run.
+    result = run_probe(tmp_path, Probe(name, at, ("r",), (("sp[-1].mid", "9"),)), adapter=debug)
+    assert "lists no field `mid`" in refused_before_launch(result)

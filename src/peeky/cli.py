@@ -714,19 +714,26 @@ def _describe_text(manifest):
     mutable = manifest["mutable_types"]
     if "root locals" in mutable and "fields" not in mutable:
         mutable += " (root locals: the stopped function's own variables, not fields)"
-    # Locals no stop can change, per function (#138); `probe --set` refuses them at once.
-    never = [
-        f"{scope['scope']}: {', '.join(scope['never_settable'])}"
-        for scope in manifest.get("scopes", ())
-        if scope.get("never_settable")
-    ]
-    if never:
-        mutable += (
-            ". Never settable, kept in a register (a candidate edit with "
-            "`std::hint::black_box(&mut x)` keeps one in memory, COOKBOOK 6.6): "
-            + "; ".join(never[:12])
-            + (f"; and {len(never) - 12} more functions" if len(never) > 12 else "")
-        )
+    # Locals no stop can change, per function and why (#138); `probe --set` refuses them
+    # before the program runs.
+    whys = {
+        "register": "kept in a register (a candidate edit with `std::hint::black_box(&mut x)` "
+        "keeps one in memory, COOKBOOK 6.6)",
+        "async state": "held in an async body's state across an `.await` (change what it is "
+        "computed from, or copy it into a local after the `.await`)",
+    }
+    for why, label in whys.items():
+        never = [
+            f"{scope['scope']}: {', '.join(names)}"
+            for scope in manifest.get("scopes", ())
+            if (names := [n for n, w in (scope.get("never_settable") or {}).items() if w == why])
+        ]
+        if never:
+            mutable += (
+                f". Never settable, {label}: "
+                + "; ".join(never[:12])
+                + (f"; and {len(never) - 12} more functions" if len(never) > 12 else "")
+            )
     lines.append(f"mutable: {mutable}")
     lines.extend(f"{name}: {usage}" for name, usage in manifest["commands"].items())
     lines.append(f"timing: {manifest['timing']['advice']}")

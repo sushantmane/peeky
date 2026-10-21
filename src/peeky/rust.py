@@ -759,6 +759,23 @@ _HASH_IN = re.compile(r"17(h[0-9a-f]{16})E")
 _SETTABLE_RUST = frozenset({"i16", "i32", "i64", "u16", "u32", "u64", "isize", "usize"})
 
 
+def _state_held(body, name):
+    """True if every binding of ``name`` in the MIR ``body`` of an async body is kept in
+    its state: a local the coroutine layout saves across an `.await` (``saved``), or a
+    field of the state (a parameter's, `debug n => ((*_36).0: i32)`). The poll reaches
+    it through a pointer at every stop."""
+    if body is None or body.coroutine is None:
+        return False
+    state = re.compile(rf"\(+\*_{body.coroutine}\)")
+    bindings = body.bindings.get(name, ())
+    return bool(bindings) and all(
+        binding[0] in body.saved
+        if binding[0] is not None
+        else bool(state.match(body.places.get((name, *binding[1:3], binding[4]), "")))
+        for binding in bindings
+    )
+
+
 def _plain(name):
     """A local's name without where LLDB says it is declared (`s @ main.rs:81` is `s`,
     when several of that name are in scope); the IR's memory proof covers every local
@@ -1040,19 +1057,23 @@ class RustSession(NativeSession):
 
     def _register_names(self, linkages, names):
         """For `describe` (#138): of a function's integer locals (``names``: {name:
-        types}), those the build's IR keeps in a register in it (see never_settable)."""
+        types}), those no stop can change, and why: `register` where the build's IR keeps
+        one in a register, `async state` where an async body keeps it across an `.await`
+        in its state (see never_settable)."""
         if self._optimized() or not self.memory:
-            return ()
+            return {}
         hashes = {found[1] for linkage in linkages if (found := _HASH_IN.search(linkage or ""))}
         if not hashes:
-            return ()
-        return [
-            name
+            return {}
+        proofs = getattr(self, "owned", None)
+        bodies = [proofs.body(hashed) if proofs is not None else None for hashed in hashes]
+        return {
+            name: ("async state" if all(_state_held(body, name) for body in bodies) else "register")
             for name, kinds in names.items()
             if kinds
             and set(kinds) <= _SETTABLE_RUST
             and all(self.memory.get((hashed, name)) is not True for hashed in hashes)
-        ]
+        }
 
     def _macro_binding(self):
         """For `describe`, which bindings the DWARF declares are a macro's own (sixth
@@ -1146,6 +1167,21 @@ class RustSession(NativeSession):
                 "read, so a change made here would have no effect"
             )
         hashed = _frame_hash(frame)
+        proofs = getattr(self, "owned", None)
+        if (
+            hashed
+            and self.memory.get((hashed[1], _plain(name))) is not True
+            and _state_held(proofs.body(hashed[1]) if proofs is not None else None, _plain(name))
+        ):
+            where = display_function((frame or {}).get("name")) or "this frame"
+            raise ValueError(
+                f"Rust mutation requires a local the program keeps in memory; {name!r} in "
+                f"{where} is held in the async body's state across an `.await` (a field of "
+                "the future, which the poll reaches through a pointer Peeky never writes), "
+                "at every stop of the body. Change what it is computed from before it is "
+                "assigned, or copy it into a local of the poll's own after the `.await` with "
+                "a candidate edit, in the same probe"
+            )
         if not hashed or self.memory.get((hashed[1], _plain(name))) is not True:
             where = display_function((frame or {}).get("name")) or "this frame"
             raise ValueError(
@@ -1173,8 +1209,12 @@ class RustSession(NativeSession):
         hashed = _frame_hash(frame)
         if not hashed or not self.memory:
             return None
-        if self.memory.get((hashed[1], _plain(variable.get("name")))) is True:
+        plain = _plain(variable.get("name"))
+        if self.memory.get((hashed[1], plain)) is True:
             return None
+        proofs = getattr(self, "owned", None)
+        if _state_held(proofs.body(hashed[1]) if proofs is not None else None, plain):
+            return "async state"
         return "register"
 
     def _line_functions(self, source, line):
@@ -1245,7 +1285,7 @@ class RustSession(NativeSession):
         """Why ``root`` (and the path ``steps`` into it) can never change in the function
         ``hashed``: (kind, detail), or None. Raises fields.Unsettable when the debug
         information Peeky needs could not be read (nothing is ruled out then)."""
-        from peeky.fields import Unsettable, settable_member
+        from peeky.fields import Unsettable, debugger_steps, settable_member
 
         plain = _plain(root)
         proofs = getattr(self, "owned", None)
@@ -1269,7 +1309,11 @@ class RustSession(NativeSession):
                 return ("type", "Peeky cannot match it to the build's debug information")
             try:
                 kind, framed = self._declared_type(types, root)
-                settable_member(graph, kind, root, steps)
+                # As the stop's walk reads the selector (`sp[-1]`, `sp[01]` are `sp[1]`).
+                named = debugger_steps(graph, kind, root, steps)
+                if named is None:
+                    return None
+                settable_member(graph, kind, root, named)
                 if not framed:
                     raise Unsettable(
                         f"`{root}` is not kept in this frame's own memory (a static, or a "
@@ -1279,6 +1323,8 @@ class RustSession(NativeSession):
                 return ("type", str(exc))
         if kept is True:
             return None
+        if _state_held(body, plain):
+            return ("state", plain)
         if kept is None and body is None:
             return ("unproven", plain)
         parameter = body is not None and any(
@@ -1290,7 +1336,7 @@ class RustSession(NativeSession):
         """The refusal for a `--set` that ``failures`` [(function, (kind, detail))] rule
         out in every function at ``line``, naming each rule and what to do instead."""
         plain = _plain(root)
-        parts, registers = [], set()
+        parts, registers, states = [], set(), False
         for function, (kind, detail) in failures:
             if kind == "register":
                 registers.add(detail)
@@ -1298,6 +1344,13 @@ class RustSession(NativeSession):
                 parts.append(
                     f"in {function}, `{plain}` is a {what} kept in a register (the debugger "
                     "only shows a copy of it, so a change would not affect the program)"
+                )
+            elif kind == "state":
+                states = True
+                parts.append(
+                    f"in {function}, `{plain}` is held in the async body's state across an "
+                    "`.await` (a field of the future, which the poll reaches through a pointer "
+                    "Peeky never writes) at every stop of the body"
                 )
             elif kind == "absent":
                 parts.append(f"{function} {detail}")
@@ -1331,6 +1384,13 @@ class RustSession(NativeSession):
             text += (
                 f". A candidate edit keeps it in memory, in the same probe (COOKBOOK 6.6): "
                 f"{keep}, by `--old`/`--new`, with this `--set`"
+            )
+        if states:
+            text += (
+                ". Change what it is computed from before it is assigned, or copy it into a "
+                "local of the poll's own after the `.await` with a candidate edit, in the "
+                f"same probe (`let mut {plain}2 = {plain}; std::hint::black_box(&mut "
+                f"{plain}2);` on a line before the stop's, then use and set `{plain}2`)"
             )
         listed = self._settable_names(source, line)
         return text + f"; settable here: {', '.join(listed) if listed else 'none'}"

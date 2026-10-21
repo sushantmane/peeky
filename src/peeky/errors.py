@@ -285,6 +285,12 @@ _MUTATION_HINTS = (
         "N --set-hit N`, N counting that line's stops (`--capture <arg> --hits all` there).",
     ),
     (
+        r"held in the async body's state",
+        "Change what it is computed from before it is assigned, or copy it into a local of "
+        "the poll's own after the `.await` with a candidate edit (`--old`/`--new`) and "
+        "`--set` that local in the same probe.",
+    ),
+    (
         r"kept in a register",
         "Keep it in memory with a candidate edit (`std::hint::black_box(&mut x);` after its "
         "`let`, by `--old`/`--new`) and `--set` it in that same probe.",

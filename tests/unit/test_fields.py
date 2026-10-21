@@ -11,6 +11,7 @@ from peeky.fields import (
     CPP_LIBRARIES,
     RUST_LIBRARIES,
     Unsettable,
+    debugger_steps,
     local_types,
     settable_member,
     type_graph,
@@ -150,6 +151,29 @@ def test_plain_fields_and_elements_resolve_to_their_integer(root, steps, expecte
             settable_member(GRAPH, root, "s", steps)
         return
     assert settable_member(GRAPH, root, "s", steps) == expected
+
+
+@pytest.mark.parametrize(
+    "root, steps, expected",
+    [
+        # Review of #138: an index as the stop's walk reads it, the debugger's `[N]`.
+        (0x70, ["arr", "[01]"], ["arr", "[1]"]),
+        (0x70, ["arr", "[-1]"], ["arr", "[2]"]),
+        (0x70, ["arr", "[-3]"], ["arr", "[0]"]),
+        (0x70, ["grid", "[-1]", "[-2]"], ["grid", "[1]", "[0]"]),
+        (0x70, ["in", "y"], ["in", "y"]),
+        # Past the start, or no length to count from: not told here.
+        (0x70, ["arr", "[-4]"], None),
+        (0x150, ["[-1]"], None),
+        (0x150, ["[007]"], ["[7]"]),
+        # Anything else is left for settable_member to judge.
+        (0x40, ["[-1]", "x"], ["[-1]", "x"]),
+        (0x70, ["nope", "[-1]"], ["nope", "[-1]"]),
+        (0x70, ["arr", "x"], ["arr", "x"]),
+    ],
+)
+def test_a_selectors_indexes_are_read_as_the_debugger_names_elements(root, steps, expected):
+    assert debugger_steps(GRAPH, root, "s", steps) == expected
 
 
 @pytest.mark.parametrize(

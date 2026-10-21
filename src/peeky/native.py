@@ -1012,8 +1012,8 @@ def function_scopes(info, line_text, workspace, declared, hidden=None, never=Non
     left out as a macro's own bindings (Rust: `println!`'s `args`), or None.
 
     ``never(linkages, names)``: of a copy's locals (``names``: {name: types}), those no
-    stop can change (#138: a Rust local kept in a register); a scope lists the ones
-    never settable in every copy (``never_settable``).
+    stop can change, and why (#138: {name: `register`}, a Rust local kept in a
+    register); a scope lists the ones never settable in every copy (``never_settable``).
     """
     replaced = set()
     dies, functions, lines, (inputs, sources), _, addresses = _function_entries(
@@ -1082,9 +1082,13 @@ def function_scopes(info, line_text, workspace, declared, hidden=None, never=Non
             merged[1].setdefault(local, set()).update(kinds)
         if never is not None:
             # Never settable in the scope only if in every copy (a generic's instances).
-            unchanged = set(never(linkages_of(entry, root), names) or ())
+            unchanged = dict(never(linkages_of(entry, root), names) or {})
             held = merged[4][0]
-            merged[4][0] = unchanged if held is None else held & unchanged
+            merged[4][0] = (
+                unchanged
+                if held is None
+                else {name: why for name, why in held.items() if name in unchanged}
+            )
         # Rows a later row at their address replaces run no code.
         ran = {
             key: [address for address in found if (address, *key) not in replaced]
@@ -1121,7 +1125,7 @@ def function_scopes(info, line_text, workspace, declared, hidden=None, never=Non
                 **scope,
                 **({"types": types} if types else {}),
                 **({"spans": spans} if spans else {}),
-                **({"never_settable": sorted(unchanged[0])} if unchanged[0] else {}),
+                **({"never_settable": dict(sorted(unchanged[0].items()))} if unchanged[0] else {}),
             }
         )
     scopes.sort(key=lambda s: (s["source"], s["lines"][0], s["scope"]))
@@ -3205,7 +3209,7 @@ class NativeSession:
         bitfield, a root not in the frame's own memory) in every function a stop there
         can be in. A root local is judged at the stop (its type as the debugger names
         it, its declaration's progress)."""
-        from peeky.fields import Unsettable, settable_member
+        from peeky.fields import Unsettable, debugger_steps, settable_member
         from peeky.probe import parse_selector
 
         source = self._relative(program)
@@ -3231,7 +3235,11 @@ class NativeSession:
                                 "Peeky cannot match it to the build's debug information"
                             )
                         kind, framed = self._declared_type(entry["types"], root)
-                        settable_member(self.fields, kind, root, steps)
+                        # As the stop's walk reads the selector (`sp[-1]` is `sp[1]`).
+                        named = debugger_steps(self.fields, kind, root, steps)
+                        if named is None:
+                            break
+                        settable_member(self.fields, kind, root, named)
                         if not framed:
                             raise Unsettable(
                                 f"`{root}` is not kept in this frame's own memory (a static, "

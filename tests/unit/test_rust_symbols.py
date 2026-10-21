@@ -1885,7 +1885,10 @@ def test_describe_lists_the_locals_no_stop_can_change_per_function():
             "breakpoint_lines": {},
             "scopes": [
                 {"scope": "limiter::allow", "lines": [9, 20], "names": ["limit", "now", "w"]}
-                | {"never_settable": ["limit", "now"], "source": "src/main.rs"},
+                | {"never_settable": {"limit": "register", "now": "register"}}
+                | {"source": "src/main.rs"},
+                {"scope": "app::aw::{{closure}}", "lines": [86, 94], "names": ["k"]}
+                | {"never_settable": {"k": "async state"}, "source": "src/main.rs"},
                 {"scope": "limiter::main", "lines": [22, 35], "names": ["w"]}
                 | {"source": "src/main.rs"},
             ],
@@ -1895,4 +1898,5 @@ def test_describe_lists_the_locals_no_stop_can_change_per_function():
         }
     )
     [line] = [line for line in text.splitlines() if line.startswith("mutable:")]
-    assert line.endswith("COOKBOOK 6.6): limiter::allow: limit, now"), line
+    assert "COOKBOOK 6.6): limiter::allow: limit, now. Never settable, held in an" in line
+    assert line.endswith("a local after the `.await`): app::aw::{{closure}}: k"), line

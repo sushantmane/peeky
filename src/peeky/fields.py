@@ -313,6 +313,49 @@ def _strip(graph, offset, path):
     raise Unsettable(f"The type of `{path}` is nested too deeply")
 
 
+def debugger_steps(graph, root, name, steps):
+    """A selector's ``steps`` from the local ``name`` of type ``root`` as the debugger
+    names the children they reach, which is how the stop's walk reads them (#138): an
+    index with leading zeros is that element (`[01]` is `[1]`), and a negative one
+    counts from the end of a fixed-size array (`[-1]` of an `int[3]` is `[2]`). None
+    where that cannot be told here (a negative index into an array whose length the
+    debug information does not fix, or past its start). From a step that is neither a
+    field of a record nor an index of an array on, the steps are kept as they are, for
+    settable_member to judge."""
+    found, offset, path, pending = [], root, name, None
+    for position, step in enumerate(steps):
+        index = re.fullmatch(r"\[(-?[0-9]+)\]", step)
+        if pending is not None:
+            element, counts = pending
+        else:
+            try:
+                offset, node, _ = _strip(graph, offset, path)
+            except Unsettable:
+                return [*found, *steps[position:]]
+            if node[0] == "record" and index is None:
+                members = [member for member in node[5] if member[0] == step]
+                if len(members) != 1:
+                    return [*found, *steps[position:]]
+                found.append(step)
+                offset, path = members[0][1], f"{path}.{step}"
+                continue
+            if node[0] != "array" or index is None:
+                return [*found, *steps[position:]]
+            element, counts = node[2], node[3]
+        if index is None:
+            return [*found, *steps[position:]]
+        number = int(index[1])
+        if number < 0:
+            if not counts or number + counts[0] < 0:
+                return None
+            number += counts[0]
+        found.append(f"[{number}]")
+        path += found[-1]
+        pending = (element, counts[1:]) if counts and len(counts) > 1 else None
+        offset = element
+    return found
+
+
 def settable_member(graph, root, name, steps):
     """(signed, bits, names) for the integer that ``steps`` (the debugger's child names:
     `end`, `__0`, `[2]`) reach from the local ``name`` of type ``root``: whether it is

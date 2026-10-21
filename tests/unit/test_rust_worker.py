@@ -886,12 +886,15 @@ def test_a_set_is_refused_before_launch_only_where_every_function_on_the_line_fa
             ancestors=ancestors,
         )
 
-    def body(bindings, arguments=(), types=None):
+    def body(bindings, arguments=(), types=None, saved=(), coroutine=None):
         return SimpleNamespace(
             bindings={name: [(local, "src/main.rs", 3, 1, 0)] for name, local in bindings.items()},
             arguments=set(arguments),
             types=types or {},
             visible_scopes=lambda line, path: {0},
+            coroutine=coroutine,
+            saved=frozenset(saved),
+            places={},
         )
 
     functions = {
@@ -899,18 +902,21 @@ def test_a_set_is_refused_before_launch_only_where_every_function_on_the_line_fa
         "h2": function("{closure#0}", [5], ancestors=("app", "outer")),
         "h3": function("inlined", [], copies=[9]),
         "h4": function("elsewhere", [7]),
+        "h5": function("{async_fn#0}", [11], ancestors=("app", "aw")),
     }
     bodies = {
         "h1": body({"width": 1, "total": 2, "flag": 3}, [1], {1: "u64", 2: "u64", 3: "bool"}),
         "h2": body({"v": 1}, [1], {1: "&u64"}),
         "h3": body({"x": 1}, [1], {1: "u32"}),
+        "h5": body({"k": 37, "q": 27}, [1], {37: "i32", 27: "i32"}, saved=[37], coroutine=36),
     }
     session = object.__new__(RustSession)
     session.target = SimpleNamespace(opt_level="0")
     session.prepared = SimpleNamespace(source_root=tmp_path)
-    session._lines_data = json.dumps({"src/main.rs": [5, 7, 9]})
+    session._lines_data = json.dumps({"src/main.rs": [5, 7, 9, 11]})
     session.memory = {("h1", "total"): True, ("h1", "flag"): True, ("h1", "width"): False}
     session.memory[("h3", "x")] = False
+    session.memory.update({("h5", "k"): False, ("h5", "q"): True})
     session.owned = SimpleNamespace(
         functions=functions,
         body=bodies.get,
@@ -935,6 +941,10 @@ def test_a_set_is_refused_before_launch_only_where_every_function_on_the_line_fa
     assert "`x` is a parameter kept in a register" in judged("x", 9)
     # A line the debugger moves its breakpoint from, or no function's: left to the stop.
     assert judged("width", 6) is None and judged("width", 8) is None
+    # Kept in an async body's state across an `.await`: no `black_box` helps there.
+    message = judged("k", 11)
+    assert "`k` is held in the async body's state across an `.await`" in message, message
+    assert "black_box(&mut k)" not in message and message.endswith("settable here: q")
     session.owned.precise = False
     assert judged("width") is None
     session.owned.precise = True

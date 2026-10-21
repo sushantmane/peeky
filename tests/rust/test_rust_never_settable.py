@@ -212,3 +212,108 @@ def test_a_local_settable_at_other_stops_is_left_to_the_stop(tmp_path, state, ca
             rows[phase, "total"]["settable"] is True and "not_settable" not in rows[phase, "total"]
         )
         assert rows[phase, "offset"]["not_settable"] == "register", rows
+
+
+SHAPES = """use std::future::Future;
+use std::hint::black_box;
+use std::pin::{pin, Pin};
+use std::task::{Context, Poll, Waker};
+
+#[derive(Clone, Copy, Debug)]
+struct Span {
+    start: i32,
+    end: i32,
+}
+
+#[inline(never)]
+fn arrs() -> i64 {
+    let mut grid = [[1i32, 2], [3, 4]];
+    let mut sp = [Span { start: 1, end: 2 }, Span { start: 3, end: 4 }];
+    black_box(&mut grid);
+    black_box(&mut sp);
+    let r = grid[1][0] as i64 + sp[1].end as i64; // ARR
+    r
+}
+
+struct Yield(bool);
+impl Future for Yield {
+    type Output = ();
+    fn poll(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<()> {
+        if self.0 { Poll::Ready(()) } else { self.0 = true; Poll::Pending }
+    }
+}
+
+fn block_on<F: Future>(future: F) -> F::Output {
+    let mut future = pin!(future);
+    let mut cx = Context::from_waker(Waker::noop());
+    loop {
+        if let Poll::Ready(value) = future.as_mut().poll(&mut cx) {
+            return value;
+        }
+    }
+}
+
+async fn aw(n: i32) -> i32 {
+    let mut k = n + 1;
+    black_box(&mut k);
+    Yield(false).await;
+    let mut q = 3;
+    black_box(&mut q);
+    let r = q + k; // ASYNC
+    r
+}
+
+fn main() {
+    println!("arrs {}", arrs());
+    println!("async {}", block_on(aw(10)));
+}
+"""
+
+
+@pytest.mark.timeout(400)
+def test_an_index_is_judged_as_the_stop_reads_it(tmp_path, state, capsys):
+    # Review of #138: `sp[-1].end` and `sp[01].end` change `sp[1].end` at the stop (the
+    # walk counts `-1` from the array's end and reads `01` as 1), but were refused before
+    # the run ("`sp` is an array: select an element as `sp[0]`").
+    crate = crate_at(tmp_path, "shapes", SHAPES)
+    at = line_of(SHAPES, "// ARR")
+    for selector in ("sp[-1].end", "sp[01].end"):
+        code, result = probe(capsys, crate, at, "--capture", "sp[1].end", "--set", f"{selector}=9")
+        assert code == 0, (selector, result.get("error"))
+        assert "arrs 12" in result["output"], (selector, result["output"])
+    # Whatever the stop makes of an index (here: no length for a nested array's `[-1]`),
+    # the build does not rule it out.
+    code, result = probe(capsys, crate, at, "--set", "grid[-1][0]=9")
+    assert result["hits"] == 1 and "refused_before_launch" not in result, result
+    # Past the start of the array, or into a field it does not have: still judged.
+    code, result = probe(capsys, crate, at, "--set", "sp[-1].middle=9")
+    assert "lists no field `middle`" in refused_before_launch(result)
+
+
+@pytest.mark.timeout(400)
+def test_a_local_an_async_body_keeps_across_an_await_says_so(tmp_path, state, capsys):
+    # Review of #138: `k`, black-boxed but kept in the future's state across the
+    # `.await`, was refused as "kept in a register" with `black_box` advice that cannot
+    # help: the poll reaches it through a pointer at every stop of the body.
+    crate = crate_at(tmp_path, "shapes", SHAPES)
+    at = line_of(SHAPES, "// ASYNC")
+    code, result = probe(capsys, crate, at, "--set", "k=9")
+    message = refused_before_launch(result)
+    assert "`k` is held in the async body's state across an `.await`" in message, message
+    assert "register" not in message and "black_box(&mut k)" not in message, message
+    assert "`let mut k2 = k; std::hint::black_box(&mut k2);`" in message, message
+    assert message.endswith("settable here: q"), message
+    assert "copy it into a local of the poll's own" in result["error"]["hint"]
+    code, result = probe(capsys, crate, at, "--capture", "k,q")
+    rows = {row["selector"]: row for row in result["rows"]}
+    assert rows["k"]["not_settable"] == "async state" and rows["q"]["settable"] is True, rows
+    assert main(["describe", str(crate)]) == 0
+    mutable = next(line for line in capsys.readouterr().out.splitlines() if "mutable:" in line)
+    assert "held in an async body's state across an `.await`" in mutable, mutable
+    assert "shapes::aw::{{closure}}: k" in mutable, mutable
+    # As advised: a copy the poll keeps itself, set in the same probe.
+    edit = ["--old", "    black_box(&mut q);", "--new"]
+    edit += ["    black_box(&mut q); let mut k2 = k; black_box(&mut k2);"]
+    edit += ["--old", "let r = q + k;", "--new", "let r = q + k2;"]
+    code, result = probe(capsys, crate, at, "--capture", "k2", *edit, "--set", "k2=9")
+    assert code == 0 and "async 12" in result["output"], result.get("error")
