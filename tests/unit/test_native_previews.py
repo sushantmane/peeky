@@ -79,6 +79,12 @@ GRAPH = {
         ],
     ),
     31: record("O", [("s", 30)]),
+    # Review 2: wide character bitfields; a member named as a base class.
+    32: ("base", "char16_t", "DW_ATE_UTF", 2),
+    33: ("typedef", "wchar_t", 1),
+    34: record("EB", [("w", 32, 9), ("wc", 33, 9), ("i8", 3, 3)]),
+    35: record("B2", [("A2", 1)], bases=(36,)),
+    36: record("A2", [("v", 1)]),
 }
 
 
@@ -376,9 +382,39 @@ def test_what_a_pointer_points_at_when_a_selector_asks():
 def test_a_char_bitfield_member_row_shows_its_number():
     frame = {"id": 1}
     native = session()
-    assert native.member_value(node("sc", "'\\x05'", "signed char"), frame, ["b", "sc"]) == "-3"
+    shown = native.member_value(node("sc", "'\\x05'", "signed char"), frame, ["b", "sc"])
+    assert shown == {"value": "-3"}
     assert native.member_value(node("x", "9"), frame, ["b", "x"]) is None
     assert session("rust").member_value(node("sc", "'\\x05'"), frame, ["b", "sc"]) is None
+    # A wide character bitfield, which LLDB reads at other bits: no value, and why.
+    native.declarations[0]["types"]["e"] = {(34, "automatic", None)}
+    for name in ("w", "wc"):
+        shown = native.member_value(node(name, "u'\u030d'"), frame, ["e", name])
+        assert shown["unavailable"] and "wide character" in shown["reason"], shown
+
+
+def test_wide_character_bitfields_and_clashing_names_are_not_previewed():
+    # Review 2 of #136: `char16_t w : 9` read `u'̍'` for u'a'; in C `wchar_t` is a typedef
+    # of `int`, so its name tells it. A number LLDB gives a char bitfield is masked too.
+    assert Typed(GRAPH, 32, bits=9).wide_character() and Typed(GRAPH, 33, bits=9).wide_character()
+    assert not Typed(GRAPH, 1, bits=9).wide_character()
+    assert bitfield_text("u'\u030d'", Typed(GRAPH, 32, bits=9)) == "<bitfield>"
+    assert bitfield_text("5", Typed(GRAPH, 3, bits=3)) == "-3"
+    assert bitfield_text("-3", Typed(GRAPH, 3, bits=3)) == "-3"
+    members = [node("w", "u'\u030d'"), node("wc", "L'b'"), node("i8", "'\\xfd'")]
+    fetch = Debugger({1: members})
+    assert preview(node("e", "EB @ 0x10", "EB", 1), fetch, typed(34), text) == (
+        "{w = <bitfield>, wc = <bitfield>, i8 = -3}"
+    )
+    # `struct B2 : A2 { int A2; }`: lldb-dap names the base and the member alike.
+    assert typed(35).child("A2") is None
+    clash = Debugger(
+        {1: [node("A2", "A2 @ 0x10", "A2", 2), node("A2", "60")], 2: [node("v", "50")]}
+    )
+    assert preview(node("b", "B2 @ 0x10", "B2", 1), clash, typed(35), text) is None
+    # A struct where the type says a number: not this member.
+    odd = Debugger({1: [node("x", "Q @ 0x10", "Q", 2), node("y", "2")]})
+    assert preview(node("p", "Pt @ 0x10", "Pt", 1), odd, typed(10), text) is None
 
 
 def test_a_selected_field_is_previewed_alone_or_left_as_read():

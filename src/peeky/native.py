@@ -2590,15 +2590,28 @@ class NativeSession:
         return preview(variable, fetch, typed, text)
 
     def member_value(self, variable, frame, steps):
-        """A field's text where LLDB's is wrong, or None to keep it (#136): a char-typed
-        bitfield LLDB reads as an unsigned character (`'\\x05'` for `signed char sc:3`
-        holding -3) shows as the number its bits hold, sign-extended where signed."""
-        from peeky.native_previews import bitfield_text
+        """How to show a field LLDB reads wrongly, or None to keep its text (#136): a
+        char-typed bitfield LLDB reads as an unsigned character (`'\\x05'` for
+        `signed char sc:3` holding -3) as {"value": the number its bits hold,
+        sign-extended where signed}; a wide character bitfield, which LLDB reads at other
+        bits than the program's, or a char bitfield whose text is no character, as
+        {"unavailable": True, "reason": ...}."""
+        from peeky.native_previews import WIDE_BITFIELD, bitfield_text
 
         if getattr(getattr(self, "target", None), "language", None) not in ("c", "cpp"):
             return None
         typed = self._typed(frame, steps)
-        return bitfield_text(variable.get("value"), typed) if typed is not None else None
+        shown = bitfield_text(variable.get("value"), typed) if typed is not None else None
+        if shown is None:
+            return None
+        if shown == "<bitfield>":
+            reason = (
+                WIDE_BITFIELD
+                if typed.wide_character()
+                else "a char-typed bitfield whose text from the debugger is no character"
+            )
+            return {"unavailable": True, "reason": reason}
+        return {"value": shown}
 
     def _typed(self, frame, steps):
         """``native_previews.Typed`` of the value ``steps`` name in ``frame`` (its root

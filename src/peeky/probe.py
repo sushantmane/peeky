@@ -2463,6 +2463,9 @@ def _children(worker, stop, selector, variable, pointers=False, whole_strings=Fa
             entry["stale"] = True
         if type(child.get("settable")) is bool:
             entry["settable"] = child["settable"]
+        if isinstance(child.get("note"), str):
+            # Read through a value Peeky cannot vouch for: so is this one (#136, #148).
+            entry["note"] = child["note"]
         path = _child_selector(selector, child["name"])
         if pointers and path is None and _pointee(variable, page["variables"]) is child:
             path = f"{selector}[0]"

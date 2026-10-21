@@ -151,6 +151,9 @@ class DebugWorker:
         # {handle: taint}: values inside a local whose pointers may reach freed memory
         # (a runtime's aggregate_taint), passed on to everything inside them.
         self.taints = {}
+        # The note of a value Peeky shows but cannot vouch for, by the handle of each
+        # value read through it (#136 previews, #148): its fields carry it too.
+        self.notes = {}
         # (name, why) for roots a rule left unmarked in the last inspection (unsettable_here).
         self.unsettable_reasons = []
         # Verdicts behind [settable] marks on fields and elements, by where the program is
@@ -930,6 +933,7 @@ class DebugWorker:
         self.stop_reason = None
         self.children.clear()
         self.taints.clear()
+        self.notes.clear()
         self.stop_id = None
         self.frames.clear()
         self.listed_frames = []
@@ -1327,6 +1331,7 @@ class DebugWorker:
             self.reference_adapter.clear()
             self.children.clear()
             self.taints.clear()
+            self.notes.clear()
             self.stop_id = uuid.uuid4().hex if self.state == "stopped" else None
             self.stopped_at = event.get("received", time.monotonic()) if self.stop_id else None
             self.thread_id = event.get("body", {}).get("threadId")
@@ -1371,6 +1376,7 @@ class DebugWorker:
             self.stopped(args)
             self.children.clear()
             self.taints.clear()
+            self.notes.clear()
             self.inspection_nodes = 0
             self.view_fetches = self.view_items = self.view_bytes = 0
             self.view_deadline = time.monotonic() + VIEW_SECONDS
@@ -1603,6 +1609,7 @@ class DebugWorker:
                 return self.set_member(args, runtime)
             self.children.clear()
             self.taints.clear()
+            self.notes.clear()
             self.marks.clear()
             if not self.capabilities.get("supports_set_variable", False):
                 raise ValueError("Adapter does not support variable mutation")
@@ -1982,12 +1989,15 @@ class DebugWorker:
         self.view_bytes += count
         return data
 
-    def expose_variables(self, variables, frame, scope, ancestry, taint=None, root=None):
+    def expose_variables(
+        self, variables, frame, scope, ancestry, taint=None, root=None, inherited=None
+    ):
         """Only worker-issued handles leave the process. A child handle permits a write only
         to a member the runtime allows (Java fields and array elements), checked again
         when the write is made. ``taint`` is the parent's (see ``self.taints``). ``root``:
         the debugger's variable for the root local of ``ancestry``, whose fields and
-        elements are marked settable where `set` would change them (C, C++, Rust)."""
+        elements are marked settable where `set` would change them (C, C++, Rust).
+        ``inherited``: the parent's note (see ``self.notes``), which its children carry."""
         result = []
         member_rule = (
             self.member_rule(self.runtime, frame, root) if ancestry and root is not None else None
@@ -2040,8 +2050,9 @@ class DebugWorker:
                 if pending
                 else None
             )
-            # A value shown though the runtime cannot vouch for it: a note on its row.
-            note = getattr(reason, "note", None)
+            # A value shown though the runtime cannot vouch for it: a note on its row, and
+            # on every field and element read through it (#136's previews too).
+            note = getattr(reason, "note", None) if not ancestry else inherited
             if reason and note is None:
                 # Indeterminate here: never shown as a value, expanded or offered for set,
                 # nor read through by a qualified view (a Rust container, enum or Box).
@@ -2172,6 +2183,8 @@ class DebugWorker:
                 self.children[handle] = (dict(frame), scope, path)
                 if own:
                     self.taints[handle] = own
+                if isinstance(note, str):
+                    self.notes[handle] = note
             output = {
                 "name": name,
                 "value": str(variable.get("value", ""))[:2000],
@@ -2207,8 +2220,14 @@ class DebugWorker:
                 and not output.get("unavailable")
                 and (fixed := member_value(variable, frame, [s for s, _ in ancestry] + [name]))
             ):
-                # A field LLDB reads wrongly (a char-typed bitfield, #136).
-                output["value"] = fixed
+                # A field LLDB reads wrongly (a char-typed bitfield, #136): its number,
+                # or no value with the reason (a wide character bitfield).
+                if fixed.get("unavailable"):
+                    # Peeky's own reason, not the debugger's.
+                    output.update(value=None, unavailable=True, reason=fixed["reason"][:300])
+                    output.update(withheld=True, withheld_as="not shown", settable=False)
+                else:
+                    output["value"] = fixed["value"]
             wanted = self.previewing
             if (
                 preview
@@ -2395,6 +2414,7 @@ class DebugWorker:
             ancestry,
             self.taints.get(args["handle"]),
             root=trail[0] if trail else None,
+            inherited=self.notes.get(args["handle"]),
         )
         runtime.assert_current()
         return {
@@ -2657,6 +2677,7 @@ class DebugWorker:
         # A change invalidates every handle: the next read or change inspects again.
         self.children.clear()
         self.taints.clear()
+        self.notes.clear()
         self.marks.clear()
         self.references.clear()
         self.reference_frames.clear()
@@ -2928,6 +2949,7 @@ class DebugWorker:
         self.reference_adapter.clear()
         self.children.clear()
         self.taints.clear()
+        self.notes.clear()
         try:
             if adapter:
                 if runtime is not None and getattr(runtime, "terminate_debuggee", True) is False:

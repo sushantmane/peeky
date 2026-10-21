@@ -76,6 +76,31 @@ class Typed:
             offset = node[2]
         return None
 
+    def names(self):
+        """The type's names on the way to what it is: typedefs (`wchar_t` in C, where
+        it is a typedef of `int`), then a base type's own."""
+        found, offset = [], self.offset
+        for _ in range(64):
+            node = self.graph.get(offset)
+            if node is None:
+                break
+            if node[0] == "typedef":
+                found.append(node[1])
+            elif node[0] != "qualifier":
+                if node[0] == "base":
+                    found.append(node[1])
+                break
+            offset = node[2]
+        return found
+
+    def wide_character(self):
+        """Whether it is a character type wider than a byte (`wchar_t`, `char16_t`,
+        `char32_t`, or UTF): LLDB shows one as a character, never as a number."""
+        scalar = self.scalar()
+        return scalar is not None and (
+            scalar[1] == "DW_ATE_UTF" or any(name in _WIDE for name in self.names())
+        )
+
     def kind(self):
         """ "record", "union", "array", "pointer", "reference", "scalar", "library",
         "incomplete" or "unknown"."""
@@ -178,10 +203,12 @@ class Typed:
         if sort in ("record", "union"):
             members, bases = self.members()
             named = [typed for member, typed in members if member == name]
-            if len(named) == 1:
-                return named[0]
             based = [typed for base, typed in bases if base is not None and _names(name, base)]
-            return based[0] if len(based) == 1 and not named else None
+            if len(named) + len(based) != 1:
+                # A member named as a base class (`struct B2 : A2 { int A2; }`): lldb-dap
+                # lists both by one name, so neither can be told.
+                return None
+            return (named or based)[0]
         return None
 
 
@@ -191,13 +218,28 @@ def _names(shown, base):
     return shown == base or str(shown).endswith("::" + base)
 
 
+WIDE_BITFIELD = (
+    "a bitfield of a wide character type (`char16_t`, `char32_t`, `wchar_t`), which LLDB "
+    "reads at other bits than the program's (u'a' in a `char16_t w : 9` shows as U+030D); "
+    "print it from the program to see it"
+)
+
+
 def bitfield_text(value, typed):
     """A char-typed bitfield's value as the number its bits hold, sign-extended where its
-    type is signed, from LLDB's character (`'\\x05'`), or None to keep the debugger's
-    text (any other member). None where LLDB's text cannot be read as one character."""
-    scalar = typed.scalar() if typed.bits else None
+    type is signed, from LLDB's character (`'\\x05'`) or number, or None to keep the
+    debugger's text (any other member). `<bitfield>` where LLDB's text cannot be read as
+    one character, or the field is a wide character type's (``WIDE_BITFIELD``), whose
+    bits LLDB reads wrongly."""
+    if not typed.bits:
+        return None
+    if typed.wide_character():
+        return "<bitfield>"
+    scalar = typed.scalar()
     if scalar is None or scalar[1] not in _NARROW:
         return None
+    if re.fullmatch(r"-?[0-9]{1,4}", str(value).strip()):
+        return _bits(int(value), typed.bits, scalar[1] == "DW_ATE_signed_char")
     found = _CHARACTER.fullmatch(str(value))
     if found is None:
         return "<bitfield>"
@@ -214,9 +256,13 @@ def bitfield_text(value, typed):
         code = ord(text[1])
     else:
         return "<bitfield>"
-    bits = typed.bits
+    return _bits(code, typed.bits, scalar[1] == "DW_ATE_signed_char")
+
+
+def _bits(code, bits, signed):
+    """The number ``bits`` low bits of ``code`` hold, sign-extended where ``signed``."""
     code &= (1 << bits) - 1
-    if scalar[1] == "DW_ATE_signed_char" and code >> (bits - 1):
+    if signed and code >> (bits - 1):
         code -= 1 << bits
     return str(code)
 
@@ -366,6 +412,9 @@ def _member(child, typed, fetch, text, depth, room):
         return _open(child, typed, fetch, text, depth + 1, _Room(room.left))
     if sort in ("library", "incomplete", "unknown") and _PLACEHOLDER.fullmatch(value):
         return "{…}"
+    if sort == "scalar" and expandable and _PLACEHOLDER.fullmatch(value):
+        # A struct or array where the type says a number: not this member.
+        raise _Unsure()
     if (number := bitfield_text(value, typed)) is not None:
         return number
     shown = text(child)

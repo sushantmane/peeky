@@ -359,3 +359,59 @@ def test_what_the_debug_information_cannot_vouch_for_is_not_previewed(
     # The evidence store keeps what the row shows.
     assert main(["sql", "SELECT value FROM last_run WHERE selector = 'npp[0]'", "--json"]) == 0
     assert json.loads(capsys.readouterr().out)["rows"][0]["value"].startswith("0x")
+
+
+NOTED = """#include <setjmp.h>
+#include <stdio.h>
+struct pt { int x, y; };
+struct box { struct pt lo; struct pt hi; int tag; };
+static jmp_buf env;
+static int count;
+static void jump(void) {
+    if (count++ < 2) longjmp(env, 1);
+}
+__attribute__((noinline)) static int twice(int v) { return v * 2; }
+static int looped(void) {
+    int total = 0, x = 0;
+    do {
+        struct pt y = { twice(x), 2 }; // DO_STRUCT
+        total += y.x + y.y;
+        x++;
+    } while (x < 3);
+    return total;
+}
+int main(void) {
+    struct pt before = {1, 2};
+    int k = setjmp(env);
+    struct pt mid = {k + count, 10 * count};
+    printf("pass %d mid={%d %d}\\n", count, mid.x, mid.y); // STOP
+    struct box late = {{count, count + 1}, {count * 2, count * 3}, 100 + count};
+    printf("late={{%d %d} {%d %d} %d} %d\\n", late.lo.x, late.lo.y, late.hi.x, late.hi.y, late.tag, looped());
+    jump();
+    return before.x;
+}
+"""
+
+
+@pytest.mark.timeout(120)
+def test_what_is_read_through_a_noted_local_carries_its_note(c_program, capsys):
+    # Review 2 of #136: a local Peeky shows but cannot vouch for (declared below a stop
+    # after `setjmp`, a `do` body's first line) carried its note, but its preview's
+    # fields and its children did not: `late.lo` read `{x = 1073741824, y = 0}`, plain.
+    source = c_program("noted.c", NOTED)
+    for marker, root, fields in (
+        ("// STOP", "late", ("late.lo", "late.lo.x", "late.tag")),
+        ("// DO_STRUCT", "y", ("y.x",)),
+    ):
+        line = line_of(NOTED, marker)
+        capture = ",".join((root, *fields))
+        assert main(["probe", str(source), "--at", str(line), "--capture", capture, "--json"]) == 0
+        rows = {row["selector"]: row for row in json.loads(capsys.readouterr().out)["rows"]}
+        note = rows[root].get("note")
+        assert note, rows[root]
+        for field in fields:
+            assert rows[field].get("note") == note, rows[field]
+        with session(source, line, capsys) as get:
+            shown = get(root)[root]
+            assert shown.get("note") == note
+            assert shown["children"] and all(c.get("note") == note for c in shown["children"])

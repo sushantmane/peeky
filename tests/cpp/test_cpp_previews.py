@@ -248,3 +248,49 @@ def test_types_the_debug_information_gives_never_the_names(cpp, tmp_path, capsys
     assert rows["bits.sc"] == "-3"
     assert rows["w"] == "[L'a', L'\\0', L'b', L'\\0']", rows["w"]
     assert (rows["u"], rows["U"]) == ("[u'x', u'\\0', u'y']", "[U'q', U'\\0', U'r']"), rows
+
+
+BITS = """#include <cstdio>
+#include <cstdint>
+enum Sm : signed char { NEG2 = -2, Z = 0 };
+struct EB { Sm s : 3; int8_t i8 : 3; uint8_t u8 : 3; char16_t w : 9; wchar_t wc : 9; char32_t u : 9; bool b : 1; };
+struct A2 { int v = 50; };
+struct B2 : A2 { int A2 = 60; };
+struct Ok : A2 { int w = 70; };
+int main() {
+    EB e{};
+    e.s = NEG2; e.i8 = -3; e.u8 = 5; e.w = u'a'; e.wc = L'b'; e.u = U'c'; e.b = true;
+    B2 b2;
+    Ok ok;
+    std::printf("w=%d wc=%d %d %d %d\\n", (int)e.w, (int)e.wc, (int)e.u, b2.A2 + b2.v, ok.w); // HERE
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(120)
+def test_fields_lldb_reads_wrongly_or_cannot_tell_apart_have_no_value(cpp, tmp_path, capsys):
+    # Review 2 of #136: a wide character bitfield (`char16_t w : 9` holding u'a') read
+    # `u'̍'` (U+030D): LLDB reads its bits elsewhere, so it has no value, in the preview
+    # and its own row. `struct B2 : A2 { int A2; }` previewed `{A2 = A2 @ 0x…, A2 = 60}`:
+    # a base and a member of one name cannot be told apart, so no preview.
+    (tmp_path / "bits.cpp").write_text(BITS)
+    line = line_of(BITS, "// HERE")
+    capture = "e,e.w,e.wc,e.u,e.i8,b2,ok"
+    assert (
+        main(
+            ["probe", str(tmp_path / "bits.cpp"), "--at", str(line), "--capture", capture, "--json"]
+        )
+        == 0
+    )
+    result = json.loads(capsys.readouterr().out)
+    rows = {row["selector"]: row for row in result["rows"]}
+    assert rows["e"]["value"] == (
+        "{s = NEG2, i8 = -3, u8 = 5, w = <bitfield>, wc = <bitfield>, u = <bitfield>, b = true}"
+    ), rows["e"]
+    for field in ("e.w", "e.wc", "e.u"):
+        assert rows[field].get("unavailable") and "value" not in rows[field], rows[field]
+        assert rows[field]["error"].startswith("not shown: a bitfield of a wide character type")
+    assert rows["e.i8"]["value"] == "-3"
+    assert " @ 0x" in rows["b2"]["value"], rows["b2"]
+    assert rows["ok"]["value"] == "{A2 = {v = 50}, w = 70}", rows["ok"]

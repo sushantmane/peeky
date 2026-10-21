@@ -927,3 +927,43 @@ def test_a_noted_reason_shows_the_value_with_its_note_and_only_others_withhold(t
     )
     assert plain["value"] == "7" and "note" not in plain and plain["settable"] is True
     assert asked == [(name, names) for name in names]
+
+
+def test_what_is_read_through_a_noted_local_carries_its_note(tmp_path):
+    # Review 2 of #136 (and #148): a local Peeky shows but cannot vouch for carries a
+    # note; every field and element read through its handle carries it too.
+    from types import SimpleNamespace
+
+    from peeky.native import ValueNote
+    from peeky.worker import DebugWorker
+
+    note = ValueNote("declared below a setjmp", "may be leftovers", refuses=True)
+
+    def pending(variable, frame, **_):
+        return note if variable["name"] == "late" else None
+
+    runtime = SimpleNamespace(
+        assert_current=lambda: None, reports_unavailable_as_text=True, not_yet_declared=pending
+    )
+    worker = DebugWorker(tmp_path)
+    worker.runtime, worker.state, worker.stop_id = runtime, "stopped", "stop1"
+    late, plain = worker.expose_variables(
+        [
+            {"name": "late", "type": "box", "value": "box @ 0x10", "variablesReference": 7},
+            {"name": "mid", "type": "pt", "value": "pt @ 0x20", "variablesReference": 8},
+        ],
+        {"id": 1},
+        ("Locals",),
+        (),
+    )
+    assert late["note"] == "may be leftovers" and "note" not in plain
+    assert worker.notes == {late["variablesReference"]: "may be leftovers"}
+    (field,) = worker.expose_variables(
+        [{"name": "lo", "type": "pt", "value": "pt @ 0x10", "variablesReference": 9}],
+        {"id": 1},
+        ("Locals",),
+        (("late", "box"),),
+        inherited=worker.notes[late["variablesReference"]],
+    )
+    assert field["note"] == "may be leftovers"
+    assert worker.notes[field["variablesReference"]] == "may be leftovers"
