@@ -209,7 +209,7 @@ hit  phase     line  function  selector   type  value
 **Common cases**
 
 - `--hits N` captures N stops; `--hits all` every stop, up to 100, and needs the program to exit. `queries hits` shows one selector across hits, with `changed`.
-- **A line can stop several times per pass** (a macro's code, a one-line loop's body, a range `for`): the probe warns, and each row's `stop` says which location. Check the rows' `stop` pattern before filtering on it: where every pass runs location 1 (a macro's code: 1, 2, 3, 1, 2, 3), `WHERE stop = 1` keeps one row per pass; a one-line loop's or a range `for`'s location 1 runs once, before the loop (1, 2, 2, 2), so use `stop = 2` there.
+- **A line can stop several times per pass** (a macro's code, a one-line loop's body, a range `for`): the probe warns, and each row's `stop` says which location. For one row per pass, keep the location every pass reaches, which `peeky sql "SELECT stop, COUNT(DISTINCT hit) AS hits FROM last_run WHERE phase = 'observed' GROUP BY stop ORDER BY hits DESC"` lists first, then filter on it (`WHERE stop = 2`). Which one it is depends on the line: C and C++ one-line loops and range `for`s stop 1, 2, 2, 2 (location 1 runs once, before the loop), a Rust one-line `for` 1, 2, 3, 3, 3, and a macro's code 1, 2, 1, 2 (each location repeats: any will do).
 - **A loop header may stop only once, before its loop:** the probe warns; put `--at` on the first line of the body.
 - Different functions on one line (a closure, a lambda) are told apart by each row's `function`.
 
@@ -1066,9 +1066,9 @@ The commands are the same for every language; only the target changes.
 **Common cases**
 
 - **Read** any value by selector: `s.end`, `bins[3].hi`, through a pointer with `.` (`ps.start`), C++ members as `this.head_`, a map by key (`m[1]`).
-- **Set** an integer local, or an integer field or element of a struct or array local the stopped frame owns (`--set s.end=10`), at a statement's first line; rows mark it `[settable]`.
+- **Set** a 16- to 64-bit integer local, or such a field or element of a struct or array local the stopped frame owns (`--set s.end=10`), at a statement's first line; rows mark it `[settable]` (an 8-bit `char` is refused).
 - **A field through a pointer** (`r->tail` in `push(struct ring *r)`, `this.count`) cannot be set: set it in the frame that owns the struct, before the call (in C, when the program calls the function once, the refusal names that call: `push has one caller: …`).
-- **`no value yet`** is a local not initialized at this stop (declared below it, an initializer still running); a `note` is a value Peeky cannot vouch for. Read the next line.
+- **`no value yet`** is a local not initialized at this stop (declared below it, an initializer still running): read it below its declaration (the row says where: `stop after line 35 to read it`). A `note` is a value Peeky cannot vouch for: on a line a loop returns to (a `do` body's first) the next line reads it; below a `setjmp` call, a local declared at or below the stop shows a `note` instead of `no value yet`, and reads plainly below its declaration.
 - **Same-named locals:** a plain name is the declaration the code names at the stop; `name @ file:line` selects another.
 
 **Quick start (C and C++).** What can be read, what can be set, and where:
@@ -1245,9 +1245,9 @@ A breakpoint on a statement's first line (`--at`, `continue --to`) or a `step` t
 
 **Common cases**
 
-- **Read** locals with their Rust types; an owned `Vec` or `String` local, and a reference parameter of plain elements (`&[T]`, `&str`), from memory (`[memory]`), in an unoptimized build with lldb-dap 20.
-- **A `Vec` or `String` field stays raw**, with a note: `self.values` behind `&mut self`, and `w.values` in `main`, which owns `w`. Its scalar fields (`self.k`) and owned `Vec` locals are read.
-- **Set** an integer local kept in memory, or an integer field of a struct local the frame owns (`--set w.start=10`); a local kept in a register is `[not settable: register]` (keep it in memory with `black_box`, 6.6).
+- **Read** locals with their Rust types; an owned `String`, or a `Vec` of plain elements (integers, `bool`, floats, `char`, or tuples and crate structs of them), and a reference parameter of such elements (`&[T]`, `&str`), from memory (`[memory]`), in an unoptimized build with lldb-dap 20. A `Vec<String>` (`args`) stays raw.
+- **A `Vec` or `String` field stays raw**, with a note: `self.values` behind `&mut self`, and `w.values` in `main`, which owns `w`. The struct's scalar fields (`self.k`, `w.k`) are read.
+- **Set** a 16- to 64-bit integer local kept in memory, or such a field of a struct local the frame owns (`--set w.start=10`); a local kept in a register is `[not settable: register]` (keep it in memory with `black_box`, 6.6).
 - **Through `&mut Window`** (`w.start` in the callee), set it in the caller that owns `w`, at the call's line.
 - **A plain `cargo new` crate** works; run `cargo generate-lockfile` once if `Cargo.lock` is missing.
 
@@ -1302,7 +1302,7 @@ output:
 **Common cases**
 
 - A Java target needs `--config <file.json>` (the adapter bundle, sources and main class); `describe`'s commands repeat it.
-- Objects, arrays and `ArrayList`s show their first fields or elements; read members through `this` (`this.total`).
+- Objects and arrays show their first fields or elements, an `ArrayList` its size and first elements (an empty one, its raw fields); read members through `this` (`this.total`).
 - Scalar fields and array elements can be set too (`--set current.end=10`), not final or static fields, Strings, boxed values or an `ArrayList`'s elements.
 - A line several methods share (a lambda on its method's line) stops in only one of them; the probe says which.
 
@@ -1355,7 +1355,7 @@ A value must fit the variable's type exactly. For example, `int` 3000000000 and 
 
 **Reading Java values.**
 
-- In a launched Java program, a value you capture or `session get` shows more: an object its first fields inline (`Merge$Interval@143 {end=10, start=1}`), an array its first elements (`int[3]@144 [1, 2, 3]`), an `ArrayList` its size and first elements (`ArrayList@142 size=2 [...]`).
+- In a launched Java program, a value you capture or `session get` shows more: an object its first fields inline (`Merge$Interval@143 {end=10, start=1}`), an array its first elements (`int[3]@144 [1, 2, 3]`), an `ArrayList` its size and first elements (`ArrayList@142 size=2 [...]`; an empty one shows its raw fields, `size=0`).
 - These are the debugger's reads of the value's own fields (no code runs in the program); Java `inspect` listings stay plain. An attached JVM shows plain values to keep its pauses short.
 - `ArrayList` selectors index like arrays (`merged[0]`, `merged[-1].end`) within its `size`, unless its backing array holds more than 512 slots.
 - Fields that are Strings and chars show as Java literals (`name="say \"hi\""`, `quote='"'`), a String cut after 38 characters with `…`.
