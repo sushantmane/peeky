@@ -32,7 +32,10 @@ def test_probe_captures_intervenes_and_reports_in_one_call(program):
     assert "not found" in observed["missing"]["error"]
     after = {r["selector"]: r for r in result["rows"] if r["phase"] == "after-set"}
     assert after["start"]["value"] == "0"
-    assert result["interventions"] == [{"name": "start", "before": "3", "after": "0"}]
+    # Where each change was made (#137): its stop's line and hit, and the captured hits.
+    assert result["interventions"] == [
+        {"name": "start", "before": "3", "after": "0", "line": 8, "hit": 1, "capture_hit": 1}
+    ]
     assert "PAGE: [10, 20, 30]" in result["output"]
     assert "session_id" not in result and "stop_id" not in str(result["rows"])
 

@@ -1178,3 +1178,157 @@ def test_rust_containers_of_tuples_and_structs_are_told_apart(kind, composite, u
 def test_a_numbered_field_selector_says_how_rust_names_tuple_fields():
     with pytest.raises(ValueError, match=r"\.__0, \.__1 in Rust.*: runs\[0\]\.__0$"):
         parse_selector("runs[0].0")
+
+
+def test_set_at_locations_parse_with_a_hit_and_are_bounded():
+    from peeky.probe import MAX_SET_AT_HIT, parse_set_at
+
+    assert parse_set_at("stock.cpp:22@3", "colon=6") == ("stock.cpp", 22, 3, "colon", "6")
+    assert parse_set_at("23", "w.start = 0") == (None, 23, 1, "w.start", "0")
+    assert parse_set_at("src/main.rs:5@12", "x=a=b") == ("src/main.rs", 5, 12, "x", "a=b")
+    for where, assignment in (("22@0", "x=1"), ("x@3", "x=1"), ("22@", "x=1"), ("22", "x")):
+        with pytest.raises(ValueError, match="--set-at"):
+            parse_set_at(where, assignment)
+    ok = Probe("a.c", 3, set_at=((4, 2, "x", "1"),))
+    assert ok.set_at == ((4, 2, "x", "1"),)
+    for set_at in (
+        ((4, 0, "x", "1"),),
+        ((4, MAX_SET_AT_HIT + 1, "x", "1"),),
+        ((0, 1, "x", "1"),),
+        ((4, 1, "x", 1),),
+        ((4, 1, "x()", "1"),),
+        (("4", 1, "x", "1"),),
+        ((4, 1, "x", "1"),) * 9,
+    ):
+        with pytest.raises(ValueError):
+            Probe("a.c", 3, set_at=set_at)
+    # --set and --set-at share the bound on interventions.
+    with pytest.raises(ValueError, match="--set and --set-at together"):
+        Probe("a.c", 3, set=(("x", "1"),) * 4, set_at=((4, 1, "x", "1"),) * 5)
+    with pytest.raises(Exception, match="map and dict entries cannot be changed"):
+        Probe("a.c", 3, set_at=((4, 1, "m['k']", "1"),))
+    # One set of after-set rows per captured stop with changes, in the row budget.
+    many = tuple(f"a{i}" for i in range(20))
+    assert Probe("a.c", 3, many, hits="all", set_at=((3, 2, "a", "1"),)).limit == 99
+    assert Probe("a.c", 3, many, hits="all", set_at=((4, 2, "a", "1"),)).limit == 100
+
+
+class Lines(FakeWorker):
+    """Stops at lines 8 and 9 of main.py in turn, `stops` times each, then ends."""
+
+    def __init__(self, stops=3, moved=None):
+        super().__init__()
+        self.order = [line for _ in range(stops) for line in (8, 9)]
+        self.moved, self.placed = moved, []
+
+    def dispatch(self, operation, args):
+        if operation == "launch":
+            self.calls.append(operation)
+            self.placed.append([point["line"] for point in args["breakpoints"]])
+            replies = [
+                {"id": index, "verified": True, "line": self.moved.get(p["line"], p["line"])}
+                if self.moved
+                else {"id": index, "verified": True, "line": p["line"]}
+                for index, p in enumerate(args["breakpoints"], 1)
+            ]
+            return {
+                "session_id": "s",
+                "breakpoints": replies,
+                "artifact_manifest_id": None,
+                "target_identity": None,
+                "source_sha256": "x",
+            }
+        if operation == "breakpoints":
+            self.calls.append(operation)
+            self.placed.append([point["line"] for point in args["breakpoints"]])
+            lines = {point["line"] for point in args["breakpoints"]}
+            self.order = [line for line in self.order if line in lines]
+            return {"breakpoints": [{"line": p["line"]} for p in args["breakpoints"]]}
+        if operation == "wait":
+            self.calls.append(operation)
+            if not self.order:
+                return {"state": "terminated"}
+            self.line = self.order.pop(0)
+            return {"state": "stopped", "stop_id": "t", "event": {"body": {"reason": "breakpoint"}}}
+        if operation == "set_variable":
+            self.calls.append(operation)
+            return {"name": args["name"], "before": "1", "after": args["value"]}
+        return super().dispatch(operation, args)
+
+
+def test_set_at_applies_each_change_at_its_own_stop_and_reports_the_rest(monkeypatch):
+    import peeky.probe as probe_module
+
+    worker = Lines()
+    monkeypatch.setattr(probe_module, "DebugWorker", lambda *args, **kwargs: worker)
+    request = Probe(
+        "main.py", 8, ("x",), set_at=((9, 2, "x", "5"), (8, 3, "x", "6"), (9, 4, "x", "7"))
+    )
+    result = probe_module.run_probe("/w", request)
+    assert result["status"] == "completed" and result["hits"] == 1
+    # Line 8 is captured once; its 3rd stop (kept for its --set-at) is not.
+    assert {(row["hit"], row["phase"]) for row in result["rows"]} == {(1, "observed")}
+    assert [
+        (change["after"], change["line"], change["hit"], change["at"], change["capture_hit"])
+        for change in result["interventions"]
+    ] == [("5", 9, 2, "9@2", 1), ("6", 8, 3, "8@3", 1)]
+    # A breakpoint is kept only while a later stop needs it.
+    assert worker.placed == [[8, 9], [9]]
+    assert result["unapplied"] == [{"at": "9@4", "name": "x", "value": "7", "stops": 3}]
+    assert any("9@4 x=7 was not applied: line 9 stopped 3 time(s)" in w for w in result["warnings"])
+    # The other five stops only counted or changed.
+    assert len(result["pauses_ms"]) == 1 and len(result["set_pauses_ms"]) == 5
+    assert not any("Interventions are applied once" in w for w in result["warnings"])
+
+
+def test_a_set_at_line_the_debugger_moves_is_refused(monkeypatch):
+    import peeky.probe as probe_module
+
+    worker = Lines(moved={9: 10})
+    monkeypatch.setattr(probe_module, "DebugWorker", lambda *args, **kwargs: worker)
+    result = probe_module.run_probe("/w", Probe("main.py", 8, ("x",), set_at=((9, 1, "x", "5"),)))
+    assert result["status"] == "failed" and result["error"]["code"] == "INVALID_REQUEST"
+    assert (
+        "line 9 has no code of its own (the debugger moved its breakpoint to line 10)"
+        in (result["error"]["message"])
+    )
+    assert "set_variable" not in worker.calls and "wait" not in worker.calls
+
+
+def test_the_http_probe_passes_set_at_and_refuses_malformed_ones(tmp_path, monkeypatch):
+    import subprocess
+    import threading
+
+    from peeky import worker as worker_module
+    from peeky.client import Client
+
+    seen = {}
+
+    class Process:
+        pid = 0
+
+        def __init__(self, command, **kwargs):
+            seen["command"] = command
+
+        def communicate(self, timeout=None):
+            return b'{"status": "completed"}', b""
+
+    monkeypatch.setattr(subprocess, "Popen", Process)
+    request = Probe("x.c", 3, set_at=((4, 2, "w.start", "9"), (5, 1, "n", "a b")))
+    assert worker_module._run_probe_process(tmp_path, request, None, 60) == {"status": "completed"}
+    command = seen["command"]
+    at = [index for index, part in enumerate(command) if part == "--set-at"]
+    assert [command[i + 1 : i + 3] for i in at] == [["4@2", "w.start=9"], ["5@1", "n=a b"]]
+
+    server = worker_module.make_server(tmp_path, "unit-test-secret-token-1234", 0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        client = Client(f"http://127.0.0.1:{server.server_port}", "unit-test-secret-token-1234")
+        for set_at in ([[4, 2, "x"]], [["4", 2, "x", "1"]], [[4, 2, "x", 1]], {"x": 1}):
+            with pytest.raises(Exception, match="set_at"):
+                client.call("probe", at="x.c:1", set_at=set_at)
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=3)

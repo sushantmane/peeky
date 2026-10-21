@@ -82,7 +82,18 @@ def test_a_recorded_probe_is_queryable_with_numbers_and_identity(store):
     latest = evidence.query(store, "SELECT DISTINCT run_id FROM last_run")["rows"]
     assert latest == [{"run_id": 2}]
     changes = evidence.query(store, "SELECT * FROM interventions")["rows"]
-    assert changes == [{"run_id": 2, "hit": 1, "name": "start", "before": "3", "after": "0"}]
+    # A result without the line (a worker before #137): its after-set rows' line.
+    assert changes == [
+        {
+            "run_id": 2,
+            "hit": 1,
+            "name": "start",
+            "before": "3",
+            "after": "0",
+            "line": 8,
+            "capture_hit": 1,
+        }
+    ]
     assert evidence.query(store, "SELECT worker FROM runs WHERE run_id = 2")["rows"] == [
         {"worker": "http://127.0.0.1:1"}
     ]
@@ -278,6 +289,7 @@ def test_canned_queries_answer_comparisons(store):
     assert effect == [
         {
             "hit": 1,
+            "line": 8,
             "selector": "start",
             "observed": "3",
             "after_set": "0",
@@ -656,7 +668,7 @@ def test_values_changed_by_an_intervention_rank_after_real_differences(store):
     )
     rows = evidence.run_query(store, "diff")["rows"]
     assert [(r["hit"], r["phase"], r["note"]) for r in rows] == [
-        (None, None, "the runs made different interventions (--set)"),
+        (None, None, "the runs made different interventions (--set, --set-at)"),
         (2, "observed", None),
         (1, "after-set", "intervention only in run b"),
     ]
@@ -1163,6 +1175,7 @@ def test_wide_gives_one_row_per_hit_with_a_column_per_selector(store):
         "line (selector)",
         "no_value",
         "caveats",
+        "sets",
     ]
     shown = [
         (row["hit"], row["phase"], row["now"], row["w.start"], row["bins[3].hi"], row["no_value"])
@@ -1193,9 +1206,9 @@ def test_wide_gives_one_row_per_hit_with_a_column_per_selector(store):
     evidence.record(store, captured([(1, "observed", "v", "1"), (1, "observed", "v", "2")]))
     with pytest.raises(ValueError, match="'v' more than once at hit 1 .*different values"):
         evidence.run_query(store, "wide")
-    # 95 selectors fit in 100 columns; more are refused, never cut short.
-    many = [(1, "observed", f"s{i}", str(i)) for i in range(96)]
-    evidence.record(store, captured(many[:95]))
+    # 94 selectors fit in 100 columns; more are refused, never cut short.
+    many = [(1, "observed", f"s{i}", str(i)) for i in range(95)]
+    evidence.record(store, captured(many[:94]))
     assert len(evidence.run_query(store, "wide")["columns"]) == 100
     evidence.record(store, captured(many))
     with pytest.raises(ValueError, match="wide would have 101 columns, more than 100"):
@@ -1302,7 +1315,8 @@ def test_wide_and_join_name_every_qualified_cell_and_never_merge_columns(store):
     ]
     wide = evidence.run_query(store, "wide")
     assert wide["columns"] == [
-        "hit", "phase", "line", "k", "x", "X (2)", "h.o", "s", "gone; here", "no_value", "caveats"
+        "hit", "phase", "line", "k", "x", "X (2)", "h.o", "s", "gone; here", "no_value", "caveats",
+        "sets",
     ]  # fmt: skip
     (row,) = wide["rows"]
     assert (row["x"], row["X (2)"]) == ("2", "101")
@@ -1555,7 +1569,61 @@ def test_a_qualified_value_says_so_whatever_else_its_diff_row_says(store):
     diff = evidence.run_query(store, "diff")["rows"]
     shown = [(row["hit"], row["phase"], row["selector"], row["note"]) for row in diff]
     assert shown == [
-        (None, None, "(sets)", "the runs made different interventions (--set)"),
+        (None, None, "(sets)", "the runs made different interventions (--set, --set-at)"),
         (2, "after-set", "n", "intervention only in run a"),
         (2, "after-set", "k", "intervention only in run a; " + qualified),
     ], shown
+
+
+def test_interventions_at_their_own_stops_are_stored_shown_and_placed(store):
+    # #137: --set-at changes at other lines and hits. Captured at line 8 (3 hits); a
+    # change at line 8's hit 2 (captured: after-set rows), one at line 9's hit 2 (after
+    # hit 2, before hit 3), and one after the last captured hit.
+    rows = [(hit, "observed", "w", str(hit)) for hit in (1, 2, 3)]
+    rows.insert(2, (2, "after-set", "w", "50"))
+    recorded = captured(rows)
+    recorded["probe"]["set_at"] = [[8, 2, "w", "50"], [9, 2, "w", "2"], [9, 4, "w", "0"]]
+    recorded["interventions"] = [
+        {"name": "w", "before": "2", "after": "50", "line": 8, "hit": 2, "capture_hit": 2},
+        {"name": "w", "before": "50", "after": "2", "line": 9, "hit": 2, "capture_hit": 2},
+        {"name": "w", "before": "3", "after": "0", "line": 9, "hit": 4, "capture_hit": 3},
+    ]
+    recorded["set_pauses_ms"] = [7.5]
+    evidence.record(store, recorded)
+    run = evidence.query(store, "SELECT sets, set_hit, max_pause_ms FROM runs")["rows"][0]
+    assert json.loads(run["sets"]) == [["w", "50", "8@2"], ["w", "2", "9@2"], ["w", "0", "9@4"]]
+    assert run["set_hit"] is None and run["max_pause_ms"] == 7.5
+    effect = evidence.run_query(store, "set_effect")["rows"]
+    assert [
+        (row["hit"], row["line"], row["selector"], row["observed"], row["after_set"])
+        for row in effect
+    ] == [(2, 8, "w", "2", "50"), (2, 9, "w", "50", "2"), (4, 9, "w", "3", "0")]
+    assert [row["interventions"] for row in effect] == ["w: 2 -> 50", "w: 50 -> 2", "w: 3 -> 0"]
+    wide = evidence.run_query(store, "wide")
+    sets = [(row["hit"], row["phase"], row["sets"]) for row in wide["rows"]]
+    # Each change on the row it comes before: at a captured stop, its after-set row;
+    # else the next hit's observed row; none after the last.
+    assert sets == [
+        (1, "observed", None),
+        (2, "observed", None),
+        (2, "after-set", '["w: 2 -> 50 (line 8, hit 2)"]'),
+        (3, "observed", '["w: 50 -> 2 (line 9, hit 2)"]'),
+    ]
+    assert evidence.query(store, wide["sql"])["rows"] == wide["rows"]
+
+
+def test_a_schema_9_store_gains_intervention_lines(store):
+    # Every --set before #137 was made at a captured stop of the run's line.
+    evidence.record(store, result(sets=[("start", "0")]))
+    connection = sqlite3.connect(store)
+    connection.executescript(
+        """
+        ALTER TABLE interventions DROP COLUMN line;
+        ALTER TABLE interventions DROP COLUMN capture_hit;
+        PRAGMA user_version = 9;
+        """
+    )
+    connection.close()
+    rows = evidence.query(store, "SELECT hit, line, capture_hit FROM interventions")["rows"]
+    assert rows == [{"hit": 1, "line": 8, "capture_hit": 1}]
+    assert evidence.run_query(store, "set_effect")["rows"][0]["interventions"] == "start: 3 -> 0"

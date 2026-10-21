@@ -2973,8 +2973,18 @@ def make_server(root, token, port=8765, *, adapter=None):
             "args",
             "expect_sha256",
             "edit",
+            "set_at",
         }:
             raise ValueError("Unknown probe field")
+        set_at = args.get("set_at", [])
+        if not isinstance(set_at, list) or not all(
+            isinstance(point, list)
+            and len(point) == 4
+            and all(type(part) is int for part in point[:2])
+            and all(isinstance(part, str) for part in point[2:])
+            for point in set_at
+        ):
+            raise ValueError("Probe set_at must be a list of [line, hit, name, value]")
         edit = args.get("edit")
         # One {old, new} object, or a list of them for several edits.
         edits = edit if isinstance(edit, list) else [edit]
@@ -3014,6 +3024,7 @@ def make_server(root, token, port=8765, *, adapter=None):
             else (edit["old"], edit["new"])
             if isinstance(edit, dict)
             else tuple((item["old"], item["new"]) for item in edits),
+            set_at=tuple(tuple(point) for point in set_at),
         )
         if not probes.acquire(blocking=False):
             raise ValueError("Another probe is running; retry later")
@@ -3142,6 +3153,8 @@ def _run_probe_process(root, request, adapter, cap):
         command += ["--capture", ",".join(request.capture)]
     for name, value in request.set:
         command += ["--set", f"{name}={value}"]
+    for line, hit, name, value in request.set_at:
+        command += ["--set-at", f"{line}@{hit}", f"{name}={value}"]
     with tempfile.TemporaryDirectory(prefix="peeky-probe-") as scratch:
         if request.edit:
             from peeky.probe import edit_pairs

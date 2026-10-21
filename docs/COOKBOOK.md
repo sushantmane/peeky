@@ -267,6 +267,40 @@ Every command takes `--json`. Exit codes:
 - 2: an error;
 - 3: a background job still running.
 
+### 2.8 Change a Value, Then Restore It
+
+**What it answers:** Would the output be right if one value were different for one statement only?
+
+`stock.cpp` (C++) keeps `"apple "` and `"apple"` apart because `trim_left` leaves trailing spaces. Line 22 is `std::string name = trim_left(entry.substr(0, colon));` and line 23 `long qty = std::stol(entry.substr(colon + 1));`. To test the fix, shorten `colon` so line 22 cuts the space off, then restore it so line 23 still reads the quantity:
+
+```sh
+peeky probe stock --at stock.cpp:22 --capture colon,entry --hits all \
+  --set-at 22@3 colon=6 --set-at 23@3 colon=7 \
+  --set-at 22@4 colon=4 --set-at 23@4 colon=5 -- "apple:3, pear:2, apple :4,pear :1"
+```
+
+```
+hit  phase      line  function  selector  type         value
+3    observed   22    main      colon     size_t       7  [settable]
+3    observed   22    main      entry     std::string  " apple :4"
+3    after-set  22    main      colon     size_t       6  [settable]
+...
+set colon: 7 -> 6  (--set-at line 22@3)
+set colon: 6 -> 7  (--set-at line 23@3)
+set colon: 5 -> 4  (--set-at line 22@4)
+set colon: 4 -> 5  (--set-at line 23@4)
+output:
+  STOCK:apple=7,pear=3
+```
+
+Shortened alone, line 23 reads `:4` and `std::stol` throws. With `--set` you would need a session (start, set, step, set, …) for this.
+
+- **Where and when:** `--set-at [PATH:]LINE[@HIT] name=value` changes a value at hit `HIT` (default 1) of `LINE`, counting that line's own stops, in the `--at` file. Repeat it for several lines and hits; changes at one stop are made in the order given.
+- **Captures:** The probe stops at every `--set-at` line as well as at `--at`, but captures values only at `--at`. A change at a captured stop gets `after-set` rows, as `--set` does. `--set` and `--set-hit` work as before, and together with `--set-at` make at most 8 changes.
+- **How long it runs:** The probe keeps each breakpoint until the changes on that line are made, past `--hits` if need be. With `--until hits` it ends once both are done (an attached JVM, which never exits, waits for them until `--timeout`). A change whose stop never comes (`23@9` where line 23 stops 4 times) is not made, and the result says so: a warning, and `unapplied` in JSON.
+- **Rules:** Each change follows the same rules as `--set` at its own stop (a statement under way, a local not yet initialized, a value with a note, a field through a pointer: see 2.3). One refusal fails the whole probe, naming its line and hit and how many changes were already made: half of a linked change is not the experiment you asked for. A line with no code of its own is refused, never moved to the next line.
+- **Evidence:** `runs.sets` lists each change as `[name, value, "LINE@HIT"]` (a `--set` stays `[name, value]`), so `queries diff`'s `(sets)` row tells runs apart by them. The `interventions` table gives each change's `line`, `hit` and `capture_hit`. `queries set_effect` lists the changes in the order they were made, and `queries wide` puts each one in the `sets` column of the row it comes before.
+
 ---
 
 ## 3. Comparing Runs
@@ -325,11 +359,11 @@ peeky queries set_effect
 ```
 
 ```
-hit  selector  observed  after_set  caveat_observed  caveat_after_set  interventions
-1    start     3         0          NULL             NULL              start: 3 -> 0
+hit  line  selector  observed  after_set  caveat_observed  caveat_after_set  interventions
+1    8     start     3         0          NULL             NULL              start: 3 -> 0
 ```
 
-`caveat_observed` and `caveat_after_set` name a view or `note` that qualifies either value, as `hits` does.
+`caveat_observed` and `caveat_after_set` name a view or `note` that qualifies either value, as `hits` does. Rows come in the order the changes were made. A change at a stop where nothing was captured (a `--set-at` line, 2.8) is one row: what it changed, before and after.
 
 Pass `--param a=<run> --param b=<run>` to `diff`, `compare`, `outputs` and `join` to pick specific runs.
 
@@ -345,11 +379,11 @@ peeky queries wide                  # the newest run; --param run=3 for another
 ```
 
 ```
-hit  phase     line  v  total  bins[3].hi  no_value  caveats
-1    observed  9     2  0      4           NULL      NULL
-2    observed  9     7  6      4           NULL      NULL
-3    observed  9     7  34     4           NULL      NULL
-4    observed  9     8  62     4           NULL      NULL
+hit  phase     line  v  total  bins[3].hi  no_value  caveats  sets
+1    observed  9     2  0      4           NULL      NULL     NULL
+2    observed  9     7  6      4           NULL      NULL     NULL
+3    observed  9     7  34     4           NULL      NULL     NULL
+4    observed  9     8  62     4           NULL      NULL     NULL
 ```
 
 - **Columns:** one per selector, named exactly as captured, in `--capture` order.
@@ -362,7 +396,8 @@ hit  phase     line  v  total  bins[3].hi  no_value  caveats
   - `stale`, `unproven`, `opaque` or `budget-exhausted`: the row's view (`peeky sql --schema` explains `view`). `stale` is a moved or dropped Rust local's leftover bytes, whatever view decoded them.
   - `note`: the probe marked the row `[note]` (for example a C local declared on a `do` body's first line: `{"k":"note"}`, "may be the last pass's value, or leftovers"), or gave it one of the Rust notes among its warnings. `peeky queries run` shows each row's note.
 - **Phases:** a run with `--set` has an `after-set` row after its hit's `observed` row. `--param phase=observed` (or `after-set`) keeps one.
-- **`--json`** also gives the SQL it ran (`sql`): refine it with `peeky sql`, e.g. `SELECT * FROM (<sql>) WHERE "v" = '7'`. Up to 95 selectors fit (100 columns at most); a wider run is refused.
+- **`sets`** lists the changes made since the previous row's values were read (a JSON list, `["colon: 7 -> 6 (line 22, hit 3)"]`): on an `after-set` row, those made at that stop; on an `observed` row, those made at other lines' stops after the previous hit (`--set-at`, 2.8). A change after the last hit precedes no row; `queries set_effect` lists them all.
+- **`--json`** also gives the SQL it ran (`sql`): refine it with `peeky sql`, e.g. `SELECT * FROM (<sql>) WHERE "v" = '7'`. Up to 94 selectors fit (100 columns at most); a wider run is refused.
 
 ### 3.5 Joining Two Runs by a Value
 

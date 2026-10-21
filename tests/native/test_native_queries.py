@@ -59,6 +59,7 @@ def test_wide_and_join_read_probes_of_a_c_program(bins, capsys):
         "bins[3].hi",
         "no_value",
         "caveats",
+        "sets",
     ]
     rows = [(row["hit"], row["v"], row["total"], row["bins[3].hi"]) for row in wide["rows"]]
     assert rows == [(1, "7", "0", "4"), (2, "2", "28", "4"), (3, "5", "34", "4")]

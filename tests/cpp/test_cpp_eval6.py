@@ -238,3 +238,26 @@ def test_a_blocks_locals_are_not_listed_on_lines_outside_it(cpp, capsys):
     text = capsys.readouterr().out
     assert "lines 22-35" not in text and "lines 17-35" not in text, text
     assert ", lines 22-2" in text, text
+
+
+@pytest.mark.timeout(240)
+def test_a_value_shortened_at_one_line_is_restored_at_the_next_in_one_probe(cpp, capsys):
+    # #137 (sixth evaluation, `stock`): the agent shortened `colon` at line 22 for the
+    # names with a trailing space and restored it at line 23, so `std::stol` still read
+    # the quantity: 14 session calls, as one `--set colon=` crashed at line 23.
+    source = cpp("stock.cpp", STOCK)
+    name = line_of(STOCK, "std::string name = trim_left")
+    qty = line_of(STOCK, "long qty = ")
+    sets = []
+    for hit, short, whole in ((3, 6, 7), (4, 4, 5)):
+        sets += ["--set-at", f"stock.cpp:{name}@{hit}", f"colon={short}"]
+        sets += ["--set-at", f"stock.cpp:{qty}@{hit}", f"colon={whole}"]
+    argv = ["probe", str(source), "--at", str(name), "--capture", "colon", "--hits", "all"]
+    code = main([*argv, *sets, "--json", "--quiet", "--", "apple:3, pear:2, apple :4,pear :1"])
+    result = json.loads(capsys.readouterr().out)
+    assert code == 0, result.get("error")
+    assert "STOCK:apple=7,pear=3" in result["output"], result["output"]
+    assert [
+        (change["before"], change["after"], change["line"], change["hit"])
+        for change in result["interventions"]
+    ] == [("7", "6", name, 3), ("6", "7", qty, 3), ("5", "4", name, 4), ("4", "5", qty, 4)]
