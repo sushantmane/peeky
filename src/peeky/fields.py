@@ -175,9 +175,11 @@ def type_graph(dies, offsets, libraries, limit=MAX_TYPES):
             encoding = (attrs.get("DW_AT_encoding") or "").strip()
             graph[offset] = ("base", name, encoding, size)
         elif tag in ("DW_TAG_pointer_type", "DW_TAG_ptr_to_member_type"):
-            graph[offset] = ("pointer", name)
+            # What it points at, never walked here: previews read one level (#136).
+            aimed = target if tag == "DW_TAG_pointer_type" else None
+            graph[offset] = ("pointer", name, aimed)
         elif tag in ("DW_TAG_reference_type", "DW_TAG_rvalue_reference_type"):
-            graph[offset] = ("reference", name)
+            graph[offset] = ("reference", name, target)
         elif tag == "DW_TAG_enumeration_type":
             graph[offset] = ("enum", name, size)
         elif tag == "DW_TAG_array_type":
@@ -197,7 +199,7 @@ def type_graph(dies, offsets, libraries, limit=MAX_TYPES):
             graph[offset] = ("array", name, target, tuple(counts) if known else None, variable)
             pending.append(target)
         elif tag in _RECORDS:
-            members, holds, variant = [], [], False
+            members, holds, variant, bases = [], [], False, []
             for child in die["children"]:
                 member = dies[child]
                 if member["tag"] == "DW_TAG_variant_part":
@@ -205,6 +207,7 @@ def type_graph(dies, offsets, libraries, limit=MAX_TYPES):
                     continue
                 if member["tag"] == "DW_TAG_inheritance":
                     holds.append(_target(member["attrs"].get("DW_AT_type")))
+                    bases.append(holds[-1])
                     continue
                 if member["tag"] != "DW_TAG_member":
                     continue
@@ -220,6 +223,8 @@ def type_graph(dies, offsets, libraries, limit=MAX_TYPES):
                         _number(own.get("DW_AT_data_member_location")),
                         "DW_AT_bit_size" in own or "DW_AT_bit_offset" in own,
                         _number(own.get("DW_AT_alignment")),
+                        # A bitfield's width, for its preview (#136).
+                        _number(own.get("DW_AT_bit_size")),
                     )
                 )
             graph[offset] = (
@@ -233,6 +238,8 @@ def type_graph(dies, offsets, libraries, limit=MAX_TYPES):
                 variant,
                 "DW_AT_declaration" in attrs,
                 _library(dies, offset, libraries),
+                # Its base classes, in order (#136).
+                tuple(bases),
             )
             pending.extend(kind for kind in holds if kind is not None)
         else:
@@ -271,7 +278,7 @@ def _packed(graph, node):
     `#[repr(packed)]`), or its layout cannot be checked."""
     own = node[4]
     needed = []
-    for _, kind, offset, bitfield, alignment in node[5]:
+    for _, kind, offset, bitfield, alignment, *_ in node[5]:
         if bitfield:
             continue
         natural = _alignment(graph, kind)
@@ -337,7 +344,7 @@ def settable_member(graph, root, name, steps):
                     "continue --to` the call's line reaches only the next call"
                 )
             if node[0] == "record":
-                _, record, kind, _, _, members, _, variant, incomplete, library = node
+                _, record, kind, _, _, members, _, variant, incomplete, library = node[:10]
                 shown = record or f"an unnamed {kind}"
                 if library:
                     raise Unsettable(
@@ -368,7 +375,7 @@ def settable_member(graph, root, name, steps):
                         f"type of `{path}` (base classes and anonymous members are not "
                         "walked)"
                     )
-                _, offset, _, bitfield, _ = found[0]
+                _, offset, _, bitfield, _ = found[0][:5]
                 path = f"{path}.{step}"
                 if bitfield:
                     raise Unsettable(

@@ -248,3 +248,48 @@ def test_set_at_lines_map_through_a_candidate_and_run_on_a_remote_worker(
         server.shutdown()
         server.server_close()
         thread.join(timeout=3)
+
+
+POINT = """#include <stdio.h>
+struct pt { int x; int y; };
+int main(void) {
+  struct pt p = {0, 0};
+  int sum = 0;
+  for (int i = 0; i < 3; i++) {
+    p.x = i;
+    sum += p.x + p.y; // SUM
+    p.y += 1; // STEP
+  }
+  printf("SUM:%d\\n", sum);
+  return 0;
+}
+"""
+
+
+@pytest.mark.timeout(240)
+def test_struct_previews_read_at_captures_and_after_set_with_set_at(linked, capsys):
+    # #136's previews in a --set-at probe: captured rows and after-set rows show the
+    # struct's fields; the stop at STEP, which captures nothing, reads none.
+    (linked / "linked.c").write_text(POINT)
+    at = {
+        marker: next(i for i, text in enumerate(POINT.splitlines(), 1) if marker in text)
+        for marker in ("SUM", "STEP")
+    }
+    argv = ["probe", str(linked), "--at", f"linked.c:{at['SUM']}", "--capture", "p,p.y"]
+    sets = ["--set-at", f"{at['SUM']}@2", "p.y=10", "--set-at", f"{at['STEP']}@2", "p.y=1"]
+    assert main([*argv, "--hits", "all", *sets, "--json", "--quiet"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert "SUM:15" in result["output"], result["output"]
+    shown = [
+        (row["hit"], row["phase"], row["value"]) for row in result["rows"] if row["selector"] == "p"
+    ]
+    assert shown == [
+        (1, "observed", "{x = 0, y = 0}"),
+        (2, "observed", "{x = 1, y = 1}"),
+        (2, "after-set", "{x = 1, y = 10}"),
+        (3, "observed", "{x = 2, y = 2}"),
+    ], shown
+    assert [(c["line"], c["hit"], c["after"]) for c in result["interventions"]] == [
+        (at["SUM"], 2, "10"),
+        (at["STEP"], 2, "1"),
+    ]

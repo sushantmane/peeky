@@ -1219,7 +1219,7 @@ class Lines(FakeWorker):
     def __init__(self, stops=3, moved=None):
         super().__init__()
         self.order = [line for _ in range(stops) for line in (8, 9)]
-        self.moved, self.placed = moved, []
+        self.moved, self.placed, self.previews = moved, [], []
 
     def dispatch(self, operation, args):
         if operation == "launch":
@@ -1249,7 +1249,14 @@ class Lines(FakeWorker):
             if not self.order:
                 return {"state": "terminated"}
             self.line = self.order.pop(0)
-            return {"state": "stopped", "stop_id": "t", "event": {"body": {"reason": "breakpoint"}}}
+            return {
+                "state": "stopped",
+                "stop_id": "t",
+                "event": {"body": {"reason": "breakpoint"}},
+                "location": f"main.py:{self.line}",
+            }
+        if operation == "inspect":
+            self.previews.append((self.line, args.get("previews")))
         if operation == "set_variable":
             self.calls.append(operation)
             return {"name": args["name"], "before": "1", "after": args["value"]}
@@ -1278,6 +1285,9 @@ def test_set_at_applies_each_change_at_its_own_stop_and_reports_the_rest(monkeyp
     assert any("9@4 x=7 was not applied: line 9 stopped 3 time(s)" in w for w in result["warnings"])
     # The other five stops only counted or changed.
     assert len(result["pauses_ms"]) == 1 and len(result["set_pauses_ms"]) == 5
+    # Previews (#136) only where values are captured: line 8's first stop.
+    assert [previews for line, previews in worker.previews if previews] == [["x"]]
+    assert worker.previews[0] == (8, ["x"])
     assert not any("Interventions are applied once" in w for w in result["warnings"])
 
 

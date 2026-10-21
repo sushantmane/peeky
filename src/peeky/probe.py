@@ -633,6 +633,7 @@ def _with_globals(worker, stop, snapshot, name):
         "names": sorted({name, *(snapshot.get("names") or ())})[:32],
         "globals": asked[:32],
     }
+    request["previews"] = request["names"]
     if snapshot.get("frame"):
         request["frame"] = snapshot["frame"]
     fresh = worker.dispatch("inspect", request)
@@ -1290,6 +1291,30 @@ _BUDGET = re.compile(
 )
 
 
+def _previewed(worker, stop, variable):
+    """A field's or element's value with its preview (#136): a selector walks to it
+    without previewing the listings on its way. A worker that cannot preview (one that
+    predates it), or a value it has none for, keeps the debugger's text."""
+    handle = variable.get("variablesReference")
+    if variable.get("unavailable") or type(handle) is not int or handle <= 0:
+        return variable
+    # What a pointer points at (`p[0]`, #102), which lldb-dap lists as the pointer's
+    # children: the selector asked for it, so it is read as the pointer's target. Only
+    # a value `_dereferenced` made: lldb-dap's own `*pp` child is a value of its own (a
+    # pointer, where `pp` is a pointer to one), and never a pointee's preview.
+    pointee = {"pointee": True} if variable.get("dereferenced") is True else {}
+    from peeky.errors import PeekyError
+
+    try:
+        shown = worker.dispatch("preview", {**stop, "handle": handle, **pointee})
+    except (ValueError, PeekyError) as exc:
+        if getattr(exc, "session_closed", False):
+            raise
+        # The value is read; only its preview is not (an older worker, a spent budget).
+        return variable
+    return {**variable, "value": shown["value"]} if shown.get("value") else variable
+
+
 def _capture(
     worker,
     stop,
@@ -1312,8 +1337,10 @@ def _capture(
     reads (0, the innermost, by default).
     """
 
-    # Asked for by name, a local or global past the listing bound is read too.
-    named = {"names": roots} if (roots := _roots(selectors)) else {}
+    # Asked for by name, a local or global past the listing bound is read too; only
+    # those roots are previewed (#136).
+    roots = _roots(selectors)
+    named = {**({"names": roots} if roots else {}), "previews": roots}
 
     def inspect():
         if not frame:
@@ -1355,6 +1382,8 @@ def _capture(
                 # Inside a local withheld here (no value yet): `--set` refuses it too.
                 row["settable"] = False
         else:
+            if len(parse_selector(selector)) > 1:
+                variable = _previewed(worker, stop, variable)
             if variable.get("unavailable"):
                 # A placeholder such as "<error: variable not available>" is not a value.
                 reason = variable.get("reason", "unavailable")
@@ -1529,7 +1558,7 @@ def apply_set(worker, stop, name, value):
     frame holds itself, #105)."""
     worker = _Coded(worker)
     segments = parse_selector(name)
-    snapshot = worker.dispatch("inspect", {**stop, "names": [segments[0]]})
+    snapshot = worker.dispatch("inspect", {**stop, "names": [segments[0]], "previews": False})
     if len(segments) == 1:
         # As LLDB names it (`s @ main.rs:81` however written).
         name = segments[0]
@@ -1538,7 +1567,7 @@ def apply_set(worker, stop, name, value):
         found, scope = _scope_lookup(worker, stop, snapshot, own, name)
         if found is not None and found not in scope["variables"]:
             # Reading the group revoked the scope's authority to change: inspect again.
-            fresh = worker.dispatch("inspect", {**stop, "names": [segments[0]]})
+            fresh = worker.dispatch("inspect", {**stop, "names": [segments[0]], "previews": False})
             scope = next((s for s in fresh["scopes"] if s["name"] == scope["name"]), None)
         if scope is None:
             raise Refused(
@@ -1725,6 +1754,8 @@ def _dereferenced(variable, pointee, root=False):
         "value": summary or f"{pointee or '*' + variable['name']} @ {address[0]}",
         "type": pointee or None,
         "variablesReference": variable["variablesReference"],
+        # Its handle is the pointer's: a preview reads what that points at (#136).
+        "dereferenced": True,
     }
     if variable.get("pointee_aliased_type"):
         shown["aliased_type"] = variable["pointee_aliased_type"]
@@ -2455,7 +2486,10 @@ def _list_children(worker, stop, selector, backing, size):
 def _children(worker, stop, selector, variable, pointers=False, whole_strings=False):
     """One page (64) of a value's children, for a person or agent deciding what to read.
     ``whole_strings``: LLDB's summary of a std::string shows all of it (libc++)."""
-    page = worker.dispatch("expand", {**stop, "handle": variable["variablesReference"], "start": 0})
+    page = worker.dispatch(
+        "expand",
+        {**stop, "handle": variable["variablesReference"], "start": 0, "previews": True},
+    )
     if listed := java_list(variable, page["variables"]):
         try:
             return _list_children(worker, stop, selector, *listed)
@@ -2715,7 +2749,18 @@ def run_probe(root, probe, *, adapter=None, progress=None):
             # was just removed may still be served (LLDB stops all threads together).
             expected = {number: _expected_line(placed[number], state, number) for number in lines}
             roots = _roots([*probe.capture, *(p["name"] for p in points if p["change"] is None)])
-            snapshot = worker.dispatch("inspect", {**stop, **({"names": roots} if roots else {})})
+            # Previews (#136) of the captured roots only: each costs debugger requests. A
+            # stop the wait places at another line (a --set-at's) reads none.
+            where = str(state.get("location") or "").rpartition(":")[2]
+            capturing = hits < probe.limit and (not where.isdigit() or int(where) == expected[line])
+            snapshot = worker.dispatch(
+                "inspect",
+                {
+                    **stop,
+                    **({"names": roots} if roots else {}),
+                    "previews": _roots(probe.capture) if capturing else False,
+                },
+            )
             frame = snapshot["frames"][0] if snapshot["frames"] else {}
             reason = state.get("event", {}).get("body", {}).get("reason")
             path = str(frame.get("source", {}).get("path", "")).replace("\\", "/")

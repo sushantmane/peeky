@@ -843,6 +843,7 @@ The commands are the same for every language; only the target changes.
 **Quick start (C and C++).** What can be read, what can be set, and where:
 
 - **Read** any local, parameter or global by selector: fields and elements (`s.end`, `bins[3].hi`, `grid[1][0]`), through pointers too (`ps.start`), C++ members through `this` (`this.head_`), a `std::string` whole, a `std::vector` by index and a `std::map` by key (`m[1]`, `ages["al"]`).
+- **Structs and arrays** show their members: `bins` reads `[{lo = 0, hi = 2, count = 0}, …]`, `bins[3]` `{lo = 6, hi = 7, count = 0}`, in probes, `inspect` and `session get`. Unions and what pointers point at are never read into a preview.
 - **Withheld, never guessed:** a local whose storage may still hold leftovers (declared below the stop, an initializer still running, a jump past its declaration) shows `no value yet` and why; one Peeky shows but cannot vouch for (a `do` body's first line, below a `setjmp` call) carries a `note`, and so does every field and element read through it (``read through `q`: …``, in captures, in `session get` children, marked `[note]`, and in the evidence), which `--set` refuses where it refuses the local.
 - **Set** integer locals, and integer fields and elements of a struct, class or array local the frame holds itself: `--set s.end=10`, `--set 'bins[3].hi=8'` (16 to 64 bits, in range).
 - **Never** through a pointer or a reference (`ps.end`, `this.count`), nor in a union, a packed struct, a bitfield, a const or a `std::` type; strings and floats cannot be set.
@@ -851,6 +852,20 @@ The commands are the same for every language; only the target changes.
 - **Later hits:** `--set-hit N` applies a probe's changes at hit N; in a session, change values at as many stops as you like.
 
 The rest of this section shows them at work, then the detail behind them.
+
+**Structs and arrays of structs.** A struct, class or fixed-size array shows its first members, read from the debugger's own children (#136). In the sixth evaluation's `histo` case ([report](evaluations/2026-10-20-agent-sixth-round.md); `struct bin bins[4]`, each `{lo, hi, count}`), one capture reads every bin:
+
+```sh
+peeky probe histo.c --at histo.c:28 --arg 0 --arg 7 --arg 7 --capture 'bins,bins[3]'
+```
+
+```
+hit  phase     line  function  selector  type    value
+1    observed  28    main      bins      bin[4]  [{lo = 0, hi = 2, count = 0}, {lo = 2, hi = 4, count = 0}, {lo = 4, hi = 6, count = 0}, {lo = 6, hi = 7, count = 0}]
+1    observed  28    main      bins[3]   bin     {lo = 6, hi = 7, count = 0}
+```
+
+`session get bins` shows each element so, and its selector (`bins[3]: bin = {lo = 6, hi = 7, count = 0} (children: peeky session get 'bins[3]')`); fields are still read and set by name (`bins[3].hi`, `--set 'bins[3].hi=8'`). A preview shows 8 members or elements, then `…`, two levels deep (`{…}` below), at most 40 characters of one member. A union is not previewed (`<union>` inside another value: only one of its members holds what was stored); a pointer inside shows its address, never what it points at; a member with no value shows `<no value>`; a C++ base class shows as a member named by its class (`{Base = {b = 1}, d = 2}`); a `std::` container keeps its summary (`v = size=2`). Types come from the build's debug information, and where it cannot vouch for one there is no preview, only the debugger's `T @ 0x…`: a local withheld at the stop, a variable-length array, an incomplete type (`op[0]` on `struct opaque *`), a value inside a `std::` container, and every value of an optimized build. A wide character array shows element by element (`[L'a', L'\0', L'b', L'\0']`, where LLDB's text stops at the first NUL), and a char-typed bitfield as its number (`sc = -3`, not LLDB's `'\x05'`). Details: NATIVE.md, CPP.md.
 
 ```sh
 peeky probe examples/c/pagination_bug.c --at 25 --capture 'start,page,items[1]' --set start=0

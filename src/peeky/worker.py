@@ -20,6 +20,10 @@ from peeky.dap import DAP, RequestFailed, ResponseTimeout
 from peeky.errors import _RULES, PROTOCOL_VERSION, classify
 
 VIEW_SECONDS = 10
+# C and C++ previews (#136): their own budget per inspection or expansion, so that
+# they never take the one value views and string checks use (#128).
+PREVIEW_FETCHES = 256
+PREVIEW_SECONDS = 3
 MAX_HISTORY_BYTES = 4_000_000
 MAX_HISTORY_ENTRY_BYTES = 256_000
 
@@ -30,6 +34,7 @@ OPERATIONS = frozenset(
         "wait",
         "inspect",
         "expand",
+        "preview",
         "set_variable",
         "breakpoints",
         "continue",
@@ -156,6 +161,9 @@ class DebugWorker:
         self.marks = {}
         self.inspection_nodes = 0
         self.view_fetches = 0
+        self.preview_fetches = 0
+        self.preview_deadline = 0.0
+        self.previewing = False
         self.view_items = 0
         self.view_bytes = 0
         self.view_deadline = 0.0
@@ -975,6 +983,7 @@ class DebugWorker:
             "wait",
             "inspect",
             "expand",
+            "preview",
             "set_variable",
             "breakpoints",
             "continue",
@@ -1050,6 +1059,15 @@ class DebugWorker:
                 raise ValueError("globals must be true, false or a list of at most 32 names")
         if operation == "inspect" and "names" in args and not _name_list(args["names"]):
             raise ValueError("names must be a list of at most 32 names")
+        if operation == "inspect" and type(args.get("previews", True)) is not bool:
+            if not _name_list(args["previews"]):
+                raise ValueError("previews must be true, false or a list of at most 32 names")
+        if operation == "expand" and type(args.get("previews", False)) is not bool:
+            raise ValueError("previews must be true or false")
+        if operation == "preview" and (type(args.get("handle")) is not int or args["handle"] < 1):
+            raise ValueError("Invalid preview handle")
+        if operation == "preview" and type(args.get("pointee", False)) is not bool:
+            raise ValueError("pointee must be true or false")
         if operation == "expand":
             for key, default, low, high in (
                 ("handle", None, 1, None),
@@ -1077,6 +1095,7 @@ class DebugWorker:
             "wait",
             "inspect",
             "expand",
+            "preview",
             "set_variable",
             "breakpoints",
             "continue",
@@ -1389,6 +1408,10 @@ class DebugWorker:
             self.view_fetches = self.view_items = self.view_bytes = 0
             self.view_deadline = time.monotonic() + VIEW_SECONDS
             self.view_timed_out = False
+            self.reset_previews()
+            # C and C++ previews (#136): of every root, none, or the roots named.
+            wanted = args.get("previews", True)
+            self.previewing = wanted if type(wanted) is bool else frozenset(wanted)
             validate_children = getattr(runtime, "validate_children", None)
             # A timed-out view read may still be processed by the adapter; until its
             # reply drains, this inspection is read-only.
@@ -1510,7 +1533,7 @@ class DebugWorker:
                 pending.append((handle, scope, exposed, len(variables)))
             references = [scope["variablesReference"] for _, scope, _, _ in pending]
             writable = quiescent and not self.view_timed_out
-            if self.view_fetches and writable:
+            if (self.view_fetches or self.preview_fetches) and writable:
                 # Value views issued nested reads that may change adapter scope context.
                 # Bind mutation authority only to freshly re-acquired, identical scopes.
                 references = self.reacquire_scopes(runtime, selected_frame, pending)
@@ -1605,6 +1628,8 @@ class DebugWorker:
             return snapshot
         if operation == "expand":
             return self.expand(args, runtime)
+        if operation == "preview":
+            return self.preview(args, runtime)
         if operation == "set_variable":
             self.stopped(args)
             if "handle" in args:
@@ -1927,6 +1952,37 @@ class DebugWorker:
             raise ViewBudgetExhausted("Value view budget exhausted")
         return values
 
+    def reset_previews(self):
+        self.preview_fetches = 0
+        self.preview_deadline = time.monotonic() + PREVIEW_SECONDS
+
+    def preview_fetch(self, reference, count):
+        """The first ``count`` children of a raw debugger value, for a runtime's preview
+        (#136). Bounded per inspection or expansion (PREVIEW_FETCHES requests within
+        PREVIEW_SECONDS), apart from the value-view budget; exhaustion leaves the
+        remaining values as the debugger shows them."""
+        remaining = self.preview_deadline - time.monotonic()
+        if self.preview_fetches >= PREVIEW_FETCHES or remaining <= 0:
+            raise ViewBudgetExhausted("Preview budget exhausted")
+        self.preview_fetches += 1
+        if type(reference) is not int or reference <= 0:
+            raise ValueError("Variable is not expandable")
+        if type(count) is not int or not 0 < count <= 64:
+            raise ValueError("Preview read exceeds limit")
+        try:
+            values = self.dap.request(
+                "variables",
+                {"variablesReference": reference, "start": 0, "count": count},
+                timeout=remaining,
+            ).get("variables", [])
+        except ResponseTimeout as exc:
+            # As for a view: until its reply drains, nothing is changed.
+            self.view_timed_out = True
+            raise ViewBudgetExhausted("Preview budget exhausted") from exc
+        if not isinstance(values, list) or len(values) > count:
+            raise ValueError("Preview child collection exceeds limit")
+        return [value for value in values if isinstance(value, dict)]
+
     def view_read(self, reference, count):
         """Bounded memory reads used only by a runtime's trusted value-view hook; shares
         the inspection's view budgets with view_fetch."""
@@ -1978,6 +2034,8 @@ class DebugWorker:
         aggregate_taint = getattr(self.runtime, "aggregate_taint", None)
         display_value = getattr(self.runtime, "display_value", None)
         string_value = getattr(self.runtime, "string_value", None)
+        preview = getattr(self.runtime, "preview_value", None)
+        member_value = getattr(self.runtime, "member_value", None)
         identify = getattr(self.runtime, "object_identity", None)
         groups = getattr(self.runtime, "variable_groups", frozenset())
         for variable in variables:
@@ -2198,6 +2256,43 @@ class DebugWorker:
                 output["value"] = None
             elif isinstance(note, str):
                 output["note"] = note[:500]
+            if (
+                ancestry
+                and member_value
+                and not output.get("unavailable")
+                and (fixed := member_value(variable, frame, [s for s, _ in ancestry] + [name]))
+            ):
+                # A field LLDB reads wrongly (a char-typed bitfield, #136): its number,
+                # or no value with the reason (a wide character bitfield).
+                if fixed.get("unavailable"):
+                    # Peeky's own reason, not the debugger's.
+                    output.update(value=None, unavailable=True, reason=fixed["reason"][:300])
+                    output.update(withheld=True, withheld_as="not shown", settable=False)
+                else:
+                    output["value"] = fixed["value"]
+            wanted = self.previewing
+            if (
+                preview
+                and (
+                    wanted is True
+                    or (not ancestry and isinstance(wanted, frozenset) and name in wanted)
+                )
+                and not output.get("unavailable")
+                and not output.get("text")
+                and type(raw) is int
+                and raw > 0
+            ):
+                # A C or C++ struct or array, shown by its members (#136); its fields
+                # stay selectable through the same handle.
+                reads = self.view_read if self.capabilities.get("supports_read_memory") else None
+                steps = [step for step, _ in ancestry] + [name]
+                try:
+                    shown = preview(variable, self.preview_fetch, reads, frame=frame, steps=steps)
+                except ValueError:
+                    # The budget is spent: the value stays as the debugger shows it.
+                    shown = None
+                if shown is not None:
+                    output["value"] = str(shown)[:2000]
             if kind is not None:
                 output["type"] = kind
             resolve = getattr(self.runtime, "typedef_kind", None)
@@ -2358,6 +2453,10 @@ class DebugWorker:
         # Each expansion is its own bounded request with a fresh value-view budget.
         self.view_fetches = self.view_items = self.view_bytes = 0
         self.view_deadline = time.monotonic() + VIEW_SECONDS
+        self.reset_previews()
+        # Previews of the page's values only where asked: a listing shows them, a
+        # selector walking to a field needs none (its value is previewed alone).
+        self.previewing = args.get("previews", False) is True
         result = self.expose_variables(
             variables[start : start + count],
             frame,
@@ -2374,6 +2473,50 @@ class DebugWorker:
             "truncated": start + len(result) < len(variables),
             "remaining_nodes": 512 - self.inspection_nodes,
         }
+
+    def preview(self, args, runtime):
+        """The preview of the value an expansion handle names (#136), as `inspect` would
+        show it: {"value": text}, or {} where it has none. A selector that walks to a
+        field or element reads it alone, so the listings it walks through need none."""
+        self.stopped(args)
+        # As for an expansion: the reads can change an adapter's implicit scope context.
+        self.references.clear()
+        self.reference_frames.clear()
+        self.reference_adapter.clear()
+        record = self.children.get(args["handle"])
+        if record is None:
+            raise ValueError("Unknown or stale expansion handle; inspect again")
+        hook = getattr(runtime, "preview_value", None)
+        if hook is None or record[0] == "view":
+            return {}
+        trail = []
+        frame, _, ancestry, _, _ = self.walk(record, runtime, trail)
+        if not trail:
+            return {}
+        variable = trail[-1]
+        steps = [step for step, _ in ancestry]
+        self.reset_previews()
+        # Its strings' memory reads (#128) count as an expansion's.
+        self.view_fetches = self.view_items = self.view_bytes = 0
+        self.view_deadline = time.monotonic() + VIEW_SECONDS
+        reads = self.view_read if self.capabilities.get("supports_read_memory") else None
+        if self.placeholders() and is_unavailable(variable.get("value")):
+            return {}
+        try:
+            # With `pointee`, what a pointer points at (`p[0]`), as a selector asked:
+            # lldb-dap lists it as the pointer's own children.
+            shown = hook(
+                variable,
+                self.preview_fetch,
+                reads,
+                pointee=args.get("pointee") is True,
+                frame=frame,
+                steps=steps,
+            )
+        except ValueError:
+            shown = None
+        runtime.assert_current()
+        return {"value": str(shown)[:2000]} if shown is not None else {}
 
     def unsettable_here(self, runtime, frame, roots, scopes):
         """Why nothing is settable at this stop, where a rule says so (sixth evaluation,
