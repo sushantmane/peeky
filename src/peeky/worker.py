@@ -1740,6 +1740,14 @@ class DebugWorker:
                 validate_variable(variable, args["value"])
             if validate_target := getattr(runtime, "validate_mutation_target", None):
                 validate_target(variable, self.reference_frames.get(ref))
+            unread_note = None
+            if read_after := getattr(runtime, "read_after", None):
+                # Java (#164): a local the code never reads again is never changed.
+                verdict = read_after(variable, self.reference_frames.get(ref), self.stop_reason)
+                if verdict is False:
+                    raise ValueError(_UNREAD.format(name=repr(args["name"])))
+                if verdict is None:
+                    unread_note = _UNREAD_UNKNOWN
             if text is not None and (check := getattr(runtime, "validate_text_target", None)):
                 check(variable, self.reference_frames.get(ref), self.stop_reason)
             if validate_debugger := getattr(runtime, "validate_debugger", None):
@@ -1776,7 +1784,12 @@ class DebugWorker:
             after = normalize_value(changed) if normalize_value else changed.get("value")
             if confirm := getattr(runtime, "confirm_mutation", None):
                 confirm(args["name"], args["value"], before, after)
-            return {"name": args["name"], "before": before, "after": after}
+            return {
+                "name": args["name"],
+                "before": before,
+                "after": after,
+                **({"note": unread_note} if unread_note else {}),
+            }
         if operation == "breakpoints":
             runtime.validate_breakpoints(args["breakpoints"])
             self.breakpoint_counts[str(self.path(args["program"]))] = len(args["breakpoints"])
@@ -2247,6 +2260,13 @@ class DebugWorker:
                 elif settable and mid and (why := mid(variable, frame, self.stop_reason)):
                     settable = False
                     self.unsettable_reasons.append((name, why))
+                elif (
+                    settable
+                    and (read_after := getattr(self.runtime, "read_after", None))
+                    and read_after(variable, frame, self.stop_reason) is False
+                ):
+                    settable = False
+                    self.unsettable_reasons.append((name, _UNREAD_WHY))
             elif ancestry and member_rule is not None:
                 # A field or element `set` would change (#105), judged as `set` judges it
                 # (sixth evaluation, finding 7); never one reached through a pointer.
@@ -3266,6 +3286,18 @@ class DebugWorker:
 _CALLER_SET = (
     "{name} is in a caller's frame, whose values cannot be changed: only the stopped "
     "(innermost) frame's can, which `session set` and probes change"
+)
+# Java (#164): a local no path from the stop reads again; or where that is not known.
+_UNREAD_WHY = (
+    "the program does not read it after this stop (a lambda or inner class that captured "
+    "it before keeps its own copy; javac compiles a constant local into its uses)"
+)
+_UNREAD = (
+    "{name} cannot be changed at this stop: " + _UNREAD_WHY + ", so a change would never be seen"
+)
+_UNREAD_UNKNOWN = (
+    "Peeky could not tell whether the program reads it after this stop; a lambda or inner "
+    "class that captured it before keeps its own copy, which the change does not reach"
 )
 # A std::string's text changes in place (#164): a view the program took before the
 # change keeps the old size.

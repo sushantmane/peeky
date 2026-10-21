@@ -144,6 +144,46 @@ _PRIMITIVE_WORDS = frozenset(
     "dyn".split()
 )
 _STD_PATHS = ("std::", "core::", "alloc::")
+# Standard-library types that hold no pointer but what their type arguments hold
+# (#164): with such arguments only, a value of them holds no borrow.
+_FREE_PATHS = frozenset(
+    f"{crate}::{path}"
+    for crate, paths in (
+        (
+            "std",
+            "string::String vec::Vec boxed::Box option::Option result::Result "
+            "collections::VecDeque collections::HashMap collections::HashSet "
+            "collections::BTreeMap collections::BTreeSet collections::hash::map::HashMap "
+            "collections::hash::set::HashSet hash::RandomState collections::hash_map::RandomState "
+            "rc::Rc sync::Arc cell::Cell cell::RefCell alloc::Global",
+        ),
+        (
+            "alloc",
+            "string::String vec::Vec boxed::Box collections::VecDeque "
+            "collections::BTreeMap collections::BTreeSet rc::Rc sync::Arc alloc::Global",
+        ),
+        ("core", "option::Option result::Result cell::Cell cell::RefCell"),
+    )
+    for path in paths.split()
+)
+
+
+def _pointer_free(kind, generics):
+    """Whether a value of ``kind`` (a type as the MIR prints it) provably holds no
+    pointer, so no borrow (#164): primitives, `String`, and arrays, tuples and the
+    standard containers of these. Not a reference, a raw pointer, a lifetime, a trait
+    object (`dyn Fn()`: the MIR prints no lifetime for it), an opaque `impl` type, a
+    closure or coroutine, a type parameter of ``generics`` (any, where they are not
+    known), an ADT of the program's own, or a type not known."""
+    if kind is None or generics is None or mentions(kind, generics):
+        return False
+    if re.search(r"[&*'{}]|\b(?:dyn|impl|fn|for)\b", kind):
+        return False
+    return all(
+        word in _PRIMITIVE_WORDS or word in _FREE_PATHS for word in _TYPE_WORDS.findall(kind)
+    )
+
+
 _NOT_A_CALL = re.compile(
     r"(?:drop|assert|switchInt|goto|falseEdge|falseUnwind|yield|return|resume|unreachable)\b"
 )
@@ -239,9 +279,10 @@ class Body:
     _assign_cache: dict | None = None
     _line_blocks: dict | None = None
     _copies: dict | None = None
-    _live: tuple | None = None
+    _live: dict | None = None
     _copy_reads: tuple | None = None
     _lent_from: dict | None = None
+    _maybe: dict | None = None
 
     @property
     def name(self):
@@ -781,31 +822,37 @@ class Body:
                 pending.extend((successor, 0) for successor in (*block.successors, *resumed))
         return False
 
-    def live_ahead(self, start):
+    def live_ahead(self, start, drops=False):
         """A bitset of the locals ``used_ahead`` finds used on some path from ``start``,
         all at once (#105 judges every copy of a local at every place of a line): each
         statement is read once, and which locals each block's successors use is a
-        backward dataflow over the body; a place replays its block from there."""
+        backward dataflow over the body; a place replays its block from there. With
+        ``drops``, dropping a local uses it too (#164: a `Drop` may read a borrow)."""
         number, index = start
         if number not in self.blocks:
             return 0
-        out, effects = self._liveness()
+        out, effects = self._liveness(drops)
         state = out[number]
         for uses, ends in reversed(effects[number][index:]):
             state = uses | state & ~ends
         return state
 
-    def _liveness(self):
+    def _liveness(self, drops=False):
         """({block: the locals some path from its end uses ahead}, {block: [(the locals
-        each statement uses, those it ends)]}) for ``live_ahead``, per ``_event``."""
+        each statement uses, those it ends)]}) for ``live_ahead``, per ``_event``;
+        with ``drops``, a `drop` of a local is a use of it."""
         if self._live is None:
+            self._live = {}
+        if drops not in self._live:
             effects = {}
             for number, block in self.blocks.items():
                 found = []
                 for text, _, _ in block.statements:
                     uses = ends = 0
-                    for local in {int(n) for n in _ANY_LOCAL.findall(_STRING.sub('""', text))}:
-                        event = _event(text, local)
+                    plain = _STRING.sub('""', text)
+                    dropped = _DROP.match(plain) if drops else None
+                    for local in {int(n) for n in _ANY_LOCAL.findall(plain)}:
+                        event = "use" if dropped else _event(text, local)
                         if event == "use":
                             uses |= 1 << local
                         elif event == "end":
@@ -843,8 +890,8 @@ class Body:
                         if other not in queued:
                             queued.add(other)
                             work.append(other)
-            self._live = (out, effects)
-        return self._live
+            self._live[drops] = (out, effects)
+        return self._live[drops]
 
     def copies_of(self, local, formatting=True):
         """The temporaries (locals no variable names, other than the return place) that
@@ -929,13 +976,7 @@ class Body:
             return self.types.get(number)
 
         def pointing(number):
-            found = kind(number)
-            return (
-                found is None
-                or bool(_BORROWING.search(found))
-                or generics is None
-                or mentions(found, generics)
-            )
+            return not _pointer_free(kind(number), generics)
 
         def hidden_cell(number):
             # What a shared reference may still change: a `Cell`, a lock, a type of the
@@ -967,7 +1008,11 @@ class Body:
                     found.add(target)
                 found |= referents(target, shared, seen)
             for source in sources.get(number, ()):
+                # A pointer copied out of a local (`_40 = copy (_6.0: Unique<…>) as *const
+                # …`, as `vec![…]` fills its Box) points into what that local owns.
                 if pointing(source):
+                    if source != local and (not shared or hidden_cell(source)):
+                        found.add(source)
                     found |= referents(source, shared, seen)
             return found
 
@@ -1602,6 +1647,53 @@ class Body:
                         queued.add(target)
                         work.append(target)
         self._entry = entry
+        return entry
+
+    def maybe_initialized(self, position):
+        """A bitset of the locals that may hold a value at ``position`` ((block, index):
+        before that statement), on some path from bb0: assigned and not moved, dropped
+        or ended since (#164: a `drop` of a local moved out on every path drops
+        nothing). Every local where the analysis gives up."""
+        if self._maybe is None:
+            self._maybe = self._maybe_flow() or {}
+        number, index = position
+        state = self._maybe.get(number)
+        if state is None or number not in self.blocks:
+            return -1
+        for text, _, _ in self.blocks[number].statements[:index]:
+            state = self._transfer(text, state)
+        return state
+
+    def _maybe_flow(self):
+        """{block: maybe-initialized bitset on entry}: ``_dataflow``'s transfer, merged
+        by union up from nothing (its least fixpoint); None past the budget."""
+        entry = {number: 0 for number in self.blocks}
+        entry[0] = _mask(self.arguments)
+        work, queued, steps = [0], {0}, 0
+        limit = max(MAX_ITERATIONS, STEPS_PER_BLOCK * len(self.blocks))
+        while work:
+            steps += 1
+            if steps > limit:
+                return None
+            number = work.pop()
+            queued.discard(number)
+            block = self.blocks.get(number)
+            if block is None:
+                return None
+            state = entry[number]
+            for text, _, _ in block.statements[:-1]:
+                state = self._transfer(text, state)
+            state = self._terminate(block.terminator, state)
+            for target in self._flows(number):
+                out = state
+                if target == block.returns:
+                    out |= 1 << int(_ASSIGN.match(block.terminator)[1])
+                merged = entry.get(target, 0) | out
+                if merged != entry.get(target, 0):
+                    entry[target] = merged
+                    if target not in queued:
+                        queued.add(target)
+                        work.append(target)
         return entry
 
     def _assigned_flow(self, resumed=True):
@@ -3151,7 +3243,13 @@ class OwnedLocals:
         if breakpoint and not function.inline_only:
             positions = _first_places(body, function, positions)
         lent = _mask(body.lent_from(local, self.type_parameters(hashed)))
-        return any(body.live_ahead(position) & lent for position in positions)
+        # A drop uses what it drops (#164: a guard's `Drop` reads its `&str`), unless what
+        # it would drop was moved out before the stop (`drop(b);` then the scope's end).
+        return any(
+            (body.live_ahead(position) | body.live_ahead(position, drops=True) & held) & lent
+            for position in positions
+            for held in (body.maybe_initialized(position),)
+        )
 
     def _formatting(self):
         """Whether a call that reads like `format_args!`'s constructors (and returns

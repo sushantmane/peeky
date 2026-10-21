@@ -27,7 +27,9 @@ public class Greet {
         Object[] objs = {"x"};
         final String fc = "const";
         final int fk = 5;
-        System.out.println("NAME:[" + name + "] ALIAS:[" + alias + "] " + g.label + " " + names[1] + " " + o + cs + objs[0] + g.held + " FC:" + fc + " FK:" + fk);
+        String cap = "captured";
+        java.util.function.Supplier<String> lam = () -> cap;
+        System.out.println("NAME:[" + name + "] ALIAS:[" + alias + "] " + g.label + " " + names[1] + " " + o + cs + objs[0] + g.held + " FC:" + fc + " FK:" + fk + " LAM:" + lam.get());
     }
 }
 """
@@ -62,7 +64,7 @@ def greet(tmp_path, monkeypatch):
 def probe(capsys, greet, *argv):
     root, config, _ = greet
     at = ["probe", str(root), "--config", str(config), "--at", f"demo/Greet.java:{OBSERVE}"]
-    capture = "name,alias,g.label,o,cs,objs[0],g.held,fc,fk"
+    capture = "name,alias,g.label,o,cs,objs[0],g.held,fc,fk,cap"
     code = main([*at, "--capture", capture, *argv, "--json", "--no-save", "--quiet"])
     return code, json.loads(capsys.readouterr().out)
 
@@ -120,6 +122,7 @@ def test_marks_follow_the_declared_type_and_a_constant_local_is_never_changed(gr
         "g.held": False,
         "fc": False,
         "fk": False,
+        "cap": False,
     }, marks
     for assignment in ('fc="x"', "fk=9"):
         code, result = probe(capsys, greet, "--set", assignment)
@@ -135,3 +138,19 @@ def test_marks_follow_the_declared_type_and_a_constant_local_is_never_changed(gr
             assert f"it is declared {declared} and holds a String" in result["error"]["message"]
         code, result = probe(capsys, greet, "--set", 'o="y"')
         assert code == 1 and "o is java.lang.Object" in result["error"]["message"], result
+
+
+@pytest.mark.timeout(180)
+def test_a_local_the_code_never_reads_after_the_stop_is_never_changed(greet, capsys):
+    # #164 review 2: `cap` was captured by a lambda before the stop, and nothing reads
+    # it after: the change was reported, and `lam.get()` still returned `captured`.
+    code, result = probe(capsys, greet, "--set", 'cap="X"')
+    assert code == 1 and result["error"]["code"] == "MUTATION_REJECTED", result
+    message = result["error"]["message"]
+    if greet[2]:
+        assert "the program does not read it after this stop (a lambda or inner class" in message
+    assert "LAM:" not in (result.get("output") or ""), result
+    # A local read after the stop is changed as before.
+    if greet[2]:
+        code, result = probe(capsys, greet, "--set", 'alias="b"')
+        assert code == 0 and "ALIAS:[b]" in result["output"], result

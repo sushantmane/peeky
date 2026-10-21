@@ -214,3 +214,30 @@ def test_breakpoint_notes_say_which_method_stops_on_a_shared_line():
     ]
     assert "never in the static initializer" in notes[1]
     assert JavaSession.breakpoint_notes(session, "/w/demo/B.java", [{"line": 7}]) == []
+
+
+def test_reads_after_follows_the_code_from_the_stop():
+    # #164 review 2: a local a lambda captured before the stop is never read after it.
+    from peeky.java_metadata import reads_after
+
+    def method(code, handlers=()):
+        return {"code": bytes(code), "handlers": tuple(handlers)}
+
+    # 0: aload_1  1: astore_2  2: aload_2  3: areturn
+    straight = method([0x2B, 0x4D, 0x2C, 0xB0])
+    assert reads_after(straight, 2, (2,)) is True
+    assert reads_after(straight, 2, (3,)) is False
+    assert reads_after(straight, 1, (1,)) is False
+    # A store before any read: the old value is never read.
+    # 0: aload_1  1: astore_2  2: aload_2  3: astore_1  4: aload_1  5: areturn
+    overwritten = method([0x2B, 0x4D, 0x2C, 0x4C, 0x2B, 0xB0])
+    assert reads_after(overwritten, 1, (2,)) is False
+    # A loop's back edge reads it again: 0: aload_2  1: pop  2: goto -2  (to 0).
+    looped = method([0x2C, 0x57, 0xA7, 0xFF, 0xFE])
+    assert reads_after(looped, 2, (1,)) is True
+    # A handler covering the stop's code reads it: 0: nop  1: return  2: aload_3  3: athrow.
+    handled = method([0x00, 0xB1, 0x2D, 0xBF], handlers=[(0, 1, 2)])
+    assert reads_after(handled, 3, (0,)) is True
+    # Code that does not decode, or a subroutine: not known.
+    assert reads_after(method([0xA8, 0x00, 0x03, 0xB1]), 1, (0,)) is None
+    assert reads_after(method([0x15]), 1, (0,)) is None

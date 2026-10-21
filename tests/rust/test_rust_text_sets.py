@@ -192,3 +192,88 @@ def main_output(crate, capsys, at, name):
     result = json.loads(capsys.readouterr().out)
     assert code == 0, result.get("error")
     return result["output"]
+
+
+HIDDEN = """use std::future::Future;
+use std::pin::Pin;
+use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
+#[inline(never)]
+fn mark() {}
+#[inline(never)]
+fn check(tag: &str, t: &str) -> usize {
+    println!("{}: utf8={}", tag, std::str::from_utf8(t.as_bytes()).is_ok());
+    t.len()
+}
+fn cap(text: &str) -> String { let mut s = String::with_capacity(32); s.push_str(text); s }
+trait Show { fn show(&self) -> usize; }
+struct Held<'a> { t: &'a str }
+impl Show for Held<'_> { fn show(&self) -> usize { check("held", self.t) } }
+struct Guard<'a> { t: &'a str }
+impl Drop for Guard<'_> { fn drop(&mut self) { check("guard", self.t); } }
+fn noop_raw() -> RawWaker {
+    fn clone(_: *const ()) -> RawWaker { noop_raw() }
+    fn noop(_: *const ()) {}
+    static VT: RawWakerVTable = RawWakerVTable::new(clone, noop, noop, noop);
+    RawWaker::new(std::ptr::null(), &VT)
+}
+fn block_on<F: Future>(mut f: F) -> F::Output {
+    let waker = unsafe { Waker::from_raw(noop_raw()) };
+    let mut cx = Context::from_waker(&waker);
+    let mut f = unsafe { Pin::new_unchecked(&mut f) };
+    loop { if let Poll::Ready(v) = f.as_mut().poll(&mut cx) { return v; } }
+}
+fn boxed() { let mut s = cap("abcdefghij");
+    let t = &s[2..];
+    let b: Box<dyn Fn() -> usize + '_> = Box::new(move || check("boxed", t));
+    mark(); // BOXED
+    b(); drop(b);
+    mark(); // DROPPED
+    s.push('!'); }
+fn listed() { let mut s = cap("abcdefghij");
+    let v: Vec<Box<dyn Fn() -> usize + '_>> = vec![Box::new(|| check("listed", &s[2..]))];
+    mark(); // LISTED
+    v[0](); drop(v); s.push('!'); }
+fn shown() { let mut s = cap("abcdefghij");
+    let d: Box<dyn Show + '_> = Box::new(Held { t: &s[2..] });
+    mark(); // SHOWN
+    d.show(); drop(d); s.push('!'); }
+fn guarded() { let s = cap("abcdefghij");
+    let g = Guard { t: &s[2..] };
+    mark(); // GUARDED
+    println!("guarded end"); }
+fn iterated() { let mut s = cap("abcdefghij");
+    let it: Box<dyn Iterator<Item = char> + '_> = Box::new(s[2..].chars());
+    mark(); // ITERATED
+    let rest: String = it.collect(); check("iterated", &rest); s.push('!'); }
+fn awaited() { let mut s = cap("abcdefghij");
+    let t = &s[2..];
+    let fut: Pin<Box<dyn Future<Output = usize> + '_>> = Box::pin(async move { check("awaited", t) });
+    mark(); // AWAITED
+    block_on(fut); s.push('!'); }
+fn main() { boxed(); listed(); shown(); guarded(); iterated(); awaited(); }
+"""
+
+
+@pytest.mark.timeout(400)
+def test_a_borrow_in_a_trait_object_or_a_guards_drop_is_never_missed(crate, capsys):
+    # #164 review 2: the MIR prints `dyn Fn() -> usize` without the borrow's lifetime,
+    # so a `Box<dyn Fn + '_>`, `Vec<Box<dyn Fn + '_>>`, `Box<dyn Show + '_>`, `Box<dyn
+    # Iterator + '_>` or `Pin<Box<dyn Future + '_>>` holding `&s[2..]` passed as holding
+    # no pointer; and a guard whose `Drop` reads its `&str` is used only by its drop.
+    # Each change was made, and left `&s[2..]` reading bytes that are not UTF-8.
+    (crate / "src/main.rs").write_text(HIDDEN)
+    lines = HIDDEN.splitlines()
+    for marker in ("BOXED", "LISTED", "SHOWN", "GUARDED", "ITERATED", "AWAITED"):
+        at = next(i for i, text in enumerate(lines, 1) if f"// {marker}" in text)
+        code = main(["probe", str(crate), "--at", f"src/main.rs:{at}", "--set", 's="aé"', "--json"])
+        result = json.loads(capsys.readouterr().out)
+        refusal(code, result, "`s` cannot be changed to a text at this stop: a borrow of it")
+        assert "utf8=false" not in (result.get("output") or ""), (marker, result)
+    # Once the trait object is dropped, nothing borrows it.
+    at = next(i for i, text in enumerate(lines, 1) if "// DROPPED" in text)
+    code = main(["probe", str(crate), "--at", f"src/main.rs:{at}", "--set", 's="aé"', "--json"])
+    result = json.loads(capsys.readouterr().out)
+    if WRITES:
+        assert code == 0, result.get("error")
+    else:
+        refusal(code, result, "cannot write memory")

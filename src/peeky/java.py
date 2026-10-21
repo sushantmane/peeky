@@ -614,6 +614,42 @@ class JavaSession:
         """[(descriptor, whether the code reads it)] for each declaration of the local
         ``name`` the stopped frame's method has in scope on its line, from the class
         files (#164); None where the method is not found."""
+        found = self._frame_method(frame)
+        if found is None:
+            return None
+        method, line = found
+        return [
+            (descriptor, read)
+            for local, descriptor, lines, read in method["locals"]
+            if local == name and line in lines
+        ]
+
+    def read_after(self, variable, frame, stop):
+        """Whether the program may read the root local ``variable`` after this stop
+        (#164): False where no path from where the stop's line begins reads its slot
+        before storing into it again, so a change would never be seen (a lambda or
+        inner class captured its value before; a constant javac compiled into its
+        uses); True where one may; None where that cannot be told (another kind of
+        stop, a method or code not understood)."""
+        from peeky.java_metadata import reads_after
+
+        found = self._frame_method(frame) if stop in ("breakpoint", "step") else None
+        if found is None:
+            return None
+        method, line = found
+        name = str(variable.get("name"))
+        verdicts = [
+            reads_after(method, slot, method["line_pcs"].get(line, ()))
+            for (local, _, lines, _), (_, slot, _, _) in zip(method["locals"], method["slots"])
+            if local == name and line in lines
+        ]
+        if not verdicts or None in verdicts:
+            return None
+        return any(verdicts)
+
+    def _frame_method(self, frame):
+        """(the class files' record of the stopped frame's method, its line), or None
+        where it is not found (#164)."""
         try:
             path = Path(frame["source"]["path"]).resolve()
             workspace = Path(self.declaration_roots()[1]).resolve()
@@ -635,11 +671,7 @@ class JavaSession:
         ]
         if len(methods) != 1:
             return None
-        return [
-            (descriptor, read)
-            for local, descriptor, lines, read in methods[0]["locals"]
-            if local == name and line in lines
-        ]
+        return methods[0], line
 
     def declared_member(self, parent, name):
         """The descriptor a field or element is declared with (#164): an array's

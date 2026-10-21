@@ -2578,3 +2578,31 @@ def test_a_locals_copies_are_what_passes_over_every_assignment_find():
         body = parse_body(text)
         for local in range(2 + max(body.types, default=0)):
             assert body.copies_of(local, formatting=False) == passes(body, local), local
+
+
+@pytest.mark.parametrize(
+    "kind, free",
+    [
+        ("usize", True),
+        ("std::string::String", True),
+        ("(i32, std::string::String)", True),
+        ("[u8; 4]", True),
+        ("std::vec::Vec<std::option::Option<u64>>", True),
+        ("&str", False),
+        ("*const u8", False),
+        ("std::str::Chars<'_>", False),
+        # The MIR prints a trait object's lifetime nowhere (#164 review 2).
+        ("std::boxed::Box<dyn std::ops::Fn() -> usize>", False),
+        ("std::pin::Pin<std::boxed::Box<dyn std::future::Future<Output = usize>>>", False),
+        ("impl std::iter::Iterator<Item = char>", False),
+        ("{closure@src/main.rs:3:9: 3:11}", False),
+        ("main::Count", False),
+        ("T", False),
+        (None, False),
+    ],
+)
+def test_only_types_that_provably_hold_no_pointer_are_free(kind, free):
+    from peeky.rust_mir import _pointer_free
+
+    assert _pointer_free(kind, ("T",)) is free
+    assert _pointer_free("usize", None) is False
