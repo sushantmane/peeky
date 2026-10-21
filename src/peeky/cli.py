@@ -964,7 +964,8 @@ def _keep_evidence(args, result, root, language):
         # A plain `queries diff` compares with the run before, whatever it was: name the
         # run that is this probe without the edit (seventh evaluation, finding 12).
         try:
-            before = evidence.baseline(path, run_id)
+            # The unedited source as the run read it (the candidate's own is the edit's).
+            before = evidence.baseline(path, run_id, result.get("source_sha256"))
         except Exception:
             return
         result["evidence"]["compare"] = (
@@ -973,8 +974,8 @@ def _keep_evidence(args, result, root, language):
             else {
                 "run": None,
                 "hint": "no saved run is this probe without the edit (the same --at, "
-                "--capture and program arguments, no --set): run it without --old/--new, "
-                "then `peeky queries diff`",
+                "--capture, program arguments and build, of the source as it is now, with "
+                "no --set or --set-at): run it without --old/--new, then `peeky queries diff`",
             }
         )
 
@@ -2314,12 +2315,37 @@ def _verify_text(result, keep=False):
 _RETAINED_BYTES = 16000
 
 
+# A line that says what failed: `FAIL ...`, an exception (`ValueError: ...`), an
+# assertion; a traceback's own last line is its exception.
+_FAILURE = re.compile(r"FAIL|\b\w*Error\b|\bassert|Traceback")
+
+
+def _failure_line(stream):
+    """The last line of ``stream`` that says what failed, with up to two indented lines
+    after it (`FAIL first case; expected 3; got 2`), or None. A traceback gives its last
+    line, the exception."""
+    lines = [line.rstrip() for line in stream.splitlines() if line.strip()]
+    found = [i for i, line in enumerate(lines) if _FAILURE.search(line)]
+    if not found:
+        return None
+    at = found[-1]
+    if lines[at].lstrip().startswith("Traceback"):
+        return lines[-1].strip() if at < len(lines) - 1 else None
+    following = []
+    for line in lines[at + 1 : at + 3]:
+        if not line[:1].isspace():
+            break
+        following.append(line.strip())
+    return "; ".join([lines[at].strip(), *following])
+
+
 def _verify_reason(result):
     """Why a verify did not pass, in one line: the build's diagnostic, a timeout, or the
-    checker's error; for a checker that exited with a status alone (`sys.exit(1)`), its
-    last non-empty output line (`FAIL [...]`) instead, as the output shows it, stdout
-    then stderr (seventh evaluation, finding 11). The status stays in `checker exit`
-    (and `checker.error`), and in the reason where it is not that exit code."""
+    checker's error; for a checker that exited with a status alone (`sys.exit(1)`), the
+    output's line that says what failed (`FAIL [...]`, an exception), stdout's before
+    stderr's, else the last non-empty line of stdout, else of stderr (seventh evaluation,
+    finding 11). The status stays in `checker exit` (and `checker.error`), and in the
+    reason where it is not that exit code."""
     checker = str((result.get("checker") or {}).get("error") or "")
     reason = result.get("diagnostic") or checker
     # A build's own timeout is in its diagnostic (`The build failed: clang timed out`).
@@ -2332,11 +2358,14 @@ def _verify_reason(result):
     if any(len(stream.encode()) >= _RETAINED_BYTES for stream in streams):
         # Cut short: its last line may be part of one.
         return reason
-    lines = [line.strip() for stream in streams for line in stream.splitlines() if line.strip()]
-    if not lines:
+    last = [
+        lines[-1].strip() for s in streams if (lines := [x for x in s.splitlines() if x.strip()])
+    ]
+    chosen = next((line for line in (*map(_failure_line, streams), *last) if line), None)
+    if chosen is None:
         return reason
-    last = lines[-1][:500]
-    return last if status[1] == str(result.get("exit_code")) else f"{last} ({checker})"
+    chosen = chosen[:500]
+    return chosen if status[1] == str(result.get("exit_code")) else f"{chosen} ({checker})"
 
 
 def _rejected(result):

@@ -290,8 +290,8 @@ _MUTATION_HINTS = (
     ),
     (
         r"has one caller: \S+:[0-9]+ in ",
-        "Change the value at that call, where it is owned: `--set-at <its line>@N`, N "
-        "counting that line's own stops (`--at <its line> --capture <x> --hits all` finds N).",
+        "Change the value where it is owned, before the call the message names: as it "
+        "says where the value is settable there, else at a statement's first line before it.",
     ),
     (
         r"is a (?:pointer|reference)\b(?!;)",

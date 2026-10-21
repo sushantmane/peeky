@@ -958,19 +958,22 @@ def record(path, result, *, language=None, target=None, label=None, worker=None)
     return run_id
 
 
-def baseline(path, run_id):
-    """The newest run before ``run_id`` that is the same probe without its edit (the
-    same target, file, line, captures, program arguments and Python entry; no edit, no
-    `--set`), to compare a candidate run with (seventh evaluation, finding 12); else
-    None."""
+def baseline(path, run_id, source_sha256):
+    """The newest run before ``run_id`` that is the same probe without its edit, to
+    compare a candidate run with (seventh evaluation, finding 12): the same target,
+    file, line, captures, program arguments and Python entry; the same build (its
+    target identity: compiler options, optimization, sources, headers); the unedited
+    source the candidate's edit was made to (``source_sha256``); no edit, no `--set`
+    or `--set-at`. Else None."""
     found = query(
         path,
         "SELECT b.run_id FROM runs c JOIN runs b ON b.run_id < c.run_id AND b.target IS "
         "c.target AND b.language IS c.language AND b.program IS c.program AND b.line IS "
         "c.line AND b.capture IS c.capture AND b.args IS c.args AND b.entry IS c.entry AND "
+        "b.target_identity IS c.target_identity AND b.source_sha256 = :source AND "
         "b.edit IS NULL AND COALESCE(b.sets, '[]') = '[]' WHERE c.run_id = :run "
         "ORDER BY b.run_id DESC LIMIT 1",
-        {"run": run_id},
+        {"run": run_id, "source": source_sha256},
     )["rows"]
     return found[0]["run_id"] if found else None
 

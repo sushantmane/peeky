@@ -125,7 +125,7 @@ def test_a_pointer_parameters_one_caller_is_named(c_program, capsys):
         "settable: a probe's `--set-at 36@N r.tail=<value>`"
     ) in out, out
     assert code == 2, out
-    assert "hint: Change the value at that call, where it is owned" in out, out
+    assert "hint: Change the value where it is owned, before the call the message names" in out
     # The claim holds: line 36 changes `r.tail` before push's 4th call reads it.
     code, out = run(
         capsys, "probe", source, "--at", "36", "--capture", "r.tail", "--hits", "4",
@@ -162,8 +162,10 @@ def test_callers_peeky_cannot_single_out_keep_the_general_advice(c_program, caps
     )  # fmt: skip
     called = line_of(CALLERS, "int sum = ")
     assert code == 2, out
-    assert f"passed has one caller: callers.c:{called} in main; change the value" in out, out
-    assert "settable" not in out.split("one caller")[1], out
+    assert (
+        f"passed has one caller: callers.c:{called} in main, which passes `p`; change the value"
+    ) in out, out
+    assert "settable" not in out.splitlines()[0].split("one caller")[1], out
 
 
 @pytest.mark.timeout(240)
@@ -225,3 +227,150 @@ def test_a_set_at_refused_before_the_run_names_the_caller_and_shows_no_table(c_p
         ("1", "3")
     ], result
     assert [row["value"] for row in result["rows"]] == ["0", "3"], result["rows"]
+
+
+# Review of PR #165: calls a stop at their line cannot change the value before.
+CALL_SITES = {
+    # The line overwrites the field before the call.
+    "overwrite": "    r.tail = 1; total += push(&r, 1);  /* CALL */",
+    # So does the call's own argument.
+    "argument": "    total += push(&r, r.tail = 3);  /* CALL */",
+    # The call is on its statement's second line, and runs before the first's code.
+    "continued": "    total += 1 +\n        push(&r, 1);  /* CALL */",
+    # A clean one, for comparison.
+    "clean": "    total += push(&r, 1);  /* CALL */",
+}
+SITE = """#include <stdio.h>
+struct ring { int head; int tail; int buf[4]; };
+static int push(struct ring *r, int v) {
+    r->buf[r->tail % 4] = v; /* AT */
+    r->tail++;
+    return r->tail;
+}
+int main(void) {
+    struct ring r = { 0, 0, { 0 } };
+    int total = 0;
+CALL
+    printf("%d %d\\n", total, r.tail);
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(240)
+@pytest.mark.parametrize("site", list(CALL_SITES))
+def test_settable_is_claimed_only_where_the_call_sees_the_change(c_program, capsys, site):
+    # Low 1: `r.tail = 1; total += push(&r, 1);` was called settable at line 11, but the
+    # line overwrites the field before the call; so does `push(&r, r.tail = 3)`. Low 3:
+    # a call on its statement's second line was named by that line, where no stop is at
+    # the statement's start.
+    text = SITE.replace("CALL\n", CALL_SITES[site] + "\n")
+    source = c_program("m.c", text)
+    at, call = line_of(text, "/* AT */"), line_of(text, "/* CALL */")
+    code, out = run(capsys, "probe", source, "--at", at, "--capture", "v", "--set", "r.tail=0")
+    assert code == 2, out
+    if site == "clean":
+        assert (
+            f"push has one caller: m.c:{call} in main, which passes `&r`, where `r.tail` is "
+            f"settable: a probe's `--set-at {call}@N r.tail=<value>`"
+        ) in out, out
+        return
+    message = out.splitlines()[0]
+    assert "settable" not in message.split("has one caller")[1], out
+    assert "--set-at" not in message, out
+    if site == "continued":
+        start = call - 1
+        assert f"push has one caller: m.c:{call} (its statement starts on line {start}) in " in out
+        assert f"Peeky cannot tell that a change at line {start} reaches it" in out, out
+    else:
+        assert f"push has one caller: m.c:{call} in main, which passes `&r`; change the " in out
+    # The claim would have been wrong: a change at that line's stop never reaches push.
+    if site == "overwrite":
+        code, out = run(
+            capsys, "probe", source, "--at", at, "--capture", "r.tail", "--set-at",
+            f"{call}@1", "r.tail=3", "--json",
+        )  # fmt: skip
+        assert json.loads(out)["rows"][0]["value"] == "1", out
+
+
+OTHER_MAIN = """#include <stdio.h>
+#include "ring.h"
+int push(struct ring *r, int v) {
+    r->buf[r->tail % 4] = v; /* AT */
+    r->tail++;
+    return r->tail;
+}
+int main(void) {
+    int total = helper();
+    printf("%d\\n", total);
+    return 0;
+}
+"""
+OTHER = """#include "ring.h"
+
+int helper(void) {
+    struct ring q = { 0, 0, { 0 } };
+    int t = 0;
+    t += push(&q, 2);
+    return t;
+}
+"""
+RING_H = """struct ring { int head; int tail; int buf[4]; };
+int push(struct ring *r, int v);
+int helper(void);
+"""
+HEADER_MAIN = OTHER_MAIN.replace(
+    "int total = helper();", "struct ring r = { 0, 0, { 0 } };\n    int total = via(&r) + helper();"
+)
+HEADER_OTHER = """#include "ring.h"
+int helper(void) {
+    struct ring q = { 0, 0, { 0 } };
+    return via(&q);
+}
+"""
+HEADER_H = RING_H.replace(
+    "int helper(void);",
+    "static inline int via(struct ring *r) { return push(r, 7); }\nint helper(void);",
+)
+
+
+@pytest.mark.timeout(240)
+def test_a_caller_in_another_file_is_changed_by_a_probe_there(c_program, capsys):
+    # Low 2: push's one call is at other.c:6, but `--set-at 6@N` names main.c's line 6,
+    # the probe's own file. A probe `--at other.c:6` with `--set` is what works.
+    root = c_program("main.c", OTHER_MAIN).parent
+    c_program("other.c", OTHER)
+    c_program("ring.h", RING_H)
+    code, out = run(
+        capsys, "probe", root, "--at", "main.c:4", "--capture", "v", "--set", "r.tail=0"
+    )
+    advice = (
+        "push has one caller: other.c:6 in helper, which passes `&q`, where `q.tail` is "
+        "settable: `peeky probe <target> --at other.c:6 --set q.tail=<value> --set-hit N`"
+    )
+    assert code == 2 and advice in out and "--set-at" not in out, out
+    # Followed, it changes what push sees: push returns tail + 1.
+    code, out = run(
+        capsys, "probe", root, "--at", "other.c:6", "--capture", "q.tail", "--set",
+        "q.tail=3", "--set-hit", "1", "--json",
+    )  # fmt: skip
+    result = json.loads(out)
+    assert code == 0 and [(i["before"], i["after"]) for i in result["interventions"]] == [
+        ("0", "3")
+    ], result
+    assert result["output"].strip() == "4", result["output"]
+
+
+@pytest.mark.timeout(240)
+def test_a_caller_in_a_header_gets_no_advice_a_probe_cannot_follow(c_program, capsys):
+    # Low 2: push's one call is in ring.h's `via`, where no probe stops.
+    root = c_program("main.c", HEADER_MAIN).parent
+    c_program("other.c", HEADER_OTHER)
+    c_program("ring.h", HEADER_H)
+    code, out = run(
+        capsys, "probe", root, "--at", "main.c:4", "--capture", "v", "--set", "r.tail=0"
+    )
+    assert code == 2, out
+    assert "push has one caller: ring.h:3 in via, which passes `r`; change the value" in out
+    assert "a probe stops only in the program's source files, not in ring.h" in out, out
+    assert "--set-at" not in out.split("has one caller")[1], out

@@ -41,6 +41,9 @@ def probe_result(function=WHOLE, **extra):
         "interventions": [],
         "warnings": [],
         "output": "",
+        # The build and the source as it ran (a candidate's: the unedited source's hash).
+        "target_identity": {"language": "c", "optimization": "O0"},
+        "source_sha256": "0" * 64,
         **extra,
     }
 
@@ -188,10 +191,35 @@ def test_a_reason_the_output_cannot_give_stays_the_checkers():
     # Output cut short may end part-way through a line.
     long = "y" * 16000 + "\nFAIL tail"
     assert _verify_reason(failed("SystemExit: 1", stdout=long)) == "SystemExit: 1"
-    # stderr shows after stdout: its last line is the output's last.
+    # A line that says what failed wins over a later one that does not, in either stream.
     both = failed("SystemExit: 1", stdout="case 1 ok\n", stderr="FAIL case 2\n\n")
     assert _verify_reason(both) == "FAIL case 2"
     assert _verify_reason(failed("SystemExit: 1", timed_out=True)) == "checker timed out"
+
+
+def test_a_reason_is_the_line_that_says_what_failed():
+    # Review of PR #165, Low 5: `FAIL ...` on stdout and `note: cleanup done` on stderr
+    # gave the stderr note.
+    from peeky.cli import _verify_reason
+
+    def reason(stdout="", stderr=""):
+        result = {"passed": False, "stage": "verification", "exit_code": 1}
+        return _verify_reason(
+            {**result, "checker": {"error": "SystemExit: 1"}, "stdout": stdout, "stderr": stderr}
+        )
+
+    noisy = "case 1: ok\nFAIL ring: got '7 2' want '7 3'\n"
+    assert reason(noisy, "note: cleanup done\n") == "FAIL ring: got '7 2' want '7 3'"
+    # A failure over several lines: its indented lines, two at most.
+    spread = "FAIL first case\n  expected 3\n  got 2\n  (seed 9)\nsummary\n"
+    assert reason(spread) == "FAIL first case; expected 3; got 2"
+    # A traceback gives its exception; stdout's failure before stderr's.
+    trace = 'Traceback (most recent call last):\n  File "c.py", line 3\nValueError: bad\n'
+    assert reason("progress\n", trace) == "ValueError: bad"
+    assert reason("assert got == want\n", trace) == "assert got == want"
+    # None says what failed: stdout's last line, then stderr's.
+    assert reason("case 1 ok\n", "cleanup\n") == "case 1 ok"
+    assert reason("", "cleanup\n") == "cleanup"
 
 
 @pytest.fixture
@@ -399,8 +427,40 @@ def test_the_guide_lists_session_wait_and_program_arguments_up_front():
     assert "/ `wait` /" in session and "`wait` waits for a running one to stop" in session
     probe = next(row for row in table.splitlines() if row.startswith("| `peeky probe <target>"))
     assert "[-- ARGS]" in probe and "after `--`, or repeatable `--arg`" in probe, probe
+    # Review of PR #165: exit 3 is not only a background job's.
+    assert (
+        "3 not there yet (a background job still running; a session's `--to`, `--count` or "
+        "`--hit` stopped first), 4 a probe change never made"
+    ) in " ".join(guide.split())
     # Finding 19: a step can land back on an `if`'s line.
     cookbook = " ".join((docs / "COOKBOOK.md").read_text().split())
     assert "A step can also land back on an `if`'s line after the last line of its block" in (
         cookbook
     )
+
+
+def test_the_compared_run_has_the_candidates_build_and_unedited_source(cli, capsys):
+    # Review of PR #165, Low 4: `compare:` named an -O1 run for an -O0 candidate, and a
+    # run of the source as it was before the file changed on disk.
+    import hashlib
+
+    def run(candidate=False, optimization="O0", source="0" * 64):
+        result = probe_result(source_sha256=source)
+        result["target_identity"] = {"language": "c", "optimization": optimization}
+        result["probe"].update(program="a.py", line=1, capture=["i"])
+        if candidate:
+            result["candidate"] = {"sha256": hashlib.sha256(b"x = 2\n").hexdigest()}
+        edit = ["--old", "x = 1", "--new", "x = 2"] if candidate else []
+        return cli(result, "--capture", "i", *edit)
+
+    assert run() == 0  # run 1: the baseline
+    assert run(optimization="O1") == 0  # run 2: another build
+    assert run(source="1" * 64) == 0  # run 3: the file as it was before an edit on disk
+    capsys.readouterr()
+    assert run(candidate=True) == 0  # run 4
+    assert "compare: peeky queries diff --param a=1 --param b=4" in capsys.readouterr().out
+    # An -O1 candidate has no -O1 run of this source to compare with.
+    assert run(candidate=True, optimization="O1", source="2" * 64) == 0
+    text = capsys.readouterr().out
+    assert "compare: no saved run is this probe without the edit" in text, text
+    assert "build, of the source as it is now" in text, text

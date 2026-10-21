@@ -757,6 +757,49 @@ def _arguments(text, opening):
     return None
 
 
+_NONBLANK_CODE = re.compile(r"\S")
+
+
+def _argument_spans(text, opening):
+    """The (start, end) offsets in ``text`` of each argument of the parentheses that
+    open at ``opening``, at their top level; None where they do not close."""
+    spans, depth, start = [], 0, opening + 1
+    for position in range(opening, min(len(text), opening + 65536)):
+        char = text[position]
+        if char in "([{":
+            depth += 1
+        elif char in ")]}":
+            depth -= 1
+            if depth == 0:
+                spans.append((start, position))
+                return spans
+        elif char == "," and depth == 1:
+            spans.append((start, position))
+            start = position + 1
+    return None
+
+
+def _writes(text, root):
+    """Whether C ``text`` (comments and literals blanked) may change the local ``root``
+    or what it holds: an assignment to it or through its fields and elements (`r.tail =
+    1`, `r.buf[0] += 2`), `++`/`--` on them, or its or a field's address taken (`&r`,
+    `&r.tail`), which lets a call change it. A member of another value named alike
+    (`q.r`, `p->r`) does not count."""
+    after = re.compile(
+        r"(?:\s*(?:\.|->)\s*[A-Za-z_]\w*|\s*\[[^\[\]]*\])*\s*"
+        r"(?:(?:[-+*/%&|^]|<<|>>)?=(?!=)|\+\+|--)"
+    )
+    for found in re.finditer(rf"(?<![\w$]){re.escape(root)}(?![\w$])", text):
+        before = text[: found.start()].rstrip()
+        if before.endswith((".", "->")):
+            continue
+        if before.endswith(("++", "--")) or (before.endswith("&") and not before.endswith("&&")):
+            return True
+        if after.match(text, found.end()):
+            return True
+    return False
+
+
 def _split_arguments(text):
     """The comma-separated parts of an argument or parameter list, at its top level."""
     parts, depth, start = [], 0, 0
@@ -3966,10 +4009,13 @@ class NativeSession:
         through the pointer parameter ``root`` of the C function ``function`` (a
         declarations entry), when the program's sources call it once (seventh
         evaluation, finding 13): `push has one caller: ring.c:36 in main, which passes
-        `&r`, where `r.tail` is settable: ...`, saying settable only where `set`'s rules
-        allow a change there (``_settable_at_call``). None, for the general advice, with
-        several or unknown callers, and in C++ (overloads, argument-dependent lookup and
-        member calls make a call's target unclear from the text)."""
+        `&r`, where `r.tail` is settable: ...`. Settable is said, with how to change it,
+        only where a probe's stop on the first line of the call's statement can make the
+        change and the call sees it (``_settable_at_call``): a `--set-at` there, or in
+        another file (a probe stops in its `--at` file) a probe `--at` that line. Else the
+        call is named alone. None, for the general advice, with several or unknown
+        callers, and in C++ (overloads, argument-dependent lookup and member calls make a
+        call's target unclear from the text)."""
         if function is None or getattr(self.target, "language", None) != "c":
             return None
         declared = (function.get("types") or {}).get(root) or ()
@@ -3977,33 +4023,104 @@ class NativeSession:
             return None
         try:
             found = self._single_call(function, root)
+            if found is None:
+                return None
+            caller, source, line, argument, index = found
+            first, scanned = self._call_statement(source, line, function.get("name"), index)
         except (OSError, ValueError, RuntimeError):
             return None
-        if found is None:
-            return None
-        caller, source, line, argument = found
         named, at = function.get("name"), f"{Path(source).name}:{line}"
+        where = at + (
+            f" (its statement starts on line {first})" if first not in (None, line) else ""
+        )
         passed = re.fullmatch(r"&\s*([A-Za-z_]\w*)", argument or "")
-        if passed and steps and self._settable_at_call(caller, source, line, passed[1], steps):
+        # A probe stops in its `--at` file, one of the program's sources (not a header).
+        stoppable = source == function.get("source") or source in map(str, self.target.sources)
+        if (
+            passed
+            and steps
+            and stoppable
+            and first is not None
+            and scanned is not None
+            and not _writes(scanned, passed[1])
+            and self._settable_at_call(caller, source, first, passed[1], steps)
+        ):
             selector = passed[1] + "".join(
                 step if step.startswith("[") else f".{step}" for step in steps
             )
-            return (
-                f"{named} has one caller: {at} in {caller.get('name')}, which passes "
-                f"`{argument}`, where `{selector}` is settable: a probe's `--set-at {line}@N "
-                f"{selector}=<value>`, N counting line {line}'s own stops (find N with `--at "
-                f"{line} --capture {selector} --hits all`)"
+            how = (
+                f"a probe's `--set-at {first}@N {selector}=<value>`, N counting line {first}'s "
+                f"own stops (find N with `--at {first} --capture {selector} --hits all`)"
+                if source == function.get("source")
+                # A probe stops in its `--at` file only: `--set-at` names a line of it.
+                else f"`peeky probe <target> --at {source}:{first} --set "
+                f"{selector}=<value> --set-hit N`, N counting that line's own stops (find N "
+                f"with `--capture {selector} --hits all` there)"
             )
-        return (
-            f"{named} has one caller: {at} in {caller.get('name')}; change the value where "
-            f"it is owned, before that call: a probe's `--set-at {line}@N <name>=<value>`, N "
-            f"counting line {line}'s own stops (find N with `--at {line} --capture <argument> "
-            "--hits all`)"
+            return (
+                f"{named} has one caller: {where} in {caller.get('name')}, which passes "
+                f"`{argument}`, where `{selector}` is settable: {how}"
+            )
+        passes = f", which passes `{argument}`" if argument else ""
+        why = (
+            f"Peeky cannot tell that a change at line {first or line} reaches it (a statement "
+            "there may change the value, or make the call, first)"
+            if stoppable
+            else f"a probe stops only in the program's source files, not in {Path(source).name}"
         )
+        return (
+            f"{named} has one caller: {where} in {caller.get('name')}{passes}; change the "
+            f"value where it is owned, before that call: {why}"
+        )
+
+    def _call_statement(self, source, line, name, index):
+        """For the one call of ``name`` on ``source:line`` (the program's own text): the
+        first line of the statement it is in (``Statements.begins``: `int total = 1 +` /
+        `push(&r, 1);` starts on the line above), or None; and that statement's text
+        (comments and literals blanked) to the end of its last line, with the argument
+        at ``index`` blanked, where the call is in the first statement on that first line
+        (`r.tail = 1; total += push(&r, 1);` has another before it), else None."""
+        statements = self._statements(source)
+        if statements is None or statements.unreadable or not 1 <= line <= len(statements.starts):
+            return None, None
+        code, starts = statements.blanked, statements.starts
+
+        def end_of(number):
+            return starts[number] if number < len(starts) else len(code)
+
+        calls = list(
+            re.finditer(rf"(?<![\w$]){re.escape(name)}\s*\(", code[starts[line - 1] : end_of(line)])
+        )
+        if len(calls) != 1:
+            return None, None
+        call = starts[line - 1] + calls[0].start()
+        opening = starts[line - 1] + calls[0].end() - 1
+        first = None
+        for number in range(line, max(0, line - 64), -1):
+            begins = statements.begins(number)
+            if begins is None:
+                return None, None
+            if begins:
+                span = statements.statement_span(number)
+                first = number if span is not None and span[1] >= line else None
+                break
+        if first is None:
+            return None, None
+        start = _NONBLANK_CODE.search(code, starts[first - 1]).start()
+        span = statements.statement_span(first)
+        if re.search(r"[;{}]|<%|%>", code[start:call]) or index is None or span is None:
+            return first, None
+        arguments = _argument_spans(code, opening)
+        if arguments is None or index >= len(arguments):
+            return first, None
+        low, high = arguments[index]
+        text = code[start : end_of(span[1])]
+        own = slice(low - start, high - start)
+        return first, text[: own.start] + " " * (own.stop - own.start) + text[own.stop :]
 
     def _single_call(self, function, parameter):
         """(caller's declarations entry, source, line, the argument passed for
-        ``parameter``) of the one call of the C function ``function`` in the program's
+        ``parameter``, that parameter's index) of the one call of the C function ``function`` in the program's
         sources, as the compiler preprocessed them (a macro's calls are where it is
         used); None unless that is certain. Every mention of the function's name must be
         its definition, a prototype at file scope, or a call by name inside a function
@@ -4070,8 +4187,8 @@ class NativeSession:
             i for i, text in enumerate(parameters) if re.search(rf"(?<!\w){parameter}(?!\w)", text)
         ]
         if len(named) != 1 or len(values) != len(parameters):
-            return caller, where, line, None
-        return caller, where, line, " ".join(values[named[0]].split())
+            return caller, where, line, None, None
+        return caller, where, line, " ".join(values[named[0]].split()), named[0]
 
     def _enclosing(self, source, line):
         """The declarations entry of the narrowest function whose own lines (its span)

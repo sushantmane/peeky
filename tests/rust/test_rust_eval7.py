@@ -112,3 +112,32 @@ def test_describe_says_which_rust_locals_have_settable_fields(crate, capsys):
     assert ". Locals with such fields or elements: movavg::main: w. Never settable" in mutable
     # `self` is a reference: its fields are not changed through it.
     assert "push: self" not in mutable.split("Never settable")[0], mutable
+
+
+SPAN = """#[derive(Debug, Clone, Copy)]
+struct Span {
+    start: usize,
+    end: i32,
+}
+
+fn main() {
+    let mut s = Span { start: 2, end: 3 };
+    std::hint::black_box(&mut s);
+    println!("{:?}", s); // HERE
+}
+"""
+
+
+@pytest.mark.timeout(400)
+def test_every_field_keeps_lldbs_type_name_beside_the_rust_one(crate, capsys):
+    # Review of PR #165: a field of a struct previewed from memory (`s.start`) had no
+    # `debugger_type`, while a raw field (`w.k`) had one.
+    (crate / "src/main.rs").write_text(SPAN)
+    line = next(i for i, text in enumerate(SPAN.splitlines(), 1) if "// HERE" in text)
+    found = rows(capsys, crate, line, "s,s.start,s.end")
+    shown = {s: (found[s]["type"], found[s].get("debugger_type")) for s in ("s.start", "s.end")}
+    assert shown == {"s.start": ("usize", "unsigned long"), "s.end": ("i32", "int")}, found
+    # The table shows the Rust names.
+    argv = ["probe", str(crate), "--at", f"src/main.rs:{line}", "--capture", "s.start", "--quiet"]
+    assert main([*argv, *ARGS]) == 0
+    assert " s.start   usize " in capsys.readouterr().out
