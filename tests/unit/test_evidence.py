@@ -214,7 +214,13 @@ def test_canned_queries_answer_comparisons(store):
     evidence._ensure(store).close()
     for name in evidence.QUERIES:
         params = {"selector": "start"} if name == "values" else {}
-        if name in ("compare", "diff", "outputs"):
+        params = {"key": "start"} if name == "join" else params
+        if name == "wide":
+            # Its columns come from a run: with none, it says so.
+            with pytest.raises(ValueError, match="no saved run;"):
+                evidence.run_query(store, name, params)
+            continue
+        if name in ("compare", "diff", "outputs", "join"):
             # Nothing to compare: said plainly, never an empty or one-sided comparison.
             with pytest.raises(ValueError, match="comparing needs two saved runs"):
                 evidence.run_query(store, name, params)
@@ -260,6 +266,7 @@ def test_canned_queries_answer_comparisons(store):
         "line": 8,
         "value": "3",
         "seen": 2,
+        "qualified": 0,
         "runs": 2,
         "first_run": 1,
         "last_run": 2,
@@ -274,6 +281,8 @@ def test_canned_queries_answer_comparisons(store):
             "selector": "start",
             "observed": "3",
             "after_set": "0",
+            "caveat_observed": None,
+            "caveat_after_set": None,
             "interventions": "start: 3 -> 0",
         }
     ]
@@ -1128,3 +1137,425 @@ def test_the_notes_example_matches_overloads_as_sql_does(store):
     assert "twice(int)" in text and "short_function(function) = 'twice'" in text, text
     sql = "SELECT count(*) AS n FROM captures WHERE short_function(function) = 'twice'"
     assert evidence.query(store, sql)["rows"] == [{"n": 4}]
+
+
+def test_wide_gives_one_row_per_hit_with_a_column_per_selector(store):
+    # #139 (sixth evaluation): one row per hit took three-way self-joins on captures.
+    selectors = ("now", "w.start", "bins[3].hi", 'ages["al"]', "d['k']", "line")
+    rows = []
+    for hit, now in enumerate(("0", "1", "10"), 1):
+        rows += [(hit, "observed", selector, f"{now}{i}") for i, selector in enumerate(selectors)]
+    rows.append((2, "after-set", "now", "7"))
+    recorded = captured(rows, set=[["now", "7"]])
+    # No value at hit 2 (withheld: never shown as one); none captured at hit 3; stale.
+    recorded["rows"][7] = dict(hit=2, phase="observed", line=8, selector="w.start", error="gone")
+    del recorded["rows"][14]
+    recorded["rows"][2]["view"] = "stale"
+    recorded["rows"][1]["view"] = "memory"
+    evidence.record(store, recorded)
+    evidence.record(store, captured([(1, "observed", "x", "1")]))
+    wide = evidence.run_query(store, "wide", {"run": 1})
+    assert wide["columns"] == [
+        "hit",
+        "phase",
+        "line",
+        *selectors[:-1],
+        "line (selector)",
+        "no_value",
+        "caveats",
+    ]
+    shown = [
+        (row["hit"], row["phase"], row["now"], row["w.start"], row["bins[3].hi"], row["no_value"])
+        for row in wide["rows"]
+    ]
+    assert shown == [
+        (1, "observed", "00", "01", "02", None),
+        (2, "observed", "10", None, "12", '{"w.start":"gone"}'),
+        (2, "after-set", "7", None, None, None),
+        (3, "observed", "100", "101", None, None),
+    ]
+    assert [row["caveats"] for row in wide["rows"]] == ['{"bins[3].hi":"stale"}', None, None, None]
+    assert wide["rows"][0]['ages["al"]'] == "03" and wide["rows"][0]["d['k']"] == "04"
+    assert wide["rows"][0]["line (selector)"] == "05" and wide["rows"][0]["line"] == 8
+    # The SQL it ran, to refine with peeky sql: the same rows.
+    assert evidence.query(store, wide["sql"])["rows"] == wide["rows"]
+    observed = evidence.run_query(store, "wide", {"run": 1, "phase": "observed"})["rows"]
+    assert [row["phase"] for row in observed] == ["observed"] * 3
+    # The newest run by default.
+    assert evidence.run_query(store, "wide")["columns"][3] == "x"
+    with pytest.raises(ValueError, match="no saved run 9"):
+        evidence.run_query(store, "wide", {"run": 9})
+    with pytest.raises(ValueError, match="phase is observed or after-set"):
+        evidence.run_query(store, "wide", {"phase": "later"})
+    # A cell holds one value: a selector read twice at a hit must have read the same.
+    evidence.record(store, captured([(1, "observed", "v", "1"), (1, "observed", "v", "1")]))
+    assert [row["v"] for row in evidence.run_query(store, "wide")["rows"]] == ["1"]
+    evidence.record(store, captured([(1, "observed", "v", "1"), (1, "observed", "v", "2")]))
+    with pytest.raises(ValueError, match="'v' more than once at hit 1 .*different values"):
+        evidence.run_query(store, "wide")
+    # 95 selectors fit in 100 columns; more are refused, never cut short.
+    many = [(1, "observed", f"s{i}", str(i)) for i in range(96)]
+    evidence.record(store, captured(many[:95]))
+    assert len(evidence.run_query(store, "wide")["columns"]) == 100
+    evidence.record(store, captured(many))
+    with pytest.raises(ValueError, match="wide would have 101 columns, more than 100"):
+        evidence.run_query(store, "wide")
+
+
+def test_join_links_two_runs_by_a_selectors_value(store):
+    # #139: linking run 3 to run 4 by `v` took a correlated subquery; diff pairs by hit.
+    first = captured(
+        [
+            (1, "observed", "v", "7"),
+            (1, "observed", "bin", "3"),
+            (2, "observed", "v", "2"),
+            (2, "observed", "bin", "1"),
+            (3, "observed", "v", "5"),
+            (3, "observed", "bin", "2"),
+            (4, "observed", "v", "9"),
+            (4, "observed", "bin", "4"),
+        ]
+    )
+    first["rows"][6] = dict(hit=4, phase="observed", line=8, selector="v", error="gone")
+    evidence.record(store, first)
+    second = captured(
+        [
+            (1, "observed", "v", "2"),
+            (1, "observed", "tests", "1"),
+            (2, "observed", "v", "7"),
+            (2, "observed", "tests", "4"),
+            (3, "observed", "v", "7"),
+            (3, "observed", "tests", "5"),
+            (4, "observed", "v", "8"),
+            (4, "observed", "tests", "2"),
+        ]
+    )
+    evidence.record(store, second)
+    joined = evidence.run_query(store, "join", {"key": "v"})
+    assert joined["columns"] == [
+        "v",
+        "hit_a",
+        "hit_b",
+        "a:bin",
+        "b:tests",
+        "no_value_a",
+        "no_value_b",
+        "caveats_a",
+        "caveats_b",
+        "matched",
+    ]
+    shown = [
+        (row["v"], row["hit_a"], row["hit_b"], row["a:bin"], row["b:tests"], row["matched"])
+        for row in joined["rows"]
+    ]
+    # A value at several hits pairs each of them; then each run's unpaired hits, a hit
+    # whose key has no value among them (no_value_a says why).
+    assert shown == [
+        ("7", 1, 2, "3", "4", "both"),
+        ("7", 1, 3, "3", "5", "both"),
+        ("2", 2, 1, "1", "1", "both"),
+        ("5", 3, None, "2", None, "only in run a"),
+        (None, 4, None, "4", None, "only in run a"),
+        ("8", None, 4, None, "2", "only in run b"),
+    ]
+    assert json.loads(joined["rows"][4]["no_value_a"]) == {"v": "gone"}
+    assert evidence.query(store, joined["sql"])["rows"] == joined["rows"]
+    with pytest.raises(ValueError, match="join needs --param key=<value>"):
+        evidence.run_query(store, "join", {"a": 1, "b": 2})
+    with pytest.raises(ValueError, match="run 2 captured no 'bin'"):
+        evidence.run_query(store, "join", {"a": 1, "b": 2, "key": "bin"})
+    with pytest.raises(ValueError, match="comparing needs two saved runs"):
+        evidence.run_query(store, "join", {"a": 1, "b": 7, "key": "v"})
+
+
+def test_wide_and_join_name_every_qualified_cell_and_never_merge_columns(store):
+    # Review of #139 (PR #145, round 1): a C/C++ row's note (a `do` body's first line, a
+    # program using setjmp) was not stored, so wide showed `k=1` plain; a stale value
+    # that also had a view (`Some(40)`, active-variant) was stored with the view alone;
+    # `x` and `X` were one column to SQLite (join's `a:X:1` held x's values); no_value
+    # joined reasons with `; `, which reasons contain.
+    note = "may be the last pass's value, or leftovers on the first pass; read it on the next"
+    recorded = captured(
+        [
+            (1, "observed", "k", "1"),
+            (1, "observed", "x", "2"),
+            (1, "observed", "X", "101"),
+            (1, "observed", "h.o", "Some(40)"),
+            (1, "observed", "s", "[1, 2]"),
+            (1, "observed", "gone; here", None),
+        ]
+    )
+    rows = recorded["rows"]
+    rows[0]["note"] = note
+    rows[3].update(view="active-variant", stale=True, note="This is (or is inside) …")
+    rows[4]["view"] = "memory"
+    rows[5].update(error="no value yet: a; b", unavailable=True)
+    evidence.record(store, recorded)
+    stored = evidence.run_query(store, "run")["rows"]
+    assert [(row["selector"], row["view"], row["note"]) for row in stored] == [
+        ("k", None, note),
+        ("x", None, None),
+        ("X", None, None),
+        ("h.o", "stale", "This is (or is inside) …"),
+        ("s", "memory", None),
+        ("gone; here", None, None),
+    ]
+    wide = evidence.run_query(store, "wide")
+    assert wide["columns"] == [
+        "hit", "phase", "line", "k", "x", "X (2)", "h.o", "s", "gone; here", "no_value", "caveats"
+    ]  # fmt: skip
+    (row,) = wide["rows"]
+    assert (row["x"], row["X (2)"]) == ("2", "101")
+    assert json.loads(row["caveats"]) == {"k": "note", "h.o": "stale"}
+    assert json.loads(row["no_value"]) == {"gone; here": "no value yet: a; b"}
+    # Refined with peeky sql, each name is its own column.
+    refined = evidence.query(store, f'SELECT "x", "X (2)" FROM ({wide["sql"]})')["rows"]
+    assert refined == [{"x": "2", "X (2)": "101"}]
+
+    other = captured(
+        [(1, "observed", "k", "1"), (1, "observed", "x", "5"), (1, "observed", "X", "104")]
+    )
+    evidence.record(store, other)
+    joined = evidence.run_query(store, "join", {"key": "k"})
+    assert joined["columns"][:9] == [
+        "k", "hit_a", "hit_b", "a:x", "a:X (2)", "a:h.o", "a:s", "a:gone; here", "b:x"
+    ]  # fmt: skip
+    assert "b:X (2)" in joined["columns"]
+    (row,) = joined["rows"]
+    assert (row["a:x"], row["a:X (2)"], row["b:x"], row["b:X (2)"]) == ("2", "101", "5", "104")
+    # The key's own caveat too: a pair made on a value Peeky cannot vouch for says so.
+    assert json.loads(row["caveats_a"]) == {"k": "note", "h.o": "stale"}
+    assert row["caveats_b"] is None and "notes" not in joined
+
+
+def test_join_says_when_its_key_carries_addresses_and_can_mask_them(store):
+    # Review of #139 (low): `const char *name` is `0x… "apple"`, whose address differs
+    # between runs, so nothing paired and nothing said why.
+    first = captured(
+        [
+            (1, "observed", "name", '0x0000000100003f90 "apple"'),
+            (1, "observed", "n", "1"),
+            (2, "observed", "name", '0x0000000100003fa0 "pear"'),
+            (2, "observed", "n", "2"),
+        ]
+    )
+    second = captured(
+        [
+            (1, "observed", "name", '0x000000016fdff6a0 "pear"'),
+            (1, "observed", "n", "3"),
+            (2, "observed", "name", "0x0000000000000000"),
+            (2, "observed", "n", "4"),
+        ]
+    )
+    evidence.record(store, first, language="c")
+    evidence.record(store, second, language="c")
+    exact = evidence.run_query(store, "join", {"key": "name"})
+    assert [row["matched"] for row in exact["rows"]] == ["only in run a"] * 2 + [
+        "only in run b"
+    ] * 2
+    (note,) = exact["notes"]
+    assert "name's values carry addresses" in note and "--param masked=1" in note
+    assert "note: name's values carry addresses" in evidence.table(exact)
+    masked = evidence.run_query(store, "join", {"key": "name", "masked": 1})
+    assert "notes" not in masked
+    shown = [
+        (row["name"], row["a:name"], row["b:name"], row["a:n"], row["b:n"], row["matched"])
+        for row in masked["rows"]
+    ]
+    # NULL is not an address: it is never masked, so it pairs only with NULL.
+    assert shown == [
+        ('0x… "pear"', '0x0000000100003fa0 "pear"', '0x000000016fdff6a0 "pear"', "2", "3", "both"),
+        ('0x… "apple"', '0x0000000100003f90 "apple"', None, "1", None, "only in run a"),
+        ("0x0000000000000000", None, "0x0000000000000000", None, "4", "only in run b"),
+    ]
+    assert evidence.query(store, masked["sql"])["rows"] == masked["rows"]
+    with pytest.raises(ValueError, match="masked is 1"):
+        evidence.run_query(store, "join", {"key": "name", "masked": "yes"})
+
+
+def test_a_schema_7_store_gains_notes(store):
+    # Review of #139: rows' notes are kept from schema 8; earlier runs have none.
+    evidence.record(store, captured([(1, "observed", "k", "1")]))
+    connection = sqlite3.connect(store)
+    if "notes_kept" in {row[1] for row in connection.execute("PRAGMA table_info(runs)")}:
+        connection.execute("ALTER TABLE runs DROP COLUMN notes_kept")
+    connection.executescript(
+        """
+        DROP VIEW last_run; DROP VIEW evidence;
+        ALTER TABLE captures DROP COLUMN note;
+        CREATE VIEW evidence AS SELECT c.run_id, r.started_at, r.label, r.program,
+            c.line, r.status, c.hit, c.phase, c.function, c.selector, c.type, c.value, c.num,
+            c.unavailable, c.error, c.view, c.identity, c.scope, r.args, r.sets,
+            r.artifact_manifest_id, r.source_sha256, r.edit IS NOT NULL AS candidate,
+            r.language FROM captures c JOIN runs r ON r.run_id = c.run_id;
+        CREATE VIEW last_run AS SELECT * FROM evidence
+            WHERE run_id = (SELECT MAX(run_id) FROM runs);
+        PRAGMA user_version = 7;
+        """
+    )
+    connection.close()
+    assert evidence.query(store, "SELECT selector, note FROM last_run")["rows"] == [
+        {"selector": "k", "note": None}
+    ]
+    recorded = captured([(1, "observed", "k", "2")])
+    recorded["rows"][0]["note"] = "may be the last pass's value"
+    evidence.record(store, recorded)
+    assert evidence.query(store, "SELECT selector, note FROM last_run")["rows"] == [
+        {"selector": "k", "note": "may be the last pass's value"}
+    ]
+    # Review 2 of #139: run 1's values may be unmarked, and each query showing them says
+    # so (its probe's notes were not kept); run 2's were.
+    for name, params in (("run", {"run": 1}), ("wide", {"run": 1}), ("hits", {"run": 1})):
+        (note,) = evidence.run_query(store, name, params)["notes"]
+        assert note.startswith("run 1 was saved before Peeky kept notes"), (name, note)
+    for name in ("diff", "compare"):
+        assert evidence.run_query(store, name)["notes"][0].startswith("run 1 was saved")
+    joined = evidence.run_query(store, "join", {"key": "k"})
+    assert joined["notes"][0].startswith("run 1 was saved before Peeky kept notes")
+    assert "notes" not in evidence.run_query(store, "wide", {"run": 2})
+    assert "note: run 1 was saved" in evidence.table(evidence.run_query(store, "run", {"run": 1}))
+    values = evidence.run_query(store, "values", {"selector": "k"})
+    assert values["notes"][0].startswith("run 1 was saved")
+    connection = sqlite3.connect(store)
+    assert connection.execute("PRAGMA user_version").fetchone() == (evidence.SCHEMA_VERSION,)
+    connection.close()
+
+
+def test_qualified_values_are_never_counted_as_divergences_changes_or_sightings(store):
+    # Review 2 of #139 (PR #145): on a C `do` body's first line, two runs' leftovers in
+    # `k` and `v` came first in diff (`k 1927662298 vs 547973539`, note NULL) although
+    # the computation and output were the same; hits computed `changed` from them and
+    # values counted them.
+    leftover = "may be the last pass's value, or leftovers on the first pass"
+    runs = (("1927662298", "1005", "7"), ("547973539", "4005", "8"))
+    for k, v, r in runs:
+        recorded = captured(
+            [
+                (1, "observed", "k", k),
+                (1, "observed", "v", v),
+                (2, "observed", "k", "2"),
+                (2, "observed", "v", "3"),
+                (2, "observed", "r", r),
+                (3, "observed", "v", "3"),
+                (3, "observed", "h.n", "9"),
+            ]
+        )
+        for row in recorded["rows"][:2]:
+            row["note"] = leftover
+        recorded["rows"][6]["stale"] = True
+        recorded["rows"][6]["value"] = "9" if r == "7" else "12"
+        evidence.record(store, recorded, language="c")
+    diff = evidence.run_query(store, "diff")["rows"]
+    shown = [(row["hit"], row["selector"], row["note"]) for row in diff]
+    qualified = (
+        "qualified (run a: note, run b: note): not evidence by itself; queries run shows why"
+    )
+    # The real divergence first; then values a note or a view qualifies.
+    assert shown == [
+        (2, "r", None),
+        (1, "k", qualified),
+        (1, "v", qualified),
+        (3, "h.n", qualified.replace("a: note, run b: note", "a: stale, run b: stale")),
+    ], shown
+    compare = evidence.run_query(store, "compare")["rows"]
+    assert {row["selector"]: row["note"] for row in compare if row["hit"] == 2} == {
+        "k": None,
+        "v": None,
+        "r": None,
+    }
+    hits = evidence.run_query(store, "hits", {"run": 1, "selector": "v"})["rows"]
+    assert [(row["value"], row["caveat"], row["changed"]) for row in hits] == [
+        ("1005", "note", None),
+        ("3", None, None),
+        ("3", None, 0),
+    ]
+    values = evidence.run_query(store, "values", {"selector": "v"})["rows"]
+    assert [(row["value"], row["seen"], row["qualified"]) for row in values] == [
+        ("3", 4, 0),
+        ("1005", 1, 1),
+        ("4005", 1, 1),
+    ]
+
+
+def test_masking_leaves_quoted_text_alone(store):
+    # Review 2 of #139: masked=1 paired `"0x00000001deadbeef"` with `"0x00000002cafebabe"`
+    # (a char[32], no address), and the address note fired for it.
+    first = captured(
+        [
+            (1, "observed", "buf", '"0x00000001deadbeef"'),
+            (1, "observed", "name", '0x000000016fdff6a0 "0x00000001deadbeef"'),
+        ]
+    )
+    second = captured(
+        [
+            (1, "observed", "buf", '"0x00000002cafebabe"'),
+            (1, "observed", "name", '0x000000016fdff6b0 "0x00000002cafebabe"'),
+        ]
+    )
+    evidence.record(store, first, language="c")
+    evidence.record(store, second, language="c")
+    exact = evidence.run_query(store, "join", {"key": "buf"})
+    assert "notes" not in exact
+    masked = evidence.run_query(store, "join", {"key": "buf", "masked": 1})
+    assert [row["matched"] for row in masked["rows"]] == ["only in run a", "only in run b"]
+    masked = evidence.run_query(store, "join", {"key": "name", "masked": 1})
+    assert [row["matched"] for row in masked["rows"]] == ["only in run a", "only in run b"]
+    # diff: a different text is a real difference, not an address-only one.
+    diff = {row["selector"]: row["note"] for row in evidence.run_query(store, "diff")["rows"]}
+    assert diff == {"buf": None, "name": None}
+    assert evidence._no_addresses('0x000000016fdff6a0 "0x00000001deadbeef"') == (
+        '0x… "0x00000001deadbeef"'
+    )
+    assert evidence._no_addresses("'0x00000001deadbeef'") == "'0x00000001deadbeef'"
+    assert evidence._no_addresses("<Node object at 0x104a5b2c0>") == "<Node object at 0x…>"
+    assert evidence._no_addresses('"x at 0x00000001deadbeef"', "java") == (
+        '"x at 0x00000001deadbeef"'
+    )
+
+
+def test_a_qualified_value_says_so_whatever_else_its_diff_row_says(store):
+    # Review 3 of #139 (PR #145): one note per row, and `missing in run b`, `intervention
+    # only in run a` and `type …` won over `qualified`, so a noted leftover read plain
+    # (and came first).
+    def run(hits, extra=False, typed="int", sets=False):
+        rows = []
+        for hit in range(1, hits + 1):
+            k = str(hit * 7 + (typed == "long"))
+            rows += [(hit, "observed", "n", str(hit)), (hit, "observed", "k", k)]
+        if extra:
+            rows.append((1, "observed", "extra", "5"))
+        if sets:
+            rows += [(2, "after-set", "n", "1"), (2, "after-set", "k", "0")]
+        recorded = captured(rows, set=[["n", "1"]] if sets else [])
+        for row in recorded["rows"]:
+            row["type"] = typed if row["selector"] == "k" else "int"
+            if row["selector"] in ("k", "extra"):
+                row["note"] = "may be the last pass's value, or leftovers on the first pass"
+        return recorded
+
+    evidence.record(store, run(3, extra=True))
+    evidence.record(store, run(2, typed="long"))
+    qualified = "qualified (run a: note): not evidence by itself; queries run shows why"
+    diff = evidence.run_query(store, "diff")["rows"]
+    shown = [(row["hit"], row["selector"], row["note"]) for row in diff]
+    assert shown == [
+        (3, "n", "missing in run b"),
+        (1, "k", "type int -> long; " + qualified.replace("a: note", "a: note, run b: note")),
+        (2, "k", "type int -> long; " + qualified.replace("a: note", "a: note, run b: note")),
+        (3, "k", "missing in run b; " + qualified),
+        (1, "extra", "only in run a (one row per selector: its first hit); " + qualified),
+    ], shown
+    compare = evidence.run_query(store, "compare")["rows"]
+    assert {(row["hit"], row["selector"]): row["note"] for row in compare}[3, "k"] == (
+        "missing in run b; " + qualified
+    )
+
+    evidence.record(store, run(2, sets=True))
+    evidence.record(store, run(2))
+    diff = evidence.run_query(store, "diff")["rows"]
+    shown = [(row["hit"], row["phase"], row["selector"], row["note"]) for row in diff]
+    assert shown == [
+        (None, None, "(sets)", "the runs made different interventions (--set)"),
+        (2, "after-set", "n", "intervention only in run a"),
+        (2, "after-set", "k", "intervention only in run a; " + qualified),
+    ], shown
