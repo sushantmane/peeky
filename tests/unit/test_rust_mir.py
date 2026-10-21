@@ -2606,3 +2606,62 @@ def test_only_types_that_provably_hold_no_pointer_are_free(kind, free):
 
     assert _pointer_free(kind, ("T",)) is free
     assert _pointer_free("usize", None) is False
+
+
+@pytest.mark.parametrize(
+    "kind, quiet",
+    [
+        ("&str", True),
+        ("std::vec::Vec<&str>", True),
+        ("std::option::Option<&str>", True),
+        ("std::str::Chars<'_>", True),
+        ("std::collections::HashMap<&str, i32>", True),
+        # A drop that may read what it borrows (#164 review 3).
+        ("Guard<'_>", False),
+        ("std::boxed::Box<dyn std::ops::Fn() -> usize>", False),
+        ("std::string::Drain<'_>", False),
+        ("{closure@src/main.rs:3:9: 3:11}", False),
+        ("T", False),
+        (None, False),
+    ],
+)
+def test_only_drops_that_cannot_read_a_borrow_are_quiet(kind, quiet):
+    from peeky.rust_mir import _quiet_drop
+
+    assert _quiet_drop(kind, ("T",)) is quiet
+
+
+def test_crate_types_whose_fields_hold_no_pointer_are_free():
+    # #164 review 3: `Vec<Span>` with `Span { start: u32, end: u32 }` holds no borrow.
+    from peeky.rust import free_types
+    from peeky.rust_mir import _pointer_free
+
+    def die(tag, name=None, kind=None, children=(), parent=None):
+        attrs = {}
+        if name:
+            attrs["DW_AT_name"] = f'"{name}"'
+        if kind is not None:
+            attrs["DW_AT_type"] = f"0x{kind:08x}"
+        return {"tag": tag, "attrs": attrs, "children": list(children), "parent": parent}
+
+    dies = {
+        1: die("DW_TAG_namespace", "spans", children=[10, 20, 30, 40]),
+        2: die("DW_TAG_base_type", "u32"),
+        3: die("DW_TAG_pointer_type", "*const u8", kind=2),
+        10: die("DW_TAG_structure_type", "Span", children=[11, 12], parent=1),
+        11: die("DW_TAG_member", "start", kind=2, parent=10),
+        12: die("DW_TAG_member", "end", kind=2, parent=10),
+        20: die("DW_TAG_structure_type", "Pointing", children=[21], parent=1),
+        21: die("DW_TAG_member", "at", kind=3, parent=20),
+        30: die("DW_TAG_structure_type", "Pair", children=[31], parent=1),
+        31: die("DW_TAG_member", "inner", kind=10, parent=30),
+        # A type that holds itself is not assumed to hold no pointer.
+        40: die("DW_TAG_structure_type", "Loop", children=[41], parent=1),
+        41: die("DW_TAG_member", "again", kind=40, parent=40),
+    }
+    found = free_types(dies)
+    assert {"Span", "spans::Span", "Pair", "spans::Pair"} <= found, found
+    assert not {"Pointing", "Loop"} & found, found
+    assert _pointer_free("std::vec::Vec<Span>", (), found) is True
+    assert _pointer_free("std::vec::Vec<Span>", ()) is False
+    assert _pointer_free("std::vec::Vec<Pointing>", (), found) is False

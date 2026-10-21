@@ -808,6 +808,101 @@ _CHAR_POINTER = re.compile(
 _ADDRESS = re.compile(r"(0x[0-9a-fA-F]+)(?:\s|$)")
 
 
+# The standard types whose own fields Peeky does not read (#164): each holds no pointer
+# but what its type arguments hold (as its MIR name, rust_mir._FREE_PATHS).
+_FREE_RECORDS = frozenset(
+    {
+        "alloc::string::String",
+        "alloc::vec::Vec",
+        "alloc::boxed::Box",
+        "alloc::collections::vec_deque::VecDeque",
+        "alloc::collections::btree::map::BTreeMap",
+        "alloc::collections::btree::set::BTreeSet",
+        "alloc::rc::Rc",
+        "alloc::sync::Arc",
+        "alloc::alloc::Global",
+        "core::option::Option",
+        "core::result::Result",
+        "core::cell::Cell",
+        "core::cell::RefCell",
+        "std::collections::hash::map::HashMap",
+        "std::collections::hash::set::HashSet",
+        "std::hash::random::RandomState",
+    }
+)
+
+
+def free_types(dies):
+    """The names (as the MIR prints them, `Span`, and qualified, `spans::Span`) of the
+    crate's own types with no type parameters whose fields, read from the debug
+    information, provably hold no pointer (#164): numbers, arrays and the crate's own
+    such types, and the standard containers of them (``_FREE_RECORDS``, by their type
+    arguments). A name two types share is kept only if both hold none. A type that
+    holds itself (through a `Box`) is not counted: Peeky does not assume its answer."""
+    from peeky.fields import _target
+    from peeky.native import _qualified, _text
+
+    memo, pending = {}, set()
+
+    def target(die):
+        return _target(die["attrs"].get("DW_AT_type"))
+
+    def members(die):
+        for child in die["children"]:
+            tag = dies[child]["tag"]
+            if tag == "DW_TAG_member":
+                yield child
+            elif tag in ("DW_TAG_variant_part", "DW_TAG_variant"):
+                yield from members(dies[child])
+
+    def free(offset, depth=0):
+        if offset in memo:
+            return memo[offset]
+        die = dies.get(offset)
+        if die is None or depth > 64 or offset in pending:
+            return False
+        tag = die["tag"]
+        if tag in ("DW_TAG_typedef", "DW_TAG_const_type", "DW_TAG_volatile_type"):
+            return free(target(die), depth + 1)
+        if tag in ("DW_TAG_base_type", "DW_TAG_enumeration_type"):
+            return True
+        if tag == "DW_TAG_array_type":
+            return free(target(die), depth + 1)
+        if tag != "DW_TAG_structure_type" or "DW_AT_declaration" in die["attrs"]:
+            return False
+        pending.add(offset)
+        qualified = _qualified(dies, offset) or ""
+        params = [
+            target(dies[child])
+            for child in die["children"]
+            if dies[child]["tag"] == "DW_TAG_template_type_parameter"
+        ]
+        if qualified.startswith(("std::", "core::", "alloc::")):
+            found = qualified.split("<", 1)[0] in _FREE_RECORDS and all(
+                free(param, depth + 1) for param in params
+            )
+        else:
+            found = not params and all(
+                free(target(dies[member]), depth + 1) for member in members(die)
+            )
+        pending.discard(offset)
+        memo[offset] = found
+        return found
+
+    verdicts = {}
+    for offset, die in dies.items():
+        if die["tag"] != "DW_TAG_structure_type" or "DW_AT_declaration" in die["attrs"]:
+            continue
+        qualified = _qualified(dies, offset) or ""
+        name = _text(die["attrs"].get("DW_AT_name")) or ""
+        if not name or "<" in name or qualified.startswith(("std::", "core::", "alloc::")):
+            continue
+        verdict = free(offset)
+        for each in {name, qualified}:
+            verdicts[each] = verdicts.get(each, True) and verdict
+    return frozenset(name for name, verdict in verdicts.items() if verdict)
+
+
 def _frame_hash(frame):
     # lldb-dap marks an optimized frame's name ` [opt]` (macOS).
     name = re.sub(r"\s*\[opt\]$", "", str((frame or {}).get("name") or ""))
@@ -1232,6 +1327,13 @@ class RustSession(NativeSession):
                 "initialized here (it may be moved, dropped or not yet assigned), and a "
                 "String's buffer may then be freed memory"
             )
+        if proofs.unsafe_code:
+            raise ValueError(
+                f"`{name}` cannot be changed to a text: the crate has `unsafe` code, where "
+                "a raw pointer or an address kept as an integer (`s.as_ptr() as usize`) "
+                "can still read the String's bytes at the old length, which no borrow "
+                "shows Peeky"
+            )
         # Before the line's first code (as `mid_statement` requires), or anywhere on it.
         start = stop == "breakpoint" or (stop == "step" and self._line_start(frame))
         lent = proofs.borrow_live(
@@ -1242,6 +1344,7 @@ class RustSession(NativeSession):
             breakpoint=start,
             column=place.get("column"),
             block=self._stop_block(hashed[1], frame),
+            free_types=self._free_types(),
         )
         if lent is not False:
             raise ValueError(
@@ -1923,6 +2026,19 @@ class RustSession(NativeSession):
             )
         return cached
 
+    def _free_types(self):
+        """The names of the crate's own types that hold no pointer (#164), for the borrow
+        check of a text change: read from the build's debug information once."""
+        found = self.__dict__.get("_free_cache")
+        if found is None:
+            try:
+                self._field_types()
+            except ValueError:
+                pass
+            found = self.__dict__.get("_free_cache") or frozenset()
+            self._free_cache = found
+        return found
+
     def _read_field_types(self):
         from peeky.fields import RUST_LIBRARIES, local_types, type_graph
         from peeky.native import _chain, _code_ranges, _first, _parse_dies, _text
@@ -1956,6 +2072,7 @@ class RustSession(NativeSession):
             # One hash, two bodies that disagree (never expected): neither is trusted.
             functions[hashed[1]] = types if functions.get(hashed[1], types) == types else None
             kinds.update(kind for each in (types or {}).values() for kind, _, _ in each)
+        self._free_cache = free_types(dies)
         return functions, type_graph(dies, kinds, RUST_LIBRARIES)
 
     def view_variable(

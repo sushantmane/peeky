@@ -168,19 +168,56 @@ _FREE_PATHS = frozenset(
 )
 
 
-def _pointer_free(kind, generics):
+# Standard views whose drop does nothing with what they borrow (#164); `Drain`,
+# `Splice`, `PeekMut` and guards are not among them.
+_QUIET_PATHS = frozenset(
+    f"{crate}::{path}"
+    for crate in ("std", "core")
+    for path in (
+        "str::Chars str::CharIndices str::Bytes str::Split str::SplitWhitespace "
+        "str::SplitN str::RSplit str::Lines str::Matches str::MatchIndices "
+        "slice::Iter slice::Windows slice::Chunks fmt::Arguments fmt::rt::Argument "
+        "iter::Enumerate iter::Rev iter::Skip iter::Take iter::Peekable "
+        "collections::hash_map::Keys collections::hash_map::Values "
+        "collections::hash_map::Iter ops::Range ops::RangeFrom ops::RangeTo "
+        "option::Option result::Result"
+    ).split()
+)
+
+
+def _pointer_free(kind, generics, free_types=frozenset()):
     """Whether a value of ``kind`` (a type as the MIR prints it) provably holds no
     pointer, so no borrow (#164): primitives, `String`, and arrays, tuples and the
-    standard containers of these. Not a reference, a raw pointer, a lifetime, a trait
-    object (`dyn Fn()`: the MIR prints no lifetime for it), an opaque `impl` type, a
-    closure or coroutine, a type parameter of ``generics`` (any, where they are not
-    known), an ADT of the program's own, or a type not known."""
+    standard containers of these, and the crate's own types ``free_types`` names (whose
+    fields the debug information shows hold none, see rust.RustSession._free_types). Not
+    a reference, a raw pointer, a lifetime, a trait object (`dyn Fn()`: the MIR prints no
+    lifetime for it), an opaque `impl` type, a closure or coroutine, a type parameter of
+    ``generics`` (any, where they are not known), another type of the crate's, or a
+    type not known."""
     if kind is None or generics is None or mentions(kind, generics):
         return False
     if re.search(r"[&*'{}]|\b(?:dyn|impl|fn|for)\b", kind):
         return False
     return all(
-        word in _PRIMITIVE_WORDS or word in _FREE_PATHS for word in _TYPE_WORDS.findall(kind)
+        word in _PRIMITIVE_WORDS or word in _FREE_PATHS or word in free_types
+        for word in _TYPE_WORDS.findall(kind)
+    )
+
+
+def _quiet_drop(kind, generics):
+    """Whether dropping a value of ``kind`` provably runs no code that reads what it
+    borrows (#164): references and raw pointers (no drop at all), and the standard
+    containers and views of them (`Vec<&str>`, `Option<&str>`, `std::str::Chars<'_>`),
+    whose drop frees only what they own. Not a type of the crate's (it may implement
+    `Drop`), a trait object, a closure, an `impl` type, a type parameter, a standard
+    type whose drop works on what it borrows (`Drain`), or a type not known."""
+    if kind is None or generics is None or mentions(kind, generics):
+        return False
+    if re.search(r"[{}]|\b(?:dyn|impl|fn|for)\b", kind):
+        return False
+    return all(
+        word in _PRIMITIVE_WORDS or word in _FREE_PATHS or word in _QUIET_PATHS
+        for word in _TYPE_WORDS.findall(_LIFETIME.sub("", kind))
     )
 
 
@@ -938,7 +975,7 @@ class Body:
         self._copies[local, formatting] = frozenset(holds)
         return self._copies[local, formatting]
 
-    def lent_from(self, local, generics=None):
+    def lent_from(self, local, generics=None, free_types=frozenset()):
         """The locals that may hold a pointer into ``local``'s storage or into what it
         owns (#164: a String's buffer): one assigned a borrow of it or of a place of it
         (`&_1`, `&mut (_1.0: T)`, `&raw const _1`), or a value that mentions such a local
@@ -951,7 +988,7 @@ class Body:
         known); a `usize` from `s.len()` holds none."""
         if self._lent_from is None:
             self._lent_from = {}
-        key = (local, generics)
+        key = (local, generics, free_types)
         if key in self._lent_from:
             return self._lent_from[key]
         assignments, borrows, sources = [], {}, {}
@@ -976,7 +1013,7 @@ class Body:
             return self.types.get(number)
 
         def pointing(number):
-            return not _pointer_free(kind(number), generics)
+            return not _pointer_free(kind(number), generics, free_types)
 
         def hidden_cell(number):
             # What a shared reference may still change: a `Cell`, a lock, a type of the
@@ -3215,8 +3252,30 @@ class OwnedLocals:
         held = _mask(body.copies_of(local, formatting=self._formatting()))
         return any(body.live_ahead(position) & held for position in positions)
 
+    @functools.cached_property
+    def unsafe_code(self):
+        """Whether the crate's sources use `unsafe` (#164): a raw pointer, or an address
+        kept as an integer (`s.as_ptr() as usize`), can then read a String's bytes in
+        ways no borrow shows. True where a source does not lex (an unterminated string
+        or comment)."""
+        from peeky.rust_lexer import code_only
+
+        for text in (self.texts or {}).values():
+            code = code_only(text)
+            if code is None or re.search(r"\bunsafe\b", code):
+                return True
+        return False
+
     def borrow_live(
-        self, hashed, variable_name, line, path, breakpoint=False, column=None, block=None
+        self,
+        hashed,
+        variable_name,
+        line,
+        path,
+        breakpoint=False,
+        column=None,
+        block=None,
+        free_types=frozenset(),
     ):
         """For the frame's owned local ``variable_name`` (a String a text change writes,
         #164): False if, from every place the stop can be on ``line`` of ``path``, no
@@ -3242,13 +3301,17 @@ class OwnedLocals:
             return None
         if breakpoint and not function.inline_only:
             positions = _first_places(body, function, positions)
-        lent = _mask(body.lent_from(local, self.type_parameters(hashed)))
-        # A drop uses what it drops (#164: a guard's `Drop` reads its `&str`), unless what
-        # it would drop was moved out before the stop (`drop(b);` then the scope's end).
+        generics = self.type_parameters(hashed)
+        found = body.lent_from(local, generics, free_types)
+        lent = _mask(found)
+        # A drop uses what it drops where its code may read a borrow (#164: a guard's
+        # `Drop`; not a `Vec<&str>`'s), unless what it would drop was moved out before the
+        # stop (`drop(b);` then the scope's end).
+        dropped = _mask(n for n in found if not _quiet_drop(body.types.get(n), generics))
         return any(
-            (body.live_ahead(position) | body.live_ahead(position, drops=True) & held) & lent
+            body.live_ahead(position) & lent
+            or body.live_ahead(position, drops=True) & body.maybe_initialized(position) & dropped
             for position in positions
-            for held in (body.maybe_initialized(position),)
         )
 
     def _formatting(self):

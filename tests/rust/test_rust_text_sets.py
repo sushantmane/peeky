@@ -196,7 +196,7 @@ def main_output(crate, capsys, at, name):
 
 HIDDEN = """use std::future::Future;
 use std::pin::Pin;
-use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
+use std::task::{Context, Poll, Waker};
 #[inline(never)]
 fn mark() {}
 #[inline(never)]
@@ -210,16 +210,10 @@ struct Held<'a> { t: &'a str }
 impl Show for Held<'_> { fn show(&self) -> usize { check("held", self.t) } }
 struct Guard<'a> { t: &'a str }
 impl Drop for Guard<'_> { fn drop(&mut self) { check("guard", self.t); } }
-fn noop_raw() -> RawWaker {
-    fn clone(_: *const ()) -> RawWaker { noop_raw() }
-    fn noop(_: *const ()) {}
-    static VT: RawWakerVTable = RawWakerVTable::new(clone, noop, noop, noop);
-    RawWaker::new(std::ptr::null(), &VT)
-}
-fn block_on<F: Future>(mut f: F) -> F::Output {
-    let waker = unsafe { Waker::from_raw(noop_raw()) };
-    let mut cx = Context::from_waker(&waker);
-    let mut f = unsafe { Pin::new_unchecked(&mut f) };
+fn block_on<F: Future>(f: F) -> F::Output {
+    // No `unsafe` (#164: a crate that has some takes no text).
+    let mut cx = Context::from_waker(Waker::noop());
+    let mut f = std::pin::pin!(f);
     loop { if let Poll::Ready(v) = f.as_mut().poll(&mut cx) { return v; } }
 }
 fn boxed() { let mut s = cap("abcdefghij");
@@ -277,3 +271,85 @@ def test_a_borrow_in_a_trait_object_or_a_guards_drop_is_never_missed(crate, caps
         assert code == 0, result.get("error")
     else:
         refusal(code, result, "cannot write memory")
+
+
+ADDRESSES = """#[derive(Debug, Clone, Copy)]
+struct Span { start: u32, end: u32 }
+#[derive(Debug)]
+struct Pointing { at: *const u8 }
+#[inline(never)]
+fn mark() {}
+fn spans(text: &str) -> Vec<Span> {
+    text.split(',').map(|p| { let (a, b) = p.split_once('-').unwrap(); Span { start: a.parse().unwrap(), end: b.parse().unwrap() } }).collect()
+}
+fn main() {
+    let mut text = String::with_capacity(32);
+    text.push_str("1-3,8-10");
+    let merged: Vec<Span> = spans(&text);
+    mark(); // SPANS
+    println!("MERGED:{:?}", merged);
+    let mut s = String::with_capacity(32);
+    s.push_str("abcdefghij");
+    let at = Pointing { at: s.as_ptr() };
+    mark(); // POINTING
+    println!("AT:{}", !at.at.is_null());
+    text.push('!');
+    s.push('!');
+}
+"""
+UNSAFE = """#[inline(never)]
+fn mark() {}
+fn main() {
+    let mut s = String::with_capacity(32);
+    s.push_str("abcdefghij");
+    let addr = s.as_ptr() as usize;
+    let len = s.len();
+    mark(); // ADDR
+    let t = unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts((addr + 2) as *const u8, len - 2)) };
+    println!("utf8={}", std::str::from_utf8(t.as_bytes()).is_ok());
+    s.push('!');
+}
+"""
+
+
+def probe_at(crate, capsys, text, marker, name):
+    at = next(i for i, line in enumerate(text.splitlines(), 1) if f"// {marker}" in line)
+    code = main(
+        ["probe", str(crate), "--at", f"src/main.rs:{at}", "--set", f'{name}="aé"', "--json"]
+    )
+    return code, json.loads(capsys.readouterr().out)
+
+
+@pytest.mark.timeout(400)
+def test_crate_types_without_pointers_and_quiet_drops_hold_no_borrow(crate, capsys):
+    # #164 review 3: `merged: Vec<Span>` (`Span` only `u32`s) counted as maybe holding a
+    # borrow of `text`, and a `Vec<&str>` dropped at the end of `main` as reading `b`.
+    (crate / "src/main.rs").write_text(ADDRESSES)
+    code, result = probe_at(crate, capsys, ADDRESSES, "SPANS", "text")
+    if WRITES:
+        assert code == 0 and "MERGED:[Span { start: 1, end: 3 }" in result["output"], result
+    else:
+        refusal(code, result, "cannot write memory")
+    # A type of the crate's that holds a pointer still counts.
+    code, result = probe_at(crate, capsys, ADDRESSES, "POINTING", "s")
+    refusal(code, result, "`s` cannot be changed to a text at this stop: a borrow of it")
+    # BORROWS' `v: Vec<&str>` holds `b` until `main` ends, but its drop never reads it.
+    (crate / "src/main.rs").write_text(BORROWS)
+    lines = BORROWS.splitlines()
+    after = next(i for i, line in enumerate(lines, 1) if "// MANY" in line) + 1
+    code = main(["probe", str(crate), "--at", f"src/main.rs:{after}", "--set", 'b="x"', "--json"])
+    result = json.loads(capsys.readouterr().out)
+    if WRITES:
+        assert code == 0, result.get("error")
+    else:
+        refusal(code, result, "cannot write memory")
+
+
+@pytest.mark.timeout(400)
+def test_a_crate_with_unsafe_code_takes_no_text(crate, capsys):
+    # #164 review 3: `s.as_ptr() as usize` holds no borrow the MIR shows, and `unsafe`
+    # code read the String through it after a change: bytes that are not UTF-8.
+    (crate / "src/main.rs").write_text(UNSAFE)
+    code, result = probe_at(crate, capsys, UNSAFE, "ADDR", "s")
+    refusal(code, result, "`s` cannot be changed to a text: the crate has `unsafe` code")
+    assert "utf8=false" not in (result.get("output") or ""), result
