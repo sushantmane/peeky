@@ -98,3 +98,35 @@ def test_a_probe_with_gcc_for_cpp_keeps_no_run(tmp_path, monkeypatch, capsys):
     assert shown["error"]["message"].startswith(CPP_COMPILER_REFUSAL)
     assert "evidence" not in shown and shown.get("refused_before_launch") is True
     assert not (tmp_path / "state" / "evidence" / "evidence.db").exists()
+
+
+def test_a_compiler_that_never_answers_is_ended_with_its_children(tmp_path, monkeypatch):
+    # PR #171 review: the timeout killed only the wrapper; its own child (`sleep 60`)
+    # kept running. `--version` runs in a group of its own, ended whole.
+    import time
+
+    from peeky import native
+
+    monkeypatch.setattr(native, "VERSION_TIMEOUT", 0.5)
+    child = tmp_path / "child.pid"
+    wrapper = tmp_path / "slow++"
+    wrapper.write_text(f"#!/bin/sh\nsleep 60 &\necho $! > '{child}'\nsleep 60\n")
+    wrapper.chmod(wrapper.stat().st_mode | stat.S_IXUSR)
+    began = time.monotonic()
+    assert compiler_family(str(wrapper)) == "timeout"
+    assert time.monotonic() - began < 10
+    from peeky import processes
+
+    pid = int(child.read_text())
+    deadline = time.monotonic() + 5
+    # Gone, or a zombie its new parent has yet to reap (a container's init may not).
+    while processes.alive((processes.table() or {}).get(pid)):
+        if time.monotonic() > deadline:
+            os.kill(pid, 9)
+            raise AssertionError("the wrapper's child outlived the timeout")
+        time.sleep(0.05)
+    # Not kept: a compiler slow once (a loaded host) is asked again next time.
+    assert not any(key[0] == str(wrapper) for key in native._FAMILIES)
+    with pytest.raises(ValueError) as refused:
+        target(wrapper)._compile_flags()
+    assert "timed out: no answer to --version within 0.5 s" in str(refused.value)

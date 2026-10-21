@@ -14,6 +14,7 @@ import os
 import posixpath
 import re
 import shutil
+import signal
 import struct
 import subprocess
 import sys
@@ -60,6 +61,8 @@ def _tool(name):
 
 # What each compiler's `--version` says it is (#167): {(path, mtime, size): family}.
 _FAMILIES = {}
+# How long a compiler may take to say what it is; past it, its whole group is ended.
+VERSION_TIMEOUT = 10
 _FAMILIES_LOCK = threading.Lock()
 CPP_COMPILER_REFUSAL = (
     "C++ targets need clang++ (Peeky's C++ rules are checked against clang's debug "
@@ -70,7 +73,9 @@ CPP_COMPILER_REFUSAL = (
 def compiler_family(path):
     """ "clang", "gcc" or "unknown": what ``<path> --version`` says the compiler is,
     asked once per compiler file (its path, modification time and size), never guessed
-    from its name (`c++` and `g++` are often clang, `clang++` a wrapper)."""
+    from its name (`c++` and `g++` are often clang, `clang++` a wrapper). "timeout" if
+    it did not answer within VERSION_TIMEOUT (not kept: asked again next time); it runs
+    in a process group of its own, which is ended then, a wrapper's children too."""
     try:
         stat = os.stat(path)
     except OSError:
@@ -80,19 +85,34 @@ def compiler_family(path):
         if key in _FAMILIES:
             return _FAMILIES[key]
     try:
-        done = subprocess.run(
+        process = subprocess.Popen(
             [str(path), "--version"],
             stdin=subprocess.DEVNULL,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
             errors="replace",
-            timeout=10,
             env={**os.environ, "LC_ALL": "C"},
-            check=False,
+            start_new_session=True,
         )
-        said = f"{done.stdout}\n{done.stderr}"
-    except (OSError, subprocess.SubprocessError):
-        said = ""
+    except OSError:
+        process, said = None, ""
+    if process is not None:
+        try:
+            out, err = process.communicate(timeout=VERSION_TIMEOUT)
+            said = f"{out}\n{err}"
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+            # Reaped, never read to the end: a process that left the group could hold
+            # the pipes open.
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                process.wait(timeout=5)
+            process.stdout.close()
+            process.stderr.close()
+            return "timeout"
     if re.search(r"\bclang version\b", said):
         family = "clang"
     elif re.search(
@@ -2192,11 +2212,11 @@ class NativeTarget:
         if self.language == "cpp":
             compiler = _tool(self.compiler)
             if (family := compiler_family(compiler)) != "clang":
-                refused = ValueError(
-                    f"{CPP_COMPILER_REFUSAL} ({compiler} is "
-                    + ("GCC" if family == "gcc" else "not clang, by its --version")
-                    + ")"
-                )
+                said = {
+                    "gcc": "is GCC",
+                    "timeout": f"timed out: no answer to --version within {VERSION_TIMEOUT} s",
+                }.get(family, "is not clang, by its --version")
+                refused = ValueError(f"{CPP_COMPILER_REFUSAL} ({compiler} {said})")
                 # Nothing was built or run: no run is kept as evidence.
                 refused.before_launch = True
                 raise refused
