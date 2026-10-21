@@ -45,15 +45,32 @@ _DECLARES = (
     ),
 )
 _SPILL = re.compile(r"\.dbg\.spill")
-_IR_ESCAPE = re.compile(rb"\\([0-9A-Fa-f]{2})")
+# What LLVM IR writes as it is in a string: printable ASCII but `"` and `\\`.
+_IR_PLAIN = re.compile(r"[ !#-\[\]-~]*")
+_IR_ESCAPE = re.compile(r"\\([0-9A-Fa-f]{2})")
 
 
 def ir_string(text):
-    """An LLVM IR string's text: LLVM writes a quote, a backslash and every unprintable
-    byte (any non-ASCII one) as `\\` and two hex digits (`src/x\\E2\\80\\A8y.rs`, a
-    variable `gr\\C3\\B6\\C3\\9Fe`; #179)."""
-    raw = _IR_ESCAPE.sub(lambda found: bytes([int(found[1], 16)]), text.encode("utf-8"))
-    return raw.decode("utf-8", errors="replace")
+    """An LLVM IR string's text (without its quotes), or None where it is none LLVM
+    writes: LLVM writes a quote, a backslash and every unprintable byte (any non-ASCII
+    one) as `\\` and two hex digits (`src/x\\E2\\80\\A8y.rs`, a variable
+    `gr\\C3\\B6\\C3\\9Fe`; #179), so any other `\\` (`\\q`), anything else unescaped, and
+    bytes that are not UTF-8 (`\\FF`) are refused, never read as another name (#188
+    review)."""
+    found, at = bytearray(), 0
+    while True:
+        plain = _IR_PLAIN.match(text, at)
+        found += plain[0].encode("ascii")
+        if (at := plain.end()) == len(text):
+            break
+        if (escape := _IR_ESCAPE.match(text, at)) is None:
+            return None
+        found.append(int(escape[1], 16))
+        at = escape.end()
+    try:
+        return found.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
 
 
 _HASH = re.compile(r"17(h[0-9a-f]{16})E$")
@@ -85,19 +102,22 @@ def ir_locals(path, declarations=None):
     if path.stat().st_size > MAX_IR_BYTES:
         return {}, {}
     entries, declares = {}, []
-    with path.open(encoding="utf-8", errors="replace") as stream:
+    # Bytes not UTF-8 stay apart (surrogates ir_string refuses), never one `\ufffd`.
+    with path.open(encoding="utf-8", errors="surrogateescape", newline="") as stream:
         for line in stream:
             if line.startswith("!"):
                 match = _ENTRY.match(line)
                 if match:
                     fields = {key: pattern.search(match[3]) for key, pattern in _FIELD.items()}
+                    values = {
+                        key: ir_string(found[1]) if key in ("name", "linkage") else found[1]
+                        for key, found in fields.items()
+                        if found
+                    }
+                    # A name LLVM does not write proves nothing (#188 review).
                     entries[match[1]] = (
                         match[2],
-                        {
-                            key: ir_string(found[1]) if key in ("name", "linkage") else found[1]
-                            for key, found in fields.items()
-                            if found
-                        },
+                        {key: value for key, value in values.items() if value is not None},
                     )
                 continue
             if "dbg" not in line:

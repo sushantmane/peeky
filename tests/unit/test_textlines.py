@@ -22,12 +22,22 @@ def octal(name):
     )
 
 
-@pytest.mark.parametrize("text", ["", "a", "a\n", "a\n\n", "a\r\nb", "\n", "a\nb\r\n", "x\r"])
+@pytest.mark.parametrize("text", ["", "a", "a\n", "a\n\n", "a\r\nb", "\n", "a\nb\r\n"])
 def test_lines_end_where_splitlines_ends_them_at_a_newline(text):
     from peeky.textlines import split_lines
 
     assert split_lines(text) == text.splitlines()
     assert split_lines(text, keepends=True) == text.splitlines(keepends=True)
+
+
+@pytest.mark.parametrize(
+    "text, lines", [("x\r", ["x\r"]), ("a\rb\nc\r", ["a\rb", "c\r"]), ("a\r\n", ["a"])]
+)
+def test_a_lone_carriage_return_is_part_of_its_line(text, lines):
+    # #188 review: only a `\r` ending a chunk that `\n` ends goes with it.
+    from peeky.textlines import split_lines
+
+    assert split_lines(text) == lines
 
 
 @pytest.mark.parametrize("separator", BREAKS)
@@ -173,3 +183,129 @@ def test_an_inline_assembly_refusal_names_its_file_with_any_character():
     printed = octal("dir/a\u2028b.c")
     output = f'# 1 "{printed}"\n__asm__(".incbin \\"x\\"");\n'.encode()
     assert "the asm at dir/a\u2028b.c:1 uses `.incbin`" in str(c_refusal(output, False))
+
+
+@pytest.mark.parametrize(
+    "text, rust, lines",
+    [
+        ("a\rb\nc\n", True, ["a\rb", "c"]),
+        ("a\rb\nc\n", False, ["a", "b", "c"]),
+        ("a\r\nb\r\n", True, ["a", "b"]),
+        ("a\r\nb\r\n", False, ["a", "b"]),
+        ("a\fb\vc\n", False, ["a\fb\vc"]),
+    ],
+)
+def test_a_source_has_the_lines_its_compiler_counts(text, rust, lines):
+    # #188 review: rustc ends a line at `\n` alone; clang (and javac, Python) also at a
+    # lone `\r`; neither at a form feed or vertical tab.
+    from peeky.textlines import source_lines
+
+    assert source_lines(text, rust) == lines
+
+
+def test_a_line_table_is_checked_against_each_compilers_count(tmp_path):
+    # `Path.read_text` turned a Rust source's lone `\r` into a line break rustc does not
+    # count: line 2 of a one-line Rust file passed as real.
+    from peeky.native import parse_lines
+
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src/main.rs").write_bytes(b"fn main() {}\r// one line to rustc\n")
+    (tmp_path / "main.c").write_bytes(b"int main(void)\r{ return 0; }\n")
+
+    def dump(name, line):
+        return f'''debug_line[0x00000000]
+version: 4
+file_names[ 1]:
+name: "{name}"
+dir_index: 0
+Address Line Column File
+0x0000000000401000 {line} 1 1 0 0 is_stmt
+0x0000000000401010 {line} 1 1 0 0 end_sequence
+'''
+
+    with pytest.raises(ValueError, match="exceeds declared source length"):
+        parse_lines(dump("src/main.rs", 2), tmp_path, ("src/main.rs",))
+    assert parse_lines(dump("src/main.rs", 1), tmp_path, ("src/main.rs",)) == {"src/main.rs": [1]}
+    # clang counts the lone `\r`: its second line is real.
+    assert parse_lines(dump("main.c", 2), tmp_path, ("main.c",)) == {"main.c": [2]}
+
+
+@pytest.mark.parametrize(
+    "printed, name",
+    [
+        ("src/\\\\x41.c", "src/\\x41.c"),
+        ("src/\\x41.c", None),
+        ("src/\\400.c", None),
+        ("src/\\q.c", None),
+        ("src/\\377.c", None),
+        ('src/a"b.c', None),
+        ('src/a\\"b\\t.c', 'src/a"b\t.c'),
+        ("main\\342\\200\\250x.c", "main\u2028x.c"),
+        ("größe.c", "größe.c"),
+    ],
+)
+def test_octal_names_are_read_only_as_llvm_writes_them(printed, name):
+    # #188 review: `codecs.escape_decode` read Python's escapes too (`\x41` as `A`),
+    # kept unknown ones and cut `\400` short.
+    from peeky.native import _text
+    from peeky.rust_symbols import _string
+    from peeky.textlines import octal_string
+
+    assert octal_string(printed) == name
+    assert octal_string(printed.encode()) == name
+    assert _text(f'"{printed}"') == name
+    if name is None:
+        with pytest.raises(ValueError):
+            _string(f'"{printed}")')
+    elif not any(ord(char) < 32 for char in name):
+        assert _string(f'"{printed}")') == name
+
+
+def test_a_marker_name_that_is_not_llvms_names_no_file():
+    from peeky.c_source import Preprocessed
+
+    seen = []
+    text = b'# 1 "src/\\x41.c"\nint x;\n# 1 "src/\\\\x41.c"\nint y;\n'
+    Preprocessed([line + b"\n" for line in text.split(b"\n")[:-1]], seen.append)
+    assert seen == ["<unread>", "src/\\x41.c"]
+
+
+@pytest.mark.parametrize(
+    "printed, name",
+    [
+        (r"src/\E2\80\A8y.rs", "src/\u2028y.rs"),
+        (r"a\5Cb\22c", 'a\\b"c'),
+        (r"src/\FF.rs", None),
+        (r"src/\q.rs", None),
+        (r"src/\5.rs", None),
+        ('a"b', None),
+        ("gr\u00f6", None),
+        ("x\udcff", None),
+    ],
+)
+def test_ir_names_are_read_only_as_llvm_writes_them(printed, name):
+    # #188 review: `\FF` read as U+FFFD could name a declared `src/\ufffd.rs`, and a
+    # backslash LLVM never writes alone (`\q`) was kept.
+    from peeky.rust_ir import ir_string
+
+    assert ir_string(printed) == name
+
+
+def test_an_ir_name_llvm_does_not_write_proves_nothing(tmp_path):
+    from peeky.rust_ir import ir_locals
+
+    ir = tmp_path / "demo.ll"
+    ir.write_bytes(
+        b"define internal i64 @_ZN4demo3sum17h3333333333333333E() !dbg !40 {\n"
+        b"start:\n"
+        b"  #dbg_declare(ptr %kept, !50, !DIExpression(), !60)\n"
+        b"  #dbg_declare(ptr %other, !51, !DIExpression(), !60)\n"
+        b"  ret i64 0\n}\n"
+        b'!40 = distinct !DISubprogram(name: "sum", linkageName: "_ZN4demo3sum17h3333333333333333E", '
+        b"scope: !1, file: !2, line: 10, type: !3, scopeLine: 11, unit: !9)\n"
+        b'!50 = !DILocalVariable(name: "kept", scope: !40, file: !2, line: 12, type: !5)\n'
+        b'!51 = !DILocalVariable(name: "k\\FFpt", scope: !40, file: !2, line: 13, type: !5)\n'
+        b"!60 = !DILocation(line: 10, column: 1, scope: !40)\n"
+    )
+    memory, _ = ir_locals(ir)
+    assert memory == {("h3333333333333333", "kept"): True}

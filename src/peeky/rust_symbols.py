@@ -30,7 +30,7 @@ from peeky.adapters import ViewBudgetExhausted
 from peeky.native import _metadata, parse_lines
 from peeky.rust_chars import ESCAPED
 from peeky.rust_lexer import code_only
-from peeky.textlines import split_lines
+from peeky.textlines import octal_string, split_lines
 
 # An application unit's own DWARF: a program using std's collections has megabytes of
 # monomorphized types (4.4 MB for one using HashMap); dumping and parsing it takes
@@ -96,12 +96,11 @@ def _string(raw):
     match = re.fullmatch(r'(".*")\)', raw or "")
     if not match:
         raise ValueError("Expected a quoted DWARF string attribute")
-    try:
-        # dwarfdump writes an unprintable byte (any non-ASCII one) in octal (#179).
-        value = codecs.escape_decode(match[1][1:-1].encode())[0].decode("utf-8")
-    except (ValueError, UnicodeDecodeError) as exc:
-        raise ValueError("Unsupported DWARF string escape") from exc
-    if not isinstance(value, str) or any(ord(char) < 32 for char in value):
+    # dwarfdump writes an unprintable byte (any non-ASCII one) in octal (#179).
+    value = octal_string(match[1][1:-1])
+    if value is None:
+        raise ValueError("Unsupported DWARF string escape")
+    if any(ord(char) < 32 for char in value):
         raise ValueError("Unsupported DWARF string attribute")
     return value
 

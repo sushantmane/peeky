@@ -16,8 +16,9 @@ a macro whose expansion may hold an unclosed bracket or a `;` (`unsafe_macros`).
 """
 
 import bisect
-import codecs
 import re
+
+from peeky.textlines import octal_string
 
 # An identifier, not the tail of a number or of another identifier (`1e5`).
 _IDENTIFIER = re.compile(r"(?<!\w)[A-Za-z_]\w*")
@@ -410,10 +411,7 @@ class Preprocessed:
                 if marker[2] is not None:
                     # clang writes an unprintable byte (any non-ASCII one) in octal,
                     # `\342\200\250`, gcc as it is; both escape `\` and `"` (#179).
-                    try:
-                        path = codecs.escape_decode(marker[2])[0].decode("utf-8")
-                    except (ValueError, UnicodeDecodeError):
-                        path = "<unread>"
+                    path = octal_string(marker[2]) or "<unread>"
                     if path not in names:
                         names[path] = program(path)
                     name = names[path]

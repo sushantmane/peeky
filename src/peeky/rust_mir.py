@@ -2797,7 +2797,8 @@ def load_bodies(directory, crate):
         return []
     bodies = []
     for path in files:
-        body = parse_body(path.read_text(encoding="utf-8", errors="replace"))
+        # As rustc wrote it: no newline translation, and no byte read as another (#188).
+        body = parse_body(path.read_bytes().decode("utf-8", errors="surrogateescape"))
         if body is not None:
             bodies.append(body)
     return bodies
@@ -2949,7 +2950,8 @@ def ir_functions(path, files):
     if path.stat().st_size > 256 * 1024 * 1024:
         return {}
     raw, meta, current, pending = [], {}, None, ""
-    with path.open(encoding="utf-8", errors="replace") as stream:
+    # Bytes not UTF-8 stay apart (surrogates ir_string refuses), never one `\ufffd`.
+    with path.open(encoding="utf-8", errors="surrogateescape", newline="") as stream:
         for line in stream:
             if line.startswith("!"):
                 if found := _META_LIST.match(line):
@@ -2958,9 +2960,11 @@ def ir_functions(path, files):
                     meta[found[1]] = (
                         found[2],
                         {
-                            key: _unquote(m[1])
+                            key: value
                             for key, pattern in _METAFIELDS.items()
                             if (m := pattern.search(found[3]))
+                            # A string LLVM does not write names nothing (#188 review).
+                            and (value := _unquote(m[1])) is not None
                         },
                     )
                 continue

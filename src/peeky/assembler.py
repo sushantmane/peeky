@@ -13,11 +13,11 @@ assembler no option (`-Wa,`), so inline assembly is all the assembler reads.
 """
 
 import bisect
-import codecs
 import re
 
 from peeky.c_source import _digit_separator, blank
 from peeky.rust_lexer import lexemes, scan
+from peeky.textlines import octal_string
 
 ASSEMBLER_REFUSAL = "Inline assembly that can read a file is not supported"
 
@@ -158,11 +158,7 @@ def _c_places(text, blanked):
                 number = int(marker[1])
                 if marker[2] is not None:
                     # clang writes a non-ASCII byte in octal (`\342\200\250`; #179).
-                    try:
-                        raw = codecs.escape_decode(marker[2].encode("utf-8"))[0]
-                        name = raw.decode("utf-8")
-                    except (ValueError, UnicodeDecodeError):
-                        name = "<unknown>"
+                    name = octal_string(marker[2]) or "<unknown>"
             else:
                 number += 1
             original = line = re.sub(r"[^\n]", " ", line)

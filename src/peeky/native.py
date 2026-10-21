@@ -6,7 +6,6 @@ against hostile in-memory patching. SDK/system headers are not hermetic inputs.
 """
 
 import bisect
-import codecs
 import contextlib
 import hashlib
 import json
@@ -45,7 +44,7 @@ from peeky.cxx_strings import libstdcxx_string, shows_text, string_class, text_l
 from peeky.digest import sha256_file
 from peeky.names import unicode_escape
 from peeky.text_sets import text_kind
-from peeky.textlines import split_lines
+from peeky.textlines import octal_string, read_source, source_lines, split_lines
 
 MAX_METADATA = 2 * 1024 * 1024
 # Type-rich C++ units (iostream) carry megabytes of DIEs; read only by `describe`.
@@ -192,7 +191,8 @@ def _metadata(tool, arguments, workspace, env, *, max_bytes=MAX_METADATA, timeou
             )
         if output.stat().st_size > max_bytes or errors.stat().st_size > 16000:
             raise ValueError("Native symbol metadata exceeds limit")
-        return read(output) if read else output.read_text(encoding="utf-8")
+        # As the tool wrote it: a raw name (`DW_AT_decl_file`) may hold a lone `\r`.
+        return read(output) if read else output.read_bytes().decode("utf-8")
 
 
 def _line_rows(text, workspace, declared, limit=MAX_METADATA, replaced=None, epilogues=None):
@@ -209,7 +209,11 @@ def _line_rows(text, workspace, declared, limit=MAX_METADATA, replaced=None, epi
         raise ValueError("Native line metadata exceeds limit")
     workspace = Path(workspace).resolve()
     inputs = {str((workspace / name).resolve()): name for name in declared}
-    counts = {name: len(split_lines((workspace / name).read_text())) for name in declared}
+    # As each compiler counts lines: rustc at `\n` alone, clang at a lone `\r` too (#188).
+    counts = {
+        name: len(source_lines(read_source(workspace / name), name.endswith(".rs")))
+        for name in declared
+    }
     directories, files, current = {0: str(workspace)}, {}, None
     # {file id: declared name or None} for this table: one resolve per file, not per row.
     resolved = {}
@@ -406,13 +410,11 @@ def _parse_dies(text):
 
 
 def _text(value):
-    """A dwarfdump string attribute; non-ASCII bytes are printed as octal escapes."""
+    """A dwarfdump string attribute (non-ASCII bytes printed as octal escapes), or None
+    where it is none dwarfdump writes (textlines.octal_string)."""
     if value is None or len(value) < 2 or value[0] != '"' or value[-1] != '"':
         return None
-    try:
-        return codecs.escape_decode(value[1:-1].encode())[0].decode("utf-8")
-    except (ValueError, UnicodeDecodeError):
-        return None
+    return octal_string(value[1:-1])
 
 
 def _chain(dies, offset):
@@ -1274,7 +1276,7 @@ def function_scopes(info, line_text, workspace, declared, hidden=None, never=Non
         name = _qualified(dies, entry["bodies"][0])
         if source not in macros:
             macros[source] = (
-                _macro_rules_lines((Path(workspace) / source).read_text(errors="replace"))
+                _macro_rules_lines(read_source(Path(workspace) / source, "replace"))
                 if source.endswith(".rs")
                 else set()
             )
@@ -3104,7 +3106,9 @@ class NativeSession:
             return None
         if ("text", path) not in cache:
             try:
-                cache[("text", path)] = split_lines(Path(path).read_text(errors="replace"))
+                cache[("text", path)] = source_lines(
+                    read_source(path, "replace"), path.endswith(".rs")
+                )
             except OSError:
                 cache[("text", path)] = []
         lines = cache[("text", path)]
