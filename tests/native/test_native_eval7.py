@@ -374,3 +374,107 @@ def test_a_caller_in_a_header_gets_no_advice_a_probe_cannot_follow(c_program, ca
     assert "push has one caller: ring.h:3 in via, which passes `r`; change the value" in out
     assert "a probe stops only in the program's source files, not in ring.h" in out, out
     assert "--set-at" not in out.split("has one caller")[1], out
+
+
+# Round 2 of PR #165: what a stop on the call's line cannot see changes the value first.
+WRITERS = """#include <stdio.h>
+#include <string.h>
+struct ring { int head; int tail; int buf[4]; };
+static struct ring *saved;
+static int touch(void) { if (saved) saved->tail = 5; return 1; }
+static int bump(int *p) { *p = 6; return 1; }
+static void keep(struct ring *x) { saved = x; }
+static int peek(struct ring *x) { return x->tail + x->buf[x->head]; }
+#define RESET(x) ((x).tail = 0)
+#define ZERO() (r.tail = 0)
+static int push(struct ring *r, int v) {
+    r->buf[r->tail % 4] = v; /* AT */
+    r->tail++;
+    return r->tail;
+}
+int main(void) {
+    struct ring r = { 0, 0, { 0 } };
+    int total = 0;
+DECLARE
+    STATEMENT  /* CALL */
+    printf("%d %d %d %d\\n", total, r.tail, touch() + bump(&total), (int)(saved != 0));
+    return 0;
+}
+"""
+WRITTEN_FIRST = {
+    "paren_root": ("", "total = ((r).tail = 2, push(&r, 1));"),
+    "paren_field": ("", "total = ((r.tail) = 2, push(&r, 1));"),
+    "macro_arg": ("", "total = push(&r, RESET(r));"),
+    "macro_noroot": ("", "total = push(&r, ZERO());"),
+    "alias_arg": ("struct ring *a = &r;", "total = push(&r, (a->tail = 5));"),
+    "alias_field": ("int *p = &r.tail;", "total = push(&r, bump(p));"),
+    "callee_global": ("saved = &r;", "total = push(&r, touch());"),
+    # keep() leaves a pointer to r behind, which a thread or handler may write through.
+    "escaping_callee": ("keep(&r);", 'total = push(&r, (int)strlen("ab"));'),
+}
+
+
+def writers(declare, call):
+    return WRITERS.replace("DECLARE\n", f"    {declare}\n" if declare else "").replace(
+        "STATEMENT", call
+    )
+
+
+@pytest.mark.timeout(240)
+@pytest.mark.parametrize("site", list(WRITTEN_FIRST))
+def test_no_settable_claim_where_the_statement_or_an_alias_writes_first(c_program, capsys, site):
+    # A parenthesized root or member, a macro's assignment (the call is read as the
+    # compiler preprocesses it), and the root's address taken elsewhere in the caller.
+    text = writers(*WRITTEN_FIRST[site])
+    source = c_program("m.c", text)
+    at, call = line_of(text, "/* AT */"), line_of(text, "/* CALL */")
+    code, out = run(capsys, "probe", source, "--at", at, "--capture", "v", "--set", "r.tail=0")
+    message = out.splitlines()[0]
+    assert code == 2 and f"push has one caller: m.c:{call} in main" in message, out
+    assert "settable" not in message.split("has one caller")[1], out
+    assert "--set-at" not in message, out
+
+
+@pytest.mark.timeout(240)
+@pytest.mark.parametrize(
+    ("declare", "call", "selector", "claimed"),
+    [
+        # A library function reaches the program's locals only through its arguments.
+        ("", 'total = push(&r, (int)strlen("ab"));', "r.tail", True),
+        # peek() reads `x->tail` and `x->buf[i]` only: it keeps no pointer to r.
+        ("peek(&r);", 'total = push(&r, (int)strlen("ab"));', "r.tail", True),
+        # A pointer into an array needs no `&`: sscanf may write r.buf[1] through q.
+        ("int *q = r.buf;", 'total = push(&r, sscanf("7", "%d", q + 1));', "r.buf[1]", False),
+        ("", "total = push(&r, 1);", "r.buf[1]", True),
+    ],
+)
+def test_the_claim_kept_where_nothing_can_reach_the_value(
+    c_program, capsys, declare, call, selector, claimed
+):
+    text = writers(declare, call)
+    source = c_program("m.c", text)
+    at, line = line_of(text, "/* AT */"), line_of(text, "/* CALL */")
+    code, out = run(capsys, "probe", source, "--at", at, "--capture", "v", "--set", f"{selector}=0")
+    message = out.splitlines()[0]
+    assert code == 2 and f"push has one caller: m.c:{line} in main" in message, out
+    claim = f"where `{selector}` is settable: a probe's `--set-at {line}@N"
+    assert (claim in message) == claimed, out
+
+
+@pytest.mark.timeout(240)
+def test_compare_needs_every_source_unchanged(c_program, capsys):
+    # Round 2 of PR #165, Low 2: after main.c changed on disk, a candidate on other.c
+    # was paired with a run of the old main.c, and `diff` credited the change to the edit.
+    root = c_program("main.c", OTHER_MAIN.replace("r->tail++;", "r->tail += 100;")).parent
+    c_program("other.c", OTHER)
+    c_program("ring.h", RING_H)
+    probe = ["probe", root, "--at", "other.c:7", "--capture", "t", "--quiet"]
+    edit = ["--old", "t += push(&q, 2);", "--new", "t += push(&q, 3);"]
+    assert run(capsys, *probe)[0] == 0  # run 1
+    main_c = root / "main.c"
+    main_c.write_text(main_c.read_text().replace("r->tail += 100;", "r->tail += 1;"))
+    code, out = run(capsys, *probe, *edit)  # run 2
+    assert code == 0 and "compare: no saved run is this probe without the edit" in out, out
+    assert run(capsys, *probe)[0] == 0  # run 3
+    code, out = run(capsys, *probe, *edit)  # run 4
+    assert "compare: peeky queries diff --param a=3 --param b=4" in out, out

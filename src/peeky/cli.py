@@ -837,12 +837,43 @@ def probe(args):
             result["error"]["hint"] = misplaced + "."
         else:
             result.setdefault("warnings", []).append(misplaced)
+    if language == "python" and "inputs_sha256" not in result and result.get("source_sha256"):
+        # A Python program reads the root's modules as they are on disk (no build).
+        if (inputs := _python_inputs(root)) is not None:
+            result["inputs_sha256"] = inputs
     if not args.no_save and not result.get("refused_before_launch"):
         # A probe refused before it ran (#138) leaves no run to compare.
         _keep_evidence(args, result, root, language)
     _emit(result, args.json, lambda shown: _probe_text(shown, quiet=args.quiet))
     # 2 for a probe refused before it ran (finding 14), 4 for a change not made (#151).
     return probe_exit_code(result)
+
+
+MAX_PYTHON_INPUTS = 4096
+MAX_PYTHON_BYTES = 16 * 1024 * 1024
+
+
+def _python_inputs(root):
+    """A digest of the `.py` files under ``root`` (outside hidden, cache and environment
+    directories), the sources a Python program may import, or None where there are too
+    many or one cannot be read."""
+    found, total = [], 0
+    skipped = {"__pycache__", "node_modules", "site-packages", "venv", "env"}
+    for directory, names, files in os.walk(root):
+        names[:] = sorted(n for n in names if not n.startswith(".") and n not in skipped)
+        for name in sorted(files):
+            if not name.endswith(".py"):
+                continue
+            path = Path(directory) / name
+            try:
+                data = path.read_bytes()
+            except OSError:
+                return None
+            total += len(data)
+            if len(found) >= MAX_PYTHON_INPUTS or total > MAX_PYTHON_BYTES:
+                return None
+            found.append((path.relative_to(root).as_posix(), hashlib.sha256(data).hexdigest()))
+    return hashlib.sha256(json.dumps(found).encode()).hexdigest() if found else None
 
 
 def _misplaced_options(args):
@@ -974,8 +1005,11 @@ def _keep_evidence(args, result, root, language):
             else {
                 "run": None,
                 "hint": "no saved run is this probe without the edit (the same --at, "
-                "--capture, program arguments and build, of the source as it is now, with "
-                "no --set or --set-at): run it without --old/--new, then `peeky queries diff`",
+                "--capture, program arguments and build, of the sources as they are now, with "
+                "no --set or --set-at): run it without --old/--new, then `peeky queries diff`"
+                if result.get("inputs_sha256")
+                else "Peeky cannot tell which saved run read the same sources as this one: "
+                "run this probe without --old/--new, then `peeky queries diff`",
             }
         )
 
@@ -2315,57 +2349,67 @@ def _verify_text(result, keep=False):
 _RETAINED_BYTES = 16000
 
 
-# A line that says what failed: `FAIL ...`, an exception (`ValueError: ...`), an
-# assertion; a traceback's own last line is its exception.
-_FAILURE = re.compile(r"FAIL|\b\w*Error\b|\bassert|Traceback")
+# A line that says what failed, at a line's start: `FAIL`/`FAILED` (not a unittest
+# summary, `FAILED (failures=1)`), unittest's `ERROR:`, pytest's `E   ...`, an exception
+# (`ValueError: ...`, a traceback's last line), an `assert`.
+_FAILURE = re.compile(
+    r"^(?:FAIL(?:ED)?\b(?! \((?:failures|errors)=)|ERROR: |E\s|"
+    r"[A-Za-z_][\w.]*(?:Error|Exception)(?::|$)|assert\b)"
+)
+_EXCEPTION = re.compile(r"^[A-Za-z_][\w.]*(?:Error|Exception)(?::|$)")
 
 
 def _failure_line(stream):
-    """The last line of ``stream`` that says what failed, with up to two indented lines
-    after it (`FAIL first case; expected 3; got 2`), or None. A traceback gives its last
-    line, the exception."""
+    """The first line of ``stream`` that says what failed (``_FAILURE``), or None: with
+    up to two indented lines after it (`FAIL first case; expected 3; got 2`); for a
+    unittest test's header (`FAIL: test_wrap (...)`), with the exception it reports;
+    pytest's `E` marker left out."""
     lines = [line.rstrip() for line in stream.splitlines() if line.strip()]
-    found = [i for i, line in enumerate(lines) if _FAILURE.search(line)]
-    if not found:
+    at = next((i for i, line in enumerate(lines) if _FAILURE.match(line)), None)
+    if at is None:
         return None
-    at = found[-1]
-    if lines[at].lstrip().startswith("Traceback"):
-        return lines[-1].strip() if at < len(lines) - 1 else None
+    first = re.sub(r"^E\s+", "", lines[at])
+    if re.match(r"(?:FAIL|ERROR): ", first):
+        raised = next((line for line in lines[at + 1 :] if _EXCEPTION.match(line)), None)
+        return f"{first}: {raised}" if raised else first
     following = []
     for line in lines[at + 1 : at + 3]:
         if not line[:1].isspace():
             break
         following.append(line.strip())
-    return "; ".join([lines[at].strip(), *following])
+    return "; ".join([first.strip(), *following])
 
 
 def _verify_reason(result):
     """Why a verify did not pass, in one line: the build's diagnostic, a timeout, or the
-    checker's error; for a checker that exited with a status alone (`sys.exit(1)`), the
-    output's line that says what failed (`FAIL [...]`, an exception), stdout's before
-    stderr's, else the last non-empty line of stdout, else of stderr (seventh evaluation,
-    finding 11). The status stays in `checker exit` (and `checker.error`), and in the
-    reason where it is not that exit code."""
+    checker's error; for a checker that exited with a status alone (`sys.exit(1)`,
+    unittest's `sys.exit(True)`), the first line of its stdout that says what failed
+    (``_FAILURE``), else stdout's last line; with no stdout, the same of stderr
+    (seventh evaluation, finding 11). The status stays in `checker exit` (and
+    `checker.error`), and in the reason where it is not that exit code."""
     checker = str((result.get("checker") or {}).get("error") or "")
     reason = result.get("diagnostic") or checker
     # A build's own timeout is in its diagnostic (`The build failed: clang timed out`).
     if result.get("timed_out") and result.get("stage") != "build":
         return "checker timed out"
-    status = re.fullmatch(r"SystemExit: (-?[0-9]+)", checker)
+    status = re.fullmatch(r"SystemExit: (-?[0-9]+|True)", checker)
     if result.get("diagnostic") or status is None or status[1] == "0":
         return reason or None
     streams = [result.get(key) or "" for key in ("stdout", "stderr")]
     if any(len(stream.encode()) >= _RETAINED_BYTES for stream in streams):
         # Cut short: its last line may be part of one.
         return reason
-    last = [
-        lines[-1].strip() for s in streams if (lines := [x for x in s.splitlines() if x.strip()])
-    ]
-    chosen = next((line for line in (*map(_failure_line, streams), *last) if line), None)
+    chosen = None
+    for stream in streams:
+        lines = [line.strip() for line in stream.splitlines() if line.strip()]
+        if lines:
+            chosen = _failure_line(stream) or lines[-1]
+            break
     if chosen is None:
         return reason
     chosen = chosen[:500]
-    return chosen if status[1] == str(result.get("exit_code")) else f"{chosen} ({checker})"
+    code = "1" if status[1] == "True" else status[1]
+    return chosen if code == str(result.get("exit_code")) else f"{chosen} ({checker})"
 
 
 def _rejected(result):

@@ -44,6 +44,8 @@ def probe_result(function=WHOLE, **extra):
         # The build and the source as it ran (a candidate's: the unedited source's hash).
         "target_identity": {"language": "c", "optimization": "O0"},
         "source_sha256": "0" * 64,
+        # Every source the build read (a candidate's before its edit).
+        "inputs_sha256": "a" * 64,
         **extra,
     }
 
@@ -191,9 +193,10 @@ def test_a_reason_the_output_cannot_give_stays_the_checkers():
     # Output cut short may end part-way through a line.
     long = "y" * 16000 + "\nFAIL tail"
     assert _verify_reason(failed("SystemExit: 1", stdout=long)) == "SystemExit: 1"
-    # A line that says what failed wins over a later one that does not, in either stream.
+    # stdout first: its last line, though stderr says FAIL (round 2 of PR #165).
     both = failed("SystemExit: 1", stdout="case 1 ok\n", stderr="FAIL case 2\n\n")
-    assert _verify_reason(both) == "FAIL case 2"
+    assert _verify_reason(both) == "case 1 ok"
+    assert _verify_reason(failed("SystemExit: 1", stderr="FAIL case 2\n")) == "FAIL case 2"
     assert _verify_reason(failed("SystemExit: 1", timed_out=True)) == "checker timed out"
 
 
@@ -213,13 +216,58 @@ def test_a_reason_is_the_line_that_says_what_failed():
     # A failure over several lines: its indented lines, two at most.
     spread = "FAIL first case\n  expected 3\n  got 2\n  (seed 9)\nsummary\n"
     assert reason(spread) == "FAIL first case; expected 3; got 2"
-    # A traceback gives its exception; stdout's failure before stderr's.
+    # A traceback gives its exception, where stdout is empty; stdout comes first.
     trace = 'Traceback (most recent call last):\n  File "c.py", line 3\nValueError: bad\n'
-    assert reason("progress\n", trace) == "ValueError: bad"
+    assert reason("", trace) == "ValueError: bad"
     assert reason("assert got == want\n", trace) == "assert got == want"
     # None says what failed: stdout's last line, then stderr's.
     assert reason("case 1 ok\n", "cleanup\n") == "case 1 ok"
     assert reason("", "cleanup\n") == "cleanup"
+
+
+@pytest.mark.parametrize(
+    "stdout, stderr, said",
+    [
+        # Round 2 of PR #165, Low 3: unanchored words in passing lines were picked.
+        ("ok: empty input raises ValueError\nmismatch: wrap got 6 want 7\n", "",
+         "mismatch: wrap got 6 want 7"),
+        ("FAIL case 3: got 2 want 3\ncase 4 ok: raises KeyError as expected\n", "",
+         "FAIL case 3: got 2 want 3"),
+        ("case 1 ok: handles ValueError input\nFAIL case 3: got 2 want 3\nsummary: 1 failed\n",
+         "", "FAIL case 3: got 2 want 3"),
+        ("FAIL case 3: got 2 want 3\ndebug: retrying with ErrorHandler disabled\n", "",
+         "FAIL case 3: got 2 want 3"),
+        ("mismatch: got 2 want 3\nasserting cleanup finished\n", "",
+         "asserting cleanup finished"),
+        ("no Traceback (most recent call last) found: ok\nmismatch: got 2 want 3\n", "",
+         "mismatch: got 2 want 3"),
+        ("case 1 ok\nmismatch in case 2\nFAILOVER test skipped\n", "", "FAILOVER test skipped"),
+        # A handled exception logged on stderr is not the failure stdout reports.
+        ("recovered\nmismatch: got 2 want 3\n",
+         "Traceback (most recent call last):\n  File \"c.py\", line 4\nKeyError: 'k'\n",
+         "mismatch: got 2 want 3"),
+        # pytest: its `E` line, before the FAILED summary.
+        ("test_x.py ...F [100%]\n>       assert run() == '7 3'\n"
+         "E       AssertionError: assert '6 3' == '7 3'\n\ntest_x.py:12: AssertionError\n"
+         "FAILED test_x.py::test_wrap - AssertionError: assert '6 3' == '7 3'\n", "",
+         "AssertionError: assert '6 3' == '7 3'"),
+        # unittest (on stderr): the test and its assertion, not `FAILED (failures=1)`.
+        ("", ".F\n======\nFAIL: test_wrap (__main__.T.test_wrap)\n------\n"
+         "Traceback (most recent call last):\n  File \"x.py\", line 9, in test_wrap\n"
+         "AssertionError: '6 3' != '7 3'\n------\nRan 2 tests in 0.001s\n\n"
+         "FAILED (failures=1)\n",
+         "FAIL: test_wrap (__main__.T.test_wrap): AssertionError: '6 3' != '7 3'"),
+    ],
+)  # fmt: skip
+def test_the_reason_is_the_first_line_anchored_as_a_failure(stdout, stderr, said):
+    from peeky.cli import _verify_reason
+
+    error = "SystemExit: True" if "unittest" in said or "__main__" in said else "SystemExit: 1"
+    result = {"passed": False, "stage": "verification", "exit_code": 1}
+    reason = _verify_reason(
+        {**result, "checker": {"error": error}, "stdout": stdout, "stderr": stderr}
+    )
+    assert reason == said
 
 
 @pytest.fixture
@@ -463,4 +511,44 @@ def test_the_compared_run_has_the_candidates_build_and_unedited_source(cli, caps
     assert run(candidate=True, optimization="O1", source="2" * 64) == 0
     text = capsys.readouterr().out
     assert "compare: no saved run is this probe without the edit" in text, text
-    assert "build, of the source as it is now" in text, text
+    assert "build, of the sources as they are now" in text, text
+
+
+def test_the_compared_run_read_the_same_sources(cli, capsys):
+    # Round 2 of PR #165, Low 2: after another source file changed on disk, `compare:`
+    # still named a run of the old file, and `diff` credited the change to the edit.
+    import hashlib
+
+    def run(candidate=False, inputs="a" * 64):
+        result = probe_result(inputs_sha256=inputs)
+        result["probe"].update(program="a.py", line=1, capture=["i"])
+        if candidate:
+            result["candidate"] = {"sha256": hashlib.sha256(b"x = 2\n").hexdigest()}
+        if inputs is None:
+            del result["inputs_sha256"]
+        edit = ["--old", "x = 1", "--new", "x = 2"] if candidate else []
+        return cli(result, "--capture", "i", *edit)
+
+    assert run() == 0  # run 1: main.c as it was
+    capsys.readouterr()
+    assert run(candidate=True, inputs="b" * 64) == 0  # run 2: main.c changed on disk
+    text = capsys.readouterr().out
+    assert "compare: no saved run is this probe without the edit" in text, text
+    assert run(inputs="b" * 64) == 0  # run 3
+    capsys.readouterr()
+    assert run(candidate=True, inputs="b" * 64) == 0  # run 4
+    assert "compare: peeky queries diff --param a=3 --param b=4" in capsys.readouterr().out
+    # The store keeps the digest with the build's identity, for SQL too.
+    from peeky.cli import main
+
+    sql = "SELECT json_extract(target_identity, '$.inputs_sha256') AS i FROM runs WHERE run_id = 4"
+    assert main(["sql", sql, "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["rows"] == [{"i": "b" * 64}]
+    # Sources Peeky could not read (a large Python tree): no run is named.
+    import peeky.cli as cli_module
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(cli_module, "_python_inputs", lambda root: None)
+        assert run(candidate=True, inputs=None) == 0
+    text = capsys.readouterr().out
+    assert "compare: Peeky cannot tell which saved run read the same sources" in text, text

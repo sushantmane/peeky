@@ -68,7 +68,11 @@ TABLES = {
             "artifact_manifest_id": "Identity of the build the values came from",
             "source_sha256": "SHA-256 of the breakpoint's source file as it ran: for a candidate "
             "run, the edited text",
-            "target_identity": "JSON target identity (toolchain, flags)",
+            "target_identity": "JSON target identity (toolchain, flags), with inputs_sha256: "
+            "a digest of every source and header the run read (C/C++: the build's sources "
+            "and headers; Rust: the crate's sources, Cargo.toml and Cargo.lock; Java: its "
+            "sources; Python: the root's .py files), as they were on disk, a candidate's "
+            "before its edit; without it for a run saved before Peeky recorded it",
             "edit": "For a candidate run (probe --old/--new), the unified diff of the edit the "
             "build had; NULL otherwise. Values never come from your files when this is set",
             "notes_kept": "1 where the run's notes are in captures.note (schema 9 on); NULL "
@@ -881,7 +885,13 @@ def record(path, result, *, language=None, target=None, label=None, worker=None)
         "artifact_manifest_id": result.get("artifact_manifest_id"),
         # A candidate's values came from the edited text, never from the file on disk.
         "source_sha256": _text(candidate.get("sha256") if edited else result.get("source_sha256")),
-        "target_identity": _text(result.get("target_identity")),
+        # With the digest of every source the run read (a candidate's before its edit).
+        "target_identity": _text(
+            {**(result.get("target_identity") or {}), "inputs_sha256": result["inputs_sha256"]}
+            if isinstance(result.get("inputs_sha256"), str)
+            and isinstance(result.get("target_identity") or {}, dict)
+            else result.get("target_identity")
+        ),
         "edit": candidate.get("diff") if edited else None,
         "notes_kept": 1,
     }
@@ -961,17 +971,20 @@ def record(path, result, *, language=None, target=None, label=None, worker=None)
 def baseline(path, run_id, source_sha256):
     """The newest run before ``run_id`` that is the same probe without its edit, to
     compare a candidate run with (seventh evaluation, finding 12): the same target,
-    file, line, captures, program arguments and Python entry; the same build (its
-    target identity: compiler options, optimization, sources, headers); the unedited
-    source the candidate's edit was made to (``source_sha256``); no edit, no `--set`
-    or `--set-at`. Else None."""
+    file, line, captures, program arguments and Python entry; the same build and the
+    same sources (its target identity: compiler options, optimization, and the digest of
+    every source and header it read, the candidate's before its edit); the `--at`
+    file's unedited text (``source_sha256``); no edit, no `--set` or `--set-at`. None
+    where none is, or the candidate's sources are not known."""
     found = query(
         path,
         "SELECT b.run_id FROM runs c JOIN runs b ON b.run_id < c.run_id AND b.target IS "
         "c.target AND b.language IS c.language AND b.program IS c.program AND b.line IS "
         "c.line AND b.capture IS c.capture AND b.args IS c.args AND b.entry IS c.entry AND "
-        "b.target_identity IS c.target_identity AND b.source_sha256 = :source AND "
-        "b.edit IS NULL AND COALESCE(b.sets, '[]') = '[]' WHERE c.run_id = :run "
+        "b.target_identity = c.target_identity AND b.source_sha256 = :source AND "
+        "b.edit IS NULL AND COALESCE(b.sets, '[]') = '[]' WHERE c.run_id = :run AND "
+        "json_valid(c.target_identity) AND "
+        "json_extract(c.target_identity, '$.inputs_sha256') IS NOT NULL "
         "ORDER BY b.run_id DESC LIMIT 1",
         {"run": run_id, "source": source_sha256},
     )["rows"]

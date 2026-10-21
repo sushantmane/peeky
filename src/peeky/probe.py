@@ -11,6 +11,7 @@ evidence about one execution, never a verified fix.
 
 import argparse
 import ast
+import hashlib
 import json
 import re
 import sys
@@ -2806,6 +2807,13 @@ def run_probe(root, probe, *, adapter=None, progress=None):
             target_identity=launch["target_identity"],
             source_sha256=launch["source_sha256"],
         )
+        if isinstance(manifest := launch.get("source_manifest"), dict) and manifest:
+            # Every source and header the build read, as they were on disk (a candidate's
+            # before its edit): which runs read the same program (seventh evaluation,
+            # review of finding 12).
+            result["inputs_sha256"] = hashlib.sha256(
+                json.dumps(sorted(manifest.items())).encode()
+            ).hexdigest()
         # A launched JVM's captured objects show their fields; an attached one (often a
         # live service) does not, since every read lengthens its pause.
         identity = launch["target_identity"] if isinstance(launch["target_identity"], dict) else {}
