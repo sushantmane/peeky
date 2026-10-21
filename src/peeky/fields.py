@@ -139,9 +139,10 @@ def _definitions(dies):
     return found
 
 
-def type_graph(dies, offsets, libraries, limit=MAX_TYPES):
+def type_graph(dies, offsets, libraries, limit=MAX_TYPES, pointees=False):
     """{offset: node} for the given types and every type they hold by value (through
-    typedefs, qualifiers, arrays and record members, not pointers or references). A
+    typedefs, qualifiers, arrays and record members, not pointers or references, unless
+    ``pointees``: what they point at too, for display only). A
     type the walk did not reach is absent, which ``settable_member`` refuses. A record
     in a namespace of ``libraries`` (`CPP_LIBRARIES`, `RUST_LIBRARIES`) is the
     library's, whose layout Peeky does not change. A class
@@ -183,8 +184,12 @@ def type_graph(dies, offsets, libraries, limit=MAX_TYPES):
             # What it points at, never walked here: previews read one level (#136).
             aimed = target if tag == "DW_TAG_pointer_type" else None
             graph[offset] = ("pointer", name, aimed)
+            if pointees and aimed is not None:
+                pending.append(aimed)
         elif tag in ("DW_TAG_reference_type", "DW_TAG_rvalue_reference_type"):
             graph[offset] = ("reference", name, target)
+            if pointees and target is not None:
+                pending.append(target)
         elif tag == "DW_TAG_enumeration_type":
             graph[offset] = ("enum", name, size)
         elif tag == "DW_TAG_array_type":
@@ -368,11 +373,13 @@ def debugger_steps(graph, root, name, steps):
     return found
 
 
-def settable_member(graph, root, name, steps):
+def settable_member(graph, root, name, steps, owner=None):
     """(signed, bits, names) for the integer that ``steps`` (the debugger's child names:
     `end`, `__0`, `[2]`) reach from the local ``name`` of type ``root``: whether it is
     signed, its width, and the type names (typedefs, then the base type) it has. Raises
-    Unsettable with the reason when anything on the way is not a plain value."""
+    Unsettable with the reason when anything on the way is not a plain value.
+    ``owner()``, where the local is itself a pointer: where to change the value
+    instead, if the caller can tell (the one call that passed it), else None."""
     offset, path = root, name
     pending = None  # the remaining dimensions of a multidimensional array
     for step in steps:
@@ -381,15 +388,20 @@ def settable_member(graph, root, name, steps):
         else:
             offset, node, _ = _strip(graph, offset, path)
             if node[0] in ("pointer", "reference"):
+                advice = owner() if owner is not None and path == name else None
                 raise Unsettable(
                     f"`{path}` is a {node[0]}: Peeky changes only values the frame holds "
                     f"itself and does not write through a {node[0]} (what it reaches may be "
-                    "freed or moved); change the value where it is owned, before the call "
-                    "that passed it: a probe `--at` that call's line with `--hits N "
-                    "--set-hit N`, or `session start --at` it with `--hit N`, where N counts "
-                    "that line's own stops, not the called function's (find it with `peeky "
-                    "probe ... --at <call line> --capture <argument> --hits all`); `session "
-                    "continue --to` the call's line reaches only the next call"
+                    "freed or moved); "
+                    + (
+                        advice
+                        or "change the value where it is owned, before the call that passed "
+                        "it: a probe `--at` that call's line with `--hits N --set-hit N`, or "
+                        "`session start --at` it with `--hit N`, where N counts that line's "
+                        "own stops, not the called function's (find it with `peeky probe ... "
+                        "--at <call line> --capture <argument> --hits all`); `session "
+                        "continue --to` the call's line reaches only the next call"
+                    )
                 )
             if node[0] == "record":
                 _, record, kind, _, _, members, _, variant, incomplete, library = node[:10]
@@ -474,6 +486,83 @@ def settable_member(graph, root, name, steps):
     if node[0] in ("pointer", "reference"):
         raise Unsettable(f"`{path}` is a {node[0]}; only integers can be changed")
     raise Unsettable(f"`{path}` is not a single integer; select one of its fields or elements")
+
+
+def settable_parts(graph, root, name):
+    """ "fields" (or "elements") where some integer field of the struct, class or tuple
+    local ``name`` of type ``root`` (or element of the array local) is one
+    ``settable_member`` allows: a direct one, an element of an array field, or a field
+    of a struct field. Else None. What `describe` lists, judged by the rules `set`
+    applies to the type (seventh evaluation, finding 16)."""
+
+    def elements(offset, path):
+        try:
+            _, node, _ = _strip(graph, offset, path)
+        except Unsettable:
+            return None
+        return node
+
+    node = elements(root, name)
+    if node is None or node[0] not in ("record", "array"):
+        return None
+    candidates = []
+    if node[0] == "array":
+        candidates.append(["[0]"] * len(node[3] or (0,)))
+        inner = elements(node[2], name)
+        if inner is not None and inner[0] == "record":
+            candidates.extend([*candidates[0], member[0]] for member in inner[5] if member[0])
+    else:
+        for member in node[5][:64]:
+            field, kind = member[0], member[1]
+            if not field:
+                continue
+            candidates.append([field])
+            inner = elements(kind, f"{name}.{field}")
+            if inner is not None and inner[0] == "array":
+                candidates.append([field, *["[0]"] * len(inner[3] or (0,))])
+            elif inner is not None and inner[0] == "record":
+                candidates.extend([field, sub[0]] for sub in inner[5][:64] if sub[0])
+    for steps in candidates:
+        try:
+            settable_member(graph, root, name, steps)
+        except Unsettable:
+            continue
+        return "elements" if node[0] == "array" else "fields"
+    return None
+
+
+def member_base(graph, root, steps):
+    """The DWARF name of the base type (`usize`, `i64`) that the debugger's child names
+    ``steps`` (`k`, `[2]`, `__0`) reach from a local of type ``root``, through what a
+    pointer or reference points at as the debugger shows it (`self.k`), or None. For
+    display only, from a graph built with ``pointees``."""
+    offset = root
+    for step in [*steps, None]:
+        node = None
+        for _ in range(64):
+            node = graph.get(offset)
+            if node is None:
+                return None
+            if node[0] in ("typedef", "qualifier"):
+                offset = node[2]
+                continue
+            if node[0] in ("pointer", "reference") and step is not None and node[2] is not None:
+                # LLDB lists what a pointer or reference points at as its children.
+                offset = node[2]
+                continue
+            break
+        if step is None:
+            return node[1] if node[0] == "base" and node[1] else None
+        if node[0] == "record" and not node[7]:
+            found = [member for member in node[5] if member[0] == step]
+            if len(found) != 1:
+                return None
+            offset = found[0][1]
+        elif node[0] == "array" and _INDEX.fullmatch(step) and node[3] and len(node[3]) == 1:
+            offset = node[2]
+        else:
+            return None
+    return None
 
 
 def integer_range(signed, bits):

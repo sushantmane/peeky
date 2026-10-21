@@ -2175,7 +2175,7 @@ class DebugWorker:
                 if kind is not None:
                     output["type"] = kind
                 shown = getattr(self.runtime, "display_type", None)
-                if shown and (rust := shown(variable, frame, top=not ancestry)):
+                if shown and (rust := shown(variable, frame, **self.typed_at(ancestry, name))):
                     # A reference parameter's Rust type (`&mut Window`), as for plain rows.
                     output.update(type=rust, debugger_type=kind)
                 if isinstance(note, str):
@@ -2331,7 +2331,7 @@ class DebugWorker:
                 # Or behind what a pointer points at (`IntSet *`).
                 output["pointee_aliased_type"] = aliased[:2000]
             shown = getattr(self.runtime, "display_type", None)
-            if shown and (rust := shown(variable, frame, top=not ancestry)):
+            if shown and (rust := shown(variable, frame, **self.typed_at(ancestry, name))):
                 # The language's own name; the debugger's stays alongside.
                 output.update(type=rust, debugger_type=kind)
             if isinstance(variable.get("evaluateName"), str) and variable["evaluateName"]:
@@ -2957,6 +2957,14 @@ class DebugWorker:
                 f"but as {str(shown[0].get('value'))[:80] if len(shown) == 1 else 'nothing'} "
                 "from memory: the program's state is unknown, so the session is closed"
             )
+
+    @staticmethod
+    def typed_at(ancestry, name):
+        """display_type's arguments for the value ``name`` under ``ancestry``: a root
+        local's, or a field's or element's with its path from the root (finding 18)."""
+        if not ancestry:
+            return {"top": True}
+        return {"top": False, "path": [step for step, _ in ancestry] + [name]}
 
     def refuse_never_settable(self, runtime, program, points, names):
         """Refuse, before the program runs, a probe's `--set` of a value no stop of its

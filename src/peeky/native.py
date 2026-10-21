@@ -730,11 +730,89 @@ def _locals(dies, offset, hidden=None):
             name = _text(_first(dies, chain, "DW_AT_name"))
             # `$`-prefixed names are debugger-synthesized storage, not program locals.
             if name and not name.startswith("$"):
-                kind = _type_name(dies, _first(dies, chain, "DW_AT_type"))
+                reference = _first(dies, chain, "DW_AT_type")
+                kind = _c_tagged(dies, reference, _type_name(dies, reference))
                 names.setdefault(name, set()).update({kind} if kind else set())
         elif die["tag"] == "DW_TAG_lexical_block":
             pending.extend(die["children"])
     return names
+
+
+# Operators whose operand never runs: a call there is no caller.
+_UNEVALUATED = frozenset(("sizeof", "_Alignof", "alignof", "typeof", "__typeof__", "__typeof"))
+
+
+def _arguments(text, opening):
+    """(the text inside the parentheses that open at ``opening``, the offset after
+    their close), or None where they do not close in ``text``."""
+    depth = 0
+    for position in range(opening, min(len(text), opening + 65536)):
+        char = text[position]
+        if char in "([{":
+            depth += 1
+        elif char in ")]}":
+            depth -= 1
+            if depth == 0:
+                return text[opening + 1 : position], position + 1
+    return None
+
+
+def _split_arguments(text):
+    """The comma-separated parts of an argument or parameter list, at its top level."""
+    parts, depth, start = [], 0, 0
+    for position, char in enumerate(text):
+        if char in "([{":
+            depth += 1
+        elif char in ")]}":
+            depth -= 1
+        elif char == "," and depth == 0:
+            parts.append(text[start:position])
+            start = position + 1
+    parts.append(text[start:])
+    return [part.strip() for part in parts] if any(p.strip() for p in parts) else []
+
+
+_C_TAGS = {
+    "DW_TAG_structure_type": "struct",
+    "DW_TAG_union_type": "union",
+    "DW_TAG_enumeration_type": "enum",
+}
+
+
+def _c_tagged(dies, value, name):
+    """``name``, `_type_name`'s for the DW_AT_type reference ``value``, with C's tag
+    word where the type is a C struct, union or enum named by its tag, not by a
+    typedef: `struct ring *` for dwarfdump's `ring *`, as C code names it (seventh
+    evaluation, finding 17). A typedef's name, a C++ type and a name in which the tag
+    is not found exactly once stay as they are."""
+    reference = _REFERENCE.fullmatch(value or "")
+    if name is None or reference is None:
+        return name
+    offset = int(reference[1], 16)
+    for _ in range(16):
+        die = dies.get(offset)
+        if die is None or die["tag"] not in _TYPE_WRAPPERS:
+            break
+        inner = _REFERENCE.fullmatch(die["attrs"].get("DW_AT_type") or "")
+        if inner is None:
+            return name
+        offset = int(inner[1], 16)
+    die = dies.get(offset)
+    tag = _text(die["attrs"].get("DW_AT_name")) if die and die["tag"] in _C_TAGS else None
+    if not tag:
+        return name
+    unit = die
+    for _ in range(64):
+        if unit is None or unit["tag"] == "DW_TAG_compile_unit":
+            break
+        unit = dies.get(unit["parent"])
+    language = (unit or {}).get("attrs", {}).get("DW_AT_language") or ""
+    if not re.fullmatch(r"DW_LANG_C[0-9]*", language.strip()):
+        return name
+    found = [m.start() for m in re.finditer(rf"(?<![\w:]){re.escape(tag)}(?![\w:])", name)]
+    if len(found) != 1:
+        return name
+    return f"{name[: found[0]]}{_C_TAGS[die['tag']]} {name[found[0] :]}"
 
 
 def _bindings(dies, offset):
@@ -998,7 +1076,7 @@ def _macro_rules_lines(text):
     return lines
 
 
-def function_scopes(info, line_text, workspace, declared, hidden=None, never=None):
+def function_scopes(info, line_text, workspace, declared, hidden=None, never=None, settable=None):
     """Each function in a declared source: qualified name, source, line span, locals.
 
     Display only (`describe`). A line-table row belongs to the innermost function or
@@ -1014,12 +1092,31 @@ def function_scopes(info, line_text, workspace, declared, hidden=None, never=Non
     ``never(linkages, names)``: of a copy's locals (``names``: {name: types}), those no
     stop can change, and why (#138: {name: `register`}, a Rust local kept in a
     register); a scope lists the ones never settable in every copy (``never_settable``).
+
+    ``settable``: (the standard library's namespaces, ``in_memory(linkages, name)`` or
+    None): the struct and array locals with an integer field or element `set` may
+    change, judged from the type as `set` judges it (fields.settable_parts), in the
+    frame's own memory, and where ``in_memory`` says so (Rust: the IR keeps it there):
+    {name: "fields" | "elements"} in every copy (``settable_parts``, seventh
+    evaluation, finding 16).
     """
     replaced = set()
     dies, functions, lines, (inputs, sources), _, addresses = _function_entries(
         info, line_text, workspace, declared, replaced
     )
     workspace = Path(workspace).resolve()
+    graph, typed = None, {}
+    if settable is not None:
+        from peeky.fields import local_types, type_graph
+
+        typed = {root: local_types(dies, entry["bodies"]) for root, entry in functions.items()}
+        kinds = {
+            kind
+            for types in typed.values()
+            for each in (types or {}).values()
+            for kind, _, _ in each
+        }
+        graph = type_graph(dies, kinds, settable[0])
 
     def source_of(attribute):
         return _source_of(attribute, inputs, workspace, sources)
@@ -1077,9 +1174,19 @@ def function_scopes(info, line_text, workspace, declared, hidden=None, never=Non
         # Instantiations of one generic function (Rust's names drop the generic
         # arguments) are one scope; their types join (`&[i32] or &[char]`), and so do
         # their blocks' lines (code a constant condition removes differs between them).
-        merged = found.setdefault(json.dumps(scope, sort_keys=True), (scope, {}, {}, set(), [None]))
+        merged = found.setdefault(
+            json.dumps(scope, sort_keys=True), (scope, {}, {}, set(), [None], [None])
+        )
         for local, kinds in names.items():
             merged[1].setdefault(local, set()).update(kinds)
+        if graph is not None:
+            parts = _settable_parts(
+                graph, typed.get(root), names, settable[1], linkages_of(entry, root)
+            )
+            held = merged[5][0]
+            merged[5][0] = (
+                parts if held is None else {n: p for n, p in held.items() if parts.get(n) == p}
+            )
         if never is not None:
             # Never settable in the scope only if in every copy (a generic's instances).
             unchanged = dict(never(linkages_of(entry, root), names) or {})
@@ -1112,7 +1219,7 @@ def function_scopes(info, line_text, workspace, declared, hidden=None, never=Non
             merged[2].setdefault(local, set()).update(spans)
         merged[3].update(blocks[1])
     scopes = []
-    for scope, kinds, spans, everywhere, unchanged in found.values():
+    for scope, kinds, spans, everywhere, unchanged, parts in found.values():
         # Two blocks may declare one name with different types (`int or long`).
         types = {local: " or ".join(sorted(k)) for local, k in sorted(kinds.items()) if k}
         spans = {
@@ -1126,12 +1233,35 @@ def function_scopes(info, line_text, workspace, declared, hidden=None, never=Non
                 **({"types": types} if types else {}),
                 **({"spans": spans} if spans else {}),
                 **({"never_settable": dict(sorted(unchanged[0].items()))} if unchanged[0] else {}),
+                **({"settable_parts": dict(sorted(parts[0].items()))} if parts[0] else {}),
             }
         )
     scopes.sort(key=lambda s: (s["source"], s["lines"][0], s["scope"]))
     if len(scopes) > MAX_SCOPES:
         scopes = [*scopes[:MAX_SCOPES], {"omitted": len(scopes) - MAX_SCOPES}]
     return scopes
+
+
+def _settable_parts(graph, types, names, in_memory, linkages):
+    """{name: "fields" | "elements"} of one function copy's shown locals (``names``)
+    that are one struct or array local, of one type, in the frame's own memory (an
+    automatic or a parameter there), with an integer field or element `set` may change
+    (see function_scopes)."""
+    from peeky.fields import settable_parts
+
+    found = {}
+    for name, declared in (types or {}).items():
+        kinds = {kind for kind, _, _ in declared}
+        storages = {storage for _, storage, _ in declared}
+        if name not in names or len(kinds) != 1 or None in kinds:
+            continue
+        if storages - {"automatic", "parameter"}:
+            continue
+        if (label := settable_parts(graph, next(iter(kinds)), name)) is None:
+            continue
+        if in_memory is None or in_memory(linkages, name):
+            found[name] = label
+    return found
 
 
 # A local in the frame: DW_OP_fbreg (frame base) or DW_OP_bregN (a register) offsets.
@@ -2508,9 +2638,15 @@ class NativeSession:
                 dwarfdump, [option, str(self.symbols)], workspace, env, max_bytes=limit
             )
 
+        from peeky.fields import CPP_LIBRARIES
+
         info = dump("--debug-info", MAX_DEBUG_INFO)
         return function_scopes(
-            info, dump("--debug-line", MAX_METADATA), workspace, tuple(self.lines)
+            info,
+            dump("--debug-line", MAX_METADATA),
+            workspace,
+            tuple(self.lines),
+            settable=(CPP_LIBRARIES, None),
         )
 
     def typedef_kind(self, kind):
@@ -3345,7 +3481,13 @@ class NativeSession:
                         named = debugger_steps(self.fields, kind, root, steps)
                         if named is None:
                             break
-                        settable_member(self.fields, kind, root, named)
+                        settable_member(
+                            self.fields,
+                            kind,
+                            root,
+                            named,
+                            owner=lambda e=entry, n=named: self._caller_advice(e, root, n),
+                        )
                         if not framed:
                             raise Unsettable(
                                 f"`{root}` is not kept in this frame's own memory (a static, "
@@ -3694,7 +3836,11 @@ class NativeSession:
             address = self._unslid(frame)
         if place is None or function is None or address is None:
             return "Peeky cannot place the stop among its function's statements"
-        source, line = place
+        return self._statement_start(function, *place, address)
+
+    def _statement_start(self, function, source, line, address):
+        """mid_statement's verdict for a stop at ``address`` (the executable's own
+        numbering) on ``source:line`` in ``function`` (a declarations entry)."""
         if self._own_line(function, source, line) is not True:
             return (
                 f"the stop is on {source}:{line}, outside its function's own lines (a "
@@ -3766,7 +3912,13 @@ class NativeSession:
         try:
             kind, framed, graph = self._root_type(frame, root)
             # What the path reaches first (a pointer, a union...), then the local's state.
-            signed, bits, names = settable_member(graph, kind, name, steps)
+            signed, bits, names = settable_member(
+                graph,
+                kind,
+                name,
+                steps,
+                owner=lambda: self._caller_advice(self._function_at(frame), name, steps),
+            )
             if not framed:
                 raise Unsettable(
                     f"`{name}` is not kept in this frame's own memory (a static, or a value "
@@ -3806,6 +3958,177 @@ class NativeSession:
                 f"Native integer mutation is outside the range of `{selector}` ({names[0]}: "
                 f"{low} to {high})"
             )
+
+    def _caller_advice(self, function, root, steps):
+        """Where to change a field (``steps``, the debugger's child names) reached
+        through the pointer parameter ``root`` of the C function ``function`` (a
+        declarations entry), when the program's sources call it once (seventh
+        evaluation, finding 13): `push has one caller: ring.c:36 in main, which passes
+        `&r`, where `r.tail` is settable: ...`, saying settable only where `set`'s rules
+        allow a change there (``_settable_at_call``). None, for the general advice, with
+        several or unknown callers, and in C++ (overloads, argument-dependent lookup and
+        member calls make a call's target unclear from the text)."""
+        if function is None or getattr(self.target, "language", None) != "c":
+            return None
+        declared = (function.get("types") or {}).get(root) or ()
+        if not declared or {storage for _, storage, _ in declared} != {"parameter"}:
+            return None
+        try:
+            found = self._single_call(function, root)
+        except (OSError, ValueError, RuntimeError):
+            return None
+        if found is None:
+            return None
+        caller, source, line, argument = found
+        named, at = function.get("name"), f"{Path(source).name}:{line}"
+        passed = re.fullmatch(r"&\s*([A-Za-z_]\w*)", argument or "")
+        if passed and steps and self._settable_at_call(caller, source, line, passed[1], steps):
+            selector = passed[1] + "".join(
+                step if step.startswith("[") else f".{step}" for step in steps
+            )
+            return (
+                f"{named} has one caller: {at} in {caller.get('name')}, which passes "
+                f"`{argument}`, where `{selector}` is settable: a probe `--at {line} --set "
+                f"{selector}=<value>` with `--hits N --set-hit N`, N counting line {line}'s "
+                f"own stops (`--capture {selector} --hits all` there)"
+            )
+        return (
+            f"{named} has one caller: {at} in {caller.get('name')}; change the value where "
+            f"it is owned, before that call: a probe `--at {line}` with `--hits N --set-hit "
+            f"N`, N counting line {line}'s own stops (`--capture <argument> --hits all` there)"
+        )
+
+    def _single_call(self, function, parameter):
+        """(caller's declarations entry, source, line, the argument passed for
+        ``parameter``) of the one call of the C function ``function`` in the program's
+        sources, as the compiler preprocessed them (a macro's calls are where it is
+        used); None unless that is certain. Every mention of the function's name must be
+        its definition, a prototype at file scope, or a call by name inside a function
+        the build's debug information places there: anything else (its address taken, a
+        member's function pointer of that name, a declaration inside a function, a file
+        Peeky cannot preprocess) leaves the callers unknown."""
+        from peeky.c_source import _EXPRESSIONS
+
+        name, span, source = function.get("name"), function.get("span"), function.get("source")
+        if not re.fullmatch(r"[A-Za-z_]\w*", str(name)) or not span or not source:
+            return None
+        definition, calls, seen = None, {}, set()
+        for unit in self.target.sources:
+            read = self._preprocessed(str(unit))
+            if isinstance(read, str):
+                return None
+            preprocessed, statements = read
+            text, starts = statements.blanked, statements.starts
+            counts = {}
+            for found in re.finditer(rf"(?<![\w$]){re.escape(name)}(?![\w$])", text):
+                index = bisect.bisect_right(starts, found.start()) - 1
+                origin = (
+                    preprocessed.origins[index] if 0 <= index < len(preprocessed.origins) else None
+                )
+                if origin is None:
+                    return None
+                counts[origin] = counts.get(origin, 0) + 1
+                key = (origin, counts[origin])
+                before = text[: found.start()].rstrip()
+                opening = len(text) - len(text[found.end() :].lstrip())
+                if before.endswith((".", "->")) or not text.startswith("(", opening):
+                    return None
+                arguments = _arguments(text, opening)
+                if arguments is None:
+                    return None
+                word = re.search(r"[A-Za-z_]\w*$", before)
+                if word is not None and word[0] in _UNEVALUATED:
+                    return None
+                typed = before.endswith("*") or (word is not None and word[0] not in _EXPRESSIONS)
+                if origin == (source, span[0]):
+                    if definition not in (None, arguments):
+                        return None
+                    definition = arguments
+                    continue
+                inside = self._enclosing(*origin)
+                if inside is None:
+                    # At file scope only a prototype: `static int push(struct ring *, int);`
+                    if not typed or not text[arguments[1] :].lstrip().startswith(";"):
+                        return None
+                    continue
+                if typed or key in seen:
+                    # A declaration inside a function (or `a * push(x)`, which reads alike).
+                    if typed:
+                        return None
+                    continue
+                seen.add(key)
+                calls[key] = (inside, origin, arguments)
+        if definition is None or len(calls) != 1:
+            return None
+        caller, (where, line), arguments = next(iter(calls.values()))
+        parameters = _split_arguments(definition[0])
+        values = _split_arguments(arguments[0])
+        named = [
+            i for i, text in enumerate(parameters) if re.search(rf"(?<!\w){parameter}(?!\w)", text)
+        ]
+        if len(named) != 1 or len(values) != len(parameters):
+            return caller, where, line, None
+        return caller, where, line, " ".join(values[named[0]].split())
+
+    def _enclosing(self, source, line):
+        """The declarations entry of the narrowest function whose own lines (its span)
+        hold ``source:line``, or None."""
+        holding = [
+            (entry["span"][1] - entry["span"][0], index)
+            for index, entry in enumerate(self.declarations or ())
+            if entry.get("source") == source
+            and entry.get("span")
+            and entry["span"][0] <= line <= entry["span"][1]
+        ]
+        return self.declarations[min(holding)[1]] if holding else None
+
+    def _settable_at_call(self, caller, source, line, name, steps):
+        """Whether `set` would change ``name`` with ``steps`` (the field the callee
+        reaches through the pointer) at a breakpoint on ``source:line`` in ``caller``:
+        the type walk and storage `set` checks, ``name`` declared on an earlier line by a
+        statement that ends before it, and the stop at the first instruction of the
+        statement there (mid_statement's rule, at the line's breakpoint address), not a
+        loop's header (a later pass stops past it). False where any of that fails or
+        cannot be told: a function with labels (a `goto` can return above a
+        declaration), or a program that may call setjmp."""
+        from peeky.fields import Unsettable, debugger_steps, settable_member
+
+        if self.fields is None or caller.get("jumps") or self.returns_twice is not None:
+            return False
+        declared = (caller.get("types") or {}).get(name) or ()
+        try:
+            kind, framed = self._declared_type(caller.get("types") or {}, name)
+            named = debugger_steps(self.fields, kind, name, list(steps))
+            if not framed or named is None:
+                return False
+            settable_member(self.fields, kind, name, named)
+        except Unsettable:
+            return False
+        places = {where for _, _, where in declared}
+        storages = {storage for _, storage, _ in declared}
+        if len(places) != 1 or None in places:
+            return False
+        (file, at), statements = next(iter(places)), self._statements(source)
+        if statements is None or file != Path(source).name or at >= line:
+            return False
+        if storages != {"parameter"}:
+            end = statements.declared_through(at, name)
+            if end is None or end >= line:
+                return False
+        if not 1 <= line <= len(statements.starts):
+            return False
+        # A loop's header runs again on each pass, after its first instruction.
+        opening = re.match(
+            r"[\s}]*([A-Za-z_]\w*)", statements.blanked[statements.starts[line - 1] :]
+        )
+        if opening is not None and opening[1] in ("for", "while", "do"):
+            return False
+        rows = [
+            address
+            for address, where, number in caller.get("order", ())
+            if (where, number) == (source, line)
+        ]
+        return bool(rows) and self._statement_start(caller, source, line, min(rows)) is None
 
     def _root_type(self, frame, root):
         """(type offset, whether the frame keeps it in its own memory, type graph) of

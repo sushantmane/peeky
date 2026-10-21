@@ -714,6 +714,19 @@ def _describe_text(manifest):
     mutable = manifest["mutable_types"]
     if "root locals" in mutable and "fields" not in mutable:
         mutable += " (root locals: the stopped function's own variables, not fields)"
+    # The struct and array locals with such fields and elements, per function (seventh
+    # evaluation, finding 16): `w.k` is settable where `w` is.
+    with_parts = [
+        f"{scope['scope']}: {', '.join(scope['settable_parts'])}"
+        for scope in manifest.get("scopes", ())
+        if scope.get("settable_parts")
+    ]
+    if with_parts and not manifest.get("optimized"):
+        mutable += (
+            ". Locals with such fields or elements: "
+            + "; ".join(with_parts[:12])
+            + (f"; and {len(with_parts) - 12} more functions" if len(with_parts) > 12 else "")
+        )
     # Locals no stop can change, per function and why (#138); `probe --set` refuses them
     # before the program runs.
     whys = {
