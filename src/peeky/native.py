@@ -2331,6 +2331,21 @@ def _integer_ranges():
 
 
 INTEGER_RANGES = _integer_ranges()
+# What a function may return that Peeky shows (#155): LLDB reads it from the return
+# register, exactly. Structs, classes, references and arrays are withheld.
+RETURN_SCALARS = frozenset(INTEGER_RANGES) | {
+    "bool",
+    "_Bool",
+    "char",
+    "signed char",
+    "unsigned char",
+    "wchar_t",
+    "char8_t",
+    "char16_t",
+    "char32_t",
+    "float",
+    "double",
+}
 
 
 def _writable_integer(variable):
@@ -3872,6 +3887,74 @@ class NativeSession:
 
     def local_scopes(self, scopes):
         return locals_only(scopes)
+
+    @staticmethod
+    def return_entry(variable):
+        """ "" where LLDB lists what the function a step left returned, else None (#155)."""
+        return "" if variable.get("name") == "(Return Value)" else None
+
+    def return_withheld(self, variable):
+        """Why a returned value LLDB lists is not shown, or None: only a number, a
+        character, a boolean or a pointer, which LLDB reads from the return register.
+        A struct may come back in registers or through memory LLDB cannot place, and a
+        reference's object may already be gone (#155)."""
+        kind = re.sub(
+            r"^(?:(?:const|volatile)\s+)+|(?:\s+(?:const|volatile))+$",
+            "",
+            str(variable.get("type") or "").strip(),
+        )
+        if kind in RETURN_SCALARS or (kind.endswith("*") and "&" not in kind and "(" not in kind):
+            return None
+        if (self.typedef_kind(kind) or ("",))[0] == "pointer":
+            return None
+        return (
+            f"{kind or 'its type'} is not a number, character, boolean or pointer: the "
+            "debugger may read a struct, class or reference from the wrong place, so "
+            "Peeky shows only scalar returns"
+        )
+
+    @staticmethod
+    def returned_by_command(dap, thread_id):
+        """What LLDB itself recorded the step out returned (`thread info`: "Return value:
+        (bool) $0 = false"), for lldb-dap before LLVM 21, which lists no `(Return
+        Value)`; only for the stopped thread, and only a one-line value. None if none."""
+        try:
+            text = dap.request(
+                "evaluate", {"expression": "`thread info", "context": "repl"}, timeout=2
+            ).get("result", "")
+        except Exception:
+            return None
+        thread = re.search(r"\btid = (0x[0-9a-fA-F]+|[0-9]+)", text or "")
+        if not thread or int(thread[1], 0) != thread_id:
+            return None
+        found = re.search(r"^Return value: \(([^\n]+?)\) \$[0-9]+ = ([^\n]*)$", text, re.M)
+        return {"name": "(Return Value)", "type": found[1], "value": found[2]} if found else None
+
+    def before_step(self, dap):
+        """Once per session, make LLDB's step out stop where the function returns, one
+        frame up (#155). By default it goes on past libc++'s internal frames (its "libc++
+        frame recognizer" hides them) and past code without debug information (libc's
+        qsort), and then the value it lists is not what the function returned, and a
+        probe could not tell one call's return from the next call's stop."""
+        if getattr(self, "_steps_set", False):
+            return
+        self._steps_set = True
+
+        def command(text):
+            return dap.request(
+                "evaluate", {"expression": f"`{text}", "context": "repl"}, timeout=2
+            ).get("result", "")
+
+        try:
+            command(
+                "settings set target.process.thread.step-out-avoids-code-without-debug-info false"
+            )
+            listed = command("frame recognizer list")
+            if found := re.search(r"^(\d+): libc\+\+ frame recognizer", listed or "", re.M):
+                command(f"frame recognizer disable {found[1]}")
+        except Exception:
+            # Without it, a step out that goes further withholds the value (left_function).
+            pass
 
     def normalize_capabilities(self, raw):
         return {

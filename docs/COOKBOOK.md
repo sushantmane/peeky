@@ -267,6 +267,28 @@ Every command takes `--json`. Exit codes:
 - 2: an error;
 - 3: a background job still running.
 
+### 2.8 What a Function Returned
+
+**What it answers:** What did each call of this function return, including calls a library makes (a comparator `std::sort` or `qsort` calls, a key function, a `Comparator`)? C, C++, Rust and Java.
+
+```sh
+peeky probe sched.cpp --at 16 --capture "a.name,b.name,return" --hits all -- "build:2:30,test:2:10,deploy:1:5,lint:3:50"
+```
+
+```
+hit  phase     line  function  selector  type         value
+1    observed  16    before    a.name    std::string  "test"
+1    observed  16    before    b.name    std::string  "build"
+1    returned  115   before    (return)  bool         false
+...
+```
+
+`return` (or `(return)`) captures what the function holding the `--at` line returns: after each hit, Peeky steps out of that call, one frame, and records a `(return)` row (`phase` `returned`): `function` is the function that returned, `line` and `location` where it returned to, often in the library that called it. With `--hits all`, that is one row per call, and a recursive call's return goes to its own hit. Probe the function's first line, or any line that runs once per call. If the line runs again at the same depth before the call returns (a loop's next pass, or a call that ended by an exception and the next one), the earlier hit's return is withheld rather than guessed, and so is a call the program never returned from.
+
+A session shows the same after `session step --out`: `session inspect` lists it under `[Returned]`, apart from the locals (`returned` in JSON), labelled with the function that returned, and `session get return` reads it. A step that stops outside your sources (`outside the program's sources`, in `sort.h` or libc) still shows what your function returned; the library's own locals are not read.
+
+Shown only when exact. LLDB reads a returned value from the return register, so C and C++ show integers, `bool`, characters, `float`/`double` and pointers, and Rust its integers (a `u8` as Rust prints it, `65`), `bool` and floats. A struct, class, `std::string`, reference, Rust enum or `Option`, a value the debugger cannot read, any return in an optimized build, and a function returning nothing are withheld, with the reason. LLDB would otherwise step out past libc++'s hidden frames and code without debug information, and then list another value as that function's; Peeky keeps each step out to one frame and checks that it stopped where the call returns. lldb-dap before LLVM 21 (the Linux lanes' 18 and 20) lists no `(Return Value)`; Peeky then reads what LLDB itself recorded for that step out (`thread info`), under the same checks. Java's returns are JDI's exact values, any type. Python's are not available: debugpy shows one only by writing it into the program's globals (`__pydevd_ret_val_dict`), which the program could see, so Peeky refuses `--capture return` there; capture what the caller stores.
+
 ---
 
 ## 3. Comparing Runs
@@ -622,7 +644,7 @@ state: stopped at .../pagination_bug.py:13 in <module> (paused 0.0 s)
 state: terminated (program exited; `peeky session report` shows output)
 ```
 
-State lines number the stops at the session's breakpoint (`…:8 in get_page, hit 3`). `session start --hit 5` runs on to the 5th stop, and `session continue --count 3` to the 3rd breakpoint stop from here, each within one `--timeout`. They never run past anything else: a crash, a finished step or the program's exit ends them there, with a note saying why and the last hit reached, and exit status 3 (as when `--timeout` ends them first). `peeky session continue --to 9` stops once at line 9 of the session's file (the extra breakpoint is removed at the next stop), then the session's own breakpoint applies again. A step can leave your sources, for example into a library, into Rust's standard library, or past the end of `main`. The state then says `outside the program's sources`, and nothing there is read or changed. While your code is still on the stack, `step --out` returns to it; past `main`, the state says so and `continue` finishes. `continue --to` refuses a line the debugger would move (no code there) and keeps the stop. When other threads are stopped at the breakpoint too (LLDB stops them together; Java stops each one separately), `step` waits until `continue` has served them. For Java, `--into` and `--out` skip JDK classes (`java.*`, `javax.*`, `jdk.*`, `sun.*`, `com.sun.*`), so `step --into` on a line that calls `Math.min` stays in your code and reaches lambda bodies. A plain `step` at the end of a method that JDK code called (a `Runnable`, a comparator) stops outside your sources; `continue` from there. Java adapter bundles built before stepping are refused with a hint to rebuild them.
+State lines number the stops at the session's breakpoint (`…:8 in get_page, hit 3`). `session start --hit 5` runs on to the 5th stop, and `session continue --count 3` to the 3rd breakpoint stop from here, each within one `--timeout`. They never run past anything else: a crash, a finished step or the program's exit ends them there, with a note saying why and the last hit reached, and exit status 3 (as when `--timeout` ends them first). `peeky session continue --to 9` stops once at line 9 of the session's file (the extra breakpoint is removed at the next stop), then the session's own breakpoint applies again. A step can leave your sources, for example into a library, into Rust's standard library, or past the end of `main`. The state then says `outside the program's sources`, and nothing there is read or changed, except what your function returned when the step left it (2.8). In C, C++ and Rust, `step --out` leaves one frame at a time, also in a library. While your code is still on the stack, `step --out` returns to it; past `main`, the state says so and `continue` finishes. `continue --to` refuses a line the debugger would move (no code there) and keeps the stop. When other threads are stopped at the breakpoint too (LLDB stops them together; Java stops each one separately), `step` waits until `continue` has served them. For Java, `--into` and `--out` skip JDK classes (`java.*`, `javax.*`, `jdk.*`, `sun.*`, `com.sun.*`), so `step --into` on a line that calls `Math.min` stays in your code and reaches lambda bodies. A plain `step` at the end of a method that JDK code called (a `Runnable`, a comparator) stops outside your sources; `continue` from there. Java adapter bundles built before stepping are refused with a hint to rebuild them.
 
 ### 5.3 Several Sessions at Once
 
@@ -1145,7 +1167,8 @@ All codes are listed in [ERRORS.md](ERRORS.md). If you suspect a filesystem with
 | `info locals`, `print *obj` | `peeky session inspect`, `peeky session get obj` | `get` lists one level of children with their selectors |
 | `bt` | `peeky session inspect --json \| jq '.frames'` | The stack at the stop; values come from the top frame |
 | `frame 1`, `up` | `peeky session inspect --frame 1`, `peeky session get --frame 1 x` | Reads a caller's locals (frame N as `frames` lists them) |
-| `next`, `step`, `finish` | `peeky session step`, `step --into`, `step --out` | Java `--into`/`--out` skip JDK code. After `step --out`, C, C++ and Rust `session inspect` lists the returned value as `(Return Value)`, marked `[not selectable]`: read it there |
+| `next`, `step`, `finish` | `peeky session step`, `step --into`, `step --out` | Java `--into`/`--out` skip JDK code. After `step --out`, C, C++, Rust and Java `session inspect` shows what the function returned under `[Returned]` (also when the step stopped in a library), and `session get return` reads it; withheld unless exact (2.8). Python: not available |
+| `finish` at every call (`Run till exit ... Value returned is`) | `peeky probe target --at <function's first line> --capture return --hits all` | One `(return)` row per call, recursion and library callers included (2.8) |
 | `until 42`, `advance 42` | `peeky session continue --to 42` | One-shot; the session's own breakpoint stays |
 | `continue` | `peeky session continue [--to-exit]` | Runs to the next stop or to exit |
 | "rerun with another input and compare by eye" | `--arg ... --label A`, then `peeky queries diff` | The `(output)`, `(args)`, ... rows come first, then the first divergence |
