@@ -2109,9 +2109,12 @@ class DebugWorker:
                     watch = None
             try:
                 self.dap.request(STEPS[kind], {"threadId": self.thread_id})
-            except RequestFailed as exc:
+            except Exception as exc:
                 if watch is not None:
+                    # No step runs that it could watch.
                     runtime.unwatch_return(self.dap, watch)
+                if not isinstance(exc, RequestFailed):
+                    raise
                 # Refused (e.g. stepping out of the outermost frame): nothing moved.
                 raise ValueError(
                     f"The debugger refused to step {kind} here ({exc}); `session continue` instead"

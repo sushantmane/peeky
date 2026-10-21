@@ -1563,6 +1563,14 @@ def _returned_by(worker, stop, call):
         # A library stop LLDB lists no return for.
         return {**row, "unavailable": True, "error": f"withheld: {exc}"[:2000]}
     row = _returned_row(row, snapshot)
+    if not snapshot.get("returned"):
+        # Its step out ended, but not where a return lands (Java: in the caller's
+        # handler, after an exception).
+        row["error"] = (
+            "withheld: the step out did not end where this call returns (it did not return "
+            "normally, or the debugger did not say what it returned)"
+        )
+        row["unavailable"] = True
     depth = snapshot.get("depth")
     why = None
     if call["depth"] is not None and depth != call["depth"] - 1:

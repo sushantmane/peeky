@@ -376,6 +376,10 @@ def test_returns_that_never_came_are_withheld(monkeypatch, tmp_path):
     # The program ended inside the call.
     _, returns, _ = probe_with(monkeypatch, tmp_path, [("hit", 3), ("end",)])
     assert "ended before it returned" in returns[1]["error"]
+    # The step out ended where no return lands: no advice to probe for returns.
+    _, returns, _ = probe_with(monkeypatch, tmp_path, [("hit", 3), ("step", 2, None), ("end",)])
+    assert "did not end where this call returns" in returns[1]["error"]
+    assert "--capture return" not in returns[1]["error"] and returns[1]["unavailable"]
 
 
 def test_another_threads_stop_withholds_and_the_probe_goes_on(monkeypatch, tmp_path):
