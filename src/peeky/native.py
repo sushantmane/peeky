@@ -2975,7 +2975,20 @@ class NativeSession:
                     "frame is back in its own lines"
                 )
             here, line = place
-        if shadowed := self._block_storage(name, frame, here, line, (stopped, raw_line)):
+        # At the first instruction of the line's statements, none has run (#169).
+        entering = (
+            (
+                lambda: (
+                    getattr(self.target, "optimization", "O0") == "O0"
+                    and self.mid_statement(variable, frame) is None
+                )
+            )
+            if innermost and (here, line) == (stopped, raw_line)
+            else None
+        )
+        if shadowed := self._block_storage(
+            name, frame, here, line, (stopped, raw_line), entering=entering
+        ):
             return shadowed
         if not innermost and (
             unfinished := declared_unfinished(
@@ -3710,12 +3723,18 @@ class NativeSession:
                 # Each function a stop there can be in, and in it the declaration of the
                 # root the code names where the line's breakpoint stops: its lowest address
                 # that runs before the function returns (not an exception's landing pad,
-                # where no stop is made). With none, none is singled out (#158).
-                places = []
+                # where no stop is made). With none, none is singled out (#158). LLDB also
+                # stops at the line's code in each other block (#157), but there the stop
+                # is part-way through the line, where no change is made (#105), so only
+                # the first stop can make one: said where another stop names another (#169).
+                places, elsewhere = [], set()
                 for entry, addresses in self._line_places(source, line):
                     returned = entry.get("returned")
-                    normal = [a for a in addresses if returned is None or a < returned]
-                    places.append((entry, self._named_where(root, min(normal)) if normal else None))
+                    normal = sorted(a for a in addresses if returned is None or a < returned)
+                    first = self._named_where(root, normal[0]) if normal else None
+                    places.append((entry, first))
+                    if any(self._named_where(root, a) != first for a in normal[1:]):
+                        elsewhere.add(entry.get("name") or "this function")
                 if line not in stops or not places:
                     continue
                 failures = []
@@ -3746,9 +3765,17 @@ class NativeSession:
                     reasons = by_function(
                         (function, f"in {FUNCTION}, {why}") for function, why in failures
                     )
+                    later = (
+                        f" (the line's later stops in {', '.join(sorted(elsewhere))}, in other "
+                        f"blocks, name another `{root}`, but each is part-way through the "
+                        "line, where no change is made: to change that one, stop at a line "
+                        "that starts in its block)"
+                        if elsewhere
+                        else ""
+                    )
                     return (
                         f"`{name}` cannot be changed at {source}:{line}, at any stop of this "
-                        f"build: {reasons}. Refused before the program runs: nothing ran"
+                        f"build: {reasons}{later}. Refused before the program runs: nothing ran"
                     )
         return None
 
@@ -3857,7 +3884,7 @@ class NativeSession:
             return None
         return int(pointer, 16) - bias
 
-    def _block_storage(self, name, frame, source, line, stop=None):
+    def _block_storage(self, name, frame, source, line, stop=None, entering=None):
         """Why the root local ``name`` of ``frame`` is not what the code at ``source:line``
         reads, or None: a block around the line declares ``name`` after the local, so
         that the code names that instead: a `static` or an `extern` (lldb-dap does not
@@ -3868,10 +3895,14 @@ class NativeSession:
         compiler preprocessed it, so what a macro, a conditional or an `#include` makes
         of the source is what is read; withheld where Peeky cannot read it. ``stop``:
         the (file, line) the frame runs, where ``source:line`` is an `#include` line
-        that brings it in (the preprocessed text has its lines there instead)."""
+        that brings it in (the preprocessed text has its lines there instead).
+        ``entering()``: whether the stop is the first instruction of the statements that
+        start on the line (None: it is not), where a range-`for`'s binding there is not
+        declared yet."""
         found = shown_declaration(self.declarations, name, self._block_pc(frame))
         if found is None:
             return None
+        function = self._function_at(frame)
         base = (_SHADOWED.fullmatch(name) or [None, name])[1]
         declared = found[1] if found else (None, None, False)
         verdicts, failure = set(), None
@@ -3893,7 +3924,15 @@ class NativeSession:
                 # The stop's line, or the local's, is not singled out in it.
                 verdicts.add(None)
                 continue
-            storage = statements.block_storage(at, base, after, True)
+            # A frame whose function is wholly on the line (a lambda there): its body.
+            body = bool(
+                function is not None
+                and function.get("source") == source
+                and tuple(function.get("span") or ()) == (line, line)
+            )
+            storage = statements.block_storage(at, base, after, True, body)
+            if storage and storage[0] == "binding" and entering is not None and entering():
+                storage = statements.block_storage(at, base, after, True, body, True)
             if storage:
                 origin = preprocessed.origins[storage[1] - 1]
                 storage = None if origin is None else (storage[0], *origin)
