@@ -926,7 +926,7 @@ def test_a_multi_stop_lines_refusal_says_its_later_stops_make_no_change(director
     path.write_text(source)
     code, result = probed(capsys, path, line_of(source, "// MULTI"), "t.x=50", "t")
     error = result["error"]
-    assert code == 1 and error["code"] == "MUTATION_REJECTED", result
+    assert code == 2 and error["code"] == "MUTATION_REJECTED", result
     assert result.get("refused_before_launch") is True, result
     assert "`t` has no fields" in error["message"], error
     assert "later stops in main, in other blocks, name another `t`" in error["message"], error
