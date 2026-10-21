@@ -700,6 +700,81 @@ def test_a_tainted_locals_children_are_tainted_and_marked(tmp_path):
     assert "view" not in b and b["variablesReference"] and "stale" not in n
 
 
+def test_what_is_read_through_a_noted_local_carries_its_note(tmp_path):
+    # #148: a root shown with a note (#140) passed it to nothing read through it; its
+    # fields, their fields and a decoded preview's elements now carry it, said as read
+    # through the root, and none is settable where the root's change is refused.
+    from types import SimpleNamespace
+
+    from peeky.worker import DebugWorker
+
+    class Noted(str):
+        def __new__(cls, note, refuses):
+            made = super().__new__(cls, note)
+            made.note, made.refuses = note, refuses
+            return made
+
+    notes = {"q": Noted("may be leftovers", True), "u": Noted("not judged", False), "k": None}
+    preview = [{"name": "x", "type": "long", "value": "1"}]
+    runtime = SimpleNamespace(
+        assert_current=lambda: None,
+        not_yet_declared=lambda variable, frame, **_: notes[variable["name"]],
+        member_settable=lambda variable: None,
+        view_variable=lambda variable, fetch, read, **_: (
+            {"value": "{x = 1}", "rust_view": "memory", "children": preview}
+            if variable["type"] == "View"
+            else None
+        ),
+        view_writable=lambda view: False,
+    )
+    children = {
+        7: [
+            {"name": "x", "type": "long", "value": "9", "variablesReference": 0},
+            {"name": "inner", "type": "pt", "value": "pt @ 0x10", "variablesReference": 8},
+            {"name": "w", "type": "View", "value": "raw", "variablesReference": 9},
+        ],
+        8: [{"name": "y", "type": "long", "value": "3", "variablesReference": 0}],
+    }
+    worker = DebugWorker(tmp_path)
+    worker.runtime, worker.state, worker.stop_id = runtime, "stopped", "stop1"
+    worker.capabilities = {"supports_set_variable": True, "supports_member_set": True}
+    worker.innermost_frame = 1
+    reference = {"value": 7}
+    worker.walk = lambda record, runtime, trail=None: (*record, reference["value"], None)
+    worker.bounded_variables = lambda handle, indexed=None: children[handle]
+    top = worker.expose_variables(
+        [
+            {"name": name, "type": "pt", "value": "pt @ 0x30", "variablesReference": 7}
+            for name in notes
+        ],
+        {"id": 1},
+        ("Locals",),
+        (),
+    )
+    assert [shown.get("note") for shown in top] == ["may be leftovers", "not judged", None]
+
+    def expand(handle, at=7):
+        reference["value"] = at
+        return worker.expand({"stop_id": "stop1", "handle": handle}, runtime)["variables"]
+
+    x, inner, w = expand(top[0]["variablesReference"])
+    through = "read through `q`: may be leftovers"
+    assert x["note"] == through and x["settable"] is False
+    assert inner["note"] == through and w["note"] == through
+    [y] = expand(inner["variablesReference"], at=8)
+    assert y["note"] == through and y["settable"] is False
+    [element] = expand(w["variablesReference"])
+    assert element["note"] == through
+    # A note that refuses no change: carried, and settable as before.
+    x, inner, w = expand(top[1]["variablesReference"])
+    assert x["note"] == "read through `u`: not judged" and x["settable"] is True
+    # A local with no note: nothing to carry.
+    x, inner, w = expand(top[2]["variablesReference"])
+    assert "note" not in x and "note" not in inner and x["settable"] is True
+    [y] = expand(inner["variablesReference"], at=8)
+    assert "note" not in y
+
+
 def test_a_string_the_runtime_shows_keeps_its_handle_and_never_overrides_no_value(tmp_path):
     # #128: a libstdc++ string's text is the runtime's (read from memory, or noted); the
     # worker keeps its handle to the raw members, reads memory only where the debugger
