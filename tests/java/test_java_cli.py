@@ -69,8 +69,10 @@ def test_java_fields_are_read_through_this_and_commands_keep_the_config(counter,
     assert scopes["Counter.add"]["lines"] == [10, 13]
     assert scopes["Counter.main"]["names"] == ["args", "counter"]
     assert main(["describe", *common]) == 0
+    # #183: with each name's declared type, as C, C++ and Rust give them.
     assert (
-        "names in Counter.add (demo/Counter.java:10-13): this, times, i" in capsys.readouterr().out
+        "names in Counter.add (demo/Counter.java:10-13): this (demo.Counter), times (int), i (int)"
+        in capsys.readouterr().out
     )
     code = main(
         [
@@ -224,8 +226,13 @@ def test_rows_say_which_java_locals_set_can_change(counter, capsys):
     }
     code = main([*common, "--set", "args=1", "--json", "--no-save", "--quiet"])
     result = json.loads(capsys.readouterr().out)
-    assert code == 1 and result["error"]["code"] == "MUTATION_REJECTED"
-    assert result["error"]["message"].endswith("settable here: none")
+    # #183: the declared type rules it out before the program runs.
+    assert code == 2 and result["error"]["code"] == "MUTATION_REJECTED"
+    assert result.get("refused_before_launch") is True, result
+    assert (
+        "`args` is declared String[]; only byte, short, int, long, char"
+        in (result["error"]["message"])
+    )
     at = ["probe", str(root), "--config", str(config), "--at", "demo/Counter.java:11"]
     code = main([*at, "--capture", "i,times", "--json", "--no-save", "--quiet"])
     result = json.loads(capsys.readouterr().out)
