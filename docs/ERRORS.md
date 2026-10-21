@@ -26,7 +26,7 @@ Every Peeky failure, from the HTTP worker, the SDK (`peeky.errors.PeekyError`) o
 | `DEBUGGER_ERROR` | Adapter/debugger failure: a broken protocol stream (for example a reply over 4 MiB), java-debug's event thread dying, or an attached JVM's stop the debugger never reported (`Lost stop:`); session discarded | Start again; capture narrower selectors if values are huge; for Java, keep `debugger_events` (#27) |
 | `SESSION_ACTIVE` / `NO_SESSION` | Session lifecycle misuse | Close / start a session |
 | `BUSY` | Another probe is running on this worker | Retry later |
-| `UNSUPPORTED` | Operation or capability not offered (`--capture return` for Python), or a Java adapter bundle built before a required java-debug patch | Call `version`; rebuild the Java adapter with `scripts/setup_java_adapter.py` |
+| `UNSUPPORTED` | Operation or capability not offered (`--capture return` for Python), a Java adapter bundle built before a required java-debug patch, or a C++ target whose compiler is not clang (`C++ targets need clang++ …`, refused before building: CPP.md) | Call `version`; rebuild the Java adapter with `scripts/setup_java_adapter.py`; set `PEEKY_NATIVE_CXX` to clang++ |
 | `UNAUTHORIZED` | Missing or wrong bearer token | Use the worker's `DEBUG_TOKEN` |
 | `INVALID_REQUEST` | Malformed arguments (such as a `--frame` past the stack, whose message says how many frames there are), or an evidence store that cannot be used | Fix the request; for a store, move it aside or pass `--store` |
 | `INVALID_QUERY` | `peeky sql`/`peeky queries`: bad SQL, a write, a missing `--param`, or a query over its time bound | Fix the query; `peeky sql --schema` lists tables, columns and canned queries |
