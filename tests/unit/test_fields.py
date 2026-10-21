@@ -2,6 +2,7 @@
 decided from the debug information (fields.py), and how the worker writes and reads
 it back."""
 
+import re
 from copy import deepcopy
 
 import pytest
@@ -645,3 +646,52 @@ def test_a_value_view_that_is_no_structs_own_storage_is_never_written(tmp_path):
             "set_variable", {**STOP, "handle": handle_of(worker), "name": "end", "value": "10"}
         )
     assert not any(op == "setVariable" for op, _ in worker.dap.calls)
+
+
+def test_a_container_field_is_found_only_through_plain_records():
+    # #156: `self.values` behind `&mut self`, `self.inner.items`, `self.arr[1]`; never
+    # into a standard-library type (a RefCell's contents change behind `&self`), an
+    # enum, or through a pointer on the way.
+    from peeky.fields import held_container
+
+    vec = "alloc::vec::Vec<i64, alloc::alloc::Global>"
+
+    def record(name, members, library=None, variant=False, qualified=None):
+        fields = tuple((field, kind, offset, False, 8, None) for field, kind, offset in members)
+        holds = tuple(kind for _, kind, _ in members)
+        size = 24 * max(len(members), 1)
+        return ("record", name, "struct", size, 8, fields, holds, variant, False, library, ())
+
+    graph = {
+        1: ("pointer", "&mut app::Window", 2),
+        2: record(
+            "Window",
+            [("values", 3, 0), ("inner", 4, 24), ("cell", 5, 48), ("maybe", 6, 72)]
+            + [("arr", 7, 96), ("next", 8, 144)],
+        )
+        + ("app::Window",),
+        3: record("Vec<i64, alloc::alloc::Global>", [], "alloc") + (vec,),
+        4: record("Inner", [("items", 3, 0)]) + ("app::Inner",),
+        5: record("RefCell<Vec<i64>>", [("value", 3, 0)], "core") + ("core::cell::RefCell",),
+        6: record("Option<Vec<i64>>", [], variant=True) + ("core::option::Option",),
+        7: ("array", "", 3, (2,), False),
+        8: ("pointer", "*const app::Window", 2),
+    }
+    assert held_container(graph, 1, "self", ["values"], dereference=True) == vec
+    assert held_container(graph, 1, "self", ["inner", "items"], dereference=True) == vec
+    assert held_container(graph, 1, "self", ["arr", "[1]"], dereference=True) == vec
+    assert held_container(graph, 2, "w", ["values"]) == vec
+    # Any other record is named too: only a container's layout reads it.
+    assert held_container(graph, 1, "self", ["inner"], dereference=True) == "app::Inner"
+    refused = {
+        ("cell", "value"): "`self.cell` is a standard-library type (RefCell<Vec<i64>>)",
+        ("maybe", "__0"): "`self.maybe` is an enum",
+        ("next", "values"): "`self.next` is a pointer",
+        ("arr", "[2]"): "`self.arr` has no element [2]",
+        ("arr",): "`self.arr` is not a container",
+    }
+    for steps, why in refused.items():
+        with pytest.raises(Unsettable, match=re.escape(why)):
+            held_container(graph, 1, "self", list(steps), dereference=True)
+    with pytest.raises(Unsettable, match="`self` is a pointer"):
+        held_container(graph, 1, "self", ["values"])
