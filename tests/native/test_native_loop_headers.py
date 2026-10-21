@@ -109,16 +109,12 @@ def test_a_loop_header_that_stops_only_before_its_loop_says_so(loops, capsys):
         ], (marker, seen[marker])
         # Once per start of its loop: the inner one starts at each outer pass.
         assert hits == (2 if marker == "INNER" else 1), (marker, seen[marker])
-    # A header with no code of its own may move to the next line (GCC); where it stops
-    # on its own line, it is a loop entry.
+    # `for (;;)` and `do {` hold no code of their loop's header (a jump into it at most,
+    # which a `goto` is too: review of #166): no note, whether they stop once (clang) or
+    # move into the body (GCC).
     for marker in ("FOREVER", "DO_OPEN"):
         hits, notes, line = seen[marker]
-        if line == line_of(marker):
-            assert hits == 1 and len(notes) == 1, (marker, seen[marker])
-        else:
-            assert not notes, (marker, seen[marker])
-    if compiler == "clang":
-        assert all(seen[marker][1] for marker in ("FOREVER", "DO_OPEN")), seen
+        assert not notes, (marker, seen[marker])
     # What stops at each pass gets no note: a body, a `do`'s `while`, a one-line loop's
     # body block.
     assert seen["BODY"][:2] == (3, []), seen["BODY"]
@@ -143,3 +139,56 @@ def test_session_start_on_a_loop_header_says_it_stops_before_the_loop(loops, cap
     finally:
         main(["session", "close"])
         capsys.readouterr()
+
+
+# Review of #166: lines that run at each pass of a loop around them, where the note said
+# "never at the passes": a loop entered under a condition, a line holding a whole loop
+# (a statement macro's), a `goto` into a loop.
+AROUND = """#include <stdio.h>
+#define FILL(a, n, v) for (int i_ = 0; i_ < (n); i_++) (a)[i_] = (v)
+#define CLEAR(a, n) do { for (int z = 0; z < (n); z++) (a)[z] = 0; } while (0)
+int main(void) {
+    int total = 0, k = 0, g = 0, rows[3][4], arr[4] = {1, 2, 3, 4};
+    for (int r = 0; r < 5; r++) { // R_LOOP
+        if (r == 3) for (int i = 0; i < 2; i++) { // IFFOR
+            total += i;
+        }
+        if (r % 2) while (k < r) { k++; } // IFWHILE
+    }
+    for (int r = 0; r < 3; r++) {
+        FILL(rows[r], 4, r); // FILL
+        CLEAR(arr, 4); // CLEAR
+        total += rows[r][3] + arr[0];
+    }
+    goto inside; // GOTO
+    while (g < 3) {
+        total++;
+inside:
+        g++;
+    }
+    printf("total=%d k=%d g=%d\\n", total, k, g);
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(300)
+def test_lines_at_each_pass_of_a_loop_around_them_get_no_note(loops, capsys):
+    compiler, root, config = loops
+    (root / "loops.c").write_text(AROUND)
+    seen = {}
+    for marker, passes in (("IFFOR", 5), ("IFWHILE", 5), ("FILL", 3), ("CLEAR", 3), ("GOTO", 1)):
+        line = next(i for i, text in enumerate(AROUND.splitlines(), 1) if f"// {marker}" in text)
+        command = ["probe", str(root), "--config", str(config), "--at", f"loops.c:{line}"]
+        assert main([*command, "--capture", "total", "--hits", "all", "--json", "--quiet"]) == 0
+        result = json.loads(capsys.readouterr().out)
+        assert "total=6 k=3 g=3" in result["output"], result
+        seen[marker] = (line, result["hits"], result["warnings"])
+        assert not [w for w in result["warnings"] if "is a loop header" in w], (marker, seen)
+        assert result["hits"] >= passes, (marker, seen[marker])
+    # A header alone on its line keeps it.
+    line = next(i for i, text in enumerate(AROUND.splitlines(), 1) if "// R_LOOP" in text)
+    command = ["probe", str(root), "--config", str(config), "--at", f"loops.c:{line}"]
+    assert main([*command, "--capture", "total", "--hits", "all", "--json", "--quiet"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["hits"] == 1 and [w for w in result["warnings"] if "is a loop header" in w]

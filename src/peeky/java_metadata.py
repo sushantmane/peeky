@@ -341,7 +341,7 @@ def loop_header_stops(mapping, classes_dir, source, line):
     None (no loop of the line, a stop at each pass, or unclear: the line in several
     classes, bytecode that does not decode). java-debug binds a line breakpoint to the
     first method holding the line, in class-file order, at its first code there."""
-    from peeky.loop_headers import java_instructions, java_line_ranges, stops_before_loop
+    from peeky.loop_headers import java_instructions, java_line_table, stops_before_loop
 
     source = Path(source).resolve()
     holding = []
@@ -361,8 +361,8 @@ def loop_header_stops(mapping, classes_dir, source, line):
             instructions = java_instructions(code)
             if instructions is None:
                 return None
-            ranges = java_line_ranges(lines, len(code), line)
-            return stops_before_loop(instructions, ranges, [min(pcs)], handlers)
+            table = java_line_table(lines, len(code))
+            return stops_before_loop(instructions, table, line, [min(pcs)], handlers)
     return None
 
 

@@ -200,6 +200,9 @@ class DebugWorker:
         self.own_lines, self.own_ids, self.temporary_lines = set(), set(), set()
         self.stop_outside = self.stop_returns = self.co_served = False
         self.forget_places()
+        # {line: stops}: the launch's breakpoint lines that are loop headers stopping
+        # only before their loop, so many times each time it starts (#161).
+        self.loop_lines = {}
         self.stop_place = None
         self.reset_lost_stops()
         # A session that failed on a lost stop (#27): its id, error and final report.
@@ -866,9 +869,6 @@ class DebugWorker:
         # of them names asks once more (placed before the program loaded, unslid).
         self.places_asked = None
         self.places_renewed = False
-        # {line: stops}: lines that are loop headers stopping only before their loop,
-        # so many times each time it starts (#161).
-        self.loop_lines = {}
         # Some were listed before the program loaded (`m[0x…], unresolved`): their counts
         # hold, but their addresses are the module's, which a stop's pc may match by
         # chance once the program is slid. No stop is labelled from them (review 2 of
@@ -906,13 +906,14 @@ class DebugWorker:
             group[1].add(location["address"])
         for (line, _), (function, addresses) in groups.items():
             self.places.setdefault(line, []).append((function, tuple(sorted(addresses))))
-        self.loop_lines = self.loop_headers(runtime)
 
     def loop_headers(self, runtime):
         """{line: stops} of the session's breakpoint lines that are loop headers whose
-        every location runs before the loop, in each function holding them (#161): a
-        C, C++ `for`/`while` header binds its first code, Rust's `for` its two. Asked of
-        the runtime while the program waits (the debugger's disassembly); best effort."""
+        every location runs once each time the loop starts, before it (#161): a C, C++
+        `for`/`while` header binds its first code, Rust's `for` its two. Asked of the
+        runtime once, at launch, before the program runs (the debugger's disassembly and
+        line table, kept for the launch); never again when breakpoints are set again or
+        their places asked again (review of #166). Best effort."""
         hook = getattr(runtime, "loop_header_stops", None)
         if hook is None or self.dap is None or not self.places:
             return {}
@@ -920,15 +921,14 @@ class DebugWorker:
             source = runtime.source_path(self.program)
         except Exception:
             return {}
-        found = {}
+        found, cache = {}, {}
         for line in sorted(self.places)[:8]:
-            counts = set()
-            for _, addresses in self.places[line]:
-                try:
-                    counts.add(hook(self.dap, source, line, addresses))
-                except Exception:
-                    counts.add(None)
-            if len(counts) == 1 and (count := counts.pop()):
+            groups = [addresses for _, addresses in self.places[line]]
+            try:
+                count = hook(self.dap, source, line, groups, cache)
+            except Exception:
+                count = None
+            if count:
                 found[line] = count
         return found
 
@@ -939,6 +939,8 @@ class DebugWorker:
 
         notes = []
         for line, count in sorted(self.loop_lines.items()):
+            if line not in self.places:
+                continue
             note = loop_header_note(line, count)
             if count > 1:
                 note += f" (each hit's stop, 1 to {count}, says which)"
@@ -1337,6 +1339,7 @@ class DebugWorker:
             self.hits, self.stop_hit, self.stop_line = 0, None, None
             self.own_lines, self.own_ids, self.temporary_lines = set(), set(), set()
             self.forget_places()
+            self.loop_lines = {}
             # Nothing about an earlier session's stops carries over on a shared worker.
             self.co_served = self.stop_outside = self.stop_returns = False
             self.stop_all_threads = False
@@ -1413,6 +1416,8 @@ class DebugWorker:
                 self.record_own_points(args.get("breakpoints", []), points)
                 self.note_placed(runtime.source_path(program), args.get("breakpoints", []), points)
                 self.note_places(runtime, args.get("breakpoints", []), points)
+                # Once, before the program runs (#161): breakpoints set again later keep it.
+                self.loop_lines = self.loop_headers(runtime)
                 self.dap.request("configurationDone", timeout=left())
                 self.dap.response(launch, timeout=left())
                 runtime.assert_current()

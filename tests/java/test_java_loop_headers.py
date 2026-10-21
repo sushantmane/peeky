@@ -34,6 +34,9 @@ public class Loops {
         for (; j < 2; j++) { // FOR_NO_INIT
             total += j;
         }
+        for (int r = 0; r < 4; r++) {
+            if (r == 2) for (int i = 0; i < 2; i++) total += i; // IFFOR
+        }
         System.out.println("TOTAL:" + total + " " + k);
     }
 }
@@ -72,7 +75,7 @@ def test_java_loop_headers_say_when_they_stop_only_before_their_loop(loops, caps
         command = ["probe", str(root), "--config", str(config), "--at", f"demo/Loops.java:{line}"]
         assert main([*command, "--capture", "total", "--hits", "all", "--json", "--quiet"]) == 0
         result = json.loads(capsys.readouterr().out)
-        assert result["status"] == "completed" and "TOTAL:14 3" in result["output"], result
+        assert result["status"] == "completed" and "TOTAL:15 3" in result["output"], result
         return line, result["hits"], [w for w in result["warnings"] if "loop header" in w]
 
     for marker in ("FOR", "FOR_EACH"):
@@ -85,6 +88,8 @@ def test_java_loop_headers_say_when_they_stop_only_before_their_loop(loops, caps
                 "first line of the loop's body for one stop per pass"
             ],
         ), marker
-    for marker, passes in (("WHILE", 4), ("DO", 7), ("FOR_NO_INIT", 3)):
+    # A loop entered under a condition runs at each pass of the loop around it (review
+    # of #166): no note.
+    for marker, passes in (("WHILE", 4), ("DO", 7), ("FOR_NO_INIT", 3), ("IFFOR", 4)):
         line, hits, notes = run(marker)
         assert (hits, notes) == (passes, []), marker

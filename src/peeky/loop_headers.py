@@ -6,12 +6,22 @@ condition the loop returns to; Rust's `for` has two such locations. An agent tha
 `--at` on the header expecting one stop per pass gets one stop in all.
 
 Decided from the code alone, never from the source's shape: the function's control
-flow (LLDB's disassembly, or Java bytecode) gives its natural loops (dominator-based);
-a loop is the line's where its header holds code of the line, or the line's own jump
-enters it (Rust's `loop {`); the line stops only before it where every breakpoint
-location of the line is outside each such loop and reaches it. Anything unclear (an
-indirect jump, flow that is not a natural loop, a location or line with no code found)
-gives no answer.
+flow (LLDB's disassembly, or Java bytecode) gives its natural loops (dominator-based),
+and its line table which line each instruction is. A loop is the line's where its
+header holds code of the line. The line stops only before it where:
+
+- every breakpoint location of the line is outside each such loop, and every path from
+  it passes through that loop's header before it can come back to the location or
+  return (so it runs once each time the loop starts, never on its own: not a condition
+  the loop sits under, review of #166);
+- the loop holds code of other lines (its body), and the line's code in it is the loop's
+  own: its condition (the blocks the header starts, of the line's code alone), its
+  increment (the line's code ending a block that jumps back to the header), or a
+  binding starting the body (a for-each's element), no further right on the line than
+  that condition or increment.
+
+Anything unclear (an indirect jump, flow that is not a natural loop, a location or line
+with no code found) gives no answer.
 """
 
 import re
@@ -25,14 +35,16 @@ _INSTRUCTION = re.compile(
 )
 # A line's code in `source info`: `[0x100003f74-0x100003f78): /w/m.c:4:14`.
 _RANGE = re.compile(
-    r"^\[(0x[0-9a-fA-F]{1,16})-(0x[0-9a-fA-F]{1,16})\): .*?:([0-9]{1,9})(?::[0-9]{1,9})?$"
+    r"^\[(0x[0-9a-fA-F]{1,16})-(0x[0-9a-fA-F]{1,16})\): .*?:([0-9]{1,9})(?::([0-9]{1,9}))?$"
 )
 _ADDRESS = re.compile(r"(?<![\w#])0x[0-9a-fA-F]{1,16}\b")
 
-# How each kind of instruction leaves (arm64 and x86-64): "stop" never falls through,
-# "jump" goes to its target only, "branch" to its target or the next, "indirect" goes
-# where the code cannot tell (a jump table).
-_STOPS = frozenset(("ret", "retq", "retl", "retaa", "retab", "brk", "udf", "ud2", "hlt", "int3"))
+# How each kind of instruction leaves (arm64 and x86-64): "return" leaves the function,
+# "stop" traps (a panic's `brk`, never a return), "jump" goes to its target only,
+# "branch" to its target or the next, "indirect" goes where the code cannot tell (a jump
+# table).
+_RETURNS = frozenset(("ret", "retq", "retl", "retaa", "retab"))
+_STOPS = frozenset(("brk", "udf", "ud2", "hlt", "int3"))
 _JUMPS = frozenset(("b", "jmp", "jmpq"))
 _CONDITIONAL = frozenset(("cbz", "cbnz", "tbz", "tbnz"))
 _CALLS = re.compile(r"^(?:bl|blr|blra\w*|callq?|calll)$")
@@ -42,6 +54,8 @@ _PREFIXES = frozenset(
 
 
 def _kind(mnemonic, operands):
+    if mnemonic in _RETURNS:
+        return "return"
     if mnemonic in _STOPS:
         return "stop"
     if _CALLS.match(mnemonic):
@@ -86,14 +100,15 @@ def disassembly(text):
     return found or None
 
 
-def line_ranges(text, line):
-    """[(start, end)] of the code ``line`` has in LLDB's `source info` text."""
-    ranges = []
+def line_table(text):
+    """[(start, end, line, column)] of LLDB's `source info` text, by start: which line
+    (and column, 0 where none) each range of code is."""
+    rows = []
     for raw in text.splitlines():
         match = _RANGE.match(raw.strip())
-        if match and int(match[3]) == line:
-            ranges.append((int(match[1], 16), int(match[2], 16)))
-    return ranges
+        if match:
+            rows.append((int(match[1], 16), int(match[2], 16), int(match[3]), int(match[4] or 0)))
+    return sorted(rows)
 
 
 def _blocks(instructions, handlers=()):
@@ -213,50 +228,117 @@ def natural_loops(instructions, handlers=()):
     return loops, owner, successors
 
 
-def stops_before_loop(instructions, ranges, locations, handlers=()):
+def _located(table):
+    """address -> (line, column) of ``table`` (see ``line_table``), or None."""
+    import bisect
+
+    starts = [row[0] for row in table]
+
+    def at(address):
+        index = bisect.bisect_right(starts, address) - 1
+        if index < 0 or not table[index][0] <= address < table[index][1] or not table[index][2]:
+            # No line (a call's return point, line 0): it belongs to none.
+            return None
+        return table[index][2], table[index][3]
+
+    return at
+
+
+def stops_before_loop(instructions, table, line, locations, handlers=()):
     """How many of ``locations`` (a line's breakpoint addresses in this function) the
-    line stops at before its loop, when every one of them is outside each loop whose
-    header holds code of the line (``ranges``) and leads into one, so none is reached
-    again by a pass; else None (the line is no loop's header here, a location is in
-    its loop, or the flow is unclear)."""
+    line stops at each time its loop starts, before the first pass, where the line is
+    that loop's header alone (see the module); else None. ``table``: which line each
+    range of code is (``line_table``)."""
     analysed = natural_loops(instructions, handlers)
-    if analysed is None or not locations or not ranges:
+    if analysed is None or not locations or not table:
         return None
     loops, owner, successors = analysed
+    at = _located(table)
+    code = {}
+    for address, kind, _ in instructions:
+        code.setdefault(owner[address], []).append((address, kind, at(address)))
 
-    def ours(address):
-        return any(start <= address < end for start, end in ranges)
+    def ours(where):
+        return where is not None and where[0] == line
 
-    # The line's loops: those whose header holds code of the line (a condition, Rust's
-    # `next()`), or that the line's own jump enters (Rust's `loop {`, a C `do {`).
-    entered = {
-        owner.get(targets[0])
-        for address, kind, targets in instructions
-        if kind == "jump" and len(targets) == 1 and ours(address)
-    }
-    headers = [
-        header
-        for header in loops
-        if header in entered
-        or any(ours(address) for address, block in owner.items() if block == header)
-    ]
+    headers = [header for header in loops if any(ours(w) for _, _, w in code[header])]
     if not headers:
         return None
+    if not _own_code(headers, loops, code, successors, ours):
+        return None
+    inside = {block for header in headers for block in loops[header]}
     for location in locations:
         block = owner.get(location)
-        if block is None or any(block in loops[header] for header in headers):
+        if block is None or block in inside or block not in code:
             return None
-        # It leads into the loop: a header is reachable from it.
-        seen, pending = set(), [block]
+        # Every path from it reaches a header before it comes back to it or returns.
+        seen, pending = set(), list(successors.get(block, ()))
+        if code[block][-1][1] == "return":
+            return None
         while pending:
             current = pending.pop()
-            if current in seen:
+            if current in headers or current in seen:
                 continue
+            if current == block or code.get(current, [(0, "", None)])[-1][1] == "return":
+                return None
             seen.add(current)
             pending.extend(successors.get(current, ()))
-        if not seen & set(headers):
-            return None
     return len(locations)
+
+
+def _own_code(headers, loops, code, successors, ours):
+    """Whether the line's code inside each of its loops is only that loop's own (see the
+    module): never its body, and never all of the loop."""
+    for header in headers:
+        body = loops[header]
+        if not any(
+            where is not None and not ours(where) for block in body for _, _, where in code[block]
+        ):
+            # The whole loop is the line's (`for (...) total += i;`, a macro's loop).
+            return False
+        # The condition: the blocks the header starts, of the line's code alone and no
+        # further right on it than the header's (a body statement written on the line,
+        # `{ if (a[i]) continue;`, is not).
+        reach = max((w[1] for _, _, w in code[header] if ours(w)), default=0)
+        condition, pending = set(), [header]
+        while pending:
+            block = pending.pop()
+            if block in condition or block not in body:
+                continue
+            if block != header and not all(
+                where is None or (ours(where) and (not reach or not where[1] or where[1] <= reach))
+                for _, _, where in code[block]
+            ):
+                continue
+            condition.add(block)
+            pending.extend(successors.get(block, ()))
+        allowed = {address for block in condition for address, _, _ in code[block]}
+        control = [where[1] for block in condition for _, _, where in code[block] if ours(where)]
+        for block in body - condition:
+            rows = code[block]
+            if header in successors.get(block, ()):
+                # The increment: the line's code ending a block that jumps back.
+                for address, _, where in reversed(rows):
+                    if not ours(where):
+                        break
+                    allowed.add(address)
+                    control.append(where[1])
+        widest = max(control, default=0)
+        for block in body - condition:
+            if not any(previous in condition for previous in body if block in successors[previous]):
+                continue
+            # A binding starting the body (a for-each's element), within the header.
+            for address, _, where in code[block]:
+                if not ours(where) or address in allowed:
+                    break
+                if where[1] and widest and where[1] > widest:
+                    break
+                allowed.add(address)
+        for block in body:
+            for address, _, where in code[block]:
+                if ours(where) and address not in allowed:
+                    return False
+    return True
 
 
 # Java bytecode: each opcode's length where it is fixed, by opcode.
@@ -342,7 +424,9 @@ def java_instructions(code):
                     kind, targets = "jump", (pc + signed(pc + 1, 4),)
                 elif op in (0xA8, 0xA9, 0xC9):
                     kind = "indirect"
-                elif 0xAC <= op <= 0xB1 or op == 0xBF:
+                elif 0xAC <= op <= 0xB1:
+                    kind = "return"
+                elif op == 0xBF:
                     kind = "stop"
                 else:
                     kind = "fall"
@@ -359,14 +443,13 @@ def java_instructions(code):
     return found or None
 
 
-def java_line_ranges(lines, size, line):
-    """[(start, end)] of the bytecode ``line`` covers, from a method's LineNumberTable
-    ({pc: line}): each entry's line holds from its pc to the next entry's."""
+def java_line_table(lines, size):
+    """``line_table``'s rows for a method's LineNumberTable ({pc: line}): each entry's
+    line holds from its pc to the next entry's (no columns in bytecode)."""
     starts = sorted(lines)
     return [
-        (pc, starts[index + 1] if index + 1 < len(starts) else size)
+        (pc, starts[index + 1] if index + 1 < len(starts) else size, lines[pc], 0)
         for index, pc in enumerate(starts)
-        if lines[pc] == line
     ]
 
 

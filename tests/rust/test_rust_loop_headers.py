@@ -44,6 +44,12 @@ MAIN = """fn main() {
         n += 1;
         if n > 2 { break; }
     }
+    for r in 0..5 {
+        if r % 2 == 1 { while k < r + 2 { k += 1; } } // IFWHILE
+    }
+    for r in 0..3 {
+        let mut m = 0; while m < 2 { m += 1; } total += m + r; // STMTWHILE
+    }
     println!("TOTAL:{} {} {}", total, k, n);
 }
 """
@@ -68,7 +74,7 @@ def probe(root, capsys, marker):
     command = ["probe", str(root), "--at", f"src/main.rs:{line}", "--capture", "k"]
     assert main([*command, "--hits", "all", "--json", "--quiet", "--no-save"]) == 0
     result = json.loads(capsys.readouterr().out)
-    assert result["status"] == "completed" and "TOTAL:36 3 3" in result["output"], result
+    assert result["status"] == "completed" and "TOTAL:45 5 3" in result["output"], result
     notes = [w for w in result["warnings"] if "loop header" in w]
     return line, result, notes
 
@@ -85,10 +91,20 @@ def test_rust_loop_headers_say_when_they_stop_only_before_their_loop(crate, caps
     # The loop note says more than #157's per-pass warning, which it replaces.
     assert not [w for w in result["warnings"] if "times per pass" in w], result["warnings"]
     assert [row["stop"] for row in result["rows"]] == [1, 2]
-    for marker in ("WHILE", "LOOP"):
+    line, result, notes = probe(crate, capsys, "WHILE")
+    assert result["hits"] == 1 and len(notes) == 1, result["warnings"]
+    assert notes[0].startswith(f"Line {line} is a loop header: it stops once"), notes
+    # `loop {` holds no code of its loop's header, only a jump into it (as a `goto`
+    # would): no note (review of #166).
+    line, result, notes = probe(crate, capsys, "LOOP")
+    assert result["hits"] == 1 and not notes, result["warnings"]
+    # Review of #166: a loop entered under a condition, and a line holding a whole loop
+    # and more, run at each pass of the loop around them: no note, and #157's per-pass
+    # warning where the line has several locations.
+    for marker, passes in (("IFWHILE", 5), ("STMTWHILE", 3)):
         line, result, notes = probe(crate, capsys, marker)
-        assert result["hits"] == 1 and len(notes) == 1, (marker, result["warnings"])
-        assert notes[0].startswith(f"Line {line} is a loop header: it stops once"), notes
+        assert result["hits"] >= passes and not notes, (marker, result["warnings"])
+    assert [w for w in result["warnings"] if "times per pass" in w], result["warnings"]
     # At each pass (`while let` checks 4 times for 3 values): no note.
     for marker, hits in (("WHILE_LET", 4), ("BODY", 3)):
         line, result, notes = probe(crate, capsys, marker)

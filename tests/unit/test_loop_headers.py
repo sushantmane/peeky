@@ -6,8 +6,8 @@ from types import SimpleNamespace
 from peeky.loop_headers import (
     disassembly,
     java_instructions,
-    java_line_ranges,
-    line_ranges,
+    java_line_table,
+    line_table,
     loop_header_note,
     natural_loops,
     stops_before_loop,
@@ -80,8 +80,8 @@ SOURCE_INFO = """Lines found for file loops.c in compilation unit loops.c in `lo
 """
 
 
-def judged(listing, line, locations):
-    return stops_before_loop(disassembly(listing), line_ranges(SOURCE_INFO, line), locations)
+def judged(listing, line, locations, info=SOURCE_INFO):
+    return stops_before_loop(disassembly(listing), line_table(info), line, locations)
 
 
 def test_a_header_whose_location_runs_before_its_loop_stops_once():
@@ -99,6 +99,211 @@ def test_a_header_whose_location_runs_before_its_loop_stops_once():
     # Before the program runs, LLDB lists `module[address]`: the same answer.
     unslid = ARM64.replace("    0x1", "    loops[0x1").replace(" <+", "] <+")
     assert judged(unslid, 4, [0x100000474]) == 1
+
+
+# Review of #166: clang -O0's `main` of this, as LLDB lists it before the program runs,
+# and its `source info -f u.c -l 1` (the whole file's line table):
+#  3    for (int r = 0; r < 3; r++) {
+#  4        if (r == 2) for (int i = 0; i < 2; i++) {
+#  5            total += i;
+#  6        }
+#  7        for (int j = 0; j < 4; j++) a[j] = r;
+#  8    }
+#  9    goto inside;
+# 10    while (g < 3) {
+# 11        total++;
+# 12inside:
+# 13        g++;
+# 14    }
+# 15    for (int k = 0; k < 2; k++) {
+NESTED = """u`main:
+u[0x100000410] <+0>:   sub    sp, sp, #0x50
+u[0x100000414] <+4>:   stp    x29, x30, [sp, #0x40]
+u[0x100000418] <+8>:   add    x29, sp, #0x40
+u[0x10000041c] <+12>:  adrp   x8, 4
+u[0x100000420] <+16>:  ldr    x8, [x8]
+u[0x100000424] <+20>:  ldr    x8, [x8]
+u[0x100000428] <+24>:  stur   x8, [x29, #-0x8]
+u[0x10000042c] <+28>:  stur   wzr, [x29, #-0x1c]
+u[0x100000430] <+32>:  str    wzr, [sp, #0x20]
+u[0x100000434] <+36>:  str    wzr, [sp, #0x1c]
+u[0x100000438] <+40>:  str    wzr, [sp, #0x18]
+u[0x10000043c] <+44>:  b      0x100000440               ; <+48> at u.c:3:21
+u[0x100000440] <+48>:  ldr    w8, [sp, #0x18]
+u[0x100000444] <+52>:  subs   w8, w8, #0x3
+u[0x100000448] <+56>:  b.ge   0x1000004f0               ; <+224> at u.c:9:5
+u[0x10000044c] <+60>:  b      0x100000450               ; <+64> at u.c:4:13
+u[0x100000450] <+64>:  ldr    w8, [sp, #0x18]
+u[0x100000454] <+68>:  subs   w8, w8, #0x2
+u[0x100000458] <+72>:  b.ne   0x1000004a0               ; <+144> at u.c:7:18
+u[0x10000045c] <+76>:  b      0x100000460               ; <+80> at u.c:4:30
+u[0x100000460] <+80>:  str    wzr, [sp, #0x14]
+u[0x100000464] <+84>:  b      0x100000468               ; <+88> at u.c:4:37
+u[0x100000468] <+88>:  ldr    w8, [sp, #0x14]
+u[0x10000046c] <+92>:  subs   w8, w8, #0x2
+u[0x100000470] <+96>:  b.ge   0x10000049c               ; <+140> at u.c:6:9
+u[0x100000474] <+100>: b      0x100000478               ; <+104> at u.c:5:22
+u[0x100000478] <+104>: ldr    w9, [sp, #0x14]
+u[0x10000047c] <+108>: ldr    w8, [sp, #0x20]
+u[0x100000480] <+112>: add    w8, w8, w9
+u[0x100000484] <+116>: str    w8, [sp, #0x20]
+u[0x100000488] <+120>: b      0x10000048c               ; <+124> at u.c:4:45
+u[0x10000048c] <+124>: ldr    w8, [sp, #0x14]
+u[0x100000490] <+128>: add    w8, w8, #0x1
+u[0x100000494] <+132>: str    w8, [sp, #0x14]
+u[0x100000498] <+136>: b      0x100000468               ; <+88> at u.c:4:37
+u[0x10000049c] <+140>: b      0x1000004a0               ; <+144> at u.c:7:18
+u[0x1000004a0] <+144>: str    wzr, [sp, #0x10]
+u[0x1000004a4] <+148>: b      0x1000004a8               ; <+152> at u.c:7:25
+u[0x1000004a8] <+152>: ldr    w8, [sp, #0x10]
+u[0x1000004ac] <+156>: subs   w8, w8, #0x4
+u[0x1000004b0] <+160>: b.ge   0x1000004dc               ; <+204> at u.c:8:5
+u[0x1000004b4] <+164>: b      0x1000004b8               ; <+168> at u.c:7:44
+u[0x1000004b8] <+168>: ldr    w8, [sp, #0x18]
+u[0x1000004bc] <+172>: ldrsw  x10, [sp, #0x10]
+u[0x1000004c0] <+176>: sub    x9, x29, #0x18
+u[0x1000004c4] <+180>: str    w8, [x9, x10, lsl #2]
+u[0x1000004c8] <+184>: b      0x1000004cc               ; <+188> at u.c:7:33
+u[0x1000004cc] <+188>: ldr    w8, [sp, #0x10]
+u[0x1000004d0] <+192>: add    w8, w8, #0x1
+u[0x1000004d4] <+196>: str    w8, [sp, #0x10]
+u[0x1000004d8] <+200>: b      0x1000004a8               ; <+152> at u.c:7:25
+u[0x1000004dc] <+204>: b      0x1000004e0               ; <+208> at u.c:3:29
+u[0x1000004e0] <+208>: ldr    w8, [sp, #0x18]
+u[0x1000004e4] <+212>: add    w8, w8, #0x1
+u[0x1000004e8] <+216>: str    w8, [sp, #0x18]
+u[0x1000004ec] <+220>: b      0x100000440               ; <+48> at u.c:3:21
+u[0x1000004f0] <+224>: b      0x100000514               ; <+260> at u.c:13:10
+u[0x1000004f4] <+228>: ldr    w8, [sp, #0x1c]
+u[0x1000004f8] <+232>: subs   w8, w8, #0x3
+u[0x1000004fc] <+236>: b.ge   0x100000524               ; <+276> at u.c:15:14
+u[0x100000500] <+240>: b      0x100000504               ; <+244> at u.c:11:14
+u[0x100000504] <+244>: ldr    w8, [sp, #0x20]
+u[0x100000508] <+248>: add    w8, w8, #0x1
+u[0x10000050c] <+252>: str    w8, [sp, #0x20]
+u[0x100000510] <+256>: b      0x100000514               ; <+260> at u.c:13:10
+u[0x100000514] <+260>: ldr    w8, [sp, #0x1c]
+u[0x100000518] <+264>: add    w8, w8, #0x1
+u[0x10000051c] <+268>: str    w8, [sp, #0x1c]
+u[0x100000520] <+272>: b      0x1000004f4               ; <+228> at u.c:10:12
+u[0x100000524] <+276>: str    wzr, [sp, #0xc]
+u[0x100000528] <+280>: b      0x10000052c               ; <+284> at u.c:15:21
+u[0x10000052c] <+284>: ldr    w8, [sp, #0xc]
+u[0x100000530] <+288>: subs   w8, w8, #0x2
+u[0x100000534] <+292>: b.ge   0x100000560               ; <+336> at u.c:18:12
+u[0x100000538] <+296>: b      0x10000053c               ; <+300> at u.c:16:18
+u[0x10000053c] <+300>: ldr    w9, [sp, #0xc]
+u[0x100000540] <+304>: ldr    w8, [sp, #0x20]
+u[0x100000544] <+308>: add    w8, w8, w9
+u[0x100000548] <+312>: str    w8, [sp, #0x20]
+u[0x10000054c] <+316>: b      0x100000550               ; <+320> at u.c:15:29
+u[0x100000550] <+320>: ldr    w8, [sp, #0xc]
+u[0x100000554] <+324>: add    w8, w8, #0x1
+u[0x100000558] <+328>: str    w8, [sp, #0xc]
+u[0x10000055c] <+332>: b      0x10000052c               ; <+284> at u.c:15:21
+u[0x100000560] <+336>: ldr    w8, [sp, #0x20]
+u[0x100000564] <+340>: ldur   w9, [x29, #-0xc]
+u[0x100000568] <+344>: add    w8, w8, w9
+u[0x10000056c] <+348>: str    w8, [sp, #0x8]
+u[0x100000570] <+352>: ldur   x9, [x29, #-0x8]
+u[0x100000574] <+356>: adrp   x8, 4
+u[0x100000578] <+360>: ldr    x8, [x8]
+u[0x10000057c] <+364>: ldr    x8, [x8]
+u[0x100000580] <+368>: subs   x8, x8, x9
+u[0x100000584] <+372>: b.eq   0x100000590               ; <+384> at u.c
+u[0x100000588] <+376>: b      0x10000058c               ; <+380> at u.c:18:5
+u[0x10000058c] <+380>: bl     0x1000005a0               ; symbol stub for: __stack_chk_fail
+u[0x100000590] <+384>: ldr    w0, [sp, #0x8]
+u[0x100000594] <+388>: ldp    x29, x30, [sp, #0x40]
+u[0x100000598] <+392>: add    sp, sp, #0x50
+u[0x10000059c] <+396>: ret    
+"""
+NESTED_INFO = """[0x0000000100000410-0x0000000100000430): u.c:1
+[0x0000000100000430-0x0000000100000434): u.c:2:9
+[0x0000000100000434-0x0000000100000438): u.c:2:26
+[0x0000000100000438-0x000000010000043c): u.c:3:14
+[0x000000010000043c-0x0000000100000440): u.c:3:10
+[0x0000000100000440-0x0000000100000444): u.c:3:21
+[0x0000000100000444-0x0000000100000450): u.c:3:5
+[0x00000001000004e0-0x00000001000004ec): u.c:3:29
+[0x00000001000004ec-0x00000001000004f0): u.c:3:5
+[0x0000000100000450-0x0000000100000454): u.c:4:13
+[0x0000000100000454-0x0000000100000460): u.c:4:15
+[0x0000000100000460-0x0000000100000464): u.c:4:30
+[0x0000000100000464-0x0000000100000468): u.c:4:26
+[0x0000000100000468-0x000000010000046c): u.c:4:37
+[0x000000010000046c-0x0000000100000478): u.c:4:21
+[0x000000010000048c-0x0000000100000498): u.c:4:45
+[0x0000000100000498-0x000000010000049c): u.c:4:21
+[0x0000000100000478-0x000000010000047c): u.c:5:22
+[0x000000010000047c-0x0000000100000488): u.c:5:19
+[0x0000000100000488-0x000000010000048c): u.c:6:9
+[0x000000010000049c-0x00000001000004a0): u.c:6:9
+[0x00000001000004a0-0x00000001000004a4): u.c:7:18
+[0x00000001000004a4-0x00000001000004a8): u.c:7:14
+[0x00000001000004a8-0x00000001000004ac): u.c:7:25
+[0x00000001000004ac-0x00000001000004b8): u.c:7:9
+[0x00000001000004b8-0x00000001000004bc): u.c:7:44
+[0x00000001000004bc-0x00000001000004c0): u.c:7:39
+[0x00000001000004c0-0x00000001000004c4): u.c:7:37
+[0x00000001000004c4-0x00000001000004c8): u.c:7:42
+[0x00000001000004c8-0x00000001000004cc): u.c:7:37
+[0x00000001000004cc-0x00000001000004d8): u.c:7:33
+[0x00000001000004d8-0x00000001000004dc): u.c:7:9
+[0x00000001000004dc-0x00000001000004e0): u.c:8:5
+[0x00000001000004f0-0x00000001000004f4): u.c:9:5
+[0x00000001000004f4-0x00000001000004f8): u.c:10:12
+[0x00000001000004f8-0x0000000100000504): u.c:10:5
+[0x0000000100000520-0x0000000100000524): u.c:10:5
+[0x0000000100000504-0x0000000100000510): u.c:11:14
+[0x0000000100000510-0x0000000100000514): u.c:11:9
+[0x0000000100000514-0x0000000100000520): u.c:13:10
+[0x0000000100000524-0x0000000100000528): u.c:15:14
+[0x0000000100000528-0x000000010000052c): u.c:15:10
+[0x000000010000052c-0x0000000100000530): u.c:15:21
+[0x0000000100000530-0x000000010000053c): u.c:15:5
+[0x0000000100000550-0x000000010000055c): u.c:15:29
+[0x000000010000055c-0x0000000100000560): u.c:15:5
+[0x000000010000053c-0x0000000100000540): u.c:16:18
+[0x0000000100000540-0x000000010000054c): u.c:16:15
+[0x000000010000054c-0x0000000100000550): u.c:17:5
+[0x0000000100000560-0x0000000100000564): u.c:18:12
+[0x0000000100000564-0x0000000100000568): u.c:18:20
+[0x0000000100000568-0x0000000100000570): u.c:18:18
+[0x0000000100000570-0x0000000100000590): u.c:18:5
+[0x0000000100000594-0x00000001000005a0): u.c:18:5
+"""
+
+
+def test_lines_that_run_at_each_pass_of_a_loop_around_them_get_no_note():
+    def stops(line, *locations):
+        return judged(NESTED, line, list(locations), NESTED_INFO)
+
+    # Headers alone on their line, bound before their loop: once each time it starts.
+    assert (stops(3, 0x100000438), stops(15, 0x100000524)) == (1, 1)
+    # `if (r == 2) for (...)`: the condition runs at each pass of the `r` loop, entering
+    # the `for` or not, so the line stops at each (the note said "never at the passes").
+    assert stops(4, 0x100000450, 0x100000460) is None
+    # The inner `for`'s own location alone: every path from it enters its loop.
+    assert stops(4, 0x100000460) == 1
+    # A line holding a whole loop (`for (...) a[j] = r;`, a macro's): its body too.
+    assert stops(7, 0x1000004A0) is None
+    # `goto inside;` jumps into a loop whose header holds none of its code (Low 1).
+    assert stops(9, 0x1000004F0) is None
+    # The `while` the goto enters: its condition is in its loop, at each pass after the first.
+    assert stops(10, 0x1000004F4) is None
+
+
+def test_a_header_line_holding_a_body_statement_gets_no_note():
+    # `for (int r = 0; r < 3; r++) {` with `if (r == 1) continue;` written on it too: the
+    # statement's code (further right than the condition) is the body's.
+    table = [
+        (row[0], row[1], 3 if row[2] == 4 and row[3] >= 13 else row[2], row[3] + 40 * (row[2] == 4))
+        for row in line_table(NESTED_INFO)
+    ]
+    found = disassembly(NESTED)
+    assert stops_before_loop(found, line_table(NESTED_INFO), 3, [0x100000438]) == 1
+    assert stops_before_loop(found, table, 3, [0x100000438]) is None
 
 
 def test_flow_that_is_not_plain_natural_loops_gives_no_answer():
@@ -133,9 +338,15 @@ def test_x86_64_branches_calls_and_prefixed_jump_tables():
         ("fall", ()),
         ("branch", (0x40112A,)),
     ]
-    # GCC's layout: `i = 0` and the jump to the condition at the bottom, both before it.
-    ranges = [(0x401121, 0x40112A), (0x401138, 0x40113E)]
-    assert stops_before_loop(found, ranges, [0x401121]) == 1
+    # GCC's layout: `i = 0` and the jump to the condition at the bottom, both before it;
+    # the body (line 5), then the increment (line 4) falling into the condition.
+    table = [
+        (0x401121, 0x40112A, 4, 14),
+        (0x40112A, 0x40112F, 5, 9),
+        (0x40112F, 0x401138, 4, 28),
+        (0x401138, 0x40113E, 4, 19),
+    ]
+    assert stops_before_loop(found, table, 4, [0x401121]) == 1
     # A CET build's jump table: `notrack jmpq *%rax` goes where the code cannot tell.
     table = listing.replace("callq  0x401030 ", "notrack jmpq *%rax ")
     assert natural_loops(disassembly(table)) is None
@@ -158,8 +369,8 @@ def test_java_bytecode_headers_bound_before_their_loop():
 
     def stops(line):
         pcs = [pc for pc, number in JAVA_LINES.items() if number == line]
-        ranges = java_line_ranges(JAVA_LINES, len(JAVA), line)
-        return stops_before_loop(instructions, ranges, [min(pcs)])
+        table = java_line_table(JAVA_LINES, len(JAVA))
+        return stops_before_loop(instructions, table, line, [min(pcs)])
 
     # java-debug binds the line's first bytecode: `i = 0` and the array's copy run once.
     assert (stops(6), stops(16)) == (1, 1)
@@ -171,12 +382,13 @@ def test_java_bytecode_headers_bound_before_their_loop():
     assert java_instructions(switch)[1] == (1, "jump", (24, 25, 26))
     # A branch into the middle of an instruction is no bytecode a JVM runs.
     assert java_instructions(switch[:7] + bytes([0x13]) + switch[8:]) is None
-    assert java_instructions(bytes([0xC4, 0x84, 0, 1, 0, 1, 0xB1]))[1] == (6, "stop", ())
+    assert java_instructions(bytes([0xC4, 0x84, 0, 1, 0, 1, 0xB1]))[1] == (6, "return", ())
+    assert java_instructions(bytes([0x01, 0xBF]))[1] == (1, "stop", ())
     assert java_instructions(bytes([0xCB])) is None
     assert java_instructions(bytes([0xA7, 0x7F, 0x00])) is None
 
 
-def test_the_worker_says_it_and_drops_its_per_pass_warning(tmp_path):
+def test_the_worker_says_it_once_at_launch_and_drops_its_per_pass_warning(tmp_path):
     listing = """  1.1: where = loops`loops::main::h0123456789abcdef + 20 at main.rs:4:14, address = 0x0000000100000474, resolved
   1.2: where = loops`loops::main::h0123456789abcdef + 24 at main.rs:4:5, address = 0x0000000100000478, resolved
 """
@@ -184,8 +396,8 @@ def test_the_worker_says_it_and_drops_its_per_pass_warning(tmp_path):
 
     asked = []
 
-    def stops(dap, source, line, addresses):
-        asked.append((line, addresses))
+    def stops(dap, source, line, groups, cache):
+        asked.append((line, groups))
         return 2
 
     runtime = SimpleNamespace(
@@ -195,18 +407,55 @@ def test_the_worker_says_it_and_drops_its_per_pass_warning(tmp_path):
     )
     worker = DebugWorker(tmp_path)
     worker.dap, worker.program = object(), tmp_path / "main.rs"
-    worker.note_places(
-        runtime, [{"line": 4}], {"breakpoints": [{"id": 1, "line": 4, "verified": True}]}
-    )
-    assert asked == [(4, (0x100000474, 0x100000478))]
+    placed = {"breakpoints": [{"id": 1, "line": 4, "verified": True}]}
+    worker.note_places(runtime, [{"line": 4}], placed)
+    # At launch, once.
+    worker.loop_lines = worker.loop_headers(runtime)
+    assert asked == [(4, [(0x100000474, 0x100000478)])]
     assert worker.loop_warnings() == [
         loop_header_note(4, 2) + " (each hit's stop, 1 to 2, says which)."
     ]
     assert worker.place_warnings() == []
+    # Review of #166: breakpoints set again (a probe re-arming after a --set-at) or
+    # asked again keep the launch's answer, never analysing while the program waits.
+    worker.note_places(runtime, [{"line": 4}], placed)
+    worker.stop_reason = "breakpoint"
+    worker.place_of({"line": 4, "instructionPointerReference": "0x100000999"})
+    assert len(asked) == 1 and worker.loop_warnings()
     # A runtime that cannot say: #157's warning stands.
     del runtime.loop_header_stops
-    worker.note_places(
-        runtime, [{"line": 4}], {"breakpoints": [{"id": 1, "line": 4, "verified": True}]}
-    )
+    worker.loop_lines = worker.loop_headers(runtime)
     assert worker.loop_warnings() == []
     assert worker.place_warnings()[0].startswith("Line 4 stops up to 2 times per pass")
+
+
+def test_the_debugger_is_asked_once_per_file_and_function(tmp_path):
+    # Review of #166: each line and each place disassembled its function and read its
+    # line again (240 inlined copies: 1.1 s at launch).
+    from peeky.native import NativeSession
+
+    source = tmp_path / "u.c"
+    source.write_text("\n".join(f"line {n}" for n in range(1, 20)).replace("line 3", "for (;;) {"))
+    text = source.read_text().splitlines()
+    text[14] = "for (int k = 0; k < 2; k++) {"
+    text[6] = "x = 1;"
+    source.write_text("\n".join(text) + "\n")
+    commands = []
+
+    class Dap:
+        def request(self, command, arguments, timeout=None):
+            commands.append(arguments["expression"].split()[1])
+            return {"result": NESTED if "disassemble" in arguments["expression"] else NESTED_INFO}
+
+    cache = {}
+
+    def stops(line, *groups):
+        return NativeSession.loop_header_stops(None, Dap(), source, line, list(groups), cache)
+
+    assert stops(3, (0x100000438,)) == 1 and stops(15, (0x100000524,)) == 1
+    # One line table for the file, one disassembly for the function.
+    assert commands == ["info", "-a"]
+    # A line naming no loop is not analysed; nor one in more than 8 places.
+    assert stops(7, (0x1000004A0,)) is None and commands == ["info", "-a"]
+    assert stops(15, *[(0x100000524 + 4 * n,) for n in range(9)]) is None
+    assert commands == ["info", "-a"]
