@@ -11,6 +11,7 @@ import contextlib
 import hashlib
 import json
 import os
+import platform
 import posixpath
 import re
 import shutil
@@ -2366,6 +2367,8 @@ _LOCATION_WHERE = re.compile(
     r" at [^:]+:([0-9]{1,9})(?::[0-9]{1,9})?"
 )
 MAX_LOCATIONS = 256
+# Where `loop_headers` reads LLDB's disassembly: its branches are known (#161).
+_LOOP_MACHINES = frozenset(("arm64", "aarch64", "x86_64", "amd64"))
 
 
 def breakpoint_locations(text, ids):
@@ -2569,6 +2572,39 @@ class NativeSession:
         if not isinstance(text, str) or len(text) > MAX_METADATA:
             return None
         return breakpoint_locations(text, set(ids))
+
+    def loop_header_stops(self, dap, source, line, addresses):
+        """How many of ``addresses`` (one function's breakpoint locations of ``line`` of
+        ``source``) stop each time a loop starts, before its first pass, where the line
+        is that loop's header and none of them is in the loop (#161: `for (int i = 0;
+        ...)` binds `i = 0`, never the condition); else None. From LLDB's disassembly of
+        the function and the line's code (`source info`), read-only; see
+        ``loop_headers``."""
+        from peeky.loop_headers import disassembly, line_ranges, stops_before_loop
+
+        path = str(source)
+        if not addresses or platform.machine().lower() not in _LOOP_MACHINES:
+            return None
+        if any(character in path for character in '"\\\n`'):
+            return None
+
+        def command(text):
+            reply = dap.request(
+                "evaluate", {"expression": "`" + text, "context": "repl"}, timeout=5
+            )
+            result = reply.get("result") if isinstance(reply, dict) else None
+            return result if isinstance(result, str) and len(result) <= MAX_METADATA else None
+
+        listing = command(f"disassemble -a 0x{min(addresses):x}")
+        found = command(f'source info -f "{path}" -l {line} -e {line}')
+        instructions = disassembly(listing) if listing is not None else None
+        if instructions is None or found is None:
+            return None
+        first, last = instructions[0][0], instructions[-1][0]
+        if any(not first <= address <= last for address in addresses):
+            return None
+        ranges = [(start, end) for start, end in line_ranges(found, line) if first <= start <= last]
+        return stops_before_loop(instructions, ranges, list(addresses))
 
     def function_scopes(self):
         """Each function in the declared sources, its line span and locals (for describe)."""

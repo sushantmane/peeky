@@ -866,6 +866,9 @@ class DebugWorker:
         # of them names asks once more (placed before the program loaded, unslid).
         self.places_asked = None
         self.places_renewed = False
+        # {line: stops}: lines that are loop headers stopping only before their loop,
+        # so many times each time it starts (#161).
+        self.loop_lines = {}
 
     def note_places(self, runtime, requested, placed):
         """Ask the runtime where the debugger placed the session program's breakpoints
@@ -897,6 +900,44 @@ class DebugWorker:
             group[1].add(location["address"])
         for (line, _), (function, addresses) in groups.items():
             self.places.setdefault(line, []).append((function, tuple(sorted(addresses))))
+        self.loop_lines = self.loop_headers(runtime)
+
+    def loop_headers(self, runtime):
+        """{line: stops} of the session's breakpoint lines that are loop headers whose
+        every location runs before the loop, in each function holding them (#161): a
+        C, C++ `for`/`while` header binds its first code, Rust's `for` its two. Asked of
+        the runtime while the program waits (the debugger's disassembly); best effort."""
+        hook = getattr(runtime, "loop_header_stops", None)
+        if hook is None or self.dap is None or not self.places:
+            return {}
+        try:
+            source = runtime.source_path(self.program)
+        except Exception:
+            return {}
+        found = {}
+        for line in sorted(self.places)[:8]:
+            counts = set()
+            for _, addresses in self.places[line]:
+                try:
+                    counts.add(hook(self.dap, source, line, addresses))
+                except Exception:
+                    counts.add(None)
+            if len(counts) == 1 and (count := counts.pop()):
+                found[line] = count
+        return found
+
+    def loop_warnings(self):
+        """The note for each breakpoint line that is a loop header stopping only before
+        its loop (#161)."""
+        from peeky.loop_headers import loop_header_note
+
+        notes = []
+        for line, count in sorted(self.loop_lines.items()):
+            note = loop_header_note(line, count)
+            if count > 1:
+                note += f" (each hit's stop, 1 to {count}, says which)"
+            notes.append(note + ".")
+        return notes[:5]
 
     def place_of(self, frame):
         """(index, count) of the breakpoint location a stop's ``frame`` is at among its
@@ -928,6 +969,9 @@ class DebugWorker:
         )
         notes = []
         for line in sorted(self.places):
+            if line in self.loop_lines:
+                # Its loop note says more: none of those stops is at a pass.
+                continue
             for function, addresses in self.places[line]:
                 if len(addresses) > 1:
                     count = len(addresses)
@@ -1408,6 +1452,7 @@ class DebugWorker:
                         if (
                             notes := [
                                 *self.breakpoint_notes(program, args),
+                                *self.loop_warnings(),
                                 *self.place_warnings(),
                                 *(getattr(runtime, "warnings", None) or ()),
                             ]
@@ -1895,7 +1940,7 @@ class DebugWorker:
                 self.points, self.temporary_line = list(args["breakpoints"]), None
                 self.record_own_points(args["breakpoints"], placed)
                 self.note_places(runtime, args["breakpoints"], placed)
-                if warnings := self.place_warnings():
+                if warnings := [*self.loop_warnings(), *self.place_warnings()]:
                     return {**placed, "warnings": warnings}
             return placed
         if operation == "continue":

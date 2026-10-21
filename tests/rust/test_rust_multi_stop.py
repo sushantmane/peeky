@@ -115,9 +115,11 @@ def test_formats_line_says_it_stops_three_times_per_pass(movavg, capsys):
 @pytest.mark.timeout(600)
 def test_a_for_header_has_two_locations_both_before_the_loop(movavg, capsys):
     # `for v in xs` has two blocks' first code on its line, `into_iter` and the iterator's
-    # binding: two stops, both before the first pass, and none at later passes.
+    # binding: two stops, both before the first pass, and none at later passes. Its loop
+    # note (#161) says so, in place of the per-pass warning.
     result = probe(movavg, capsys, at("FOR"), "--hits", "all")
-    assert result["hits"] == 2 and len(per_pass(result)) == 1
+    assert result["hits"] == 2 and not per_pass(result)
+    assert [w for w in result["warnings"] if "is a loop header: it stops twice" in w]
     assert [(row["stop"], row["stops"]) for row in result["rows"]] == [(1, 2), (2, 2)]
     # A plain line stops once per pass: no warning, no stop.
     result = probe(movavg, capsys, at("PUSH"), "--hits", "all")

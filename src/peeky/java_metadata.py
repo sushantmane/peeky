@@ -76,10 +76,12 @@ def _modified_utf8(raw):
     return b"".join(units).decode("utf-16-be", errors="surrogatepass")
 
 
-def _class_metadata(data, shared=None, scopes=None):
+def _class_metadata(data, shared=None, scopes=None, codes=None):
     """(binary internal name, SourceFile, sorted executable lines). With ``scopes`` (a
     list), also appends (method, descriptor, first line, last line, local names) for each
-    method with code, its names from the LocalVariableTable (`javac -g`). With ``shared`` (a
+    method with code, its names from the LocalVariableTable (`javac -g`). With ``codes``
+    (a list), also appends (method, descriptor, bytecode, {pc: line}, [(start, end,
+    handler)]) for each method with code, in class-file order (#161). With ``shared`` (a
     dict), also records {line: {"stops": method, "never": [methods]}} for lines that
     several methods of the class share (a lambda body on its enclosing method's line, a
     static initializer's lambda, nested lambdas, a field initializer in each
@@ -184,13 +186,15 @@ def _class_metadata(data, shared=None, scopes=None):
             code_length = body.number(4)
             if not 0 < code_length < 65536:
                 raise ValueError("Invalid method code length")
-            body.take(code_length)
+            code = body.take(code_length)
+            handlers = []
             for _ in range(body.u2()):
                 start, end, handler, catch = (body.u2() for _ in range(4))
                 if not (start < end <= code_length and handler < code_length):
                     raise ValueError("Invalid exception-table location")
                 if catch:
                     constant(catch, 7)
+                handlers.append((start, end, handler))
             method_lines, names, table = {}, [], False
             for nested_name, nested in attrs(body):
                 if nested_name in {"Code", "SourceFile", "SourceDebugExtension"}:
@@ -221,6 +225,8 @@ def _class_metadata(data, shared=None, scopes=None):
             if not method_lines:
                 raise ValueError("Missing executable line debug information; compile with -g")
             lines.update(method_lines.values())
+            if codes is not None:
+                codes.append((method_name, descriptor, bytes(code), dict(method_lines), handlers))
             if scopes is not None:
                 # javac -g leaves the table out only where there is no name to list (a
                 # static method without parameters or locals); `this` or a parameter
@@ -326,6 +332,38 @@ def java_scopes(mapping, classes_dir, workspace, limit=300):
     if len(found) > limit:
         found = found[:limit] + [{"omitted": len(found) - limit}]
     return found
+
+
+def loop_header_stops(mapping, classes_dir, source, line):
+    """How many times java-debug stops at ``line`` of ``source`` each time its loop
+    starts, where the line is a loop header whose breakpoint is bound before the loop
+    (#161: `for (int i = 0; ...)` binds `i = 0`, a for-each its array or iterator); else
+    None (no loop of the line, a stop at each pass, or unclear: the line in several
+    classes, bytecode that does not decode). java-debug binds a line breakpoint to the
+    first method holding the line, in class-file order, at its first code there."""
+    from peeky.loop_headers import java_instructions, java_line_ranges, stops_before_loop
+
+    source = Path(source).resolve()
+    holding = []
+    for binary, entry in mapping["classes"].items():
+        if Path(entry["path"]).resolve() != source or line not in entry.get("lines", ()):
+            continue
+        internal = binary.replace(".", "/")
+        path = Path(entry.get("class_file") or Path(classes_dir) / f"{internal}.class")
+        codes = []
+        _class_metadata(path.read_bytes(), codes=codes)
+        holding.append(codes)
+    if len(holding) != 1:
+        return None
+    for _, _, code, lines, handlers in holding[0]:
+        pcs = [pc for pc, number in lines.items() if number == line]
+        if pcs:
+            instructions = java_instructions(code)
+            if instructions is None:
+                return None
+            ranges = java_line_ranges(lines, len(code), line)
+            return stops_before_loop(instructions, ranges, [min(pcs)], handlers)
+    return None
 
 
 def _regular_inside(path, root):
