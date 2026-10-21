@@ -93,3 +93,39 @@ def test_a_session_step_out_shows_the_methods_return_apart_from_the_locals(java,
         assert "items" in names and not any("twice" in name for name in names)
     finally:
         worker.close()
+
+
+# Round 1 of #162: a method that threw was withheld as "a function returning nothing".
+THROWS = """package demo;
+public class Throws {
+  static int f(int n) {
+    int r = n * 7; // F
+    if (n == 1) throw new RuntimeException("boom");
+    return r;
+  }
+  public static void main(String[] args) {
+    int s = 0;
+    for (int i = 0; i < 3; i++) {
+      try { s += f(i == 0 ? 1 : 2); } catch (RuntimeException e) { s -= 1; }
+    }
+    System.out.println("S:" + s);
+  }
+}
+"""
+
+
+@pytest.mark.timeout(120)
+def test_a_method_that_threw_is_withheld_without_claiming_it_returns_nothing(java, tmp_path):
+    (tmp_path / "demo/Throws.java").write_text(THROWS)
+    target = JavaTarget(bundle=java.bundle, sources=("demo/Throws.java",), main_class="demo.Throws")
+    line = next(i for i, text in enumerate(THROWS.splitlines(), 1) if "// F" in text)
+    probe = Probe("demo/Throws.java", line, ("n", RETURN), hits="all")
+    result = run_probe(tmp_path, probe, adapter=target)
+    assert result["status"] == "completed", result.get("error")
+    hits = {}
+    for row in result["rows"]:
+        hits.setdefault(row["hit"], {})[row["selector"]] = row
+    threw = hits[1][RETURN]
+    assert "value" not in threw and "or it ended by an exception" in threw["error"], threw
+    assert "a function returning nothing" not in threw["error"]
+    assert [hits[hit][RETURN]["value"] for hit in (2, 3)] == ["14", "14"]

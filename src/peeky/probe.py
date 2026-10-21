@@ -1533,9 +1533,10 @@ _AGAIN = (
 )
 _UNWOUND = "its frame was gone when the step out ended (it did not return normally)"
 _OTHER_THREADS = (
-    "another thread stopped at the breakpoint at the same time, so the step out of this call "
-    "was not made and its return is not followed"
+    "another thread stopped at a breakpoint before it returned; a probe follows one "
+    "thread's returns at a time, so its return is not followed"
 )
+_GONE = "its frame was gone before it returned (it ended by an exception, longjmp or panic)"
 _OPTIMIZED_RETURN = (
     "optimized build ({}): the function may be inlined, with no return of its own to step out to"
 )
@@ -1563,14 +1564,35 @@ def _returned_by(worker, stop, call):
         return {**row, "unavailable": True, "error": f"withheld: {exc}"[:2000]}
     row = _returned_row(row, snapshot)
     depth = snapshot.get("depth")
-    if call["depth"] is not None and depth != call["depth"] - 1 and "value" in row:
+    why = None
+    if call["depth"] is not None and depth != call["depth"] - 1:
+        why = f"the step out ended {call['depth'] - (depth or 0)} frames up, not in the caller"
+    elif not _same_callers(snapshot.get("frames") or [], call.get("below")):
+        # A step out of another call of it (a --set-at's stop in a later call).
+        why = "the step out ended in another frame than the one this call returns to"
+    if why and "value" in row:
         row = {key: v for key, v in row.items() if key not in ("value", "type")}
-        row.update(
-            unavailable=True,
-            error=f"withheld: the step out ended {call['depth'] - (depth or 0)} frames up, not "
-            "in the caller",
-        )
+        row.update(unavailable=True, error=f"withheld: {why}")
     return {**row, "depth": depth}
+
+
+def _frame_id(frame):
+    return (frame.get("name"), frame.get("instructionPointerReference"), frame.get("line"))
+
+
+def _same_callers(frames, below):
+    """Whether a step out ended in the frame a call returns to: the caller, back where
+    it made the call, and the frames under it as they were at the call's hit (#155). The
+    line is not compared in the caller: LLDB names a caller's line from its call, a
+    stopped frame's from where it stopped."""
+    if below is None:
+        return True
+    after = [_frame_id(frame) for frame in frames]
+    if not after or not below:
+        return False
+    return after[0][:2] == tuple(below[0][:2]) and all(
+        new == tuple(old) for new, old in zip(after[1:], below[1:])
+    )
 
 
 def _returned_row(row, snapshot):
@@ -3004,7 +3026,23 @@ def run_probe(root, probe, *, adapter=None, progress=None):
             # From the moment the stop arrived, so debugger reads before capture count too.
             paused = state.get("event", {}).get("received", time.monotonic())
             stop = {**session, "stop_id": state["stop_id"]}
-            if returning and state.get("event", {}).get("body", {}).get("reason") == "step":
+            body = state.get("event", {}).get("body", {})
+            # The worker's reason: a step out that ended where its caller went on without
+            # the call's return is a step's end, though a breakpoint stopped it (#155).
+            reason = state.get("reason") or body.get("reason")
+            if (
+                wants_return
+                and reason == "step"
+                and (not returning or returning[-1]["thread"] != body.get("threadId"))
+            ):
+                # A step out of a call already withheld because another thread stopped
+                # in between: nothing to read, and nothing pending can be followed now.
+                for call in reversed(returning):
+                    rows.append(_never_returned(call, _OTHER_THREADS))
+                returning.clear()
+                worker.dispatch("continue", stop)
+                continue
+            if returning and reason == "step":
                 # The innermost pending call's step out ended: what it returned (#155).
                 row = _returned_by(worker, stop, returning[-1])
                 depth = row.pop("depth", None)
@@ -3052,7 +3090,6 @@ def run_probe(root, probe, *, adapter=None, progress=None):
                 },
             )
             frame = snapshot["frames"][0] if snapshot["frames"] else {}
-            reason = state.get("event", {}).get("body", {}).get("reason")
             path = str(frame.get("source", {}).get("path", "")).replace("\\", "/")
             matched = [number for number in lines if expected[number] == frame.get("line")]
             if (
@@ -3199,25 +3236,34 @@ def run_probe(root, probe, *, adapter=None, progress=None):
                     if isinstance(reply, dict):
                         placed[number] = reply
                 active = needed
+            depth = snapshot.get("depth")
+            thread = body.get("threadId")
+            while returning and (
+                returning[-1]["thread"] != thread
+                or depth is None
+                or returning[-1]["depth"] > depth
+                or (captured and returning[-1]["depth"] == depth)
+            ):
+                # A breakpoint stop (the capture line's, or a --set-at's) before the
+                # call's return: on another thread, above the call's frame (it is gone),
+                # or the line again at its depth (a loop's next pass, or the call ended
+                # without returning and another began; the stack cannot tell which).
+                call = returning.pop()
+                why = (
+                    _OTHER_THREADS
+                    if call["thread"] != thread
+                    else _AGAIN
+                    if depth is not None and call["depth"] == depth
+                    else _GONE
+                )
+                rows.append(_never_returned(call, why))
             if wants_return and captured:
-                depth = snapshot.get("depth")
-                thread = state.get("event", {}).get("body", {}).get("threadId")
-                while returning and (
-                    depth is None
-                    or returning[-1]["depth"] >= depth
-                    or returning[-1]["thread"] != thread
-                ):
-                    # The line ran again at that depth (or on another thread) before the
-                    # call's return: a loop's next pass, or the call ended without
-                    # returning and another began. Which, the stack cannot tell.
-                    call = returning.pop()
-                    why = _AGAIN if call["thread"] == thread else _OTHER_THREADS
-                    rows.append(_never_returned(call, why))
                 call = {
                     "hit": hits,
                     "depth": depth,
                     "thread": thread,
                     "function": frame.get("name"),
+                    "below": [_frame_id(caller) for caller in snapshot["frames"][1:]],
                 }
                 if level := snapshot.get("optimized"):
                     # Inlined calls have no return of their own to step out to.

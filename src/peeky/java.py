@@ -502,6 +502,13 @@ class JavaSession:
         found = re.fullmatch(r"(?:\u23af\u25ba|->)([^\s()]+)\(\)", str(variable.get("name") or ""))
         return found[1] if found else None
 
+    # JDI gives no value for a method that returns nothing or ends by an exception, and
+    # java-debug does not say which.
+    no_return = (
+        "java-debug listed no returned value: the method returns nothing, or it ended by "
+        "an exception"
+    )
+
     def local_scopes(self, scopes):
         return [scope for scope in scopes if not scope.get("expensive")]
 

@@ -194,3 +194,150 @@ def test_optimized_builds_capture_no_return(tmp_path):
     assert result["status"] == "completed", result.get("error")
     row = returns(result)[1]
     assert "value" not in row and "optimized build (-O2)" in row["error"]
+
+
+# Round 1 of #162: calls that never return, inlined calls, a --set-at in the call.
+ENDINGS = """#include <setjmp.h>
+#include <stdio.h>
+
+static jmp_buf env;
+
+static int leap(int n) {
+    int r = n * 10; /* LEAP */
+    if (n == 1) longjmp(env, 1);
+    return r;
+}
+
+static int plain(int x) { return x + 1; }
+
+__attribute__((always_inline)) static inline int folded(int x) {
+    int y = x * 3; /* FOLDED */
+    return y + plain(y);
+}
+
+static int add(int n) {
+    int r = n * 10; /* ADD */
+    r = r + 1; /* SET */
+    return r;
+}
+
+int main(void) {
+    volatile int s = 0;
+    volatile int i = 0;
+    while (i < 3) {
+        if (setjmp(env) == 0) s += leap(i == 0 ? 1 : 2); /* JUMPED */
+        i++;
+    }
+    int t = folded(1) + add(1) + add(2);
+    printf("%d %d\\n", s, t);
+    return 0;
+}
+"""
+
+THREADS = """#include <pthread.h>
+#include <stdio.h>
+#include <unistd.h>
+
+static int busy(int n) {
+    usleep(2000); /* BUSY */
+    return n * 11;
+}
+
+static void *work(void *arg) {
+    long id = (long)arg, s = 0;
+    for (int i = 0; i < 3; i++) s += busy((int)(id * 100 + i));
+    return (void *)s;
+}
+
+int main(void) {
+    pthread_t threads[2];
+    for (long k = 0; k < 2; k++) pthread_create(&threads[k], 0, work, (void *)(k + 1));
+    long total = 0;
+    for (int k = 0; k < 2; k++) {
+        void *r;
+        pthread_join(threads[k], &r);
+        total += (long)r;
+    }
+    printf("%ld\\n", total);
+    return 0;
+}
+"""
+
+
+def run(capsys, source, text, marker, capture, *extra):
+    line = next(i for i, row in enumerate(text.splitlines(), 1) if marker in row)
+    code = main(
+        ["probe", str(source), "--at", str(line), "--capture", capture, "--hits", "all"]
+        + [*extra, "--json", "--no-save"]
+    )
+    result = json.loads(capsys.readouterr().out)
+    assert code == 0, result.get("error")
+    hits = {}
+    for row in result["rows"]:
+        hits.setdefault(row["hit"], {})[row["selector"]] = row
+    return result, hits
+
+
+@pytest.mark.timeout(120)
+def test_a_call_left_by_longjmp_is_never_credited_with_the_next_calls_value(c_program, capsys):
+    # leap(1) jumps back to main, which calls leap(2) from the same place in the same
+    # frame: LLDB's step out of leap(1) ended at leap(2)'s return, and its 20 was shown
+    # as leap(1)'s.
+    source = c_program.with_name("endings.c")
+    source.write_text(ENDINGS)
+    _, hits = run(capsys, source, ENDINGS, "LEAP", "n,return")
+    assert [rows["n"]["value"] for rows in hits.values()] == ["1", "2", "2"]
+    jumped = hits[1][RETURN]
+    assert "value" not in jumped and "never returned" in jumped["error"], jumped
+    assert all(hits[hit][RETURN]["value"] == "20" for hit in (2, 3)), hits
+
+
+@pytest.mark.timeout(120)
+def test_an_inlined_function_says_so(c_program, capsys):
+    source = c_program.with_name("endings.c")
+    source.write_text(ENDINGS)
+    _, hits = run(capsys, source, ENDINGS, "FOLDED", "x,return")
+    row = hits[1][RETURN]
+    assert "value" not in row and "inlined into its caller" in row["error"], row
+    assert "--capture return" not in row["error"]
+
+
+@pytest.mark.timeout(120)
+def test_a_return_after_a_set_at_in_the_call_is_that_calls(c_program, capsys):
+    # The --set-at's stop comes while the first call's step out runs; its return still
+    # comes back to the same frame, and is the call's own.
+    source = c_program.with_name("endings.c")
+    source.write_text(ENDINGS)
+    line = next(i for i, row in enumerate(ENDINGS.splitlines(), 1) if "SET" in row)
+    result, hits = run(capsys, source, ENDINGS, "ADD", "n,return", "--set-at", f"{line}@1", "r=500")
+    assert [hits[hit][RETURN]["value"] for hit in (1, 2)] == ["501", "21"], hits
+    # folded(1) + add(1) + add(2), the first add's r set to 500.
+    assert result["output"].split()[1] == str(7 + 501 + 21)
+
+
+@pytest.mark.timeout(120)
+def test_a_threaded_callee_withholds_returns_it_cannot_follow_and_keeps_every_row(
+    c_program, capsys
+):
+    # Two threads call busy() together: a step out of one call is not made while the
+    # other's stop is served, and another thread's stop ends following a return. Those
+    # returns are withheld; the probe goes on, with every hit's rows.
+    source = c_program.with_name("threads.c")
+    source.write_text(THREADS)
+    result, hits = run(capsys, source, THREADS, "BUSY", "n,return")
+    assert result["status"] == "completed" and len(hits) == 6
+    assert sorted(int(rows["n"]["value"]) for rows in hits.values()) == [
+        100,
+        101,
+        102,
+        200,
+        201,
+        202,
+    ]
+    for rows in hits.values():
+        row = rows[RETURN]
+        if "value" in row:
+            assert row["value"] == str(11 * int(rows["n"]["value"])), rows
+        else:
+            assert "another thread" in row["error"], row
+    assert "session continue" not in json.dumps(result)

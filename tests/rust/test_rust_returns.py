@@ -128,3 +128,50 @@ def test_rust_returns_once_per_call_as_rust_prints_them(crate, capsys):
         reason in option["error"]
         for reason in ("Option<i32> is not an integer, bool or float", "reported no value")
     ), option
+
+
+# Round 1 of #162: f(1) panics, catch_unwind catches it, and the loop's next f(2) is
+# called from the same closure at the same place: LLDB's step out of f(1) ended at
+# f(2)'s return, and its 20 was shown as f(1)'s.
+PANICS = """use std::panic;
+
+fn f(n: u32) -> u32 {
+    let r = n * 10; // F
+    if n == 1 {
+        panic!("boom");
+    }
+    r
+}
+
+fn main() {
+    panic::set_hook(Box::new(|_| {}));
+    let mut s = 0u32;
+    for i in 0..3u32 {
+        let n = if i == 0 { 1 } else { 2 };
+        match panic::catch_unwind(|| f(n)) {
+            Ok(v) => s += v,
+            Err(_) => s += 1,
+        }
+    }
+    println!("{}", s);
+}
+"""
+
+
+@pytest.mark.timeout(300)
+def test_a_call_that_panicked_is_never_credited_with_a_later_calls_value(crate, capsys):
+    (crate / "src/main.rs").write_text(PANICS)
+    line = next(i for i, text in enumerate(PANICS.splitlines(), 1) if "// F" in text)
+    code = main(
+        ["probe", str(crate), "--at", f"src/main.rs:{line}", "--capture", "n,return"]
+        + ["--hits", "all", "--json", "--no-save"]
+    )
+    result = json.loads(capsys.readouterr().out)
+    assert code == 0, result.get("error")
+    hits = {}
+    for row in result["rows"]:
+        hits.setdefault(row["hit"], {})[row["selector"]] = row
+    assert [rows["n"]["value"] for rows in hits.values()] == ["1", "2", "2"]
+    panicked = hits[1][RETURN]
+    assert "value" not in panicked and "never returned" in panicked["error"], panicked
+    assert all(hits[hit][RETURN]["value"] == "20" for hit in (2, 3)), hits

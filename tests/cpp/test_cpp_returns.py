@@ -209,3 +209,68 @@ def test_struct_string_and_reference_returns_are_withheld(cpp, capsys):
             for reason in ("is not a number, character, boolean or pointer", "reported no value")
         ), found[marker]
     assert (found["WEIGHT"]["value"], found["WEIGHT"]["type"]) == ("30", "long")
+
+
+# Round 1 of #162: f(0) throws and its caller catches it on the same line; the loop's
+# next call, g(1), returns to the same place in the same frame. LLDB's step out of f(0)
+# ended there, and g(1)'s 1000 was shown as f(0)'s return.
+THROWS = """#include <cstdio>
+#include <stdexcept>
+static int f(int n) {
+    int r = n * 10; // F
+    if (n == 0) throw std::runtime_error("boom"); // THROW
+    return r;
+}
+static int g(int n) {
+    int r = n * 1000;
+    return r;
+}
+int main() {
+    int (*table[])(int) = {f, g, f, g};
+    long s = 0;
+    for (int i = 0; i < 4; i++) {
+        try { s += table[i](i); } catch (...) { s -= 1; } // CALL
+    }
+    std::printf("%ld\\n", s);
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(180)
+def test_a_call_that_threw_is_never_credited_with_a_later_calls_value(cpp, capsys):
+    source = cpp("throws.cpp", THROWS)
+    code = main(
+        ["probe", str(source), "--at", str(line_of(THROWS, "// F")), "--capture", "n,return"]
+        + ["--hits", "all", "--json", "--no-save"]
+    )
+    result = json.loads(capsys.readouterr().out)
+    assert code == 0, result.get("error")
+    hits = {}
+    for row in result["rows"]:
+        hits.setdefault(row["hit"], {})[row["selector"]] = row
+    assert [rows["n"]["value"] for rows in hits.values()] == ["0", "2"]
+    threw = hits[1][RETURN]
+    assert "value" not in threw and "never returned" in threw["error"], threw
+    assert hits[2][RETURN]["value"] == "20"
+
+
+@pytest.mark.timeout(180)
+def test_a_session_step_out_of_a_throw_shows_no_value(cpp, capsys):
+    source = cpp("throws.cpp", THROWS)
+    assert main(["session", "start", str(source), "--at", str(line_of(THROWS, "THROW"))]) == 0
+    try:
+        assert main(["session", "step", "--out"]) == 0
+        capsys.readouterr()
+        main(["session", "inspect", "--json"])
+        snapshot = json.loads(capsys.readouterr().out)
+        returned = snapshot["returned"]
+        assert returned["unavailable"] and "never returned" in returned["reason"], returned
+        assert "value" not in returned
+        # Where its caller went on: about to call g(1), from the same line.
+        assert snapshot["frames"][0]["line"] == line_of(THROWS, "CALL")
+        main(["session", "get", "return", "--json"])
+        assert "1000" not in capsys.readouterr().out
+    finally:
+        main(["session", "close"])
+        capsys.readouterr()
