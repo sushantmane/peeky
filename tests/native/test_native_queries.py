@@ -155,3 +155,82 @@ def test_wide_and_join_keep_notes_case_and_addresses_apart(bins, capsys):
     ]
     assert shown == [('0x… "5"', 1, 2, "2", "101", "3"), ('0x… "6"', 2, 1, "3", "102", "2")]
     assert all(row["matched"] == "both" and row["b:X (2)"] for row in masked["rows"])
+
+
+LEFTOVERS = """#include <stdio.h>
+#include <stdlib.h>
+static long run(int n) {
+  long total = 0;
+  do {
+    int k = n * 2; long v = k + 1; // FIRST
+    total += v;
+    n--;
+  } while (n > 0);
+  return total;
+}
+static long warm(long seed) {
+  volatile long pad[16];
+  for (int j = 0; j < 16; j++) pad[j] = seed + j;
+  return pad[0];
+}
+int main(int argc, char **argv) {
+  long seed = atol(argv[1]);
+  char buf[32] = {0};
+  snprintf(buf, sizeof buf, "0x%016lx", (unsigned long)seed * 0x100000001UL);
+  const char *name = buf;
+  warm(seed);
+  long total = run(3); // TEXT
+  printf("TOTAL:%ld %d\\n", total, name[0] == '0');
+  return 0;
+}
+"""
+
+
+@pytest.mark.timeout(240)
+def test_diff_hits_and_values_never_count_leftovers_or_quoted_hex(bins, capsys):
+    # Review 2 of #139 (PR #145). Line FIRST is a do body's first line: at hit 1, `k` and
+    # `v` hold leftovers (here `warm`'s, so they differ with the seed), which the probe
+    # marks [note]. diff listed them as the first divergences, note NULL, though the
+    # runs computed and printed the same; hits and values counted them.
+    (bins / "bins.c").write_text(LEFTOVERS)
+    lines = {
+        marker: next(i for i, text in enumerate(LEFTOVERS.splitlines(), 1) if marker in text)
+        for marker in ("FIRST", "TEXT")
+    }
+
+    def probe(marker, capture, seed):
+        argv = ["probe", str(bins), "--at", f"bins.c:{lines[marker]}", "--capture", capture]
+        assert main([*argv, "--hits", "all", "--quiet", "--", seed]) == 0
+        capsys.readouterr()
+
+    probe("FIRST", "k,v,n", "1000")
+    probe("FIRST", "k,v,n", "4000")
+    diff = queried(capsys, "diff")["rows"]
+    assert [row["selector"] for row in diff if row["selector"].startswith("(")] == ["(args)"]
+    values = [row for row in diff if not row["selector"].startswith("(")]
+    assert values and {(row["hit"], row["selector"]) for row in values} <= {
+        (1, "k"),
+        (1, "v"),
+    }, diff
+    for row in values:
+        assert row["note"].startswith("qualified (run a: note, run b: note)"), row
+    hits = queried(capsys, "hits", "--param", "run=1", "--param", "selector=v")["rows"]
+    assert [(row["caveat"], row["changed"]) for row in hits] == [("note", None)] * 3
+    seen = queried(capsys, "values", "--param", "selector=v")["rows"]
+    assert all(row["qualified"] == row["seen"] for row in seen), seen
+
+    # `buf` holds hex text, no address; `name` points at it. Masking pairs neither.
+    probe("TEXT", "buf,name", "1000")
+    probe("TEXT", "buf,name", "4000")
+    params = ("--param", "a=3", "--param", "b=4")
+    buf = queried(capsys, "join", *params, "--param", "key=buf")
+    assert "notes" not in buf
+    for key in ("buf", "name"):
+        masked = queried(capsys, "join", *params, "--param", f"key={key}", "--param", "masked=1")
+        matched = [row["matched"] for row in masked["rows"]]
+        assert matched == ["only in run a", "only in run b"], masked
+    diff = queried(capsys, "diff", *params)["rows"]
+    assert {row["selector"]: row["note"] for row in diff if row["hit"] == 1} == {
+        "buf": None,
+        "name": None,
+    }

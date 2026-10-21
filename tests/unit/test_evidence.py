@@ -266,6 +266,7 @@ def test_canned_queries_answer_comparisons(store):
         "line": 8,
         "value": "3",
         "seen": 2,
+        "qualified": 0,
         "runs": 2,
         "first_run": 1,
         "last_run": 2,
@@ -280,6 +281,8 @@ def test_canned_queries_answer_comparisons(store):
             "selector": "start",
             "observed": "3",
             "after_set": "0",
+            "caveat_observed": None,
+            "caveat_after_set": None,
             "interventions": "start: 3 -> 0",
         }
     ]
@@ -1374,6 +1377,8 @@ def test_a_schema_7_store_gains_notes(store):
     # Review of #139: rows' notes are kept from schema 8; earlier runs have none.
     evidence.record(store, captured([(1, "observed", "k", "1")]))
     connection = sqlite3.connect(store)
+    if "notes_kept" in {row[1] for row in connection.execute("PRAGMA table_info(runs)")}:
+        connection.execute("ALTER TABLE runs DROP COLUMN notes_kept")
     connection.executescript(
         """
         DROP VIEW last_run; DROP VIEW evidence;
@@ -1398,6 +1403,111 @@ def test_a_schema_7_store_gains_notes(store):
     assert evidence.query(store, "SELECT selector, note FROM last_run")["rows"] == [
         {"selector": "k", "note": "may be the last pass's value"}
     ]
+    # Review 2 of #139: run 1's values may be unmarked, and each query showing them says
+    # so (its probe's notes were not kept); run 2's were.
+    for name, params in (("run", {"run": 1}), ("wide", {"run": 1}), ("hits", {"run": 1})):
+        (note,) = evidence.run_query(store, name, params)["notes"]
+        assert note.startswith("run 1 was saved before Peeky kept notes"), (name, note)
+    for name in ("diff", "compare"):
+        assert evidence.run_query(store, name)["notes"][0].startswith("run 1 was saved")
+    joined = evidence.run_query(store, "join", {"key": "k"})
+    assert joined["notes"][0].startswith("run 1 was saved before Peeky kept notes")
+    assert "notes" not in evidence.run_query(store, "wide", {"run": 2})
+    assert "note: run 1 was saved" in evidence.table(evidence.run_query(store, "run", {"run": 1}))
+    values = evidence.run_query(store, "values", {"selector": "k"})
+    assert values["notes"][0].startswith("run 1 was saved")
     connection = sqlite3.connect(store)
     assert connection.execute("PRAGMA user_version").fetchone() == (evidence.SCHEMA_VERSION,)
     connection.close()
+
+
+def test_qualified_values_are_never_counted_as_divergences_changes_or_sightings(store):
+    # Review 2 of #139 (PR #145): on a C `do` body's first line, two runs' leftovers in
+    # `k` and `v` came first in diff (`k 1927662298 vs 547973539`, note NULL) although
+    # the computation and output were the same; hits computed `changed` from them and
+    # values counted them.
+    leftover = "may be the last pass's value, or leftovers on the first pass"
+    runs = (("1927662298", "1005", "7"), ("547973539", "4005", "8"))
+    for k, v, r in runs:
+        recorded = captured(
+            [
+                (1, "observed", "k", k),
+                (1, "observed", "v", v),
+                (2, "observed", "k", "2"),
+                (2, "observed", "v", "3"),
+                (2, "observed", "r", r),
+                (3, "observed", "v", "3"),
+                (3, "observed", "h.n", "9"),
+            ]
+        )
+        for row in recorded["rows"][:2]:
+            row["note"] = leftover
+        recorded["rows"][6]["stale"] = True
+        recorded["rows"][6]["value"] = "9" if r == "7" else "12"
+        evidence.record(store, recorded, language="c")
+    diff = evidence.run_query(store, "diff")["rows"]
+    shown = [(row["hit"], row["selector"], row["note"]) for row in diff]
+    qualified = (
+        "qualified (run a: note, run b: note): not evidence by itself; queries run shows why"
+    )
+    # The real divergence first; then values a note or a view qualifies.
+    assert shown == [
+        (2, "r", None),
+        (1, "k", qualified),
+        (1, "v", qualified),
+        (3, "h.n", qualified.replace("a: note, run b: note", "a: stale, run b: stale")),
+    ], shown
+    compare = evidence.run_query(store, "compare")["rows"]
+    assert {row["selector"]: row["note"] for row in compare if row["hit"] == 2} == {
+        "k": None,
+        "v": None,
+        "r": None,
+    }
+    hits = evidence.run_query(store, "hits", {"run": 1, "selector": "v"})["rows"]
+    assert [(row["value"], row["caveat"], row["changed"]) for row in hits] == [
+        ("1005", "note", None),
+        ("3", None, None),
+        ("3", None, 0),
+    ]
+    values = evidence.run_query(store, "values", {"selector": "v"})["rows"]
+    assert [(row["value"], row["seen"], row["qualified"]) for row in values] == [
+        ("3", 4, 0),
+        ("1005", 1, 1),
+        ("4005", 1, 1),
+    ]
+
+
+def test_masking_leaves_quoted_text_alone(store):
+    # Review 2 of #139: masked=1 paired `"0x00000001deadbeef"` with `"0x00000002cafebabe"`
+    # (a char[32], no address), and the address note fired for it.
+    first = captured(
+        [
+            (1, "observed", "buf", '"0x00000001deadbeef"'),
+            (1, "observed", "name", '0x000000016fdff6a0 "0x00000001deadbeef"'),
+        ]
+    )
+    second = captured(
+        [
+            (1, "observed", "buf", '"0x00000002cafebabe"'),
+            (1, "observed", "name", '0x000000016fdff6b0 "0x00000002cafebabe"'),
+        ]
+    )
+    evidence.record(store, first, language="c")
+    evidence.record(store, second, language="c")
+    exact = evidence.run_query(store, "join", {"key": "buf"})
+    assert "notes" not in exact
+    masked = evidence.run_query(store, "join", {"key": "buf", "masked": 1})
+    assert [row["matched"] for row in masked["rows"]] == ["only in run a", "only in run b"]
+    masked = evidence.run_query(store, "join", {"key": "name", "masked": 1})
+    assert [row["matched"] for row in masked["rows"]] == ["only in run a", "only in run b"]
+    # diff: a different text is a real difference, not an address-only one.
+    diff = {row["selector"]: row["note"] for row in evidence.run_query(store, "diff")["rows"]}
+    assert diff == {"buf": None, "name": None}
+    assert evidence._no_addresses('0x000000016fdff6a0 "0x00000001deadbeef"') == (
+        '0x… "0x00000001deadbeef"'
+    )
+    assert evidence._no_addresses("'0x00000001deadbeef'") == "'0x00000001deadbeef'"
+    assert evidence._no_addresses("<Node object at 0x104a5b2c0>") == "<Node object at 0x…>"
+    assert evidence._no_addresses('"x at 0x00000001deadbeef"', "java") == (
+        '"x at 0x00000001deadbeef"'
+    )
