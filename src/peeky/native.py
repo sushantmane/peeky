@@ -802,11 +802,122 @@ def _locals(dies, offset, hidden=None):
             name = _text(_first(dies, chain, "DW_AT_name"))
             # `$`-prefixed names are debugger-synthesized storage, not program locals.
             if name and not name.startswith("$"):
-                kind = _type_name(dies, _first(dies, chain, "DW_AT_type"))
+                reference = _first(dies, chain, "DW_AT_type")
+                kind = _c_tagged(dies, reference, _type_name(dies, reference))
                 names.setdefault(name, set()).update({kind} if kind else set())
         elif die["tag"] == "DW_TAG_lexical_block":
             pending.extend(die["children"])
     return names
+
+
+# Operators whose operand never runs: a call there is no caller.
+_UNEVALUATED = frozenset(("sizeof", "_Alignof", "alignof", "typeof", "__typeof__", "__typeof"))
+
+
+def _arguments(text, opening):
+    """(the text inside the parentheses that open at ``opening``, the offset after
+    their close), or None where they do not close in ``text``."""
+    depth = 0
+    for position in range(opening, min(len(text), opening + 65536)):
+        char = text[position]
+        if char in "([{":
+            depth += 1
+        elif char in ")]}":
+            depth -= 1
+            if depth == 0:
+                return text[opening + 1 : position], position + 1
+    return None
+
+
+_NONBLANK_CODE = re.compile(r"\S")
+
+
+def _argument_spans(text, opening):
+    """The (start, end) offsets in ``text`` of each argument of the parentheses that
+    open at ``opening``, at their top level; None where they do not close."""
+    spans, depth, start = [], 0, opening + 1
+    for position in range(opening, min(len(text), opening + 65536)):
+        char = text[position]
+        if char in "([{":
+            depth += 1
+        elif char in ")]}":
+            depth -= 1
+            if depth == 0:
+                spans.append((start, position))
+                return spans
+        elif char == "," and depth == 1:
+            spans.append((start, position))
+            start = position + 1
+    return None
+
+
+# What may come before the one call in its statement for a stop there to be the last
+# word on what the call reads (``_untouched``): `return`, `if (`, `NAME =` (or `op=`), or
+# a declaration's `TYPE NAME =`.
+_CONTROL = r"(?:if|else|while|for|do|switch|case|default|return|goto|sizeof|break|continue)"
+_CALL_LEAD = re.compile(
+    r"\s*(?:return\s+|(?P<condition>if)\s*\(\s*|"
+    rf"(?:(?!{_CONTROL}\b)[A-Za-z_]\w*(?:\s+|\s*\*[\s*]*))*"
+    r"(?P<name>[A-Za-z_]\w*)\s*(?:[-+*/%|^&]|<<|>>)?=\s*)?"
+)
+
+
+def _split_arguments(text):
+    """The comma-separated parts of an argument or parameter list, at its top level."""
+    parts, depth, start = [], 0, 0
+    for position, char in enumerate(text):
+        if char in "([{":
+            depth += 1
+        elif char in ")]}":
+            depth -= 1
+        elif char == "," and depth == 0:
+            parts.append(text[start:position])
+            start = position + 1
+    parts.append(text[start:])
+    return [part.strip() for part in parts] if any(p.strip() for p in parts) else []
+
+
+_C_TAGS = {
+    "DW_TAG_structure_type": "struct",
+    "DW_TAG_union_type": "union",
+    "DW_TAG_enumeration_type": "enum",
+}
+
+
+def _c_tagged(dies, value, name):
+    """``name``, `_type_name`'s for the DW_AT_type reference ``value``, with C's tag
+    word where the type is a C struct, union or enum named by its tag, not by a
+    typedef: `struct ring *` for dwarfdump's `ring *`, as C code names it (seventh
+    evaluation, finding 17). A typedef's name, a C++ type and a name in which the tag
+    is not found exactly once stay as they are."""
+    reference = _REFERENCE.fullmatch(value or "")
+    if name is None or reference is None:
+        return name
+    offset = int(reference[1], 16)
+    for _ in range(16):
+        die = dies.get(offset)
+        if die is None or die["tag"] not in _TYPE_WRAPPERS:
+            break
+        inner = _REFERENCE.fullmatch(die["attrs"].get("DW_AT_type") or "")
+        if inner is None:
+            return name
+        offset = int(inner[1], 16)
+    die = dies.get(offset)
+    tag = _text(die["attrs"].get("DW_AT_name")) if die and die["tag"] in _C_TAGS else None
+    if not tag:
+        return name
+    unit = die
+    for _ in range(64):
+        if unit is None or unit["tag"] == "DW_TAG_compile_unit":
+            break
+        unit = dies.get(unit["parent"])
+    language = (unit or {}).get("attrs", {}).get("DW_AT_language") or ""
+    if not re.fullmatch(r"DW_LANG_C[0-9]*", language.strip()):
+        return name
+    found = [m.start() for m in re.finditer(rf"(?<![\w:]){re.escape(tag)}(?![\w:])", name)]
+    if len(found) != 1:
+        return name
+    return f"{name[: found[0]]}{_C_TAGS[die['tag']]} {name[found[0] :]}"
 
 
 def _bindings(dies, offset):
@@ -1072,7 +1183,7 @@ def _macro_rules_lines(text):
     return lines
 
 
-def function_scopes(info, line_text, workspace, declared, hidden=None, never=None):
+def function_scopes(info, line_text, workspace, declared, hidden=None, never=None, settable=None):
     """Each function in a declared source: qualified name, source, line span, locals.
 
     Display only (`describe`). A line-table row belongs to the innermost function or
@@ -1088,12 +1199,31 @@ def function_scopes(info, line_text, workspace, declared, hidden=None, never=Non
     ``never(linkages, names)``: of a copy's locals (``names``: {name: types}), those no
     stop can change, and why (#138: {name: `register`}, a Rust local kept in a
     register); a scope lists the ones never settable in every copy (``never_settable``).
+
+    ``settable``: (the standard library's namespaces, ``in_memory(linkages, name)`` or
+    None): the struct and array locals with an integer field or element `set` may
+    change, judged from the type as `set` judges it (fields.settable_parts), in the
+    frame's own memory, and where ``in_memory`` says so (Rust: the IR keeps it there):
+    {name: "fields" | "elements"} in every copy (``settable_parts``, seventh
+    evaluation, finding 16).
     """
     replaced = set()
     dies, functions, lines, (inputs, sources), _, addresses = _function_entries(
         info, line_text, workspace, declared, replaced
     )
     workspace = Path(workspace).resolve()
+    graph, typed = None, {}
+    if settable is not None:
+        from peeky.fields import local_types, type_graph
+
+        typed = {root: local_types(dies, entry["bodies"]) for root, entry in functions.items()}
+        kinds = {
+            kind
+            for types in typed.values()
+            for each in (types or {}).values()
+            for kind, _, _ in each
+        }
+        graph = type_graph(dies, kinds, settable[0])
 
     def source_of(attribute):
         return _source_of(attribute, inputs, workspace, sources)
@@ -1151,9 +1281,19 @@ def function_scopes(info, line_text, workspace, declared, hidden=None, never=Non
         # Instantiations of one generic function (Rust's names drop the generic
         # arguments) are one scope; their types join (`&[i32] or &[char]`), and so do
         # their blocks' lines (code a constant condition removes differs between them).
-        merged = found.setdefault(json.dumps(scope, sort_keys=True), (scope, {}, {}, set(), [None]))
+        merged = found.setdefault(
+            json.dumps(scope, sort_keys=True), (scope, {}, {}, set(), [None], [None])
+        )
         for local, kinds in names.items():
             merged[1].setdefault(local, set()).update(kinds)
+        if graph is not None:
+            parts = _settable_parts(
+                graph, typed.get(root), names, settable[1], linkages_of(entry, root)
+            )
+            held = merged[5][0]
+            merged[5][0] = (
+                parts if held is None else {n: p for n, p in held.items() if parts.get(n) == p}
+            )
         if never is not None:
             # Never settable in the scope only if in every copy (a generic's instances).
             unchanged = dict(never(linkages_of(entry, root), names) or {})
@@ -1186,7 +1326,7 @@ def function_scopes(info, line_text, workspace, declared, hidden=None, never=Non
             merged[2].setdefault(local, set()).update(spans)
         merged[3].update(blocks[1])
     scopes = []
-    for scope, kinds, spans, everywhere, unchanged in found.values():
+    for scope, kinds, spans, everywhere, unchanged, parts in found.values():
         # Two blocks may declare one name with different types (`int or long`).
         types = {local: " or ".join(sorted(k)) for local, k in sorted(kinds.items()) if k}
         spans = {
@@ -1200,12 +1340,35 @@ def function_scopes(info, line_text, workspace, declared, hidden=None, never=Non
                 **({"types": types} if types else {}),
                 **({"spans": spans} if spans else {}),
                 **({"never_settable": dict(sorted(unchanged[0].items()))} if unchanged[0] else {}),
+                **({"settable_parts": dict(sorted(parts[0].items()))} if parts[0] else {}),
             }
         )
     scopes.sort(key=lambda s: (s["source"], s["lines"][0], s["scope"]))
     if len(scopes) > MAX_SCOPES:
         scopes = [*scopes[:MAX_SCOPES], {"omitted": len(scopes) - MAX_SCOPES}]
     return scopes
+
+
+def _settable_parts(graph, types, names, in_memory, linkages):
+    """{name: "fields" | "elements"} of one function copy's shown locals (``names``)
+    that are one struct or array local, of one type, in the frame's own memory (an
+    automatic or a parameter there), with an integer field or element `set` may change
+    (see function_scopes)."""
+    from peeky.fields import settable_parts
+
+    found = {}
+    for name, declared in (types or {}).items():
+        kinds = {kind for kind, _, _ in declared}
+        storages = {storage for _, storage, _ in declared}
+        if name not in names or len(kinds) != 1 or None in kinds:
+            continue
+        if storages - {"automatic", "parameter"}:
+            continue
+        if (label := settable_parts(graph, next(iter(kinds)), name)) is None:
+            continue
+        if in_memory is None or in_memory(linkages, name):
+            found[name] = label
+    return found
 
 
 # A local in the frame: DW_OP_fbreg (frame base) or DW_OP_bregN (a register) offsets.
@@ -2893,9 +3056,15 @@ class NativeSession:
                 dwarfdump, [option, str(self.symbols)], workspace, env, max_bytes=limit
             )
 
+        from peeky.fields import CPP_LIBRARIES
+
         info = dump("--debug-info", MAX_DEBUG_INFO)
         return function_scopes(
-            info, dump("--debug-line", MAX_METADATA), workspace, tuple(self.lines)
+            info,
+            dump("--debug-line", MAX_METADATA),
+            workspace,
+            tuple(self.lines),
+            settable=(CPP_LIBRARIES, None),
         )
 
     def typedef_kind(self, kind):
@@ -3903,7 +4072,13 @@ class NativeSession:
                         named = debugger_steps(self.fields, kind, root, steps)
                         if named is None:
                             break
-                        settable_member(self.fields, kind, root, named)
+                        settable_member(
+                            self.fields,
+                            kind,
+                            root,
+                            named,
+                            owner=lambda e=entry, n=named: self._caller_advice(e, root, n),
+                        )
                         if not framed:
                             raise Unsettable(
                                 f"`{root}` is not kept in this frame's own memory (a static, "
@@ -4317,7 +4492,11 @@ class NativeSession:
             address = self._unslid(frame)
         if place is None or function is None or address is None:
             return "Peeky cannot place the stop among its function's statements"
-        source, line = place
+        return self._statement_start(function, *place, address)
+
+    def _statement_start(self, function, source, line, address):
+        """mid_statement's verdict for a stop at ``address`` (the executable's own
+        numbering) on ``source:line`` in ``function`` (a declarations entry)."""
         if self._own_line(function, source, line) is not True:
             return (
                 f"the stop is on {source}:{line}, outside its function's own lines (a "
@@ -4389,7 +4568,13 @@ class NativeSession:
         try:
             kind, framed, graph = self._root_type(frame, root)
             # What the path reaches first (a pointer, a union...), then the local's state.
-            signed, bits, names = settable_member(graph, kind, name, steps)
+            signed, bits, names = settable_member(
+                graph,
+                kind,
+                name,
+                steps,
+                owner=lambda: self._caller_advice(self._function_at(frame), name, steps),
+            )
             if not framed:
                 raise Unsettable(
                     f"`{name}` is not kept in this frame's own memory (a static, or a value "
@@ -4429,6 +4614,431 @@ class NativeSession:
                 f"Native integer mutation is outside the range of `{selector}` ({names[0]}: "
                 f"{low} to {high})"
             )
+
+    def _caller_advice(self, function, root, steps):
+        """Where to change a field (``steps``, the debugger's child names) reached
+        through the pointer parameter ``root`` of the C function ``function`` (a
+        declarations entry), when the program's sources call it once (seventh
+        evaluation, finding 13): `push has one caller: m.c:15 in main, which passes `&r`,
+        where `r.tail` is settable: ...`. Settable is said, with how to change it,
+        only where a probe's stop on the first line of the call's statement can make the
+        change and the call sees it (``_settable_at_call``): a `--set-at` there, or in
+        another file (a probe stops in its `--at` file) a probe `--at` that line. Else the
+        call is named alone. None, for the general advice, with several or unknown
+        callers, and in C++ (overloads, argument-dependent lookup and member calls make a
+        call's target unclear from the text)."""
+        if function is None or getattr(self.target, "language", None) != "c":
+            return None
+        declared = (function.get("types") or {}).get(root) or ()
+        if not declared or {storage for _, storage, _ in declared} != {"parameter"}:
+            return None
+        try:
+            site = self._single_call(function, root)
+            if site is None:
+                return None
+            caller, source, line, argument = (
+                site["caller"],
+                site["source"],
+                site["line"],
+                site["argument"],
+            )
+            first, start = self._call_statement(site)
+        except (OSError, ValueError, RuntimeError):
+            return None
+        named, at = function.get("name"), f"{Path(source).name}:{line}"
+        where = at + (
+            f" (its statement starts on line {first})" if first not in (None, line) else ""
+        )
+        passed = re.fullmatch(r"&\s*([A-Za-z_]\w*)", argument or "")
+        # A probe stops in its `--at` file, one of the program's sources (not a header).
+        stoppable = source == function.get("source") or source in map(str, self.target.sources)
+        if (
+            passed
+            and steps
+            and stoppable
+            and first is not None
+            and start is not None
+            and self._untouched(site, start, passed[1])
+            and self._settable_at_call(caller, source, first, passed[1], steps)
+        ):
+            selector = passed[1] + "".join(
+                step if step.startswith("[") else f".{step}" for step in steps
+            )
+            how = (
+                f"a probe's `--set-at {first}@N {selector}=<value>`, N counting line {first}'s "
+                f"own stops (find N with `--at {first} --capture {selector} --hits all`)"
+                if source == function.get("source")
+                # A probe stops in its `--at` file only: `--set-at` names a line of it.
+                else f"`peeky probe <target> --at {source}:{first} --set "
+                f"{selector}=<value> --set-hit N`, N counting that line's own stops (find N "
+                f"with `--capture {selector} --hits all` there)"
+            )
+            return (
+                f"{named} has one caller: {where} in {caller.get('name')}, which passes "
+                f"`{argument}`, where `{selector}` is settable: {how}"
+            )
+        passes = f", which passes `{argument}`" if argument else ""
+        why = (
+            f"Peeky cannot tell that a change at line {first or line} reaches it (a statement "
+            "there may change the value, or make the call, first)"
+            if stoppable
+            else f"a probe stops only in the program's source files, not in {Path(source).name}"
+        )
+        return (
+            f"{named} has one caller: {where} in {caller.get('name')}{passes}; change the "
+            f"value where it is owned, before that call: {why}"
+        )
+
+    def _call_statement(self, site):
+        """For the one call ``site`` (``_single_call``'s, in the translation unit as the
+        compiler preprocessed it, so a macro's code is where it is used): the first line
+        of the statement it is in (``Statements.begins``: `int total = 1 +` / `push(&r,
+        1);` starts on the line above), as a line of the call's own file, or None; and the
+        offset in the unit's text where that statement starts, where the call is in the
+        first statement on that line (`r.tail = 1; total += push(&r, 1);` has another
+        before it), else None."""
+        preprocessed, statements = site["unit"]
+        code, starts = statements.blanked, statements.starts
+        call = site["call"]
+        line = bisect.bisect_right(starts, call)
+        first = None
+        for number in range(line, max(0, line - 64), -1):
+            begins = statements.begins(number)
+            if begins is None:
+                return None, None
+            if begins:
+                span = statements.statement_span(number)
+                first = number if span is not None and span[1] >= line else None
+                break
+        origin = preprocessed.origins[first - 1] if first else None
+        if origin is None or origin[0] != site["source"]:
+            return None, None
+        start = _NONBLANK_CODE.search(code, starts[first - 1]).start()
+        if re.search(r"[;{}]|<%|%>", code[start:call]) or site["index"] is None:
+            return origin[1], None
+        return origin[1], start
+
+    def _untouched(self, site, start, root):
+        """Whether nothing that runs before the call reads its arguments may change the
+        local ``root`` (passed as `&root`): its statement, from ``start``
+        (``_call_statement``'s) as the compiler preprocessed it, is one of `push(ARGS);`,
+        `NAME = push(ARGS);` (or `NAME op=`, or a declaration's `TYPE NAME =`), `return
+        push(ARGS);` and `if (push(ARGS) ...)`, NAME a plain name other than ``root``;
+        ARGS are `&root` and reads (``_reads``), and so is the rest of an `if`'s
+        condition; and the caller takes no address of ``root`` or its fields elsewhere
+        but to lend it (``_lent``), so no pointer reaches it. Anything else may change it
+        first (`r = q, push(&r, 1)`, `push(&r, RESET(r))`, `push(&r, ops[0](r.buf))`
+        writing through the array that starts `r`, a pointer `a = &r` set earlier)."""
+        from peeky.fields import Unsettable
+
+        preprocessed, statements = site["unit"]
+        code, caller, opening = statements.blanked, site["caller"], site["opening"]
+        closed, spans = _arguments(code, opening), _argument_spans(code, opening)
+        if closed is None or spans is None or site["index"] is None or self.fields is None:
+            return False
+        lead = _CALL_LEAD.fullmatch(code[start : site["call"]])
+        if lead is None or lead["name"] == root:
+            return False
+        if lead["condition"] is not None:
+            header = _arguments(code, start + code[start : site["call"]].index("("))
+            rest = code[closed[1] : header[1] - 1] if header is not None else None
+        else:
+            rest = "" if re.match(r"\s*;", code[closed[1] :]) else None
+        try:
+            kind, _ = self._declared_type(caller.get("types") or {}, root)
+        except Unsettable:
+            return False
+        parts = [code[slice(*span)] for i, span in enumerate(spans) if i != site["index"]]
+        if (
+            rest is None
+            or not re.fullmatch(rf"\s*&\s*{re.escape(root)}\s*", code[slice(*spans[site["index"]])])
+            or not all(self._reads(part, root, kind) for part in (*parts, rest))
+        ):
+            return False
+        span = caller.get("span")
+        if not span:
+            return False
+        own = range(site["argument_span"][0], site["argument_span"][1])
+        for number in range(span[0], span[1] + 1):
+            at = preprocessed.line(caller.get("source"), number)
+            if at == 0:
+                return False  # the line is in the unit more than once
+            if at is None:
+                continue
+            begin = statements.starts[at - 1]
+            finish = statements.starts[at] if at < len(statements.starts) else None
+            body = statements.blanked[begin:finish]
+            address = rf"(?<!&)&(?!&)\s*(?:\(\s*)*{re.escape(root)}(?![\w$])"
+            for found in re.finditer(address, body):
+                at = begin + found.start()
+                if at not in own and not self._lent(site, root, at):
+                    return False
+        return True
+
+    def _reads(self, text, root, kind):
+        """Whether the expression ``text`` only reads: no assignment, `++` or `--`, no `&`
+        (but `&&`), no call of any kind (a `(` after a name, `)`, `]` or member: `f(x)`,
+        `(*fp)(x)`, `ops[0](x)`, `v.fn(x)`; `sizeof(x)` and `(int)(x)` too), no block,
+        and ``root`` (of type ``kind``) only in reads of its integer fields (`r.count`,
+        not `r.buf`, which passes a pointer into it)."""
+        from peeky.fields import Unsettable, debugger_steps, settable_member
+
+        if (
+            re.search(r"(?<![=!<>])(?:[-+*/%|^]|<<|>>|&(?!&))?=(?!=)|\+\+|--", text)
+            or re.search(r"(?<!&)&(?!&)|[;{}]|<%|%>", text)
+            or re.search(r"[\w$)\]]\s*\(", text)
+        ):
+            return False
+        for found in re.finditer(rf"(?<![\w$]){re.escape(root)}(?![\w$])", text):
+            if text[: found.start()].rstrip().endswith((".", "->")):
+                continue  # a member's name
+            member = re.match(r"\s*\.\s*([A-Za-z_]\w*)(?!\s*(?:[\[.(]|->))", text[found.end() :])
+            if member is None:
+                return False
+            steps = [member[1]]
+            try:
+                settable_member(
+                    self.fields, kind, root, debugger_steps(self.fields, kind, root, steps)
+                )
+            except Unsettable:
+                return False
+        return True
+
+    def _lent(self, site, root, position):
+        """Whether the `&root` at ``position`` of the caller's unit (``site``'s) is a whole
+        argument of a call by name of one of the program's functions, defined in that
+        unit, whose parameter there points to ``root``'s type and is used only as
+        `p->field` or `p->array[i]` of a scalar (by the build's types), never with `&`
+        (`pop(&r, &v)`, pop reading `r->count` and `r->buf[r->head]`): such a call leaves
+        no pointer to ``root`` behind."""
+        from peeky.fields import Unsettable, debugger_steps, settable_member
+
+        preprocessed, statements = site["unit"]
+        text, caller, graph = statements.blanked, site["caller"], self.fields
+        if graph is None:
+            return False
+        depth, opening = 0, None
+        for at in range(position - 1, max(-1, position - 65536), -1):
+            if text[at] in ")]}":
+                depth += 1
+            elif text[at] in "([{":
+                if depth == 0:
+                    opening = at if text[at] == "(" else None
+                    break
+                depth -= 1
+            elif text[at] == ";" and depth == 0:
+                break
+        named = re.search(r"([A-Za-z_]\w*)\s*$", text[:opening]) if opening else None
+        if named is None or text[: named.start()].rstrip().endswith((".", "->")):
+            return False
+        name, spans = named[1], _argument_spans(text, opening) or []
+        index = [i for i, (low, high) in enumerate(spans) if low <= position < high]
+        if (
+            len(index) != 1
+            or name in (caller.get("types") or {})  # a local function pointer
+            or not re.fullmatch(rf"&\s*{re.escape(root)}", text[slice(*spans[index[0]])].strip())
+        ):
+            return False
+        callees = [e for e in self.declarations or () if e.get("name") == name and e.get("span")]
+        at = preprocessed.line(callees[0].get("source"), callees[0]["span"][0]) if callees else 0
+        if len(callees) != 1 or not at:
+            return False
+        end = statements.starts[at] if at < len(statements.starts) else len(text)
+        heading = re.compile(rf"(?<![\w$]){re.escape(name)}\s*\(").search(
+            text, statements.starts[at - 1], end
+        )
+        listed = _arguments(text, heading.end() - 1) if heading else None
+        parameters = _split_arguments(listed[0]) if listed else []
+        brace = text.find("{", listed[1]) if listed else -1
+        body = _arguments(text, brace) if brace >= 0 else None
+        # Not a prototype's line (nor a K&R definition's, left out).
+        if body is None or ";" in text[listed[1] : brace] or len(parameters) != len(spans):
+            return False
+        parameter = re.search(r"([A-Za-z_]\w*)\s*$", parameters[index[0]])
+        declared = (callees[0].get("types") or {}).get(parameter[1] if parameter else None) or ()
+        if {storage for _, storage, _ in declared} != {"parameter"} or len(declared) != 1:
+            return False
+
+        def under(offset):
+            for _ in range(64):
+                node = graph.get(offset)
+                if node is None or node[0] not in ("typedef", "qualifier"):
+                    return offset
+                offset = node[2]
+            return None
+
+        try:
+            kind, _ = self._declared_type(caller.get("types") or {}, root)
+        except Unsettable:
+            return False
+        pointer = graph.get(under(next(iter(declared))[0]))
+        if not pointer or pointer[0] != "pointer" or under(pointer[2]) != under(kind):
+            return False
+        inner = body[0]
+        for found in re.finditer(rf"(?<![\w$]){re.escape(parameter[1])}(?![\w$])", inner):
+            before = inner[: found.start()].rstrip()
+            if before.endswith((".", "->")):
+                continue  # a member's name
+            use = re.match(r"\s*->\s*([A-Za-z_]\w*)\s*(\[)?", inner[found.end() :])
+            if use is None or re.search(r"(?<!&)&\s*(?:\(\s*)*$", before):
+                return False
+            steps = [use[1], *(["[0]"] if use[2] else [])]
+            try:
+                settable_member(graph, kind, root, debugger_steps(graph, kind, root, steps))
+            except Unsettable:
+                return False
+        return True
+
+    def _single_call(self, function, parameter):
+        """{caller (its declarations entry), source, line, argument (the one passed for
+        ``parameter``), index (that parameter's), unit (the translation unit read as
+        `_preprocessed` gives it), call, opening and argument_span (offsets in its
+        text)} of the one call of the C function ``function`` in the program's
+        sources, as the compiler preprocessed them (a macro's calls are where it is
+        used); None unless that is certain. Every mention of the function's name must be
+        its definition, a prototype at file scope, or a call by name inside a function
+        the build's debug information places there: anything else (its address taken, a
+        member's function pointer of that name, a declaration inside a function, a file
+        Peeky cannot preprocess) leaves the callers unknown."""
+        from peeky.c_source import _EXPRESSIONS
+
+        name, span, source = function.get("name"), function.get("span"), function.get("source")
+        if not re.fullmatch(r"[A-Za-z_]\w*", str(name)) or not span or not source:
+            return None
+        definition, calls, seen = None, {}, set()
+        for unit in self.target.sources:
+            read = self._preprocessed(str(unit))
+            if isinstance(read, str):
+                return None
+            preprocessed, statements = read
+            text, starts = statements.blanked, statements.starts
+            counts = {}
+            for found in re.finditer(rf"(?<![\w$]){re.escape(name)}(?![\w$])", text):
+                index = bisect.bisect_right(starts, found.start()) - 1
+                origin = (
+                    preprocessed.origins[index] if 0 <= index < len(preprocessed.origins) else None
+                )
+                if origin is None:
+                    return None
+                counts[origin] = counts.get(origin, 0) + 1
+                key = (origin, counts[origin])
+                before = text[: found.start()].rstrip()
+                opening = len(text) - len(text[found.end() :].lstrip())
+                if before.endswith((".", "->")) or not text.startswith("(", opening):
+                    return None
+                arguments = _arguments(text, opening)
+                if arguments is None:
+                    return None
+                word = re.search(r"[A-Za-z_]\w*$", before)
+                if word is not None and word[0] in _UNEVALUATED:
+                    return None
+                typed = before.endswith("*") or (word is not None and word[0] not in _EXPRESSIONS)
+                if origin == (source, span[0]):
+                    if definition not in (None, arguments):
+                        return None
+                    definition = arguments
+                    continue
+                inside = self._enclosing(*origin)
+                if inside is None:
+                    # At file scope only a prototype: `static int push(struct ring *, int);`
+                    if not typed or not text[arguments[1] :].lstrip().startswith(";"):
+                        return None
+                    continue
+                if typed or key in seen:
+                    # A declaration inside a function (or `a * push(x)`, which reads alike).
+                    if typed:
+                        return None
+                    continue
+                seen.add(key)
+                calls[key] = (inside, origin, arguments, read, found.start(), opening)
+        if definition is None or len(calls) != 1:
+            return None
+        caller, (where, line), arguments, read, call, opening = next(iter(calls.values()))
+        parameters = _split_arguments(definition[0])
+        values = _split_arguments(arguments[0])
+        spans = _argument_spans(read[1].blanked, opening) or []
+        named = [
+            i for i, text in enumerate(parameters) if re.search(rf"(?<!\w){parameter}(?!\w)", text)
+        ]
+        site = {
+            "caller": caller,
+            "source": where,
+            "line": line,
+            "argument": None,
+            "index": None,
+            "unit": read,
+            "call": call,
+            "opening": opening,
+            "argument_span": (0, 0),
+        }
+        if len(named) != 1 or len(values) != len(parameters) or len(spans) != len(values):
+            return site
+        site.update(
+            argument=" ".join(values[named[0]].split()),
+            index=named[0],
+            argument_span=spans[named[0]],
+        )
+        return site
+
+    def _enclosing(self, source, line):
+        """The declarations entry of the narrowest function whose own lines (its span)
+        hold ``source:line``, or None."""
+        holding = [
+            (entry["span"][1] - entry["span"][0], index)
+            for index, entry in enumerate(self.declarations or ())
+            if entry.get("source") == source
+            and entry.get("span")
+            and entry["span"][0] <= line <= entry["span"][1]
+        ]
+        return self.declarations[min(holding)[1]] if holding else None
+
+    def _settable_at_call(self, caller, source, line, name, steps):
+        """Whether `set` would change ``name`` with ``steps`` (the field the callee
+        reaches through the pointer) at a breakpoint on ``source:line`` in ``caller``:
+        the type walk and storage `set` checks, ``name`` declared on an earlier line by a
+        statement that ends before it, and the stop at the first instruction of the
+        statement there (mid_statement's rule, at the line's breakpoint address), not a
+        loop's header (a later pass stops past it). False where any of that fails or
+        cannot be told: a function with labels (a `goto` can return above a
+        declaration), or a program that may call setjmp."""
+        from peeky.fields import Unsettable, debugger_steps, settable_member
+
+        if self.fields is None or caller.get("jumps") or self.returns_twice is not None:
+            return False
+        declared = (caller.get("types") or {}).get(name) or ()
+        try:
+            kind, framed = self._declared_type(caller.get("types") or {}, name)
+            named = debugger_steps(self.fields, kind, name, list(steps))
+            if not framed or named is None:
+                return False
+            settable_member(self.fields, kind, name, named)
+        except Unsettable:
+            return False
+        places = {where for _, _, where in declared}
+        storages = {storage for _, storage, _ in declared}
+        if len(places) != 1 or None in places:
+            return False
+        (file, at), statements = next(iter(places)), self._statements(source)
+        if statements is None or file != Path(source).name or at >= line:
+            return False
+        if storages != {"parameter"}:
+            end = statements.declared_through(at, name)
+            if end is None or end >= line:
+                return False
+        if not 1 <= line <= len(statements.starts):
+            return False
+        # A loop's header runs again on each pass, after its first instruction.
+        opening = re.match(
+            r"[\s}]*([A-Za-z_]\w*)", statements.blanked[statements.starts[line - 1] :]
+        )
+        if opening is not None and opening[1] in ("for", "while", "do"):
+            return False
+        rows = [
+            address
+            for address, where, number in caller.get("order", ())
+            if (where, number) == (source, line)
+        ]
+        return bool(rows) and self._statement_start(caller, source, line, min(rows)) is None
 
     def _root_type(self, frame, root):
         """(type offset, whether the frame keeps it in its own memory, type graph) of

@@ -240,11 +240,16 @@ def test_diff_hits_and_values_never_count_leftovers_or_quoted_hex(bins, capsys):
     # `intervention only in run a` (a --set), and came first.
     probe("FIRST", "k,v,n", "1000", "--hits", "2")
     probe("FIRST", "k,v,n", "1000", "--set", "n=1", "--set-hit", "2")
-    for a, b, said in ((1, 5, "missing in run b"), (6, 1, "intervention only in run a")):
+    for a, b, said in ((1, 5, "missing in run b"), (6, 1, None)):
         diff = queried(capsys, "diff", "--param", f"a={a}", "--param", f"b={b}")["rows"]
         values = [row for row in diff if not row["selector"].startswith("(")]
         noted = [row for row in values if row["selector"] in ("k", "v")]
         # A plain value's row first (`n`: a hit one run did not reach).
         assert values[0]["selector"] == "n" and "qualified" not in values[0]["note"], diff
-        assert any(row["note"].startswith(said + "; qualified (run a: note") for row in noted)
+        if said is None:
+            # Seventh evaluation, finding 10: `--set n=1` left `k` and `v` as they were,
+            # so their after-set rows are no difference of their own.
+            assert not [row for row in noted if row["phase"] == "after-set"], diff
+        else:
+            assert any(row["note"].startswith(said + "; qualified (run a: note") for row in noted)
         assert all("qualified (" in (row["note"] or "") for row in noted), diff

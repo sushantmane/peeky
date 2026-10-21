@@ -33,7 +33,7 @@ def test_gcc_for_cpp_is_refused_before_building(gcc, tmp_path, monkeypatch, caps
     shown = json.loads(capsys.readouterr().out)
     error = shown["error"]
     # Before: BUILD_FAILED, "unrecognized command-line option '--driver-mode=g++'".
-    assert code == 1 and error["code"] == "UNSUPPORTED", error
+    assert code == 2 and error["code"] == "UNSUPPORTED", error
     assert error["message"].startswith(CPP_COMPILER_REFUSAL) and "is GCC" in error["message"]
     assert "driver-mode" not in json.dumps(shown)
     assert shown.get("refused_before_launch") is True and "evidence" not in shown
