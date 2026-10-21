@@ -285,6 +285,17 @@ _MUTATION_HINTS = (
         "N --set-hit N`, N counting that line's stops (`--capture <arg> --hits all` there).",
     ),
     (
+        r"another binding of|the binding of `[^`]+` declared on line",
+        "Keep every binding of the name in memory with a candidate edit (`--old`/`--new`): "
+        "`std::hint::black_box(&mut x);` after each `let` the message names, or rename one "
+        "of them, and `--set` it in that same probe.",
+    ),
+    (
+        r"inlined where it is called",
+        "Inlining prevents the change: change the value in the caller, or drop "
+        "`#[inline(always)]` with a candidate edit (`--old`/`--new`).",
+    ),
+    (
         r"held in the async body's state",
         "Change what it is computed from before it is assigned, or copy it into a local of "
         "the poll's own after the `.await` with a candidate edit (`--old`/`--new`) and "

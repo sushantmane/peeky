@@ -53,13 +53,18 @@ def memory_locals(path):
     return ir_locals(path)[0]
 
 
-def ir_locals(path):
+def ir_locals(path, declarations=None):
     """(memory locals, reference parameters), read in one pass over the IR.
 
     Memory locals: {(function hash, local name): True only if every declaration is a
     real slot}. Reference parameters: {(function hash, name): {"type": declared type,
     "line": last line before the body}} for parameters whose only declaration is a
     non-inlined slot of their own (`<name>` or `<name>.dbg.spill`).
+
+    ``declarations``, a dict if given, receives what the memory proof covers, per name:
+    {(function hash, local name): [(line declared, "slot" | "copy" | "inlined")]}: a
+    real slot, a `.dbg.spill` copy of a value kept in a register, or a declaration in a
+    copy inlined into another function (#138: why a name is not proven in memory).
 
     The function hash is the `h<16 hex>` of the legacy-mangled linkage name, which
     LLDB also ends Rust frame names with. Locals without any declaration, or whose
@@ -100,6 +105,10 @@ def ir_locals(path):
         real = not _SPILL.search(pointer) and located
         key = (hashed[1], fields["name"])
         memory[key] = memory.get(key, True) and real
+        if declarations is not None:
+            kind = "slot" if real else "copy" if located else "inlined"
+            line = int(fields["line"]) if fields.get("line", "").isdigit() else None
+            declarations.setdefault(key, []).append((line, kind))
         declared = entries.get(fields.get("type"), (None, {}))[1].get("name")
         lines = [function.get("line"), function.get("scope_line"), fields.get("line")]
         proven = (

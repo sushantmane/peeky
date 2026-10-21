@@ -628,7 +628,8 @@ class RustTarget:
                 prepared.workspace,
                 cargo_inputs.inputs,
             )
-            memory, parameters = ir_locals(binary.with_name(binary.name + ".ll"))
+            declarations = {}
+            memory, parameters = ir_locals(binary.with_name(binary.name + ".ll"), declarations)
             owned = None
             if wrapper is not None:
                 owned = owned_locals(
@@ -683,6 +684,8 @@ class RustTarget:
             session.test_target = prepared.workspace / uplift
             session.units = tuple(units)
             session.code_blocks = blocks
+            # Each local's IR declarations, to say why a name is not in memory (#138).
+            session.declarations_ir = declarations
             session.assert_current()
             return session
         except BaseException as exc:
@@ -1182,6 +1185,19 @@ class RustSession(NativeSession):
                 "assigned, or copy it into a local of the poll's own after the `.await` with "
                 "a candidate edit, in the same probe"
             )
+        if hashed and self.memory.get((hashed[1], _plain(name))) is not True:
+            place = frame or {}
+            why = self._not_in_memory(
+                hashed[1], name, place.get("line"), (place.get("source") or {}).get("path")
+            )
+            if why[0] != "own":
+                # Another binding of the name, or an inlined copy, is what the proof lacks.
+                where = display_function(place.get("name")) or "this frame"
+                rule, advice = self._register_text(where, _plain(name), why)
+                raise ValueError(
+                    f"Rust mutation requires a local the program keeps in memory; {rule}. "
+                    + advice.replace(", with this `--set`", ", with `--set` in the same probe")
+                )
         if not hashed or self.memory.get((hashed[1], _plain(name))) is not True:
             where = display_function((frame or {}).get("name")) or "this frame"
             raise ValueError(
@@ -1215,7 +1231,109 @@ class RustSession(NativeSession):
         proofs = getattr(self, "owned", None)
         if _state_held(proofs.body(hashed[1]) if proofs is not None else None, plain):
             return "async state"
+        place = frame or {}
+        kind, lines = self._not_in_memory(
+            hashed[1],
+            variable.get("name"),
+            place.get("line"),
+            (place.get("source") or {}).get("path"),
+        )
+        if kind == "inlined":
+            return "inlined"
+        if kind in ("other", "some"):
+            return f"another binding in a register (line {', '.join(map(str, lines))})"
         return "register"
+
+    def _not_in_memory(self, hashed, name, line=None, path=None):
+        """Why the IR proves no memory for ``name`` (as LLDB names it: `x @ main.rs:5`
+        too) in the function ``hashed``, a proof that covers every binding of its name
+        there (rust_ir): ("own", None) where the binding asked for (the one in scope at
+        ``line`` of ``path``) is itself kept in a register, or the IR does not say;
+        ("other", [lines]) where it has a slot but other bindings of its name, declared
+        on those lines, are kept in a register; ("inlined", None) where every binding
+        without a slot is in a copy of the function inlined where it is called."""
+        plain, _, at = str(name).partition(" @ ")
+        found = (getattr(self, "declarations_ir", None) or {}).get((hashed, plain), [])
+        unproven = [(number, kind) for number, kind in found if kind != "slot"]
+        if not unproven:
+            return ("own", None)
+        if all(kind == "inlined" for _, kind in unproven):
+            return ("inlined", None)
+        asked = at.rpartition(":")[2]
+        asked = int(asked) if asked.isdigit() else self._binding_line(hashed, plain, line, path)
+        copies = sorted({number for number, kind in unproven if kind == "copy" and number})
+        own = [kind for number, kind in found if asked is not None and number == asked]
+        if own and all(kind == "slot" for kind in own) and copies:
+            return ("other", copies)
+        if (
+            asked is None
+            and copies
+            and any(kind == "slot" for _, kind in found)
+            and len({number for number, _ in found}) > 1
+        ):
+            # Which binding is asked for is not told (several in scope): name the ones
+            # kept in a register.
+            return ("some", copies)
+        return ("own", None)
+
+    def _binding_line(self, hashed, name, line, path):
+        """The line the binding of ``name`` in scope at ``line`` of ``path`` is declared
+        on, in the MIR body of ``hashed``; None where that is not one binding."""
+        proofs = getattr(self, "owned", None)
+        body = proofs.body(hashed) if proofs is not None else None
+        if body is None:
+            return None
+        bindings = body.bindings.get(name, ())
+        if len(bindings) == 1:
+            return bindings[0][2]
+        if line is None:
+            return None
+        local = proofs._local(body, name, line, path)
+        lines = {binding[2] for binding in bindings if local is not None and binding[0] == local}
+        return lines.pop() if len(lines) == 1 else None
+
+    @staticmethod
+    def _register_text(function, name, why, parameter=False):
+        """The rule and its way around for a local the IR proves no memory for (see
+        _not_in_memory), in ``function``: (the rule, the advice)."""
+        kind, lines = why
+        if kind == "inlined":
+            return (
+                f"in {function}, `{name}` is a local of a function inlined where it is "
+                "called (`#[inline(always)]`): Peeky proves no slot for a local of an "
+                "inlined copy, so a change would not reach the program",
+                "Inlining prevents the change: drop `#[inline(always)]` with a candidate "
+                "edit, or change the value where it comes from, in the caller",
+            )
+        if kind in ("other", "some"):
+            listed = ", ".join(map(str, lines))
+            some = "line" if len(lines) == 1 else "lines"
+            return (
+                (
+                    f"in {function}, `{name}` has a slot of its own, but another binding of "
+                    f"`{name}` (declared on {some} {listed}) is kept in a register"
+                    if kind == "other"
+                    else f"in {function}, the binding of `{name}` declared on {some} {listed} "
+                    "is kept in a register (the debugger only shows a copy of it)"
+                )
+                + ", and Peeky proves a name in memory only when every binding of it is",
+                f"A candidate edit keeps that one in memory too, in the same probe "
+                f"(COOKBOOK 6.6): `std::hint::black_box(&mut {name});` after the `let` on "
+                f"{some} {listed} (declared `let mut`), or a new name for one of them",
+            )
+        what = "parameter" if parameter else "local"
+        keep = (
+            f"`mut {name}` in the signature and `std::hint::black_box(&mut {name});` as "
+            "the function's first statement"
+            if parameter
+            else f"`std::hint::black_box(&mut {name});` after its `let` (declared `let mut`)"
+        )
+        return (
+            f"in {function}, `{name}` is a {what} kept in a register (the debugger only "
+            "shows a copy of it, so a change would not affect the program)",
+            f"A candidate edit keeps it in memory, in the same probe (COOKBOOK 6.6): {keep}, "
+            "by `--old`/`--new`, with this `--set`",
+        )
 
     def _line_functions(self, source, line):
         """[(hash, IrFunction)] of every function that can stop at ``line`` of
@@ -1330,21 +1448,19 @@ class RustSession(NativeSession):
         parameter = body is not None and any(
             binding[0] in body.arguments for binding in body.bindings.get(plain, ())
         )
-        return ("register", "parameter" if parameter else "local")
+        return ("register", (parameter, self._not_in_memory(hashed, root, line, source)))
 
     def _never_message(self, name, root, steps, source, line, failures):
         """The refusal for a `--set` that ``failures`` [(function, (kind, detail))] rule
         out in every function at ``line``, naming each rule and what to do instead."""
         plain = _plain(root)
-        parts, registers, states = [], set(), False
+        parts, registers, states = [], set(), False  # registers: the advice for each
         for function, (kind, detail) in failures:
             if kind == "register":
-                registers.add(detail)
-                what = "parameter" if detail == "parameter" else "local"
-                parts.append(
-                    f"in {function}, `{plain}` is a {what} kept in a register (the debugger "
-                    "only shows a copy of it, so a change would not affect the program)"
-                )
+                parameter, why = detail
+                rule, advice = self._register_text(function, plain, why, parameter)
+                parts.append(rule)
+                registers.add(advice)
             elif kind == "state":
                 states = True
                 parts.append(
@@ -1355,7 +1471,7 @@ class RustSession(NativeSession):
             elif kind == "absent":
                 parts.append(f"{function} {detail}")
             elif kind == "unproven":
-                registers.add("local")
+                registers.add(self._register_text(function, plain, ("own", None))[1])
                 parts.append(
                     f"in {function}, the build's IR gives `{plain}` no memory slot of its own "
                     "(a register, or no such local), so a change would not affect the program"
@@ -1372,19 +1488,10 @@ class RustSession(NativeSession):
             listed = self._settable_names(source, line)
             return (
                 "NOT_FOUND",
-                text + f"; settable here: {', '.join(listed) if listed else 'none'}",
+                text + self._settable_here(listed),
             )
-        if registers:
-            keep = (
-                f"`mut {plain}` in the signature and `std::hint::black_box(&mut {plain});` as "
-                "the function's first statement"
-                if registers == {"parameter"}
-                else f"`std::hint::black_box(&mut {plain});` after its `let` (declared `let mut`)"
-            )
-            text += (
-                f". A candidate edit keeps it in memory, in the same probe (COOKBOOK 6.6): "
-                f"{keep}, by `--old`/`--new`, with this `--set`"
-            )
+        for advice in sorted(registers):
+            text += f". {advice}"
         if states:
             text += (
                 ". Change what it is computed from before it is assigned, or copy it into a "
@@ -1393,11 +1500,13 @@ class RustSession(NativeSession):
                 f"{plain}2);` on a line before the stop's, then use and set `{plain}2`)"
             )
         listed = self._settable_names(source, line)
-        return text + f"; settable here: {', '.join(listed) if listed else 'none'}"
+        return text + self._settable_here(listed)
 
     def _settable_names(self, source, line):
         """The integer locals the build keeps in memory, bound in scopes of ``line``:
-        those `set` may change there once assigned (the stop decides the rest)."""
+        those `set` may change there once assigned (the stop decides the rest), as
+        selectors name them: `z @ main.rs:10` where several of the name are in scope,
+        as LLDB shows them."""
         proofs = getattr(self, "owned", None)
         found = set()
         for hashed, _ in self._line_functions(source, line):
@@ -1406,14 +1515,25 @@ class RustSession(NativeSession):
             if visible is None:
                 continue
             for name, bindings in body.bindings.items():
-                if self.memory.get((hashed, name)) is True and any(
-                    binding[0] is not None
-                    and binding[4] in visible
-                    and body.types.get(binding[0]) in _SETTABLE_RUST
-                    for binding in bindings
-                ):
-                    found.add(name)
+                if self.memory.get((hashed, name)) is not True:
+                    continue
+                shown = [binding for binding in bindings if binding[4] in visible]
+                for binding in shown:
+                    if binding[0] is None or body.types.get(binding[0]) not in _SETTABLE_RUST:
+                        continue
+                    where = f"{Path(binding[1]).name}:{binding[2]}"
+                    found.add(name if len(shown) == 1 else f"{name} @ {where}")
         return sorted(found)[:20]
+
+    @staticmethod
+    def _settable_here(listed):
+        """The end of a refusal before the run: what may be set at its line instead."""
+        if not listed:
+            return "; settable here: no root locals (fields where rows mark them [settable])"
+        return (
+            f"; settable here: {', '.join(listed)} (root locals; fields too where rows mark "
+            "them [settable])"
+        )
 
     def _stop_block(self, hashed, frame):
         """#115: the lexical block the frame's pc is in (``stop_block``), once per function

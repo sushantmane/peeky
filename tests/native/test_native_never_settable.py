@@ -108,3 +108,44 @@ def test_an_index_is_judged_as_the_stop_reads_it(tmp_path, language):
     # A field the element's type lacks is still refused before the run.
     result = run_probe(tmp_path, Probe(name, at, ("r",), (("sp[-1].mid", "9"),)), adapter=debug)
     assert "lists no field `mid`" in refused_before_launch(result)
+
+
+INDEXES = """#include <stdio.h>
+
+struct inner { int arr[3]; };
+struct grid { int g[2][4]; };
+
+__attribute__((noinline)) static int run(void) {
+    int arr[4] = { 1, 2, 3, 4 };
+    short sh[3] = { 5, 6, 7 };
+    struct inner np = { { 8, 9, 10 } };
+    struct grid gr = { { { 1, 2, 3, 4 }, { 5, 6, 7, 8 } } };
+    int r = arr[3] + sh[2] + np.arr[1] + np.arr[2] + gr.g[1][0];  /* IDX */
+    return r;
+}
+
+int main(void) {
+    printf("RUN %d\\n", run());
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(240)
+@pytest.mark.parametrize("language", ["c", "cpp"])
+def test_a_final_index_is_set_as_it_is_read_and_marked(tmp_path, language):
+    # Review of #138: `arr[03]`, `sh[-1]`, `np.arr[-1]`, `gr.g[1][-4]` read and were
+    # marked [settable], then `set` refused them ("a negative index can be changed only
+    # in a Java array", "'[03]' is not a field or element the debugger lists there").
+    name = f"reg.{'cpp' if language == 'cpp' else 'c'}"
+    (tmp_path / name).write_text(INDEXES)
+    at = next(i for i, text in enumerate(INDEXES.splitlines(), 1) if "IDX" in text)
+    debug = target(language, "O0")
+    selectors = ("arr[03]", "sh[-1]", "np.arr[01]", "np.arr[-1]", "gr.g[1][-4]")
+    marked = run_probe(tmp_path, Probe(name, at, selectors), adapter=debug)
+    assert [row.get("settable") for row in marked["rows"]] == [True] * 5, marked.get("error")
+    # 4 + 7 + 9 + 10 + 5 = 35, each one changed to 9.
+    for selector, total in zip(selectors, (40, 37, 35, 34, 39)):
+        result = run_probe(tmp_path, Probe(name, at, (), ((selector, "9"),)), adapter=debug)
+        assert result["status"] == "completed", (selector, result.get("error"))
+        assert f"RUN {total}" in result["output"], (selector, result["output"])

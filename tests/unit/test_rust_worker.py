@@ -932,7 +932,9 @@ def test_a_set_is_refused_before_launch_only_where_every_function_on_the_line_fa
     message = judged("width")
     assert "in app::outer, `width` is a parameter kept in a register" in message, message
     assert "app::outer::{closure#0} has no local `width`" in message, message
-    assert "`mut width` in the signature" in message and message.endswith("settable here: total")
+    assert "`mut width` in the signature" in message and message.endswith(
+        "settable here: total (root locals; fields too where rows mark them [settable])"
+    )
     assert judged("total") is None
     assert "`flag` is a bool; only integer locals" in judged("flag")
     code, message = judged("nope")
@@ -944,7 +946,9 @@ def test_a_set_is_refused_before_launch_only_where_every_function_on_the_line_fa
     # Kept in an async body's state across an `.await`: no `black_box` helps there.
     message = judged("k", 11)
     assert "`k` is held in the async body's state across an `.await`" in message, message
-    assert "black_box(&mut k)" not in message and message.endswith("settable here: q")
+    assert "black_box(&mut k)" not in message and message.endswith(
+        "settable here: q (root locals; fields too where rows mark them [settable])"
+    )
     session.owned.precise = False
     assert judged("width") is None
     session.owned.precise = True
@@ -952,3 +956,39 @@ def test_a_set_is_refused_before_launch_only_where_every_function_on_the_line_fa
     assert judged("width") is None
     session.target.opt_level = "1"
     assert session.never_settable_row({"name": "x", "type": "int"}, {}) is None
+
+
+def test_a_name_not_proven_in_memory_says_which_binding_or_copy_is_why():
+    # Review of #138: the IR's proof covers every binding of a name; the binding asked
+    # for may have its slot while another, or an inlined copy, does not.
+    from types import SimpleNamespace
+
+    from peeky.rust import RustSession
+
+    bindings = {"x": [(1, "src/main.rs", 4, None, 0), (2, "src/main.rs", 6, None, 0)]}
+    bindings["y"] = [(3, "src/main.rs", 9, None, 0)]
+    body = SimpleNamespace(bindings=bindings)
+    session = object.__new__(RustSession)
+    session.owned = SimpleNamespace(
+        body=lambda hashed: body, _local=lambda body, name, line, path: {8: 2}.get(line)
+    )
+    session.declarations_ir = {
+        ("h", "x"): [(4, "copy"), (6, "slot")],
+        ("h", "y"): [(9, "copy")],
+        ("h", "far"): [(3, "inlined"), (3, "inlined")],
+        ("h", "both"): [(5, "copy"), (5, "slot")],
+    }
+    judged = session._not_in_memory
+    assert judged("h", "x @ main.rs:6") == ("other", [4])
+    assert judged("h", "x @ main.rs:4") == ("own", None)
+    assert judged("h", "x", 8, "src/main.rs") == ("other", [4])  # the line's binding
+    assert judged("h", "x", 7, "src/main.rs") == ("some", [4])  # not told which
+    assert judged("h", "y") == ("own", None)
+    assert judged("h", "far") == ("inlined", None)
+    assert judged("h", "both") == ("own", None)
+    assert judged("h", "unknown") == ("own", None)
+    rule, advice = RustSession._register_text("app::f", "x", ("other", [4]))
+    assert "another binding of `x` (declared on line 4)" in rule
+    assert "after the `let` on line 4" in advice
+    rule, advice = RustSession._register_text("app::far", "y", ("inlined", None))
+    assert "inlined where it is called" in rule and advice.startswith("Inlining prevents")

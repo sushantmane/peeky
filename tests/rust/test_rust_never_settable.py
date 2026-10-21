@@ -140,7 +140,9 @@ def test_a_register_parameter_is_refused_before_the_run_and_marked(tmp_path, sta
     assert "in limiter::allow, `width` is a parameter kept in a register" in message, message
     assert "only shows a copy" in message and "COOKBOOK 6.6" in message, message
     assert "`mut width` in the signature and `std::hint::black_box(&mut width);`" in message
-    assert message.endswith("settable here: none"), message
+    assert message.endswith(
+        "settable here: no root locals (fields where rows mark them [settable])"
+    ), message
     assert "black_box" in result["error"]["hint"], result["error"]
     assert not (state / "evidence" / "evidence.db").exists()
     # The observation rows say so, and `describe` lists them per function.
@@ -174,7 +176,9 @@ def test_only_what_fails_in_every_function_on_the_line_is_refused_before_the_run
     message = refused_before_launch(result)
     assert "in scale::scale, `offset` is a parameter kept in a register" in message, message
     # Bound in scope there and kept in memory (once assigned).
-    assert message.endswith("settable here: factor, total"), message
+    assert message.endswith(
+        "settable here: factor, total (root locals; fields too where rows mark them [settable])"
+    ), message
     # A line `scale` shares with its closure: refused where it fails in both.
     code, result = probe(capsys, crate, shared, "--set", "offset=3")
     message = refused_before_launch(result)
@@ -302,7 +306,9 @@ def test_a_local_an_async_body_keeps_across_an_await_says_so(tmp_path, state, ca
     assert "`k` is held in the async body's state across an `.await`" in message, message
     assert "register" not in message and "black_box(&mut k)" not in message, message
     assert "`let mut k2 = k; std::hint::black_box(&mut k2);`" in message, message
-    assert message.endswith("settable here: q"), message
+    assert message.endswith(
+        "settable here: q (root locals; fields too where rows mark them [settable])"
+    ), message
     assert "copy it into a local of the poll's own" in result["error"]["hint"]
     code, result = probe(capsys, crate, at, "--capture", "k,q")
     rows = {row["selector"]: row for row in result["rows"]}
@@ -317,3 +323,113 @@ def test_a_local_an_async_body_keeps_across_an_await_says_so(tmp_path, state, ca
     edit += ["--old", "let r = q + k;", "--new", "let r = q + k2;"]
     code, result = probe(capsys, crate, at, "--capture", "k2", *edit, "--set", "k2=9")
     assert code == 0 and "async 12" in result["output"], result.get("error")
+
+
+BINDINGS = """mod other;
+
+fn shadow(n: u32) -> u64 {
+    let x: u32 = n + 1; // FIRST
+    std::hint::black_box(x);
+    let mut x: u64 = x as u64 * 2; // SECOND
+    std::hint::black_box(&mut x);
+    x + 1 // SHADOW
+}
+
+fn twins(n: u64) -> u64 {
+    let mut z: u64 = n;
+    std::hint::black_box(&mut z);
+    let mut z: u64 = z + 10;
+    std::hint::black_box(&mut z);
+    let mut t = (n, 7u64);
+    std::hint::black_box(&mut t);
+    let mut arr = [1u64, 2, 3, 4];
+    std::hint::black_box(&mut arr);
+    let mut nested = [[1u64, 2], [3, 4]];
+    std::hint::black_box(&mut nested);
+    z + t.0 + arr[3] + nested[1][1] // TWINS
+}
+
+fn main() {
+    println!("SHADOW {}", shadow(4));
+    println!("TWINS {}", twins(5));
+    println!("FAR {}", other::far(std::hint::black_box(20)));
+}
+"""
+OTHER = """#[inline(always)]
+pub fn far(a: u64) -> u64 {
+    let mut y = a + 1;
+    std::hint::black_box(&mut y);
+    y * 2 // FAR
+}
+"""
+
+
+@pytest.mark.timeout(400)
+def test_the_binding_kept_in_a_register_is_named(tmp_path, state, capsys):
+    # Review of #138: the IR's proof covers every binding of a name, so `x @ main.rs:6`,
+    # black-boxed, was refused with advice to black-box it; so was `y` of an always-inlined
+    # function, which no `black_box` helps.
+    crate = crate_at(tmp_path, "bind", BINDINGS)
+    (crate / "src/other.rs").write_text(OTHER)
+    shadow = line_of(BINDINGS, "// SHADOW")
+    code, result = probe(capsys, crate, shadow, "--set", "x @ main.rs:6=9")
+    message = refused_before_launch(result)
+    assert "`x` has a slot of its own, but another binding of `x` (declared on line 4)" in message
+    assert "`std::hint::black_box(&mut x);` after the `let` on line 4" in message, message
+    assert "after its `let`" not in message and "after each `let`" in result["error"]["hint"]
+    code, result = probe(capsys, crate, shadow, "--capture", "x @ main.rs:4,x @ main.rs:6")
+    marks = {row["selector"]: row.get("not_settable") for row in result["rows"]}
+    assert marks == {
+        "x @ main.rs:4": "register",
+        "x @ main.rs:6": "another binding in a register (line 4)",
+    }, result["rows"]
+    # As advised: both in memory, the change is made.
+    edit = ["--old", "let x: u32 = n + 1;", "--new"]
+    edit.append("let mut x: u32 = n + 1; std::hint::black_box(&mut x);")
+    code, result = probe(capsys, crate, shadow, *edit, "--set", "x @ main.rs:6=9")
+    assert code == 0 and "SHADOW 10" in result["output"], result.get("error")
+    # The stop says the same, where nothing ran before it.
+    start = ["session", "start", str(crate), "--at", f"src/main.rs:{shadow}"]
+    assert main(start) == 0
+    capsys.readouterr()
+    try:
+        assert main(["session", "set", "x @ main.rs:6=9", "--json"]) == 2
+        error = json.loads(capsys.readouterr().out)["error"]
+        assert "another binding of `x` (declared on line 4)" in error["message"], error
+    finally:
+        main(["session", "close"])
+        capsys.readouterr()
+    # Always inlined: inlining, not the binding, is what prevents the change.
+    far = line_of(OTHER, "// FAR")
+    code = main(["probe", str(crate), "--at", f"src/other.rs:{far}", "--set", "y=9", "--json"])
+    result = json.loads(capsys.readouterr().out)
+    message = refused_before_launch(result)
+    assert "a function inlined where it is called (`#[inline(always)]`)" in message, message
+    assert "black_box(&mut y)" not in message and "Inlining prevents" in result["error"]["hint"]
+    code = main(["probe", str(crate), "--at", f"src/other.rs:{far}", "--capture", "y", "--json"])
+    assert json.loads(capsys.readouterr().out)["rows"][0]["not_settable"] == "inlined"
+
+
+@pytest.mark.timeout(400)
+def test_settable_here_names_selectors_and_a_final_index_is_set_as_marked(tmp_path, state, capsys):
+    crate = crate_at(tmp_path, "bind", BINDINGS)
+    (crate / "src/other.rs").write_text(OTHER)
+    twins = line_of(BINDINGS, "// TWINS")
+    # As LLDB names two `z` in scope; and fields may be settable where no root is.
+    code, result = probe(capsys, crate, twins, "--set", "n=9")
+    message = refused_before_launch(result)
+    assert message.endswith(
+        "settable here: z @ main.rs:12, z @ main.rs:14 (root locals; fields too where rows "
+        "mark them [settable])"
+    ), message
+    # A final index read as `set` takes it (review of #138: marked [settable], then
+    # refused as "negative index ... only in a Java array" or "'[03]' is not a field").
+    capture = "arr[-1],arr[03],nested[1][-1]"
+    code, result = probe(capsys, crate, twins, "--capture", capture)
+    assert all(row["settable"] is True for row in result["rows"]), result["rows"]
+    for selector, total in (("arr[-1]", 33), ("arr[03]", 33), ("nested[1][-1]", 33)):
+        code, result = probe(capsys, crate, twins, "--set", f"{selector}=9")
+        assert code == 0, (selector, result.get("error"))
+        assert f"TWINS {total}" in result["output"], (selector, result["output"])
+    code, result = probe(capsys, crate, twins, "--set", "arr[-9]=9")
+    assert result["hits"] == 1 and "out of range for 4 elements" in result["error"]["message"]
