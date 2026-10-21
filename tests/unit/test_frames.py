@@ -93,6 +93,7 @@ class Runtime(PythonAdapter):
         innermost=False,
         stop=None,
         siblings=None,
+        ancestry=None,
     ):
         if top:
             self.innermost.append((frame["id"], variable["name"], innermost))

@@ -1488,6 +1488,47 @@ def test_rust_comments_and_literals_are_found_by_one_lexer(text, spans, complete
         assert len(blanked) == len(text) and blanked.count("\n") == text.count("\n")
 
 
+@pytest.mark.parametrize(
+    "text, spans, complete",
+    [
+        # Review of #156, round 3: rustc skips a shebang line, so its `"` opens no string
+        # (which hid the `unsafe` below it).
+        ('#!/usr/bin/env -S echo "\nlet a = "x";', [(0, 24, True), (33, 36, False)], True),
+        ('\ufeff#!/bin/sh "\nfn f() {}', [(0, 12, True)], True),
+        # `#!` and `[` (whitespace between) are an inner attribute.
+        ("#![allow(x)]\nfn f() {}", [], True),
+        ("#!\n [allow(x)] fn f() {}", [], True),
+        ("#!\u200e[allow(x)]", [], True),
+        # Not judged: a comment after `#!`, and frontmatter.
+        ("#! /* c */ [allow(x)]", [], False),
+        ('---\nx = "\n---\nfn f() {} // "', [], False),
+        ("#!/bin/sh\n\n---\n---\nfn f() {}", [], False),
+    ],
+)
+def test_a_shebang_is_skipped_as_rustc_skips_it(text, spans, complete):
+    from peeky.rust_lexer import lexemes
+
+    assert lexemes(text) == (spans, complete)
+
+
+@pytest.mark.parametrize(
+    "text, why",
+    [
+        ("fn f() { (1 }", "its brackets do not pair up"),
+        ("fn f() { [1] ", "its brackets do not pair up"),
+        ("fn f() { 1 } }", "its brackets do not pair up"),
+        ("fn f() { let c = '}'; let s = \"{\"; }", None),
+    ],
+)
+def test_code_whose_brackets_do_not_pair_up_is_not_read(text, why):
+    # Every source rustc accepts pairs its brackets (its tokens are trees): ones that do
+    # not, once comments and literals are blanked, mean Peeky misread a literal.
+    from peeky.rust_lexer import code_only, scan
+
+    assert scan(text)[1] == why
+    assert (code_only(text) is None) is (why is not None)
+
+
 BOXED = "std::boxed::Box<Pt>"
 
 
@@ -2578,3 +2619,339 @@ def test_a_locals_copies_are_what_passes_over_every_assignment_find():
         body = parse_body(text)
         for local in range(2 + max(body.types, default=0)):
             assert body.copies_of(local, formatting=False) == passes(body, local), local
+
+
+# `for v in args[0].split('/') { total = count(v.len()); total += 1; }` (#156).
+FROZEN = """// MIR for `main` after PreCodegen
+
+fn main() -> () {
+    let mut _0: ();                      // return place in scope 0 at src/main.rs:5:10: 5:10
+    let mut _1: !;                       // in scope 0 at src/main.rs:5:11: 13:2
+    let _2: std::vec::Vec<std::string::String>; // in scope 0 at src/main.rs:6:9: 6:13
+    let mut _3: std::env::Args;          // in scope 0 at src/main.rs:6:29: 6:45
+    let _5: ();                          // in scope 0 at src/main.rs:8:5: 11:6
+    let mut _6: std::str::Split<'_, char>; // in scope 0 at src/main.rs:8:14: 8:32
+    let mut _7: std::str::Split<'_, char>; // in scope 0 at src/main.rs:8:14: 8:32
+    let mut _8: &str;                    // in scope 0 at src/main.rs:8:14: 8:21
+    let _9: &str;                        // in scope 0 at src/main.rs:8:14: 8:32
+    let mut _10: &std::string::String;   // in scope 0 at src/main.rs:8:14: 8:21
+    let _11: &std::string::String;       // in scope 0 at src/main.rs:8:18: 8:21
+    let mut _12: &std::vec::Vec<std::string::String>; // in scope 0 at src/main.rs:8:14: 8:18
+    let mut _14: ();                     // in scope 0 at src/main.rs:5:1: 13:2
+    let _15: ();                         // in scope 0 at src/main.rs:8:14: 8:32
+    let mut _16: std::option::Option<&str>; // in scope 0 at src/main.rs:8:14: 8:32
+    let mut _17: &mut std::str::Split<'_, char>; // in scope 0 at src/main.rs:8:14: 8:32
+    let mut _18: &mut std::str::Split<'_, char>; // in scope 0 at src/main.rs:8:14: 8:32
+    let mut _19: isize;                  // in scope 0 at src/main.rs:8:5: 11:6
+    let mut _20: !;                      // in scope 0 at src/main.rs:8:5: 11:6
+    let mut _22: usize;                  // in scope 0 at src/main.rs:9:17: 9:31
+    let mut _23: usize;                  // in scope 0 at src/main.rs:9:23: 9:30
+    let mut _24: &str;                   // in scope 0 at src/main.rs:9:23: 9:24
+    let mut _25: (usize, bool);          // in scope 0 at src/main.rs:10:9: 10:19
+    let _26: !;                          // in scope 0 at src/main.rs:12:5: 12:37
+    let mut _27: i32;                    // in scope 0 at src/main.rs:12:24: 12:36
+    let mut _28: usize;                  // in scope 0 at src/main.rs:12:24: 12:29
+    scope 1 {
+        debug args => _2;                // in scope 1 at src/main.rs:6:9: 6:13
+        let mut _4: usize;               // in scope 1 at src/main.rs:7:9: 7:18
+        scope 2 {
+            debug total => _4;           // in scope 2 at src/main.rs:7:9: 7:18
+            let mut _13: std::str::Split<'_, char>; // in scope 2 at src/main.rs:8:14: 8:32
+            scope 3 {
+                debug iter => _13;       // in scope 3 at src/main.rs:8:14: 8:32
+                let _21: &str;           // in scope 3 at src/main.rs:8:9: 8:10
+                scope 4 {
+                    debug v => _21;      // in scope 4 at src/main.rs:8:9: 8:10
+                }
+            }
+        }
+    }
+
+    bb0: {
+        StorageLive(_2);                 // scope 0 at src/main.rs:6:9: 6:13
+        StorageLive(_3);                 // scope 0 at src/main.rs:6:29: 6:45
+        _3 = args() -> [return: bb1, unwind continue]; // scope 0 at src/main.rs:6:29: 6:45
+                                         // mir::ConstOperand
+                                         // + span: src/main.rs:6:29: 6:43
+                                         // + const_: Const { ty: fn() -> Args {args}, val: Value(args) }
+    }
+
+    bb1: {
+        _2 = <Args as Iterator>::collect::<Vec<String>>(move _3) -> [return: bb2, unwind: bb16]; // scope 0 at src/main.rs:6:29: 6:55
+                                         // mir::ConstOperand
+                                         // + span: src/main.rs:6:46: 6:53
+                                         // + const_: Const { ty: fn(Args) -> Vec<String> {<Args as Iterator>::collect::<Vec<String>>}, val: Value(<Args as Iterator>::collect::<Vec<String>>) }
+    }
+
+    bb2: {
+        StorageDead(_3);                 // scope 0 at src/main.rs:6:54: 6:55
+        StorageLive(_4);                 // scope 1 at src/main.rs:7:9: 7:18
+        _4 = const 0_usize;              // scope 1 at src/main.rs:7:21: 7:22
+        StorageLive(_5);                 // scope 2 at src/main.rs:8:5: 11:6
+        StorageLive(_6);                 // scope 2 at src/main.rs:8:14: 8:32
+        StorageLive(_7);                 // scope 2 at src/main.rs:8:14: 8:32
+        StorageLive(_8);                 // scope 2 at src/main.rs:8:14: 8:21
+        StorageLive(_9);                 // scope 2 at src/main.rs:8:14: 8:32
+        StorageLive(_10);                // scope 2 at src/main.rs:8:14: 8:21
+        StorageLive(_11);                // scope 2 at src/main.rs:8:18: 8:21
+        StorageLive(_12);                // scope 2 at src/main.rs:8:14: 8:18
+        _12 = &_2;                       // scope 2 at src/main.rs:8:14: 8:18
+        _11 = <Vec<String> as Index<usize>>::index(move _12, const 0_usize) -> [return: bb3, unwind: bb15]; // scope 2 at src/main.rs:8:18: 8:21
+                                         // mir::ConstOperand
+                                         // + span: src/main.rs:8:18: 8:21
+                                         // + const_: Const { ty: for<'a> fn(&'a Vec<String>, usize) -> &'a <Vec<String> as Index<usize>>::Output {<Vec<String> as Index<usize>>::index}, val: Value(<Vec<String> as Index<usize>>::index) }
+    }
+
+    bb3: {
+        _10 = &(*_11);                   // scope 2 at src/main.rs:8:14: 8:21
+        _9 = <String as Deref>::deref(move _10) -> [return: bb4, unwind: bb15]; // scope 2 at src/main.rs:8:14: 8:32
+                                         // mir::ConstOperand
+                                         // + span: src/main.rs:8:14: 8:32
+                                         // + const_: Const { ty: for<'a> fn(&'a String) -> &'a <String as Deref>::Target {<String as Deref>::deref}, val: Value(<String as Deref>::deref) }
+    }
+
+    bb4: {
+        _8 = &(*_9);                     // scope 2 at src/main.rs:8:14: 8:21
+        StorageDead(_12);                // scope 2 at src/main.rs:8:20: 8:21
+        StorageDead(_10);                // scope 2 at src/main.rs:8:20: 8:21
+        _7 = core::str::<impl str>::split::<char>(move _8, const '/') -> [return: bb5, unwind: bb15]; // scope 2 at src/main.rs:8:14: 8:32
+                                         // mir::ConstOperand
+                                         // + span: src/main.rs:8:22: 8:27
+                                         // + const_: Const { ty: for<'a> fn(&'a str, char) -> std::str::Split<'a, char> {core::str::<impl str>::split::<char>}, val: Value(core::str::<impl str>::split::<char>) }
+    }
+
+    bb5: {
+        StorageDead(_8);                 // scope 2 at src/main.rs:8:31: 8:32
+        _6 = <std::str::Split<'_, char> as IntoIterator>::into_iter(move _7) -> [return: bb6, unwind: bb15]; // scope 2 at src/main.rs:8:14: 8:32
+                                         // mir::ConstOperand
+                                         // + span: src/main.rs:8:14: 8:32
+                                         // + const_: Const { ty: fn(std::str::Split<'_, char>) -> <std::str::Split<'_, char> as IntoIterator>::IntoIter {<std::str::Split<'_, char> as IntoIterator>::into_iter}, val: Value(<std::str::Split<'_, char> as IntoIterator>::into_iter) }
+    }
+
+    bb6: {
+        StorageDead(_7);                 // scope 2 at src/main.rs:8:31: 8:32
+        StorageLive(_13);                // scope 2 at src/main.rs:8:14: 8:32
+        _13 = move _6;                   // scope 2 at src/main.rs:8:14: 8:32
+        goto -> bb7;                     // scope 3 at src/main.rs:8:5: 11:6
+    }
+
+    bb7: {
+        StorageLive(_15);                // scope 3 at src/main.rs:8:14: 8:32
+        StorageLive(_16);                // scope 3 at src/main.rs:8:14: 8:32
+        StorageLive(_17);                // scope 3 at src/main.rs:8:14: 8:32
+        StorageLive(_18);                // scope 3 at src/main.rs:8:14: 8:32
+        _18 = &mut _13;                  // scope 3 at src/main.rs:8:14: 8:32
+        _17 = &mut (*_18);               // scope 3 at src/main.rs:8:14: 8:32
+        _16 = <std::str::Split<'_, char> as Iterator>::next(move _17) -> [return: bb8, unwind: bb15]; // scope 3 at src/main.rs:8:14: 8:32
+                                         // mir::ConstOperand
+                                         // + span: src/main.rs:8:14: 8:32
+                                         // + const_: Const { ty: for<'a> fn(&'a mut std::str::Split<'_, char>) -> Option<<std::str::Split<'_, char> as Iterator>::Item> {<std::str::Split<'_, char> as Iterator>::next}, val: Value(<std::str::Split<'_, char> as Iterator>::next) }
+    }
+
+    bb8: {
+        StorageDead(_17);                // scope 3 at src/main.rs:8:31: 8:32
+        _19 = discriminant(_16);         // scope 3 at src/main.rs:8:14: 8:32
+        switchInt(move _19) -> [0: bb11, 1: bb10, otherwise: bb9]; // scope 3 at src/main.rs:8:14: 8:32
+    }
+
+    bb9: {
+        unreachable;                     // scope 3 at src/main.rs:8:14: 8:32
+    }
+
+    bb10: {
+        StorageLive(_21);                // scope 3 at src/main.rs:8:9: 8:10
+        _21 = copy ((_16 as Some).0: &str); // scope 3 at src/main.rs:8:9: 8:10
+        StorageLive(_22);                // scope 4 at src/main.rs:9:17: 9:31
+        StorageLive(_23);                // scope 4 at src/main.rs:9:23: 9:30
+        StorageLive(_24);                // scope 4 at src/main.rs:9:23: 9:24
+        _24 = &(*_21);                   // scope 4 at src/main.rs:9:23: 9:24
+        _23 = core::str::<impl str>::len(move _24) -> [return: bb12, unwind: bb15]; // scope 4 at src/main.rs:9:23: 9:30
+                                         // mir::ConstOperand
+                                         // + span: src/main.rs:9:25: 9:28
+                                         // + const_: Const { ty: for<'a> fn(&'a str) -> usize {core::str::<impl str>::len}, val: Value(core::str::<impl str>::len) }
+    }
+
+    bb11: {
+        _5 = const ();                   // scope 3 at src/main.rs:8:5: 11:6
+        StorageDead(_18);                // scope 3 at src/main.rs:11:5: 11:6
+        StorageDead(_16);                // scope 3 at src/main.rs:11:5: 11:6
+        StorageDead(_15);                // scope 3 at src/main.rs:11:5: 11:6
+        StorageDead(_13);                // scope 2 at src/main.rs:11:5: 11:6
+        StorageDead(_11);                // scope 2 at src/main.rs:11:5: 11:6
+        StorageDead(_9);                 // scope 2 at src/main.rs:11:5: 11:6
+        StorageDead(_6);                 // scope 2 at src/main.rs:11:5: 11:6
+        StorageDead(_5);                 // scope 2 at src/main.rs:11:5: 11:6
+        StorageLive(_26);                // scope 2 at src/main.rs:12:5: 12:37
+        StorageLive(_27);                // scope 2 at src/main.rs:12:24: 12:36
+        StorageLive(_28);                // scope 2 at src/main.rs:12:24: 12:29
+        _28 = copy _4;                   // scope 2 at src/main.rs:12:24: 12:29
+        _27 = move _28 as i32 (IntToInt); // scope 2 at src/main.rs:12:24: 12:36
+        StorageDead(_28);                // scope 2 at src/main.rs:12:35: 12:36
+        _26 = exit(move _27) -> bb15;    // scope 2 at src/main.rs:12:5: 12:37
+                                         // mir::ConstOperand
+                                         // + span: src/main.rs:12:5: 12:23
+                                         // + const_: Const { ty: fn(i32) -> ! {exit}, val: Value(exit) }
+    }
+
+    bb12: {
+        StorageDead(_24);                // scope 4 at src/main.rs:9:29: 9:30
+        _22 = count(move _23) -> [return: bb13, unwind: bb15]; // scope 4 at src/main.rs:9:17: 9:31
+                                         // mir::ConstOperand
+                                         // + span: src/main.rs:9:17: 9:22
+                                         // + const_: Const { ty: fn(usize) -> usize {count}, val: Value(count) }
+    }
+
+    bb13: {
+        StorageDead(_23);                // scope 4 at src/main.rs:9:30: 9:31
+        _4 = move _22;                   // scope 4 at src/main.rs:9:9: 9:31
+        StorageDead(_22);                // scope 4 at src/main.rs:9:30: 9:31
+        _25 = AddWithOverflow(copy _4, const 1_usize); // scope 4 at src/main.rs:10:9: 10:19
+        assert(!move (_25.1: bool), "attempt to compute `{} + {}`, which would overflow", copy _4, const 1_usize) -> [success: bb14, unwind: bb15]; // scope 4 at src/main.rs:10:9: 10:19
+    }
+
+    bb14: {
+        _4 = move (_25.0: usize);        // scope 4 at src/main.rs:10:9: 10:19
+        _15 = const ();                  // scope 4 at src/main.rs:8:33: 11:6
+        StorageDead(_21);                // scope 3 at src/main.rs:11:5: 11:6
+        StorageDead(_18);                // scope 3 at src/main.rs:11:5: 11:6
+        StorageDead(_16);                // scope 3 at src/main.rs:11:5: 11:6
+        StorageDead(_15);                // scope 3 at src/main.rs:11:5: 11:6
+        _14 = const ();                  // scope 3 at src/main.rs:8:5: 11:6
+        goto -> bb7;                     // scope 3 at src/main.rs:8:5: 11:6
+    }
+
+    bb15 (cleanup): {
+        drop(_2) -> [return: bb16, unwind terminate(cleanup)]; // scope 0 at src/main.rs:13:1: 13:2
+    }
+
+    bb16 (cleanup): {
+        resume;                          // scope 0 at src/main.rs:5:1: 13:2
+    }
+}
+"""
+
+
+def frozen_with(after, *statements):
+    """FROZEN with ``statements`` added after the one starting ``after``, each with its
+    span comment (parse_body keeps only statements that have one)."""
+    line = next(line for line in FROZEN.splitlines() if line.strip().startswith(after))
+    comment = line[line.index("//") :]
+    added = "".join(f"\n        {statement} {comment}" for statement in statements)
+    return FROZEN.replace(line, line + added, 1)
+
+
+def test_a_borrow_made_only_from_frozen_owners_is_traced_to_them():
+    # Seventh evaluation (Low, #156): `v` of `for v in args[0].split('/')` past its last
+    # use and a call was unproven, though it points into `args`, which nothing changes:
+    # `&_2`, `index`, `deref`, `split`, `into_iter`, and `next` on an iterator only
+    # `next` borrows `&mut`.
+    from peeky.rust_mir import _FROZEN_TYPE, _frozen_sources, _only_iterated
+
+    body = parse_body(FROZEN)
+    assert _frozen_sources(body, 21, set(), True) == {(2, False)}
+    assert _only_iterated(body, 13, True)
+    # Where `Iterator` may be the crate's own, `next` may return into the iterator.
+    assert _frozen_sources(body, 21, set(), False) is None
+    # An iterator borrowed otherwise too (`iter.size_hint()`) may hold anything.
+    other = frozen_with("_18 = &mut _13;", "_24 = &_13;")
+    assert _frozen_sources(parse_body(other), 21, set(), True) is None
+    # A call the borrow passes through with a `&mut` operand: not traced.
+    other = FROZEN.replace("index(move _12, const 0_usize)", "index(move _17, const 0_usize)")
+    assert _frozen_sources(parse_body(other), 21, set(), True) is None
+    for frozen in ("std::vec::Vec<std::string::String>", "[i64; 3]", "(u8, char)", "str"):
+        assert _FROZEN_TYPE.fullmatch(frozen), frozen
+    for thawed in (
+        "std::cell::RefCell<std::string::String>",
+        "std::vec::Vec<&str>",
+        "std::rc::Rc<std::string::String>",
+        "Bag",
+    ):
+        assert not _FROZEN_TYPE.fullmatch(thawed), thawed
+
+
+@pytest.mark.parametrize(
+    "code,std",
+    [
+        ("fn f() -> impl Iterator<Item = u8> { [1].into_iter() }", True),
+        ("fn g<I: Iterator>(i: I) {} struct S; impl Iterator for S { type Item = u8; }", True),
+        ("fn h(i: &mut dyn Iterator<Item = u8>) {} use std::iter::Iterator;", True),
+        ("trait Iterator { fn next(&mut self) -> Option<&str>; }", False),
+        ("use crate::mine::Walk as Iterator;", False),
+        ("make!(Iterator);", False),
+    ],
+)
+def test_next_is_the_standard_librarys_only_where_the_crate_names_no_other(code, std):
+    owned = OwnedLocals([], {}, ("src/main.rs",), texts={"src/main.rs": code})
+    assert owned._std_iterator() is std
+
+
+def test_a_frozen_owner_is_never_a_type_the_crate_may_name_itself():
+    # Review of #156: a function's header prints its arguments' types by short names
+    # (`&Vec<String>`), which a crate's own `Vec` (one a macro declares) may also have.
+    from peeky.rust_mir import _frozen_owners
+
+    body = parse_body(FROZEN)
+    body.generics = ()  # matched to its IR function: not generic
+    assert _frozen_owners(body, 21, True) == {(2, False)}
+    # The owner's type is printed whole (`std::vec::Vec<std::string::String>`): a crate's
+    # own `Vec` is not that.
+    assert _frozen_owners(body, 21, True, frozenset({"Vec"})) == {(2, False)}
+    assert _frozen_owners(body, 21, True, frozenset({"String"})) == {(2, False)}
+    body = parse_body(FROZEN.replace("std::vec::Vec<std::string::String>", "Vec<String>"))
+    body.generics = ()
+    assert _frozen_owners(body, 21, True) == {(2, False)}
+    assert _frozen_owners(body, 21, True, frozenset({"Vec"})) is None
+    # A twin a macro generates (its type parameters unknown) is never judged so.
+    assert _frozen_owners(parse_body(FROZEN), 21, True) is None
+
+
+@pytest.mark.parametrize(
+    "edge", ["unwind continue", "unwind unreachable", "unwind terminate(abi)", "unwind: bb9"]
+)
+def test_a_call_is_read_whatever_its_unwind_edge(edge):
+    # Review of #156: calls with no cleanup of their own print `unwind continue`, which
+    # left a reference argument's borrows untraced.
+    from peeky.rust_mir import _CALL
+
+    call = _CALL.fullmatch(f"<String as Deref>::deref(move _8) -> [return: bb2, {edge}]")
+    assert call and (call[1], call[2]) == ("<String as Deref>::deref", "move _8")
+
+
+@pytest.mark.parametrize(
+    "code,untrusted",
+    [
+        ('fn f() { let v: Vec<String> = vec![]; println!("{}", v.len() as usize); }', set()),
+        ("use std::string::String;", set()),
+        ('fn f(x: &str) { assert_eq!(x, String::from("a")); }', set()),
+        ("struct String;", {"String"}),
+        ("use crate::m::Vec;", {"Vec"}),
+        ("use std::vec::Vec as Box;", {"Box"}),
+        ("mk!(String);", {"String"}),
+        ("type u8 = i32;", {"u8"}),
+        # Review of #156: a macro may declare one (`decl!(Vec<T>);`).
+        ("macro_rules! decl { ($n:ident) => { pub struct Vec<T>(T); }; }", {"Vec"}),
+        ("macro_rules! sum { ($($x:expr),*) => { 0 $(+ $x as i64)* }; }", {"i64"}),
+        ("macro_rules! two { () => { 2usize }; }", set()),
+        ('fn f() { let s = "Vec"; } // String', set()),
+    ],
+)
+def test_a_short_type_name_is_trusted_only_where_the_crate_names_no_other(code, untrusted):
+    # A function's header prints types by short names (`&Vec<String>`).
+    owned = OwnedLocals([], {}, ("src/main.rs",), texts={"src/main.rs": code})
+    assert owned._untrusted_names() == untrusted
+
+
+def test_the_names_a_crate_gives_its_own_items_are_found_in_one_pass():
+    # Review of #156, round 3: each macro call's arguments were searched to the next `;`,
+    # per name: 8,000 calls in one statement took 22 s (the inspection's whole budget).
+    import time
+
+    calls = ", ".join(f"m!({index})" for index in range(8000))
+    code = f"macro_rules! m {{ ($x:expr) => {{ $x }} }}\nfn main() {{ let a = [{calls}]; }}"
+    owned = OwnedLocals([], {}, ("src/main.rs",), texts={"src/main.rs": code})
+    started = time.monotonic()
+    assert owned._untrusted_names() == frozenset()
+    assert time.monotonic() - started < 1
+    passed = code.replace("m!(7999)", "m!(String)")
+    owned = OwnedLocals([], {}, ("src/main.rs",), texts={"src/main.rs": passed})
+    assert owned._untrusted_names() == {"String"}
