@@ -861,3 +861,22 @@ def test_a_programs_own_breakpoint_call_ends_hit_numbering(tmp_path, monkeypatch
     assert lines[:2] == [("3", 1, True), ("3", 2, True)], lines
     assert lines[2][0] != "3" and lines[2][1:] == (None, False), lines
     assert lines[3] == ("3", None, False), lines
+
+
+def test_a_python_string_takes_a_text_as_its_debugger_evaluates_it(workspace, capsys):
+    # #137 part 2: the same `--set name="..."` as C, C++, Rust and Java; debugpy
+    # evaluates it as a Python literal (JSON's escapes are Python's too), and the name is
+    # rebound to the new str.
+    program = workspace / "greet.py"
+    program.write_text(
+        'def main():\n    name = "apple "\n    alias = name\n'
+        '    print(f"NAME:[{name}] ALIAS:[{alias}]")\n\n\nmain()\n'
+    )
+    probe = ["probe", program, "--at", "4", "--capture", "name", "--json", "--quiet"]
+    code, out = run(capsys, *probe, "--set", 'name="caf\\u00e9 \\"x\\""')
+    result = json.loads(out.out)
+    assert code == 0, result.get("error")
+    assert 'NAME:[café "x"] ALIAS:[apple ]' in result["output"], result["output"]
+    assert [(c["before"], c["after"]) for c in result["interventions"]] == [
+        ("'apple '", "'café \"x\"'")
+    ]

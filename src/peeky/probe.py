@@ -1763,6 +1763,12 @@ def _element(worker, stop, snapshot, segments, target, negative):
     return name
 
 
+def _launch_set(line, name, value):
+    """A change as the check before the run judges it (#138): its line and name, and
+    whether its value is a text (#137: a string's, not an integer's)."""
+    return {"line": line, "name": name, **({"text": True} if value.startswith('"') else {})}
+
+
 def apply_set(worker, stop, name, value):
     """Apply one `--set name=value` at this stop: a root local, or a field or array
     element a selector names (Java: `current.end`, `this.count`, `xs[0]`, `xs[-1]`; C,
@@ -2993,8 +2999,8 @@ def run_probe(root, probe, *, adapter=None, progress=None):
                 # Each with the line whose stops make it: a --set-at's own (#137).
                 **(
                     {
-                        "sets": [{"line": line, "name": name} for name, _ in probe.set]
-                        + [{"line": p["build_line"], "name": p["name"]} for p in points]
+                        "sets": [_launch_set(line, name, value) for name, value in probe.set]
+                        + [_launch_set(p["build_line"], p["name"], p["value"]) for p in points]
                     }
                     if probe.set or points
                     else {}
@@ -3571,6 +3577,14 @@ def run_probe(root, probe, *, adapter=None, progress=None):
             + ". --hits, --set-hit and --set-at's @HIT count every stop; the function column "
             "says which is which."
         )
+    # A change's own caveat (a std::string's text, #164), once for the names it covers.
+    caveats = {}
+    for change in changes:
+        if change.get("note"):
+            caveats.setdefault(change["note"], []).append(change["name"])
+    for note, names in caveats.items():
+        named = ", ".join(f"`{name}`" for name in dict.fromkeys(names))
+        warnings.append(f"Changed {named}: {note}")
     unproven = _UNPROVEN_RUST[0].upper() + _UNPROVEN_RUST[1:] + "."
     for note in (
         _OWNED_RUST,

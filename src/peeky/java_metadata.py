@@ -13,6 +13,8 @@ ambiguous owners. No nested/anonymous name is guessed from a '$' suffix.
 import re
 from pathlib import Path
 
+from peeky.java_bytecode import decode
+
 MAX_CLASS_BYTES = 4 * 1024 * 1024
 MAX_TOTAL_BYTES = 64 * 1024 * 1024
 MAX_ENTRIES = 16384
@@ -76,7 +78,39 @@ def _modified_utf8(raw):
     return b"".join(units).decode("utf-16-be", errors="surrogatepass")
 
 
-def _class_metadata(data, shared=None, scopes=None, codes=None):
+def reads_after(method, slot, starts):
+    """Whether the method's code may read local ``slot`` on some path from any of
+    ``starts`` (the pcs where the stop's line begins: a breakpoint or a step stops
+    there) before storing into it again: True, False, or None where the code does not
+    decode (#164: a change to a local the code never reads again is never seen, as when
+    a lambda captured its value before the stop)."""
+    decoded = decode(method["code"])
+    if decoded is None or not starts or any(each.kind == "indirect" for each in decoded):
+        return None
+    code = {each.pc: each for each in decoded}
+    pending, seen = list(starts), set()
+    while pending:
+        pc = pending.pop()
+        if pc in seen:
+            continue
+        if pc not in code:
+            return None
+        seen.add(pc)
+        each = code[pc]
+        if each.reads == slot:
+            return True
+        # Any instruction a handler covers may throw into it.
+        pending += [handler for start, end, handler in method["handlers"] if start <= pc < end]
+        if each.writes == slot:
+            continue
+        if each.kind in ("jump", "branch"):
+            pending += each.targets
+        if each.kind in ("fall", "branch"):
+            pending.append(each.end)
+    return False
+
+
+def _class_metadata(data, shared=None, scopes=None, declarations=None, codes=None):
     """(binary internal name, SourceFile, sorted executable lines). With ``scopes`` (a
     list), also appends (method, descriptor, first line, last line, local names) for each
     method with code, its names from the LocalVariableTable (`javac -g`). With ``codes``
@@ -86,7 +120,12 @@ def _class_metadata(data, shared=None, scopes=None, codes=None):
     several methods of the class share (a lambda body on its enclosing method's line, a
     static initializer's lambda, nested lambdas, a field initializer in each
     constructor). java-debug binds a line breakpoint to the first such method in
-    class-file order only, so the others never stop there."""
+    class-file order only, so the others never stop there. With ``declarations`` (a
+    dict), also fills in "super" (the superclass's internal name), "fields" ({name:
+    descriptor}) and "methods": [{"name", "first", "last", "locals": [(name, descriptor,
+    {lines its scope's code is on}, whether the code ever reads it)]}] (#164: what a
+    variable is declared, and a constant local javac folds into its uses, which the
+    program never reads)."""
     if len(data) > MAX_CLASS_BYTES:
         raise ValueError("Class file exceeds metadata size limit")
     reader = _Reader(data)
@@ -157,12 +196,18 @@ def _class_metadata(data, shared=None, scopes=None, codes=None):
     super_class = reader.u2()
     if super_class:
         constant(super_class, 7)
+    if declarations is not None:
+        declarations.update(
+            super=utf(constant(super_class, 7)) if super_class else None, fields={}, methods=[]
+        )
     for _ in range(reader.u2()):
         constant(reader.u2(), 7)
     for _ in range(reader.u2()):
         reader.u2()
-        utf(reader.u2())
-        utf(reader.u2())
+        field_name = utf(reader.u2())
+        field_type = utf(reader.u2())
+        if declarations is not None:
+            declarations["fields"][field_name] = field_type
         for name, _ in attrs(reader):
             if name in {"Code", "SourceFile", "LineNumberTable", "SourceDebugExtension"}:
                 raise ValueError("Debug metadata in unsupported field context")
@@ -186,7 +231,7 @@ def _class_metadata(data, shared=None, scopes=None, codes=None):
             code_length = body.number(4)
             if not 0 < code_length < 65536:
                 raise ValueError("Invalid method code length")
-            code = body.take(code_length)
+            code = bytes(body.take(code_length))
             handlers = []
             for _ in range(body.u2()):
                 start, end, handler, catch = (body.u2() for _ in range(4))
@@ -195,20 +240,23 @@ def _class_metadata(data, shared=None, scopes=None, codes=None):
                 if catch:
                     constant(catch, 7)
                 handlers.append((start, end, handler))
-            method_lines, names, table = {}, [], False
+            method_lines, names, table, declared = {}, [], False, []
             for nested_name, nested in attrs(body):
                 if nested_name in {"Code", "SourceFile", "SourceDebugExtension"}:
                     raise ValueError("Unsupported nested debug metadata")
-                if nested_name == "LocalVariableTable" and scopes is not None:
+                if nested_name == "LocalVariableTable" and (
+                    scopes is not None or declarations is not None
+                ):
                     table = True
                     for _ in range(nested.u2()):
                         start, length = nested.u2(), nested.u2()
                         name = utf(nested.u2())
-                        utf(nested.u2())
+                        descriptor_of = utf(nested.u2())
                         slot = nested.u2()
                         if start + length > code_length:
                             raise ValueError("Invalid local variable location")
                         names.append((slot, start, name))
+                        declared.append((name, descriptor_of, slot, start, length))
                     nested.end()
                     continue
                 if nested_name != "LineNumberTable":
@@ -226,7 +274,50 @@ def _class_metadata(data, shared=None, scopes=None, codes=None):
                 raise ValueError("Missing executable line debug information; compile with -g")
             lines.update(method_lines.values())
             if codes is not None:
-                codes.append((method_name, descriptor, bytes(code), dict(method_lines), handlers))
+                codes.append((method_name, descriptor, code, dict(method_lines), handlers))
+            if declarations is not None:
+                decoded = decode(code)
+                if decoded is None:
+                    raise ValueError("Method code does not decode")
+                reads = {(each.reads, each.pc) for each in decoded if each.reads is not None}
+                starts = sorted(method_lines)
+
+                def lines_of(start, length):
+                    # The lines of the instructions in its scope: where a stop can see it.
+                    found = {method_lines[pc] for pc in starts if start <= pc < start + length}
+                    before = [pc for pc in starts if pc <= start]
+                    return found | ({method_lines[before[-1]]} if before else set())
+
+                declarations["methods"].append(
+                    {
+                        "name": method_name,
+                        "first": min(method_lines.values()),
+                        "last": max(method_lines.values()),
+                        # For ``reads_after``: the code, its handlers, where each line's
+                        # code starts, and each local's slot.
+                        "code": code,
+                        "handlers": tuple(handlers),
+                        "line_pcs": {
+                            line: tuple(pc for pc in starts if method_lines[pc] == line)
+                            for line in set(method_lines.values())
+                        },
+                        "slots": [
+                            (name, slot, start, length) for name, _, slot, start, length in declared
+                        ],
+                        "locals": [
+                            (
+                                name,
+                                descriptor_of,
+                                lines_of(start, length),
+                                any(
+                                    slot == read and start <= pc < start + length
+                                    for read, pc in reads
+                                ),
+                            )
+                            for name, descriptor_of, slot, start, length in declared
+                        ],
+                    }
+                )
             if scopes is not None:
                 # javac -g leaves the table out only where there is no name to list (a
                 # static method without parameters or locals); `this` or a parameter
@@ -300,6 +391,26 @@ def _own_constructor_lines(scopes):
             own = [line for line in found if line < following[0]]
             last = max(own) if own else last
         scopes[index] = (method, descriptor, first, last, names)
+
+
+def java_declarations(mapping, classes_dir, workspace):
+    """{internal class name: ``_class_metadata``'s declarations, plus "source" (its path
+    relative to ``workspace``)} for each prepared class (#164)."""
+    workspace = Path(workspace).resolve()
+    found = {}
+    for binary, entry in mapping["classes"].items():
+        internal = binary.replace(".", "/")
+        path = Path(entry.get("class_file") or Path(classes_dir) / f"{internal}.class")
+        declarations = {}
+        _class_metadata(path.read_bytes(), declarations=declarations)
+        source = Path(entry["path"]).resolve()
+        declarations["source"] = (
+            source.relative_to(workspace).as_posix()
+            if source.is_relative_to(workspace)
+            else source.name
+        )
+        found[internal] = declarations
+    return found
 
 
 def java_scopes(mapping, classes_dir, workspace, limit=300):

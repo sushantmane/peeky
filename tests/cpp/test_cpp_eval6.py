@@ -5,6 +5,7 @@ are not shown as visible on lines between its code and its cleanup."""
 import contextlib
 import json
 import os
+import sys
 
 import pytest
 
@@ -266,6 +267,31 @@ def test_a_value_shortened_at_one_line_is_restored_at_the_next_in_one_probe(cpp,
         (change["before"], change["after"], change["line"], change["hit"])
         for change in result["interventions"]
     ] == [("7", "6", name, 3), ("6", "7", qty, 3), ("5", "4", name, 4), ("4", "5", qty, 4)]
+
+
+@pytest.mark.timeout(240)
+def test_a_name_set_to_its_trimmed_text_fixes_the_totals(cpp, capsys):
+    # #137 part 2 (sixth evaluation, `stock`): the names with a trailing space were the
+    # bug; setting `name` to the trimmed text, which a string's change now does, shows
+    # that trimming them is the fix, without changing the parser's offsets.
+    source = cpp("stock.cpp", STOCK)
+    qty = line_of(STOCK, "long qty = ")
+    add = line_of(STOCK, "stock[name] += qty")
+    sets = ["--set-at", f"{qty}@3", 'name="apple"', "--set-at", f"{qty}@4", 'name="pear"']
+    argv = ["probe", str(source), "--at", str(add), "--capture", "name", "--hits", "all"]
+    code = main([*argv, *sets, "--json", "--quiet", "--", "apple:3, pear:2, apple :4,pear :1"])
+    result = json.loads(capsys.readouterr().out)
+    reads = sys.platform == "darwin" or any(row.get("view") == "memory" for row in result["rows"])
+    if not reads:
+        # lldb-dap 18 cannot tell whether a libstdc++ string's text is in the string.
+        assert code == 1 and "cannot read memory" in result["error"]["message"], result
+        return
+    assert code == 0, result.get("error")
+    assert "STOCK:apple=7,pear=3" in result["output"], result["output"]
+    assert [
+        (change["before"], change["after"], change["line"], change["hit"])
+        for change in result["interventions"]
+    ] == [('"apple "', '"apple"', qty, 3), ('"pear "', '"pear"', qty, 4)]
 
 
 LAMBDA = """#include <cstdio>

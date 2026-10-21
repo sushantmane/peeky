@@ -7,7 +7,6 @@ from pathlib import Path
 
 import pytest
 
-from peeky.build import dependency_paths
 from peeky.cli import main
 from peeky.rust_ir import ir_locals, memory_locals
 
@@ -180,22 +179,6 @@ def test_reference_parameters_are_proven_only_from_their_entry_spill(tmp_path):
     }
     # Not proven: a local, a parameter that a local shadows, an inlined copy, an
     # unknown type, and a slot named for another variable.
-
-
-def test_dependency_files_list_every_prerequisite(tmp_path):
-    text = (
-        f"{tmp_path}/target/x.d: src/main.rs src/a\\ b.rs \\\n  /abs/helper.rs\n\n"
-        "src/main.rs:\n# env-dep:CARGO_MANIFEST_DIR=/ws/My: Project\n"
-        "obj.o: main.c /sdk/stdio.h \\\n pagination.h\n"
-    )
-    assert [str(p) for p in dependency_paths(text, tmp_path)] == [
-        f"{tmp_path}/src/main.rs",
-        f"{tmp_path}/src/a b.rs",
-        "/abs/helper.rs",
-        f"{tmp_path}/main.c",
-        "/sdk/stdio.h",
-        f"{tmp_path}/pagination.h",
-    ]
 
 
 @pytest.mark.timeout(240)

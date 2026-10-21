@@ -719,7 +719,7 @@ def test_what_is_read_through_a_noted_local_carries_its_note(tmp_path):
     runtime = SimpleNamespace(
         assert_current=lambda: None,
         not_yet_declared=lambda variable, frame, **_: notes[variable["name"]],
-        member_settable=lambda variable: None,
+        member_settable=lambda variable, **_: None,
         view_variable=lambda variable, fetch, read, **_: (
             {"value": "{x = 1}", "rust_view": "memory", "children": preview}
             if variable["type"] == "View"

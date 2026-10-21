@@ -32,6 +32,7 @@ from peeky.build import (
     BuildCommandError,
     BuildRecipe,
     Command,
+    UnreadDependencies,
     _digest,
     assert_current,
     default_sdk,
@@ -43,6 +44,7 @@ from peeky.c_source import Preprocessed, Statements, macro_hazards, returning_tw
 from peeky.cxx_strings import libstdcxx_string, shows_text, string_class, text_like, tidy
 from peeky.digest import sha256_file
 from peeky.names import unicode_escape
+from peeky.text_sets import text_kind
 
 MAX_METADATA = 2 * 1024 * 1024
 # Type-rich C++ units (iostream) carry megabytes of DIEs; read only by `describe`.
@@ -2646,13 +2648,23 @@ def external_inputs(depfiles, workspace, declared):
     rechecked before every operation like the declared ones.
     """
     root = Path(workspace).resolve()
-    found = {}
+    found, listings = {}, {}
     for depfile in depfiles:
-        for dependency in dependency_paths(depfile.read_text(), root):
-            path = dependency.resolve(strict=True)
+        for dependency in dependency_paths(depfile.read_text(), root, "make"):
+            try:
+                path = dependency.resolve(strict=True)
+            except OSError as exc:
+                raise UnreadDependencies(
+                    f"it lists {dependency}, which Peeky cannot find ({exc.strerror})"
+                ) from None
             try:
                 relative = path.relative_to(root).as_posix()
             except ValueError:
+                if twin := _backslash_twin(dependency, listings):
+                    raise UnreadDependencies(
+                        f"clang prints a backslash in a file name as `/`, so {dependency} "
+                        f"may be {twin}"
+                    ) from None
                 if str(path) not in found:
                     if len(found) >= MAX_EXTERNAL_INPUTS:
                         raise ValueError("The build read too many files outside the workspace")
@@ -2663,6 +2675,30 @@ def external_inputs(depfiles, workspace, declared):
                     f"The build read {relative}, which is not a declared source or header"
                 )
     return dict(sorted(found.items()))
+
+
+def _backslash_twin(path, listings):
+    """A file whose name has a backslash that clang would print as ``path`` (it prints a
+    name's `\\` as `/`, so `/x/a\\b.h` reads as `/x/a/b.h`): an entry of a directory on
+    ``path``'s way named for the next step and a backslash (`a\\...` beside `a`), or one
+    that, its backslashes read as `/`, is ``path`` or a directory on its way (`\\x.h`
+    beside `x.h`; #178 review), or None. ``listings`` caches each directory's backslashed
+    names; one that cannot be listed raises UnreadDependencies."""
+    parts = path.parts
+    for depth in range(1, len(parts)):
+        directory = Path(*parts[:depth])
+        if directory not in listings:
+            try:
+                listings[directory] = [name for name in os.listdir(directory) if "\\" in name]
+            except OSError as exc:
+                raise UnreadDependencies(
+                    f"Peeky cannot list {directory} ({exc.strerror}) to tell which file {path} is"
+                ) from None
+        for name in listings[directory]:
+            printed = Path(str(directory), name.replace("\\", "/").lstrip("/"))
+            if name.split("\\")[0] == parts[depth] or printed == path or printed in path.parents:
+                return directory / name
+    return None
 
 
 def _integer_ranges():
@@ -4079,7 +4115,7 @@ class NativeSession:
         except (OSError, ValueError):
             return None
 
-    def never_settable(self, program, lines, names):
+    def never_settable(self, program, lines, names, text=False):
         """Why a probe's `--set` of one of ``names`` can change nothing at any stop of
         ``lines`` of ``program`` in this build (#138), or None: a field or element whose
         path the debug information rules out (#105: through a pointer, in a union, a
@@ -4537,6 +4573,60 @@ class NativeSession:
                 "value can be changed in this program"
             )
         return None
+
+    def text_storage(self, variable, frame):
+        """(kind, shape) of the storage a text (#137) is written in, for text_sets: the
+        build's debug information decides, under any typedef (`using S = std::string`,
+        `typedef char Tag[8]`): a `char[N]` array (shape {"count": N}) or a std::string
+        of char; and refuses one const or volatile (#164: a `const std::string`, a typedef
+        of one, an array of `const char`), as it refuses what is neither. ValueError
+        naming why; also where the debug information cannot be read."""
+        from peeky.fields import Unsettable, _strip
+        from peeky.text_sets import qualifier_reason
+
+        name = variable.get("name")
+        try:
+            kind, refusal = text_kind(variable, "c"), None
+        except ValueError as exc:
+            kind, refusal = None, exc
+
+        def refused(reason):
+            return ValueError(f"`{name}` cannot be changed to a text: {reason}")
+
+        try:
+            offset, _, graph = self._root_type(frame, variable)
+            _, node, _ = _strip(graph, offset, name)
+            declared = None
+            if node[0] == "array" and node[3] is not None and len(node[3]) == 1:
+                # Its elements' own qualifiers count too (`const char[8]`).
+                _, element, _ = _strip(graph, node[2], name)
+                if element[0] == "base" and element[1] == "char" and element[3] == 1:
+                    declared = ("array", {"count": node[3][0]})
+            elif (
+                node[0] == "record" and node[9] and re.fullmatch(r"basic_string<char\b.*", node[1])
+            ):
+                declared = ("std", None)
+        except Unsettable as exc:
+            found = re.search(r"is (const|volatile|atomic)\b", str(exc))
+            if found:
+                raise refused(qualifier_reason(found[1])) from None
+            if refusal is not None:
+                raise refusal from None
+            raise refused(str(exc)) from None
+        if declared is None:
+            if refusal is not None:
+                raise refusal
+            raise refused(
+                f"the build's debug information does not show it as a {variable.get('type')}"
+            )
+        if kind is not None and declared[0] != kind:
+            raise refused(
+                f"the debugger shows it as a {variable.get('type')}, which its declared type "
+                "does not match"
+            )
+        if kind == "array" and f"[{declared[1]['count']}]" not in str(variable.get("type")):
+            raise refused("the debugger and the debug information give it different sizes")
+        return declared
 
     def validate_mutation_target(self, variable, frame):
         reason = self.not_yet_declared(variable, frame)
@@ -5476,6 +5566,8 @@ class NativeSession:
             "supports_member_set": raw.get("supportsSetVariable") is True,
             # Used only inside the worker, by qualified value views (Rust containers).
             "supports_read_memory": raw.get("supportsReadMemoryRequest") is True,
+            # Used only by text changes (#137: a string's heap buffer, see text_sets).
+            "supports_write_memory": raw.get("supportsWriteMemoryRequest") is True,
             "supports_conditional_breakpoints": False,
             "supports_hit_conditional_breakpoints": False,
             "supports_logpoints": False,
@@ -5486,9 +5578,15 @@ class NativeSession:
     def validate_breakpoints(self, points):
         self.target.validate_breakpoints(points)
 
+    # A `--set` value in double quotes is text, written into a string (text_sets, #137).
+    text_language = "c"
+
     def validate_value(self, value):
         if not isinstance(value, str) or not re.fullmatch(r"[+-]?(?:0|[1-9][0-9]{0,19})", value):
-            raise ValueError("Native mutations require bounded decimal integer literals")
+            raise ValueError(
+                "Native mutations require bounded decimal integer literals, or text in double "
+                "quotes for a string (--set 'name=\"apple\"')"
+            )
 
     # A value lldb-dap gives no memoryReference has no address at all, so a write could
     # only change LLDB's copy. This catches nothing in practice (lldb-dap 20 and 21 give
@@ -5547,6 +5645,15 @@ class NativeSession:
     def validate_variable(self, variable, value):
         self.validate_value(value)
         kind = variable.get("type")
+        try:
+            text_kind(variable, getattr(self, "text_language", "c"))
+        except ValueError:
+            pass
+        else:
+            raise ValueError(
+                f"Native mutation requires a text in double quotes for {variable.get('name')!r}, "
+                f"a {kind} (--set '{variable.get('name')}=\"apple\"')"
+            )
         if not _writable_integer(variable):
             raise ValueError(
                 f"Only writable integer locals of these types support native mutation: "

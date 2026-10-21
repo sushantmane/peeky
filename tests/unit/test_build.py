@@ -331,3 +331,99 @@ def test_before_command_validates_each_build_step_and_failures_are_fatal(source,
     with pytest.raises(ValueError, match="staged manifest"):
         prepare(recipe(build_commands=(write, touch)), source, before_command=reject)
     assert not marker.exists()
+
+
+# #177: each compiler's dependency file, read by its own escaping, `\n` alone ending a
+# line; anything that could be read two ways fails the provenance check.
+RUSTC_NAMES = ["src/main.rs", "src/a b.rs", "src/c$$d.rs", "src/e$f.rs", "src/g\u2028h.rs"]
+
+
+def rustc_depfile(names, notes=("# env-dep:CARGO_PKG_NAME=x",)):
+    listed = " ".join(name.replace(" ", "\\ ") for name in names)
+    rules = "".join(f"/ws/target/debug/deps/x{end}: {listed}\n\n" for end in (".d", ""))
+    files = "".join(name.replace(" ", "\\ ") + ":\n" for name in names)
+    return rules + files + ("\n" + "\n".join(notes) + "\n" if notes else "")
+
+
+@pytest.mark.parametrize("notes", [(), ("# env-dep:X=a: b", "# env-dep:Y")])
+def test_rustc_dependency_files_list_every_file_by_its_own_name(tmp_path, notes):
+    from peeky.build import dependency_paths
+
+    # rustc escapes a space alone: `$$` is two dollars (main read `$`), and a U+2028 is
+    # part of a name (main split the rule there and dropped what followed).
+    names = [*RUSTC_NAMES, "/elsewhere/after.rs"]
+    found = dependency_paths(rustc_depfile(names, notes), tmp_path, "rustc")
+    assert [str(path) for path in found] == [
+        *(str(tmp_path / name) for name in RUSTC_NAMES),
+        "/elsewhere/after.rs",
+    ]
+
+
+@pytest.mark.parametrize(
+    "text, why",
+    [
+        # A newline in a name breaks its own line and its rule's.
+        (rustc_depfile(["src/main.rs", "src/x\ny.rs"]), "a file's own line is not"),
+        (rustc_depfile(["src/main.rs", "src/x:\ny.rs"]), "rules are not each followed"),
+        # A name starting with `#` reads as a note.
+        (rustc_depfile(["src/main.rs", "#x.rs"], ()), "notes do not follow a blank line"),
+        (rustc_depfile(["#x.rs", "src/main.rs"]), "a file's own line is not"),
+        (rustc_depfile(["src/main.rs"]).replace("src/main.rs:", "src/other.rs:"), "a rule"),
+        ("x: a.rs\na.rs:\n", "a file's own line is not"),
+    ],
+)
+def test_a_rustc_dependency_file_read_two_ways_is_refused(tmp_path, text, why):
+    from peeky.build import UnreadDependencies, dependency_paths
+
+    with pytest.raises(UnreadDependencies, match=why):
+        dependency_paths(text, tmp_path, "rustc")
+
+
+def test_make_dependency_files_list_every_file_by_its_own_name(tmp_path):
+    from peeky.build import dependency_paths
+
+    # clang's and gcc's escaping: `\ `, `\#`, `$$`; a rule continued with ` \`. A U+2028
+    # is part of a name (main split there and dropped the rest of the rule).
+    text = (
+        "peeky-object-0.o: main.c a\\ b.h two\\ \\ sp.h c$$$$d.h e$$f.h hash\\#x.h \\\n"
+        "  g\u2028h.h colon:x.h /elsewhere/after.h\n"
+    )
+    found = dependency_paths(text, tmp_path, "make")
+    names = ["main.c", "a b.h", "two  sp.h", "c$$d.h", "e$f.h", "hash#x.h", "g\u2028h.h"]
+    assert [str(path) for path in found] == [
+        *(str(tmp_path / name) for name in [*names, "colon:x.h"]),
+        "/elsewhere/after.h",
+    ]
+
+
+@pytest.mark.parametrize(
+    "text, made, why",
+    [
+        # Neither compiler leaves a `$` single (gcc before 10 writes it as it is).
+        ("peeky-object-0.o: e$f.h\n", (), "a `\\$` is not doubled"),
+        # gcc before 10: `c$$d.h` may be itself, or `c$d.h` written as clang does.
+        ("peeky-object-0.o: c$$d.h\n", ("c$$d.h",), "could also be 'c\\$\\$d.h'"),
+        # gcc writes a name ending in a backslash, then a space, as an escaped space.
+        ("peeky-object-0.o: endbs\\ x.h\n", ("endbs\\",), "could also be 'endbs\\\\\\\\'"),
+        ("peeky-object-0.o: bs\\x.h\n", (), "a backslash or tab"),
+        ("peeky-object-0.o: t\\\tab.h\n", (), "a bare tab"),
+        ("peeky-object-0.o: t\tab.h\n", (), "a bare tab"),
+        ("peeky-object-0.o: a#b.h\n", (), "a bare `#`"),
+        # A newline in a name ends a line that is not continued.
+        ("peeky-object-0.o: a.h\nb.h c.h\n", (), "neither ends its rule nor continues it"),
+        ("peeky-object-0.o: x\\ \\\n\\ y.h\n", (), "neither ends its rule nor continues it"),
+        ("peeky-object-0.o: a.h \\\n", (), "its last line is continued"),
+        ("a b.o: a.h\n", (), "target is not a plain name"),
+        # clang prints a name's backslash as `/`: an empty step may be one (#178 review).
+        ("peeky-object-0.o: /w/out//x.h\n", (), "an empty step"),
+        ("peeky-object-0.o: /w/out////x.h\n", (), "an empty step"),
+        ("peeky-object-0.o: /w/out/x.h/\n", (), "an empty step"),
+    ],
+)
+def test_a_make_dependency_file_read_two_ways_is_refused(tmp_path, text, made, why):
+    from peeky.build import UnreadDependencies, dependency_paths
+
+    for name in made:
+        (tmp_path / name).write_text("")
+    with pytest.raises(UnreadDependencies, match=why):
+        dependency_paths(text, tmp_path, "make")

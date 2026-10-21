@@ -121,7 +121,7 @@ _RULES = (
         r"|has no readable value here|refused in an optimized build|did not change "
         r"|has no memory location|refused to change|would overwrite a change"
         r"|cannot be changed|can be changed only|changes only the stopped|locals can be changed "
-        r"for this language|predates field and element changes",
+        r"for this language|predates field and element changes|predates String changes",
         "MUTATION_REJECTED",
         "Observe the value instead, or change the source with a candidate edit "
         "(`--old`/`--new`) and verify it; rows marked [settable] can be changed here.",
@@ -355,12 +355,28 @@ _MUTATION_HINTS = (
         "(a later `--at`, or `session continue --to LINE`).",
     ),
     (
-        r"predates field and element changes",
+        r"predates field and element changes|predates String changes",
         "Rebuild the Java adapter bundle with scripts/setup_java_adapter.py.",
     ),
     (
+        r"the text does not fit",
+        "Pass a shorter text (the message says how much fits), or change the source with a "
+        "candidate edit (`--old`/`--new`).",
+    ),
+    (
+        r"cannot write memory|cannot read memory|gives no address for",
+        "This debugger cannot make this change: use lldb-dap 21 or later, or change the "
+        "source with a candidate edit (`--old`/`--new`).",
+    ),
+    (
+        r"does not write through",
+        "Change the text where it is owned (a char array, std::string or String local), or "
+        "change the source with a candidate edit (`--old`/`--new`).",
+    ),
+    (
         r"literal|bounded decimal integer|numeric or boolean scalar",
-        "Pass a literal value of the variable's type (C, C++ and Rust: a decimal integer).",
+        "Pass a literal value of the variable's type (C, C++ and Rust: a decimal integer, or "
+        "text in double quotes for a string).",
     ),
 )
 

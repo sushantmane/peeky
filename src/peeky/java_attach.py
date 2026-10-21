@@ -269,6 +269,10 @@ class JavaAttachSession(JavaSession):
         self.assert_current()
         return java_scopes(self.mapping, self.root, self.root)
 
+    def declaration_roots(self):
+        """(classes directory, workspace): an attached JVM's classes are under its root."""
+        return self.root, self.root
+
     @property
     def environment(self):
         return None

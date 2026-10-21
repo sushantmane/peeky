@@ -26,6 +26,8 @@ with no code found) gives no answer.
 
 import re
 
+from peeky.java_bytecode import decode
+
 MAX_INSTRUCTIONS = 50_000
 
 # One instruction of LLDB's `disassemble`: `    0x100003f78 <+24>:  b      0x100003f7c ;
@@ -346,106 +348,12 @@ def _own_code(headers, loops, code, successors, ours):
     return True
 
 
-# Java bytecode: each opcode's length where it is fixed, by opcode.
-_JAVA_LENGTHS = {
-    **dict.fromkeys(range(0x00, 0x10), 1),
-    0x10: 2,
-    0x11: 3,
-    0x12: 2,
-    0x13: 3,
-    0x14: 3,
-    **dict.fromkeys(range(0x15, 0x1A), 2),
-    **dict.fromkeys(range(0x1A, 0x36), 1),
-    **dict.fromkeys(range(0x36, 0x3B), 2),
-    **dict.fromkeys(range(0x3B, 0x84), 1),
-    0x84: 3,
-    **dict.fromkeys(range(0x85, 0x99), 1),
-    **dict.fromkeys(range(0x99, 0xA9), 3),
-    0xA9: 2,
-    **dict.fromkeys(range(0xAC, 0xB2), 1),
-    **dict.fromkeys(range(0xB2, 0xB9), 3),
-    0xB9: 5,
-    0xBA: 5,
-    0xBB: 3,
-    0xBC: 2,
-    0xBD: 3,
-    0xBE: 1,
-    0xBF: 1,
-    0xC0: 3,
-    0xC1: 3,
-    0xC2: 1,
-    0xC3: 1,
-    0xC5: 4,
-    0xC6: 3,
-    0xC7: 3,
-    0xC8: 5,
-    0xC9: 5,
-}
-
-
 def java_instructions(code):
     """[(pc, kind, targets)] of a method's bytecode (as `disassembly` gives), or None
-    where it does not decode (an unknown opcode, a target outside the code)."""
-    code = bytes(code)
-    size = len(code)
-
-    def signed(at, width):
-        if at + width > size:
-            raise IndexError
-        return int.from_bytes(code[at : at + width], "big", signed=True)
-
-    found, pc = [], 0
-    try:
-        while pc < size:
-            op = code[pc]
-            targets = ()
-            if op == 0xC4:
-                length, kind = (6 if code[pc + 1] == 0x84 else 4), "fall"
-            elif op in (0xAA, 0xAB):
-                at = (pc + 4) & ~3
-                if op == 0xAA:
-                    low, high = signed(at + 4, 4), signed(at + 8, 4)
-                    if not 0 <= high - low < 65536:
-                        return None
-                    offsets = [signed(at + 12 + 4 * i, 4) for i in range(high - low + 1)]
-                    length = at + 12 + 4 * (high - low + 1) - pc
-                else:
-                    pairs = signed(at + 4, 4)
-                    if not 0 <= pairs < 65536:
-                        return None
-                    offsets = [signed(at + 12 + 8 * i, 4) for i in range(pairs)]
-                    length = at + 8 + 8 * pairs - pc
-                targets = tuple(pc + offset for offset in (signed(at, 4), *offsets))
-                kind = "jump"
-            elif op not in _JAVA_LENGTHS:
-                return None
-            else:
-                length = _JAVA_LENGTHS[op]
-                if 0x99 <= op <= 0xA6 or op in (0xC6, 0xC7):
-                    kind, targets = "branch", (pc + signed(pc + 1, 2),)
-                elif op == 0xA7:
-                    kind, targets = "jump", (pc + signed(pc + 1, 2),)
-                elif op == 0xC8:
-                    kind, targets = "jump", (pc + signed(pc + 1, 4),)
-                elif op in (0xA8, 0xA9, 0xC9):
-                    kind = "indirect"
-                elif 0xAC <= op <= 0xB1:
-                    kind = "return"
-                elif op == 0xBF:
-                    kind = "stop"
-                else:
-                    kind = "fall"
-            if any(not 0 <= target < size for target in targets) or pc + length > size:
-                return None
-            found.append((pc, kind, targets))
-            pc += length
-    except IndexError:
-        return None
-    starts = {pc for pc, _, _ in found}
-    if any(target not in starts for _, _, targets in found for target in targets):
-        # A branch into the middle of an instruction: not bytecode a JVM runs.
-        return None
-    return found or None
+    where it does not decode (an unknown opcode, a target outside the code): the
+    decoding ``java_bytecode.decode`` shares with a local's reads after a stop (#164)."""
+    decoded = decode(code)
+    return None if decoded is None else [(each.pc, each.kind, each.targets) for each in decoded]
 
 
 def java_line_table(lines, size):
