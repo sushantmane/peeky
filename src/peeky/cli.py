@@ -27,7 +27,7 @@ import time
 from dataclasses import asdict
 from pathlib import Path
 
-from peeky.adapters import PYDEVD_GROUPS
+from peeky.adapters import COPY_NOTE, PYDEVD_GROUPS
 from peeky.client import Client
 from peeky.errors import PROTOCOL_VERSION
 from peeky.probe import (
@@ -1019,6 +1019,12 @@ def _keep_evidence(args, result, root, language):
         try:
             # The unedited source as the run read it (the candidate's own is the edit's).
             before = evidence.baseline(path, run_id, result.get("source_sha256"))
+            # The run to compare with makes no change: a candidate's --set (perhaps of a
+            # variable only the edit declares) is left out too (eighth evaluation, L21).
+            probe = result.get("probe") or {}
+            without = (
+                " and without its --set/--set-at" if probe.get("set") or probe.get("set_at") else ""
+            )
             apart = evidence.stops_apart(path, before, run_id) if before is not None else None
         except Exception:
             return
@@ -1040,10 +1046,11 @@ def _keep_evidence(args, result, root, language):
                 "run": None,
                 "hint": "no saved run is this probe without the edit (the same --at, "
                 "--capture, program arguments and build, of the sources as they are now, with "
-                "no --set or --set-at): run it without --old/--new, then `peeky queries diff`"
+                f"no --set or --set-at): run it without --old/--new{without}, then `peeky "
+                "queries diff`"
                 if result.get("inputs_sha256")
                 else "Peeky cannot tell which saved run read the same sources as this one: "
-                "run this probe without --old/--new, then `peeky queries diff`",
+                f"run this probe without --old/--new{without}, then `peeky queries diff`",
             }
         )
 
@@ -1071,6 +1078,19 @@ def _probe_text(result, quiet=False):
     # and query tables say it too.
     noted = not result.get("refused_before_launch") and _short_note(result) is not None
     short_names = not quiet and noted and _first_time("short-names")
+    # A Python candidate's note on its copied root (eighth evaluation, L6): once per
+    # root and state directory, never with --quiet; `--json` always has it.
+    warnings = [
+        warning
+        for warning in result.get("warnings", ())
+        if not warning.startswith(COPY_NOTE)
+        or (
+            not quiet
+            and _first_time("python-copy-" + hashlib.sha256(warning.encode()).hexdigest()[:16])
+        )
+    ]
+    if warnings != list(result.get("warnings", ())):
+        result = {**result, "warnings": warnings}
     text = _table(result, short_names=short_names)
     if result.get("refused_before_launch"):
         return text
@@ -1275,7 +1295,20 @@ _OPTIMIZED_NOTE = (
 )
 
 
-def _state_text(state):
+def _named(text, name):
+    """``text`` with `--name NAME` added to each session command it names (`peeky session
+    wait`, `session continue --to 17`), for a session other than `default`: pasted, a
+    command acts on the session it came from (eighth evaluation, L1)."""
+    if not name or name == "default":
+        return text
+    return re.sub(
+        r"`((?:peeky )?session [a-z]+(?: [^`]*)?)`",
+        lambda m: f"`{m[1]}`" if "--name" in m[1] else f"`{m[1]} --name {shlex.quote(name)}`",
+        text,
+    )
+
+
+def _state_text(state, name="default"):
     where = f" at {state['location']}" if state.get("location") else ""
     if where and state.get("function"):
         from peeky.names import display_function
@@ -1328,12 +1361,14 @@ def _state_text(state):
             f"\nnote: {state['auto_resumed']} breakpoint stop(s) were auto-resumed after the "
             f"pause budget (latest at {last.get('location')} after {last.get('paused_s')} s)"
         )
-    return text
+    return _named(text, name)
 
 
 def _stop(record):
     if record.get("state") != "stopped" or not record.get("stop_id"):
-        raise ValueError("The program is not stopped; run `peeky session wait`")
+        raise ValueError(
+            _named("The program is not stopped; run `peeky session wait`", record.get("name"))
+        )
     return {"session_id": record["session_id"], "stop_id": record["stop_id"]}
 
 
@@ -1484,7 +1519,7 @@ def _read_frame(row):
     )
 
 
-def _get_lines(row):
+def _get_lines(row, session="default"):
     """`session get` text: the value, then one level of children with their selectors."""
     if "value" not in row and not row.get("unavailable"):
         # Nothing was read: there is no type or value to show, only why.
@@ -1503,6 +1538,7 @@ def _get_lines(row):
         name = child.get("selector") or f"{child['name']} [not selectable]"
         more = (
             f" (children: peeky session get {shlex.quote(child['selector'])}"
+            + (f" --name {shlex.quote(session)}" if session != "default" else "")
             + (f" --frame {row['frame']})" if row.get("frame") else ")")
             if child.get("expandable") and child.get("selector")
             else ""
@@ -1573,7 +1609,7 @@ def session(args):
     record, client = _load(args.name)
     if args.action == "wait":
         state = _wait(record, client, args.timeout)
-        _emit(state, args.json, _state_text)
+        _emit(state, args.json, lambda shown: _state_text(shown, args.name))
     elif args.action == "inspect":
         if args.globals and record.get("language") not in (None, "python"):
             raise ValueError("--globals lists a Python module's globals; this is not Python")
@@ -1634,7 +1670,7 @@ def session(args):
             args.json,
             lambda rows: "\n".join(
                 [_read_frame(rows[0])] * bool(args.frame and rows)
-                + [line for row in rows for line in _get_lines(row)]
+                + [line for row in rows for line in _get_lines(row, args.name)]
                 + ([f"note: this stop is in {place}"] if place else [])
                 + ([_OPTIMIZED_NOTE.format(record["optimized"])] if record.get("optimized") else [])
             ),
@@ -1707,7 +1743,7 @@ def session(args):
                 break
             client.call("continue", **_stop(record), to_exit=True)
             state = _wait(record, client, args.timeout)
-        _emit(state, args.json, _state_text)
+        _emit(state, args.json, lambda shown: _state_text(shown, args.name))
         if not complete:
             return 3
     elif args.action == "step":
@@ -1715,7 +1751,38 @@ def session(args):
         _require_stepping(record, client)
         client.call("step", **_stop(record), kind=kind)
         state = _wait(record, client, args.timeout)
-        _emit(state, args.json, _state_text)
+        if _counted(state) and state.get("reason") == "breakpoint":
+            # The code the step ran reached the session's breakpoint first (a recursive call,
+            # or the rest of the function on `--out`): the step is over (eighth evaluation, L3).
+            state["note"] = (
+                f"the session's breakpoint (hit {state['hit']}) stopped the step before it "
+                "ended, and the step is over"
+            )
+        returned = None
+        if kind == "out" and state["state"] == "stopped" and record.get("language") != "python":
+            # What the function returned, as `session get return` reads it, shown with the
+            # stop (eighth evaluation, L2); none where the step did not end at a return.
+            from peeky.probe import RETURN
+
+            try:
+                (row,) = _capture(
+                    _Remote(client), _stop(record), (RETURN,), 0, "observed", children=False
+                )
+            except (ValueError, KeyError, TypeError):
+                row = {}
+            if "value" in row or row.get("unavailable"):
+                returned = {key: v for key, v in row.items() if key != "hit"}
+                state["returned"] = returned
+        _emit(
+            state,
+            args.json,
+            lambda shown: "\n".join(
+                [
+                    _state_text(shown, args.name),
+                    *(_get_lines(returned, args.name) if returned else []),
+                ]
+            ),
+        )
     elif args.action == "report":
         report = client.call("report", session_id=record["session_id"])
         _emit(
@@ -1948,7 +2015,9 @@ def _start_remote(args, root, program, line, language, max_pause):
     _emit(
         {"session": args.name, "language": language, "worker": args.worker, **state},
         args.json,
-        lambda s: f"session {s['session']} ({s['language']}, remote): " + _state_text(s),
+        lambda s: (
+            f"session {s['session']} ({s['language']}, remote): " + _state_text(s, s["session"])
+        ),
     )
     return 0 if complete else 3
 
@@ -2027,7 +2096,7 @@ def _start(args):
     _emit(
         {"session": args.name, "language": language, **state},
         args.json,
-        lambda s: f"session {s['session']} ({s['language']}): " + _state_text(s),
+        lambda s: f"session {s['session']} ({s['language']}): " + _state_text(s, s["session"]),
     )
     # 3: the session exists but is not at the requested hit (see the note).
     return 3 if state.pop("incomplete", False) else 0
@@ -2396,11 +2465,16 @@ def _verify_text(result, keep=False):
         lines.append(
             "compiled tests: none (the crate has no integration test; the checker decides)"
         )
-    if not result["passed"] and (reason := result.get("reason") or _verify_reason(result)):
+    reason = not result["passed"] and (result.get("reason") or _verify_reason(result))
+    if reason:
         lines.append(f"reason: {reason}")
     lines.append(f"checker exit: {result.get('exit_code')}")
     output = [(result.get(key) or "")[-2000:] for key in ("stdout", "stderr")]
-    if any(output):
+    shown = "\n".join(text.strip() for text in output if text.strip())
+    if reason and shown and shown == re.sub(r" \(SystemExit: [^)]*\)$", "", reason):
+        # The checker printed only the line `reason` shows (eighth evaluation, L5).
+        lines.append("output: the reason above, its only line")
+    elif any(output):
         lines.extend(("output:", *output))
     if keep:
         lines.append(

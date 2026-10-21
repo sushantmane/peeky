@@ -176,6 +176,12 @@ def _standard_names(name):
         return name
 
 
+def standard_type(name):
+    """A C++ type name as code writes it (`std::vector<std::string>`, not libc++'s
+    `std::__1::vector<std::__1::basic_string<char, ...>, ...>`), as probe tables show it."""
+    return _standard_names(name) if "std::" in name else name
+
+
 def _top_level(text):
     """Each character of ``text`` with the depth of brackets around it."""
     depth = 0
