@@ -607,10 +607,14 @@ def test_the_guide_lists_session_wait_and_program_arguments_up_front():
     docs = Path(__file__).resolve().parents[2] / "docs"
     guide = (docs / "AGENT_GUIDE.md").read_text()
     table = guide.split("## Commands", 1)[1].split("###", 1)[0]
-    session = next(row for row in table.splitlines() if row.startswith("| `peeky session inspect`"))
-    assert "/ `wait` /" in session and "`wait` waits for a running one to stop" in session
+    sessions = [row for row in table.splitlines() if row.startswith("| `peeky session")]
+    assert any(
+        "/ `wait`" in row and "`wait` waits for a running one to stop" in row for row in sessions
+    ), sessions
     probe = next(row for row in table.splitlines() if row.startswith("| `peeky probe <target>"))
-    assert "[-- ARGS]" in probe and "after `--` or repeated `--arg`" in probe, probe
+    assert "[-- ARGS]" in probe, probe
+    # The arguments' syntax is in the commands section, for every language.
+    assert "**Program arguments:** after `--` or repeated `--arg`" in table, table
     # Review of PR #165: exit 3 is not only a background job's.
     assert (
         "3 not there yet (a background job still running; a session's `--to`, `--count` or "
