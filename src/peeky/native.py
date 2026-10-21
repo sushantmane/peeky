@@ -3380,8 +3380,13 @@ class NativeSession:
         typed = Typed(self.fields, offset)
         indirect, contained = not framed, False
         for step in steps[1:]:
-            indirect = indirect or typed.kind() in ("pointer", "reference")
-            contained = contained or typed.container() is not None
+            holder = typed
+            if typed.kind() in ("pointer", "reference"):
+                indirect = True
+                if not str(step).startswith("*"):
+                    # The debugger lists what it refers to as its own children (#102).
+                    holder = typed.target()
+            contained = contained or (holder is not None and holder.container() is not None)
             typed = typed.child(step)
             if typed is None:
                 return None

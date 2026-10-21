@@ -492,6 +492,8 @@ CONTAINERS = {
     60: container("std::multimap<int, int>", ("type", 1), ("type", 1)),
     61: container("std::vector<std::vector<int> >", ("type", 50)),
     62: ("pointer", "", 50),
+    63: ("reference", "", 51),
+    64: ("pointer", "", 51),
 }
 
 
@@ -656,6 +658,22 @@ def test_an_element_of_a_container_a_library_call_may_be_changing_is_not_preview
         element, fetch, None, frame=frames[2], steps=["vp", "[0]"], stack=frames, threads=one
     )
     assert shown is None
+    # Through a reference or pointer to the vector, whose elements it lists as its own.
+    # (Review of #181's own: its elements were not taken for a container's.)
+    native.declarations[0]["types"]["rv"] = {(63, "automatic", None)}
+    native.declarations[0]["types"]["pv"] = {(64, "automatic", None)}
+    below = stack("main", "void std::_Destroy<Noisy>(Noisy*)", "caller")
+    alone = stack("main", "start")
+    for root in ("rv", "pv"):
+        assert native._typed(below[0], [root, "[0]"], walked=True)[2] is True
+        shown = native.preview_value(
+            element, fetch, None, frame=below[0], steps=[root, "[0]"], stack=below, threads=one
+        )
+        assert shown is None
+        shown = native.preview_value(
+            element, fetch, None, frame=alone[0], steps=[root, "[0]"], stack=alone, threads=one
+        )
+        assert shown == "{x = 1, y = 2}"
     settled = stack("main", "start")
     shown = native.preview_value(
         element, fetch, None, frame=settled[0], steps=["vp", "[0]"], stack=settled, threads=one
