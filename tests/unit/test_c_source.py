@@ -760,3 +760,319 @@ def test_begins_is_unknown_where_the_compiler_may_read_the_text_otherwise():
     assert Statements("int f(void) {\n  int a = (1;\n}\n").begins(2) is None
     hidden = Statements("int f(void) {\n  OPEN 1;\n  g();\n}\n", macros={"OPEN"})
     assert hidden.begins(3) is None
+
+
+BLOCK_STORAGE = """int main(void) {
+    long q = 1, gcount = 6, r = 3;
+    {
+        static long a[2] = {1, 2}, q = 3;
+        use(q);
+    }
+    {
+        { static long q = 9; }
+        use(q);
+    }
+    {
+        struct S { static long q; };
+        use(q);
+    }
+    {
+        KEEP(r);
+        use(r + q);
+    }
+    {
+        extern long gcount;
+        use(gcount);
+    }
+    {
+        use(q); static long q = 4;
+    }
+    {
+        static long other = q + 1;
+        use(q);
+    }
+    return 0;
+}
+"""
+
+
+def test_a_blocks_static_or_extern_of_an_outer_locals_name_is_found():
+    # Review of PR #140: the code reads the block's own `static`/`extern`, which lldb-dap
+    # does not list; the outer local of that name was shown under it.
+    hazards = {"declares": {"KEEP"}, "expands": {"KEEP": frozenset({"static", "long", "n"})}}
+    statements = Statements(BLOCK_STORAGE, raw_strings=False, hazards=hazards)
+
+    def found(line, name):
+        return statements.block_storage(line, name, 2)
+
+    assert found(5, "q") == ("static", 4)  # after an initializer's braces too
+    assert found(9, "q") is False  # a block closed before the line
+    assert found(13, "q") is False  # a class member
+    assert found(17, "r") is None and found(17, "q") is False  # a macro given `r`
+    assert found(21, "gcount") == ("extern", 20) and found(21, "q") is False
+    assert found(24, "q") == ("static", 24)  # later on the line: counted
+    assert found(28, "q") is False  # only named in an initializer
+    assert found(30, "q") is False  # the function's own block
+    # Declared before the outer local itself: that one is the local shown.
+    assert Statements(BLOCK_STORAGE, raw_strings=False).block_storage(5, "q", 5) is False
+    cpp = "int main() {\n  long q = 1;\n  {\n    using ns::q;\n    use(q);\n  }\n"
+    cpp += "  {\n    using namespace ns;\n    use(q);\n  }\n}\n"
+    statements = Statements(cpp, raw_strings=True)
+    assert statements.block_storage(5, "q", 2) == ("using", 4)
+    assert statements.block_storage(9, "q", 2) is False
+    # Nothing in the source declares it so: read cheaply, even where unreadable.
+    assert (
+        Statements("int f(void) {\n  long q = 1;\n  use(q);\n}\n").block_storage(3, "q", 2) is False
+    )
+
+
+def test_calls_that_may_return_twice_are_found_by_line_and_through_macros():
+    from peeky.c_source import macro_hazards, returning_twice
+
+    text = (
+        "#define TRY if (setjmp(env) == 0)\n"
+        "#define AGAIN TRY\n"
+        "int f(void) {\n"
+        "  long a = 1;\n"
+        "  AGAIN { a = 2; }\n"
+        '  puts("setjmp");\n'
+        "  if (sigsetjmp(e, 1)) a = 3;\n"
+        "  return a;\n"
+        "}\n"
+    )
+    hazards = macro_hazards([text], raw_strings=False)
+    assert hazards["setjmp"] == {"TRY", "AGAIN"}
+    statements = Statements(text, raw_strings=False, hazards=hazards)
+    assert statements.returns_twice(3, 9) == ((5, 7), False)  # not the string's
+    assert statements.returns_twice(3, 4) == ((), False)
+    assert statements.returns_twice(3, 9, extra={"puts"}) == ((5, 6, 7), False)
+    with_directive = Statements(text.replace("  return a;", "#ifdef X\n  return a;\n#endif"))
+    assert with_directive.returns_twice(3, 11)[1] is True
+    # A library header's TRY, through another macro.
+    header = "#define SJ_TRY(b) if (__builtin_setjmp(b) == 0)\n#define TRY SJ_TRY(env)\n"
+    assert returning_twice([header, "#define OTHER 1\n"]) == {"SJ_TRY", "TRY"}
+
+
+def test_a_storage_declaration_of_a_name_is_read_cheaply_but_not_a_parameters():
+    from peeky.c_source import storage_named
+
+    assert storage_named("{ static long q = 2; use(q); }", "q")
+    assert storage_named("extern long a, gcount;", "gcount")
+    assert storage_named("static long (*q)(int) = 0;", "q")
+    assert storage_named("using cfg::level;", "level")
+    # A static function's parameter, or a name after the statement: not declared so.
+    assert not storage_named("static long run(long seed) {\n  long head = seed;", "seed")
+    assert not storage_named("static long f(void) {\n  long q = 1;", "q")
+
+
+MORE_HIDING = """#define ONCE static int once_flag = 0
+#define KEEP(x) static long x = 5
+int main(void) {
+    long q = 1, gcount = 6, use2 = 4;
+    { extern long gcount; use(gcount); }
+    {
+        static struct { long v; } q = { 5 };
+        use(q.v);
+    }
+    {
+        enum { q = 7 };
+        use(q);
+    }
+    {
+        enum class E { q };
+        use(q);
+    }
+    {
+        long use2(long);
+        use(use2 != 0);
+    }
+    {
+        v.use2(1);
+        use(use2);
+    }
+    {
+#if 0
+        static long q = 2;
+#endif
+        use(q);
+    }
+    {
+#ifdef NOT_DEFINED
+        static long q = 2;
+#endif
+        use(q);
+    }
+    {
+        extern long helper(long q);
+        static long (*gcount)(long) = 0;
+        use(q);
+    }
+    {
+        ONCE;
+        use(q);
+    }
+    {
+        KEEP(q);
+        use(q);
+    }
+    {
+        static thread_local long q = 8;
+        use(q);
+    }
+    return 0;
+}
+"""
+
+
+def test_names_a_block_declares_that_hide_an_outer_local_are_told_apart():
+    # Review of PR #144: a block opening on the stop line, a declarator after a type's
+    # body, an enumerator and a function declaration each hide the outer local; `#if 0`
+    # text, a prototype's parameter and a macro whose expansion names another do not.
+    from peeky.c_source import macro_hazards
+
+    hazards = macro_hazards([MORE_HIDING], raw_strings=True)
+    assert hazards["declares"] == {"ONCE", "KEEP"} and "once_flag" in hazards["expands"]["ONCE"]
+    statements = Statements(MORE_HIDING, raw_strings=True, hazards=hazards)
+    expected = {
+        5: ("gcount", ("extern", 5)),  # a block opening on the stop line
+        8: ("q", ("static", 7)),  # after a type's body
+        12: ("q", ("enumerator", 11)),
+        16: ("q", False),  # a scoped enum's enumerator
+        20: ("use2", ("function", 19)),
+        24: ("use2", False),  # a member's call declares nothing
+        30: ("q", False),  # `#if 0`
+        36: ("q", None),  # another conditional: Peeky cannot tell
+        41: ("q", False),  # a prototype's parameter; another's grouped declarator
+        45: ("q", False),  # ONCE's expansion names `once_flag`, not `q`
+        49: ("q", None),  # KEEP given `q`
+        53: ("q", ("thread_local", 52)),  # said as a thread's own, listed apart
+    }
+    for line, (name, found) in expected.items():
+        assert statements.block_storage(line, name, 4) == found, line
+    assert statements.block_storage(41, "gcount", 4) == ("static", 40)
+
+
+def test_a_cheap_read_finds_declarators_after_braces_enumerators_and_functions():
+    from peeky.c_source import storage_named
+
+    assert storage_named("{ static long a[2] = {1, 2}, q = 3; }", "q")
+    assert storage_named("{ static struct { long v; } q = { 5 }; }", "q")
+    assert storage_named("{ enum { q = 7 }; }", "q")
+    assert storage_named("{ long use2(long); }", "use2")
+    assert storage_named("{ typedef long q; }", "q")
+    assert storage_named("{ struct q { long v; }; }", "q")
+    assert not storage_named("{ long r = 1; use(r); }", "q")
+
+
+# Review of PR #144 (round 2): what Peeky reads is the translation unit as the compiler
+# preprocessed it; Clang's output for a function, with a system header, a fragment
+# included in a block and a `_Pragma` splitting a line.
+PREPROCESSED = b"""# 1 "dir/a.c"
+# 1 "<built-in>" 1
+# 1 "<built-in>" 3
+# 1 "<command line>" 1
+# 1 "<built-in>" 2
+# 1 "dir/a.c" 2
+# 1 "/usr/include/stdio.h" 1 3 4
+extern int printf(const char *, ...);
+
+# 2 "dir/a.c" 2
+long f(long q) {
+    long total = 1;
+# 3 "dir/a.c"
+#pragma clang diagnostic push
+# 3 "dir/a.c"
+                     total += 2;
+    {
+        enum { q = 7 };
+# 1 "dir/./frag.inc" 1
+total += 9;
+# 7 "dir/a.c" 2
+        total += q;
+    }
+# 20 "dir/a.c"
+    return total;
+}
+"""
+
+
+def test_a_preprocessed_unit_is_read_back_onto_its_sources():
+    from peeky.c_source import Preprocessed
+
+    own = {"dir/a.c", "dir/frag.inc"}
+    pre = Preprocessed(
+        PREPROCESSED.splitlines(keepends=True),
+        lambda path: path.replace("/./", "/") if path.replace("/./", "/") in own else None,
+    )
+    lines = pre.text.splitlines()
+    # A system header's run is one `#include` line; the `_Pragma`'s pieces are one line.
+    assert lines[pre.line("dir/a.c", 2) - 2] == "#include <another file>"
+    assert " ".join(lines[pre.line("dir/a.c", 3) - 1].split()) == "long total = 1; total += 2;"
+    assert pre.line("dir/frag.inc", 1) == pre.line("dir/a.c", 5) + 1
+    assert lines[pre.line("dir/a.c", 7) - 1].strip() == "total += q;"
+    assert lines[pre.line("dir/a.c", 20) - 1].strip() == "return total;"
+    assert pre.line("dir/a.c", 12) is None and pre.files == own
+    assert pre.origins[pre.line("dir/a.c", 5) - 1] == ("dir/a.c", 5)
+    statements = Statements(pre.text, raw_strings=False, trigraphs=False)
+    found = statements.block_storage(pre.line("dir/a.c", 7), "q", None, True)
+    assert pre.origins[found[1] - 1] == ("dir/a.c", 5) and found[0] == "enumerator"
+    # A system header's text inside a block: Peeky cannot tell what it declares.
+    inside = PREPROCESSED.replace(b"total += 9;", b'# 1 "/usr/include/x.h" 1 3\nint x;')
+    pre = Preprocessed(
+        inside.splitlines(keepends=True), lambda path: path if "usr" not in path else None
+    )
+    statements = Statements(pre.text, raw_strings=False, trigraphs=False)
+    assert statements.block_storage(pre.line("dir/a.c", 7), "q", None, True) is None
+    # A file the output gives twice: its lines are not singled out.
+    twice = PREPROCESSED + b'# 1 "dir/./frag.inc" 1\ntotal += 9;\n'
+    pre = Preprocessed(twice.splitlines(keepends=True), lambda path: path.replace("/./", "/"))
+    assert pre.line("dir/frag.inc", 1) == 0
+
+
+NESTED_ENUMS = """long run(void) {
+    long q = 1, r = 2, total = 0;
+    {
+        struct S { enum { q = 3 } kind; long v; } s = { 0, 2 };
+        total += q;
+    }
+    {
+        total += (enum { r = 4 })0 + r;
+    }
+    {
+        struct T { long v; } t = { 1 };
+        struct q { long v; } u = { 2 };
+        total += q;
+    }
+    {
+        struct q;
+        total += q;
+    }
+    return total;
+}
+"""
+
+
+def test_c_gives_enumerators_anywhere_in_a_block_its_scope_and_cpp_a_class_name():
+    # Review of PR #144 (round 2): in C an enum nested in a struct's body (or a cast)
+    # declares its enumerators in the block; in C++ they are the class's. A C++ class a
+    # block declares hides the outer local; a C struct's tag does not.
+    c = Statements(NESTED_ENUMS, raw_strings=False, trigraphs=False)
+    cpp = Statements(NESTED_ENUMS, raw_strings=True)
+    assert c.block_storage(5, "q", 2) == ("enumerator", 4)
+    assert cpp.block_storage(5, "q", 2) is False
+    assert c.block_storage(8, "r", 2) == ("enumerator", 8)
+    assert c.block_storage(13, "q", 2) is False
+    assert cpp.block_storage(13, "q", 2) == ("class", 12)
+    assert cpp.block_storage(17, "q", 2) == ("class", 16)
+    # In the local's own block, a class of its name leaves the variable named.
+    own = "long run() {\n    long q = 1;\n    struct q { long v; };\n    return q;\n}\n"
+    assert Statements(own, raw_strings=True).block_storage(4, "q", 2) is False
+    attributed = "long run() {\n    long q = 1;\n    {\n        struct [[maybe_unused]] q;\n"
+    attributed += "        enum class alignas(8) E { a };\n        return 0;\n    }\n}\n"
+    assert Statements(attributed, raw_strings=True).block_storage(6, "q", 2) == ("class", 4)
+    # A function returning a struct it defines: its body does not hide the declaration.
+    returning = "long run(void) {\n    long use2 = 1;\n    {\n"
+    returning += "        struct S { long v; } use2(long);\n        return 0;\n    }\n}\n"
+    for raw_strings in (False, True):
+        found = Statements(returning, raw_strings=raw_strings).block_storage(5, "use2", 2)
+        assert found == ("function", 4)

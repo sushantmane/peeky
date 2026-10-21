@@ -52,6 +52,10 @@ _PAIRS.update({"<%": "{", "%>": "{"})
 _WORDS = re.compile(r"(?<!\w)[A-Za-z_]\w*|" + _TOKENS.pattern)
 _WORD = re.compile(r"[A-Za-z_]\w*")
 _LAST_WORD = re.compile(r"[A-Za-z_]\w*$")
+# Words and punctuators as a declaration is read: its `=` and `,` (not `==`, `+=`, ...).
+_DECLARATION_TOKENS = re.compile(
+    r"(?<!\w)[A-Za-z_]\w*|==|!=|[-+*/%&|^]=|<<=|>>=|" + _TOKENS.pattern + r"|[=,.]"
+)
 # Statements whose header (in parentheses) can declare a variable for their body.
 _HEADERS = frozenset(("for", "if", "while", "switch", "catch"))
 # Keywords a name follows where it is used, not declared.
@@ -164,15 +168,58 @@ def unsafe_macros(texts, raw_strings=True, trigraphs=None):
     return macro_hazards(texts, raw_strings, trigraphs)["brackets"]
 
 
+# What may return twice into the function calling it: setjmp's family (`_setjmp`,
+# `sigsetjmp`, `__builtin_setjmp`, ...) and the ucontext switches.
+_RETURNS_TWICE = re.compile(r"\w*setjmp\w*|getcontext|swapcontext|savectx")
+# What declares a name with static or external storage, or brings one into a block.
+_STORAGE = frozenset(
+    ("static", "extern", "using", "thread_local", "_Thread_local", "__thread", "typedef")
+)
+# Of those, what a declaration's specifiers say: a block's name the code reads instead.
+_HIDERS = frozenset(("static", "extern", "thread_local", "_Thread_local", "__thread", "typedef"))
+# A body that belongs to the statement it is in, not a block of statements.
+_TYPE_BODIES = frozenset(("struct", "union", "enum", "class"))
+# What names a C++ class or enumeration (`enum` too); and what may come between that and
+# the name (`struct alignas(8) q`).
+_CLASS_KEYS = _TYPE_BODIES
+_ATTRIBUTES = frozenset(("__attribute__", "alignas", "_Alignas", "__declspec"))
+# A statement starting so names no function it declares (`return use2(1);`).
+_NOT_DECLARING = frozenset(
+    (
+        "return",
+        "case",
+        "goto",
+        "throw",
+        "delete",
+        "new",
+        "sizeof",
+        "else",
+        "do",
+        "co_return",
+        "co_yield",
+        "co_await",
+    )
+)
+
+
 def macro_hazards(texts, raw_strings=True, trigraphs=None):
     r"""The macros ``texts`` define, by what their expansion may hide from a scan of the
     text: ``brackets`` (`unsafe_macros`), ``blocks`` (the same but for a `;`: a bracket
-    it does not close), ``labels`` (a `case`, `default` or label a jump can reach, `x:`)
-    and ``gotos`` (a `goto`). A macro naming such a macro counts too, and every macro of
-    a source with a splice before `\n\r` counts for all of them."""
+    it does not close), ``labels`` (a `case`, `default` or label a jump can reach, `x:`),
+    ``gotos`` (a `goto`), ``setjmp`` (a call that may return twice, `setjmp`) and
+    ``declares`` (a `static`, `extern` or `using` declaration). A macro naming such a
+    macro counts too, and every macro of a source with a splice before `\n\r` counts
+    for all of them."""
     trigraphs = not raw_strings if trigraphs is None else trigraphs
     uses = {}
-    found = {"brackets": set(), "blocks": set(), "labels": set(), "gotos": set()}
+    found = {
+        "brackets": set(),
+        "blocks": set(),
+        "labels": set(),
+        "gotos": set(),
+        "setjmp": set(),
+        "declares": set(),
+    }
     for text in texts:
         # Spliced as the compiler splices lines, before comments and literals.
         code = blank(_SPLICE.sub("", translated(text, trigraphs)), raw_strings)
@@ -196,10 +243,109 @@ def macro_hazards(texts, raw_strings=True, trigraphs=None):
                 found["labels"].add(name)
             if unknown or "goto" in words:
                 found["gotos"].add(name)
+            if unknown or any(_RETURNS_TWICE.fullmatch(word) for word in words):
+                found["setjmp"].add(name)
+            if unknown or words & _STORAGE:
+                found["declares"].add(name)
     for names in found.values():
         while more := {name for name, used in uses.items() if name not in names and used & names}:
             names |= more
-    return {kind: frozenset(names) for kind, names in found.items()}
+    # What each macro's expansion may name, through the macros it names.
+    expands = {name: set(used) for name, used in uses.items()}
+    for _ in range(len(expands)):
+        changed = False
+        for words in expands.values():
+            more = set().union(*(expands[w] for w in words & expands.keys())) - words
+            if more:
+                words |= more
+                changed = True
+        if not changed:
+            break
+    return {
+        **{kind: frozenset(names) for kind, names in found.items()},
+        "expands": {name: frozenset(words) for name, words in expands.items()},
+    }
+
+
+def returning_twice(texts):
+    """The macros ``texts`` (headers outside the program, read as they are) define that
+    may expand to a call returning twice (`setjmp`, directly or through another), for a
+    TRY macro a library header hides it in. Read without blanking comments: a comment
+    naming one only counts too much."""
+    uses, found = {}, set()
+    for text in texts:
+        for define in _DEFINE.finditer(_SPLICE.sub("", text)):
+            name, body = define[1], define[3]
+            words = {word[0] for word in _IDENTIFIER.finditer(body)}
+            uses.setdefault(name, set()).update(words)
+            if any(_RETURNS_TWICE.fullmatch(word) for word in words):
+                found.add(name)
+    while more := {name for name, used in uses.items() if name not in found and used & found}:
+        found |= more
+    return frozenset(found)
+
+
+def storage_named(text, name):
+    """Whether ``text`` may declare ``name`` so that it hides an outer local of that name:
+    with static or external storage or as a typedef, by a C++ `using` declaration, as an
+    enumerator, as a function a block declares or as a C++ class (a cheap read: an
+    initializer's braces are skipped; a parameter of a function defined there is not
+    counted)."""
+    escaped = re.escape(str(name))
+    balanced = r"(?:[^;{}]|\{(?:[^{}]|\{[^{}]*\})*\})*"
+    keyword = re.compile(
+        r"\b(?:static|extern|thread_local|_Thread_local|__thread|using|typedef)\b"
+        + balanced
+        + r"\b"
+        + escaped
+        + r"\b"
+    )
+    for found in keyword.finditer(text):
+        rest = re.match(r"[^;{]*", text[found.end() :])[0]
+        following = text[found.end() + len(rest) : found.end() + len(rest) + 1]
+        if not (following == "{" and ")" in rest and "(" in found[0]):
+            return True
+    if re.search(r"\benum\b[^;{}]*\{[^{}]*\b" + escaped + r"\b", text):
+        return True
+    # A C++ class (or enumeration) a block declares by that name: `struct q { ... };`.
+    if re.search(r"\b(?:struct|class|union|enum)\b[^;{}]*?\b" + escaped + r"\b", text):
+        return True
+    # A function a block declares where an outer local's name is: `long use2(long);`
+    # (or after a type's body: `struct S { long v; } use2(long);`).
+    return bool(re.search(r"(?:[A-Za-z_]\w*|\})[\s*&]+" + escaped + r"\s*\(", text))
+
+
+def _class_name(statement, index):
+    """The name a class key (``statement[index]``: `struct`, `class`, `union`, `enum`)
+    gives, past `enum class` and attributes (`struct [[deprecated]] q`), or None."""
+    following = index + 1
+    if statement[index][0] == "enum" and following < len(statement):
+        if statement[following][0] in ("class", "struct"):
+            following += 1
+    while following < len(statement):
+        text, _, depth = statement[following]
+        if text in _ATTRIBUTES and following + 1 < len(statement):
+            following += 1
+            text, _, depth = statement[following]
+            if text != "(":
+                return None
+        elif text not in ("[", "<:"):
+            return text if _WORD.fullmatch(text) else None
+        # Past the bracketed group: to the bracket closing it.
+        following += 1
+        while following < len(statement) and not (
+            statement[following][0] in _CLOSE and statement[following][2] == depth - 1
+        ):
+            following += 1
+        following += 1
+    return None
+
+
+def _parameters_follow(token):
+    """Whether a `(` after ``token`` opens a declarator's parameters (after its name or
+    a bracket), not a grouping (`long (*q)[3]` opens after a type's name, followed by
+    `*`, which the caller checks)."""
+    return bool(_WORD.fullmatch(token)) or token in (")", "]", ":>")
 
 
 def _balanced(body):
@@ -217,6 +363,64 @@ def _balanced(body):
         elif token[0] in ("<::", "%:%:") or (token[0] == ";" and depth == 0):
             return False
     return depth == 0 and "##" not in body
+
+
+# A line marker in a preprocessor's output (`# 12 "dir/a.h" 2`, GCC's and Clang's): the
+# next line is that line of that file (of the same file, without one). Any other line
+# starting with `#` is a directive the output keeps (`#pragma`).
+_MARKER = re.compile(rb'[ \t]*#[ \t]*(?:line[ \t]+)?([0-9]+)(?:[ \t]+"((?:[^"\\\n]|\\.)*)")?')
+_DIRECTIVE_LINE = re.compile(r"[ \t]*(?:#|%:)")
+
+
+class Preprocessed:
+    """A translation unit as the compiler's preprocessor gave it (`-E`, with its line
+    markers; ``lines``, as bytes), read back onto its sources. ``program(path)``: the
+    name of the program's own file at ``path`` (as the markers give it), or None for
+    another (a system header, the built-in definitions).
+
+    ``text``: one line for each of the program's source lines in the order the output
+    gives them (where the output splits one, around a `_Pragma`, its pieces joined),
+    directives (`#pragma`) blank, and each run of another file's lines one `#include`
+    line in their place. ``origins``: each of its lines' (name, line), None for those."""
+
+    def __init__(self, lines, program):
+        groups, names, name, number = [], {}, None, 0
+        for raw in lines:
+            raw = raw.rstrip(b"\r\n")
+            marker = _MARKER.match(raw)
+            if marker:
+                number = int(marker[1])
+                if marker[2] is not None:
+                    path = re.sub(rb"\\(.)", rb"\1", marker[2]).decode("utf-8", "replace")
+                    if path not in names:
+                        names[path] = program(path)
+                    name = names[path]
+                continue
+            origin = None if name is None else (name, number)
+            number += 1
+            if origin is None:
+                if not groups or groups[-1][0] is not None:
+                    groups.append((None, ["#include <another file>"]))
+                continue
+            text = raw.decode("utf-8", "replace")
+            text = "" if _DIRECTIVE_LINE.match(text) else text
+            if groups and groups[-1][0] == origin:
+                groups[-1][1].append(text)
+            else:
+                groups.append((origin, [text]))
+        self.origins = [origin for origin, _ in groups]
+        self.text = "".join(" ".join(pieces) + "\n" for _, pieces in groups)
+        # Each (name, line) -> its line in ``text``; 0 where it is there more than once.
+        self.places = {}
+        for number, origin in enumerate(self.origins, 1):
+            if origin is not None:
+                self.places[origin] = 0 if origin in self.places else number
+        self.files = {origin[0] for origin in self.places}
+
+    def line(self, name, number):
+        """The line of ``text`` holding line ``number`` of ``name``: None if the output
+        does not give it, 0 if it gives it more than once (a file included twice)."""
+        return self.places.get((name, number))
 
 
 class Statements:
@@ -237,6 +441,11 @@ class Statements:
         # What may hide a bracket from `begins`: an unclosed one (a `;` alone hides none).
         self.blocks = frozenset(hazards.get("blocks", ())) if "blocks" in hazards else self.macros
         self.gotos = frozenset(hazards.get("gotos", ()))
+        # What may call setjmp, or declare a static, an extern or a `using` name.
+        self.setjmps = frozenset(hazards.get("setjmp", ()))
+        self.declarers = frozenset(hazards.get("declares", ()))
+        # What each of the program's macros may expand to name (macro_hazards).
+        self.expansions = dict(hazards.get("expands", {}))
         # Where the compiler may read any line differently from the scan.
         self.unreadable = bool(
             _SPLICED_PAIR.search(text)
@@ -912,6 +1121,348 @@ class Statements:
         if not self._readable(line, begin, last):
             return None
         return line, bisect.bisect_right(self.starts, last)
+
+    def returns_twice(self, first, last, extra=frozenset()):
+        """``(lines, unknown)``: the lines from ``first`` to ``last`` (a function's own)
+        that may call a function returning twice (`setjmp`, `sigsetjmp`, a macro that
+        expands to one, ``extra`` naming those of headers outside the program), and
+        whether Peeky cannot tell for some: the source unreadable, or a directive among
+        them, which may bring one in."""
+        if type(first) is not int or type(last) is not int or self.unreadable:
+            return (), True
+        first, last = max(first, 1), min(last, len(self.starts))
+        if first > last:
+            return (), True
+        begin = self.starts[first - 1]
+        finish = self.starts[last] if last < len(self.starts) else len(self.blanked)
+        names = self.setjmps | frozenset(extra)
+        lines = {
+            bisect.bisect_right(self.starts, word.start())
+            for word in _IDENTIFIER.finditer(self.blanked, begin, finish)
+            if _RETURNS_TWICE.fullmatch(word[0]) or word[0] in names
+        }
+        unknown = any(
+            _DIRECTIVE.match(self.blanked, self.starts[number - 1])
+            for number in range(first, last + 1)
+        )
+        return tuple(sorted(lines)), unknown
+
+    def block_storage(self, line, name, after=None, elsewhere=False):
+        """For the local ``name`` the debugger shows at a stop on ``line`` (declared on
+        line ``after``; None for a parameter): ``(kind, its line)`` of a declaration of
+        ``name`` the code there names instead, which is not that local: one with
+        `static`, `extern` or `thread_local` storage, a `typedef`, a C++ `using`
+        declaration ("using"), an enumerator ("enumerator"; in C also one of an enum in
+        a struct's body or a cast), a function a block declares ("function"), or a C++
+        class or enumeration a block within the local's declares ("class"). In a block
+        around the line or opening on it, after ``after`` and up to the line's end (one
+        later on the line counts too), not inside a block closed before it, nor in text
+        an `#if 0` leaves out. False if there is none; None if Peeky cannot tell: the
+        source is unreadable or its brackets do not balance, one is under another
+        conditional (`#ifdef X`), a macro that may declare one names it (given it, or in
+        its expansion), or an `#include` is there, where ``elsewhere`` (what it brings
+        in may declare one).
+
+        Peeky reads a translation unit as the compiler preprocessed it
+        (``Preprocessed``), where no macro or conditional is left and an `#include`
+        line stands for a system header's text; the rest reads a source as written."""
+        named = self.__dict__.setdefault("storage_named", {})
+        if name not in named:
+            named[name] = storage_named(self.text, name)
+        if "include_lines" not in self.__dict__:
+            self.include_lines = [
+                number
+                for number, start in enumerate(self.starts, 1)
+                if _INCLUDE.match(self.blanked, start)
+            ]
+        # An `#include` from the local's declaration (or the source's start) to the line.
+        first = after if type(after) is int else 1
+        included = type(line) is not int or bisect.bisect_left(
+            self.include_lines, first
+        ) < bisect.bisect_right(self.include_lines, line)
+        if not named[name] and not (elsewhere and included) and not self._names_declarers():
+            # Nothing in the source can declare it so (the common case, read cheaply).
+            return False
+        if self.unreadable or type(line) is not int or not 1 <= line <= len(self.starts):
+            return None
+        code, pairs = self._code()
+        if pairs is None:
+            return None
+        begin = self.starts[line - 1]
+        finish = self.starts[line] if line < len(self.starts) else len(code)
+        first = _NONBLANK.search(code, begin, finish)
+        position = first.start() if first else begin
+        lower = (
+            self.starts[after - 1] if type(after) is int and 1 <= after <= len(self.starts) else 0
+        )
+        # Every block around the line, and every block of statements opening on it
+        # before its end (`{ extern long gcount; total += use(gcount); }`, a statement
+        # expression's `({`); not a type's body or an initializer there, read as part of
+        # its statement, nor a lambda's, which another function runs.
+        around = sorted(
+            opened
+            for opened, closed in pairs.items()
+            if opened < finish
+            and closed > position
+            and code.startswith(("{", "<%"), opened)
+            and (opened < position or self._opens_statements(opened))
+        )
+        if not around:
+            return False
+        if elsewhere and any(
+            _INCLUDE.match(self.blanked, self.starts[number - 1])
+            for number in range(bisect.bisect_right(self.starts, max(around[0], lower)), line + 1)
+        ):
+            # An `#include` in a block (a fragment) may declare it so.
+            return None
+        for index, opened in enumerate(around):
+            # This block's own statements, up to the next block around the line.
+            start = max(opened + 1, lower)
+            stop = around[index + 1] if index + 1 < len(around) else finish
+            if start >= stop:
+                continue
+            # A C++ class declared in the local's own block leaves the local named
+            # (the variable hides it); one in a block within it hides the local.
+            found = self._storage_declaration(code, start, stop, name, after, opened >= lower)
+            if found is not False:
+                return found
+        return False
+
+    def _opens_statements(self, opening):
+        """Whether the brace at ``opening`` opens statements this function runs: a block,
+        or a statement expression (`({`)."""
+        if self._brace(opening) == "statement":
+            return True
+        before = self._unattributed(opening)
+        return before is not None and before[0] == "("
+
+    def _names_declarers(self):
+        """Whether the source names a macro that may declare a static or extern."""
+        if "declarer_named" not in self.__dict__:
+            self.declarer_named = bool(self.declarers) and any(
+                word[0] in self.declarers for word in _IDENTIFIER.finditer(self.blanked)
+            )
+        return self.declarer_named
+
+    def _conditions(self):
+        """{line: "dead" or "maybe"}: lines an `#if 0` (or the `#else` of an `#if 1`)
+        leaves out, and lines under any other conditional, which may be compiled or not."""
+        if "conditions" not in self.__dict__:
+            states, stack = {}, []
+            for number, start in enumerate(self.starts, 1):
+                end = self.starts[number] if number < len(self.starts) else len(self.blanked)
+                found = re.match(
+                    r"[ \t\f\v]*(?:#|%:)[ \t\f\v]*(if|ifdef|ifndef|elif|else|endif)\b(.*)",
+                    self.blanked[start:end],
+                )
+                if found:
+                    kind, rest = found[1], found[2].strip()
+                    if kind in ("if", "ifdef", "ifndef"):
+                        literal = {"0": "dead", "1": "live"}.get(rest) if kind == "if" else None
+                        stack.append(literal or "maybe")
+                    elif kind == "elif" and stack:
+                        stack[-1] = "maybe"
+                    elif kind == "else" and stack:
+                        stack[-1] = {"dead": "live", "live": "dead"}.get(stack[-1], "maybe")
+                    elif kind == "endif" and stack:
+                        stack.pop()
+                    continue
+                if "dead" in stack:
+                    states[number] = "dead"
+                elif "maybe" in stack:
+                    states[number] = "maybe"
+            self.conditions = states
+        return self.conditions
+
+    def _storage_declaration(self, code, start, stop, name, after=None, nested=True):
+        """(kind, line) of the first declaration of ``name`` that hides an outer local
+        (see ``block_storage``) among the statements from ``start`` to ``stop`` at their
+        own depth: a block closed before ``stop`` is skipped, and an initializer's
+        braces and a type's body (`static struct { long v; } q`) are kept in their
+        statement; False if none; None if Peeky cannot tell (see ``block_storage``).
+        ``nested``: whether they are in a block within the local's own (where a C++
+        class of that name hides it)."""
+        conditions = self._conditions()
+        depth, statement, blocks, hidden = 0, [], [], set()
+        body = None  # a type's body in the statement: [its depth, enum?, previous, names]
+        # C gives the enumerators of an enum anywhere in a block's statements (in a
+        # struct's body, a cast, another enum's value) the block's scope: each enum body
+        # open there, as [its depth, the token before at its level]; and where an `enum`
+        # specifier began, until its body opens or it ends.
+        enums, specifier = [], None
+
+        def judged(statement):
+            # A macro given ``name``, or expanding to name it, may declare it.
+            given = any(text == name for text, _, _ in statement)
+            if any(given or name in self.expansions.get(macro, {name}) for macro in hidden):
+                return None
+            found = self._storage_of(statement, name, after, code, nested)
+            if found:
+                state = conditions.get(found[1])
+                if state == "maybe":
+                    return None
+            return found
+
+        for token in _DECLARATION_TOKENS.finditer(code, start, stop):
+            text = token[0]
+            state = conditions.get(bisect.bisect_right(self.starts, token.start()))
+            if state == "dead":
+                continue
+            if not self.raw_strings and not blocks:
+                if enums and depth == enums[-1][0] + 1:
+                    if text in _CLOSE:
+                        enums.pop()
+                    elif text == name and enums[-1][1] in ("{", "<%", ","):
+                        at = bisect.bisect_right(self.starts, token.start())
+                        return None if state == "maybe" else ("enumerator", at)
+                    else:
+                        enums[-1][1] = text
+                if text == "enum":
+                    specifier = depth
+                elif specifier is not None:
+                    if text in ("{", "<%"):
+                        enums.append([depth, text])
+                        specifier = None
+                    elif (text in (";", ",", "=") and depth == specifier) or (
+                        text in _CLOSE and depth <= specifier
+                    ):
+                        specifier = None
+            if body is not None:
+                # Inside a type's body: only an enum's enumerators can hide the name.
+                if text in _OPEN:
+                    depth += 1
+                elif text in _CLOSE:
+                    depth -= 1
+                    if depth == body[0]:
+                        if body[1] and name in body[3]:
+                            at = bisect.bisect_right(self.starts, body[3][name])
+                            return None if conditions.get(at) == "maybe" else ("enumerator", at)
+                        body = None
+                        # The body, in its statement's place (`struct { long v; } q`
+                        # names no class `q`).
+                        statement.append(("{}", token.start(), depth))
+                        continue
+                elif body[1] and depth == body[0] + 1 and body[2] in ("{", ",", "<%"):
+                    if _WORD.fullmatch(text):
+                        body[3].setdefault(text, token.start())
+                if depth == body[0] + 1:
+                    body[2] = text
+                continue
+            if depth == 0 and not blocks and text in self.declarers:
+                # A macro that may declare a static: Peeky cannot see what, beyond the
+                # names its expansion and its arguments give.
+                if not code[token.end() : token.end() + 64].lstrip().startswith("("):
+                    if name in self.expansions.get(text, {name}):
+                        return None
+                else:
+                    hidden.add(text)
+            if text in _OPEN:
+                if (
+                    text in ("{", "<%")
+                    and depth == len(blocks)
+                    and not any(word == "=" and level == 0 for word, _, level in statement)
+                ):
+                    words = [word for word, _, level in statement if level == 0]
+                    if not blocks and set(words) & _TYPE_BODIES and words[-1:] != [")"]:
+                        # A type's body: its statement goes on after it (`} q = { 5 };`).
+                        scoped = "enum" in words and words[words.index("enum") + 1 :][:1] in (
+                            ["class"],
+                            ["struct"],
+                        )
+                        body = [depth, "enum" in words and not scoped, "{", {}]
+                        depth += 1
+                        continue
+                    # A nested block (or a function's body): what came before it is
+                    # judged as a statement, and what is in it is out of scope here.
+                    if (found := judged(statement)) is not False:
+                        return found
+                    statement, hidden = [], set()
+                    blocks.append(depth)
+                    depth += 1
+                    continue
+                depth += 1
+            elif text in _CLOSE:
+                depth = max(depth - 1, 0)
+                if blocks and depth == blocks[-1] and text in ("}", "%>"):
+                    blocks.pop()
+                    statement, hidden = [], set()
+                    continue
+            if blocks:
+                continue
+            if depth == 0 and text == ";":
+                if (found := judged(statement)) is not False:
+                    return found
+                statement, hidden = [], set()
+                continue
+            statement.append((text, token.start(), depth))
+        return judged(statement)
+
+    def _storage_of(self, statement, name, after=None, code=None, nested=True):
+        """(kind, line) if the tokens of one statement declare ``name`` so that it hides
+        an outer local (see ``block_storage``): with static or external storage or as a
+        typedef (`static long q = 2`, `extern long a, gcount`), by a C++ `using`
+        declaration, as a function (`long use2(long);`, not on line ``after``, the
+        local's own), or, in C++ and ``nested`` (a block within the local's), as a class
+        or an enumeration (`struct q { ... };`, "class"); else False. Names in a
+        function declarator's parameters (`extern long helper(long q);`) are not
+        declared there."""
+        words = [text for text, _, depth in statement if depth == 0]
+        if not words:
+            return False
+        at = bisect.bisect_right(self.starts, statement[0][1])
+        if self.raw_strings and nested:
+            for index, (text, position, _) in enumerate(statement):
+                if text in _CLASS_KEYS and _class_name(statement, index) == name:
+                    return ("class", bisect.bisect_right(self.starts, position))
+        if words[0] == "using" and self.raw_strings:
+            if len(words) > 1 and words[1] == "namespace":
+                return False
+            return ("using", at) if name in words else False
+        code = self._code()[0] if code is None else code
+        # A thread's own (`static thread_local`) is listed apart, so it is said first.
+        storage = next(
+            (word for word in words if word in ("thread_local", "_Thread_local", "__thread")),
+            next((word for word in words if word in _HIDERS), None),
+        )
+        if storage is not None:
+            # Each declarator, without its initializer (`long a = q, q = 2` declares the
+            # second) or a function declarator's parameters.
+            declarator, initializing, skipping = [], False, None
+            for index, (text, position, depth) in enumerate(statement):
+                if skipping is not None:
+                    if text in (")", ":>", "]") and depth == skipping - 1:
+                        skipping = None
+                    continue
+                if depth == 0 and text == ",":
+                    initializing = False
+                    continue
+                if depth == 0 and text == "=":
+                    initializing = True
+                    continue
+                if initializing:
+                    continue
+                if text == "(" and index and _parameters_follow(statement[index - 1][0]):
+                    following = code[position + 1 : position + 64].lstrip()[:1]
+                    if following not in ("*", "&", "^", "("):
+                        skipping = depth
+                        continue
+                declarator.append(text)
+            return (storage, at) if name in declarator else False
+        if at == after or words[0] in _NOT_DECLARING or "=" in words:
+            return False
+        for index, (text, _, depth) in enumerate(statement):
+            if (
+                depth == 0
+                and text == name
+                and 0 < index < len(statement) - 1
+                and statement[index + 1][0] == "("
+                and statement[index - 1][2] == 0
+                # After a type's name, or its body (`struct S { ... } use2(long);`).
+                and (_WORD.fullmatch(statement[index - 1][0]) or statement[index - 1][0] == "{}")
+                and statement[index - 1][0] not in _NOT_DECLARING
+            ):
+                return ("function", at)
+        return False
 
     def old_style(self, line):
         """Whether ``line`` is in the body of a K&R-style definition (`long f(a) long a;
