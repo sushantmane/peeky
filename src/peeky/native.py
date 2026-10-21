@@ -3626,13 +3626,27 @@ class NativeSession:
 
     def frames_listed(self, frames):
         """The worker lists a stop's frames (innermost first): which one is innermost,
-        and which ones a signal interrupted (each just above a signal trampoline)."""
+        and which ones a signal interrupted (each just above a signal trampoline: a
+        frame of that name outside the program's sources, not a function of the
+        program's named so)."""
         self.innermost_id = frames[0].get("id") if frames else None
         self.interrupted_ids = {
             frames[index + 1].get("id")
             for index, frame in enumerate(frames[:-1])
-            if _trampoline(frame.get("name"))
+            if _trampoline(frame.get("name")) and not self._in_program(frame)
         }
+
+    def _in_program(self, frame):
+        """Whether ``frame`` runs a line of the program's own sources or headers."""
+        path = ((frame or {}).get("source") or {}).get("path")
+        if not isinstance(path, str) or not path:
+            return False
+        try:
+            relative = Path(path).resolve().relative_to(self.prepared.workspace.resolve())
+        except (OSError, ValueError):
+            return False
+        inputs = {str(each) for each in getattr(self.target, "verification_inputs", ())}
+        return relative.as_posix() in inputs
 
     def _block_pc(self, frame):
         """Where ``frame`` runs, as blocks and lines are matched against it: its address

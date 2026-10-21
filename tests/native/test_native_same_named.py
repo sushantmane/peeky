@@ -524,3 +524,113 @@ def test_c_a_frame_a_signal_interrupted_is_judged_where_it_stopped(directory, ca
     finally:
         main(["session", "close"])
         capsys.readouterr()
+
+
+# Review of PR #159 (round 3): a statement on the declaration's line after it that only
+# names the local (a header's `while (t > 20)`, a block's `{ t += 0; }`) was read as its
+# declaration, scoping it to that line: the outer `t` was chosen, and changed.
+SAME_LINE = """#include <stdio.h>
+int main(void) {
+    int t = 1;
+    {
+        long t = 11; LATER
+        t += 1;
+        printf("B=%ld\\n", (long)t);  // B
+    }
+    return t - 1;
+}
+"""
+LATER = {
+    "while": "while (t > 20) t--;",
+    "if": "if (t) t += 0;",
+    "switch": "switch (t) { default: break; }",
+    "for": "for (; t > 20;) t--;",
+    "do": "do t += 0; while (t > 20);",
+    "block": "{ t += 0; }",
+}
+
+
+@pytest.mark.timeout(300)
+@pytest.mark.parametrize("suffix", ["c", "cpp"])
+@pytest.mark.parametrize("later", sorted(LATER))
+def test_a_statement_naming_the_local_after_its_declaration_keeps_its_scope(
+    directory, capsys, later, suffix
+):
+    source = SAME_LINE.replace("LATER", LATER[later])
+    source = source if suffix == "c" else cpp(source)
+    path = directory / f"later.{suffix}"
+    path.write_text(source)
+    code, result = captured(capsys, path, line_of(source, "// B"), "t", "--set", "t=9")
+    assert code == 0 and result["status"] == "completed", result.get("error")
+    observed = next(row for row in result["rows"] if row["phase"] == "observed")
+    assert (observed["type"], observed["value"]) == ("long", "12"), observed
+    assert "B=9" in result["output"], result["output"]
+
+
+# A macro writing the declaration and a header naming it: the inner `t` (its end Peeky
+# cannot read in the raw source, so it is withheld), never the outer one.
+MACRO_LINE = """#include <cstdio>
+static int next_val(int &n) { return n-- > 0 ? n + 10 : 0; }
+#define HEAD(d) d; if (t)
+int main() {
+    int t = 1;
+    {
+        int n = 2;
+        HEAD(long t = next_val(n)) { std::printf("in=%ld\\n", t); }
+        n += 1;
+        std::printf("B=%d\\n", (int)t);  // B
+    }
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(300)
+def test_cpp_a_macros_declaration_and_header_never_choose_the_outer_local(directory, capsys):
+    path = directory / "macro_line.cpp"
+    path.write_text(MACRO_LINE)
+    code, result = captured(capsys, path, line_of(MACRO_LINE, "// B"), "t")
+    assert code == 0 and result["status"] == "completed", result.get("error")
+    [observed] = result["rows"]
+    assert observed["type"] == "long", observed
+
+
+# Review of PR #159 (round 3): a function of the program named like a signal trampoline
+# (`sigtramp`, `__restore`) is no trampoline: its caller is judged as any caller.
+USER_TRAMPOLINES = """#include <stdio.h>
+__attribute__((noinline)) void sigtramp(long v) {
+    printf("sigtramp %ld\\n", v);  // SIGTRAMP
+}
+__attribute__((noinline)) void __restore(long v) {
+    printf("restore %ld\\n", v);  // RESTORE
+}
+int main(void) {
+    int t = 10;
+    {
+        long t = 20;
+        sigtramp(t);
+    }
+    {
+        long t = 30;
+        __restore(t);
+    }
+    printf("%d\\n", t);
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(300)
+@pytest.mark.parametrize("marker, value", [("// SIGTRAMP", "20"), ("// RESTORE", "30")])
+def test_c_a_programs_function_named_like_a_trampoline_is_a_call(directory, capsys, marker, value):
+    path = directory / "usertramp.c"
+    path.write_text(USER_TRAMPOLINES)
+    line = line_of(USER_TRAMPOLINES, marker)
+    assert main(["session", "start", str(path), "--at", str(line)]) == 0
+    capsys.readouterr()
+    try:
+        code, rows = run(capsys, "session", "get", "t", "--frame", "1")
+        assert (rows[0]["type"], rows[0]["value"]) == ("long", value), rows
+    finally:
+        main(["session", "close"])
+        capsys.readouterr()

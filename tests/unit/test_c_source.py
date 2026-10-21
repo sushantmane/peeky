@@ -1116,3 +1116,41 @@ def test_a_declarations_scope_ends_with_its_block_or_its_header_statement():
     for (line, name), scope in expected.items():
         assert statements.scope_lines(line, name) == scope, (line, name)
     assert statements.scope_lines(4, "nothing") is None
+
+
+SAME_LINE = """int f(int k) {
+    int t = 1;
+    {
+        long t = 11; while (t > 20) t--;
+        t += 1;
+    }
+    {
+        long t = 11; { t += 1; }
+        t += 1;
+    }
+    {
+        long t = 1; t = 2;
+    }
+    {
+        auto [t, u] = g();
+        t += 1;
+    }
+    {
+        long t = 1; { long t = 2; }
+    }
+    return t;
+}
+"""
+
+
+def test_a_scope_is_read_from_the_statement_that_declares_the_name():
+    # Review of PR #159 (round 3): a later statement on the line that only names it (a
+    # header, a block) is not its declaration; two that declare it tell nothing.
+    statements = Statements(SAME_LINE, raw_strings=True)
+    assert statements.scope_lines(4, "t") == (4, 6)
+    assert statements.scope_lines(8, "t") == (8, 10)
+    assert statements.scope_lines(15, "t") == (15, 17)  # a binding, the one naming it
+    assert statements.scope_lines(19, "t") is None
+    # Where it has run still counts the last statement naming it.
+    assert statements.declared_through(12, "t") == 12
+    assert statements.declaration(12, "t") != statements.declaration(12, "t", declaring=True)

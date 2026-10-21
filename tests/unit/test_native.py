@@ -1,4 +1,5 @@
 import struct
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -1761,6 +1762,12 @@ def test_a_caller_is_judged_before_its_return_address_unless_a_signal_interrupte
     for name in ("_sigtramp", "__restore_rt", "__kernel_rt_sigreturn", "<signal handler called>"):
         assert _trampoline(name), name
     assert not _trampoline("sigtramp_helper") and not _trampoline(None)
+    # A function of the program named so is no trampoline (review of PR #159, round 3).
+    session.prepared = SimpleNamespace(workspace=Path("/w"))
+    session.target = SimpleNamespace(verification_inputs=("app.c",))
+    own = {**frames[1], "name": "__restore", "source": {"path": "/w/app.c"}}
+    session.frames_listed([frames[0], own, frames[2]])
+    assert session._block_pc(frames[2]) == 0x2FF
     # Before the worker lists a stop's frames, a frame counts as it is.
     fresh = NativeSession.__new__(NativeSession)
     fresh.load_bias = 0

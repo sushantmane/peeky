@@ -523,25 +523,32 @@ class Statements:
         found = self.declaration(line, name)
         return None if found is None else bisect.bisect_right(self.starts, found[0])
 
-    def declaration(self, line, name):
+    def declaration(self, line, name, declaring=False):
         """``(position, depth, header, settled)``: where the declaration of ``name`` on
         ``line`` ends (the `;` or `)` after it), how many brackets of its statement are
         open there, whether a statement's header declares it (`for (int i = 0; ...)`),
         and whether that header sets it once, with no call (`_settled`); None if unknown.
         Of the statements starting on the line, the last naming ``name`` counts: a later
-        end only withholds more."""
-        key = ("declaration", line, name)
+        end only withholds more (`long t; t = f();` has run only after the second).
+
+        ``declaring``: the one statement that declares ``name`` instead (`long t = 11;`
+        in `long t = 11; while (t > 20) t--;`, whose header only uses it), for where its
+        scope and its block are; None unless just one does (review of PR #159)."""
+        key = ("declaration", line, name, declaring)
         if key not in self._ends:
-            self._ends[key] = self._declaration(line, name)
+            self._ends[key] = self._declaration(line, name, declaring)
         return self._ends[key]
 
-    def _declaration(self, line, name):
+    def _declaration(self, line, name, declaring=False):
         blanked, starts = self.blanked, self.starts
         if self.unreadable or type(line) is not int or not 1 <= line <= len(starts):
             return None
         first = position = starts[line - 1]
         end_of_line = starts[line] if line < len(starts) else len(blanked)
         found, last = None, first
+        # Each statement on the line that names the name, and each that declares it, as
+        # ``found`` gives them.
+        named, declared = [], []
         while (token := _WORDS.search(blanked, position)) is not None:
             word, start = token[0], token.start()
             if start >= end_of_line:
@@ -573,18 +580,25 @@ class Statements:
                     closing, semicolon = closed
                     last = max(last, closing)
                     if self._names(opening.end(), closing, name):
+                        declares = self._declares(opening.end(), closing, name)
                         if self._declares(closing + 1, end_of_line, name):
                             # Maybe declared again after the header: read it whole.
                             pass
                         elif semicolon is not None and self._names(opening.end(), semicolon, name):
                             settled = self._settled(word, opening.end(), semicolon)
                             found = (semicolon, 1, True, settled)
+                            named.append(found)
+                            if declares:
+                                declared.append(found)
                             position = closing + 1
                             continue
                         else:
                             part = opening.end() if semicolon is None else semicolon + 1
                             settled = self._settled(word, part, closing)
                             found = (closing, 0, True, settled)
+                            named.append(found)
+                            if declares:
+                                declared.append(found)
                             position = closing + 1
                             continue
                     else:
@@ -598,7 +612,21 @@ class Statements:
             # After a header declaring it, its body on the line only uses it.
             if self._names(start, end, name) and not (found is not None and found[2]):
                 found = (end, 0, False, False)
+            if self._names(start, end, name):
+                named.append((end, 0, False, False))
+                if self._declares(start, end, name):
+                    declared.append(named[-1])
             position = end + 1
+        if declaring:
+            # One that reads as a declaration; else the one naming it at all (a structured
+            # binding's `[a, b]`, a macro's argument), the line being where it is declared.
+            found = (
+                declared[0]
+                if len(declared) == 1
+                else named[0]
+                if not declared and len(named) == 1
+                else None
+            )
         if found is None or not self._readable(line, first, max(last, found[0])):
             return None
         return found
@@ -610,7 +638,7 @@ class Statements:
         `switch (short t = g(); t)`, `if (auto p = f())`, a `for`'s, a range-`for`'s, a
         `catch`'s), to the end of that statement: its body, and an `if`'s `else`. None
         if unknown (see ``declaration``; a body Peeky does not read: a `do` loop's)."""
-        found = self.declaration(line, name)
+        found = self.declaration(line, name, declaring=True)
         code, pairs = self._code()
         if found is None or pairs is None:
             return None
@@ -783,7 +811,8 @@ class Statements:
         between."""
         key = ("jumped", line, name, stop, span)
         if key not in self._ends:
-            found = self.declaration(line, name)
+            # From the statement that declares it: a label after it on the line counts.
+            found = self.declaration(line, name, declaring=True)
             self._ends[key] = (
                 None
                 if found is None
@@ -895,7 +924,7 @@ class Statements:
         """Whether an `#include` may bring code between the declaration of ``name`` on
         ``line`` and the end of its block (a `case` there can skip it): True, False, or
         None if the declaration's end is unknown. Unknown braces reach the file's end."""
-        found = self.declaration(line, name)
+        found = self.declaration(line, name, declaring=True)
         if found is None:
             return None
         blanked, starts = self.blanked, self.starts
