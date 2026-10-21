@@ -17,7 +17,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import quote
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 9
 MAX_RUNS = 500
 DEFAULT_ROWS = 200
 MAX_ROWS = 10000
@@ -69,6 +69,8 @@ TABLES = {
             "target_identity": "JSON target identity (toolchain, flags)",
             "edit": "For a candidate run (probe --old/--new), the unified diff of the edit the "
             "build had; NULL otherwise. Values never come from your files when this is set",
+            "notes_kept": "1 where the run's notes are in captures.note (schema 9 on); NULL "
+            "for a run saved before: a value its probe marked with a note shows unmarked",
         },
     ),
     "captures": (
@@ -88,8 +90,9 @@ TABLES = {
             "(write num * 1.0 / k), and SUM fails past 64 bits (TOTAL(num) does not)",
             "unavailable": "1 when the debugger has no value here (optimized out, not live)",
             "error": "Why there is no value (unknown name, unreadable, ...), else NULL",
-            "view": "Qualified value view (e.g. a Rust Option); 'stale' for a value in a Rust "
-            "local that may be moved or dropped (the bytes it left, #108); else NULL",
+            "view": "Qualified value view (e.g. a Rust Option); 'stale' (whatever its view) "
+            "for a value in a Rust local that may be moved or dropped (the bytes it left, "
+            "#108); else NULL",
             "identity": "Python: which object the value is, an INTEGER (debugpy's number for "
             "the object, not an address; the object keeps it if its class is reassigned). "
             "Within one hit, equal means the same object (an alias), different means "
@@ -101,6 +104,10 @@ TABLES = {
             "module's globals (it was not a local there); 'unknown' for a row stored before "
             "Peeky recorded this (an early version of schema 6, which could read module "
             "globals); else NULL: the stopped frame's own variables",
+            "note": "What Peeky says about the value, which it cannot vouch for or shows "
+            "raw (a C/C++ local a loop returns to, a program using setjmp; a Rust value "
+            "shown as LLDB's summary, a pointer it does not follow, a moved local): read "
+            "the value with it. NULL for a plain value (and for runs saved before schema 8)",
         },
     ),
     "interventions": (
@@ -120,7 +127,7 @@ TABLES = {
 }
 _EVIDENCE_COLUMNS = (
     "run_id, started_at, label, program, line, status, hit, phase, function, selector, type, "
-    "value, num, unavailable, error, view, identity, scope, args, sets, "
+    "value, num, unavailable, error, view, note, identity, scope, args, sets, "
     "artifact_manifest_id, source_sha256, candidate, language"
 )
 VIEWS = {
@@ -133,7 +140,7 @@ VIEWS = {
 }
 _EVIDENCE_VIEW = """CREATE VIEW evidence AS SELECT c.run_id, r.started_at, r.label, r.program,
         c.line, r.status, c.hit, c.phase, c.function, c.selector, c.type, c.value, c.num,
-        c.unavailable, c.error, c.view, c.identity, c.scope, r.args, r.sets,
+        c.unavailable, c.error, c.view, c.note, c.identity, c.scope, r.args, r.sets,
         r.artifact_manifest_id,
         r.source_sha256, r.edit IS NOT NULL AS candidate, r.language
         FROM captures c JOIN runs r ON r.run_id = c.run_id"""
@@ -145,7 +152,7 @@ _LAST_RUN_VIEW = (
 _CAPTURES = """CREATE TABLE {} (
         run_id INTEGER NOT NULL, hit INTEGER, phase TEXT, line INTEGER, function TEXT,
         selector TEXT, type TEXT, value TEXT, num NUMERIC, unavailable INTEGER NOT NULL,
-        error TEXT, view TEXT, identity INTEGER, scope TEXT)"""
+        error TEXT, view TEXT, identity INTEGER, scope TEXT, note TEXT)"""
 _CAPTURE_INDEXES = (
     "CREATE INDEX captures_run ON captures (run_id, hit)",
     "CREATE INDEX captures_selector ON captures (selector)",
@@ -158,7 +165,7 @@ _DDL = (
         status TEXT, error_code TEXT, error_message TEXT, hits INTEGER, seconds REAL,
         max_pause_ms REAL, optimized TEXT, output TEXT, output_truncated INTEGER,
         output_complete INTEGER, warnings TEXT, artifact_manifest_id TEXT,
-        source_sha256 TEXT, target_identity TEXT, edit TEXT)""",
+        source_sha256 TEXT, target_identity TEXT, edit TEXT, notes_kept INTEGER)""",
     _CAPTURES.format("captures"),
     "CREATE TABLE interventions (run_id INTEGER NOT NULL, hit INTEGER, name TEXT, "
     "before TEXT, after TEXT)",
@@ -176,16 +183,24 @@ _DDL = (
 # `candidate` (an early version 2 had the column but the old views); version 4 made
 # captures.num NUMERIC; version 5 added language to the views; version 6 added
 # captures.identity and captures.scope; version 7 makes identity an INTEGER where an
-# early version 6 stored it as TEXT (`list@7`) without scope. Views name columns of the
-# newest captures table, so earlier steps only drop them and the last step creates them.
+# early version 6 stored it as TEXT (`list@7`) without scope; version 8 adds captures.note
+# (earlier runs' notes were not kept: NULL); version 9 adds runs.notes_kept, 1 for a run
+# saved with its notes, so queries can say which runs' values may be unmarked. Views name
+# columns of the newest tables, so earlier steps only drop them and the last creates them.
 _DROP_VIEWS = ("DROP VIEW IF EXISTS last_run", "DROP VIEW IF EXISTS evidence")
 
 
-def _add_identity(connection):
-    columns = {row[1] for row in connection.execute("PRAGMA table_info(captures)")}
-    for column, kind in (("identity", "INTEGER"), ("scope", "TEXT")):
-        if column not in columns:
-            connection.execute(f"ALTER TABLE captures ADD COLUMN {column} {kind}")
+def _add_columns(*added, table="captures"):
+    def add(connection):
+        columns = {row[1] for row in connection.execute(f"PRAGMA table_info({table})")}
+        for column, kind in added:
+            if column not in columns:
+                connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {kind}")
+
+    return add
+
+
+_add_identity = _add_columns(("identity", "INTEGER"), ("scope", "TEXT"))
 
 
 def _identity_number(value):
@@ -237,7 +252,14 @@ _MIGRATIONS = {
     ),
     4: _DROP_VIEWS,
     5: (*_DROP_VIEWS, _add_identity),
-    6: (*_DROP_VIEWS, _integer_identity, _EVIDENCE_VIEW, _LAST_RUN_VIEW),
+    6: (*_DROP_VIEWS, _integer_identity),
+    7: (*_DROP_VIEWS, _add_columns(("note", "TEXT"))),
+    8: (
+        *_DROP_VIEWS,
+        _add_columns(("notes_kept", "INTEGER"), table="runs"),
+        _EVIDENCE_VIEW,
+        _LAST_RUN_VIEW,
+    ),
 }
 
 _LATEST = "(SELECT MAX(run_id) FROM runs)"
@@ -250,6 +272,18 @@ _A = f"COALESCE(:a, (SELECT MAX(run_id) FROM runs WHERE run_id < {_B}))"
 _ERROR = "CASE WHEN value IS NULL THEN COALESCE(error, 'no value') END"
 
 
+def _caveat(alias=""):
+    """What qualifies a row's value, so it is not evidence by itself: its view where that
+    is not just how it was read (`memory`, `active-variant`): stale, unproven, opaque,
+    budget-exhausted or one added later; else `note` where the row has a note (a C/C++
+    local a loop returns to, a Rust summary). NULL for a plain value, or none."""
+    prefix = f"{alias}." if alias else ""
+    return (
+        f"CASE WHEN {prefix}value IS NULL THEN NULL WHEN {prefix}view NOT IN ('memory', "
+        f"'active-variant') THEN {prefix}view WHEN {prefix}note IS NOT NULL THEN 'note' END"
+    )
+
+
 def _shown(alias=""):
     prefix = f"{alias}." if alias else ""
     return f"COALESCE({prefix}value, '<' || COALESCE({prefix}error, 'no value') || '>')"
@@ -258,12 +292,12 @@ def _shown(alias=""):
 # Selectors a run asked for (runs.capture), whether or not it reached a capture.
 _ASKED = "(SELECT value FROM json_each((SELECT capture FROM runs WHERE run_id = {})))"
 _LANGUAGE = "(SELECT language FROM runs WHERE run_id = {})"
-_PAIR = f"""WITH a AS (SELECT hit, phase, selector, {_shown()} AS v, type AS t, rowid AS pos
-    FROM captures WHERE run_id = {_A}),
-  b AS (SELECT hit, phase, selector, {_shown()} AS v, type AS t, rowid AS pos
-    FROM captures WHERE run_id = {_B}),
+_PAIR = f"""WITH a AS (SELECT hit, phase, selector, {_shown()} AS v, type AS t, rowid AS pos,
+    {_caveat()} AS c FROM captures WHERE run_id = {_A}),
+  b AS (SELECT hit, phase, selector, {_shown()} AS v, type AS t, rowid AS pos,
+    {_caveat()} AS c FROM captures WHERE run_id = {_B}),
   k AS (SELECT hit, phase, selector FROM a UNION SELECT hit, phase, selector FROM b),
-  pair AS (SELECT k.hit, k.phase, k.selector, a.v AS value_a, b.v AS value_b,
+  kinds AS (SELECT k.hit, k.phase, k.selector, a.v AS value_a, b.v AS value_b,
     a.v IS NOT b.v AS differs, COALESCE(a.pos, b.pos) AS pos,
     CASE
       WHEN k.selector NOT IN {_ASKED.format(_B)} THEN 'only in run a'
@@ -276,8 +310,15 @@ _PAIR = f"""WITH a AS (SELECT hit, phase, selector, {_shown()} AS v, type AS t, 
         THEN 'type ' || a.t || ' -> ' || b.t
       WHEN a.v IS NOT b.v AND no_addresses(a.v, {_LANGUAGE.format(_A)})
         IS no_addresses(b.v, {_LANGUAGE.format(_B)}) THEN 'addresses only'
-    END AS note
-    FROM k LEFT JOIN a USING (hit, phase, selector) LEFT JOIN b USING (hit, phase, selector))"""
+    END AS kind,
+    CASE WHEN a.c IS NOT NULL OR b.c IS NOT NULL THEN 'qualified (' || CASE
+      WHEN a.c IS NOT NULL AND b.c IS NOT NULL THEN 'run a: ' || a.c || ', run b: ' || b.c
+      WHEN a.c IS NOT NULL THEN 'run a: ' || a.c ELSE 'run b: ' || b.c END
+      || '): not evidence by itself; queries run shows why' END AS qualified
+    FROM k LEFT JOIN a USING (hit, phase, selector) LEFT JOIN b USING (hit, phase, selector)),
+  -- Whatever else a row says, a qualified value says so too (review 3 of #139).
+  pair AS (SELECT *, CASE WHEN qualified IS NULL THEN kind WHEN kind IS NULL THEN qualified
+    ELSE kind || '; ' || qualified END AS note FROM kinds)"""
 _PAIR_COLUMNS = (
     f"{_A} AS run_a, {_B} AS run_b, hit, phase, selector, value_a, value_b, differs, note"
 )
@@ -289,20 +330,26 @@ _PAIR_ORDER = " ORDER BY hit, phase = 'after-set', pos"
 # interventions (sixth evaluation, finding 9: the decisive (output) row came after rows
 # for selectors only one run captured). Then real divergences, in hit and capture order
 # (a hit only one run reached is one); then values changed by an intervention only one
-# run made; then values that differ only in memory addresses; last, one row per
-# selector only one run asked for. Nothing is dropped: an address-only difference may
-# still be a real one.
+# run made; then values a view or a note qualifies in either run (a C local's leftovers
+# on a `do` body's first line, a moved Rust local's bytes: review of #139), whatever else
+# their note says (`missing in run b; qualified (run a: note)`); then values
+# that differ only in memory addresses; last, one row per selector only one run asked
+# for. Nothing is dropped: an address-only or qualified difference may still be real.
 _DIFF = f"""{_PAIR}
 SELECT {_PAIR_COLUMNS} FROM (
   SELECT 10 AS rank, hit, phase, selector, value_a, value_b, differs, note, pos FROM pair
-    WHERE differs AND (note IS NULL OR note LIKE 'missing%' OR note LIKE 'type %')
+    WHERE differs AND qualified IS NULL
+    AND (kind IS NULL OR kind LIKE 'missing%' OR kind LIKE 'type %')
   UNION ALL SELECT 11, hit, phase, selector, value_a, value_b, differs, note, pos FROM pair
-    WHERE note LIKE 'intervention only%'
+    WHERE qualified IS NULL AND kind LIKE 'intervention only%'
   UNION ALL SELECT 12, hit, phase, selector, value_a, value_b, differs, note, pos FROM pair
-    WHERE note = 'addresses only'
-  UNION ALL SELECT 13, hit, phase, selector, value_a, value_b, 1,
-    note || ' (one row per selector: its first hit)', MIN(pos) FROM pair
-    WHERE note LIKE 'only in%' GROUP BY selector, note
+    WHERE differs AND qualified IS NOT NULL AND (kind IS NULL OR kind NOT LIKE 'only in%')
+  UNION ALL SELECT 13, hit, phase, selector, value_a, value_b, differs, note, pos FROM pair
+    WHERE qualified IS NULL AND kind = 'addresses only'
+  -- hit, the values and qualified are those of the MIN(pos) row (SQLite's bare columns).
+  UNION ALL SELECT 14, hit, phase, selector, value_a, value_b, 1,
+    kind || ' (one row per selector: its first hit)' || COALESCE('; ' || qualified, ''),
+    MIN(pos) FROM pair WHERE kind LIKE 'only in%' GROUP BY selector, kind
   UNION ALL SELECT 0, NULL, NULL, '(status)', ra.status, rb.status, 1, 'outcome differs', 0
     FROM runs ra, runs rb WHERE ra.run_id = {_A} AND rb.run_id = {_B}
     AND ra.status IS NOT rb.status
@@ -380,6 +427,10 @@ _JAVA_LANGUAGES = ("java", "java-attach")
 _JAVA_ID = re.compile(r"(?<=[\w$\])…])@[0-9]+\b")
 # A preview's String and char literals (Peeky escapes both), never masked.
 _QUOTED = re.compile(r"""("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\(?:u[0-9a-f]{4}|.))')""")
+# Quoted text in any language's value (a C string after its pointer, a char array, a
+# Rust or Python string): the program's data, where hex is never an address. A quote
+# left open (a value cut short) runs to the end.
+_TEXT = re.compile(r"""("(?:[^"\\]|\\.)*(?:"|$)|'(?:[^'\\]|\\.)*(?:'|$))""")
 
 
 def _no_addresses(value, language=None):
@@ -391,13 +442,19 @@ def _no_addresses(value, language=None):
     """
     if not isinstance(value, str):
         return value
-    # A String value is java-debug's unescaped text: data, never an object number.
-    if language in _JAVA_LANGUAGES and not value.startswith('"'):
+    if language in _JAVA_LANGUAGES:
+        if value.startswith('"'):
+            # A String value is java-debug's unescaped text: data, never an object
+            # number or an address.
+            return value
         value = "".join(
             part if part[:1] in ('"', "'") else _JAVA_ID.sub("@…", part)
             for part in _QUOTED.split(value)
         )
-    return _ADDRESS.sub("0x…", value)
+    # Only outside quoted text: `0x16fd… "0x00000001deadbeef"` masks the pointer alone.
+    return "".join(
+        part if part[:1] in ('"', "'") else _ADDRESS.sub("0x…", part) for part in _TEXT.split(value)
+    )
 
 
 # The identity at the start of a value java-debug wrote: `Merge$Interval@143`,
@@ -437,17 +494,21 @@ QUERIES = {
         (),
     ),
     "run": (
-        "Every captured value of one run, in capture order; error says why a value is NULL",
-        f"SELECT hit, phase, line, function, selector, type, value, {_ERROR} AS error, view "
-        f"FROM captures WHERE run_id = {_RUN} ORDER BY rowid",
+        "Every captured value of one run, in capture order; error says why a value is NULL; "
+        "view and note qualify a value (read it with them)",
+        f"SELECT hit, phase, line, function, selector, type, value, {_ERROR} AS error, view, "
+        f"note FROM captures WHERE run_id = {_RUN} ORDER BY rowid",
         _RUN_PARAM,
         (),
     ),
     "hits": (
         "Each selector across hits, with changed = 1 where its value differs from the "
-        "previous hit's; changed is NULL when either hit has no value (error says why)",
-        f"""SELECT selector, hit, line, value, {_ERROR} AS error,
-  CASE WHEN value IS NULL OR LAG(value) OVER w IS NULL THEN NULL
+        "previous hit's; changed is NULL when either hit has no value (error says why) or "
+        "a qualified one (caveat names its view, or `note`: queries run shows it), which "
+        "is not evidence by itself",
+        f"""SELECT selector, hit, line, value, {_ERROR} AS error, {_caveat()} AS caveat,
+  CASE WHEN value IS NULL OR LAG(value) OVER w IS NULL OR {_caveat()} IS NOT NULL
+    OR LAG({_caveat()}) OVER w IS NOT NULL THEN NULL
     ELSE value IS NOT LAG(value) OVER w END AS changed
 FROM captures
 WHERE run_id = {_RUN} AND phase = 'observed' AND (:selector IS NULL OR selector = :selector)
@@ -457,7 +518,8 @@ WINDOW w AS (PARTITION BY selector ORDER BY hit) ORDER BY selector, hit""",
     ),
     "compare": (
         "Every value of two runs side by side, in hit and capture order; note says when a "
-        "value is missing from a run or differs only in memory addresses",
+        "value is missing from a run, qualified in either (a view or a note: not evidence "
+        "by itself) or differs only in memory addresses",
         f"{_PAIR}\nSELECT {_PAIR_COLUMNS} FROM pair{_PAIR_ORDER}",
         _PAIR_PARAMS,
         (),
@@ -467,7 +529,10 @@ WINDOW w AS (PARTITION BY selector ORDER BY hit) ORDER BY selector, hit""",
         "(source), (line), (args) and (sets) rows when the runs' outcomes, outputs, edits, "
         "source, stop lines, program arguments or interventions differ; then real "
         "differences in hit and capture order (the first is the first divergence); then "
-        "address-only differences; last, selectors only one run captured",
+        "values only one run's intervention changed; then values a view or a note "
+        "qualifies in either run (note: qualified (run a: note), not evidence by itself: "
+        "leftovers, a moved Rust local's bytes); then address-only differences; last, "
+        "selectors only one run captured",
         _DIFF,
         _PAIR_PARAMS,
         (),
@@ -482,8 +547,10 @@ WINDOW w AS (PARTITION BY selector ORDER BY hit) ORDER BY selector, hit""",
         (),
     ),
     "set_effect": (
-        "Each selector before and after the run's interventions, with the change applied",
+        "Each selector before and after the run's interventions, with the change applied; "
+        "caveat_observed and caveat_after_set name a view or `note` that qualifies a value",
         f"""SELECT o.hit, o.selector, {_shown("o")} AS observed, {_shown("s")} AS after_set,
+  {_caveat("o")} AS caveat_observed, {_caveat("s")} AS caveat_after_set,
   (SELECT group_concat(name || ': ' || before || ' -> ' || after, '; ') FROM interventions i
     WHERE i.run_id = o.run_id AND i.hit = o.hit) AS interventions
 FROM captures o JOIN captures s ON s.run_id = o.run_id AND s.hit = o.hit
@@ -494,13 +561,49 @@ WHERE o.run_id = {_RUN} AND o.phase = 'observed' ORDER BY o.hit, o.rowid""",
     ),
     "values": (
         "Distinct observed values of one selector across all runs, most frequent first "
-        "(candidate runs, from probe --old/--new, are left out)",
-        "SELECT program, line, value, COUNT(*) AS seen, COUNT(DISTINCT run_id) AS runs, "
-        "MIN(run_id) AS first_run, MAX(run_id) AS last_run FROM evidence "
-        "WHERE selector = :selector AND phase = 'observed' AND NOT candidate "
-        "GROUP BY program, line, value ORDER BY seen DESC, value",
+        "(candidate runs, from probe --old/--new, are left out); qualified counts the "
+        "sightings a view or a note qualifies (leftovers, a moved Rust local's bytes: not "
+        "evidence by themselves), and values are ordered by their other sightings",
+        f"SELECT program, line, value, COUNT(*) AS seen, SUM(({_caveat()}) IS NOT NULL) AS "
+        "qualified, COUNT(DISTINCT run_id) AS runs, MIN(run_id) AS first_run, MAX(run_id) "
+        "AS last_run FROM evidence WHERE selector = :selector AND phase = 'observed' AND "
+        "NOT candidate GROUP BY program, line, value ORDER BY seen - qualified DESC, seen "
+        "DESC, value",
         {"selector": "Selector, e.g. request.page (required)"},
         ("selector",),
+    ),
+    "wide": (
+        "One row per hit (and phase) of one run, a column per selector in capture order "
+        "(a name SQLite would take for an earlier column, ignoring case, gets ` (2)`), each "
+        "cell the value as stored. no_value is a JSON object naming the cells with no value "
+        "(NULL: unavailable, withheld, an error) and why; a selector not captured at that "
+        "hit is NULL and not named. caveats names the cells whose value is qualified: "
+        "{selector: view} for stale, unproven, opaque or budget-exhausted, else "
+        "{selector: 'note'} for a row with a note (queries run shows it): read those with "
+        "it, never as plain values. --json gives the generated SQL too (`sql`), to refine "
+        "with peeky sql",
+        lambda path, params: _wide(path, params),
+        {**_RUN_PARAM, "phase": "observed or after-set (default: both, after-set after)"},
+        (),
+    ),
+    "join": (
+        "Two runs joined by one selector's value instead of by hit: each pair of hits, one "
+        "per run, where key has the same value (as stored text; a value at several hits "
+        "pairs every hit of a with every hit of b), with each run's other selectors "
+        "(columns a:<selector>, b:<selector>); then the hits of each run whose key value "
+        "the other run never had, or that have none (matched: only in run a / b). "
+        "no_value_a/b and caveats_a/b are wide's, per run (the key's own included). A key "
+        "whose values carry addresses gets a note; masked=1 matches them masked. --json "
+        "gives the generated SQL too (`sql`)",
+        lambda path, params: _join(path, params),
+        {
+            **_PAIR_PARAMS,
+            "key": "Selector whose value links the runs, e.g. v (required)",
+            "phase": "observed (default) or after-set",
+            "masked": "1: match key values with addresses masked (no_addresses), for a "
+            "pointer or a C string; any address then matches any other",
+        },
+        ("key",),
     ),
     "unreadable": (
         "Selectors of one run that have no value, and why",
@@ -525,6 +628,8 @@ EXAMPLES = (
     'peeky sql "SELECT selector, COUNT(DISTINCT value) AS distinct_values FROM last_run '
     'GROUP BY selector"',
     "peeky queries diff --param a=3 --param b=4",
+    "peeky queries wide --param run=3",
+    "peeky queries join --param a=3 --param b=4 --param key=v",
 )
 
 
@@ -680,6 +785,7 @@ def record(path, result, *, language=None, target=None, label=None, worker=None)
         "source_sha256": _text(candidate.get("sha256") if edited else result.get("source_sha256")),
         "target_identity": _text(result.get("target_identity")),
         "edit": candidate.get("diff") if edited else None,
+        "notes_kept": 1,
     }
     connection = _ensure(path)
     try:
@@ -689,7 +795,9 @@ def record(path, result, *, language=None, target=None, label=None, worker=None)
             tuple(run.values()),
         ).lastrowid
         connection.executemany(
-            "INSERT INTO captures VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO captures (run_id, hit, phase, line, function, selector, type, value, "
+            "num, unavailable, error, view, identity, scope, note) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [
                 (
                     run_id,
@@ -703,9 +811,12 @@ def record(path, result, *, language=None, target=None, label=None, worker=None)
                     _number(row.get("value")),
                     1 if row.get("unavailable") else 0,
                     row.get("error"),
-                    _text(row.get("view") or ("stale" if row.get("stale") else None)),
+                    # Stale wins: a moved local's `Some(40)` (active-variant) is the bytes
+                    # it left, whatever view decoded them.
+                    _text("stale" if row.get("stale") else row.get("view")),
                     row["identity"] if type(row.get("identity")) is int else None,
                     "globals" if row.get("scope") == "globals" else None,
+                    _text(row.get("note")),
                 )
                 for row in result.get("rows") or []
             ],
@@ -981,6 +1092,231 @@ def _require_runs(path, params):
     )
 
 
+def _literal(text):
+    """A string as an SQL literal (the generated SQL is shown, to run with peeky sql)."""
+    return "'" + str(text).replace("'", "''") + "'"
+
+
+def _identifier(name):
+    return '"' + str(name).replace('"', '""') + '"'
+
+
+_PHASES = ("observed", "after-set")
+# Each run's cells: names whose value is NULL, with why, and names whose value something
+# qualifies, with what: JSON objects, so no reason or selector text can be misread as a
+# separator. NULL where there are none.
+_NO_VALUE = "NULLIF(json_group_object(selector, reason) FILTER (WHERE reason IS NOT NULL), '{}')"
+_CAVEATS = "NULLIF(json_group_object(selector, caveat) FILTER (WHERE caveat IS NOT NULL), '{}')"
+
+
+def _cells(where):
+    """SQL for one row per hit, phase and selector of the captures matching ``where``:
+    ``value``; ``reason``, why it has none; ``caveat``, what qualifies a value (a view
+    other than how it was read, else `note` where the row has a note). A selector
+    captured twice at a hit read the same both times (``_captured`` checks): one cell."""
+    return (
+        "SELECT hit, phase, selector, MIN(line) AS line, MAX(value) AS value,\n"
+        "    CASE WHEN MAX(value) IS NULL THEN COALESCE(MAX(error), 'no value') END AS reason,\n"
+        f"    MAX({_caveat()}) AS caveat\n"
+        f"  FROM captures WHERE {where} GROUP BY hit, phase, selector"
+    )
+
+
+def _phase(params, default=None):
+    phase = params.get("phase", default)
+    if phase is not None and phase not in _PHASES:
+        raise ValueError(f"Evidence query failed: phase is observed or after-set, not {phase!r}")
+    return phase
+
+
+def _run_id(path, run):
+    """The run ``run`` names (default: the newest), which must exist."""
+    found = query(
+        path,
+        f"SELECT {_RUN} AS run_id, (SELECT COUNT(*) FROM runs WHERE run_id = {_RUN}) AS n",
+        {"run": run},
+    )["rows"][0]
+    if found["run_id"] is None or not found["n"]:
+        raise ValueError(
+            f"Evidence query failed: no saved run {run if run is not None else ''}".rstrip()
+            + "; `peeky queries runs` lists them, and --param run=<run> picks one"
+        )
+    return found["run_id"]
+
+
+def _captured(path, run, phase):
+    """The selectors run ``run`` captured (in ``phase``, or either), in capture order.
+    A selector captured twice at one hit (`--capture v,v`) must have read the same both
+    times, as a cell holds one value."""
+    bound = {"run": run, "phase": phase}
+    where = "run_id = :run AND (:phase IS NULL OR phase = :phase)"
+    rows = query(
+        path,
+        f"SELECT selector FROM captures WHERE {where} GROUP BY selector ORDER BY MIN(rowid)",
+        bound,
+        limit=MAX_ROWS,
+    )["rows"]
+    differing = query(
+        path,
+        f"SELECT hit, phase, selector FROM captures WHERE {where} GROUP BY hit, phase, "
+        "selector HAVING COUNT(DISTINCT value) > 1 OR MIN(value IS NULL) != MAX(value IS NULL) "
+        "LIMIT 1",
+        bound,
+    )["rows"]
+    if differing:
+        first = differing[0]
+        raise ValueError(
+            f"Evidence query failed: run {run} captured {first['selector']!r} more than once "
+            f"at hit {first['hit']} ({first['phase']}), with different values; use `peeky "
+            "queries run`"
+        )
+    return [row["selector"] for row in rows]
+
+
+def _columns(selectors, taken, prefix="", fixed=frozenset()):
+    """A result column name for each selector: the selector itself (after ``prefix``);
+    `<name> (selector)` where that is one of the query's ``fixed`` columns; and
+    `<name> (2)`, `(3)`, ... where SQLite would take it for a column before it (its
+    identifiers ignore ASCII case: `x` and `X` would be one column). ``taken`` holds the
+    lowercased names given so far, and gains these."""
+    names = []
+    for selector in selectors:
+        name = f"{prefix}{selector}"
+        if name.lower() in fixed:
+            name = f"{name} (selector)"
+        column, number = name, 2
+        while column.lower() in taken:
+            column, number = f"{name} ({number})", number + 1
+        taken.add(column.lower())
+        names.append(column)
+    return names
+
+
+def _too_wide(count, run, name):
+    if count > MAX_COLUMNS:
+        raise ValueError(
+            f"Evidence query failed: {name} would have {count} columns, more than "
+            f"{MAX_COLUMNS} (run {run} captured too many selectors); use `peeky queries run`, "
+            "or peeky sql with the selectors you need"
+        )
+
+
+def _picked(selectors, names, indent):
+    return "".join(
+        f"\n{indent}MAX(CASE WHEN selector = {_literal(selector)} THEN value END) AS "
+        f"{_identifier(name)},"
+        for selector, name in zip(selectors, names)
+    )
+
+
+def _wide(path, params):
+    """(SQL, params, notes) of `queries wide`: one row per hit and phase of a run, a
+    column per selector in capture order. Generated per run: SQL cannot pivot alone."""
+    run, phase = _run_id(path, params.get("run")), _phase(params)
+    selectors = _captured(path, run, phase)
+    fixed = {"hit", "phase", "line", "no_value", "caveats"}
+    names = _columns(selectors, set(fixed), fixed=fixed)
+    _too_wide(len(names) + len(fixed), run, "wide")
+    where = f"run_id = {run}" + (f" AND phase = {_literal(phase)}" if phase else "")
+    sql = (
+        f"SELECT hit, phase, MIN(line) AS line,{_picked(selectors, names, '  ')}\n"
+        f"  {_NO_VALUE} AS no_value,\n  {_CAVEATS} AS caveats\n"
+        f"FROM ({_cells(where)})\nGROUP BY hit, phase ORDER BY hit, phase = 'after-set'"
+    )
+    return sql, {}, []
+
+
+def _join(path, params):
+    """(SQL, params, notes) of `queries join`: two runs' hits paired where ``key`` has
+    the same value (stored text; with ``masked``, addresses masked), every pair where it
+    repeats; then each run's unpaired hits."""
+    _require_runs(path, params)
+    found = query(
+        path,
+        f"SELECT {_A} AS a, {_B} AS b, (SELECT language FROM runs WHERE run_id = {_A}) AS la, "
+        f"(SELECT language FROM runs WHERE run_id = {_B}) AS lb",
+        {"a": params.get("a"), "b": params.get("b")},
+    )["rows"][0]
+    a, b = found["a"], found["b"]
+    key, phase = params["key"], _phase(params, "observed")
+    if params.get("masked") not in (None, 0, 1):
+        raise ValueError("Evidence query failed: masked is 1 (or 0)")
+    masked = params.get("masked") == 1
+    fixed = {"hit_a", "hit_b", "no_value_a", "no_value_b", "caveats_a", "caveats_b", "matched"}
+    taken = set(fixed)
+    (key_name,) = _columns([key], taken, fixed=fixed)
+    sides = {}
+    for name, run, language in (("a", a, found["la"]), ("b", b, found["lb"])):
+        captured = _captured(path, run, phase)
+        if key not in captured:
+            raise ValueError(
+                f"Evidence query failed: run {run} captured no {key!r} ({phase}); it "
+                f"captured: {', '.join(captured[:20]) or 'nothing'}"
+            )
+        # Masked, each run's own key value is a column too: the masked text is the match.
+        others = [selector for selector in captured if masked or selector != key]
+        matched = "value" if not masked else f"no_addresses(value, {_literal(language)})"
+        sides[name] = (run, others, _columns(others, taken, f"{name}:"), matched)
+    _too_wide(len(fixed) + 1 + len(sides["a"][1]) + len(sides["b"][1]), f"{a} and {b}", "join")
+    notes = []
+    if not masked:
+        carried = query(
+            path,
+            "SELECT c.value FROM captures c JOIN runs r USING (run_id) WHERE c.run_id IN "
+            "(:a, :b) AND c.selector = :key AND c.phase = :phase AND c.value IS NOT NULL "
+            "AND no_addresses(c.value, r.language) IS NOT c.value LIMIT 1",
+            {"a": a, "b": b, "key": key, "phase": phase},
+        )["rows"]
+        if carried:
+            notes.append(
+                f"{key}'s values carry addresses ({carried[0]['value'][:60]}), which "
+                "differ between runs even where what they point at is equal, so such "
+                "hits rarely pair: --param masked=1 matches them with addresses masked "
+                "(no_addresses: any address then matches any other)"
+            )
+
+    def side(name):
+        run, others, names, matched = sides[name]
+        where = f"run_id = {run} AND phase = {_literal(phase)}"
+        return (
+            f"{name} AS (SELECT hit, MAX(CASE WHEN selector = {_literal(key)} THEN {matched} "
+            f"END) AS k,{_picked(others, names, '    ')}\n    {_NO_VALUE} AS no_value,\n"
+            f"    {_CAVEATS} AS caveats\n  FROM ({_cells(where)}) GROUP BY hit)"
+        )
+
+    def columns(name, present):
+        return [
+            f"{name}.{_identifier(column)}" if present else f"NULL AS {_identifier(column)}"
+            for column in sides[name][2]
+        ]
+
+    def row(present_a, present_b, matched):
+        parts = [
+            f"{'a' if present_a else 'b'}.k AS {_identifier(key_name)}",
+            "a.hit AS hit_a" if present_a else "NULL AS hit_a",
+            "b.hit AS hit_b" if present_b else "NULL AS hit_b",
+            *columns("a", present_a),
+            *columns("b", present_b),
+            "a.no_value AS no_value_a" if present_a else "NULL AS no_value_a",
+            "b.no_value AS no_value_b" if present_b else "NULL AS no_value_b",
+            "a.caveats AS caveats_a" if present_a else "NULL AS caveats_a",
+            "b.caveats AS caveats_b" if present_b else "NULL AS caveats_b",
+            f"{_literal(matched)} AS matched",
+        ]
+        return "SELECT " + ", ".join(parts)
+
+    sql = (
+        f"WITH {side('a')},\n{side('b')}\nSELECT * FROM (\n"
+        f"{row(True, True, 'both')} FROM a JOIN b ON a.k = b.k\nUNION ALL\n"
+        f"{row(True, False, 'only in run a')} FROM a "
+        "WHERE NOT EXISTS (SELECT 1 FROM b WHERE b.k = a.k)\nUNION ALL\n"
+        f"{row(False, True, 'only in run b')} FROM b "
+        "WHERE NOT EXISTS (SELECT 1 FROM a WHERE a.k = b.k))\n"
+        "ORDER BY matched != 'both', hit_a IS NULL, hit_a, hit_b"
+    )
+    return sql, {}, notes
+
+
 def run_query(path, name, params=None, *, limit=DEFAULT_ROWS):
     """Run a canned query by name with optional parameters."""
     if name not in QUERIES:
@@ -1001,7 +1337,48 @@ def run_query(path, name, params=None, *, limit=DEFAULT_ROWS):
             f"Evidence query failed: {name} needs "
             + " ".join(f"--param {param}=<value>" for param in missing)
         )
-    return query(path, sql, {**dict.fromkeys(accepted), **params}, limit=limit)
+    bound = {**dict.fromkeys(accepted), **params}
+    if callable(sql):
+        # Built for the runs named (a column per selector): shown, to refine with peeky sql.
+        built, extra, notes = sql(path, params)
+        result = {**query(path, built, extra, limit=limit), "sql": built}
+    else:
+        result, notes = query(path, sql, bound, limit=limit), []
+    notes = _unmarked(path, name, bound) + notes
+    return {**result, "notes": notes} if notes else result
+
+
+# The runs each canned query shows values of, for `_unmarked`.
+_SHOWN_RUNS = {
+    **dict.fromkeys(("run", "wide", "hits", "set_effect"), _RUN),
+    **dict.fromkeys(("compare", "diff", "join"), f"{_A}, {_B}"),
+    "values": "SELECT run_id FROM captures WHERE selector = :selector",
+}
+
+
+def _unmarked(path, name, params):
+    """A note naming the runs this query shows values of that were saved before Peeky
+    kept notes (runs.notes_kept NULL): a value their probe marked is unmarked here."""
+    if name not in _SHOWN_RUNS:
+        return []
+    runs = [
+        row["run_id"]
+        for row in query(
+            path,
+            "SELECT run_id FROM runs WHERE notes_kept IS NULL AND run_id IN "
+            f"({_SHOWN_RUNS[name]}) ORDER BY run_id",
+            params,
+            limit=MAX_ROWS,
+        )["rows"]
+    ]
+    if not runs:
+        return []
+    named = ", ".join(map(str, runs[:10])) + (", ..." if len(runs) > 10 else "")
+    return [
+        f"run{'s' if len(runs) > 1 else ''} {named} {'were' if len(runs) > 1 else 'was'} "
+        "saved before Peeky kept notes: a value its probe marked with a note (a C/C++ "
+        "local's leftovers, a Rust value shown raw) may be unmarked here"
+    ]
 
 
 def schema(path):
@@ -1089,6 +1466,7 @@ def table(result, width=120):
     count = result["row_count"]
     if note := shortened_note(shortened):
         lines.append(note)
+    lines.extend(f"note: {note}" for note in result.get("notes", ()))
     lines.append(
         f"({count} row{'s' if count != 1 else ''}"
         + (
