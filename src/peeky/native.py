@@ -14,6 +14,7 @@ import os
 import posixpath
 import re
 import shutil
+import signal
 import struct
 import subprocess
 import sys
@@ -56,6 +57,73 @@ def _tool(name):
     if not path:
         raise ValueError(f"Missing native tool: {name}")
     return str(real_tool(path))
+
+
+# What each compiler's `--version` says it is (#167): {(path, mtime, size): family}.
+_FAMILIES = {}
+# How long a compiler may take to say what it is; past it, its whole group is ended.
+VERSION_TIMEOUT = 10
+_FAMILIES_LOCK = threading.Lock()
+CPP_COMPILER_REFUSAL = (
+    "C++ targets need clang++ (Peeky's C++ rules are checked against clang's debug "
+    "info); set PEEKY_NATIVE_CXX to clang++"
+)
+
+
+def compiler_family(path):
+    """ "clang", "gcc" or "unknown": what ``<path> --version`` says the compiler is,
+    asked once per compiler file (its path, modification time and size), never guessed
+    from its name (`c++` and `g++` are often clang, `clang++` a wrapper). "timeout" if
+    it did not answer within VERSION_TIMEOUT (not kept: asked again next time); it runs
+    in a process group of its own, which is ended then, a wrapper's children too."""
+    try:
+        stat = os.stat(path)
+    except OSError:
+        return "unknown"
+    key = (str(path), stat.st_mtime_ns, stat.st_size)
+    with _FAMILIES_LOCK:
+        if key in _FAMILIES:
+            return _FAMILIES[key]
+    try:
+        process = subprocess.Popen(
+            [str(path), "--version"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            errors="replace",
+            env={**os.environ, "LC_ALL": "C"},
+            start_new_session=True,
+        )
+    except OSError:
+        process, said = None, ""
+    if process is not None:
+        try:
+            out, err = process.communicate(timeout=VERSION_TIMEOUT)
+            said = f"{out}\n{err}"
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+            # Reaped, never read to the end: a process that left the group could hold
+            # the pipes open.
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                process.wait(timeout=5)
+            process.stdout.close()
+            process.stderr.close()
+            return "timeout"
+    if re.search(r"\bclang version\b", said):
+        family = "clang"
+    elif re.search(
+        r"Free Software Foundation|\((?:GCC|[^)]*\bGCC\b[^)]*)\)|^g\+\+|^gcc", said, re.M
+    ):
+        family = "gcc"
+    else:
+        family = "unknown"
+    with _FAMILIES_LOCK:
+        _FAMILIES[key] = family
+    return family
 
 
 def _path_name(name, suffix):
@@ -2301,10 +2369,24 @@ class NativeTarget:
     supports_edits = True
 
     def _compile_flags(self):
-        """(driver, every flag a source is compiled with, the sysroot, its resolved SDK)."""
-        # The compiler path is resolved (clang++ is a symlink to clang), and clang picks
-        # its language from the name it runs as; keep C++ mode so libc++ is linked.
-        driver = ("--driver-mode=g++",) if self.language == "cpp" else ()
+        """(driver, every flag a source is compiled with, the sysroot, its resolved SDK).
+        A C++ target's compiler must be clang (#167): refused before anything runs."""
+        driver = ()
+        if self.language == "cpp":
+            compiler = _tool(self.compiler)
+            if (family := compiler_family(compiler)) != "clang":
+                said = {
+                    "gcc": "is GCC",
+                    "timeout": f"timed out: no answer to --version within {VERSION_TIMEOUT} s",
+                }.get(family, "is not clang, by its --version")
+                refused = ValueError(f"{CPP_COMPILER_REFUSAL} ({compiler} {said})")
+                # Nothing was built or run: no run is kept as evidence.
+                refused.before_launch = True
+                raise refused
+            # The compiler path is resolved (clang++ is a symlink to clang), and clang
+            # picks its language from the name it runs as; keep C++ mode so libc++ is
+            # linked. A clang-only option.
+            driver = ("--driver-mode=g++",)
         flags = [*driver, *self.compiler_options]
         # Without an explicit sysroot, use the SDK the /usr/bin xcrun stub would have
         # supplied; it is part of the recorded build commands either way.
@@ -2334,8 +2416,9 @@ class NativeTarget:
                 if self.language == "c"
                 else "Native candidate edits require a declared C++ source"
             )
-        compiler, adapter, dwarfdump = map(_tool, (self.compiler, self.adapter, self.dwarfdump))
+        # The compiler is judged first: a C++ target refuses GCC before anything runs.
         driver, flags, sysroot, sdk = self._compile_flags()
+        compiler, adapter, dwarfdump = map(_tool, (self.compiler, self.adapter, self.dwarfdump))
         # Keep objects until dsymutil finishes; single-step clang removes its
         # temporary objects and a subsequent dsymutil can erase valid symbols.
         objects = tuple(f"peeky-object-{index}.o" for index in range(len(self.sources)))
@@ -3143,7 +3226,20 @@ class NativeSession:
                     "frame is back in its own lines"
                 )
             here, line = place
-        if shadowed := self._block_storage(name, frame, here, line, (stopped, raw_line)):
+        # At the first instruction of the line's statements, none has run (#169).
+        entering = (
+            (
+                lambda: (
+                    getattr(self.target, "optimization", "O0") == "O0"
+                    and self.mid_statement(variable, frame) is None
+                )
+            )
+            if innermost and (here, line) == (stopped, raw_line)
+            else None
+        )
+        if shadowed := self._block_storage(
+            name, frame, here, line, (stopped, raw_line), entering=entering
+        ):
             return shadowed
         if not innermost and (
             unfinished := declared_unfinished(
@@ -3878,12 +3974,18 @@ class NativeSession:
                 # Each function a stop there can be in, and in it the declaration of the
                 # root the code names where the line's breakpoint stops: its lowest address
                 # that runs before the function returns (not an exception's landing pad,
-                # where no stop is made). With none, none is singled out (#158).
-                places = []
+                # where no stop is made). With none, none is singled out (#158). LLDB also
+                # stops at the line's code in each other block (#157), but there the stop
+                # is part-way through the line, where no change is made (#105), so only
+                # the first stop can make one: said where another stop names another (#169).
+                places, elsewhere = [], set()
                 for entry, addresses in self._line_places(source, line):
                     returned = entry.get("returned")
-                    normal = [a for a in addresses if returned is None or a < returned]
-                    places.append((entry, self._named_where(root, min(normal)) if normal else None))
+                    normal = sorted(a for a in addresses if returned is None or a < returned)
+                    first = self._named_where(root, normal[0]) if normal else None
+                    places.append((entry, first))
+                    if any(self._named_where(root, a) != first for a in normal[1:]):
+                        elsewhere.add(entry.get("name") or "this function")
                 if line not in stops or not places:
                     continue
                 failures = []
@@ -3920,9 +4022,17 @@ class NativeSession:
                     reasons = by_function(
                         (function, f"in {FUNCTION}, {why}") for function, why in failures
                     )
+                    later = (
+                        f" (the line's later stops in {', '.join(sorted(elsewhere))}, in other "
+                        f"blocks, name another `{root}`, but each is part-way through the "
+                        "line, where no change is made: to change that one, stop at a line "
+                        "that starts in its block)"
+                        if elsewhere
+                        else ""
+                    )
                     return (
                         f"`{name}` cannot be changed at {source}:{line}, at any stop of this "
-                        f"build: {reasons}. Refused before the program runs: nothing ran"
+                        f"build: {reasons}{later}. Refused before the program runs: nothing ran"
                     )
         return None
 
@@ -4031,7 +4141,7 @@ class NativeSession:
             return None
         return int(pointer, 16) - bias
 
-    def _block_storage(self, name, frame, source, line, stop=None):
+    def _block_storage(self, name, frame, source, line, stop=None, entering=None):
         """Why the root local ``name`` of ``frame`` is not what the code at ``source:line``
         reads, or None: a block around the line declares ``name`` after the local, so
         that the code names that instead: a `static` or an `extern` (lldb-dap does not
@@ -4042,10 +4152,14 @@ class NativeSession:
         compiler preprocessed it, so what a macro, a conditional or an `#include` makes
         of the source is what is read; withheld where Peeky cannot read it. ``stop``:
         the (file, line) the frame runs, where ``source:line`` is an `#include` line
-        that brings it in (the preprocessed text has its lines there instead)."""
+        that brings it in (the preprocessed text has its lines there instead).
+        ``entering()``: whether the stop is the first instruction of the statements that
+        start on the line (None: it is not), where a range-`for`'s binding there is not
+        declared yet."""
         found = shown_declaration(self.declarations, name, self._block_pc(frame))
         if found is None:
             return None
+        function = self._function_at(frame)
         base = (_SHADOWED.fullmatch(name) or [None, name])[1]
         declared = found[1] if found else (None, None, False)
         verdicts, failure = set(), None
@@ -4067,7 +4181,15 @@ class NativeSession:
                 # The stop's line, or the local's, is not singled out in it.
                 verdicts.add(None)
                 continue
-            storage = statements.block_storage(at, base, after, True)
+            # A frame whose function is wholly on the line (a lambda there): its body.
+            body = bool(
+                function is not None
+                and function.get("source") == source
+                and tuple(function.get("span") or ()) == (line, line)
+            )
+            storage = statements.block_storage(at, base, after, True, body)
+            if storage and storage[0] == "binding" and entering is not None and entering():
+                storage = statements.block_storage(at, base, after, True, body, True)
             if storage:
                 origin = preprocessed.origins[storage[1] - 1]
                 storage = None if origin is None else (storage[0], *origin)

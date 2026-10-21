@@ -846,3 +846,88 @@ def test_cpp_a_binding_shadowing_a_parameter_is_the_name(directory, capsys, mark
     assert "value" not in observed, observed
     error = observed["error"]
     assert f"declared on line {line}" in error or "structured binding `t`" in error, error
+
+
+# #169: a range-`for` header's structured binding names nothing in a lambda in its
+# range, nor in the range's expression, which runs before the binding is declared.
+RANGE_LAMBDA = """#include <cstdio>
+#include <utility>
+#include <vector>
+template <class F> std::vector<std::pair<long, long>> make(F f) { return {{f(40), 2}, {f(41) + 1, 3}}; }
+__attribute__((noinline)) long id(long v) { return v; }  // ID
+int main() {
+    long t = 1;
+    for (auto [t, u] : make([&](long t) { return id(t); })) {  // HEADER
+        std::printf("FA=%ld\\n", t + 0 * u);
+    }
+    for (auto [t, u] : make([&](long v) { long t = v; return id(t); })) {
+        std::printf("FD=%ld\\n", t + 0 * u);  // FD
+    }
+    std::printf("FB=%ld\\n", t);
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(300)
+def test_cpp_a_range_for_binding_names_nothing_in_a_lambda_in_its_range(directory, capsys):
+    path = directory / "range_lambda.cpp"
+    path.write_text(RANGE_LAMBDA)
+    assert main(["session", "start", str(path), "--at", str(line_of(RANGE_LAMBDA, "// ID"))]) == 0
+    capsys.readouterr()
+    try:
+        # The lambda's own `t` (its parameter), withheld as "the structured binding".
+        code, rows = run(capsys, "session", "get", "t", "--frame", "1")
+        assert code == 0 and rows[0].get("value") == "40", rows
+    finally:
+        main(["session", "close"])
+        capsys.readouterr()
+    # The binding's own row (where the debugger describes it, macOS), withheld as the
+    # outer local because a lambda on its line declares a `t`; else the outer row.
+    code, result = captured(capsys, path, line_of(RANGE_LAMBDA, "// FD"), "t")
+    assert code == 0 and result["status"] == "completed", result.get("error")
+    [observed] = result["rows"]
+    if observed["type"] != "long":
+        assert observed.get("value"), observed
+    else:
+        assert "structured binding `t`" in observed["error"], observed
+
+
+@pytest.mark.timeout(300)
+def test_cpp_a_range_for_header_reads_the_outer_local_before_its_range_runs(directory, capsys):
+    path = directory / "range_header.cpp"
+    path.write_text(RANGE_LAMBDA)
+    line = line_of(RANGE_LAMBDA, "// HEADER")
+    code, result = captured(capsys, path, line, "t", "--set", "t=7", "--hits", "1")
+    assert code == 0 and result["status"] == "completed", result.get("error")
+    observed = next(row for row in result["rows"] if row["phase"] == "observed")
+    assert (observed["type"], observed["value"]) == ("long", "1"), observed
+    assert "FB=7" in result["output"], result["output"]
+
+
+# #169: a multi-stop line (#157) is judged before the run at its first stop, the only
+# one where a change is made; the refusal says so where a later stop names another `t`.
+MULTI_STOP = """#include <stdio.h>
+struct Q { long x; long z; };
+int main(void) {
+    long t = 1;
+    for (int i = 0; i < 2; i++) { struct Q t = {10 + i, 0}; { long k = t.x; printf("HB=%ld\\n", k); } }  // MULTI
+    printf("HA=%ld\\n", t);
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(300)
+@pytest.mark.parametrize("suffix", ["c", "cpp"])
+def test_a_multi_stop_lines_refusal_says_its_later_stops_make_no_change(directory, capsys, suffix):
+    source = MULTI_STOP if suffix == "c" else cpp(MULTI_STOP)
+    path = directory / f"multi.{suffix}"
+    path.write_text(source)
+    code, result = probed(capsys, path, line_of(source, "// MULTI"), "t.x=50", "t")
+    error = result["error"]
+    assert code == 1 and error["code"] == "MUTATION_REJECTED", result
+    assert result.get("refused_before_launch") is True, result
+    assert "`t` has no fields" in error["message"], error
+    assert "later stops in main, in other blocks, name another `t`" in error["message"], error
+    assert "part-way through the line" in error["message"], error

@@ -175,6 +175,13 @@ _RULES = (
         False,
     ),
     (
+        r"C\+\+ targets need clang\+\+",
+        "UNSUPPORTED",
+        "Install clang and point PEEKY_NATIVE_CXX (or the target's `compiler`) at its "
+        "clang++; C targets build with GCC as well.",
+        False,
+    ),
+    (
         r"Stepping is not supported",
         "UNSUPPORTED",
         "Use `peeky session continue --to LINE` to stop at another line.",
