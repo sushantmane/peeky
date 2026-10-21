@@ -81,6 +81,8 @@ def test_the_place_is_read_from_the_line_markers():
 
 def test_cpp_raw_strings_and_constant_templates():
     assert "uses `.incbin`" in c('asm(R"x(.incbin "f")x");', cpp=True)
+    # A raw string's line that starts with `#` is no directive line.
+    assert "uses `.incbin`" in c('asm(R"(\n# .incbin "f"\n)");', cpp=True)
     assert c('const char *s = R"(asm(".incbin"))";', cpp=True) is None
     # Clang's constant-expression templates are not evaluated: refused.
     refused = c('constexpr const char *s() { return "nop"; }\nasm((s()));', cpp=True)

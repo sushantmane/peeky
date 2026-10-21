@@ -142,36 +142,38 @@ def _c_group(text, opening, cpp):
     return size, literals
 
 
-def _c_places(text):
-    """For each line of ``text`` (a preprocessor's output), (file, line) as its line
-    markers give it, and the text with its directive lines blanked (offsets kept)."""
-    places, kept, name, number = [], [], "<unknown>", 1
-    for line in _C_LINE.findall(text):
+def _c_places(text, blanked):
+    """For each line of ``text`` (a preprocessor's output; ``blanked``, the same with its
+    literals blanked), (file, line) as its line markers give it; and both texts with
+    their directive lines blanked (offsets kept). A line in a raw string is none."""
+    places, kept, name, number, at = [], ([], []), "<unknown>", 1, 0
+    for line in _C_LINE.findall(blanked):
         if not line:
             break
+        original, at = text[at : at + len(line)], at + len(line)
         places.append((name, number))
         if _C_DIRECTIVE.match(line):
-            if marker := _C_MARKER.match(line):
+            if marker := _C_MARKER.match(original):
                 number = int(marker[1])
                 if marker[2] is not None:
                     name = re.sub(r"\\(.)", r"\1", marker[2])
             else:
                 number += 1
-            kept.append(re.sub(r"[^\n]", " ", line))
+            original = line = re.sub(r"[^\n]", " ", line)
         else:
             number += 1
-            kept.append(line)
-    return places, "".join(kept)
+        kept[0].append(original)
+        kept[1].append(line)
+    return places, "".join(kept[0]), "".join(kept[1])
 
 
 def c_refusal(output, cpp):
     """The refusal (a ValueError) for inline assembly that can read a file in a
     translation unit as the compiler's `-E` gives it (``output``, bytes), or None."""
     text = output.decode("utf-8", errors="replace").replace("\r\n", "\n")
-    places, text = _c_places(text)
+    places, text, blanked = _c_places(text, blank(text, cpp))
     starts = [0]
     starts += [found.end() for found in re.finditer("\n", text)]
-    blanked = blank(text, cpp)
 
     def where(offset):
         name, line = places[min(bisect.bisect_right(starts, offset) - 1, len(places) - 1)]
