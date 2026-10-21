@@ -5,7 +5,7 @@ import pytest
 
 from peeky.errors import classify
 from peeky.java import JavaSession
-from peeky.native import NativeSession, _return_paths
+from peeky.native import NativeSession, _instructions, _return_paths
 from peeky.probe import RETURN, Probe, run_probe
 from peeky.rust import RustSession
 from peeky.worker import DebugWorker, _method_name
@@ -230,13 +230,18 @@ X86 = """a.out`main:
 
 def test_every_way_back_to_where_a_call_returns_is_watched():
     # The call, each branch to its return address, and each computed jump.
-    assert _return_paths(ARM64, 0x10000049C) == [0x100000498, 0x1000004A0, 0x1000004A4, 0x1000004AC]
-    assert _return_paths(ARM64, 0x1000004AC) == [0x1000004A8, 0x1000004A0]
-    assert _return_paths(X86, 0x401139) == [0x401134, 0x40113B, 0x40113E]
+    assert _return_paths(_instructions(ARM64), 0x10000049C) == [
+        0x100000498,
+        0x1000004A0,
+        0x1000004A4,
+        0x1000004AC,
+    ]
+    assert _return_paths(_instructions(ARM64), 0x1000004AC) == [0x1000004A8, 0x1000004A0]
+    assert _return_paths(_instructions(X86), 0x401139) == [0x401134, 0x40113B, 0x40113E]
     # No call just before it (an inlined frame's address), or not an instruction there.
-    assert _return_paths(X86, 0x40113E) is None
-    assert _return_paths(X86, 0x40113A) is None
-    assert _return_paths("", 0x401139) is None
+    assert _return_paths(_instructions(X86), 0x40113E) is None
+    assert _return_paths(_instructions(X86), 0x40113A) is None
+    assert _return_paths(_instructions(""), 0x401139) is None
 
 
 def test_a_python_probe_of_returns_is_refused_before_running(tmp_path):
@@ -495,3 +500,128 @@ def test_a_frames_stack_pointer_is_read_as_the_debugger_gives_it():
     assert _stack_pointer(Dap("281474976709568"), 3) == 281474976709568
     assert _stack_pointer(Dap("0x000000016f63b290"), 3) == 0x16F63B290
     assert _stack_pointer(Dap("<error>"), 3) is None
+
+
+def test_a_watch_dropped_for_a_deep_recursion_withholds_the_return(tmp_path):
+    # #162 round 2: LLDB dropped the watch after a recursion through the caller ran its
+    # watched call WATCH_TRAPS times; the step ends normally, its return is not followed.
+    worker = watched(tmp_path, {"pc": 0x20, "sp": 0x1000, "dropped": 128}, "step")
+    returned = worker.returned_value(worker.runtime, RETURNED, VALUE)
+    assert returned["unavailable"] and "value" not in returned
+    assert "ran over 128 times in deeper calls" in returned["reason"]
+
+
+class Repl:
+    """lldb-dap's console, answering commands from a script; records what was asked."""
+
+    def __init__(self, answers):
+        self.answers, self.asked = answers, []
+
+    def request(self, command, arguments, timeout=None):
+        if command == "stackTrace":
+            return {"stackFrames": [{"id": 9, "instructionPointerReference": "0x20"}]}
+        text = arguments["expression"]
+        self.asked.append(text)
+        if text == "$sp":
+            return {"result": "0x1000"}
+        return {"result": next((a for k, a in self.answers.items() if text.startswith(k)), "")}
+
+
+COUNTERS = """3: address = program[0x0000000100000528], locations = 1, resolved = 1, hit count = {n} Options: ignore: 0 enabled auto-continue tid: 0x3438d5a
+    Breakpoint commands:
+      breakpoint disable 2 3
+
+  3.1: where = program`c + 124 at r.c:13:13, address = 0x0000000102a34528, resolved, hit count = {n}
+"""
+
+
+@pytest.mark.parametrize(
+    "listing, dropped",
+    [(COUNTERS.format(n=3), False), (COUNTERS.format(n=129), True), ("error: no such id", True)],
+)
+def test_the_watch_counters_say_whether_lldb_dropped_it(listing, dropped):
+    dap = Repl({"`breakpoint list": listing})
+    watch = {"thread": 7, "ids": [2, 3], "counters": [3], "addresses": [0x18], "sp": 0x1000}
+    seen = NativeSession.unwatch_return(object.__new__(NativeSession), dap, watch, 7)
+    assert ("dropped" in seen) is dropped and (seen["pc"], seen["sp"]) == (0x20, 0x1000)
+    # Read before the watch is deleted, and deleted either way.
+    assert dap.asked.index("`breakpoint list 3") < dap.asked.index("`breakpoint delete -f 2 3")
+
+
+def test_a_callers_disassembly_is_read_once_per_function_and_its_failure_said():
+    session = object.__new__(NativeSession)
+    asked = []
+
+    def command(text):
+        asked.append(text)
+        return X86 if "0x401139" in text else "error: Could not find function bounds"
+
+    assert _return_paths(session.caller_instructions(command, 0x401139), 0x401139)
+    # Another call site in the same function: no second disassembly.
+    assert session.caller_instructions(command, 0x40113E)[0][0] == 0x401130
+    assert asked == ["disassemble --force -a 0x401139"]
+    failure = session.caller_instructions(command, 0x500000)
+    assert failure == "LLDB did not disassemble its caller (error: Could not find function bounds)"
+    assert session.caller_instructions(command, 0x500000) == failure and len(asked) == 2
+
+
+def test_a_step_interrupted_on_another_thread_is_discarded_on_that_thread():
+    threads = (
+        "Process 1 stopped\n* thread #2: tid = 0x22, 0x1 a`g, stop reason = breakpoint 1.1\n"
+        "  thread #1: tid = 0x11, 0x2 a`f\n"
+    )
+    dap = Repl({"`thread list": threads})
+    NativeSession.discard_steps(dap, 0x11)
+    assert dap.asked == [
+        "`thread list",
+        "`thread select 1",
+        "`thread plan discard 1",
+        "`thread select 2",
+    ]
+    dap = Repl({"`thread list": threads})
+    NativeSession.discard_steps(dap, 0x22)
+    assert dap.asked == ["`thread list", "`thread plan discard 1"]
+
+
+def test_a_mutual_recursions_outer_calls_get_their_returns(monkeypatch, tmp_path):
+    # f -> c -> f (#162 round 2): the inner f's step out ends in c (depth 4), above the
+    # outer f's frame (3): step out again, to the outer f, then out of it.
+    script = [
+        ("hit", 3),
+        ("hit", 5),
+        ("step", 4, value("1")),
+        ("step", 3, None),
+        ("step", 2, value("2")),
+        ("end",),
+    ]
+    result, returns, resumed = probe_with(monkeypatch, tmp_path, script)
+    assert (returns[2]["value"], returns[1]["value"]) == ("1", "2"), returns
+    assert resumed == ["step", "step", "step", "step", "continue"]
+
+
+@pytest.mark.parametrize("optimization, watched", [(None, True), ("-O2", False)])
+def test_a_step_out_is_watched_only_where_a_value_could_be_shown(tmp_path, optimization, watched):
+    from types import SimpleNamespace
+
+    class Dap:
+        def request(self, command, arguments=None, **_):
+            if command == "stackTrace":
+                return {"stackFrames": [frame("f", "0x10", 4), frame("main", "0x30", 9)]}
+            return {}
+
+    calls = []
+    runtime = SimpleNamespace(
+        assert_current=lambda: None,
+        return_entry=NativeSession.return_entry,
+        watch_return=lambda dap, thread, frames: calls.append(frames) or {"unwatched": "x"},
+        target_identity={
+            "language": "c",
+            **({"optimization": optimization} if optimization else {}),
+        },
+    )
+    worker = DebugWorker(tmp_path)
+    worker.dap, worker.session, worker.thread_id, worker.runtime = Dap(), "s1", 1, runtime
+    worker.state, worker.stop_id = "stopped", "stop1"
+    worker.dispatch("step", {"session_id": "s1", "stop_id": "stop1", "kind": "out"})
+    # An optimized build's returns are withheld whatever happens: no watch is paid for.
+    assert bool(calls) is watched

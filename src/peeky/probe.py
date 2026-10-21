@@ -3056,8 +3056,9 @@ def run_probe(root, probe, *, adapter=None, progress=None):
                 depth = row.pop("depth", None)
                 top = returning[-1]["depth"]
                 if None not in (depth, top) and depth >= top:
-                    # Back from a frame below the call (a --set-at's stop): the call
-                    # itself has not returned yet.
+                    # Back in a frame below the call (a --set-at's stop, or a frame of a
+                    # recursion through another function), or in the call's own frame:
+                    # the call itself has not returned yet; step out until it does.
                     _resume(worker, stop, returning, rows)
                     continue
                 rows.append(row)
@@ -3065,12 +3066,9 @@ def run_probe(root, probe, *, adapter=None, progress=None):
                 while returning and (depth is None or returning[-1]["depth"] > depth):
                     # Its frame is gone too, without a return Peeky saw.
                     rows.append(_never_returned(returning.pop(), _UNWOUND))
-                if returning and returning[-1]["depth"] != depth:
-                    # Not back in the next pending call's frame: none of them can be
-                    # followed to its return any more.
-                    for call in reversed(returning):
-                        rows.append(_never_returned(call, "a step out ended elsewhere"))
-                    returning.clear()
+                # The next pending call is at this depth (its own frame), or above it (a
+                # recursion through another function, `f` -> `c` -> `f`): step out until
+                # it returns. Each return is checked against its own hit's frames.
                 _resume(worker, stop, returning, rows)
                 pauses.append(round((time.monotonic() - paused) * 1000, 1))
                 if not returning and not active and probe.until == "hits":

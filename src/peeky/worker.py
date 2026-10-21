@@ -810,8 +810,17 @@ class DebugWorker:
                 origin["abandoned"] = True
                 if not (isinstance(ids, list) and set(ids) & self.own_ids):
                     self.stop_reason = "step"
+                return
         elif reason == "step" and seen["sp"] != watch["sp"]:
             origin["moved"] = True
+        if traps := seen.get("dropped"):
+            # A recursion through the caller ran its watched instructions that often,
+            # and LLDB dropped the watch to keep the step's cost bounded (#162).
+            origin["unwatched"] = (
+                f"its caller's watched instructions ran over {traps} times in deeper calls "
+                "during the step (a recursion through its caller), so the watch was "
+                "dropped to keep the step's cost bounded"
+            )
 
     def stack_depth(self):
         """The number of frames on the stopped thread's stack (every one listed)."""
@@ -1624,11 +1633,19 @@ class DebugWorker:
             self.stop_reason = event.get("body", {}).get("reason") if self.stop_id else None
             self.stop_function = self.stop_line = self.stop_hit = None
             # This thread's step (if any) has ended; the next poll starts afresh.
+            was_stepping = set(self.stepping)
             self.stepping.discard(self.thread_id)
             self.candidate = None
             if self.return_watch is not None:
                 watch, self.return_watch = self.return_watch, None
                 self.end_return_watch(runtime, watch, event)
+            if self.stop_id and (discard := getattr(runtime, "discard_steps", None)):
+                # A step this stop interrupted is over: LLDB would end it at a later
+                # `continue`, with a step stop no one asked for (#162).
+                for thread in list(was_stepping):
+                    if thread != self.thread_id or self.stop_reason != "step":
+                        discard(self.dap, thread)
+                        self.stepping.discard(thread)
             if self.stop_id and self.sighted and self.sighted["thread"] == self.thread_id:
                 self.sighted = None  # it was reported after all
             if self.state == "terminated" and self.sighted:
@@ -2102,6 +2119,8 @@ class DebugWorker:
                 origin
                 and kind == "out"
                 and (watch_return := getattr(runtime, "watch_return", None))
+                # An optimized build's returns are withheld anyway: nothing to watch for.
+                and not self.optimized()
             ):
                 watch = watch_return(self.dap, self.thread_id, listed)
                 if watch.get("inlined") or "unwatched" in watch:

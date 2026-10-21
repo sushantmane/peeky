@@ -342,3 +342,145 @@ def test_a_threaded_callee_withholds_returns_it_cannot_follow_and_keeps_every_ro
         else:
             assert "another thread" in row["error"], row
     assert "session continue" not in json.dumps(result)
+
+
+# Round 2 of #162: a step out over a deep recursion through its caller, mutual recursion
+# in probes, a caller LLDB refuses to disassemble unless forced, and the leftover step.
+DEEP = """#include <stdio.h>
+#include <stdlib.h>
+static int top;
+static int c(int n);
+static int f(int n) {
+    int r = n % 7;
+    if (n == top) {
+        r += 1; /* TOP */
+    }
+    if (n > 0) r += c(n - 1);
+    return r;
+}
+static int c(int n) {
+    int v = f(n) + 1; /* CALLS */
+    return v;
+}
+int main(int argc, char **argv) {
+    top = argc > 1 ? atoi(argv[1]) : 2000;
+    printf("%d\\n", c(top));
+    return 0;
+}
+"""
+
+MUTUAL = """#include <stdio.h>
+#include <string.h>
+static int c(int n);
+static int f(int n) {
+    int r = n * 10; /* F */
+    if (n > 0) r += c(n - 1);
+    return r;
+}
+static int c(int n) {
+    char buf[64];
+    memset(buf, n, sizeof buf);
+    int v = f(n) + buf[3];
+    return v;
+}
+int main(void) {
+    int t = c(3);
+    printf("%d\\n", t);
+    return 0;
+}
+"""
+
+
+def line(text, marker):
+    return next(i for i, row in enumerate(text.splitlines(), 1) if marker in row)
+
+
+@pytest.mark.timeout(180)
+def test_a_step_out_over_a_deep_recursion_completes_and_withholds_what_it_cannot_follow(
+    c_program, capsys
+):
+    # Each deeper c() runs the watched call: LLDB stopped (and said `continued`) twice
+    # per level, and 1,100 levels overflowed the 2,000-entry event history: the session
+    # failed and the program was killed. The watch now gives up inside LLDB after
+    # WATCH_TRAPS runs, and the return is withheld, never the session.
+    source = c_program.with_name("deep.c")
+    source.write_text(DEEP)
+    start = ["session", "start", str(source), "--at", str(line(DEEP, "TOP")), "--", "1100"]
+    assert main(start) == 0
+    try:
+        assert main(["session", "step", "--out", "--timeout", "60", "--json"]) == 0
+        capsys.readouterr()
+        main(["session", "inspect", "--json"])
+        snapshot = json.loads(capsys.readouterr().out)
+        assert snapshot["frames"][0]["line"] == line(DEEP, "CALLS")
+        returned = snapshot["returned"]
+        assert "value" not in returned and "watch was dropped" in returned["reason"], returned
+        assert main(["session", "continue", "--to-exit", "--timeout", "60"]) == 0
+    finally:
+        main(["session", "close"])
+        capsys.readouterr()
+    result, hits = run(capsys, source, DEEP, "TOP", "r,return", "--timeout", "120", "--arg", "1100")
+    assert result["status"] == "completed" and hits[1]["r"]["value"] == "1"
+    assert "watch was dropped" in hits[1][RETURN]["error"]
+
+
+@pytest.mark.timeout(120)
+def test_a_probe_follows_each_call_of_a_mutual_recursion_to_its_return(c_program, capsys):
+    # f -> c -> f: the step out of the innermost f returns into c, not into the next
+    # pending f; Peeky steps out again until that f returns (each checked against its
+    # own hit's frames). Only the innermost got a value before.
+    source = c_program.with_name("mutual.c")
+    source.write_text(MUTUAL)
+    _, hits = run(capsys, source, MUTUAL, "F", "n,return")
+    values = {rows["n"]["value"]: rows[RETURN].get("value") for rows in hits.values()}
+    # f(n) = 10n + c(n-1), c(n) = f(n) + n.
+    assert values == {"0": "0", "1": "10", "2": "31", "3": "63"}, hits
+
+
+@pytest.mark.timeout(180)
+def test_a_caller_too_large_for_lldb_to_disassemble_unforced_is_still_watched(c_program, capsys):
+    # LLDB refuses a function this large without --force: every return was withheld,
+    # saying no call came before it, and the function was disassembled again each time.
+    body = []
+    for k in range(120):
+        body.append(f"    t += f(k + {k});")
+        body += [
+            f"    sink = sink * {3 + j} + t + {8 * k + j}; t ^= sink >> {j % 5};" for j in range(8)
+        ]
+    text = (
+        "#include <stdio.h>\nstatic volatile int sink;\n"
+        "static int f(int n) {\n    int r = n * 2; /* F */\n    return r + 1;\n}\n"
+        "static int big(int k) {\n    int t = 0;\n" + "\n".join(body) + "\n    return t;\n}\n"
+        'int main(void) {\n    printf("%d\\n", big(1));\n    return 0;\n}\n'
+    )
+    source = c_program.with_name("big.c")
+    source.write_text(text)
+    _, hits = run(capsys, source, text, "/* F */", "n,return", "--hits", "40")
+    assert len(hits) == 40
+    for rows in hits.values():
+        assert rows[RETURN]["value"] == str(2 * int(rows["n"]["value"]) + 1), rows
+
+
+@pytest.mark.timeout(120)
+def test_a_step_out_a_breakpoint_interrupts_leaves_no_step_behind(c_program, capsys):
+    # The breakpoint in the next (deeper) f stops the step out of the first; LLDB kept
+    # that step and, at a later `continue`, stopped where it returns, as a step stop.
+    source = c_program.with_name("mutual.c")
+    source.write_text(MUTUAL)
+    assert main(["session", "start", str(source), "--at", str(line(MUTUAL, "F"))]) == 0
+    capsys.readouterr()
+    try:
+        assert main(["session", "step", "--out", "--json"]) == 0
+        state = json.loads(capsys.readouterr().out)
+        assert (state["reason"], state["hit"]) == ("breakpoint", 2), state
+        reasons = []
+        for _ in range(6):
+            main(["session", "continue", "--json"])
+            state = json.loads(capsys.readouterr().out)
+            if state.get("state") != "stopped":
+                break
+            reasons.append(state["reason"])
+        assert reasons == ["breakpoint", "breakpoint"], reasons
+    finally:
+        main(["session", "close"])
+        capsys.readouterr()
