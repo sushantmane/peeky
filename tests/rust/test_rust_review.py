@@ -48,7 +48,9 @@ def test_locals_the_program_keeps_in_registers_cannot_be_changed(crate, capsys):
     )
     at = first + 1  # the println: marker is live and assigned
     code, result = probe(capsys, crate, "--at", at, "--capture", "marker", "--set", "marker=100")
-    assert code == 1 and result["error"]["code"] == "MUTATION_REJECTED"
+    # Refused before the run (#138), a refusal exits 2 (seventh evaluation, finding 14).
+    assert code == 2 and result.get("refused_before_launch") is True, result
+    assert result["error"]["code"] == "MUTATION_REJECTED"
     assert "only shows a copy" in result["error"]["message"]
     code, result = probe(capsys, crate, "--at", at, "--capture", "marker,start", "--set", "start=0")
     assert code == 0, result.get("error")
@@ -209,7 +211,8 @@ def test_locals_of_always_inlined_functions_cannot_be_changed(crate, capsys):
         i for i, line in enumerate(path.read_text().splitlines(), 1) if 'println!("MARK' in line
     )
     code, result = probe(capsys, crate, "--at", at, "--capture", "marker", "--set", "marker=100")
-    assert code == 1 and result["error"]["code"] == "MUTATION_REJECTED", result
+    assert code == 2 and result.get("refused_before_launch") is True, result
+    assert result["error"]["code"] == "MUTATION_REJECTED", result
     assert not result["interventions"]
 
 

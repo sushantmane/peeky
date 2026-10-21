@@ -1060,6 +1060,8 @@ class RustSession(NativeSession):
             )
         if not infos:
             raise ValueError("No application units were recorded for this build")
+        from peeky.fields import RUST_LIBRARIES
+
         return function_scopes(
             "\n".join(infos),
             "\n".join(tables),
@@ -1067,7 +1069,17 @@ class RustSession(NativeSession):
             tuple(self.lines),
             hidden=self._macro_binding(),
             never=self._register_names,
+            settable=(RUST_LIBRARIES, self._kept_in_memory),
         )
+
+    def _kept_in_memory(self, linkages, name):
+        """For `describe`: whether the build's IR keeps the local ``name`` in memory in
+        every copy of the function (``linkages``), as a field change needs (#105); never
+        in an optimized build."""
+        if self._optimized() or not self.memory:
+            return False
+        hashes = {found[1] for linkage in linkages if (found := _HASH_IN.search(linkage or ""))}
+        return bool(hashes) and all(self.memory.get((hashed, name)) is True for hashed in hashes)
 
     def _register_names(self, linkages, names):
         """For `describe` (#138): of a function's integer locals (``names``: {name:
@@ -1837,7 +1849,29 @@ class RustSession(NativeSession):
             raise Unsettable(
                 f"Peeky could not read the build's debug information ({str(cached)[:200]})"
             )
-        return cached
+        return cached[:2]
+
+    def _field_display_type(self, frame, path, kind):
+        """The Rust primitive a field or element shows as (`usize`, not LLDB's `unsigned
+        long`, which is also `u64`): the base type the build's debug information
+        declares at ``path`` (the root local's name, then the debugger's child names),
+        where LLDB's ``kind`` spells it (seventh evaluation, finding 18); else None."""
+        from peeky.fields import Unsettable, member_base
+
+        if kind in UNIQUE_SCALARS or not any(kind in names for names in RUST_SCALARS.values()):
+            return None
+        hashed = _frame_hash(frame)
+        try:
+            functions, _ = self._field_types()
+        except Unsettable:
+            return None
+        types = functions.get(hashed[1]) if hashed else None
+        try:
+            root, _ = self._declared_type(types or {}, path[0])
+        except Unsettable:
+            return None
+        declared = member_base(self._field_cache[2], root, path[1:])
+        return declared if kind in RUST_SCALARS.get(declared, ()) else None
 
     def _read_field_types(self):
         from peeky.fields import RUST_LIBRARIES, local_types, type_graph
@@ -1872,7 +1906,12 @@ class RustSession(NativeSession):
             # One hash, two bodies that disagree (never expected): neither is trusted.
             functions[hashed[1]] = types if functions.get(hashed[1], types) == types else None
             kinds.update(kind for each in (types or {}).values() for kind, _, _ in each)
-        return functions, type_graph(dies, kinds, RUST_LIBRARIES)
+        # The second, through pointers and references too, only names a field's type.
+        return (
+            functions,
+            type_graph(dies, kinds, RUST_LIBRARIES),
+            type_graph(dies, kinds, RUST_LIBRARIES, pointees=True),
+        )
 
     def view_variable(
         self,
@@ -2157,13 +2196,17 @@ class RustSession(NativeSession):
             return None if innermost else "pointers"
         return "stale"
 
-    def display_type(self, variable, frame, top=True):
+    def display_type(self, variable, frame, top=True, path=None):
         """A value's Rust type where LLDB shows a C-style name: a root local's primitive
-        from the build's MIR (`usize`, not `unsigned long`), any other's when only one
-        primitive renders as that name (`double` is `f64`); and a reference parameter's
-        from the build's IR (`&mut limiter::Window`, not `limiter::Window *`), which
-        declares each instantiation's own types, never a type parameter."""
+        from the build's MIR (`usize`, not `unsigned long`), a field's or element's
+        (``path``: the root's name, then the child names) from the build's debug
+        information, any other's when only one primitive renders as that name (`double`
+        is `f64`); and a reference parameter's from the build's IR (`&mut
+        limiter::Window`, not `limiter::Window *`), which declares each instantiation's
+        own types, never a type parameter."""
         kind = variable.get("type")
+        if not top and path and (declared := self._field_display_type(frame, path, kind)):
+            return declared
         hashed, proofs = _frame_hash(frame), getattr(self, "owned", None)
         proof = self.parameters.get((hashed[1], variable.get("name"))) if top and hashed else None
         if proof and (match := re.fullmatch(r"&(?:mut )?(.+)", proof["type"])):

@@ -218,6 +218,9 @@ class DebugWorker:
         self.step_origin = None
         self.return_watch = None
         self.forget_places()
+        # {line: stops}: the launch's breakpoint lines that are loop headers stopping
+        # only before their loop, so many times each time it starts (#161).
+        self.loop_lines = {}
         self.stop_place = None
         self.reset_lost_stops()
         # A session that failed on a lost stop (#27): its id, error and final report.
@@ -1149,6 +1152,47 @@ class DebugWorker:
         for (line, _), (function, addresses) in groups.items():
             self.places.setdefault(line, []).append((function, tuple(sorted(addresses))))
 
+    def loop_headers(self, runtime):
+        """{line: stops} of the session's breakpoint lines that are loop headers whose
+        every location runs once each time the loop starts, before it (#161): a C, C++
+        `for`/`while` header binds its first code, Rust's `for` its two. Asked of the
+        runtime once, at launch, before the program runs (the debugger's disassembly and
+        line table, kept for the launch); never again when breakpoints are set again or
+        their places asked again (review of #166). Best effort."""
+        hook = getattr(runtime, "loop_header_stops", None)
+        if hook is None or self.dap is None or not self.places:
+            return {}
+        try:
+            source = runtime.source_path(self.program)
+        except Exception:
+            return {}
+        found, cache = {}, {}
+        for line in sorted(self.places)[:8]:
+            groups = [addresses for _, addresses in self.places[line]]
+            try:
+                count = hook(self.dap, source, line, groups, cache)
+            except Exception:
+                count = None
+            if count:
+                found[line] = count
+        return found
+
+    def loop_warnings(self):
+        """The note for each breakpoint line that is a loop header stopping only before
+        its loop (#161)."""
+        from peeky.loop_headers import loop_header_note
+
+        notes = []
+        for line, count in sorted(self.loop_lines.items()):
+            if line not in self.places:
+                continue
+            count, exact = count
+            note = loop_header_note(line, count, exact)
+            if count > 1:
+                note += f" (each hit's stop, 1 to {count}, says which)"
+            notes.append(note + ".")
+        return notes[:5]
+
     def place_of(self, frame):
         """(index, count) of the breakpoint location a stop's ``frame`` is at among its
         line's locations in the same code, in address order, where there are several
@@ -1183,6 +1227,9 @@ class DebugWorker:
         )
         notes = []
         for line in sorted(self.places):
+            if line in self.loop_lines:
+                # Its loop note says more: none of those stops is at a pass.
+                continue
             for function, addresses in self.places[line]:
                 if len(addresses) > 1:
                     count = len(addresses)
@@ -1541,6 +1588,7 @@ class DebugWorker:
             self.hits, self.stop_hit, self.stop_line = 0, None, None
             self.own_lines, self.own_ids, self.temporary_lines = set(), set(), set()
             self.forget_places()
+            self.loop_lines = {}
             # Nothing about an earlier session's stops carries over on a shared worker.
             self.co_served = self.stop_outside = self.stop_returns = False
             self.step_origin = self.return_watch = None
@@ -1618,6 +1666,8 @@ class DebugWorker:
                 self.record_own_points(args.get("breakpoints", []), points)
                 self.note_placed(runtime.source_path(program), args.get("breakpoints", []), points)
                 self.note_places(runtime, args.get("breakpoints", []), points)
+                # Once, before the program runs (#161): breakpoints set again later keep it.
+                self.loop_lines = self.loop_headers(runtime)
                 self.dap.request("configurationDone", timeout=left())
                 self.dap.response(launch, timeout=left())
                 runtime.assert_current()
@@ -1667,6 +1717,7 @@ class DebugWorker:
                         if (
                             notes := [
                                 *self.breakpoint_notes(program, args),
+                                *self.loop_warnings(),
                                 *self.place_warnings(),
                                 *(getattr(runtime, "warnings", None) or ()),
                             ]
@@ -2191,7 +2242,7 @@ class DebugWorker:
                 self.points, self.temporary_line = list(args["breakpoints"]), None
                 self.record_own_points(args["breakpoints"], placed)
                 self.note_places(runtime, args["breakpoints"], placed)
-                if warnings := self.place_warnings():
+                if warnings := [*self.loop_warnings(), *self.place_warnings()]:
                     return {**placed, "warnings": warnings}
             return placed
         if operation == "continue":
@@ -2644,7 +2695,7 @@ class DebugWorker:
                 if kind is not None:
                     output["type"] = kind
                 shown = getattr(self.runtime, "display_type", None)
-                if shown and (rust := shown(variable, frame, top=not ancestry)):
+                if shown and (rust := shown(variable, frame, **self.typed_at(ancestry, name))):
                     # A reference parameter's Rust type (`&mut Window`), as for plain rows.
                     output.update(type=rust, debugger_type=kind)
                 if isinstance(note, str):
@@ -2802,7 +2853,7 @@ class DebugWorker:
                 # Or behind what a pointer points at (`IntSet *`).
                 output["pointee_aliased_type"] = aliased[:2000]
             shown = getattr(self.runtime, "display_type", None)
-            if shown and (rust := shown(variable, frame, top=not ancestry)):
+            if shown and (rust := shown(variable, frame, **self.typed_at(ancestry, name))):
                 # The language's own name; the debugger's stays alongside.
                 output.update(type=rust, debugger_type=kind)
             if isinstance(variable.get("evaluateName"), str) and variable["evaluateName"]:
@@ -2906,6 +2957,9 @@ class DebugWorker:
                 1 if "index" in args else min(args.get("count", 64), 512 - self.inspection_nodes)
             )
             settable = self.preview_settable(record, runtime, elements[start : start + count])
+            # LLDB's names for the fields of a value read from memory, as a field it lists
+            # raw shows beside the language's (seventh evaluation, review of finding 18).
+            listed = self.preview_kinds(record, runtime)
             # Fields of a preview whose root no stop can change (#138), and why; a nested
             # preview's keep its root's.
             source = record[2] if len(record) > 2 else None
@@ -2929,6 +2983,9 @@ class DebugWorker:
                         self.notes[handle] = noted
                 shown = {key: value for key, value in element.items() if key != "children"}
                 page.append({**shown, "variablesReference": handle, "view": "memory"})
+                kind = listed.get(element.get("name"))
+                if isinstance(kind, str) and kind != shown.get("type"):
+                    page[-1]["debugger_type"] = kind
                 if noted and not shown.get("unavailable"):
                     # Read through a local shown with a note (#148).
                     page[-1]["note"] = noted[0]
@@ -3115,6 +3172,29 @@ class DebugWorker:
             return None
         key = ("root", self.mark_place(), str(root.get("name")), str(root.get("type")))
         return self.remember(key, lambda: mid(root, frame, self.stop_reason))
+
+    def preview_kinds(self, record, runtime):
+        """{field: the type the debugger lists it with} for a value shown as a preview
+        read from memory whose fields the debugger lists too (its own storage: a
+        struct's or tuple's fields), read once per function and value path; {} for what
+        a view decodes alone (a container's elements) or where it cannot be read."""
+        source = record[2] if len(record) > 2 else None
+        if source is None:
+            return {}
+        key = ("kinds", source[0].get("name"), tuple(map(tuple, source[2])))
+
+        def read():
+            try:
+                _, _, _, reference, indexed = self.walk(source, runtime, [])
+                variables = self.bounded_variables(reference, indexed)
+            except ValueError:
+                return {}
+            kinds = {}
+            for variable in variables:
+                kinds.setdefault(variable.get("name"), []).append(variable.get("type"))
+            return {name: types[0] for name, types in kinds.items() if len(types) == 1}
+
+        return self.remember(key, read)
 
     def preview_settable(self, record, runtime, elements):
         """For the fields of a value shown as a preview read from memory (#106): a check
@@ -3430,6 +3510,14 @@ class DebugWorker:
                 f"but as {str(shown[0].get('value'))[:80] if len(shown) == 1 else 'nothing'} "
                 "from memory: the program's state is unknown, so the session is closed"
             )
+
+    @staticmethod
+    def typed_at(ancestry, name):
+        """display_type's arguments for the value ``name`` under ``ancestry``: a root
+        local's, or a field's or element's with its path from the root (finding 18)."""
+        if not ancestry:
+            return {"top": True}
+        return {"top": False, "path": [step for step, _ in ancestry] + [name]}
 
     def refuse_never_settable(self, runtime, program, changes):
         """Refuse, before the program runs, a probe's change ({line, name}: a `--set` at

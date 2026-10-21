@@ -326,6 +326,8 @@ def test_cpp_build_recipe_uses_selected_compiler_for_compile_and_link(tmp_path, 
     (tmp_path / "types.hpp").write_text("#pragma once\n")
     monkeypatch.setattr("peeky.native.sys.platform", "linux")
     monkeypatch.setattr("peeky.native._tool", lambda tool: tool)
+    # What `/trusted/clang++-18 --version` would say (#167).
+    monkeypatch.setattr("peeky.native.compiler_family", lambda path: "clang")
 
     class Captured(Exception):
         pass
