@@ -92,8 +92,12 @@ class Client:
         args=(),
         expect_sha256=None,
         edit=None,
+        set_at=(),
     ):
         """One stateless request: stop at `path:line`, capture, optionally set, report.
+
+        ``set_at`` holds (line, hit, name, value) interventions, each at its own stop of
+        the same file (#137).
 
         ``edit=(old, new)`` probes a candidate fix: the worker builds the program with
         ``old`` replaced once by ``new``; ``at`` is in the original's line numbering. A
@@ -109,6 +113,8 @@ class Client:
             options["args"] = list(args)
         if expect_sha256:
             options["expect_sha256"] = dict(expect_sha256)
+        if set_at:
+            options["set_at"] = [list(point) for point in set_at]
         return self.call(
             "probe",
             at=at,

@@ -83,7 +83,7 @@ probe: peeky probe examples/pagination_bug.py --at pagination_bug.py:<line> [--r
 
 For a large module, `--json` and `jq` find a function quickly: `peeky describe dir --at module.py --json | jq '.scopes[] | select(.scope | test("is_private"))'`.
 
-C, C++ and Rust list the same from the build's debug information: each function in your sources, with its file, lines and parameters and locals. Names are readable (`crate::Type::method`, `<crate::Type as core::fmt::Display>::fmt`, `geo::Box::area`). A probe table's `function` column shows each frame's short name: `trim_left`, `geo::Box::area`, `same<int>`, a Rust function without its symbol hash; two overloads in one table keep their parameters (`twice(int)`, `twice(std::string const&)`). JSON and the evidence store keep LLDB's whole frame name (a C++ signature, `trim_left(std::__1::basic_string<char, …> const&)`; Rust's symbol escapes, `_$LT$…`), and a session's text names the frame with its parameters, the standard types written as code writes them (`in trim_left(std::string const&)`). SQL compares the whole name, so `WHERE function = 'trim_left'` finds nothing: a table that shows short names says so in a note. Match a frame with `short_function(function) = 'trim_left'` or with its whole name. `short_function` drops the parameters of every overload, so overloads share one name (`operator+` for `operator+(V, V)` and `operator+(W, W)`; `G::get` for `get() &` and `get() &&`): a `GROUP BY` or join on it combines them, and it is not always what a table shows (a table keeps the parameters of overloads that would read alike). Closures and lambdas are listed under their function. A function inlined into another (`#[inline(always)]`, `always_inline`) keeps its own lines. Each name shows its type. A local declared only inside nested blocks also shows those blocks' lines, where it is visible: `i (int, lines 23, 28)` is two one-line `for` loops' `i`, not a name of the whole function. A block that also runs another file's code (an `#include` inside it) gives none (a local macro's expansion, on its definition's lines, does not count), and past eight blocks one span covers them all. In Rust every `let` opens a block, so a local shows the lines after its `let`, where it is visible (#107). Bindings a macro from another crate declares (`println!`'s `args`, `core::fmt::rt::Argument[1]`) are left out: the build's MIR places them in the macro's own file. A macro of your crate's keeps its bindings, `#[collapse_debuginfo(yes)]` too. Lines between a block's own where only code outside the block runs are left out, so one block can give several spans. In C++ a block's cleanup code, which runs when an exception leaves the block, is on the function's closing line: `name (std::string, lines 22-25, 35)` is an `if` block's local, visible on its lines and, while an exception unwinds, at the closing `}`, not on the lines between. A span is never narrower than where the debugger can show the local, so lines without code (comments, a lone `}`) inside it are kept. If the debug information cannot be read, the text says `function names: unavailable (reason)`. A very large optimized C++ unit can exceed the 16 MB bound on reading it:
+C, C++ and Rust list the same from the build's debug information: each function in your sources, with its file, lines and parameters and locals. Names are readable (`crate::Type::method`, `<crate::Type as core::fmt::Display>::fmt`, `geo::Box::area`). A probe table's `function` column shows each frame's short name: `trim_left`, `geo::Box::area`, `same<int>`, a Rust function without its symbol hash; two overloads in one table keep their parameters (`twice(int)`, `twice(std::string const&)`). JSON and the evidence store keep LLDB's whole frame name (a C++ signature, `trim_left(std::__1::basic_string<char, …> const&)`; Rust's symbol escapes, `_$LT$…`), and a session's text names the frame with its parameters, the standard types written as code writes them (`in trim_left(std::string const&)`). SQL compares the whole name, so `WHERE function = 'trim_left'` finds nothing: a table that shows short names says so in a note. Match a frame with `short_function(function) = 'trim_left'` or with its whole name. `short_function` drops the parameters of every overload and a Rust symbol's hash, so overloads share one name (`operator+` for `operator+(V, V)` and `operator+(W, W)`; `G::get` for `get() &` and `get() &&`), and so do a Rust function's closures (`cz::main::{{closure}}` for `{closure#0}` and `{closure#1}`) and a generic's instances (`cz::gen_apply` for `gen_apply<i32>` and `gen_apply<i16>`): a `GROUP BY` or join on it combines them, and it is not always what a table shows (a table keeps the parameters of overloads that would read alike). A probe table shows a closure or instance as the build names it (`cz::main::{closure#0}`, `cz::gen_apply<i32>`); the `instance` column of `captures` (and of `evidence`, `interventions`) keeps that label, so `WHERE instance = 'cz::main::{closure#0}'` finds one closure's rows, and the table's note says so. Closures and lambdas are listed under their function. A function inlined into another (`#[inline(always)]`, `always_inline`) keeps its own lines. Each name shows its type. A local declared only inside nested blocks also shows those blocks' lines, where it is visible: `i (int, lines 23, 28)` is two one-line `for` loops' `i`, not a name of the whole function. A block that also runs another file's code (an `#include` inside it) gives none (a local macro's expansion, on its definition's lines, does not count), and past eight blocks one span covers them all. In Rust every `let` opens a block, so a local shows the lines after its `let`, where it is visible (#107). Bindings a macro from another crate declares (`println!`'s `args`, `core::fmt::rt::Argument[1]`) are left out: the build's MIR places them in the macro's own file. A macro of your crate's keeps its bindings, `#[collapse_debuginfo(yes)]` too. Lines between a block's own where only code outside the block runs are left out, so one block can give several spans. In C++ a block's cleanup code, which runs when an exception leaves the block, is on the function's closing line: `name (std::string, lines 22-25, 35)` is an `if` block's local, visible on its lines and, while an exception unwinds, at the closing `}`, not on the lines between. A span is never narrower than where the debugger can show the local, so lines without code (comments, a lone `}`) inside it are kept. If the debug information cannot be read, the text says `function names: unavailable (reason)`. A very large optimized C++ unit can exceed the 16 MB bound on reading it:
 
 ```
 names in parse_count (pagination_bug.c:6-14): end (char *), minimum (int), result (int *), text (const char *), value (long)
@@ -265,7 +265,43 @@ Every command takes `--json`. Exit codes:
 - 0: success;
 - 1: a completed command with a negative result (a failed probe or a failed verify);
 - 2: an error;
-- 3: a background job still running.
+- 3: a background job still running;
+- 4: a probe (`peeky probe`, or the `peeky-probe` script) that completed, but a change it was asked to make (`--set`, `--set-at`) never happened, because its stop never came (2.8). The values are evidence; the experiment did not happen. A shortfall of `--hits` alone is not a failure: 0, with a warning.
+
+### 2.8 Change a Value, Then Restore It
+
+**What it answers:** Would the output be right if one value were different for one statement only?
+
+`stock.cpp` (C++) keeps `"apple "` and `"apple"` apart because `trim_left` leaves trailing spaces. Line 22 is `std::string name = trim_left(entry.substr(0, colon));` and line 23 `long qty = std::stol(entry.substr(colon + 1));`. To test the fix, shorten `colon` so line 22 cuts the space off, then restore it so line 23 still reads the quantity:
+
+```sh
+peeky probe stock --at stock.cpp:22 --capture colon,entry --hits all \
+  --set-at 22@3 colon=6 --set-at 23@3 colon=7 \
+  --set-at 22@4 colon=4 --set-at 23@4 colon=5 -- "apple:3, pear:2, apple :4,pear :1"
+```
+
+```
+hit  phase      line  function  selector  type         value
+3    observed   22    main      colon     size_t       7  [settable]
+3    observed   22    main      entry     std::string  " apple :4"
+3    after-set  22    main      colon     size_t       6  [settable]
+...
+set colon: 7 -> 6  (--set-at line 22@3)
+set colon: 6 -> 7  (--set-at line 23@3)
+set colon: 5 -> 4  (--set-at line 22@4)
+set colon: 4 -> 5  (--set-at line 23@4)
+output:
+  STOCK:apple=7,pear=3
+```
+
+Shortened alone, line 23 reads `:4` and `std::stol` throws. With `--set` you would need a session (start, set, step, set, …) for this.
+
+- **Where and when:** `--set-at [PATH:]LINE[@HIT] name=value` changes a value at hit `HIT` (default 1) of `LINE`, counting that line's own stops, in the `--at` file. Repeat it for several lines and hits; changes at one stop are made in the order given.
+- **Which function:** `HIT` counts every stop of the line, in any function: a lambda or closure on the line (`auto f = [](long v) { return v + 1; }; total += f(v);` stops in `main`, then in the lambda), a recursive call, or a generic's instances (Rust: `gen::tf<gen::A>` and `gen::tf<gen::B>`, named with their type arguments; a name past 300 characters is cut with `…`, and two that then read alike get their symbol hashes; closures as `main::{closure#1}`). Python's debugger names two lambdas on one line alike (`<lambda>`, with no column), so the warning says their stops are counted together, and a change in one says `one of 2 on the line the debugger names alike`. Each change says whose variable it changed (`set v: 0 -> 100  (--set-at line 6@2, in main::$_0::operator())`; `function` in JSON and in the `interventions` table), and a `--set-at` line that stopped in more than one function gets a warning listing each function's stops.
+- **Captures:** The probe stops at every `--set-at` line as well as at `--at`, but captures values only at `--at`. A change at a captured stop gets `after-set` rows, as `--set` does. `--set` and `--set-hit` work as before, and together with `--set-at` make at most 8 changes.
+- **How long it runs:** The probe keeps each breakpoint until the changes on that line are made, past `--hits` if need be. With `--until hits` it ends once both are done (an attached JVM, which never exits, waits for them until `--timeout`). A change whose stop never comes (`23@9` where line 23 stops 4 times) is not made, and the result says so: `status: completed (1 requested change not made)`, a warning, `unapplied` in JSON, and exit code 4. So is a `--set` whose `--set-hit` never comes.
+- **Rules:** Each change follows the same rules as `--set` at its own stop (a statement under way, a local not yet initialized, a value with a note, a field through a pointer: see 2.3). Before the program runs, each `--set-at` is judged against the functions on its own line, as a `--set` is against the `--at` line's: one that no stop of its line could make (a Rust local kept in a register, a field through a pointer) is refused there, naming the line, and nothing runs (6.6). One refusal fails the whole probe, naming its line and hit and how many changes were already made: half of a linked change is not the experiment you asked for. A line with no code of its own is refused, never moved to the next line.
+- **Evidence:** `runs.sets` lists each change as `[name, value, "LINE@HIT"]` (a `--set` stays `[name, value]`), so `queries diff`'s `(sets)` row tells runs apart by them. The `interventions` table gives each change's `line`, `hit`, `capture_hit`, `function` and `instance` (schema 12; `captures.instance`, schema 13, labels captured values the same way). `queries set_effect` lists the changes in the order they were made, and `queries wide` puts each one in the `sets` column of the row it comes before.
 
 ### 2.8 What a Function Returned
 
@@ -347,11 +383,11 @@ peeky queries set_effect
 ```
 
 ```
-hit  selector  observed  after_set  caveat_observed  caveat_after_set  interventions
-1    start     3         0          NULL             NULL              start: 3 -> 0
+hit  line  selector  observed  after_set  caveat_observed  caveat_after_set  interventions
+1    8     start     3         0          NULL             NULL              start: 3 -> 0
 ```
 
-`caveat_observed` and `caveat_after_set` name a view or `note` that qualifies either value, as `hits` does.
+`caveat_observed` and `caveat_after_set` name a view or `note` that qualifies either value, as `hits` does. Rows come in the order the changes were made. A change at a stop where nothing was captured (a `--set-at` line, 2.8) is one row: what it changed, before and after.
 
 Pass `--param a=<run> --param b=<run>` to `diff`, `compare`, `outputs` and `join` to pick specific runs.
 
@@ -367,11 +403,11 @@ peeky queries wide                  # the newest run; --param run=3 for another
 ```
 
 ```
-hit  phase     line  v  total  bins[3].hi  no_value  caveats
-1    observed  9     2  0      4           NULL      NULL
-2    observed  9     7  6      4           NULL      NULL
-3    observed  9     7  34     4           NULL      NULL
-4    observed  9     8  62     4           NULL      NULL
+hit  phase     line  v  total  bins[3].hi  no_value  caveats  sets
+1    observed  9     2  0      4           NULL      NULL     NULL
+2    observed  9     7  6      4           NULL      NULL     NULL
+3    observed  9     7  34     4           NULL      NULL     NULL
+4    observed  9     8  62     4           NULL      NULL     NULL
 ```
 
 - **Columns:** one per selector, named exactly as captured, in `--capture` order.
@@ -384,7 +420,8 @@ hit  phase     line  v  total  bins[3].hi  no_value  caveats
   - `stale`, `unproven`, `opaque` or `budget-exhausted`: the row's view (`peeky sql --schema` explains `view`). `stale` is a moved or dropped Rust local's leftover bytes, whatever view decoded them.
   - `note`: the probe marked the row `[note]` (for example a C local declared on a `do` body's first line: `{"k":"note"}`, "may be the last pass's value, or leftovers"), or gave it one of the Rust notes among its warnings. `peeky queries run` shows each row's note.
 - **Phases:** a run with `--set` has an `after-set` row after its hit's `observed` row. `--param phase=observed` (or `after-set`) keeps one.
-- **`--json`** also gives the SQL it ran (`sql`): refine it with `peeky sql`, e.g. `SELECT * FROM (<sql>) WHERE "v" = '7'`. Up to 95 selectors fit (100 columns at most); a wider run is refused.
+- **`sets`** lists the changes made since the previous row's values were read (a JSON list, `["colon: 7 -> 6 (line 22, hit 3)"]`): on an `after-set` row, those made at that stop; on an `observed` row, those made at other lines' stops after the previous hit (`--set-at`, 2.8). A change after the last hit precedes no row; `queries set_effect` lists them all.
+- **`--json`** also gives the SQL it ran (`sql`): refine it with `peeky sql`, e.g. `SELECT * FROM (<sql>) WHERE "v" = '7'`. Up to 94 selectors fit (100 columns at most); a wider run is refused.
 
 ### 3.5 Joining Two Runs by a Value
 
@@ -807,7 +844,7 @@ run_a  run_b  hit   phase     selector  value_a           value_b               
   ```
 
   This reports `set end: 3 -> 10`. `black_box` keeps the new Rust local in memory, where a change reaches the program.
-- **A Rust local kept in a register:** a by-value parameter, or a `let` the code never borrows or reassigns, may live only in a register even in a debug build, so the debugger shows a copy and a change would not reach the program. Rows mark it `[not settable: register]` (a struct's fields too, in its preview) and `describe`'s `mutable:` line lists them per function. A probe that sets one is refused before the program runs (nothing ran, no run saved), as is any `--set` its build rules out in every function on the `--at` line (#138). Keep it in memory with the edit, in the same probe: for the limiter's `fn allow(w: &mut Window, now: u64, limit: u32, width: u64)`,
+- **A Rust local kept in a register:** a by-value parameter, or a `let` the code never borrows or reassigns, may live only in a register even in a debug build, so the debugger shows a copy and a change would not reach the program. Rows mark it `[not settable: register]` (a struct's fields too, in its preview) and `describe`'s `mutable:` line lists them per function. A probe that sets one is refused before the program runs (nothing ran, no run saved), as is any `--set` its build rules out in every function on the `--at` line (#138), and any `--set-at` the build rules out on its own line (2.8). Keep it in memory with the edit, in the same probe: for the limiter's `fn allow(w: &mut Window, now: u64, limit: u32, width: u64)`,
 
   ```sh
   peeky probe limiter --at src/main.rs:10 --arg 2 --arg 10 --arg 0,1,10,11 --capture width \
