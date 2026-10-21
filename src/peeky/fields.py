@@ -44,6 +44,8 @@ _PARAMETERS = {
 _CHARACTERS = frozenset({"wchar_t", "char8_t", "char16_t", "char32_t"})
 _SELECTABLE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _INDEX = re.compile(r"\[(0|[1-9][0-9]{0,9})\]")
+# A location that is one offset in the frame, nothing more: a local's own storage.
+_PLAIN_FRAME = re.compile(r"\(?\s*DW_OP_(?:fbreg|breg[0-9]+)\b[^,()]*\)?\s*")
 
 
 class Unsettable(ValueError):
@@ -62,6 +64,33 @@ def _number(value):
     if re.fullmatch(r"[0-9]{1,19}", text):
         return int(text)
     return None
+
+
+def referred_locals(dies, bodies):
+    """The names of the parameters and variables of a function's code (as
+    ``local_types`` walks them) whose storage the frame reaches through a pointer:
+    any location other than one frame offset (`DW_OP_fbreg -24`), such as clang's
+    `DW_OP_fbreg -24, DW_OP_deref` for a structured binding of a reference
+    (`auto& [items, n] = *owner`), a class passed by value through a hidden pointer, or
+    a named return value. Their values may be what a caller's library call is changing
+    (#181). None if there are too many to list them all."""
+    found, pending, seen = set(), [child for body in bodies for child in dies[body]["children"]], 0
+    while pending:
+        child = pending.pop()
+        die = dies[child]
+        if die["tag"] == "DW_TAG_lexical_block":
+            pending.extend(die["children"])
+            continue
+        if die["tag"] not in ("DW_TAG_formal_parameter", "DW_TAG_variable"):
+            continue
+        seen += 1
+        if seen > MAX_LOCALS:
+            return None
+        name = _text(_first(dies, _chain(dies, child), "DW_AT_name"))
+        location = die["attrs"].get("DW_AT_location") or ""
+        if name and not _PLAIN_FRAME.fullmatch(location):
+            found.add(name)
+    return frozenset(found)
 
 
 def local_types(dies, bodies):

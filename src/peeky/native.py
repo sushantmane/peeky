@@ -1450,8 +1450,9 @@ def local_declarations(info, line_text, workspace, declared):
     it. ``root``: the function's DIE; ``constructor``, ``enclosing`` and ``defined``:
     see _class_role. ``span``: its own lines in its source, or None. ``order``: every row
     it runs, (address, source, line) by address. ``classes``: _local_classes.
-    ``types``: fields.local_types, the type and storage of each local (#105)."""
-    from peeky.fields import local_types
+    ``types``: fields.local_types, the type and storage of each local (#105);
+    ``referred``: fields.referred_locals, those the frame reaches through a pointer."""
+    from peeky.fields import local_types, referred_locals
 
     epilogues = set()
     dies, functions, _, files, runs, addresses = _function_entries(
@@ -1546,6 +1547,8 @@ def local_declarations(info, line_text, workspace, declared):
                 "order": tuple(ordered),
                 "classes": classes.get(root, ()),
                 "types": local_types(dies, entry["bodies"]),
+                # Its locals the frame reaches through a pointer (#181 review).
+                "referred": referred_locals(dies, entry["bodies"]),
                 "inlined": inlined,
                 # (name, source, line, automatic) -> the code ranges of the block declaring
                 # it (the function's for a parameter): where lldb-dap lists that local.
@@ -1749,6 +1752,12 @@ def _is_object(variable):
 _CONSTRUCTOR_NAME = re.compile(
     r"(?:^|::|\s)([A-Za-z_]\w*|\$_\d+|\((?:anonymous|unnamed) (?:struct|class|union)[^()]*\)"
     r"|\{unnamed type#\d+\})(?:<[^()]*>)?::\1(?:<[^()]*>)?\("
+)
+# A C++ destructor's or assignment operator's frame name (`Noisy::~Noisy()`,
+# `ns::Box<int>::~Box()`, `E::operator=(E const&)`), as _CONSTRUCTOR_NAME's.
+_LIFETIME_NAME = re.compile(
+    r"(?:(?:^|::|\s)([A-Za-z_]\w*|\$_\d+|\((?:anonymous|unnamed) (?:struct|class|union)[^()]*\)"
+    r"|\{unnamed type#\d+\})(?:<[^()]*>)?::~\1(?:<[^()]*>)?|::operator=)\("
 )
 # A source whose statements are scanned (c_source) to place a caller's declaration.
 MAX_STATEMENT_SOURCE = 8_000_000
@@ -3266,8 +3275,17 @@ class NativeSession:
         if walked is None:
             return None
         typed, indirect, contained = walked
-        settled = self.containers_settled(frame, indirect or pointee, stack, deeper, threads)
-        if contained and not settled:
+        known = []
+
+        def settled():
+            # Asked only for a container (it reads the stop's threads and frames).
+            if not known:
+                known.append(
+                    self.containers_settled(frame, indirect or pointee, stack, deeper, threads)
+                )
+            return known[0]
+
+        if contained and not settled():
             # An element of a standard container a library call may be changing (an
             # element `clear()` has destroyed already): not previewed (#181).
             return None
@@ -3310,18 +3328,24 @@ class NativeSession:
         a `push_back` on a container this one shares); no standard-library function is
         running between the stop and ``frame`` (a `push_back` or `clear` there may be
         part-way through its change, with an element's constructor or destructor of the
-        program's on top); and, where the value is reached through a pointer or
-        reference (``indirect``) or is no automatic of the frame, none anywhere on the
-        stack (it may be what a caller's `clear` changes). ``stack``: the frames as
-        listed (innermost first); ``deeper()``: up to 64 of them, where the ten listed
-        may not be all; ``threads()``: how many threads the debugger lists."""
+        program's on top), nor a constructor, destructor or assignment operator below
+        ``frame`` (the program's own `slot->~E(); ::new (slot) E(3);` ends and begins an
+        element's lifetime in place); and, where the value is reached through a pointer
+        or reference (``indirect``) or is no automatic of the frame, no such frame
+        anywhere on the stack (it may be what a caller's `clear` changes). ``stack``: the
+        frames as listed (innermost first); ``deeper()``: up to 64 of them, where the ten
+        listed may not be all; ``threads()``: how many threads the program has, or None
+        where that is not known for sure."""
         if threads is None or threads() != 1:
             return False
         frames = list(stack or [])
         ids = [each.get("id") for each in frames]
         if frame is None or ids.count(frame.get("id")) != 1:
             return False
-        if any(_library_frame(each) for each in frames[: ids.index(frame.get("id")) + 1]):
+        index = ids.index(frame.get("id"))
+        if any(_library_frame(each) for each in frames[: index + 1]):
+            return False
+        if any(self._lifetime(each) for each in frames[:index]):
             return False
         if not indirect:
             return True
@@ -3330,7 +3354,13 @@ class NativeSession:
             if not frames or len(frames) >= 64:
                 # More frames than are read: one of them may be the library's.
                 return False
-        return not any(_library_frame(each) for each in frames)
+        return not any(_library_frame(each) or self._lifetime(each) for each in frames)
+
+    def _lifetime(self, frame):
+        """Whether a frame runs a C++ constructor, destructor or assignment operator,
+        which may be part-way through building, ending or replacing an element of a
+        container (#181 review): by its function's debug information or its name."""
+        return self._constructs(frame) or bool(_LIFETIME_NAME.search(str(frame.get("name") or "")))
 
     def member_value(self, variable, frame, steps):
         """How to show a field LLDB reads wrongly, or None to keep its text (#136): a
@@ -3362,8 +3392,9 @@ class NativeSession:
         None where it cannot be told (no debug information read, a name declared twice
         with two types, a child the type does not have). With ``walked``, (Typed,
         whether the path goes through a pointer or reference, or starts at a local that
-        is no automatic or parameter of the frame, whether it goes through a standard
-        container's element)."""
+        is no automatic or parameter of the frame or one it reaches through a pointer
+        (``fields.referred_locals``), whether it goes through a standard container's
+        element)."""
         from peeky.fields import Unsettable
         from peeky.native_previews import Typed
 
@@ -3378,7 +3409,14 @@ class NativeSession:
         except Unsettable:
             return None
         typed = Typed(self.fields, offset)
-        indirect, contained = not framed, False
+        plain = re.fullmatch(r"(.+) @ [^:]+:[0-9]+", str(steps[0]))
+        referred = function.get("referred")
+        # A local the frame reaches through a pointer (a structured binding of a
+        # reference, `auto& [items, n] = *owner`, which the debug information types as
+        # the vector itself), or one whose locations were not all read, counts as one
+        # reached through a pointer (#181 review).
+        reached = referred is None or (plain[1] if plain else str(steps[0])) in referred
+        indirect, contained = not framed or reached, False
         for step in steps[1:]:
             holder = typed
             if typed.kind() in ("pointer", "reference"):
@@ -5406,6 +5444,22 @@ class NativeSession:
             "debugger may read a struct, class or reference from the wrong place, so "
             "Peeky shows only scalar returns"
         )
+
+    @staticmethod
+    def listed_threads(dap):
+        """The thread IDs LLDB itself lists at this stop (`thread list`: `thread #2: tid =
+        0x3a7f3b5, …`), which lldb-dap's `threads` reply may not yet show (#181 review),
+        or None where it does not say."""
+        try:
+            text = dap.request(
+                "evaluate", {"expression": "`thread list", "context": "repl"}, timeout=2
+            ).get("result", "")
+        except Exception:
+            return None
+        if not isinstance(text, str) or len(text) > MAX_METADATA:
+            return None
+        found = re.findall(r"^\*?\s*thread #[0-9]+: tid = (0x[0-9a-fA-F]+|[0-9]+)\b", text, re.M)
+        return frozenset(int(tid, 0) for tid in found) or None
 
     @staticmethod
     def returned_by_command(dap, thread_id):

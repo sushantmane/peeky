@@ -14,6 +14,7 @@ from peeky.fields import (
     Unsettable,
     debugger_steps,
     local_types,
+    referred_locals,
     settable_member,
     type_graph,
 )
@@ -743,3 +744,38 @@ def test_a_standard_containers_template_arguments_type_its_elements():
     assert graph[0x44][12] == (("type", "T", 0x14, None),)
     alone = type_graph(_parse_dies(CONTAINERS), (0x44,), CPP_LIBRARIES)
     assert 0x14 not in alone
+
+
+REFERRED = dump(
+    (0x0B, 0, "DW_TAG_compile_unit", {"DW_AT_name": '"r.cpp"'}),
+    (0x10, 1, "DW_TAG_base_type", base("int", "DW_ATE_signed", "0x04")),
+    (0x20, 1, "DW_TAG_subprogram", {"DW_AT_name": '"f"'}),
+    (0x24, 2, "DW_TAG_formal_parameter", NAMED("plain") | {"DW_AT_location": "DW_OP_fbreg -8"}),
+    (
+        0x28,
+        2,
+        "DW_TAG_variable",
+        NAMED("items") | {"DW_AT_location": "DW_OP_fbreg -24, DW_OP_deref"},
+    ),
+    (0x2C, 2, "DW_TAG_lexical_block", {}),
+    (
+        0x30,
+        3,
+        "DW_TAG_variable",
+        NAMED("sized") | {"DW_AT_location": "DW_OP_breg29 W29-8, DW_OP_deref_size 0x8"},
+    ),
+    (0x34, 3, "DW_TAG_variable", NAMED("framed") | {"DW_AT_location": "DW_OP_breg29 W29-16"}),
+    (0x38, 2, "DW_TAG_variable", NAMED("global") | {"DW_AT_location": "DW_OP_addr 0x1000"}),
+    (0x3C, 2, "DW_TAG_variable", NAMED("gone")),
+)
+
+
+def test_locals_the_frame_reaches_through_a_pointer():
+    # Review of #181: `auto &[items, dropped] = *owner` is typed as the vector itself, at
+    # `DW_OP_fbreg -24, DW_OP_deref`: storage "automatic", so its container was taken for
+    # the frame's own. Anything but one frame offset is read through a pointer.
+    dies = _parse_dies(REFERRED)
+    assert referred_locals(dies, [0x20]) == {"items", "sized", "global", "gone"}
+    assert {k: {s for _, s, _ in v} for k, v in local_types(dies, [0x20]).items()}["items"] == {
+        "automatic"
+    }

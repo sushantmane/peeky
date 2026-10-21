@@ -120,6 +120,9 @@ class DAP:
         self.abandoned = set()
         self.events = collections.deque(maxlen=MAX_CONTROL_EVENTS)
         self.ignored_events = {}
+        # The threads a `thread` event said started since launch (#181 review): two
+        # mean the program has run more than one thread.
+        self.started_threads = set()
         # Bounded message summaries (no arguments or values) for diagnosing lost events.
         self.trace = collections.deque(maxlen=200)
         # Requests kept out of the trace (Peeky's own bounded polls), until their reply.
@@ -279,6 +282,14 @@ class DAP:
                         if type(pid) is int and pid > 1:
                             self.debuggee_pid = pid
                             self._announce(pid)
+                    detail = body.get("body") or {}
+                    started = self.__dict__.setdefault("started_threads", set())
+                    if (
+                        body["event"] == "thread"
+                        and detail.get("reason") == "started"
+                        and len(started) < 64
+                    ):
+                        started.add(detail.get("threadId"))
                     # Thread/module churn (thousands per second in large JVMs) must not
                     # evict lifecycle events; keep only bounded counts.
                     name = body["event"] if len(self.ignored_events) < 64 else "<other>"

@@ -326,3 +326,140 @@ def test_a_program_running_several_threads_shows_container_summaries(cpp, capsys
     assert main(command) == 0
     rows = {row["selector"]: row for row in json.loads(capsys.readouterr().out)["rows"]}
     assert rows["shared"]["value"] == "size=3", rows["shared"]
+
+
+BINDING = """#include <cstdio>
+#include <vector>
+struct Owner;
+struct Item {
+    int value;
+    Owner *owner;
+    Item(int v, Owner *o) : value(v), owner(o) {}
+    ~Item();
+};
+struct Owner { std::vector<Item> items; int dropped = 0; };
+Item::~Item() {
+    auto &[items, dropped] = *owner;
+    dropped += 1; // IN_DTOR
+    value = -99;
+}
+int main() {
+    Owner o;
+    o.items.reserve(4);
+    o.items.emplace_back(1, &o);
+    o.items.emplace_back(2, &o);
+    o.items.clear();
+    std::printf("%d\\n", o.dropped);
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(120)
+def test_a_structured_binding_of_a_reference_is_read_as_one(cpp, capsys):
+    # Review of #181: clang types `items` of `auto &[items, dropped] = *owner` as the
+    # vector itself, at a location read through a pointer (`DW_OP_deref`). Taken for
+    # the frame's own vector, it previewed `size=2 [{value = 1, …}, {value = -99, …}]`
+    # at the second destructor `clear()` runs, the first element destroyed already.
+    source = cpp / "binding.cpp"
+    source.write_text(BINDING)
+    line = line_of(BINDING, "// IN_DTOR")
+    command = ["probe", str(source), "--at", str(line), "--capture", "items", "--hits", "2"]
+    assert main([*command, "--json"]) == 0
+    rows = json.loads(capsys.readouterr().out)["rows"]
+    assert [row["value"] for row in rows] == ["size=2", "size=2"], rows
+
+
+MANUAL = """#include <cstdio>
+#include <new>
+#include <vector>
+static int dead = 0;
+struct E {
+    int x;
+    E(int v) : x(v) {}
+    ~E() {
+        x = -7;
+        dead += 1; // IN_E_DTOR
+    }
+};
+int main() {
+    std::vector<E> v;
+    v.reserve(2);
+    v.emplace_back(1);
+    v.emplace_back(2);
+    E *slot = &v[0];
+    slot->~E();
+    ::new (slot) E(3);
+    std::printf("%d %d %d\\n", v[0].x, v[1].x, dead);
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(120)
+def test_a_container_whose_element_the_program_destroys_in_place_keeps_its_summary(cpp, capsys):
+    # Review of #181: `slot->~E(); ::new (slot) E(3);` in `main`, stopped in `E::~E()`:
+    # `main`'s `v` previewed `size=2 [{x = -7}, {x = 2}]`, an element whose lifetime
+    # had ended, with no library frame between. A constructor, destructor or assignment
+    # operator below the container's frame now withholds its elements.
+    source = cpp / "manual.cpp"
+    source.write_text(MANUAL)
+    with session(source, line_of(MANUAL, "// IN_E_DTOR"), capsys) as get:
+        main(["session", "inspect", "--json"])
+        frames = json.loads(capsys.readouterr().out)["frames"]
+        caller = next(i for i, f in enumerate(frames) if f.get("name") == "main")
+        rows = get("v", frame=caller)
+        assert rows["v"]["value"] == "size=2", rows["v"]
+    line = line_of(MANUAL, "std::printf")
+    assert main(["probe", str(source), "--at", str(line), "--capture", "v", "--json"]) == 0
+    (row,) = json.loads(capsys.readouterr().out)["rows"]
+    assert row["value"] == "size=2 [{x = 3}, {x = 2}]", row
+
+
+RELOCATING = """#include <atomic>
+#include <cstdio>
+#include <thread>
+#include <vector>
+static std::atomic<bool> parked{false}, released{false};
+struct Slow {
+    int x;
+    Slow(int v) : x(v) {}
+    Slow(Slow &&other) noexcept : x(other.x) { other.x = -1; }
+    ~Slow() {
+        if (x == -1 && !released.load()) {
+            // The old element, moved from, while emplace_back relocates: held here.
+            parked = true;
+            while (!released.load()) std::this_thread::yield();
+        }
+    }
+};
+int main() {
+    std::vector<Slow> shared;
+    shared.reserve(1);
+    shared.emplace_back(1);
+    std::thread worker([&] { shared.emplace_back(2); });
+    while (!parked.load()) std::this_thread::yield();
+    int n = (int)shared.size(); // HERE
+    released = true;
+    worker.join();
+    std::printf("%d %zu %d %d\\n", n, shared.size(), shared[0].x, shared[1].x);
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(120)
+def test_a_container_another_thread_is_relocating_keeps_its_summary(cpp, capsys):
+    # Review of #181: the worker thread is inside `emplace_back`, which has moved the
+    # element out (`x = -1` left behind) and is destroying it, when `main` stops: two
+    # threads, so `shared` shows its summary, and its element no preview.
+    source = cpp / "relocating.cpp"
+    source.write_text(RELOCATING)
+    line = line_of(RELOCATING, "// HERE")
+    command = ["probe", str(source), "--at", str(line), "--capture", "shared,shared[0]", "--json"]
+    assert main(command) == 0
+    result = json.loads(capsys.readouterr().out)
+    rows = {row["selector"]: row for row in result["rows"]}
+    assert rows["shared"]["value"] == "size=1", rows["shared"]
+    assert re.fullmatch(r"Slow @ 0x[0-9a-f]+", rows["shared[0]"]["value"]), rows["shared[0]"]
+    assert "1 2 1 2" in result["output"], result["output"]

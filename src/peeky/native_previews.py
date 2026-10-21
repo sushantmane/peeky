@@ -370,13 +370,18 @@ def _bits(code, bits, signed):
 
 class _Room:
     """The characters a preview has left, and whether it may show a standard
-    container's elements (#181)."""
+    container's elements (#181): ``containers``, a bool or a function asked only when a
+    container is met."""
 
     def __init__(self, length, containers=True):
-        self.left, self.containers = length, containers
+        self.left, self.allows = length, containers
+
+    @property
+    def containers(self):
+        return self.allows() if callable(self.allows) else self.allows
 
     def nested(self):
-        return _Room(self.left, self.containers)
+        return _Room(self.left, self.allows)
 
 
 class _Unsure(Exception):
@@ -392,9 +397,9 @@ def preview(variable, fetch, typed, text, containers=True):
     ``typed``: its ``Typed``. ``fetch(reference, count)``: the first ``count`` children
     the debugger lists for a value; raises ValueError where it cannot (the preview
     budget is spent). ``text(child)``: a member's text as the worker shows it (a string
-    checked and spelled), or None for no value. Without ``containers``, a standard
-    container keeps the debugger's summary (`size=2`): a library call may be part-way
-    through changing it."""
+    checked and spelled), or None for no value. Without ``containers`` (a bool, or a
+    function asked when a container is met), a standard container keeps the debugger's
+    summary (`size=2`): a library call may be part-way through changing it."""
     reference = variable.get("variablesReference")
     if type(reference) is not int or reference <= 0 or typed is None:
         return None
@@ -417,7 +422,7 @@ def preview(variable, fetch, typed, text, containers=True):
     sort = typed.kind()
     if sort == "library" and typed.container() is not None:
         # A standard container (#181): `size=3 [1, 2, 3]`.
-        if not containers:
+        if not (containers() if callable(containers) else containers):
             return None
         try:
             shown = _container(variable, typed, fetch, text, 1, _Room(LENGTH - len(prefix)))
@@ -598,8 +603,8 @@ def _member(child, typed, fetch, text, depth, room):
         sort == "library"
         and expandable
         and depth < DEPTH
-        and room.containers
         and typed.container() is not None
+        and room.containers
     ):
         # A standard container inside (#181): its elements, or else its summary.
         try:

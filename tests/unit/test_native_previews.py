@@ -317,7 +317,8 @@ def session(language="cpp", optimization="O0", fields=None):
                 "ppp": {(23, "automatic", None)},
                 "b": {(28, "automatic", None)},
                 "w": {(20, "automatic", None)},
-            }
+            },
+            "referred": frozenset(),
         }
     ]
     native._function_at = lambda frame: native.declarations[0]
@@ -696,3 +697,54 @@ def test_an_element_of_a_container_a_library_call_may_be_changing_is_not_preview
         vector, fetch, None, frame=settled[0], steps=["v"], stack=settled, threads=lambda: 3
     )
     assert shown is None
+
+
+def test_a_lifetime_under_way_below_a_container_withholds_it():
+    # Review of #181: `slot->~E(); ::new (slot) E(3);` in `main` leaves `v` holding an
+    # element whose lifetime ended, with no library frame on the stack.
+    native = session()
+    frames = stack("E::~E()", "E::~E()", "main", "start")
+    assert native.containers_settled(frames[2], False, frames, threads=one) is False
+    for name in ("Widget::Widget(int)", "ns::Box<int>::~Box()", "E::operator=(E const&)"):
+        below = stack(name, "main")
+        assert native.containers_settled(below[1], False, below, threads=one) is False
+    # The frame's own constructor or destructor holds its containers whole, unless they
+    # are reached through a pointer or reference (an owner's vector holding `*this`).
+    own = stack("Owner::~Owner()", "main")
+    assert native.containers_settled(own[0], False, own, threads=one) is True
+    assert native.containers_settled(own[0], True, own, threads=one) is False
+    calls = stack("Widget::reset()", "E::operator==(E const&)", "main")
+    assert native.containers_settled(calls[2], False, calls, threads=one) is True
+
+
+def test_a_local_reached_through_a_pointer_is_read_as_one():
+    # Review of #181: a structured binding of a reference (`DW_OP_deref`) is typed as
+    # the vector itself; its container must meet the whole-stack rule.
+    native = session(fields=CONTAINERS)
+    native.declarations[0]["types"]["items"] = {(50, "automatic", None)}
+    native.declarations[0]["types"]["own"] = {(50, "automatic", None)}
+    native.declarations[0]["referred"] = frozenset({"items"})
+    frame = {"id": 1}
+    assert native._typed(frame, ["items"], walked=True)[1] is True
+    assert native._typed(frame, ["own"], walked=True)[1] is False
+    # Where the locations were not read, every local counts as one.
+    del native.declarations[0]["referred"]
+    assert native._typed(frame, ["own"], walked=True)[1] is True
+    vector = node("items", "size=1", "std::vector<int>", 2)
+    fetch = Debugger({2: elements("1")})
+    native.declarations[0]["referred"] = frozenset({"items"})
+    below = stack("main", "start", "std::thread::_State_impl<…>::_M_run()")
+    shown = native.preview_value(
+        vector, fetch, None, frame=below[0], steps=["items"], stack=below, threads=one
+    )
+    assert shown is None
+    shown = native.preview_value(
+        node("own", "size=1", "std::vector<int>", 2),
+        fetch,
+        None,
+        frame=below[0],
+        steps=["own"],
+        stack=below,
+        threads=one,
+    )
+    assert shown == "size=1 [1]"

@@ -2450,18 +2450,31 @@ class DebugWorker:
         }
 
     def threads_at_stop(self):
-        """How many threads the debugger lists at this stop, read once per inspection;
-        None if it does not say. Asked twice: lldb-dap answers its first `threads`
-        request with the threads the program had when it was launched (one)."""
+        """How many threads the program has at this stop, read once per inspection, or
+        None where that is not sure (#181 review). The threads every source names: two
+        `threads` replies (lldb-dap answers its first with the threads the program had
+        at launch), the `thread` events that said a thread started since launch, and
+        the runtime's own list where it has one (LLDB's `thread list`); a source that
+        does not answer makes it unsure."""
         if getattr(self, "thread_count", None) is None:
-            counts = []
+            ids, sure = set(), True
             for _ in range(2):
                 try:
                     listed = self.dap.request("threads", {}, timeout=2).get("threads")
                 except (TimeoutError, RuntimeError, OSError):
                     listed = None
-                counts.append(len(listed) if isinstance(listed, list) else -1)
-            self.thread_count = -1 if -1 in counts else max(counts)
+                if not isinstance(listed, list):
+                    sure = False
+                    continue
+                ids |= {each.get("id") for each in listed if isinstance(each, dict)}
+            ids |= set(getattr(self.dap, "started_threads", None) or ())
+            if listing := getattr(self.runtime, "listed_threads", None):
+                found = listing(self.dap)
+                if found is None:
+                    sure = False
+                else:
+                    ids |= set(found)
+            self.thread_count = len(ids) if sure and ids and None not in ids else -1
         return None if self.thread_count < 0 else self.thread_count
 
     def deeper_stack(self, levels=64):
