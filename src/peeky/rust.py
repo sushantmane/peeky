@@ -753,7 +753,7 @@ def _require_declared_dependencies(executables, workspace, inputs):
         depfile = executable.with_name(executable.name + ".d")
         if not depfile.is_file():
             raise ValueError(f"Cargo wrote no dependency file for {executable.name}")
-        for dependency in dependency_paths(depfile.read_text(), root):
+        for dependency in dependency_paths(depfile.read_text(), root, "rustc"):
             try:
                 relative = dependency.resolve().relative_to(root).as_posix()
             except (OSError, ValueError):
