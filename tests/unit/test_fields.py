@@ -325,8 +325,8 @@ def test_locals_are_listed_with_their_type_and_where_the_frame_keeps_them():
         # Two `a` in nested blocks, both in the frame: one type, each where it is declared.
         "a": frozenset({(0x10, "automatic", ("t.c", 3)), (0x10, "automatic", ("t.c", 9))}),
         "big": frozenset({(0x10, "automatic", None)}),
-        "kept": frozenset({(0x10, "other", None)}),
-        "held": frozenset({(0x10, "other", None)}),
+        "kept": frozenset({(0x10, "static", None)}),
+        "held": frozenset({(0x10, "register", None)}),
         "nowhere": frozenset({(0x10, "other", None)}),
     }
     # A call inlined into the function keeps its own locals.
@@ -578,6 +578,49 @@ def test_a_preview_that_reads_otherwise_after_a_change_fails_closed(tmp_path):
         worker.dispatch(
             "set_variable", {**STOP, "handle": handle_of(worker), "name": "end", "value": "10"}
         )
+
+
+def test_a_previews_fields_say_why_no_stop_changes_them(tmp_path):
+    # #138 with #106: the fields of a struct previewed from memory whose root the build
+    # keeps in a register are marked so (`set` refuses them), nested fields too; a
+    # settable field never is.
+    worker = previewing(tmp_path)
+    worker.runtime.refuse = "`s` is a parameter kept in a register"
+    worker.runtime.never_settable_row = lambda variable, frame, member=False: (
+        "register" if (variable["name"], member) == ("s", True) else None
+    )
+    worker.runtime.view_variable = lambda variable, fetch, read=None, **options: (
+        {
+            "name": "s",
+            "type": "pair",
+            "variablesReference": 0,
+            "value": "Pair { start: 1, end: Inner { v: 2 } }",
+            "rust_view": "memory",
+            "children": [
+                {"name": "start", "type": "i64", "value": "1"},
+                {
+                    "name": "end",
+                    "type": "Inner",
+                    "value": "Inner { v: 2 }",
+                    "children": [{"name": "v", "type": "i64", "value": "2"}],
+                },
+            ],
+        }
+        if variable.get("name") == "s"
+        else None
+    )
+    page = worker.dispatch("expand", {**STOP, "handle": handle_of(worker)})["variables"]
+    assert [(row["name"], row.get("settable"), row.get("not_settable")) for row in page] == [
+        ("start", False, "register"),
+        ("end", False, "register"),
+    ]
+    nested = worker.dispatch("expand", {**STOP, "handle": page[1]["variablesReference"]})
+    assert [row.get("not_settable") for row in nested["variables"]] == ["register"]
+    # A field `set` would change is never marked so.
+    worker = previewing(tmp_path)
+    worker.runtime.never_settable_row = lambda variable, frame, member=False: "register"
+    page = worker.dispatch("expand", {**STOP, "handle": handle_of(worker)})["variables"]
+    assert [(row.get("settable"), row.get("not_settable")) for row in page] == [(True, None)] * 2
 
 
 def test_a_value_view_that_is_no_structs_own_storage_is_never_written(tmp_path):

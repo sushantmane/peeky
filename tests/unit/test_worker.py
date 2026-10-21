@@ -855,6 +855,96 @@ def test_a_string_shown_as_its_text_lists_no_members(tmp_path):
     assert deep["variablesReference"] == 0 and "depth_limited" not in deep
 
 
+class ChildrenDap:
+    """`variables` replies by reference, each request recorded."""
+
+    def __init__(self, children):
+        self.children, self.requests = children, []
+
+    def request(self, command, arguments=None, **_):
+        self.requests.append((command, arguments))
+        reference = arguments["variablesReference"]
+        return {"variables": self.children[reference][: arguments.get("count", 64)]}
+
+
+def test_previews_are_made_only_where_asked_and_within_their_budget(tmp_path):
+    # #136: a C or C++ struct's preview replaces lldb-dap's `Type @ 0x…`; the handle
+    # stays, so its fields are selected as before. Probes ask only for the roots they
+    # capture; a listing for the values it lists.
+    import time as clock
+    from types import SimpleNamespace
+
+    from peeky.worker import PREVIEW_FETCHES, DebugWorker
+
+    located = []
+
+    def preview_value(variable, fetch, read, frame=None, steps=None):
+        # Where the value is: its frame, and the path of names its type is found by.
+        located.append((frame, steps))
+        listed = fetch(variable["variablesReference"], 64)
+        return "{" + ", ".join(f"{c['name']} = {c['value']}" for c in listed) + "}"
+
+    runtime = SimpleNamespace(
+        assert_current=lambda: None, reports_unavailable_as_text=True, preview_value=preview_value
+    )
+    worker = DebugWorker(tmp_path)
+    worker.runtime, worker.state, worker.stop_id = runtime, "stopped", "stop1"
+    worker.dap = ChildrenDap({7: [{"name": "x", "value": "1"}], 8: [{"name": "y", "value": "2"}]})
+    locals_ = [
+        {"name": "p", "type": "Pt", "value": "Pt @ 0x10", "variablesReference": 7},
+        {"name": "q", "type": "Pt", "value": "Pt @ 0x20", "variablesReference": 8},
+        {"name": "g", "type": "Pt", "value": "<variable not available>", "variablesReference": 9},
+    ]
+
+    def expose(previewing):
+        worker.previewing = previewing
+        worker.reset_previews()
+        return worker.expose_variables(locals_, {"id": 1}, ("Locals",), ())
+
+    p, q, gone = expose(True)
+    assert p["value"] == "{x = 1}" and q["value"] == "{y = 2}" and p["variablesReference"]
+    assert located[:2] == [({"id": 1}, ["p"]), ({"id": 1}, ["q"])]
+    # No value, no preview.
+    assert gone["unavailable"] and gone["value"] is None
+    assert [arguments["variablesReference"] for _, arguments in worker.dap.requests] == [7, 8]
+    p, q, _ = expose(frozenset({"q"}))
+    assert p["value"] == "Pt @ 0x10" and q["value"] == "{y = 2}"
+    p, q, _ = expose(False)
+    assert (p["value"], q["value"]) == ("Pt @ 0x10", "Pt @ 0x20")
+    # A spent budget leaves the debugger's text; it is the preview's own, not the
+    # value views' (#128 strings, Rust).
+    worker.previewing = True
+    worker.preview_fetches, worker.preview_deadline = PREVIEW_FETCHES, clock.monotonic() + 5
+    worker.view_fetches = 0
+    p, _, _ = worker.expose_variables(locals_, {"id": 1}, ("Locals",), ())
+    assert p["value"] == "Pt @ 0x10" and worker.view_fetches == 0
+    worker.reset_previews()
+    worker.preview_deadline = clock.monotonic() - 1
+    with pytest.raises(ValueError, match="Preview budget exhausted"):
+        worker.preview_fetch(7, 8)
+    worker.reset_previews()
+    for count in (0, 65):
+        with pytest.raises(ValueError, match="exceeds limit"):
+            worker.preview_fetch(7, count)
+
+
+@pytest.mark.parametrize(
+    "operation, args, message",
+    [
+        ("inspect", {"previews": "p"}, "previews must be"),
+        ("inspect", {"previews": ["p"] * 33}, "previews must be"),
+        ("expand", {"handle": 1, "previews": ["p"]}, "previews must be true or false"),
+        ("preview", {"handle": 0}, "Invalid preview handle"),
+        ("preview", {"handle": 1, "pointee": "yes"}, "pointee must be"),
+    ],
+)
+def test_preview_requests_are_checked(tmp_path, operation, args, message):
+    from peeky.worker import DebugWorker
+
+    with pytest.raises(ValueError, match=message):
+        DebugWorker(tmp_path).validate(operation, {"session_id": "s", "stop_id": "t", **args})
+
+
 def test_a_noted_reason_shows_the_value_with_its_note_and_only_others_withhold(tmp_path):
     # #140 with #132's check before any view: a reason with a `note` shows the value (a
     # view's too) with the note, and is offered for set unless it `refuses`; a reason

@@ -785,7 +785,7 @@ run_a  run_b  hit   phase     selector  value_a           value_b               
   ```
 
   This reports `set end: 3 -> 10`. `black_box` keeps the new Rust local in memory, where a change reaches the program.
-- **A Rust local kept in a register:** a by-value parameter, or a `let` the code never borrows or reassigns, may live only in a register even in a debug build, so the debugger shows a copy and a change would not reach the program. Rows mark it `[not settable: register]` and `describe`'s `mutable:` line lists them per function. A probe that sets one is refused before the program runs (nothing ran, no run saved), as is any `--set` its build rules out in every function on the `--at` line (#138). Keep it in memory with the edit, in the same probe: for the limiter's `fn allow(w: &mut Window, now: u64, limit: u32, width: u64)`,
+- **A Rust local kept in a register:** a by-value parameter, or a `let` the code never borrows or reassigns, may live only in a register even in a debug build, so the debugger shows a copy and a change would not reach the program. Rows mark it `[not settable: register]` (a struct's fields too, in its preview) and `describe`'s `mutable:` line lists them per function. A probe that sets one is refused before the program runs (nothing ran, no run saved), as is any `--set` its build rules out in every function on the `--at` line (#138). Keep it in memory with the edit, in the same probe: for the limiter's `fn allow(w: &mut Window, now: u64, limit: u32, width: u64)`,
 
   ```sh
   peeky probe limiter --at src/main.rs:10 --arg 2 --arg 10 --arg 0,1,10,11 --capture width \
@@ -818,14 +818,29 @@ The commands are the same for every language; only the target changes.
 **Quick start (C and C++).** What can be read, what can be set, and where:
 
 - **Read** any local, parameter or global by selector: fields and elements (`s.end`, `bins[3].hi`, `grid[1][0]`), through pointers too (`ps.start`), C++ members through `this` (`this.head_`), a `std::string` whole, a `std::vector` by index and a `std::map` by key (`m[1]`, `ages["al"]`).
+- **Structs and arrays** show their members: `bins` reads `[{lo = 0, hi = 2, count = 0}, …]`, `bins[3]` `{lo = 6, hi = 7, count = 0}`, in probes, `inspect` and `session get`. Unions and what pointers point at are never read into a preview.
 - **Withheld, never guessed:** a local whose storage may still hold leftovers (declared below the stop, an initializer still running, a jump past its declaration) shows `no value yet` and why; one Peeky shows but cannot vouch for (a `do` body's first line, below a `setjmp` call) carries a `note`, and so does every field and element read through it (``read through `q`: …``, in captures, in `session get` children, marked `[note]`, and in the evidence), which `--set` refuses where it refuses the local.
 - **Set** integer locals, and integer fields and elements of a struct, class or array local the frame holds itself: `--set s.end=10`, `--set 'bins[3].hi=8'` (16 to 64 bits, in range).
 - **Never** through a pointer or a reference (`ps.end`, `this.count`), nor in a union, a packed struct, a bitfield, a const or a `std::` type; strings and floats cannot be set. A probe whose `--set` the build's debug information rules out like this in every function on its `--at` line is refused before the program runs (nothing ran, no run saved); parameters are set as other locals (an unoptimized build keeps them on the stack).
 - **Where:** at a statement's first instruction, so a breakpoint on its first line (`--at`, `session continue --to LINE`) or a `step` that lands there; not after `step --out`, not on a loop header's later passes.
-- **Marks:** rows show `[settable]` on what `set` would change, fields and elements included; when a rule leaves nothing settable, `session inspect` says why. A refused change's hint names the one way around it.
+- **Marks:** rows show `[settable]` on what `set` would change, fields and elements included (a preview's too); the fields of a local the debug information keeps in registers or as a static say `[not settable: register]` or `[not settable: static]`; when a rule leaves nothing settable, `session inspect` says why. A refused change's hint names the one way around it.
 - **Later hits:** `--set-hit N` applies a probe's changes at hit N; in a session, change values at as many stops as you like.
 
 The rest of this section shows them at work, then the detail behind them.
+
+**Structs and arrays of structs.** A struct, class or fixed-size array shows its first members, read from the debugger's own children (#136). In the sixth evaluation's `histo` case ([report](evaluations/2026-10-20-agent-sixth-round.md); `struct bin bins[4]`, each `{lo, hi, count}`), one capture reads every bin:
+
+```sh
+peeky probe histo.c --at histo.c:28 --arg 0 --arg 7 --arg 7 --capture 'bins,bins[3]'
+```
+
+```
+hit  phase     line  function  selector  type    value
+1    observed  28    main      bins      bin[4]  [{lo = 0, hi = 2, count = 0}, {lo = 2, hi = 4, count = 0}, {lo = 4, hi = 6, count = 0}, {lo = 6, hi = 7, count = 0}]
+1    observed  28    main      bins[3]   bin     {lo = 6, hi = 7, count = 0}
+```
+
+`session get bins` shows each element so, and its selector (`bins[3]: bin = {lo = 6, hi = 7, count = 0} (children: peeky session get 'bins[3]')`); fields are still read and set by name (`bins[3].hi`, `--set 'bins[3].hi=8'`). A preview shows 8 members or elements, then `…`, two levels deep (`{…}` below), at most 40 characters of one member. A union is not previewed (`<union>` inside another value: only one of its members holds what was stored); a pointer inside shows its address, never what it points at; a member with no value shows `<no value>`; a C++ base class shows as a member named by its class (`{Base = {b = 1}, d = 2}`); a `std::` container keeps its summary (`v = size=2`). Types come from the build's debug information, and where it cannot vouch for one there is no preview, only the debugger's `T @ 0x…`: a local withheld at the stop, a variable-length array, an incomplete type (`op[0]` on `struct opaque *`), a value inside a `std::` container, and every value of an optimized build. A wide character array shows element by element (`[L'a', L'\0', L'b', L'\0']`, where LLDB's text stops at the first NUL), and a char-typed bitfield as its number (`sc = -3`, not LLDB's `'\x05'`). Details: NATIVE.md, CPP.md.
 
 ```sh
 peeky probe examples/c/pagination_bug.c --at 25 --capture 'start,page,items[1]' --set start=0

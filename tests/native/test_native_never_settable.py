@@ -149,3 +149,26 @@ def test_a_final_index_is_set_as_it_is_read_and_marked(tmp_path, language):
         result = run_probe(tmp_path, Probe(name, at, (), ((selector, "9"),)), adapter=debug)
         assert result["status"] == "completed", (selector, result.get("error"))
         assert f"RUN {total}" in result["output"], (selector, result["output"])
+
+
+@pytest.mark.timeout(240)
+@pytest.mark.parametrize("language", ["c", "cpp"])
+def test_a_previews_fields_are_marked_as_set_treats_them(tmp_path, language):
+    # #138 with #146: a struct's preview keeps its fields' marks, as `set` judges them:
+    # the frame's own struct's field is [settable] and changed; one reached through a
+    # pointer is not, and is refused before the run.
+    name = f"reg.{'cpp' if language == 'cpp' else 'c'}"
+    (tmp_path / name).write_text(SOURCE)
+    debug, widen, call = target(language, "O0"), line_of("WIDEN"), line_of("CALL")
+    marked = run_probe(tmp_path, Probe(name, widen, ("ps[0]", "ps[0].end")), adapter=debug)
+    rows = {row["selector"]: row for row in marked["rows"]}
+    assert rows["ps[0].end"]["value"] == "2" and rows["ps[0].end"]["settable"] is False, rows
+    result = run_probe(tmp_path, Probe(name, widen, (), (("ps[0].end", "9"),)), adapter=debug)
+    assert "`ps` is a pointer" in refused_before_launch(result)
+    marked = run_probe(tmp_path, Probe(name, call, ("s", "s.end")), adapter=debug)
+    rows = {row["selector"]: row for row in marked["rows"]}
+    assert rows["s"]["value"] == "{start = 1, end = 2}", rows
+    assert rows["s.end"]["settable"] is True and "not_settable" not in rows["s.end"], rows
+    changed = run_probe(tmp_path, Probe(name, call, (), (("s.end", "9"),)), adapter=debug)
+    assert changed["status"] == "completed", changed.get("error")
+    assert "Y 15 3" in changed["output"], changed["output"]

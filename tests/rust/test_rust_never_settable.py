@@ -433,3 +433,47 @@ def test_settable_here_names_selectors_and_a_final_index_is_set_as_marked(tmp_pa
         assert f"TWINS {total}" in result["output"], (selector, result["output"])
     code, result = probe(capsys, crate, twins, "--set", "arr[-9]=9")
     assert result["hits"] == 1 and "out of range for 4 elements" in result["error"]["message"]
+
+
+PREVIEWED = """#[derive(Debug, Clone, Copy)]
+struct Meters {
+    v: u64,
+}
+
+fn grow(m: Meters, k: u64) -> u64 {
+    let mut kept = Meters { v: k };
+    std::hint::black_box(&mut kept);
+    let total = m.v + kept.v; // GROW
+    total
+}
+
+fn main() {
+    let n = std::env::args().count() as u64;
+    println!("GROWN {}", grow(Meters { v: n + 4 }, 3));
+}
+"""
+
+
+@pytest.mark.timeout(300)
+def test_a_previews_fields_say_their_root_is_kept_in_a_register(tmp_path, state, capsys):
+    # #138 with #106: a struct parameter kept in a register is previewed from what the
+    # debugger shows; its fields read with the reason no stop changes them, as `set`
+    # refuses them before the run. A struct kept in memory has [settable] fields.
+    crate = crate_at(tmp_path, "previewed", PREVIEWED)
+    at = line_of(PREVIEWED, "// GROW")
+    assert main(["session", "start", str(crate), "--at", f"src/main.rs:{at}"]) == 0
+    capsys.readouterr()
+    try:
+        assert main(["session", "get", "m"]) == 0
+        shown = capsys.readouterr().out
+        assert main(["session", "get", "kept"]) == 0
+        kept = capsys.readouterr().out
+    finally:
+        main(["session", "close"])
+        capsys.readouterr()
+    assert "m: previewed::Meters = Meters { v: 5 }" in shown, shown
+    assert "m.v: u64 = 5  [not settable: register]" in shown, shown
+    assert "kept.v: u64 = 3  [settable]" in kept, kept
+    code, result = probe(capsys, crate, at, "--set", "m.v=9")
+    assert code == 1
+    assert "`m` is a parameter kept in a register" in refused_before_launch(result)
