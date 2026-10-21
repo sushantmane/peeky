@@ -664,6 +664,7 @@ class DAP:
             if self.closed:
                 return self.cleanup
             self.closed = True
+            self.family_wake.set()  # the watcher stops
             owned, ran, before = {}, True, self.family.listed
             if terminate:
                 for thread in list(self.announcing):
