@@ -86,7 +86,8 @@ def test_a_file_read_after_a_line_separator_in_a_name_is_still_checked(tmp_path,
     # Declared, never compiled: what main read the name before the U+2028 as.
     (root / "src/x.rs").write_text("")
     code, result = probe(capsys, root, line)
-    assert code == 1 and result["status"] == "failed", result
+    assert code == 2 and result["status"] == "failed", result
+    assert result["refused_before_launch"] is True
     assert (
         f"The Rust build read {outside}, which is not a declared source"
         in (result["error"]["message"])
