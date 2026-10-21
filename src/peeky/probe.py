@@ -2707,6 +2707,14 @@ def run_probe(root, probe, *, adapter=None, progress=None):
                 last_said = time.monotonic()
                 of = f" (all, up to {probe.limit})" if probe.hits == "all" else f"/{probe.limit}"
                 say(f"hit {hits}{of} at {probe.program}:{expected}; capturing")
+            # Which of the line's breakpoint locations in this function the stop is at, where
+            # it has several (#157): each pass stops at each.
+            place = (
+                {"stop": state["place"], "stops": state["places"]}
+                if type(state.get("place")) is int and type(state.get("places")) is int
+                else {}
+            )
+            first = len(rows)
             # The stop-validation inspection is reused for the first selectors.
             rows.extend(
                 _capture(
@@ -2734,6 +2742,8 @@ def run_probe(root, probe, *, adapter=None, progress=None):
                         pointers=pointers,
                     )
                 )
+            for row in rows[first:]:
+                row.update(place)
             if len(rows) > MAX_ROWS:
                 raise ValueError("Probe row budget exceeded")
             if hits >= probe.limit:
@@ -2942,7 +2952,12 @@ def _by_hit(rows):
     for row in rows:
         entry = grouped.setdefault(
             row["hit"],
-            {"hit": row["hit"], "line": row.get("line"), "function": row.get("function")},
+            {
+                "hit": row["hit"],
+                "line": row.get("line"),
+                "function": row.get("function"),
+                **({"stop": row["stop"], "stops": row["stops"]} if "stops" in row else {}),
+            },
         )
         value = row["value"] if "value" in row else {"error": row.get("error")}
         entry.setdefault(row["phase"], {})[row["selector"]] = value
@@ -2957,13 +2972,17 @@ def _rust_notes():
 
 def _table(result):
     lines = []
-    header = ("hit", "phase", "line", "function", "selector", "type", "value")
+    # Which of a line's breakpoint locations each stop is at, where it has several (#157).
+    stops = any("stops" in row for row in result["rows"])
+    header = ("hit", *(("stop",) if stops else ()), "phase", "line", "function", "selector")
+    header += ("type", "value")
     # A C++ frame's signature (`trim_left(std::__1::basic_string<...> const&)`) would
     # double the table's width; Rust's ends with a symbol hash. JSON keeps the name whole.
     functions = function_labels(row.get("function") for row in result["rows"])
     rows = [
         (
             str(row["hit"]),
+            *((f"{row['stop']}/{row['stops']}" if "stops" in row else "",) if stops else ()),
             row["phase"],
             str(row.get("line", "")),
             functions.get(row.get("function"), ""),

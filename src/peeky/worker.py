@@ -18,6 +18,7 @@ from pathlib import Path
 from peeky.adapters import PythonAdapter, ViewBudgetExhausted
 from peeky.dap import DAP, RequestFailed, ResponseTimeout
 from peeky.errors import _RULES, PROTOCOL_VERSION, classify
+from peeky.names import display_function
 
 VIEW_SECONDS = 10
 # C and C++ previews (#136): their own budget per inspection or expansion, so that
@@ -198,6 +199,8 @@ class DebugWorker:
         # adapter ids, and every one-shot `--to` line the session has used.
         self.own_lines, self.own_ids, self.temporary_lines = set(), set(), set()
         self.stop_outside = self.stop_returns = self.co_served = False
+        self.forget_places()
+        self.stop_place = None
         self.reset_lost_stops()
         # A session that failed on a lost stop (#27): its id, error and final report.
         self.failed = None
@@ -640,6 +643,7 @@ class DebugWorker:
             path = frame.get("source", {}).get("path")
             self.stop_function = str(frame.get("name") or "")[:300] or None
             self.stop_line = frame.get("line")
+            self.stop_place = self.place_of(frame)
             return f"{_display_path(self.runtime, path)}:{frame.get('line')}" if path else None
         except Exception:
             return None
@@ -650,6 +654,10 @@ class DebugWorker:
             where["function"] = self.stop_function
         if self.stop_id and self.stop_hit:
             where["hit"] = self.stop_hit
+        if self.stop_id and self.stop_place:
+            # Which of the line's breakpoint locations in this function the stop is at
+            # (#157): 1 to `places`, in address order.
+            where["place"], where["places"] = self.stop_place
         if self.stop_id:
             # This worker numbers hits (older ones never send `hit`); False once a stop
             # could not be classified.
@@ -850,6 +858,84 @@ class DebugWorker:
             if reply.get("id") is not None:
                 self.own_ids.add(reply["id"])
 
+    def forget_places(self):
+        # {line: [(function, its locations' addresses, ascending)]}: where the debugger
+        # placed the session program's breakpoints (#157), by the code holding them.
+        self.places = {}
+        # What they were asked from (runtime, request, reply): a stop at an address none
+        # of them names asks once more (placed before the program loaded, unslid).
+        self.places_asked = None
+        self.places_renewed = False
+
+    def note_places(self, runtime, requested, placed):
+        """Ask the runtime where the debugger placed the session program's breakpoints
+        (#157): a line can have several locations in one function (a macro's or a
+        block's own code, a loop header's), and it stops at each. Best effort: none
+        known means no warning and no `place`, never a failure."""
+        self.forget_places()
+        self.places_asked = (runtime, list(requested), placed)
+        hook = getattr(runtime, "breakpoint_locations", None)
+        replies = (placed.get("breakpoints") or []) if isinstance(placed, dict) else []
+        ids = [
+            reply["id"]
+            for reply in replies
+            if isinstance(reply, dict)
+            and reply.get("verified") is True
+            and type(reply.get("id")) is int
+        ]
+        if hook is None or not ids or self.dap is None:
+            return
+        try:
+            found = hook(self.dap, ids)
+        except Exception:
+            return
+        groups = {}
+        for location in found or ():
+            group = groups.setdefault(
+                (location["line"], location["place"]), (location["function"], set())
+            )
+            group[1].add(location["address"])
+        for (line, _), (function, addresses) in groups.items():
+            self.places.setdefault(line, []).append((function, tuple(sorted(addresses))))
+
+    def place_of(self, frame):
+        """(index, count) of the breakpoint location a stop's ``frame`` is at among its
+        line's locations in the same code, in address order, where there are several
+        (#157); else None."""
+        if self.stop_reason != "breakpoint" or frame.get("line") not in self.places:
+            return None
+        text = frame.get("instructionPointerReference")
+        if not isinstance(text, str) or not re.fullmatch(r"0x[0-9a-fA-F]{1,16}", text):
+            return None
+        pc = int(text, 16)
+        for _ in range(2):
+            for _, addresses in self.places.get(frame.get("line"), ()):
+                if pc in addresses:
+                    return (addresses.index(pc) + 1, len(addresses)) if len(addresses) > 1 else None
+            if self.places_renewed or self.places_asked is None:
+                return None
+            # Placed before the program loaded, at addresses it no longer has: once more.
+            self.note_places(*self.places_asked)
+            self.places_renewed = True
+        return None
+
+    def place_warnings(self):
+        """A warning for each line that stops more than once per pass in a function
+        (#157): --hits and --set-hit count stops."""
+        notes = []
+        for line in sorted(self.places):
+            for function, addresses in self.places[line]:
+                if len(addresses) > 1:
+                    count = len(addresses)
+                    notes.append(
+                        f"Line {line} stops up to {count} times per pass in "
+                        f"{display_function(function)[:200]} ({count} breakpoint locations): "
+                        "--hits and --set-hit count stops, not passes (as do session hit "
+                        f"numbers); each hit's stop (1 to {count}, in address order) says which "
+                        "location."
+                    )
+        return notes[:5]
+
     def classify_hit(self):
         """Number this stop if it is at one of the session's own breakpoints.
 
@@ -880,6 +966,7 @@ class DebugWorker:
             {"source": {"path": str(runtime.source_path(self.program))}, "breakpoints": unique},
         )
         self.note_placed(runtime.source_path(self.program), unique, placed)
+        self.note_places(runtime, unique, placed)
         self.breakpoint_counts[str(self.program)] = len(unique)
         self.temporary_line = temporary
         if temporary is not None:
@@ -941,7 +1028,7 @@ class DebugWorker:
 
     def forget_stop(self):
         self.stop_outside = self.stop_returns = False
-        self.stop_hit = self.stop_line = None
+        self.stop_hit = self.stop_line = self.stop_place = None
         self.state = "running"
         self.stopped_at = None
         self.stop_location = None
@@ -1160,6 +1247,7 @@ class DebugWorker:
             self.temporary_line = None
             self.hits, self.stop_hit, self.stop_line = 0, None, None
             self.own_lines, self.own_ids, self.temporary_lines = set(), set(), set()
+            self.forget_places()
             # Nothing about an earlier session's stops carries over on a shared worker.
             self.co_served = self.stop_outside = self.stop_returns = False
             self.stop_all_threads = False
@@ -1237,6 +1325,7 @@ class DebugWorker:
                 )
                 self.record_own_points(args.get("breakpoints", []), points)
                 self.note_placed(runtime.source_path(program), args.get("breakpoints", []), points)
+                self.note_places(runtime, args.get("breakpoints", []), points)
                 self.dap.request("configurationDone", timeout=left())
                 self.dap.response(launch, timeout=left())
                 runtime.assert_current()
@@ -1286,6 +1375,7 @@ class DebugWorker:
                         if (
                             notes := [
                                 *self.breakpoint_notes(program, args),
+                                *self.place_warnings(),
                                 *(getattr(runtime, "warnings", None) or ()),
                             ]
                         )
@@ -1376,7 +1466,7 @@ class DebugWorker:
             self.thread_id = event.get("body", {}).get("threadId")
             self.stop_all_threads = event.get("body", {}).get("allThreadsStopped") is True
             self.stop_reason = event.get("body", {}).get("reason") if self.stop_id else None
-            self.stop_function = self.stop_line = self.stop_hit = None
+            self.stop_function = self.stop_line = self.stop_hit = self.stop_place = None
             # This thread's step (if any) has ended; the next poll starts afresh.
             self.stepping.discard(self.thread_id)
             self.candidate = None
@@ -1579,6 +1669,12 @@ class DebugWorker:
                 "frame": index,
                 # Which stop at the session's breakpoint this is, as state lines say.
                 **({"hit": self.stop_hit} if self.stop_hit else {}),
+                # Which of the line's breakpoint locations in its function (#157).
+                **(
+                    {"place": self.stop_place[0], "places": self.stop_place[1]}
+                    if self.stop_place
+                    else {}
+                ),
                 "frames": frames,
                 "scopes": result,
                 # The object whose members selectors may name without it (C++, Java).
@@ -1757,6 +1853,9 @@ class DebugWorker:
             if self.path(args["program"]) == self.program:
                 self.points, self.temporary_line = list(args["breakpoints"]), None
                 self.record_own_points(args["breakpoints"], placed)
+                self.note_places(runtime, args["breakpoints"], placed)
+                if warnings := self.place_warnings():
+                    return {**placed, "warnings": warnings}
             return placed
         if operation == "continue":
             self.stopped(args)
@@ -1778,6 +1877,7 @@ class DebugWorker:
                     {"source": {"path": str(runtime.source_path(self.program))}, "breakpoints": []},
                 )
                 self.note_placed(runtime.source_path(self.program), [], {})
+                self.forget_places()
                 self.breakpoint_counts[str(self.program)] = 0
                 self.points, self.temporary_line = [], None
             elif args.get("to_line") is not None:

@@ -2349,6 +2349,54 @@ def _writable_integer(variable):
     )
 
 
+# One location of LLDB's `breakpoint list` (#157): `  1.2: where = movavg`movavg::main::h…
+# + 1008 at main.rs:29:18, address = 0x0000000100000ee4, resolved, hit count = 0`. An
+# unresolved location has no address and is left out.
+_BREAKPOINT_LOCATION = re.compile(
+    r"^ *([0-9]{1,9})\.[0-9]{1,9}: where = (.*), address = (0x[0-9a-fA-F]{1,16})(?:,.*)?[ \t]*$",
+    re.MULTILINE,
+)
+# Its `where`: module`function, its offset there, the function inlined at it, file:line.
+_LOCATION_WHERE = re.compile(
+    r"(?:[^`]*`)?(.+?)(?: \+ ([0-9]{1,12}))?(?: \[inlined\] (.+?))? at [^:]+:([0-9]{1,9})"
+    r"(?::[0-9]{1,9})?"
+)
+MAX_LOCATIONS = 256
+
+
+def breakpoint_locations(text, ids):
+    """Where LLDB placed the breakpoints ``ids`` (#157), from its `breakpoint list` text:
+    [{"id", "line", "address", "function", "place"}], each location with the function
+    that holds it. ``place`` names the code it is in: the function's start (its address
+    less its offset), or, for code inlined there, the location itself, since two
+    inlined copies of a function are two calls (each stops once) that LLDB's text cannot
+    tell apart from one copy with two locations. Unreadable lines are left out; None
+    past MAX_LOCATIONS, where a count would fall short."""
+    found = []
+    for match in _BREAKPOINT_LOCATION.finditer(text):
+        if int(match[1]) not in ids:
+            continue
+        where = _LOCATION_WHERE.fullmatch(match[2].strip())
+        if where is None:
+            continue
+        address = int(match[3], 16)
+        offset = int(where[2]) if where[2] else 0
+        if offset > address:
+            continue
+        found.append(
+            {
+                "id": int(match[1]),
+                "line": int(where[4]),
+                "address": address,
+                "function": where[3] or where[1],
+                "place": f"inlined at 0x{address:x}" if where[3] else f"0x{address - offset:x}",
+            }
+        )
+        if len(found) > MAX_LOCATIONS:
+            return None
+    return found
+
+
 class Withholding(str):
     """A reason ``not_yet_declared`` withholds a row for that is not about its value
     being set yet: ``label`` heads the row's error (in place of `no value yet`), and
@@ -2496,6 +2544,24 @@ class NativeSession:
             "console": "internalConsole",
             "enableAutoVariableSummaries": False,
         }
+
+    def breakpoint_locations(self, dap, ids):
+        """Where LLDB placed the breakpoints ``ids`` (see ``breakpoint_locations``): a
+        line can have several locations in one function (a macro's or a block's own
+        code, a loop header's), and it stops at each (#157). Asked with lldb-dap's
+        command escape, as a read-only `breakpoint list`; None where it cannot say."""
+        ids = sorted({number for number in ids if type(number) is int and number > 0})[:64]
+        if not ids:
+            return None
+        reply = dap.request(
+            "evaluate",
+            {"expression": "`breakpoint list " + " ".join(map(str, ids)), "context": "repl"},
+            timeout=5,
+        )
+        text = reply.get("result") if isinstance(reply, dict) else None
+        if not isinstance(text, str) or len(text) > MAX_METADATA:
+            return None
+        return breakpoint_locations(text, set(ids))
 
     def function_scopes(self):
         """Each function in the declared sources, its line span and locals (for describe)."""

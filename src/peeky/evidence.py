@@ -17,7 +17,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import quote
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 MAX_RUNS = 500
 DEFAULT_ROWS = 200
 MAX_ROWS = 10000
@@ -108,6 +108,10 @@ TABLES = {
             "raw (a C/C++ local a loop returns to, a program using setjmp; a Rust value "
             "shown as LLDB's summary, a pointer it does not follow, a moved local): read "
             "the value with it. NULL for a plain value (and for runs saved before schema 8)",
+            "stop": "Which of the line's breakpoint locations in its function the hit was at, "
+            "1 to N in address order, where the line has several there (a macro's or a "
+            "block's own code, a loop header's): a pass stops at each, so hits count stops, "
+            "not passes. NULL for a line with one (and for runs saved before schema 10)",
         },
     ),
     "interventions": (
@@ -126,7 +130,8 @@ TABLES = {
     ),
 }
 _EVIDENCE_COLUMNS = (
-    "run_id, started_at, label, program, line, status, hit, phase, function, selector, type, "
+    "run_id, started_at, label, program, line, status, hit, stop, phase, function, selector, "
+    "type, "
     "value, num, unavailable, error, view, note, identity, scope, args, sets, "
     "artifact_manifest_id, source_sha256, candidate, language"
 )
@@ -139,7 +144,7 @@ VIEWS = {
     "last_run": "The evidence rows of the newest run",
 }
 _EVIDENCE_VIEW = """CREATE VIEW evidence AS SELECT c.run_id, r.started_at, r.label, r.program,
-        c.line, r.status, c.hit, c.phase, c.function, c.selector, c.type, c.value, c.num,
+        c.line, r.status, c.hit, c.stop, c.phase, c.function, c.selector, c.type, c.value, c.num,
         c.unavailable, c.error, c.view, c.note, c.identity, c.scope, r.args, r.sets,
         r.artifact_manifest_id,
         r.source_sha256, r.edit IS NOT NULL AS candidate, r.language
@@ -152,7 +157,7 @@ _LAST_RUN_VIEW = (
 _CAPTURES = """CREATE TABLE {} (
         run_id INTEGER NOT NULL, hit INTEGER, phase TEXT, line INTEGER, function TEXT,
         selector TEXT, type TEXT, value TEXT, num NUMERIC, unavailable INTEGER NOT NULL,
-        error TEXT, view TEXT, identity INTEGER, scope TEXT, note TEXT)"""
+        error TEXT, view TEXT, identity INTEGER, scope TEXT, note TEXT, stop INTEGER)"""
 _CAPTURE_INDEXES = (
     "CREATE INDEX captures_run ON captures (run_id, hit)",
     "CREATE INDEX captures_selector ON captures (selector)",
@@ -185,7 +190,8 @@ _DDL = (
 # captures.identity and captures.scope; version 7 makes identity an INTEGER where an
 # early version 6 stored it as TEXT (`list@7`) without scope; version 8 adds captures.note
 # (earlier runs' notes were not kept: NULL); version 9 adds runs.notes_kept, 1 for a run
-# saved with its notes, so queries can say which runs' values may be unmarked. Views name
+# saved with its notes, so queries can say which runs' values may be unmarked; version 10
+# adds captures.stop (#157), which of a line's breakpoint locations a hit was at. Views name
 # columns of the newest tables, so earlier steps only drop them and the last creates them.
 _DROP_VIEWS = ("DROP VIEW IF EXISTS last_run", "DROP VIEW IF EXISTS evidence")
 
@@ -254,12 +260,8 @@ _MIGRATIONS = {
     5: (*_DROP_VIEWS, _add_identity),
     6: (*_DROP_VIEWS, _integer_identity),
     7: (*_DROP_VIEWS, _add_columns(("note", "TEXT"))),
-    8: (
-        *_DROP_VIEWS,
-        _add_columns(("notes_kept", "INTEGER"), table="runs"),
-        _EVIDENCE_VIEW,
-        _LAST_RUN_VIEW,
-    ),
+    8: (*_DROP_VIEWS, _add_columns(("notes_kept", "INTEGER"), table="runs")),
+    9: (*_DROP_VIEWS, _add_columns(("stop", "INTEGER")), _EVIDENCE_VIEW, _LAST_RUN_VIEW),
 }
 
 _LATEST = "(SELECT MAX(run_id) FROM runs)"
@@ -495,8 +497,9 @@ QUERIES = {
     ),
     "run": (
         "Every captured value of one run, in capture order; error says why a value is NULL; "
-        "view and note qualify a value (read it with them)",
-        f"SELECT hit, phase, line, function, selector, type, value, {_ERROR} AS error, view, "
+        "view and note qualify a value (read it with them); stop says which of the line's "
+        "breakpoint locations a hit was at, where it has several",
+        f"SELECT hit, stop, phase, line, function, selector, type, value, {_ERROR} AS error, view, "
         f"note FROM captures WHERE run_id = {_RUN} ORDER BY rowid",
         _RUN_PARAM,
         (),
@@ -573,7 +576,8 @@ WHERE o.run_id = {_RUN} AND o.phase = 'observed' ORDER BY o.hit, o.rowid""",
         ("selector",),
     ),
     "wide": (
-        "One row per hit (and phase) of one run, a column per selector in capture order "
+        "One row per hit (and phase) of one run (with stop, which of the line's breakpoint "
+        "locations it was at, for a line with several), a column per selector in capture order "
         "(a name SQLite would take for an earlier column, ignoring case, gets ` (2)`), each "
         "cell the value as stored. no_value is a JSON object naming the cells with no value "
         "(NULL: unavailable, withheld, an error) and why; a selector not captured at that "
@@ -796,8 +800,8 @@ def record(path, result, *, language=None, target=None, label=None, worker=None)
         ).lastrowid
         connection.executemany(
             "INSERT INTO captures (run_id, hit, phase, line, function, selector, type, value, "
-            "num, unavailable, error, view, identity, scope, note) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "num, unavailable, error, view, identity, scope, note, stop) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [
                 (
                     run_id,
@@ -817,6 +821,7 @@ def record(path, result, *, language=None, target=None, label=None, worker=None)
                     row["identity"] if type(row.get("identity")) is int else None,
                     "globals" if row.get("scope") == "globals" else None,
                     _text(row.get("note")),
+                    row["stop"] if type(row.get("stop")) is int else None,
                 )
                 for row in result.get("rows") or []
             ],
@@ -1115,7 +1120,7 @@ def _cells(where):
     other than how it was read, else `note` where the row has a note). A selector
     captured twice at a hit read the same both times (``_captured`` checks): one cell."""
     return (
-        "SELECT hit, phase, selector, MIN(line) AS line, MAX(value) AS value,\n"
+        "SELECT hit, phase, selector, MIN(line) AS line, MIN(stop) AS stop, MAX(value) AS value,\n"
         "    CASE WHEN MAX(value) IS NULL THEN COALESCE(MAX(error), 'no value') END AS reason,\n"
         f"    MAX({_caveat()}) AS caveat\n"
         f"  FROM captures WHERE {where} GROUP BY hit, phase, selector"
@@ -1214,12 +1219,20 @@ def _wide(path, params):
     column per selector in capture order. Generated per run: SQL cannot pivot alone."""
     run, phase = _run_id(path, params.get("run")), _phase(params)
     selectors = _captured(path, run, phase)
-    fixed = {"hit", "phase", "line", "no_value", "caveats"}
+    # Which of the line's breakpoint locations each hit was at (#157), for a run whose
+    # line has several in one function.
+    stops = query(
+        path,
+        "SELECT 1 AS n FROM captures WHERE run_id = :run AND stop IS NOT NULL LIMIT 1",
+        {"run": run},
+    )["rows"]
+    fixed = {"hit", *(("stop",) if stops else ()), "phase", "line", "no_value", "caveats"}
     names = _columns(selectors, set(fixed), fixed=fixed)
     _too_wide(len(names) + len(fixed), run, "wide")
     where = f"run_id = {run}" + (f" AND phase = {_literal(phase)}" if phase else "")
     sql = (
-        f"SELECT hit, phase, MIN(line) AS line,{_picked(selectors, names, '  ')}\n"
+        f"SELECT hit,{' MIN(stop) AS stop,' if stops else ''} phase, MIN(line) AS line,"
+        f"{_picked(selectors, names, '  ')}\n"
         f"  {_NO_VALUE} AS no_value,\n  {_CAVEATS} AS caveats\n"
         f"FROM ({_cells(where)})\nGROUP BY hit, phase ORDER BY hit, phase = 'after-set'"
     )
