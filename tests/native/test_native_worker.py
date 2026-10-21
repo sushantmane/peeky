@@ -557,6 +557,71 @@ def test_headers_read_from_outside_the_workspace_are_provenance(tmp_path, native
         session.close()
 
 
+def outside_build(tmp_path, native_config, headers, included):
+    """A program including ``included`` (names in an `outside` directory beside it, made
+    from ``headers``: {name: text}), prepared: its session, or the error."""
+    from peeky.native import NativeTarget
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    for name, text in headers.items():
+        (outside / name).parent.mkdir(parents=True, exist_ok=True)
+        (outside / name).write_text(text)
+    root = tmp_path / "program"
+    root.mkdir()
+    lines = "".join(f'#include "{outside / name}"\n' for name in included)
+    (root / "main.c").write_text(
+        f"#include <stdio.h>\n{lines}"
+        'int main(void) {\n  int limit = LIMIT;\n  printf("%d\\n", limit);\n  return 0;\n}\n'
+    )
+    target = NativeTarget(**{**native_config, "sources": ("main.c",)})
+    return outside, target.prepare(root / "main.c", root)
+
+
+def test_headers_outside_are_hashed_by_their_real_names(tmp_path, native_config):
+    # #177: a U+2028 in a name is no line break: main dropped the rest of the rule (the
+    # header after it went unhashed) and hashed a decoy named for the part before it.
+    # `$` (written `$$`) and spaces (`\ `) it read right.
+    headers = {
+        "c$$d.h": "#define LIMIT 3\n",
+        "c$d.h": "#define DECOY 1\n",
+        "e$f.h": "#define E 1\n",
+        "a b.h": "#define A 1\n",
+        "g\u2028h.h": "#define G 1\n",
+        "g": "decoy\n",
+        "after.h": "#define AFTER 1\n",
+    }
+    included = ["c$$d.h", "e$f.h", "a b.h", "g\u2028h.h", "after.h"]
+    outside, session = outside_build(tmp_path, native_config, headers, included)
+    try:
+        hashed = set(session.external_inputs)
+        for name in included:
+            assert str((outside / name).resolve()) in hashed, (name, sorted(hashed))
+        for decoy in ("c$d.h", "g"):
+            assert str((outside / decoy).resolve()) not in hashed, decoy
+    finally:
+        session.close()
+
+
+def test_a_header_clang_names_with_a_slash_for_its_backslash_is_refused(tmp_path, native_config):
+    # #177: clang prints a name's backslash as `/`: `bs\x.h` reads as `bs/x.h`, which
+    # main hashed (a decoy) in its place. GCC keeps the backslash, which is refused too.
+    headers = {"bs\\x.h": "#define LIMIT 3\n", "bs/x.h": "#define DECOY 1\n"}
+    with pytest.raises(ValueError, match="unambiguously") as caught:
+        outside_build(tmp_path, native_config, headers, ["bs\\x.h"])
+    assert "may be" in str(caught.value) or "backslash" in str(caught.value), caught.value
+
+
+@pytest.mark.parametrize("real", ["\\x.h", "\\\\/x.h"])
+def test_a_header_clang_prints_with_an_empty_step_is_refused(tmp_path, native_config, real):
+    # #178 review: clang prints `/out/\x.h` (and `/out/\\/x.h`) with `//` for the
+    # backslashes, which a path shortens to `/out/x.h`, a decoy: its hash was recorded,
+    # and a change to the header the compiler read went unnoticed.
+    headers = {real: "#define LIMIT 1\n", "x.h": "#define LIMIT 2\n"}
+    with pytest.raises(ValueError, match="unambiguously"):
+        outside_build(tmp_path, native_config, headers, [real])
+
+
 def test_compiled_programs_take_per_run_arguments(tmp_path, native_config, capsys):
     from peeky.cli import main
 
