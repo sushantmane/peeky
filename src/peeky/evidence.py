@@ -17,7 +17,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import quote
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 13
 MAX_RUNS = 500
 DEFAULT_ROWS = 200
 MAX_ROWS = 10000
@@ -45,8 +45,10 @@ TABLES = {
             "program": "Source file of the breakpoint, relative to target",
             "line": "Requested breakpoint line",
             "capture": "JSON list of requested selectors",
-            "sets": "JSON list of requested [name, value] interventions",
-            "set_hit": "Hit at which the interventions were applied; NULL without --set",
+            "sets": "JSON list of requested interventions: [name, value] for --set (at "
+            "set_hit of line), [name, value, 'LINE@HIT'] for --set-at (at hit HIT of LINE, "
+            "counting that line's own stops, in the original's numbering)",
+            "set_hit": "Hit at which the --set interventions were applied; NULL without --set",
             "hits_requested": "The probe's --hits: a number, or 'all'",
             "args": "JSON list of the arguments the program received (--arg, else the "
             "configured ones); NULL for an attached JVM, whose arguments are unknown",
@@ -57,7 +59,7 @@ TABLES = {
             "error_message": "Error message, or NULL",
             "hits": "Hits that actually occurred",
             "seconds": "Wall time of the probe",
-            "max_pause_ms": "Longest pause at one hit, in milliseconds",
+            "max_pause_ms": "Longest pause at one stop (a hit, or a --set-at's), in milliseconds",
             "optimized": "Optimization level of an optimized build, else NULL",
             "output": "Program output (bounded)",
             "output_truncated": "1 when the output was truncated",
@@ -81,7 +83,9 @@ TABLES = {
             "phase": "observed, or after-set (the value after that hit's interventions)",
             "line": "Line where the program actually stopped (a candidate run's own numbering; "
             "runs.line is the requested line in the original file)",
-            "function": "Function (frame) name",
+            "function": "Function (frame) name, as the debugger names it (C++: its "
+            "signature; Rust: with its symbol hash, and every closure of a function as "
+            "`{{closure}}`). short_function(function) drops parameters and hashes",
             "selector": "Selector as requested, e.g. request.page or items[0]",
             "type": "Type as the debugger reports it",
             "value": "Value as the debugger displays it; NULL when there is none",
@@ -108,16 +112,34 @@ TABLES = {
             "raw (a C/C++ local a loop returns to, a program using setjmp; a Rust value "
             "shown as LLDB's summary, a pointer it does not follow, a moved local): read "
             "the value with it. NULL for a plain value (and for runs saved before schema 8)",
+            "instance": "That function as the build names it where the frame's name does not "
+            "tell it apart (Rust: a closure, `cz::main::{closure#0}`; a generic's instance "
+            "with its type arguments, `cz::gen_apply<i32>`, cut at 300 characters with `…`), "
+            "as a probe table's function column shows it; else NULL (and for runs saved before schema 13). short_function(function) "
+            "gives every closure of a function, and every instance of a generic, one name: "
+            "instance tells them apart",
         },
     ),
     "interventions": (
-        "One row per applied --set.",
+        "One row per applied --set or --set-at, in the order they were applied.",
         {
             "run_id": "-> runs.run_id",
-            "hit": "Hit at which it was applied",
+            "hit": "Hit of its line at which it was applied (that line's own stops)",
             "name": "Local that was changed",
             "before": "Value before",
             "after": "Value after, as the debugger reports it",
+            "line": "Line where it was applied (where the program stopped: a candidate "
+            "run's own numbering, as captures.line); NULL where an older run did not say",
+            "capture_hit": "How many hits of the capture line had been captured when it was "
+            "applied (its own hit, at a captured stop): it falls after those values and "
+            "before the next hit's",
+            "function": "Function (frame) whose variable it changed: a line's stops can be "
+            "in several (a lambda or closure on it, a recursive call), and its hit counts "
+            "them all; NULL where an older run did not say",
+            "instance": "That function as the build names it where the frame's name does not "
+            "tell it apart (Rust: a generic's instance with its type arguments, "
+            "`gen::tf<gen::A>`, cut at 300 characters with `…`; a closure, "
+            "`main::{closure#1}`), else NULL",
         },
     ),
     "pauses": (
@@ -126,7 +148,8 @@ TABLES = {
     ),
 }
 _EVIDENCE_COLUMNS = (
-    "run_id, started_at, label, program, line, status, hit, phase, function, selector, type, "
+    "run_id, started_at, label, program, line, status, hit, phase, function, instance, "
+    "selector, type, "
     "value, num, unavailable, error, view, note, identity, scope, args, sets, "
     "artifact_manifest_id, source_sha256, candidate, language"
 )
@@ -139,7 +162,8 @@ VIEWS = {
     "last_run": "The evidence rows of the newest run",
 }
 _EVIDENCE_VIEW = """CREATE VIEW evidence AS SELECT c.run_id, r.started_at, r.label, r.program,
-        c.line, r.status, c.hit, c.phase, c.function, c.selector, c.type, c.value, c.num,
+        c.line, r.status, c.hit, c.phase, c.function, c.instance, c.selector, c.type, c.value,
+        c.num,
         c.unavailable, c.error, c.view, c.note, c.identity, c.scope, r.args, r.sets,
         r.artifact_manifest_id,
         r.source_sha256, r.edit IS NOT NULL AS candidate, r.language
@@ -152,7 +176,7 @@ _LAST_RUN_VIEW = (
 _CAPTURES = """CREATE TABLE {} (
         run_id INTEGER NOT NULL, hit INTEGER, phase TEXT, line INTEGER, function TEXT,
         selector TEXT, type TEXT, value TEXT, num NUMERIC, unavailable INTEGER NOT NULL,
-        error TEXT, view TEXT, identity INTEGER, scope TEXT, note TEXT)"""
+        error TEXT, view TEXT, identity INTEGER, scope TEXT, note TEXT, instance TEXT)"""
 _CAPTURE_INDEXES = (
     "CREATE INDEX captures_run ON captures (run_id, hit)",
     "CREATE INDEX captures_selector ON captures (selector)",
@@ -168,7 +192,7 @@ _DDL = (
         source_sha256 TEXT, target_identity TEXT, edit TEXT, notes_kept INTEGER)""",
     _CAPTURES.format("captures"),
     "CREATE TABLE interventions (run_id INTEGER NOT NULL, hit INTEGER, name TEXT, "
-    "before TEXT, after TEXT)",
+    "before TEXT, after TEXT, line INTEGER, capture_hit INTEGER, function TEXT, instance TEXT)",
     "CREATE TABLE pauses (run_id INTEGER NOT NULL, hit INTEGER, ms REAL)",
     *_CAPTURE_INDEXES,
     "CREATE INDEX interventions_run ON interventions (run_id)",
@@ -185,8 +209,12 @@ _DDL = (
 # captures.identity and captures.scope; version 7 makes identity an INTEGER where an
 # early version 6 stored it as TEXT (`list@7`) without scope; version 8 adds captures.note
 # (earlier runs' notes were not kept: NULL); version 9 adds runs.notes_kept, 1 for a run
-# saved with its notes, so queries can say which runs' values may be unmarked. Views name
-# columns of the newest tables, so earlier steps only drop them and the last creates them.
+# saved with its notes, so queries can say which runs' values may be unmarked; version
+# 10 adds interventions.line and capture_hit (an earlier run's --set was at its captured
+# stop); version 11 adds interventions.function, version 12 interventions.instance, and
+# version 13 captures.instance (a closure's or generic instance's label, NULL before). Views
+# name columns of the newest tables, so earlier steps only drop them and the last creates
+# them.
 _DROP_VIEWS = ("DROP VIEW IF EXISTS last_run", "DROP VIEW IF EXISTS evidence")
 
 
@@ -254,18 +282,32 @@ _MIGRATIONS = {
     5: (*_DROP_VIEWS, _add_identity),
     6: (*_DROP_VIEWS, _integer_identity),
     7: (*_DROP_VIEWS, _add_columns(("note", "TEXT"))),
-    8: (
+    8: (*_DROP_VIEWS, _add_columns(("notes_kept", "INTEGER"), table="runs")),
+    9: (
         *_DROP_VIEWS,
-        _add_columns(("notes_kept", "INTEGER"), table="runs"),
-        _EVIDENCE_VIEW,
-        _LAST_RUN_VIEW,
+        _add_columns(("line", "INTEGER"), ("capture_hit", "INTEGER"), table="interventions"),
+        # Every --set before version 10 was applied at a captured stop of the run's line.
+        "UPDATE interventions SET capture_hit = hit, line = COALESCE((SELECT MIN(c.line) "
+        "FROM captures c WHERE c.run_id = interventions.run_id AND c.hit = interventions.hit "
+        "AND c.phase = 'after-set'), (SELECT r.line FROM runs r WHERE r.run_id = "
+        "interventions.run_id)) WHERE capture_hit IS NULL",
     ),
+    10: (*_DROP_VIEWS, _add_columns(("function", "TEXT"), table="interventions")),
+    11: (*_DROP_VIEWS, _add_columns(("instance", "TEXT"), table="interventions")),
+    12: (*_DROP_VIEWS, _add_columns(("instance", "TEXT")), _EVIDENCE_VIEW, _LAST_RUN_VIEW),
 }
 
 _LATEST = "(SELECT MAX(run_id) FROM runs)"
 _RUN = f"COALESCE(:run, {_LATEST})"
 _B = f"COALESCE(:b, {_LATEST})"
 _A = f"COALESCE(:a, (SELECT MAX(run_id) FROM runs WHERE run_id < {_B}))"
+
+
+# An intervention (`i`) made at a captured stop: that stop has after-set captures.
+_AT_CAPTURE = (
+    "EXISTS (SELECT 1 FROM captures c WHERE c.run_id = i.run_id AND c.phase = 'after-set' "
+    "AND c.hit = i.hit AND c.line IS i.line)"
+)
 
 
 # Why a value is NULL; never shown in the value column, so no reason reads as a value.
@@ -380,7 +422,7 @@ SELECT {_PAIR_COLUMNS} FROM (
     FROM runs ra, runs rb WHERE ra.run_id = {_A} AND rb.run_id = {_B}
     AND ra.args IS NOT rb.args
   UNION ALL SELECT 5, NULL, NULL, '(sets)', COALESCE(ra.sets, '[]'), COALESCE(rb.sets, '[]'), 1,
-    'the runs made different interventions (--set)', 0
+    'the runs made different interventions (--set, --set-at)', 0
     FROM runs ra, runs rb WHERE ra.run_id = {_A} AND rb.run_id = {_B}
     AND COALESCE(ra.sets, '[]') IS NOT COALESCE(rb.sets, '[]'))
 ORDER BY rank, hit, phase = 'after-set', pos"""
@@ -547,15 +589,29 @@ WINDOW w AS (PARTITION BY selector ORDER BY hit) ORDER BY selector, hit""",
         (),
     ),
     "set_effect": (
-        "Each selector before and after the run's interventions, with the change applied; "
-        "caveat_observed and caveat_after_set name a view or `note` that qualifies a value",
-        f"""SELECT o.hit, o.selector, {_shown("o")} AS observed, {_shown("s")} AS after_set,
-  {_caveat("o")} AS caveat_observed, {_caveat("s")} AS caveat_after_set,
-  (SELECT group_concat(name || ': ' || before || ' -> ' || after, '; ') FROM interventions i
-    WHERE i.run_id = o.run_id AND i.hit = o.hit) AS interventions
-FROM captures o JOIN captures s ON s.run_id = o.run_id AND s.hit = o.hit
-  AND s.selector = o.selector AND s.phase = 'after-set'
-WHERE o.run_id = {_RUN} AND o.phase = 'observed' ORDER BY o.hit, o.rowid""",
+        "Each selector before and after the run's interventions, in the order they were "
+        "applied, with the changes made at that stop (line, and hit: that line's own); "
+        "caveat_observed and caveat_after_set name a view or `note` that qualifies a value. "
+        "A change at a stop with no capture (a --set-at line) is one row: selector is what "
+        "it changed, observed and after_set its value before and after (the set's own "
+        "read-back), function whose variable it was",
+        f"""SELECT hit, line, function, selector, observed, after_set, caveat_observed,
+  caveat_after_set, interventions FROM (
+  SELECT o.hit, o.line, o.function, o.selector, {_shown("o")} AS observed,
+    {_shown("s")} AS after_set,
+    {_caveat("o")} AS caveat_observed, {_caveat("s")} AS caveat_after_set,
+    (SELECT group_concat(name || ': ' || before || ' -> ' || after, '; ') FROM interventions i
+      WHERE i.run_id = o.run_id AND i.hit = o.hit AND i.line IS o.line) AS interventions,
+    (SELECT MIN(rowid) FROM interventions i
+      WHERE i.run_id = o.run_id AND i.hit = o.hit AND i.line IS o.line) AS seq, o.rowid AS pos
+  FROM captures o JOIN captures s ON s.run_id = o.run_id AND s.hit = o.hit
+    AND s.selector = o.selector AND s.phase = 'after-set'
+  WHERE o.run_id = {_RUN} AND o.phase = 'observed'
+  UNION ALL
+  SELECT i.hit, i.line, i.function, i.name, i.before, i.after, NULL, NULL,
+    i.name || ': ' || i.before || ' -> ' || i.after, i.rowid, 0
+  FROM interventions i WHERE i.run_id = {_RUN} AND NOT {_AT_CAPTURE})
+ORDER BY seq, pos""",
         _RUN_PARAM,
         (),
     ),
@@ -647,6 +703,20 @@ def _text(value):
     if value is None or isinstance(value, str):
         return value
     return json.dumps(value, sort_keys=True, default=str)
+
+
+def _set_line(result, hit):
+    """Where a --set from a worker before #137 was applied: its hit's after-set rows'."""
+    return next(
+        (
+            row["line"]
+            for row in result.get("rows") or []
+            if row.get("phase") == "after-set"
+            and row.get("hit") == hit
+            and type(row.get("line")) is int
+        ),
+        None,
+    )
 
 
 def _program_args(result, probe, language):
@@ -762,7 +832,14 @@ def record(path, result, *, language=None, target=None, label=None, worker=None)
         "program": probe.get("program"),
         "line": probe.get("line"),
         "capture": json.dumps(list(probe.get("capture") or [])),
-        "sets": json.dumps([list(change) for change in probe.get("set") or []]),
+        # --set as [name, value]; --set-at as [name, value, "LINE@HIT"] (#137).
+        "sets": json.dumps(
+            [list(change) for change in probe.get("set") or []]
+            + [
+                [name, value, f"{line}@{hit}"]
+                for line, hit, name, value in probe.get("set_at") or []
+            ]
+        ),
         # Eval 5: a run without --set has no intervention hit (the probe's default is 1).
         "set_hit": probe.get("set_hit") if probe.get("set") else None,
         "hits_requested": probe.get("hits"),
@@ -774,7 +851,9 @@ def record(path, result, *, language=None, target=None, label=None, worker=None)
         "error_message": error.get("message"),
         "hits": result.get("hits"),
         "seconds": seconds,
-        "max_pause_ms": max(pauses) if pauses else None,
+        "max_pause_ms": max(stops)
+        if (stops := [*pauses, *(result.get("set_pauses_ms") or [])])
+        else None,
         "optimized": result.get("optimized"),
         "output": output,
         "output_truncated": result.get("output_truncated") or cut,
@@ -796,8 +875,8 @@ def record(path, result, *, language=None, target=None, label=None, worker=None)
         ).lastrowid
         connection.executemany(
             "INSERT INTO captures (run_id, hit, phase, line, function, selector, type, value, "
-            "num, unavailable, error, view, identity, scope, note) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "num, unavailable, error, view, identity, scope, note, instance) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [
                 (
                     run_id,
@@ -817,19 +896,28 @@ def record(path, result, *, language=None, target=None, label=None, worker=None)
                     row["identity"] if type(row.get("identity")) is int else None,
                     "globals" if row.get("scope") == "globals" else None,
                     _text(row.get("note")),
+                    _text(row.get("instance")),
                 )
                 for row in result.get("rows") or []
             ],
         )
         connection.executemany(
-            "INSERT INTO interventions VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO interventions (run_id, hit, name, before, after, line, capture_hit, "
+            "function, instance) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [
                 (
                     run_id,
-                    probe.get("set_hit"),
+                    # A worker before #137 says neither: its --set was at set_hit.
+                    change.get("hit", probe.get("set_hit")),
                     change.get("name"),
                     _text(change.get("before")),
                     _text(change.get("after")),
+                    change.get("line")
+                    if type(change.get("line")) is int
+                    else _set_line(result, change.get("hit", probe.get("set_hit"))),
+                    change.get("capture_hit", change.get("hit", probe.get("set_hit"))),
+                    _text(change.get("function")),
+                    _text(change.get("instance")),
                 )
                 for change in result.get("interventions") or []
             ],
@@ -1214,14 +1302,26 @@ def _wide(path, params):
     column per selector in capture order. Generated per run: SQL cannot pivot alone."""
     run, phase = _run_id(path, params.get("run")), _phase(params)
     selectors = _captured(path, run, phase)
-    fixed = {"hit", "phase", "line", "no_value", "caveats"}
+    fixed = {"hit", "phase", "line", "no_value", "caveats", "sets"}
     names = _columns(selectors, set(fixed), fixed=fixed)
     _too_wide(len(names) + len(fixed), run, "wide")
     where = f"run_id = {run}" + (f" AND phase = {_literal(phase)}" if phase else "")
+    # The interventions made since the previous row's values were read (#137): at this
+    # captured stop for its after-set row; else, at other stops after the previous hit
+    # and before this one, for its observed row.
+    sets = (
+        "(SELECT NULLIF(json_group_array(name || ': ' || COALESCE(before, '?') || ' -> ' || "
+        "COALESCE(after, '?') || ' (line ' || COALESCE(line, '?') || ', hit ' || hit || "
+        "COALESCE(', in ' || COALESCE(instance, short_function(function)), '') || ')'), "
+        f"'[]') FROM (SELECT * FROM interventions i WHERE i.run_id = {run} AND CASE WHEN "
+        f"{_AT_CAPTURE} THEN w.phase = 'after-set' AND i.hit = w.hit ELSE w.phase = "
+        "'observed' AND i.capture_hit = w.hit - 1 END ORDER BY i.rowid))"
+    )
     sql = (
+        f"SELECT w.*, {sets} AS sets FROM (\n"
         f"SELECT hit, phase, MIN(line) AS line,{_picked(selectors, names, '  ')}\n"
         f"  {_NO_VALUE} AS no_value,\n  {_CAVEATS} AS caveats\n"
-        f"FROM ({_cells(where)})\nGROUP BY hit, phase ORDER BY hit, phase = 'after-set'"
+        f"FROM ({_cells(where)})\nGROUP BY hit, phase) w ORDER BY w.hit, w.phase = 'after-set'"
     )
     return sql, {}, []
 
@@ -1410,9 +1510,13 @@ def schema(path):
             "differs from b",
             "short_function(function)": "A frame name without a C++ signature's parameters, "
             "qualifiers and return type (`trim_left`) or a Rust symbol hash; NULL for NULL. "
-            "Overloads share it (`operator+`, `G::get` for `get() &` and `get() &&`), so "
-            "GROUP BY or a join on it combines them; a table shows it, except that "
-            "overloads in one table keep their parameters there",
+            "Overloads share it (`operator+`, `G::get` for `get() &` and `get() &&`), and so "
+            "do a function's closures (`cz::main::{{closure}}`) and a generic's instances "
+            "(`cz::gen_apply` for `gen_apply<i32>` and `gen_apply<i16>`), so GROUP BY or a "
+            "join on it combines them; captures.instance and interventions.instance tell "
+            "closures and instances apart (`instance = 'cz::main::{closure#0}'`). A table "
+            "shows it, except that overloads in one table keep their parameters there, and "
+            "a probe table shows a short instance instead",
             "object_ref(text)": "The Java object a value is (`Merge$Interval@143`), else NULL: "
             "two values of one run with the same object_ref are the same object (aliasing); "
             "the numbers differ between runs. Python values carry theirs in "

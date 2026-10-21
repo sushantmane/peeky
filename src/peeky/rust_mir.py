@@ -2306,6 +2306,9 @@ class IrFunction:
     sure: dict = field(default_factory=dict)
     calls: dict = field(default_factory=dict)
     scoped: bool = False
+    # A generic's instance as the DISubprogram names it, with its arguments (`tf<rc::A>`;
+    # `name` drops them), else "": a frame's symbol hash is all that tells instances apart.
+    instance: str = ""
 
     def agrees(self, block, line):
         """True if the IR's blocks with the names of a stop's DWARF block (``block``, a
@@ -2501,6 +2504,7 @@ def ir_functions(path, files):
             frozenset(copies.get(subprogram, ())),
             ancestors=_namespaces(meta, fields.get("scope")),
             generics=_generics(meta, fields),
+            instance=_instance(fields.get("name", "")),
             chains=_count(chain[block] for block in chain) if chain else {},
             line_chains=_count(
                 (number, chain[block]) for number, found in line_blocks.items() for block in found
@@ -2538,8 +2542,17 @@ def ir_functions(path, files):
             inline_only=True,
             ancestors=_namespaces(meta, fields.get("scope")),
             generics=_generics(meta, fields),
+            instance=_instance(fields.get("name", "")),
         )
     return functions
+
+
+def _instance(name):
+    """A DISubprogram's name where it gives generic arguments (`tf<rc::A>`), else "";
+    one past 300 characters is cut and ends with `…`."""
+    if not isinstance(name, str) or not name.endswith(">"):
+        return ""
+    return name if len(name) <= 300 else name[:299] + "…"
 
 
 # A const generic's value as rustc names an instantiation (`sum<3>`, `cgt<u8, 2>`).
