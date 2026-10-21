@@ -274,7 +274,8 @@ def test_a_refused_python_probe_of_returns_keeps_no_run(monkeypatch, tmp_path, c
     monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
     (tmp_path / "a.py").write_text("def f():\n    return 1\nf()\n")
     command = ["probe", str(tmp_path), "--at", "a.py:2", "--capture", "return", "--json"]
-    assert main(command) == 1
+    # Refused before the program runs: exit 2, as any refusal (#165, finding 14).
+    assert main(command) == 2
     shown = json.loads(capsys.readouterr().out)
     assert shown["error"]["code"] == "UNSUPPORTED" and "evidence" not in shown
     assert not (tmp_path / "state" / "evidence" / "evidence.db").exists()

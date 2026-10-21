@@ -94,7 +94,7 @@ def test_a_probe_with_gcc_for_cpp_keeps_no_run(tmp_path, monkeypatch, capsys):
     (tmp_path / "a.cpp").write_text("int main() {\n    int t = 1;\n    return t;\n}\n")
     code = main(["probe", str(tmp_path / "a.cpp"), "--at", "2", "--capture", "t", "--json"])
     shown = json.loads(capsys.readouterr().out)
-    assert code == 1 and shown["error"]["code"] == "UNSUPPORTED"
+    assert code == 2 and shown["error"]["code"] == "UNSUPPORTED"
     assert shown["error"]["message"].startswith(CPP_COMPILER_REFUSAL)
     assert "evidence" not in shown and shown.get("refused_before_launch") is True
     assert not (tmp_path / "state" / "evidence" / "evidence.db").exists()
