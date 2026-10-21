@@ -817,6 +817,26 @@ def _sets(items):
 
 
 def probe(args):
+    try:
+        root, request, edit, original, language, adapter = _probe_request(args)
+        if args.worker is not None:
+            result = _probe_remote(args, root, request)
+    except Exception as exc:
+        from peeky.client import TransportLost
+
+        if not isinstance(exc, TransportLost):
+            # Nothing ran (#190): the request, its target or the worker refused it, or
+            # it never reached the worker. A broken connection's outcome is unknown.
+            exc.before_launch = True
+        raise
+    if args.worker is None:
+        result = run_probe(root, request, adapter=adapter, progress=_progress(args))
+    return _probe_result(args, root, result, edit, original, request.program, language)
+
+
+def _probe_request(args):
+    """(root, the Probe, edit, original text, language, the local adapter or None) for
+    `peeky probe`'s arguments."""
     if args.label is not None and len(args.label) > 200:
         raise ValueError("--label is at most 200 characters")
     root, program, line, language, data = resolve(args.target, args.at, args.config)
@@ -842,15 +862,17 @@ def probe(args):
         edit=edit,
         set_at=set_at,
     )
-    progress = (
-        None
-        if args.quiet
-        else lambda message: print(f"peeky: {message}", file=sys.stderr, flush=True)
-    )
-    if args.worker is not None:
-        result = _probe_remote(args, root, request)
-    else:
-        result = run_probe(root, request, adapter=adapter_for(language, data), progress=progress)
+    adapter = adapter_for(language, data) if args.worker is None else None
+    return root, request, edit, original, language, adapter
+
+
+def _progress(args):
+    if args.quiet:
+        return None
+    return lambda message: print(f"peeky: {message}", file=sys.stderr, flush=True)
+
+
+def _probe_result(args, root, result, edit, original, program, language):
     if edit:
         _bind_candidate(result, original, edit, program)
     if misplaced := _misplaced_options(args):
@@ -3097,7 +3119,11 @@ def main(argv=None, _job=False, _edits=None):
 
         payload = classify(exc, session_closed=False if isinstance(exc, ValueError) else None)
         if getattr(args, "json", False):
-            print(json.dumps({"error": payload}, indent=2))
+            shown = {"error": payload}
+            if getattr(args, "command", None) == "probe" and getattr(exc, "before_launch", False):
+                # As a probe the worker refused (#190): nothing ran.
+                shown = {"status": "failed", **shown, "refused_before_launch": True}
+            print(json.dumps(shown, indent=2))
         print(f"peeky: [{payload.get('code')}] {payload.get('message')}", file=sys.stderr)
         print(f"  hint: {payload.get('hint', '')}", file=sys.stderr)
         if payload.get("cleanup"):

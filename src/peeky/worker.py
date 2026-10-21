@@ -161,6 +161,9 @@ class DebugWorker:
         # Scope handles of module globals: listed for reading, never changed.
         self.global_handles = set()
         self.launched_at = None
+        # Whether the current launch has asked the debugger to start (or attach to) the
+        # program: an error before that is one before launch (#190).
+        self.launch_requested = False
         self.reference_frames = {}
         self.reference_adapter = {}
         self.reference_counter = 0
@@ -1003,7 +1006,12 @@ class DebugWorker:
                     traceback.print_exc()
 
     def dispatch(self, operation, args):
-        self.validate(operation, args)
+        try:
+            self.validate(operation, args)
+        except Exception as exc:
+            if operation == "launch":
+                exc.before_launch = True
+            raise
         with self.lock:
             failed = self.failed
             if operation != "launch" and failed and args.get("session_id") == failed["session"]:
@@ -1029,6 +1037,7 @@ class DebugWorker:
             self.last_used = time.monotonic()
             if operation == "launch":
                 self.failed = None
+                self.launch_requested = False
             self.last_cleanup = None
             try:
                 try:
@@ -1042,6 +1051,10 @@ class DebugWorker:
                 if self.last_cleanup and not self.dap:
                     # The error says what became of the processes the session started.
                     exc.cleanup = self.last_cleanup
+                if operation == "launch" and not self.launch_requested:
+                    # Nothing ran: the build, its checks or the debugger's start failed
+                    # before the program was asked to start (#190).
+                    exc.before_launch = True
                 raise
             finally:
                 self.last_used = time.monotonic()
@@ -1639,14 +1652,16 @@ class DebugWorker:
                     "initialize", runtime.initialize_args(), timeout=left()
                 )
                 self.capabilities = runtime.normalize_capabilities(capabilities)
+                launch_args = (
+                    runtime.launch_args(entry or program, self.root, args["args"])
+                    if args.get("args")
+                    else runtime.launch_args(entry or program, self.root)
+                )
+                timeout = left(5)
+                # From here the program may run, even if the request then fails.
+                self.launch_requested = True
                 launch = self.dap.send(
-                    getattr(runtime, "dap_request", "launch"),
-                    (
-                        runtime.launch_args(entry or program, self.root, args["args"])
-                        if args.get("args")
-                        else runtime.launch_args(entry or program, self.root)
-                    ),
-                    timeout=left(5),
+                    getattr(runtime, "dap_request", "launch"), launch_args, timeout=timeout
                 )
                 budget = left()
                 try:

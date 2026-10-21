@@ -2966,6 +2966,9 @@ def run_probe(root, probe, *, adapter=None, progress=None):
     # `returning` holds the calls still to return, innermost last: {hit, depth, thread}.
     wants_return, returning = RETURN in probe.capture, []
     selectors = tuple(selector for selector in probe.capture if selector != RETURN)
+    # Whether the worker was asked to launch: an error before that, or one the worker
+    # says came before it asked the debugger to start the program, is one before launch.
+    launching = False
     try:
         if wants_return and isinstance(worker.adapter, PythonAdapter):
             refused = ValueError(
@@ -2986,6 +2989,7 @@ def run_probe(root, probe, *, adapter=None, progress=None):
             result["candidate"] = {"line": line, "original_line": probe.line}
         # The capture line first, then each --set-at line, each once.
         lines = list(dict.fromkeys([line, *(point["build_line"] for point in points)]))
+        launching = True
         launch = worker.dispatch(
             "launch",
             {
@@ -3500,8 +3504,8 @@ def run_probe(root, probe, *, adapter=None, progress=None):
         from peeky.errors import classify
 
         result.update(status="failed", error=classify(exc, session_closed=True))
-        if getattr(exc, "before_launch", False):
-            # Nothing ran (#138): no run to keep as evidence.
+        if getattr(exc, "before_launch", False) or not launching:
+            # Nothing ran (#138, #190): no run to keep as evidence, and no table.
             result["refused_before_launch"] = True
         if session is not None:
             # What the program printed before the failure says how far it got.

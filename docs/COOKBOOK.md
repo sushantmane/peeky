@@ -372,8 +372,8 @@ peeky probe examples/pagination_bug.py --at 8 --capture start --json --quiet | j
 
 Every command takes `--json`. Exit codes:
 - 0: success;
-- 1: a completed command with a negative result (a failed probe or a failed verify);
-- 2: an error, or a refusal: a probe refused before it ran (`refused_before_launch`: nothing ran, so its text has no table, only the error and its hint);
+- 1: a completed command with a negative result (a probe that failed once its program was asked to start, or a failed verify);
+- 2: an error, or a refusal: any probe that ended before its program was asked to start, whatever its code (`refused_before_launch`: a refusal, a file outside the worker root, a build that failed, a debugger that did not start). Nothing ran, so its text has no table, only the error and its hint;
 - 3: a background job still running;
 - 4: a probe (`peeky probe`, or the `peeky-probe` script) that completed, but a change it was asked to make (`--set`, `--set-at`) never happened, because its stop never came (2.8). The values are evidence; the experiment did not happen. A shortfall of `--hits` alone is not a failure: 0, with a warning.
 
