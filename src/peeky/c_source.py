@@ -1355,7 +1355,7 @@ class Statements:
         )
         return tuple(sorted(lines)), unknown
 
-    def block_storage(self, line, name, after=None, elsewhere=False):
+    def block_storage(self, line, name, after=None, elsewhere=False, body=False, entering=False):
         """For the local ``name`` the debugger shows at a stop on ``line`` (declared on
         line ``after``; None for a parameter): ``(kind, its line)`` of a declaration of
         ``name`` the code there names instead, which is not that local: one with
@@ -1370,6 +1370,17 @@ class Statements:
         conditional (`#ifdef X`), a macro that may declare one names it (given it, or in
         its expansion), or an `#include` is there, where ``elsewhere`` (what it brings
         in may declare one).
+
+        ``body``: the stop is in a function wholly on the line (a lambda in a statement
+        there, #169): where the line opens one function's or lambda's body, it is that
+        one, and only its statements count, not the statement holding it (a
+        range-`for`'s binding names nothing inside a lambda in its range); where it
+        opens several, the line is read as any other.
+
+        ``entering``: the stop is the first instruction of the statements that start on
+        the line, so none of them has run: a range-`for` there whose header ends the
+        line with its body's `{` is about to run its range's expression, where its
+        binding is not declared yet (#169), so the binding names nothing at the stop.
 
         Peeky reads a translation unit as the compiler preprocessed it
         (``Preprocessed``), where no macro or conditional is left and an `#include`
@@ -1403,6 +1414,22 @@ class Statements:
         lower = (
             self.starts[after - 1] if type(after) is int and 1 <= after <= len(self.starts) else 0
         )
+        fresh = self._range_headers(begin, finish) if entering else frozenset()
+        bodies = [
+            opened
+            for opened in (pairs if body else ())
+            if begin <= opened < finish
+            and code.startswith(("{", "<%"), opened)
+            and self._brace(opened) in ("function", "lambda")
+        ]
+        if len(bodies) == 1:
+            opened = bodies[0]
+            start, stop = max(opened + 1, lower), min(pairs[opened], finish)
+            if start >= stop:
+                return False
+            return self._storage_declaration(
+                code, start, stop, name, after, opened >= lower, position, fresh
+            )
         # Every block around the line, and every block of statements opening on it
         # before its end (`{ extern long gcount; total += use(gcount); }`, a statement
         # expression's `({`); not a type's body or an initializer there, read as part of
@@ -1432,11 +1459,44 @@ class Statements:
             # A C++ class declared in the local's own block leaves the local named
             # (the variable hides it); one in a block within it hides the local.
             found = self._storage_declaration(
-                code, start, stop, name, after, opened >= lower, position
+                code, start, stop, name, after, opened >= lower, position, fresh
             )
             if found is not False:
                 return found
         return False
+
+    def _range_headers(self, begin, finish):
+        """Where each range-`for` (its `for`) starts on the line from ``begin`` to
+        ``finish`` whose header ends the line with its body's `{` (nothing after it):
+        `for (auto [t, u] : make(t)) {`. Not one whose parentheses hold a `?` (a `:`
+        Peeky may misread) or run onto another line."""
+        code, pairs = self._code()
+        found = set()
+        for opened in pairs or {}:
+            if not (begin <= opened < finish and code.startswith(("{", "<%"), opened)):
+                continue
+            width = 2 if code.startswith("<%", opened) else 1
+            if _NONBLANK.search(code, opened + width, finish):
+                continue
+            before = self._unattributed(opened)
+            if before is None or before[0] != ")":
+                continue
+            parenthesis = self._opening(before[1])
+            keyword = self._before(parenthesis) if parenthesis is not None else None
+            if keyword is None or keyword[0] != "for" or keyword[1] < begin:
+                continue
+            if "?" in code[parenthesis : before[1]]:
+                continue
+            depth = 0
+            for mark in _TOKENS.finditer(code, parenthesis + 1, before[1]):
+                if mark[0] in _OPEN:
+                    depth += 1
+                elif mark[0] in _CLOSE:
+                    depth -= 1
+                elif mark[0] == ":" and depth == 0:
+                    found.add(keyword[1])
+                    break
+        return frozenset(found)
 
     def _opens_statements(self, opening):
         """Whether the brace at ``opening`` opens statements this function runs: a block,
@@ -1484,7 +1544,9 @@ class Statements:
             self.conditions = states
         return self.conditions
 
-    def _storage_declaration(self, code, start, stop, name, after=None, nested=True, within=None):
+    def _storage_declaration(
+        self, code, start, stop, name, after=None, nested=True, within=None, fresh=frozenset()
+    ):
         """(kind, line) of the first declaration of ``name`` that hides an outer local
         (see ``block_storage``) among the statements from ``start`` to ``stop`` at their
         own depth: a block closed before ``stop`` is skipped, and an initializer's
@@ -1492,7 +1554,9 @@ class Statements:
         statement; False if none; None if Peeky cannot tell (see ``block_storage``).
         ``nested``: whether they are in a block within the local's own (where a C++
         class of that name hides it); ``within``: where the stop's line begins (a
-        header's structured binding counts only in the statement holding the stop)."""
+        header's structured binding counts only in the statement holding the stop);
+        ``fresh``: where range-`for` statements start whose binding is not declared yet
+        at the stop (see ``block_storage``'s ``entering``)."""
         conditions = self._conditions()
         depth, statement, blocks, hidden = 0, [], [], set()
         body = None  # a type's body in the statement: [its depth, enum?, previous, names]
@@ -1510,6 +1574,8 @@ class Statements:
             # Whether the stop is in the statement: it reaches the stop's line, or is the
             # header of a block around it.
             last = last or bool(statement and within is not None and statement[-1][1] >= within)
+            if statement and statement[0][1] in fresh:
+                last = False
             found = self._storage_of(statement, name, after, code, nested, last)
             if found:
                 state = conditions.get(found[1])
@@ -1708,13 +1774,37 @@ class Statements:
             if name not in names:
                 continue
             line = bisect.bisect_right(self.starts, position)
-            if line == after:
-                begin = self.starts[line - 1]
-                finish = self.starts[line] if line < len(self.starts) else len(self.blanked)
-                if not self._declares(begin, finish, name, bindings=False):
-                    continue
+            if line == after and not self._declared_beside(line, name):
+                continue
             return line
         return None
+
+    def _declared_beside(self, line, name):
+        """Whether ``line`` declares ``name`` otherwise than by a structured binding,
+        outside the bodies of lambdas (or functions) there (#169): a local of the name
+        in one is that function's own, whose frame no binding outside it names."""
+        code, pairs = self._code()
+        begin = self.starts[line - 1]
+        finish = self.starts[line] if line < len(self.starts) else len(self.blanked)
+        cuts = []
+        for opened, closed in (pairs or {}).items():
+            if begin <= opened < finish:
+                cut = (opened, min(closed + 1, finish))
+            elif opened < begin < closed < finish:
+                cut = (begin, closed + 1)
+            else:
+                continue
+            if code.startswith(("{", "<%"), opened) and self._brace(opened) in (
+                "function",
+                "lambda",
+            ):
+                cuts.append(cut)
+        position = begin
+        for low, high in sorted(cuts):
+            if low > position and self._declares(position, low, name, bindings=False):
+                return True
+            position = max(position, high)
+        return position < finish and self._declares(position, finish, name, bindings=False)
 
     def old_style(self, line):
         """Whether ``line`` is in the body of a K&R-style definition (`long f(a) long a;
