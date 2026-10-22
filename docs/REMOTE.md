@@ -1,12 +1,17 @@
-# Remote workers over SSH (#8)
+# Remote workers over SSH
 
-Peeky's worker runs next to the program, on the target host. The client (an agent, a harness or you) stays on your machine. SSH carries the traffic and provides encryption and host authentication. The worker binds to loopback only and also requires its bearer token.
+Peeky's worker runs next to the program, on the target host. The client stays on your machine: an
+agent, a harness or you. SSH carries the traffic between them, with encryption and host
+authentication. The worker binds to loopback only, and it also requires its bearer token.
 
 ```
 your machine                                target host
 peeky probe/session --worker URL  ──ssh -L──▶  python -m peeky.worker (127.0.0.1 only)
 local checkout (same sources)                  target checkout, target interpreter/toolchain
 ```
+
+The [COOKBOOK, section 9](COOKBOOK.md#9-a-program-on-another-host), has a short version of this
+page. The error codes are in [ERRORS.md](ERRORS.md).
 
 ## Separate-host procedure
 
@@ -16,7 +21,7 @@ On the **target host**, use the interpreter and toolchain that run the program:
 export DEBUG_TOKEN=$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')
 echo "$DEBUG_TOKEN"            # copy it over a trusted channel; never commit it
 python3 -m peeky.worker --root /srv/app --port 8765 [--idle-timeout 300] \
-    [--rust-config|--native-config|--java-config trusted.json]
+    [--rust-config|--native-config|--java-config|--java-attach-config trusted.json]
 ```
 
 On **your machine**, in a checkout with the same sources:
@@ -29,68 +34,221 @@ peeky session start ./app --at lib/parse.py:42 --worker http://127.0.0.1:8765
 peeky session inspect; peeky session continue; peeky session close
 ```
 
-Notes:
-- **Interpreter and dependencies:** the worker's interpreter and its trusted target config choose the runtime. The client never sends executables or configuration.
-- **Source identity:** the client sends the sha256 of the local program (and of the `--run` entry script). The worker refuses with `PROVENANCE_CHANGED` **before launching** if its copies differ, so a mismatched program is never executed or changed. As a second check, the client also compares the hashes the worker reports; any result that can't be confirmed is discarded (`results_discarded: true`, no rows and no output).
-- **`ExitOnForwardFailure=yes`:** without it, ssh only warns when the local port is already taken, and the token would go to whatever process holds that port.
-- **Verification runs locally.** `peeky verify` builds and checks candidates on your machine, so the local interpreter, toolchain and dependencies must match the target for its verdict to transfer. Run `verify` on the target host when they differ.
-- **Secrets:**
-  - The token is read only from `PEEKY_WORKER_TOKEN` (or `DEBUG_TOKEN` on the worker) and is never accepted as an argument, so it can't appear in `ps` output.
-  - Session records holding it are private (`0600` inside a `0700` directory).
-  - Probe results, reports and errors never contain it; a test checks this.
-- **Closing:** `session close` closes the session but never stops a remote worker, which is shared infrastructure. Stop it on the target host.
+Results look as they do without a worker. For example, a probe through a worker:
+
+```
+$ peeky probe pagination_bug.py --at 8 --capture start,page --set start=0 --worker http://127.0.0.1:18765
+hit  phase      line  function  selector  type  value
+1    observed   8     get_page  start     int   3
+1    observed   8     get_page  page      int   1
+1    after-set  8     get_page  start     int   0
+after-set: 1 row equal to the hit's observed value left out (`--json` has every row)
+set start: 3 -> 0
+status: completed  hits: 1  seconds: 1.072  max pause: 14.1 ms
+output:
+  PAGE: [10, 20, 30]
+evidence: saved as run 1; query it with `peeky queries run --param run=1` or `peeky sql` (see `peeky sql --schema`)
+```
+
+A session started with `--worker` says `remote` in its state: `session default (python, remote)`.
+
+### What runs where
+
+- The worker's interpreter, and its trusted target config, choose the runtime.
+- The client never sends executables or configuration.
+- The client saves remote probe evidence, and its `runs.worker` column names the worker's URL. The
+  worker runs stateless probes with `--no-save`, so the worker host keeps none.
+- **Verification runs locally.** `peeky verify` builds and checks candidates on your machine. So
+  the local interpreter, toolchain and dependencies must match the target's for the verdict to
+  carry over. When they differ, run `verify` on the target host.
+
+### Java on the worker host
+
+The worker's own trusted config decides what runs. Its paths are relative to `--root`, and its
+`bundle` is relative to the config file.
+
+| Target | Worker flag | The config names |
+| --- | --- | --- |
+| A JVM that Peeky launches | `--java-config` | `bundle`, `sources`, `main_class` |
+| A JVM already waiting for a debugger | `--java-attach-config` | `bundle`, `port`, `sources`, `class_roots` |
+
+- The host needs a JDK, and an adapter bundle built there with `scripts/setup_java_adapter.py`.
+- On your machine, pass your own `--config` of the same kind. With `--worker`, the client uses it
+  only to tell a launched JVM from an attached one.
+- The breakpoint's `.java` file must match yours: see [Source identity](#source-identity).
+
+A probe through the worker:
+
+```
+$ peeky probe . --config launch.json --at demo/PaginationBug.java:13 --capture start,pageSize --set start=0 --worker http://127.0.0.1:56757
+hit  phase      line  function                      selector  type  value
+1    observed   13    PaginationBug.main(String[])  start     int   3  [settable]
+1    observed   13    PaginationBug.main(String[])  pageSize  int   3  [settable]
+1    after-set  13    PaginationBug.main(String[])  start     int   0  [settable]
+after-set: 1 row equal to the hit's observed value left out (`--json` has every row)
+set start: 3 -> 0
+status: completed  hits: 1  seconds: 0.706  max pause: 117.5 ms
+output:
+  PAGE:[10, 20, 30]
+```
+
+A session works the same way:
+
+```
+$ peeky session start . --config launch.json --at demo/PaginationBug.java:13 --worker http://127.0.0.1:56757
+session default (java, remote): state: stopped at /home/peeky/java/demo/PaginationBug.java:13 in PaginationBug.main(String[]), hit 1 (paused 0.0 s)
+```
+
+With an attached JVM, a probe stops at its hits, then detaches. The JVM runs on, and Peeky never
+kills it ([JAVA_ATTACH.md](JAVA_ATTACH.md)).
+
+### Source identity
+
+The client sends the sha256 of the local program, and of the `--run` entry script. If the worker's
+copies differ, it refuses with `PROVENANCE_CHANGED` **before launching**. So a mismatched program
+is never run or changed. For Java, the program is the breakpoint's `.java` file. The refusal
+comes before the JVM is launched, or before a waiting JVM is attached:
+
+```
+$ peeky probe pagination_bug.py --at 8 --capture start --set start=0 --worker http://127.0.0.1:18765
+error [PROVENANCE_CHANGED]: Worker source provenance differs for the program pagination_bug.py: refused before launching. Sync sources before debugging remotely
+hint: Sources, build outputs or tools changed; start a new session on a fresh build.
+```
+
+As a second check, the client compares the hashes the worker reports. A result it can't confirm
+is discarded: `results_discarded: true`, with no rows and no output.
+
+**Only those two files are compared.** The worker's other sources are not: other Python modules,
+the other files in a config's `sources`, C and C++ headers, and a crate's other files. Keep them in
+sync with yours ([#249](https://github.com/sushantmane/peeky/issues/249)). A saved run's
+`inputs_sha256` records what the worker read.
+
+### Why `ExitOnForwardFailure=yes`
+
+Without it, ssh only warns when the local port is already taken. The token would then go to
+whatever process holds that port.
+
+### Keep the token secret
+
+- The client reads the token only from `PEEKY_WORKER_TOKEN`, and the worker only from
+  `DEBUG_TOKEN`. Neither accepts it as an argument, so it can't appear in `ps` output.
+- Session records that hold it are private: `0600`, inside a `0700` directory.
+- Probe results, reports and errors never contain it. A test checks this.
+
+### Closing
+
+`session close` closes the session, but never stops a remote worker, which is shared
+infrastructure. Stop the worker on the target host.
 
 ## Disconnects, reconnects and cleanup
 
 | Situation | Client result | What to do |
 | --- | --- | --- |
-| Local tunnel port closed (no ssh, or the worker is local and down) | `UNREACHABLE` (`retryable: true`, `session_closed: false`) | Restore the tunnel and retry. The worker still holds the session. A `session close` that fails this way keeps the record so it can be retried; `session close --forget` drops it if the worker is gone for good. |
-| Tunnel up but the remote worker down (ssh accepts, then closes) | `TRANSPORT_LOST` | As below. |
+| The local tunnel port is closed: no ssh, or a local worker is down | `UNREACHABLE` (`retryable: true`, `session_closed: false`) | Restore the tunnel, and retry. The worker still holds the session. |
+| The tunnel is up, but the remote worker is down: ssh accepts, then closes | `TRANSPORT_LOST` | As for a lost connection, below. |
 | The session's own local worker has exited | `DEBUGGER_ERROR` (`session_closed: true`) | Start a new session. |
-| Connection lost during a request | `TRANSPORT_LOST` (`retryable: false`, `session_closed: false`) | The outcome is unknown. Reconnect, then `inspect`/`wait`; never repeat a mutation blindly. |
-| Client gone for longer than `--idle-timeout` | The worker closes the session and reaps the debuggee | Start a new session. |
+| The connection is lost during a request | `TRANSPORT_LOST` (`retryable: false`, `session_closed: false`) | The outcome is unknown. Reconnect, then `inspect` or `wait`. Never repeat a change blindly. |
+| The client is gone for longer than `--idle-timeout` | The worker closes the session, and reaps the debuggee. | Start a new session. |
+
+For example, with the worker stopped:
+
+```
+$ peeky session get start
+peeky: [UNREACHABLE] Worker at http://127.0.0.1:18765 is unreachable ([Errno 61] Connection refused); the request was not sent. Check the worker process or SSH tunnel, then retry
+  hint: Restore the worker or SSH tunnel, and retry: it keeps the session until its idle timeout. If it is gone for good, run `peeky session close --forget`.
+```
+
+- A `session close` that fails with `UNREACHABLE` keeps the session's record, so you can retry it.
+- If the worker is gone for good, `session close --forget` drops the record:
+  `forgot default (the worker was not contacted)`.
 
 ## What is automated
 
-See also the [recorded separate-host run](#recorded-separate-host-run-2026-10-16), which CI repeats on every change.
+`tests/integration/test_remote_worker.py` runs the worker as a separate process, and an SSH-like
+TCP relay as a third. Its tests cover:
 
-
-`tests/integration/test_remote_worker.py` runs the worker as a separate process and an SSH-like TCP relay as a third process. Its tests cover:
 - probes through the forwarded port;
-- the source-identity mismatch, where results are discarded;
-- a dropped tunnel giving `UNREACHABLE` without losing the session;
-- reconnecting on the same port and continuing the session;
+- remote probe evidence saved by the client only, none on the worker host;
+- a source-identity mismatch, where results are discarded;
+- a dropped tunnel giving `UNREACHABLE`, without losing the session;
+- reconnecting on the same port, and continuing the session;
 - closing without stopping the worker;
 - idle reaping, including the debuggee process;
-- rejection of a non-loopback URL, a missing token, a wrong token (`UNAUTHORIZED`) and a closed port;
+- refusing a non-loopback URL, a missing token, a wrong token (`UNAUTHORIZED`) and a closed port;
 - the token never appearing in output.
 
-## Recorded separate-host run (2026-10-16)
+The [recorded separate-host run](#recorded-separate-host-run-2026-10-22), Python and Java, is
+repeated by CI on every change.
 
-`tests/remote/test_ssh_e2e.py` runs the procedure above against a second host: a Linux container started from `scripts/remote_e2e/Dockerfile`, with its own kernel network namespace, filesystem, OS and Python. The container runs a key-only `sshd` that permits a single forward, to `127.0.0.1:8765`. The client uses a throwaway ed25519 key and ignores the user's ssh configuration. The worker binds to the container's loopback and reads its token from stdin, so the token never appears on a command line. Every step goes through a real `ssh -L` tunnel. The same test runs in CI (job "remote SSH e2e"). Run it locally with Docker (for example OrbStack):
+## Recorded separate-host run (2026-10-22)
+
+`tests/remote/test_ssh_e2e.py` runs the procedure above against a second host. The host is a Linux
+container started from `scripts/remote_e2e/Dockerfile`. It has its own kernel network namespace,
+filesystem, OS and Python. The Java tests use the Dockerfile's `java` target, which adds a JDK and
+an adapter bundle built in the image.
+
+- The container runs a key-only `sshd`, which permits a single forward, to `127.0.0.1:8765`.
+- The client uses a throwaway ed25519 key, and ignores the user's ssh configuration.
+- The worker binds to the container's loopback, and reads its token from stdin. So the token never
+  appears on a command line.
+- Every step goes through a real `ssh -L` tunnel.
+- The same test runs in CI, as the job "remote SSH e2e".
+
+To run it locally, you need Docker, for example OrbStack:
 
 ```sh
 PEEKY_E2E_DOCKER=1 PEEKY_E2E_RECORD=remote-run.json pytest tests/remote -v
 ```
+
+The Java steps are saved beside it, in `remote-run-java.json`.
 
 | | Client | Worker host |
 | --- | --- | --- |
 | OS | macOS 27.0.1 arm64 | Linux 7.2.9 (OrbStack) aarch64, Debian 13 |
 | Python / debugpy | 3.13.8 / 1.8.22 | 3.11.17 / 1.8.22 |
 | SSH | OpenSSH 10.3p1 client | OpenSSH 10.0p2 sshd |
+| Java | none needed | Temurin 17.0.20.1 (the `java` target only) |
 
 | Step | Command (client) | Exit | Seconds | Result |
 | --- | --- | ---: | ---: | --- |
-| Probe with an intervention | `peeky probe pagination_bug.py --at 8 --capture start,page --set start=0 --worker URL` | 0 | 1.55 | `start` 3 → 0; output `PAGE: [10, 20, 30]` |
-| Session start | `peeky session start pagination_bug.py --at 8 --worker URL` | 0 | 0.45 | stopped at line 8 |
+| Probe with a change | `peeky probe pagination_bug.py --at 8 --capture start,page --set start=0 --worker URL` | 0 | 1.82 | `start` 3 → 0; output `PAGE: [10, 20, 30]` |
+| Session start | `peeky session start pagination_bug.py --at 8 --worker URL` | 0 | 0.44 | stopped at line 8 |
 | Read a value | `peeky session get start` | 0 | 0.14 | `3` |
-| Tunnel killed | `peeky session get start` | 2 | 0.005 | `UNREACHABLE`, `retryable: true`, `session_closed: false` |
-| Tunnel reopened on the same port | `peeky session get start` | 0 | 0.10 | `3`: the worker kept the stopped session |
-| Change a local | `peeky session set start=0` | 0 | 0.23 | 3 → 0 |
-| Run to the end | `peeky session continue --to-exit` | 0 | 0.69 | terminated |
-| Program output | `peeky session report` | 0 | 0.007 | `PAGE: [10, 20, 30]` |
-| Close | `peeky session close` | 0 | 0.011 | closed; the shared worker kept running |
-| Host's source differs | `peeky probe … --set start=0 --worker URL` | 1 | 0.06 | `PROVENANCE_CHANGED`, refused before launching; the host's changed program never ran |
-| Worker stopped behind a live tunnel | `peeky probe … --worker URL` | 2 | 0.008 | `TRANSPORT_LOST`, `session_closed: false` |
+| Tunnel killed | `peeky session get start` | 2 | 0.001 | `UNREACHABLE`, `retryable: true`, `session_closed: false` |
+| Tunnel reopened on the same port | `peeky session get start` | 0 | 0.09 | `3`: the worker kept the stopped session |
+| Change a local | `peeky session set start=0` | 0 | 0.24 | 3 → 0 |
+| Run to the end | `peeky session continue --to-exit` | 0 | 0.71 | terminated |
+| Program output | `peeky session report` | 0 | 0.005 | `PAGE: [10, 20, 30]` |
+| Close | `peeky session close` | 0 | 0.013 | closed; the shared worker kept running |
+| The host's source differs | `peeky probe … --set start=0 --worker URL` | 2 | 0.05 | `PROVENANCE_CHANGED`, refused before launching; the host's changed program never ran |
+| Worker stopped behind a live tunnel | `peeky probe … --worker URL` | 2 | 0.002 | `TRANSPORT_LOST`, `session_closed: false` |
 
-Across five consecutive local runs, the module took 4.6–5.0 s, including starting the container and sshd. On GitHub's `ubuntu-latest` runner (x86_64 client and container), the same module took 21.7 s including the image build, and every step gave the same result. The token never appears in any command's output (asserted on every step).
+- All step results matched the first recorded run, of 2026-10-16, except the changed-source
+  probe's exit status, which changed from 1 to 2. A probe refused before launch exits 2.
+- The token never appears in any command's output. Every step asserts this.
+- This run's module took 9.6 s, including starting the container and sshd, with the image already
+  built.
+
+**Java** (2026-10-22), with the `java` target's container:
+
+| Step | Command (client) | Exit | Seconds | Result |
+| --- | --- | ---: | ---: | --- |
+| Probe with a change | `peeky probe . --config launch.json --at demo/PaginationBug.java:13 --capture start,pageSize --set start=0 --worker URL` | 0 | 0.60 | `start` 3 → 0; output `PAGE:[10, 20, 30]` |
+| Session start | `peeky session start . --config launch.json --at demo/PaginationBug.java:13 --worker URL` | 0 | 0.49 | stopped at line 13 |
+| Read, change, run to the end | `peeky session get start`, `session set start=0`, `session continue --to-exit` | 0 | 0.02 each | `3`; 3 → 0; terminated |
+| Program output, close | `peeky session report`, `session close` | 0 | 0.01 | `PAGE:[10, 20, 30]`; closed |
+| The host's source differs | `peeky probe … --config launch.json … --worker URL` | 2 | 0.05 | `PROVENANCE_CHANGED`, refused before launching; the host's changed program never ran |
+| The host's source differs, attached JVM | `peeky probe … --config attach.json … --worker URL` | 2 | 0.07 | `PROVENANCE_CHANGED`; the JVM still waited, not attached |
+| Attached JVM, probe with a change | `peeky probe … --config attach.json … --worker URL` | 0 | 0.25 | `start` 3 → 0; `ended: hits`. The JVM stayed alive, printed `PAGE:[10, 20, 30]` and blocked on its sentinel file |
+| The sentinel file created | `touch release`, on the host | — | — | the JVM printed `DONE` and exited with status 0 |
+
+- The attached JVM was started on the host with
+  `-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=127.0.0.1:5005`. Then the worker
+  was restarted with `--java-attach-config`.
+- After its output, the attached program waits for a `release` file. So the probe could pass only
+  by ending at its hit, and leaving the JVM running: not by waiting for the JVM's exit, or ending
+  it.
+- With the Java tests, the module took 8.0 s locally, with both images already built. A cold build
+  of the `java` image took 17 s, with its base images already pulled.
+- On 2026-10-16, five consecutive local runs took 4.6–5.0 s. On GitHub's `ubuntu-latest` runner,
+  with an x86_64 client and container, the module took 21.7 s including the image build.

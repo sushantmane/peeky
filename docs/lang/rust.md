@@ -47,6 +47,19 @@ Peeky debugs Rust with lldb-dap, LLVM's debugger.
   ([Rust 7.2](rust-cookbook.md#what-peeky-reads)).
 - Plain elements are integers, `bool`, floats and `char`, and tuples and crate structs of them
   ([Rust 7.2](rust-cookbook.md#tuples-and-structs)).
+- A tuple or struct local whose fields are all integers, `bool`, floats or `char` reads from
+  memory, marked `[memory]`. It shows as derived `Debug` prints it:
+  `Request { page: 1, page_size: 3, total: 8 }`. Its fields stay selectable
+  ([Rust 7.2](rust-cookbook.md#tuples-and-structs)).
+- So does a by-value parameter of such a type, or a reference parameter to one
+  ([Rust 7.2](rust-cookbook.md#tuples-and-structs)).
+- An owned local or a by-value parameter shows this way only in the innermost frame, where the MIR
+  proves it initialized at the stop line ([Rust 7.2](rust-cookbook.md#tuples-and-structs)).
+- A reference parameter shows this way only once the build's IR proves it live. A `&mut` one shows
+  it only in the innermost frame ([Rust 7.2](rust-cookbook.md#tuples-and-structs)).
+- These keep LLDB's summary: a struct with any other field, a nested struct, a `#[repr(packed)]`
+  struct, a standard-library struct such as `Range<usize>`, and any preview in an optimized build
+  or with a debugger without `readMemory` ([Rust 7.2](rust-cookbook.md#tuples-and-structs)).
 - Contents read only in an unoptimized build, with lldb-dap 20 or later
   ([Rust 7.2](rust-cookbook.md#set-up-the-crate)).
 - An owned `Vec` or `String` local reads only in the innermost frame, where the MIR proves it
@@ -56,6 +69,8 @@ Peeky debugs Rust with lldb-dap, LLVM's debugger.
 - A reference parameter that its function binds again shows only its pointer
   ([Rust 7.2](rust-cookbook.md#reference-parameters)).
 - A `Vec<String>` stays raw ([Rust 7.2](rust-cookbook.md#what-peeky-reads)).
+- A `HashMap` or `BTreeMap` shows LLDB's raw fields. Peeky loads none of LLDB's Rust formatters,
+  so `m[1]` finds no element.
 - A `&str` loop item reads as text where the code still uses it. In `for cell in cells` over a
   `&[&str]`, `cell` reads `"Renée"`
   ([Rust 7.2](rust-cookbook.md#str-loop-items-and-containers-of-str)).

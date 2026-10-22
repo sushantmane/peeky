@@ -303,6 +303,12 @@ _MUTATION_HINTS = (
         "--to LINE` to the line after it.",
     ),
     (
+        r"Change it before that statement starts",
+        "Change it before the statement under way starts: a stop on an earlier line (`--at`, "
+        "`session continue --to LINE`), or an earlier stop of this line (`--set-hit`), where "
+        "it is [settable].",
+    ),
+    (
         r"cannot be changed here",
         "Stop on the statement's first line (`--at`, `session continue --to LINE`), or "
         "`session step` to it.",

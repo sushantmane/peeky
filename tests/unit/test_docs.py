@@ -149,6 +149,35 @@ def test_each_language_has_a_page_and_a_cookbook_numbered_as_the_cookbook():
             assert heading in cookbook, (lang, heading)
 
 
+def _contents(path):
+    """A page's contents list, as (text, anchor) links in order, and its `##`/`###`
+    headings other than the list's own, as (text, anchor) pairs."""
+    text = _without_fences(path.read_text())
+    listed = re.search(r"^## (?:Table of )?Contents\n(.*?)^## ", text, flags=re.M | re.S)
+    links = re.findall(r"\[((?:[^\]`]|`[^`]*`)+)\]\(#([^)]+)\)", listed.group(1))
+    headings = _headings(path)
+    levels = re.findall(r"^ {0,3}(#{1,6}) .+$", text, flags=re.M)
+    shown = [
+        (heading, slug)
+        for heading, slug, level in zip(headings, _slugs(headings), levels)
+        if level in ("##", "###") and not re.match(r"(Table of )?Contents$", heading)
+    ]
+    return links, shown
+
+
+def test_each_contents_list_matches_the_headings():
+    # #212: the rewrites renamed and added headings; COOKBOOK's table of contents and each
+    # language cookbook's list name every `##` and `###` heading, in order, by its anchor.
+    for path in [DOCS / "COOKBOOK.md", *sorted((DOCS / "lang").glob("*-cookbook.md"))]:
+        links, shown = _contents(path)
+        assert [anchor for _, anchor in links] == [slug for _, slug in shown], path.name
+        for (text, _), (heading, _) in zip(links, shown):
+            assert re.sub(r"^\d+\. ", "", heading) == text, (path.name, heading)
+        # No two headings share a slug, so no anchor needs GitHub's `-1` suffix.
+        bases = [next(_slugs([heading])) for heading in _headings(path)]
+        assert len(set(bases)) == len(bases), path.name
+
+
 def test_every_part_of_the_cookbooks_fits_one_read():
     # #207: the 181 KB COOKBOOK could not be read in pieces. Each part between two headings,
     # and each language's summary page whole, fits one 20 KB read.
@@ -172,7 +201,9 @@ def test_the_docs_say_reading_any_global_lists_and_reprs_them_all(capsys):
     assert "Listing them runs every global's repr" in help_text
     assert "a misspelled one included" in help_text
     guide = (DOCS / "AGENT_GUIDE.md").read_text()
-    assert "one, or a misspelled name, lists all, running all reprs" in guide
+    assert "Reading one, or a misspelled name, lists all globals, running all reprs" in " ".join(
+        guide.split()
+    )
     python = " ".join((DOCS / "lang/python-cookbook.md").read_text().split())
     assert "Then all of them are listed and every repr runs" in python
     c_cpp = " ".join((DOCS / "lang/c-cpp-cookbook.md").read_text().split())
@@ -197,3 +228,23 @@ def test_errors_md_lists_every_code_with_the_retryable_flag_peeky_sends():
     for code, flags in expected.items():
         assert len(flags) == 1, code
         assert rows[code] == ("yes" if flags.pop() else "no"), code
+
+
+def test_the_docs_peeky_prints_exist():
+    # #212: a printed hint names a doc by path and anchor (`docs/lang/rust-cookbook.md#…`), by a
+    # bare name under docs/ (`see ERRORS.md`), or a cookbook section by number (`rust-cookbook
+    # 6.6`, `COOKBOOK 6.6`); each must resolve.
+    source = "\n".join(
+        path.read_text() for path in sorted((DOCS.parent / "src/peeky").rglob("*.py"))
+    )
+    paths = re.findall(r"(?<![\w/.-])([\w/.-]+\.md)(?:#([\w-]+))?", source)
+    assert {"docs/lang/rust-cookbook.md", "ERRORS.md"} <= {path for path, _ in paths}
+    for path, anchor in paths:
+        page = DOCS.parent / path if path.startswith("docs/") else DOCS / path
+        assert page.is_file(), path
+        assert not anchor or anchor in set(_slugs(_headings(page))), (path, anchor)
+    sections = re.findall(r"\b((?:python|java|c-cpp|rust)-cookbook|COOKBOOK) (\d+\.\d+)\b", source)
+    assert sections
+    for page, number in sections:
+        path = DOCS / ("COOKBOOK.md" if page == "COOKBOOK" else f"lang/{page}.md")
+        assert any(h.startswith(number + " ") for h in _headings(path)), (page, number)

@@ -32,6 +32,12 @@ details, in the [Java cookbook](java-cookbook.md) or the [COOKBOOK](../COOKBOOK.
   ([8](../COOKBOOK.md#8-slow-programs-and-tool-timeouts)).
 - Add `--until hits` to skip waiting for the program to exit
   ([2.6](../COOKBOOK.md#26-stop-right-after-the-last-hit)).
+- To debug a JVM on another host, run the worker there with `--java-config`, or with
+  `--java-attach-config` for an attached JVM. Then add `--worker URL`, and pass your own `--config`
+  of the same kind ([REMOTE](../REMOTE.md#java-on-the-worker-host)).
+- Through a worker, only the breakpoint's `.java` file is compared with yours before the JVM
+  launches or is attached. Keep the config's other sources in sync
+  ([REMOTE](../REMOTE.md#source-identity)).
 - To debug a JVM already running with `--debug-jvm`, attach to it. Peeky never kills an attached
   JVM ([Java 7.4](java-cookbook.md#74-java-tests-already-running-gradle---debug-jvm-eg-venice)).
   With an attached JVM:

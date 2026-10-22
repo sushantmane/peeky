@@ -35,6 +35,7 @@ statement of the stop line is a place the stop can be.
 
 import bisect
 import functools
+import posixpath
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -603,7 +604,7 @@ class Body:
         ``within`` (a ``StopBlock``): the DWARF lexical block the stop's pc is in, which
         keeps only the places in its MIR scope, where it and the IR's ``function`` tell
         that apart, and at a line breakpoint, only those up to ``_cut`` (#115)."""
-        found = self._placed(blocks, line, file, foreign, facts, shared)
+        found = self._placed(blocks, line, file, foreign, facts, shared, function)
         if found is None:
             return None
         if within is not None:
@@ -623,7 +624,7 @@ class Body:
         there goes unexplained (#115); else None. Its bindings and those of the scopes
         around it are the ones lldb-dap shows, where two scopes have the same names
         (two `for item in items` loops)."""
-        found = self._placed(blocks, line, file, foreign, None, shared)
+        found = self._placed(blocks, line, file, foreign, None, shared, function)
         if found is None:
             return None
         kept, scope = self._in_block(found, within, line, function)
@@ -631,11 +632,27 @@ class Body:
             return None
         return scope
 
-    def _placed(self, blocks, line, file, foreign, facts=None, shared=None):
+    def _placed(self, blocks, line, file, foreign, facts=None, shared=None, function=None):
         """{position: [(block, index) of each statement whose code is there], or None
-        for code of the line no statement explains} (see ``stop_positions``)."""
+        for code of the line no statement explains} (see ``stop_positions``).
+
+        A call spanning another file is taken for the line's (a macro it may invoke)
+        unless the IR's ``function`` places every instruction of the block holding it
+        (``IrFunction.call_lines``) and none on this line: `format!`'s call on line 4
+        (`label = format!(…)`, its code there or inlined from there) returns into the
+        block of line 5's `println!`, whose stop is past the store (#222)."""
         predecessors, found = self.predecessors(), {}
         explained = set()
+
+        def elsewhere(number):
+            # The block's call is another line's: every instruction of its IR block (code
+            # inlined there by its call's site) says where it is, none is on this line,
+            # and no `invoke` stores its result in the next block (#230 review: an
+            # unlocated one could be anywhere).
+            if function is None or self.blocks[number].statements[-1][1] in (file, None):
+                return False
+            lines = function.call_lines(number)
+            return lines is not None and line not in lines
 
         def owned(number, index):
             text, spanned, spanned_line = self.blocks[number].statements[index]
@@ -673,6 +690,7 @@ class Body:
                 if _target(self.blocks[other]) == number
                 and _call(self.blocks[other], len(self.blocks[other].statements) - 1)
                 and owned(other, len(self.blocks[other].statements) - 1)
+                and not elsewhere(other)
             ]
             lines[number] = (indexes, stores)
             if indexes or stores:
@@ -3274,7 +3292,7 @@ _DBG = re.compile(r"!dbg (![0-9]+)")
 _META = re.compile(
     r"^(![0-9]+) = (?:distinct )?!(DILocation|DISubprogram|DILexicalBlock|DILexicalBlockFile"
     r"|DIFile|DINamespace|DICompositeType|DITemplateTypeParameter|DITemplateValueParameter"
-    r"|DILocalVariable)\((.*)\)\s*$"
+    r"|DILocalVariable|DICompileUnit)\((.*)\)\s*$"
 )
 _METAFIELDS = {
     key: re.compile(rf'(?:^|, ){key}: ("(?:[^"\\]|\\.)*"|![0-9]+|[0-9]+)')
@@ -3287,6 +3305,7 @@ _METAFIELDS = {
         "column",
         "inlinedAt",
         "filename",
+        "directory",
         "templateParams",
     )
 }
@@ -3300,6 +3319,9 @@ _IR_BRANCH = re.compile(r"^\s*(?:br i1 |switch )")
 # (not a constant), a store of bytes (not of nothing, nor of an undefined value).
 _IR_SURE_BRANCH = re.compile(r"^\s*br i1 %")
 _IR_STORE = re.compile(r"^\s*store (?:volatile )?(.+) (\S+), ptr ")
+# An instruction's own line: not a label, a comment, an `invoke`'s `to label` line, a
+# `switch`'s cases or its closing `]`.
+_IR_INSTRUCTION = re.compile(r"^  (?! )(?![;\]])(?!to label )\S")
 
 
 def _stores_bytes(found):
@@ -3351,6 +3373,31 @@ class IrFunction:
     # A generic's instance as the DISubprogram names it, with its arguments (`tf<rc::A>`;
     # `name` drops them), else "": a frame's symbol hash is all that tells instances apart.
     instance: str = ""
+    # {label: {line}}: the lines of its own file where code LLVM inlined into that label
+    # is called from (a `#[inline(always)]` callee's `inlinedAt` chain leaving it).
+    sites: dict = field(default_factory=dict)
+    # {label: ((instruction kind, line of its own file or None, known), ...)}: where each
+    # instruction is, in order (see _placed_at), unlocated ones included (#230 review).
+    provenance: dict = field(default_factory=dict)
+    # The labels an `invoke` ends: its result is stored in its normal successor.
+    invokes: frozenset = frozenset()
+
+    def call_lines(self, number):
+        """The lines of its own file the IR block of MIR block ``number`` has code of (an
+        inlined callee's by its call site; another file's code counts for none), where
+        every instruction of the block says where it is; None where any does not, where
+        an `invoke` ends it (the call's result is stored in its successor, unexamined),
+        or where the IR names no block for it (codegen merged it into another). The
+        whole block counts, not a call within it: which LLVM call is the MIR
+        terminator's is not told (a helper may follow it, an inlined callee may call
+        others, the call may be gone) (#230 review, round 2)."""
+        label = "start" if number == 0 else f"bb{number}"
+        found = self.provenance.get(label)
+        if label not in self.blocks or not found or label in self.invokes:
+            return None
+        if not all(known for _, _, known in found):
+            return None
+        return {line for _, line, _ in found if line is not None}
 
     def agrees(self, block, line):
         """True if the IR's blocks with the names of a stop's DWARF block (``block``, a
@@ -3431,13 +3478,20 @@ def ir_functions(path, files):
             if current is None:
                 if line.startswith("define ") and (found := _DEFINE.match(line.rstrip())):
                     hashed = _LEGACY_HASH.search(found[2])
-                    current = (hashed[1] if hashed else None, found[3], {}, {}, ["start"])
+                    current = (hashed[1] if hashed else None, found[3], {}, {}, ["start"], set())
                 continue
             if line.startswith("}"):
+                if pending:
+                    # An `invoke` or branch whose location never came: unknown (#230 review).
+                    current[2].setdefault(current[4][0], []).append((None, pending))
+                    pending = ""
                 raw.append(current)
                 current = None
                 continue
             if label := _LABEL.match(line.rstrip()):
+                if pending:
+                    current[2].setdefault(current[4][0], []).append((None, pending))
+                    pending = ""
                 name = label[1].strip('"')
                 current[4][0] = name
                 current[2].setdefault(name, [])
@@ -3450,6 +3504,9 @@ def ir_functions(path, files):
                 continue
             if _IR_CALL.match(line):
                 kind = "c"
+                if re.search(r"\binvoke ", line):
+                    # It ends its block: its result is stored in the normal successor.
+                    current[5].add(current[4][0])
             elif _IR_BRANCH.match(line):
                 kind = "B" if _IR_SURE_BRANCH.match(line) else "b"
             elif (store := _IR_STORE.match(line)) and _stores_bytes(store):
@@ -3465,7 +3522,10 @@ def ir_functions(path, files):
                 current[2].setdefault(current[4][0], []).append((None, kind))
             elif kind in ("c", "b", "B"):
                 pending = kind
-    wanted = set(files)
+            elif _IR_INSTRUCTION.match(line):
+                # Code with no location: where it is cannot be told (#230 review).
+                current[2].setdefault(current[4][0], []).append((None, kind))
+    wanted = _source_names(meta, set(files))
     # {lexical block or subprogram: the names of the variables it declares} (#115).
     names = {}
     for kind, fields in meta.values():
@@ -3476,7 +3536,7 @@ def ir_functions(path, files):
     # {subprogram: lines} of code LLVM inlined from each function into another, in the
     # inlined function's own file (#116).
     copies = {}
-    for _, _, blocks, _, _ in raw:
+    for _, _, blocks, _, _, _ in raw:
         for refs in blocks.values():
             for ref, _ in refs:
                 kind, location = meta.get(ref, (None, {}))
@@ -3491,14 +3551,14 @@ def ir_functions(path, files):
                 ):
                     copies.setdefault(subprogram, set()).add(number)
     functions = {}
-    for hashed, subprogram, blocks, preds, _ in raw:
+    for hashed, subprogram, blocks, preds, _, invokes in raw:
         kind, fields = meta.get(subprogram, (None, {}))
         if hashed is None or kind != "DISubprogram":
             continue
         file = _file(meta, subprogram)
         if file not in wanted:
             continue
-        lines, events, inlined = {}, {}, {}
+        lines, events, inlined, sites, provenance = {}, {}, {}, {}, {}
         # #115: the named blocks with code (an inlined call's site counts), those with
         # code of each line, and each label's sure instructions and calls.
         active, line_blocks, sure, calls = set(), {}, {}, {}
@@ -3506,8 +3566,12 @@ def ir_functions(path, files):
             lines[label] = set()
             found_events = ([], [])
             found_sure, before = [], 0
+            # (instruction, its line in the file or None, whether where it is is known)
+            # for each instruction, in order (#230 review).
+            placed = provenance.setdefault(label, [])
             for ref, instruction in refs:
                 kind, location = meta.get(ref, (None, {}))
+                placed.append((instruction, *_placed_at(meta, location, file, kind)))
                 if kind != "DILocation":
                     before += instruction == "c"
                     continue
@@ -3518,6 +3582,8 @@ def ir_functions(path, files):
                     if site is not None and _file(meta, site.get("scope")) == file:
                         found = (int(site.get("line") or 0), int(site.get("column") or 0))
                         inlined.setdefault(found[0], set()).add(found[1])
+                        if found[0] > 0:
+                            sites.setdefault(label, set()).add(found[0])
                     continue
                 calls_before = before
                 before += instruction == "c"
@@ -3541,7 +3607,7 @@ def ir_functions(path, files):
         functions[hashed] = IrFunction(
             re.sub(r"<.*>$", "", fields.get("name", "")),
             parent,
-            file,
+            wanted[file],
             lines,
             preds,
             int(fields["line"]) if str(fields.get("line", "")).isdigit() else None,
@@ -3565,6 +3631,9 @@ def ir_functions(path, files):
             else {},
             calls=calls,
             scoped=chain is not None,
+            sites=sites,
+            provenance={label: tuple(found) for label, found in provenance.items()},
+            invokes=frozenset(invokes),
         )
     # A function LLVM inlined everywhere (`#[inline(always)]`, even at opt-level 0) has
     # no IR function, yet its frames carry its own hash; its MIR body is the one before
@@ -3580,7 +3649,7 @@ def ir_functions(path, files):
         functions[hashed[1]] = IrFunction(
             re.sub(r"<.*>$", "", fields.get("name", "")),
             meta.get(fields.get("scope"), (None, {}))[1].get("name"),
-            file,
+            wanted[file],
             {},
             {},
             int(fields["line"]) if str(fields.get("line", "")).isdigit() else None,
@@ -3763,15 +3832,72 @@ def _call_site(meta, location):
     return None
 
 
+def _placed_at(meta, location, file, kind):
+    """(line, known) of an instruction at ``location`` (of metadata ``kind``) in the
+    function of ``file``: the line of the file it is on (an inlined call's site line for
+    code inlined there; None for another file's), and whether that is known. Not known:
+    no location, line 0, a scope naming no file, an `inlinedAt` chain that does not
+    resolve (#230 review)."""
+    if kind != "DILocation":
+        return None, False
+    if "inlinedAt" in location:
+        location = _call_site(meta, location)
+        if location is None:
+            return None, False
+    number = int(location.get("line") or 0)
+    where = _file(meta, location.get("scope"))
+    if number <= 0 or where is None:
+        return None, False
+    return (number if where == file else None), True
+
+
 def _file(meta, scope):
+    """The file a scope's code is in: its DIFile's directory and name as one normalized
+    path (`/crate/src/a/mod.rs`), so files of one name in two directories differ (#230
+    review); None where the scope names none."""
     for _ in range(256):
         kind, fields = meta.get(scope, (None, {}))
         if kind is None:
             return None
         if kind in ("DISubprogram", "DILexicalBlock", "DILexicalBlockFile") and "file" in fields:
-            return meta.get(fields["file"], (None, {}))[1].get("filename")
+            return _file_path(meta, fields["file"])
         scope = fields.get("scope")
     return None
+
+
+def _file_path(meta, reference):
+    kind, fields = meta.get(reference, (None, {}))
+    name = fields.get("filename") if kind == "DIFile" else None
+    if not name:
+        return None
+    directory = fields.get("directory")
+    return posixpath.normpath(
+        name if name.startswith("/") or not directory else f"{directory}/{name}"
+    )
+
+
+def _source_names(meta, files):
+    """{a DIFile path (_file): the program's relative source name it is}: each of
+    ``files`` under the directory the build ran in, its compile units' (or, in IR with
+    none, the directories of the DIFiles that name it)."""
+    roots = {
+        fields.get("directory")
+        for kind, unit in meta.values()
+        if kind == "DICompileUnit"
+        for fields in (meta.get(unit.get("file"), (None, {}))[1],)
+        if fields.get("directory")
+    }
+    if not roots:
+        roots = {
+            fields.get("directory") or ""
+            for kind, fields in meta.values()
+            if kind == "DIFile" and fields.get("filename") in files
+        }
+    return {
+        posixpath.normpath(name if name.startswith("/") or not root else f"{root}/{name}"): name
+        for root in roots
+        for name in files
+    }
 
 
 class OwnedLocals:
