@@ -965,6 +965,10 @@ def test_a_python_candidate_notes_an_import_hook_into_the_tree(tmp_path, monkeyp
 
     warnings = candidate(serves=True)
     assert any("`import app` loads" in w and str(proj / "app.py") in w for w in warnings), warnings
+    # The hook may rebuild in your tree: the warning says so (review of #253).
+    assert any(
+        w.endswith("serves it ahead of every import path, and may rebuild there") for w in warnings
+    ), warnings
     warnings = candidate(serves=False)
     assert not any("`import app`" in w or "could not ask" in w for w in warnings), warnings
 

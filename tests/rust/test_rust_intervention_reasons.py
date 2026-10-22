@@ -390,6 +390,7 @@ def test_a_copy_in_the_programs_own_binding_blocks_the_change(crate, capsys):
         message = result["error"]["message"]
         plain = root.split(".")[0]
         assert f"has already copied `{plain}` into `{copy}`" in message, (marker, message)
+        assert "Peeky proves no read of the changed part first" in message, message
         assert "Change it before the program copies it" in message, message
     # Where the program reads `x` again, before or after it uses its copy, it sees the
     # change, and its copy keeps the old value as the program's own (`let a = s.x;`), as

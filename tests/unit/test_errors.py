@@ -32,3 +32,13 @@ def test_a_refused_change_hints_the_one_action_its_rule_leaves(message, action):
         payload = classify(error)
         assert payload["code"] == "MUTATION_REJECTED" and action in payload["hint"], payload
         assert len(payload["hint"]) < 200, payload["hint"]
+
+
+def test_a_missing_name_hints_what_reads_and_changes_take():
+    # Review of #253: the NOT_FOUND hint keeps the scope of a change, the frame's own
+    # locals and, in Java, Rust, C and C++, their fields and elements.
+    payload = classify(ValueError("'nope' is not a visible local"))
+    assert payload["code"] == "NOT_FOUND", payload
+    assert "changes take the frame's own locals" in payload["hint"], payload["hint"]
+    assert "in Java, Rust, C and C++ their fields and elements" in payload["hint"], payload
+    assert len(payload["hint"]) <= 150, payload["hint"]
