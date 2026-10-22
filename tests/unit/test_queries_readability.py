@@ -89,7 +89,24 @@ def test_diff_shows_long_values_from_just_before_they_differ(store, capsys):
     saved(store, [{"previous": "[1" + CAFE % 1}])
     (row,) = [line for line in text(capsys, store, "diff").splitlines() if " previous " in line]
     assert "[0[{'text': 'Einkäufe'" in row and "[1[{'text': 'Einkäufe'" in row, row
-    assert row.count("...") == 2 and "…" not in row, row
+    assert row.count("…") == 2 and "..." not in row, row
+
+
+def test_both_values_of_a_pair_start_at_one_offset():
+    # Review of PR #269: `a` fits, `b` is cut, and their first difference is at 110: each
+    # started at its own offset, `a` at 0 and `b` at 70.
+    a = "a" * 110
+    b = a + "B" * 90
+    result = {
+        "query": "diff",
+        "columns": ["selector", "value_a", "value_b"],
+        "rows": [{"selector": "s", "value_a": a, "value_b": b}],
+        "row_count": 1,
+        "truncated": False,
+    }
+    row = evidence.table(result).splitlines()[1]
+    assert row.startswith("s         …" + "a" * 40 + "  …" + "a" * 40 + "B" * 78 + "…"), row
+    assert "..." not in evidence.table(result) and len(row.split("  ")[-1]) <= 120
 
 
 def test_set_effect_shows_each_change_where_it_differs(store, capsys):
@@ -170,28 +187,27 @@ def test_the_sets_row_is_short_and_interventions_come_first(store, capsys):
 def test_values_a_change_moved_tell_nothing_of_alignment(store):
     # debounce: the reset count moves `db.stable`, whose 0s and 1s then line up better at
     # other hits: "the values do not settle whether a hit is the same moment in both …
-    # pair hits by a value that names the call", and `settle` has none.
+    # pair hits by a value that names the call", and `settle` has none. The change may
+    # account for that, so the note says so; the sign still stands (review of PR #269).
     debounce(store, "a")
     debounce(store, "b")
     debounce(store, "b", edit="--- a/debounce.c\n")
     for b, start, cause in (
-        (
-            2,
-            "`level` agrees",
-            "the interventions (run 2's on `db.count` in main) and may follow from them",
-        ),
-        (
-            3,
-            "the hits line up as far as `level` shows: it agrees",
-            "the edit and may follow from it",
-        ),
+        (2, "`level` agrees", "the interventions (run 2's on `db.count` in main) and"),
+        (3, "`level` agrees", "the edit and"),
     ):
         (note,) = evidence.run_query(store, "diff", {"a": 1, "b": b})["notes"]
         assert "do not settle" not in note and "join --param" not in note, note
+        assert "the hits line up as" not in note and "line up by" not in note, note
+        short = cause.split(" (")[0].removesuffix(" and")
         assert note == (
             f"{start} between the runs at each of the 32 hits, but it reads alike at some "
-            "hits, which could still trade places; `db.stable` and `db.count` differ after "
-            f"{cause}, so this check leaves them out"
+            f"hits, which could still trade places; `db.count` differs after {cause} may "
+            f"follow from {'them' if b == 2 else 'it'}, so this check leaves it out; but runs "
+            f"1 and {b} saw `db.stable`'s values at other hits (run {b}'s hit 10 matches run 1's "
+            f"hit 9: 1): `db.stable` may differ because of {short}, so this does not prove a "
+            "reorder, but it keeps Peeky from saying the hits line up; no captured selector "
+            "tells the hits apart, so `queries join` could not pair them"
         )
 
 
@@ -212,10 +228,33 @@ def test_a_selector_the_change_left_alone_shows_what_pairing_by_number_does(stor
     )
     assert evidence.run_query(store, "diff")["notes"] == [
         "`ms` agrees between the runs at each of the 32 hits, and its value is different at "
-        "every hit, so pairing hits by number pairs them as `queries join` by it would; "
-        "`db.stable` differs after the interventions (run 2's on `db.count` in main) and may "
-        "follow from them, so this check leaves it out"
+        "every hit, so pairing hits by number pairs them as `queries join` by it would, though "
+        "that does not prove the hits are the same moments; but runs 1 and 2 saw "
+        "`db.stable`'s values at other hits (run 2's hit 10 matches run 1's hit 9: 1): "
+        "`db.stable` may differ because of the interventions (run 2's on `db.count` in main), "
+        "so this does not prove a reorder, but it keeps Peeky from saying the hits line up"
     ]
+
+
+def test_a_reorder_after_an_edit_keeps_the_hits_from_lining_up(store):
+    # Review of PR #269: with `call` left out after the edit, `key` alone said "the hits
+    # line up by `key`", though `call` shows the first two calls swapped.
+    saved(store, [{"key": k, "call": c} for k, c in zip("123", ["'A'", "'B'", "'C'"])])
+    saved(
+        store,
+        [{"key": k, "call": c} for k, c in zip("123", ["'B'", "'A'", "'C'"])],
+        edit="--- a/a.py\n",
+    )
+    (note,) = evidence.run_query(store, "diff")["notes"]
+    assert "the hits line up by" not in note and "the hits line up as" not in note, note
+    assert note == (
+        "`key` agrees between the runs at each of the 3 hits, and its value is different at "
+        "every hit, so pairing hits by number pairs them as `queries join` by it would, though "
+        "that does not prove the hits are the same moments; but runs 1 and 2 saw the same "
+        "values of `call` in another order (run 2's hit 1 matches run 1's hit 2: 'B'): `call` "
+        "may differ because of the edit, so this does not prove a reorder, but it keeps Peeky "
+        "from saying the hits line up"
+    )
 
 
 def test_a_candidate_that_changes_every_value_gets_a_short_note(store):
@@ -256,10 +295,10 @@ def test_agreement_is_said_as_agreement_between_the_runs(store):
         edit="--- a/src/main.rs\n",
     )
     assert evidence.run_query(store, "diff", {"a": 1, "b": 3})["notes"] == [
-        "the hits line up by `e.cents`: it agrees between the runs at each of the 3 hits, and "
-        "its value is different at every hit, so pairing hits by number pairs them as "
-        "`queries join` by it would; `payer` differs after the edit and may follow from it, "
-        "so this check leaves it out"
+        "`e.cents` agrees between the runs at each of the 3 hits, and its value is different "
+        "at every hit, so pairing hits by number pairs them as `queries join` by it would, "
+        "though that does not prove the hits are the same moments; `payer` differs after the "
+        "edit and may follow from it, so this check leaves it out"
     ]
 
 
@@ -295,11 +334,18 @@ def runoff(store, side):
 
 def test_join_leaves_out_selectors_that_agree_at_every_paired_hit(store, capsys):
     # runoff 7: `queries join --param key=round` was about 400 columns wide, every
-    # unchanged selector shown for both runs.
+    # unchanged selector shown for both runs. Only the text table leaves them out;
+    # `--json` keeps every column (review of PR #269).
     runoff(store, "a")
     runoff(store, "b")
+    every = ["a:counted", "a:tally", "a:this.names", "b:counted", "b:tally", "b:this.names"]
     joined = evidence.run_query(store, "join", {"key": "round"})
-    assert joined["columns"] == [
+    assert joined["columns"][3:9] == every and "notes" not in joined
+    assert evidence.query(store, joined["sql"])["rows"] == joined["rows"]
+    assert main(["queries", "join", "--param", "key=round", "--store", str(store), "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["columns"][3:9] == every
+    header, *_, note, count = text(capsys, store, "join", "--param", "key=round").splitlines()
+    assert header.split() == [
         "round",
         "hit_a",
         "hit_b",
@@ -311,17 +357,15 @@ def test_join_leaves_out_selectors_that_agree_at_every_paired_hit(store, capsys)
         "caveats_b",
         "matched",
     ]
-    assert joined["notes"] == [
-        "left out 2 selectors that agree between the runs at every paired hit: `counted` and "
-        "`this.names` (with their values at unpaired hits); add --param unchanged=1 to show "
-        "them"
-    ]
-    assert evidence.query(store, joined["sql"])["rows"] == joined["rows"]
-    assert "this.names" not in text(capsys, store, "join", "--param", "key=round").split("\n")[0]
-    # unchanged=1 keeps them, with no note.
-    kept = evidence.run_query(store, "join", {"key": "round", "unchanged": 1})
-    assert "a:this.names" in kept["columns"] and "b:counted" in kept["columns"]
-    assert "notes" not in kept
+    assert note == (
+        "note: left out 2 selectors that agree between the runs at every paired hit: `counted` "
+        "and `this.names` (with their values at unpaired hits); --param unchanged=1 or --json "
+        "shows them"
+    )
+    # unchanged=1 keeps them in the table, with no note.
+    kept = text(capsys, store, "join", "--param", "key=round", "--param", "unchanged=1")
+    assert "a:this.names" in kept and "b:counted" in kept and "note:" not in kept
+    assert evidence.run_query(store, "join", {"key": "round", "unchanged": 1}) == joined
     with pytest.raises(ValueError, match="unchanged is 1"):
         evidence.run_query(store, "join", {"key": "round", "unchanged": "yes"})
     assert "unchanged" in evidence.schema(store)["queries"]["join"]["params"]
