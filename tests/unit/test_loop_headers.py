@@ -612,7 +612,8 @@ def test_the_debugger_is_asked_once_per_file_and_function(tmp_path):
     cache = {}
 
     def stops(line, *groups):
-        return NativeSession.loop_header_stops(None, Dap(), source, line, list(groups), cache)
+        session = object.__new__(NativeSession)
+        return session.loop_header_stops(Dap(), source, line, list(groups), cache)
 
     assert stops(3, (0x100000438,)) == (1, True) and stops(15, (0x100000524,)) == (1, True)
     # One line table for the file, one disassembly for the function.

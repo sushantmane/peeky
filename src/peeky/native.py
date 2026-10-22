@@ -6,7 +6,6 @@ against hostile in-memory patching. SDK/system headers are not hermetic inputs.
 """
 
 import bisect
-import codecs
 import contextlib
 import hashlib
 import json
@@ -46,6 +45,7 @@ from peeky.digest import sha256_file
 from peeky.identifiers import changeable, split_located
 from peeky.names import standard_type, unicode_escape
 from peeky.text_sets import text_kind
+from peeky.textlines import octal_string, read_source, source_lines, split_lines
 
 MAX_METADATA = 2 * 1024 * 1024
 # Type-rich C++ units (iostream) carry megabytes of DIEs; read only by `describe`.
@@ -192,10 +192,13 @@ def _metadata(tool, arguments, workspace, env, *, max_bytes=MAX_METADATA, timeou
             )
         if output.stat().st_size > max_bytes or errors.stat().st_size > 16000:
             raise ValueError("Native symbol metadata exceeds limit")
-        return read(output) if read else output.read_text(encoding="utf-8")
+        # As the tool wrote it: a raw name (`DW_AT_decl_file`) may hold a lone `\r`.
+        return read(output) if read else output.read_bytes().decode("utf-8")
 
 
-def _line_rows(text, workspace, declared, limit=MAX_METADATA, replaced=None, epilogues=None):
+def _line_rows(
+    text, workspace, declared, limit=MAX_METADATA, replaced=None, epilogues=None, rust=False
+):
     """Rows of the LLVM DWARF4 line-table dump for declared sources: (address, name, line).
 
     Unrecognized rows fail closed. Rows outside the declared sources (SDK and system
@@ -209,7 +212,9 @@ def _line_rows(text, workspace, declared, limit=MAX_METADATA, replaced=None, epi
         raise ValueError("Native line metadata exceeds limit")
     workspace = Path(workspace).resolve()
     inputs = {str((workspace / name).resolve()): name for name in declared}
-    counts = {name: len((workspace / name).read_text().splitlines()) for name in declared}
+    # As the compiler counts lines (``rust``: rustc, at `\n` alone; else clang, at a lone
+    # `\r` too), told by the caller: a Rust module may have any name (#188 review).
+    counts = {name: len(source_lines(read_source(workspace / name), rust)) for name in declared}
     directories, files, current = {0: str(workspace)}, {}, None
     # {file id: declared name or None} for this table: one resolve per file, not per row.
     resolved = {}
@@ -236,7 +241,7 @@ def _line_rows(text, workspace, declared, limit=MAX_METADATA, replaced=None, epi
             rows.append(last[:3])
         group.clear()
 
-    for raw in text.splitlines():
+    for raw in split_lines(text):
         line = raw.strip()
         if line.startswith("debug_line["):
             table_count += 1
@@ -254,7 +259,7 @@ def _line_rows(text, workspace, declared, limit=MAX_METADATA, replaced=None, epi
             key = int(match[1])
             if key in directories and key != 0:
                 raise ValueError("Duplicate line directory")
-            directories[key] = json.loads(match[2])
+            directories[key] = _line_string(match[2])
         elif match := re.fullmatch(r"file_names\[\s*(\d+)\]:", line):
             current = int(match[1])
             if current in files:
@@ -263,7 +268,7 @@ def _line_rows(text, workspace, declared, limit=MAX_METADATA, replaced=None, epi
         elif match := re.fullmatch(r"name:\s*(\".*\")", line):
             if current is None:
                 raise ValueError("Missing line file identity")
-            files[current]["name"] = json.loads(match[1])
+            files[current]["name"] = _line_string(match[1])
         elif match := re.fullmatch(r"dir_index:\s*(\d+)", line):
             if current is None:
                 raise ValueError("Missing line file identity")
@@ -300,10 +305,19 @@ def _line_rows(text, workspace, declared, limit=MAX_METADATA, replaced=None, epi
     return rows
 
 
-def parse_lines(text, workspace, declared, *, limit=MAX_METADATA):
+def _line_string(quoted):
+    """A line table's quoted name (`"main\\342\\200\\250x.c"`): dwarfdump escapes a
+    backslash, quote, tab and newline, and writes every other unprintable byte (any
+    non-ASCII one) in octal, which JSON does not read (#179)."""
+    if (name := _text(quoted)) is None:
+        raise ValueError("Unsupported DWARF line table name")
+    return name
+
+
+def parse_lines(text, workspace, declared, *, limit=MAX_METADATA, rust=False):
     """Parse the LLVM DWARF4 line-table dump; unrecognized rows fail closed."""
     result = {name: set() for name in declared}
-    for _, name, number in _line_rows(text, workspace, declared, limit):
+    for _, name, number in _line_rows(text, workspace, declared, limit, rust=rust):
         result[name].add(number)
     if not any(result.values()):
         raise ValueError("Missing executable native debug symbol line information")
@@ -359,7 +373,7 @@ def _dies(text):
 
 def _parse_dies(text):
     dies, stack, ranges = {}, [], None
-    for raw in text.splitlines():
+    for raw in split_lines(text):
         if ranges is not None:
             ranges.extend((int(lo, 16), int(hi, 16)) for lo, hi in _RANGE.findall(raw))
             if raw.rstrip().endswith("))") or not _RANGE.search(raw):
@@ -397,13 +411,11 @@ def _parse_dies(text):
 
 
 def _text(value):
-    """A dwarfdump string attribute; non-ASCII bytes are printed as octal escapes."""
+    """A dwarfdump string attribute (non-ASCII bytes printed as octal escapes), or None
+    where it is none dwarfdump writes (textlines.octal_string)."""
     if value is None or len(value) < 2 or value[0] != '"' or value[-1] != '"':
         return None
-    try:
-        return codecs.escape_decode(value[1:-1].encode())[0].decode("utf-8")
-    except (ValueError, UnicodeDecodeError):
-        return None
+    return octal_string(value[1:-1])
 
 
 def _chain(dies, offset):
@@ -1077,7 +1089,9 @@ def _code_ranges(die):
     return [(lo, hi) for lo, hi in spans if 0 < lo < hi and lo < _TOMBSTONE]
 
 
-def _function_entries(info, line_text, workspace, declared, replaced=None, epilogues=None):
+def _function_entries(
+    info, line_text, workspace, declared, replaced=None, epilogues=None, rust=False
+):
     """(dies, {root: entry}, {root: {line: span}}, files, {root: {(source, line): span}})
     for functions in declared sources; see function_scopes. ``replaced``: see
     _line_rows. A span is the lowest and
@@ -1089,7 +1103,9 @@ def _function_entries(info, line_text, workspace, declared, replaced=None, epilo
     workspace = Path(workspace).resolve()
     inputs = {str((workspace / name).resolve()): name for name in declared}
     rows = sorted(
-        _line_rows(line_text, workspace, declared, replaced=replaced, epilogues=epilogues)
+        _line_rows(
+            line_text, workspace, declared, replaced=replaced, epilogues=epilogues, rust=rust
+        )
     )
     addresses = [row[0] for row in rows]
     dies = _dies(info)
@@ -1193,7 +1209,9 @@ def _macro_rules_lines(text):
     return lines
 
 
-def function_scopes(info, line_text, workspace, declared, hidden=None, never=None, settable=None):
+def function_scopes(
+    info, line_text, workspace, declared, hidden=None, never=None, settable=None, rust=False
+):
     """Each function in a declared source: qualified name, source, line span, locals.
 
     Display only (`describe`). A line-table row belongs to the innermost function or
@@ -1216,10 +1234,13 @@ def function_scopes(info, line_text, workspace, declared, hidden=None, never=Non
     frame's own memory, and where ``in_memory`` says so (Rust: the IR keeps it there):
     {name: "fields" | "elements"} in every copy (``settable_parts``, seventh
     evaluation, finding 16).
+
+    ``rust``: the program is Rust; its sources' lines are counted as rustc counts them
+    (at `\n` alone), and `macro_rules!` bodies are found in them.
     """
     replaced = set()
     dies, functions, lines, (inputs, sources), _, addresses = _function_entries(
-        info, line_text, workspace, declared, replaced
+        info, line_text, workspace, declared, replaced, rust=rust
     )
     workspace = Path(workspace).resolve()
     graph, typed = None, {}
@@ -1271,8 +1292,8 @@ def function_scopes(info, line_text, workspace, declared, hidden=None, never=Non
         name = _qualified(dies, entry["bodies"][0])
         if source not in macros:
             macros[source] = (
-                _macro_rules_lines((Path(workspace) / source).read_text(errors="replace"))
-                if source.endswith(".rs")
+                _macro_rules_lines(read_source(Path(workspace) / source, "replace"))
+                if rust
                 else set()
             )
         numbers = _own_lines(dies, entry, lines.get(root), macros[source] or frozenset())
@@ -2958,6 +2979,9 @@ _UNJUDGED = {
 class NativeSession:
     # lldb-dap reports optimized-out/not-live locals as `<error: ...>` text.
     reports_unavailable_as_text = True
+    # Whose rule numbers the program's lines: rustc's (`\n` alone) or clang's (a lone
+    # `\r` too); the session's language says, never a file's name (#188 review).
+    rust_lines = False
     # lldb-dap names an array's elements `[N]` and lists any range of them on request,
     # so one element of a long array can be fetched alone (#105).
     elements_by_index = True
@@ -3105,7 +3129,7 @@ class NativeSession:
             return None
         if ("text", path) not in cache:
             try:
-                cache[("text", path)] = Path(path).read_text(errors="replace").splitlines()
+                cache[("text", path)] = source_lines(read_source(path, "replace"), self.rust_lines)
             except OSError:
                 cache[("text", path)] = []
         lines = cache[("text", path)]
@@ -5470,7 +5494,7 @@ class NativeSession:
         if any(address == ret for address, _, _ in listed):
             cache["read"].append((listed[0][0], listed[-1][0], listed))
             return listed
-        said = next((line.strip() for line in text.splitlines() if "error" in line.lower()), "")
+        said = next((line.strip() for line in split_lines(text) if "error" in line.lower()), "")
         failure = (
             f"LLDB did not disassemble its caller ({said[:200]})"
             if said

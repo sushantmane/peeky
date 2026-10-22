@@ -14,6 +14,7 @@ from pathlib import Path
 
 from peeky.identifiers import is_name
 from peeky.java_bytecode import decode
+from peeky.textlines import split_lines
 
 MAX_CLASS_BYTES = 4 * 1024 * 1024
 MAX_TOTAL_BYTES = 64 * 1024 * 1024
@@ -519,7 +520,7 @@ def generate_source_map(classes_dir: Path, source_paths: list[Path], source_root
         if size > MAX_CLASS_BYTES or total > MAX_TOTAL_BYTES:
             raise ValueError("Source metadata size limit exceeded")
         try:
-            count = len(path.read_text(encoding="utf-8").splitlines())
+            count = len(split_lines(path.read_text(encoding="utf-8")))
         except UnicodeError as exc:
             raise ValueError("Java sources must use UTF-8") from exc
         sources[path] = count

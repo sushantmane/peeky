@@ -79,6 +79,7 @@ from peeky.rust_symbols import (
     without_numbered_structs,
 )
 from peeky.text_sets import text_kind
+from peeky.textlines import split_lines
 
 DEPS = "target/debug/deps"
 MIR_DIR = "target/peeky-mir"
@@ -240,10 +241,10 @@ def compiler_diagnostic(result, sources):
         return False
     # Cargo's stderr for an ordinary compile failure is only progress and its footer.
     if not all(
-        _CARGO_STDERR.fullmatch(line) for line in stderr.splitlines() if line.strip()
-    ) or not any(line.startswith("error: could not compile") for line in stderr.splitlines()):
+        _CARGO_STDERR.fullmatch(line) for line in split_lines(stderr) if line.strip()
+    ) or not any(line.startswith("error: could not compile") for line in split_lines(stderr)):
         return False
-    lines = stdout.splitlines()
+    lines = split_lines(stdout)
     try:
         final = json.loads(lines[-1])
     except (IndexError, ValueError, RecursionError):
@@ -288,7 +289,7 @@ def compiler_diagnostic(result, sources):
 
 def libtest_summary(result):
     """Interpret one bounded libtest run; anything but an explicit clean pass fails."""
-    lines = [line.strip() for line in result.get("stdout", "").splitlines() if line.strip()]
+    lines = [line.strip() for line in split_lines(result.get("stdout", "")) if line.strip()]
     summaries = [match for line in lines if (match := _SUMMARY.fullmatch(line))]
     # The harness prints its summary last; an earlier or extra summary is forged.
     if summaries and not _SUMMARY.fullmatch(lines[-1]):
@@ -338,7 +339,7 @@ def _libtest_failures(stdout, limit):
         return []
     names = [
         line.strip()
-        for line in listing.split("\n\n", 1)[0].splitlines()
+        for line in split_lines(listing.split("\n\n", 1)[0])
         if line.startswith("    ") and line.strip()
     ][: min(limit, 10)]
     failures = []
@@ -1350,6 +1351,7 @@ class RustSession(NativeSession):
             hidden=self._macro_binding(),
             never=self._register_names,
             settable=(RUST_LIBRARIES, self._kept_in_memory),
+            rust=True,
         )
 
     def _kept_in_memory(self, linkages, name):
@@ -1501,6 +1503,7 @@ class RustSession(NativeSession):
         super().validate_variable(variable, value)
 
     text_language = "rust"
+    rust_lines = True
 
     def text_storage(self, variable, frame):
         """(kind, shape) for text_sets: a String, with its layout from the build's debug
@@ -2155,7 +2158,7 @@ class RustSession(NativeSession):
                         max_bytes=RUST_METADATA,
                     )
                     rows += _line_rows(
-                        table, self.prepared.workspace, tuple(self.lines), RUST_METADATA
+                        table, self.prepared.workspace, tuple(self.lines), RUST_METADATA, rust=True
                     )
                 self.assert_current()
             except (OSError, RuntimeError, ValueError):

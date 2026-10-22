@@ -18,6 +18,8 @@ a macro whose expansion may hold an unclosed bracket or a `;` (`unsafe_macros`).
 import bisect
 import re
 
+from peeky.textlines import octal_string
+
 # An identifier's characters: ASCII letters, digits and `_`, and every non-ASCII
 # character but whitespace (Clang reads U+00A0 as a space), which outside comments and
 # literals a program the compiler accepts holds only in identifiers (#195: `größe`, or
@@ -419,7 +421,9 @@ class Preprocessed:
             if marker:
                 number = int(marker[1])
                 if marker[2] is not None:
-                    path = re.sub(rb"\\(.)", rb"\1", marker[2]).decode("utf-8", "replace")
+                    # clang writes an unprintable byte (any non-ASCII one) in octal,
+                    # `\342\200\250`, gcc as it is; both escape `\` and `"` (#179).
+                    path = octal_string(marker[2]) or "<unread>"
                     if path not in names:
                         names[path] = program(path)
                     name = names[path]
