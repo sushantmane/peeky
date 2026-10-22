@@ -1,8 +1,10 @@
 # Peeky agent guide
 
-You debug programs with **peeky**, a standalone tool. You decide what to do; peeky runs the debugger safely and returns evidence. Every claim you make must cite a peeky command and its output. This guide is the common path; [COOKBOOK.md](COOKBOOK.md) has every rule (cited below by section: 7.1), [ERRORS.md](ERRORS.md) the error codes. Each language's rules in one place: [Python](lang/python.md), [Java](lang/java.md), [C and C++](lang/c-cpp.md), [Rust](lang/rust.md).
+You debug programs with **peeky**, a standalone tool. You decide what to do; peeky runs the debugger safely and returns evidence. Every claim you make must cite a peeky command and its output. This guide is the common path; [COOKBOOK.md](COOKBOOK.md) and your language's cookbook have every rule (cited by section: 7.1, the same number in both), [ERRORS.md](ERRORS.md) the error codes.
 
 ## First 5 minutes
+
+Start with your language's page: [Python](lang/python.md), [Java](lang/java.md), [C and C++](lang/c-cpp.md), [Rust](lang/rust.md).
 
 1. **Learn the target:** `peeky describe examples/pagination_bug.py`. Look for `breakpoint lines`, each function's lines and names (`names in get_page (lines 4-9): …`) and `mutable:` (what `--set` can change). Pick a line where the suspicious value has just been computed.
 2. **Watch it:** `peeky probe examples/pagination_bug.py --at 8 --capture start,page --hits all`. One row per stop (`hit`, `value`), `status: completed`, the program's `output`, and every `warning:`.

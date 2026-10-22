@@ -1911,11 +1911,13 @@ def test_describe_lists_the_locals_no_stop_can_change_per_function():
         }
     )
     [line] = [line for line in text.splitlines() if line.startswith("mutable:")]
-    assert "COOKBOOK 6.6): limiter::allow: limit, now; bind::shadow: n. Never settable, a" in line
+    assert (
+        "rust-cookbook 6.6): limiter::allow: limit, now; bind::shadow: n. Never settable, a" in line
+    )
     # Review round 3: as the rows say, the binding to black-box, and inlining.
-    assert "every one in memory, COOKBOOK 6.6): bind::shadow: x (line 4). Never" in line
+    assert "every one in memory, rust-cookbook 6.6): bind::shadow: x (line 4). Never" in line
     assert "change the value in the caller): bind::other::far: a, y. Never settable, held" in line
     assert "a local after the `.await`): app::aw::{{closure}}: k. A Vec's" in line, line
-    # #183: where nothing can change, the edit that can (COOKBOOK 6.6).
+    # #183: where nothing can change, the edit that can (rust-cookbook 6.6).
     assert "nor is anything in limiter::allow, app::aw::{{closure}}," in line, line
-    assert line.endswith("keeps a local in memory: COOKBOOK 6.6)"), line
+    assert line.endswith("keeps a local in memory: rust-cookbook 6.6)"), line
