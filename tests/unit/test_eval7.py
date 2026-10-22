@@ -496,6 +496,72 @@ def test_returns_alone_on_a_line_that_stops_several_times_are_flagged(store):
     assert "notes" not in evidence.run_query(store, "diff")
 
 
+def test_returns_alone_pair_by_their_own_stop(store):
+    # #174: a `(return)` row now has its hit's stop, so returns alone on a line that
+    # stops several times per pass pair by stop, and nothing is left to flag.
+    from peeky import evidence
+
+    warning = "Line 36 stops up to 2 times per pass in f (2 breakpoint locations): ..."
+    saved(
+        store,
+        [(1, "returned", "(return)", "5", 1), (2, "returned", "(return)", "6", 2)],
+        warnings=[warning],
+    )
+    saved(
+        store,
+        [(1, "returned", "(return)", "5", 1), (2, "returned", "(return)", "8", 1)],
+        warnings=[warning],
+    )
+    result = evidence.run_query(store, "diff")
+    assert [(r["hit"], r["note"]) for r in result["rows"]] == [
+        (2, "missing in run b (run a: stop 2)"),
+        (2, "missing in run a (run b: stop 1)"),
+    ]
+    assert not any("rows do not say at which stop" in note for note in result.get("notes", ()))
+
+
+def test_a_return_whose_hits_rows_disagree_is_not_paired_by_a_guessed_stop(store):
+    # Review of PR #198: a `(return)` row saved without its stop took MIN(stop) of its
+    # hit's rows. Run 1's hit was observed at stop 1 and set at stop 2, so its return
+    # was paired as stop 1 with run 2's and compared (5 against 6), with no note. Rows
+    # that disagree give no stop: nothing is paired by a guess, and the note says so.
+    from peeky import evidence
+
+    warning = "Line 36 stops up to 2 times per pass in f (2 breakpoint locations): ..."
+    saved(
+        store,
+        [
+            (1, "observed", "x", "1", 1),
+            (1, "after-set", "x", "1", 2),
+            (1, "returned", "(return)", "5"),
+        ],
+        warnings=[warning],
+    )
+    saved(
+        store,
+        [
+            (1, "observed", "x", "1", 1),
+            (1, "after-set", "x", "1", 1),
+            (1, "returned", "(return)", "6"),
+        ],
+        warnings=[warning],
+    )
+    result = evidence.run_query(store, "diff")
+    returns = [
+        (r["value_a"], r["value_b"], r["note"])
+        for r in result["rows"]
+        if r["selector"] == "(return)"
+    ]
+    assert returns == [
+        ("5", None, "missing in run b"),
+        (None, "6", "missing in run a (run b: stop 1)"),
+    ]
+    assert any(
+        note.startswith("run 1's line stops several times per pass, and its `(return)` rows")
+        for note in result["notes"]
+    ), result["notes"]
+
+
 def test_diff_collapses_address_only_rows_per_stop(store):
     # Finding 9 with #160's stops: one address-only row per selector and stop.
     from peeky import evidence

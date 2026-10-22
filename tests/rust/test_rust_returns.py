@@ -175,3 +175,45 @@ def test_a_call_that_panicked_is_never_credited_with_a_later_calls_value(crate, 
     panicked = hits[1][RETURN]
     assert "value" not in panicked and "never returned" in panicked["error"], panicked
     assert all(hits[hit][RETURN]["value"] == "20" for hit in (2, 3)), hits
+
+
+# #174: `format!` stops at each of its blocks (#160), so each call of `width` stops
+# several times at the line before it returns.
+FORMATS = """fn width(v: f64) -> usize {
+    let s = format!("{:.1}", v); // FORMAT
+    s.len()
+}
+
+fn main() {
+    let a = width(3.0);
+    let b = width(12.5);
+    println!("{} {}", a, b);
+}
+"""
+
+
+@pytest.mark.timeout(300)
+def test_a_return_is_followed_across_a_lines_breakpoint_locations(crate, capsys):
+    # Every hit but a call's last was withheld as "the line ran again ... (a loop's next
+    # pass ...)"; the step out's watch proves each later stop is in the same call, so
+    # every hit gets its call's return, each `(return)` row with its own hit's stop.
+    (crate / "src/main.rs").write_text(FORMATS)
+    line = next(i for i, text in enumerate(FORMATS.splitlines(), 1) if "// FORMAT" in text)
+    code = main(
+        ["probe", str(crate), "--at", f"src/main.rs:{line}", "--capture", "v,return"]
+        + ["--hits", "all", "--json", "--no-save"]
+    )
+    result = json.loads(capsys.readouterr().out)
+    assert code == 0, result.get("error")
+    assert result["output"].strip() == "3 4"
+    shown = [
+        (row["stop"], row["stops"], row.get("value"))
+        for row in result["rows"]
+        if row["selector"] == RETURN
+    ]
+    stops = shown[0][1]
+    assert stops > 1, result["rows"]
+    calls = [(stop, value) for stop, _, value in shown]
+    assert calls == [(n, "3") for n in range(1, stops + 1)] + [
+        (n, "4") for n in range(1, stops + 1)
+    ], shown
