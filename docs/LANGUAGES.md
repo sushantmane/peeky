@@ -18,7 +18,7 @@ has as a whole:
 | C++ | Explicit C++17 builds, bounded expansion of classes, references and arrays, and deterministic candidate repair. | [C++ slice](CPP.md) |
 | Rust | An experimental HTTP worker for one dependency-free Cargo binary, with application-unit symbols and compiler-validated `Option<i32>` views. A deterministic investigation loop: the hashed compiled Cargo test and an independent checker must both pass on a fresh build. | [worker](RUST_GATE.md), [loop](RUST_AGENT.md) |
 
-Still open for Java: binding source paths on a separate host, and an evaluation with a live model.
+Still open for Java: binding source paths on a separate host.
 
 ## Priority and rationale
 
