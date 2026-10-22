@@ -1658,3 +1658,21 @@ def test_a_warning_says_how_many_functions_it_does_not_list():
     assert shown.startswith("f0 (stop 0); f1 (stop 1)") and shown.endswith(
         "f7 (stop 7); and 2 more"
     )
+
+
+def test_a_selector_by_line_that_names_several_bindings_is_refused():
+    # PR #215 review: `x @ part.rs:1` where two included files named `part.rs` (or two
+    # `let x` on one line) both declare an `x` there: the one lldb-dap lists by its
+    # plain name is not selected by it.
+    from peeky.probe import Refused, _scope_lookup
+
+    row = {"name": "x", "value": "1", "declared_at": "x @ part.rs:1", "declared_at_shared": 2}
+    scopes = [{"name": "Locals", "variables": [row]}]
+    with pytest.raises(Refused, match="2 bindings on this line: not selectable by line"):
+        _scope_lookup(None, {}, {}, scopes, "x @ part.rs:1")
+    alone = {**row, "declared_at_shared": 1}
+    found, _ = _scope_lookup(
+        None, {}, {}, [{"name": "Locals", "variables": [alone]}], "x @ part.rs:1"
+    )
+    assert found is alone
+    assert _scope_lookup(None, {}, {}, scopes, "x")[0] is row
