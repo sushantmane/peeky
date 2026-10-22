@@ -4394,9 +4394,10 @@ class OwnedLocals:
         pointer, a reference argument never reassigned (its target outlives the call),
         and a local only ever assigned constants (`"text"`, a promoted `&[1, 2]`); a
         local never borrowed itself, for the last two. A raw pointer keeps no borrow, so
-        it is False (one inside a tuple reads with the tuple). A value not yet assigned
-        (its declaration line) is False. A name bound more than once that the stop
-        cannot tell apart is judged by every binding. ``block`` (a ``StopBlock``): the
+        it is False (a tuple holding one is judged as a tuple, and the raw pointer in it
+        shows only its address, #255). A value not yet assigned (its declaration line)
+        is False. A name bound more than once that the stop cannot tell apart is judged
+        by every binding. ``block`` (a ``StopBlock``): the
         DWARF lexical block the stop's pc is in, if known (#115)."""
         site = self._site(hashed, line, path)
         if site is None:
@@ -4746,9 +4747,9 @@ class OwnedLocals:
             return None
         if _FN_POINTER.match(kind):
             return True
-        # A raw pointer (or an array of them) keeps no borrow. One inside a tuple or a
-        # generic reads with the value that holds it, as one in a struct does (the MIR
-        # names no field types).
+        # A raw pointer (or an array of them) keeps no borrow. A tuple or a generic
+        # holding one is judged as a value is (the MIR names no field types); the raw
+        # pointer inside it shows only its address (#255).
         if _RAW_POINTER.match(kind.lstrip("[")):
             return False
         assigned = body._assignments().get(local, [])

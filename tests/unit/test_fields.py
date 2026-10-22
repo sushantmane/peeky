@@ -698,6 +698,71 @@ def test_a_container_field_is_found_only_through_plain_records():
         held_container(graph, 1, "self", ["values"])
 
 
+def test_a_rust_raw_pointer_is_told_from_a_reference_by_its_debug_information_name():
+    # #255: LLDB names `*const i64` and `&i64` both `long *`; the debug information
+    # names each. A fat pointer's address has no name: the fat pointer's says.
+    from peeky.fields import rust_raw_pointer
+
+    def record(name, members, variant=False):
+        fields = tuple(
+            (field, kind, 8 * at, False, 8, None) for at, (field, kind) in enumerate(members)
+        )
+        holds = tuple(kind for _, kind in members)
+        return ("record", name, "struct", 8 * len(members), 8, fields, holds, variant, False, None)
+
+    graph = {
+        1: record(
+            "Holder",
+            [("n", 10), ("p", 11), ("r", 12), ("b", 13), ("ps", 14), ("text", 15)]
+            + [("q", 17), ("slot", 18), ("odd", 24)],
+        ),
+        10: ("base", "i64", "DW_ATE_signed", 8),
+        11: ("pointer", "*const i64", 10),
+        12: ("pointer", "&i64", 10),
+        13: ("pointer", "alloc::boxed::Box<i64, alloc::alloc::Global>", 10),
+        14: ("array", "", 11, (2,), False),
+        15: record("*const str", [("data_ptr", 20), ("length", 10)]),
+        16: record("&str", [("data_ptr", 20), ("length", 10)]),
+        17: record("NonNull<i64>", [("pointer", 21)]),
+        18: record("Slot", [], variant=True),
+        19: ("pointer", "&*const i64", 11),
+        20: ("pointer", "", 22),
+        21: ("pointer", "*mut i64", 10),
+        22: ("base", "u8", "DW_ATE_unsigned", 1),
+        23: ("pointer", "&&i64", 12),
+        24: record("Odd", [("at", 20)]),
+        25: ("pointer", "*mut Holder", 1),
+        26: ("pointer", "&Holder", 1),
+    }
+    cases = [
+        (1, ["p"], True),
+        (1, ["r"], False),
+        (1, ["b"], False),
+        (1, ["ps", "[1]"], True),
+        (1, ["text", "data_ptr"], True),
+        (16, ["data_ptr"], False),
+        (1, ["q", "pointer"], True),
+        # LLDB lists a pointer to a scalar or a pointer as one child, `*p`.
+        (19, ["*r"], True),
+        (23, ["*r"], False),
+        # A struct's fields LLDB lists under a pointer to it: read through that pointer.
+        (26, ["p"], True),
+        (26, ["r"], False),
+        (25, ["r"], True),
+        # Not a pointer, not reached, or not named: the debug information does not say.
+        (1, ["n"], None),
+        (1, ["ps"], None),
+        (1, ["slot", "__0"], None),
+        (1, ["missing"], None),
+        (1, ["odd", "at"], None),
+        (12, ["*r"], None),
+        (1, [], None),
+    ]
+    for root, steps, expected in cases:
+        assert rust_raw_pointer(graph, root, steps) is expected, (root, steps)
+    assert rust_raw_pointer({}, 1, ["p"]) is None
+
+
 CONTAINERS = dump(
     (0x0B, 0, "DW_TAG_compile_unit", {"DW_AT_name": '"c.cpp"'}),
     (0x10, 1, "DW_TAG_base_type", base("int", "DW_ATE_signed", "0x04")),

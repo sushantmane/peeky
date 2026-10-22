@@ -883,15 +883,7 @@ def _resolve(worker, stop, snapshot, segments, pointers=False):
                 f"; value {value[:80]}" if isinstance(value, str) and "view" not in variable else ""
             )
             if variable.get("view") == "unproven":
-                reason = variable.get("unproven_reason")
-                raise ValueError(
-                    f"cannot expand {variable['name']!r}: "
-                    + (
-                        f"this Rust reference shows only its pointer: {reason}"
-                        if isinstance(reason, str)
-                        else _UNPROVEN_RUST
-                    )
-                )
+                raise ValueError(f"cannot expand {variable['name']!r}: {_unproven_text(variable)}")
             keyed = (
                 f"; {path} is the value for that key, as in C++ (an entry's key and value are "
                 f"{variable['_map']}[#N].first and .second)"
@@ -1124,6 +1116,23 @@ _UNPROVEN_RUST = (
     "crate with no unsafe code. Here what it points at may be moved or dropped, or the "
     "MIR cannot say (rust-cookbook 7.2)"
 )
+# A raw pointer is never followed, wherever it is and however live (#255).
+_RAW_RUST = (
+    "this Rust raw pointer shows only its address: Peeky never follows a raw pointer, "
+    "because nothing proves that what it points at still stands"
+)
+_MAYBE_RAW_RUST = (
+    "this Rust pointer shows only its address: Peeky never follows a raw pointer, and the "
+    "build's debug information does not say whether this is one"
+)
+_RAW_HELD_RUST = (
+    "Its Rust raw pointers show only their address: Peeky never follows a raw pointer, "
+    "because nothing proves that what one points at still stands"
+)
+_MAYBE_RAW_HELD_RUST = (
+    "Its Rust pointers show only their address: Peeky never follows a raw pointer, and the "
+    "build's debug information does not say which of them are raw"
+)
 _STALE_RUST = (
     "This is (or is inside) a Rust local that may own memory through a pointer: probe a "
     "line where it is live, or read it where it is passed. The MIR does not prove it "
@@ -1157,12 +1166,33 @@ def _unread_note(variable, selector):
     )
 
 
-def _unproven_note(variable):
-    """The note of a Rust value shown only as its pointer: why, where the worker says
-    (a reference past #110's proof, #205), else every way that can be."""
+def _unproven_text(variable):
+    """Why a Rust value shows only its pointer: a raw pointer, or one the build does not
+    tell from one (#255); a reference past #110's proof, where the worker says (#205);
+    else every way that can be."""
+    pointer = variable.get("unproven_pointer")
+    if pointer in ("raw", "unknown"):
+        return _RAW_RUST if pointer == "raw" else _MAYBE_RAW_RUST
     reason = variable.get("unproven_reason")
     if isinstance(reason, str):
-        return f"This Rust reference shows only its pointer: {reason}."
+        return f"this Rust reference shows only its pointer: {reason}"
+    return _UNPROVEN_RUST
+
+
+def _unproven_note(variable):
+    """The note of a Rust value shown only as its pointer (see _unproven_text)."""
+    text = _unproven_text(variable)
+    return text[0].upper() + text[1:] + "."
+
+
+def _held_unproven_note(children):
+    """The note of a Rust value that reads, for its children shown only as their pointer:
+    its raw pointers (#255), else every way that can be (#108)."""
+    kinds = {child.get("unproven_pointer") for child in children}
+    if kinds == {"raw"}:
+        return _RAW_HELD_RUST + "."
+    if kinds <= {"raw", "unknown"}:
+        return _MAYBE_RAW_HELD_RUST + "."
     return _UNPROVEN_RUST[0].upper() + _UNPROVEN_RUST[1:] + "."
 
 
@@ -1171,7 +1201,14 @@ def _unproven_note(variable):
 _RUST_NOTE_OPENINGS = tuple(
     text.split(":")[0].split(";")[0]
     for text in (_OWNED_RUST, _FIELD_RUST, _UNREAD_RUST, _COMPOSITE_RUST, _STALE_RUST)
-) + ("This Rust Box", "This Rust reference shows only its pointer")
+) + (
+    "This Rust Box",
+    "This Rust reference shows only its pointer",
+    "This Rust raw pointer shows only its address",
+    "This Rust pointer shows only its address",
+    "Its Rust raw pointers show only their address",
+    "Its Rust pointers show only their address",
+)
 _RUST_CONTAINERS = (
     "alloc::vec::Vec<",
     "alloc::string::String",
@@ -1613,6 +1650,9 @@ def _capture(
                     row["note"] = variable["note"]
             if "view" in variable:
                 row["view"] = variable["view"]
+            if variable.get("unproven_pointer") in ("raw", "unknown"):
+                # A raw pointer, or one the build does not tell from one (#255).
+                row["unproven_pointer"] = variable["unproven_pointer"]
             if variable.get("stale"):
                 row["stale"] = True
             if variable.get("scope") == "globals":
@@ -1664,9 +1704,11 @@ def _capture(
                     # text, each still selectable (`text[5]`), so no listing is no loss
                     # (ninth evaluation: `<children: … exceeds bounded expansion limit>`).
                 listed = row.get("children", ())
-                if "note" not in row and any(c.get("view") == "unproven" for c in listed):
-                    # A caller's struct reads, but not what its pointers reach (#108).
-                    row["note"] = _UNPROVEN_RUST[0].upper() + _UNPROVEN_RUST[1:] + "."
+                unproven = [c for c in listed if c.get("view") == "unproven"]
+                if "note" not in row and unproven:
+                    # A caller's struct reads, but not what its pointers reach (#108); a
+                    # live one, but not what its raw pointers do (#255).
+                    row["note"] = _held_unproven_note(unproven)
                 elif "note" not in row and any(c.get("stale") for c in listed):
                     row["note"] = _STALE_RUST + "."
         rows.append(row)
@@ -2978,6 +3020,9 @@ def _children(worker, stop, selector, variable, pointers=False, whole_strings=Fa
             entry["identity"] = child["identity"]
         if child.get("view"):
             entry["view"] = child["view"]
+        if child.get("unproven_pointer") in ("raw", "unknown"):
+            # A raw pointer, or one the build does not tell from one (#255).
+            entry["unproven_pointer"] = child["unproven_pointer"]
         if child.get("stale"):
             entry["stale"] = True
         if isinstance(child.get("note"), str) and not child.get("unavailable"):

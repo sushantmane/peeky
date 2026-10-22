@@ -1,12 +1,18 @@
-"""The Box gate's type tests: LLDB's C-style declarators and the MIR's non-owning types."""
+"""The Box gate's type tests: LLDB's C-style declarators and the MIR's non-owning types;
+and which pointer inside a value is a raw pointer (#255)."""
+
+from types import SimpleNamespace
 
 import pytest
 
+from peeky.fields import Unsettable
 from peeky.rust import (
     _NON_OWNING,
+    RustSession,
     _constructors,
     _holds_data_pointers,
     _is_wide_box,
+    _may_hold_raw,
     _may_own,
 )
 
@@ -243,3 +249,71 @@ def test_a_generic_bodys_primitive_names_may_be_type_parameters(mir, generics):
     assert _may_own(mir, generics)
     # A reference never owns, whatever it points at.
     assert not _may_own(f"&{mir}", generics)
+
+
+@pytest.mark.parametrize(
+    "mir",
+    ["i64", "()", "&i64", "&&str", "&'static str", "&mut [u8]", "(i64, &i64)", "[&u8; 2]"]
+    + ["fn(&Pt) -> i64", "for<'a> fn(&'a Pt) -> i64", "(&[i64], (u8, &&char))"],
+)
+def test_values_that_hold_no_raw_pointer(mir):
+    assert not _may_hold_raw(mir)
+
+
+@pytest.mark.parametrize(
+    "mir",
+    [None, "*const i64", "*mut u8", "(i64, *const i64)", "[*mut u8; 2]", "&[*const u8]"]
+    + ["Holder", "&Holder", "&mut app::Holder", "std::ptr::NonNull<i64>", "&dyn Debug", "T"],
+)
+def test_values_that_may_hold_a_raw_pointer(mir):
+    # #255: a struct's or a generic's name says nothing of its fields.
+    assert _may_hold_raw(mir)
+
+
+def test_a_generic_bodys_primitive_name_may_hold_a_raw_pointer():
+    assert _may_hold_raw("i64", ("i64",)) and _may_hold_raw("&i64", None)
+
+
+def test_a_pointer_in_a_value_is_raw_by_its_debug_information_else_by_the_mir(monkeypatch):
+    # #255: the field's Rust type from the build's debug information decides; where
+    # that says nothing, any pointer in a local whose MIR type may hold a raw pointer is
+    # withheld as maybe one, and one in a local of references and primitives is not.
+    import peeky.fields
+
+    frame = {"name": "app::work::h0123456789abcdef", "line": 9, "source": {"path": "main.rs"}}
+    said, mir = [None], [["(i64, &i64)"]]
+    monkeypatch.setattr(peeky.fields, "rust_raw_pointer", lambda graph, root, steps: said[0])
+    session = SimpleNamespace(
+        _field_types=lambda: ({"h0123456789abcdef": {}}, {}),
+        _declared_type=lambda types, name, where: (1, True),
+        _frame_scope=lambda frame, root: None,
+        _field_cache=({}, {}, {}),
+        _binding_types=lambda variable, frame: mir[0],
+        owned=SimpleNamespace(type_parameters=lambda hashed: ()),
+    )
+
+    def raw(kind="long *"):
+        variable = {"name": "__1", "type": kind}
+        return RustSession._raw_pointer(session, variable, frame, [("t", "(i64, &i64)")])
+
+    said[0] = True
+    assert raw() == "raw"
+    said[0] = False
+    assert raw() is None
+    said[0] = None
+    assert raw() is None
+    for types in (["app::Holder"], [], ["(i64, &i64)", "*const i64"]):
+        mir[0] = types
+        assert raw() == "unknown", types
+
+    def unread():
+        raise Unsettable("Peeky could not read the build's debug information")
+
+    session._field_types, mir[0] = unread, ["(i64, &i64)"]
+    assert raw() is None
+    session.owned = None
+    assert raw() == "unknown"
+    # Not a data pointer as LLDB shows it: an array of them is judged by element, a fn
+    # pointer points at code.
+    for kind in ("long *[2]", "long (*)(long)", "app::Holder", "i64"):
+        assert raw(kind) is None, kind

@@ -123,6 +123,18 @@ The rules are in the cookbook's
 - A function is too big or unusual to analyze when its dataflow runs past its budget.
 - A reference parameter that is never reassigned stops reading when the function drops what it
   points at: `*h = new`, or `*c.borrow_mut() = new` through a shared `&RefCell`.
+- A raw pointer keeps no borrow, so nothing proves what it points at. One inside a value shows only
+  its address, however live the value is (#255). The build's DWARF tells it from a reference:
+  rustc names pointer types `*const T`, `*mut T`, `&T`, `&mut T` and `alloc::boxed::Box<T, A>`.
+  LLDB names them all `T *`.
+- The address inside a fat pointer has no DWARF name. The fat pointer's own name says which it is:
+  `*const str` or `&str`.
+- Where the DWARF doesn't say, as on a path Peeky can't walk, the local's MIR type decides. A
+  pointer shows only its address unless that type is made only of primitives, and references,
+  tuples and arrays of them, such as `(i64, &i64)`. A struct's name says nothing of its fields.
+  Its note then says that the build doesn't tell it from a raw pointer, not that it is one.
+- A raw pointer local is judged by its MIR type, before #110. An array of them isn't collapsed:
+  each element is judged as a raw pointer inside a value.
 
 ### The Drop window
 
