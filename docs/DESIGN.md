@@ -278,8 +278,8 @@ How the languages plug in:
 - Java and C candidate acceptance use the shared `CompiledVerification` lifecycle, with thin
   language wrappers, fresh prepared builds and the unchanged trusted checker.
 
-[JAVA_WORKER.md](JAVA_WORKER.md) has the restrictions, and the limits of provenance for trusted
-development.
+[Java 7.3](lang/java-cookbook.md#what-peeky-checks-about-a-java-build) has the restrictions, and the
+limits of provenance for trusted development.
 
 ## Open questions
 

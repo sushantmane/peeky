@@ -208,6 +208,8 @@ very large optimized C++ unit can exceed the 16 MB bound on reading it.
 | JSON and the evidence store | LLDB's whole frame name: a C++ signature, or a Rust name with its symbol escapes | `trim_left(std::__1::basic_string<char, …> const&)`, `_$LT$…` |
 | A session's text | The frame with its parameters, the standard types written as code writes them | `in trim_left(std::string const&)` |
 
+How C++ names are shortened: [C and C++ 1.1](lang/c-cpp-cookbook.md#how-a-c-functions-name-is-shown).
+
 #### Match a function in SQL
 
 SQL compares the whole name, so `WHERE function = 'trim_left'` finds nothing. Match a frame with
@@ -239,14 +241,19 @@ function. With `--json`, a scope's `spans` maps such a name to its blocks' `[fir
 
 - A span leaves out lines between the block's own lines where only code outside the block runs.
   So one block can give several spans.
+- A later span starts right after the last line it leaves out. LLDB moves a breakpoint on a line
+  without code to the next line with code, and that code is the block's.
 - In C++, a block's cleanup code is on the function's closing line. That code runs when an
   exception leaves the block. So `name (std::string, lines 22-25, 35)` is an `if` block's local.
   It is visible on the block's lines, and at the closing `}` while an exception unwinds. It is not
-  visible on the lines between.
+  visible on the lines between. C blocks have no such cleanup code.
 - A span is never narrower than where the debugger can show the local. So it keeps the lines
   inside it without code, such as comments or a lone `}`.
 - A block that also runs another file's code, such as an `#include` inside it, gives no lines. A
   local macro's expansion, on its definition's lines, does not count as another file's code.
+- For example, a Rust `for` loop's `i`, whose body runs `let s = twice!(i);` with a macro defined
+  above the loop, reads `i (lines 66, 70-71)`: the macro's line, then the body's. The loop header's
+  line between them runs outside the block.
 - Past eight blocks, one span covers them all.
 
 #### Fields and elements `set` may change (C, C++, Rust)
@@ -2836,13 +2843,14 @@ In [Java 7.4](lang/java-cookbook.md#74-java-tests-already-running-gradle---debug
 
 To debug the optimized program, set its level in a `--config`:
 
-| Language | Key | Example |
+| Language | Key | Levels |
 | --- | --- | --- |
-| C, C++ | `optimization` | `"optimization": "O2"` |
-| Rust | `opt_level` | `"opt_level": "2"` |
+| C, C++ | `optimization` | `"Og"`, `"O1"` or `"O2"`; `"O0"` by default |
+| Rust | `opt_level` | `"1"` or `"2"`; `"0"` by default |
 
-[NATIVE.md](NATIVE.md) lists the other levels. A C or C++ config may also name explicit tool
-paths, as NATIVE.md shows. For example, this `examples/c/optimized.json` names them:
+A C or C++ config may also name explicit tool paths
+([C and C++ 7.1](lang/c-cpp-cookbook.md#name-the-tools-in-a-config)). For example, this
+`examples/c/optimized.json` names them:
 
 ```json
 {"sources": ["pagination_bug.c"], "headers": ["pagination.h"], "optimization": "O2", "compiler": "/Library/Developer/CommandLineTools/usr/bin/clang", "adapter": "/Library/Developer/CommandLineTools/usr/bin/lldb-dap", "dwarfdump": "/usr/bin/dwarfdump", "dsymutil": "/Library/Developer/CommandLineTools/usr/bin/dsymutil", "sysroot": "/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk"}
@@ -2867,11 +2875,18 @@ output:
 
 What changes in an optimized build:
 
-- Locals may be `unavailable`.
-- Values that are shown can be stale.
+- Locals may be `unavailable`. LLDB reports such a local as text, such as
+  `<error: variable not available>` or `<error: could not evaluate DW_OP_entry_value: ...>`. Peeky
+  gives it no value, an error that quotes the debugger's reason, and a warning.
+- Values that are shown can be stale, and look normal. An inlined `-O2` C function reported
+  `b=2, t=8` where the live values were 0 and 3. At Rust's `opt-level 2`, `start` read `1` where
+  the program's value was `3`, with no `unavailable` mark. Peeky can't detect this, so prefer an
+  unoptimized build for debugging.
 - In this macOS C example, the `function` column marks the frame `[opt]`. Only lldb-dap on macOS
   adds that mark. Linux's never does, and Rust function names have it removed.
-- Every result carries `optimized` and a warning.
+- Every probe result, session snapshot, `session get` row and `describe` carries `optimized` and a
+  warning.
+- A Rust enum is opaque, because LLDB zero-fills the enum pieces it can't locate.
 - Changes are refused. A probe's `--set` is refused before the program runs. The error says when
   the debug information gives the local no stack slot (a register or a location list):
 
@@ -2884,6 +2899,11 @@ peeky probe examples/c --config examples/c/optimized.json --at pagination_bug.c:
 error [MUTATION_REJECTED]: `start` cannot be changed: changing values is refused in an optimized build (-O2), where the program may keep using other copies of a value; here the debug information gives `start` no stack slot (a register or a location list), so a change could not reach every copy. Refused before the program runs: the debugger's launch/attach request was not sent. Use an unoptimized build
 hint: Use an unoptimized build to change values.
 ```
+
+- These rules apply to C, C++ and Rust, which all use LLDB. Peeky never reinterprets the value text
+  of another language's debugger.
+- In an unoptimized build, a value that the debugger can't read, such as one behind a NULL
+  pointer, shows the debugger's reason. It is never called "optimized out".
 
 ---
 

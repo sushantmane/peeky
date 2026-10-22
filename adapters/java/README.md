@@ -1,6 +1,6 @@
 # Experimental Java DAP launcher
 
-This launcher wraps Microsoft java-debug's unmodified core with narrow service providers. It is qualified by packaged and nested-class fixtures and now connects to the experimental [Java worker](../../docs/JAVA_WORKER.md). Use JDK 17 (the CI version), Python 3.11+, and HTTPS access to GitHub/Maven Central for setup.
+This launcher wraps Microsoft java-debug's unmodified core with narrow service providers. It is qualified by packaged and nested-class fixtures and now connects to the experimental [Java worker](../../docs/WORKER.md#start-a-java-worker). Use JDK 17 (the CI version), Python 3.11+, and HTTPS access to GitHub/Maven Central for setup.
 
 From the repository root:
 
