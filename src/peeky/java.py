@@ -637,6 +637,9 @@ class JavaSession:
     pause_budget_writes = True
     # java-debug occasionally drops VM-death events (#27); infer exit from no threads.
     liveness_by_threads = True
+    # A JDI step ends in its own call: one an exception ends stops at the caller's catch, so
+    # a step's stop in the same method, at the same depth, is the same call (#262).
+    steps_end_in_their_call = True
     # java-debug's "Event Hub" thread turns every JDI event into DAP stops, steps and
     # exits. If it dies (an unpatched bundle, #27), or an exception escapes one of its
     # handlers, nothing is ever reported again: end the session at once.

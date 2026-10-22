@@ -68,10 +68,12 @@ def test_steps_say_when_they_leave_a_block_or_change_calls(program, capsys):
         assert state["location"].endswith(f":{line_of('LOOP')}"), state
         assert main(["session", "get", "square", "--json"]) == 1
         (row,) = json.loads(capsys.readouterr().out)
+        # LLDB's steps can run on to a later call (after a `longjmp`): only the scope is
+        # claimed, not the call.
         assert row["error"].startswith(
-            f"not found: 'square' was visible at line {line_of('SQUARE')}, earlier in this "
-            "same call, but the block declaring it has ended (read it at a line inside that "
-            "block); visible: "
+            f"not found: 'square' was visible at line {line_of('SQUARE')}, at an earlier stop "
+            "in this function, and this stop is outside its scope (read it at a line in its "
+            "scope); visible: "
         ), row
     finally:
         main(["session", "close"])

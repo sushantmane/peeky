@@ -990,8 +990,11 @@ class DebugWorker:
         if change["kind"] != "same":
             self.call_change = change
         elif mark["kind"] == "step" and mark["names"] and type(mark["line"]) is int:
-            # A step cannot leave its call and come back to it without stopping: this is
-            # the same call, so a name it listed earlier and lacks now has left its scope.
+            # The same function at the same depth, under the same callers: a step there
+            # stayed in its call (Java), or LLDB's step ran on to a later call from the same
+            # place after an exception or `longjmp` ended it. Either way, a name listed
+            # earlier in this function and not here is out of scope at this line (scopes
+            # are the code's, not the call's).
             self.names_before = {"names": mark["names"], "line": mark["line"]}
 
     def take_returned(self, runtime, variables):
@@ -2485,9 +2488,18 @@ class DebugWorker:
                 before = self.names_before
                 gone = sorted(set(before["names"]) - set(own)) if before else []
                 if gone and not isinstance(self.adapter, PythonAdapter):
-                    # Listed at an earlier stop of this same call: the block declaring each
-                    # has ended (Python has no block scopes; its own reason says why).
-                    snapshot["no_longer_visible"] = {"names": gone[:50], "line": before["line"]}
+                    # Listed at an earlier stop in this function, at this depth: this line
+                    # is outside each one's scope (Python has no block scopes; its own reason
+                    # says why). Java's steps also prove it is the same call.
+                    snapshot["no_longer_visible"] = {
+                        "names": gone[:50],
+                        "line": before["line"],
+                        **(
+                            {"same_call": True}
+                            if getattr(runtime, "steps_end_in_their_call", False)
+                            else {}
+                        ),
+                    }
             if names:
                 # Searched in every listed scope, past the bound too.
                 snapshot["names"] = sorted(names)

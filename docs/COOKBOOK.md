@@ -2212,16 +2212,20 @@ A step can land on a closing `}`, on a loop's header, or back on an `if`'s line
 A step off a function's last line lands in its caller, where the function's names are not
 visible. So the state then has a note that names both calls:
 
-- ``note: returned from `get_page` to `<module>` ``: the stop is in a caller. With `, 2 calls up`,
-  it returned from more than one call.
+- ``note: returned from `get_page` to `<module>` ``: the stop is in a caller. The call returned,
+  or an exception ended it. With `, 2 calls up`, more than one call ended.
 - ``note: entered `walk`, called from `run` ``: the stop is in a call that the earlier frame
   made.
 - ``note: returned from `add`, then entered `shift` ``: the earlier call has ended, and this is
   another one.
 
 Calls are told apart by the stack's depth and its callers, not only by name. So a recursive call
-gets a note too: ``entered `walk`, called from `walk` ``. `continue` gets the same notes. A stop
-in the same call gets none.
+gets a note too: ``entered `walk`, called from `walk` ``. `continue` gets the same notes.
+
+No note usually means the same function at the same depth, under the same callers. After a step
+in Java or Python, that is the same call. In C, C++ and Rust, it can be a later call from the same
+place. LLDB's step runs on when an exception or `longjmp` ends its call, and the next stop may be
+a breakpoint in that later call.
 
 A `get` with no value at such a stop repeats the note:
 
@@ -2261,6 +2265,10 @@ best.load: <not found: 'best' was visible at line 30, earlier in this same call,
   read every stop's locals, because some debuggers run the program's code to show them.
 - After `continue`, there is no such note: the same function at the same depth may be another
   call.
+- In C, C++ and Rust, the message doesn't say "this same call", because LLDB's step can end in a
+  later call. It says only that this stop is outside the local's scope:
+  `'square' was visible at line 14, at an earlier stop in this function, and this stop is outside
+  its scope`.
 - Python has no block scopes. A local that is gone was deleted, and its message says it has no
   value.
 

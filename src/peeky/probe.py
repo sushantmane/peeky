@@ -756,11 +756,19 @@ def _root(worker, stop, snapshot, name):
         return found, False
     gone = snapshot.get("no_longer_visible") or {}
     if name in (gone.get("names") or ()):
-        # Listed at an earlier stop of this same call (a session's step), and not now.
+        # Listed at an earlier stop a session's step came from, in this function at this
+        # depth. Java's steps prove it is the same call; LLDB's can run on to a later one
+        # (an exception or `longjmp`), so there only this line's scope is claimed.
         raise ValueError(
-            f"not found: {name!r} was visible at line {gone.get('line')}, earlier in this "
-            "same call, but the block declaring it has ended (read it at a line inside that "
-            f"block); visible: {_visible(snapshot)}"
+            f"not found: {name!r} was visible at line {gone.get('line')}, "
+            + (
+                "earlier in this same call, but the block declaring it has ended (read it at "
+                "a line inside that block)"
+                if gone.get("same_call") is True
+                else "at an earlier stop in this function, and this stop is outside its scope "
+                "(read it at a line in its scope)"
+            )
+            + f"; visible: {_visible(snapshot)}"
         )
     if any(scope.get("truncated") for scope in own) and name not in (snapshot.get("names") or ()):
         # A worker that predates `names` lists no name past the bound.
