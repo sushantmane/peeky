@@ -172,7 +172,9 @@ def test_the_docs_say_reading_any_global_lists_and_reprs_them_all(capsys):
     assert "Listing them runs every global's repr" in help_text
     assert "a misspelled one included" in help_text
     guide = (DOCS / "AGENT_GUIDE.md").read_text()
-    assert "one, or a misspelled name, lists all, running all reprs" in guide
+    assert "Reading one, or a misspelled name, lists all globals, running all reprs" in " ".join(
+        guide.split()
+    )
     python = " ".join((DOCS / "lang/python-cookbook.md").read_text().split())
     assert "Then all of them are listed and every repr runs" in python
     c_cpp = " ".join((DOCS / "lang/c-cpp-cookbook.md").read_text().split())

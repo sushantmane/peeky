@@ -695,10 +695,12 @@ def test_the_guide_lists_session_wait_and_program_arguments_up_front():
     # The arguments' syntax is in the commands section, for every language.
     assert "**Program arguments:** after `--` or repeated `--arg`" in table, table
     # Review of PR #165: exit 3 is not only a background job's.
+    flat = " ".join(guide.split())
     assert (
-        "3 not there yet (a background job still running; a session's `--to`, `--count` or "
-        "`--hit` stopped first), 4 a probe change never made"
-    ) in " ".join(guide.split())
+        "3: not there yet (a background job still running; a session's `--to`, `--count` or "
+        "`--hit` stopped first)."
+    ) in flat
+    assert "4: a probe change never made" in flat
     # Finding 19: a step can land back on an `if`'s line.
     cookbook = " ".join((docs / "COOKBOOK.md").read_text().split())
     assert "A step can also land back on an `if`'s line after the last line of its block" in (
