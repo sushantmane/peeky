@@ -187,13 +187,14 @@ def test_a_local_declared_only_in_blocks_lists_their_lines(tmp_path):
     )
     names, found = details(tmp_path / "out", "count")
     assert names == ["this", "ballots", "choice", "n", "round", "counted", "b", "c", "ranking"]
-    # The lines of the code in each declaration's scope, where a stop sees it: not the
-    # declaring line of `ranking` (9, 22), whose code runs before its scope starts. The
-    # two `c` loops are adjacent but two blocks; `b`'s are split by the code between.
+    # The lines whose breakpoint sees each declaration (#264 review: a line's first
+    # instruction in its scope): not the declaring line of `ranking` (9, 22), nor a `for`
+    # header (8, 12, 17, 21), whose first instruction initializes the loop's variable.
+    # The two `c` loops are adjacent but two blocks; `b`'s are split by the code between.
     assert found["spans"] == {
         "counted": [[8, 26]],
-        "b": [[8, 10], [21, 23]],
-        "c": [[12, 14], [17, 18]],
+        "b": [[9, 10], [22, 23]],
+        "c": [[13, 14], [18, 18]],
         "ranking": [[10, 10], [23, 23]],
     }
     # Declared for the whole method from where it is (`round`'s loop never ends): no lines.
@@ -201,7 +202,7 @@ def test_a_local_declared_only_in_blocks_lists_their_lines(tmp_path):
     assert found["types"]["ranking"] == "int[]" and "typed_spans" not in found
     # Blocks declaring one name with different types list each with its own lines.
     names, found = details(tmp_path / "out", "shapes")
-    assert found["spans"] == {"i": [[32, 34]], "j": [[36, 38]], "x": [[34, 34], [38, 38]]}
+    assert found["spans"] == {"i": [[33, 34]], "j": [[37, 38]], "x": [[34, 34], [38, 38]]}
     assert found["typed_spans"] == {
         "x": [{"type": "int", "spans": [[34, 34]]}, {"type": "String", "spans": [[38, 38]]}]
     }

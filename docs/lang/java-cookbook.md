@@ -79,16 +79,24 @@ names in BalanceBug.assign (demo/BalanceBug.java:19-32): workers (java.util.List
 ...
 ```
 
-- The lines come from the class file's LocalVariableTable. They are the lines of the code in the
-  local's scope, where a stop sees it.
-- So they start after the line that declares it. `best` is declared on line 21, and a stop there
-  doesn't see it yet.
-- A local declared for the rest of the method, such as `order`, gets no lines. So does one whose
-  scope runs to the method's end, such as an endless loop's counter.
-- Two blocks that declare one name give it the lines of both. In a vote count that declares
-  `ranking` in two loops: `ranking (int[], lines 51-53, 78-79)`.
-- Blocks that declare one name with different types list it once per type, each with its lines:
-  `x (int, line 34), x (String, line 38)`.
+- The lines come from the class file's LocalVariableTable. A line is listed where its breakpoint
+  sees the local: java-debug stops at the line's first instruction, and that is in the local's
+  scope.
+- So the line that declares a local isn't listed: its first instruction runs before the local
+  exists. `best` is declared on line 21, and a stop there doesn't see it yet.
+- Nor is a `for` header, whose first instruction starts the loop. `for (int b = 0; …)` on line 49
+  gives `b (int, lines 50-53, …)`. A step can still stop part-way through the header, where `b`
+  is visible.
+- A block on one line, such as `{ int x = n + 1; use(x); }`, gives no line:
+  `x (int, no breakpoint line)`. So does a one-line `for`.
+- A name declared once, for the rest of the method, gets no lines, such as `order`. So does one
+  whose scope runs to the method's end, such as an endless loop's counter.
+- A name declared more than once gets every declaration's lines, one that runs to the method's
+  end too. In a vote count that declares `ranking` in two loops:
+  `ranking (int[], lines 51-53, 78-79)`.
+- A name declared with different types is listed once per type, each with its own lines, or
+  `no breakpoint line`. An `int value` in an `if` block, then a `String value` to the method's
+  end: `value (int, line 31), value (String, line 34)`.
 
 ## 2.9 What a Function Returned
 

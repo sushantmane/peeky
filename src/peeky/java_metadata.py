@@ -434,60 +434,63 @@ _MAX_SPANS = 8
 
 
 def _block_lines(declared, method_lines, code_length, names):
-    """{"spans": {name: [[first, last], ...]}} for the locals a method declares only
-    inside blocks (#264: a `for` loop's `b`, declared again in a later loop), from the
-    LocalVariableTable: a declaration whose scope ends before the method's code does
-    (javac ends a method-level local's there). Its lines are those of the code in its
-    scope (start_pc and length), where a stop sees it, so not its declaration's line,
-    whose code runs before its scope starts. One declaration's lines are one span,
-    split where a line between two of them runs other code; overlapping spans are
-    joined, and past _MAX_SPANS one covers them all. Where the blocks declare a name
-    with different types, also {"typed_spans": {name: [{"type", "spans"}, ...]}}, each
-    type's own. ``declared``: (name, descriptor, slot, start, length) per entry."""
-    starts = sorted(method_lines)
-    running = sorted(set(method_lines.values()))
-    whole, blocks = set(), {}
+    """{"spans": {name: [[first, last], ...]}} for the locals that a method does not
+    declare once for the rest of its code (#264: a `for` loop's `b`, declared again in a
+    later loop), from the LocalVariableTable. A name whose one declaration's scope runs
+    to the end of the code (where javac ends a method-level local's) gets none; any
+    other gets each declaration's lines, one ending there included.
+
+    A declaration's lines are those whose first instruction is in its scope (start_pc
+    and length): java-debug binds a line breakpoint to a line's first instruction, so
+    those are the lines whose breakpoint sees it. Not the line that declares it, nor a
+    loop header whose first instruction initializes it (`for (int i = 0; ...)`), and no
+    line at all for a one-line block (`{ int x = 1; use(x); }`): an empty list. One
+    declaration's lines are one span, split where a line between two of them runs
+    other code; overlapping spans are joined, and past _MAX_SPANS one covers them all.
+
+    Where a name is declared with different types, also {"typed_spans": {name: [{"type",
+    "spans"}, ...]}}, every type with its own lines (maybe none), in the order the code
+    declares them. ``declared``: (name, descriptor, slot, start, length) per entry."""
+    first = {}
+    for pc, line in method_lines.items():
+        first[line] = min(pc, first.get(line, pc))
+    running = sorted(first)
+    found = {}
     for local, descriptor_of, _, start, length in declared:
         if local not in names:
             continue
-        if start + length >= code_length:
-            whole.add(local)
-            continue
-        covered = {method_lines[pc] for pc in starts if start <= pc < start + length}
-        before = [pc for pc in starts if pc <= start]
-        if before:
-            # The line its scope starts in: a step can stop part-way through it.
-            covered.add(method_lines[before[-1]])
-        if covered:
-            blocks.setdefault(local, []).append((descriptor_of, _runs(covered, running)))
+        seen = {line for line, pc in first.items() if start <= pc < start + length}
+        found.setdefault(local, []).append(
+            (start, descriptor_of, start + length >= code_length, _runs(seen, running))
+        )
     spans, typed = {}, {}
     for local in names:
-        if local in whole or local not in blocks:
+        each = sorted(found.get(local, ()))
+        if not each or (len(each) == 1 and each[0][2]):
+            # Declared once, for the rest of the method: the method's own local.
             continue
-        spans[local] = _joined(span for _, found in blocks[local] for span in found)
-        descriptors = list(dict.fromkeys(descriptor_of for descriptor_of, _ in blocks[local]))
+        spans[local] = _joined(span for _, _, _, runs in each for span in runs)
+        descriptors = list(dict.fromkeys(descriptor_of for _, descriptor_of, _, _ in each))
         if len(descriptors) > 1:
-            # In the order of their lines, as the source declares them.
-            typed[local] = sorted(
-                (
-                    {
-                        "type": descriptor_name(each),
-                        "spans": _joined(
-                            span for kind, found in blocks[local] if kind == each for span in found
-                        ),
-                    }
-                    for each in descriptors
-                ),
-                key=lambda each: each["spans"][0],
-            )
+            typed[local] = [
+                {
+                    "type": descriptor_name(kind),
+                    "spans": _joined(
+                        span for _, other, _, runs in each if other == kind for span in runs
+                    ),
+                }
+                for kind in descriptors
+            ]
     return {**({"spans": spans} if spans else {}), **({"typed_spans": typed} if typed else {})}
 
 
 def _runs(covered, running):
-    """One declaration's lines ``covered`` as spans [[first, last], ...]: split only
-    where a line between two of them runs code (``running``, sorted) that is not in its
-    scope."""
+    """One declaration's lines ``covered`` as spans [[first, last], ...] (none for no
+    line): split only where a line between two of them runs code (``running``, sorted)
+    that is not in its scope."""
     ordered = sorted(covered)
+    if not ordered:
+        return []
     found = [[ordered[0], ordered[0]]]
     for line in ordered[1:]:
         at = bisect.bisect_right(running, found[-1][1])

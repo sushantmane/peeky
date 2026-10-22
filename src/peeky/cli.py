@@ -798,7 +798,7 @@ def _describe_text(manifest):
                 shown.append(f"{name} ({count} bindings on this line: not selectable by line)")
                 continue
             if isinstance(typed.get(name), list):
-                # Blocks declaring one name with different types (#264): each its own.
+                # One name declared with different types (#264): each with its own lines.
                 shown += [
                     f"{name} ({spell(each['type'])}, {_block_span_text(each['spans'])})"
                     for each in typed[name]
@@ -928,7 +928,10 @@ def _describe_text(manifest):
 
 
 def _block_span_text(spans):
-    """`line 23`, `lines 23, 28`, `lines 51-53, 78-79`: a block local's lines."""
+    """`line 23`, `lines 23, 28`, `lines 51-53, 78-79`: a block local's lines; `no
+    breakpoint line` where none is (a Java one-line block)."""
+    if not spans:
+        return "no breakpoint line"
     listed = [f"{a}-{b}" if b > a else str(a) for a, b in spans]
     single = len(listed) == 1 and "-" not in listed[0]
     return ("line " if single else "lines ") + ", ".join(listed)

@@ -69,13 +69,13 @@ def test_java_fields_are_read_through_this_and_commands_keep_the_config(counter,
     assert scopes["Counter.add"]["lines"] == [10, 13]
     assert scopes["Counter.main"]["names"] == ["args", "counter"]
     # #264: a local declared only in a block gives the block's lines, as for C and Rust.
-    assert scopes["Counter.add"]["spans"] == {"i": [[10, 11]]}
+    assert scopes["Counter.add"]["spans"] == {"i": [[11, 11]]}
     assert "spans" not in scopes["Counter.main"]
     assert main(["describe", *common]) == 0
     # #183: with each name's declared type, as C, C++ and Rust give them; #264: its lines.
     assert (
         "names in Counter.add (demo/Counter.java:10-13): this (demo.Counter), times (int), "
-        "i (int, lines 10-11)" in capsys.readouterr().out
+        "i (int, line 11)" in capsys.readouterr().out
     )
     code = main(
         [

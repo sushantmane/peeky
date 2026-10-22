@@ -72,19 +72,26 @@ def test_describe_lists_a_java_block_locals_lines_and_each_type_its_own():
                     "scope": "Runoff.count",
                     "source": "app/Runoff.java",
                     "lines": [43, 79],
-                    "names": ["n", "b", "ranking", "x", "i"],
+                    "names": ["n", "b", "ranking", "x", "i", "y", "z"],
                     "types": {"n": "int", "b": "int", "ranking": "int[]", "x": "String or int"},
                     "spans": {
                         "b": [[49, 53], [76, 79]],
                         "ranking": [[51, 53], [78, 79]],
                         "x": [[60, 60], [70, 71]],
                         "i": [[60, 60]],
+                        "y": [],
+                        "z": [[80, 81]],
                     },
                     "typed_spans": {
                         "x": [
                             {"type": "int", "spans": [[60, 60]]},
                             {"type": "String", "spans": [[70, 71]]},
-                        ]
+                        ],
+                        # A one-line block's `long z`, and an `int z` to the method's end.
+                        "z": [
+                            {"type": "long", "spans": []},
+                            {"type": "int", "spans": [[80, 81]]},
+                        ],
                     },
                 }
             ],
@@ -97,5 +104,5 @@ def test_describe_lists_a_java_block_locals_lines_and_each_type_its_own():
     assert line == (
         "names in Runoff.count (app/Runoff.java:43-79): n (int), b (int, lines 49-53, 76-79), "
         "ranking (int[], lines 51-53, 78-79), x (int, line 60), x (String, lines 70-71), "
-        "i (line 60)"
+        "i (line 60), y (no breakpoint line), z (long, no breakpoint line), z (int, lines 80-81)"
     )
