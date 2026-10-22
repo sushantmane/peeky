@@ -1035,7 +1035,22 @@ def _slice_element(proofs, body, assigned):
         calls = every.get(int(match[1]), ())
         if not calls or not all(_SLICE_NEXT.match(call) for call in calls):
             return False
-    return bool(proofs._std_compares())
+    # A crate's own `trait Iterator` (`impl Iterator for std::slice::Iter<…>`) is dumped
+    # `<std::slice::Iter<…> as Iterator>::next` too (review of #276).
+    return bool(proofs._std_compares()) and bool(proofs._std_iterator())
+
+
+def _redirected(body, local):
+    """Whether the argument ``local`` of the MIR ``body`` may hold another value than
+    the call passed, at some stop: the body assigns to it, whole or in part, or takes
+    it by `&mut` or as a raw pointer, which can write it (review of #276: `p = &GLOBAL;`).
+    Anywhere in the body counts, before the stop or not."""
+    if body._assignments().get(local):
+        return True
+    taken = re.compile(rf"&(?:mut |raw (?:mut|const) )_{local}(?![0-9])")
+    return any(
+        taken.search(text) for block in body.blocks.values() for text, _, _ in block.statements
+    )
 
 
 def _names(names):
@@ -2713,10 +2728,12 @@ class RustSession(NativeSession):
         """What the reference or raw pointer root local ``root`` (`e`, or `e @
         main.rs:64`) of the function ``hashed`` is at ``line`` of ``path``: the MIR's
         binding in scope there (OwnedLocals._local), compared with the body's
-        arguments. "parameter"; "element", a local proven to be a standard slice
+        arguments. "parameter", an argument the body never reassigns or lends mutably
+        (``_redirected``); "element", a local proven to be a standard slice
         iterator's item (``_slice_element``); "local", one whose value comes from no
         argument; or None where Peeky can't tell (no single whole-local binding in
-        scope, a closure's capture, a copy or a pattern of a parameter)."""
+        scope, a closure's capture, a copy or a pattern of a parameter, a parameter
+        that may have been pointed elsewhere)."""
         proofs = getattr(self, "owned", None)
         body = proofs.body(hashed) if proofs is not None and hashed else None
         if body is None or type(line) is not int or not path:
@@ -2725,7 +2742,8 @@ class RustSession(NativeSession):
         if local is None:
             return None
         if local in body.arguments:
-            return "parameter"
+            # Only a parameter that still holds what the call passed.
+            return None if _redirected(body, local) else "parameter"
         assigned = body._assignments().get(local, ())
         mentioned = {int(n) for value in assigned for n in _MENTIONED.findall(value)}
         if not assigned or mentioned & body.arguments:

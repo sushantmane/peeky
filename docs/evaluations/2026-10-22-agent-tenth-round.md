@@ -114,7 +114,7 @@ or explained by the PR that adds this report.
 | L11 | Python's field refusal hint mentioned `[settable]` rows, which Python never shows. It printed `peeky: [MUTATION_REJECTED]` on stderr, where other languages print `error [MUTATION_REJECTED]:`. | prep | Done: the hint says to set a local, or add one with a candidate edit. The probe's refusal prints as the other languages' do. |
 | L12 | C pointer refusals don't end with `settable here:`, as AGENT_GUIDE promised. | prep | AGENT_GUIDE narrowed: Rust's refusals before the run end with it. Java's don't either. A C refusal through a pointer names the frame where the field is settable instead. |
 | L13 | Rust `describe` listed the `?` operator's `residual` and `val` bindings. | prep | Done: the DWARF doesn't mark them as the compiler's, but in the MIR each one's span ends right after the `?`. `residual` spans only the `?`, and `val` the expression it tries, through the `?`. A binding you write spans its name, so your own `val` stays listed. |
-| L14 | Rust `--set e.payer=0` advised changing it "before the call that passed it". `e` is a `for` item, which no call passed. | prep | Done: only a pointer proven to be a parameter at the stop gets the call advice, in Rust, C or C++. A local, one shadowing a parameter too, says no call passed it. A Rust slice's or Vec's loop item says to edit the source. Anything else, such as a static, names no call. |
+| L14 | Rust `--set e.payer=0` advised changing it "before the call that passed it". `e` is a `for` item, which no call passed. | prep | Done: only a pointer proven to be a parameter at the stop, still holding what the call passed, gets the call advice, in Rust, C or C++. A local, one shadowing a parameter too, says no call passed it. A Rust slice's or Vec's loop item says to edit the source. Anything else, such as a static or a parameter pointed elsewhere, names no call. |
 | L15 | `--json`'s `output` has `\r\n`. | prep | Documented: a C, C++ or Rust program writes through a terminal that LLDB opens, which adds the `\r`. The evidence store keeps it too. Peeky can't tell that `\r` from one the program wrote. |
 | L16 | The C cookbook's "Change a field behind a pointer" ran about 130 lines. | debounce | Done: it starts with the refusal and what to do, and keeps every condition, in 109 lines. |
 
@@ -163,6 +163,11 @@ Each fix PR had review rounds. They found these problems, none of which an agent
     passed it".
   - Now the call advice needs a parameter proven at the stop. Rust reads the binding in scope
     from the MIR, and C and C++ the declaration that applies at the stop.
+  - The second round found a parameter pointed elsewhere first (`p = &global;`) still called a
+    parameter. Now the function must never assign it, step it or take its address.
+  - It also found that a crate's own `trait Iterator`, implemented for the standard slice
+    iterator, made any reference look like a slice's element. That needs the standard trait
+    now.
 
 ## What worked
 

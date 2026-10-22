@@ -1313,16 +1313,19 @@ These don't reach the stop you need:
 - `session step --out` returns part-way through the line, where changes are refused.
 
 The refusal gives this call advice only where the build's MIR proves the reference is the
-function's parameter at the stop. Otherwise it names no call:
+function's parameter at the stop, still holding what the call passed. Otherwise it names no call:
 
-- A local came from no call: `let r = &mut x;`, or a `let p` that shadows a parameter `p`. If
-  what it points at is also a root local in some frame, change it there, where its row is
-  `[settable]`. Otherwise edit the source with `--old`/`--new`.
+- A local binding was not passed into this function as a parameter: `let r = &mut x;`, or a
+  `let p` that shadows a parameter `p`. If what it points at is also a root local in some
+  frame, change it there, where its row is `[settable]`. Otherwise edit the source with
+  `--old`/`--new`.
 - A `for` loop's item over a slice or `Vec`, such as `e` in `for e in expenses`, points at an
   element. Peeky never changes a slice's or `Vec`'s elements, so the refusal says to edit the
-  source.
+  source. The crate must not declare its own `Iterator` trait, or its own `std`.
 - Where the MIR doesn't prove either, the refusal says the reference isn't proven a parameter.
   Examples are a closure's capture, and a local that reborrows a parameter (`let q = &*p;`).
+  So is a parameter that the function may point elsewhere: `p = &GLOBAL;`, or `&mut p` taken
+  anywhere in it.
 
 ### Set a String to a text
 

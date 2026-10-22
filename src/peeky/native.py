@@ -5301,7 +5301,7 @@ class NativeSession:
             # scope too): a parameter's, or an automatic's, there.
             parameters = (function.get("parameters") or {}).get(base) or ()
             if any((Path(str(at)).name, number) == shown[1:] for at, number in parameters):
-                return "parameter"
+                return None if self._redirected(function, base) else "parameter"
             where = (shown[1], shown[2], True)
         if not where:
             return None
@@ -5311,7 +5311,8 @@ class NativeSession:
             if base in (function.get("parameters") or {}) or any(
                 storage == "parameter" for _, storage, _ in types
             ):
-                return "parameter"
+                # Only a parameter that still holds what the call passed.
+                return None if self._redirected(function, base) else "parameter"
             return None
         if len(where) < 3 or not where[2]:
             return None
@@ -5320,6 +5321,51 @@ class NativeSession:
         if declared and all(storage == "automatic" for _, storage, _ in declared):
             return "local"
         return None
+
+    def _redirected(self, function, name):
+        """Whether the pointer parameter ``name`` of the C or C++ function ``function``
+        (a declarations entry) may hold another value than its call passed, at some stop
+        in it (review of #276: `p = &global; p->x++;`). Read from its body as each
+        translation unit holding it preprocesses it (``_uses``): an assignment (`p = …`,
+        `p += …`), a step (`++`, `--`) or its address (`&p`), and inline assembly or an
+        address builtin, which may write it unseen. In C++ also any mention but through
+        it (`p->x`, `p[i]`, `*p`): a reference to it (`S *&r = p;`, a `S *&` parameter)
+        can write it. True where Peeky can't read the body, or the function declares
+        another local of that name."""
+        source = function.get("source")
+        if not source:
+            return True
+        cplusplus = getattr(self.target, "language", None) != "c"
+        defined = False
+        for unit in self._units(source):
+            read = self._preprocessed(unit)
+            if isinstance(read, str):
+                return True
+            uses = self._uses({"unit": read, "caller": function, "argument_span": (0, 0)}, name)
+            if uses is None:
+                # Not defined in this unit, or not readable: it is judged by the others.
+                continue
+            defined = True
+            if any(use in ("changes", "assembly") or use.startswith("builtin:") for use in uses):
+                return True
+            if cplusplus and self._bare_mention(read, function, name):
+                return True
+        return not defined
+
+    def _bare_mention(self, unit, function, name):
+        """Whether the C++ function ``function``'s body in ``unit`` names ``name`` other
+        than through it (`name->x`, `name[i]`, `*name`), or can't be read."""
+        defined = self._definition(unit, function)
+        if defined is None:
+            return True
+        inner = defined[1]
+        for found in re.finditer(rf"(?<![\w$]){re.escape(name)}(?![\w$])", inner):
+            before, after = inner[: found.start()].rstrip(), inner[found.end() :]
+            if before.endswith((".", "->", "::")):
+                continue  # a member's name, or a qualified one
+            if not (re.match(r"\s*(?:->|\[)", after) or before.endswith("*")):
+                return True
+        return False
 
     def _caller_advice(self, function, root, steps, where=None):
         """Where to change what the pointer root local ``root`` of ``function`` (a

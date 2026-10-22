@@ -1,8 +1,8 @@
 """The tenth agent evaluation's C finding (prep 9, seen in Rust): a refused field change
 through a pointer that is a local, not a parameter, said to change it "before the call
 that passed it", though no call passed it. Review of #276: only a pointer proven a
-parameter at the stop gets call advice; a local shadowing a parameter, or a static, gets
-none."""
+parameter at the stop gets call advice: not a local shadowing a parameter, a static, or
+a parameter that the function points elsewhere (round 2)."""
 
 import json
 import os
@@ -37,6 +37,13 @@ static int shadow(struct acc *a) { /* SIGNATURE */
     return a->count + own.count + kept->count;
 }
 
+static int redirect(struct acc *a) {
+    int first = a->count;
+    a = &global;
+    a->count += first; /* REDIRECTED */
+    return a->count;
+}
+
 int main(int argc, char **argv) {
     struct acc box = {0, 0};
     struct acc *p = &box;
@@ -45,6 +52,7 @@ int main(int argc, char **argv) {
     }
     printf("%d %d\\n", add(&box, argc), box.count); /* CALL */
     printf("%d\\n", shadow(&box)); /* SHADOW_CALL */
+    printf("%d\\n", redirect(&box)); /* REDIRECT_CALL */
     return 0;
 }
 """
@@ -110,13 +118,24 @@ def test_a_local_shadowing_a_parameter_is_not_taken_for_it(program, capsys):
     message = error["message"]
     assert f"`a` is a local here, not a parameter, so no call passed it: {NO_CALL}" in message
     assert "one caller" not in message and "before the call" not in message, message
-    # The parameter above the inner block, and named by its declaration inside it: the
-    # call advice. Not the caller's line: the function declares another `a`, which the
-    # chain's reading of the source would not tell apart.
+    # The parameter above the inner block, and named by its declaration inside it: no
+    # call either. Peeky reads the body by name, and `struct acc *a = &own;` reads as
+    # pointing `a` elsewhere: it can't prove the parameter still holds what was passed.
     for marker, root in (("PARAM_USE", "a"), ("SHADOWED", f"a @ acc.c:{line_of('SIGNATURE')}")):
         message = refusal(program, capsys, marker, f"{root}.count=5")["message"]
-        assert "before the call that passed it" in message, (marker, message)
-        assert "not a parameter" not in message and "proven" not in message, message
+        assert f"`{root}` isn't proven a parameter here, so Peeky names no call" in message
+        assert "before the call" not in message, (marker, message)
+
+
+@pytest.mark.timeout(120)
+def test_a_parameter_pointed_elsewhere_gets_no_call_claim(program, capsys):
+    # Review round 2 of #276: `a = &global;` before the stop, and `a` was still called a
+    # parameter, with the caller's line.
+    error = refusal(program, capsys, "REDIRECTED", "a.count=5")
+    message = error["message"]
+    assert f"`a` isn't proven a parameter here, so Peeky names no call: {NO_CALL}" in message
+    assert "one caller" not in message and "before the call" not in message, message
+    assert "call" not in error["hint"], error
 
 
 @pytest.mark.timeout(120)
@@ -132,7 +151,8 @@ def test_a_static_pointer_gets_no_call_claim(program, capsys):
     ("marker", "named", "said"),
     [
         ("SHADOWED", "INNER", "is a local here, not a parameter, so no call passed it"),
-        ("SHADOWED", "SIGNATURE", "before the call that passed it"),
+        ("SHADOWED", "SIGNATURE", "isn't proven a parameter here, so Peeky names no call"),
+        ("REDIRECTED", None, "`a` isn't proven a parameter here, so Peeky names no call"),
         ("LOCAL", None, "`p` is a local here, not a parameter, so no call passed it"),
     ],
 )
@@ -142,7 +162,7 @@ def test_a_sessions_set_through_a_pointer_says_what_the_binding_is(
     at = str(line_of(marker))
     assert main(["session", "start", str(program), "--at", at, "--arg", "x"]) == 0
     capsys.readouterr()
-    root = f"a @ acc.c:{line_of(named)}" if named else "p"
+    root = f"a @ acc.c:{line_of(named)}" if named else "p" if marker == "LOCAL" else "a"
     try:
         assert main(["session", "set", f"{root}.count=5", "--json"]) == 2
         error = json.loads(capsys.readouterr().out)["error"]

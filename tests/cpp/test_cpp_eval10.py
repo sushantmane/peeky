@@ -1,6 +1,7 @@
 """Review of #276 (tenth evaluation, prep 9): a refused change through a C++ pointer gets
 the call advice only where the pointer is proven a parameter at the stop. A local that
-shadows a parameter, and a static, get advice that claims no call."""
+shadows a parameter, a static, and a parameter the function points elsewhere (round 2)
+get advice that claims no call."""
 
 import json
 import os
@@ -16,6 +17,29 @@ SOURCE = """struct Acc {
 
 static Acc global_acc;
 
+static int bump(Acc *a) {
+    a->count += 1; // PARAM
+    return a->count;
+}
+
+static int redirect(Acc *a) {
+    int first = a->count;
+    a = &global_acc;
+    a->count += first; // REDIRECTED
+    return a->count;
+}
+
+static void aim(Acc *&slot) {
+    slot = &global_acc;
+}
+
+static int aimed(Acc *a) {
+    int first = a->count;
+    aim(a);
+    a->count += first; // AIMED
+    return a->count;
+}
+
 static int shadow(Acc *a) { // SIGNATURE
     a->count += 1; // PARAM_USE
     Acc own{0, 0};
@@ -30,7 +54,7 @@ static int shadow(Acc *a) { // SIGNATURE
 
 int main() {
     Acc box{0, 0};
-    return shadow(&box) > 0 ? 0 : 1;
+    return shadow(&box) + bump(&box) + redirect(&box) + aimed(&box) > 0 ? 0 : 1;
 }
 """
 NO_CALL = "if what it points at is also a root local in some frame, change it there"
@@ -66,10 +90,20 @@ def test_only_a_proven_parameter_gets_the_call_advice(program, capsys):
     out = refusal(program, capsys, "STATIC", "kept.count=5")
     assert f"`kept` isn't proven a parameter here, so Peeky names no call: {NO_CALL}" in out, out
     assert "before the call" not in out, out
-    for marker, root in (("PARAM_USE", "a"), ("SHADOWED", f"a @ acc.cpp:{line_of('SIGNATURE')}")):
+    # A parameter whose function reads only through it: the call advice.
+    out = refusal(program, capsys, "PARAM", "a.count=5")
+    assert "before the call that passed it" in out and "proven" not in out, out
+    # The shadowed parameter (`Acc *a = &own;` reads as pointing `a` elsewhere), and
+    # parameters pointed elsewhere, by assignment or through a `Acc *&` (round 2).
+    for marker, root in (
+        ("PARAM_USE", "a"),
+        ("SHADOWED", f"a @ acc.cpp:{line_of('SIGNATURE')}"),
+        ("REDIRECTED", "a"),
+        ("AIMED", "a"),
+    ):
         out = refusal(program, capsys, marker, f"{root}.count=5")
-        assert "before the call that passed it" in out, (marker, out)
-        assert "not a parameter" not in out, (marker, out)
+        assert f"`{root}` isn't proven a parameter here, so Peeky names no call" in out, out
+        assert "before the call" not in out, (marker, out)
 
 
 @pytest.mark.timeout(180)
@@ -77,7 +111,7 @@ def test_only_a_proven_parameter_gets_the_call_advice(program, capsys):
     ("named", "said"),
     [
         ("INNER", "is a local here, not a parameter, so no call passed it"),
-        ("SIGNATURE", "before the call that passed it"),
+        ("SIGNATURE", "isn't proven a parameter here, so Peeky names no call"),
     ],
 )
 def test_a_sessions_set_says_what_the_shadowing_binding_is(program, capsys, named, said):
@@ -88,8 +122,7 @@ def test_a_sessions_set_says_what_the_shadowing_binding_is(program, capsys, name
         assert main(["session", "set", f"{root}.count=5", "--json"]) == 2
         error = json.loads(capsys.readouterr().out)["error"]
         assert error["code"] == "MUTATION_REJECTED" and said in error["message"], error
-        if named == "INNER":
-            assert "before the call" not in error["message"], error
+        assert "before the call" not in error["message"], error
     finally:
         main(["session", "close"])
         capsys.readouterr()

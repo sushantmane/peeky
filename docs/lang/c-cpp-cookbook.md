@@ -1078,12 +1078,17 @@ before that call. Repeat it for more stops. Other refusals say:
 - `` `p` is a local here, not a parameter, so no call passed it ``, for an automatic local, one
   that shadows a parameter too: if what it points at is also a root local in some frame, change
   it there. Otherwise edit the source.
-- `` `kept` isn't proven a parameter here, so Peeky names no call ``, for a static, or where Peeky
-  can't single out the declaration that applies at the stop: the same advice.
+- `` `kept` isn't proven a parameter here, so Peeky names no call ``: the same advice. This is
+  for a static, or where Peeky can't single out the declaration that applies at the stop. It is
+  also for a parameter that the function may point elsewhere, or that shares its name with
+  another local of the function. Peeky reads the function's body as the compiler preprocesses
+  it. `p = …`, `p += …`, `++` or `--` on `p`, `&p`, inline assembly or an address builtin
+  anywhere in it count. In C++, so does any mention of `p` but `p->…`, `p[…]` or `*p`, since a
+  reference can change it (`aim(p)` with `void aim(Acc *&)`).
 - `change the value where it is owned, before the call that passed it`, for a pointer proven to
-  be the function's parameter at the stop. C++ says this for every parameter, because overloads
-  and member calls make a call's target unclear from the text. So does C for a parameter that
-  shares its name with another local of the function. Use
+  be the function's parameter at the stop, still holding what the call passed. C++ says this
+  for every such parameter, because overloads and member calls make a call's target unclear
+  from the text. Use
   `--set-at <call line>@N`, a probe `--at` the call's line with `--hits N --set-hit N`, or
   `session start --at` that line with `--hit N`.
 

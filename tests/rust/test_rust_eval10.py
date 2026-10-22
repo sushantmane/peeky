@@ -62,6 +62,21 @@ fn shadow(p: &mut Pair) -> i64 { // SIGNATURE
     p.x + p.y
 }
 
+static GLOBAL: Pair = Pair { x: 7, y: 8 };
+
+fn redirect(mut p: &Pair) -> i64 {
+    let first = p.x;
+    p = &GLOBAL;
+    first + p.y // REDIRECTED
+}
+
+fn aimed(mut p: &Pair) -> i64 {
+    let first = p.x;
+    let slot = &mut p;
+    *slot = &GLOBAL;
+    first + p.y // AIMED
+}
+
 fn settle(expenses: &[Expense]) -> i64 {
     let mut total = 0;
     for e in expenses {
@@ -78,7 +93,7 @@ fn main() {
     ];
     let paid = settle(&expenses);
     let mut pair = Pair { x: 3, y: 4 };
-    let shadowed = shadow(&mut pair);
+    let shadowed = shadow(&mut pair) + redirect(&pair) + aimed(&pair);
     println!("{} {} {} {}", paid, expenses[0].payer == expenses[1].payer, shadowed, pair.y);
 }
 """
@@ -171,6 +186,73 @@ def test_a_local_shadowing_a_parameter_is_not_taken_for_it(crate, capsys):
         f"`q` isn't proven a parameter here, so Peeky names no call: {NO_CALL}" in error["message"]
     ), error
     assert "before the call" not in error["message"], error
+
+
+@pytest.mark.timeout(400)
+@pytest.mark.parametrize("marker", ["REDIRECTED", "AIMED"])
+def test_a_parameter_pointed_elsewhere_gets_no_call_claim(crate, capsys, marker):
+    # Review round 2 of #276: `p = &GLOBAL;` (or a write through `&mut p`) before the
+    # stop, and `p` was still called a parameter.
+    error = _refused(capsys, crate, marker, "p.y=0")
+    message = error["message"]
+    assert f"`p` isn't proven a parameter here, so Peeky names no call: {NO_CALL}" in message
+    assert "before the call" not in message and "call" not in error["hint"], error
+
+
+# Review round 2 of #276: a crate's own `trait Iterator`, implemented for the standard
+# slice iterator, is dumped `<std::slice::Iter<'_, Pair> as Iterator>::next` too, and
+# its `next` may return any reference.
+OWN_ITERATOR = """struct Pair {
+    x: i64,
+    y: i64,
+}
+
+static GLOBAL: Pair = Pair { x: 7, y: 8 };
+
+trait Iterator {
+    type Item;
+    fn next(&mut self) -> Option<Self::Item>;
+}
+
+impl<'a> Iterator for std::slice::Iter<'a, Pair> {
+    type Item = &'a Pair;
+    fn next(&mut self) -> Option<&'a Pair> {
+        Some(&GLOBAL)
+    }
+}
+
+fn fake(items: &[Pair]) -> i64 {
+    let mut total = 0;
+    let mut it = items.iter();
+    while let Some(e) = Iterator::next(&mut it) {
+        total += e.x; // FAKE
+        if total > 20 {
+            break;
+        }
+    }
+    total
+}
+
+fn main() {
+    let items = [Pair { x: 1, y: 2 }];
+    println!("{} {}", fake(&items), items[0].y);
+}
+"""
+
+
+@pytest.mark.timeout(400)
+def test_an_item_of_a_crates_own_iterator_trait_is_no_slice_element(crate, capsys):
+    (crate / "src/main.rs").write_text(OWN_ITERATOR)
+    line = next(i for i, text in enumerate(OWN_ITERATOR.splitlines(), 1) if "// FAKE" in text)
+    code = main(
+        ["probe", str(crate), "--at", f"src/main.rs:{line}", "--capture", "e"]
+        + ["--set", "e.x=0", "--json"]
+    )
+    result = json.loads(capsys.readouterr().out)
+    assert code == 2 and result.get("refused_before_launch") is True, result
+    message = result["error"]["message"]
+    assert f"`e` is a local here, not a parameter, so no call passed it: {NO_CALL}" in message
+    assert "slice or Vec" not in message, message
 
 
 @pytest.mark.timeout(400)
