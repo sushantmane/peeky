@@ -398,6 +398,9 @@ read `[maybe settable: other threads are running; set checks again]`:
 - So Peeky reads what holds the array again at each listing, and keeps no verdict.
 - A change suspends every thread of the JVM while it checks and writes the element. Then the
   threads run on, as before.
+- If the adapter can't resume them, it disconnects from the JVM, which lets the threads run, and
+  ends. The change fails, and the session closes with that reason (`DEBUGGER_ERROR`). An attached
+  JVM runs on, and a launched one is ended.
 
 An element is marked `[settable]` only at a stop where every thread is suspended, and no JDK class
 holds its array. With a bundle built before this check, elements read `[maybe settable: …]`, which

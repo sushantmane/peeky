@@ -665,7 +665,14 @@ class JavaSession:
         r'Exception in thread "Event Hub"': (
             "java-debug's event thread died ({excerpt}); it reports no more stops, steps or "
             "exits, so the session cannot continue: close it and retry"
-        )
+        ),
+        # The launcher suspends every thread across a change to an element (#261). One it
+        # cannot resume ends it: the debugger's connection closes, which lets the JVM run.
+        r"Peeky experimental Java adapter: could not resume the JVM": (
+            "The session is closed: the Java adapter could not resume the JVM's threads after "
+            "a change ({excerpt}). It disconnected, so an attached JVM runs on, and a launched "
+            "one is ended. Start a new session"
+        ),
     }
 
     def __init__(self, target, prepared, java, bundle, command, bundle_hash, mapping, mapping_path):

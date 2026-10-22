@@ -78,6 +78,8 @@ public final class PeekyJavaAdapter extends ProtocolServer {
     private final SourceMap sources;
     /** The container each pending `variables` request lists, by request seq (#204). */
     private final Map<Integer, Integer> listings = new ConcurrentHashMap<>();
+    /** The JVM a pending change suspended, by request seq (#261): resumed before its reply. */
+    private final Map<Integer, com.sun.jdi.VirtualMachine> paused = new ConcurrentHashMap<>();
 
     private PeekyJavaAdapter(ProviderContext context, SourceMap sources) {
         super(System.in, System.out, context);
@@ -85,8 +87,6 @@ public final class PeekyJavaAdapter extends ProtocolServer {
     }
 
     @Override protected void dispatchRequest(Messages.Request request) {
-        // The JVM, while a change to an array element is checked and made (#261).
-        com.sun.jdi.VirtualMachine paused=null;
         try {
             if (!COMMANDS.contains(request.command)) throw new IllegalArgumentException("unsupported command");
             JsonObject args = request.arguments;
@@ -155,9 +155,10 @@ public final class PeekyJavaAdapter extends ProtocolServer {
                 }
                 // A line breakpoint stops only its own thread: another could make a JDK
                 // class hold the array between the check and the write. Every thread stays
-                // suspended until the write is made (released below, after java-debug's
-                // reply, which super.dispatchRequest waits for).
-                paused=suspendForArray(args.get("variablesReference").getAsInt());
+                // suspended until the write is made: until its reply (sendResponse), which
+                // super.dispatchRequest waits for.
+                com.sun.jdi.VirtualMachine vm=suspendForArray(args.get("variablesReference").getAsInt());
+                if (vm!=null) paused.put(request.seq, vm);
                 checkFieldTarget(args.get("variablesReference").getAsInt(), args.get("name").getAsString());
                 if (text) checkDeclaredTarget(args.get("variablesReference").getAsInt(), args.get("name").getAsString(), "java.lang.String", "text changes only a String");
                 if (character) checkDeclaredTarget(args.get("variablesReference").getAsInt(), args.get("name").getAsString(), "char", "a quoted char changes only a char");
@@ -178,13 +179,48 @@ public final class PeekyJavaAdapter extends ProtocolServer {
             sendResponse(new Messages.Response(request.seq, request.command, false,
                 "Peeky experimental Java adapter: " + error.getMessage()));
         } finally {
-            if (paused!=null) {
-                try {
-                    paused.resume();
-                } catch (RuntimeException gone) {
-                    // VMDisconnectedException: nothing is left to resume.
-                }
+            // Never left suspended, should no reply have been sent.
+            com.sun.jdi.VirtualMachine left=paused.remove(request.seq);
+            if (left!=null) resumeOrEnd(left);
+        }
+    }
+
+    /**
+     * Resume a JVM a change suspended (#261), or end the launcher where that fails: a JVM
+     * whose every thread stays suspended must never outlive the session silently. Ending
+     * closes the debugger's connection, which resumes them in an attached JVM too, and
+     * Peeky's worker closes the session with the reason the launcher gave on stderr.
+     */
+    private static void resumeOrEnd(com.sun.jdi.VirtualMachine vm) {
+        if (!resume(vm, System.err)) Runtime.getRuntime().halt(3);
+    }
+
+    /**
+     * Resume ``vm``: true where it runs again, or is gone (VMDisconnectedException: nothing
+     * is left to resume). Any other failure would leave every thread suspended: disconnect
+     * from it (JDWP's Dispose resumes every thread the debugger suspended), say so on
+     * ``err`` in a line that ends Peeky's session (JavaSession.fatal_stderr), and return
+     * false.
+     */
+    static boolean resume(com.sun.jdi.VirtualMachine vm, java.io.PrintStream err) {
+        try {
+            vm.resume();
+            return true;
+        } catch (com.sun.jdi.VMDisconnectedException gone) {
+            return true;
+        } catch (RuntimeException error) {
+            String after;
+            try {
+                vm.dispose();
+                after="disconnected from it, which resumes every thread the debugger suspended";
+            } catch (RuntimeException also) {
+                after="disconnecting failed too (" + also + "); ending the launcher closes the connection";
             }
+            err.println("Peeky experimental Java adapter: could not resume the JVM after a change ("
+                + error + "); " + after);
+            error.printStackTrace(err);
+            err.flush();
+            return false;
         }
     }
 
@@ -482,6 +518,9 @@ public final class PeekyJavaAdapter extends ProtocolServer {
     }
 
     @Override public void sendResponse(Messages.Response response) {
+        // A change's JVM runs again before its reply goes out, or no reply does (#261).
+        com.sun.jdi.VirtualMachine suspended=paused.remove(response.request_seq);
+        if (suspended!=null) resumeOrEnd(suspended);
         if ("variables".equals(response.command)) {
             Integer reference=listings.remove(response.request_seq);
             if (response.success && reference!=null && response.body!=null)

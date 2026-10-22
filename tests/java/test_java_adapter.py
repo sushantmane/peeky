@@ -281,3 +281,99 @@ def test_a_dropped_exit_event_is_inferred_only_when_the_jvm_is_gone():
     for alive_or_unknown in (os.getpid(), None):
         with pytest.raises(TimeoutError):
             wait_for_exit(Silent(alive_or_unknown), timeout=0)
+
+
+RESUME_HARNESS = """
+import com.sun.jdi.InternalException;
+import com.sun.jdi.VMDisconnectedException;
+import com.sun.jdi.VirtualMachine;
+import java.io.ByteArrayOutputStream;
+import java.io.PrintStream;
+import java.lang.reflect.Proxy;
+
+/** Calls the launcher's resume with a VirtualMachine that fails as ``args[0]`` says. */
+public class ResumeHarness {
+    public static void main(String[] args) {
+        String mode = args[0];
+        StringBuilder calls = new StringBuilder();
+        VirtualMachine vm = (VirtualMachine) Proxy.newProxyInstance(
+            VirtualMachine.class.getClassLoader(), new Class<?>[] {VirtualMachine.class},
+            (proxy, method, arguments) -> {
+                calls.append(method.getName()).append(' ');
+                if (method.getName().equals("resume")) {
+                    if (mode.equals("gone")) throw new VMDisconnectedException();
+                    if (!mode.equals("runs")) throw new InternalException("Unexpected JDWP Error: 113", 113);
+                }
+                if (method.getName().equals("dispose") && mode.equals("stuck"))
+                    throw new InternalException("Unexpected JDWP Error: 112", 112);
+                return null;
+            });
+        ByteArrayOutputStream err = new ByteArrayOutputStream();
+        boolean resumed = PeekyJavaAdapter.resume(vm, new PrintStream(err, true));
+        System.out.println(resumed + " " + calls.toString().trim());
+        System.out.print(err);
+    }
+}
+"""
+
+
+@pytest.mark.parametrize(
+    "mode, resumed, calls",
+    [
+        ("runs", True, "resume"),
+        # A JVM gone already has nothing left to resume.
+        ("gone", True, "resume"),
+        # Any other failure: disconnect (which resumes every thread), and say so.
+        ("broken", False, "resume dispose"),
+        ("stuck", False, "resume dispose"),
+    ],
+)
+def test_a_jvm_the_launcher_cannot_resume_is_disconnected_and_ends_the_session(
+    bundle, tmp_path, mode, resumed, calls
+):
+    # #261 review round 2: the launcher took any failure to resume the JVM after a change
+    # for a disconnect, and could leave an attached JVM with every thread suspended.
+    import re
+
+    from peeky.java import JavaSession
+
+    root = Path(os.environ["PEEKY_JAVA_ADAPTER"])
+    if (
+        b"could not resume the JVM"
+        not in (root / "classes" / "PeekyJavaAdapter.class").read_bytes()
+    ):
+        pytest.skip("a launcher from before #261 suspends no thread for a change")
+    (tmp_path / "ResumeHarness.java").write_text(RESUME_HARNESS)
+    path = os.pathsep.join([str(root / "classes"), str(root / "lib" / "*"), str(tmp_path)])
+    subprocess.run(
+        ["javac", "-cp", path, "-d", str(tmp_path), str(tmp_path / "ResumeHarness.java")],
+        check=True,
+        timeout=120,
+    )
+    shown = subprocess.run(
+        ["java", "-cp", path, "ResumeHarness", mode],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=60,
+    ).stdout
+    first, _, stderr = shown.partition("\n")
+    assert first == f"{str(resumed).lower()} {calls}", shown
+    if resumed:
+        assert stderr == "", stderr
+        return
+    # The line Peeky's worker ends the session on, with the failure's own trace.
+    [(pattern, _)] = [(p, m) for p, m in JavaSession.fatal_stderr.items() if "resume" in p]
+    assert re.search(pattern, stderr), stderr
+    assert stderr.startswith(
+        "Peeky experimental Java adapter: could not resume the JVM after a change "
+        "(com.sun.jdi.InternalException: Unexpected JDWP Error: 113); "
+    ), stderr
+    after = (
+        "disconnected from it, which resumes every thread the debugger suspended"
+        if mode == "broken"
+        else "disconnecting failed too (com.sun.jdi.InternalException: Unexpected JDWP Error: "
+        "112); ending the launcher closes the connection"
+    )
+    assert stderr.splitlines()[0].endswith(after), stderr
+    assert "\tat PeekyJavaAdapter.resume(PeekyJavaAdapter.java:" in stderr, stderr
