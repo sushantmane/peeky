@@ -1324,8 +1324,8 @@ function's parameter at the stop, still holding what the call passed. Otherwise 
   source. The crate must not declare its own `Iterator` trait, or its own `std`.
 - Where the MIR doesn't prove either, the refusal says the reference isn't proven a parameter.
   Examples are a closure's capture, and a local that reborrows a parameter (`let q = &*p;`).
-  So is a parameter that the function may point elsewhere: `p = &GLOBAL;`, or `&mut p` taken
-  anywhere in it.
+  So is a parameter that the function may point elsewhere: `p = &GLOBAL;`, `&mut p` taken
+  anywhere in it, or any `asm!` in it, which may write its operands.
 
 ### Set a String to a text
 

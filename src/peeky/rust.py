@@ -1044,12 +1044,16 @@ def _redirected(body, local):
     """Whether the argument ``local`` of the MIR ``body`` may hold another value than
     the call passed, at some stop: the body assigns to it, whole or in part, or takes
     it by `&mut` or as a raw pointer, which can write it (review of #276: `p = &GLOBAL;`).
-    Anywhere in the body counts, before the stop or not."""
-    if body._assignments().get(local):
+    Also any `asm!` in the body, which may write any operand (`inout(reg) copy _1 =>
+    _1`, round 3), as for C and C++; and a body Peeky doesn't fully read
+    (``supported``). Anywhere in the body counts, before the stop or not."""
+    if not body.supported or body._assignments().get(local):
         return True
     taken = re.compile(rf"&(?:mut |raw (?:mut|const) )_{local}(?![0-9])")
     return any(
-        taken.search(text) for block in body.blocks.values() for text, _, _ in block.statements
+        text.startswith("asm!") or taken.search(text)
+        for block in body.blocks.values()
+        for text, _, _ in block.statements
     )
 
 

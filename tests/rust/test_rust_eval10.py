@@ -4,6 +4,7 @@ it "before the call that passed it", though no call passed it (prep 9)."""
 
 import json
 import os
+import platform
 
 import pytest
 
@@ -253,6 +254,55 @@ def test_an_item_of_a_crates_own_iterator_trait_is_no_slice_element(crate, capsy
     message = result["error"]["message"]
     assert f"`e` is a local here, not a parameter, so no call passed it: {NO_CALL}" in message
     assert "slice or Vec" not in message, message
+
+
+# Review round 3 of #276: `asm!` with `inout(reg) p` writes the parameter, and the MIR
+# shows it only as an operand (`inout(reg) copy _1 => _1`): no assignment, no `&mut`.
+# `mov {0}, {0}` is the same text on x86-64 and AArch64.
+ASM = """use std::arch::asm;
+
+struct Pair {
+    x: i64,
+    y: i64,
+}
+
+fn hidden(mut p: *const Pair) -> i64 {
+    unsafe {
+        asm!("mov {0}, {0}", inout(reg) p);
+        (*p).x + (*p).y // ASM_USE
+    }
+}
+
+fn plain(p: *const Pair) -> i64 {
+    unsafe { (*p).x + (*p).y } // RAW_USE
+}
+
+fn main() {
+    let pair = Pair { x: 1, y: 2 };
+    println!("{} {}", hidden(&pair), plain(&pair));
+}
+"""
+
+
+@pytest.mark.timeout(400)
+def test_inline_assembly_leaves_a_pointer_parameter_unproven(crate, capsys):
+    if platform.machine().lower() not in ("x86_64", "amd64", "arm64", "aarch64"):
+        pytest.skip("the test's `mov {0}, {0}` is x86-64 or AArch64 assembly")
+    (crate / "src/main.rs").write_text(ASM)
+
+    def refused(marker):
+        line = next(i for i, text in enumerate(ASM.splitlines(), 1) if f"// {marker}" in text)
+        at = f"src/main.rs:{line}"
+        code = main(["probe", str(crate), "--at", at, "--capture", "p", "--set", "p.x=0", "--json"])
+        result = json.loads(capsys.readouterr().out)
+        assert code == 2 and result.get("refused_before_launch") is True, result
+        return result["error"]["message"]
+
+    message = refused("ASM_USE")
+    assert f"`p` isn't proven a parameter here, so Peeky names no call: {NO_CALL}" in message
+    assert "before the call" not in message, message
+    # The same raw pointer parameter with no `asm!` in its function keeps the advice.
+    assert "before the call that passed it" in refused("RAW_USE")
 
 
 @pytest.mark.timeout(400)

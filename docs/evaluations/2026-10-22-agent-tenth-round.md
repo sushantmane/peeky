@@ -164,7 +164,8 @@ Each fix PR had review rounds. They found these problems, none of which an agent
   - Now the call advice needs a parameter proven at the stop. Rust reads the binding in scope
     from the MIR, and C and C++ the declaration that applies at the stop.
   - The second round found a parameter pointed elsewhere first (`p = &global;`) still called a
-    parameter. Now the function must never assign it, step it or take its address.
+    parameter. Now the function must never assign it, step it or take its address. A third
+    round added inline assembly in Rust, which can write a parameter it names.
   - It also found that a crate's own `trait Iterator`, implemented for the standard slice
     iterator, made any reference look like a slice's element. That needs the standard trait
     now.
