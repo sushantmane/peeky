@@ -439,8 +439,10 @@ That is the case for:
 Where the elements come from: the debugger's children, which its formatter reads from the
 container's own storage, `size()` of them. Each shows as the class template's argument says in the
 debug information (`_Tp`, `_Key`), never by LLDB's type names. A container that the debugger lists
-another way keeps its summary: its own members, or fewer elements than its size. A `std::array`
-that LLDB lists by its C array (`ai.__elems_`) shows that array's elements.
+another way keeps its summary: its own members, or fewer elements than its size. LLDB lists a
+`std::array` by its one C-array member: libc++'s `__elems_` (`ai.__elems_`), or libstdc++'s
+`_M_elems`. Peeky shows that array's elements once the debug information says it holds `_Size`
+elements of `_Tp`.
 
 #### A container that something may be changing
 
@@ -822,11 +824,11 @@ So on Linux, the worker checks each string against its `_M_string_length`. It do
   with only that text is unavailable:
   `LLDB's summary of this value failed (...); select its members`. After a pointer's address, it
   reads `0x… <no text: …>`.
-- LLDB's text gives no sign of a NUL it dropped, so Peeky checks every libstdc++ string. Each costs
-  a debugger request, or two or three where its bytes are read. These come out of the inspection's
-  budget: 128 requests and 10 s, per inspection or expansion. So a large page of strings, such as
-  a big `std::vector<std::string>`, may say `(not checked for a NUL byte: ...)` instead. A libc++
-  string costs nothing.
+- LLDB's text gives no sign of a NUL it dropped. So Peeky attempts to check each libstdc++ string,
+  within the inspection's budget of 128 requests and 10 s, per inspection or expansion. Each string
+  costs a debugger request, or two or three where its bytes are read. So a large page of strings,
+  such as a big `std::vector<std::string>`, may say `(not checked for a NUL byte: ...)` instead. A
+  libc++ string costs nothing.
 
 On every platform:
 
@@ -979,7 +981,7 @@ exactly, and names `am[#N]`. `not found ... would insert it` comes only with `st
   entries. `t[1]` could then be a key or a position. `t[#1]` reads by position.
 - So is a type that the debug information gives several classes, a map or set among them. An
   example is `std::map<int, std::set<int>>::mapped_type`, where other maps' `mapped_type` is
-  `int`.
+  `int`. Its type then shows as `?`.
 - Vectors, deques and arrays index by position as usual.
 
 #### Listing a map, and big maps
@@ -993,8 +995,9 @@ exactly, and names `am[#N]`. `not found ... would insert it` comes only with `st
   `std::greater`) and more than 20 entries is bisected. It reads about log2(size) entries. So any
   size up to 512 entries reads in a few steps. Its size is the summary's `size=N`, checked against
   the listing.
-- Any other map is compared entry by entry. One inspection (512 nodes) holds the entries and keys
-  of a map of about 200. A bigger one is refused before any entry is read: use `m[#N]`.
+- Any other map is compared entry by entry. That costs one node per entry and one per key, within
+  the inspection's 512 nodes, so one inspection holds a map of about 200 entries. A bigger one is
+  refused before any entry is read: use `m[#N]`.
 - A listing shorter than the summary's size never says that a key is missing.
 - A typedef that the debug information doesn't resolve at all, with no class for its name, is told
   from a vector only by its entries. So a set behind one reads `s[N]` by position, as a vector
