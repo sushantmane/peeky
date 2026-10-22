@@ -127,21 +127,25 @@ def store(tmp_path):
     return tmp_path / "evidence" / "evidence.db"
 
 
-def test_outputs_and_diff_say_where_each_change_applied(store):
+def test_outputs_and_diff_say_where_each_change_was_requested(store):
     # sessions 4: `queries outputs` showed `set_hit NULL` for `--set-at` runs, which
     # reads as no change; rechnung 5: `diff`'s `(sets)` row gave `[["gleich", "true"]]`
     # with no hit, so the same --set at hits 3 and 4 differed in nothing it showed.
+    # runs.sets holds requests (review of PR #214): see test_probe for one not made.
     evidence.record(store, result(set_at=((35, 4, "gap", "20"), (35, 6, "gap", "20"))))
     evidence.record(store, result(sets=(("gap", "20"),), set_hit=4))
     outputs = evidence.run_query(store, "outputs")["rows"]
     assert [json.loads(row["sets"]) for row in outputs] == [
-        [["gap", "20", "35@4"], ["gap", "20", "35@6"]],
-        [["gap", "20", "34@4"]],
+        [["gap", "20", "requested at 35@4"], ["gap", "20", "requested at 35@6"]],
+        [["gap", "20", "requested at 34@4"]],
     ]
     assert "set_hit" not in outputs[0]
     evidence.record(store, result(sets=(("gap", "20"),), set_hit=3))
     (row,) = [r for r in evidence.run_query(store, "diff")["rows"] if r["selector"] == "(sets)"]
-    assert (row["value_a"], row["value_b"]) == ('[["gap","20","34@4"]]', '[["gap","20","34@3"]]')
+    assert (json.loads(row["value_a"]), json.loads(row["value_b"])) == (
+        [["gap", "20", "requested at 34@4"]],
+        [["gap", "20", "requested at 34@3"]],
+    )
     # No intervention: `[]`, as before.
     evidence.record(store, result())
     (row,) = [r for r in evidence.run_query(store, "diff")["rows"] if r["selector"] == "(sets)"]
