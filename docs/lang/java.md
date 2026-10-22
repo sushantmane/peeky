@@ -110,8 +110,9 @@ details, in the [Java cookbook](java-cookbook.md) or the [COOKBOOK](../COOKBOOK.
 - Final and static fields, boxed values such as `Integer`, and an `ArrayList`'s elements. To change
   an element of a list, change one of its fields: `merged[0].end=10`
   ([Java 7.3](java-cookbook.md#what-can-be-set)).
-- A field whose name a subclass's static field hides, or another field shares. java-debug would
-  write the other field ([Java 7.3](java-cookbook.md#change-a-field-or-an-array-element)).
+- A field whose name a static field hides, such as a subclass's, or another instance field shares.
+  java-debug would write the other field. A static field that this field itself hides, such as a
+  superclass's, doesn't matter ([Java 7.3](java-cookbook.md#change-a-field-or-an-array-element)).
 - A field that a JDK class declares, inherited or not. Examples: a String's `hash`, an `ArrayList`'s
   `size` ([Java 7.3](java-cookbook.md#fields-the-jdk-declares)).
 - A JDK class is one in a JDK module, `jdk.jshell` too. On Java 8, it is one that the JDK's own

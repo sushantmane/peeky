@@ -158,8 +158,8 @@ No kind of variable can always be set. Each row gives the conditions, and links 
 | --- | --- |
 | A local of type `byte`, `short`, `int`, `long`, `boolean`, `float`, `double` or `char` | Only if the program reads it after the stop ([rule](#locals-the-program-never-reads-again)) |
 | A local declared `String` | Only to a text in double quotes, and only if the program reads it after the stop ([rule](#set-a-string)) |
-| A field of one of those types, or declared `String` | Only if it is not final or static, and no JDK class declares it ([rule](#fields-the-jdk-declares)). Also only if no subclass's static field hides its name, and no other field shares it ([rule](#change-a-field-or-an-array-element)). A `String` field takes only a text ([rule](#set-a-string)) |
-| An element of an array of one of those types, or of a `String[]` | Only if the array isn't held by a JDK class's field, directly or inside another array that such a field holds ([rule](#arrays-the-jdk-holds)). A program's list's backing array doesn't count as the JDK's ([rule](#which-lists-arrays-are-the-programs)). A `String[]` element takes only a text ([rule](#set-a-string)) |
+| A field of one of those types, or declared `String` | Only if it is not final or static, and no JDK class declares it ([rule](#fields-the-jdk-declares)). Also only if no static field hides its name, such as a subclass's, and no other instance field shares it ([rule](#change-a-field-or-an-array-element)). A `String` field takes only a text ([rule](#set-a-string)) |
+| An element of an array of one of those types, or of a `String[]` | Only if the array isn't held by a JDK class's field, directly or inside another array that such a field holds ([rule](#arrays-the-jdk-holds)). The backing array of the program's own `ArrayList`, `Vector`, `ArrayDeque` or `Arrays.asList` list doesn't count as the JDK's ([rule](#which-lists-arrays-are-the-programs)). A `String[]` element takes only a text ([rule](#set-a-string)) |
 | A local, field or element declared another type, such as `Object` or `CharSequence` | No, even if it holds a String ([rule](#the-declared-type-decides)) |
 | A boxed value, such as `Integer` | No |
 | An object, such as an `ArrayList`'s element | No. Change one of its fields instead: `merged[0].end=10` |
@@ -224,8 +224,10 @@ for `end`.
   [table above](#what-can-be-set) allows them.
 - In a session, `session set current.end=10` changes a field.
 - Peeky reads the value back from the object after the change.
-- A field is refused if a subclass's static field hides its name, or another field shares its
+- A field is refused unless its name means exactly one instance field. It is refused if a static
+  field hides it, such as a subclass's. It is also refused if another instance field has the same
   name. java-debug would write the other field.
+- A static field that this field itself hides, such as a superclass's, doesn't matter.
 - Field changes need an adapter bundle built by this version of `scripts/setup_java_adapter.py`.
   With an older one, `set` refuses them and says to rebuild it.
 
@@ -276,7 +278,8 @@ What counts as a JDK class:
 ### Arrays the JDK holds
 
 An element of an array that a JDK class's field holds can't be changed either, under any name. The
-only exception is the backing array of a program's list: see
+only exception is the backing array of the program's own `ArrayList`, `Vector`, `ArrayDeque` or
+`Arrays.asList` list: see
 [Which lists' arrays are the program's](#which-lists-arrays-are-the-programs).
 
 - **Under its path,** such as a String's bytes, `a.bezeichnung.value[0]`. Here the class files
