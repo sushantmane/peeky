@@ -877,38 +877,117 @@ output:
 
 ### 2.6 Stop Right After the Last Hit
 
-**What it answers:** I only need the values, not the output. Can it be faster? It saves the most where the program is slow to exit (JVMs, Python).
+**What it answers:** I only need the values, not the output. Can it be faster?
+
+Add `--until hits`. The probe then ends right after its last hit, instead of waiting for the
+program to exit. This saves the most where the program is slow to exit, as JVMs and Python are.
+Attached JVMs work this way by default.
 
 ```sh
 peeky probe examples/pagination_bug.py --at 8 --capture start --until hits
 ```
 
 ```
-status: completed  hits: 1  seconds: 0.267  max pause: 4.1 ms
+hit  phase     line  function  selector  type  value
+1    observed  8     get_page  start     int   3
+status: completed  hits: 1  seconds: 0.348  max pause: 6.0 ms
+output so far (the program ran on after the last hit, so this can include text written after it):
+  PAGE: [40, 50, 60]
 ```
 
-That took 0.27 s, compared with 1.0 s when waiting for the program to exit. Attached JVMs default to this.
+That took about 0.3 s. Waiting for the program to exit took 1.0 s.
 
-- **The program runs on:** after the last hit, Peeky removes its breakpoints, resumes the program, reads its output, and then ends it (an attached JVM is detached instead, and keeps running). Until then the program runs unwatched: what it prints meanwhile may be in `output`, and what it does (a file it writes) happens.
-- **So the output is not the output at the hit:** JSON says `output_after_last_hit: true`, and the text `output so far (the program ran on after the last hit, so this can include text written after it):`. `output_complete` is `false`.
-- **Unless it had exited, and all its output was read:** when the debugger has reported the program's end (`exited` or `terminated`) before Peeky disconnects, Peeky ends the adapter's input and reads its stream to its end: output can follow `terminated`, but none can follow that end. The output is what the debugger sent before Peeky sent its disconnect; when nothing more came before the end (not even while the adapter handled the disconnect), `output_complete` is `true`, with `exit_code`, and the text says `output (all of it: the program ran on after the last hit, to its exit):`, or, with `output_truncated: true`, `output through the program's exit (it ran on after the last hit; truncated: some of it was dropped):`. A C, C++, Rust or Java program that exits right after the hit can have ended in time; a Python one rarely has (debugpy delays its exit by about 0.5 s). For the whole output, run to the exit (the default).
-- **Ended, but not proven whole:** if the adapter keeps its stream open (2 s), sends text once Peeky began closing the session, even before answering its disconnect (its own, or the program's that was still on its way, kept apart in `output_after_disconnect`: lldb-dap 18 on Linux prints its crash as it exits), exits with a status other than 0 (`adapter_exit`, and a warning: it may have dropped output it held; the one exception is debugpy's status 1 when Peeky ends its input as it answers the disconnect, an exit Peeky provokes, and only with the failure debugpy then prints on stderr: `exit_provoked: true`, no warning), or the end is only Peeky's inference (java-debug dropped its exit event, issue #27: [Java](lang/java.md)), `output_complete` stays `false` with `program_ended: true`, and the text says the program ended `but its output may still have been arriving`. This holds for any probe, not only `--until hits`.
+#### What happens after the last hit
+
+After the last hit, Peeky removes its breakpoints, resumes the program, reads its output, and
+then ends the program. An attached JVM is detached instead, and keeps running.
+
+Until then, the program runs unwatched. What it prints meanwhile may be in `output`. What it does
+happens, such as writing a file.
+
+#### Why the output is not the output at the hit
+
+So the output may include text written after the hit, as `PAGE: [40, 50, 60]` above was:
+
+- JSON says `output_after_last_hit: true`, and `output_complete` is `false`.
+- The text says so above the output, as in the example:
+
+  ```
+  output so far (the program ran on after the last hit, so this can include text written after it):
+  ```
+
+For the whole output, run to the exit, which is the default.
+
+#### When the output is complete
+
+Sometimes the program had already exited before Peeky disconnected, and Peeky read all of its
+output. That happens when the debugger reported the program's end (`exited` or `terminated`)
+first. Peeky then ends the adapter's input and reads its stream to its end. Output can follow
+`terminated`, but none can follow that end.
+
+The output is what the debugger sent before Peeky sent its disconnect. When nothing more came
+before the end, not even while the adapter handled the disconnect:
+
+- `output_complete` is `true`, with `exit_code`;
+- the text says `output (all of it: the program ran on after the last hit, to its exit):`;
+- or, with `output_truncated: true`, the text says:
+
+  ```
+  output through the program's exit (it ran on after the last hit; truncated: some of it was dropped):
+  ```
+
+A C, C++, Rust or Java program that exits right after the hit can end in time. A Python program
+rarely does, because debugpy delays its exit by about 0.5 s.
+
+#### When the program ended, but its output isn't proven whole
+
+In these cases, `output_complete` stays `false` with `program_ended: true`. The text says that the
+program ended `but its output may still have been arriving`:
+
+- The adapter keeps its stream open for 2 s.
+- The adapter sends text once Peeky began closing the session, even before it answers the
+  disconnect. That text, its own or the program's that was still on its way, is kept apart in
+  `output_after_disconnect`. For example, lldb-dap 18 on Linux prints its crash as it exits.
+- The adapter exits with a status other than 0. The result has `adapter_exit` and a warning: the
+  adapter may have dropped output it held.
+- The end is only Peeky's inference: java-debug dropped its exit event (see [Java](lang/java.md)).
+
+One non-zero exit doesn't count. debugpy exits with status 1 when Peeky ends its input as debugpy
+answers the disconnect. Peeky provokes that exit. If debugpy's only failure is the one it then
+prints on stderr, the result has `exit_provoked: true` and no warning.
+
+These rules hold for any probe, not only for `--until hits`.
 
 ### 2.7 JSON for Scripts
 
 **What it answers:** How do I feed results into another tool?
+
+Add `--json` to any command, and read the result with a tool such as `jq`:
 
 ```sh
 peeky probe examples/pagination_bug.py --at 8 --capture start --json --quiet | jq -c '.by_hit[0].observed'
 # {"start":"3"}
 ```
 
-Every command takes `--json`. Exit codes:
-- 0: success;
-- 1: a completed command with a negative result (a probe that failed once the debugger's launch or attach request was sent, or a failed verify, a failed build included);
-- 2: an error, or a refusal: any probe that ended before the debugger's launch or attach request was sent, whatever its code (`refused_before_launch`: a refusal, a file outside the worker root, a build that failed, a debugger that did not start). Peeky did not start the program (a build, or a Python candidate's interpreter, may have run), so its text has no table, only the error and its hint, and no run is saved;
-- 3: a background job still running;
-- 4: a probe (`peeky probe`, or the `peeky-probe` script) that completed, but a change it was asked to make (`--set`, `--set-at`) never happened, because its stop never came (2.8). The values are evidence; the experiment did not happen. A shortfall of `--hits` alone is not a failure: 0, with a warning.
+Branch on the exit status:
+
+| Status | Meaning |
+| --- | --- |
+| 0 | Success. |
+| 1 | A completed command with a negative result: a probe that failed after the debugger's launch or attach request was sent, timed out, or never stopped; a verify that didn't pass, a failed build included; a `session get` with a failed selector. |
+| 2 | An error, or a refusal. See below. |
+| 3 | Not there yet: a background job is still running, or `session start --hit`, `session continue --count` or `session continue --to` stopped before the stop asked for. |
+| 4 | A probe completed, but a change it was asked to make (`--set`, `--set-at`) never happened, because its stop never came ([2.8](#28-change-a-value-then-restore-it)). This holds for `peeky probe` and for the `peeky-probe` script. The values are evidence, but the experiment didn't happen. |
+
+- Status 2 includes any probe that ended before the debugger's launch or attach request was sent,
+  whatever its code. JSON says `refused_before_launch`. The cause can be a refusal, a file outside
+  the worker root, a build that failed, or a debugger that didn't start.
+- In that case Peeky didn't start the program, though a build, or a Python candidate's
+  interpreter, may have run. So the text has no table, only the error and its hint, and no run is
+  saved.
+- Fewer hits than `--hits` asked for is not a failure on its own: the status is 0, with a warning.
+
+[ERRORS.md](ERRORS.md) lists every exit status and error code.
 
 ### 2.8 Change a Value, Then Restore It
 
@@ -916,12 +995,21 @@ Every command takes `--json`. Exit codes:
 
 **Common cases**
 
-- `--set-at LINE@HIT name=value` changes a value at hit `HIT` of `LINE` (counting that line's own stops), in the `--at` file; repeat it to change at one line and restore at the next.
-- Values are captured only at `--at`; a change there gets `after-set` rows, as `--set` does.
-- `HIT` counts every stop of the line, in any function (a lambda's too); each change says whose variable it changed.
-- A change that never happened (its stop never came) makes the probe exit 4.
+- `--set-at LINE@HIT name=value` changes a value at hit `HIT` of `LINE`, in the `--at` file. `HIT`
+  counts that line's own stops. Repeat it to change a value at one line and restore it at the next.
+- Values are captured only at `--at`. A change there gets `after-set` rows, as `--set` does.
+- `HIT` counts every stop of the line, in any function, a lambda's too. Each change says whose
+  variable it changed.
+- A change that never happened, because its stop never came, makes the probe exit 4.
 
-`stock.cpp` (C++) keeps `"apple "` and `"apple"` apart because `trim_left` leaves trailing spaces. Line 22 is `std::string name = trim_left(entry.substr(0, colon));` and line 23 `long qty = std::stol(entry.substr(colon + 1));`. To test the fix, shorten `colon` so line 22 cuts the space off, then restore it so line 23 still reads the quantity:
+#### Example: change a value for one line
+
+`stock.cpp` (C++) treats `"apple "` and `"apple"` as different items, because `trim_left` leaves
+trailing spaces. Line 22 is `std::string name = trim_left(entry.substr(0, colon));`. Line 23 is
+`long qty = std::stol(entry.substr(colon + 1));`.
+
+To test a fix, shorten `colon` so that line 22 cuts the space off. Then restore it, so that line
+23 still reads the quantity:
 
 ```sh
 peeky probe stock --at stock.cpp:22 --capture colon,entry --hits all \
@@ -947,9 +1035,11 @@ output:
   STOCK:apple=7,pear=3
 ```
 
-Shortened alone, line 23 reads `:4` and `std::stol` throws. With `--set` you would need a session (start, set, step, set, …) for this.
+If you only shortened `colon`, line 23 would read `:4`, and `std::stol` would throw. With `--set`
+alone, you would need a session for this: start, set, step, set, and so on.
 
-Or change the text itself, once line 22 has made it: `name` is a `std::string`, so it takes a text in double quotes (2.3), and nothing needs restoring:
+Or change the text itself, once line 22 has made it. `name` is a `std::string`, so it takes a text
+in double quotes ([2.3](#23-test-a-hypothesis-by-changing-a-value)), and nothing needs restoring:
 
 ```sh
 peeky probe stock --at stock.cpp:24 --capture name --hits all \
@@ -963,26 +1053,93 @@ output:
   STOCK:apple=7,pear=3
 ```
 
-- **Where and when:** `--set-at [PATH:]LINE[@HIT] name=value` changes a value at hit `HIT` (default 1) of `LINE`, counting that line's own stops, in the `--at` file. Repeat it for several lines and hits; changes at one stop are made in the order given.
-- **Which function:** `HIT` counts every stop of the line, in any function: a lambda or closure on the line (`auto f = [](long v) { return v + 1; }; total += f(v);` stops in `main`, then in the lambda), a recursive call, or a generic's instances (Rust: `gen::tf<gen::A>` and `gen::tf<gen::B>`, named with their type arguments; a name past 300 characters is cut with `…`, and two that then read alike get their symbol hashes; closures as `main::{closure#1}`).
-- **What a change says:** Each change says whose variable it changed (`set v: 0 -> 100  (--set-at line 6@2, in main::$_0::operator())`; `function` in JSON and in the `interventions` table), and a `--set-at` line that stopped in more than one function gets a warning listing each function's stops.
-- **Captures:** The probe stops at every `--set-at` line as well as at `--at`, but captures values only at `--at`. A change at a captured stop gets `after-set` rows, as `--set` does. `--set` and `--set-hit` work as before, and together with `--set-at` make at most 8 changes.
-- **How long it runs:** The probe keeps each breakpoint until the changes on that line are made, past `--hits` if need be. With `--until hits` it ends once both are done (an attached JVM, which never exits, waits for them until `--timeout`). A change whose stop never comes (`23@9` where line 23 stops 4 times) is not made, and the result says so: `status: completed (1 requested change not made)`, a warning, `unapplied` in JSON, and exit code 4. So is a `--set` whose `--set-hit` never comes.
-- **Rules:** Each change follows the same rules as `--set` at its own stop (a statement under way, a local not yet initialized, a value with a note, a field through a pointer: see 2.3). Before the program runs, each `--set-at` is judged against the functions on its own line, as a `--set` is against the `--at` line's: one that no stop of its line could make (a Rust local kept in a register, a field through a pointer) is refused there, naming the line, and nothing runs (6.6; exit code 2, with only the error and its hint). One refusal fails the whole probe, naming its line and hit and how many changes were already made: half of a linked change is not the experiment you asked for. A line with no code of its own is refused, never moved to the next line.
-- **Evidence:** `runs.sets` lists each requested change as `[name, value, "LINE@HIT"]` (a `--set` stays `[name, value]`, with its hit in `runs.set_hit`). `queries diff`'s `(sets)` row and `queries outputs` show each as `[name, value, "requested at LINE@HIT"]`, a `--set`'s too (`["gleich", "true", "requested at 56@4"]`), and add `, not made: that hit never came` where the probe warned so; runs whose changes differ only in their hit, or in which were made, tell apart. The `interventions` table gives each change made: its `line`, `hit`, `capture_hit`, `function` and `instance` (schema 12; `captures.instance`, schema 13, labels captured values the same way). `queries set_effect` lists the changes in the order they were made, and `queries wide` puts each one in the `sets` column of the row it comes before.
+#### Where and when a change is made
 
-**Per language:** [Python 2.8](lang/python-cookbook.md#28-change-a-value-then-restore-it) (two lambdas on one line).
+- `--set-at [PATH:]LINE[@HIT] name=value` changes a value at hit `HIT` of `LINE`, in the `--at`
+  file. `HIT` is 1 by default, and counts that line's own stops.
+- Repeat `--set-at` for several lines and hits. Changes at one stop are made in the order given.
+- The probe stops at every `--set-at` line as well as at `--at`, but captures values only at
+  `--at`. A change at a captured stop gets `after-set` rows, as `--set` does.
+- `--set` and `--set-hit` work as usual. Together with `--set-at`, they make at most 8 changes.
+
+#### Which function's variable changes
+
+`HIT` counts every stop of the line, in any function:
+
+- a lambda or closure on the line: `auto f = [](long v) { return v + 1; }; total += f(v);` stops
+  in `main`, then in the lambda;
+- a recursive call;
+- a generic's instances. In Rust they are named with their type arguments: `gen::tf<gen::A>` and
+  `gen::tf<gen::B>`. A name past 300 characters is cut with `…`, and two names that then read
+  alike get their symbol hashes. Closures are named like `main::{closure#1}`.
+
+Each change says whose variable it changed:
+`set v: 0 -> 100  (--set-at line 6@2, in main::$_0::operator())`. JSON and the `interventions`
+table have it as `function`. When a `--set-at` line stopped in more than one function, a warning
+lists each function's stops.
+
+#### How long the probe runs
+
+- The probe keeps each breakpoint until the changes on that line are made, past `--hits` if need
+  be.
+- With `--until hits`, the probe ends once both are done. An attached JVM never exits, so it waits
+  for them until `--timeout`.
+- A change whose stop never comes is not made: for example `23@9`, where line 23 stops 4 times.
+  The result says so: `status: completed (1 requested change not made)`, a warning, `unapplied` in
+  JSON, and exit code 4.
+- The same holds for a `--set` whose `--set-hit` never comes.
+
+#### Which changes are refused
+
+- Each change follows the same rules as `--set` at its own stop
+  ([2.3](#23-test-a-hypothesis-by-changing-a-value)). Those rules cover a statement under way, a
+  local not yet initialized, a value with a note, and a field through a pointer.
+- Before the program runs, each `--set-at` is judged against the functions on its own line, as a
+  `--set` is against the `--at` line's. A change that no stop of its line could make is refused
+  there, naming the line, and nothing runs. Examples are a Rust local kept in a register, and a
+  field through a pointer ([6.6](#66-see-what-a-fix-does-before-making-it)). The exit code is 2,
+  and the text has only the error and its hint.
+- One refusal fails the whole probe. The error names its line and hit, and how many changes were
+  already made. Half of a linked change is not the experiment you asked for.
+- A line with no code of its own is refused. It is never moved to the next line.
+
+#### How the evidence records changes
+
+- `runs.sets` lists each requested change as `[name, value, "LINE@HIT"]`. A `--set` stays
+  `[name, value]`, with its hit in `runs.set_hit`.
+- `queries diff`'s `(sets)` row and `queries outputs` show each change, a `--set`'s too, as
+  `[name, value, "requested at LINE@HIT"]`: `["gleich", "true", "requested at 56@4"]`. They add
+  `, not made: that hit never came` where the probe warned so.
+- So runs whose changes differ only in their hit, or in which changes were made, tell apart.
+- The `interventions` table lists each change made: its `line`, `hit`, `capture_hit`, `function`
+  and `instance` (schema 12). `captures.instance` (schema 13) labels captured values the same way.
+- `queries set_effect` lists the changes in the order they were made.
+- `queries wide` puts each change in the `sets` column of the row it comes before.
+
+**Per language:** [Python 2.8](lang/python-cookbook.md#28-change-a-value-then-restore-it)
+(two lambdas on one line).
 
 ### 2.9 What a Function Returned
 
-**What it answers:** What did each call of this function return, including calls a library makes (a comparator `std::sort` or `qsort` calls, a key function, a `Comparator`)? C, C++, Rust and Java.
+**What it answers:** What did each call of this function return? That includes calls a library
+makes, such as a comparator that `std::sort` or `qsort` calls, a key function, or a `Comparator`.
+This works for C, C++, Rust and Java.
 
 **Common cases**
 
-- `--capture return` with `--hits all` gives a `(return)` row per hit, what its call of the `--at` line's function returned, a library's calls included: probe the function's first line for one row per call.
-- A value is shown only when exact: C and C++ integers, `bool`, characters, floats and pointers, Rust integers, `bool` and floats, Java any type; a struct, a string or any return in an optimized build is withheld, saying why.
-- After `session step --out`, the state shows what the function returned (`(return): int = 42`; `returned` in JSON), or a withheld row saying why (the rules below; an exception, `longjmp` or panic that ended the call included); nothing where another stop interrupted the step first, or the program ended. `session inspect` lists it under `[Returned]` and `session get return` reads it.
-- Python's returns cannot be captured: capture what the caller stores, on the caller's next line (for `r = f(x)` on line 20, `--at 21 --capture r`).
+- `--capture return` with `--hits all` gives a `(return)` row per hit: what that hit's call of the
+  `--at` line's function returned, a library's calls included. For one row per call, probe the
+  function's first line.
+- A value is shown only when it is exact. That means C and C++ integers, `bool`, characters,
+  floats and pointers; Rust integers, `bool` and floats; and Java values of any type.
+- A struct, a string, or any return in an optimized build is withheld, with the reason.
+- After `session step --out`, the state shows what the function returned: `(return): int = 42`,
+  or `returned` in JSON. Or it shows a withheld row with the reason, following the rules below.
+  That includes a call that an exception, a `longjmp` or a panic ended.
+- It shows nothing where another stop interrupted the step first, or where the program ended.
+  `session inspect` lists the value under `[Returned]`, and `session get return` reads it.
+- Python's returns can't be captured. Capture what the caller stores, on the caller's next line:
+  for `r = f(x)` on line 20, use `--at 21 --capture r`.
 
 ```sh
 peeky probe sched.cpp --at 16 --capture "a.name,b.name,return" --hits all -- "build:2:30,test:2:10,deploy:1:5,lint:3:50"
@@ -996,31 +1153,145 @@ hit  phase     line  function  selector  type         value
 ...
 ```
 
-`return` (or `(return)`) captures what the function holding the `--at` line returns: after each hit, Peeky steps out of that call, one frame, and records a `(return)` row (`phase` `returned`): `function` is the function that returned, `line` and `location` where it returned to, often in the library that called it.
+`return`, or `(return)`, captures what the function holding the `--at` line returns. After each
+hit, Peeky steps out of that call, one frame, and records a `(return)` row whose `phase` is
+`returned`. Its `function` is the function that returned. Its `line` and `location` are where the
+function returned to, often in the library that called it.
 
-- **One row per hit:** Each hit's `(return)` row is what its call returned, or why that is withheld. On a line that runs once per call, with `--hits all`, that is one row per call, and a recursive call's return goes to its own hit, also through another function (`f` calls `c` calls `f`: Peeky steps out of `c` too, until each `f` returns).
-- **Which line:** Probe the function's first line, or any line that runs once per call. A line can stop again at the same depth before the call returns: a loop's next pass, or the line's next breakpoint location (a line with several, #157). In C, C++ and Rust, when the step out's watch on the caller (below) held until that stop, the frames under it are the call's, and its caller is at the same stack pointer, the stop is in the same call: no other call could have returned to that place without running the watched call instruction there. Peeky then follows the return across it, and each of those hits gets the call's return.
-- **Withheld instead:** Otherwise the earlier hit's return is withheld rather than guessed. Where the stopped function is not the call's, the row says the line `stopped again at the same depth in a call of another function`; where the frames under the stop are not the call's, `in another call`. Else it says Peeky `could not tell whether in this call` (another of the line's breakpoint locations, or a loop's next pass) `or in a later call after this one ended without returning`: for example in Java, which has no such watch, or where the watch was dropped or another stop came in between. A call still running when the program ends is withheld too (`the program ended before it returned`), and so is one still running when the probe's `--timeout` runs out (`the probe timed out before it returned`).
-- **Stops:** On a line with several breakpoint locations (#157), each `(return)` row has its hit's `stop` (and `stops` in JSON): where its call was stopped, not the line it returned to.
-- **Cost:** Each hit costs a step out to its return, through every call it makes: through a deep or wide recursion (`f` calls `c` calls `f`, each call several more), `--capture return` costs about 7.5 ms per nested call on macOS (a depth-13 tree took 62.6 s, against 1.8 s without `return`). There, limit `--hits`, or probe a line only one call reaches.
+#### One row per hit
+
+- Each hit's `(return)` row is what its call returned, or why that value is withheld.
+- On a line that runs once per call, with `--hits all`, that is one row per call.
+- A recursive call's return goes to its own hit, also through another function. If `f` calls `c`
+  calls `f`, Peeky steps out of `c` too, until each `f` returns.
+
+#### Which line to probe
+
+Probe the function's first line, or any line that runs once per call.
+
+A line can stop again at the same depth before the call returns. That happens at a loop's next
+pass, or at the line's next breakpoint location, on a line with several. In C, C++ and Rust, Peeky
+can prove that such a stop is in the same call. Three things must hold:
+
+- the step out's watch on the caller (see [The watch on the caller](#the-watch-on-the-caller)) held
+  until that stop;
+- the frames under the stop are the call's;
+- the caller is at the same stack pointer.
+
+No other call could then have returned to that place without running the watched call instruction
+there. So Peeky follows the return across that stop, and each of those hits gets the call's
+return.
+
+#### When the return is withheld
+
+Otherwise, the earlier hit's return is withheld rather than guessed. The row says why:
+
+| Case | The row says |
+| --- | --- |
+| The stopped function is not the call's | the line `stopped again at the same depth in a call of another function` |
+| The frames under the stop are not the call's | `in another call` |
+| Anything else: in Java, which has no such watch; where the watch was dropped; or where another stop came in between | Peeky `could not tell whether in this call` (another of the line's breakpoint locations, or a loop's next pass) `or in a later call after this one ended without returning` |
+| A call still running when the program ends | `the program ended before it returned` |
+| A call still running when the probe's `--timeout` runs out | `the probe timed out before it returned` |
+
+On a line with several breakpoint locations, each `(return)` row has its hit's `stop`, and `stops`
+in JSON. That is where its call was stopped, not the line it returned to.
+
+#### What it costs
+
+Each hit costs a step out to its return, through every call it makes. Through a deep or wide
+recursion, `--capture return` costs about 7.5 ms per nested call on macOS. In such a recursion,
+`f` calls `c` calls `f`, and each call makes several more. A tree of depth 13 took 62.6 s, against
+1.8 s without `return`. There, limit `--hits`, or probe a line that only one call reaches.
+
+#### A call that never returns
 
 A call that never returns gets no value.
 
-- **Exceptions, `longjmp` and panics:** In C, C++ and Rust, when an exception, a `longjmp` or a panic ends a call and its caller goes on (it catches the exception, `setjmp` returns again, `catch_unwind` returns), LLDB's step out stays armed: the next call that returns to the same place in the same frame ends it, and LLDB lists that call's value as the first one's. So while it steps out, Peeky watches the caller on that thread: the call instruction, every branch to the address the call returns to, and every computed jump, in a frame at or above the caller's (none of them can run there while the call is still running).
-- **Where it ends:** If one does, the step ends there, where the caller went on, and the row says `it never returned: its caller went on without its return (an exception, longjmp or panic ended it)`. When the step does end at that address, the stack pointer must be the caller's again, or the value is withheld.
-- **The watch:** The watch reads the caller's disassembly once per function (forced for a function too large for LLDB's default; if LLDB still gives none, the row says so). A deeper call of a recursion through the caller runs the watched call too, and each run costs LLDB a stop of its own: after 128 of them in one step, LLDB drops the watch, the step goes on at the cost it has without one, and the value is withheld (`the watch was dropped to keep the step's cost bounded`). No step fails for it: a `step --out` over a recursion thousands of calls deep completes (each of LLDB's own stops used to take a place in the session's event history, and 2,000 of them failed the session; a run of them now takes one). An optimized build, whose returns are withheld anyway, is not watched.
-- **Inlined functions:** A function inlined into its caller (`always_inline`) has no return of its own: withheld, saying it was inlined.
-- **Threads:** A probe follows one thread's returns at a time: a call another thread's stop comes before (or with: LLDB stops threads together) is withheld (`another thread stopped at a breakpoint before it returned`), and the probe goes on with every hit's rows.
-- **A `--set-at` inside the function:** A `--set-at` line inside the function stops before the return, which still comes and is that call's (the probe checks that it comes back to the frame that made the call).
+In C, C++ and Rust, an exception, a `longjmp` or a panic can end a call while its caller goes on.
+For example, the caller catches the exception, `setjmp` returns again, or `catch_unwind` returns.
+LLDB's step out then stays armed. The next call that returns to the same place, in the same frame,
+ends it. LLDB then lists that call's value as the first call's.
 
-A session shows the same after `session step --out`: the step's state shows it (`(return): long = 1`; `returned` in JSON; nothing where another stop interrupted the step first), `session inspect` lists it under `[Returned]`, apart from the locals (`returned` in JSON), labelled with the function that returned, and `session get return` reads it. A step that stops outside your sources (`outside the program's sources`, in `sort.h` or libc) still shows what your function returned; the library's own locals are not read. A `step --out` of a call that throws (C, C++, Rust) stops where its caller goes on without it, at the next call from the same place or a jump back to it, and `[Returned]` says the function never returned.
+So while it steps out, Peeky watches the caller on that thread, in a frame at or above the
+caller's. It watches the call instruction, every branch to the address the call returns to, and
+every computed jump. None of them can run there while the call is still running.
 
-Shown only when exact. LLDB reads a returned value from the return register, so C and C++ show integers, `bool`, characters, `float`/`double` and pointers, and Rust its integers (a `u8` as Rust prints it, `65`), `bool` and floats.
+If one of them runs, the step ends there, where the caller went on. The row says:
 
-- **Withheld:** A struct, class, `std::string`, reference, Rust enum or `Option`, a value the debugger cannot read, any return in an optimized build, and a function returning nothing are withheld, with the reason. LLDB would otherwise step out past libc++'s hidden frames and code without debug information, and then list another value as that function's; Peeky keeps each step out to one frame and checks that it stopped where the call returns. lldb-dap before LLVM 21 (the Linux lanes' 18 and 20) lists no `(Return Value)`; Peeky then reads what LLDB itself recorded for that step out (`thread info`), under the same checks.
-- **Java and Python:** Java's returns are JDI's exact values, any type. Python's are not available: debugpy shows one only by writing it into the program's globals (`__pydevd_ret_val_dict`), which the program could see, so Peeky refuses `--capture return` there; capture what the caller stores.
+```
+it never returned: its caller went on without its return (an exception, longjmp or panic ended it)
+```
 
-**Per language:** [Java 2.9](lang/java-cookbook.md#29-what-a-function-returned) (a method that threw).
+When the step does end at the return address, the stack pointer must be the caller's again, or
+the value is withheld.
+
+#### The watch on the caller
+
+- The watch reads the caller's disassembly once per function. Peeky forces it for a function too
+  large for LLDB's default. If LLDB still gives none, the row says so.
+- A deeper call of a recursion through the caller runs the watched call too. Each run costs LLDB a
+  stop of its own. After 128 of them in one step, LLDB drops the watch, and the step goes on at the
+  cost it has without one. The value is then withheld:
+  `the watch was dropped to keep the step's cost bounded`.
+- No step fails for this. A `step --out` over a recursion thousands of calls deep completes. A run
+  of LLDB's own stops takes one place in the session's event history.
+- An optimized build is not watched, because its returns are withheld anyway.
+
+#### Other cases
+
+- **Inlined functions:** a function inlined into its caller (`always_inline`) has no return of its
+  own. Its return is withheld, saying it was inlined.
+- **Threads:** a probe follows one thread's returns at a time. A call that another thread's stop
+  comes before is withheld: `another thread stopped at a breakpoint before it returned`. So is one
+  that another thread's stop comes with, because LLDB stops threads together. The probe goes on
+  with every hit's rows.
+- **A `--set-at` inside the function:** a `--set-at` line inside the function stops before the
+  return. The return still comes, and it is that call's. The probe checks that it comes back to the
+  frame that made the call.
+
+#### In a session
+
+A session shows the same after `session step --out`:
+
+- The step's state shows the return: `(return): long = 1`, or `returned` in JSON. It shows nothing
+  where another stop interrupted the step first.
+- `session inspect` lists it under `[Returned]`, apart from the locals (`returned` in JSON),
+  labelled with the function that returned. `session get return` reads it.
+- A step that stops outside your sources (`outside the program's sources`, in `sort.h` or libc)
+  still shows what your function returned. The library's own locals are not read.
+- In C, C++ and Rust, a `step --out` of a call that throws stops where its caller goes on without
+  it. That is the next call from the same place, or a jump back to it. `[Returned]` says that the
+  function never returned.
+
+#### Which values are shown
+
+Values are shown only when they are exact. LLDB reads a returned value from the return register:
+
+- C and C++ show integers, `bool`, characters, `float`/`double` and pointers.
+- Rust shows its integers (a `u8` as Rust prints it: `65`), `bool` and floats.
+- Java's returns are JDI's exact values, of any type.
+
+These are withheld, with the reason:
+
+- a struct, a class, a `std::string`, a reference, a Rust enum or `Option`;
+- a value the debugger can't read;
+- any return in an optimized build;
+- the return of a function that returns nothing.
+
+Otherwise, LLDB would step out past libc++'s hidden frames and code without debug information,
+and then list another value as that function's. So Peeky keeps each step out to one frame, and
+checks that it stopped where the call returns.
+
+lldb-dap before LLVM 21 lists no `(Return Value)`; the Linux lanes use 18 and 20. Peeky then reads
+what LLDB itself recorded for that step out (`thread info`), under the same checks.
+
+Python's returns are not available. debugpy shows one only by writing it into the program's
+globals (`__pydevd_ret_val_dict`), which the program could see. So Peeky refuses
+`--capture return` for Python: capture what the caller stores.
+
+**Per language:** [Java 2.9](lang/java-cookbook.md#29-what-a-function-returned)
+(a method that threw).
 
 ---
 
