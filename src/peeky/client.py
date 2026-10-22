@@ -37,7 +37,15 @@ class Client:
         )
         try:
             with _OPENER.open(request, timeout=45) as response:
-                return json.load(response)
+                try:
+                    return json.load(response)
+                except ValueError:
+                    # Sent and answered, but not as the worker answers: whatever the
+                    # worker did is unknown (#190 review).
+                    raise TransportLost(
+                        f"Connection to the worker at {self.url} broke during {operation!r} "
+                        "(its answer is not JSON); its outcome is unknown"
+                    ) from None
         except HTTPError as exc:
             return self._http_error(exc)
         except URLError as exc:
@@ -64,7 +72,11 @@ class Client:
         except ValueError:
             body = None
         if isinstance(body, dict) and isinstance(body.get("error"), dict):
-            raise PeekyError(exc.url, exc.code, exc.headers, body["error"], raw) from None
+            error = PeekyError(exc.url, exc.code, exc.headers, body["error"], raw)
+            # The worker's own refusal, as it answers one; any other body may be a
+            # tunnel's or a proxy's, after which the request's outcome is unknown.
+            error.from_worker = True
+            raise error from None
         raise PeekyError(
             exc.url,
             exc.code,

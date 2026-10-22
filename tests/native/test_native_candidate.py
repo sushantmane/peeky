@@ -109,7 +109,9 @@ def test_a_candidate_that_does_not_compile_is_build_failed(loop, capsys):
     code, result = probe(
         capsys, loop, "--at", "loop.c:5", "--old", "total += i;", "--new", "total += ;"
     )
-    assert code == 1 and result["error"]["code"] == "BUILD_FAILED"
+    # Refused before the launch request (#190): exit 2, no table.
+    assert code == 2 and result["error"]["code"] == "BUILD_FAILED"
+    assert result["refused_before_launch"] is True
     assert "error" in result["error"]["message"] and "loop.c:5" in result["error"]["message"]
     assert "edit" in result["error"]["hint"] and result["rows"] == []
     assert (loop / "loop.c").read_bytes() == before

@@ -62,7 +62,7 @@ Report the observation, the intervention and its effect, the edit, and the verif
 - **In a session:** `get` also lists a value's children, each with the selector that reads it, and exits 1 if any selector failed. `--frame N` reads caller frame N.
 - **Stepping:** `step` runs to the next line (`--into` a call, `--out` of the function, then showing its return as `get return` does (not in Python); for Java, `--into` and `--out` skip JDK classes). `outside_program: true`: a step left your sources; only the return is read (`get return`); `step --out` or `continue`.
 - **Continuing:** `continue` runs to the next stop (`--count N`: the Nth breakpoint stop); `session start --hit N` starts at the Nth stop; states show `hit N` at the session's breakpoint. `--count` and `--hit` stop at anything else (a crash, a step, the exit) with a note; `--to LINE` also stops once at LINE of the session's file (a stop before it, such as the session's breakpoint, says so: repeat it); `--to-exit` clears the breakpoints and runs to the end.
-- **Candidates:** any target but an attached JVM. `--at` keeps the original's line numbers (a line inside an edit that adds or removes lines is refused). An edit that does not compile fails with `BUILD_FAILED` (Python: `NO_STOP`, with the `SyntaxError`). Compare with the unedited run through `peeky queries diff`. It is evidence, not verification.
+- **Candidates:** any target but an attached JVM. `--at` keeps the original's line numbers (a line inside an edit that adds or removes lines is refused). A non-compiling edit is `BUILD_FAILED`: exit 2, not saved (`verify`: exit 1; Python: `NO_STOP` with its `SyntaxError`). Compare with the unedited run via `peeky queries diff`. It is evidence, not verification.
 
 ### Interventions (`--set name=value`)
 
@@ -85,7 +85,7 @@ Report the observation, the intervention and its effect, the edit, and the verif
 
 ### Querying saved evidence (`peeky sql`, `peeky queries`)
 
-Every probe is saved (`evidence.run_id`). **SQL is optional**: for one probe, read its JSON; saved runs help with large captures (query only the rows you need), comparisons (two inputs, with and without `--set`) and slow or unrepeatable runs.
+Probes not refused before launch are saved (`evidence.run_id`). **SQL is optional**: for one probe, read its JSON; saved runs help with large captures, comparisons (with and without `--set`) and slow or unrepeatable runs.
 
 - `peeky sql --schema` lists the tables (`runs`, `captures`, `interventions`, `pauses`), the `evidence` and `last_run` views, and the canned queries. Read it before writing SQL.
 - `peeky queries` needs no SQL: `run`, `wide` (a row per hit), `hits`, `compare`, `join` (two runs' hits paired by a value: `key=v`), `diff` (what differs, first divergence first: §3), `outputs`, `set_effect`, `values`, `unreadable`, `failures`. `--param a=1 --param b=5` (default: the last two) or `run=3` picks runs.
@@ -114,4 +114,4 @@ Every probe is saved (`evidence.run_id`). **SQL is optional**: for one probe, re
 
 ## When something fails
 
-Errors have a stable `code`, a `hint`, `retryable` and `session_closed` (see [ERRORS.md](ERRORS.md)). Use `--json` to read them. Follow the hint. Exit codes: 0 success, 1 a completed command with a negative result (probe failed or no-stop, verify did not pass), 2 an error or a refusal (a probe refused before it ran), 3 not there yet (a background job still running; a session's `--to`, `--count` or `--hit` stopped first), 4 a probe change never made (`unapplied`). Never repeat a `set`/mutation after `TIMEOUT` or `DEBUGGER_ERROR`; the outcome is uncertain: start a new session. `NO_STOP` from a probe means your line never ran: choose another from `describe`.
+Errors have a stable `code`, a `hint`, `retryable` and `session_closed` (see [ERRORS.md](ERRORS.md)). Use `--json` to read them. Follow the hint. Exit codes: 0 success, 1 a completed command with a negative result (probe failed or no-stop, verify did not pass), 2 an error or a refusal (a probe refused before launch), 3 not there yet (a background job still running; a session's `--to`, `--count` or `--hit` stopped first), 4 a probe change never made (`unapplied`). Never repeat a `set`/mutation after `TIMEOUT` or `DEBUGGER_ERROR`; the outcome is uncertain: start a new session. `NO_STOP` from a probe means your line never ran: choose another from `describe`.
