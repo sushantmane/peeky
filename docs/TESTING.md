@@ -13,7 +13,7 @@ or install job sits ahead of the tests.
 | integration (Python 3.13) | Same integration contract on the newer interpreter | 180s |
 | Java headless conformance (`java`) | `tests/java` on JDK 17 (Temurin), with an adapter that `scripts/setup_java_adapter.py` builds | — |
 | C LLVM 18 conformance (`native-c`) | `tests/native` on Ubuntu 24.04, with clang-18, lldb-18 and llvm-18 from signed Ubuntu repositories | — |
-| C++ LLVM 18 conformance (`native-cpp`) | `tests/cpp`, with the same LLVM 18 packages and `clang++-18` | — |
+| C++ LLVM 18 conformance (`native-cpp`) | `tests/cpp`: real C++ debugging and agent verification, with the same LLVM 18 packages and `clang++-18`. It records the installed package revisions, and depends on no C or Java lane. Measured hosted runs show whether it meets its budget | — |
 | Rust 1.96 LLVM 18 conformance (`rust-probe`) | `tests/rust`: raw Rust debugging and the experimental Rust worker, with the pinned Rust 1.96.0 toolchain and LLVM 18 | — |
 | wheel smoke | Build wheel/sdist, install clean, import and CLI entry points outside source tree | 90s |
 | remote SSH e2e | A second host (Linux container with key-only sshd) reached through a real `ssh -L`: probe, session, tunnel drop and recovery, source-mismatch refusal, worker loss (`tests/remote`, `PEEKY_E2E_DOCKER=1`) | 120s |
@@ -49,7 +49,8 @@ image's `python3`. [CONTRIBUTING.md](../CONTRIBUTING.md) has the commands. The m
 that hosted CI doesn't have:
 
 - `cpp-llvm20` and `rust-llvm20`: C++ and Rust with LLVM 20's lldb-dap, whose `readMemory` qualifies
-  Rust memory views, and libstdc++ strings with a NUL byte;
+  Rust memory views, and libstdc++ strings with a NUL byte. In `cpp-llvm20`,
+  `PEEKY_EXPECT_READ_MEMORY=1` makes the C++ tests expect libstdc++ strings read whole from memory;
 - `gdb-dap`: GDB's DAP, which the CUDA qualification drives (`scripts/cuda/qualify.py`).
 
 It prints one PASS or FAIL line per lane, and exits non-zero on a failure.
@@ -84,6 +85,17 @@ python -m build
 
 - Each test has a 45-second timeout.
 - Unit and integration paths can run separately, matching the parallel CI lanes.
+
+C++ conformance on macOS uses the Command Line Tools:
+
+```sh
+PEEKY_NATIVE_DAP="$(xcrun --find lldb-dap)" \
+PEEKY_NATIVE_CXX="$(xcrun --find clang++)" \
+PEEKY_NATIVE_DWARFDUMP="$(xcrun --find llvm-dwarfdump)" \
+PEEKY_NATIVE_DSYMUTIL="$(xcrun --find dsymutil)" \
+PEEKY_NATIVE_SYSROOT="$(xcrun --show-sdk-path)" \
+pytest tests/cpp --durations=10
+```
 
 ## Live model evaluation
 

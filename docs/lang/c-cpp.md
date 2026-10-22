@@ -6,7 +6,8 @@ Read [AGENT_GUIDE.md](../AGENT_GUIDE.md) first: it has the steps and rules every
 
 Peeky builds C with clang or GCC, C++ with clang++, and debugs both with lldb-dap, LLVM's
 debugger. C uses clang unless `PEEKY_NATIVE_CC`, or a target's `compiler`, names another compiler.
-A C++ compiler that isn't clang is refused before anything runs.
+A C++ compiler that isn't clang is refused before anything runs
+([C and C++ 7.1](c-cpp-cookbook.md#which-c-builds-peeky-supports)).
 
 ## Choose the target
 

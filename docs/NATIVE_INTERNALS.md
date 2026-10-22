@@ -1,0 +1,144 @@
+# How Peeky reads C and C++ values
+
+This page is for maintainers. It explains how Peeky's C and C++ rules work, and which tests check
+them. The rules themselves are in [c-cpp.md](lang/c-cpp.md) and the
+[C and C++ cookbook](lang/c-cpp-cookbook.md). The worker's fields are in [WORKER.md](WORKER.md).
+
+## Building C++
+
+- Peeky passes clang `--driver-mode=g++`. The resolved `clang++` is often `clang` itself, which
+  picks its language from the name it was run by.
+- Debugger display types, and the standard library's member names, differ between platforms.
+  Tests check the values, and never assume that libc++ and libstdc++ share a layout.
+
+## Maps and sets
+
+- LLDB lists the entries of every associative container as `[0]`, `[1]`, … in iteration order, in
+  libc++ and libstdc++ alike. Only the entry's type, such as `std::pair<const int, int>`, tells
+  them from a vector's elements.
+- Reading LLDB's `[1]` as key 1 would give a wrong value with no note. For
+  `std::map<int, int> m{{2, 20}, {1, 10}, {5, 50}}`, `m[1].second` would read `20`. So a selector
+  on these containers never takes a position for a key.
+- `typedef_kinds` records the class that the debug information gives a typedef.
+- A class's member typedef, such as `Holder<std::string>::S`, is spelled differently by lldb-dap
+  and by the debug information. Peeky keeps the class that every instance's typedef names, or the
+  map or set template that they all instantiate (`std::map`).
+- `std::less` is the default order, and LLDB leaves it out of the type's name.
+
+## Strings in libstdc++
+
+- LLDB's libstdc++ summary is the `_M_dataplus._M_p` C string. Its
+  `LibStdcppStringSummaryProvider` sets `SetBinaryZeroIsTerminator(true)`, so `"a\0b"` reads `"a"`.
+  For libc++, `SetBinaryZeroIsTerminator(false)` in LLDB's `LibCxx.cpp` prints every byte, from
+  the size.
+- For a value LLDB names `std::string`, LLDB uses the summary string `${var._M_dataplus._M_p}`
+  instead. On clang's Linux builds it fails, because clang leaves `_Alloc_hider` incomplete and
+  expects libstdc++'s own debug information.
+- LLDB applies its libstdc++ formatters to a typedef's canonical class. So without Peeky's check,
+  `Bytes b` would read `"b"` for `"b\0y"`, and `Name tn` would read the parsing error, with no
+  note.
+- The worker's `string_value` hook, `peeky.cxx_strings`, reads each `std::basic_string`'s members
+  through the debugger's own reference, at any depth. That is one value-view read, within the
+  inspection's view budget. It compares the summary's length, counted as LLDB escapes it, with
+  `_M_string_length`.
+- Under any other name, a string is known by its members. It is a value LLDB shows as a literal,
+  or as a failed summary, other than C's `char *` or `char[N]`. Its `_M_dataplus` is a
+  `std::basic_string<C>::_Alloc_hider`, which names the character type, beside a
+  `_M_string_length`.
+- With `readMemory`, the hook reads the data pointer and the length from the string's first two
+  words, and checks the length against `_M_string_length`. The text takes one 32-byte request for
+  a string in its own 16-byte buffer, and a second for one on the heap.
+- A literal is kept within the worker's 2000 characters, and cut between characters, for two
+  reasons. A value with a note once ran to 5041 characters. A long libc++ text was cut inside an
+  escape, with no mark.
+- `tidy` respells only the debugger's own text, and only once. LLDB's escapes are unambiguous:
+  `\0` is always one NUL, and LLDB writes no other octal escape. Reading memory again on macOS
+  would cost a request per string, just to fix a spelling.
+- A literal read from memory is already spelled as C reads it. Rust's `\0` is never followed by
+  more digits, so Rust literals stay as LLDB shows them.
+- `NativeSession.string_value` marks a standard string `text` when the value shown is its text, or
+  Peeky's reason it has none. It does this by the type's name, or a typedef's class, in libc++ and
+  libstdc++, and by the members in libstdc++.
+- Map keys need no member. The worker's `string_length`, or `view: memory`, carries the length
+  that `_string_bytes` read from `_M_string_length`.
+
+## Locals reached through a pointer
+
+clang gives a structured binding of a reference no storage of its own. It describes each name as a
+variable of the member's type, at a location read through the hidden reference. For
+`auto &[at, dropped] = *owner;`, that is `DW_OP_fbreg -16, DW_OP_deref, DW_OP_plus_uconst 0x18`.
+
+- Its storage class says it is the frame's own (`automatic`). A change would then write the
+  caller's `o.dropped`, through the reference. So `fields.local_types` stores a variable whose
+  location reads through a pointer as `through`.
+- clang types `auto &[items, dropped] = *owner` as the vector itself, at a location read through
+  the hidden reference (`DW_OP_fbreg -24, DW_OP_deref`).
+- `fields.referred_locals` counts any local whose location is not one frame offset as reached
+  through a pointer. That is a structured binding of a reference, a class passed by value through
+  a hidden pointer, and a named return value.
+
+## Function names
+
+LLDB's demangled C++ signatures run to about 100 characters, which made a probe table about 200
+columns wide.
+
+- `names.short_function` gives a table's short name.
+- `function_labels` gives a table's column. That is the short name, or, for frames that would read
+  alike, the signature as `display_function` shows it, else the whole name.
+- `display_function` writes session text and frame listings.
+- `names.shortened_note` writes the note of a table that shortens names. Its example is the SQL
+  function `short_function(function)`'s value.
+- `captures.instance` tells a Rust function's closures and a generic's instances apart.
+
+## Block spans
+
+clang's lexical blocks are right, but their code isn't contiguous.
+
+- The landing pads that destroy a block's objects, when an exception leaves it, lie inside the
+  block's `DW_AT_ranges`. They carry the function's closing line. LLDB places that line's
+  breakpoint locations there, among the function's own.
+- A span from a block's lowest line to its highest was too wide. In a function ending at line 35,
+  a `while` body's local read `colon (size_t, lines 17-35)`, and an `if` block's
+  `name (lines 22-35)`.
+- `_block_spans` splits a block's lines only where a line between two of them runs code, none of
+  which is the block's (`_runs`).
+
+## Previews and containers
+
+- lldb-dap 18 names an anonymous member `<null>`. lldb-dap 20 and later name it `""`.
+- The lldb-dap builds tested, 18, 20 and Xcode's, list no vtable pointer.
+- `fields.type_graph` records the template arguments (`DW_TAG_template_type_parameter`: `_Tp`,
+  `_Key`) of each supported preview container, and walks them. Those are the containers
+  `fields.CXX_CONTAINER` names: `std::vector`, `std::array`, `std::deque`, `std::list`, `std::map`,
+  `std::unordered_map`, `std::set`, `std::multiset`, `std::unordered_set` and
+  `std::unordered_multiset`. It leaves out `std::multimap`, `std::forward_list`, the adaptors,
+  `std::pair` and `std::tuple`. A container's storage is behind pointers, so a plain walk never
+  reaches its elements.
+- The formatters of libc++ and libstdc++, in every lldb-dap tested, read a container's children
+  from its own storage.
+- **Threads:** the program runs one thread only where every source agrees.
+  - The sources are two `threads` replies, LLDB's `thread list`, and every `thread` event that
+    said a thread started since launch.
+  - lldb-dap answers its first `threads` request with the threads the program had at launch.
+  - Peeky asks `thread list` through lldb-dap's command escape.
+  - Two started threads mean several threads, for good.
+  - The thread IDs of all of them together must be one. A source that doesn't answer, or a thread
+    without an ID, leaves it unsure, and unsure withholds.
+- A row's withholding check runs before anything else about it, a name or type too long to show
+  whole included.
+- Rows read through a container are withheld for a reason. `main`'s `o.items[1].name` would read
+  the freed string of an element that `clear()` had destroyed (`"\U00000003\0\0…"`), with no note.
+  `items[1].name` would read it too, through the reference parameter of a function that the
+  destructor calls. `shared[0].x` would read a moved-from `-1` while a worker thread relocated it.
+
+## Which tests check what
+
+| Test | What it checks | Where |
+| --- | --- | --- |
+| `tests/cpp/test_cpp_worker.py` | C++17 builds with debug information: a class object, a reference to it, `std::array<int, 128>` and a local integer. The `Pagination` object and the `Pagination &` reference expand to `page`, `page_size` and `total`. The `std::array` lists a raw `__elems_` child, which expands to integers. The test also accepts one raw storage member, or indexed elements, on other standard libraries, and requires the first three values to be 10, 20 and 30 | Apple LLDB 21, locally. Hosted LLVM 18 is a separate CI result, not an assumption about its display shape |
+| `tests/cpp/test_cpp_strings.py` | `--set` on a `std::string` | lldb-dap 18 and 20. The Docker `cpp-llvm20` lane sets `PEEKY_EXPECT_READ_MEMORY` |
+| `tests/cpp/test_cpp_bindings.py`, and `test_a_c_local_reached_through_a_pointer_is_never_changed` | Locals reached through a pointer are never changed | The C test: macOS |
+| `tests/cpp/test_cpp_eval6.py` | A `stock.cpp`; strings by value, reference, pointer and typedef, in a struct, a vector and a map; overloads on one line | macOS (libc++); Linux (libstdc++, lldb-dap 18 and 20) |
+| `tests/cpp/test_cpp_previews.py`, with C's in `tests/native/test_native_previews.py` | Struct and class previews | macOS (libc++); Linux (libstdc++, lldb-dap 18 and 20) |
+| `tests/cpp/test_cpp_containers.py` | Vectors of strings, structs, `bool` and vectors; a moved-from vector; `std::array`; maps; sets; `std::deque`; `std::list`; a struct holding a vector; a reference; a pointer; a caller frame; a destructor during `clear()`; a structured binding of a reference; an element destroyed in place; a second thread, also one held inside `emplace_back`'s relocation; a loop's next pass; an optimized build | macOS (libc++); Linux (libstdc++, lldb-dap 18 and 20) |
+| `test_rows_read_through_a_container_a_library_call_is_changing_are_withheld` and `test_rows_read_through_a_container_whose_element_is_destroyed_in_place_are_withheld` | Rows read through a container that something may be changing | macOS and Linux |
