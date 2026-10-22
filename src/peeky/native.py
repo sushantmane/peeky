@@ -42,7 +42,7 @@ from peeky.build import (
 from peeky.c_source import Preprocessed, Statements, macro_hazards, returning_twice
 from peeky.cxx_strings import libstdcxx_string, shows_text, string_class, text_like, tidy
 from peeky.digest import sha256_file
-from peeky.identifiers import changeable, split_located
+from peeky.identifiers import changeable, looks_located, split_located
 from peeky.names import standard_type, unicode_escape
 from peeky.text_sets import text_kind
 from peeky.textlines import octal_string, read_source, source_lines, split_lines
@@ -3396,6 +3396,14 @@ class NativeSession:
         line = (frame or {}).get("line")
         if name == "this" and (building := self._under_construction(frame, stack, deeper)):
             return building
+        if looks_located(name) and split_located(name) is None:
+            # LLDB names it with where it is declared, in a form Peeky cannot read: which
+            # declaration it is cannot be told, so nothing judges it (#195 review).
+            return (
+                f"LLDB names it {str(name)[:200]!r}, with where it is declared, in a form "
+                "Peeky cannot read, so which declaration it is cannot be told: it may not "
+                "be initialized yet, and its storage may hold leftovers"
+            )
         if not self.declarations and self.__dict__.get("unjudged") and isinstance(name, str):
             return self._unjudged(name, frame)
         if not self.declarations or not isinstance(name, str) or not isinstance(path, str):
@@ -4012,7 +4020,8 @@ class NativeSession:
         lists that plain name itself, or another of the name that is no automatic local
         or parameter of the function (a block's `thread_local`), or Peeky cannot tell
         which one the code names: then `t` is refused, and the rows' names select."""
-        shown = split_located(str(variable.get("name")))
+        shown_name = str(variable.get("name"))
+        shown = split_located(shown_name)
         if shown is None or not self.declarations:
             return None
         base, names = shown[0], [str(sibling.get("name")) for sibling in siblings]
@@ -4042,7 +4051,9 @@ class NativeSession:
             place = next(iter(parameters))
         else:
             place = (Path(str(where[0])).name, where[1])
-        return base if place == shown[1:] else None
+        # Only an alias a change can also give (a selector's bounds): never one that
+        # reads a local whose change the worker would refuse.
+        return base if place == shown[1:] and changeable(shown_name) else None
 
     def _named_where(self, name, pc):
         """(source, line, automatic) of the declaration of the local ``name`` the code at

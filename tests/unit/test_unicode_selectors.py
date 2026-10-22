@@ -539,27 +539,33 @@ def test_the_worker_takes_lldbs_spelling_of_a_shadowed_root_and_nothing_else(tmp
 # a change is checked, when the worker names the row's plain name, and when Peeky judges
 # its declaration.
 @pytest.mark.parametrize(
-    "name, parsed",
+    "name, parsed, changeable",
     [
-        ("t @ main.c:5", ("t", "main.c", 5)),
-        ("t @ my file.c:5", ("t", "my file.c", 5)),
-        ("t @ one @ two.c:5", ("t", "one @ two.c", 5)),
-        ("größe @ a @ b.rs:12", ("größe", "a @ b.rs", 12)),
-        ("a$b @ x.c:3", ("a$b", "x.c", 3)),  # a base no selector writes still parses
-        ("t @ a:b.c:5", None),
-        ("t @ main.c:x", None),
-        ("t @ :5", None),
-        ("@ main.c:5", None),
-        (" @ main.c:5", None),
-        ("t", None),
-        ("t @ " + "f" * 256 + ":5", None),
+        ("t @ main.c:5", ("t", "main.c", 5), True),
+        ("t @ my file.c:5", ("t", "my file.c", 5), True),
+        ("t @ one @ two.c:5", ("t", "one @ two.c", 5), True),
+        ("größe @ a @ b.rs:12", ("größe", "a @ b.rs", 12), True),
+        ("a$b @ x.c:3", ("a$b", "x.c", 3), False),  # parsed, though no selector writes it
+        # Round 4: every spelling the judgments read parses, past a selector's bounds
+        # (`#line 1000000000`, a long `#line` file name), which only selecting and
+        # changing apply.
+        ("t @ virtual.c:1000000000", ("t", "virtual.c", 1000000000), False),
+        ("t @ " + "f" * 256 + ":5", ("t", "f" * 256, 5), False),
+        ("t @ virtual.c:" + "9" * 30, ("t", "virtual.c", int("9" * 30)), False),
+        ("t @ a:b.c:5", None, False),  # looks located, does not parse: withheld
+        ("t @ main.c:x", None, False),
+        ("t @ :5", None, False),
+        ("@ main.c:5", None, False),
+        (" @ main.c:5", None, False),
+        ("t", None, True),
     ],
 )
-def test_lldbs_located_names_parse_one_way(name, parsed):
-    from peeky.identifiers import changeable, split_located
+def test_lldbs_located_names_parse_one_way(name, parsed, changeable):
+    from peeky.identifiers import changeable as changes
+    from peeky.identifiers import split_located
 
     assert split_located(name) == parsed
-    assert changeable(name) is (is_name(name) or (parsed is not None and is_name(parsed[0])))
+    assert changes(name) is changeable
 
 
 def test_a_file_named_with_an_at_sign_gives_the_real_local_its_plain_name():
@@ -590,3 +596,41 @@ def test_a_file_named_with_an_at_sign_gives_the_real_local_its_plain_name():
     # Each declaration the debugger shows under its name is judged, never "none of it".
     assert shown_declaration(table, inner, 50) == (table[0], ("one @ two.c", 5, True))
     assert shown_declaration(table, outer, 50) == (table[0], ("one @ two.c", 3, True))
+
+
+# Review of #199, round 4: a selector's bounds never decide what the judgments read. A
+# local declared under `#line 1000000000` (or a `#line` file name past 255 characters)
+# is judged as on main, and a row that looks located but does not parse is withheld.
+@pytest.mark.parametrize("file, line", [("virtual.c", 1000000004), ("v" * 300 + ".c", 4)])
+def test_a_declaration_past_a_selectors_bounds_is_still_judged(file, line):
+    from peeky.identifiers import looks_located, reachable
+    from peeky.native import declared_below, shown_declaration
+
+    name = f"t @ {file}:{line}"
+    table = [
+        {
+            "ranges": [(0, 100)],
+            "rows": {(file, line - 1): (10, 20), (file, line): (20, 30)},
+            "jumps": False,
+            "locals": {"t": [(file, line - 3, True), (file, line, True)]},
+            "visible": {
+                ("t", file, line - 3, True): [(0, 100)],
+                ("t", file, line, True): [(15, 60)],
+            },
+        }
+    ]
+    assert shown_declaration(table, name, 15) == (table[0], (file, line, True))
+    # Declared on the line below the stop: withheld (on a930b21, "nothing to judge").
+    assert declared_below(table, name, file, line - 1, address=15, pc=15) == (line, None)
+    assert looks_located(name) and not reachable({"name": name, "selected_as": "t"})
+
+
+def test_a_row_that_looks_located_and_does_not_parse_is_withheld():
+    from peeky.native import NativeSession
+
+    session = object.__new__(NativeSession)
+    frame = {"source": {"path": "/w/a:b.c"}, "line": 6}
+    for name in ("t @ a:b.c:7", "t @ x:y:z.c:7"):
+        reason = session.not_yet_declared({"name": name, "value": "1"}, frame)
+        assert "in a form Peeky cannot read" in reason, name
+        assert "may hold leftovers" in reason

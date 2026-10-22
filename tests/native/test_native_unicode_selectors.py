@@ -143,3 +143,71 @@ def test_a_shadowed_local_in_a_file_named_with_a_space_is_read_and_set(directory
     result = json.loads(capsys.readouterr().out)
     assert code == 0, result.get("error")
     assert "INNER 30" in result["output"] and "OUTER 1" in result["output"], result["output"]
+
+
+# Review of #199, round 4: the judgments read every spelling LLDB gives. A shadowing
+# local declared under a `#line` past a selector's bounds (a ten-digit line, a file name
+# of 300 characters) is withheld, as on main, never shown with its leftovers; one whose
+# file's name holds a colon, which no parse reads, is withheld too.
+VIRTUAL = """#include <stdio.h>
+int main(void) {{
+    int t = 1;
+    {{
+        printf("BEFORE %d\\n", t);  // STOP
+#line {directive}
+        int t = 2;
+#line 8 "{file}"
+        printf("INNER %d\\n", t);
+    }}
+    printf("OUTER %d\\n", t);
+    return 0;
+}}
+"""
+
+
+def _rows(capsys):
+    assert main(["session", "inspect", "--json"]) == 0
+    snapshot = json.loads(capsys.readouterr().out)
+    return {v["name"]: v for s in snapshot["scopes"] for v in s["variables"]}
+
+
+@pytest.mark.timeout(240)
+@pytest.mark.parametrize(
+    "directive, shown", [('1000000000 "virtual.c"', "virtual.c:1000000000"), ("long", None)]
+)
+def test_a_local_declared_under_a_line_past_a_selectors_bounds_is_withheld(
+    directory, capsys, directive, shown
+):
+    long = "v" * 300 + ".c"
+    if directive == "long":
+        directive, shown = f'1 "{long}"', f"{long}:1"
+    path = directory / "main.c"
+    path.write_text(VIRTUAL.format(directive=directive, file="main.c"))
+    assert main(["session", "start", str(path), "--at", "5"]) == 0
+    capsys.readouterr()
+    try:
+        rows = _rows(capsys)
+        inner = rows[f"t @ {shown}"]
+        assert inner.get("unavailable") is True and inner.get("value") is None, inner
+        # No selector reads it: `t` is not taken for it.
+        assert main(["session", "get", "t"]) == 1
+        assert "not found" in capsys.readouterr().out
+    finally:
+        main(["session", "close"])
+
+
+@pytest.mark.timeout(240)
+def test_a_shadowed_local_in_a_file_named_with_a_colon_is_withheld(directory, capsys):
+    path = directory / "a:b.c"
+    path.write_text(SHADOWED)
+    stop = next(n for n, text in enumerate(SHADOWED.splitlines(), 1) if "STOP" in text)
+    assert main(["session", "start", str(path), "--at", f"a:b.c:{stop}"]) == 0
+    capsys.readouterr()
+    try:
+        rows = _rows(capsys)
+        # `t @ a:b.c:6` was shown on a930b21, holding what its storage held.
+        for name in ("t @ a:b.c:4", "t @ a:b.c:6"):
+            assert rows[name].get("unavailable") is True, rows
+            assert "in a form Peeky cannot read" in rows[name]["reason"], rows[name]
+    finally:
+        main(["session", "close"])

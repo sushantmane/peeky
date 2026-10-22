@@ -69,8 +69,12 @@ _INDEX = re.compile(r"\[(?:0|[1-9][0-9]{0,9})\]|0|[1-9][0-9]{0,9}")
 
 
 # Where LLDB says a local is declared, as LLDB writes it: any file name with no colon
-# (`t @ my file.c:3`). NativeSession.selected_as reads this (#158).
+# (`t @ my file.c:3`), any line (`#line 1000000000`): what Peeky's judgments read.
+_ANY_PLACE = re.compile(r" @ ([^:]+):([0-9]+)")
+# The same within the bounds a selector or a change may name (`changeable`).
 LLDB_PLACE = r" @ ([^:]{1,255}):([0-9]{1,9})"
+# A row that looks so: ` @ ` in it, and a line at its end.
+_LOOKS_LOCATED = re.compile(r" @ .*:[0-9]+\Z", re.S)
 
 
 def selectable(name):
@@ -83,16 +87,33 @@ def split_located(name):
     """``(base, file, line)`` of a name LLDB gives with where it is declared, as LLDB
     writes it (`t @ my file.c:3`), else None: the one parser of such names. The base is
     all before the first ` @ ` and holds no space, as no name does, so `t @ one @ two.c:5`
-    is `t` in `one @ two.c` everywhere; never a greedy prefix. A base no selector writes
-    (`a$b`, one past 128 characters) still parses, for what the debugger lists; whoever
-    selects or changes checks it is a name."""
+    is `t` in `one @ two.c` everywhere; never a greedy prefix. Any file name with no colon
+    and any line parse (`#line 1000000000`, a long `#line` file name), and so does a base
+    no selector writes (`a$b`, one past 128 characters): Peeky's judgments read what the
+    debugger lists. Whoever selects or changes applies a selector's bounds
+    (``changeable``). A row that ``looks_located`` and does not parse is withheld."""
     if not isinstance(name, str):
         return None
     base, at, _ = name.partition(" @ ")
     if not at or not base or any(char.isspace() for char in base):
         return None
-    found = re.fullmatch(LLDB_PLACE, name[len(base) :])
+    found = _ANY_PLACE.fullmatch(name, len(base))
     return (base, found[1], int(found[2])) if found else None
+
+
+def looks_located(name):
+    """Whether ``name`` looks like one LLDB gives with where it is declared (` @ ` in it,
+    a line at its end), whether or not ``split_located`` reads it."""
+    return isinstance(name, str) and _LOOKS_LOCATED.search(name) is not None
+
+
+def _bounded(name):
+    """``split_located``'s base, where ``name`` is a name with where it is declared
+    within a selector's bounds (``LLDB_PLACE``), else None."""
+    found = split_located(name)
+    if found is None or not is_name(found[0]):
+        return None
+    return found[0] if re.fullmatch(LLDB_PLACE, name[len(found[0]) :]) else None
 
 
 def reachable(row):
@@ -103,19 +124,16 @@ def reachable(row):
     name, alias = row.get("name"), row.get("selected_as")
     if selectable(name):
         return True
-    found = split_located(name)
-    return found is not None and is_name(alias) and found[0] == alias
+    return is_name(alias) and _bounded(name) == alias
 
 
 def changeable(name):
     """Whether a root local's ``name`` is one a change may give the debugger: a name, or
     one LLDB lists with where it is declared (``split_located``) whose base is a name,
-    which a selector reaches through its plain name (``reachable``). The debugger's rows
-    must still list exactly that name."""
-    if is_name(name):
-        return True
-    found = split_located(name)
-    return found is not None and is_name(found[0])
+    within a selector's bounds (``LLDB_PLACE``: a file name of at most 255 characters, a
+    line of at most nine digits), which a selector reaches through its plain name
+    (``reachable``). The debugger's rows must still list exactly that name."""
+    return is_name(name) or _bounded(name) is not None
 
 
 def member_name(name):
