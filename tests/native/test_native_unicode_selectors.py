@@ -111,8 +111,9 @@ int main(void) {
 
 
 @pytest.mark.timeout(240)
-def test_a_shadowed_local_in_a_file_named_with_a_space_is_read_and_set(directory, capsys):
-    path = directory / "my file.c"
+@pytest.mark.parametrize("file", ["my file.c", "one @ two.c"])
+def test_a_shadowed_local_in_a_file_named_with_a_space_is_read_and_set(directory, capsys, file):
+    path = directory / file
     path.write_text(SHADOWED)
     stop = next(n for n, text in enumerate(SHADOWED.splitlines(), 1) if "STOP" in text)
     assert main(["session", "start", str(path), "--at", str(stop)]) == 0
@@ -122,12 +123,12 @@ def test_a_shadowed_local_in_a_file_named_with_a_space_is_read_and_set(directory
         inspected = capsys.readouterr().out
         # The inner `t`, which `t` selects, is offered and settable; the outer one, which
         # no selector names, is neither.
-        assert "t @ my file.c:6: int = 2  [settable]\n" in inspected, inspected
-        assert "t @ my file.c:4: int = 1 [not selectable]" in inspected, inspected
+        assert f"t @ {file}:6: int = 2  [settable]\n" in inspected, inspected
+        assert f"t @ {file}:4: int = 1 [not selectable]" in inspected, inspected
         assert main(["session", "get", "t", "--json"]) == 0
         assert json.loads(capsys.readouterr().out)[0]["value"] == "2"
         assert main(["session", "set", "t=20"]) == 0
-        assert "set t @ my file.c:6: 2 -> 20" in capsys.readouterr().out
+        assert f"set t @ {file}:6: 2 -> 20" in capsys.readouterr().out
         assert main(["session", "continue", "--to-exit"]) == 0
         capsys.readouterr()
         assert main(["session", "report", "--json"]) == 0

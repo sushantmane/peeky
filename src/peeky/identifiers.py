@@ -79,6 +79,22 @@ def selectable(name):
     return is_name(name) or is_located(name, _LISTED_PLACE)
 
 
+def split_located(name):
+    """``(base, file, line)`` of a name LLDB gives with where it is declared, as LLDB
+    writes it (`t @ my file.c:3`), else None: the one parser of such names. The base is
+    all before the first ` @ ` and holds no space, as no name does, so `t @ one @ two.c:5`
+    is `t` in `one @ two.c` everywhere; never a greedy prefix. A base no selector writes
+    (`a$b`, one past 128 characters) still parses, for what the debugger lists; whoever
+    selects or changes checks it is a name."""
+    if not isinstance(name, str):
+        return None
+    base, at, _ = name.partition(" @ ")
+    if not at or not base or any(char.isspace() for char in base):
+        return None
+    found = re.fullmatch(LLDB_PLACE, name[len(base) :])
+    return (base, found[1], int(found[2])) if found else None
+
+
 def reachable(row):
     """Whether a selector reads the root row ``row`` whole: by its own name
     (``selectable``), or by the plain name the worker gives it (``selected_as``, #158)
@@ -87,20 +103,19 @@ def reachable(row):
     name, alias = row.get("name"), row.get("selected_as")
     if selectable(name):
         return True
-    return (
-        is_name(alias)
-        and isinstance(name, str)
-        and name.startswith(alias)
-        and re.fullmatch(LLDB_PLACE, name[len(alias) :]) is not None
-    )
+    found = split_located(name)
+    return found is not None and is_name(alias) and found[0] == alias
 
 
 def changeable(name):
     """Whether a root local's ``name`` is one a change may give the debugger: a name, or
-    one LLDB lists with where it is declared, as LLDB writes it (``LLDB_PLACE``), which a
-    selector reaches through its plain name (``reachable``). The debugger's rows must
-    still list exactly that name."""
-    return is_name(name) or is_located(name, LLDB_PLACE)
+    one LLDB lists with where it is declared (``split_located``) whose base is a name,
+    which a selector reaches through its plain name (``reachable``). The debugger's rows
+    must still list exactly that name."""
+    if is_name(name):
+        return True
+    found = split_located(name)
+    return found is not None and is_name(found[0])
 
 
 def member_name(name):

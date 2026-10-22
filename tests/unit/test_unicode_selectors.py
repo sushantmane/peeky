@@ -532,3 +532,61 @@ def test_the_worker_takes_lldbs_spelling_of_a_shadowed_root_and_nothing_else(tmp
     ):
         with pytest.raises(ValueError, match="set_variable's name must be a local's name"):
             check(name)
+
+
+# Review of #199, round 3: one parser reads LLDB's `name @ file:line`, the base up to the
+# first ` @ `, never a greedy prefix: a file named `one @ two.c` reads the same way when
+# a change is checked, when the worker names the row's plain name, and when Peeky judges
+# its declaration.
+@pytest.mark.parametrize(
+    "name, parsed",
+    [
+        ("t @ main.c:5", ("t", "main.c", 5)),
+        ("t @ my file.c:5", ("t", "my file.c", 5)),
+        ("t @ one @ two.c:5", ("t", "one @ two.c", 5)),
+        ("größe @ a @ b.rs:12", ("größe", "a @ b.rs", 12)),
+        ("a$b @ x.c:3", ("a$b", "x.c", 3)),  # a base no selector writes still parses
+        ("t @ a:b.c:5", None),
+        ("t @ main.c:x", None),
+        ("t @ :5", None),
+        ("@ main.c:5", None),
+        (" @ main.c:5", None),
+        ("t", None),
+        ("t @ " + "f" * 256 + ":5", None),
+    ],
+)
+def test_lldbs_located_names_parse_one_way(name, parsed):
+    from peeky.identifiers import changeable, split_located
+
+    assert split_located(name) == parsed
+    assert changeable(name) is (is_name(name) or (parsed is not None and is_name(parsed[0])))
+
+
+def test_a_file_named_with_an_at_sign_gives_the_real_local_its_plain_name():
+    from peeky.identifiers import changeable, reachable
+    from peeky.native import NativeSession, shown_declaration
+
+    inner, outer = "t @ one @ two.c:5", "t @ one @ two.c:3"
+    table = [
+        {
+            "ranges": [(0, 100)],
+            "locals": {"t": [("one @ two.c", 3, True), ("one @ two.c", 5, True)]},
+            "visible": {
+                ("t", "one @ two.c", 3, True): [(0, 100)],
+                ("t", "one @ two.c", 5, True): [(40, 60)],
+            },
+        }
+    ]
+    session = object.__new__(NativeSession)
+    session.declarations = table
+    session._function_at = lambda frame: table[0]
+    session._block_pc = lambda frame: 50
+    session._named_where = lambda name, pc: ("src/one @ two.c", 5) if name == "t" else None
+    rows = [{"name": inner}, {"name": outer}]
+    assert session.selected_as(rows[0], {}, rows) == "t"
+    assert session.selected_as(rows[1], {}, rows) is None
+    assert changeable(inner) and reachable({"name": inner, "selected_as": "t"})
+    assert not reachable({"name": outer})
+    # Each declaration the debugger shows under its name is judged, never "none of it".
+    assert shown_declaration(table, inner, 50) == (table[0], ("one @ two.c", 5, True))
+    assert shown_declaration(table, outer, 50) == (table[0], ("one @ two.c", 3, True))
