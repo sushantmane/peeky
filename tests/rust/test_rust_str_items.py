@@ -6,6 +6,7 @@ Box it is not; the probe's warnings did not say which selector each one was abou
 
 import json
 import os
+import re
 
 import pytest
 
@@ -181,7 +182,12 @@ def test_a_str_item_past_its_last_use_or_in_unsafe_code_is_not_read(tmp_path, st
     cell = rows[(1, "cell")]
     assert cell["value"].startswith("0x") and cell["view"] == "unproven", cell
     assert cell["note"].startswith("This Rust reference shows only its pointer"), cell
-    assert "Box" not in cell["note"] and "`cell` was last used" in cell["note"], cell
+    # The note names what may have run since (#259): the calls on the line before.
+    width = line_of(past, "width = width.max(cell.len());")
+    assert "Box" not in cell["note"] and "#" not in cell["note"], cell
+    assert re.search(
+        rf"`cell` is not used ahead, and (a call|calls) on lines? {width}\b", cell["note"]
+    )
     assert "this Rust reference shows only its pointer" in rows[(1, "cell.length")]["error"]
     # In a crate with unsafe code, nothing is read from memory (#156).
     unsafe = (

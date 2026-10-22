@@ -501,7 +501,8 @@ The details:
   alive.
 - The `&str` that `cell` points at outlives it, so only `cell` itself must be alive.
 - Past that point, `cell` shows only its pointer, marked `[unproven]`. Its note says so. Past that
-  point means it isn't used ahead, or a call or drop came since its last use.
+  point means it isn't used ahead, and a call or drop may have come since its last use. The note
+  names that call or drop, and its line.
 - A `&&str` parameter reads as a `&str` parameter does, typed `&&str`. An example is
   `fn show(s: &&str)`, called by `words.iter().map(show)`.
 - A `&[&str]` or `Vec<&str>` shows LLDB's summary. Its note says where its items read, and names
@@ -752,11 +753,20 @@ note: self.names shows LLDB's summary, not contents: Peeky does not read the ele
 - In the innermost frame of an unoptimized build, a reference reads while the code still uses it.
   That includes a `&str`, and a tuple, `Vec` or closure that holds a reference.
 - After its last use, it reads until a call or a drop runs. Only arithmetic, copies and branches
-  may come between.
+  may come between. A call of `std::ptr::eq` or `std::ptr::addr_eq` counts as arithmetic here: it
+  only compares two addresses.
 - Past that, it shows only its pointer: what it pointed into may be moved, dropped or reallocated.
   To read it, probe a line that still uses it.
+- Its note says what may have run since its last use, and on which line. For example: "`first` is
+  not used ahead, and a call on line 47 may have run since its last use".
 - A line breakpoint stops where its line starts in each lexical block. So a reference reads on the
   line of its last use. A step or a pause can stop inside a line, after a call there.
+- Making a reference into a raw pointer is a use of it, and its last one in
+  `if ptr::eq(f, e.payer)`. The raw pointer made from it is no use of `f` later.
+- Peeky counts a line breakpoint as maybe past a call that the compiler inlined, even at
+  opt-level 0. That doesn't matter for `ptr::eq`, so `f.name` reads on that line. It does for
+  `if same(f, e.payer)`, where `same` is your own `#[inline(always)]` function. There the note says
+  the stop may be past a call on this line.
 - A macro that declares variables of its own, such as `println!` or `assert_eq!`, adds a stop in
   each of its lexical blocks, all at the macro's column. A reference not used later reads at the
   stops before the macro's first call, and shows only its address at those after it.
