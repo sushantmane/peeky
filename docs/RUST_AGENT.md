@@ -1,8 +1,358 @@
-# Experimental Rust investigation loop
+# How Peeky proves Rust values
+
+This page is for maintainers. It explains how Peeky proves what it reads and changes in a Rust
+program. The rules themselves, with examples, are in [rust.md](lang/rust.md) and the
+[Rust cookbook](lang/rust-cookbook.md#72-rust-a-cargo-crate). The worker is in
+[RUST_GATE.md](RUST_GATE.md). The investigation loop is at the [end](#the-investigation-loop).
+
+## The MIR build
+
+Unoptimized builds compile the binary crate through a small rustc wrapper, set as
+`RUSTC_WORKSPACE_WRAPPER`. Peeky writes it into its own build directory, and rechecks its bytes
+before every command. For that crate only, the wrapper adds:
+
+- `-Zmir-opt-level=0`;
+- a `PreCodegen` MIR dump into `target/peeky-mir`;
+- legacy symbol mangling.
+
+Around it:
+
+- `RUSTC_BOOTSTRAP` is set to that crate's name only, so no other crate gets unstable features.
+- The test target, and anything else Cargo compiles, gets no flags. Cargo reuses the one binary
+  unit for both commands.
+- The dumps are a hashed build artifact.
+- Optimized builds use no wrapper, and read no owned locals.
+
+## The owned-local proof
+
+`rust_mir` parses the dumps, and runs a definite-initialization dataflow over each body.
+
+- It maps the stop line to MIR blocks through the LLVM IR's debug locations. Those already
+  attribute macro-expanded code to the line that invokes the macro.
+- It reads an owned `Vec<T>` or `String` local only if the local is initialized everywhere code of
+  that line can be. That means in every such block, and in any block codegen merged into it.
+  `T` is an integer type, `bool`, `f32`, `f64` or `char`.
+- "Everywhere" means before each statement on the line, and in code from another file, such as an
+  external macro's. The dataflow follows moves, drops and assignments statement by statement.
+- A block whose code on the line no statement explains must keep the local throughout.
+- The stop must be in the function's own file.
+- The MIR body must be identified positively. Exactly one body of that name has a span on the
+  function's `fn` line, and it owns every line of its code that any body has a span on.
+
+A second dataflow follows, for every local, only whether it was assigned since its storage began.
+
+- A `StorageLive` ends that: a loop's next pass, or a poll resuming the body. A move or a drop
+  doesn't.
+- Across a suspension, only what the coroutine's state saves stays.
+- A stop where some path leaves a local unassigned withholds it.
+
+Anything Peeky doesn't understand proves nothing:
+
+- an unparsed statement;
+- a coroutine;
+- a projected or doubly bound name;
+- a body that is ambiguous for its IR function, macro-generated twins included;
+- a block of unknown origin;
+- a stop in another file, such as a macro defined there.
+
+A crate using `#[collapse_debuginfo]` gets the whole-block rule only. Unsafe code that duplicates
+ownership, such as `ptr::read`, is outside the proof.
+
+## Reading values from memory
+
+The rules are in the cookbook's
+[What Peeky reads](lang/rust-cookbook.md#what-peeky-reads). How they are proven:
+
+- Reference parameters are read at offsets checked against the build's debug information, when the
+  debugger supports `readMemory`: lldb-dap from LLVM 20.
+- A parameter named in Unicode reads as its ASCII twin does. The LLVM IR quotes its name in hex,
+  so its proofs match the hex spelling.
+- A `let w: &Vec<i64>;` that the function never assigns is named in the IR, but never stored. So
+  it counts as binding the name again.
+- A reference parameter takes its type from the build's IR: `&mut limiter::Window`, not LLDB's
+  `limiter::Window *`. The IR declares each instantiation's own types, never a type parameter.
+- Locals and parameters take their types from the build's MIR.
+- A tuple or struct preview reads at the offsets the build's debug information gives.
+- On stable Rust, a crate can't declare an identifier `__0` other than by a nightly feature.
+  `macro_rules!` can't join identifiers. A procedural macro needs a crate that Peeky's builds
+  refuse: a dependency, a library target or a build script. Peeky's builds allow nightly features,
+  and `${concat(__, "0")}` declares `__0` with no such token. Every file the build reads is a
+  declared input, and all of them are scanned. That includes `Cargo.toml` and `Cargo.lock`, read
+  as plain text, which `include!` can read as Rust.
+- Of a name bound more than once, only the bindings in scope at the stop count. The MIR's scopes
+  pick the binding, and so the type that a field read uses.
+
+### Fields holding a `Vec`, `String`, `&str` or `Box<str>`
+
+- Such a field reads under the proof of the value that holds it. The build's debug information
+  decides the path, never LLDB's names.
+- A shared reference parameter's field reads in every frame, because nothing can change its target
+  during the call. The exception is where the MIR shows its target dropped and not yet replaced
+  ([The Drop window](#the-drop-window)).
+- The field's DWARF type picks the layout: `alloc::vec::Vec<i64, alloc::alloc::Global>`, which LLDB
+  names `Vec<long>`.
+- A `RefCell`'s or `Mutex`'s contents change behind a shared reference, so
+  `self.cell.value.value` stays raw.
+- An owned `Vec` or `String` local's note gives its own reason, rather than always "may be moved,
+  dropped or not yet assigned".
+- `session get self` lists the fields that stay raw, and why. An index into one is refused with
+  that reason, and the length selector to capture: `self.values.len`, `self.name.vec.len`.
+
+## When a reference reads
+
+The rules are in the cookbook's
+[When a reference reads](lang/rust-cookbook.md#when-a-reference-reads). How they are proven:
+
+- While the code still uses a reference, the borrow checker keeps its target.
+- Peeky tells which lexical block a line breakpoint stopped in from the stop's column and the
+  build's LLVM IR.
+- For a macro's stops, it tells the blocks apart by the lexical block that the stop's address is
+  in. That is the build's DWARF, matched to the MIR's scopes and the LLVM IR's blocks by the names
+  each declares.
+- An `#[inline(always)]` function is inlined by LLVM even at opt-level 0, so no IR of its own
+  places the stop. Its frame is judged at every statement of the stop line, and after each of its
+  calls. A frame whose code can't be told apart from another's, such as methods a macro generates,
+  shows every local that borrows as only its pointer, except a reference parameter as below.
+- A function is too big or unusual to analyze when its dataflow runs past its budget.
+- A reference parameter that is never reassigned stops reading when the function drops what it
+  points at: `*h = new`, or `*c.borrow_mut() = new` through a shared `&RefCell`.
+
+### The Drop window
+
+Between the drop and the store of `*v = new`, `v` shows only its address. That holds also when the
+store goes through:
+
+- a reborrow;
+- a struct, a `Cell` or a closure that holds it: `Ctx { v: &mut *v }`;
+- a call that returns it: `id_mut(v)`;
+- a closure's capture of it.
+
+### Frozen owners
+
+In a crate with no unsafe code, a shared reference made only from shared borrows of variables that
+nothing changes always reads. An example is `v` of `for v in args[2].split(',')`, past its last
+use. The borrows may pass through:
+
+- reborrows and copies;
+- calls whose borrowing operands are such borrows: `index`, `deref`, `split`, `into_iter`;
+- `Iterator::next`, on an iterator that only `next` borrows `&mut`. Its items never borrow the
+  iterator.
+
+Limits on that:
+
+- A crate that names anything else `Iterator` gets none of this.
+- A type that a function's header names short, such as `&Vec<String>`, must be the standard
+  library's. It must not be one the crate declares, imports under that name, or names in a
+  `macro_rules!` body.
+
+Each such variable:
+
+- has a scope that encloses the reference's;
+- is assigned once, and never moved, partly assigned, or borrowed `&mut` or raw;
+- is initialized at the stop;
+- has a type with no interior mutability and no references of its own (`Vec<String>`, `String`,
+  integers, and arrays and tuples of them), or is a shared reference argument to such a type.
+
+These read too, unless written through a `&mut` to them:
+
+- a reference into what a shared reference parameter points at, `&items[0]`, because the caller's
+  borrow freezes it;
+- a reference to a variable of an enclosing scope that is initialized at the stop: `&p`;
+- a parameter, never reassigned, that holds references: `&mut self`, `p: &mut Pt`, `v: View<'_>`,
+  `(&Pt, i64)`. The caller lent them for the call;
+- a literal, `let s = "text"`, and a fn pointer.
+
+### Async bodies
+
+- The `.await`'s column is also where the awaited future is dropped if a panic unwinds. A reference
+  handed to the awaited future is past its last use while it is polled. So lines with an `.await`
+  hide more than the same code without `async`.
+- The 140-line async program showed up to four stops on every line.
+- lldb-dap lists the function's own variables, such as a parameter's future field, before a
+  lexical block's.
+- lldb-dap lists a row only where the stop is inside its binding's lexical block. So places of the
+  line outside the blocks of the frame's rows don't count. Where the stop's address tells its
+  lexical block apart, places outside that block don't count either.
+- After a call or a drop on the line, only the edge it returns on counts.
+
+## Withheld and stale values
+
+The rules are in the cookbook's
+[Values Peeky withholds or leaves raw](lang/rust-cookbook.md#values-peeky-withholds-or-leaves-raw).
+How they are proven:
+
+- A local that may hold leftovers is found by the second dataflow above, as rustc's own
+  initialization check would find it.
+- Any struct counts as possibly owning memory through a pointer, because the MIR names no fields.
+- A tuple or array of only primitives and references doesn't count, unless a generic function's
+  type parameter has a primitive's name.
+
+## Crates with unsafe code
+
+The rules are in the cookbook's
+[Crates with unsafe code](lang/rust-cookbook.md#crates-with-unsafe-code). Why the rule is the
+whole crate's:
+
+Unsafe code can free what a value owns where the MIR still shows the value initialized. That is
+sound as long as the value isn't used while it dangles. Examples:
+
+- `ptr::drop_in_place(&mut self.values)` before a `ptr::write`;
+- `ptr::read(&w.values)`, with the copy dropped before `mem::forget(w)`;
+- the same in a closure, or in an `unsafe fn` that the function calls;
+- through a pointer stored for later: an out-parameter, `slot.replace(&mut w.values)`;
+- after the value is moved or rebound;
+- in a caller: `look(w: &W)` after its caller freed `w.values`.
+
+No analysis of the stopped function sees all of these. An owned `Vec` or `String` local's read
+would read freed memory in these cases too. So where the crate's own sources have unsafe code
+anywhere, Peeky reads nothing from memory itself. References are still judged by when they read,
+as above.
+
+- Before the 2024 edition, `#[no_mangle]`, `#[export_name]` and `#[link_section]` are unsafe without
+  saying so. `global_asm!` needs no `unsafe`, but can define `free`.
+- In a crate with no unsafe code, safe Rust guarantees that a reachable `Vec` or `String` owns live
+  memory. A raw pointer, such as `v.as_ptr()`, can free nothing without unsafe code.
+- The standard library is taken as sound. Peeky's builds have no other dependencies.
+- A reference parameter's contents stay raw, because a caller may have freed the buffer of what it
+  lends: `look(v: &Vec<i64>)` reading only `v.capacity()`.
+- A Box's contents are never read. A Box can be freed through a second Box made by
+  `Box::from_raw`, while the first is later forgotten.
+- What LLDB reads itself stays. A reference parameter's target is valid for the whole call, as Rust
+  requires of a reference argument, so its scalar fields read. A by-value struct's preview is its
+  own storage, in the frame.
+
+How the check reads the sources:
+
+- The sources include an integration test's in `tests/`. A test runs in its own binary, but what
+  Peeky read from rustc's dependency file to leave such files out wasn't exact for every file name,
+  such as `a$$b.rs` or one with a U+2028.
+- A shebang line, such as `#!/usr/bin/env -S echo "`, is skipped. Read as code, its `"` would open
+  a string that hides the code below it.
+- Brackets that don't pair up, once comments and literals are blanked, mean a literal was misread.
+  Every source rustc accepts pairs them.
+- A nightly feature counts because Peeky's MIR builds set `RUSTC_BOOTSTRAP`. Then
+  `#![feature(custom_mir)]` frees what a `&Vec` points at with `Drop(*v, ...)`, and no `unsafe`
+  token.
+
+## Changing a value
+
+The rules are in the cookbook's [What `--set` can change](lang/rust-cookbook.md#what---set-can-change)
+and the sections after it. How they are proven:
+
+### No statement under way has read it
+
+A change is allowed at a line breakpoint, or after a step that ends at its line's lowest address in
+the function, where a breakpoint on it stops. From the line's first code in the stop's lexical
+block, the build's MIR must show no temporary that may hold a value read from the local, and is
+used again. Such a temporary is:
+
+- a copy of the local, or of a field;
+- a read through a pointer that may point into it;
+- what a call given such a pointer returns. `format_args!`'s calls don't count, because they keep
+  the pointer, unless the crate itself names something `core` or `std` that could pass for them.
+
+- The line's first MIR place may emit no code, as `&k` in `let t = (&k,` / `s.a,` / `s.b);`. So the
+  stop's column places a breakpoint on its line.
+- `let arr = [s.a,` / `k,` / `s.b];` builds its array on line 1, after reading `s.a`.
+- `OwnedLocals.copied_everywhere` finds lines where every place a line can stop at is inside such a
+  statement. Places that emit no code, such as `StorageDead`, are left aside.
+
+### The order the code runs
+
+`Body.copies_at` reads the MIR in the order the code runs.
+
+- An assignment to the local, or the start or end of its storage, leaves no temporary holding its
+  new value. So a temporary made before doesn't count.
+- A call's result counts only on its return edge.
+- `Body.direct_copies_at` gives the direct copies, from the blocks reachable from `bb0` or a
+  coroutine's resumption. That is a copy or move of the local or a part, what is computed from one,
+  a closure or aggregate holding one, and a read through a pointer to it. It isn't what a call
+  given a pointer returns, such as `x.len()`.
+- A temporary that read the local blocks the change wherever it is used again. One taken from a
+  binding's copy is judged as that binding is: `a + x` still reads `x`.
+- Copies are judged by the part they may have taken: `direct_copies_at(…, projection)`. An
+  aggregate's `[settable]` gate leaves them out (`mid_statement(members=True)`), and judges each
+  member alone.
+
+### The program's own bindings
+
+A binding of the program's own blocks the change where, on some path, the program uses it and then
+assigns or ends the local without reading the changed part (`Body.copy_undoes`). Only direct copies
+count for bindings.
+
+- Only a read that surely covers part of that part counts: `_root_access`, with the selector's MIR
+  projection. `fields.member_indexes` maps fields, because rustc's DWARF lists them in declaration
+  order, as the MIR numbers them.
+- A read is a `copy` or `move` of a place that overlaps the part, or the standard library's
+  printing of a borrowed primitive.
+- A print counts at the call that formats it (`Body._format_reads`): a call to `std::io::_print`,
+  `std::io::_eprint` or `alloc::fmt::format`, by its full MIR path. `format` alone counts only where
+  no function of the crate's own is so named, because the MIR then prints the standard library's.
+- The call's span must be exactly in this toolchain's standard-library or `alloc` `macros.rs`
+  (`rust.std_macro_files`). That is the sysroot's `lib/rustlib/src/rust/library/…`, or
+  `/rustc/<commit-hash>/library/…` with the hash from the build's own `rustc -vV`. It is never a
+  file under the crate or its build, as a crate's own `src/library/std/src/macros.rs` is.
+- The print is traced back to the borrow through `Arguments::new`, the `Argument` array and
+  `Argument::new_display::<i64>`, through locals assigned once. It never counts for a type parameter
+  named like a primitive, nor where the body's type parameters aren't known.
+- `write!` isn't a read, because a `write_fmt` of the crate's own may format nothing. A panic
+  message isn't one either, because a hook may never format it.
+- A borrow given to anything else is unknown, and the path goes on. A write to another part reads
+  nothing, and one that covers the part assigns it.
+
+### How the change is written
+
+- The change is the debugger's `setVariable` on the field. Then the frame's scopes are listed
+  again, and the field is read back.
+- `describe`'s `mutable:` line comes from `fields.settable_parts`: a walk through structs and
+  fixed-size arrays, at any depth, whose every leaf `settable_member` judges. `&str` is a record
+  named `&str` in the DWARF, which the walk never enters.
+- Types are shown as the program spells them, by `rust.rust_spelling`: `Vec<u32>`, `String`,
+  `Option<i32>`, without `alloc::alloc::Global`. The spelling comes from the DWARF name of the type
+  at the row's path, where LLDB's spelling matches it. LLDB's stays in `debugger_type`.
+
+## Changing a String's text
+
+The rules are in the cookbook's
+[Set a String to a text](lang/rust-cookbook.md#set-a-string-to-a-text). How they are proven:
+
+- Peeky writes the bytes with the debugger's `writeMemory`, and `len` with `setVariable` on
+  `vec.len`.
+- `OwnedLocals.borrow_live` decides whether a local that may hold a pointer into the `String` is
+  used after the stop.
+- `Body.lent_from` takes every borrow of the `String` (`&s`, `&mut s`, `&raw const s`), and every
+  value built from one: what `deref`, `index`, `as_str` and `chars` return, a copy, a struct, a
+  closure.
+- It also takes what a call given a borrow may store it into: what another `&mut` or raw pointer it
+  is given points at, or a shared one to a type that may hide a `Cell`.
+- It keeps every local whose type doesn't provably hold no pointer (`_pointer_free`, from
+  `rust.free_types`). A type is free unless it reaches a reference, a raw pointer, a trait object
+  or an unknown type. So a type that holds itself through a `Box` is judged by the rest.
+- A trait object never counts as free: the MIR doesn't print its lifetime.
+- A pointer copied out of a local, such as `vec![…]` filling its `Box`, points into what that local
+  owns.
+- `Body.live_ahead` says whether one is used from the stop's places. A drop counts as a use where
+  the local may still hold a value there (`Body.maybe_initialized`), and its drop may run code that
+  reads the borrow (`_quiet_drop`: not a standard container or view of references).
+- A crate with unsafe code takes no text: `RustSession.unsafe_code`, from `rust.unsafe_source`. An
+  address kept as an integer (`s.as_ptr() as usize`, `addr()`, a `transmute`) holds a pointer that
+  no type shows, and only `unsafe` code can read through it. The crate has no dependencies, so its
+  sources are all the code but the standard library's.
+
+## Limits and qualification
+
+- dwarfdump's octal escapes and the LLVM IR's hex escapes read back. rustc's MIR and Cargo's
+  messages are split at `\n` alone. So a source's name may hold any character.
+- Edition 2024 was qualified by running the whole Rust suite, 56 tests with every owned-local proof,
+  with its example crate switched to 2024.
+- Test processes share OS permissions with the checker, and are trusted code.
+- No live-model Rust evaluation has been recorded.
+
+## The investigation loop
 
 The Rust controller uses the same observation, intervention and candidate-verification flow as Java, C and C++. A fixed Rust worker builds and debugs one dependency-free Cargo binary through LLDB-DAP (see [RUST_GATE.md](RUST_GATE.md)). `RustVerification` rebuilds each candidate in a fresh workspace. Only declared application `.rs` sources are editable; `Cargo.toml`, `Cargo.lock` and the integration-test file are frozen inputs included in every identity check.
 
-## Two independent gates
+### Two independent gates
 
 A Rust candidate passes only when both of these pass on the same fresh build:
 
@@ -11,26 +361,7 @@ A Rust candidate passes only when both of these pass on the same fresh build:
 
 Baseline test failure is recorded and does not stop the investigation; the checker must fail on the original. A failed test assertion or checker case is a verification failure that returns to the decision loop. Candidate compile errors are retryable `build` results only when Cargo's JSON messages (`--message-format=json-diagnostic-short`) show every rustc `error` with a primary span in a declared application source. Span-less errors such as linker or driver failures, errors elsewhere, and malformed or possibly truncated messages are fatal. A test-target compile failure, toolchain/probe failure, unexpected artifact, executable drift or source/test/checker change is fatal.
 
-Before anything runs, a crate whose `asm!`, `global_asm!` or `naked_asm!` can read a file (`.incbin`, `.include`, or an assembler macro that could spell one) is refused (`UNSUPPORTED`, #180): rustc's dependency file does not list what the assembler reads. Where a template may come from elsewhere (a `macro_rules!` argument, a renamed asm macro, `include_str!`), such a directive anywhere in the crate counts.
-
-## The MIR behind owned-local views (#53)
-
-Unoptimized builds also compile the binary crate through a small rustc wrapper (`RUSTC_WORKSPACE_WRAPPER`). It is written into Peeky's own build directory, and its bytes are rechecked before every command. For that crate only, the wrapper adds:
-- `-Zmir-opt-level=0`;
-- a `PreCodegen` MIR dump into `target/peeky-mir`;
-- legacy symbol mangling.
-
-`RUSTC_BOOTSTRAP` is set to that crate's name only, so no other crate gets unstable features. The test target and anything else Cargo compiles get no flags, and Cargo reuses the one binary unit for both commands. The dumps are a hashed build artifact.
-
-`rust_mir` uses them as follows:
-- It parses the dumps and runs a definite-initialization dataflow over each body.
-- It maps the stop line to MIR blocks through the LLVM IR's debug locations, which already attribute macro-expanded code to the invoking line.
-- It reads an owned `Vec<T>` (`T` an integer type, `bool`, `f32`, `f64` or `char`) or `String` local only if, in every such block (and any block codegen merged into it), the local is initialized at each place code of that line can be: before each statement on the line, or from another file (external macro code), following moves, drops and assignments statement by statement. A block whose code of the line no statement explains must keep the local throughout. The stop must be in the function's own file, and the MIR body must be identified positively: exactly one same-named body with a span on the function's `fn` line, owning every line of its code that any body has a span on.
-- For every local, a second dataflow follows only whether it was assigned since its storage began: a `StorageLive` (a loop's next pass, a poll resuming the body) ends that, a move or drop does not, and across a suspension only what the coroutine's state saves stays. A stop where some path leaves a local unassigned withholds it (#132).
-
-Anything not understood proves nothing: an unparsed statement, a coroutine, a projected or doubly bound name, a body that is ambiguous for its IR function (macro-generated twins included), a block of unknown origin, or a stop in another file (a macro defined there). A crate using `#[collapse_debuginfo]` gets the whole-block rule only. Optimized builds use no wrapper and read no owned locals. Unsafe code that duplicates ownership (`ptr::read`) is outside the proof.
-
-## Required deterministic proof
+### Required deterministic proof
 
 ```sh
 PEEKY_RUST_CARGO="$(rustup which --toolchain 1.96.0 cargo)" \
@@ -53,45 +384,3 @@ On Linux, use the LLVM 18 paths from the Rust CI lane and omit `PEEKY_RUST_DSYMU
 The report keeps the original source, test, manifest, lockfile and checker unchanged. It records the candidate hash, build manifest, test executable hash, libtest summary and checker completion. Temporary workspaces are removed (`artifacts_retained: false`). A second regression changes the frozen test file mid-investigation, and verification fails fatally without accepting a fix.
 
 Local macOS run (Apple LLVM 21, Rust 1.96.0): the full investigation took 5.05 s, and the frozen-test drift regression took 2.34 s. Linux timings are recorded in TESTING.md from the hosted lane.
-
-## Reading Rust values
-
-Rust reference parameters (`&[T]`, `&str`, `&Vec<T>`, `&String`, shared or `&mut`, where `T` is any integer type, `bool`, `f32`, `f64` or `char`) are read from the program's memory, in a crate with no unsafe code (see the end of this section), at offsets checked against the build's debug information, when the debugger supports `readMemory` (lldb-dap from LLVM 20). A parameter named in Unicode (`größe`) reads as its ASCII twin does (the IR quotes its name in hex, #191), but no selector names it: listings show it `[not selectable]`. A parameter its function binds again anywhere (`let w = …;`, or a `let w: &Vec<i64>;` it never assigns, which the IR names but never stores) shows only its pointer throughout the function, since the plain name may be either binding. Rows show `[memory]`; selectors index them (`values[0]`, `values[-1]`) and read their length (`values.length` for slices and `&str`, `list.len` and `list.capacity` through `&Vec`/`&String`). Text is shown whole. `&mut` parameters are read only in the innermost frame. Elements show as Rust's `{:?}` prints them (`[0.1, -0.0, 1e16, NaN]`, `[true, false]`), and each element row carries its exact type (`u64`, not LLDB's `unsigned long`). Scalars do too, with LLDB's name in `debugger_type`. Locals and parameters take theirs from the build's MIR (`usize`, `f64`, `char`), and a reference parameter its type from the build's IR (`&mut limiter::Window`, not LLDB's `limiter::Window *`), the instantiation's own in a generic function. A reference or raw pointer to a `u8`, `i8` or `char` (`&u8`, LLDB's `unsigned char *`) shows only its address, never LLDB's C-string reading of what follows it; its pointee is its child. A field takes the one primitive LLDB's name can be (`double` is `f64`); only `long` and `unsigned long` (i64/isize, u64/usize) keep LLDB's name there. `f64`/`f32` values print as Rust's `{:?}` (`10.0`), and `u8`/`i8` values as integers (`65`, not LLDB's `'A'`). Owned `Vec<T>`/`String` locals are read too, in the innermost frame, where the build's MIR proves them initialized at the stop line, in a crate with no unsafe code (#156 review, below). Where they may be moved or dropped (`drop(v)`, `consume(v)`, `let s = s + "x"`, a move on that very line), they keep their raw fields (`ordered.len`) with a note, because their pointer can reach freed memory (#53); one not yet assigned (a `let label: String;` before its assignment) is withheld (#132, below). Elements may also be tuples, or structs your crate defines, whose fields are all such scalars (`Vec<(char, usize)>`, `&[Interval]`, `Vec<Point>` for `struct Point(i32, u8)`, generic ones like `Pair<u16>`). The build's debug information must show plain fields at aligned offsets (no enums, references, nested containers or `#[repr(packed)]`), and the compiler's own type picks the layout, because LLDB's names can collide (it names `Pair<i8>` `Pair<char>`). They print as a derived `Debug` would (`('a', 3)`, `Interval { start: 1, end: 10, open: false }`, `Point(1, 2)`, `(7,)`), even for a type with its own `Debug`. Fields are selectable, named as LLDB names them (`runs[0].__0`, `spans[-1].open`, `points[1].__1`), with their Rust types, and are read-only. Structs from the standard library (`Range<usize>`, which prints as `1..5`) and structs with other fields (a `String`) keep LLDB's summary, with a note. Two structs that share a path (one declared in a function's body, one in a module of the same name) cannot be told apart by name, so a container of either is opaque. A tuple or struct local, or a reference parameter to one (`s: Span`, `t: (i64, char)`, `last: &Span`, `p: Point`, `m: Marker`), whose fields are all such scalars is previewed the same way (#106): `inspect`, `get` and probe rows show `Span { start: 2, end: 3 }`, `Point(1, 2)`, `(7,)` or `Marker` with `[memory]`, read from memory at the offsets the build's debug information gives, and its fields stay selectable (`s.start`, `t.__1`) with their Rust types. The proofs are the containers': an owned local (or a by-value parameter) only where the build's MIR proves it initialized at the stop line, in the innermost frame; a reference parameter once the IR proves it live, a `&mut` one only in the innermost frame. LLDB's own value and fields stay for a local that may be moved, dropped or not yet assigned (`[stale]`, #108), a caller frame's local, a reference local, a nested struct (`Rect { a: Span, .. }`), a packed one, one with any other field (an enum, a reference, a `String`), one sharing its path with another struct (a function's own `Token`), and the standard library's (`Range`). The compiler's own type picks the layout (`Pair<i8>`, which LLDB names `Pair<char>`), and LLDB's name must spell it (`Pair<char32_t>` is never a `Pair<i8>`). In a generic function, its closures and its impl's methods, a type the MIR declares that names a type parameter is never taken for the frame's, whatever the parameter's name (`fn show<i8>(p: Pair<i8>)` may be called with chars): such a local or `Vec` stays raw, and a scalar keeps LLDB's type name; a reference parameter still previews, by the instantiation's own type. A const parameter is a value, never a type, so a function generic only over consts (`fn sum<const N: usize>`, `fn ch<const C: char>`) keeps its previews and Rust types. A packed struct (`#[repr(packed)]`) never previews, even where its fields fall aligned, and the DWARF of `struct Num { __0: u32 }` is that of `struct Num(u32)`, so no tuple struct previews (or reads in a container) in a crate whose sources have an identifier `__0` or enable a nightly feature (`#![feature(…)]`, also inside `cfg_attr`; Peeky's builds allow them, and `${concat(__, "0")}` declares `__0` with no such token). On stable Rust a crate cannot otherwise declare one: `macro_rules!` cannot join identifiers, and a procedural macro needs a crate Peeky's builds refuse (a dependency, library target or build script); every file the build reads is a declared input, and all are scanned (`Cargo.toml` and `Cargo.lock` too, which `include!` can read as Rust, as plain text). Optimized builds and debuggers without `readMemory` show no previews, nor does a preview longer than 1000 characters. A `Box<T>` local or parameter (or an array of them) shows its contents (`b.x`) under the same proof, in a crate with no unsafe code (#156); where it may be moved or dropped it shows only its pointer, `[unproven]`, with a note, because the allocation may be freed and reused (#101). So does a Box a closure captures, and a pointer the MIR cannot vouch for: a generic `T`, `Self` or `impl Trait` value, an `async fn`'s parameter (its future holds it twice), or an unmangled (`#[no_mangle]`) function's (these are never proven). Of a name bound more than once, only the bindings in scope at the stop count. In the innermost frame of an unoptimized build, a reference (also `&str`, or a tuple, `Vec` or closure holding one) reads while the code still uses it (the borrow checker then keeps its target), or after its last use while no call or drop has run since (only arithmetic, copies and branches). Past a call or drop after its last use, what it pointed into may be moved, dropped or reallocated, so it shows only its pointer too (#110): probe a line that still uses it. A line breakpoint stops where its line starts in each lexical block (Peeky tells which from the stop's column and the build's LLVM IR), so a reference reads on the line of its last use; a step or a pause can stop inside a line, after a call there. A macro that declares variables of its own (`println!`, `assert_eq!`) adds a stop in each of its lexical blocks, all at the macro's column. Peeky tells them apart by the lexical block the stop's address is in (the build's DWARF, matched to the MIR's scopes and the LLVM IR's blocks by the names each declares, #115): a reference not used later reads at the stops before the macro's first call, and shows only its address at those after it. Where the address does not tell the block apart (a block whose code the compiler left out, an `.await`'s, two blocks declaring the same names on one line, the function's own line, an `#[inline(always)]` or caller frame), every stop of the line is judged as any of them. A raw pointer (also `NonNull`, `AtomicPtr`) keeps no borrow and always shows only its address (one inside a tuple reads with the tuple, as one in a struct does). Always read, in a crate with no unsafe code (below): a shared reference made only from shared borrows of variables nothing changes (#156: `v` of `for v in args[2].split(',')` past its last use), through reborrows, copies, calls whose borrowing operands are such borrows (`index`, `deref`, `split`, `into_iter`), and `Iterator::next` on an iterator only `next` borrows `&mut` (its items never borrow the iterator; a crate that names anything else `Iterator` gets none of this; a type a function's header names short, `&Vec<String>`, must be the standard library's: not one the crate declares, imports under that name or names in a `macro_rules!` body); each such variable's scope encloses the reference's, and it is assigned once, never moved, partly assigned or borrowed `&mut` or raw, initialized at the stop, of a type with no interior mutability or references of its own (`Vec<String>`, `String`, integers, and arrays and tuples of them), or is a shared reference argument to such a type; a reference into what a shared reference parameter points at (`&items[0]`: the caller's borrow freezes it), one at a variable of an enclosing scope that is initialized at the stop (`&p`), a parameter never reassigned that holds references (`&mut self`, `p: &mut Pt`, `v: View<'_>`, `(&Pt, i64)`: the caller lent them for the call), a literal (`let s = "text"`) and a fn pointer, unless written through a `&mut` to it. Between the drop and the store of `*v = new` (a stop inside the old value's `Drop`, then `step --out`), `v` shows only its address, also when the store goes through a reborrow, a struct, `Cell` or closure holding it (`Ctx { v: &mut *v }`), a call returning it (`id_mut(v)`), or a closure's capture of it; and a Box partly moved out of (`let d = bx.data;`, also `bx.inner.data` of a Box in a Box) shows only its pointer. A stop inside a macro from another file, at a line the build's IR does not explain, in a function too big or unusual to analyze (its dataflow past its budget), or in methods a macro generates (which the MIR cannot tell apart) gates every borrowing local; a reference parameter never reassigned still reads, unless the function drops what it points at (`*h = new`, `*c.borrow_mut() = new` through a shared `&RefCell`). In a crate using `#[collapse_debuginfo]` a line invoking a macro is judged whole. A frame of an `#[inline(always)]` function (LLVM inlines it even at opt-level 0, so no IR of its own places the stop) is judged at every statement of the stop line and after each of its calls; one whose code cannot be told apart from another's (methods a macro generates) gates every borrowing local, except a reference parameter as above. Async bodies (an `async fn`'s, an async block's or async closure's) are judged as functions are: a local the future keeps across an `.await` reads while used ahead, and one it does not keep shows only its pointer after the `.await`, where a later poll's frame holds whatever it held (#116). An `async fn`'s parameter shows twice, as the future's field and as the poll's copy; both read where they hold the same pointer (for a slice or `&str` parameter, only where the debugger reads memory: lldb-dap from LLVM 20). Lines with an `.await` hide more than the same code without `async`: the `.await`'s column is also where the awaited future is dropped if a panic unwinds, and a reference handed to the awaited future is past its last use while it is polled. In a 140-line async program, 145 of 899 reference rows (up to four stops of every line) were hidden, 103 of them on lines that hide them in its synchronous twin too. In the innermost frame of an unoptimized build, and in a caller frame inside a call it makes, a local of a type that does not borrow (a scalar, an enum, a struct, a `Vec`) is withheld where the build's MIR shows that some path to the stop leaves it unassigned since its storage began, as rustc's own initialization check would: `unavailable` and `withheld` with the reason (`no value yet:` in a probe or `session get`), never a value, and it cannot be `--set` (#132). That is a `let late;` before its assignment, a loop's next pass before its `let`, an `if let` binding while its scrutinee's call runs, and, in an async body, a local the future does not keep across an `.await` because the body does not use it after: a poll resuming after the `.await` never assigns it, so its slot holds what earlier calls left (`tmp = 1` where the first poll set 105). An `async fn`'s scalar parameter shows twice: the future's field, which reads, and the poll's own copy, which is withheld there and names the other row (lldb-dap lists the function's own variables, the field, before a lexical block's). Where the body may have reassigned the parameter (`mut n`) before the stop, the field is withheld instead: it holds only what the caller passed. lldb-dap lists a row only where the stop is inside its binding's lexical block, so places of the line outside the blocks of the frame's rows do not count, nor, where the stop's address tells its lexical block apart (#115), places outside that block; after a call or drop of the line, only the edge it returns on counts. The MIR cannot tell the first poll from a resumed one on a line both run (the `.await` itself, a loop around it), so there such a local is withheld in the first poll too. A moved or dropped value is not withheld (#108 marks it), and references keep #110's rules. A local that may own memory through a pointer inside it (a struct, tuple, array or enum holding a Box, Vec, String or Rc; any struct counts, since the MIR names no fields, but not a tuple or array of only primitives and references, unless a generic function's type parameter has a primitive's name) is judged by the same proof (#108). Where the build's MIR does not prove it initialized at the stop, in the innermost frame of an unoptimized build (after `drop(h)`, `consume(h)`, `let g = h;` or a partial move `let d = h.b;`, and wherever nothing is proven: an optimized build, a closure's or async block's capture, a macro's twin functions), it is `[stale]`: its fields show the bytes left in its own storage, the moved-from copy, each `[stale]` with a note (`h.n`, `h.v.len`), and every pointer inside it (a Box field, a `Box<str>`, a reference, an Rc) shows only its address, `[unproven]`, so `h.b.x` is refused and `session get h` lists `h.b` as not expandable. In a caller frame (`--frame N`) its fields read unmarked where the MIR proves it initialized on the call's line (lent as `&mut h`), and its pointers still show only their address, as a callee may be midway through replacing a Box it was lent; where the call may move it (`consume(h)`) it is `[stale]`. A field or element reassigned in place (`h.b = Box::new(..)`, `w.s = String::from(..)`, `arr[i] = ..`) drops the old value and stores the new one, which leaves the local whole if it was whole before; a field moved out and then stored again (`let d = h.b; h.b = ..`) still leaves it `[stale]`. A data-carrying enum other than `Option<i32>` stays opaque. Optimized builds prove nothing, so there every Box, and every pointer the MIR cannot vouch for, shows only its pointer (#111). A `&str` or slice local (`let view: &[i32]`) reads where #110 shows its target standing (below); so does a `&&str` (`cell` of `for cell in cells` over a `&[&str]`, LLDB's `&str *`), whose `&str` outlives it, as text (#205). Past that it shows only its pointer, saying so; a `Vec<&str>` past it keeps its own fields (`names.len`), and its pointers show only their address. A `String`, `Vec` or `&str` field reads through a reference local where #110 shows its target standing (`entry.name` of a loop's `entry: &Entry`, #206); other reference locals keep their raw fields. Of a name the function binds more than once, the binding in scope at the stop (the MIR's scopes) picks the type a field read uses, and `describe` lists each binding by `x @ main.rs:6`, which also selects one lldb-dap lists by its plain name (#206). Optimized builds give no proof, so parameters there keep their raw fields or show as optimized out. Long values show their first elements or characters with `(first k of N)`; up to 256 elements stay selectable.
-
-
-### Fields holding a `Vec`, `String`, `&str` or `Box<str>` (#156)
-
-A field (or an element) of type `Vec<T>`, `String`, `&str`, `Box<str>` or a slice reads from memory as an owned container does, under the proof of the value holding it, reached through plain struct and tuple fields and fixed-size array elements only (the build's debug information decides, never LLDB's names):
-
-- **Through a reference parameter** the build's IR proves live (`&self`, `&mut self`, `w: &Window`), once past its declaration lines, as the parameter itself reads: in `fn push(&mut self, v: i64)`, `self.values` shows `[3, 6]`, and `self.values[0]`, `self.values[-1]` and `self.values.len` select from it. A `&mut` parameter reads only in the innermost frame: in a caller frame the call under way may be changing what it points at. A shared one reads in every frame (nothing can change its target during the call), except where #110 shows its target dropped and not yet replaced. What a `&str` field there points at outlives the call.
-- **In an owned local**, or in what its `Box` holds, in the innermost frame where the build's MIR proves the local initialized at the stop (`w.values` in `main`, beside `w.sum [settable]`). A moved, dropped or partly moved local (`let moved = w;`, `let n = w.name;`) stays `[stale]` with its #108 note, and a caller frame's local stays raw. A `&str` field reads where #110 shows what the local borrows still standing; a struct with no lifetime holds only `&'static str`.
-
-The DWARF type of the field picks the layout (`alloc::vec::Vec<i64, alloc::alloc::Global>`, which LLDB names `Vec<long>`), so a generic's instances read as themselves (#130: `w.items` in `fn peek<T>(w: &Wrap<T>)` is `[1, 2]` for `T = u8` and `['a']` for `T = char`). Elements may be scalars, or tuples and crate structs of them, as for containers. Nothing is read through a pointer or a reference other than the root parameter, an enum (`Option<Vec<i64>>`), a union, a packed struct, or a standard-library type: a `RefCell`'s or `Mutex`'s contents change behind a shared reference, so `self.cell.value.value` stays raw. Where a field stays raw, its row's note gives the reason (`` `self` is a `&mut` parameter of a caller frame ``, `` `self.cell` is a standard-library type (RefCell<…>) ``, `` `w` is a local of a caller frame ``, `the debugger gives no memory address for it` on lldb-dap 18), as does an owned `Vec` or `String` local's (no longer always "may be moved, dropped or not yet assigned"); `session get self` lists the fields that stay raw and why, and an index into one is refused with that reason and the length selector to capture (`self.values.len`, `self.name.vec.len`). The first such field of a session reads the application units' debug information once (tens of milliseconds for a small crate, shared with field changes, #105).
-
-Unsafe code can free what a value owns where the MIR still shows the value initialized, soundly as long as the value is not used while it dangles: `ptr::drop_in_place(&mut self.values)` before a `ptr::write`, `ptr::read(&w.values)` with the copy dropped before `mem::forget(w)`, and the same in a closure, in an `unsafe fn` the function calls, through a pointer stored for later (an out-parameter, `slot.replace(&mut w.values)`), after the value is moved or rebound, or in a caller (`look(w: &W)` after its caller freed `w.values`). No analysis of the stopped function sees all of these, so the rule is the crate's: where its own sources have unsafe code anywhere (an `unsafe` block, function, impl, trait or extern block, an `#[unsafe(...)]` attribute or, unsafe without saying so before the 2024 edition, `#[no_mangle]`, `#[export_name]` or `#[link_section]`, and `global_asm!`, which needs no `unsafe` but can define `free` too; read without comments and strings, `macro_rules!` bodies included, and any other file the build reads as plain text), no owned `Vec` or `String` local (#53's reads, which read freed memory in these cases too), no `Vec`, `String`, `&str` or `Box<str>` field and no `&str` or slice local proven by the frozen-owner rule is read: each stays raw with the reason ("the crate has unsafe code (in src/main.rs), which can free a buffer without Peeky seeing it"), and #110 judges references as before. In a crate with no unsafe code, safe Rust guarantees a reachable `Vec` or `String` owns live memory (a raw pointer, `v.as_ptr()`, can free nothing without unsafe code), so they read. The standard library is taken as sound (Peeky's builds have no other dependencies). The same holds for every other read Peeky makes from memory itself, which this narrows from main for a crate with unsafe code: a reference parameter's contents (`&Vec<T>`, `&String`, `&[T]`, `&str`, and a struct preview through `&S`; a caller may have freed the buffer of what it lends, `look(v: &Vec<i64>)` reading only `v.capacity()`) stay raw with the reason, a Box's contents are never read (`b.x`, freed through a second Box made by `Box::from_raw` while `b` is later forgotten: the Box shows only its pointer, `[unproven]`), and the pointers inside a value (a Box field, a reference field) show only their address. What LLDB reads itself stays: a scalar local, the scalar fields of a struct in the frame (`w.k`) and of what a reference parameter points at (its target is valid for the whole call, as Rust requires of a reference argument), a by-value struct's #106 preview (its own storage, in the frame), an enum's variant.
-
-The sources are every file the crate declares, an integration test's (`tests/`) too: a test runs in its own binary, but what Peeky read from rustc's dependency file to leave such files out was not exact for every file name (`a$$b.rs`, a U+2028 in a name). They are read as rustc reads them: a shebang line (`#!/usr/bin/env -S echo "`) is skipped, not taken for code, whose `"` would open a string hiding the code below it; `#unsafe` counts (a macro may drop the `#`: `run!(#unsafe { ... })`), only `r#unsafe` is a name. A source Peeky cannot be sure it reads so counts as having unsafe code, with its own reason ("Peeky cannot rule out unsafe code in src/main.rs (it opens with a `---` frontmatter block, which Peeky does not read), …"): a comment, string or char literal that does not end, brackets that do not pair up once comments and literals are blanked (every source rustc accepts pairs them, so a literal was misread), a comment after the `#!`, and frontmatter (a nightly feature). A nightly feature counts as well (`#![feature(...)]`, also under `#![cfg_attr(...)]`: "the crate enables nightly features (in src/main.rs), …"): Peeky's MIR builds set `RUSTC_BOOTSTRAP`, and `#![feature(custom_mir)]` frees what a `&Vec` points at with `Drop(*v, ...)` and no `unsafe` token.
-
-Safe Rust is trusted to keep what it reaches alive, so a compiler soundness bug that lets safe code outlive a borrow defeats this: rustc's #25860 (implied bounds on function pointers, as `cve-rs` uses it) gives a struct a `&[i64]` into a `Vec` dropped since, which then reads freed memory with no note. Peeky does not look for such code.
-
-## Changing fields and elements (#105)
-
-`--set` (and `session set`) also changes an integer field or element of a struct, tuple or array local: `s.end=10`, `o.span.start=1`, `o.marks[1]=2`, `t.__0=3` (LLDB's name for a tuple's `.0`), `arr[2]=4` (an element of an array of any length, fetched alone at any step of the path), and of a shadowed local LLDB names with where it is declared (`s @ main.rs:81.a`, as after `let mut w = w;`; an integer one too: `x @ main.rs:18=500`). What a change makes true: the value's storage holds the new value, and the program's later reads of it see it. Only where that holds:
-- the frame is the innermost one, and the build is unoptimized (opt-level 0);
-- the root local is one the build's IR keeps in memory (as for integer locals) and its MIR proves initialized at the stop, so not moved, dropped or yet to be assigned (`drop(h)`, `let later: Span;` before its assignment): a change there would be lost, or overwritten by the assignment;
-- the path, read from the build's debug information rather than LLDB's type names, selects only fields of structs and tuples your crate defines and elements of fixed-size arrays: nothing through a reference, a raw pointer or a `Box` (what one points at may be moved or freed, #101), and nothing inside an enum (variants and niches), a union, a `#[repr(packed)]` struct (its fields may be misaligned) or a standard-library type (`Vec`, `String`, `Range`, `Option`);
-- the value is an `i16` to `i64`, `u16` to `u64`, `isize` or `usize` (not `bool`, `char`, floats or 8-bit integers), and the new value is in its range.
-- no statement under way at the stop has already read the local (#105 review): the stop is a line breakpoint, or a step that ends at its line's lowest address in the function (where a breakpoint on it stops), and from the line's first code in the stop's lexical block the build's MIR shows no temporary that may hold a value read from it (a copy of it or of a field, a read through a pointer that may point into it, or what a call given such a pointer returns, other than `format_args!`'s, which keep the pointer, unless the crate itself names something `core` or `std` that could pass for them) used again. A breakpoint's place on its line is told by the stop's column (the line's first MIR place may emit no code, as `&k` in `let t = (&k,` / `s.a,` / `s.b);`): with no column, the change is refused. Every other stop is refused (`cannot be changed here`), for an integer local too: a step back from a call (`step --out` into `let t = s.a + f();`), a step back onto a statement's first line after its later lines ran (`let arr = [s.a,` / `k,` / `s.b];` builds its array on line 1, after reading `s.a`), and anything else no breakpoint or step explains. A breakpoint on `+ f();` under `let t = s.a` is refused by the MIR (past the read), as is anything the MIR does not explain.
-- the MIR is read in the order the code runs (#183, `Body.copies_at`): an assignment to the local, or the start or end of its storage, leaves no temporary holding its new value, so one made before (the `next()` result `entry` is moved out of in `for entry in args`, which the loop's next pass reads) does not count; a call's result counts only on its return edge. The program's own bindings count as copies too (#192 review: a `match` arm's `n` in `x = match x { n => … n }`, a `while let`'s `v`, `let y = x;`, a `move` closure's capture): one blocks the change where, on some path, the program uses it and then assigns or ends the local without reading the changed part (`Body.copy_undoes`): it goes on with the old value and never sees the change. Only a read that surely covers part of that part counts (#192 review 2, `_root_access` with the selector's MIR projection, `fields.member_indexes`: rustc's DWARF lists fields in declaration order, as MIR numbers them): a `copy` or `move` of a place that overlaps it, or std's printing of a borrowed primitive, counted at the call that formats it (#192 reviews 3 and 4, `Body._format_reads`: a call to `std::io::_print`, `std::io::_eprint` or `alloc::fmt::format` by its full MIR path (`format` alone only where no function of the crate's own is so named, as MIR then prints std's), whose span is exactly in this toolchain's std or alloc `macros.rs` (`rust.std_macro_files`: the sysroot's `lib/rustlib/src/rust/library/…`, or `/rustc/<commit-hash>/library/…` with the hash from the build's own `rustc -vV`; never a file under the crate or its build, as a crate's own `src/library/std/src/macros.rs` is), traced back through `Arguments::new`, the `Argument` array and `Argument::new_display::<i64>` to the borrow, through locals assigned once; never a type parameter named like a primitive, nor where the body's type parameters are not known). A `format_args!` given to anything else or dropped, `write!` (a `write_fmt` of the crate's own may format nothing) and a panic message (a hook may never format it) are no read. A borrow given to anything else (`ignore(&x)`, `width(&s)`, `{:?}` of a crate type) is unknown and the path goes on; a write to another part reads nothing, and one covering the part assigns it. Where it reads the part again, the copy is the program's own history (`let a = s.x;`). Copies are judged by the part they may have taken (`direct_copies_at(…, projection)`), and an aggregate's `[settable]` gate leaves them out (`mid_statement(members=True)`), each member being judged alone. Only direct copies count for bindings (`Body.direct_copies_at`, from the blocks reachable from bb0 or a coroutine's resumption: a copy or move of the local or a part, what is computed from one, a closure or aggregate holding one, a read through a pointer to it), not what a call given a pointer returns (`x.len()`); a temporary that read the local blocks it wherever it is used again, as before, and one taken from a binding's copy is judged as that binding is (`a + x` still reads `x`). A refusal names the lines where the temporaries it found were made (`at line 17`), or the bindings (`into `n``), and where every place a line can stop at is inside such a statement (`OwnedLocals.copied_everywhere`: `s.b];`, the last line of `let arr = [s.a,` / `k,` / `s.b];`; places that emit no code, as `StorageDead`, aside), the probe is refused before it runs, naming that line.
-
-The change is made with the debugger's `setVariable` on the field, then the frame's scopes are listed again and the field read back: it must be the value asked, or the change is reported as not made (`MUTATION_REJECTED`), or, when something else was stored, the session is closed. A struct or tuple local shown as a preview read from memory (#106: `Span { start: 1, end: 2 } [memory]`) is its own storage, so its fields change the same way, under the same rules: the write goes through the debugger's own variable (not the preview), and the preview is read again afterwards, which must show the new value too (else the session is closed). What a container holds (a `Vec`'s or `String`'s contents, a `Box`'s target) and an enum's variant stay unchangeable (`inside a value Peeky decodes itself`). A caller's frame is never changed: a call it is making may hold a copy of the old value. Copies the program made itself keep the old value (`let a = s.a;` above the stop, a `for` loop's iterator over `0..s.n`), and the stop's own line may overwrite the change (`s = Tri { a: 9, ..s };`). Probe rows, `session get` listings and a preview's fields mark what a change would reach `[settable]`, judged by these rules at the stop (never a field through a reference); a refused `--set` says which rule it broke (`` `pk` is a packed struct (Packed): its fields may be misaligned ``).
-
-`describe`'s `mutable:` line lists the paths a change can reach per function (`board::main: board.entries`; `[*]` for any element; `fields.settable_parts`, a walk through structs and fixed-size arrays at any depth whose every leaf `settable_member` judges, with `… and N more` past its cap), never a reference's or slice's parts (`&str` is a record named `&str` in the DWARF), and the functions where nothing can change, with the candidate edit that can (#183). Types are shown as the program spells them (`rust.rust_spelling`: `Vec<u32>`, `String`, `Option<i32>`, without `alloc::alloc::Global`), from the DWARF name of the type at the row's path where LLDB's spelling matches it, LLDB's kept as `debugger_type`.
-
-## Changing a String's text (#137)
-
-`--set 'name="pear"'` (a text in double quotes, as JSON writes a string) changes a `String` local's text in the buffer it has: Peeky reads the String's pointer, `len` and `cap` at the offsets the build's DWARF gives (as for owned-`String` views), refuses a text longer than `cap` (nothing written), writes the bytes with the debugger's `writeMemory` and `len` with `setVariable` on `vec.len`, then reads all three words and the bytes back (any difference closes the session). It needs the same proofs as an integer local (innermost frame, opt-level 0, in memory, no statement under way) and two more: the MIR must prove the local initialized at the stop, since a moved or dropped `String`'s pointer may point into freed memory; and no local that may hold a pointer into it may be used after the stop (`OwnedLocals.borrow_live`, #164): `Body.lent_from` takes every borrow of the String (`&s`, `&mut s`, `&raw const s`), every value built from one (what `deref`, `index`, `as_str`, `chars` return, a copy, a struct, a closure), and what a call given one may store it into (what another `&mut` or raw pointer it is given points at, or a shared one to a type that may hide a `Cell`), keeping every local whose type does not provably hold no pointer (`_pointer_free`: numbers, `String`, arrays, tuples and standard containers of those, and the crate's own structs, enums and unions without type parameters whose fields, variants and elements the DWARF shows to be such or a `Box` of such, `rust.free_types`: a type is free unless it reaches a reference, raw pointer, trait object or unknown type, so one that holds itself through a `Box` is judged by the rest; never a trait object, whose lifetime the MIR does not print, an `impl` type, a type parameter or another type of the crate's own), and a pointer copied out of a local (`vec![…]` filling its Box) points into what that local owns. `Body.live_ahead` says whether one is used from the stop's places, a `drop` counting as a use where the local may still hold a value there and its drop may run code that reads the borrow (`_quiet_drop`: not a standard container or view of references) (`Body.maybe_initialized`: a guard's `Drop` reads its `&str`; a Box dropped before the stop drops nothing at the scope's end). Such a borrow keeps the old length: it would read a mix of texts, or bytes that are not UTF-8. A crate with unsafe code takes no text, with #163's reason (`RustSession.unsafe_code`, from `rust.unsafe_source`, described above: `unsafe`, `#[no_mangle]` and the like, the `asm!` macros, a nightly feature, or a source Peeky cannot read as rustc does, in any of the crate's files): an address kept as an integer (`s.as_ptr() as usize`, `addr()`, a `transmute`) holds a pointer no type shows, and only `unsafe` code can read through it; the crate has no dependencies, so its sources are all the code but the standard library's. A `&str`, a `&String` and any other local are refused before the program runs (`&str`: borrowed text, possibly a read-only literal), and a String field or element is never changed. lldb-dap 18 and 20 have no `writeMemory`, so there a String's text is refused.
-
-## Limits
-
-One dependency-free binary and at most one integration-test target, edition 2021 or 2024. A source's name may hold any character (`#[path = "x\u{2028}y.rs"]`): dwarfdump's octal and LLVM IR's hex escapes read back, and rustc's MIR and Cargo's messages are split at `\n` alone (#179). It must end in `.rs`: a `#[path]` module named otherwise is not part of the build (`couldn't read src/module`). Lines are counted as rustc counts them, at `\n` alone. A plain `cargo new` crate qualifies: targets may be explicit (`[[bin]]`, `[[test]]`, discovery switched off) or Cargo's defaults (`src/main.rs`, `tests/*.rs`), provided nothing else Cargo would discover exists (`src/lib.rs`, `src/bin`, `build.rs`, test directories). `[dependencies]` tables must be empty, and package metadata fields (`description`, `license`, ...) are allowed. Without an integration test, `verify` relies on the checker alone. Edition 2024 was qualified by running the whole Rust suite (56 tests, every owned-local proof included) with its example crate switched to 2024. No workspaces, build scripts, dependencies, doctests or unit-test harness of the binary itself. libtest output beyond the 16,000-byte capture is a failure, not a pass. Test processes share OS permissions with the checker and are trusted code. No live-model Rust evaluation has been recorded.
