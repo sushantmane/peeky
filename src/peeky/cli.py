@@ -623,12 +623,13 @@ def describe(args):
             "xs[0]) of type byte, short, int, long, char, boolean, float or double, and "
             "String ones; a char takes a char in single quotes ('+') or a code point (43), a "
             "String a text in double quotes (--set 'name=\"apple\"'); never a boxed value "
-            "(Integer), another object or an ArrayList's elements. char and String changes "
-            "need an adapter bundle built by this version of scripts/setup_java_adapter.py. "
-            "Rows mark what can change [settable]",
+            "(Integer), another object or an ArrayList's elements, nor a field a JDK class "
+            "declares (a String's hash, an ArrayList's size) or an element of an array one "
+            "holds. Field, char and String changes need an adapter bundle built by this "
+            "version of scripts/setup_java_adapter.py. Rows mark what can change [settable]",
             "java-attach": "root locals, fields and array elements of type byte, short, int, "
-            "long, char, boolean, float or double, and String ones, as for launched Java "
-            "(attached JVM; no edit verification)",
+            "long, char, boolean, float or double, and String ones, as for launched Java, "
+            "never a JDK class's fields (attached JVM; no edit verification)",
         }[language]
         from peeky.probe import optimization_level
 
@@ -1519,6 +1520,13 @@ def _variables_text(snapshot, name="default"):
                 if variable.get("variablesReference") and is_name(variable["name"])
                 else ""
             )
+            if more and variable.get("whole"):
+                # A Java String or boxed number (#204): a value, not its class's fields.
+                more = (
+                    ""
+                    if str(variable.get("value")).startswith('"')
+                    else more.replace("(children:", "(value:", 1)
+                )
             if variable.get("unavailable"):
                 more = f" (no readable value: {variable.get('reason')})"
             elif variable["name"] in PYDEVD_GROUPS and not variable.get("type"):
