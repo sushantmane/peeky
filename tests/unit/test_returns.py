@@ -440,9 +440,10 @@ def test_a_line_reached_again_before_the_return_is_never_attributed(monkeypatch,
     _, returns, _ = probe_with(monkeypatch, tmp_path, script)
     error = returns[1]["error"]
     assert "value" not in returns[1] and error.startswith(
-        "withheld: the line stopped again at the same depth before this call returned, and "
-        "Peeky could not tell whether in this call (a loop's next pass) or in a later call "
-        "after this one ended without returning"
+        "withheld: probe a line that runs once per call, such as the function's first. The "
+        "line stopped again at the same depth before this call returned, and Peeky could not "
+        "tell whether in this call (a loop's next pass) or in a later call after this one "
+        "ended without returning"
     )
     assert "breakpoint location" not in error and "ran again" not in error
     assert returns[2]["value"] == "7"
@@ -461,9 +462,10 @@ def test_a_later_stop_of_a_multi_stop_line_says_so_and_claims_no_pass(monkeypatc
     result, returns, _ = probe_with(monkeypatch, tmp_path, script)
     error = returns[1]["error"]
     assert error.startswith(
-        "withheld: the line stopped again at the same depth (at its breakpoint location 2 of "
-        "2) before this call returned, and Peeky could not tell whether in this call (another "
-        "of the line's breakpoint locations, or a loop's next pass) or in a later call"
+        "withheld: probe a line that runs once per call, such as the function's first. The "
+        "line stopped again at the same depth (at its breakpoint location 2 of 2) before this "
+        "call returned, and Peeky could not tell whether in this call (another breakpoint "
+        "location, or a loop's next pass) or in a later call"
     ), error
     # Each (return) row has its own hit's stop, in the rows and per hit.
     assert [(returns[h]["stop"], returns[h]["stops"]) for h in (1, 2)] == [(1, 2), (2, 2)]

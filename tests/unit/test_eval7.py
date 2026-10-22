@@ -412,7 +412,7 @@ def test_diff_says_when_the_runs_hits_do_not_line_up(store, capsys):
         )
     result = evidence.run_query(store, "diff")
     note, after = result["notes"]
-    assert note.startswith("run 1 stopped 4 times at its line and run 2 5,"), note
+    assert "Run 1 stopped 4 times at its line and run 2 5," in note, note
     assert "peeky queries join --param a=1 --param b=2 --param key=<selector>" in note
     # #201: how many rows come after the first hit that differs (every row is kept).
     assert after.startswith(
@@ -420,7 +420,7 @@ def test_diff_says_when_the_runs_hits_do_not_line_up(store, capsys):
     ), after
     assert len(result["rows"]) == 5
     assert main(["queries", "diff", "--store", str(store)]) == 0
-    assert "note: run 1 stopped 4 times" in capsys.readouterr().out
+    assert "Run 1 stopped 4 times" in capsys.readouterr().out
     # The same number of stops: no note.
     saved(store, [(1, "observed", "x", "1")])
     saved(store, [(1, "observed", "x", "2")])
@@ -447,7 +447,7 @@ def test_diff_pairs_hits_at_the_same_stop_where_both_runs_label_them(store):
         (2, None, "5", "missing in run a (run b: stop 1)"),
     ]
     (note,) = result["notes"]
-    assert note.startswith("at hit 2 run 1 was at stop 2 of its line and run 2 at stop 1"), note
+    assert "At hit 2, run 1 was at stop 2 of its line and run 2 at stop 1" in note, note
     assert "peeky queries join --param a=1 --param b=2 --param key=<selector>" in note
     # The same stops pair as before; a run with no labels pairs by hit and says so.
     saved(store, [(1, "observed", "x", "1", 1), (2, "observed", "x", "7", 2)])
@@ -501,7 +501,7 @@ def test_returns_alone_on_a_line_that_stops_several_times_are_flagged(store):
     saved(store, returns, warnings=[warning])
     saved(store, returns[:1] + [(2, "returned", "(return)", "8")], warnings=[warning])
     (note,) = evidence.run_query(store, "diff")["notes"]
-    assert note.startswith("run 1's line stops several times per pass, and its `(return)`")
+    assert "Run 1's line stops several times per pass, and its `(return)`" in note
     assert "peeky queries join --param a=1 --param b=2 --param key=<selector>" in note
     # A line with one location: no note.
     saved(store, returns)
@@ -570,7 +570,7 @@ def test_a_return_whose_hits_rows_disagree_is_not_paired_by_a_guessed_stop(store
         (None, "6", "missing in run a (run b: stop 1)"),
     ]
     assert any(
-        note.startswith("run 1's line stops several times per pass, and its `(return)` rows")
+        "Run 1's line stops several times per pass, and its `(return)` rows" in note
         for note in result["notes"]
     ), result["notes"]
 
@@ -612,9 +612,9 @@ def test_compare_names_no_run_whose_hits_are_at_other_stops(cli, capsys):
     compare = json.loads(capsys.readouterr().out)["evidence"]["compare"]
     assert compare["run"] is None, compare
     assert compare["hint"] == (
-        "run 1 is this probe without the edit, but at hit 1 it was at stop 1 of the line "
-        "and this run at stop 2, so hits do not pair by number: pair them by a value, "
-        "`peeky queries join --param a=1 --param b=3 --param key=<selector>`"
+        "pair the hits by a value: `peeky queries join --param a=1 --param b=3 --param "
+        "key=<selector>`. Run 1 is this probe without the edit, but at hit 1 it was at stop 1 "
+        "of the line and this run at stop 2, so hits do not pair by number"
     )
 
 

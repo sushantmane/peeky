@@ -603,13 +603,12 @@ class DebugWorker:
         state at failure, and `close` ends it. Raises LostStop."""
         diagnosis = self.diagnose(runtime, evidence)
         message = (
-            "Lost stop: java-debug never reported a stop it made (issue #27). Thread "
-            f"{diagnosis['thread_name']!r} (id {diagnosis['thread']}) has been suspended for "
-            f"{diagnosis['unreported_s']} s in {diagnosis['function']} at "
-            f"{diagnosis['location']}, this session's verified breakpoint "
-            f"{diagnosis['breakpoint']}, with no other thread suspended in "
-            f"{diagnosis['samples']} checks, and no `stopped` event arrived. Nothing was "
-            "served from this stop, and Peeky detached from the program"
+            "Lost stop: java-debug never reported a stop it made, so Peeky served nothing "
+            f"from it and detached from the program. Thread {diagnosis['thread_name']!r} (id "
+            f"{diagnosis['thread']}) has been suspended for {diagnosis['unreported_s']} s in "
+            f"{diagnosis['function']} at {diagnosis['location']}, this session's verified "
+            f"breakpoint {diagnosis['breakpoint']}, with no other thread suspended in "
+            f"{diagnosis['samples']} checks"
         )
         self.record(
             {"time": time.time(), "operation": "lost_stop", "arguments": {}, "result": diagnosis}

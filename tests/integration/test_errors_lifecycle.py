@@ -213,7 +213,7 @@ def test_a_python_program_that_never_starts_is_not_left_running(worker, monkeypa
         assert len(pids) == 1 and not processes.alive(table.get(pids[0]))
         assert failure.error_code == "TIMEOUT" and failure.payload["session_closed"] is True
         assert failure.payload["message"].startswith("The debuggee did not start")
-        assert "check that it can read its own path" in failure.hint
+        assert "can read its path and every directory above it" in failure.hint
         assert failure.payload["cleanup"] == f"terminated pid {pids[0]}"
     finally:
         for pid in pids:

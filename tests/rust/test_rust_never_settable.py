@@ -305,12 +305,13 @@ def test_a_local_an_async_body_keeps_across_an_await_says_so(tmp_path, state, ca
     code, result = probe(capsys, crate, at, "--set", "k=9")
     message = refused_before_launch(result)
     assert "`k` is held in the async body's state across an `.await`" in message, message
+    assert "a pointer Peeky never writes) at every stop of the body" in message, message
     assert "register" not in message and "black_box(&mut k)" not in message, message
     assert "`let mut k2 = k; std::hint::black_box(&mut k2);`" in message, message
     assert message.endswith(
         "settable here: q (root locals; fields too where rows mark them [settable])"
     ), message
-    assert "copy it into a local of the poll's own" in result["error"]["hint"]
+    assert "copy it into a local after the `.await`" in result["error"]["hint"]
     code, result = probe(capsys, crate, at, "--capture", "k,q")
     rows = {row["selector"]: row for row in result["rows"]}
     assert rows["k"]["not_settable"] == "async state" and rows["q"]["settable"] is True, rows

@@ -1590,10 +1590,10 @@ def _join(path, params):
         )["rows"]
         if carried:
             notes.append(
-                f"{key}'s values carry addresses ({carried[0]['value'][:60]}), which "
-                "differ between runs even where what they point at is equal, so such "
-                "hits rarely pair: --param masked=1 matches them with addresses masked "
-                "(no_addresses: any address then matches any other)"
+                f"add --param masked=1 to match {key}'s values with addresses masked, so that "
+                f"any address matches any other: they carry addresses "
+                f"({carried[0]['value'][:60]}), which differ between runs even where what they "
+                "point at is equal, so such hits rarely pair"
             )
     same = " AND ".join(f"a.k{i} = b.k{i}" for i in range(len(keys)))
 
@@ -1684,11 +1684,11 @@ def _repeated(path, sides, keys, a, b):
     shown = _listed([f"`{key}` {str(part)[:60]}" for key, part in zip(keys, value)])
     many = len(crossed) > 1
     return [
-        f"the key repeats: run {run}'s hits {_listed(hits)} "
+        f"the key repeats: add a selector that names the call to the key "
+        f"(key={','.join(keys)},<selector>). Run {run}'s hits {_listed(hits)} "
         f"{'both' if len(hits) == 2 else 'all'} have {shown}, and such a value pairs every "
         f"hit that has it in one run with every one in the other ({rows} rows, from "
-        f"{len(crossed)} value{'s' if many else ''}): to tell those hits apart, add a "
-        f"selector that names the call to the key (key={','.join(keys)},<selector>)"
+        f"{len(crossed)} value{'s' if many else ''})"
     ]
 
 
@@ -1791,17 +1791,18 @@ def _unaligned(path, params):
                 return notes, False
             return notes + _unplaced_returns(path, run), False
         return [
-            f"at hit {apart['hit']} run {run['a']} was at {stop_text(apart['stop_a'])} of "
-            f"its line and run {run['b']} at {stop_text(apart['stop_b'])}, so a hit need not "
-            "be the same moment in both: pair them by a value instead, `peeky queries join "
-            f"--param a={run['a']} --param b={run['b']} {_JOIN_KEY}`"
+            "pair the hits by a value instead: `peeky queries join "
+            f"--param a={run['a']} --param b={run['b']} {_JOIN_KEY}`. At hit {apart['hit']}, "
+            f"run {run['a']} was at {stop_text(apart['stop_a'])} of its line and run "
+            f"{run['b']} at {stop_text(apart['stop_b'])}, so a hit need not be the same moment "
+            "in both"
         ], False
     return [
-        f"run {run['a']} stopped {run['ha']} times at its line and run {run['b']} "
-        f"{run['hb']}, so a hit need not be the same moment in both (a sort's comparator "
-        "is called on other pairs once one answer differs), and pairing by hit number can "
-        "show every later hit as a difference: pair them by a value instead, `peeky queries "
-        f"join --param a={run['a']} --param b={run['b']} {_JOIN_KEY}`"
+        "pair the hits by a value instead: `peeky queries join "
+        f"--param a={run['a']} --param b={run['b']} {_JOIN_KEY}`. Run {run['a']} stopped "
+        f"{run['ha']} times at its line and run {run['b']} {run['hb']}, so a hit need not be "
+        "the same moment in both, and pairing by hit number can show every later hit as a "
+        "difference"
     ], True
 
 
@@ -2201,12 +2202,11 @@ def _unplaced_returns(path, run):
     if not found:
         return []
     return [
-        f"run {found[0]['run_id']}'s line stops several times per pass, and its `(return)` "
-        "rows do not say at which stop their call began (no row of their hit records one, "
-        "or its rows disagree), "
-        "so a hit need not be the same call in both runs: capture a selector with `return` "
-        "to pair them by stop, or pair them by a value, `peeky queries join --param "
-        f"a={run['a']} --param b={run['b']} --param key=<selector>`"
+        "capture a selector with `return` to pair the hits by stop, or pair them by a value: "
+        f"`peeky queries join --param a={run['a']} --param b={run['b']} --param "
+        f"key=<selector>`. Run {found[0]['run_id']}'s line stops several times per pass, and "
+        "its `(return)` rows do not say at which stop their call began, so a hit need not be "
+        "the same call in both runs"
     ]
 
 

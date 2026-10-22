@@ -428,7 +428,7 @@ peeky probe report.py --at 8 --capture total --old 'sum(values) * 2' --new 'sum(
 ```
 
 ```
-warning: This Python candidate ran from a copy of .../demo/ only (no .git, pyproject.toml, setup.py or setup.cfg there). Nothing above it was copied: if the program reads, imports or runs anything there (git finding the repository), values may differ for that reason, not the edit's; then give that directory as the target (`peeky probe <project> --at <path/to/file.py>:<line>`)
+warning: This Python candidate ran from a copy of .../demo/ only (no .git, pyproject.toml, setup.py or setup.cfg there). If the program reads, imports or runs anything above it, as git does to find the repository, give that directory as the target (`peeky probe <project> --at <path/to/file.py>:<line>`): nothing above was copied, so values may differ for that reason, not the edit's
 ```
 
 If the program reads or imports anything above the root, give the project directory as the target:

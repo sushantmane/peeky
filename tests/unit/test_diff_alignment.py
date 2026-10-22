@@ -338,9 +338,10 @@ def test_diff_says_how_many_rows_come_after_the_first_difference(store):
     first = min(row["hit"] for row in result["rows"] if row["hit"] is not None)
     assert first == 4 and [r["selector"] for r in result["rows"] if r["hit"] == 4] == ["gleich"]
     count, after = alignment(result["notes"])
-    assert count.startswith("run 1 stopped 8 times at its line and run 2 6"), count
-    assert count.endswith(
-        "`peeky queries join --param a=1 --param b=2 --param key=<selector>[,<selector>…]`"
+    assert count.startswith("pair the hits by a value instead"), count
+    assert "Run 1 stopped 8 times at its line and run 2 6" in count, count
+    assert (
+        "`peeky queries join --param a=1 --param b=2 --param key=<selector>[,<selector>…]`" in count
     ), count
     assert after == (
         "the first difference at a hit is at hit 4; 19 of the 20 rows at a hit come after "
@@ -359,10 +360,10 @@ def test_join_pairs_by_several_selectors_and_says_when_its_key_repeats(store):
     assert sum(row["matched"] == "both" for row in one["rows"]) == 16
     (note,) = one["notes"]
     assert note == (
-        'the key repeats: run 1\'s hits 1, 7 and 8 all have `neu.bezeichnung` "Mutter", and '
-        "such a value pairs every hit that has it in one run with every one in the other "
-        "(16 rows, from 3 values): to tell those hits apart, add a selector that names the "
-        "call to the key (key=neu.bezeichnung,<selector>)"
+        "the key repeats: add a selector that names the call to the key "
+        "(key=neu.bezeichnung,<selector>). Run 1's hits 1, 7 and 8 all have `neu.bezeichnung` "
+        '"Mutter", and such a value pairs every hit that has it in one run with every one in '
+        "the other (16 rows, from 3 values)"
     )
     two = evidence.run_query(store, "join", {"key": "p.bezeichnung,neu.bezeichnung"})
     assert two["columns"][:4] == ["p.bezeichnung", "neu.bezeichnung", "hit_a", "hit_b"]
@@ -374,10 +375,11 @@ def test_join_pairs_by_several_selectors_and_says_when_its_key_repeats(store):
     ]
     assert unpaired == [(5, None, "only in run a"), (6, None, "only in run a")]
     (note,) = two["notes"]
-    assert note.startswith(
-        'the key repeats: run 1\'s hits 1 and 7 both have `p.bezeichnung` "Schraube" and '
-        '`neu.bezeichnung` "Mutter", and such a value pairs every hit that has it in one run '
-        "with every one in the other (4 rows, from 1 value)"
+    assert note == (
+        "the key repeats: add a selector that names the call to the key "
+        "(key=p.bezeichnung,neu.bezeichnung,<selector>). Run 1's hits 1 and 7 both have "
+        '`p.bezeichnung` "Schraube" and `neu.bezeichnung` "Mutter", and such a value pairs '
+        "every hit that has it in one run with every one in the other (4 rows, from 1 value)"
     ), note
     assert evidence.query(store, two["sql"])["rows"] == two["rows"]
 

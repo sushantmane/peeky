@@ -155,7 +155,7 @@ For example, with the worker stopped:
 ```
 $ peeky session get start
 peeky: [UNREACHABLE] Worker at http://127.0.0.1:18765 is unreachable ([Errno 61] Connection refused); the request was not sent. Check the worker process or SSH tunnel, then retry
-  hint: No request reached the worker. Restore the worker or SSH tunnel and retry; the worker keeps a session until its idle timeout. If the worker is gone for good, use `peeky session close --forget`.
+  hint: Restore the worker or SSH tunnel, and retry: it keeps the session until its idle timeout. If it is gone for good, run `peeky session close --forget`.
 ```
 
 - A `session close` that fails with `UNREACHABLE` keeps the session's record, so you can retry it.

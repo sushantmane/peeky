@@ -166,8 +166,9 @@ def test_a_line_that_stops_again_before_the_return_claims_no_cause(java, tmp_pat
     for hit in (1, 2):
         error = hits[hit][RETURN]["error"]
         assert "value" not in hits[hit][RETURN] and error.startswith(
-            "withheld: the line stopped again at the same depth before this call returned, "
-            "and Peeky could not tell whether in this call (a loop's next pass) or in a later "
-            "call after this one ended without returning"
+            "withheld: probe a line that runs once per call, such as the function's first. "
+            "The line stopped again at the same depth before this call returned, and Peeky "
+            "could not tell whether in this call (a loop's next pass) or in a later call after "
+            "this one ended without returning"
         ), error
     assert hits[3][RETURN]["value"] == "6"
