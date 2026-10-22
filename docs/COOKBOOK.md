@@ -52,8 +52,12 @@ peeky verify <target> --check <checker.py> --old '<text>' --new '<text>'   # pro
 ## Table of Contents
 
 0. [Setup](#0-setup): install Peeky and the debugger or toolchain each language needs
+   - [Install Peeky](#install-peeky): Python 3.11 or later; `pip install` brings debugpy
+   - [What each language also needs](#what-each-language-also-needs): the tools for C, C++, Rust and Java, and how Peeky finds them
+   - [Keep a task's runs apart](#keep-a-tasks-runs-apart): `PEEKY_STATE_DIR`
+   - [How Peeky tells the language](#how-peeky-tells-the-language): from the target's path, or `--config`
 1. [First Look](#1-first-look): what a target offers, and a first probe
-   - [1.1 What Can I Ask?](#11-what-can-i-ask): `describe`: breakpoint lines, each function's names and types, what `--set` can change; lines and stepping
+   - [1.1 What Can I Ask?](#11-what-can-i-ask): `describe`: breakpoint lines, each function's names and their types (not in Python), what `--set` can change; lines and stepping
    - [1.2 First Probe](#12-first-probe): values at one line, and the program's output
 2. [Asking Questions with Probes](#2-asking-questions-with-probes): one run per question: values, changes, returns
    - [2.1 Fields and Indexes](#21-fields-and-indexes): selectors: fields, indexes, keys; names in any script
@@ -64,14 +68,14 @@ peeky verify <target> --check <checker.py> --old '<text>' --new '<text>'   # pro
    - [2.6 Stop Right After the Last Hit](#26-stop-right-after-the-last-hit): `--until hits`: stop once the values are in
    - [2.7 JSON for Scripts](#27-json-for-scripts): `--json` and `jq`
    - [2.8 Change a Value, Then Restore It](#28-change-a-value-then-restore-it): `--set-at LINE@HIT`: change at one line, restore at another
-   - [2.9 What a Function Returned](#29-what-a-function-returned): `--capture return`: what each call returned
+   - [2.9 What a Function Returned](#29-what-a-function-returned): `--capture return`: what a call returned, in C, C++, Rust and Java
 3. [Comparing Runs](#3-comparing-runs): what differs between saved runs
    - [3.1 Two Inputs Side by Side](#31-two-inputs-side-by-side): `queries diff`: what else differed, then the first divergence
    - [3.2 Inputs, Outcomes and Outputs of the Last Two Runs](#32-inputs-outcomes-and-outputs-of-the-last-two-runs): `queries outputs`: arguments, changes, status and output per run
    - [3.3 What My Intervention Changed](#33-what-my-intervention-changed): `queries set_effect`: values before and after a change
    - [3.4 One Row per Hit](#34-one-row-per-hit): `queries wide`: a row per hit, a column per selector
    - [3.5 Joining Two Runs by a Value](#35-joining-two-runs-by-a-value): `queries join`: pair two runs' hits by a value
-4. [SQL over Saved Runs](#4-sql-over-saved-runs): your own SQL over every probe ever run
+4. [SQL over Saved Runs](#4-sql-over-saved-runs): your own SQL over saved runs
    - [4.1 What Is in the Store?](#41-what-is-in-the-store): tables, views and SQL functions (`no_addresses`, `object_ref`)
    - [4.2 The Newest Run](#42-the-newest-run): `last_run`
    - [4.3 Numeric Filters](#43-numeric-filters): `num`: numbers, not text
