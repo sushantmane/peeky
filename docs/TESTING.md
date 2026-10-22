@@ -27,6 +27,17 @@ Pip caching uses package/dev requirements as keys. Superseded branch/PR runs are
 - Process tests verify output caps, timeouts, credential stripping and cleanup.
 - Verification regressions reject premature exit(0), missing completion, modified checker, no runtime evidence and an overfit pagination patch.
 - Real adapter tests run local HTTP and debugpy, observe values, mutate them, continue and verify the candidate with the fixed checker.
+- The Java lane (`PEEKY_JAVA_ADAPTER="$PWD/work/java-adapter" pytest tests/java`) includes
+  `tests/java/test_java_worker.py`. It uses real HTTP requests, a worker HTTP server, the real Java
+  adapter and a separate JVM. Its fixture has a package, a nested class, an integer local, an array
+  local, a process ID and a check that the worker token is present. It exercises a runtime change,
+  a stale stop identity, a required fresh inspection, a fresh launch's reset, rejection of a
+  tampered original or copied source or compiled class, and cleanup after the adapter fails.
+  Public breakpoint events and the actual stopped locations show that the wanted breakpoint was
+  reached. The test's HTTP worker runs in a thread of the test process; the debugger and the
+  target are separate owned processes. That shows real transport and JVM behavior, not a
+  deployment on another host or source synchronization across roots. The fixtures hold no
+  secrets, and no required test calls a model.
 - Packaging smoke imports the wheel in a clean environment outside the checkout and exercises entry-point help. The installed wheel also launches a real debugger and inspects a value; a separate-host SSH fixture remains subsequent acceptance work.
 
 The independent example verifier checks first/middle/last/empty pages, page size edge cases and invalid inputs. Passing these proves those cases, not arbitrary pagination correctness. Malicious native code and deliberate escape from owned process groups are outside the MVP trust contract.

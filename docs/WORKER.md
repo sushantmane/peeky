@@ -75,6 +75,81 @@ RESULT=success value=5000 array=4 pointer=5000
   automatic variable summaries. That removes hidden configuration and behavior. It isn't isolation
   from hostile code.
 
+## Start a Java worker
+
+The worker takes a launched target's config, the same as the CLI's `--config`
+([Java 7.3](lang/java-cookbook.md#set-up-a-launched-target)). For example, a `work/java-target.json`:
+
+```json
+{
+  "bundle": "java-adapter",
+  "sources": ["demo/BranchBug.java"],
+  "main_class": "demo.BranchBug",
+  "arguments": []
+}
+```
+
+- `bundle` resolves relative to the config file, and source paths relative to the worker root.
+- The config is trusted local input, not a request from an agent. A request can't supply adapter
+  commands or build recipes.
+
+```sh
+export DEBUG_TOKEN="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
+peeky-worker --root /absolute/path/to/java-sources --java-config "$PWD/work/java-target.json" --port 8765
+```
+
+The bundled example starts with
+`peeky-worker --root examples/java --java-config examples/java/target.json`, after setting
+`DEBUG_TOKEN`.
+
+## Inspect and change a Java value
+
+`examples/java/demo/BranchBug.java` branches on line 6:
+`String result = timeoutMs > 0 ? "ready" : "timed out";`. At that stop, change `timeoutMs` from
+`0` to `5000`, and continue: the program prints `ready` instead of `timed out`.
+
+From another process, with the same token:
+
+```python
+import os
+from peeky.client import Client
+
+client = Client("http://127.0.0.1:8765", os.environ["DEBUG_TOKEN"])
+launch = client.call("launch", program="demo/BranchBug.java", breakpoints=[{"line": 6}])
+session = {"session_id": launch["session_id"]}
+stop = client.call("wait", **session, timeout=2)
+while stop["state"] == "running":
+    stop = client.call("wait", **session, timeout=2)
+if stop["state"] == "stopped":
+    snapshot = client.call("inspect", **session, stop_id=stop["stop_id"])
+    print(snapshot)
+client.call("close", **session)
+```
+
+- For your own program, choose a line that runs code.
+- A breakpoint may start pending while its class loads. `wait` and `report` show bounded
+  breakpoint events, including the adapter's verified location.
+- `inspect` returns the actual stopped source path and line, checked against the compiler's
+  metadata. Source paths in the stack point to the worker's fresh workspace.
+- An array shows its type, its length and its debugger reference. `expand` lists its elements
+  ([below](#read-a-values-children-expand-and-preview)).
+- Sessions can step over, into and out. The launcher fixes the step filters
+  ([Java 5.2](lang/java-cookbook.md#what---into-and---out-skip)).
+- A change at runtime is an experiment, never a verified fix. The
+  [Java investigation loop](JAVA_AGENT.md) rebuilds a candidate fix and verifies it.
+
+## Java adapter markers
+
+Peeky's launcher tells the worker what the bundle supports. A bundle without a marker refuses the
+change that needs it.
+
+| Marker | What the launcher does |
+| --- | --- |
+| `peekyCharSet` | Sends java-debug a char between single quotes, only for a variable declared `char` |
+| `peekyTextSet` | Sends a text, only for a variable declared `String` |
+| `peekyJdkOwners` | Names each listed field's declaring class (`peekyOwner`), and whether it is the JDK's (`peekyJdkOwner`): by its module, or on Java 8 by its class loader |
+| `peekyPauseLeftMs` | Bounds the wait for what refers to an array to what the pause budget leaves ([Java 7.3](lang/java-cookbook.md#when-peeky-cant-tell-who-holds-an-array)) |
+
 ## Configure a C++ target
 
 A native target's config, passed with `--native-config`, sets `"language": "cpp"` for C++. Its

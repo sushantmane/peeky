@@ -21,6 +21,7 @@ through JDI, the JDK's debugger API. For these words and a few more, see
   - [What `--into` and `--out` skip](#what---into-and---out-skip)
 - [7.3 Java (launched)](#73-java-launched)
   - [Set up a launched target](#set-up-a-launched-target)
+  - [What Peeky checks about a Java build](#what-peeky-checks-about-a-java-build)
   - [What can be set](#what-can-be-set)
   - [Change a local](#change-a-local)
   - [Change a field or an array element](#change-a-field-or-an-array-element)
@@ -132,7 +133,7 @@ Read [COOKBOOK 5.2](../COOKBOOK.md#52-stepping-and-running-to-a-line) first.
 stays in your code, and it reaches lambda bodies.
 
 - A plain `step` at the end of a method that JDK code called, such as a `Runnable` or a
-  comparator, stops outside your sources. Run `continue` from there.
+  comparator, stops outside your sources, where nothing is read. Run `continue` from there.
 - An adapter bundle built before Peeky could step is refused, with a hint to rebuild it.
 
 ## 7.3 Java (launched)
@@ -149,6 +150,54 @@ For example, `examples/java/pagination.json`. The bundle path is relative to the
 ```json
 {"bundle": "../../work/java-adapter", "sources": ["demo/PaginationBug.java"], "main_class": "demo.PaginationBug", "arguments": []}
 ```
+
+- `sources` are relative to the target's directory. Declare every `.java` file the program needs.
+  Maven or Gradle projects, and external classpaths, aren't supported.
+- Use a standard package-relative layout. A source-root prefix works.
+- Peeky reads non-preview class files up to Java 21. CI tests Java 17.
+- Arguments may hold spaces, backslashes and single quotes, and may be empty. Embedded double
+  quotes, CR or LF, and NUL are refused: the JDI connector's quoted-string contract can't carry
+  them.
+
+Build the adapter bundle once, with JDK 17 and Python 3.11 or later:
+
+```sh
+python scripts/setup_java_adapter.py --output "$PWD/work/java-adapter"
+```
+
+- The script builds java-debug from its pinned, checksummed source, and Peeky's launcher. It
+  applies Peeky's patches to java-debug before compiling, and lists them in the bundle's
+  `adapter.json`, under `patches`.
+- One patch, `eventhub-log-guard`, keeps java-debug's event thread alive. Without it, that thread
+  could die and stop reporting every stop and exit
+  ([JAVA_ATTACH.md](../JAVA_ATTACH.md#root-cause-java-debugs-event-thread-died)).
+- Peeky checks each patch in the compiled classes, not in the list: the patched `EventHub.class`
+  calls `Logger.isLoggable`. A bundle without it is refused with `UNSUPPORTED` and the rebuild
+  command. Rebuild an older bundle into a new directory.
+
+### What Peeky checks about a Java build
+
+Each launch copies the declared sources into a new workspace. It compiles them with debug
+information, and with annotation processing off. It reads the source, class and line mappings
+from the class files.
+
+- The build's record covers the original and copied sources, the compiled classes, the tools and
+  their version probes, and the controlled environment.
+- A Java session also records the adapter bundle, the generated source map, the main class and
+  the arguments.
+- Launch, inspection, changes, breakpoint changes and `continue` check these before they run. A
+  failed check ends the session, and cleans up its processes and workspace.
+
+These checks bind the known local build and launch inputs. They aren't a cryptographic proof of
+every class a hostile JVM loads, nor a sandbox. The program, the compiler and the debugger run as
+the worker's user.
+
+Not supported:
+
+- conditional or log breakpoints: breakpoints are unconditional line breakpoints;
+- expression evaluation, and hot code replacement;
+- automatic `toString` and logical-structure evaluation, which are off;
+- remote absolute-path rebinding, arbitrary class loaders, and production Kubernetes.
 
 ### What can be set
 
@@ -251,6 +300,8 @@ hit  phase     line  function                       selector        type    valu
 1    observed  30    BalanceBug.assign(List,int[])  best.name.hash  int     0  [not settable: declared by java.lang.String (the JDK's own state)]
 ...
 ```
+
+With an adapter bundle that doesn't name a field's class, Peeky changes no field at all.
 
 A change at a stop is refused, naming the class:
 `'size' cannot be changed: it is declared by java.util.ArrayList, a JDK class`. Where the class
