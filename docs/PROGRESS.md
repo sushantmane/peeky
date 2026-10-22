@@ -579,6 +579,7 @@ An hourly thread heartbeat (`continue-peeky-mvp`) checks for available usage and
   - Found by experiment: upstream GDB 14.2, 15.1 and 16.3 start the program at different DAP requests. One order works on all three (breakpoints, `launch`, then `configurationDone`).
   - The new `gdb-dap` lane keeps that order tested against GDB 15.1; 14.2 and 16.3 were run by hand.
 - **#212: the Java docs in plain English** (branch `docs/plain-java`). `docs/lang/java.md` and `docs/lang/java-cookbook.md` rewritten to the Python pilot's style, every fact kept (the PR maps each one to its new place). Sentences: mean 26.0 words to 10.5, none over 25 (45 before, the longest 101). New real examples: `describe`'s declared types, a JDK field's `[not settable]` row, two refusals before the run (`merged.size`, a String's bytes) and a String change.
+- **#212: COOKBOOK 5 and 6 in plain English** (branch `docs/plain-cookbook-4`). Sessions and verifying a fix rewritten to the pilot's style, every fact kept (the PR maps each one). Sentences: mean 18.9 words to 10.4, none over 25 (27 before, the longest 100). Examples re-recorded on macOS; `--keep` prints `candidate:`, not `kept:`.
 - **Dependabot:** #1, #3, #4 and #5 were merged. #2 (`upload-artifact` v7) was validated by dispatching `artifact.yml`, then fast-forwarded over SSH as `7308955`, because the API token lacks the `workflow` scope.
 
 **Closed issues:** #6, #7, #8, #9, #10, #11, #12, #13, #48, #49, #53, #55, #56, #57, #58, #59, #74, #75, #76, #77, #78, #79, #86.
