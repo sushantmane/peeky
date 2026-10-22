@@ -1445,10 +1445,14 @@ class RustSession(NativeSession):
         return hidden
 
     def launch_args(self, program, root, args=None):
+        launch = super().launch_args(program, root, args)
         return {
-            **super().launch_args(program, root, args),
-            # Never execute Python scripts embedded beside symbol files.
-            "initCommands": ["settings set target.load-script-from-symbol-file false"],
+            **launch,
+            "initCommands": [
+                *launch.get("initCommands", ()),
+                # Never execute Python scripts embedded beside symbol files.
+                "settings set target.load-script-from-symbol-file false",
+            ],
         }
 
     # The rules behind a [settable] mark (mid_statement, _root_holds, validate_member)
