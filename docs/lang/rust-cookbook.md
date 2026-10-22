@@ -1058,6 +1058,13 @@ holds for integer locals too.
   refused.
 - A breakpoint on `+ f();` under `let t = s.a` is refused: the MIR shows it past the read. So is
   any stop that the MIR doesn't explain.
+- A line in another file, a macro's code, is named with its file:
+  `(at alloc/src/macros.rs:113)` for `format!`.
+- The refusal says where a change works instead: before that statement starts. That is a stop
+  on an earlier line, or an earlier stop of the same line (a probe's `--set-hit`).
+- A macro's call from another crate counts for a line only where the IR puts its code there.
+  After `let label: String;` and `label = format!(…);` on line 4, the first stop of line 5 is
+  past the assignment: `label` reads `"sum 6"` and `sum` is `[settable]`.
 - Some lines can only stop inside such a statement. An example is a statement's later line:
   `s.b];` of `let arr = [s.a,` / `k,` / `s.b];`. A probe there is refused before it runs, naming
   that line.

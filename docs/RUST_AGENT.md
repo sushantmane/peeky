@@ -35,6 +35,12 @@ Around it:
   `T` is an integer type, `bool`, `f32`, `f64` or `char`.
 - "Everywhere" means before each statement on the line, and in code from another file, such as an
   external macro's. The dataflow follows moves, drops and assignments statement by statement.
+- A call from another file can return into the next MIR block. That block's start counts as the
+  line's, unless the IR block holding the call has every instruction located, none on this line,
+  and doesn't end in an `invoke`. An instruction with no location, at line 0, or with an
+  `inlinedAt` chain that doesn't resolve keeps the place. So `label = format!(…);` on line 4 is
+  line 4's, not line 5's.
+- The IR's files are told apart by directory and name: `src/a/mod.rs` is never `src/b/mod.rs`.
 - A block whose code on the line no statement explains must keep the local throughout.
 - The stop must be in the function's own file.
 - The MIR body must be identified positively. Exactly one body of that name has a span on the
@@ -346,3 +352,5 @@ The rules are in the cookbook's
   messages are split at `\n` alone. So a source's name may hold any character.
 - Edition 2024 was qualified by running the whole Rust suite, 56 tests with every owned-local proof,
   with its example crate switched to 2024.
+- Test processes share OS permissions with the checker, and are trusted code.
+- No live-model Rust evaluation has been recorded.
