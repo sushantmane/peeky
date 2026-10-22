@@ -10,6 +10,7 @@ What is particular to Python targets, one rule per line, each with the [COOKBOOK
 
 ## Reading values
 
+- Python compiles names NFKC-normalized, and debugpy lists them so: `größe` written NFD in the source is selected as NFC `größe`, `ﬁx` as `fix`; another spelling is refused with the listed one ([2.1](../COOKBOOK.md#21-fields-and-indexes)).
 - Dict entries are read by key: `order['id']`; `order.id` fails with a message that names `order['id']` and lists the keys ([2.1](../COOKBOOK.md#21-fields-and-indexes)).
 - A line stops once per pass (a `for` header once per pass and once more when the loop ends), so Python rows have no `stop` ([2.2](../COOKBOOK.md#22-every-iteration-of-a-loop)).
 - Two lambdas on one line are named alike (`<lambda>`): their stops are counted together, and the warning says so ([2.2](../COOKBOOK.md#22-every-iteration-of-a-loop)).

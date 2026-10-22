@@ -25,7 +25,7 @@ peeky verify <target> --check <checker.py> --old '<text>' --new '<text>'   # pro
    - [1.1 What Can I Ask?](#11-what-can-i-ask): `describe`: breakpoint lines, each function's names and types, what `--set` can change; lines and stepping
    - [1.2 First Probe](#12-first-probe): values at one line, and the program's output
 2. [Asking Questions with Probes](#2-asking-questions-with-probes): one run per question: values, changes, returns
-   - [2.1 Fields and Indexes](#21-fields-and-indexes): selectors: fields, indexes, keys; C and C++ pointers; C++ maps and sets
+   - [2.1 Fields and Indexes](#21-fields-and-indexes): selectors: fields, indexes, keys; names in any script; C and C++ pointers; C++ maps and sets
    - [2.2 Every Iteration of a Loop](#22-every-iteration-of-a-loop): `--hits N`/`all`; lines that stop several times per pass; loop headers
    - [2.3 Test a Hypothesis by Changing a Value](#23-test-a-hypothesis-by-changing-a-value): `--set`: what can be changed, where, and to which values
    - [2.4 Change the Value at a Later Hit](#24-change-the-value-at-a-later-hit): `--set-hit N`: change a later hit
@@ -196,7 +196,8 @@ hit  phase     line  function  selector   type  value
 1    observed  8     get_page  items      list  [10, 20, 30, 40, 50, 60]
 ```
 
-- **Every language:** Selectors are dotted paths, indexes and string keys (`request.page`, `args[0]`, `items[-1]`, `order['id']`), never expressions: Peeky never evaluates code in your program. A selector that is not there lists what is. Quote selectors that contain `[...]`: zsh, the macOS default shell, would otherwise treat them as filename patterns.
+- **Every language:** Selectors are dotted paths, indexes and string keys (`request.page`, `args[0]`, `items[-1]`, `order['id']`), never expressions: Peeky never evaluates code in your program. A selector that is not there lists what is.
+- **Names in any script:** A name is matched exactly as the debugger lists it, non-ASCII ones too (`größe.zähler`, `ñ`). Peeky never normalizes a name: compilers differ (Python lists `größe` written NFD in the source as NFC and `ﬁx` as `fix`, Rust lists NFC, javac and Clang keep NFC and NFD spellings as two variables), so a spelling that differs from a listed name only by Unicode normalization is refused, and the message gives the listed spelling escaped (`'gr\xf6\xdfe'`). `inspect` marks two rows that look alike with how each is written. A name holding an invisible character (U+200B, U+200D, a bidi control) is never selectable. Quote selectors that contain `[...]`: zsh, the macOS default shell, would otherwise treat them as filename patterns.
 - **Python:** Python dict entries are read by key; `order.id` fails with a message that names `order['id']` and lists the keys.
 - **C and C++ pointers:** In C and C++, follow a pointer with `.` (`stats.total_us`, not `->`); a pointer to a scalar carries no length, so `values[0]` reads what it points at; for other elements, read the array itself where it is declared (in the caller). The same holds for a pointer to an array, a container or a struct: `pa[0]` is what it points at, so `pa[0][1]` is `(*pa)[1]`, while `pa[1]`, which C reads past the pointee, is refused with that selector (#102). A typedef'd pointer (`RowPtr`, `const RowPtr`) works the same; the build's debug information tells it from a typedef'd reference, which indexes its referent. A pointer under a type name it does not resolve (a template's member typedef such as `std::vector<T>::pointer` to a container) is refused for indexing rather than read either way. A NULL or unreadable pointer is refused (`p is NULL`).
 - **Rust:** Rust references and Boxes are never indexed this way.

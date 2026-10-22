@@ -12,6 +12,7 @@ What is particular to Java targets, one rule per line, each with the [COOKBOOK](
 ## Reading values
 
 - Objects and arrays show their first fields or elements (`Merge$Interval@143 {end=10, start=1}`), an `ArrayList` its size and first elements; read members through `this` (`this.total`) ([7.3](../COOKBOOK.md#73-java-launched)).
+- Names are selected as javac keeps them, non-ASCII too (`größe.zähler`): `größe` in NFC and in NFD are two locals, each selected by its own spelling, and `inspect` marks such look-alike rows with how each is written ([2.1](../COOKBOOK.md#21-fields-and-indexes)).
 - Object numbers (`@143`) follow the order the debugger first touched objects: `queries diff` treats them like addresses, and `object_ref(value)` in SQL tells the same object from a copy within one run (across runs the numbers differ) ([4.6](../COOKBOOK.md#46-same-object-or-a-copy-java-python)).
 - A line several methods share (a lambda on its method's line) stops in only one of them, and the probe says which; Java rows have no `stop` ([7.3](../COOKBOOK.md#73-java-launched), [2.2](../COOKBOOK.md#22-every-iteration-of-a-loop)).
 - A `step` from a block's last statement stops on its closing `}`, where the block's locals are gone; `step --into` and `--out` skip JDK classes ([7.3](../COOKBOOK.md#73-java-launched), [5.2](../COOKBOOK.md#52-stepping-and-running-to-a-line)).

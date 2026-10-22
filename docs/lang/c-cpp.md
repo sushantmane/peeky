@@ -11,6 +11,7 @@ What is particular to C and C++ targets, one rule per line, each with the [COOKB
 ## Reading values
 
 - Selectors: `s.end`, `bins[3].hi`, through a pointer with `.` (`ps.start`), C++ members as `this.head_`, a map's value by key (`m[1]`) and its first entry as `m[#0]` ([2.1](../COOKBOOK.md#21-fields-and-indexes), [7.1](../COOKBOOK.md#71-c-and-c)).
+- Names are selected as Clang keeps them, non-ASCII too (`größe.zähler`, `--set ñ=3`): `größe` in NFC and in NFD are two locals, each selected by its own spelling, and `inspect` marks such look-alike rows with how each is written ([2.1](../COOKBOOK.md#21-fields-and-indexes)).
 - Structs and arrays show their first members (`{lo = 0, hi = 2}`); unions and pointer targets are not read ([7.1](../COOKBOOK.md#71-c-and-c)).
 - **`no value yet`** is a local not initialized at this stop: read it below its declaration (the row says where). A **`note`** is a value Peeky cannot vouch for: on a line a loop returns to (a `do` body's first) the next line reads it; below a `setjmp` call, a local declared at or below the stop shows a `note`, and reads plainly below its declaration ([7.1](../COOKBOOK.md#71-c-and-c)).
 - **Same-named locals:** a plain name is the declaration the code names at the stop; `name @ file:line` selects another ([7.1](../COOKBOOK.md#71-c-and-c)).
