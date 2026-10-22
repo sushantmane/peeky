@@ -353,10 +353,11 @@ def test_threads_a_thread_event_says_started_are_kept():
 
 
 # A debugger whose last messages follow the program's end (#203). `late`: `exited`,
-# `terminated`, then output, all before it answers the disconnect; `exit-later`: after
+# `terminated`, then output, all before Peeky disconnects; `exit-later`: after
 # `terminated`, `exited` comes once it answered; `noisy`: after it answered, text of its
-# own (lldb-dap 18 on Linux prints its crash as `stderr` output); `open`: its stream
-# stays open after the end; `running`: the program never ends.
+# own (lldb-dap 18 on Linux prints its crash as `stderr` output); `answering`: that text
+# while it handles the disconnect, before its answer; `open`: its stream stays open
+# after the end; `running`: the program never ends.
 ENDING_ADAPTER = r"""
 import json, sys, time
 mode = sys.argv[1]
@@ -388,6 +389,8 @@ if mode == "late":
 elif mode != "running":
     event("terminated")
 while (request := read()) is not None:
+    if mode == "answering" and request["command"] == "disconnect":
+        output("free(): invalid pointer\n", "stderr")
     write({"seq": 0, "type": "response", "request_seq": request["seq"], "success": True,
            "command": request["command"], "body": {}})
     if request["command"] == "disconnect":
@@ -407,6 +410,9 @@ if mode == "open":
         ("late", True, True, "early\nlate\n", 0, ""),
         ("exit-later", True, True, "early\n", 7, ""),
         ("noisy", True, False, "early\n", None, "free(): invalid pointer\n"),
+        # #213 review: what comes from the disconnect on is not the program's, even
+        # before the adapter's answer.
+        ("answering", True, False, "early\n", None, "free(): invalid pointer\n"),
         ("open", True, False, "early\n", None, ""),
         ("running", False, False, "early\n", None, ""),
     ],
@@ -435,8 +441,9 @@ def test_close_reads_the_output_to_the_adapters_end(
         dap.wait_event({"terminated"} if ended else {"never"}, 0, 5)
     except TimeoutError:
         assert not ended
+    # Closed once what the program wrote has come: in `late`, output after `terminated`.
     deadline = time.monotonic() + 5
-    while "early" not in dap.snapshot_output()[0] and time.monotonic() < deadline:
+    while dap.snapshot_output()[0] != output and time.monotonic() < deadline:
         time.sleep(0.01)
     started = time.monotonic()
     dap.close(terminate=False)

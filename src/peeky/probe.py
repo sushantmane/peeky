@@ -1602,7 +1602,7 @@ def _settle_output(result, final, known_end):
     Peeky's disconnect. Whole (`output_complete`) only when the debugger reported the
     program's end before that disconnect, and the adapter then ended its stream with
     nothing more: none could follow. An end Peeky only inferred (java-debug #27), a
-    stream the adapter kept open, or text it sent after the disconnect (its own, or the
+    stream the adapter kept open, or text it sent from the disconnect on (its own, or the
     program's: `output_after_disconnect`) leaves it partial, and `program_ended` says the
     program had ended all the same."""
     if isinstance(final, dict) and final.get("ended"):
@@ -4051,7 +4051,7 @@ def _table(result, short_names=True):
         lines.extend("  " + line for line in shown[-20:])
     if result.get("output_after_disconnect"):
         lines.append(
-            "the debugger sent more text after Peeky disconnected, its own or the program's "
+            "the debugger sent more text once Peeky disconnected, its own or the program's "
             "(output_after_disconnect in --json)"
         )
     return "\n".join(lines)

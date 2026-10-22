@@ -283,7 +283,7 @@ def test_until_hits_says_the_output_can_follow_the_last_hit(monkeypatch, final, 
             "terminated",
             NOISY,
             False,
-            "arriving):\n  at the hit\n  after it\nthe debugger sent more text after Peeky "
+            "arriving):\n  at the hit\n  after it\nthe debugger sent more text once Peeky "
             "disconnected, its own or the program's (output_after_disconnect in --json)",
         ),
     ],

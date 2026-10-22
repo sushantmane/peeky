@@ -30,7 +30,7 @@ TERMINATE_GRACE = 1.0
 # waits at most this long for the adapter to end its output stream (#203): only that end
 # proves no more of the program's output can come. A wait that runs out says so.
 DRAIN_TIMEOUT = 2.0
-# At most this much of what the adapter sent after Peeky's disconnect is kept.
+# At most this much of what the adapter sent from Peeky's disconnect on is kept.
 AFTER_DISCONNECT_CHARS = 4096
 # How often the session's processes are listed (#143), and at most how often a stop or
 # an announcement lists them again.
@@ -172,9 +172,10 @@ class DAP:
         # Set when the adapter ended its output stream (EOF): nothing more can come.
         self.stream_ended = threading.Event()
         # What close() left (#203): whether the debugger had reported the program's end
-        # before Peeky disconnected (`ended`); the output up to Peeky's disconnect, and
-        # whether the adapter then ended its stream with nothing more (`drained`); what
-        # it sent after the disconnect (`after_disconnect`); the exit code.
+        # before Peeky disconnected (`ended`); the output before Peeky's disconnect was
+        # sent, and whether the adapter then ended its stream with nothing more
+        # (`drained`); what it sent from the disconnect on, while answering it included
+        # (`after_disconnect`); the exit code.
         self.final = None
         self.sequence = 0
         self.event_sequence = 0
@@ -794,19 +795,21 @@ class DAP:
                     owned, ran = self._list_family()
                 except Exception:
                     owned = None
-            # The program's end as the debugger reported it, never one inferred (#203).
-            ended = self._end_reported()
+            # The program's end as the debugger reported it, never one inferred, and the
+            # output so far, read together before the disconnect is sent (#203). The
+            # output is whole only once the adapter has ended its stream on its own with
+            # nothing more: what it sends from the disconnect on, while handling it (its
+            # reply) or shutting down (lldb-dap 18's crash on Linux), cannot be told from
+            # the program's output.
+            with self.condition:
+                ended = self._end_reported()
+                mark, kept = self.output_count, ("".join(self.output), self.output_truncated)
             if self._adapter_running():
                 try:
                     seq = self.send("disconnect", {"terminateDebuggee": terminate}, timeout=0.25)
                     self.response(seq, timeout=1)
                 except Exception:
                     pass
-            # Its output is whole only once the adapter has ended its stream on its own,
-            # with nothing after the disconnect: what an adapter says as it shuts down
-            # (lldb-dap 18's crash on Linux) cannot be told from the program's output.
-            with self.condition:
-                mark, kept = self.output_count, ("".join(self.output), self.output_truncated)
             drained = ended and self._drain(mark)
             if stop := getattr(self, "stderr_stop", None):
                 # The stderr reader stops and closes its descriptor itself (_read_stderr).
@@ -842,15 +845,16 @@ class DAP:
             return self.cleanup
 
     def _end_reported(self):
-        """Whether the debugger has reported the program's end (`exited`, `terminated`)."""
-        with self.condition:
-            return any(e["event"] in ("exited", "terminated") for e in self.events)
+        """Whether the debugger has reported the program's end (`exited`, `terminated`).
+        The caller holds the condition."""
+        return any(e["event"] in ("exited", "terminated") for e in self.events)
 
     def _drain(self, mark):
         """End the adapter's input, so that it ends too, and wait at most DRAIN_TIMEOUT
-        for it to end its output stream: whether it did with no output after ``mark``.
-        Called before anything is killed, so the end is the adapter's own (#203); output
-        after ``mark`` already settles it, so it is not waited for."""
+        for it to end its output stream: whether it did with no output after ``mark``
+        (taken before the disconnect was sent). Called before anything is killed, so the
+        end is the adapter's own (#203); output after ``mark`` already settles it, so it
+        is not waited for."""
         if self.write_lock.acquire(timeout=1):
             try:
                 self.process.stdin.close()
