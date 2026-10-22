@@ -1597,10 +1597,26 @@ def _resume(worker, stop, returning, rows):
     worker.dispatch("continue", stop)
 
 
-def _ran_to_end(report):
-    """Whether the debugger had reported the program's end when its output was read: a
-    wait read it (`terminated`), or it came after the probe's last resume, unread (#203)."""
-    return report.get("state") == "terminated" or report.get("program_ended") is True
+def _settle_output(result, final, known_end):
+    """The output as the session's end left it (#203). Whole (`output_complete`) only when
+    the debugger reported the program's end before Peeky disconnected, and the adapter
+    then ended its stream on its own: no more could come. An end Peeky only inferred
+    (java-debug #27), or a stream the adapter kept open, leaves it partial, and
+    `program_ended` says the program had ended all the same."""
+    if isinstance(final, dict) and final.get("ended"):
+        known_end = True
+        if final.get("output") or "output" in result:
+            result.update(
+                output=final.get("output") or "",
+                output_truncated=final.get("output_truncated") is True,
+                output_complete=final.get("drained") is True,
+            )
+        if type(final.get("exit_code")) is int:
+            result["exit_code"] = final["exit_code"]
+    if "output" in result and result.get("output_complete") is not True:
+        result["output_complete"] = False
+        if known_end:
+            result["program_ended"] = True
 
 
 _UNWOUND = "its frame was gone when the step out ended (it did not return normally)"
@@ -3048,6 +3064,8 @@ def run_probe(root, probe, *, adapter=None, progress=None, launch_budget=None, l
     functions = {}
     last_said = 0.0
     session = None
+    # Whether the worker's session said the program ended (a wait read it, or inferred it).
+    known_end = False
     # `(return)` (#155): after each call's hit, step out of it and read what it returned.
     # `returning` holds the calls still to return, innermost last: {hit, depth, thread}.
     wants_return, returning = RETURN in probe.capture, []
@@ -3527,10 +3545,10 @@ def run_probe(root, probe, *, adapter=None, progress=None, launch_budget=None, l
             ended="hits" if at_hits else "exit" if report.get("state") == "terminated" else None,
             output=report["output"],
             output_truncated=report["output_truncated"],
-            # False when Peeky stopped collecting before the debugger reported the
-            # program's end (--until hits, a timeout).
-            output_complete=_ran_to_end(report),
+            # Settled once the session is closed (_settle_output).
+            output_complete=False,
         )
+        known_end = report.get("state") == "terminated"
         if at_hits:
             # Resumed after its last hit, the program ran on (until Peeky ends it, or for
             # good once detached) while its output was collected: it can include text
@@ -3635,14 +3653,16 @@ def run_probe(root, probe, *, adapter=None, progress=None, launch_budget=None, l
                 result.update(
                     output=report["output"],
                     output_truncated=report.get("output_truncated", False),
-                    output_complete=_ran_to_end(report),
+                    output_complete=False,
                 )
+            known_end = report.get("state") == "terminated"
             failed_for_good = report.get("lost_stop") or report.get("adapter_failure")
             if failed_for_good and (events := report.get("debugger_events")):
                 # The evidence for #27: the last DAP messages, the polls, the adapter's log.
                 result["debugger_events"] = events
     finally:
         cleanup = worker.close()
+    _settle_output(result, getattr(worker, "last_final", None), known_end)
     if cleanup and isinstance(result.get("error"), dict) and "cleanup" not in result["error"]:
         # What became of the program once the probe failed or timed out (#143).
         result["error"] = {**result["error"], "cleanup": cleanup}
@@ -4020,23 +4040,42 @@ def _table(result, short_names=True):
         if error.get("cleanup"):
             lines.append(f"cleanup: {error['cleanup']}")
     if result.get("output"):
-        complete = result.get("output_complete", True)
-        lines.append(
-            (
-                "output (all of it: the program ran on after the last hit, to its exit):"
-                if complete
-                else "output so far (the program ran on after the last hit, so this can "
-                "include text written after it):"
-            )
-            if result.get("output_after_last_hit")
-            else "output:"
-            if complete
-            else "output so far (the program was stopped when the probe failed):"
-            if result.get("status") == "failed"
-            else "output so far (the program was still running):"
-        )
-        lines.extend("  " + line for line in split_lines(result["output"])[-20:])
+        lines.append(_output_label(result))
+        shown = split_lines(result["output"])
+        if len(shown) > 20:
+            lines.append(f"  ({len(shown) - 20} earlier lines: see --json)")
+        lines.extend("  " + line for line in shown[-20:])
     return "\n".join(lines)
+
+
+def _output_label(result):
+    """What the output shown is (#203): whole, cut, or read before its end was proven."""
+    complete = result.get("output_complete", True)
+    cut = result.get("output_truncated") is True
+    if result.get("output_after_last_hit"):
+        if complete:
+            return (
+                "output through the program's exit (it ran on after the last hit; "
+                "truncated: some of it was dropped):"
+                if cut
+                else "output (all of it: the program ran on after the last hit, to its exit):"
+            )
+        if result.get("program_ended"):
+            return (
+                "output so far (the program ran on after the last hit and ended, but its "
+                "output may still have been arriving):"
+            )
+        return (
+            "output so far (the program ran on after the last hit, so this can include text "
+            "written after it):"
+        )
+    if complete:
+        return "output (truncated: some of it was dropped):" if cut else "output:"
+    if result.get("program_ended"):
+        return "output so far (the program ended, but its output may still have been arriving):"
+    if result.get("status") == "failed":
+        return "output so far (the program was stopped when the probe failed):"
+    return "output so far (the program was still running):"
 
 
 def _own_set_at(program, where, assignment):

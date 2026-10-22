@@ -349,3 +349,105 @@ def test_threads_a_thread_event_says_started_are_kept():
         )
     dap._accept({"type": "event", "event": "thread", "body": {"reason": "exited", "threadId": 3}})
     assert dap.started_threads == {1, 2}
+
+
+# A debugger whose last messages follow the program's end (#203). `late`: `exited`, then
+# `terminated`, then output, all before the disconnect is read; `exit-later`: after
+# `terminated`, output and `exited` come only once the client disconnected; `open`: its
+# stream stays open after the end; `running`: the program never ends.
+ENDING_ADAPTER = r"""
+import json, sys, time
+mode = sys.argv[1]
+def read():
+    headers = {}
+    while True:
+        line = sys.stdin.buffer.readline()
+        if not line:
+            return None
+        if line == b"\r\n":
+            break
+        key, value = line.decode().split(":", 1)
+        headers[key.lower()] = value.strip()
+    return json.loads(sys.stdin.buffer.read(int(headers["content-length"])))
+def write(body):
+    data = json.dumps(body).encode()
+    sys.stdout.buffer.write(b"Content-Length: %d\r\n\r\n" % len(data) + data)
+    sys.stdout.buffer.flush()
+def event(name, **body):
+    write({"seq": 0, "type": "event", "event": name, "body": body})
+def output(text):
+    event("output", category="stdout", output=text)
+output("early\n")
+if mode == "late":
+    event("exited", exitCode=0)
+    event("terminated")
+    time.sleep(0.3)
+    output("late\n")
+elif mode in ("exit-later", "open"):
+    event("terminated")
+while (request := read()) is not None:
+    write({"seq": 0, "type": "response", "request_seq": request["seq"], "success": True,
+           "command": request["command"], "body": {}})
+    if mode == "exit-later" and request["command"] == "disconnect":
+        time.sleep(0.3)
+        output("late\n")
+        event("exited", exitCode=7)
+if mode == "open":
+    time.sleep(60)
+"""
+
+
+@pytest.mark.parametrize(
+    "mode, ended, drained, output, code",
+    [
+        ("late", True, True, "early\nlate\n", 0),
+        ("exit-later", True, True, "early\nlate\n", 7),
+        ("open", True, False, "early\n", None),
+        ("running", False, False, "early\n", None),
+    ],
+)
+def test_close_reads_the_output_to_the_adapters_end(
+    monkeypatch, mode, ended, drained, output, code
+):
+    # #203: output can follow `terminated`, and `exited` can come after it: what close
+    # leaves is whole only past the adapter's own end of its stream, never a guess.
+    import subprocess
+    import sys
+    import time
+
+    import peeky.dap as dap_module
+
+    monkeypatch.setattr(dap_module, "DRAIN_TIMEOUT", 1.0 if mode == "open" else 10.0)
+    popen = subprocess.Popen
+
+    def spawn(_command, **kwargs):
+        return popen([sys.executable, "-c", ENDING_ADAPTER, mode], **kwargs)
+
+    monkeypatch.setattr("peeky.dap.subprocess.Popen", spawn)
+    dap = DAP()
+    try:
+        dap.wait_event({"terminated"} if ended else {"never"}, 0, 5)
+    except TimeoutError:
+        assert not ended
+    deadline = time.monotonic() + 5
+    while "early" not in dap.snapshot_output()[0] and time.monotonic() < deadline:
+        time.sleep(0.01)
+    started = time.monotonic()
+    dap.close(terminate=False)
+    final = dap.final
+    assert (final["ended"], final["drained"]) == (ended, drained)
+    assert (final["output"], final["exit_code"]) == (output, code)
+    # The wait is for the adapter's end, never a fixed sleep: it stops when the end comes.
+    assert time.monotonic() - started < (6 if mode == "open" else 8)
+    assert dap.process.poll() is not None and not dap.reader.is_alive()
+
+
+def test_only_an_end_between_frames_is_the_streams_end():
+    from peeky.dap import StreamEnd
+
+    with pytest.raises(StreamEnd):
+        read_message(io.BytesIO(b""))
+    for cut in (b"Content-Length: 2\r\n", b"Content-Length: 5\r\n\r\n{}"):
+        with pytest.raises(EOFError) as raised:
+            read_message(io.BytesIO(cut))
+        assert not isinstance(raised.value, StreamEnd)

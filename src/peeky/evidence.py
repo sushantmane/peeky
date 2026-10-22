@@ -63,8 +63,9 @@ TABLES = {
             "optimized": "Optimization level of an optimized build, else NULL",
             "output": "Program output (bounded)",
             "output_truncated": "1 when the output was truncated",
-            "output_complete": "0 when Peeky stopped reading the output before the debugger "
-            "reported the program's end (--until hits, a timeout)",
+            "output_complete": "1 only when the debugger reported the program's end and the "
+            "adapter then ended its stream (all output read); else 0 (--until hits, a "
+            "timeout, an exit Peeky inferred)",
             "warnings": "JSON list of the probe's warnings",
             "artifact_manifest_id": "Identity of the build the values came from",
             "source_sha256": "SHA-256 of the breakpoint's source file as it ran: for a candidate "

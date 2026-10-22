@@ -32,4 +32,4 @@ What is particular to Java targets, one rule per line, each with the [COOKBOOK](
 
 ## The debugger's own failures
 
-- java-debug sometimes loses events (issue #27): its event thread dying, or an attached JVM's stop it never reports, ends with `DEBUGGER_ERROR` at once ([ERRORS](../ERRORS.md)); a lost exit event is inferred from no threads being left, with a warning that the exit code is unknown (nothing to do).
+- java-debug sometimes loses events (issue #27): its event thread dying, or an attached JVM's stop it never reports, ends with `DEBUGGER_ERROR` at once ([ERRORS](../ERRORS.md)); a lost exit event is inferred from no threads being left, with a warning that the exit code is unknown (nothing to do); the output is then not proven whole (`output_complete: false`, `program_ended: true`: [2.6](../COOKBOOK.md#26-stop-right-after-the-last-hit)).

@@ -26,6 +26,10 @@ class ResponseTimeout(TimeoutError):
 
 # Ending a launched debuggee at close: SIGTERM, then SIGKILL after this many seconds.
 TERMINATE_GRACE = 1.0
+# Once the debugger has reported the program's end, close() ends the adapter's input and
+# waits at most this long for the adapter to end its output stream (#203): only that end
+# proves no more of the program's output can come. A wait that runs out says so.
+DRAIN_TIMEOUT = 2.0
 # How often the session's processes are listed (#143), and at most how often a stop or
 # an announcement lists them again.
 FAMILY_INTERVAL = 1.0
@@ -48,6 +52,10 @@ _UNTRACED_EVENTS = frozenset({"output", "thread", "telemetry"})
 _JDK_FRAMES = ("at java.", "at jdk.", "at sun.", "at com.sun.")
 
 
+class StreamEnd(EOFError):
+    """The adapter ended its output stream between frames: a clean end (#203)."""
+
+
 def read_message(stream):
     """Read one bounded frame; malformed adapters fail the session closed."""
     headers = {}
@@ -56,7 +64,7 @@ def read_message(stream):
         line = stream.readline(MAX_HEADER_BYTES + 1)
         total += len(line)
         if not line:
-            raise EOFError("Debugger adapter closed")
+            raise (EOFError if total else StreamEnd)("Debugger adapter closed")
         if total > MAX_HEADER_BYTES:
             raise ValueError("DAP headers exceed limit")
         if line == b"\r\n":
@@ -157,6 +165,12 @@ class DAP:
         self.started = time.monotonic()
         self.output = collections.deque(maxlen=500)
         self.output_truncated = False
+        # Set when the adapter ended its output stream (EOF): nothing more can come.
+        self.stream_ended = threading.Event()
+        # What close() left (#203): the output, the exit code, and whether the debugger
+        # had reported the program's end before Peeky disconnected (`ended`) and the
+        # adapter then ended its stream on its own (`drained`).
+        self.final = None
         self.sequence = 0
         self.event_sequence = 0
         self.error = None
@@ -301,6 +315,8 @@ class DAP:
             while True:
                 self._accept(read_message(self.process.stdout))
         except Exception as exc:
+            if isinstance(exc, StreamEnd):
+                self.stream_ended.set()
             if isinstance(exc, EOFError) and getattr(self, "fatal_stderr", None):
                 # An adapter that exits right after saying why on stderr: read that first,
                 # so its diagnosis is the transport's error, not "adapter closed".
@@ -770,12 +786,16 @@ class DAP:
                     owned, ran = self._list_family()
                 except Exception:
                     owned = None
+            # The program's end as the debugger reported it, never one inferred (#203).
+            ended = self._end_reported()
             if self._adapter_running():
                 try:
                     seq = self.send("disconnect", {"terminateDebuggee": terminate}, timeout=0.25)
                     self.response(seq, timeout=1)
                 except Exception:
                     pass
+            # Its output is whole only once the adapter has ended its stream on its own.
+            drained = ended and self._drain()
             if stop := getattr(self, "stderr_stop", None):
                 # The stderr reader stops and closes its descriptor itself (_read_stderr).
                 stop.set()
@@ -795,4 +815,30 @@ class DAP:
                 stderr_reader.join(timeout=1)
             self.process.stdin.close()
             self.process.stdout.close()
+            with self.condition:
+                self.final = {
+                    "ended": ended,
+                    "drained": drained,
+                    "output": "".join(self.output),
+                    "output_truncated": self.output_truncated,
+                    "exit_code": self.exit_code,
+                }
             return self.cleanup
+
+    def _end_reported(self):
+        """Whether the debugger has reported the program's end (`exited`, `terminated`)."""
+        with self.condition:
+            return any(e["event"] in ("exited", "terminated") for e in self.events)
+
+    def _drain(self):
+        """End the adapter's input, so that it ends too, and wait at most DRAIN_TIMEOUT
+        for it to end its output stream: whether it did. Called before anything is
+        killed, so the end is the adapter's own, after all it had to send (#203)."""
+        if self.write_lock.acquire(timeout=1):
+            try:
+                self.process.stdin.close()
+            except OSError:
+                pass
+            finally:
+                self.write_lock.release()
+        return self.stream_ended.wait(DRAIN_TIMEOUT)

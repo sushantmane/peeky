@@ -58,8 +58,6 @@ RESUMABLE_STOPS = frozenset({"breakpoint", "step", "interrupted"})
 # end, or (LLDB) the point another thread's stop at the same time caught it (#162).
 STEP_STOPS = frozenset({"step", "interrupted"})
 STEPS = {"over": "next", "in": "stepIn", "out": "stepOut"}
-# How long a report waits for the debugger's end of a program it reported exited (#203).
-END_AFTER_EXIT_S = 0.5
 # The frames a step's start is compared by with the stop it returns to (#155).
 ORIGIN_LEVELS = 10
 # Why a step out's function shows no value (#155).
@@ -258,6 +256,8 @@ class DebugWorker:
         self.failed = None
         # What closing the last session did to the processes it started (#143).
         self.last_cleanup = None
+        # The output closing the last session left, and whether it is whole (#203).
+        self.last_final = None
         # The single absolute launch budget, below Client.call's 45 s HTTP timeout.
         # Preparation (supports_deadline adapters: builds, symbols, module identity)
         # and every DAP launch phase receive only the remaining time, so a launch
@@ -1093,6 +1093,7 @@ class DebugWorker:
             if operation == "launch":
                 self.failed = None
                 self.launch_requested = False
+                self.last_final = None
             self.last_cleanup = None
             try:
                 try:
@@ -2501,15 +2502,10 @@ class DebugWorker:
         raise ValueError("Unknown operation")
 
     def report(self, runtime):
-        # Read before the output: all that the debugger sent before the end is then in it.
-        ended = self.state != "terminated" and self.end_unread()
         output, truncated = self.dap.snapshot_output()
         return {
             "session_id": self.session,
             "state": self.state,
-            # The debugger reported the program's end, which no wait has read yet (a
-            # probe's last resume, #203).
-            **({"program_ended": True} if ended else {}),
             "output": output,
             "output_truncated": truncated,
             **(
@@ -2522,24 +2518,6 @@ class DebugWorker:
             "breakpoint_events": list(self.breakpoint_events),
             "debugger_events": self.dap.recent_events(),
         }
-
-    def end_unread(self):
-        """Whether the debugger reported the program's end (`terminated`) after the last
-        event a wait or resume read. Once it reported the exit (`exited`), the end comes
-        at once: it is waited for, briefly."""
-        latest = getattr(self.dap, "event_cursor", None)
-        if latest is None:
-            return False
-        upto = latest()
-        if self.dap.events_between(self.cursor, upto, {"terminated"}):
-            return True
-        if not self.dap.events_between(self.cursor, upto, {"exited"}):
-            return False
-        try:
-            self.dap.wait_event({"terminated"}, self.cursor, END_AFTER_EXIT_S)
-        except (TimeoutError, RuntimeError):
-            return False
-        return True
 
     @staticmethod
     def scope_identity(scope):
@@ -4116,6 +4094,9 @@ class DebugWorker:
                     cleanup = adapter.close()
                 # What ending the session did to the processes it started (#143).
                 self.last_cleanup = cleanup if isinstance(cleanup, str) else None
+                # The output as the session's end left it, and whether it is whole (#203).
+                final = getattr(adapter, "final", None)
+                self.last_final = final if isinstance(final, dict) else None
         finally:
             if runtime:
                 runtime.close()

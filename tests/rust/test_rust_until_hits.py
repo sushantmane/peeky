@@ -67,11 +67,16 @@ def test_until_hits_says_the_output_can_follow_the_last_hit(crate, capsys, sleep
     assert "still running" not in text and output.startswith("BEFORE\n")
     assert result.get("output_after_last_hit") is True
     if result["output_complete"]:
-        # It exited before Peeky stopped reading: all of its output, and its exit.
+        # It exited before Peeky disconnected, and the adapter then ended its stream: all
+        # of its output, and its exit.
         assert sleep == "0" and result["exit_code"] == 0 and output == "BEFORE\nAFTER 3\n"
+        assert not result["output_truncated"] and "program_ended" not in result
         assert "output (all of it: the program ran on after the last hit, to its exit):" in text
+    elif result.get("program_ended"):
+        # It ended, but the adapter kept its stream open: more output may have been coming.
+        assert sleep == "0" and "after the last hit and ended, but its output may still" in text
     else:
-        # Its exit, once reported, is waited for: never an exit code without it.
+        # Peeky ended it: no exit of its own to report.
         assert "exit_code" not in result
         assert (
             "output so far (the program ran on after the last hit, so this can include text "
