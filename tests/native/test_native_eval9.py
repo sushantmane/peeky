@@ -169,6 +169,65 @@ def test_a_loop_counter_whose_initialization_may_not_have_run_is_withheld(progra
         capsys.readouterr()
 
 
+MIDLINE = """#include <stdio.h>
+
+static int done;
+
+static void sink_a(int *p) {
+    (void)p;
+    done++; /* SINKA */
+}
+
+static void sink_b(int *p) {
+    (void)p;
+    done++; /* SINKB */
+}
+
+int main(int argc, char **argv) {
+    (void)argv;
+    for (int i; done < 3; ) { sink_a(&i); } /* NOINIT */
+    if (argc > 0)
+        goto inside;
+    for (int k = 0; done < 6; ) { inside: sink_b(&k); } /* GOTO */
+    printf("%d\\n", done);
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(120)
+@pytest.mark.parametrize(
+    ("sink", "line", "name"), [("SINKA", "NOINIT", "i"), ("SINKB", "GOTO", "k")]
+)
+def test_a_one_line_loops_variable_its_header_may_not_have_set_is_withheld_mid_line(
+    program, capsys, sink, line, name
+):
+    # Review round 2 of PR #214: back from a call in a one-line loop's body (`step
+    # --out`), a header's variable read as live mid-line though the header sets nothing
+    # (`int i;`), or a `goto` into the body skipped `int k = 0`: both leftovers.
+    path = program.parent / "midline.c"
+    path.write_text(MIDLINE)
+    lines = {
+        marker: number
+        for number, text in enumerate(MIDLINE.splitlines(), 1)
+        for marker in ("SINKA", "SINKB", "NOINIT", "GOTO")
+        if f"/* {marker} */" in text
+    }
+    assert main(["session", "start", str(path), "--at", str(lines[sink])]) == 0
+    capsys.readouterr()
+    try:
+        assert main(["session", "step", "--out", "--json"]) == 0
+        state = json.loads(capsys.readouterr().out)
+        assert state["location"].endswith(f":{lines[line]}"), state
+        code = main(["session", "get", name, "--json"])
+        (row,) = json.loads(capsys.readouterr().out)
+        assert code == 1 and "value" not in row, json.dumps(row)
+        assert "part-way through that line" in row["error"], row
+    finally:
+        main(["session", "close"])
+        capsys.readouterr()
+
+
 TEXTS = """#include <stdio.h>
 #include <string.h>
 

@@ -2139,11 +2139,18 @@ def declared_mid_line(table, name, source, line, address, settled):
     line's first instruction (``address``, unslid) and the function still has code of
     the line at or after it: back from a call in `long r = f(3) + f(4);` (`step --out`),
     `r` is stored only by that code. Else None. Not a variable a header sets once by no
-    call (``settled(source, line, name)`` True: `for (int i = 0; ...)`), which is live
+    call in a function no jump can enter it in (``settled(source, line, name, span)``
+    True, ``span`` the function's lines: `for (int i = 0; ...)`), which is live
     mid-line on later passes of a one-line loop."""
     base, found = _in_scope(table, name, source, line, address)
-    places = [at for declared_in, at, _ in found if declared_in == source and at == line]
-    if address is None or not places or settled(source, line, base) is True:
+    places = [
+        function for declared_in, at, function in found if declared_in == source and at == line
+    ]
+    if (
+        address is None
+        or not places
+        or all(settled(source, line, base, function.get("span")) is True for function in places)
+    ):
         return None
     for function in table:
         span = function["rows"].get((source, line))
@@ -4008,12 +4015,16 @@ class NativeSession:
         statements = self._statements(source)
         return None if statements is None else statements.header(line, name)
 
-    def _settled(self, source, line, name):
-        """Whether a statement's header sets ``name`` on ``line`` once, by no call (True,
-        False), or None if unknown (Statements.declaration)."""
+    def _settled(self, source, line, name, span=None):
+        """Whether a statement's header sets ``name`` on ``line`` once, by no call, where
+        no jump can enter the statement past it (True, False; the function's lines
+        ``span``), or None if unknown (Statements.declaration, jumped_into): `goto
+        inside;` to a label in a one-line loop's body skips `int i = 0`."""
         statements = self._statements(source)
         found = None if statements is None else statements.declaration(line, name)
-        return None if found is None else found[3]
+        if found is None or found[3] is not True:
+            return None if found is None else found[3]
+        return statements.jumped_into(line, name, tuple(span) if span else None) is False
 
     def _jumped_past_include(self, source, line, stop, span):
         """Statements.jumped_past_include for the prepared ``source``; None if unreadable."""

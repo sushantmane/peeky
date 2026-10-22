@@ -426,11 +426,14 @@ def test_a_header_variable_is_settled_only_without_a_call_or_a_while():
   for (unsigned long i = 0x10ul << 2; i > -1; i++) g(i);
   for (bool b = true; b; b = false) g();
   for (int i = 0, j = i; i < 3; i++) g(i);
+  for (int i; ; ) sink(&i);
+  for (int i = 0, j = 1; i < j; i++) g(i);
+  for (int j = INIT, i = 0; i < j; i++) g(i);
 }
 """
     statements = Statements(source)
     settled = {
-        line: statements.declaration(line, name)[3]
+        (line, name): statements.declaration(line, name)[3]
         for line, name in (
             (2, "i"),
             (3, "i"),
@@ -445,22 +448,35 @@ def test_a_header_variable_is_settled_only_without_a_call_or_a_while():
             (12, "i"),
             (13, "b"),
             (14, "i"),
+            (14, "j"),
+            (15, "i"),
+            (16, "i"),
+            (16, "j"),
+            (17, "i"),
         )
     }
+    # Review round 2 of PR #214: each declarator is judged with those before it
+    # (`j = i` names `i`, but `i = 0` is set first; `j = INIT` runs before `i = 0`),
+    # and one with no initializer (`int i;`) is never set by the header.
     assert settled == {
-        2: True,
-        3: False,
-        4: False,
-        5: False,
-        6: False,
-        7: False,
-        8: False,
-        9: False,
-        10: False,
-        11: False,
-        12: True,
-        13: True,
-        14: False,
+        (2, "i"): True,
+        (3, "i"): False,
+        (4, "r"): False,
+        (5, "v"): False,
+        (6, "k"): False,
+        (7, "x"): False,
+        (8, "f"): False,
+        (9, "n"): False,
+        (10, "i"): False,
+        (11, "i"): False,
+        (12, "i"): True,
+        (13, "b"): True,
+        (14, "i"): True,
+        (14, "j"): False,
+        (15, "i"): False,
+        (16, "i"): True,
+        (16, "j"): True,
+        (17, "i"): False,
     }
     # A macro of the program's own named `true` is no literal.
     hazards = macro_hazards(["#define true make_true()\n"])
@@ -472,6 +488,52 @@ def test_a_header_variable_is_settled_only_without_a_call_or_a_while():
         "if",
     ]
     assert Statements("int f(void) {\n  int t = 1;\n}\n").header(2, "t") is None
+
+
+def test_a_jump_into_a_headers_statement_past_its_declaration_is_found():
+    # Review round 2 of PR #214: `goto inside;` to a label in a one-line loop's body
+    # skips `int i = 0`, so a header's variable is live mid-line only where no jump can
+    # enter its statement past the declaration (as `jumped_past` judges a label).
+    source = """#define JUMP goto out
+#define MARK out:
+int plain(int x) {
+  for (int i = 0; i < 3; i++) g(&i);
+  switch (x) { case 1: g(&x); }
+  return 0;
+}
+int jumps(void) {
+  goto inside;
+  for (int i = 0; ; ) { inside: g(&i); }
+}
+int back(void) {
+  for (int i = 0; ; ) { again: g(&i); }
+  goto again;
+}
+int switched(int x) {
+  switch (x) { for (int i = 0; ; ) { case 1: g(&i); } }
+}
+int labelled(void) {
+  for (int i = 0; i < 3; i++) g(&i);
+  done: return 0;
+}
+int hidden(void) {
+  for (int i = 0; i < 3; i++) { MARK g(&i); }
+}
+int included(void) {
+  for (int i = 0; i < 3; i++) {
+#include "body.h"
+  }
+}
+int macrojump(void) {
+  for (int i = 0; ; ) { out: g(&i); }
+  JUMP;
+}
+"""
+    statements = Statements(source, hazards=macro_hazards([source]))
+    found = {line: statements.jumped_into(line, "i") for line in (4, 10, 13, 17, 20, 24, 27, 32)}
+    # A switch after the loop, and a label no `goto` names, cannot enter it; a macro
+    # that may hold a label, or an `#include`, leaves it unknown.
+    assert found == {4: False, 10: 10, 13: 13, 17: 17, 20: False, 24: None, 27: None, 32: 32}
 
 
 def test_includes_and_the_labels_after_one():
