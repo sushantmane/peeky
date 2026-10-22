@@ -1900,11 +1900,9 @@ def _not_framed(name, storages):
     value in registers."""
     if "through" in storages:
         return (
-            f"`{name}` is reached through a pointer or reference (the debug information "
-            "places it behind one: a C++ structured binding of a reference, `auto &[a, b] = "
-            "s`, a named return value, a C `__block` variable): Peeky changes only values the "
-            "frame holds itself and does not write through a pointer or reference; change "
-            "the value where it is owned"
+            f"`{name}` is reached through a pointer or reference (a C++ structured binding "
+            "of a reference, a named return value or a C `__block` variable). Change the "
+            "value where it is owned: Peeky changes only values the frame holds itself"
         )
     return (
         f"`{name}` is not kept in this frame's own memory (a static, or a value the debug "
@@ -3878,34 +3876,30 @@ class NativeSession:
             at, why, detail = unfinished
             if why == "file":
                 return (
-                    f"declared on line {at} of "
+                    f"read it after the call returns. It is declared on line {at} of "
                     + (detail or "a file outside the program's sources")
-                    + f", while this caller frame is at {stopped}:{raw_line}, in "
-                    "another file, inside a call it makes: an initializer can `#include` "
-                    "its rows, or be included itself, so Peeky cannot place the frame "
-                    "within or after the declaration, and it may not be initialized yet: "
-                    "its storage may hold leftovers; read it after the call returns"
+                    + f", and this caller frame is in another file ({stopped}:{raw_line}), "
+                    "which Peeky cannot place before or after the declaration: it may not be "
+                    "initialized, and its storage may hold leftovers"
                 )
             if why == "statement":
                 return (
-                    (
-                        f"declared on line {at}, and its declaration (lines {at}-{detail}) "
-                        "is still running in this caller frame"
+                    f"read it after the call returns. It is declared on line {at}, and "
+                    + (
+                        f"its declaration (lines {at}-{detail}) is still running in this "
+                        "caller frame"
                         if detail is not None
-                        else f"declared on line {at}, and Peeky cannot tell from the source "
-                        "where its declaration ends (or the compiler may read that text "
-                        "differently: a directive, a macro, a line splice or a trigraph), "
-                        "so this caller frame may be inside it"
+                        else "Peeky cannot tell from the source where its declaration ends, so "
+                        "this caller frame may be inside it"
                     )
-                    + " (inside a call it makes): it may not be initialized yet, and its "
-                    "storage may hold leftovers; read it after the call returns"
+                    + ": it may not be initialized yet, and its storage may hold leftovers"
                 )
             if why == "no code":
                 return (
-                    f"declared on line {at}, which has no code of its own (an aggregate is "
-                    "stored element by element on its elements' lines), so this caller "
-                    "frame cannot tell whether it is initialized yet: its storage may hold "
-                    "leftovers; read it in the frame that is running once it is stored"
+                    "read it in the frame that is running, once it is stored. It is declared "
+                    f"on line {at}, which has no code of its own (an aggregate is stored "
+                    "element by element), so it may not be initialized yet: its storage may "
+                    "hold leftovers"
                 )
             # A caller is inside a call: `long r = f(x);` stores `r` only after it.
             shown = split_located(name)
@@ -3915,16 +3909,15 @@ class NativeSession:
                 # nothing; nor can the text (a `goto` into the body, a macro's call). Kept
                 # under the worker's 300-character cap on a reason.
                 return (
-                    f"declared on line {at}, in this caller frame's `{word}` header, and Peeky "
-                    "cannot prove the loop has run its initialization (a `goto` into the body "
-                    "or a macro's call can skip or delay it): its storage may hold leftovers; "
-                    "read it in the loop's body (a probe there, or `step --out` to this frame)"
+                    "read it in the loop's body: a probe there, or `step --out` to this frame. "
+                    f"It is declared in this caller frame's `{word}` header, on line {at}, and "
+                    "Peeky cannot prove the loop has run its initialization: its storage may "
+                    "hold leftovers"
                 )
             return (
-                f"declared on line {at}, whose code this caller frame has not finished (it "
-                "is inside a call, and the declaration may be stored after the call "
-                "returns), so it may not be initialized yet: its storage may hold "
-                "leftovers; read it after the call returns"
+                f"read it after the call returns. It is declared on line {at}, whose code this "
+                "caller frame has not finished, so it may not be initialized yet: its storage "
+                "may hold leftovers"
             )
         address = self._unslid(frame)
         below = declared_below(
@@ -3959,9 +3952,9 @@ class NativeSession:
                 "cannot tell which one the debugger shows here",
             }[why]
             return (
-                f"declared at line {at}, below this stop's line, and Peeky cannot prove the "
-                f"stop comes before its declaration ({reason}), so it may not be "
-                f"initialized: its storage may hold leftovers; stop after line {at} to read it"
+                f"stop after line {at} to read it. It is declared at line {at}, below this "
+                f"stop's line, and Peeky cannot prove the stop comes before it: {reason}. So it "
+                "may not be initialized, and its storage may hold leftovers"
             )
         if innermost and (
             running := declared_running(
@@ -3986,15 +3979,14 @@ class NativeSession:
                         f"storage holds leftovers; stop after line {where} to read it"
                     )
                 return (
-                    f"declared on line {at} of {origin}, and Peeky cannot tell from the "
-                    f"source whether its declaration has run by {here}:{line} ("
+                    f"declared on line {at} of {origin}, and Peeky cannot tell whether it has "
+                    f"run by {here}:{line} ("
                     + (
-                        f"the `#include` on line {where} brings it in, and its initializer "
-                        "can run on, or an `#include` or a label after it skip it"
+                        f"code after the `#include` on line {where} can run on or skip it"
                         if where is not None
                         else f"no one `#include` in {here} brings it in"
                     )
-                    + "), so it may not be initialized yet: its storage may hold leftovers"
+                    + "): it may not be initialized yet, and its storage may hold leftovers"
                 )
             return (
                 (
@@ -4004,9 +3996,9 @@ class NativeSession:
                 )
                 if end is not None
                 else f"declared on line {at}, and Peeky cannot tell from the source where its "
-                "declaration ends (or the compiler may read that text differently: a "
-                "directive, a macro, a line splice or a trigraph), so this stop may be "
-                "inside it: it may not be initialized yet, and its storage may hold leftovers"
+                "declaration ends (a directive, a macro or a line splice can hide it), so this "
+                "stop may be inside it: it may not be initialized yet, and its storage may "
+                "hold leftovers"
             )
         if building := self._foreign_line(variable, frame, stopped, raw_line):
             return building
@@ -4057,11 +4049,10 @@ class NativeSession:
         if on_line is not None:
             if on_line[1] == "label":
                 return (
-                    f"declared on line {line}, at whose first instruction this stop is, and "
-                    "a label in the function lets a `goto` return here with it live, or this "
-                    "is its first pass, which Peeky cannot tell apart: it may not be "
-                    f"initialized, and its storage may hold leftovers; stop after line {line} "
-                    "to read it"
+                    f"stop after line {line} to read it. This stop is at its declaration's "
+                    "first instruction, and a `goto` can return here with it live: Peeky "
+                    "cannot tell that from a first pass, so it may not be initialized, and its "
+                    "storage may hold leftovers"
                 )
             if on_line[1] == "unknown":
                 return (
@@ -4250,11 +4241,10 @@ class NativeSession:
             # Its own line, or unknown: then `_own_place` withholds all but parameters.
             return None
         return (
-            f"this frame runs {source}:{line}, outside its function's own lines (a class's "
-            "default member initializer, run where an object is built, or code an "
-            "`#include` brings in), so this object may be under construction or skipped: it "
-            "may not be initialized yet, and its storage may hold leftovers; read it once "
-            "the frame is back in its own lines"
+            "read it once the frame is back in its own lines. This frame runs "
+            f"{source}:{line}, outside its function's own lines (a default member initializer, "
+            "or code an `#include` brings in): this object may be under construction or "
+            "skipped, and its storage may hold leftovers"
         )
 
     def _jumped_past(self, source, line, name, stop, span=None):
@@ -4681,16 +4671,15 @@ class NativeSession:
                         (function, f"in {FUNCTION}, {why}") for function, why in failures
                     )
                     later = (
-                        f" (the line's later stops in {', '.join(sorted(elsewhere))}, in other "
-                        f"blocks, name another `{root}`, but each is part-way through the "
-                        "line, where no change is made: to change that one, stop at a line "
-                        "that starts in its block)"
+                        f". To change the `{root}` of another block (the line's later stops in "
+                        f"{', '.join(sorted(elsewhere))}), stop at a line that starts in that "
+                        "block: those stops are part-way through the line"
                         if elsewhere
                         else ""
                     )
                     return (
                         f"`{name}` cannot be changed at {source}:{line}, at any stop of this "
-                        f"build: {reasons}{later}. Refused before the program runs: the debugger's launch request was not sent"
+                        f"build: {reasons}{later}. Refused before the program runs: nothing ran"
                     )
         return None
 
@@ -4720,7 +4709,7 @@ class NativeSession:
         ]
         if storages and all(storage in ("register", "other") for storage in storages):
             return (
-                f"; here the debug information gives `{plain}` no stack slot (a register "
+                f". Here the debug information gives `{plain}` no stack slot (a register "
                 "or a location list), so a change could not reach every copy"
             )
         return ""
@@ -5220,9 +5209,9 @@ class NativeSession:
         if entry is None or not addresses or address != min(addresses):
             where = f"line {line}" if lines[0] == lines[1] else f"lines {lines[0]}-{lines[1]}"
             return (
-                f"the stop is not at the first instruction of the statement on {where}: "
-                "it is part-way through it (back from a call, as after `step --out`; on a "
-                "loop's later pass; or where the compiler put code of a later line first)"
+                f"the stop is not at the first instruction of the statement on {where}: it "
+                "is part-way through it (after a call returns, on a loop's later pass, or "
+                "where the compiler moved code)"
             )
         return None
 

@@ -313,20 +313,18 @@ _MUTATION_HINTS = (
     ),
     (
         r"cannot be changed here",
-        "Change it at the statement's first instruction: a breakpoint on the statement's "
-        "first line (`--at`, `session continue --to LINE`), or a `session step` that lands "
-        "there.",
+        "Stop on the statement's first line (`--at`, `session continue --to LINE`), or "
+        "`session step` to it.",
     ),
     (
         r"in a caller's frame",
-        "Change it in its own frame, before the call under way: `probe --at <its line> "
-        "--hits N --set-hit N`, N counting that line's stops (`--capture <x> --hits all`).",
+        "Change it in its own frame, before the call: `--at <its line> --hits N --set-hit "
+        "N`, N counting that line's stops.",
     ),
     (
         r"lists the fields each function can set",
-        "Change the field in the function that holds the struct itself (`describe`'s "
-        "`mutable:` line names it), at a stop before the calls that lead here: a probe's "
-        "`--set-at LINE@N`.",
+        "Change the field where the struct is held, before the calls that lead here: "
+        "`--set-at LINE@N` (`describe`'s `mutable:` line names the function).",
     ),
     (
         r"which Peeky does not change \(it changes only locals a frame holds\)",
@@ -334,19 +332,16 @@ _MUTATION_HINTS = (
     ),
     (
         r"has one caller: \S+:[0-9]+ in ",
-        "Change the value where it is owned, before the call the message names there: as it "
-        "says where the value is settable, else at a statement's first line before it.",
+        "Change the value in the caller the message names, before that call, as the message says.",
     ),
     (
         r"is a (?:pointer|reference)\b(?!;)",
-        "Change the value where it is owned, before the call: `probe --at <call line> --hits "
-        "N --set-hit N`, N counting that line's stops (`--capture <arg> --hits all` there).",
+        "Change the value where it is owned, before the call: `--at <call line> --hits N "
+        "--set-hit N`, N counting that line's stops.",
     ),
     (
         r"is reached through a pointer or reference",
-        "Change the value where it is owned (the struct a structured binding `auto &[a, b] "
-        "= s` refers to, in the frame that holds it), or change the source with a candidate "
-        "edit (`--old`/`--new`).",
+        "Change the value in the frame that owns it, or edit the source with `--old`/`--new`.",
     ),
     (
         r"another binding of|the binding of `[^`]+` declared on line",
