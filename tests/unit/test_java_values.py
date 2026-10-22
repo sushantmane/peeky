@@ -123,3 +123,82 @@ def test_the_type_is_judged_before_the_value_and_names_the_rule():
     # A literal of another type names the variable's own.
     with pytest.raises(ValueError, match=r"requires a literal of left's type \(long\)"):
         charred("'+'").validate_variable({"name": "left", "type": "long"}, "'+'")
+
+
+def owners(field_owners=True):
+    session = JavaSession.__new__(JavaSession)
+    session.field_owners = field_owners
+    return session
+
+
+def test_a_jdk_classs_field_is_never_settable_and_says_whose_it_is():
+    # #204: a String's cached hash; the launcher names each field's declaring class.
+    session = owners()
+    hash_ = {"name": "hash", "type": "int", "value": "0", "peekyOwner": "java.lang.String"}
+    reason = session.internal_member(hash_, parent="String")
+    assert "declared by java.lang.String, a JDK class" in reason
+    assert reason.row == "declared by java.lang.String (the JDK's own state)"
+    # Inherited from a JDK class by one of the program's, and of another JDK package.
+    for owner in ("java.util.AbstractList", "javax.swing.JList", "jdk.internal.Foo", "sun.x.Y"):
+        assert session.internal_member({"name": "f", "type": "int", "peekyOwner": owner})
+    assert session.internal_member({"name": "f", "type": "int", "peekyOwner": "com.sun.x.Y"})
+    # The program's own fields keep their rules, whatever their class is named.
+    for owner in ("app.Rechnung$Posten", "javalike.Box", "com.sunny.Box"):
+        assert session.internal_member({"name": "f", "type": "int", "peekyOwner": owner}) is None
+    # An object-typed field is refused too, with no row note (no change is offered).
+    value = {"name": "value", "type": "byte[]", "peekyOwner": "java.lang.String"}
+    assert session.internal_member(value).row is None
+
+
+def test_an_element_is_judged_by_the_field_that_holds_its_array():
+    session = owners()
+    root = {"name": "a", "type": "Rechnung$Posten"}
+    text = {"name": "bezeichnung", "type": "String", "peekyOwner": "app.Rechnung$Posten"}
+    value = {"name": "value", "type": "byte[]", "peekyOwner": "java.lang.String"}
+    byte = {"name": "0", "type": "byte", "value": "83"}
+    reason = session.internal_member(byte, parent="byte[]", trail=[root, text, value])
+    assert "in an array that `value` holds, a field the JDK class java.lang.String" in reason
+    # The root local's own array, and an array inside it, are the program's.
+    grid = {"name": "grid", "type": "int[][]"}
+    row = {"name": "0", "type": "int[]"}
+    assert session.internal_member(byte, parent="int[]", trail=[grid, row]) is None
+    assert session.internal_member(row, parent="int[][]", trail=[grid]) is None
+    # An array inside one a JDK field holds is the JDK's too.
+    data = {"name": "elementData", "type": "Object[]", "peekyOwner": "java.util.ArrayList"}
+    list_ = {"name": "xs", "type": "ArrayList"}
+    assert session.internal_member(byte, parent="int[]", trail=[list_, data, row])
+    # Without the way to it, nothing is offered.
+    assert "cannot tell" in session.internal_member(byte, parent="byte[]", trail=[])
+
+
+def test_a_launcher_that_names_no_declaring_class_changes_no_field():
+    field = {"name": "end", "type": "int", "value": "5"}
+    reason = owners(field_owners=False).internal_member(field, parent="Interval")
+    assert "predates" in reason and "scripts/setup_java_adapter.py" in reason
+    assert not hasattr(reason, "row")
+    assert "cannot tell which class declares it" in owners().internal_member(field)
+    # A root local's array needs no declaring class.
+    element = {"name": "0", "type": "int"}
+    trail = [{"name": "arr", "type": "int[]"}]
+    assert owners(field_owners=False).internal_member(element, "int[]", trail) is None
+
+
+@pytest.mark.parametrize(
+    "type_, value, whole",
+    [
+        ("String", '"Schraube"', True),
+        ("java.lang.String", '""', True),
+        ("Integer", "Integer@57", True),
+        ("java.lang.Long", "Long@12", True),
+        ("Character", "Character@3", True),
+        ("Boolean", "Boolean@4", True),
+        # null, an object of another class, and a user class named like none of these.
+        ("String", "null", False),
+        ("Integer", "null", False),
+        ("Rechnung$Posten", "Rechnung$Posten@54", False),
+        ("ArrayList", "ArrayList@3", False),
+    ],
+)
+def test_a_string_or_boxed_number_is_shown_whole(type_, value, whole):
+    session = JavaSession.__new__(JavaSession)
+    assert session.whole_value({"type": type_, "value": value}) is whole

@@ -2,6 +2,7 @@ import com.google.gson.*;
 import com.microsoft.java.debug.core.DebugSettings;
 import com.microsoft.java.debug.core.JavaBreakpointLocation;
 import com.microsoft.java.debug.core.adapter.*;
+import com.microsoft.java.debug.core.protocol.JsonUtils;
 import com.microsoft.java.debug.core.protocol.Messages;
 import com.microsoft.java.debug.core.adapter.variables.VariableProxy;
 import com.microsoft.java.debug.core.protocol.Types;
@@ -18,6 +19,8 @@ import java.net.URI;
 import java.nio.file.*;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.regex.Pattern;
 
 /** Experimental Microsoft-core launcher. Only explicit, prepared source maps are accepted. */
 public final class PeekyJavaAdapter extends ProtocolServer {
@@ -25,6 +28,8 @@ public final class PeekyJavaAdapter extends ProtocolServer {
         "configurationDone", "threads", "stackTrace", "scopes", "variables", "setVariable",
         "continue", "next", "stepIn", "stepOut", "disconnect");
     private static final Set<String> STEPS = Set.of("next", "stepIn", "stepOut");
+    /** The JDK's own packages (Peeky #204): their classes' fields are never written. */
+    private static final Pattern JDK = Pattern.compile("(?:java|javax|jdk|sun|com\\.sun)\\.");
 
     /** Fixed step filters: steps never stop inside the JDK; requests cannot change them. */
     private static JsonObject stepFilters() {
@@ -39,6 +44,8 @@ public final class PeekyJavaAdapter extends ProtocolServer {
         return filters;
     }
     private final SourceMap sources;
+    /** The container each pending `variables` request lists, by request seq (#204). */
+    private final Map<Integer, Integer> listings = new ConcurrentHashMap<>();
 
     private PeekyJavaAdapter(ProviderContext context, SourceMap sources) {
         super(System.in, System.out, context);
@@ -109,6 +116,9 @@ public final class PeekyJavaAdapter extends ProtocolServer {
                 if (text) checkDeclaredTarget(args.get("variablesReference").getAsInt(), args.get("name").getAsString(), "java.lang.String", "text changes only a String");
                 if (character) checkDeclaredTarget(args.get("variablesReference").getAsInt(), args.get("name").getAsString(), "char", "a quoted char changes only a char");
             }
+            if (request.command.equals("variables") && args!=null && args.has("variablesReference")
+                && args.get("variablesReference").isJsonPrimitive())
+                listings.put(request.seq, args.get("variablesReference").getAsInt());
             super.dispatchRequest(request);
         } catch (Exception error) {
             sendResponse(new Messages.Response(request.seq, request.command, false,
@@ -135,6 +145,38 @@ public final class PeekyJavaAdapter extends ProtocolServer {
         if (visible==null || visible.isStatic() || instances!=1)
             throw new IllegalArgumentException("field " + name + " is hidden by, or shares its name with, "
                 + "another field of " + type.name() + "; it cannot be changed");
+        // A JDK class's own state (#204): a String's cached hash, an ArrayList's size.
+        String owner=visible.declaringType().name();
+        if (JDK.matcher(owner).lookingAt())
+            throw new IllegalArgumentException("field " + name + " is declared by " + owner
+                + ", a JDK class; Peeky never changes the JDK's own fields");
+    }
+
+    /**
+     * Name the class that declares each field an object's listing shows (`peekyOwner`,
+     * Peeky #204): java-debug names fields only, and Peeky never changes a field a JDK
+     * class declares, inherited or not. A name two instance fields share stays unnamed.
+     */
+    private Object withOwners(int reference, Object body) {
+        try {
+            Object container=debugContext().getRecyclableIdPool().getObjectById(reference);
+            Object value=container instanceof VariableProxy ? ((VariableProxy) container).getProxiedVariable() : null;
+            if (!(value instanceof ObjectReference) || value instanceof ArrayReference) return body;
+            Map<String, List<String>> owners=new HashMap<>();
+            for (com.sun.jdi.Field field : ((ObjectReference) value).referenceType().allFields())
+                if (!field.isStatic())
+                    owners.computeIfAbsent(field.name(), key -> new ArrayList<>()).add(field.declaringType().name());
+            JsonObject json=JsonUtils.toJsonTree(body, body.getClass()).getAsJsonObject();
+            for (JsonElement each : json.getAsJsonArray("variables")) {
+                JsonObject variable=each.getAsJsonObject();
+                List<String> found=owners.get(variable.get("name").getAsString());
+                if (found!=null && found.size()==1) variable.addProperty("peekyOwner", found.get(0));
+            }
+            return json;
+        } catch (Exception error) {
+            // Unnamed: Peeky then changes none of these fields.
+            return body;
+        }
     }
 
     /**
@@ -176,6 +218,11 @@ public final class PeekyJavaAdapter extends ProtocolServer {
     }
 
     @Override public void sendResponse(Messages.Response response) {
+        if ("variables".equals(response.command)) {
+            Integer reference=listings.remove(response.request_seq);
+            if (response.success && reference!=null && response.body!=null)
+                response.body=withOwners(reference, response.body);
+        }
         if (response.success && response.command.equals("initialize")) {
             // Positive capability list: never inherit unimplemented JDT provider capabilities.
             JsonObject caps=new JsonObject();
@@ -189,6 +236,8 @@ public final class PeekyJavaAdapter extends ProtocolServer {
             caps.addProperty("peekyTextSet", true);
             // And changes a char to a quoted char (#183), only where it is declared a char.
             caps.addProperty("peekyCharSet", true);
+            // And names each listed field's declaring class, never changing a JDK class's (#204).
+            caps.addProperty("peekyFieldOwners", true);
             response.body=caps;
         }
         super.sendResponse(response);
