@@ -887,6 +887,13 @@ _CALL_LEAD = re.compile(
 # Inline assembly, which may write any memory or register it reaches, operands or not
 # (`__asm__("" : "=r"(p->width))`, a store through a register holding a pointer).
 _ASSEMBLY = re.compile(r"(?<![\w$])(?:asm|__asm|__asm__)(?![\w$])")
+# Builtins that take an address no `&` shows: of a value (`__builtin_addressof(x)`), or
+# of a frame, from which any local of it, or of its callers, is reached (review of #211).
+_ADDRESSES = re.compile(r"(?<![\w$])__builtin_(?:addressof|frame_address|stack_address)(?![\w$])")
+# Operators whose operand is not evaluated: `sizeof x.buf` takes no address.
+_UNEVALUATED_BEFORE = re.compile(
+    r"(?<![\w$])(?:sizeof|_Alignof|alignof|typeof|__typeof__|__typeof)\s*\(?\s*$"
+)
 
 
 def _under(graph, offset):
@@ -5301,6 +5308,12 @@ class NativeSession:
                     f"{caller.get('name')} has inline assembly, which may change `{argument}` "
                     "or what it points to"
                 )
+            builtin = next((use[8:] for use in uses if use.startswith("builtin:")), None)
+            if builtin is not None:
+                return chain, (
+                    f"{caller.get('name')} uses `{builtin}`, which may change `{argument}` or "
+                    "what it points to"
+                )
             if "changes" in uses:
                 return chain, f"{caller.get('name')} may point `{argument}` elsewhere first"
             key = (caller.get("name"), caller.get("source"), str(caller.get("span")))
@@ -5363,9 +5376,9 @@ class NativeSession:
         (the call's own argument), "changes" (`name = q`, `name++`, `&name`: it may point
         elsewhere), "reads" (`name->field` or `name->items[i]`, an integer by the build's
         types, only read) or "other" (`*name`, `name[0]`, `name->field = 1`, another
-        call's argument...); and "assembly" first where the body has inline assembly,
-        which may change either unseen (review of #211). None where Peeky cannot find the
-        body."""
+        call's argument...); and first "assembly" where the body has inline assembly, and
+        "builtin:NAME" where it takes an address with a builtin (``_ADDRESSES``), which may
+        change either unseen (review of #211). None where Peeky cannot find the body."""
         from peeky.fields import Unsettable, debugger_steps, settable_member
 
         graph = self.fields
@@ -5379,6 +5392,8 @@ class NativeSession:
         own, uses = range(*site["argument_span"]), []
         if _ASSEMBLY.search(inner):
             uses.append("assembly")
+        if builtin := _ADDRESSES.search(inner):
+            uses.append(f"builtin:{builtin[0]}")
         assigned = r"[\s)]*(?:(?:[-+*/%|^&]|<<|>>)?=(?!=)|\+\+|--)"
         for found in re.finditer(rf"(?<![\w$]){re.escape(name)}(?![\w$])", inner):
             before, after = inner[: found.start()].rstrip(), inner[found.end() :]
@@ -5476,8 +5491,9 @@ class NativeSession:
         ARGS are `&root` and reads (``_reads``), and so is the rest of an `if`'s
         condition; and the caller's body, as preprocessed (a header included inside it
         too), takes no address of ``root`` or its fields elsewhere but to lend it
-        (``_lent``), so no pointer reaches it, and has no inline assembly (which may take
-        it unseen). Anything else may change it
+        (``_lent``), nor names an array in it without an index (``_decays``), so no
+        pointer reaches it, and has no inline assembly or address builtin (which may take
+        it unseen: ``_ADDRESSES``). Anything else may change it
         first (`r = q, push(&r, 1)`, `push(&r, RESET(r))`, `push(&r, ops[0](r.buf))`
         writing through the array that starts `r`, a pointer `a = &r` set earlier)."""
         from peeky.fields import Unsettable
@@ -5513,13 +5529,52 @@ class NativeSession:
         if defined is None:
             return False
         _, body, begin = defined
-        if _ASSEMBLY.search(body):
+        if _ASSEMBLY.search(body) or _ADDRESSES.search(body):
             return False  # it may take the root's address unseen
         address = rf"(?<!&)&(?!&)\s*(?:\(\s*)*{re.escape(root)}(?![\w$])"
         for found in re.finditer(address, body):
             at = begin + found.start()
             if at not in own and not self._lent(site, root, at):
                 return False
+        # An array in it, named without `&`, is a pointer into it: `keep(r.buf)`.
+        for found in re.finditer(rf"(?<![\w$]){re.escape(root)}(?![\w$])", body):
+            before = body[: found.start()].rstrip()
+            if before.endswith((".", "->")) or begin + found.start() in own:
+                continue  # a member's name, or the call's own `&root`
+            if not _UNEVALUATED_BEFORE.search(before) and self._decays(kind, body, found.end()):
+                return False
+        return True
+
+    def _decays(self, kind, text, position):
+        """Whether the selector that continues at ``position`` of ``text`` (`.buf`,
+        `.rows[i]`, nothing) from a local of type ``kind`` names an array, which a use
+        turns into a pointer into the local, by the build's types; True where Peeky cannot
+        tell. Through a pointer (`.next[0]`) it is no longer the local's."""
+        graph = self.fields
+        offset, element, pending, at = _under(graph, kind), None, 0, position
+        for _ in range(64):
+            node = graph.get(offset) if offset is not None else None
+            step = re.match(r"\s*(?:\.\s*([A-Za-z_]\w*)|\[)", text[at:])
+            if step is None:
+                return pending > 0 or node is None or node[0] == "array"
+            if step[1] is not None:
+                members = (
+                    [m for m in node[5] if m[0] == step[1]] if node and node[0] == "record" else []
+                )
+                if pending or len(members) != 1:
+                    return True
+                offset, at = _under(graph, members[0][1]), at + step.end()
+                continue
+            closed = _arguments(text, at + step.end() - 1)
+            if closed is None:
+                return True
+            if not pending:
+                if node is None or node[0] != "array":
+                    return node is None
+                element, pending = node[2], len(node[3]) if node[3] else 1
+            pending, at = pending - 1, closed[1]
+            if not pending:
+                offset = _under(graph, element)
         return True
 
     def _reads(self, text, root, kind):
@@ -5596,7 +5651,7 @@ class NativeSession:
         if defined is None or len(defined[0]) != len(spans):
             return False
         parameters, inner, _ = defined
-        if _ASSEMBLY.search(inner):
+        if _ASSEMBLY.search(inner) or _ADDRESSES.search(inner):
             return False
         parameter = re.search(r"([A-Za-z_]\w*)\s*$", parameters[index[0]])
         declared = (callees[0].get("types") or {}).get(parameter[1] if parameter else None) or ()

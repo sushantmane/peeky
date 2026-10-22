@@ -360,3 +360,98 @@ def test_a_header_included_inside_a_function_on_the_way_is_scanned_too(c_program
     assert code == 2, out
     assert "and wrap has inline assembly, which may change `p`" in message, out
     assert "settable" not in message.split("one caller")[1] and "--set-at" not in message, out
+
+
+# Review of PR #211, round 3: addresses no `&` shows. `saved` points at x (pad is its
+# first member), and wrap writes the width through it before fits reads it.
+UNSEEN = """#include <stdio.h>
+struct layout { int pad[1]; int width; };
+static void *saved;
+static void lend(struct layout *q) { LEND }
+static int fits(const struct layout *p) {
+    return p->width; /* AT */
+}
+static int wrap(struct layout *p) {
+    WRAP
+    return fits(p);
+}
+int main(void) {
+    struct layout x = { { 0 }, 1 };
+    OWNER
+    int seen = 0;
+    seen = wrap(&x); /* CALL */
+    printf("SEEN:%d\\n", seen);
+    return 0;
+}
+"""
+THROUGH = "((struct layout *)saved)->width = 5;"
+ADDRESSES = {
+    # The review's repro.
+    "builtin": ("saved = __builtin_addressof(x);", "", THROUGH),
+    # An array member is a pointer into x.
+    "decayed": ("saved = x.pad;", "", THROUGH),
+    # lend reads only q->width, but keeps its address.
+    "lent": ("lend(&x);", "saved = __builtin_addressof(q->width);", "*(int *)saved = 5;"),
+    # On the way, wrap writes through the address it takes.
+    "on_the_way": ("", "", "int *w = __builtin_addressof(p->width);\n    *w = 5;"),
+}
+
+
+@pytest.mark.timeout(300)
+@pytest.mark.parametrize("case", list(ADDRESSES))
+def test_an_address_no_ampersand_shows_takes_the_claim_away(c_program, capsys, case):
+    owner, lend, wrap = ADDRESSES[case]
+    text = UNSEEN.replace("OWNER", owner).replace("LEND", lend).replace("WRAP", wrap)
+    source = c_program("m.c", text)
+    at, call = line_of(text, "/* AT */"), line_of(text, "/* CALL */")
+    code, out = run(capsys, "probe", source, "--at", at, "--set", "p.width=7")
+    message = out.splitlines()[0]
+    assert code == 2, out
+    assert "settable" not in message.split("one caller")[1] and "--set-at" not in message, out
+    if case == "on_the_way":
+        assert (
+            "which passes it on (`p`, its own pointer parameter, where a change is refused "
+            "too), and wrap uses `__builtin_addressof`, which may change `p` or what it points to"
+        ) in message, out
+    else:
+        assert (
+            f"wrap has one caller: m.c:{call} in main, which passes `&x`; change the value "
+            f"where it is owned, before that call: Peeky cannot tell that a change at line "
+            f"{call} reaches it"
+        ) in message, out
+    # The claim would have been wrong: fits reads wrap's 5, whatever main set.
+    code, out = run(
+        capsys, "probe", source, "--at", at, "--capture", "p.width", "--set-at",
+        f"{call}@1", "x.width=9", "--json",
+    )  # fmt: skip
+    result = json.loads(out)
+    assert code == 0 and [(i["before"], i["after"]) for i in result["interventions"]] == [
+        ("1", "9")
+    ], result
+    assert [row["value"] for row in result["rows"]] == ["5"], result["rows"]
+    assert result["output"].strip() == "SEEN:5", result["output"]
+
+
+@pytest.mark.timeout(300)
+def test_an_element_or_sizeof_of_an_array_member_keeps_the_claim(c_program, capsys):
+    # Neither `x.pad[0]` nor `sizeof x.pad` is a pointer into x.
+    owner = "x.pad[0] = (int)sizeof x.pad;"
+    text = UNSEEN.replace("OWNER", owner).replace("LEND", "").replace("WRAP", "")
+    source = c_program("m.c", text)
+    at, call = line_of(text, "/* AT */"), line_of(text, "/* CALL */")
+    code, out = run(capsys, "probe", source, "--at", at, "--set", "p.width=7")
+    assert (
+        code == 2
+        and (
+            f"wrap has one caller: m.c:{call} in main, which passes `&x`, where `x.width` is "
+            f"settable: a probe's `--set-at {call}@N x.width=<value>`"
+        )
+        in out
+    ), out
+    code, out = run(
+        capsys, "probe", source, "--at", at, "--capture", "p.width", "--set-at",
+        f"{call}@1", "x.width=9", "--json",
+    )  # fmt: skip
+    result = json.loads(out)
+    assert code == 0 and [row["value"] for row in result["rows"]] == ["9"], result
+    assert result["output"].strip() == "SEEN:9", result["output"]
