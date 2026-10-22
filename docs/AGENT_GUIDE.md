@@ -18,8 +18,8 @@ Report the observation, the intervention and its effect, the edit, and the verif
 ## Rules you will hit
 
 1. **A breakpoint stops before its line runs:** to see what a line assigns, stop on the next. Probe only lines `describe` lists; `NO_STOP` means the line never ran (the COOKBOOK's opening tip; 10).
-2. **Set a field in the frame that owns the struct.** Peeky never writes through a pointer or reference (`r->tail` in `push(struct ring *r)`, Rust `self.k`, `this`). Use the call a refusal names (`--set-at LINE@N`) only where it says `settable`; else follow its advice (`describe`'s `mutable:` line, a candidate edit) (7.1, 7.2).
-3. **Changes only where nothing is under way:** C and C++ at a statement's first line, Rust where the MIR proves it, never after `step --out`. Rows mark `[settable]`; a probe whose change its build rules out is refused before it runs (exit 2) (2.3, 7.1 to 7.3).
+2. **Set a field in the frame that owns the struct.** Peeky never writes through a pointer or reference (`r->tail` in `push(struct ring *r)`, Rust `self.k`, `this`). Use the call a refusal names (`--set-at LINE@N`) only where it says `settable`; else follow it (`describe`'s `mutable:` line, a candidate edit) (7.1, 7.2).
+3. **Changes only where nothing is under way:** C/C++ at a statement's first line, Rust where the MIR proves it, never after `step --out`. Rows mark `[settable]`; a probe whose change its build rules out is refused before it runs (exit 2) (2.3, 7.1 to 7.3).
 4. **`--set` applies once, at hit 1** (`--set-hit N` for another); `--set-at LINE@HIT` changes at another line's hit (2.4, 2.8).
 5. **Hits count stops, not passes.** A line with a macro's or a block's code, or a closure, can stop several times per pass: read `warnings`, each row's `stop` and `function`. A loop header may stop only before its loop: probe the body's first line (2.2).
 6. **A `note`, `no value yet:` or `unavailable: true` is not a value.** C and C++: read a local below its declaration, and a `note` on a line a loop returns to (a `do` body's first) on the next line; below a `setjmp` call, a `note` replaces `no value yet`: read it below its declaration too. Python: a `note` marks a local the pass assigns below (5.1). Rust: `[stale]` is a moved local's leftover bytes, and raw fields with a note are contents Peeky could not prove (7.1, 7.2).
@@ -88,7 +88,7 @@ Report the observation, the intervention and its effect, the edit, and the verif
 Probes not refused before launch are saved (`evidence.run_id`). **SQL is optional**: for one probe, read its JSON; saved runs help with large captures, comparisons (with and without `--set`) and slow or unrepeatable runs.
 
 - `peeky sql --schema` lists the tables (`runs`, `captures`, `interventions`, `pauses`), the `evidence` and `last_run` views, and the canned queries. Read it before writing SQL.
-- `peeky queries` needs no SQL: `run`, `wide` (a row per hit), `hits`, `compare`, `join` (two runs' hits paired by a value: `key=v`), `diff` (what differs, first divergence first: §3), `outputs`, `set_effect`, `values`, `unreadable`, `failures`. `--param a=1 --param b=5` (default: the last two) or `run=3` picks runs.
+- `peeky queries` needs no SQL: `run`, `wide` (a row per hit), `hits`, `compare`, `join` (two runs' hits paired by values: `key=v` or `key=a,b`), `diff` (what differs, first divergence first: §3), `outputs`, `set_effect`, `values`, `unreadable`, `failures`. `--param a=1 --param b=5` (default: the last two) or `run=3` picks runs.
 - Compare numbers with `num` (`value` is the debugger's text); mask addresses with `no_addresses(value)`; `object_ref(value)` tells a Java object from a copy (4.3 to 4.6). `--label` tags a run with free text, stored as given; it never changes which runs `diff` or `compare:` pair.
 - Queries are read-only and bounded. A failing query returns `INVALID_QUERY`. Saved evidence describes past runs only: a new question about the program needs a new probe.
 
