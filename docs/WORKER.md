@@ -77,6 +77,9 @@ RESULT=success value=5000 array=4 pointer=5000
 
 ## Start a Java worker
 
+Java worker support is experimental. Over HTTP, the worker serves one fixed Java target, declared
+in advance in its trusted startup config.
+
 The worker takes a launched target's config, the same as the CLI's `--config`
 ([Java 7.3](lang/java-cookbook.md#set-up-a-launched-target)). For example, a `work/java-target.json`:
 
