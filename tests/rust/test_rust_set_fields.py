@@ -598,7 +598,10 @@ def test_rust_fields_and_elements_are_marked_where_set_changes_them(crate, capsy
     # changed, and a field read through `&mut` looked like one the frame holds.
     at = f"src/main.rs:{line_of('// STOP')}"
     marked = {
-        **dict.fromkeys(("s.end", "s.start", "o.span.start", "o.marks[1]"), True),
+        **dict.fromkeys(("s.end", "o.span.start", "o.marks[1]"), True),
+        # #192 review 2: `o` copied `s`, and only `width(&s)` reads `s.start` after the
+        # stop; a reference lent to a call is no read Peeky can prove, so `set` refuses it.
+        "s.start": False,
         **dict.fromkeys(("o.pair.__0", "o.pair.__1", "t.__0", "t.__1", "arr[2]"), True),
         # Packed, through a Box or a reference, moved, unassigned, not a 16- to 64-bit
         # integer: as `set` refuses them.

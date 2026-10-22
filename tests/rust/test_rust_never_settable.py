@@ -415,7 +415,7 @@ def test_the_binding_kept_in_a_register_is_named(tmp_path, state, capsys):
     mutable = next(line for line in out.splitlines() if line.startswith("mutable:"))
     assert "keeps one in memory, COOKBOOK 6.6): bind::shadow: n; bind::twins: n." in mutable
     assert "every one in memory, COOKBOOK 6.6): bind::shadow: x (line 4)." in mutable, mutable
-    assert mutable.endswith("change the value in the caller): bind::other::far: a, y"), mutable
+    assert "change the value in the caller): bind::other::far: a, y. A Vec's" in mutable, mutable
 
 
 @pytest.mark.timeout(400)

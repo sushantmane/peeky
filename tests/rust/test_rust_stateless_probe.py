@@ -111,7 +111,7 @@ def test_peeky_cli_detects_rust_and_runs_probe_session_and_verify(tmp_path, monk
     # Unreadable Rust container elements are explained, not reported as missing.
     assert main(["session", "get", "args[0]"]) == 1
     # String elements are not read anywhere: the reason is the element type.
-    assert "does not read alloc::vec::Vec<alloc::string::String" in capsys.readouterr().out
+    assert "does not read Vec<String>'s elements" in capsys.readouterr().out
     assert main(["session", "set", "args=1"]) == 2
     assert "'args' has debugger type 'alloc::vec::Vec<" in capsys.readouterr().err
     assert main(["session", "set", "start=0"]) == 0

@@ -19,10 +19,11 @@ What is particular to Java targets, one rule per line, each with the [COOKBOOK](
 
 ## Changing values
 
-- Locals of type `byte`, `short`, `int`, `long`, `boolean`, `float`, `double` and `String` can be set (a `char` cannot); the value must fit the type exactly (`int` 3000000000 is refused) ([2.3](../COOKBOOK.md#23-test-a-hypothesis-by-changing-a-value), [7.3](../COOKBOOK.md#73-java-launched)).
+- Locals of type `byte`, `short`, `int`, `long`, `boolean`, `float`, `double`, `char` (`--set "op='+'"` or a code point, `op=43`) and `String` can be set; the value must fit the type exactly (`int` 3000000000 is refused) ([2.3](../COOKBOOK.md#23-test-a-hypothesis-by-changing-a-value), [7.3](../COOKBOOK.md#73-java-launched)).
 - Scalar fields and array elements too (`--set current.end=10`, `arr[-1]=9`); not final or static fields, boxed values (`Integer`) or an `ArrayList`'s elements ([7.3](../COOKBOOK.md#73-java-launched)).
 - A String local, field or element takes a text in double quotes (`--set 'name="apple"'`): a new String, which other references to the old one do not see; what a variable is declared decides (`Object o = "x"` takes none) ([7.3](../COOKBOOK.md#73-java-launched)).
 - A local the program never reads after the stop is refused (a lambda's captured copy, a constant javac compiled into its uses) ([7.3](../COOKBOOK.md#73-java-launched)).
+- `describe` shows each local's declared type and lists the kinds `set` changes; a `--set` the class files rule out (no such local at the line, a type or value that does not fit, never read after it) is refused before the JVM starts, exit status 2 ([7.3](../COOKBOOK.md#73-java-launched)).
 
 ## Returns
 

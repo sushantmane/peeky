@@ -454,6 +454,30 @@ def debugger_steps(graph, root, name, steps):
     return found
 
 
+def member_indexes(graph, root, name, steps):
+    """The projection ``steps`` (the debugger's child names, as ``debugger_steps`` gives
+    them) make from the local ``name`` of type ``root``, as MIR numbers it (#192 review):
+    ("field", its position among its record's members, which rustc's debug information
+    lists in declaration order, as MIR numbers fields) or ("index", n) of a fixed-size
+    array. None where a step is neither."""
+    found, offset, path = [], root, name
+    for step in steps:
+        offset, node, _ = _strip(graph, offset, path)
+        index = re.fullmatch(r"\[([0-9]+)\]", step)
+        if node[0] == "record" and index is None:
+            positions = [at for at, member in enumerate(node[5]) if member[0] == step]
+            if len(positions) != 1:
+                return None
+            found.append(("field", positions[0]))
+            offset, path = node[5][positions[0]][1], f"{path}.{step}"
+        elif node[0] == "array" and index is not None and len(node[3] or ()) <= 1:
+            found.append(("index", int(index[1])))
+            offset, path = node[2], f"{path}{step}"
+        else:
+            return None
+    return tuple(found)
+
+
 def held_container(graph, root, name, steps, dereference=False):
     """The qualified type name of the record (a Rust `Vec`, `String`, `&str`) that
     ``steps`` (the debugger's child names: `values`, `__1`, `[2]`) reach from the local
@@ -638,47 +662,71 @@ def settable_member(graph, root, name, steps, owner=None):
     raise Unsettable(f"`{path}` is not a single integer; select one of its fields or elements")
 
 
-def settable_parts(graph, root, name):
-    """ "fields" (or "elements") where some integer field of the struct, class or tuple
-    local ``name`` of type ``root`` (or element of the array local) is one
-    ``settable_member`` allows: a direct one, an element of an array field, or a field
-    of a struct field. Else None. What `describe` lists, judged by the rules `set`
-    applies to the type (seventh evaluation, finding 16)."""
+def settable_parts(graph, root, name, limit=64, visits=4096):
+    """The paths (`board.entries`, `bins[*].hi`, `board.cells[*].n`, `xs[*]`; `[*]`: any
+    element) of the integer fields and elements of the struct, class, tuple or array
+    local ``name`` of type ``root`` that ``settable_member`` allows, found by a walk
+    through records and fixed-size arrays at any depth (#192 review), each leaf judged
+    by ``settable_member`` as `set` judges it; at most ``limit``, then `… and N more`
+    (`… and more` past ``visits`` types walked); else None. What `describe` lists
+    (seventh evaluation, finding 16; #183: the paths, not the local). A Rust reference
+    or slice (`&str`, a record the debug information names `&…` or `*…`), a union, an
+    enum and a library's type are never walked into: `set` changes nothing there."""
 
-    def elements(offset, path):
+    def stripped(offset, path):
         try:
-            _, node, _ = _strip(graph, offset, path)
+            return _strip(graph, offset, path)[1]
         except Unsettable:
             return None
-        return node
 
-    node = elements(root, name)
+    node = stripped(root, name)
     if node is None or node[0] not in ("record", "array"):
         return None
-    candidates = []
-    if node[0] == "array":
-        candidates.append(["[0]"] * len(node[3] or (0,)))
-        inner = elements(node[2], name)
-        if inner is not None and inner[0] == "record":
-            candidates.extend([*candidates[0], member[0]] for member in inner[5] if member[0])
-    else:
-        for member in node[5][:64]:
-            field, kind = member[0], member[1]
-            if not field:
-                continue
-            candidates.append([field])
-            inner = elements(kind, f"{name}.{field}")
-            if inner is not None and inner[0] == "array":
-                candidates.append([field, *["[0]"] * len(inner[3] or (0,))])
-            elif inner is not None and inner[0] == "record":
-                candidates.extend([field, sub[0]] for sub in inner[5][:64] if sub[0])
-    for steps in candidates:
-        try:
-            settable_member(graph, root, name, steps)
-        except Unsettable:
+    if node[0] == "record" and str(node[1]).startswith(("&", "*")):
+        return None
+    found, extra, walked = [], 0, 0
+    # (type offset, steps from the local, the record offsets on the way: no cycle).
+    pending = [(root, [], frozenset())]
+    while pending:
+        offset, steps, seen = pending.pop()
+        walked += 1
+        if walked > visits:
+            return (*found, "… and more")
+        shown = name + "".join("[*]" if step == "[0]" else f".{step}" for step in steps)
+        node = stripped(offset, shown)
+        if node is None:
             continue
-        return "elements" if node[0] == "array" else "fields"
-    return None
+        if node[0] == "record":
+            if (
+                offset in seen
+                or node[2] == "union"
+                or node[7]
+                or node[8]
+                or node[9]
+                or str(node[1]).startswith(("&", "*"))
+            ):
+                continue
+            members = [member for member in node[5] if member[0]]
+            pending.extend(
+                (member[1], [*steps, member[0]], seen | {offset}) for member in reversed(members)
+            )
+        elif node[0] == "array":
+            if node[3]:
+                pending.append((node[2], [*steps, *["[0]"] * len(node[3])], seen))
+        elif node[0] == "base" and steps:
+            try:
+                settable_member(graph, root, name, steps)
+            except Unsettable:
+                continue
+            if shown in found:
+                continue
+            if len(found) < limit:
+                found.append(shown)
+            else:
+                extra += 1
+    if not found:
+        return None
+    return (*found, f"… and {extra} more") if extra else tuple(found)
 
 
 def member_base(graph, root, steps):
@@ -713,6 +761,36 @@ def member_base(graph, root, steps):
         else:
             return None
     return None
+
+
+def member_type(graph, root, steps):
+    """The node of the type that the debugger's child names ``steps`` reach from a local
+    of type ``root``, as ``member_base`` walks them (typedefs and qualifiers kept, what a
+    pointer or reference points at when a step goes below it), or None. For display
+    only (#183: a field's Rust name), from a graph built with ``pointees``."""
+    offset = root
+    for step in steps:
+        node = None
+        for _ in range(64):
+            node = graph.get(offset)
+            if node is None:
+                return None
+            if node[0] in ("typedef", "qualifier") or (
+                node[0] in ("pointer", "reference") and node[2] is not None
+            ):
+                offset = node[2]
+                continue
+            break
+        if node[0] == "record" and not node[7]:
+            found = [member for member in node[5] if member[0] == step]
+            if len(found) != 1:
+                return None
+            offset = found[0][1]
+        elif node[0] == "array" and _INDEX.fullmatch(step) and node[3] and len(node[3]) == 1:
+            offset = node[2]
+        else:
+            return None
+    return graph.get(offset)
 
 
 # Where a reason names its function (`in \x00, ...`).

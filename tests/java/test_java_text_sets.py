@@ -136,8 +136,9 @@ def test_marks_follow_the_declared_type_and_a_constant_local_is_never_changed(gr
             result
         )
         message = result["error"]["message"]
-        if assignment.startswith("fk") or greet[2]:
-            assert "the program never reads it (javac compiles a constant local" in message
+        # #183: judged from the class files before the program runs, any bundle.
+        assert result.get("refused_before_launch") is True, result
+        assert "javac compiles a constant local into its uses" in message, message
         assert "FC:const FK:5" not in (result.get("output") or ""), result
     if greet[2]:
         for assignment, declared in (("g.held", "java.lang.Object"), ("objs[0]", "Object")):
@@ -147,7 +148,7 @@ def test_marks_follow_the_declared_type_and_a_constant_local_is_never_changed(gr
             ), result
             assert f"it is declared {declared} and holds a String" in result["error"]["message"]
         code, result = probe(capsys, greet, "--set", 'o="y"')
-        assert code == 1 and "o is java.lang.Object" in result["error"]["message"], result
+        assert code == 2 and "`o` is declared Object; only" in result["error"]["message"], result
 
 
 @pytest.mark.timeout(180)
@@ -157,8 +158,9 @@ def test_a_local_the_code_never_reads_after_the_stop_is_never_changed(greet, cap
     code, result = probe(capsys, greet, "--set", 'cap="X"')
     assert code == _refused_code(result) and result["error"]["code"] == "MUTATION_REJECTED", result
     message = result["error"]["message"]
-    if greet[2]:
-        assert "the program does not read it after this stop (a lambda or inner class" in message
+    # #183: no read follows the line's start, judged before the program runs.
+    assert result.get("refused_before_launch") is True, result
+    assert "is never read after a stop at this line's start (a lambda or inner class" in message
     assert "LAM:" not in (result.get("output") or ""), result
     # A local read after the stop is changed as before.
     if greet[2]:

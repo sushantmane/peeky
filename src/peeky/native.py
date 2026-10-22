@@ -1232,8 +1232,8 @@ def function_scopes(
     None): the struct and array locals with an integer field or element `set` may
     change, judged from the type as `set` judges it (fields.settable_parts), in the
     frame's own memory, and where ``in_memory`` says so (Rust: the IR keeps it there):
-    {name: "fields" | "elements"} in every copy (``settable_parts``, seventh
-    evaluation, finding 16).
+    {name: [the paths it may change: `board.entries`, `bins[*].hi`]} in every copy
+    (``settable_parts``, seventh evaluation, finding 16; #183).
 
     ``rust``: the program is Rust; its sources' lines are counted as rustc counts them
     (at `\n` alone), and `macro_rules!` bodies are found in them.
@@ -1378,7 +1378,11 @@ def function_scopes(
                 **({"types": types} if types else {}),
                 **({"spans": spans} if spans else {}),
                 **({"never_settable": dict(sorted(unchanged[0].items()))} if unchanged[0] else {}),
-                **({"settable_parts": dict(sorted(parts[0].items()))} if parts[0] else {}),
+                **(
+                    {"settable_parts": {n: list(p) for n, p in sorted(parts[0].items())}}
+                    if parts[0]
+                    else {}
+                ),
             }
         )
     scopes.sort(key=lambda s: (s["source"], s["lines"][0], s["scope"]))
@@ -1388,10 +1392,10 @@ def function_scopes(
 
 
 def _settable_parts(graph, types, names, in_memory, linkages):
-    """{name: "fields" | "elements"} of one function copy's shown locals (``names``)
-    that are one struct or array local, of one type, in the frame's own memory (an
-    automatic or a parameter there), with an integer field or element `set` may change
-    (see function_scopes)."""
+    """{name: the paths `set` may change in it} of one function copy's shown locals
+    (``names``) that are one struct or array local, of one type, in the frame's own
+    memory (an automatic or a parameter there), with an integer field or element `set`
+    may change (see function_scopes, fields.settable_parts)."""
     from peeky.fields import settable_parts
 
     found = {}
@@ -6025,11 +6029,11 @@ class NativeSession:
         """Whether a root local is a writable integer of a type Peeky can change."""
         return _writable_integer(variable)
 
-    def mutation_literal(self, value):
+    def mutation_literal(self, value, variable=None):
         """The canonical decimal sent to LLDB (`+5` and unsigned `-0` are not its syntax)."""
         return str(int(value))
 
-    def confirm_mutation(self, name, value, before, after):
+    def confirm_mutation(self, name, value, before, after, variable=None):
         """The value read back must be exactly the one requested. Nothing written: the
         change is refused and the session kept. Anything else (a lossy conversion, a
         redefined type) changed the program in a way nobody asked for: fail closed."""

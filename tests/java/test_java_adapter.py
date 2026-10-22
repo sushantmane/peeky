@@ -120,6 +120,8 @@ def test_java_runtime_intervention(bundle, tmp_path, nested):
             "peekyFieldSet": True,
             # A launcher from #137 on: a String takes a text (older bundles say to rebuild).
             **({"peekyTextSet": True} if b"peekyTextSet" in launcher.read_bytes() else {}),
+            # And from #183 on, a char takes a quoted char.
+            **({"peekyCharSet": True} if b"peekyCharSet" in launcher.read_bytes() else {}),
         }
         # Steps are allowed with a positive integer thread only; step-in targets, step back
         # and goto are not.
