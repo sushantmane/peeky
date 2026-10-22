@@ -88,6 +88,9 @@ them. The rules themselves are in [c-cpp.md](lang/c-cpp.md) and the
 - With `readMemory`, the hook reads the data pointer and the length from the string's first two
   words, and checks the length against `_M_string_length`. The text takes one 32-byte request for
   a string in its own 16-byte buffer, and a second for one on the heap.
+- A literal is kept within the worker's 2000 characters, and cut between characters, for two
+  reasons. A value with a note once ran to 5041 characters. A long libc++ text was cut inside an
+  escape, with no mark.
 - `tidy` respells only the debugger's own text, and only once. LLDB's escapes are unambiguous:
   `\0` is always one NUL, and LLDB writes no other octal escape. Reading memory again on macOS
   would cost a request per string, just to fix a spelling.
@@ -144,9 +147,13 @@ clang's lexical blocks are right, but their code isn't contiguous.
 
 - lldb-dap 18 names an anonymous member `<null>`. lldb-dap 20 and later name it `""`.
 - The lldb-dap builds tested, 18, 20 and Xcode's, list no vtable pointer.
-- `fields.type_graph` records each standard container's template arguments
-  (`DW_TAG_template_type_parameter`: `_Tp`, `_Key`) and walks them. A container's storage is behind
-  pointers, so a plain walk never reaches its elements.
+- `fields.type_graph` records the template arguments (`DW_TAG_template_type_parameter`: `_Tp`,
+  `_Key`) of each supported preview container, and walks them. Those are the containers
+  `fields.CXX_CONTAINER` names: `std::vector`, `std::array`, `std::deque`, `std::list`, `std::map`,
+  `std::unordered_map`, `std::set`, `std::multiset`, `std::unordered_set` and
+  `std::unordered_multiset`. It leaves out `std::multimap`, `std::forward_list`, the adaptors,
+  `std::pair` and `std::tuple`. A container's storage is behind pointers, so a plain walk never
+  reaches its elements.
 - The formatters of libc++ and libstdc++, in every lldb-dap tested, read a container's children
   from its own storage.
 - **Threads:** the program runs one thread only where every source agrees.
