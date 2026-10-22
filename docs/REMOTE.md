@@ -21,7 +21,7 @@ On the **target host**, use the interpreter and toolchain that run the program:
 export DEBUG_TOKEN=$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')
 echo "$DEBUG_TOKEN"            # copy it over a trusted channel; never commit it
 python3 -m peeky.worker --root /srv/app --port 8765 [--idle-timeout 300] \
-    [--rust-config|--native-config|--java-config trusted.json]
+    [--rust-config|--native-config|--java-config|--java-attach-config trusted.json]
 ```
 
 On **your machine**, in a checkout with the same sources:
@@ -62,11 +62,52 @@ A session started with `--worker` says `remote` in its state: `session default (
   the local interpreter, toolchain and dependencies must match the target's for the verdict to
   carry over. When they differ, run `verify` on the target host.
 
+### Java on the worker host
+
+The worker's own trusted config decides what runs. Its paths are relative to `--root`, and its
+`bundle` is relative to the config file.
+
+| Target | Worker flag | The config names |
+| --- | --- | --- |
+| A JVM that Peeky launches | `--java-config` | `bundle`, `sources`, `main_class` |
+| A JVM already waiting for a debugger | `--java-attach-config` | `bundle`, `port`, `sources`, `class_roots` |
+
+- The host needs a JDK, and an adapter bundle built there with `scripts/setup_java_adapter.py`.
+- On your machine, pass your own `--config` of the same kind. With `--worker`, the client uses it
+  only to tell a launched JVM from an attached one.
+- The breakpoint's `.java` file must match yours: see [Source identity](#source-identity).
+
+A probe through the worker:
+
+```
+$ peeky probe . --config launch.json --at demo/PaginationBug.java:13 --capture start,pageSize --set start=0 --worker http://127.0.0.1:56757
+hit  phase      line  function                      selector  type  value
+1    observed   13    PaginationBug.main(String[])  start     int   3  [settable]
+1    observed   13    PaginationBug.main(String[])  pageSize  int   3  [settable]
+1    after-set  13    PaginationBug.main(String[])  start     int   0  [settable]
+after-set: 1 row equal to the hit's observed value left out (`--json` has every row)
+set start: 3 -> 0
+status: completed  hits: 1  seconds: 0.706  max pause: 117.5 ms
+output:
+  PAGE:[10, 20, 30]
+```
+
+A session works the same way:
+
+```
+$ peeky session start . --config launch.json --at demo/PaginationBug.java:13 --worker http://127.0.0.1:56757
+session default (java, remote): state: stopped at /home/peeky/java/demo/PaginationBug.java:13 in PaginationBug.main(String[]), hit 1 (paused 0.0 s)
+```
+
+With an attached JVM, a probe stops at its hits, then detaches. The JVM runs on, and Peeky never
+kills it ([JAVA_ATTACH.md](JAVA_ATTACH.md)).
+
 ### Source identity
 
 The client sends the sha256 of the local program, and of the `--run` entry script. If the worker's
 copies differ, it refuses with `PROVENANCE_CHANGED` **before launching**. So a mismatched program
-is never run or changed:
+is never run or changed. For Java, the program is the breakpoint's `.java` file. The refusal
+comes before the JVM is launched, or before a waiting JVM is attached:
 
 ```
 $ peeky probe pagination_bug.py --at 8 --capture start --set start=0 --worker http://127.0.0.1:18765
@@ -76,6 +117,11 @@ hint: Sources, build outputs or tools changed; start a new session on a fresh bu
 
 As a second check, the client compares the hashes the worker reports. A result it can't confirm
 is discarded: `results_discarded: true`, with no rows and no output.
+
+**Only those two files are compared.** The worker's other sources are not: other Python modules,
+the other files in a config's `sources`, C and C++ headers, and a crate's other files. Keep them in
+sync with yours ([#249](https://github.com/sushantmane/peeky/issues/249)). A saved run's
+`inputs_sha256` records what the worker read.
 
 ### Why `ExitOnForwardFailure=yes`
 
@@ -131,14 +177,15 @@ TCP relay as a third. Its tests cover:
 - refusing a non-loopback URL, a missing token, a wrong token (`UNAUTHORIZED`) and a closed port;
 - the token never appearing in output.
 
-The [recorded separate-host run](#recorded-separate-host-run-2026-10-22) is repeated by CI on every
-change.
+The [recorded separate-host run](#recorded-separate-host-run-2026-10-22), Python and Java, is
+repeated by CI on every change.
 
 ## Recorded separate-host run (2026-10-22)
 
 `tests/remote/test_ssh_e2e.py` runs the procedure above against a second host. The host is a Linux
 container started from `scripts/remote_e2e/Dockerfile`. It has its own kernel network namespace,
-filesystem, OS and Python.
+filesystem, OS and Python. The Java tests use the Dockerfile's `java` target, which adds a JDK and
+an adapter bundle built in the image.
 
 - The container runs a key-only `sshd`, which permits a single forward, to `127.0.0.1:8765`.
 - The client uses a throwaway ed25519 key, and ignores the user's ssh configuration.
@@ -153,11 +200,14 @@ To run it locally, you need Docker, for example OrbStack:
 PEEKY_E2E_DOCKER=1 PEEKY_E2E_RECORD=remote-run.json pytest tests/remote -v
 ```
 
+The Java steps are saved beside it, in `remote-run-java.json`.
+
 | | Client | Worker host |
 | --- | --- | --- |
 | OS | macOS 27.0.1 arm64 | Linux 7.2.9 (OrbStack) aarch64, Debian 13 |
 | Python / debugpy | 3.13.8 / 1.8.22 | 3.11.17 / 1.8.22 |
 | SSH | OpenSSH 10.3p1 client | OpenSSH 10.0p2 sshd |
+| Java | none needed | Temurin 17.0.20.1 (the `java` target only) |
 
 | Step | Command (client) | Exit | Seconds | Result |
 | --- | --- | ---: | ---: | --- |
@@ -178,5 +228,27 @@ PEEKY_E2E_DOCKER=1 PEEKY_E2E_RECORD=remote-run.json pytest tests/remote -v
 - The token never appears in any command's output. Every step asserts this.
 - This run's module took 9.6 s, including starting the container and sshd, with the image already
   built.
+
+**Java** (2026-10-22), with the `java` target's container:
+
+| Step | Command (client) | Exit | Seconds | Result |
+| --- | --- | ---: | ---: | --- |
+| Probe with a change | `peeky probe . --config launch.json --at demo/PaginationBug.java:13 --capture start,pageSize --set start=0 --worker URL` | 0 | 0.60 | `start` 3 → 0; output `PAGE:[10, 20, 30]` |
+| Session start | `peeky session start . --config launch.json --at demo/PaginationBug.java:13 --worker URL` | 0 | 0.49 | stopped at line 13 |
+| Read, change, run to the end | `peeky session get start`, `session set start=0`, `session continue --to-exit` | 0 | 0.02 each | `3`; 3 → 0; terminated |
+| Program output, close | `peeky session report`, `session close` | 0 | 0.01 | `PAGE:[10, 20, 30]`; closed |
+| The host's source differs | `peeky probe … --config launch.json … --worker URL` | 2 | 0.05 | `PROVENANCE_CHANGED`, refused before launching; the host's changed program never ran |
+| The host's source differs, attached JVM | `peeky probe … --config attach.json … --worker URL` | 2 | 0.07 | `PROVENANCE_CHANGED`; the JVM still waited, not attached |
+| Attached JVM, probe with a change | `peeky probe … --config attach.json … --worker URL` | 0 | 0.25 | `start` 3 → 0; `ended: hits`. The JVM stayed alive, printed `PAGE:[10, 20, 30]` and blocked on its sentinel file |
+| The sentinel file created | `touch release`, on the host | — | — | the JVM printed `DONE` and exited with status 0 |
+
+- The attached JVM was started on the host with
+  `-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=127.0.0.1:5005`. Then the worker
+  was restarted with `--java-attach-config`.
+- After its output, the attached program waits for a `release` file. So the probe could pass only
+  by ending at its hit, and leaving the JVM running: not by waiting for the JVM's exit, or ending
+  it.
+- With the Java tests, the module took 8.0 s locally, with both images already built. A cold build
+  of the `java` image took 17 s, with its base images already pulled.
 - On 2026-10-16, five consecutive local runs took 4.6–5.0 s. On GitHub's `ubuntu-latest` runner,
   with an x86_64 client and container, the module took 21.7 s including the image build.

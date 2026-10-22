@@ -18,7 +18,8 @@ has as a whole:
 | C++ | Explicit C++17 builds, bounded expansion of classes, references and arrays, and deterministic candidate repair. | [internals](NATIVE_INTERNALS.md), [worker](WORKER.md#configure-a-c-target), [loop](AGENT_LOOP.md#c-pagination_bugcpp) |
 | Rust | An experimental HTTP worker for one dependency-free Cargo binary, with application-unit symbols and compiler-validated `Option<i32>` views. A deterministic investigation loop: the hashed compiled Cargo test and an independent checker must both pass on a fresh build. | [worker](RUST_GATE.md), [loop](AGENT_LOOP.md#rusts-two-gates) |
 
-Still open for Java: binding source paths on a separate host.
+Java on a separate host is qualified, for a launched JVM and an attached one
+([REMOTE.md](REMOTE.md#java-on-the-worker-host)).
 
 ## Priority and rationale
 
