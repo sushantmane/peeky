@@ -1,6 +1,9 @@
 # Java headless DAP feasibility
 
-Historical feasibility record. Subsequent implementation is described in [JAVA_WORKER.md](JAVA_WORKER.md); the limitations below describe the initial scratch experiment.
+> **Historical:** the 2026-10-14 feasibility record for Java, kept as it was. Its limits describe
+> the first scratch experiment, not Peeky today. For current behaviour, see [Java](lang/java.md),
+> the [Java cookbook](lang/java-cookbook.md), [JAVA_AGENT.md](JAVA_AGENT.md) and
+> [JAVA_ATTACH.md](JAVA_ATTACH.md).
 
 Status: **feasibility passed locally; Java is not yet integrated or supported by Peeky.** Tested on macOS ARM64 with Microsoft OpenJDK 17.0.19. The experiment uses the real Microsoft Java Debug Server core, a deliberately limited provider shim, and a standalone DAP client. No Peeky worker/controller code was changed.
 
