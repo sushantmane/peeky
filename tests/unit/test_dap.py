@@ -17,6 +17,7 @@ def transport():
     dap.ignored_events = {}
     dap.output = collections.deque(maxlen=500)
     dap.output_truncated = False
+    dap.output_count = 0
     dap.event_sequence = 0
     dap.error = None
     return dap
@@ -349,3 +350,200 @@ def test_threads_a_thread_event_says_started_are_kept():
         )
     dap._accept({"type": "event", "event": "thread", "body": {"reason": "exited", "threadId": 3}})
     assert dap.started_threads == {1, 2}
+
+
+# A debugger whose last messages follow the program's end (#203). `late`: `exited`,
+# `terminated`, then output, all before Peeky disconnects; `exit-later`: after
+# `terminated`, `exited` comes once it answered; `noisy`: after it answered, text of its
+# own (lldb-dap 18 on Linux prints its crash as `stderr` output); `answering`: that text
+# while it handles the disconnect, before its answer; `crash`: it exits with status 2 on
+# its own once the program ended, before Peeky ends its input (it may have dropped output
+# it held), and `crash1` with status 1; `dies`: it answers the disconnect and exits with
+# status 2 at once, as Peeky checks it and ends its input; `provoked`: it exits 1 only
+# once Peeky ended its input, as debugpy can while it still handles the disconnect;
+# `provoked-bare` exits so with nothing on stderr, `provoked-other` with another failure
+# there (not debugpy's known one, whose signature `provoked` prints); `open`: its stream
+# stays open after the end; `running`: the program never ends.
+ENDING_ADAPTER = r"""
+import json, sys, time
+mode = sys.argv[1]
+def read():
+    headers = {}
+    while True:
+        line = sys.stdin.buffer.readline()
+        if not line:
+            return None
+        if line == b"\r\n":
+            break
+        key, value = line.decode().split(":", 1)
+        headers[key.lower()] = value.strip()
+    return json.loads(sys.stdin.buffer.read(int(headers["content-length"])))
+def write(body):
+    data = json.dumps(body).encode()
+    sys.stdout.buffer.write(b"Content-Length: %d\r\n\r\n" % len(data) + data)
+    sys.stdout.buffer.flush()
+def event(name, **body):
+    write({"seq": 0, "type": "event", "event": name, "body": body})
+def output(text, category="stdout"):
+    event("output", category=category, output=text)
+output("early\n")
+if mode == "late":
+    event("exited", exitCode=0)
+    event("terminated")
+    time.sleep(0.3)
+    output("late\n")
+elif mode != "running":
+    event("terminated")
+if mode in ("crash", "crash1"):
+    sys.exit(2 if mode == "crash" else 1)
+while (request := read()) is not None:
+    if mode == "answering" and request["command"] == "disconnect":
+        output("free(): invalid pointer\n", "stderr")
+    write({"seq": 0, "type": "response", "request_seq": request["seq"], "success": True,
+           "command": request["command"], "body": {}})
+    if request["command"] == "disconnect":
+        if mode == "dies":
+            sys.exit(2)
+        time.sleep(0.3)
+        if mode == "exit-later":
+            event("exited", exitCode=7)
+        elif mode == "noisy":
+            output("free(): invalid pointer\n", "stderr")
+if mode == "open":
+    time.sleep(60)
+if mode.startswith("provoked"):
+    with open(sys.argv[2]) as said:
+        sys.stderr.write(said.read())
+    sys.stderr.flush()
+    sys.exit(1)
+"""
+
+
+# What debugpy 1.8.22's adapter prints on stderr when Peeky ends its input as it answers
+# `disconnect` and it exits 1 (#213: Linux, Docker), the lines its signature checks kept.
+DEBUGPY_PROVOKED = """E+00001.227: /handling #11 request "disconnect" from Client[1]/
+             Handler 'Client.disconnect_request' (file '/v/debugpy/adapter/components.py', line 700)
+             couldn't handle #11 request "disconnect" from Client[1]:
+
+             Traceback (most recent call last):
+               File "/v/debugpy/adapter/components.py", line 97, in lock_and_handle
+                 return f(self, message)
+               File "/v/debugpy/adapter/clients.py", line 715, in disconnect_request
+                 servers.stop_serving()
+               File "/v/debugpy/adapter/servers.py", line 435, in stop_serving
+                 sessions.report_sockets()
+               File "/v/debugpy/adapter/sessions.py", line 298, in report_sockets
+                 client.report_sockets()
+               File "/v/debugpy/adapter/clients.py", line 743, in report_sockets
+                 self.channel.send_event(
+               File "/v/debugpy/common/messaging.py", line 296, in write_json
+                 raise NoMoreMessages(stream=self)
+             debugpy.common.messaging.NoMoreMessages: No more messages
+
+             During handling of the above exception, another exception occurred:
+
+             Traceback (most recent call last):
+               File "/v/debugpy/common/messaging.py", line 717, in respond
+                 assert self.response is None
+             AssertionError
+"""
+
+
+@pytest.mark.parametrize(
+    "mode, debugpy, ended, drained, output, code, after, status",
+    [
+        ("late", False, True, True, "early\nlate\n", 0, "", 0),
+        ("exit-later", False, True, True, "early\n", 7, "", 0),
+        ("noisy", False, True, False, "early\n", None, "free(): invalid pointer\n", None),
+        # #213 review: what comes from the disconnect on is not the program's, even
+        # before the adapter's answer.
+        ("answering", False, True, False, "early\n", None, "free(): invalid pointer\n", None),
+        # #213 review: a clean end of its stream, then a failed exit, is not whole: on
+        # its own before Peeky ends its input, or in the moment it does so (any adapter's
+        # status 2, debugpy's included), or after (status 1, not debugpy's).
+        ("crash", False, True, False, "early\n", None, "", 2),
+        ("crash", True, True, False, "early\n", None, "", 2),
+        ("crash1", True, True, False, "early\n", None, "", 1),
+        ("dies", False, True, False, "early\n", None, "", 2),
+        ("dies", True, True, False, "early\n", None, "", 2),
+        ("provoked", False, True, False, "early\n", None, "", 1),
+        # The one exit Peeky is known to provoke: debugpy's 1 as its input ends, with the
+        # failure it prints then. Without that signature, a status 1 is a crash.
+        ("provoked", True, True, True, "early\n", None, "", 1),
+        ("provoked-bare", True, True, False, "early\n", None, "", 1),
+        ("provoked-other", True, True, False, "early\n", None, "", 1),
+        ("open", False, True, False, "early\n", None, "", None),
+        ("running", False, False, False, "early\n", None, "", None),
+    ],
+)
+def test_close_reads_the_output_to_the_adapters_end(
+    tmp_path, monkeypatch, mode, debugpy, ended, drained, output, code, after, status
+):
+    # #203: output can follow `terminated`, and `exited` can come after it: what close
+    # leaves is whole only once the adapter ended its stream with nothing more after
+    # Peeky's disconnect, never a guess; what came after is kept apart.
+    import subprocess
+    import sys
+    import time
+
+    import peeky.dap as dap_module
+
+    monkeypatch.setattr(dap_module, "DRAIN_TIMEOUT", 1.0 if mode == "open" else 10.0)
+    popen = subprocess.Popen
+
+    from peeky.adapters import PythonAdapter
+
+    said = tmp_path / "stderr.txt"
+    said.write_text(
+        DEBUGPY_PROVOKED
+        if mode == "provoked"
+        else DEBUGPY_PROVOKED.replace("report_sockets", "propagate_output")
+        if mode == "provoked-other"
+        else ""
+    )
+
+    def spawn(_command, **kwargs):
+        return popen([sys.executable, "-c", ENDING_ADAPTER, mode, str(said)], **kwargs)
+
+    monkeypatch.setattr("peeky.dap.subprocess.Popen", spawn)
+    dap = DAP(provoked_exit=PythonAdapter.provoked_exit if debugpy else None)
+    try:
+        dap.wait_event({"terminated"} if ended else {"never"}, 0, 5)
+    except TimeoutError:
+        assert not ended
+    # Closed once what the program wrote has come: in `late`, output after `terminated`.
+    deadline = time.monotonic() + 5
+    while dap.snapshot_output()[0] != output and time.monotonic() < deadline:
+        time.sleep(0.01)
+    if mode in ("crash", "crash1"):
+        # Its exit comes before Peeky closes the session: its own (never reaped here).
+        while dap._adapter_state() == "running" and time.monotonic() < deadline:
+            time.sleep(0.01)
+    started = time.monotonic()
+    dap.close(terminate=False)
+    final = dap.final
+    assert (final["ended"], final["drained"]) == (ended, drained)
+    assert (final["output"], final["exit_code"], final["after_disconnect"]) == (output, code, after)
+    # The stream ended cleanly in each case with an exit status the adapter chose; only
+    # an exit before Peeky ended its input counts (#213 review: debugpy exits 1 when its
+    # input ends while it still handles the disconnect).
+    assert final["stream_drained"] is (status is not None)
+    if status is not None:
+        assert final["adapter_exit"] == status
+    if mode.startswith(("crash", "provoked")):
+        assert final["own_exit"] is mode.startswith("crash")
+    assert final["exit_provoked"] is (mode == "provoked" and debugpy)
+    # The wait is for the adapter's end, never a fixed sleep: it stops when the end comes.
+    assert time.monotonic() - started < (6 if mode == "open" else 8)
+    assert dap.process.poll() is not None and not dap.reader.is_alive()
+
+
+def test_only_an_end_between_frames_is_the_streams_end():
+    from peeky.dap import StreamEnd
+
+    with pytest.raises(StreamEnd):
+        read_message(io.BytesIO(b""))
+    for cut in (b"Content-Length: 2\r\n", b"Content-Length: 5\r\n\r\n{}"):
+        with pytest.raises(EOFError) as raised:
+            read_message(io.BytesIO(cut))
+        assert not isinstance(raised.value, StreamEnd)

@@ -188,6 +188,207 @@ def test_a_failed_probe_keeps_the_output_so_far_and_never_says_all(monkeypatch):
     assert worker.calls[-1] == "close"
 
 
+class Ending(FakeWorker):
+    """A session whose report reads ``output`` (``state``), and whose close leaves
+    ``final``: what the DAP read once the session ended (#203)."""
+
+    def __init__(self, state, final, output="at the hit\n", **kwargs):
+        super().__init__(**kwargs)
+        self.state, self.last_final, self.output = state, None, output
+        self.final = final
+
+    def dispatch(self, operation, args):
+        if operation == "report":
+            self.calls.append(operation)
+            return {"state": self.state, "output": self.output, "output_truncated": False}
+        return super().dispatch(operation, args)
+
+    def close(self):
+        super().close()
+        self.last_final = self.final
+
+
+WHOLE = {"ended": True, "drained": True, "output_truncated": False, "exit_code": 0}
+WHOLE["output"] = "at the hit\nafter it\n"
+CUT = {**WHOLE, "output_truncated": True}
+# The debugger reported the end, but the adapter kept its stream open: output after
+# `terminated` may still have been on its way, and so may a late `exited`.
+OPEN = {**WHOLE, "drained": False, "exit_code": None}
+# Text after Peeky's disconnect (lldb-dap 18's crash on Linux): kept apart, not as output.
+NOISY = {**OPEN, "after_disconnect": "free(): invalid pointer\n"}
+# Its stream ended cleanly, but the adapter then failed (#213 review).
+CRASHED = {**OPEN, "stream_drained": True, "adapter_exit": 2}
+KILLED = {**OPEN, "stream_drained": True, "adapter_exit": -6}
+# A status 1 from debugpy without the signature of the exit Peeky provokes: a crash.
+UNEXPLAINED = {**OPEN, "stream_drained": True, "adapter_exit": 1, "exit_provoked": False}
+# With it: Peeky's own doing (#213 review).
+PROVOKED = {**WHOLE, "stream_drained": True, "adapter_exit": 1, "exit_provoked": True}
+RAN_ON = "output so far (the program ran on after the last hit, so this can include text "
+
+
+@pytest.mark.parametrize(
+    "final, complete, label",
+    [
+        (None, False, RAN_ON + "written after it):\n  at the hit"),
+        ({**WHOLE, "ended": False}, False, RAN_ON + "written after it):\n  at the hit"),
+        (WHOLE, True, "output (all of it: the program ran on after the last hit, to its exit):"),
+        # Both flags: never "all of it".
+        (
+            CUT,
+            True,
+            "output through the program's exit (it ran on after the last hit; truncated: some "
+            "of it was dropped):",
+        ),
+        (
+            OPEN,
+            False,
+            "output so far (the program ran on after the last hit and ended, but its output may "
+            "still have been arriving):\n  at the hit\n  after it",
+        ),
+    ],
+)
+def test_until_hits_says_the_output_can_follow_the_last_hit(monkeypatch, final, complete, label):
+    # #203: resumed after its last hit, the program runs on while its output is read; it
+    # was "the output so far (the program was still running)", even once it had exited.
+    import peeky.probe as probe_module
+    from peeky.probe import _table
+
+    worker = Ending("running", final)
+    monkeypatch.setattr(probe_module, "DebugWorker", lambda *args, **kwargs: worker)
+    result = probe_module.run_probe("/w", Probe("main.py", 8, ("x",), until="hits"))
+    assert result["status"] == "completed" and result["ended"] == "hits"
+    assert result["output_after_last_hit"] is True and result["output_complete"] is complete
+    ended = bool(final and final["ended"])
+    assert result["output"] == (final["output"] if ended else "at the hit\n")
+    assert result["output_truncated"] is (final is CUT)
+    assert result.get("exit_code") == (final["exit_code"] if ended else None)
+    assert result.get("program_ended", False) is (final is OPEN)
+    text = _table(result)
+    assert "still running" not in text and label in text
+    assert ("all of it" in text) is (final is WHOLE)
+
+
+@pytest.mark.parametrize(
+    "state, final, complete, label",
+    [
+        ("terminated", WHOLE, True, "output:\n  at the hit\n  after it"),
+        ("terminated", CUT, True, "output (truncated: some of it was dropped):\n  at the hit"),
+        (
+            "terminated",
+            OPEN,
+            False,
+            "output so far (the program ended, but its output may still have been arriving):",
+        ),
+        # Peeky inferred the end (java-debug #27): the debugger never reported it.
+        (
+            "terminated",
+            None,
+            False,
+            "output so far (the program ended, but its output may still have been arriving):",
+        ),
+        (
+            "terminated",
+            NOISY,
+            False,
+            "arriving):\n  at the hit\n  after it\nthe debugger sent more text once Peeky "
+            "began closing the session, its own or the program's still on its way "
+            "(output_after_disconnect in --json)",
+        ),
+    ],
+)
+def test_output_is_whole_only_past_the_adapters_end(monkeypatch, state, final, complete, label):
+    import peeky.probe as probe_module
+    from peeky.probe import _table
+
+    worker = Ending(state, final)
+    monkeypatch.setattr(probe_module, "DebugWorker", lambda *args, **kwargs: worker)
+    result = probe_module.run_probe("/w", Probe("main.py", 8, ("x",)))
+    assert (result["ended"], result["output_complete"]) == ("exit", complete)
+    assert result.get("program_ended", False) is not complete
+    assert "output_after_last_hit" not in result and label in _table(result)
+    assert result.get("output_after_disconnect") == (final or {}).get("after_disconnect")
+    assert "free()" not in result["output"]
+
+
+@pytest.mark.parametrize("after", [True, False])
+def test_truncated_output_is_never_called_all_of_it(after):
+    # #213 review: complete (the program's end was read) but truncated is not all of it.
+    from peeky.probe import _table
+
+    result = {"status": "completed", "hits": 1, "rows": [], "interventions": [], "seconds": 1}
+    result.update(output="tail\n", output_complete=True, output_truncated=True)
+    if after:
+        result["output_after_last_hit"] = True
+    text = _table(result)
+    assert "all of it" not in text and "truncated: some of it was dropped" in text
+    assert ("output through the program's exit (it ran on after the last hit;" in text) is after
+
+
+@pytest.mark.parametrize(
+    "final, how",
+    [
+        (CRASHED, "exited with status 2"),
+        (KILLED, "was ended by signal 6"),
+        (UNEXPLAINED, "exited with status 1"),
+    ],
+)
+def test_an_adapter_that_failed_as_it_exited_leaves_the_output_partial(monkeypatch, final, how):
+    import peeky.probe as probe_module
+    from peeky.probe import _table
+
+    worker = Ending("terminated", final)
+    monkeypatch.setattr(probe_module, "DebugWorker", lambda *args, **kwargs: worker)
+    result = probe_module.run_probe("/w", Probe("main.py", 8, ("x",)))
+    assert (result["output_complete"], result["program_ended"]) == (False, True)
+    assert result["adapter_exit"] == final["adapter_exit"]
+    warning = f"The debugger's adapter {how} after the program ended, so output it had not sent"
+    assert any(w.startswith(warning) for w in result["warnings"]), result["warnings"]
+    text = _table(result)
+    assert "the program ended, but its output may still have been arriving" in text
+    assert "warning: " + warning in text
+
+
+def test_the_exit_peeky_provokes_is_said_in_json_and_never_warned(monkeypatch):
+    import peeky.probe as probe_module
+    from peeky.probe import _table
+
+    worker = Ending("terminated", PROVOKED)
+    monkeypatch.setattr(probe_module, "DebugWorker", lambda *args, **kwargs: worker)
+    result = probe_module.run_probe("/w", Probe("main.py", 8, ("x",)))
+    assert (result["output_complete"], result["exit_provoked"]) == (True, True)
+    assert not result["warnings"] and "adapter_exit" not in result
+    assert "program_ended" not in result
+    text = _table(result)
+    assert "output:\n  at the hit\n  after it" in text and "warning" not in text
+
+
+def test_only_the_last_twenty_lines_of_output_are_shown_and_it_says_so():
+    from peeky.probe import _table
+
+    output = "".join(f"line {n}\n" for n in range(1, 26))
+    result = {"status": "completed", "hits": 1, "rows": [], "interventions": [], "seconds": 1}
+    result["output"] = output
+    text = _table({**result, "output_complete": True})
+    assert "output:\n  (5 earlier lines: see --json)\n  line 6\n" in text and "line 5\n" not in text
+
+
+def test_a_closed_session_keeps_what_its_end_left(tmp_path):
+    from peeky.worker import DebugWorker
+
+    class Closing:
+        final = {**WHOLE}
+
+        def close(self, terminate=True):
+            return "nothing Peeky could identify was still running"
+
+    worker = DebugWorker(tmp_path)
+    worker.dap = Closing()
+    worker.close()
+    assert worker.last_final == WHOLE
+    worker.close()  # nothing left to close: what the end left stays
+    assert worker.last_final == WHOLE
+
+
 @pytest.mark.parametrize("selector", ["items[-1]", "a.b[-12]", "x[0][-1]"])
 def test_negative_index_selectors_parse(selector):
     from peeky.probe import parse_selector
