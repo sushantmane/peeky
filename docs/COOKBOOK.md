@@ -236,7 +236,7 @@ A hit where the selector has no value shows NULL with the reason in `error`, and
 
 **`--hits` counts stops, not passes.** A probe stops each time the program reaches one of the line's breakpoint locations. In C, C++ and Rust a line can have several in one function, since LLDB places one at the first code of each block on the line: a macro's own code (`format!` and `println!` in Rust, a C `do { int t_ = a; ... } while (0)` macro), a one-line loop's body (`for (...) { int sq = i * i; ... }`), a C++ range `for` header (its range is set up once, before the loop, and its element bound at each pass).
 
-Each pass then stops at each location it runs, and `--hits N`, `--set-hit N` and `--set-at LINE@HIT` count those stops. The probe says so before the first stop, and each row's `stop` says which location it is at, 1 to N in address order (`stop` in `--json`, the evidence, `queries run` and `queries wide`; `hit 4, stop 1 of 3` in session state lines):
+Each pass then stops at each location it runs, and `--hits N`, `--set-hit N` and `--set-at LINE@HIT` count those stops. The probe says so before the first stop, and each row's `stop` says which location it is at, 1 to N in address order (`stop` in `--json`, the evidence, `queries run` and `queries wide`, where a row's `stop` is empty unless every value in it was read at the same stop; `hit 4, stop 1 of 3` in session state lines):
 
 ```text
 peeky: Line 29 stops up to 3 times per pass in movavg::main (3 breakpoint locations): --hits, --set-hit and --set-at's @HIT count stops, not passes (as do session hit numbers); each hit's stop (1 to 3, in address order) says which location.
