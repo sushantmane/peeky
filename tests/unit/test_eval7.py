@@ -403,9 +403,14 @@ def test_diff_says_when_the_runs_hits_do_not_line_up(store, capsys):
             ],
         )
     result = evidence.run_query(store, "diff")
-    (note,) = result["notes"]
+    note, after = result["notes"]
     assert note.startswith("run 1 stopped 4 times at its line and run 2 5,"), note
     assert "peeky queries join --param a=1 --param b=2 --param key=<selector>" in note
+    # #201: how many rows come after the first hit that differs (every row is kept).
+    assert after.startswith(
+        "the first difference at a hit is at hit 3; 3 of the 5 rows at a hit come after it"
+    ), after
+    assert len(result["rows"]) == 5
     assert main(["queries", "diff", "--store", str(store)]) == 0
     assert "note: run 1 stopped 4 times" in capsys.readouterr().out
     # The same number of stops: no note.
