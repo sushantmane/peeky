@@ -8,7 +8,7 @@ import pytest
 
 from peeky import evidence
 from peeky.native import breakpoint_locations
-from peeky.probe import _table
+from peeky.probe import _by_hit, _table
 from peeky.worker import DebugWorker
 
 # lldb-dap's `breakpoint list 1 2 3 4` (Rust's legacy hash, an inlined copy, a C++
@@ -437,3 +437,44 @@ def test_a_change_says_which_stop_it_was(tmp_path):
     plain = {key: value for key, value in probe["interventions"][0].items() if key != "at"}
     shown = _table({**probe, "rows": [], "interventions": [plain], "pauses_ms": [], "output": ""})
     assert "set x: 0 -> 100  (stop 2 of 3)" in shown.splitlines()
+
+
+def test_wide_gives_a_hit_no_stop_its_rows_disagree_on(tmp_path):
+    # Review 2 of PR #198: `queries wide` took MIN(stop) for each hit and phase, so `x`
+    # at stop 1 and `y` at stop 2 of one hit showed as stop 1, as did a selector captured
+    # twice alike at stops 1 and 2, and a hit with a row at no stop showed the other's.
+    store = tmp_path / "evidence.db"
+
+    def row(hit, selector, stop):
+        labelled = {"stop": stop, "stops": 2} if stop else {}
+        value = "1" if selector == "x" else "2"
+        return dict(hit=hit, phase="observed", line=29, selector=selector, value=value) | labelled
+
+    probe = {
+        "probe": {"program": "a.c", "line": 29, "capture": ["x", "y"], "set": []},
+        "status": "completed",
+        "hits": 4,
+        "rows": [
+            row(1, "x", 1),
+            row(1, "y", 1),
+            row(2, "x", 1),
+            row(2, "y", 2),
+            row(3, "x", 1),
+            row(3, "x", 2),
+            row(3, "y", 1),
+            row(4, "x", 2),
+            row(4, "y", None),
+        ],
+    }
+    evidence.record(store, probe, language="c")
+    wide = evidence.run_query(store, "wide")
+    assert [(r["hit"], r["stop"], r["x"], r["y"]) for r in wide["rows"]] == [
+        (1, 1, "1", "2"),
+        (2, None, "1", "2"),
+        (3, None, "1", "2"),
+        (4, None, "1", "2"),
+    ]
+    # A probe's own per-hit summary takes no stop from rows that disagree either.
+    by_hit = {entry["hit"]: entry for entry in _by_hit(probe["rows"])}
+    assert by_hit[1]["stop"] == 1
+    assert not any("stop" in by_hit[hit] or "stops" in by_hit[hit] for hit in (2, 3, 4))

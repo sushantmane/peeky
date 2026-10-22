@@ -3761,9 +3761,10 @@ def _by_hit(rows):
     """The same rows regrouped per hit: {hit, line, observed: {...}, after-set: {...},
     returned: {"(return)": ...}}; line and function are the stop's, not where the call
     returned to (a `(return)` row's own line). A `(return)` row has its hit's stop too
-    (#174)."""
-    grouped = {}
+    (#174); the hit's stop is given only where every row of it has one and all agree."""
+    grouped, places = {}, {}
     for row in rows:
+        places.setdefault(row["hit"], set()).add((row.get("stop"), row.get("stops")))
         entry = grouped.setdefault(row["hit"], {"hit": row["hit"], "line": None, "function": None})
         if row["phase"] != "returned" and entry["line"] is None:
             # The stop's line and function.
@@ -3775,6 +3776,11 @@ def _by_hit(rows):
             entry.update(stop=row["stop"], stops=row["stops"])
         value = row["value"] if "value" in row else {"error": row.get("error")}
         entry.setdefault(row["phase"], {})[row["selector"]] = value
+    for hit, entry in grouped.items():
+        if len(places[hit]) > 1:
+            # Rows of one hit at different stops, or some at none: no stop is picked.
+            entry.pop("stop", None)
+            entry.pop("stops", None)
     return list(grouped.values())
 
 

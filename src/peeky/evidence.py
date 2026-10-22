@@ -287,14 +287,22 @@ def _integer_identity(connection):
         connection.execute(statement)
 
 
+def _one_stop(column="stop"):
+    """SQL aggregate: the one stop of a group of rows, only where each has one and all
+    agree, else NULL (none labelled, or contradictory evidence): a stop is never picked
+    from several (#174)."""
+    return (
+        f"CASE WHEN COUNT(DISTINCT {column}) = 1 AND COUNT({column}) = COUNT(*) THEN "
+        f"MIN({column}) END"
+    )
+
+
 def _hits_stop(row):
     """SQL: the stop of the hit of the captures row aliased ``row``, as its rows other
-    than `(return)` rows give it: only where each has one and all agree, else NULL (none
-    labelled, or contradictory evidence: a stop is never picked from several, #174)."""
+    than `(return)` rows give it (`_one_stop`)."""
     return (
-        "(SELECT CASE WHEN COUNT(DISTINCT o.stop) = 1 AND COUNT(o.stop) = COUNT(*) THEN "
-        f"MIN(o.stop) END FROM captures o WHERE o.run_id = {row}.run_id AND o.hit = "
-        f"{row}.hit AND o.phase != 'returned')"
+        f"(SELECT {_one_stop('o.stop')} FROM captures o WHERE o.run_id = {row}.run_id AND "
+        f"o.hit = {row}.hit AND o.phase != 'returned')"
     )
 
 
@@ -1328,10 +1336,12 @@ _CAVEATS = "NULLIF(json_group_object(selector, caveat) FILTER (WHERE caveat IS N
 def _cells(where):
     """SQL for one row per hit, phase and selector of the captures matching ``where``:
     ``value``; ``reason``, why it has none; ``caveat``, what qualifies a value (a view
-    other than how it was read, else `note` where the row has a note). A selector
-    captured twice at a hit read the same both times (``_captured`` checks): one cell."""
+    other than how it was read, else `note` where the row has a note); ``stop``, where
+    its rows agree on one (`_one_stop`). A selector captured twice at a hit read the same
+    both times (``_captured`` checks): one cell."""
     return (
-        "SELECT hit, phase, selector, MIN(line) AS line, MIN(stop) AS stop, MAX(value) AS value,\n"
+        f"SELECT hit, phase, selector, MIN(line) AS line, {_one_stop()} AS stop, "
+        "MAX(value) AS value,\n"
         "    CASE WHEN MAX(value) IS NULL THEN COALESCE(MAX(error), 'no value') END AS reason,\n"
         f"    MAX({_caveat()}) AS caveat\n"
         f"  FROM captures WHERE {where} GROUP BY hit, phase, selector"
@@ -1433,7 +1443,7 @@ def _wide(path, params):
     run, phase = _run_id(path, params.get("run")), _phase(params)
     selectors = _captured(path, run, phase)
     # Which of the line's breakpoint locations each hit was at (#157), for a run whose
-    # line has several in one function.
+    # line has several in one function: NULL where its cells do not agree on one (#174).
     stops = query(
         path,
         "SELECT 1 AS n FROM captures WHERE run_id = :run AND stop IS NOT NULL LIMIT 1",
@@ -1457,7 +1467,7 @@ def _wide(path, params):
     )
     sql = (
         f"SELECT w.*, {sets} AS sets FROM (\n"
-        f"SELECT hit,{' MIN(stop) AS stop,' if stops else ''} phase, MIN(line) AS line,"
+        f"SELECT hit,{f' {_one_stop()} AS stop,' if stops else ''} phase, MIN(line) AS line,"
         f"{_picked(selectors, names, '  ')}\n"
         f"  {_NO_VALUE} AS no_value,\n  {_CAVEATS} AS caveats\n"
         f"FROM ({_cells(where)})\nGROUP BY hit, phase) w ORDER BY w.hit, "
