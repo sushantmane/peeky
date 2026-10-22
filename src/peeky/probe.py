@@ -754,6 +754,22 @@ def _root(worker, stop, snapshot, name):
     own = [scope for scope in snapshot["scopes"] if not scope.get("globals")]
     if (found := _scope_lookup(worker, stop, snapshot, own, name)[0]) is not None:
         return found, False
+    gone = snapshot.get("no_longer_visible") or {}
+    if name in (gone.get("names") or ()):
+        # Listed at an earlier stop a session's step came from, in this function at this
+        # depth. Java's steps prove it is the same call; LLDB's can run on to a later one
+        # (an exception or `longjmp`), so there only this line's scope is claimed.
+        raise ValueError(
+            f"not found: {name!r} was visible at line {gone.get('line')}, "
+            + (
+                "earlier in this same call, but the block declaring it has ended (read it at "
+                "a line inside that block)"
+                if gone.get("same_call") is True
+                else "at an earlier stop in this function, and this stop is outside its scope "
+                "(read it at a line in its scope)"
+            )
+            + f"; visible: {_visible(snapshot)}"
+        )
     if any(scope.get("truncated") for scope in own) and name not in (snapshot.get("names") or ()):
         # A worker that predates `names` lists no name past the bound.
         raise ValueError(
@@ -3218,6 +3234,17 @@ def _expected_line(breakpoint, state, requested):
     return line
 
 
+def moved_breakpoint(requested, placed, candidate=False):
+    """The warning for a breakpoint the debugger placed on another line: a probe's, and a
+    session's start (#262)."""
+    return (
+        f"The debugger moved the breakpoint from line {requested} to line {placed} (line "
+        f"{requested} has no code of its own); values are from line {placed}"
+        + (" of the candidate" if candidate else "")
+        + ". Choose a line from `peeky describe`."
+    )
+
+
 def run_probe(
     root,
     probe,
@@ -3544,13 +3571,7 @@ def run_probe(
                 functions.setdefault(frame.get("name"), []).append(hits)
                 if expected[line] != line and not relocated:
                     relocated = True
-                    warnings.append(
-                        f"The debugger moved the breakpoint from line {line} to line "
-                        f"{expected[line]} (line {line} has no code of its own); values are "
-                        f"from line {expected[line]}"
-                        + (" of the candidate" if probe.edit else "")
-                        + ". Choose a line from `peeky describe`."
-                    )
+                    warnings.append(moved_breakpoint(line, expected[line], bool(probe.edit)))
                     say(warnings[-1])
                 if _report_hit(hits, probe.limit, last_said):
                     last_said = time.monotonic()

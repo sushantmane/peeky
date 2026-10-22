@@ -243,3 +243,83 @@ def test_rows_say_which_java_locals_set_can_change(counter, capsys):
         "i": True,
         "times": True,
     }
+
+
+BLOCKS = """package demo;
+
+public class Blocks {
+    static int walk(int depth) {
+        if (depth == 0) {
+            return 0;
+        }
+        return 1 + walk(depth - 1);
+    }
+
+    public static void main(String[] args) {
+        int total = 0;
+        for (int i = 0; i < 2; i++) {
+            int square = i * i;
+            total += square;
+        }
+        total += walk(2);
+        System.out.println("TOTAL:" + total);
+    }
+}
+"""
+
+
+@pytest.mark.timeout(180)
+def test_a_step_out_of_a_block_or_into_another_method_says_so(counter, capsys):
+    # Tenth evaluation (runoff): a step left the block declaring `ranking`, and the next
+    # `get 'ranking[1]'` said only `<not found …>`; a step into or out of a method said
+    # nothing either.
+    root, config = counter
+    (root / "demo" / "Blocks.java").write_text(BLOCKS)
+    data = json.loads(config.read_text())
+    config.write_text(
+        json.dumps({**data, "sources": ["demo/Blocks.java"], "main_class": "demo.Blocks"})
+    )
+    common = [str(root), "--config", str(config)]
+    try:
+        assert main(["session", "start", *common, "--at", "demo/Blocks.java:15"]) == 0
+        capsys.readouterr()
+        assert main(["session", "get", "square"]) == 0
+        assert "square: int = 0" in capsys.readouterr().out
+        assert main(["session", "step", "--json"]) == 0
+        state = json.loads(capsys.readouterr().out)
+        assert state["location"].endswith("Blocks.java:13") and "call_change" not in state
+        assert main(["session", "get", "square", "--json"]) == 1
+        (row,) = json.loads(capsys.readouterr().out)
+        assert row["error"].startswith(
+            "not found: 'square' was visible at line 15, earlier in this same call, but the "
+            "block declaring it has ended (read it at a line inside that block); visible: "
+        ), row
+    finally:
+        main(["session", "close"])
+    try:
+        assert main(["session", "start", *common, "--at", "demo/Blocks.java:17"]) == 0
+        capsys.readouterr()
+        assert main(["session", "step", "--into"]) == 0
+        out = capsys.readouterr().out
+        assert "Blocks.java:5 in Blocks.walk(int)" in out
+        assert (
+            "note: now in `Blocks.walk(int)`, one call deeper, called from `Blocks.main(String[])`"
+            in out
+        )
+        assert main(["session", "step"]) == 0
+        assert "note:" not in capsys.readouterr().out
+        # A recursive call is one call deeper, in the same method.
+        assert main(["session", "step", "--into", "--json"]) == 0
+        state = json.loads(capsys.readouterr().out)
+        assert state["call_change"] == {
+            "kind": "deeper",
+            "from": "Blocks.walk(int)",
+            "to": "Blocks.walk(int)",
+            "calls": 1,
+        }, state
+        assert main(["session", "step", "--out"]) == 0
+        out = capsys.readouterr().out
+        assert "Blocks.java:8 in Blocks.walk(int)" in out
+        assert "note: left `Blocks.walk(int)`; now in `Blocks.walk(int)`" in out
+    finally:
+        main(["session", "close"])

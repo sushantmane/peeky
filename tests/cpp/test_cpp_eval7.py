@@ -114,7 +114,9 @@ def test_continue_to_says_when_the_sessions_breakpoint_came_first(sched, capsys)
         assert "(line 30, hit 3) before reaching line 17" in state["note"], state
         for _ in range(2):
             code, out = run(capsys, "session", "continue", "--to", "17")
-        # Past the parsing loop, line 17 comes first: no note.
+        # Past the parsing loop, line 17 comes first: no note. Nor one on the comparator
+        # being a call std::sort made: a continue's stop is never compared with the stop
+        # it left, whose stack can look like another activation's (review of #274).
         assert code == 0 and "sched.cpp:17" in out and "note:" not in out, out
         # No call reaches line 18 on this input (no two tasks tie on both keys).
         code, out = run(capsys, "session", "continue", "--to", "18", "--json")

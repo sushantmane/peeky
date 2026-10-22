@@ -149,14 +149,14 @@ Without the token, the reply is `401`:
 | Operation | Required input | Result |
 | --- | --- | --- |
 | launch | worker-relative program, breakpoint list; remote clients: `expect_sha256` and `expect_inputs` | session ID, source hash, capabilities, verified locations; `inputs_checked` and `inputs_sha256` |
-| wait | session ID, bounded timeout | stopped, terminated, or still running |
-| inspect | session ID, stop ID; optional `frame` (index into `frames`, 0 the innermost) or `frame_id`; optional `names` (up to 32 names also listed past the 50-entry bound; a shadowed local's as LLDB names it, `s @ main.rs:81`); optional `globals` (Python: `true` lists the module's globals; a list of names lists them only if the function provably reads one of those names from them, with `globals_proof`) | stack and bounded locals (`frame`, `innermost` for a caller, `globals_available`); Python values carry `identity` |
+| wait | session ID, bounded timeout | stopped, terminated, or still running; at a `calls` step's own end, `call_change` (`left`, `deeper` or `other`) where its stack, read whole up to 256 frames, differs in function or depth |
+| inspect | session ID, stop ID; optional `frame` (index into `frames`, 0 the innermost) or `frame_id`; optional `names` (up to 32 names also listed past the 50-entry bound; a shadowed local's as LLDB names it, `s @ main.rs:81`); optional `globals` (Python: `true` lists the module's globals; a list of names lists them only if the function provably reads one of those names from them, with `globals_proof`) | stack and bounded locals (`frame`, `innermost` for a caller, `globals_available`); Python values carry `identity`; `no_longer_visible`: after a `calls` step that stayed in the function at its depth, names listed at an earlier stop and not here, with `same_call` where the debugger's steps prove it (Java); not Python |
 | expand | session ID, stop ID, opaque child handle, start/count | bounded read-only children |
 | preview | session ID, stop ID, child handle; optional `pointee` | the value's preview, as `inspect` shows it, or none |
 | set_variable | session ID, stop ID, scope reference, name, expression value (the innermost frame's only) | before/after |
 | breakpoints | session ID, program, complete replacement breakpoint list | verified locations |
 | continue | session ID, stop ID; optional `to_line` or `to_exit` | running |
-| step | session ID, stop ID; `kind`: `over`, `in` or `out` | running |
+| step | session ID, stop ID; `kind`: `over`, `in` or `out`; optional `calls` (the step's own end is compared with this stop) | running |
 | report | session ID | bounded output and operation history |
 | close | session ID | idle; owned process teardown |
 | probe | one stateless request: `at`, `capture`, optional `set` and the probe's other options ([ADR 0004](adr/0004-stateless-probes.md)) | the probe's result |

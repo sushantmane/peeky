@@ -1679,6 +1679,7 @@ def _wait(record, client, timeout):
     record["state"], record["stop_id"] = state["state"], state.get("stop_id")
     # Where it stopped, for messages about this stop (`session get`).
     record["location"], record["function"] = state.get("location"), state.get("function")
+    record["call_change"] = state.get("call_change")
     _save(record)
     state.pop("event", None)
     return state
@@ -1719,6 +1720,41 @@ def _relative_location(location):
     return f"{relative}:{line}"
 
 
+def _call_text(change, since=False):
+    """How a session step's stop differs from where the step started, as the stacks show
+    it (#262), never that a call returned (it may have thrown, yielded or been unwound):
+    "left `rename`; now in `run`", "now in `walk`, one call deeper, called from `walk`".
+    ``since``: the same for `session get`'s place note, "after a step from `rename`".
+    None for the same function at the same depth, or a kind this client does not know."""
+    from peeky.names import display_function
+
+    old, new = (f"`{display_function(change.get(key))}`" for key in ("from", "to"))
+    calls = change.get("calls")
+    calls = calls if type(calls) is int and calls > 0 else 1
+    kind = change.get("kind")
+    if kind not in ("left", "deeper", "other"):
+        return None
+    if since:
+        return f"after a step from {old}" + (
+            f", {calls} calls up"
+            if kind == "left" and calls > 1
+            else ", one call deeper"
+            if kind == "deeper" and calls == 1
+            else f", {calls} calls deeper"
+            if kind == "deeper"
+            else ""
+        )
+    if kind == "deeper":
+        return f"now in {new}, " + (
+            f"one call deeper, called from {old}"
+            if calls == 1
+            else f"{calls} calls deeper, below {old}"
+        )
+    return f"left {old}; now in {new}" + (
+        f", {calls} calls up" if kind == "left" and calls > 1 else ""
+    )
+
+
 def _state_text(state, name="default"):
     where = f" at {_relative_location(state['location'])}" if state.get("location") else ""
     if where and state.get("function"):
@@ -1752,6 +1788,8 @@ def _state_text(state, name="default"):
     elif reason and reason not in ("breakpoint", "step"):
         where += f" [reason: {reason}; not auto-resumed, inspect it or `session report`]"
     text = f"state: {state['state']}{where}{_pause_text(state)}{hint}"
+    if isinstance(state.get("call_change"), dict) and (call := _call_text(state["call_change"])):
+        text += f"\nnote: {call}"
     if state.get("optimized"):
         text += f"\n{_OPTIMIZED_NOTE.format(state['optimized'])}"
     if state.get("exit_inferred"):
@@ -2112,8 +2150,15 @@ def session(args):
             # A name read at the wrong stop (a caller's, a callee's): say which stop this
             # is (seventh evaluation, finding 15). `--frame N` names its frame already.
             place = _stop_place(record, unresolved[0])
+            change = record.get("call_change")
+            call = _call_text(change, since=True) if isinstance(change, dict) else None
+            if call:
+                # Why the earlier stop's names may be gone: the step changed function.
+                place += f", {call}"
             for row in unresolved:
                 row.setdefault("location", record.get("location"))
+                if call:
+                    row.setdefault("call_change", change)
         _emit(
             rows,
             args.json,
@@ -2205,7 +2250,7 @@ def session(args):
     elif args.action == "step":
         kind = "in" if args.into else "out" if args.out else "over"
         _require_stepping(record, client)
-        client.call("step", **_stop(record), kind=kind)
+        client.call("step", **_stop(record), kind=kind, calls=True)
         state = _wait(record, client, args.timeout)
         if _counted(state) and state.get("reason") == "breakpoint":
             # The code the step ran reached the session's breakpoint first (a recursive call,
@@ -2562,6 +2607,8 @@ def _start_remote(args, root, program, line, language, max_pause):
         state["optimized"] = record["optimized"]
     if launch.get("warnings"):
         state["warnings"] = launch["warnings"]
+    if moved := _moved_start(launch, state, line, program):
+        state["warnings"] = [moved, *state.get("warnings", [])]
     if misplaced := _misplaced_options(args):
         state["warnings"] = [*state.get("warnings", []), misplaced]
     if (client.sources or {}).get("kind") == "python":
@@ -2656,6 +2703,27 @@ def _start(args):
     return 3 if state.pop("incomplete", False) else 0
 
 
+def _moved_start(launch, state, line, program):
+    """The probe's warning where `session start` stopped at its breakpoint on another line
+    than `--at` asked, where the debugger placed it (one with no code of its own), with
+    any later move its `breakpoint` events report; else None. As a probe's, only after a
+    real stop there: "values are from line N" says nothing true of a run that never
+    stopped, or stopped elsewhere."""
+    from peeky.probe import _expected_line, moved_breakpoint
+
+    placed = (launch.get("breakpoints") or [None])[0]
+    if not isinstance(placed, dict) or state.get("state") != "stopped":
+        return None
+    actual = _expected_line(placed, state, line)
+    if type(actual) is not int or actual == line or state.get("reason") != "breakpoint":
+        return None
+    path, _, at = str(state.get("location") or "").rpartition(":")
+    path = path.replace("\\", "/")
+    if at != str(actual) or not (path == program or path.endswith("/" + program)):
+        return None
+    return moved_breakpoint(line, actual)
+
+
 def _start_local(args, root, program, line, language, data, max_pause):
     token = secrets.token_urlsafe(32)
     command = [sys.executable, "-m", "peeky.worker", "--root", str(root), "--port", "0"]
@@ -2716,6 +2784,8 @@ def _start_local(args, root, program, line, language, data, max_pause):
         state["incomplete"] = True
     if launch.get("warnings"):
         state["warnings"] = launch["warnings"]
+    if moved := _moved_start(launch, state, line, program):
+        state["warnings"] = [moved, *state.get("warnings", [])]
     if misplaced := _misplaced_options(args):
         state["warnings"] = [*state.get("warnings", []), misplaced]
     return state
