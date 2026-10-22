@@ -585,7 +585,7 @@ def test_rust_container_indexes_explain_what_is_unsupported():
     assert "has no indexed elements" in message and "children: buf, len" in message
     assert "Peeky reads Rust contents only for reference parameters" in message
     assert "MIR proves initialized" in message and "This one stays raw" in message
-    assert "Capture ordered.len" in message
+    assert "capture ordered.len" in message
     # Text read from memory has only its length as children: no element hint.
     text = {
         "name": "label",

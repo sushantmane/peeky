@@ -412,7 +412,7 @@ def test_a_python_candidate_warns_when_the_script_reaches_above_its_root(
     probe = ["probe", str(script), "--at", "6", "--capture", "rate", "--json", "--quiet"]
     main([*probe, "--old", "acc = 0", "--new", "acc = 1"])
     result = json.loads(capsys.readouterr().out)
-    assert any("above it was copied" in warning for warning in result["warnings"])
+    assert any("nothing above was copied" in warning for warning in result["warnings"])
     # Verification of #109: idioms no reading of the source catches still get the note.
     for locate in (
         "conf = Path(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))) / 'conf.json'",
@@ -426,7 +426,7 @@ def test_a_python_candidate_warns_when_the_script_reaches_above_its_root(
         line = str(script.read_text().splitlines().index("acc = 0") + 2)
         main([*probe[:3], line, *probe[4:], "--old", "acc = 0", "--new", "acc = 1"])
         result = json.loads(capsys.readouterr().out)
-        assert any("above it was copied" in w for w in result["warnings"]), locate
+        assert any("nothing above was copied" in w for w in result["warnings"]), locate
     # Verification of #109: a nested --at file in a root that is not the project's (a
     # `src/` layout) reaches above it too.
     (tmp_path / "src" / "pkg").mkdir(parents=True)
@@ -439,7 +439,7 @@ def test_a_python_candidate_warns_when_the_script_reaches_above_its_root(
     nested = ["probe", str(tmp_path / "src"), "--at", "pkg/app.py:6", "--capture", "rate"]
     main([*nested, "--json", "--quiet", "--old", "acc = 0", "--new", "acc = 1"])
     result = json.loads(capsys.readouterr().out)
-    assert any("above it was copied" in w for w in result["warnings"]), result
+    assert any("nothing above was copied" in w for w in result["warnings"]), result
     # With the project as the target, the copy holds them, and a project root gets no note.
     (tmp_path / "pyproject.toml").write_text("[project]\nname = 'p'\n")
     main(
@@ -1025,7 +1025,7 @@ def test_a_python_candidate_notes_access_the_copy_does_not_keep(tmp_path, monkey
         candidate.close()
     finally:
         os.chflags(proj / "state.txt", 0)
-    assert any("state.txt can be read, written or entered" in w for w in candidate.warnings), (
+    assert any("state.txt has other permissions than yours" in w for w in candidate.warnings), (
         candidate.warnings
     )
 
@@ -1146,7 +1146,7 @@ def test_a_python_candidate_refuses_an_at_file_inside_a_bare_repository(tmp_path
         SourceEdit("hooks/check.py", "x = 1", "x = 2"),
     )
     candidate.close()
-    assert not any("above it was copied" in w for w in candidate.warnings), candidate.warnings
+    assert not any("nothing above was copied" in w for w in candidate.warnings), candidate.warnings
 
 
 def test_a_hard_linked_name_of_the_edited_file_keeps_its_own_directory(

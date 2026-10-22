@@ -310,7 +310,7 @@ def test_a_local_an_async_body_keeps_across_an_await_says_so(tmp_path, state, ca
     assert message.endswith(
         "settable here: q (root locals; fields too where rows mark them [settable])"
     ), message
-    assert "copy it into a local of the poll's own" in result["error"]["hint"]
+    assert "copy it into a local after the `.await`" in result["error"]["hint"]
     code, result = probe(capsys, crate, at, "--capture", "k,q")
     rows = {row["selector"]: row for row in result["rows"]}
     assert rows["k"]["not_settable"] == "async state" and rows["q"]["settable"] is True, rows

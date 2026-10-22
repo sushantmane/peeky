@@ -119,7 +119,7 @@ def test_owned_locals_are_read_only_where_they_are_initialized(crate, capsys):
     # Dropped (its buffer reused by `reused`), moved, moved on one path: never read.
     for name in ("dropped", "moved", "maybe"):
         assert rows[name].get("view") != "memory", rows[name]
-        assert "(#53)" in rows[name]["note"], rows[name]
+        assert "may be moved, dropped or not yet assigned" in rows[name]["note"], rows[name]
     if memory_views(result["rows"]):
         value = {name: row["value"] for name, row in rows.items()}
         assert value["reused"] == "[1, 2, 3]" and value["reused[1]"] == "2"
@@ -157,7 +157,9 @@ def test_a_line_where_vec_runs_is_never_read_even_after_a_lone_carriage_return(c
     result = probe(capsys, crate, "CR", "v", "--hits", "all")
     shown = [row for row in result["rows"] if "value" in row]
     assert shown and all(row.get("view") != "memory" for row in shown), result["rows"]
-    assert all("(#53)" in row["note"] for row in shown), result["rows"]
+    assert all("may be moved, dropped or not yet assigned" in row["note"] for row in shown), result[
+        "rows"
+    ]
 
 
 @pytest.mark.timeout(300)

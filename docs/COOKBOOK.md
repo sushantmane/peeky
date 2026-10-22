@@ -357,8 +357,8 @@ peeky probe sizes.py --at 3 --capture "$(printf 'gro\xcc\x88\xc3\x9fe')"   # gr�
 
 ```
 hit  phase     line  function  selector  type  value
-1    observed  3     area      größe          <not found; visible: größe, h, w; the debugger lists 'größe' (written 'gr\xf6\xdfe'), which differs from 'gro\u0308\xdfe' only by Unicode normalization: names are matched exactly as the debugger lists them (Peeky never normalizes one), so select it as listed if that is the one you mean>
-status: completed  hits: 1  seconds: 1.091  max pause: 5.0 ms
+1    observed  3     area      größe          <not found; visible: größe, h, w; select it as listed if that is the one you mean: the debugger lists 'größe' (written 'gr\xf6\xdfe'), which differs from 'gro\u0308\xdfe' only by Unicode normalization, and Peeky never normalizes a name>
+status: completed  hits: 1  seconds: 1.086  max pause: 7.0 ms
 output:
   12
 ...
@@ -1190,7 +1190,7 @@ Otherwise, the earlier hit's return is withheld rather than guessed. The row say
 | --- | --- |
 | The stopped function is not the call's | the line `stopped again at the same depth in a call of another function` |
 | The frames under the stop are not the call's | `in another call` |
-| Anything else: in Java, which has no such watch; where the watch was dropped; or where another stop came in between | Peeky `could not tell whether in this call` (another of the line's breakpoint locations, or a loop's next pass) `or in a later call after this one ended without returning` |
+| Anything else: in Java, which has no such watch; where the watch was dropped; or where another stop came in between | Peeky `could not tell whether in this call` (another breakpoint location, or a loop's next pass) `or in a later call after this one ended without returning` |
 | A call still running when the program ends | `the program ended before it returned` |
 | A call still running when the probe's `--timeout` runs out | `the probe timed out before it returned` |
 

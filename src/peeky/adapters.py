@@ -324,10 +324,9 @@ class PythonCandidate:
                 named = ", ".join(str(path.relative_to(root)) for path in differ[:3])
                 more = f" and {len(differ) - 3} more" if len(differ) > 3 else ""
                 self._notes.append(
-                    f"This Python candidate's copy of {named}{more} can be read, written or "
-                    "entered where yours cannot, or the other way round (another owner, an "
-                    "ACL or a locked flag is not copied), so a program that uses them may "
-                    "take another branch there, not because of the edit"
+                    f"This Python candidate's copy of {named}{more} has other permissions than "
+                    "yours (an owner, an ACL or a locked flag is not copied), so a program that "
+                    "uses them may take another branch there, not because of the edit"
                 )
         except BaseException:
             self.close()
@@ -358,15 +357,15 @@ class PythonCandidate:
                     if above
                     else " (no .git, pyproject.toml, setup.py or setup.cfg there)"
                 )
-                + ". Nothing above it was copied: if the program reads, imports or runs "
-                "anything there (git finding the repository), values may differ for that "
-                "reason, not the edit's; then give that directory as the target (`peeky probe "
+                + ". If the program reads, imports or runs anything above it, as git does to "
+                "find the repository, give that directory as the target (`peeky probe "
                 + (
                     f"{target} --at {at.as_posix()}"
                     if above
                     else "<project> --at <path/to/file.py>"
                 )
-                + ":<line>`)"
+                + ":<line>`): nothing above was copied, so values may differ for that reason, "
+                "not the edit's"
             )
 
     def _copy(self, source, destination, relative, program):
@@ -678,10 +677,10 @@ class PythonCandidate:
             theirs, ours = _config_values(git, original), _config_values(git, copy)
             if theirs is not None and ours is not None and theirs != ours:
                 note = (
-                    "This Python candidate's copy of a git repository reads different git "
-                    "configuration than yours (a conditional include on the repository's "
-                    'path, `includeIf "gitdir:..."`, does not match the copy), so a program '
-                    "that reads git's configuration may see different values"
+                    "This Python candidate's copy of a git repository reads other git "
+                    'configuration than yours, since an `includeIf "gitdir:..."` on the '
+                    "repository's path does not match the copy: a program that reads git's "
+                    "configuration may see other values"
                 )
                 if note not in self._notes:
                     self._notes.append(note)
@@ -822,9 +821,9 @@ class PythonCandidate:
             if served is not None:
                 self._notes.append(
                     f"This Python candidate's `import {name}` loads {served} from your tree, "
-                    "not the copy (an import hook or install serves it ahead of every import "
-                    "path, as meson-python's editable loader does, and may rebuild there), so "
-                    "values from it are not the edit's; check the edit with `peeky verify`"
+                    "not the copy, so values from it are not the edit's: check the edit with "
+                    "`peeky verify`. An import hook or install, such as meson-python's editable "
+                    "loader, serves it ahead of every import path"
                 )
 
     def _project_copy(self, entry):

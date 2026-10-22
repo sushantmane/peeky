@@ -1638,18 +1638,17 @@ class RustSession(NativeSession):
         )
         if lent is not False:
             raise ValueError(
-                f"`{name}` cannot be changed to a text at this stop: "
+                f"`{name}` cannot be changed to a text at this stop: change it before a borrow "
+                "of it is taken, or after the borrow's last use. "
                 + (
-                    "a borrow of it (a `&str` of its text, a reference, an iterator over it) "
-                    "is still used after the stop"
+                    "A borrow of it (a `&str`, a reference or an iterator) is still used after "
+                    "the stop"
                     if lent
-                    else "Peeky cannot tell from the build's MIR whether a borrow of it (a "
-                    "`&str` of its text, a reference, an iterator) is still used after the "
-                    "stop"
+                    else "Peeky cannot tell from the MIR whether a borrow of it (a `&str`, a "
+                    "reference or an iterator) is still used after the stop"
                 )
-                + ", and it would keep the old length: it would read a mix of old and new "
-                "text, or bytes that are not UTF-8. Change it before such a borrow is taken, "
-                "or after its last use"
+                + ", and a borrow keeps the old length: it would read old and new text mixed, "
+                "or bytes that are not UTF-8"
             )
 
     def text_settable(self, variable, frame, stop=None):
@@ -1685,12 +1684,11 @@ class RustSession(NativeSession):
         ):
             where = display_function((frame or {}).get("name")) or "this frame"
             raise ValueError(
-                f"Rust mutation requires a local the program keeps in memory; {name!r} in "
-                f"{where} is held in the async body's state across an `.await` (a field of "
-                "the future, which the poll reaches through a pointer Peeky never writes), "
-                "at every stop of the body. Change what it is computed from before it is "
-                "assigned, or copy it into a local of the poll's own after the `.await` with "
-                "a candidate edit, in the same probe"
+                "Rust mutation requires a local the program keeps in memory: change what "
+                f"{name!r} is computed from before it is assigned, or copy it into a local of "
+                "the poll's own after the `.await` with a candidate edit, in the same probe. "
+                f"In {where}, it is held in the async body's state across an `.await`, a "
+                "field of the future that Peeky never writes"
             )
         if hashed and self.memory.get((hashed[1], _plain(name))) is not True:
             place = frame or {}
@@ -1708,12 +1706,11 @@ class RustSession(NativeSession):
         if not hashed or self.memory.get((hashed[1], _plain(name))) is not True:
             where = display_function((frame or {}).get("name")) or "this frame"
             raise ValueError(
-                f"Rust mutation requires a local the program keeps in memory; {name!r} in "
-                f"{where} is kept in a register and the debugger only shows a copy of it, "
-                "so changing it would not affect the program. Locals the code borrows or "
-                "reassigns live in memory: a candidate edit can add one "
-                "(`std::hint::black_box(&mut x);` after its `let`, with `--set x=…` in the same "
-                "probe); otherwise edit the source and run verify"
+                "Rust mutation requires a local the program keeps in memory: keep it there with "
+                "a candidate edit (`std::hint::black_box(&mut x);` after its `let`, with "
+                "`--set x=…` in the same probe), or edit the source and run verify. "
+                f"In {where}, {name!r} is kept in a register, and the debugger only shows a "
+                "copy of it, so changing it would not affect the program"
             )
 
     def instance_name(self, frame):
@@ -2077,9 +2074,8 @@ class RustSession(NativeSession):
                 "statement",
                 f"at every place line {line} can stop at, the program has already copied "
                 f"`{plain}` into {_names(names)}" + (f" (at {made})" if made else "") + " and "
-                f"goes on with that copy, replacing or dropping `{plain}` with no read of the "
-                "changed part Peeky can prove first (a reference lent to a call, or `{:?}`, is "
-                "not one), so a change there may never be seen",
+                "goes on with that copy, so a change there may never be seen: Peeky proves no "
+                "read of the change first (a reference lent to a call, or `{:?}`, is not one)",
             )
         return (
             "statement",
@@ -2134,7 +2130,7 @@ class RustSession(NativeSession):
         text = (
             f"`{name}` cannot be changed at {source}:{line}, at any stop of this build: "
             + by_function(parts)
-            + ". Refused before the program runs: the debugger's launch request was not sent"
+            + ". Refused before the program runs: nothing ran"
         )
         if all(kind == "absent" for _, (kind, _) in failures):
             # No function that can stop there has such a local, as `set` would find.
@@ -2157,10 +2153,10 @@ class RustSession(NativeSession):
             )
         if states:
             text += (
-                ". Change what it is computed from before it is assigned, or copy it into a "
-                "local of the poll's own after the `.await` with a candidate edit, in the "
-                f"same probe (`let mut {plain}2 = {plain}; std::hint::black_box(&mut "
-                f"{plain}2);` on a line before the stop's, then use and set `{plain}2`)"
+                ". Change what it is computed from before it is assigned, or copy it with a "
+                f"candidate edit in the same probe: `let mut {plain}2 = {plain}; "
+                f"std::hint::black_box(&mut {plain}2);` on a line before the stop's, then use "
+                f"and set `{plain}2`"
             )
         listed = self._settable_names(source, line)
         return text + self._settable_here(listed)
@@ -2257,11 +2253,9 @@ class RustSession(NativeSession):
             )
         if count == 2:
             return (
-                "this poll's copy of the parameter, never assigned by a poll resuming after an "
-                "`.await` (the future keeps none: the body does not use it after), so it may "
-                f"hold leftovers; the future's field, the other `{name}` row"
-                + (" (withheld too)," if 0 in why else ",")
-                + " holds the value passed in"
+                "this poll's copy of the parameter, which a poll resuming after an `.await` "
+                f"never assigns, so it may hold leftovers; the future's field, the other `{name}` "
+                "row" + (" (withheld too)," if 0 in why else ",") + " holds the value passed in"
             )
         return (
             "never assigned by a poll resuming after an `.await` (the future keeps no copy: "
@@ -2321,9 +2315,9 @@ class RustSession(NativeSession):
                 return _Copied(
                     f"the program has already copied its value into {_names(names)}"
                     + (f" (at {made})" if made else "")
-                    + f" and goes on with that copy, replacing or dropping `{name}` with no "
-                    "read of the changed part Peeky can prove first (a reference lent to a "
-                    "call, or `{:?}`, is not one), so the change may never be seen",
+                    + f" and goes on with that copy, so a change to `{name}` may never be seen: "
+                    "Peeky proves no read of the change first (a reference lent to a call, or "
+                    "`{:?}`, is not one)",
                     f"Change it before {_names(names)} copies it (a stop on an earlier line), "
                     f"or change {_names(names)} instead",
                 )

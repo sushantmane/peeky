@@ -1428,8 +1428,9 @@ def test_join_says_when_its_key_carries_addresses_and_can_mask_them(store):
         "only in run b"
     ] * 2
     (note,) = exact["notes"]
-    assert "name's values carry addresses" in note and "--param masked=1" in note
-    assert "note: name's values carry addresses" in evidence.table(exact)
+    assert "name's values with addresses masked" in note and "--param masked=1" in note
+    assert "they carry addresses" in note
+    assert "note: add --param masked=1 to match name's values" in evidence.table(exact)
     masked = evidence.run_query(store, "join", {"key": "name", "masked": 1})
     assert "notes" not in masked
     shown = [

@@ -157,7 +157,7 @@ def test_a_thread_alone_at_a_verified_breakpoint_for_three_polls_over_four_secon
     assert "suspended for 4.0 s" in message and "3 checks" in message
     error = classify(failure.value)
     assert (error["code"], error["session_closed"]) == ("DEBUGGER_ERROR", True)
-    assert "did not report a stop it made" in error["hint"] and "close" in error["hint"]
+    assert "state cannot be trusted" in error["hint"] and "close" in error["hint"]
     # Nothing was served; Peeky detached (an attached JVM is not terminated).
     assert worker.hits == 0 and worker.stop_id is None and "lost_stop" in operations(worker)
     assert dap.closed == {"terminate": False} and runtime.closed and worker.dap is None
