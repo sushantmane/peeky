@@ -79,6 +79,7 @@ def test_a_failed_transport_still_ends_the_launched_program(tmp_path):
         worker.dispatch("inspect", stop)
     payload = classify(caught.value)
     assert payload["code"] == "DEBUGGER_ERROR" and "protocol stream" in payload["hint"]
+    assert "closed the session: start a new one" in payload["hint"], payload["hint"]
     assert payload["session_closed"] is True
     assert gone(pid), "debugpy's debuggee (its own process group) survived the closed session"
 

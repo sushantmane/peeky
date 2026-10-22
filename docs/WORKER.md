@@ -39,9 +39,11 @@ A client on another host must show that its sources are the worker's. This is pr
    - before launching;
    - for a compiled target, again after the build, before the debugger starts;
    - for Python, before and after each later operation that resumes the program or returns a
-     stop or values (`wait` included), and for each stack frame whose code names a file under
-     the root that isn't a compared `.py` file (a virtual environment inside the root
-     excepted). Then the session is closed.
+     stop or values, `wait` included;
+   - for Python, at a stack frame whose code names a file under the root that isn't a compared
+     `.py` file. A virtual environment inside the root is excepted.
+
+   After a Python refusal, the session is closed.
 4. A request with `expect_sha256` but without `expect_inputs`, or with an empty one, is refused
    with `INVALID_REQUEST`.
 5. Check the answer to `launch`, or the probe's result:

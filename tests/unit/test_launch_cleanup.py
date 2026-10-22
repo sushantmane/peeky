@@ -157,7 +157,8 @@ def test_a_program_that_never_starts_is_ended_with_its_group(tmp_path, leftovers
     assert not running(pids["program"]) and not running(pids["child"])
     assert error["code"] == "TIMEOUT" and error["session_closed"] is True
     assert error["message"].startswith("The debuggee did not start: the debugger never ")
-    assert "check that it can read its own path" in error["hint"]
+    assert "can read its path and every directory above it" in error["hint"]
+    assert "`cleanup` says if Peeky ended it." in error["hint"], error["hint"]
     # The program and what it started, which shared its group; SIGKILL after the grace
     # for one that ignores SIGTERM.
     assert error["cleanup"] == f"terminated pids {', '.join(map(str, sorted(pids.values())))}"

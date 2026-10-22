@@ -19,24 +19,22 @@ _RULES = (
     (
         r"^Evidence query failed",
         "INVALID_QUERY",
-        "Fix the SQL or the --param values; `peeky sql --schema` lists the tables, columns and "
-        "canned queries. Queries are one read-only SELECT over captured evidence.",
+        "Fix the SQL or the --param values: one read-only SELECT. `peeky sql --schema` lists "
+        "the tables, columns and canned queries.",
         False,
     ),
     (
         r"^Evidence store ",
         "INVALID_REQUEST",
-        "A missing or empty store means no probe was saved there yet: run a probe, or check "
-        "--store. An unusable store can be moved aside (a new one is created) or replaced "
-        "with --store PATH.",
+        "Run a probe first, or check --store. Move an unusable store aside (a new one is "
+        "made), or pass --store PATH.",
         False,
     ),
     (
         r"is unreachable \(.*the request was not sent",
         "UNREACHABLE",
-        "No request reached the worker. Restore the worker or SSH tunnel and retry; the worker "
-        "keeps a session until its idle timeout. If the worker is gone for good, use "
-        "`peeky session close --forget`.",
+        "Restore the worker or SSH tunnel, and retry: it keeps the session until its idle "
+        "timeout. If it is gone for good, run `peeky session close --forget`.",
         True,
     ),
     (
@@ -50,26 +48,22 @@ _RULES = (
         r"^DAP (frame|headers)|^Duplicate DAP header|non-DAP line|^Outgoing DAP frame"
         r"|^Expected DAP object|^Incomplete DAP frame",
         "DEBUGGER_ERROR",
-        "The debugger's protocol stream failed (for example a reply larger than 4 MiB) and the "
-        "session was closed. Start a new one; capture narrower selectors if values are huge.",
+        "The protocol stream failed (a reply over 4 MiB, say) and closed the session: start "
+        "a new one, with narrower selectors if values are huge.",
         False,
     ),
     (
         r"^java-debug's event thread died",
         "DEBUGGER_ERROR",
-        "java-debug stopped processing the JVM's events, so no stop, step or exit can be "
-        "reported any more; the session was closed (an attached JVM is detached, a launched "
-        "one ended). Retry. If it recurs, rebuild the adapter with scripts/setup_java_adapter.py "
-        "and report the message (issue #27).",
+        "Retry. If it recurs, rebuild the adapter with scripts/setup_java_adapter.py. The "
+        "session is closed: an attached JVM is detached, a launched one ended.",
         False,
     ),
     (
         r"^Lost stop: ",
         "DEBUGGER_ERROR",
-        "java-debug did not report a stop it made (issue #27), so this session's state cannot "
-        "be trusted: Peeky served nothing from it and detached, and the JVM runs on. Close the "
-        "session (`peeky session close`) and retry. To help #27, first keep `peeky session "
-        "report --json` (its `debugger_events`) or the probe's `debugger_events`.",
+        "Save `peeky session report --json` for a bug report, then `peeky session close` and "
+        "retry. The session's state cannot be trusted; the JVM runs on.",
         False,
     ),
     (
@@ -134,9 +128,8 @@ _RULES = (
         r"not a visible local|Expected exactly one existing local|not found in the inspected"
         r"|not a field or element the debugger lists",
         "NOT_FOUND",
-        "Inspect to list visible names. Reads take dotted paths (a.b, this.x); changes take "
-        "the stopped function's own locals, and in Java, Rust, C and C++ their fields and "
-        "array elements.",
+        "Run `inspect` for names. Reads take dotted paths (a.b); changes take the frame's own "
+        "locals, and in Java, Rust, C and C++ their fields and elements.",
         False,
     ),
     (
@@ -173,8 +166,8 @@ _RULES = (
     (
         r"adapter bundle at .* predates Peeky's java-debug fixes",
         "UNSUPPORTED",
-        "Rebuild the Java adapter with scripts/setup_java_adapter.py (it applies Peeky's "
-        "java-debug patches), then point the target's bundle or PEEKY_JAVA_ADAPTER at it.",
+        "Rebuild it with scripts/setup_java_adapter.py, and point the target's bundle or "
+        "PEEKY_JAVA_ADAPTER at the new one.",
         False,
     ),
     (
@@ -225,10 +218,8 @@ _RULES = (
     (
         r"^The debuggee did not start",
         "TIMEOUT",
-        "The debuggee did not start: check that it can read its own path and every directory "
-        "above it (a hung or slow file system, or a pending macOS privacy prompt, blocks it "
-        "before it reaches the debugger), then retry. `cleanup` says whether Peeky ended the "
-        "process it started.",
+        "Retry once it can read its path and every directory above it: a hung disk or macOS "
+        "privacy prompt blocks it. `cleanup` says if Peeky ended it.",
         False,
     ),
     (
@@ -351,9 +342,8 @@ _MUTATION_HINTS = (
     ),
     (
         r"another binding of|the binding of `[^`]+` declared on line",
-        "Keep every binding of the name in memory with a candidate edit (`--old`/`--new`): "
-        "`std::hint::black_box(&mut x);` after each `let` the message names, or rename one "
-        "of them, and `--set` it in that same probe.",
+        "With `--old`/`--new` in the same probe, add `std::hint::black_box(&mut x);` after "
+        "each `let` the message names, or rename one of them.",
     ),
     (
         r"inlined where it is called",
@@ -362,9 +352,8 @@ _MUTATION_HINTS = (
     ),
     (
         r"held in the async body's state",
-        "Change what it is computed from before it is assigned, or copy it into a local of "
-        "the poll's own after the `.await` with a candidate edit (`--old`/`--new`) and "
-        "`--set` that local in the same probe.",
+        "Change what it is computed from, or copy it into a local after the `.await` with "
+        "`--old`/`--new`, and `--set` that local in the same probe.",
     ),
     (
         r"kept in a register",
@@ -406,9 +395,8 @@ _MUTATION_HINTS = (
     ),
     (
         r"Java mutation requires",
-        "Pass a literal of the variable's Java type: an integer, true or false, a number, a "
-        "char in single quotes ('+') or a code point for a char, a text in double quotes for "
-        "a String.",
+        "Pass a literal of the variable's Java type: a number, true or false, a char ('+') "
+        "or code point, or a text in double quotes for a String.",
     ),
     (
         r"literal|bounded decimal integer|numeric or boolean scalar",

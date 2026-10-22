@@ -172,7 +172,7 @@ def test_a_string_a_live_borrow_reads_is_never_changed(crate, capsys):
         code = main([*at, "--set", f'{name}="xé"', "--json", "--quiet"])
         return code, json.loads(capsys.readouterr().out)
 
-    refused = "a borrow of it (a `&str` of its text, a reference, an iterator over it) is "
+    refused = "change it before a borrow of it is taken, or after the borrow's last use. A borrow "
     # `head` and `tail`; an iterator; a `&str` pushed into a Vec, or into a RefCell's;
     # a closure that borrows it.
     for marker, name in (("// HEAD", "s"), *(("// MANY", each) for each in "abcd")):
@@ -267,7 +267,11 @@ def test_a_borrow_in_a_trait_object_or_a_guards_drop_is_never_missed(crate, caps
         at = next(i for i, text in enumerate(lines, 1) if f"// {marker}" in text)
         code = main(["probe", str(crate), "--at", f"src/main.rs:{at}", "--set", 's="aé"', "--json"])
         result = json.loads(capsys.readouterr().out)
-        refusal(code, result, "`s` cannot be changed to a text at this stop: a borrow of it")
+        refusal(
+            code,
+            result,
+            "`s` cannot be changed to a text at this stop: change it before a borrow of it",
+        )
         assert "utf8=false" not in (result.get("output") or ""), (marker, result)
     # Once the trait object is dropped, nothing borrows it.
     at = next(i for i, text in enumerate(lines, 1) if "// DROPPED" in text)
@@ -338,7 +342,11 @@ def test_crate_types_without_pointers_and_quiet_drops_hold_no_borrow(crate, caps
         refusal(code, result, "cannot write memory")
     # A type of the crate's that holds a pointer still counts.
     code, result = probe_at(crate, capsys, ADDRESSES, "POINTING", "s")
-    refusal(code, result, "`s` cannot be changed to a text at this stop: a borrow of it")
+    refusal(
+        code,
+        result,
+        "`s` cannot be changed to a text at this stop: change it before a borrow of it",
+    )
     # BORROWS' `v: Vec<&str>` holds `b` until `main` ends, but its drop never reads it.
     (crate / "src/main.rs").write_text(BORROWS)
     lines = BORROWS.splitlines()

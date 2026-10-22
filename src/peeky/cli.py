@@ -1141,10 +1141,9 @@ def _member_sets(sets, language):
         raise Refused(
             "MUTATION_REJECTED",
             f"--set {fields[0]} changes a field or element, which only Java, Rust, C and C++ "
-            f"targets allow; in {language} only the stopped function's own locals change. To "
-            "test a value there, add a local with a candidate edit and set it in the same "
-            "probe (COOKBOOK 6.6: `--old/--new` with `--set`), or edit the source and run "
-            "verify",
+            f"targets allow: in {language}, only the stopped function's own locals change. Add "
+            "a local with a candidate edit and set it in the same probe (COOKBOOK 6.6: "
+            "`--old/--new` with `--set`), or edit the source and run verify",
         )
 
 
@@ -1239,11 +1238,11 @@ def _keep_evidence(args, result, root, language):
             # changed how often the line stops per pass, or it predates stop labels.
             else {
                 "run": None,
-                "hint": f"run {before} is this probe without the edit, but at hit "
-                f"{apart['hit']} it was at {evidence.stop_text(apart['stop_a'])} of the line "
-                f"and this run at {evidence.stop_text(apart['stop_b'])}, so hits do not pair "
-                "by number: pair them by a value, `peeky queries join --param "
-                f"a={before} --param b={run_id} --param key=<selector>`",
+                "hint": "pair the hits by a value: `peeky queries join --param "
+                f"a={before} --param b={run_id} --param key=<selector>`. Run {before} is this "
+                f"probe without the edit, but at hit {apart['hit']} it was at "
+                f"{evidence.stop_text(apart['stop_a'])} of the line and this run at "
+                f"{evidence.stop_text(apart['stop_b'])}, so hits do not pair by number",
             }
             if before is not None
             else {

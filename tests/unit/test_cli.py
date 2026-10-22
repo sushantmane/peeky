@@ -35,6 +35,7 @@ def test_field_sets_where_no_rule_allows_them_are_refused_before_any_build(tmp_p
     assert code == 2 and error["code"] == "MUTATION_REJECTED"
     assert "only Java, Rust, C and C++ targets allow" in error["message"]
     assert "COOKBOOK 6.6" in error["message"]
+    assert "only the stopped function's own locals change" in error["message"]
     # Review of #109: names are stripped as `--set` itself strips them (`n = 3`).
     from peeky.cli import _member_sets
 

@@ -431,9 +431,9 @@ JAVA_DEBUG_PATCHES = {
 }
 STALE_BUNDLE = (
     "The Java adapter bundle at {bundle} predates Peeky's java-debug fixes (missing: "
-    "{missing}; without eventhub-log-guard java-debug can stop reporting every stop and "
-    "exit, issue #27). Rebuild it: python scripts/setup_java_adapter.py --output <a new "
-    "directory>, then point the target's bundle (or PEEKY_JAVA_ADAPTER) at it"
+    "{missing}): rebuild it with `python scripts/setup_java_adapter.py --output <a new "
+    "directory>`, then point the target's bundle (or PEEKY_JAVA_ADAPTER) at it. Without "
+    "eventhub-log-guard, java-debug can stop reporting stops and exits"
 )
 
 
@@ -881,10 +881,10 @@ class JavaSession:
         declared = self.declared_local(frame, name) if frame else None
         if declared and not all(read for _, read in declared):
             raise ValueError(
-                f"{name!r} cannot be changed: the program never reads it (javac compiles a "
-                "constant local, one declared `final` with a constant initializer, into the "
-                "code that uses it), so a change would never be seen. Change what the code "
-                "computes from it with a candidate edit (`--old`/`--new`)"
+                f"{name!r} cannot be changed: change what the code computes from it with a "
+                "candidate edit (`--old`/`--new`). The program never reads it, because javac "
+                "compiles a constant local (`final`, with a constant initializer) into the "
+                "code that uses it, so a change would never be seen"
             )
 
     def _declared(self):

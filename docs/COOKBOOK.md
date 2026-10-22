@@ -399,8 +399,8 @@ peeky probe sizes.py --at 3 --capture "$(printf 'gro\xcc\x88\xc3\x9fe')"   # gr�
 
 ```
 hit  phase     line  function  selector  type  value
-1    observed  3     area      größe          <not found; visible: größe, h, w; the debugger lists 'größe' (written 'gr\xf6\xdfe'), which differs from 'gro\u0308\xdfe' only by Unicode normalization: names are matched exactly as the debugger lists them (Peeky never normalizes one), so select it as listed if that is the one you mean>
-status: completed  hits: 1  seconds: 1.091  max pause: 5.0 ms
+1    observed  3     area      größe          <not found; visible: größe, h, w; select it as listed if that is the one you mean: the debugger lists 'größe' (written 'gr\xf6\xdfe'), which differs from 'gro\u0308\xdfe' only by Unicode normalization, and Peeky never normalizes a name>
+status: completed  hits: 1  seconds: 1.086  max pause: 7.0 ms
 output:
   12
 ...
@@ -1232,7 +1232,7 @@ Otherwise, the earlier hit's return is withheld rather than guessed. The row say
 | --- | --- |
 | The stopped function is not the call's | the line `stopped again at the same depth in a call of another function` |
 | The frames under the stop are not the call's | `in another call` |
-| Anything else: in Java, which has no such watch; where the watch was dropped; or where another stop came in between | Peeky `could not tell whether in this call` (another of the line's breakpoint locations, or a loop's next pass) `or in a later call after this one ended without returning` |
+| Anything else: in Java, which has no such watch; where the watch was dropped; or where another stop came in between | Peeky `could not tell whether in this call` (another breakpoint location, or a loop's next pass) `or in a later call after this one ended without returning` |
 | A call still running when the program ends | `the program ended before it returned` |
 | A call still running when the probe's `--timeout` runs out | `the probe timed out before it returned` |
 
@@ -1514,7 +1514,7 @@ run_a  run_b  hit   phase     selector  value_a          value_b               d
 1      2      3     observed  v         5                7                     1        NULL
 1      2      4     observed  v         NULL             8                     1        missing in run a
 1      2      4     observed  total     NULL             62                    1        missing in run a
-note: run 1 stopped 3 times at its line and run 2 4, so a hit need not be the same moment in both (a sort's comparator is called on other pairs once one answer differs), and pairing by hit number can show every later hit as a difference: pair them by a value instead, `peeky queries join --param a=1 --param b=2 --param key=<selector>[,<selector>…]`
+note: pair the hits by a value instead: `peeky queries join --param a=1 --param b=2 --param key=<selector>[,<selector>…]`. Run 1 stopped 3 times at its line and run 2 4, so a hit need not be the same moment in both, and pairing by hit number can show every later hit as a difference
 note: the first difference at a hit is at hit 1; 5 of the 6 rows at a hit come after it, where pairing by hit number may compare different calls: read those with `join`
 (8 rows)
 ```
@@ -1830,7 +1830,7 @@ v  hit_a  hit_b  a:total  a:bins[3].hi  b:total  b:bins[3].hi  no_value_a  no_va
 2  2      1      28       4             0        4             NULL        NULL        NULL       NULL       both
 5  3      NULL   34       4             NULL     NULL          NULL        NULL        NULL       NULL       only in run a
 8  NULL   4      NULL     NULL          62       4             NULL        NULL        NULL       NULL       only in run b
-note: the key repeats: run 6's hits 2 and 3 both have `v` 7, and such a value pairs every hit that has it in one run with every one in the other (2 rows, from 1 value): to tell those hits apart, add a selector that names the call to the key (key=v,<selector>)
+note: the key repeats: add a selector that names the call to the key (key=v,<selector>). Run 6's hits 2 and 3 both have `v` 7, and such a value pairs every hit that has it in one run with every one in the other (2 rows, from 1 value)
 (5 rows)
 ```
 
@@ -1842,8 +1842,8 @@ Run b saw `7` twice, so run a's hit 1 appears twice.
 - **Repeated key values.** A plain one pairs every hit that has it in one run with every hit that
   has it in the other. A qualified one matches nothing (see unmatched hits below).
 - A plain value at 2 hits of run a and 3 of run b gives 6 rows. They come in run a's hit order, then
-  run b's. A `note:` line says so, with the first such value and how many rows they make. To tell
-  those hits apart, add a selector to the key: `key=v,i`.
+  run b's. A `note:` line says so. It starts with the selector to add, then gives the first such
+  value and how many rows they make. Here `key=v,i` tells those hits apart.
 - **Several selectors:** `key=a,b` pairs hits where every one of them has the same value. Each gets
   a column. A hit missing any of them is unmatched. You can give up to 8.
 - Commas outside brackets and quotes separate the selectors. So `m["a,b"]` is one selector.
