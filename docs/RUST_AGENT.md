@@ -87,7 +87,8 @@ The rules are in the cookbook's
 - Such a field reads under the proof of the value that holds it. The build's debug information
   decides the path, never LLDB's names.
 - A shared reference parameter's field reads in every frame, because nothing can change its target
-  during the call.
+  during the call. The exception is where the MIR shows its target dropped and not yet replaced
+  ([The Drop window](#the-drop-window)).
 - The field's DWARF type picks the layout: `alloc::vec::Vec<i64, alloc::alloc::Global>`, which LLDB
   names `Vec<long>`.
 - A `RefCell`'s or `Mutex`'s contents change behind a shared reference, so
