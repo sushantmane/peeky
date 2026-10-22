@@ -1,6 +1,6 @@
 """Captured-evidence store: capture once, query with SQL (ADR 0004, step 4).
 
-`peeky probe` records every run in a local SQLite database (standard library, no
+`peeky probe` records every run not refused before launch in a local SQLite database (standard library, no
 server). Questions about what was already captured are ordinary SQL over that
 database, as heappy queries an exported heap. A new question about the running
 program is a new probe. Queries are read-only, one statement at a time, and bounded
@@ -115,8 +115,9 @@ TABLES = {
             "Peeky recorded this (an early version of schema 6, which could read module "
             "globals); else NULL: the stopped frame's own variables",
             "note": "What Peeky says about the value, which it cannot vouch for or shows "
-            "raw (a C/C++ local a loop returns to, a program using setjmp; a Rust value "
-            "shown as LLDB's summary, a pointer it does not follow, a moved local): read "
+            "raw (a C/C++ local a loop returns to, a program using setjmp; a Python local "
+            "a loop's pass has not assigned yet; a Rust value shown as LLDB's summary, a "
+            "pointer it does not follow, a moved local): read "
             "the value with it. NULL for a plain value (and for runs saved before schema 8)",
             "instance": "That function as the build names it where the frame's name does not "
             "tell it apart (Rust: a closure, `cz::main::{closure#0}`; a generic's instance "

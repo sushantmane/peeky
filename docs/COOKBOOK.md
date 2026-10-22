@@ -275,7 +275,7 @@ It decides from the build's code, never from the source's shape: the function's 
 - **Headers that run at each pass:** A header whose first code is the condition the loop returns to stops at every pass and gets no note: a Java `while (k < n)`, `for (; j < n; j++)` and `do`'s `while`, a C or C++ `do`'s `while`, a C++ range `for` (its element is bound at each pass) and Rust's `while let`.
 - **When it cannot tell:** Where Peeky cannot read the flow (a jump table, flow into the middle of a loop, an architecture other than arm64 or x86-64), it says nothing; nor does it look at a line that names no loop (no `for`, `while`, `loop`, `do`, a name with one in it, or a macro's capitals), or one in more than 8 functions or inlined copies. It asks the debugger once, at launch: one line table per file and one disassembly per function, never again when a probe re-arms its breakpoints.
 - **GCC:** GCC gives `for (;;)` and `do {` no code of their own, so LLDB moves their breakpoint into the body, which stops at each pass (`moved` says so).
-- **Python and Java:** Python stops once per pass at a line (a `for` header once per pass and once more when the loop ends); Java and Python have no `stop`.
+- **Python and Java:** Python stops once per pass at a line (a `for` header once per pass and once more when the loop ends); Java and Python have no `stop`. A Python local the pass assigns below the stop shows an earlier pass's value, with a `note` (5.1).
 - **`describe`:** `describe` does not mark these lines: for C, C++ and Rust it would need the debugger's locations, which only a run has.
 
 ### 2.3 Test a Hypothesis by Changing a Value
@@ -373,8 +373,8 @@ peeky probe examples/pagination_bug.py --at 8 --capture start --json --quiet | j
 
 Every command takes `--json`. Exit codes:
 - 0: success;
-- 1: a completed command with a negative result (a failed probe or a failed verify);
-- 2: an error, or a refusal: a probe refused before it ran (`refused_before_launch`: nothing ran, so its text has no table, only the error and its hint);
+- 1: a completed command with a negative result (a probe that failed once the debugger's launch or attach request was sent, or a failed verify, a failed build included);
+- 2: an error, or a refusal: any probe that ended before the debugger's launch or attach request was sent, whatever its code (`refused_before_launch`: a refusal, a file outside the worker root, a build that failed, a debugger that did not start). Peeky did not start the program (a build, or a Python candidate's interpreter, may have run), so its text has no table, only the error and its hint, and no run is saved;
 - 3: a background job still running;
 - 4: a probe (`peeky probe`, or the `peeky-probe` script) that completed, but a change it was asked to make (`--set`, `--set-at`) never happened, because its stop never came (2.8). The values are evidence; the experiment did not happen. A shortfall of `--hits` alone is not a failure: 0, with a warning.
 
@@ -490,7 +490,7 @@ Shown only when exact. LLDB reads a returned value from the return register, so 
 
 ## 3. Comparing Runs
 
-Every probe is saved with a run id (`--no-save` skips that). `--label` tags a run so you can find it later.
+Every probe not refused before launch is saved with a run id (`--no-save` skips that). `--label` tags a run so you can find it later.
 
 ### 3.1 Two Inputs Side by Side
 
@@ -827,6 +827,17 @@ closed default
 
 In `def shadow(): print(LIMIT); LIMIT = 1`, stopped at the `print`, `get LIMIT` says `LIMIT` is a local with no value there yet (Python raises `UnboundLocalError`), not the module's `LIMIT`; a local of an enclosing function, a closure variable, a comprehension's variable or a type parameter is named as such. debugpy files functions, classes and `__dunder__` names under groups; their members are selected by name (`add_tag.__defaults__`), and so is a local holding a function (`session set callback=None` changes it). `[id 6]` is the object's identity (see 4.6).
 
+**A pass's own value.** Stopped in a loop, a Python local that the pass assigns below the stop still holds an earlier pass's value, or one from before the loop: back in `group` with `step --out` on `key = slug(title)`, `key` is the previous title's key. Peeky shows the value with a `note`, in `get`, `inspect` and probe rows, and refuses to `set` it (the function's code overwrites it before reading it):
+
+```
+key: str = 'hello-world'
+  note: this pass's code has not assigned it before this line, and every path through the rest of the pass assigns it (line 21) before reading it: the value is likely from an earlier pass (or from before the loop at line 20)
+```
+
+- **How:** Peeky reads the function's bytecode, compiled from its source as the program's interpreter compiles it (plain and as `-O` does; both must agree), and only where Peeky runs on an interpreter that compiles alike (the same implementation, exact version and build, and bytecode magic number). The debugger gives a line, not an instruction, so the stop may be at any instruction of the line (a breakpoint's stop only where the line begins), and all must be in the same innermost loop (a `for` or `while` around the line). No path from the loop's head to the line may store the local, none from the line may read or `del` it before storing it (an exception's path counts), and every path through the rest of the pass that runs no exception must store it before the pass ends (back at the loop's head, out of the loop, a `return` or a `raise`): a store only in an `except` block, behind a `continue` or `break`, or on one branch proves nothing. An exception that a handler in the loop may swallow (a `with` whose `__exit__` may return true, an `except` that falls through, an `async for` that ends) is a path too: one that goes on in the pass without the store takes the note away, and the note names the store on each path (`lines 11, 13` for `x = 1` in the `try` and `x = 2` in its `except`).
+- **No note:** a loop's header line (its code also runs before and after the loop); a line inside a `try` whose handler can skip the assignment for a later read (`key = str(x)` with `except ValueError: pass`, then `return key` after the loop); a local a closure shares; module-level code; a source changed since the program started; and any function of a module (the whole file) that may run other code than its source says (`exec`, `eval`, `compile`, `types.FunctionType`, `__code__`, `marshal`) or reach a frame's locals (`locals()`, `vars()` or `dir()` other than with one plain argument, `sys._getframe`, `f_locals`, `f_back`, a tracer, the `inspect` or `builtins` module, `__builtins__`, `__import__`, `globals()`, a string naming a builtin such as `getattr(b, "exec")`), whatever a module is imported as. The module global of that name (`--globals`) is never noted.
+- **Limits:** the note states what the function's code does, not what ran: code in other modules that reaches into this frame (a helper writing `sys._getframe(1).f_locals`, which Python 3.13 writes through) or replaces this module's functions is not seen, hence "likely". Nor is a stop part-way through the assignment itself (in a `__del__` of the value it replaces).
+
 **Caller frames.** `--frame N` reads frame N of the stack, as `session inspect --json` lists `frames` (0, the default, is where the program stopped; 1 its caller; at most 10):
 
 ```sh
@@ -1065,7 +1076,7 @@ run_a  run_b  hit   phase     selector  value_a           value_b               
   ```
 
   This reports `set end: 3 -> 10`. `black_box` keeps the new Rust local in memory, where a change reaches the program.
-- **A Rust local kept in a register:** a by-value parameter, or a `let` the code never borrows or reassigns, may live only in a register even in a debug build, so the debugger shows a copy and a change would not reach the program. Rows mark it `[not settable: register]` (a struct's fields too, in its preview) and `describe`'s `mutable:` line lists them per function. A probe that sets one is refused before the program runs (nothing ran, no run saved), as is any `--set` its build rules out in every function on the `--at` line (#138), and any `--set-at` the build rules out on its own line (2.8). Keep it in memory with the edit, in the same probe: for the limiter's `fn allow(w: &mut Window, now: u64, limit: u32, width: u64)`,
+- **A Rust local kept in a register:** a by-value parameter, or a `let` the code never borrows or reassigns, may live only in a register even in a debug build, so the debugger shows a copy and a change would not reach the program. Rows mark it `[not settable: register]` (a struct's fields too, in its preview) and `describe`'s `mutable:` line lists them per function. A probe that sets one is refused before the program runs (the debugger's launch request is not sent, no run saved), as is any `--set` its build rules out in every function on the `--at` line (#138), and any `--set-at` the build rules out on its own line (2.8). Keep it in memory with the edit, in the same probe: for the limiter's `fn allow(w: &mut Window, now: u64, limit: u32, width: u64)`,
 
   ```sh
   peeky probe limiter --at src/main.rs:10 --arg 2 --arg 10 --arg 0,1,10,11 --capture width \
@@ -1116,7 +1127,7 @@ The commands are the same for every language; only the target changes.
 - **Withheld, never guessed:** a local whose storage may still hold leftovers (declared below the stop, an initializer still running, a jump past its declaration) shows `no value yet` and why; one Peeky shows but cannot vouch for (a `do` body's first line, below a `setjmp` call) carries a `note`, and so does every field and element read through it (``read through `q`: …``, in captures, in `session get` children, marked `[note]`, and in the evidence), which `--set` refuses where it refuses the local.
 - **Set** integer locals, and integer fields and elements of a struct, class or array local the frame holds itself: `--set s.end=10`, `--set 'bins[3].hi=8'` (16 to 64 bits, in range).
 - **Text:** a `char[N]` local or a `std::string` local takes a text in double quotes: `--set 'name="apple"'` (see **Changing text** below).
-- **Never** through a pointer or a reference (`ps.end`, `this.count`, a C++ structured binding of a reference, `auto &[at, n] = *owner`, as `n` or `at.x`, or a C `__block` variable, all `[not settable: reference]` as fields; in C, a refusal for a pointer parameter names the function's call when the program's sources have only one: `push has one caller: m.c:15 in main, which passes `&r`, where `r.tail` is settable`), nor in a union, a packed struct, a bitfield, a const or a `std::` type; floats cannot be set, and a text only as above. A probe whose `--set` the build's debug information rules out like this in every function on its `--at` line is refused before the program runs (nothing ran, no run saved); parameters are set as other locals (an unoptimized build keeps them on the stack).
+- **Never** through a pointer or a reference (`ps.end`, `this.count`, a C++ structured binding of a reference, `auto &[at, n] = *owner`, as `n` or `at.x`, or a C `__block` variable, all `[not settable: reference]` as fields; in C, a refusal for a pointer parameter names the function's call when the program's sources have only one: `push has one caller: m.c:15 in main, which passes `&r`, where `r.tail` is settable`), nor in a union, a packed struct, a bitfield, a const or a `std::` type; floats cannot be set, and a text only as above. A probe whose `--set` the build's debug information rules out like this in every function on its `--at` line is refused before the program runs (the debugger's launch request is not sent, no run saved); parameters are set as other locals (an unoptimized build keeps them on the stack).
 - **Where:** at a statement's first instruction, so a breakpoint on its first line (`--at`, `session continue --to LINE`) or a `step` that lands there; not after `step --out`, not on a loop header's later passes.
 - **Marks:** rows show `[settable]` on what `set` would change, fields and elements included (a preview's too); the fields of a local the debug information keeps in registers or as a static say `[not settable: register]` or `[not settable: static]`; when a rule leaves nothing settable, `session inspect` says why. A refused change's hint names the one way around it.
 - **Later hits:** `--set-hit N` applies a probe's changes at hit N; in a session, change values at as many stops as you like.

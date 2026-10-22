@@ -5,6 +5,7 @@ What is particular to Rust targets (a Cargo crate), one rule per line, each with
 ## Targets
 
 - The target is the crate directory with its `Cargo.lock`: a plain `cargo new` binary crate works (edition 2021 or 2024, no dependencies, no `src/lib.rs`, `src/bin` or `build.rs`, at most one integration test); run `cargo generate-lockfile` once if `Cargo.lock` is missing ([7.2](../COOKBOOK.md#72-rust-a-cargo-crate)).
+- A probe whose build fails (`BUILD_FAILED`, a candidate edit that does not compile) is refused before launch: exit 2, no table, no run saved; `verify` calls it a failed verify, exit 1 ([ERRORS](../ERRORS.md)).
 - `--at src/main.rs:LINE`; program arguments go after `--` or in repeated `--arg` ([2.5](../COOKBOOK.md#25-a-module-imported-by-a-script-with-arguments)). `verify` also runs the crate's integration test, when it has one ([6.5](../COOKBOOK.md#65-writing-a-checker)).
 
 ## Reading values

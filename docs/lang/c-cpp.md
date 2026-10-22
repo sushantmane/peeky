@@ -32,4 +32,5 @@ What is particular to C and C++ targets, one rule per line, each with the [COOKB
 
 ## Builds
 
+- A probe whose build fails (`BUILD_FAILED`, a candidate edit that does not compile) is refused before launch: exit 2, no table, no run saved; `verify` calls it a failed verify, exit 1 ([ERRORS](../ERRORS.md)).
 - `"optimization": "O2"` in a `--config` debugs the optimized program: locals may be `unavailable`, shown values can be stale, and changes are refused; every result carries `optimized` and a warning ([7.5](../COOKBOOK.md#75-optimized-builds)).

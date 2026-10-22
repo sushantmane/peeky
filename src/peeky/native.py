@@ -4359,7 +4359,7 @@ class NativeSession:
                     )
                     return (
                         f"`{name}` cannot be changed at {source}:{line}, at any stop of this "
-                        f"build: {reasons}{later}. Refused before the program runs: nothing ran"
+                        f"build: {reasons}{later}. Refused before the program runs: the debugger's launch request was not sent"
                     )
         return None
 
