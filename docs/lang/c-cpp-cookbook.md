@@ -291,9 +291,8 @@ peeky probe examples/cpp/pagination_bug.cpp --at 28 --capture start
 ### Read structs, arrays and standard containers
 
 A struct, a class or a fixed-size array shows its first members. Peeky reads them from the
-debugger's own children. For example, in the sixth evaluation's `histo` case
-([report](../evaluations/2026-10-20-agent-sixth-round.md)), `struct bin bins[4]` holds
-`{lo, hi, count}` bins. One capture reads every bin:
+debugger's own children. For example, take a `histo.c` that counts its arguments in
+`struct bin bins[4]`, where each bin is `{lo, hi, count}`. One capture reads every bin:
 
 ```sh
 peeky probe histo.c --at histo.c:28 --arg 0 --arg 7 --arg 7 --capture 'bins,bins[3]'
@@ -768,10 +767,11 @@ What Peeky checks:
   union, a packed struct or a `std::` type.
 - **The target** is an integer of 16 to 64 bits, not const, volatile or a bitfield. The value must
   fit it.
-- **The root** must be an automatic variable or a parameter of the stopped frame, in an
-  unoptimized build. Peeky must not withhold it: not declared below the stop, not in an initializer
-  still running, and no jump past it. Nor may it show with a `note` that its declaration still runs
-  after the stop, as on a `do` body's first line.
+- **The root** is the first local in a selector: `s` in `s.arr[2]`. It must be an automatic
+  variable or a parameter of the stopped frame, in an unoptimized build. Peeky must not withhold
+  it: not declared below the stop, not in an initializer still running, and no jump past it. Nor
+  may it show with a `note` that its declaration still runs after the stop, as on a `do` body's
+  first line.
 - **Arrays:** an element of an array of any length is fetched alone, at any step of the path:
   `big[700].a=1`, `grid[599][2]=3`.
 - **Read back:** the field is read back from the debugger after the write. Only the value asked for
@@ -803,8 +803,8 @@ push has one caller: m.c:15 in main, which passes `&r`, where `r.tail` is settab
 ```
 
 The refusal says `settable`, and how to change it, only in one case. A stop on the first line of
-the call's statement must be able to make the change, and the call must see it. In detail, all of
-these must hold:
+the call's statement must be able to make the change, and the call must see it. Here the root is
+`r`, the first local in the selector `r.tail`. In detail, all of these must hold:
 
 - The call is in the first statement on that line. In `r.tail = 1; total += push(&r, 1);`, the
   first statement overwrites the change.
@@ -833,7 +833,7 @@ these must hold:
   whose stop comes after the call.
 
 Anything else may change the value first: `r = q, push(&r, 1)`, `push(&r, RESET(r))`, or
-`push(&r, ops[0](r.buf))` through the array at `r`'s start. So the evaluation's
+`push(&r, ops[0](r.buf))` through the array at `r`'s start. So a call such as
 `push(&r, atoi(argv[i] + 1))` is named alone, without `settable`.
 
 More rules:
@@ -947,11 +947,12 @@ and the line table. All of these must hold:
     `while` or `switch` header.
 - A brace after something like parameters (`REPEAT(k, 1) {`) is a function's body only at file
   scope, or in a class's or namespace's body. Elsewhere, it is a block of the function around it.
-- **The pc is the lowest address** of all the function's code on the lines of the statements that
-  start there. Clang may put a later line's code first: `t =` / `p.x + g();` loads `p.x` and calls
-  `g` before line 1's store.
+- **The stopped instruction's address is the lowest** of all the function's code on the lines of
+  the statements that start there. Clang may put a later line's code first: `t =` /
+  `p.x + g();` loads `p.x` and calls `g` before line 1's store.
 - **On a function's first line** (a one-line function or lambda), the statements are those after
-  its body's `{`. The pc must be the lowest of their rows past the function's entry. For example,
+  its body's `{`. The stopped instruction's address must be the lowest of their rows past the
+  function's entry. For example,
   `long one(struct P p) { long t =` / `p.x + g();` runs the second line first, so neither line
   qualifies.
 - **No call in those statements was inlined** by the compiler (`always_inline`, `flatten`). Peeky
