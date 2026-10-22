@@ -139,8 +139,10 @@ stays in your code, and it reaches lambda bodies.
 
 ### Set up a launched target
 
-A Java target needs `--config <file.json>`. The file names the adapter bundle, the sources and the
-main class. `arguments` is optional. The commands that `describe` prints repeat the `--config`.
+A launched Java target needs `--config <file.json>`. The file names the adapter bundle, the
+sources and the main class. `arguments` is optional. An attached target's config differs: see
+[7.4](#74-java-tests-already-running-gradle---debug-jvm-eg-venice). The commands that `describe`
+prints repeat the `--config`.
 
 For example, `examples/java/pagination.json`. The bundle path is relative to the config file:
 
@@ -150,19 +152,27 @@ For example, `examples/java/pagination.json`. The bundle path is relative to the
 
 ### What can be set
 
+No kind of variable can always be set. Each row gives the conditions, and links to the full rule.
+
 | What | Can it be set? |
 | --- | --- |
-| A local of type `byte`, `short`, `int`, `long`, `boolean`, `float`, `double` or `char` | Yes |
-| A `String` local, field or element | Yes, to a text in double quotes |
-| A scalar field that is not final or static | Yes |
-| An array element | Yes, unless a JDK class's field holds the array. A program's list is the [exception](#which-lists-arrays-are-the-programs) |
-| A final or static field | No |
+| A local of type `byte`, `short`, `int`, `long`, `boolean`, `float`, `double` or `char` | Only if the program reads it after the stop ([rule](#locals-the-program-never-reads-again)) |
+| A local declared `String` | Only to a text in double quotes, and only if the program reads it after the stop ([rule](#set-a-string)) |
+| A field of one of those types, or declared `String` | Only if it is not final or static, and no JDK class declares it ([rule](#fields-the-jdk-declares)). Also only if no subclass's static field hides its name, and no other field shares it ([rule](#change-a-field-or-an-array-element)). A `String` field takes only a text ([rule](#set-a-string)) |
+| An element of an array of one of those types, or of a `String[]` | Only if the array isn't held by a JDK class's field, directly or inside another array that such a field holds ([rule](#arrays-the-jdk-holds)). A program's list's backing array doesn't count as the JDK's ([rule](#which-lists-arrays-are-the-programs)). A `String[]` element takes only a text ([rule](#set-a-string)) |
+| A local, field or element declared another type, such as `Object` or `CharSequence` | No, even if it holds a String ([rule](#the-declared-type-decides)) |
 | A boxed value, such as `Integer` | No |
-| An `ArrayList`'s element | No. Change a field of one instead: `merged[0].end=10` |
-| A field that a JDK class declares | Never |
-| A local that the program never reads after the stop, of any type | Never |
+| An object, such as an `ArrayList`'s element | No. Change one of its fields instead: `merged[0].end=10` |
 
-Rows mark what can be changed: `[settable]`. The sections below give the details.
+These rules also apply:
+
+- The value must fit the type exactly ([rule](#values-must-fit-the-type)).
+- Field, char and String changes need an adapter bundle built by this version of
+  `scripts/setup_java_adapter.py`.
+
+Rows mark what can be changed: `[settable]`. The mark on an element goes by the selector's path
+only. So an array that the JDK holds, reached under another name, may still be marked. It is
+refused only when the change is made ([rule](#arrays-the-jdk-holds)).
 
 ### Change a local
 
@@ -210,7 +220,8 @@ output:
 The output changed from `[[1,5], [12,14]]` to `[[1,10], [12,14]]`. So the merge was right except
 for `end`.
 
-- `this.count=0`, `arr[0]=1` and `arr[-1]=9` work the same way.
+- `this.count=0`, `arr[0]=1` and `arr[-1]=9` work the same way, where the
+  [table above](#what-can-be-set) allows them.
 - In a session, `session set current.end=10` changes a field.
 - Peeky reads the value back from the object after the change.
 - A field is refused if a subclass's static field hides its name, or another field shares its
@@ -302,8 +313,8 @@ program's. Peeky judges the list the same way as an array, by what holds it.
 - A list that a `HashMap` holds is the map's: `in a list held by java.util.HashMap$Node.value`.
 - So is a list whose iterator a `HashMap` holds, or whose sublist an unmodifiable view wraps:
   `in a list held, through an iterator or sublist, by ...`.
-- An `ArrayList<int[]>`'s rows can change: `rows[0][1]=9`, or `row[1]=9` for the same array. That
-  holds inside a `for` over the list too.
+- The rows of the program's own `ArrayList<int[]>` can change: `rows[0][1]=9`, or `row[1]=9` for
+  the same array. That holds inside a `for` over the list too.
 
 ### When Peeky can't tell who holds an array
 
@@ -320,7 +331,7 @@ So Peeky bounds its wait:
 - It waits less where the session's pause budget leaves less. The budget is `--max-pause`, which
   is 10 s for an attached JVM.
 - It keeps 1 s of the budget for the rest of the change:
-  `only 0.6 s of the session's pause budget is left ...`.
+  `only 0.6 s of the session's pause budget is left ...`. Then change the element at a fresh stop.
 - Past that, it refuses. The search itself runs on in the JVM until it ends.
 
 ### Changes refused before the run
@@ -365,8 +376,9 @@ it. For example, `int` 3000000000 is refused. So is `010`, which `Long.decode` r
 
 ### Set a char
 
-A `char` takes a char literal in single quotes, as Java writes one: `'+'`, `'\n'`, `'\''`,
-`'\u0041'`. Or it takes a code point from 0 to 65535: `43` is `'+'`, as in `char op = 43;`.
+This is how to write a `char` that [can be set](#what-can-be-set). Give a char literal in single
+quotes, as Java writes one: `'+'`, `'\n'`, `'\''`, `'\u0041'`. Or give a code point from 0 to
+65535: `43` is `'+'`, as in `char op = 43;`.
 java-debug shows a char as itself: `set op: - -> +`.
 
 This needs an adapter bundle built by this version of `scripts/setup_java_adapter.py`. An older
@@ -374,8 +386,9 @@ one refuses, naming the char rule and the rebuild.
 
 ### Set a String
 
-A String local, field or element takes a text in double quotes: `--set 'name="apple"'`.
-java-debug makes a new String of it, and the variable refers to that. Other references to the old
+Where a String local, field or element can be set ([What can be set](#what-can-be-set)), give a
+text in double quotes: `--set 'name="apple"'`. java-debug makes a new String of it, and the
+variable refers to that. Other references to the old
 String keep it, such as `alias` after `String alias = name;`.
 
 ```sh

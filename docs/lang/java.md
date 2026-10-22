@@ -18,8 +18,8 @@ details, in the [Java cookbook](java-cookbook.md) or the [COOKBOOK](../COOKBOOK.
 
 ## Set up a Java target
 
-- A Java target needs `--config <file.json>`. The file names the adapter bundle, the sources and
-  the main class. `arguments` is optional. For example:
+- A launched Java target needs `--config <file.json>`. The file names the adapter bundle, the
+  sources and the main class. `arguments` is optional. For example:
   `{"bundle": "work/java-adapter", "sources": ["shop/Main.java"], "main_class": "shop.Main"}`
   ([Java 7.3](java-cookbook.md#73-java-launched)).
 - The commands that `describe` prints repeat the `--config`
@@ -35,6 +35,7 @@ details, in the [Java cookbook](java-cookbook.md) or the [COOKBOOK](../COOKBOOK.
 - To debug a JVM already running with `--debug-jvm`, attach to it. Peeky never kills an attached
   JVM ([Java 7.4](java-cookbook.md#74-java-tests-already-running-gradle---debug-jvm-eg-venice)).
   With an attached JVM:
+  - The config gives `port` and `class_roots` instead of `main_class`.
   - `--arg` is refused.
   - Candidates and `verify` don't work. Try and verify edits with a launched target.
   - Values show plain, without their fields, to keep the JVM's pauses short.
@@ -70,54 +71,71 @@ details, in the [Java cookbook](java-cookbook.md) or the [COOKBOOK](../COOKBOOK.
 
 ## Change values
 
-- These locals can be set: `byte`, `short`, `int`, `long`, `boolean`, `float`, `double`, `char`
-  and `String`. The program must read the local after the stop
+### What can be set
+
+- A local can be set only if both of these hold
   ([2.3](../COOKBOOK.md#23-test-a-hypothesis-by-changing-a-value),
-  [Java 7.3](java-cookbook.md#73-java-launched)).
+  [Java 7.3](java-cookbook.md#what-can-be-set)):
+  - Its type is `byte`, `short`, `int`, `long`, `boolean`, `float`, `double`, `char` or `String`. A
+    `String` local must be declared `String`.
+  - The program reads it after the stop. So a lambda's captured copy is refused, and so is a
+    constant that javac compiled into its uses
+    ([Java 7.3](java-cookbook.md#locals-the-program-never-reads-again)).
+- A field or an array element of those types can be set too, unless it is listed under
+  [What can't be set](#what-cant-be-set). Examples: `--set current.end=10`, `arr[-1]=9`. A `String`
+  field or element must be declared `String` too
+  ([Java 7.3](java-cookbook.md#change-a-field-or-an-array-element)).
+- A `--set` that the class files rule out is refused before the JVM starts, with exit status 2.
+  That is: no such local at the line, a type or value that doesn't fit, or a local never read after
+  it ([Java 7.3](java-cookbook.md#changes-refused-before-the-run)).
+- `describe` shows each local's declared type, and lists the kinds that `set` changes
+  ([Java 1.1](java-cookbook.md#see-each-names-declared-type)).
+
+### How to write the value
+
 - The value must fit the type exactly. For example, `int` 3000000000 is refused
-  ([Java 7.3](java-cookbook.md#73-java-launched)).
-- Set a `char` with a char in single quotes, `--set "op='+'"`, or with a code point, `op=43`
-  ([Java 7.3](java-cookbook.md#73-java-launched)).
-- Scalar fields and array elements can be set too: `--set current.end=10`, `arr[-1]=9`
-  ([Java 7.3](java-cookbook.md#73-java-launched)).
-- Final and static fields, boxed values such as `Integer`, and an `ArrayList`'s elements can't be
-  set ([Java 7.3](java-cookbook.md#73-java-launched)).
-- A field that a JDK class declares is never settable, inherited or not. Examples: a String's
-  `hash`, an `ArrayList`'s `size` ([Java 7.3](java-cookbook.md#73-java-launched)).
+  ([Java 7.3](java-cookbook.md#values-must-fit-the-type)).
+- For a `char`, give a char in single quotes, `--set "op='+'"`, or a code point, `op=43`
+  ([Java 7.3](java-cookbook.md#set-a-char)).
+- For a `String`, give a text in double quotes: `--set 'name="apple"'`. The variable gets a new
+  String. Other references to the old String don't see it
+  ([Java 7.3](java-cookbook.md#set-a-string)).
+- What a variable is declared decides. `Object o = "x"` holds a String but takes no text
+  ([Java 7.3](java-cookbook.md#the-declared-type-decides)).
+- Field, char and String changes need an adapter bundle built by this version of
+  `scripts/setup_java_adapter.py` ([Java 7.3](java-cookbook.md#what-can-be-set)).
+
+### What can't be set
+
+- Final and static fields, boxed values such as `Integer`, and an `ArrayList`'s elements. To change
+  an element of a list, change one of its fields: `merged[0].end=10`
+  ([Java 7.3](java-cookbook.md#what-can-be-set)).
+- A field whose name a subclass's static field hides, or another field shares. java-debug would
+  write the other field ([Java 7.3](java-cookbook.md#change-a-field-or-an-array-element)).
+- A field that a JDK class declares, inherited or not. Examples: a String's `hash`, an `ArrayList`'s
+  `size` ([Java 7.3](java-cookbook.md#fields-the-jdk-declares)).
 - A JDK class is one in a JDK module, `jdk.jshell` too. On Java 8, it is one that the JDK's own
   class loaders loaded. A class's package never decides
-  ([Java 7.3](java-cookbook.md#73-java-launched)).
+  ([Java 7.3](java-cookbook.md#fields-the-jdk-declares)).
 - Such a field's row names its class:
   `[not settable: declared by java.lang.String (the JDK's own state)]`. A change to it is refused,
-  naming the class. Where the class files show the field, the refusal
-  comes before the JVM starts ([Java 7.3](java-cookbook.md#73-java-launched)).
-- Field changes need an adapter bundle built by this version of `scripts/setup_java_adapter.py`
-  ([Java 7.3](java-cookbook.md#73-java-launched)).
-- An element of an array that a JDK class's field holds can't be set, under any name. Nor can an
-  element of an array inside such an array, an `Object[]` too
-  ([Java 7.3](java-cookbook.md#73-java-launched)).
-- The only exception is the backing array of `ArrayList`, `Vector`, `ArrayDeque` and
-  `Arrays.asList`. Its elements can be set where the list, and any iterator or sublist of it, is
-  the program's ([Java 7.3](java-cookbook.md#73-java-launched)).
-- A row's `[settable]` mark goes by its path only. A local or field that refers to a String's
-  bytes may be marked, but the change is refused when it is made
-  ([Java 7.3](java-cookbook.md#73-java-launched)).
-- To change an array element, Peeky asks the JVM what refers to the array. It waits at most 2 s
-  for the answer, and stays within the session's pause budget, `--max-pause`
-  ([Java 7.3](java-cookbook.md#73-java-launched)).
-- A String local, field or element takes a text in double quotes: `--set 'name="apple"'`. It gets
-  a new String. Other references to the old String don't see it
-  ([Java 7.3](java-cookbook.md#73-java-launched)).
-- What a variable is declared decides. `Object o = "x"` holds a String but takes no text
-  ([Java 7.3](java-cookbook.md#73-java-launched)).
-- A local that the program never reads after the stop is refused. Examples: a lambda's captured
-  copy, and a constant that javac compiled into its uses
-  ([Java 7.3](java-cookbook.md#73-java-launched)).
-- `describe` shows each local's declared type, and lists the kinds that `set` changes
-  ([Java 7.3](java-cookbook.md#73-java-launched)).
-- A `--set` that the class files rule out is refused before the JVM starts, with exit status 2.
-  That is: no such local at the line, a type or value that doesn't fit, or a local never read
-  after it ([Java 7.3](java-cookbook.md#73-java-launched)).
+  naming the class. Where the class files show the field, the refusal comes before the JVM starts
+  ([Java 7.3](java-cookbook.md#fields-the-jdk-declares)).
+- An element of an array that a JDK class's field holds, under any name. Nor an element of an array
+  inside such an array, an `Object[]` too ([Java 7.3](java-cookbook.md#arrays-the-jdk-holds)).
+- The only exception is the backing array of an `ArrayList`, `Vector`, `ArrayDeque` or
+  `Arrays.asList` list, where the list itself is the program's. That array holds the program's own
+  elements, so it doesn't count as the JDK's. For example, the rows of the program's
+  `ArrayList<int[]>` can change: `rows[0][1]=9`
+  ([Java 7.3](java-cookbook.md#which-lists-arrays-are-the-programs)).
+- A list's iterators and sublists don't own it. But whoever holds one of them holds the list
+  ([Java 7.3](java-cookbook.md#which-lists-arrays-are-the-programs)).
+- A row's `[settable]` mark goes by its path only. A local or field that refers to a String's bytes
+  may be marked, but the change is refused when it is made
+  ([Java 7.3](java-cookbook.md#arrays-the-jdk-holds)).
+- To change an array element, Peeky asks the JVM what refers to the array. It waits at most 2 s for
+  the answer, and stays within the session's pause budget, `--max-pause`
+  ([Java 7.3](java-cookbook.md#when-peeky-cant-tell-who-holds-an-array)).
 
 ## See what a method returned
 
