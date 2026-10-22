@@ -278,13 +278,13 @@ The table's last column names the conditions a value needs. Each condition is de
 | `&[T]`, `&str`, `&Vec<T>` or `&String` parameter | its contents, marked `[memory]` | plain `T`; memory; safe crate; not rebound; `&mut` innermost |
 | `&str` or slice local | its contents | memory; safe crate; innermost; alive |
 | Field holding a `Vec`, `String`, `&str` or `Box<str>` | its contents, marked `[memory]` | memory; safe crate; [what holds it](#fields-holding-a-vec-string-str-or-boxstr) |
-| `Vec<String>`, such as `args` | raw, with a note | always |
-| `&[&str]` or `Vec<&str>` | raw, with a note naming the length selector | always |
+| `Vec<String>`, such as `args` | raw when shown, with a note | it can still be withheld |
+| `&[&str]` or `Vec<&str>` | raw when shown, with a note naming the length selector | it can still be withheld |
 
 The conditions:
 
 - **can be withheld:** a local that may be unassigned shows `no value yet:`. In an optimized
-  build, a scalar may be unavailable or stale ([7.5](../COOKBOOK.md#75-optimized-builds)).
+  build, a value may be unavailable or stale ([7.5](../COOKBOOK.md#75-optimized-builds)).
 - **a listed enum:** `describe` lists its type on the `qualified enum views:` line. Other enums
   stay opaque.
 - **unoptimized:** an unoptimized build. In an optimized build, an enum shows
@@ -811,10 +811,11 @@ Two bindings on the same file name and line share one selector, which names neit
 `--set` changes only these:
 
 - an integer local that the program keeps in memory: `i16` to `i64`, `u16` to `u64`, `isize` or
-  `usize`;
+  `usize`. The new value must be in the type's range;
 - such an integer field or element of a struct, tuple or array local that the frame holds
-  itself: `--set s.end=10`, `t.__0=3`, `arr[2]=7`;
-- a `String` local, to a text ([Set a String to a text](#set-a-string-to-a-text)).
+  itself: `--set s.end=10`, `t.__0=3`, `arr[2]=7`. Its new value must be in range too;
+- a `String` local, to a text. A text has its own conditions: capacity, initialization, borrows,
+  the debugger and the unsafe gate ([Set a String to a text](#set-a-string-to-a-text)).
 
 Every change also needs all of these:
 
@@ -825,8 +826,7 @@ Every change also needs all of these:
 - no copy of the program's own that blocks it
   ([When the program has its own copy](#when-the-program-has-its-own-copy));
 - a local that isn't in a register
-  ([Locals that can't change](#locals-that-cant-change-and-what-to-do));
-- a new value in the type's range.
+  ([Locals that can't change](#locals-that-cant-change-and-what-to-do)).
 
 For a field or element, the MIR must also prove the local initialized at the stop. Several can
 change at once: `--set w.start=10 --set w.count=0`.
@@ -909,9 +909,11 @@ Only a read of the changed part itself counts:
 
 A print counts only where Peeky proves, from the MIR, that it is the standard library's:
 
-- the call is to `std::io::_print`, `std::io::_eprint` or `alloc::fmt::format`, by its full path;
-- its code comes from this toolchain's own `macros.rs`, not from a file in the crate;
-- if the crate has a function of its own named `format`, `format!` doesn't count.
+- the call is to `std::io::_print`, `std::io::_eprint`, `alloc::fmt::format` or
+  `std::fmt::format`;
+- or it is to a bare `format`, as the MIR may name that function. That counts only if the crate
+  defines no function named `format`;
+- and its code comes from this toolchain's own `macros.rs`, not from a file in the crate.
 
 These don't count, so the change is refused there, even where the call or print does read it:
 
