@@ -18,6 +18,7 @@ What is particular to Python targets, one rule per line, each with the [COOKBOOK
 - Globals: `session inspect --globals` lists them, read-only; `get NAME` reads a global only where Peeky proves the function reads that name from its globals. Listing the globals runs every global's `__repr__` in the program ([5.1](../COOKBOOK.md#51-stop-look-change-finish)).
 - In a loop, a local the pass assigns below the stop holds an earlier pass's value: it is shown with a `note` (`this pass's code has not assigned it before this line, ...: the value is likely from an earlier pass`), and `--set` refuses it; read or change it after that assignment ([5.1](../COOKBOOK.md#51-stop-look-change-finish)).
 - debugpy lists a long list's first 100 items: a higher index is "beyond the debugger's visible window", not missing ([guide](../AGENT_GUIDE.md#reading-probe-results)).
+- `--until hits` ends the probe at the last hit, but the program runs on until Peeky ends it: its `output` can include text written after that hit (`output_after_last_hit: true`). debugpy delays the program's exit by about 0.5 s, so `output_complete` is almost always `false` then; for the whole output, run to the exit (the default) ([2.6](../COOKBOOK.md#26-stop-right-after-the-last-hit)).
 
 ## Changing values
 

@@ -365,7 +365,11 @@ peeky probe examples/pagination_bug.py --at 8 --capture start --until hits
 status: completed  hits: 1  seconds: 0.267  max pause: 4.1 ms
 ```
 
-That took 0.27 s, compared with 1.0 s when waiting for the program to exit. The output is then incomplete (`output_complete: false` in JSON). Attached JVMs default to this.
+That took 0.27 s, compared with 1.0 s when waiting for the program to exit. Attached JVMs default to this.
+
+- **The program runs on:** after the last hit, Peeky removes its breakpoints, resumes the program, reads its output, and then ends it (an attached JVM is detached instead, and keeps running). Until then the program runs unwatched: what it prints meanwhile may be in `output`, and what it does (a file it writes) happens.
+- **So the output is not the output at the hit:** JSON says `output_after_last_hit: true`, and the text `output so far (the program ran on after the last hit, so this can include text written after it):`. `output_complete` is `false`: Peeky read the output before the debugger reported the program's end.
+- **Unless it had exited:** when the debugger had reported the end by then, `output_complete` is `true`, with `exit_code`, and the text says `output (all of it: the program ran on after the last hit, to its exit):`. A C, C++ or Rust program that exits right after the hit can have; a Python or Java one rarely has, as their exits are slow (debugpy delays one by about 0.5 s). For the whole output, run to the exit (the default).
 
 ### 2.7 JSON for Scripts
 

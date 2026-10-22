@@ -1597,6 +1597,12 @@ def _resume(worker, stop, returning, rows):
     worker.dispatch("continue", stop)
 
 
+def _ran_to_end(report):
+    """Whether the debugger had reported the program's end when its output was read: a
+    wait read it (`terminated`), or it came after the probe's last resume, unread (#203)."""
+    return report.get("state") == "terminated" or report.get("program_ended") is True
+
+
 _UNWOUND = "its frame was gone when the step out ended (it did not return normally)"
 _OTHER_THREADS = (
     "another thread stopped at a breakpoint before it returned; a probe follows one "
@@ -3511,20 +3517,21 @@ def run_probe(root, probe, *, adapter=None, progress=None, launch_budget=None, l
                 rows.extend(_never_returned(call, "the probe timed out before it returned"))
             returning.clear()
         report = worker.dispatch("report", session)
+        at_hits = probe.until == "hits" and status == "completed" and hits >= probe.limit
         result.update(
             status=status,
-            ended=(
-                "hits"
-                if probe.until == "hits" and status == "completed" and hits >= probe.limit
-                else "exit"
-                if report.get("state") == "terminated"
-                else None
-            ),
+            ended="hits" if at_hits else "exit" if report.get("state") == "terminated" else None,
             output=report["output"],
             output_truncated=report["output_truncated"],
-            # False when the probe ended before the program did (--until hits).
-            output_complete=report.get("state") == "terminated",
+            # False when Peeky stopped collecting before the debugger reported the
+            # program's end (--until hits, a timeout).
+            output_complete=_ran_to_end(report),
         )
+        if at_hits:
+            # Resumed after its last hit, the program ran on (until Peeky ends it, or for
+            # good once detached) while its output was collected: it can include text
+            # written after that hit (#203).
+            result["output_after_last_hit"] = True
         if type(report.get("exit_code")) is int:
             result["exit_code"] = report["exit_code"]
         if unreported:
@@ -3624,7 +3631,7 @@ def run_probe(root, probe, *, adapter=None, progress=None, launch_budget=None, l
                 result.update(
                     output=report["output"],
                     output_truncated=report.get("output_truncated", False),
-                    output_complete=report.get("state") == "terminated",
+                    output_complete=_ran_to_end(report),
                 )
             failed_for_good = report.get("lost_stop") or report.get("adapter_failure")
             if failed_for_good and (events := report.get("debugger_events")):
@@ -4011,7 +4018,14 @@ def _table(result, short_names=True):
     if result.get("output"):
         complete = result.get("output_complete", True)
         lines.append(
-            "output:"
+            (
+                "output (all of it: the program ran on after the last hit, to its exit):"
+                if complete
+                else "output so far (the program ran on after the last hit, so this can "
+                "include text written after it):"
+            )
+            if result.get("output_after_last_hit")
+            else "output:"
             if complete
             else "output so far (the program was stopped when the probe failed):"
             if result.get("status") == "failed"

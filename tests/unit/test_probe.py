@@ -188,6 +188,113 @@ def test_a_failed_probe_keeps_the_output_so_far_and_never_says_all(monkeypatch):
     assert worker.calls[-1] == "close"
 
 
+RAN_ON = "output so far (the program ran on after the last hit, so this can include text written "
+ENDED = "output (all of it: the program ran on after the last hit, to its exit):"
+
+
+@pytest.mark.parametrize("ended", [False, True])
+def test_until_hits_says_the_output_can_follow_the_last_hit(monkeypatch, ended):
+    # #203: resumed after its last hit, the program runs on while its output is read; it
+    # was "the output so far (the program was still running)", even once it had exited.
+    import peeky.probe as probe_module
+    from peeky.probe import _table
+
+    class RanOn(FakeWorker):
+        def dispatch(self, operation, args):
+            if operation == "report":
+                self.calls.append(operation)
+                return {
+                    "state": "running",
+                    "output": "written after the hit\n",
+                    "output_truncated": False,
+                    **({"program_ended": True, "exit_code": 0} if ended else {}),
+                }
+            return super().dispatch(operation, args)
+
+    worker = RanOn()
+    monkeypatch.setattr(probe_module, "DebugWorker", lambda *args, **kwargs: worker)
+    result = probe_module.run_probe("/w", Probe("main.py", 8, ("x",), until="hits"))
+    assert result["status"] == "completed" and result["ended"] == "hits"
+    assert result["output_after_last_hit"] is True and result["output_complete"] is ended
+    assert result.get("exit_code") == (0 if ended else None)
+    text = _table(result)
+    assert "still running" not in text
+    assert (ENDED if ended else RAN_ON + "after it):") + "\n  written after the hit" in text
+
+
+def test_a_probe_to_the_exit_says_nothing_of_after_the_last_hit(monkeypatch):
+    import peeky.probe as probe_module
+    from peeky.probe import _table
+
+    class Exiting(FakeWorker):
+        def dispatch(self, operation, args):
+            if operation == "report":
+                return {"state": "terminated", "output": "done\n", "output_truncated": False}
+            return super().dispatch(operation, args)
+
+    worker = Exiting()
+    monkeypatch.setattr(probe_module, "DebugWorker", lambda *args, **kwargs: worker)
+    result = probe_module.run_probe("/w", Probe("main.py", 8, ("x",)))
+    assert (result["ended"], result["output_complete"]) == ("exit", True)
+    assert "output_after_last_hit" not in result and "output:\n  done" in _table(result)
+
+
+class EndingDap:
+    """The debugger's events after the probe's last resume (cursor 4), as a report reads
+    them; ``late`` comes while a report waits for one."""
+
+    def __init__(self, names, late=None):
+        self.events = [{"cursor": n, "event": name} for n, name in enumerate(names, 5)]
+        self.late, self.read, self.exit_code = late, [], None
+
+    def event_cursor(self):
+        return max((e["cursor"] for e in self.events), default=4)
+
+    def events_between(self, after, upto, names):
+        return [e for e in self.events if after < e["cursor"] <= upto and e["event"] in names]
+
+    def wait_event(self, names, after, timeout):
+        self.read.append("wait")
+        if self.late:
+            self.events.append({"cursor": self.event_cursor() + 1, "event": self.late})
+            return self.events[-1]
+        raise TimeoutError("No matching debugger event before deadline")
+
+    def snapshot_output(self):
+        self.read.append("output")
+        return "all\n", False
+
+    def recent_events(self):
+        return {}
+
+
+@pytest.mark.parametrize(
+    "names, late, ended",
+    [
+        ((), None, False),
+        (("continued",), None, False),
+        (("continued", "terminated"), None, True),
+        # Its exit reported, the end follows at once: waited for (lldb-dap, #203).
+        (("continued", "exited"), "terminated", True),
+        (("continued", "exited"), None, False),
+    ],
+)
+def test_a_report_says_when_the_debugger_reported_the_programs_end_unread(names, late, ended):
+    from types import SimpleNamespace
+
+    from peeky.worker import DebugWorker
+
+    worker = DebugWorker("/w")
+    worker.dap = dap = EndingDap(names, late)
+    worker.session, worker.state, worker.cursor = "s", "running", 4
+    report = worker.report(SimpleNamespace(manifest_id="m"))
+    assert report["state"] == "running" and report.get("program_ended", False) is ended
+    # The end is read first: output sent before it is in the snapshot.
+    assert dap.read[-1] == "output" and dap.read.count("wait") == ("exited" in names)
+    worker.state = "terminated"  # read by a wait: the state says it
+    assert "program_ended" not in worker.report(SimpleNamespace(manifest_id="m"))
+
+
 @pytest.mark.parametrize("selector", ["items[-1]", "a.b[-12]", "x[0][-1]"])
 def test_negative_index_selectors_parse(selector):
     from peeky.probe import parse_selector

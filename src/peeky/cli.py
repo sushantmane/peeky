@@ -3068,8 +3068,9 @@ def main(argv=None, _job=False, _edits=None):
         "--until",
         choices=("auto", "exit", "hits"),
         default="auto",
-        help="exit: run to completion for output; hits: end right after the last hit "
-        "(auto: hits for attached JVMs, else exit)",
+        help="exit: run to completion for output; hits: end right after the last hit (the "
+        "program, resumed, runs on until Peeky ends or detaches it, so its output can follow "
+        "that hit; auto: hits for attached JVMs, else exit)",
     )
     sub.add_argument(
         "--quiet", action="store_true", help="No progress messages on stderr, nor one-time notes"
