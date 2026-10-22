@@ -19,11 +19,12 @@ or install job sits ahead of the tests.
 | remote SSH e2e | A second host (Linux container with key-only sshd) reached through a real `ssh -L`: probe, session, tunnel drop and recovery, source-mismatch refusal, worker loss (`tests/remote`, `PEEKY_E2E_DOCKER=1`) | 120s |
 | Rust LLVM 20 (Docker mirror only, `scripts/ci_linux`) | Rust memory views with lldb-dap's `readMemory`; `PEEKY_EXPECT_READ_MEMORY=1` fails the lane if values fall back to raw fields | 60s |
 
-A dash means that no design budget is recorded. The lane's timeout still applies.
+A dash means that no design budget is recorded. The job's timeout still applies.
 
 **Timeouts and goals:**
 
-- Every lane has a four-minute timeout, except remote SSH e2e, which has six.
+- Every hosted CI job has a four-minute timeout, except remote SSH e2e, which has six.
+- The Docker mirror's lanes have no timeout.
 - The goal is under 5 minutes of execution wall time for the required checks, and ideally under 3.
 - Queue delays are recorded separately. They are outside the workflow's control.
 - A cold cache, and the availability of dependency services, can affect the duration.
@@ -34,15 +35,18 @@ A dash means that no design budget is recorded. The lane's timeout still applies
 - Pip caching uses the package and dev requirements as keys.
 - Superseded branch and PR runs are canceled.
 - Actions are pinned to commit SHAs. Permissions are read-only.
-- PR CI needs no live model, API token, user program, networked debugger target or paid external
-  service.
+- PR CI needs no live model, API token, user program or paid external service.
+- PR CI needs no external or persistent networked debugger target. The remote lane creates an
+  ephemeral one, in a container.
 - Diagnostics stay in the job logs. The delivery workflow uploads distributions only.
 
 ### The Docker mirror
 
-`scripts/ci_linux` runs every lane of `ci.yml` in one Linux image, except remote SSH e2e. Run that
-one on the host, with `PEEKY_E2E_DOCKER=1`. [CONTRIBUTING.md](../CONTRIBUTING.md) has the commands.
-The mirror adds lanes that hosted CI doesn't have:
+`scripts/ci_linux` runs the same checks and test suites as `ci.yml`'s jobs, once each, in its
+Ubuntu image. It skips remote SSH e2e: run that one on the host, with `PEEKY_E2E_DOCKER=1`.
+Hosted CI runs the integration tests on Python 3.11 and 3.13. The mirror runs them once, with the
+image's `python3`. [CONTRIBUTING.md](../CONTRIBUTING.md) has the commands. The mirror adds lanes
+that hosted CI doesn't have:
 
 - `cpp-llvm20` and `rust-llvm20`: C++ and Rust with LLVM 20's lldb-dap, whose `readMemory` qualifies
   Rust memory views, and libstdc++ strings with a NUL byte;
