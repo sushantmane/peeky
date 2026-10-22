@@ -349,7 +349,8 @@ def test_a_different_source_on_the_host_is_refused_before_it_runs(host, capsys, 
             "--json",
             "--no-save",
         )
-        assert code == 1 and result["error"]["code"] == "PROVENANCE_CHANGED", result
+        assert code == 2 and result["error"]["code"] == "PROVENANCE_CHANGED", result
+        assert result["refused_before_launch"] is True
         assert result["rows"] == [] and not result.get("output")
         assert host.ssh("test -e /home/peeky/RAN").returncode == 1  # never executed
         host.records[-1]["result"] = {
