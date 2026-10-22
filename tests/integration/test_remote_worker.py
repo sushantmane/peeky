@@ -112,6 +112,22 @@ def run(capsys, *argv):
     return code, capsys.readouterr()
 
 
+def test_a_file_the_worker_root_lacks_is_refused_before_launch(remote, capsys):
+    # #190: it printed an empty table and exited 1, as if the probe had run.
+    host, local, worker, _ = remote
+    _, port = worker()
+    (local / "extra.py").write_text("x = 1\nprint(x)\n")
+    args = ["probe", local / "extra.py", "--at", "2", "--capture", "x", "--worker"]
+    code, out = run(capsys, *args, f"http://127.0.0.1:{port}")
+    assert code == 2 and "error [INVALID_REQUEST]" in out.out, out
+    assert "hit  phase" not in out.out and "evidence:" not in out.out, out.out
+    code, out = run(capsys, *args, f"http://127.0.0.1:{port}", "--json")
+    result = json.loads(out.out)
+    assert code == 2 and result["error"]["code"] == "INVALID_REQUEST", result
+    assert result["refused_before_launch"] is True
+    assert "inside the worker root" in result["error"]["message"]
+
+
 def test_probe_through_a_forwarded_port_checks_source_identity(remote, capsys):
     host, local, worker, relay = remote
     _, worker_port = worker()
@@ -130,7 +146,8 @@ def test_probe_through_a_forwarded_port_checks_source_identity(remote, capsys):
     )
     code, out = run(capsys, *args, "--set", "start=0", "--worker", url)
     result = json.loads(out.out)
-    assert code == 1 and result["error"]["code"] == "PROVENANCE_CHANGED"
+    assert code == 2 and result["error"]["code"] == "PROVENANCE_CHANGED"
+    assert result["refused_before_launch"] is True
     assert result["rows"] == [] and not result.get("output")
     assert not (host / "RAN").exists()  # never executed, so never mutated either
     code, out = run(
