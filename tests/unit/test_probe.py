@@ -214,6 +214,8 @@ CUT = {**WHOLE, "output_truncated": True}
 # The debugger reported the end, but the adapter kept its stream open: output after
 # `terminated` may still have been on its way, and so may a late `exited`.
 OPEN = {**WHOLE, "drained": False, "exit_code": None}
+# Text after Peeky's disconnect (lldb-dap 18's crash on Linux): kept apart, not as output.
+NOISY = {**OPEN, "after_disconnect": "free(): invalid pointer\n"}
 RAN_ON = "output so far (the program ran on after the last hit, so this can include text "
 
 
@@ -277,6 +279,13 @@ def test_until_hits_says_the_output_can_follow_the_last_hit(monkeypatch, final, 
             False,
             "output so far (the program ended, but its output may still have been arriving):",
         ),
+        (
+            "terminated",
+            NOISY,
+            False,
+            "arriving):\n  at the hit\n  after it\nthe debugger sent more text after Peeky "
+            "disconnected, its own or the program's (output_after_disconnect in --json)",
+        ),
     ],
 )
 def test_output_is_whole_only_past_the_adapters_end(monkeypatch, state, final, complete, label):
@@ -289,6 +298,8 @@ def test_output_is_whole_only_past_the_adapters_end(monkeypatch, state, final, c
     assert (result["ended"], result["output_complete"]) == ("exit", complete)
     assert result.get("program_ended", False) is not complete
     assert "output_after_last_hit" not in result and label in _table(result)
+    assert result.get("output_after_disconnect") == (final or {}).get("after_disconnect")
+    assert "free()" not in result["output"]
 
 
 @pytest.mark.parametrize("after", [True, False])

@@ -30,6 +30,8 @@ TERMINATE_GRACE = 1.0
 # waits at most this long for the adapter to end its output stream (#203): only that end
 # proves no more of the program's output can come. A wait that runs out says so.
 DRAIN_TIMEOUT = 2.0
+# At most this much of what the adapter sent after Peeky's disconnect is kept.
+AFTER_DISCONNECT_CHARS = 4096
 # How often the session's processes are listed (#143), and at most how often a stop or
 # an announcement lists them again.
 FAMILY_INTERVAL = 1.0
@@ -165,11 +167,14 @@ class DAP:
         self.started = time.monotonic()
         self.output = collections.deque(maxlen=500)
         self.output_truncated = False
+        # Output events accepted so far, evicted ones included: marks a point in them.
+        self.output_count = 0
         # Set when the adapter ended its output stream (EOF): nothing more can come.
         self.stream_ended = threading.Event()
-        # What close() left (#203): the output, the exit code, and whether the debugger
-        # had reported the program's end before Peeky disconnected (`ended`) and the
-        # adapter then ended its stream on its own (`drained`).
+        # What close() left (#203): whether the debugger had reported the program's end
+        # before Peeky disconnected (`ended`); the output up to Peeky's disconnect, and
+        # whether the adapter then ended its stream with nothing more (`drained`); what
+        # it sent after the disconnect (`after_disconnect`); the exit code.
         self.final = None
         self.sequence = 0
         self.event_sequence = 0
@@ -262,6 +267,7 @@ class DAP:
                             len(self.output) == self.output.maxlen or len(output) > 8192
                         )
                         self.output.append(output[:8192])
+                        self.output_count += 1
                 elif body["event"] in LIFECYCLE_EVENTS:
                     if body["event"] == "exited":
                         code = (body.get("body") or {}).get("exitCode")
@@ -316,7 +322,9 @@ class DAP:
                 self._accept(read_message(self.process.stdout))
         except Exception as exc:
             if isinstance(exc, StreamEnd):
-                self.stream_ended.set()
+                with self.condition:
+                    self.stream_ended.set()
+                    self.condition.notify_all()
             if isinstance(exc, EOFError) and getattr(self, "fatal_stderr", None):
                 # An adapter that exits right after saying why on stderr: read that first,
                 # so its diagnosis is the transport's error, not "adapter closed".
@@ -794,8 +802,12 @@ class DAP:
                     self.response(seq, timeout=1)
                 except Exception:
                     pass
-            # Its output is whole only once the adapter has ended its stream on its own.
-            drained = ended and self._drain()
+            # Its output is whole only once the adapter has ended its stream on its own,
+            # with nothing after the disconnect: what an adapter says as it shuts down
+            # (lldb-dap 18's crash on Linux) cannot be told from the program's output.
+            with self.condition:
+                mark, kept = self.output_count, ("".join(self.output), self.output_truncated)
+            drained = ended and self._drain(mark)
             if stop := getattr(self, "stderr_stop", None):
                 # The stderr reader stops and closes its descriptor itself (_read_stderr).
                 stop.set()
@@ -816,11 +828,15 @@ class DAP:
             self.process.stdin.close()
             self.process.stdout.close()
             with self.condition:
+                after = list(self.output)[
+                    len(self.output) - min(self.output_count - mark, len(self.output)) :
+                ]
                 self.final = {
                     "ended": ended,
                     "drained": drained,
-                    "output": "".join(self.output),
-                    "output_truncated": self.output_truncated,
+                    "output": kept[0],
+                    "output_truncated": kept[1],
+                    "after_disconnect": "".join(after)[:AFTER_DISCONNECT_CHARS],
                     "exit_code": self.exit_code,
                 }
             return self.cleanup
@@ -830,10 +846,11 @@ class DAP:
         with self.condition:
             return any(e["event"] in ("exited", "terminated") for e in self.events)
 
-    def _drain(self):
+    def _drain(self, mark):
         """End the adapter's input, so that it ends too, and wait at most DRAIN_TIMEOUT
-        for it to end its output stream: whether it did. Called before anything is
-        killed, so the end is the adapter's own, after all it had to send (#203)."""
+        for it to end its output stream: whether it did with no output after ``mark``.
+        Called before anything is killed, so the end is the adapter's own (#203); output
+        after ``mark`` already settles it, so it is not waited for."""
         if self.write_lock.acquire(timeout=1):
             try:
                 self.process.stdin.close()
@@ -841,4 +858,11 @@ class DAP:
                 pass
             finally:
                 self.write_lock.release()
-        return self.stream_ended.wait(DRAIN_TIMEOUT)
+        deadline = time.monotonic() + DRAIN_TIMEOUT
+        with self.condition:
+            while not self.stream_ended.is_set() and self.output_count == mark:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                self.condition.wait(remaining)
+            return self.stream_ended.is_set() and self.output_count == mark

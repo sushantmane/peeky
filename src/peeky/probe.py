@@ -1598,11 +1598,13 @@ def _resume(worker, stop, returning, rows):
 
 
 def _settle_output(result, final, known_end):
-    """The output as the session's end left it (#203). Whole (`output_complete`) only when
-    the debugger reported the program's end before Peeky disconnected, and the adapter
-    then ended its stream on its own: no more could come. An end Peeky only inferred
-    (java-debug #27), or a stream the adapter kept open, leaves it partial, and
-    `program_ended` says the program had ended all the same."""
+    """The output as the session's end left it (#203): what the debugger sent up to
+    Peeky's disconnect. Whole (`output_complete`) only when the debugger reported the
+    program's end before that disconnect, and the adapter then ended its stream with
+    nothing more: none could follow. An end Peeky only inferred (java-debug #27), a
+    stream the adapter kept open, or text it sent after the disconnect (its own, or the
+    program's: `output_after_disconnect`) leaves it partial, and `program_ended` says the
+    program had ended all the same."""
     if isinstance(final, dict) and final.get("ended"):
         known_end = True
         if final.get("output") or "output" in result:
@@ -1611,6 +1613,8 @@ def _settle_output(result, final, known_end):
                 output_truncated=final.get("output_truncated") is True,
                 output_complete=final.get("drained") is True,
             )
+        if after := final.get("after_disconnect"):
+            result["output_after_disconnect"] = after
         if type(final.get("exit_code")) is int:
             result["exit_code"] = final["exit_code"]
     if "output" in result and result.get("output_complete") is not True:
@@ -4045,6 +4049,11 @@ def _table(result, short_names=True):
         if len(shown) > 20:
             lines.append(f"  ({len(shown) - 20} earlier lines: see --json)")
         lines.extend("  " + line for line in shown[-20:])
+    if result.get("output_after_disconnect"):
+        lines.append(
+            "the debugger sent more text after Peeky disconnected, its own or the program's "
+            "(output_after_disconnect in --json)"
+        )
     return "\n".join(lines)
 
 

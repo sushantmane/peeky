@@ -17,6 +17,7 @@ def transport():
     dap.ignored_events = {}
     dap.output = collections.deque(maxlen=500)
     dap.output_truncated = False
+    dap.output_count = 0
     dap.event_sequence = 0
     dap.error = None
     return dap
@@ -351,10 +352,11 @@ def test_threads_a_thread_event_says_started_are_kept():
     assert dap.started_threads == {1, 2}
 
 
-# A debugger whose last messages follow the program's end (#203). `late`: `exited`, then
-# `terminated`, then output, all before the disconnect is read; `exit-later`: after
-# `terminated`, output and `exited` come only once the client disconnected; `open`: its
-# stream stays open after the end; `running`: the program never ends.
+# A debugger whose last messages follow the program's end (#203). `late`: `exited`,
+# `terminated`, then output, all before it answers the disconnect; `exit-later`: after
+# `terminated`, `exited` comes once it answered; `noisy`: after it answered, text of its
+# own (lldb-dap 18 on Linux prints its crash as `stderr` output); `open`: its stream
+# stays open after the end; `running`: the program never ends.
 ENDING_ADAPTER = r"""
 import json, sys, time
 mode = sys.argv[1]
@@ -375,42 +377,46 @@ def write(body):
     sys.stdout.buffer.flush()
 def event(name, **body):
     write({"seq": 0, "type": "event", "event": name, "body": body})
-def output(text):
-    event("output", category="stdout", output=text)
+def output(text, category="stdout"):
+    event("output", category=category, output=text)
 output("early\n")
 if mode == "late":
     event("exited", exitCode=0)
     event("terminated")
     time.sleep(0.3)
     output("late\n")
-elif mode in ("exit-later", "open"):
+elif mode != "running":
     event("terminated")
 while (request := read()) is not None:
     write({"seq": 0, "type": "response", "request_seq": request["seq"], "success": True,
            "command": request["command"], "body": {}})
-    if mode == "exit-later" and request["command"] == "disconnect":
+    if request["command"] == "disconnect":
         time.sleep(0.3)
-        output("late\n")
-        event("exited", exitCode=7)
+        if mode == "exit-later":
+            event("exited", exitCode=7)
+        elif mode == "noisy":
+            output("free(): invalid pointer\n", "stderr")
 if mode == "open":
     time.sleep(60)
 """
 
 
 @pytest.mark.parametrize(
-    "mode, ended, drained, output, code",
+    "mode, ended, drained, output, code, after",
     [
-        ("late", True, True, "early\nlate\n", 0),
-        ("exit-later", True, True, "early\nlate\n", 7),
-        ("open", True, False, "early\n", None),
-        ("running", False, False, "early\n", None),
+        ("late", True, True, "early\nlate\n", 0, ""),
+        ("exit-later", True, True, "early\n", 7, ""),
+        ("noisy", True, False, "early\n", None, "free(): invalid pointer\n"),
+        ("open", True, False, "early\n", None, ""),
+        ("running", False, False, "early\n", None, ""),
     ],
 )
 def test_close_reads_the_output_to_the_adapters_end(
-    monkeypatch, mode, ended, drained, output, code
+    monkeypatch, mode, ended, drained, output, code, after
 ):
     # #203: output can follow `terminated`, and `exited` can come after it: what close
-    # leaves is whole only past the adapter's own end of its stream, never a guess.
+    # leaves is whole only once the adapter ended its stream with nothing more after
+    # Peeky's disconnect, never a guess; what came after is kept apart.
     import subprocess
     import sys
     import time
@@ -436,7 +442,7 @@ def test_close_reads_the_output_to_the_adapters_end(
     dap.close(terminate=False)
     final = dap.final
     assert (final["ended"], final["drained"]) == (ended, drained)
-    assert (final["output"], final["exit_code"]) == (output, code)
+    assert (final["output"], final["exit_code"], final["after_disconnect"]) == (output, code, after)
     # The wait is for the adapter's end, never a fixed sleep: it stops when the end comes.
     assert time.monotonic() - started < (6 if mode == "open" else 8)
     assert dap.process.poll() is not None and not dap.reader.is_alive()
