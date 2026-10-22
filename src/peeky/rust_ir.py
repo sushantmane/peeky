@@ -20,6 +20,7 @@ the compiler's MIR instead (rust_mir).
 """
 
 import re
+import unicodedata
 
 MAX_IR_BYTES = 256 * 1024 * 1024
 _ENTRY = re.compile(
@@ -36,15 +37,21 @@ _FIELD = {
     "scope_line": re.compile(r"(?:^|, )scopeLine: ([0-9]+)"),
     "type": re.compile(r"(?:^|, )type: (![0-9]+)"),
 }
+# A local's IR name: plain (`%x.dbg.spill`), or quoted where it holds another character
+# (`%"gr\C3\B6\C3\9Fe"` for `größe`, its bytes in hex; #191); ir_string reads the
+# quoted one, or refuses it.
+_POINTER = r'%([-\w.$]+|"(?:[^"\\]|\\.)*")'
 # (pointer, variable, location); the location is the record's last operand.
 _DECLARES = (
-    re.compile(r"#dbg_declare\(ptr %([-\w.$]+), (![0-9]+), .*, (![0-9]+)\)\s*$"),
+    re.compile(rf"#dbg_declare\(ptr {_POINTER}, (![0-9]+), .*, (![0-9]+)\)\s*$"),
     re.compile(
-        r"@llvm\.dbg\.declare\(metadata ptr %([-\w.$]+), metadata (![0-9]+), .*\), "
+        rf"@llvm\.dbg\.declare\(metadata ptr {_POINTER}, metadata (![0-9]+), .*\), "
         r"!dbg (![0-9]+)"
     ),
 )
 _SPILL = re.compile(r"\.dbg\.spill")
+# A name field, read or not.
+_NAMED = re.compile(r"(?:\(|, )name: ")
 # What LLVM IR writes as it is in a string: printable ASCII but `"` and `\\`.
 _IR_PLAIN = re.compile(r"[ !#-\[\]-~]*")
 _IR_ESCAPE = re.compile(r"\\([0-9A-Fa-f]{2})")
@@ -87,7 +94,9 @@ def ir_locals(path, declarations=None):
     Memory locals: {(function hash, local name): True only if every declaration is a
     real slot}. Reference parameters: {(function hash, name): {"type": declared type,
     "line": last line before the body}} for parameters whose only declaration is a
-    non-inlined slot of their own (`<name>` or `<name>.dbg.spill`).
+    non-inlined slot of their own (`<name>` or `<name>.dbg.spill`), and the only
+    variable so named in the function's debug information, declared or not: a shadow
+    never stored (`let é: &Vec<i64>;`) has no declaration (#194 review).
 
     ``declarations``, a dict if given, receives what the memory proof covers, per name:
     {(function hash, local name): [(line declared, "slot" | "copy" | "inlined")]}: a
@@ -114,18 +123,36 @@ def ir_locals(path, declarations=None):
                         for key, found in fields.items()
                         if found
                     }
-                    # A name LLVM does not write proves nothing (#188 review).
-                    entries[match[1]] = (
-                        match[2],
-                        {key: value for key, value in values.items() if value is not None},
-                    )
+                    # A name LLVM does not write proves nothing (#188 review), and
+                    # could be any variable's (`refused`).
+                    kept = {key: value for key, value in values.items() if value is not None}
+                    if len(kept) != len(values) or ("name" not in kept and _NAMED.search(line)):
+                        kept["refused"] = True
+                    entries[match[1]] = (match[2], kept)
                 continue
             if "dbg" not in line:
                 continue
             for pattern in _DECLARES:
                 if found := pattern.search(line):
-                    declares.append((found[1], found[2], found[3]))
+                    pointer = found[1]
+                    if pointer.startswith('"'):
+                        # As its source names it; a name LLVM does not write, none,
+                        # which still declares the variable, in no slot it can name.
+                        pointer = ir_string(pointer[1:-1])
+                    declares.append((pointer, found[2], found[3]))
                     break
+    # How many variables of each name each function's debug information holds, per
+    # function hash: one whose name cannot be read could be any (name None), one whose
+    # function cannot be told any function's ("?"). An unnamed one (`_: i32`) is none.
+    # Names count as one whichever Unicode form spells them (rustc writes NFC).
+    named = {}
+    for kind, fields in entries.values():
+        if kind == "DILocalVariable" and ("name" in fields or "refused" in fields):
+            function = _function(entries, fields.get("scope"))
+            hashed = _HASH.search((function or {}).get("linkage", ""))
+            if hashed or function is None:
+                key = (hashed[1] if hashed else "?", _form(fields.get("name")))
+                named[key] = named.get(key, 0) + 1
     memory, parameters = {}, {}
     for pointer, variable, location in declares:
         kind, fields = entries.get(variable, (None, {}))
@@ -137,10 +164,10 @@ def ir_locals(path, declarations=None):
             continue
         where = entries.get(location, (None, {}))
         located = where[0] == "DILocation" and "inlined" not in where[1]
-        real = not _SPILL.search(pointer) and located
+        real = pointer is not None and not _SPILL.search(pointer) and located
         key = (hashed[1], fields["name"])
         memory[key] = memory.get(key, True) and real
-        if declarations is not None:
+        if declarations is not None and pointer is not None:
             kind = "slot" if real else "copy" if located else "inlined"
             line = int(fields["line"]) if fields.get("line", "").isdigit() else None
             declarations.setdefault(key, []).append((line, kind))
@@ -148,6 +175,8 @@ def ir_locals(path, declarations=None):
         lines = [function.get("line"), function.get("scope_line"), fields.get("line")]
         proven = (
             pointer in (fields["name"], fields["name"] + ".dbg.spill")
+            and named.get((hashed[1], _form(fields["name"]))) == 1
+            and not {(hashed[1], None), ("?", _form(fields["name"])), ("?", None)} & named.keys()
             and located
             and "arg" in fields
             and declared
@@ -160,6 +189,10 @@ def ir_locals(path, declarations=None):
             else None
         )
     return memory, {key: proof for key, proof in parameters.items() if proof}
+
+
+def _form(name):
+    return None if name is None else unicodedata.normalize("NFC", name)
 
 
 def _function(entries, scope):
