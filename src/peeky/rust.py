@@ -1394,6 +1394,15 @@ def _top_level_parts(text, separator):
     return [*parts, text[start:]]
 
 
+def _raw_container(why, taint=None):
+    """A container left raw, saying ``why`` (view_variable). Where a call under way may be
+    changing it (a caller frame's, owned or `&mut`), its own fields (`friends.len`) are not
+    its value either: they show `[stale]`, each saying why (#260)."""
+    if CALLER_CHANGING in why:
+        return {"raw_reason": why, "taint": "stale", "carry": True}
+    return {"raw_reason": why, **({"taint": taint} if taint else {})}
+
+
 def _unproven(variable, why=None, pointer=None):
     """``variable`` shown only as its pointer (#101, #108); ``why``, where it is a
     reference past #110's proof, says so (#205). ``pointer`` (#255): "raw" for a raw
@@ -2969,7 +2978,7 @@ class RustSession(NativeSession):
                 element = str(kind).removeprefix("alloc::vec::Vec<")
                 if re.search(r"[&*]", element):
                     why += ", and its items are references"
-                return {"raw_reason": why, "taint": "pointers"}
+                return _raw_container(why, taint="pointers")
             if gated:
                 # #101: a moved or dropped Box still holds its pointer, and LLDB would
                 # read the freed allocation as its fields. The pointer is shown; what it
@@ -3003,7 +3012,7 @@ class RustSession(NativeSession):
         if view is None and top and not parameter and kind in OWNED_CONTAINERS:
             # Why an owned Vec or String stays raw, for its row's note (#156).
             why = self._owned_raw(variable, frame, innermost, owned)
-            return {"raw_reason": why} if why else None
+            return _raw_container(why) if why else None
         if (
             view is None
             and top
@@ -3016,7 +3025,7 @@ class RustSession(NativeSession):
         ):
             # An owned Vec of other elements (`Vec<Friend>`) in a caller frame says why too,
             # never offering a length the call may be changing (#260).
-            return {"raw_reason": why}
+            return _raw_container(why)
         if view is None and top and kind in ("&str", "&mut str"):
             # A closure's capture (`name` of `|f| f.name == *name`, #260) is never judged:
             # why its text is not shown.
@@ -3141,10 +3150,10 @@ class RustSession(NativeSession):
             through, dereference = "reference", True
         else:
             if taint == "pointers" or not innermost:
-                return {
-                    "raw_reason": f"`{root}` is a local of a caller frame, which the call under "
-                    "way may be changing; Peeky reads it in the innermost frame"
-                }
+                return _raw_container(
+                    f"`{root}` is a local of a caller frame, which the call under way may be "
+                    "changing; Peeky reads it in the innermost frame"
+                )
             if not proofs.proven(hashed[1], root, line, path):
                 return {
                     "raw_reason": f"the build's MIR does not prove `{root}` initialized at "

@@ -289,8 +289,8 @@ def test_a_callers_mut_vec_that_retain_mut_is_changing_is_not_read_as_its_value(
         main(["session", "get", *selectors, "kept[0].name", "--frame", str(frame), "--json"])
         rows = {row["selector"]: row for row in json.loads(capsys.readouterr().out)}
         # `main`'s own `friends`, lent `&mut` to the call under way.
-        main(["session", "get", "friends", "--frame", str(frame + 1), "--json"])
-        [owner] = json.loads(capsys.readouterr().out)
+        main(["session", "get", "friends", "friends.len", "--frame", str(frame + 1), "--json"])
+        owner, owned_length = json.loads(capsys.readouterr().out)
     finally:
         main(["session", "close"])
         capsys.readouterr()
@@ -305,7 +305,13 @@ def test_a_callers_mut_vec_that_retain_mut_is_changing_is_not_read_as_its_value(
     assert rows["slots"].get("stale") and rows["slots.length"].get("stale"), rows
     assert "`slots` is a `&mut` parameter of a caller frame" in rows["slots"]["note"], rows
     assert "`friends` is a local of a caller frame" in owner["note"], owner
-    assert "Capture" not in owner["note"], owner
+    assert "Capture" not in owner["note"] and owner.get("stale"), owner
+    # Its own length, selected directly, says why too (review round 2 of #260).
+    assert owned_length["value"] == "3" and owned_length.get("stale"), owned_length
+    assert owned_length["note"].startswith(
+        "read through `friends`: `friends` is a local of a caller frame, which the call under "
+        "way may be changing"
+    ), owned_length
     # A shared reference's target cannot change during the call: it still reads.
     assert not rows["kept"].get("stale"), rows["kept"]
     if reads(rows["kept"]):
