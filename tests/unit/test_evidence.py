@@ -1383,11 +1383,19 @@ def test_wide_and_join_name_every_qualified_cell_and_never_merge_columns(store):
         "k", "hit_a", "hit_b", "a:x", "a:X (2)", "a:h.o", "a:s", "a:gone; here", "b:x"
     ]  # fmt: skip
     assert "b:X (2)" in joined["columns"]
-    (row,) = joined["rows"]
-    assert (row["a:x"], row["a:X (2)"], row["b:x"], row["b:X (2)"]) == ("2", "101", "5", "104")
-    # The key's own caveat too: a pair made on a value Peeky cannot vouch for says so.
+    # The key's own caveat too: a value Peeky cannot vouch for pairs nothing (review of
+    # PR #209), so the hit is unmatched, and caveats_a says why.
+    shown = [(row["k"], row["hit_a"], row["hit_b"], row["matched"]) for row in joined["rows"]]
+    assert shown == [(None, 1, None, "only in run a"), ("1", None, 1, "only in run b")]
+    row, other_row = joined["rows"]
+    assert (row["a:x"], row["a:X (2)"], other_row["b:x"], other_row["b:X (2)"]) == (
+        "2",
+        "101",
+        "5",
+        "104",
+    )
     assert json.loads(row["caveats_a"]) == {"k": "note", "h.o": "stale"}
-    assert row["caveats_b"] is None and "notes" not in joined
+    assert other_row["caveats_b"] is None and "notes" not in joined
 
 
 def test_join_says_when_its_key_carries_addresses_and_can_mask_them(store):

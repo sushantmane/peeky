@@ -88,7 +88,7 @@ Report the observation, the intervention and its effect, the edit, and the verif
 Probes not refused before launch are saved (`evidence.run_id`). **SQL is optional**: for one probe, read its JSON; saved runs help with large captures, comparisons (with and without `--set`) and slow or unrepeatable runs.
 
 - `peeky sql --schema` lists the tables (`runs`, `captures`, `interventions`, `pauses`), the `evidence` and `last_run` views, and the canned queries. Read it before writing SQL.
-- `peeky queries` needs no SQL: `run`, `wide` (a row per hit), `hits`, `compare`, `join` (two runs' hits paired by a value: `key=v`), `diff` (what differs, first divergence first: §3), `outputs`, `set_effect`, `values`, `unreadable`, `failures`. `--param a=1 --param b=5` (default: the last two) or `run=3` picks runs.
+- `peeky queries` needs no SQL: `run`, `wide` (a row per hit), `hits`, `compare`, `join` (two runs' hits paired by values: `key=v` or `key=a,b`), `diff` (what differs, first divergence first: §3), `outputs`, `set_effect`, `values`, `unreadable`, `failures`. `--param a=1 --param b=5` (default: the last two) or `run=3` picks runs.
 - Compare numbers with `num` (`value` is the debugger's text); mask addresses with `no_addresses(value)`; `object_ref(value)` tells a Java object from a copy (4.3 to 4.6). `--label` tags a run with free text, stored as given; it never changes which runs `diff` or `compare:` pair.
 - Queries are read-only and bounded. A failing query returns `INVALID_QUERY`. Saved evidence describes past runs only: a new question about the program needs a new probe.
 
