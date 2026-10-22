@@ -884,6 +884,11 @@ _CALL_LEAD = re.compile(
 )
 
 
+# Inline assembly, which may write any memory or register it reaches, operands or not
+# (`__asm__("" : "=r"(p->width))`, a store through a register holding a pointer).
+_ASSEMBLY = re.compile(r"(?<![\w$])(?:asm|__asm|__asm__)(?![\w$])")
+
+
 def _under(graph, offset):
     """The type ``offset`` names under its typedefs and qualifiers (fields.type_graph),
     or None past 64 of them."""
@@ -5261,7 +5266,8 @@ class NativeSession:
         through its pointer parameter ``root`` (#202), each ``_single_call``'s site with
         the function it calls ("called") and that function's parameter ("parameter"):
         its one call, then, while that call's caller passes it on as is (its own pointer
-        parameter, to the same type, never pointed elsewhere there: ``_uses``), the
+        parameter, to the same type, never pointed elsewhere there, and no inline assembly
+        there: ``_uses``), the
         caller's one call, up to 16. Returns (those sites, why the last site's caller,
         which passes its own pointer parameter on, is followed no further, or None where
         the last call passes something else); no sites where ``function`` itself has
@@ -5290,6 +5296,11 @@ class NativeSession:
             uses = self._uses(site, argument)
             if uses is None or uses.count("passed") != 1:
                 return chain, f"Peeky cannot read how {caller.get('name')} uses `{argument}`"
+            if "assembly" in uses:
+                return chain, (
+                    f"{caller.get('name')} has inline assembly, which may change `{argument}` "
+                    "or what it points to"
+                )
             if "changes" in uses:
                 return chain, f"{caller.get('name')} may point `{argument}` elsewhere first"
             key = (caller.get("name"), caller.get("source"), str(caller.get("span")))
@@ -5352,7 +5363,9 @@ class NativeSession:
         (the call's own argument), "changes" (`name = q`, `name++`, `&name`: it may point
         elsewhere), "reads" (`name->field` or `name->items[i]`, an integer by the build's
         types, only read) or "other" (`*name`, `name[0]`, `name->field = 1`, another
-        call's argument...). None where Peeky cannot find the body."""
+        call's argument...); and "assembly" first where the body has inline assembly,
+        which may change either unseen (review of #211). None where Peeky cannot find the
+        body."""
         from peeky.fields import Unsettable, debugger_steps, settable_member
 
         graph = self.fields
@@ -5364,6 +5377,8 @@ class NativeSession:
         pointer = graph.get(_under(graph, next(iter(declared))[0]))
         kind = _under(graph, pointer[2]) if pointer and pointer[0] == "pointer" else None
         own, uses = range(*site["argument_span"]), []
+        if _ASSEMBLY.search(inner):
+            uses.append("assembly")
         assigned = r"[\s)]*(?:(?:[-+*/%|^&]|<<|>>)?=(?!=)|\+\+|--)"
         for found in re.finditer(rf"(?<![\w$]){re.escape(name)}(?![\w$])", inner):
             before, after = inner[: found.start()].rstrip(), inner[found.end() :]
@@ -5460,7 +5475,8 @@ class NativeSession:
         push(ARGS);` and `if (push(ARGS) ...)`, NAME a plain name other than ``root``;
         ARGS are `&root` and reads (``_reads``), and so is the rest of an `if`'s
         condition; and the caller takes no address of ``root`` or its fields elsewhere
-        but to lend it (``_lent``), so no pointer reaches it. Anything else may change it
+        but to lend it (``_lent``), so no pointer reaches it, and has no inline assembly
+        (which may take it unseen). Anything else may change it
         first (`r = q, push(&r, 1)`, `push(&r, RESET(r))`, `push(&r, ops[0](r.buf))`
         writing through the array that starts `r`, a pointer `a = &r` set earlier)."""
         from peeky.fields import Unsettable
@@ -5502,6 +5518,8 @@ class NativeSession:
             begin = statements.starts[at - 1]
             finish = statements.starts[at] if at < len(statements.starts) else None
             body = statements.blanked[begin:finish]
+            if _ASSEMBLY.search(body):
+                return False  # it may take the root's address unseen
             address = rf"(?<!&)&(?!&)\s*(?:\(\s*)*{re.escape(root)}(?![\w$])"
             for found in re.finditer(address, body):
                 at = begin + found.start()
@@ -5547,9 +5565,9 @@ class NativeSession:
         """Whether the `&root` at ``position`` of the caller's unit (``site``'s) is a whole
         argument of a call by name of one of the program's functions, defined in that
         unit, whose parameter there points to ``root``'s type and is used only as
-        `p->field` or `p->array[i]` of a scalar (by the build's types), never with `&`
-        (`pop(&r, &v)`, pop reading `r->count` and `r->buf[r->head]`): such a call leaves
-        no pointer to ``root`` behind."""
+        `p->field` or `p->array[i]` of a scalar (by the build's types), never with `&`,
+        in a body with no inline assembly (`pop(&r, &v)`, pop reading `r->count` and
+        `r->buf[r->head]`): such a call leaves no pointer to ``root`` behind."""
         from peeky.fields import Unsettable, debugger_steps, settable_member
 
         preprocessed, statements = site["unit"]
@@ -5583,6 +5601,8 @@ class NativeSession:
         if defined is None or len(defined[0]) != len(spans):
             return False
         parameters, inner, _ = defined
+        if _ASSEMBLY.search(inner):
+            return False
         parameter = re.search(r"([A-Za-z_]\w*)\s*$", parameters[index[0]])
         declared = (callees[0].get("types") or {}).get(parameter[1] if parameter else None) or ()
         if {storage for _, storage, _ in declared} != {"parameter"} or len(declared) != 1:
@@ -5618,21 +5638,25 @@ class NativeSession:
         `_preprocessed` gives it), call, opening and argument_span (offsets in its
         text)} of the one call of the C function ``function`` in the program's
         sources, as the compiler preprocessed them (a macro's calls are where it is
-        used); None unless that is certain. Every mention of the function's name must be
-        its definition, a prototype at file scope, or a call by name inside a function
-        the build's debug information places there: anything else (its address taken, a
-        member's function pointer of that name, a declaration inside a function, a file
-        Peeky cannot preprocess) leaves the callers unknown."""
+        used), each unit's its own (a header's code is compiled once in each unit that
+        includes it, and macros may make the copies differ); None unless that is certain,
+        and where ``function`` or the caller is defined in more than one unit. Every
+        mention of the function's name must be its definition, a prototype at file
+        scope, or a call by name inside a function the build's debug information places
+        there: anything else (its address taken, a member's function pointer of that
+        name, a declaration inside a function, a file Peeky cannot preprocess) leaves the
+        callers unknown."""
         from peeky.c_source import _EXPRESSIONS
 
         name, span, source = function.get("name"), function.get("span"), function.get("source")
         if not re.fullmatch(r"[A-Za-z_]\w*", str(name)) or not span or not source:
             return None
-        definition, calls, seen = None, {}, set()
+        definition, calls, reads = None, {}, []
         for unit in self.target.sources:
             read = self._preprocessed(str(unit))
             if isinstance(read, str):
                 return None
+            reads.append(read)
             preprocessed, statements = read
             text, starts = statements.blanked, statements.starts
             counts = {}
@@ -5644,7 +5668,9 @@ class NativeSession:
                 if origin is None:
                     return None
                 counts[origin] = counts.get(origin, 0) + 1
-                key = (origin, counts[origin])
+                # Each unit's: a header's code is compiled once in each unit that
+                # includes it, and macros may make those copies differ (review of #211).
+                key = (len(reads), origin, counts[origin])
                 before = text[: found.start()].rstrip()
                 opening = len(text) - len(text[found.end() :].lstrip())
                 if before.endswith((".", "->")) or not text.startswith("(", opening):
@@ -5657,7 +5683,8 @@ class NativeSession:
                     return None
                 typed = before.endswith("*") or (word is not None and word[0] not in _EXPRESSIONS)
                 if origin == (source, span[0]):
-                    if definition not in (None, arguments):
+                    # Defined in one unit only, the one whose code the stop runs.
+                    if definition is not None:
                         return None
                     definition = arguments
                     continue
@@ -5667,16 +5694,19 @@ class NativeSession:
                     if not typed or not text[arguments[1] :].lstrip().startswith(";"):
                         return None
                     continue
-                if typed or key in seen:
+                if typed:
                     # A declaration inside a function (or `a * push(x)`, which reads alike).
-                    if typed:
-                        return None
-                    continue
-                seen.add(key)
+                    return None
                 calls[key] = (inside, origin, arguments, read, found.start(), opening)
         if definition is None or len(calls) != 1:
             return None
         caller, (where, line), arguments, read, call, opening = next(iter(calls.values()))
+        # The caller's code must be the call's unit's alone: its first line in no other.
+        first = (caller.get("source"), (caller.get("span") or (None,))[0])
+        if None in first or any(
+            other is not read and other[0].line(*first) is not None for other in reads
+        ):
+            return None
         parameters = _split_arguments(definition[0])
         values = _split_arguments(arguments[0])
         spans = _argument_spans(read[1].blanked, opening) or []

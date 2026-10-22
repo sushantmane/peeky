@@ -18,7 +18,7 @@ Report the observation, the intervention and its effect, the edit, and the verif
 ## Rules you will hit
 
 1. **A breakpoint stops before its line runs:** to see what a line assigns, stop on the next. Probe only lines `describe` lists; `NO_STOP` means the line never ran (the COOKBOOK's opening tip; 10).
-2. **Set a field in the frame that owns the struct.** Peeky never writes through a pointer or reference (`r->tail` in `push(struct ring *r)`, `self.k` behind `&mut self`, C++ `this`): change it in the owning caller, at its call's line (`--set-at LINE@N`, or `--at` it with `--set-hit N`), as the refusal says (7.1, 7.2).
+2. **Set a field in the frame that owns the struct.** Peeky never writes through a pointer or reference (`r->tail` in `push(struct ring *r)`, Rust `self.k`, `this`). Use the call a refusal names (`--set-at LINE@N`) only where it says `settable`; else follow its advice (`describe`'s `mutable:` line, a candidate edit) (7.1, 7.2).
 3. **Changes only where nothing is under way:** C and C++ at a statement's first line, Rust where the MIR proves it, never after `step --out`. Rows mark `[settable]`; a probe whose change its build rules out is refused before it runs (exit 2) (2.3, 7.1 to 7.3).
 4. **`--set` applies once, at hit 1** (`--set-hit N` for another); `--set-at LINE@HIT` changes at another line's hit (2.4, 2.8).
 5. **Hits count stops, not passes.** A line with a macro's or a block's code, or a closure, can stop several times per pass: read `warnings`, each row's `stop` and `function`. A loop header may stop only before its loop: probe the body's first line (2.2).

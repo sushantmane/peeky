@@ -187,3 +187,101 @@ def test_no_frame_is_named_for_the_change_where_the_calls_cannot_be_followed(
             "sets it with a candidate edit (`--old`/`--new`)"
         ) in message, out
         assert "hint: Change what sets it with a candidate edit" in out, out
+
+
+# Review of PR #211, 1: an inline-asm output operand writes through the pointer, which
+# `p->width` inside the asm statement does not show as a write.
+ASM = """#include <stdio.h>
+struct layout { int width; };
+static int fits(const struct layout *p) {
+    return p->width; /* AT */
+}
+static int wrap(struct layout *p) {
+    __asm__ volatile("" : "=r"(p->width) : "0"(5));
+    return fits(p);
+}
+int main(void) {
+    struct layout x = { 1 };
+    int seen = wrap(&x); /* CALL */
+    printf("SEEN:%d\\n", seen);
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(300)
+def test_inline_assembly_on_the_way_is_never_followed(c_program, capsys):
+    source = c_program("m.c", ASM)
+    at, call = line_of(ASM, "/* AT */"), line_of(ASM, "/* CALL */")
+    code, out = run(capsys, "probe", source, "--at", at, "--set", "p.width=7")
+    message = out.splitlines()[0]
+    assert code == 2 and message.startswith("error [MUTATION_REJECTED]"), out
+    assert "settable" not in message.split("one caller")[1] and "--set-at" not in message, out
+    assert (
+        "which passes it on (`p`, its own pointer parameter, where a change is refused too), "
+        "and wrap has inline assembly, which may change `p` or what it points to"
+    ) in message, out
+    # The claim would have been wrong: fits reads the asm's 5, whatever main set.
+    code, out = run(
+        capsys, "probe", source, "--at", at, "--capture", "p.width", "--set-at",
+        f"{call}@1", "x.width=9", "--json",
+    )  # fmt: skip
+    result = json.loads(out)
+    assert code == 0 and [(i["before"], i["after"]) for i in result["interventions"]] == [
+        ("1", "9")
+    ], result
+    assert [row["value"] for row in result["rows"]] == ["5"], result["rows"]
+    assert result["output"].strip() == "SEEN:5", result["output"]
+
+
+# Review of PR #211, 2: a static function in a header is preprocessed in each unit that
+# includes it, and b.c's CLOBBER makes its copy write the width; a.c's copy only reads.
+HEADER = """struct layout { int width; };
+int fits(const struct layout *p);
+static int wrap(struct layout *p) {
+#ifdef CLOBBER
+    p->width = 5;
+#endif
+    return fits(p);
+}
+"""
+# a.c's first line matches b.c's, so both units have w.h's text at the same offsets.
+A_C = """#define KEEP
+#include "w.h"
+int fits(const struct layout *p) {
+    return p->width; /* AT */
+}
+"""
+B_C = """#define CLOBBER
+#include "w.h"
+#include <stdio.h>
+int main(void) {
+    struct layout x = { 1 };
+    int seen = wrap(&x); /* CALL */
+    printf("SEEN:%d\\n", seen);
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(300)
+def test_a_header_function_is_not_read_from_another_units_copy(c_program, capsys):
+    root = c_program("a.c", A_C).parent
+    c_program("b.c", B_C)
+    c_program("w.h", HEADER)
+    at, call = line_of(A_C, "/* AT */"), line_of(B_C, "/* CALL */")
+    code, out = run(capsys, "probe", root, "--at", f"a.c:{at}", "--set", "p.width=7")
+    message = out.splitlines()[0]
+    assert code == 2 and message.startswith("error [MUTATION_REJECTED]"), out
+    # Each unit's copy of wrap calls fits: no one caller, so no frame and no claim.
+    assert "one caller" not in message and "settable" not in message, out
+    assert "before the call that passed it" in message, out
+    # The claim would have been wrong: fits reads b.c's 5, whatever main set.
+    code, out = run(capsys, "probe", root, "--at", f"a.c:{at}", "--capture", "p.width", "--json")
+    assert [row["value"] for row in json.loads(out)["rows"]] == ["5"], out
+    code, out = run(
+        capsys, "probe", root, "--at", f"b.c:{call}", "--capture", "x.width", "--set",
+        "x.width=9", "--set-hit", "1", "--json",
+    )  # fmt: skip
+    result = json.loads(out)
+    assert code == 0 and result["output"].strip() == "SEEN:5", result
