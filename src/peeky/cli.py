@@ -1019,6 +1019,7 @@ def probe(args):
             progress=_progress(args),
             launch_budget=args.launch_budget,
             launch_marker=args.launch_marker,
+            pycache_base=args.pycache_dir,
         )
     return _probe_result(args, root, result, edit, original, request.program, language)
 
@@ -3350,6 +3351,8 @@ def main(argv=None, _job=False, _edits=None):
     # and a file written just before the debugger is asked to start the program.
     sub.add_argument("--launch-budget", type=float, help=argparse.SUPPRESS)
     sub.add_argument("--launch-marker", type=Path, help=argparse.SUPPRESS)
+    # A worker's probe child: where a remote Python run's bytecode cache goes (#249).
+    sub.add_argument("--pycache-dir", type=Path, help=argparse.SUPPRESS)
     sub.add_argument(
         "--arg",
         action="append",

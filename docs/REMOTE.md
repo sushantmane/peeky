@@ -155,9 +155,10 @@ peeky: [PROVENANCE_CHANGED] Worker source provenance changed during the session:
   caught. A frame in a virtual environment inside the root is installed code: it isn't compared,
   and the note below says so.
 - **Python bytecode:** a remote Python run reads no `.pyc` from the root, and writes none there.
-  Its bytecode cache is a fresh, empty temporary directory, removed when the session ends. A
-  `.pyc` file with no `.py` beside it is still loaded. The frame check above refuses it when it is
-  on the stack.
+  Its bytecode cache is a fresh, empty temporary directory, never inside the root or under
+  `~/Documents`. It is removed once the program and the debugger have ended.
+- A `.pyc` file with no `.py` beside it is still loaded. The frame check above refuses it when it
+  is on the stack.
 - A Python probe runs these checks at each stop and at its end. A probe that fails one is
   discarded: no rows and no output.
 - **The limit:** a file changed, then changed back, between two checks isn't seen.
@@ -185,8 +186,9 @@ packages, any directory holding a pyvenv.cfg, the standard library, and compiled
 - It must report the sources the run read (`inputs_sha256`), and they must match yours.
 - The program's and the `--run` script's hashes must match yours.
 - Your own checkout must still be what was compared. The client hashes it again after a probe's
-  answer and after `session start`, for every language. For a session, it also hashes it before and
-  after every later command.
+  answer and after `session start`, for every language. For a session, it also hashes it before
+  each later command except `close`, and again after each one that succeeds. A command that fails
+  returns no values.
 
 A probe that fails one is discarded: `PROVENANCE_CHANGED`, `results_discarded: true`, no rows and
 no output. A session that fails one is closed, and its record is dropped.

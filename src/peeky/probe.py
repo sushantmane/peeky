@@ -3182,13 +3182,24 @@ def _expected_line(breakpoint, state, requested):
     return line
 
 
-def run_probe(root, probe, *, adapter=None, progress=None, launch_budget=None, launch_marker=None):
+def run_probe(
+    root,
+    probe,
+    *,
+    adapter=None,
+    progress=None,
+    launch_budget=None,
+    launch_marker=None,
+    pycache_base=None,
+):
     """Run one self-contained probe; the worker is always closed before returning.
 
     ``progress(message)`` receives human-readable milestones (never parsed). A worker's
     probe child passes ``launch_budget`` (seconds, at most the worker's own) so its
-    launch ends before the worker's watchdog, and ``launch_marker``, a file written just
-    before the debugger is asked to start the program (#190 review).
+    launch ends before the worker's watchdog, ``launch_marker``, a file written just
+    before the debugger is asked to start the program (#190 review), and
+    ``pycache_base``, in its parent's scratch, for a remote Python run's bytecode cache
+    (#249: the parent removes it, even after killing the child).
     """
     say = progress or (lambda message: None)
     if launch_budget is not None and not launch_budget > 0:
@@ -3197,6 +3208,7 @@ def run_probe(root, probe, *, adapter=None, progress=None, launch_budget=None, l
     if launch_budget is not None:
         worker.launch_deadline_s = min(worker.launch_deadline_s, launch_budget)
     worker.launch_marker = launch_marker
+    worker.pycache_base = pycache_base
     started = time.monotonic()
     deadline = started + probe.timeout
     result = {

@@ -57,8 +57,9 @@ A client on another host must show that its sources are the worker's. This is pr
    the session.
 
 `peeky probe --worker` and `peeky session start --worker` do all of this. On every later
-`session` command, they also check the worker's protocol again, and hash your sources before and
-after the request ([REMOTE.md](REMOTE.md#source-identity)).
+`session` command, they also check the worker's protocol again. They hash your sources before
+each request except `close`, and again after each one that succeeds
+([REMOTE.md](REMOTE.md#source-identity)).
 
 ## Start a C or C++ worker
 

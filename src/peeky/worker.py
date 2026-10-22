@@ -178,8 +178,10 @@ class DebugWorker:
         # A stack frame in a file under the root that was not compared (#249): it taints
         # the session until it is closed.
         self.foreign_frame = None
-        # A remote Python run's bytecode cache: outside the root, removed at close.
+        # A remote Python run's bytecode cache: outside the root, removed at close; a probe
+        # child makes it under its parent's scratch (`pycache_base`).
         self.pycache = None
+        self.pycache_base = None
         self.capabilities = {}
         self.dap = None
         self.state = "idle"
@@ -1540,6 +1542,29 @@ class DebugWorker:
             self.foreign_frame = name
             raise RuntimeError(self.foreign_message(name))
 
+    def make_pycache(self):
+        """A fresh, empty directory for a remote Python run's bytecode (#249): never in the
+        target's root, or under ~/Documents. A probe child's is in its parent's scratch;
+        otherwise the system's temporary directory, then the worker's own scratch."""
+        documents = (Path.home() / "Documents").resolve()
+        if self.pycache_base is not None:
+            bases = [Path(self.pycache_base)]
+        else:
+            from peeky.cli import _private_dir
+
+            bases = [None, _private_dir("scratch")]
+        for base in bases:
+            if base is not None:
+                base.mkdir(parents=True, exist_ok=True, mode=0o700)
+            made = Path(tempfile.mkdtemp(prefix="peeky-pycache-", dir=base)).resolve()
+            if not (made.is_relative_to(self.root) or made.is_relative_to(documents)):
+                return made
+            shutil.rmtree(made, ignore_errors=True)
+        raise RuntimeError(
+            "No place for a remote Python run's bytecode cache outside the target's root and "
+            "~/Documents: set TMPDIR (or PEEKY_STATE_DIR) to a directory outside them"
+        )
+
     def check_stack(self):
         """At a stop of a remote Python session, read the whole stack: check_frames
         refuses a frame in a file that was not compared (#249)."""
@@ -1891,7 +1916,7 @@ class DebugWorker:
                 if self.accepted_sources is not None:
                     # A remote Python run reads no bytecode from the root (a stale .pyc is
                     # not the compared source): its cache is a fresh, empty directory (#249).
-                    self.pycache = tempfile.mkdtemp(prefix="peeky-pycache-")
+                    self.pycache = str(self.make_pycache())
                     launch_args["env"] = {
                         **launch_args.get("env", {}),
                         "PYTHONPYCACHEPREFIX": self.pycache,
@@ -4271,9 +4296,7 @@ class DebugWorker:
         """End the session; returns what became of the processes it started, if any."""
         adapter, self.dap = self.dap, None
         runtime, self.runtime = self.runtime, None
-        if self.pycache is not None:
-            shutil.rmtree(self.pycache, ignore_errors=True)
-            self.pycache = None
+        pycache, self.pycache = self.pycache, None
         self.state = "idle"
         self.stopped_at = None
         self.empty_thread_replies = 0
@@ -4310,8 +4333,13 @@ class DebugWorker:
                 final = getattr(adapter, "final", None)
                 self.last_final = final if isinstance(final, dict) else None
         finally:
-            if runtime:
-                runtime.close()
+            try:
+                if runtime:
+                    runtime.close()
+            finally:
+                # Once the adapter and the debuggee are gone (#249).
+                if pycache is not None:
+                    shutil.rmtree(pycache, ignore_errors=True)
         return self.last_cleanup if adapter else None
 
 
@@ -4738,6 +4766,11 @@ def _run_probe_process(root, request, adapter, cap):
             config.write_text(json.dumps(dataclasses.asdict(adapter), default=str))
             config.chmod(0o600)
             command += ["--config", str(config)]
+        # A remote Python run's bytecode cache, removed with the scratch whatever ends the
+        # child (#249).
+        pycache = Path(scratch) / "pycache"
+        pycache.mkdir(mode=0o700)
+        command += ["--pycache-dir", str(pycache)]
         marker = Path(scratch) / "launch-requested"
         command += ["--launch-budget", str(cap - PROBE_LAUNCH_MARGIN_S)]
         command += ["--launch-marker", str(marker)]

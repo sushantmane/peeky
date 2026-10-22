@@ -524,3 +524,23 @@ def test_your_checkout_changing_during_a_compiled_probe_discards_it(tmp_path, ca
         "a source in your checkout changed after the worker compared it"
         in (result["error"]["message"])
     )
+
+
+def test_the_bytecode_cache_is_never_in_the_root_and_goes_at_close(app, tmp_path, monkeypatch):
+    import tempfile
+
+    worker = DebugWorker(app)
+    # The system's temporary directory is inside the target: the worker's scratch is used.
+    (app / "tmp").mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(app / "tmp"))
+    made = worker.make_pycache()
+    assert not made.is_relative_to(app.resolve())
+    assert made.is_relative_to((tmp_path / "state" / "scratch").resolve())
+    assert list((app / "tmp").iterdir()) == []  # the one made inside was removed
+    # A probe child's goes under its parent's scratch.
+    worker.pycache_base = tmp_path / "probe-scratch" / "pycache"
+    child = worker.make_pycache()
+    assert child.parent == worker.pycache_base.resolve()
+    worker.pycache = str(child)
+    worker.close()
+    assert not child.exists() and worker.pycache is None
