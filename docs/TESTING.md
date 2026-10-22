@@ -64,6 +64,17 @@ It prints one PASS or FAIL line per lane, and exits non-zero on a failure.
   checker, no runtime evidence, and an overfit pagination patch.
 - **Real adapter tests** run local HTTP and debugpy. They observe values, change them, continue,
   and verify the candidate with the fixed checker.
+- **The Java lane** (`PEEKY_JAVA_ADAPTER="$PWD/work/java-adapter" pytest tests/java`) includes
+  `tests/java/test_java_worker.py`. It uses real HTTP requests, a worker HTTP server, the real Java
+  adapter and a separate JVM. Its fixture has a package, a nested class, an integer local, an array
+  local, a process ID and a check that the worker token is present. It exercises a runtime change,
+  a stale stop identity, a required fresh inspection, a fresh launch's reset, rejection of a
+  tampered original or copied source or compiled class, and cleanup after the adapter fails.
+  Public breakpoint events and the actual stopped locations show that the wanted breakpoint was
+  reached. The test's HTTP worker runs in a thread of the test process; the debugger and the
+  target are separate owned processes. That shows real transport and JVM behavior, not a
+  deployment on another host or source synchronization across roots. The fixtures hold no
+  secrets, and no required test calls a model.
 - **Packaging smoke** imports the wheel in a clean environment, outside the checkout, and exercises
   each entry point's help. The installed wheel also launches a real debugger and inspects a value.
 - **The separate-host test** is its own lane, remote SSH e2e ([REMOTE.md](REMOTE.md)).

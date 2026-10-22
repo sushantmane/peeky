@@ -211,7 +211,7 @@ revised after two adversarial reviews.
   [five-language plan](docs/LANGUAGES.md).
 - **Python** runs through debugpy and the Debug Adapter Protocol (DAP).
 - **Design notes per language:**
-  - Java: the [worker](docs/JAVA_WORKER.md) and the [investigation loop](docs/JAVA_AGENT.md),
+  - Java: the [worker](docs/WORKER.md#start-a-java-worker) and the [investigation loop](docs/JAVA_AGENT.md),
     with an example in `examples/java`;
   - C: the [worker](docs/WORKER.md) and the [investigation loop](docs/NATIVE_AGENT.md);
   - C++: [how Peeky reads C and C++ values](docs/NATIVE_INTERNALS.md), the
