@@ -1760,13 +1760,18 @@ def _listed(items):
     return items[0] if len(items) == 1 else ", ".join(items[:-1]) + " and " + items[-1]
 
 
-def run_query(path, name, params=None, *, limit=DEFAULT_ROWS):
-    """Run a canned query by name with optional parameters."""
+def prepare(path, name, params=None):
+    """``params`` checked for canned query ``name``, with the runs it reads named: `run`
+    (default: the newest), or `a` and `b` (default: the run before b, and the newest).
+    Each is resolved once, so that the query, its notes and its text table read the same
+    runs, though a probe may save a newer one meanwhile (review 2 of PR #269: `join`'s
+    table compared runs 2 and 3 for a result of runs 1 and 2). A run that does not
+    resolve stays unnamed, so the query says why."""
     if name not in QUERIES:
         raise ValueError(
             f"Evidence query failed: no canned query {name!r}; one of: {', '.join(QUERIES)}"
         )
-    _, sql, accepted, required = QUERIES[name]
+    _, _, accepted, required = QUERIES[name]
     params = dict(params or {})
     if unknown := sorted(set(params) - set(accepted)):
         raise ValueError(
@@ -1780,6 +1785,29 @@ def run_query(path, name, params=None, *, limit=DEFAULT_ROWS):
             f"Evidence query failed: {name} needs "
             + " ".join(f"--param {param}=<value>" for param in missing)
         )
+    if {"a", "b"} <= set(accepted):
+        named = {"a": _A, "b": _B}
+    elif "run" in accepted:
+        named = {"run": _RUN}
+    else:
+        return params
+    if all(params.get(run) is not None for run in named):
+        return params
+    found = query(
+        path,
+        "SELECT " + ", ".join(f"{sql} AS {run}" for run, sql in named.items()),
+        {**dict.fromkeys(named), **params},
+    )["rows"][0]
+    return {
+        **params,
+        **{run: found[run] for run in named if params.get(run) is None and found[run] is not None},
+    }
+
+
+def run_query(path, name, params=None, *, limit=DEFAULT_ROWS):
+    """Run a canned query by name with optional parameters (see ``prepare``)."""
+    params = prepare(path, name, params)
+    _, sql, accepted, _ = QUERIES[name]
     bound = {**dict.fromkeys(accepted), **params}
     if callable(sql):
         # Built for the runs named (a column per selector): shown, to refine with peeky sql.
@@ -2647,9 +2675,13 @@ def _compact_join(path, result, params):
     """`join`'s ``result`` without the columns of selectors that agree between the runs
     at every paired hit, and a note naming them: for its text table, which showed each
     twice (tenth evaluation: runoff's, 430 columns). `--json` keeps every column (review
-    of PR #269)."""
-    _, _, keys, phase, _, _, _, sides, same = _join_layout(path, params)
-    dropped, unpaired = _unchanged(path, keys, phase, sides, same)
+    of PR #269). ``params`` name the result's runs (``prepare``); where they no longer
+    give its layout (a run deleted since), the table shows every column."""
+    try:
+        _, _, keys, phase, _, _, _, sides, same = _join_layout(path, params)
+        dropped, unpaired = _unchanged(path, keys, phase, sides, same)
+    except ValueError:
+        return result
     if not dropped:
         return result
     named = {name: dict(zip(sides[name][1], sides[name][2])) for name in sides}
@@ -2671,10 +2703,11 @@ def _compact_join(path, result, params):
 
 
 def query_table(path, result, params=None):
-    """`table` for a canned query's ``result`` (``result["query"]`` names it): for
-    set_effect, with the run's changes, read whole, to show each from where its values
-    differ; for join, without the selectors that agree at every paired hit, unless
-    ``params`` has unchanged=1."""
+    """`table` for a canned query's ``result`` (``result["query"]`` names it), run with
+    ``params`` from ``prepare``, which name its runs: read again by run id, never as "the
+    newest", which a probe may have saved since. For set_effect, with the run's changes,
+    read whole, to show each from where its values differ; for join, without the
+    selectors that agree at every paired hit, unless ``params`` has unchanged=1."""
     params = params or {}
     if result.get("query") == "join" and params.get("unchanged") != 1:
         result = _compact_join(path, result, params)
@@ -2684,7 +2717,7 @@ def query_table(path, result, params=None):
             path,
             "SELECT hit, line, name, before, after FROM interventions WHERE run_id = :run "
             "ORDER BY rowid",
-            {"run": _run_id(path, params.get("run"))},
+            {"run": params.get("run")},
             limit=MAX_ROWS,
         )["rows"]
     return table(result, changes=changes)

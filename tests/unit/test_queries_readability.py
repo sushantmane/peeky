@@ -369,3 +369,75 @@ def test_join_leaves_out_selectors_that_agree_at_every_paired_hit(store, capsys)
     with pytest.raises(ValueError, match="unchanged is 1"):
         evidence.run_query(store, "join", {"key": "round", "unchanged": "yes"})
     assert "unchanged" in evidence.schema(store)["queries"]["join"]["params"]
+
+
+# Review 2 of PR #269: the text table re-read "the newest two runs" after the query ran,
+# so a probe saved meanwhile changed what it compared.
+def test_join_table_reads_the_runs_its_result_came_from(store, capsys, monkeypatch):
+    for xs in (["7", "8"], ["7", "9"]):
+        saved(store, [{"k": k, "x": x, "y": "4"} for k, x in zip("12", xs)], line=9)
+    query = evidence.run_query
+
+    def then_a_probe(*args, **kwargs):
+        result = query(*args, **kwargs)
+        # Runs 2 and 3 agree on `x`; runs 1 and 2 do not.
+        saved(store, [{"k": k, "x": x, "y": "4"} for k, x in zip("12", ["7", "9"])], line=9)
+        return result
+
+    monkeypatch.setattr(evidence, "run_query", then_a_probe)
+    header, *rows, note, count = text(capsys, store, "join", "--param", "key=k").splitlines()
+    assert header.split()[:5] == ["k", "hit_a", "hit_b", "a:x", "b:x"], header
+    assert rows[1].split()[:5] == ["2", "2", "2", "8", "9"], rows
+    assert note == (
+        "note: left out 1 selector that agrees between the runs at every paired hit: `y`; "
+        "--param unchanged=1 or --json shows it"
+    )
+    # The same with the library: prepare names the runs, which the table reads.
+    params = evidence.prepare(store, "join", {"key": "k", "a": 1})
+    assert params == {"key": "k", "a": 1, "b": 3}
+    shown = evidence.query_table(store, {**query(store, "join", params), "query": "join"}, params)
+    assert "a:x" in shown.splitlines()[0]
+
+
+def test_set_effect_table_reads_its_own_runs_changes(store, capsys, monkeypatch):
+    saved(
+        store,
+        [{"previous": CAFE % 1}],
+        after=[(1, "previous", CAFE % 0)],
+        set_at=[(66, 1, "previous", CAFE % 0)],
+        changes=[(1, "previous", CAFE % 1, CAFE % 0, 1)],
+    )
+    query = evidence.run_query
+
+    def then_a_probe(*args, **kwargs):
+        result = query(*args, **kwargs)
+        saved(store, [{"previous": CAFE % 1}])
+        return result
+
+    monkeypatch.setattr(evidence, "run_query", then_a_probe)
+    (row,) = [
+        line for line in text(capsys, store, "set_effect").splitlines() if " previous " in line
+    ]
+    assert row.endswith(
+        "previous: …1}, {'text': 'Café', 'level': 1}] -> …1}, {'text': 'Café', 'level': 0}]"
+    ), row
+
+
+def test_diff_notes_read_the_runs_its_rows_came_from(store, monkeypatch):
+    for calls in (["'A'", "'B'"], ["'B'", "'A'"]):
+        saved(store, [{"key": k, "call": c} for k, c in zip("12", calls)], line=10)
+    unaligned = evidence._unaligned
+
+    def after_a_probe(path, params):
+        # Runs 2 and 3 are alike: notes on them would say nothing.
+        saved(store, [{"key": k, "call": c} for k, c in zip("12", ["'B'", "'A'"])], line=10)
+        return unaligned(path, params)
+
+    monkeypatch.setattr(evidence, "_unaligned", after_a_probe)
+    result = evidence.run_query(store, "diff")
+    assert {(row["run_a"], row["run_b"]) for row in result["rows"]} == {(1, 2)}
+    (note,) = result["notes"]
+    assert note.startswith(
+        "`key` agrees between the runs at each of the 2 hits, but runs 1 and 2 saw the same "
+        "values of `call` in another order"
+    ), note

@@ -1362,7 +1362,8 @@ def queries(args):
             ),
         )
         return 0
-    params = evidence.parse_params(args.param)
+    # The runs are named once, so the table reads the runs the result came from.
+    params = evidence.prepare(path, args.name, evidence.parse_params(args.param))
     result = evidence.run_query(path, args.name, params, limit=args.limit)
     _emit(
         {**result, "query": args.name, "store": str(path)},
