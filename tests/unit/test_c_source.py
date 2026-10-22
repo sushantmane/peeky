@@ -410,6 +410,8 @@ def test_a_statement_expression_macro_keeps_its_semicolons_inside():
 
 
 def test_a_header_variable_is_settled_only_without_a_call_or_a_while():
+    # Review of PR #214: a name in the initializer may be a macro that calls (`INIT`,
+    # a library's `errno`), so `k = m` and `n = x` are no longer taken as settled.
     source = """int f(void) {
   for (int i = 0; i < 3; i++) g(i);
   for (long i = twice(1); i < 20; i += 7) g(i);
@@ -419,6 +421,11 @@ def test_a_header_variable_is_settled_only_without_a_call_or_a_while():
   for (auto x : items) g(x);
   for (Foo f{1}; f.ok(); f.next()) g();
   if (int n = x) g(n);
+  for (int i = INIT; i < 3; i++) g(i);
+  for (int i = errno; i < 3; i++) g(i);
+  for (unsigned long i = 0x10ul << 2; i > -1; i++) g(i);
+  for (bool b = true; b; b = false) g();
+  for (int i = 0, j = i; i < 3; i++) g(i);
 }
 """
     statements = Statements(source)
@@ -433,9 +440,38 @@ def test_a_header_variable_is_settled_only_without_a_call_or_a_while():
             (7, "x"),
             (8, "f"),
             (9, "n"),
+            (10, "i"),
+            (11, "i"),
+            (12, "i"),
+            (13, "b"),
+            (14, "i"),
         )
     }
-    assert settled == {2: True, 3: False, 4: False, 5: False, 6: True, 7: False, 8: False, 9: True}
+    assert settled == {
+        2: True,
+        3: False,
+        4: False,
+        5: False,
+        6: False,
+        7: False,
+        8: False,
+        9: False,
+        10: False,
+        11: False,
+        12: True,
+        13: True,
+        14: False,
+    }
+    # A macro of the program's own named `true` is no literal.
+    hazards = macro_hazards(["#define true make_true()\n"])
+    assert Statements(source, hazards=hazards).declaration(13, "b")[3] is False
+    # The keyword of the header that declares a name (for a caller frame's reason).
+    assert [statements.header(line, name) for line, name in ((2, "i"), (5, "v"), (9, "n"))] == [
+        "for",
+        "while",
+        "if",
+    ]
+    assert Statements("int f(void) {\n  int t = 1;\n}\n").header(2, "t") is None
 
 
 def test_includes_and_the_labels_after_one():

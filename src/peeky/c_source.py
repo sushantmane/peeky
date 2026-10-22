@@ -485,6 +485,16 @@ class Statements:
             or _RENUMBER.search(_SPLICE.sub("", self.blanked))
         )
         self._ends = {}
+        # The keyword of each statement header that declares a name, by where the
+        # declaration ends (`_declaration`'s ``found[0]``).
+        self._header_words = {}
+
+    def header(self, line, name):
+        """The keyword (`for`, `while`, `if`, `switch` or `catch`) of the statement header
+        that declares ``name`` on ``line``, from the one statement that declares it there;
+        None if no header does, or if Peeky cannot tell (`declaration`)."""
+        found = self.declaration(line, name, declaring=True)
+        return None if found is None or not found[2] else self._header_words.get(found[0])
 
     def end(self, line, name):
         """The line (from 1) of the `;` ending the last statement that starts on
@@ -619,6 +629,7 @@ class Statements:
                         elif semicolon is not None and self._names(opening.end(), semicolon, name):
                             settled = self._settled(word, opening.end(), semicolon)
                             found = (semicolon, 1, True, settled)
+                            self._header_words[semicolon] = word
                             named.append(found)
                             if declares:
                                 declared.append(found)
@@ -628,6 +639,7 @@ class Statements:
                             part = opening.end() if semicolon is None else semicolon + 1
                             settled = self._settled(word, part, closing)
                             found = (closing, 0, True, settled)
+                            self._header_words[closing] = word
                             named.append(found)
                             if declares:
                                 declared.append(found)
@@ -838,9 +850,17 @@ class Statements:
         """Whether a header's variable, declared between ``start`` and ``end``, is set
         once, by no call: not a `while`'s (run again on each pass), nor one whose
         initializer may call (a `(`, a `{` that may construct, or a range-`for`'s `:`,
-        whose iterator calls)."""
+        whose iterator calls), nor one whose initializer names anything: a name may be a
+        macro that calls (`#define INIT make_i()`, or a library's `errno`), which the
+        text cannot rule out (review of PR #214), so only literals and operators count."""
         part = self.blanked[start:end]
-        return keyword != "while" and not re.search(r"[({]|<%|(?<!:):(?![:>])", part)
+        if keyword == "while" or re.search(r"[({]|<%|(?<!:):(?![:>])", part):
+            return False
+        initializer = part.partition("=")[2]
+        return all(
+            word[0] in ("true", "false", "nullptr") and word[0] not in self.expansions
+            for word in _IDENTIFIER.finditer(initializer)
+        )
 
     def _closing(self, opening):
         """(position of the bracket closing the one at ``opening``, position of the

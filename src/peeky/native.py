@@ -2003,7 +2003,7 @@ def declared_below(table, name, source, line, through=None, address=None, pc=Non
     return at, why
 
 
-def declared_unfinished(table, name, source, line, address, ends=None, chosen=None, settled=None):
+def declared_unfinished(table, name, source, line, address, ends=None, chosen=None):
     """For a caller frame at ``source:line``, inside a call that returns to ``address``
     (unslid; None if unknown): ``(line, why, detail)`` for a C/C++ local of that name
     whose declaration may not have run yet, else None. ``why`` is `file` (``detail``: the
@@ -2028,13 +2028,7 @@ def declared_unfinished(table, name, source, line, address, ends=None, chosen=No
 
     ``chosen``: (source, line) of the declaration the name means there, where Peeky
     can tell (#158: `_named_where`); only it is judged then, not every one of the name
-    in the function (another block's `long t;` with no code withheld this one).
-
-    ``settled(line, name)``: True where a statement's header declares it and sets it
-    once, with no call (`for (int i = 0; …)`): that runs before anything else of the
-    statement, a call in its condition, increment or body included, so a caller frame
-    anywhere in it has it set (ninth evaluation: a loop's `i` in the caller, withheld on
-    its third pass because the header's increment comes after the call)."""
+    in the function (another block's `long t;` with no code withheld this one)."""
     shown = split_located(name)
     base = shown[0] if shown else name
     owners = [function for function in table if (source, line) in function["rows"]]
@@ -2063,8 +2057,6 @@ def declared_unfinished(table, name, source, line, address, ends=None, chosen=No
             span = function["rows"].get((source, at))
             if span is None:
                 return at, "no code", None
-            if at <= line and settled is not None and settled(at, base) is True:
-                continue
             if at <= line and (at == line or address is None or span[1] >= address):
                 return at, "unfinished", None
             if at <= line and ends is not None:
@@ -3780,10 +3772,6 @@ class NativeSession:
                 self._unslid(frame),
                 ends=lambda at, local: self._statement_end(here, at, local),
                 chosen=self._chosen(name, frame),
-                # In C++ an object's header can construct it (a call) with no `(`.
-                settled=None
-                if getattr(self.target, "language", None) == "cpp" and _is_object(variable)
-                else lambda at, local: self._header_settled(here, at, local),
             )
         ):
             at, why, detail = unfinished
@@ -3819,6 +3807,18 @@ class NativeSession:
                     "leftovers; read it in the frame that is running once it is stored"
                 )
             # A caller is inside a call: `long r = f(x);` stores `r` only after it.
+            shown = split_located(name)
+            local = shown[0] if shown else name
+            if at < line and (word := self._header(here, at, local)) in ("for", "while"):
+                # Its header's code also runs after the body, so the frame's place proves
+                # nothing; nor can the text (a `goto` into the body, a macro's call). Kept
+                # under the worker's 300-character cap on a reason.
+                return (
+                    f"declared on line {at}, in this caller frame's `{word}` header, and Peeky "
+                    "cannot prove the loop has run its initialization (a `goto` into the body "
+                    "or a macro's call can skip or delay it): its storage may hold leftovers; "
+                    "read it in the loop's body (a probe there, or `step --out` to this frame)"
+                )
             return (
                 f"declared on line {at}, whose code this caller frame has not finished (it "
                 "is inside a call, and the declaration may be stored after the call "
@@ -4002,13 +4002,11 @@ class NativeSession:
         statements = self._statements(source)
         return None if statements is None else statements.declared_through(line, name)
 
-    def _header_settled(self, source, line, name):
-        """Whether a statement's header on ``line`` declares ``name`` and sets it once, by
-        no call (`for (int i = 0; …)`), from the one statement that declares it there;
-        None if unknown (Statements.declaration)."""
+    def _header(self, source, line, name):
+        """The keyword of the statement header that declares ``name`` on ``line`` (`for`,
+        `while`, …), or None (Statements.header)."""
         statements = self._statements(source)
-        found = None if statements is None else statements.declaration(line, name, True)
-        return None if found is None else bool(found[2] and found[3])
+        return None if statements is None else statements.header(line, name)
 
     def _settled(self, source, line, name):
         """Whether a statement's header sets ``name`` on ``line`` once, by no call (True,

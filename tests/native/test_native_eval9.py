@@ -44,28 +44,41 @@ def line_of(marker):
 
 
 @pytest.mark.timeout(120)
-def test_a_callers_loop_counter_is_read_and_a_missing_name_is_named(program, capsys):
+def test_a_callers_loop_counter_says_where_to_read_it_and_a_missing_name_is_named(program, capsys):
     # wrap 4: `session get --frame 1 i` in `wrap`, a caller inside its `for` loop, said
     # `no value yet: declared on line 35, whose code this caller frame has not
-    # finished`: the header's increment comes after the call, but `int i = 0` runs
-    # before anything else of the loop.
+    # finished`. It stays withheld (review of PR #214: a call a macro hides in the
+    # initializer, or a `goto` into the body, leaves leftovers there), and says why and
+    # where the counter can be read.
     assert main(["session", "start", str(program), "--at", str(line_of("TWICE"))]) == 0
     capsys.readouterr()
     try:
         for _ in range(2):
             assert main(["session", "continue"]) == 0
         capsys.readouterr()
-        assert main(["session", "get", "--frame", "1", "i", "total", "--json"]) == 0
+        assert main(["session", "get", "--frame", "1", "i", "total", "--json"]) == 1
         rows = {row["selector"]: row for row in json.loads(capsys.readouterr().out)}
-        assert (rows["i"].get("value"), rows["total"].get("value")) == ("2", "2"), rows
+        assert rows["total"].get("value") == "2" and "value" not in rows["i"], rows
+        assert rows["i"]["error"] == (
+            "no value yet: declared on line 11, in this caller frame's `for` header, and "
+            "Peeky cannot prove the loop has run its initialization (a `goto` into the body "
+            "or a macro's call can skip or delay it): its storage may hold leftovers; read it "
+            "in the loop's body (a probe there, or `step --out` to this frame)"
+        ), rows["i"]
         # wrap 6: exit 1 said nothing of which selector had no value.
-        assert main(["session", "get", "--frame", "1", "i", "nosuch"]) == 1
+        assert main(["session", "get", "--frame", "1", "total", "nosuch"]) == 1
         captured = capsys.readouterr()
-        assert "i: int = 2" in captured.out
+        assert "total: int = 2" in captured.out
         assert (
             "peeky: no value for nosuch (each row above says why), so the exit status is 1"
             in captured.err
         ), captured.err
+        # The advice holds: back in the loop's own frame, `i` reads.
+        assert main(["session", "step", "--out"]) == 0
+        capsys.readouterr()
+        assert main(["session", "get", "i", "--json"]) == 0
+        (row,) = json.loads(capsys.readouterr().out)
+        assert row.get("value") == "2", row
     finally:
         main(["session", "close"])
         capsys.readouterr()
@@ -90,6 +103,70 @@ def test_a_withheld_locals_reason_names_no_jump_the_code_may_not_have(program, c
         "storage may hold leftovers"
     ), row
     assert "switch" not in row["error"] and "goto" not in row["error"]
+
+
+SKIPS = """#include <stdio.h>
+#define INIT make_i()
+
+static int make_i(void) {
+    return 0; /* MAKE */
+}
+
+static int thrice(int v) {
+    return 3 * v; /* THRICE */
+}
+
+int main(int argc, char **argv) {
+    int total = 0, passes = 0;
+    (void)argv;
+    for (int i = INIT; i < 2; i++) total += i; /* ONELINE */
+    if (argc > 0)
+        goto inside;
+    for (int j = 0; j < 2 && passes < 2; j++) {
+        inside: passes++; total += thrice(j); /* INSIDE */
+    }
+    printf("%d\\n", total);
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(180)
+def test_a_loop_counter_whose_initialization_may_not_have_run_is_withheld(program, capsys):
+    # Review of PR #214: a call a macro hides in the initializer (`int i = INIT`), and a
+    # `goto` into the body past `int j = 0`, each left leftovers where the header's
+    # text alone had been taken to prove the counter set.
+    path = program.parent / "skips.c"
+    path.write_text(SKIPS)
+    lines = {
+        marker: number
+        for number, text in enumerate(SKIPS.splitlines(), 1)
+        for marker in ("MAKE", "THRICE", "ONELINE", "INSIDE")
+        if f"/* {marker} */" in text
+    }
+    assert main(["session", "start", str(path), "--at", str(lines["MAKE"])]) == 0
+    capsys.readouterr()
+    try:
+        assert main(["session", "get", "--frame", "1", "i", "--json"]) == 1
+        (row,) = json.loads(capsys.readouterr().out)
+        assert "value" not in row, row
+        assert main(["session", "step", "--out", "--json"]) == 0
+        capsys.readouterr()
+        code = main(["session", "get", "i", "--json"])
+        (row,) = json.loads(capsys.readouterr().out)
+        assert code == 1 and "value" not in row, json.dumps(row)
+    finally:
+        main(["session", "close"])
+        capsys.readouterr()
+    assert main(["session", "start", str(path), "--at", str(lines["THRICE"])]) == 0
+    capsys.readouterr()
+    try:
+        assert main(["session", "get", "--frame", "1", "j", "--json"]) == 1
+        (row,) = json.loads(capsys.readouterr().out)
+        assert "value" not in row and "Peeky cannot prove the loop has run" in json.dumps(row), row
+    finally:
+        main(["session", "close"])
+        capsys.readouterr()
 
 
 TEXTS = """#include <stdio.h>

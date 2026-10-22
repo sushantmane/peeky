@@ -60,5 +60,7 @@ def test_the_docs_say_reading_any_global_lists_and_reprs_them_all(capsys):
     assert "one, or a misspelled name, lists all, running all reprs" in guide
     cookbook = " ".join((DOCS / "COOKBOOK.md").read_text().split())
     assert "Then all of them are listed and every repr runs" in cookbook
-    # Ninth evaluation: a counter its header sets with no call is read in a caller.
-    assert "A `for` loop's counter its header sets with no call" in cookbook
+    assert (
+        "A `for` or `while` loop's own variable (`for (int i = 0; …)`) is withheld too while the body calls, on one line or several"
+        in cookbook
+    )
