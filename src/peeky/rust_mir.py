@@ -3064,7 +3064,8 @@ _COMPARISON_NAME = re.compile(r"(?:^|::)(?:ptr::eq|addr_eq)$")
 # crate` renamed so.
 _MACRO_OPENING = re.compile(r"(?<![\w:])(?:(?:::)?(?:\w+::)*\w+)\s*!\s*([(\[{])")
 _BARE_STD = re.compile(r"\b(?:std|core)\b(?!\s*::)")
-_EXTERN_AS_STD = re.compile(r"\bextern\s+crate\s+\w+\s+as\s+(?:std|core)\b")
+# Either name may be a raw identifier (`extern crate evil as r#std;`).
+_EXTERN_AS_STD = re.compile(r"\bextern\s+crate\s+(?:r#)?\w+\s+as\s+(?:r#)?(?:std|core)\b")
 
 
 def _false(why, reason):

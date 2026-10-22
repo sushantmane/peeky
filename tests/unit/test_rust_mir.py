@@ -1391,6 +1391,11 @@ def test_the_dump_s_address_comparisons_are_the_standard_library_s(text):
         "outer!(inner!(std));\n",
         "extern crate core as std;\n",
         "extern  crate alloc as core;\n",
+        # Raw identifiers on either side (#272 review, round 2).
+        "extern crate evil as r#std;\n",
+        "extern crate evil as r#core;\n",
+        "extern crate r#evil as std;\n",
+        "extern crate r#evil\nas\tcore;\n",
     ],
 )
 def test_a_crate_that_may_name_them_itself_trusts_none(text):
