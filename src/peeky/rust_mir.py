@@ -40,6 +40,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from peeky.rust_ir import ir_string
+from peeky.textlines import split_lines
 
 MAX_MIR_BYTES = 64 * 1024 * 1024
 MAX_ITERATIONS = 10_000
@@ -3041,7 +3042,7 @@ def _top_level(text):
 
 def parse_body(text):
     """One `-Zdump-mir` body, or None when the file holds no function body."""
-    lines = text.splitlines()
+    lines = split_lines(text)
     start = next((i for i, line in enumerate(lines) if line.startswith("fn ")), None)
     if start is None or not (header := _HEADER.match(lines[start])):
         return None
@@ -3251,7 +3252,8 @@ def load_bodies(directory, crate):
         return []
     bodies = []
     for path in files:
-        body = parse_body(path.read_text(encoding="utf-8", errors="replace"))
+        # As rustc wrote it: no newline translation, and no byte read as another (#188).
+        body = parse_body(path.read_bytes().decode("utf-8", errors="surrogateescape"))
         if body is not None:
             bodies.append(body)
     return bodies

@@ -22,6 +22,7 @@ from pathlib import Path
 from peeky.adapters import PythonAdapter
 from peeky.java import JavaSession, _bundle, _hash, _tool
 from peeky.java_metadata import MAX_CLASS_BYTES, _class_metadata
+from peeky.textlines import source_lines
 
 MAX_ATTACH_SOURCES = 64
 MAX_ATTACH_CLASSES = 2048
@@ -65,7 +66,8 @@ def attached_source_map(class_roots, sources, deadline=None, identities=None):
         if key in packages:
             raise ValueError("Two declared sources share a package and file name")
         packages[key] = source
-        counts[source] = len(text.splitlines())
+        # Java ends a line at CR, LF or CRLF alone (#179).
+        counts[source] = len(source_lines(text, rust=False))
     classes, total = {}, 0
     for class_root in class_roots:
         for package in sorted({package for package, _ in packages}):
