@@ -628,6 +628,40 @@ with your permissions. System headers, libraries and the dynamic loader aren't f
 the checks don't prove that a hostile process can't interfere, nor anything about every loaded
 library.
 
+### Which C++ builds Peeky supports
+
+Peeky builds `.cpp`, `.cc` and `.cxx` files as C++17, with debug information, and only with
+clang. Its C++ rules are checked against clang's debug information alone. Those rules cover
+locals declared below the stop or not yet initialized, previews, map lookups, libstdc++ strings,
+setting a string's text, and same-named locals. C builds with clang or GCC.
+
+Before a C++ build, Peeky asks the compiler for its `--version`. A compiler that doesn't say
+`clang version` is refused before anything is built:
+
+```
+UNSUPPORTED: C++ targets need clang++ (Peeky's C++ rules are checked against clang's debug info); set PEEKY_NATIVE_CXX to clang++ (/usr/bin/aarch64-linux-gnu-g++-13 is GCC)
+```
+
+To fix it, set `PEEKY_NATIVE_CXX` to a clang++.
+
+- Peeky goes by what the compiler says, never by its name. macOS's `g++` is Apple clang, so it is
+  accepted.
+- A `ccache` or `distcc` symlink named `clang++` is refused: its own `--version` isn't clang's.
+- A wrapper script that runs clang++, such as `exec ccache clang++ "$@"`, passes clang's
+  `--version` through. So it works.
+- Peeky asks once per compiler file, which it knows by its path, modification time and size.
+- A compiler that doesn't answer within 10 s is refused as timed out. Peeky ends it, and every
+  process in its process group.
+
+Peeky's C++ support doesn't cover these:
+
+- the debugger's views of other standard-library types;
+- overloaded operators;
+- expression evaluation;
+- reassigning a pointer or a reference;
+- changing a whole class object;
+- C++ build systems.
+
 ### Why a local shows `no value yet`
 
 Peeky withholds a C or C++ local when its storage may still hold leftovers. The row says
