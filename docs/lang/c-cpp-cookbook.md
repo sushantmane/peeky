@@ -1,14 +1,25 @@
 # Peeky Cookbook: C and C++
 
-What is particular to C and C++ in Peeky's recipes. Read the [COOKBOOK](../COOKBOOK.md) for the recipes every language shares: each section here has the number and title of the COOKBOOK section it adds to. The one-page summary of C and C++'s rules is [c-cpp.md](c-cpp.md).
+This cookbook covers what is different for C and C++. Read the [COOKBOOK](../COOKBOOK.md) first:
+it has the recipes every language shares. Each section here has the number and title of the
+COOKBOOK section it adds to. For a one-page summary of the C and C++ rules, see
+[c-cpp.md](c-cpp.md).
+
+Start with [7.1](#71-c-and-c): what Peeky reads and changes in C and C++.
 
 ## Contents
 
 - [1.1 What Can I Ask?](#11-what-can-i-ask)
+  - [See each name's type](#see-each-names-type)
 - [2.1 Fields and Indexes](#21-fields-and-indexes)
+  - [Read through a pointer](#read-through-a-pointer)
+  - [Read a C++ map or set](#read-a-c-map-or-set)
 - [2.2 Every Iteration of a Loop](#22-every-iteration-of-a-loop)
+  - [Loop headers in a GCC build](#loop-headers-in-a-gcc-build)
 - [4.7 C++ References and Pointers in SQL](#47-c-references-and-pointers-in-sql)
+  - [Compare a reference's text in SQL](#compare-a-references-text-in-sql)
 - [5.1 Stop, Look, Change, Finish](#51-stop-look-change-finish)
+  - [Read a caller's local](#read-a-callers-local)
 - [7.1 C and C++](#71-c-and-c)
   - [Quick Start](#quick-start)
   - [Structs and Arrays of Structs](#structs-and-arrays-of-structs)
@@ -23,30 +34,75 @@ What is particular to C and C++ in Peeky's recipes. Read the [COOKBOOK](../COOKB
 
 ## 1.1 What Can I Ask?
 
-Adds to [COOKBOOK 1.1](../COOKBOOK.md#11-what-can-i-ask).
+Read [COOKBOOK 1.1](../COOKBOOK.md#11-what-can-i-ask) first.
 
-- **Types:** Each name shows its type; in C a struct, union or enum that no typedef names is written with its tag, as C code names it (`r (struct ring *)`, `c (enum color)`; a typedef's name stays: `t (box_t)`). C++ writes the standard library's types as code and probe tables do (`parts (std::vector<std::string>)`, `p (const std::string &, lines 6-7)`), and lists none of the compiler's own locals (a range `for`'s `__range1`, `__begin1` and `__end1`).
+### See each name's type
+
+`describe` shows each name with its type, the way C or C++ code writes it:
+
+- In C, a struct, union or enum that no typedef names is written with its tag:
+  `r (struct ring *)`, `c (enum color)`. A typedef's name stays: `t (box_t)`.
+- In C++, the standard library's types are written as code and probe tables write them:
+  `parts (std::vector<std::string>)`, `p (const std::string &, lines 6-7)`.
+- In C++, none of the compiler's own locals are listed, such as a range `for`'s `__range1`,
+  `__begin1` and `__end1`.
+
+For example, for `static int push(struct ring *r, int v)` on line 13 of a `ring.c`, `describe`
+prints:
+
+```
+names in push (ring.c:13-19): r (struct ring *), v (int)
+```
 
 ## 2.1 Fields and Indexes
 
-Adds to [COOKBOOK 2.1](../COOKBOOK.md#21-fields-and-indexes).
+Read [COOKBOOK 2.1](../COOKBOOK.md#21-fields-and-indexes) first.
 
-- **C and C++ pointers:** In C and C++, follow a pointer with `.` (`stats.total_us`, not `->`); a pointer to a scalar carries no length, so `values[0]` reads what it points at; for other elements, read the array itself where it is declared (in the caller). The same holds for a pointer to an array, a container or a struct: `pa[0]` is what it points at, so `pa[0][1]` is `(*pa)[1]`, while `pa[1]`, which C reads past the pointee, is refused with that selector (#102). A typedef'd pointer (`RowPtr`, `const RowPtr`) works the same; the build's debug information tells it from a typedef'd reference, which indexes its referent. A pointer under a type name it does not resolve (a template's member typedef such as `std::vector<T>::pointer` to a container) is refused for indexing rather than read either way. A NULL or unreadable pointer is refused (`p is NULL`).
-- **C++ maps and sets:** On a C++ `std::map` or `std::unordered_map`, `m[1]` is the value for key 1, as in C++, never the debugger's second entry; `m[#0]` is the first entry, and a set has only `s[#0]`, ... ([7.1](#maps-and-sets-c)).
+### Read through a pointer
+
+Follow a pointer with `.`, not `->`: `stats.total_us`.
+
+A pointer to a scalar carries no length. So `values[0]` reads what it points at. To read the other
+elements, read the array itself where it is declared, in the caller.
+
+The same holds for a pointer to an array, a container or a struct. `pa[0]` is what it points at,
+so `pa[0][1]` is `(*pa)[1]`. C would read `pa[1]` past what the pointer points at, so Peeky
+refuses it, naming that selector.
+
+- A typedef'd pointer (`RowPtr`, `const RowPtr`) works the same. The build's debug information
+  tells it from a typedef'd reference, which indexes what it refers to.
+- A pointer under a type name Peeky can't resolve is refused for indexing, rather than read either
+  way. An example is a template's member typedef, such as `std::vector<T>::pointer` to a
+  container.
+- A NULL or unreadable pointer is refused: `p is NULL`.
+
+### Read a C++ map or set
+
+On a `std::map` or `std::unordered_map`, `m[1]` is the value for key 1, as in C++. It is never the
+debugger's second entry. `m[#0]` is the first entry. A set has only `s[#0]`, `s[#1]`, and so on.
+See [7.1](#maps-and-sets-c) for the details.
 
 ## 2.2 Every Iteration of a Loop
 
-Adds to [COOKBOOK 2.2](../COOKBOOK.md#22-every-iteration-of-a-loop).
+Read [COOKBOOK 2.2](../COOKBOOK.md#22-every-iteration-of-a-loop) first.
 
-- **GCC:** GCC gives `for (;;)` and `do {` no code of their own, so LLDB moves their breakpoint into the body, which stops at each pass (`moved` says so).
+### Loop headers in a GCC build
+
+GCC gives `for (;;)` and `do {` no code of their own. So LLDB moves their breakpoint into the
+loop's body, which stops at each pass. The result's `moved` says so.
 
 ## 4.7 C++ References and Pointers in SQL
 
-Adds to [COOKBOOK 4.7](../COOKBOOK.md#47-c-references-and-pointers-in-sql).
+Read [COOKBOOK 4.7](../COOKBOOK.md#47-c-references-and-pointers-in-sql) first.
 
-**What it answers:** Which arguments did `trim_left` change? A `const std::string &` (or a pointer) is saved as the debugger shows it, its address first: `0x000000016d78b298 "apple"`. It never equals a plain string's `"apple"`, so take the text after the address before comparing.
+### Compare a reference's text in SQL
 
-`examples/cpp/refs/trim.cpp` trims each argument's leading spaces. Capture the reference parameter `s` in `trim_left`, then the result `name` in `main`, one run each:
+Use this to see which arguments `trim_left` changed. A `const std::string &`, or a pointer, is
+saved as the debugger shows it, with its address first: `0x000000016d78b298 "apple"`. It never
+equals a plain string's `"apple"`. So take the text after the address before you compare.
+
+`examples/cpp/refs/trim.cpp` trims each argument's leading spaces. Capture the reference parameter
+`s` in `trim_left`, then the result `name` in `main`, one run each:
 
 ```sh
 peeky probe examples/cpp/refs/trim.cpp --at trim.cpp:6 --arg apple --arg " pear" --arg "fig " \
@@ -66,15 +122,62 @@ hit  argument                    name     unchanged
 3    0x000000016d78b298 "fig "   "fig "   1
 ```
 
-`substr(value, instr(value, ' ') + 1)` is the text after the address: an address has no space, while the text may have several (`" pear"`), so take only the first. Use it only on a reference's or pointer's value (one that starts with `0x`); on a plain string it would cut the text at its first space. `no_addresses(value)` gives `0x… "apple"`: enough to compare two references, or one across runs, but still not equal to `"apple"`. Group and count such values by it, not by `value` (`GROUP BY no_addresses(value)`): two references to the same text at different addresses are then one group. A text Peeky could not check whole carries a note after it (`"v" (shown up to a NUL at byte 1 of 3)`, libstdc++ with lldb-dap 18; [7.1](#strings-with-a-nul-byte-c)), so it never equals a plain string either.
+`substr(value, instr(value, ' ') + 1)` is the text after the address. An address has no space, but
+the text may have several (`" pear"`). So cut at the first space only.
+
+- Use it only on a reference's or pointer's value, one that starts with `0x`. On a plain string,
+  it would cut the text at its first space.
+- `no_addresses(value)` gives `0x… "apple"`. That is enough to compare two references, or one
+  across runs. It still doesn't equal `"apple"`.
+- To group and count such values, use `GROUP BY no_addresses(value)`, not `value`. Two references
+  to the same text at different addresses are then one group.
+- A text that Peeky couldn't check whole carries a note after it, so it never equals a plain
+  string either: `"v" (shown up to a NUL at byte 1 of 3)`. This happens with libstdc++ and
+  lldb-dap 18 ([7.1](#strings-with-a-nul-byte-c)).
 
 ## 5.1 Stop, Look, Change, Finish
 
-Adds to [COOKBOOK 5.1](../COOKBOOK.md#51-stop-look-change-finish).
+Read [COOKBOOK 5.1](../COOKBOOK.md#51-stop-look-change-finish) first.
 
-- **C and C++ callers:** In C and C++, a caller's local is withheld while its declaration's code is not finished: in `long result = twice(seed);`, or `long multi =` over `twice(seed + 1);`, the value is stored only after `twice` returns (so is a local whose declaration line has no code of its own: an array of structs, a nested struct or a 2-D array initialized over several lines is stored element by element on its elements' lines). So is a local whose declaration statement, read from the source to its `;`, is still running on the caller's line: in `struct trio t = { seed,` / `{ twice(3),` / `twice(4) } };`, the first line's code runs before the calls and `t.p` is stored after them. A `for` or `while` loop's own variable (`for (int i = 0; …)`) is withheld too while the body calls, on one line or several: the header's code also runs after the body, and Peeky cannot prove from the source that the loop has run its initialization (a `goto` into the body, or a call a macro hides in it, skips or delays it). Read it in the loop's body: probe a line there, or `step --out` back to that frame.
-- **Headers and other files:** A variable declared in a `for`, `if`, `while` or `switch` header counts until the `;` after the whole statement, so it stays withheld while the body calls, and where the source does not give the end, the local is withheld: brackets that do not balance, or text the compiler may read differently from the scan (between the declaration and its end, a directive such as `#include`, a line splice, `<::`, or a macro of the program's sources and headers that leaves a bracket open or holds a `;` outside its brackets; anywhere in the file, `#line`). So is every local whose declaration is in another file than the caller's line: an initializer can `#include` its rows, or be included itself.
-- **How the source is read:** C's trigraphs are read as `-std=c11` reads them (`??/` is a backslash); C++17 has none. Digraphs (`<% %> <: :>`) are brackets, and lines are counted as the compiler's debug information counts them (`\r\n`, a lone `\r` or `\n`; `\n\r` is two).
+### Read a caller's local
+
+In C and C++, a caller's local is withheld while its declaration's code hasn't finished:
+
+- **A call in the declaration:** in `long result = twice(seed);`, the caller stores `result` only
+  after `twice` returns. The same holds for `long multi =` on one line and `twice(seed + 1);` on
+  the next.
+- **A declaration line with no code of its own:** the local is stored element by element, on its
+  elements' lines. Examples are an array of structs, a nested struct, or a 2-D array initialized
+  over several lines.
+- **A declaration still running on the caller's line:** Peeky reads the declaration from the source
+  up to its `;`. In `struct trio t = { seed,` / `{ twice(3),` / `twice(4) } };`, the first line's
+  code runs before the calls, and `t.p` is stored after them.
+- **A loop's own variable:** a `for` or `while` loop's variable, as in `for (int i = 0; …)`, is
+  withheld too while the body calls, on one line or several. The header's code also runs after the
+  body. Peeky can't prove from the source that the loop ran its initialization. A `goto` into the
+  body, or a call that a macro hides there, can skip or delay it. To read the variable, probe a
+  line in the loop's body, or `step --out` back to that frame.
+- **A variable declared in a header:** a variable declared in a `for`, `if`, `while` or `switch`
+  header counts until the `;` after the whole statement. So it stays withheld while the body calls.
+- **A declaration in another file:** every local declared in another file than the caller's line
+  is withheld. An initializer can `#include` its rows, or be included itself.
+
+The local is also withheld wherever the source doesn't show where the declaration ends:
+
+- brackets that don't balance;
+- between the declaration and its end, text the compiler may read differently from Peeky's scan:
+  - a directive such as `#include`;
+  - a line splice, or `<::`;
+  - a macro of the program's sources and headers that leaves a bracket open, or holds a `;` outside
+    its brackets;
+- anywhere in the file, a `#line` directive.
+
+How Peeky reads the source:
+
+- C's trigraphs are read as `-std=c11` reads them: `??/` is a backslash. C++17 has no trigraphs.
+- Digraphs (`<% %> <: :>`) are brackets.
+- Lines are counted as the compiler's debug information counts them. `\r\n`, a lone `\r` and a
+  lone `\n` each end a line; `\n\r` is two line ends.
 
 ## 7.1 C and C++
 
