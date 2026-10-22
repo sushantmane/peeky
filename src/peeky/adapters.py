@@ -1058,6 +1058,9 @@ def locals_only(scopes):
 @dataclass(frozen=True)
 class PythonAdapter:
     interpreter: str = sys.executable
+    # debugpy's adapter exits 1 when Peeky ends its input as it answers `disconnect`: its
+    # handler then writes to the closed channel (#213). No sign of output it dropped.
+    provoked_exit = 1
 
     environment = None
     manifest_id = None

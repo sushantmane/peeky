@@ -30,6 +30,9 @@ TERMINATE_GRACE = 1.0
 # waits at most this long for the adapter to end its output stream (#203): only that end
 # proves no more of the program's output can come. A wait that runs out says so.
 DRAIN_TIMEOUT = 2.0
+# How soon after the adapter answered `disconnect` Peeky ending its input still counts
+# as "just answered", for the one exit Peeky is known to provoke (#213).
+JUST_ANSWERED = 0.25
 # At most this much of what the adapter sent from Peeky's disconnect on is kept.
 AFTER_DISCONNECT_CHARS = 4096
 # How often the session's processes are listed (#143), and at most how often a stop or
@@ -96,10 +99,13 @@ def read_message(stream):
 
 
 class DAP:
-    def __init__(self, command=None, *, env=None, fatal_stderr=None):
+    def __init__(self, command=None, *, env=None, fatal_stderr=None, provoked_exit=None):
         """``fatal_stderr`` maps a regex to a message: an adapter stderr line matching it
         means the adapter can no longer work (e.g. a dead event thread), and fails the
-        transport with that message (``{excerpt}``: the line and its stack frames)."""
+        transport with that message (``{excerpt}``: the line and its stack frames).
+        ``provoked_exit``: the status this adapter is known to exit with when Peeky ends
+        its input as it answers `disconnect` (debugpy: 1, #213), which close() then does
+        not take for a crash."""
         # Trusted worker configuration only. Never forward agent-provided argv.
         command = PythonAdapter().command if command is None else command
         if (
@@ -177,6 +183,7 @@ class DAP:
         # (`drained`); what it sent from the disconnect on, while answering it included
         # (`after_disconnect`); the exit code.
         self.final = None
+        self.provoked_exit = provoked_exit
         self.sequence = 0
         self.event_sequence = 0
         self.error = None
@@ -804,13 +811,17 @@ class DAP:
             with self.condition:
                 ended = self._end_reported()
                 mark, kept = self.output_count, ("".join(self.output), self.output_truncated)
+            # Whether the disconnect was sent, and when it was answered.
+            asked, answered = False, None
             if self._adapter_running():
                 try:
                     seq = self.send("disconnect", {"terminateDebuggee": terminate}, timeout=0.25)
+                    asked = True
                     self.response(seq, timeout=1)
+                    answered = time.monotonic()
                 except Exception:
                     pass
-            clean, own_exit = self._drain(mark) if ended else (False, False)
+            clean, own_exit, input_ended = self._drain(mark) if ended else (False, False, None)
             if stop := getattr(self, "stderr_stop", None):
                 # The stderr reader stops and closes its descriptor itself (_read_stderr).
                 stop.set()
@@ -827,6 +838,7 @@ class DAP:
             self.process.wait(timeout=3)
             # An adapter that failed as it exited may have dropped output it held.
             status = self.process.returncode
+            provoked = self._provoked(status, own_exit, asked, answered, input_ended)
             self.reader.join(timeout=3)
             if stderr_reader := getattr(self, "stderr_reader", None):
                 stderr_reader.join(timeout=1)
@@ -838,15 +850,16 @@ class DAP:
                 ]
                 self.final = {
                     "ended": ended,
-                    # A status counts only when the adapter exited on its own, before
-                    # Peeky ended its input (or signalled it, later still): debugpy can
-                    # exit 1 when its input ends while it still handles the disconnect.
-                    "drained": clean and (status == 0 or not own_exit),
-                    # The stream ended cleanly, nothing after the mark: then only an exit
-                    # of its own with another status (`adapter_exit`) leaves it partial.
+                    # Any status but 0 leaves it partial, save the one known case
+                    # (_provoked): debugpy exits 1 when its input ends while it still
+                    # handles the disconnect.
+                    "drained": clean and (status == 0 or provoked),
+                    # The stream ended cleanly, nothing after the mark: then only the
+                    # adapter's exit status (`adapter_exit`) can leave it partial.
                     "stream_drained": clean,
                     "own_exit": own_exit,
                     "adapter_exit": status,
+                    "exit_provoked": provoked,
                     "output": kept[0],
                     "output_truncated": kept[1],
                     "after_disconnect": "".join(after)[:AFTER_DISCONNECT_CHARS],
@@ -866,13 +879,14 @@ class DAP:
         exited on its own before its input was ended). Called before anything is killed,
         so the end is the adapter's own (#203); output after ``mark`` already settles it,
         so it is not waited for. Its status is read without reaping it (#170)."""
-        own_exit = self._adapter_state() in ("exited", "reaped")
+        own_exit, input_ended = self._adapter_state() in ("exited", "reaped"), None
         if self.write_lock.acquire(timeout=1):
             try:
                 self.process.stdin.close()
             except OSError:
                 pass
             finally:
+                input_ended = time.monotonic()
                 self.write_lock.release()
         deadline = time.monotonic() + DRAIN_TIMEOUT
         with self.condition:
@@ -881,4 +895,16 @@ class DAP:
                 if remaining <= 0:
                     break
                 self.condition.wait(remaining)
-            return self.stream_ended.is_set() and self.output_count == mark, own_exit
+            clean = self.stream_ended.is_set() and self.output_count == mark
+        return clean, own_exit, input_ended
+
+    def _provoked(self, status, own_exit, asked, answered, input_ended):
+        """Whether the adapter's non-zero exit is the one Peeky is known to provoke (#213):
+        debugpy's adapter (``provoked_exit``), exactly that status, still running when
+        Peeky ended its input, and that while its `disconnect` was unanswered, or at
+        most JUST_ANSWERED after its answer: its disconnect handler then fails writing to
+        the channel the end of its input closed. Any other non-zero exit is a crash."""
+        known = getattr(self, "provoked_exit", None)
+        if known is None or status != known or own_exit or not asked or input_ended is None:
+            return False
+        return answered is None or input_ended - answered <= JUST_ANSWERED

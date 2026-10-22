@@ -1725,6 +1725,7 @@ class DebugWorker:
                     command=runtime.command,
                     env=getattr(runtime, "environment", None),
                     fatal_stderr=getattr(runtime, "fatal_stderr", None),
+                    provoked_exit=getattr(runtime, "provoked_exit", None),
                 )
                 capabilities = self.dap.request(
                     "initialize", runtime.initialize_args(), timeout=left()

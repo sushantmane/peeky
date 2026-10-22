@@ -1714,10 +1714,10 @@ def _settle_output(result, final, known_end):
     program's end before that disconnect, and the adapter then ended its stream with
     nothing more: none could follow. An end Peeky only inferred (java-debug #27), a
     stream the adapter kept open, text it sent from the disconnect on (its own, or the
-    program's: `output_after_disconnect`), or an adapter that exited on its own, before
-    Peeky ended its input, with a status other than 0 (`adapter_exit`, and the warning
-    returned) leaves it partial, and `program_ended` says the program had ended all the
-    same."""
+    program's: `output_after_disconnect`), or an adapter that exited with a status other
+    than 0 (`adapter_exit`, and the warning returned; save the one exit Peeky is known to
+    provoke: DAP._provoked) leaves it partial, and `program_ended` says the program had
+    ended all the same."""
     warning = None
     if isinstance(final, dict) and final.get("ended"):
         known_end = True
