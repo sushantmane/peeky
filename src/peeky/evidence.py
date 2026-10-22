@@ -17,7 +17,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import quote
 
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 15
 MAX_RUNS = 500
 DEFAULT_ROWS = 200
 MAX_ROWS = 10000
@@ -128,7 +128,9 @@ TABLES = {
             "stop": "Which of the line's breakpoint locations in its function the hit was at, "
             "1 to N in address order, where the line has several there (a macro's or a "
             "block's own code, a loop header's): a pass stops at each, so hits count stops, "
-            "not passes. NULL for a line with one (and for runs saved before schema 14)",
+            "not passes. A `(return)` row has its hit's (where its call was stopped, not the "
+            "line it returned to; from schema 15, filled in from the hit's other rows for "
+            "earlier runs). NULL for a line with one (and for runs saved before schema 14)",
         },
     ),
     "interventions": (
@@ -231,7 +233,9 @@ _DDL = (
 # stop); version 11 adds interventions.function, version 12 interventions.instance, and
 # version 13 captures.instance (a closure's or generic instance's label, NULL before);
 # version 14 adds captures.stop and interventions.stop (#157), which of a line's breakpoint
-# locations a hit or a change was at. Views name columns of the newest tables, so earlier steps only drop them and the
+# locations a hit or a change was at; version 15 gives a `(return)` row its hit's stop
+# (#174), from that hit's other rows (NULL where it had none: `--capture return` alone).
+# Views name columns of the newest tables, so earlier steps only drop them and the
 # last creates them.
 _DROP_VIEWS = ("DROP VIEW IF EXISTS last_run", "DROP VIEW IF EXISTS evidence")
 
@@ -317,6 +321,13 @@ _MIGRATIONS = {
         *_DROP_VIEWS,
         _add_columns(("stop", "INTEGER")),
         _add_columns(("stop", "INTEGER"), table="interventions"),
+    ),
+    # Every row of a hit is from one stop: its observed and after-set rows say which.
+    14: (
+        *_DROP_VIEWS,
+        "UPDATE captures SET stop = (SELECT MIN(o.stop) FROM captures o WHERE o.run_id = "
+        "captures.run_id AND o.hit = captures.hit AND o.phase != 'returned') WHERE phase = "
+        "'returned' AND stop IS NULL",
         _EVIDENCE_VIEW,
         _LAST_RUN_VIEW,
     ),
@@ -370,8 +381,9 @@ _SAME = (
 # function), a hit is also its stop: the same hit at another stop is another row.
 _STOPPED = "EXISTS (SELECT 1 FROM captures WHERE run_id = {} AND stop IS NOT NULL)"
 _BOTH_STOPPED = f"({_STOPPED.format(_A)} AND {_STOPPED.format(_B)})"
-# A row's stop, or its hit's (a `(return)` row has none of its own, #155: the observed
-# rows of its hit say where the call began).
+# A row's stop, or its hit's: a `(return)` row has its hit's own since schema 15 (#174);
+# one saved without it (#155) takes it from the other rows of its hit, as a store's
+# upgrade to 15 does.
 _HIT_STOP = (
     "COALESCE(s.stop, (SELECT MIN(o.stop) FROM captures o WHERE o.run_id = s.run_id AND "
     "o.hit = s.hit))"
@@ -1765,8 +1777,10 @@ def _aligned(a, b):
 
 def _unplaced_returns(path, run):
     """A note where a run's line stops several times per pass (#157's warning) and its
-    `(return)` rows (#155) have no observed row at their hit to say at which stop their
-    call began (`--capture return` alone): pairing them by hit number cannot be checked."""
+    `(return)` rows (#155) have no stop, nor any row at their hit to say at which stop
+    their call began (`--capture return` alone, before schema 15 gave a `(return)` row
+    its hit's stop, #174, or where no stop was recorded): pairing them by hit number
+    cannot be checked."""
     found = query(
         path,
         "SELECT r.run_id FROM runs r WHERE r.run_id IN (:a, :b) AND r.warnings LIKE "
@@ -1779,7 +1793,7 @@ def _unplaced_returns(path, run):
         return []
     return [
         f"run {found[0]['run_id']}'s line stops several times per pass, and its `(return)` "
-        "rows do not say at which stop their call began (nothing else was captured there), "
+        "rows do not say at which stop their call began (no row of their hit records one), "
         "so a hit need not be the same call in both runs: capture a selector with `return` "
         "to pair them by stop, or pair them by a value, `peeky queries join --param "
         f"a={run['a']} --param b={run['b']} --param key=<selector>`"

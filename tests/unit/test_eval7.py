@@ -496,6 +496,30 @@ def test_returns_alone_on_a_line_that_stops_several_times_are_flagged(store):
     assert "notes" not in evidence.run_query(store, "diff")
 
 
+def test_returns_alone_pair_by_their_own_stop(store):
+    # #174: a `(return)` row now has its hit's stop, so returns alone on a line that
+    # stops several times per pass pair by stop, and nothing is left to flag.
+    from peeky import evidence
+
+    warning = "Line 36 stops up to 2 times per pass in f (2 breakpoint locations): ..."
+    saved(
+        store,
+        [(1, "returned", "(return)", "5", 1), (2, "returned", "(return)", "6", 2)],
+        warnings=[warning],
+    )
+    saved(
+        store,
+        [(1, "returned", "(return)", "5", 1), (2, "returned", "(return)", "8", 1)],
+        warnings=[warning],
+    )
+    result = evidence.run_query(store, "diff")
+    assert [(r["hit"], r["note"]) for r in result["rows"]] == [
+        (2, "missing in run b (run a: stop 2)"),
+        (2, "missing in run a (run b: stop 1)"),
+    ]
+    assert not any("rows do not say at which stop" in note for note in result.get("notes", ()))
+
+
 def test_diff_collapses_address_only_rows_per_stop(store):
     # Finding 9 with #160's stops: one address-only row per selector and stop.
     from peeky import evidence

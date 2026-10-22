@@ -237,7 +237,42 @@ def test_an_older_store_gains_stops(tmp_path, version):
     assert evidence.query(store, "SELECT COUNT(stop) AS n FROM interventions")["rows"] == [{"n": 0}]
     connection = sqlite3.connect(store)
     assert connection.execute("PRAGMA user_version").fetchone() == (evidence.SCHEMA_VERSION,)
-    assert evidence.SCHEMA_VERSION == 14
+    assert evidence.SCHEMA_VERSION == 15
+
+
+def test_return_rows_keep_their_hits_stop_and_older_ones_gain_it(tmp_path):
+    # #174: a `(return)` row stored no stop (NULL), so `diff` had to infer it from the
+    # hit's observed rows. Schema 15 records it, and fills it in for earlier runs.
+    store = tmp_path / "evidence.db"
+    probe = {
+        "probe": {"program": "a.c", "line": 8, "capture": ["k", "return"], "set": []},
+        "status": "completed",
+        "hits": 2,
+        "rows": [
+            dict(hit=1, phase="observed", line=8, selector="k", value="1", stop=1, stops=2),
+            dict(hit=1, phase="returned", line=12, selector="(return)", value="5", stop=1, stops=2),
+            dict(hit=2, phase="returned", line=12, selector="(return)", value="6", stop=2, stops=2),
+        ],
+    }
+    evidence.record(store, probe, language="c")
+    stored = "SELECT hit, phase, stop FROM last_run ORDER BY hit, phase"
+    expected = [
+        {"hit": 1, "phase": "observed", "stop": 1},
+        {"hit": 1, "phase": "returned", "stop": 1},
+        {"hit": 2, "phase": "returned", "stop": 2},
+    ]
+    assert evidence.query(store, stored)["rows"] == expected
+    # The same run saved by schema 14 (no stop on its `(return)` rows): the upgrade
+    # takes each from its hit's other rows; one whose hit has none stays NULL.
+    connection = sqlite3.connect(store)
+    connection.executescript(
+        "UPDATE captures SET stop = NULL WHERE phase = 'returned'; PRAGMA user_version = 14;"
+    )
+    connection.close()
+    expected[2]["stop"] = None
+    assert evidence.query(store, stored)["rows"] == expected
+    connection = sqlite3.connect(store)
+    assert connection.execute("PRAGMA user_version").fetchone() == (evidence.SCHEMA_VERSION,)
 
 
 # lldb-dap 18's listing of `format!("[{}]", v)` in an `#[inline(always)]` function that
