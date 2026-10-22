@@ -151,9 +151,11 @@ class Watched(Native):
     def __init__(self, seen):
         self.seen, self.unwatched = seen, []
 
-    def unwatch_return(self, dap, watch, thread_id=None):
+    def unwatch_return(self, dap, watch, thread_id=None, caller=False):
         self.unwatched.append(watch["ids"])
-        return self.seen if thread_id == watch["thread"] else None
+        if thread_id != watch["thread"]:
+            return None
+        return self.seen if caller else {k: v for k, v in self.seen.items() if k != "caller_sp"}
 
 
 WATCH = {"thread": 7, "sp": 0x1000, "ids": [41], "addresses": [0x18, 0x24]}
@@ -194,6 +196,42 @@ def test_a_return_is_shown_only_where_the_callers_stack_pointer_is_back(tmp_path
     moved = watched(tmp_path, {"pc": 0x20, "sp": 0x1100}, "step")
     other = moved.returned_value(moved.runtime, RETURNED, VALUE)
     assert other["unavailable"] and "stack pointer" in other["reason"]
+
+
+def test_a_breakpoint_in_the_call_a_step_out_was_leaving_is_proven_by_its_watch(tmp_path):
+    # #174: the line's next breakpoint location, in the same call, interrupted the step
+    # out of it. The watch held, and the stopped frame's caller is at the stack pointer
+    # the call's caller had: no other call could return to that frame unseen.
+    def held(seen):
+        worker = watched(tmp_path, seen, "breakpoint", [1])
+        worker.step_origin["stop_id"] = "hit1"
+        worker.step_held = None
+        worker.end_return_watch(
+            worker.runtime, dict(WATCH), {"body": {"reason": "breakpoint", "hitBreakpointIds": [1]}}
+        )
+        return worker
+
+    again = [frame("before", "0x14", 17), *ORIGIN[1:]]
+    worker = held({"pc": 0x50, "sp": 0x0F00, "caller_sp": 0x1000})
+    assert worker.step_held == "hit1" and worker.stop_reason == "breakpoint"
+    assert worker.same_call(again) == "hit1"
+    # Another function stopped, another frame under it, or not all of them.
+    assert worker.same_call([frame("other", "0x14", 17), *ORIGIN[1:]]) is None
+    assert worker.same_call([again[0], frame("__sort3", "0x28", 117), ORIGIN[2]]) is None
+    assert worker.same_call(again[:2]) is None
+    # A step's end is not such a stop.
+    worker.stop_reason = "step"
+    assert worker.same_call(again) is None
+    # Its caller's frame at another stack position, the watch dropped, a watched
+    # instruction (a deeper frame of a recursion), or no caller's stack pointer read.
+    for seen in (
+        {"pc": 0x50, "sp": 0x0F00, "caller_sp": 0x1100},
+        {"pc": 0x50, "sp": 0x0F00, "caller_sp": 0x1000, "dropped": 128},
+        {"pc": 0x18, "sp": 0x0F00, "caller_sp": 0x1000},
+        {"pc": 0x50, "sp": 0x0F00},
+    ):
+        worker = held(seen)
+        assert worker.step_held is None and worker.same_call(again) is None, seen
 
 
 def test_inlined_and_unwatched_calls_say_why_no_value_is_shown(tmp_path):
@@ -284,14 +322,18 @@ def test_a_refused_python_probe_of_returns_keeps_no_run(monkeypatch, tmp_path, c
 class Scripted:
     """A worker whose program stops as scripted: ("hit", depth), ("step", depth,
     returned), ("set", depth) (a --set-at line's stop) or ("end",); a stop may end with
-    {"thread": n} (else thread 1). Records how each stop was resumed; `refuse` names
-    steps the worker refuses because other threads stopped too."""
+    {"thread": n} (else thread 1), {"place": (k, n)} (its line's breakpoint location k
+    of n, #157), {"same": True} (the worker proves it in the call the last step out was
+    leaving, #174) or {"caller": "other"} (another frame under it). Records how each
+    stop was resumed; `refuse` names steps the worker refuses because other threads
+    stopped too."""
 
     def __init__(self, script, optimized=None, refuse=()):
         self.script, self.optimized, self.resumed = list(script), optimized, []
         self.adapter = object()
         self.current = None
         self.refuse, self.steps = set(refuse), 0
+        self.stops, self.stepped_from = 0, None
 
     def dispatch(self, operation, args):
         if operation == "launch":
@@ -311,20 +353,32 @@ class Scripted:
             if self.current[0] == "end":
                 return {"state": "terminated", "stop_id": None}
             kind, last = self.current[0], self.current[-1]
-            thread = last["thread"] if isinstance(last, dict) and "thread" in last else 1
+            options = last if isinstance(last, dict) else {}
+            thread = options.get("thread", 1)
             reason = kind if kind in ("step", "interrupted") else "breakpoint"
             body = {"reason": reason, "threadId": thread}
-            return {"state": "stopped", "stop_id": "x", "event": {"body": body}}
+            self.stops += 1
+            place = options.get("place")
+            return {
+                "state": "stopped",
+                "stop_id": f"x{self.stops}",
+                "event": {"body": body},
+                **({"place": place[0], "places": place[1]} if place else {}),
+            }
         if operation == "inspect":
             depth = self.current[1]
+            options = self.current[-1] if isinstance(self.current[-1], dict) else {}
             if self.current[0] in ("hit", "set"):
                 line = 4 if self.current[0] == "hit" else 5
+                under = below(depth - 1)
+                if options.get("caller") == "other":
+                    under = [frame("main", "0x9a", 10)] + under[1:]
                 return {
-                    "frames": [{**frame("fact", "0xf4", line), "source": {"path": "a.c"}}]
-                    + below(depth - 1),
+                    "frames": [{**frame("fact", "0xf4", line), "source": {"path": "a.c"}}] + under,
                     "scopes": [],
                     "depth": depth,
                     **({"optimized": self.optimized} if self.optimized else {}),
+                    **({"same_call_as": self.stepped_from} if options.get("same") else {}),
                 }
             return {
                 "frames": [{**f, "source": {"path": "a.c"}} for f in below(depth)],
@@ -335,6 +389,7 @@ class Scripted:
             }
         if operation == "step":
             self.steps += 1
+            self.stepped_from = args["stop_id"]
             if self.steps in self.refuse:
                 raise ValueError(
                     "Other threads stopped at this breakpoint too and are still paused there"
@@ -372,12 +427,109 @@ def test_recursive_calls_each_get_their_own_return(monkeypatch, tmp_path):
 
 
 def test_a_line_reached_again_before_the_return_is_never_attributed(monkeypatch, tmp_path):
-    # A loop's next pass, or a call that ended by an exception and the next call: the
-    # stack cannot tell them apart, so the earlier hit gets no value.
+    # A loop's next pass, or a call that ended by an exception and the next call: not
+    # proven either way (no watch said so), so the earlier hit gets no value, and the
+    # reason claims neither (#174).
     script = [("hit", 3), ("hit", 3), ("step", 2, value("7")), ("end",)]
     _, returns, _ = probe_with(monkeypatch, tmp_path, script)
-    assert "value" not in returns[1] and "ran again at the same depth" in returns[1]["error"]
+    error = returns[1]["error"]
+    assert "value" not in returns[1] and error.startswith(
+        "withheld: the line stopped again at the same depth before this call returned, and "
+        "Peeky could not tell whether in this call (a loop's next pass) or in a later call "
+        "after this one ended without returning"
+    )
+    assert "breakpoint location" not in error and "ran again" not in error
     assert returns[2]["value"] == "7"
+
+
+def test_a_later_stop_of_a_multi_stop_line_says_so_and_claims_no_pass(monkeypatch, tmp_path):
+    # #174: the line's second breakpoint location (#160) came before the call returned.
+    # The reason was a loop's next pass; with no proof of the same call, it names the
+    # stop and claims neither a later location of this call nor a next pass.
+    script = [
+        ("hit", 3, {"place": (1, 2)}),
+        ("hit", 3, {"place": (2, 2)}),
+        ("step", 2, value("7")),
+        ("end",),
+    ]
+    result, returns, _ = probe_with(monkeypatch, tmp_path, script)
+    error = returns[1]["error"]
+    assert error.startswith(
+        "withheld: the line stopped again at the same depth (at its breakpoint location 2 of "
+        "2) before this call returned, and Peeky could not tell whether in this call (another "
+        "of the line's breakpoint locations, or a loop's next pass) or in a later call"
+    ), error
+    # Each (return) row has its own hit's stop, in the rows and per hit.
+    assert [(returns[h]["stop"], returns[h]["stops"]) for h in (1, 2)] == [(1, 2), (2, 2)]
+    assert returns[2]["value"] == "7"
+    assert [(entry["hit"], entry["stop"]) for entry in result["by_hit"]] == [(1, 1), (2, 2)]
+    # The frames under it are not the call's: another call, said as such.
+    script[1] = ("hit", 3, {"place": (2, 2), "caller": "other"})
+    _, returns, _ = probe_with(monkeypatch, tmp_path, script)
+    assert returns[1]["error"].startswith(
+        "withheld: the line stopped again at the same depth in another call (the frames "
+        "under it are not this call's) before this call returned"
+    )
+
+
+def test_a_return_is_followed_across_the_lines_stops_in_the_same_call(monkeypatch, tmp_path):
+    # #174: the step out of hit 1's call was interrupted at the line's second location,
+    # and its watch proves the stop is in that call: both hits get the call's return.
+    script = [
+        ("hit", 3, {"place": (1, 2)}),
+        ("hit", 3, {"place": (2, 2), "same": True}),
+        ("step", 2, value("7")),
+        ("end",),
+    ]
+    result, returns, resumed = probe_with(monkeypatch, tmp_path, script)
+    assert [(returns[h]["value"], returns[h]["stop"]) for h in (1, 2)] == [("7", 1), ("7", 2)]
+    assert returns[1]["function"] == "fact" and returns[1]["line"] == 9
+    assert resumed == ["step", "step", "continue"]
+    assert [r["hit"] for r in result["rows"] if r["selector"] == RETURN] == [1, 2]
+    # A loop's next pass in the same call, proven the same way: the same return.
+    script = [("hit", 3), ("hit", 3, {"same": True}), ("hit", 3, {"same": True})]
+    _, returns, _ = probe_with(monkeypatch, tmp_path, [*script, ("step", 2, value("6")), ("end",)])
+    assert [returns[h]["value"] for h in (1, 2, 3)] == ["6", "6", "6"]
+    assert "stop" not in returns[1]
+    # Withheld, then for every hit of the call: the program ended first.
+    _, returns, _ = probe_with(monkeypatch, tmp_path, [*script[:2], ("end",)])
+    assert all("ended before it returned" in returns[h]["error"] for h in (1, 2))
+
+
+def test_a_return_is_not_followed_where_the_proof_does_not_hold(monkeypatch, tmp_path):
+    # The proof is for the step out that began at the call's own last stop: a stop in
+    # between (a --set-at's, in a call below) ends it, so a later stop of the line is
+    # not taken for the same call, whatever the worker says of its own step.
+    script = [
+        ("hit", 3, {"place": (1, 2)}),
+        ("set", 4),
+        ("step", 3, value("0")),
+        ("hit", 3, {"place": (2, 2), "same": True}),
+        ("step", 2, value("7")),
+        ("end",),
+    ]
+    _, returns, _ = probe_with(monkeypatch, tmp_path, script, set_at=((5, 9, "x", "1"),))
+    assert "value" not in returns[1] and "could not tell" in returns[1]["error"]
+    assert returns[2]["value"] == "7"
+    # The frames under the stop are not the call's: not followed, whatever the proof.
+    script = [
+        ("hit", 3, {"place": (1, 2)}),
+        ("hit", 3, {"place": (2, 2), "same": True, "caller": "other"}),
+        ("step", 2, value("7")),
+        ("end",),
+    ]
+    _, returns, _ = probe_with(monkeypatch, tmp_path, script)
+    assert "in another call" in returns[1]["error"] and "value" not in returns[1]
+    # A --set-at's stop in the call itself, proven: still followed from there.
+    script = [
+        ("hit", 3, {"place": (1, 2)}),
+        ("set", 3, {"same": True}),
+        ("hit", 3, {"place": (2, 2), "same": True}),
+        ("step", 2, value("7")),
+        ("end",),
+    ]
+    _, returns, _ = probe_with(monkeypatch, tmp_path, script, set_at=((5, 9, "x", "1"),))
+    assert [returns[h]["value"] for h in (1, 2)] == ["7", "7"]
 
 
 def test_returns_that_never_came_are_withheld(monkeypatch, tmp_path):
