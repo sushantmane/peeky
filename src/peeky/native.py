@@ -2327,6 +2327,13 @@ def _elf_frame_matches(binary, module, frame):
     return any(start <= pc < end for start, end in relocated)
 
 
+# LLDB gives up on a reply from its debug server (lldb-server on Linux, debugserver on
+# macOS) after 5 s and reports the read as failed (`invalid load address`): on a loaded
+# machine a value it could read went missing (#193). Waiting up to 30 s leaves the
+# bound to Peeky's own requests (15 s, `DAP.request`), which fail as TIMEOUT.
+LLDB_INIT_COMMANDS = ("settings set plugin.process.gdb-remote.packet-timeout 30",)
+
+
 @dataclass(frozen=True)
 class NativeTarget:
     sources: tuple[str, ...]
@@ -3054,6 +3061,7 @@ class NativeSession:
         self.assert_current()
         self.source_path(program)
         return {
+            "initCommands": list(LLDB_INIT_COMMANDS),
             "program": str(self.binary),
             "cwd": str(self.prepared.workspace),
             # Per-run arguments (--arg) replace the configured ones.
