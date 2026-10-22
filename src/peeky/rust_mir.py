@@ -603,7 +603,7 @@ class Body:
         ``within`` (a ``StopBlock``): the DWARF lexical block the stop's pc is in, which
         keeps only the places in its MIR scope, where it and the IR's ``function`` tell
         that apart, and at a line breakpoint, only those up to ``_cut`` (#115)."""
-        found = self._placed(blocks, line, file, foreign, facts, shared)
+        found = self._placed(blocks, line, file, foreign, facts, shared, function)
         if found is None:
             return None
         if within is not None:
@@ -623,7 +623,7 @@ class Body:
         there goes unexplained (#115); else None. Its bindings and those of the scopes
         around it are the ones lldb-dap shows, where two scopes have the same names
         (two `for item in items` loops)."""
-        found = self._placed(blocks, line, file, foreign, None, shared)
+        found = self._placed(blocks, line, file, foreign, None, shared, function)
         if found is None:
             return None
         kept, scope = self._in_block(found, within, line, function)
@@ -631,11 +631,25 @@ class Body:
             return None
         return scope
 
-    def _placed(self, blocks, line, file, foreign, facts=None, shared=None):
+    def _placed(self, blocks, line, file, foreign, facts=None, shared=None, function=None):
         """{position: [(block, index) of each statement whose code is there], or None
-        for code of the line no statement explains} (see ``stop_positions``)."""
+        for code of the line no statement explains} (see ``stop_positions``).
+
+        A call spanning another file is taken for the line's (a macro it may invoke)
+        unless the IR's ``function`` shows the block holding it has code of other lines
+        of the file and none of this one: `format!`'s call on line 4 (`label =
+        format!(…)`, its code there or inlined from there) returns into the block of line
+        5's `println!`, whose stop is past the store (#222)."""
         predecessors, found = self.predecessors(), {}
         explained = set()
+
+        def elsewhere(number):
+            # The block's call is another line's: its IR code (or inlined code's call
+            # site) is on lines of this file, none of them this one.
+            if function is None or self.blocks[number].statements[-1][1] in (file, None):
+                return False
+            lines = function.code_lines(number)
+            return bool(lines) and line not in lines
 
         def owned(number, index):
             text, spanned, spanned_line = self.blocks[number].statements[index]
@@ -673,6 +687,7 @@ class Body:
                 if _target(self.blocks[other]) == number
                 and _call(self.blocks[other], len(self.blocks[other].statements) - 1)
                 and owned(other, len(self.blocks[other].statements) - 1)
+                and not elsewhere(other)
             ]
             lines[number] = (indexes, stores)
             if indexes or stores:
@@ -3351,6 +3366,18 @@ class IrFunction:
     # A generic's instance as the DISubprogram names it, with its arguments (`tf<rc::A>`;
     # `name` drops them), else "": a frame's symbol hash is all that tells instances apart.
     instance: str = ""
+    # {label: {line}}: the lines of its own file where code LLVM inlined into that label
+    # is called from (a `#[inline(always)]` callee's `inlinedAt` chain leaving it).
+    sites: dict = field(default_factory=dict)
+
+    def code_lines(self, number):
+        """The lines of its own file the IR block of MIR block ``number`` has code of, its
+        own or inlined there from a call on that line; None where no IR block is named
+        for it (codegen merged it into another)."""
+        label = "start" if number == 0 else f"bb{number}"
+        if label not in self.blocks:
+            return None
+        return set(self.blocks[label]) | set(self.sites.get(label, ()))
 
     def agrees(self, block, line):
         """True if the IR's blocks with the names of a stop's DWARF block (``block``, a
@@ -3498,7 +3525,7 @@ def ir_functions(path, files):
         file = _file(meta, subprogram)
         if file not in wanted:
             continue
-        lines, events, inlined = {}, {}, {}
+        lines, events, inlined, sites = {}, {}, {}, {}
         # #115: the named blocks with code (an inlined call's site counts), those with
         # code of each line, and each label's sure instructions and calls.
         active, line_blocks, sure, calls = set(), {}, {}, {}
@@ -3518,6 +3545,8 @@ def ir_functions(path, files):
                     if site is not None and _file(meta, site.get("scope")) == file:
                         found = (int(site.get("line") or 0), int(site.get("column") or 0))
                         inlined.setdefault(found[0], set()).add(found[1])
+                        if found[0] > 0:
+                            sites.setdefault(label, set()).add(found[0])
                     continue
                 calls_before = before
                 before += instruction == "c"
@@ -3565,6 +3594,7 @@ def ir_functions(path, files):
             else {},
             calls=calls,
             scoped=chain is not None,
+            sites=sites,
         )
     # A function LLVM inlined everywhere (`#[inline(always)]`, even at opt-level 0) has
     # no IR function, yet its frames carry its own hash; its MIR body is the one before
