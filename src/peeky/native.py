@@ -1761,6 +1761,37 @@ def _trampoline(name):
 _LIBRARY_FUNCTION = re.compile(r"(?:^|[\s*&])(?:::)?(?:std|__gnu_cxx|__gnu_debug)::")
 
 
+# The frames read to rule out a standard-library call below a container reached through
+# a pointer or reference (#181, #187): a deeper stack is not judged.
+STACK_READ = 1024
+
+
+def _whole(frames, asked):
+    """Whether a `stackTrace` reply of ``asked`` frames holds the whole stack: its own
+    ``complete`` where the worker kept it (fewer frames than asked for, and none more
+    in its `totalFrames`, #187 review), else fewer frames than asked for."""
+    complete = getattr(frames, "complete", None)
+    if isinstance(complete, bool):
+        return complete
+    return frames is not None and len(frames) < asked
+
+
+def _short_frame(name):
+    """A frame's function for a reason, at most 80 characters: its name without its
+    parameters, return type, ABI tags or template arguments
+    (`std::__1::vector<…>::clear`)."""
+    if not isinstance(name, str) or not name.strip():
+        return "a frame with no name"
+    bare = re.sub(r"\[abi:[^\]]*\]", "", name.rpartition("`")[2])
+    for _ in range(32):
+        folded = re.sub(r"<[^<>]*>", "\x00", bare)
+        if folded == bare:
+            break
+        bare = folded
+    bare = (bare.split("(", 1)[0].split() or [name])[-1].replace("\x00", "<…>")
+    return bare if len(bare) <= 80 else bare[:79] + "…"
+
+
 def _not_framed(name, storages):
     """Why a local outside the frame's own memory is not changed: one the frame reaches
     through a pointer or reference ("through", fields.local_types), or a static or a
@@ -3323,9 +3354,9 @@ class NativeSession:
         memory (or is None), for the strings among its members. With ``pointee``, the
         preview of what the pointer ``variable`` points at, which a selector asked for
         (`p[0]`): lldb-dap lists it as the pointer's children. ``stack``: the stop's
-        frames as listed (innermost first), ``deeper()`` more of them, ``threads()`` how
-        many threads the program has: a container shows its elements only where no
-        standard-library call may be part-way through changing it
+        frames as listed (innermost first), ``deeper(levels)`` more of them,
+        ``threads()`` how many threads the program has: a container shows its elements
+        only where no standard-library call may be part-way through changing it
         (``containers_settled``)."""
         from peeky.native_previews import preview
 
@@ -3334,7 +3365,7 @@ class NativeSession:
         walked = self._typed(frame, steps, walked=True)
         if walked is None:
             return None
-        typed, indirect, contained = walked
+        typed, indirect, contained, _ = walked
         known = []
 
         def settled():
@@ -3385,36 +3416,131 @@ class NativeSession:
     def containers_settled(self, frame, indirect, stack, deeper=None, threads=None):
         """Whether a standard container a value of ``frame`` holds is whole (#181): the
         program runs one thread (a stop pauses any other wherever it is, perhaps inside
-        a `push_back` on a container this one shares); no standard-library function is
-        running between the stop and ``frame`` (a `push_back` or `clear` there may be
-        part-way through its change, with an element's constructor or destructor of the
-        program's on top), nor a constructor, destructor or assignment operator below
-        ``frame`` (the program's own `slot->~E(); ::new (slot) E(3);` ends and begins an
-        element's lifetime in place); and, where the value is reached through a pointer
-        or reference (``indirect``) or is no automatic of the frame, no such frame
-        anywhere on the stack (it may be what a caller's `clear` changes). ``stack``: the
-        frames as listed (innermost first); ``deeper()``: up to 64 of them, where the ten
-        listed may not be all; ``threads()``: how many threads the program has, or None
-        where that is not known for sure."""
+        a `push_back` on a container this one shares), and nothing may be part-way
+        through changing it (``library_call``: a standard-library call, or a
+        constructor, destructor or assignment operator). ``threads()``: how many threads
+        the program has, or None where that is not known for sure."""
         if threads is None or threads() != 1:
             return False
+        return self.library_call(frame, indirect, stack, deeper) is None
+
+    def library_call(self, frame, indirect, stack, deeper=None):
+        """A call that may be part-way through changing a container a value of
+        ``frame`` holds (#181, #187), or None: ("between", its frame's name) for a
+        standard-library call running between the stop and ``frame`` (a `push_back` or
+        `clear` there, with an element's constructor or destructor of the program's on
+        top); ("lifetime", name) for a constructor, destructor or assignment operator
+        below ``frame`` (#181 review); ("stack", name) or ("lifetime-stack", name) for
+        one anywhere on the stack where the container is reached through a pointer or
+        reference (``indirect``) or is no automatic of the frame (it may be what a
+        caller's `clear` changes); ("unknown", None) where the frames cannot be told.
+        ``stack``: the frames as listed (innermost first, ten asked for);
+        ``deeper(levels)``: the first ``levels`` of them, where those listed may not be
+        all (``STACK_READ`` are read). Each may say whether it is the whole stack
+        (``_whole``)."""
+        listed = _whole(stack, 10)
         frames = list(stack or [])
         ids = [each.get("id") for each in frames]
         if frame is None or ids.count(frame.get("id")) != 1:
-            return False
+            return ("unknown", None)
         index = ids.index(frame.get("id"))
-        if any(_library_frame(each) for each in frames[: index + 1]):
-            return False
-        if any(self._lifetime(each) for each in frames[:index]):
-            return False
+        for each in frames[: index + 1]:
+            if _library_frame(each):
+                return ("between", each.get("name"))
+        for each in frames[:index]:
+            if self._lifetime(each):
+                # The program's own `slot->~E(); ::new (slot) E(3);` ends and begins an
+                # element's lifetime in place (#181 review).
+                return ("lifetime", each.get("name"))
         if not indirect:
-            return True
-        if len(frames) >= 10:
-            frames = list(deeper() if deeper else [])
-            if not frames or len(frames) >= 64:
-                # More frames than are read: one of them may be the library's.
-                return False
-        return not any(_library_frame(each) or self._lifetime(each) for each in frames)
+            return None
+        if not listed:
+            more = deeper(STACK_READ) if deeper else []
+            if not more or not _whole(more, STACK_READ):
+                # More frames than are read (a reply of as many as asked for, or fewer
+                # than its `totalFrames`): one of them may be the library's.
+                return ("unknown", None)
+            frames = list(more)
+        for each in frames:
+            if _library_frame(each):
+                return ("stack", each.get("name"))
+        for each in frames:
+            if self._lifetime(each):
+                return ("lifetime-stack", each.get("name"))
+        return None
+
+    def changing_container(self, frame, steps, stack=None, deeper=None, threads=None):
+        """Why a value read through a standard container's element (`o.items[1]`,
+        `o.items[1].name`, a map's entry) is withheld, as a ``Withholding``, or None
+        (#187): something may be part-way through changing that container: another
+        thread (a stop pauses it wherever it is, perhaps inside a `push_back` on it),
+        unless ``threads()`` proves the program runs one; or a library call, or a
+        constructor, destructor or assignment operator (``library_call``), as `clear()`
+        is while an element's destructor runs, the vector still counting the elements it
+        has destroyed. ``steps``: the root local's name, then each child's the debugger
+        gives."""
+        if getattr(getattr(self, "target", None), "language", None) not in ("c", "cpp"):
+            return None
+        walked = self._typed(frame, steps, walked=True) if steps and len(steps) > 1 else None
+        if walked is None or walked[3] is None:
+            return None
+        held, container = walked[3]
+        container = container if len(container) <= 60 else container[:59] + "…"
+        count = threads() if threads is not None else None
+        if count != 1:
+            how = (
+                "Peeky cannot tell how many threads the program runs"
+                if count is None
+                else f"the program runs {count} threads"
+            )
+            return Withholding(
+                f"{how}: a stop pauses every other one wherever it is, perhaps part-way "
+                f"through changing `{container}`, which this is read through (a `push_back` "
+                "moving its elements); read it where the program runs one thread",
+                "not shown",
+                "it is read through a standard container another thread may be changing",
+            )
+        found = self.library_call(frame, held, stack, deeper)
+        if found is None:
+            return None
+        where, name = found
+        if where == "between":
+            reason = (
+                f"a standard-library call below this frame ({_short_frame(name)}) may be "
+                f"part-way through changing `{container}`, which this is read through (an "
+                "element `clear()` destroyed reads freed memory); read it after that call "
+                "returns"
+            )
+        elif where == "lifetime":
+            reason = (
+                f"a constructor, destructor or assignment operator below this frame "
+                f"({_short_frame(name)}) may be part-way through building or ending an "
+                f"element of `{container}`, which this is read through; read it after that "
+                "call returns"
+            )
+        elif where == "lifetime-stack":
+            reason = (
+                f"`{container}` is read through a pointer or reference while a constructor, "
+                f"destructor or assignment operator runs on this thread ({_short_frame(name)}),"
+                " which may be part-way through building or ending one of its elements; read "
+                "it where none runs"
+            )
+        elif where == "stack":
+            reason = (
+                f"`{container}` is read through a pointer or reference while a "
+                f"standard-library call runs on this thread ({_short_frame(name)}), which "
+                "may be part-way through changing it; read it where no library call runs"
+            )
+        else:
+            reason = (
+                "Peeky cannot read every frame of this stop to rule out a standard-library "
+                f"call part-way through changing `{container}`, which this is read through"
+            )
+        return Withholding(
+            reason,
+            "not shown",
+            "it is read through a standard container a library call may be changing",
+        )
 
     def _lifetime(self, frame):
         """Whether a frame runs a C++ constructor, destructor or assignment operator,
@@ -3454,7 +3580,8 @@ class NativeSession:
         whether the path goes through a pointer or reference, or starts at a local that
         is no automatic or parameter of the frame or one it reaches through a pointer
         (``fields.referred_locals``), whether it goes through a standard container's
-        element)."""
+        element, and for the last such container (whether it is reached through a
+        pointer or reference, its path: `o.items`), or None)."""
         from peeky.fields import Unsettable
         from peeky.native_previews import Typed
 
@@ -3482,7 +3609,7 @@ class NativeSession:
             or (plain is None and looks_located(root))
             or (plain[0] if plain else root) in referred
         )
-        indirect, contained = not framed or reached, False
+        indirect, contained, held, path = not framed or reached, False, None, root
         for step in steps[1:]:
             holder = typed
             if typed.kind() in ("pointer", "reference"):
@@ -3490,12 +3617,17 @@ class NativeSession:
                 if not str(step).startswith("*"):
                     # The debugger lists what it refers to as its own children (#102).
                     holder = typed.target()
-            contained = contained or (holder is not None and holder.container() is not None)
+            if holder is not None and holder.container() is not None:
+                # The container's own selector: what a pointer points at is `p[0]`.
+                place = path + "[0]" if typed.kind() == "pointer" else path
+                contained, held = True, (indirect, place)
+            path += str(step) if str(step).startswith("[") else f".{step}"
             typed = typed.child(step)
             if typed is None:
                 return None
         if walked:
-            return typed, indirect or typed.kind() in ("pointer", "reference"), contained
+            reached = indirect or typed.kind() in ("pointer", "reference")
+            return typed, reached, contained, held
         return typed
 
     def _string_class(self, kind):
