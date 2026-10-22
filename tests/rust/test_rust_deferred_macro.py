@@ -101,3 +101,34 @@ def test_a_refusal_names_another_files_line_and_a_stop_that_works(tmp_path, stat
     assert "Change it before that statement starts: at a stop on an earlier line" in message
     assert "a breakpoint on the statement's first line" not in message, message
     assert "earlier line" in error["hint"], error
+
+
+A_MOD = """pub fn f(n: i32) -> usize {
+    let label: String;
+    label = format!("a {n}");
+    println!("{label}"); // A
+    label.len()
+}
+"""
+
+
+@pytest.mark.timeout(400)
+def test_modules_named_alike_in_two_directories_keep_their_own_lines(tmp_path, state, capsys):
+    # #230 review: the IR's files are told apart by directory, not by name alone, and
+    # each module's own `format!` assignment is its own line's.
+    crate = crate_at(
+        tmp_path,
+        "dup",
+        'mod a;\nmod b;\n\nfn main() {\n    println!("{} {}", a::f(1), b::f(22));\n}\n',
+    )
+    for name in ("a", "b"):
+        (crate / "src" / name).mkdir()
+        (crate / "src" / name / "mod.rs").write_text(A_MOD.replace('"a {n}"', f'"{name} {{n}}"'))
+    line = next(i for i, text in enumerate(A_MOD.splitlines(), 1) if "// A" in text)
+    for name, value in (("a", '"a 1"'), ("b", '"b 22"')):
+        command = ["probe", str(crate), "--at", f"src/{name}/mod.rs:{line}", "--capture", "label"]
+        assert main([*command, "--json", "--quiet"]) == 0
+        row = json.loads(capsys.readouterr().out)["rows"][0]
+        assert "error" not in row and not row.get("withheld"), row
+        if os.environ.get("PEEKY_EXPECT_READ_MEMORY") or row.get("view") == "memory":
+            assert row["value"] == value, row
