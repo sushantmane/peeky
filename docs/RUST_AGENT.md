@@ -501,7 +501,11 @@ What it can change is in [Changing a value](#changing-a-value).
 
 - A view has a `view` label. A leaf view has `variablesReference: 0`.
 - A decoded view with children gets a worker-owned expansion handle, for at most 512 children. It
-  never reaches the debugger, exposes no raw storage, and never authorizes a write.
+  never reaches the debugger, and exposes no raw storage.
+- Only a struct or tuple preview's fields can change through such a handle. The handle keeps where
+  the debugger lists the value, and a field marked settable changes under the usual member rules.
+- A container's contents (a `Vec`'s, a `String`'s, a `Box`'s) and an enum's variant never change
+  through a view.
 - A request's view reads share one budget: 128 fetches, 10 s, 1,024 items and 1 MiB. One absolute
   deadline covers each read's write and its response.
 - Running out is `budget-exhausted`, apart from a shape Peeky can't verify. That includes a read
