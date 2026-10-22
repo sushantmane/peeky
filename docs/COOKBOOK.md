@@ -2975,13 +2975,17 @@ output:
 ...
 ```
 
-If the host's source differs from yours, the worker refuses before running anything:
+If the host's copy of the program differs from yours, the worker refuses before running anything:
 
 ```
 error [PROVENANCE_CHANGED]: Worker source provenance differs for the program job.py: refused before launching. Sync sources before debugging remotely
 hint: Sources, build outputs or tools changed; start a new session on a fresh build.
 ```
 
+- Only the program and a `--run` script are compared. Keep the other sources in sync
+  ([REMOTE.md](REMOTE.md#source-identity)).
+- For Java, start the worker with `--java-config`, or `--java-attach-config` for a waiting JVM.
+  Pass your own `--config` too ([REMOTE.md](REMOTE.md#java-on-the-worker-host)).
 - A dropped tunnel gives `UNREACHABLE`. Reconnect and continue: the worker keeps the session.
 - To try this without a second machine, run `PEEKY_E2E_DOCKER=1 pytest tests/remote -v`. It runs
   against a Linux container, and needs Docker or OrbStack.

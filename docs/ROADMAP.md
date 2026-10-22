@@ -3,9 +3,9 @@
 Peeky's minimum product, the MVP, covers five languages: Python, Java, C, C++ and Rust. Python was
 the first alpha. The other languages followed, one slice at a time.
 
-The tracked MVP issues, #6 to #13, are delivered and closed. Java on a separate host is still
-open: binding its source paths there isn't qualified yet. This page lists what each slice
-delivered, with links, then what comes next and what stays deferred.
+The tracked MVP issues, #6 to #13, are delivered and closed. Java on a separate host followed, in
+[#248][i248]. This page lists what each slice delivered, with links, then what comes next and what
+stays deferred.
 [LANGUAGES.md](LANGUAGES.md) has the language priorities and acceptance criteria.
 
 ## What is delivered
@@ -31,6 +31,8 @@ delivered, with links, then what comes next and what stays deferred.
 [i11]: https://github.com/sushantmane/peeky/issues/11
 [i12]: https://github.com/sushantmane/peeky/issues/12
 [i13]: https://github.com/sushantmane/peeky/issues/13
+[i248]: https://github.com/sushantmane/peeky/issues/248
+[i249]: https://github.com/sushantmane/peeky/issues/249
 [adr4]: adr/0004-stateless-probes.md
 
 All eight issues are in the MVP milestone. #6, #7 and #8 are its foundation. The language issues
@@ -120,10 +122,14 @@ extend it. Kubernetes stays deferred.
   - Where verification runs, and what it depends on, are explicit.
 - **Delivered:**
   - [#33][p33]: `--worker`, source matching and the transport behaviour.
-  - [#42][p42]: the run on a real second host, and its CI lane. [REMOTE.md](REMOTE.md) has the
-    recorded run. `tests/remote/test_ssh_e2e.py` repeats it in the CI job "remote SSH e2e".
-- **Still open:** Java on a separate host. Binding its source paths there isn't qualified yet
-  ([LANGUAGES.md](LANGUAGES.md)).
+  - [#42][p42]: the run on a real second host, with a Python program, and its CI lane.
+    [REMOTE.md](REMOTE.md) has the recorded run. `tests/remote/test_ssh_e2e.py` repeats it in the
+    CI job "remote SSH e2e".
+  - [#248][i248]: Java on the second host, for a launched JVM and an attached one, in the same CI
+    job ([REMOTE.md](REMOTE.md#java-on-the-worker-host)).
+- **Not yet:** C, C++ and Rust have no separate-host run.
+- **Open:** before launching, only the breakpoint's file and the entry script are compared with
+  the client's ([#249][i249]).
 
 ### Language slices P1 to P5
 
