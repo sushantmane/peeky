@@ -51,6 +51,10 @@ Peeky debugs Rust with lldb-dap, LLVM's debugger.
   ([Rust 7.2](rust-cookbook.md#set-up-the-crate)).
 - An owned `Vec` or `String` local reads only in the innermost frame, where the MIR proves it
   initialized ([Rust 7.2](rust-cookbook.md#owned-vec-and-string-locals)).
+- A `&mut` reference parameter reads only in the innermost frame. A shared one reads in any frame
+  ([Rust 7.2](rust-cookbook.md#reference-parameters)).
+- A reference parameter that its function binds again shows only its pointer
+  ([Rust 7.2](rust-cookbook.md#reference-parameters)).
 - A `Vec<String>` stays raw ([Rust 7.2](rust-cookbook.md#what-peeky-reads)).
 - A `&str` loop item reads as text where the code still uses it. In `for cell in cells` over a
   `&[&str]`, `cell` reads `"Renée"`
@@ -69,6 +73,9 @@ Peeky debugs Rust with lldb-dap, LLVM's debugger.
   contents read. No `Vec` or `String` contents, no reference parameter's contents, and no such
   field. All of these stay raw, with the reason. Scalars are still read
   ([Rust 7.2](rust-cookbook.md#crates-with-unsafe-code)).
+- The gate's check is broad. `no_mangle` counts anywhere in the code, even as a variable's name.
+  `Cargo.toml` is checked too, as plain text
+  ([Rust 7.2](rust-cookbook.md#what-counts-as-unsafe-code)).
 - Peeky never guesses. A value it can't prove keeps its raw fields, with a note: `[stale]`,
   `[unproven]` or `<unverified ...>`. That includes a moved or dropped value, one in a caller
   frame, and one in an optimized build
@@ -80,9 +87,12 @@ Peeky debugs Rust with lldb-dap, LLVM's debugger.
   ([Rust 7.2](rust-cookbook.md#values-peeky-withholds-or-leaves-raw)).
 - A tuple's fields are `.__0`, `.__1` and so on: `runs[0].__0`
   ([Rust 7.2](rust-cookbook.md#tuples-and-structs)).
-- `describe` lists a name bound more than once as `x @ main.rs:6`, one entry per binding. That
-  selector reads the binding wherever it is in scope: `s @ main.rs:81.a`
+- `describe` normally lists a name bound more than once as `x @ main.rs:6`, one entry per
+  binding. That selector reads the binding wherever it is in scope: `s @ main.rs:81.a`
   ([Rust 7.2](rust-cookbook.md#names-bound-more-than-once)).
+- The exception is two bindings on the same file name and line. They share one entry, and no
+  selector can name either: `x @ main.rs:3 (2 bindings on this line: not selectable by line)`
+  ([Rust 7.2](rust-cookbook.md#two-bindings-on-one-line)).
 - A one-line `for` loop stops at three locations. Over three passes, the stops are 1, 2, 3, 3, 3,
   so rows carry a `stop` number. For one row per pass, put `--at` on a plain statement line in the
   body ([2.2](../COOKBOOK.md#22-every-iteration-of-a-loop)).
@@ -94,6 +104,8 @@ Peeky debugs Rust with lldb-dap, LLVM's debugger.
 - It also changes such a field or element of a struct, tuple or array local that the frame owns:
   `--set w.start=10`. For these, the MIR must prove the local initialized
   ([Rust 7.2](rust-cookbook.md#what---set-can-change)).
+- Every change needs an unoptimized build and the innermost frame. A caller's frame is never
+  changed ([Rust 7.2](rust-cookbook.md#what---set-can-change)).
 - A change is allowed only at a line breakpoint, or after a step that lands on a line's start.
   No statement under way may have read the value
   ([Rust 7.2](rust-cookbook.md#where-a-change-is-allowed)).

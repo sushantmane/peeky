@@ -219,7 +219,7 @@ If `Cargo.lock` is missing, run `cargo generate-lockfile` once.
 
 Some tasks need a certain build or debugger:
 
-| Task | Needs |
+| Task | Build and debugger it needs |
 | --- | --- |
 | Read the contents of a `Vec`, a `String` or a reference parameter | an unoptimized build, the default, and lldb-dap 20 or later, which has `readMemory` |
 | Change any value | an unoptimized build |
@@ -227,6 +227,9 @@ Some tasks need a certain build or debugger:
 
 An older debugger keeps contents raw, with an error that names the length field. With lldb-dap 18
 or 20, setting a text is refused.
+
+These are not the only conditions. [What Peeky reads](#what-peeky-reads) and
+[What `--set` can change](#what---set-can-change) list the others.
 
 ### A first probe
 
@@ -259,20 +262,48 @@ output:
 
 ### What Peeky reads
 
-Peeky reads a value only when it can prove the value is there. Otherwise it shows the raw value,
-with a note that says why
+Peeky reads a value only when it can prove the value is there. Otherwise it shows the raw value
+with a note, or withholds it
 ([Values Peeky withholds or leaves raw](#values-peeky-withholds-or-leaves-raw)).
 
-| Value | What a row shows |
-| --- | --- |
-| Integer, float, `bool` or `char` local | the value, with its Rust type: `usize` |
-| `Option<i32>` | `Some(3)`, `None` |
-| Struct or tuple local, or a reference parameter to one | as derived `Debug` prints it: `Window { start: 0, count: 2 }` |
-| `Vec<T>`, `String`, `&[T]`, `&str` | the contents, marked `[memory]`; as fields too: `self.values` |
-| `Vec<String>`, such as `args` | raw |
-| `&[&str]`, `Vec<&str>` | raw, with a note naming the length selector, and where the items read as text |
+The table's last column names the conditions a value needs. Each condition is defined below it.
 
-`T` is a plain element: an integer, `bool`, float or `char`, or a tuple or crate struct of them.
+| Value | What a row shows | Only with |
+| --- | --- | --- |
+| Integer, float, `bool` or `char` local or parameter | its value, with its Rust type: `usize` | no condition, but it can be withheld |
+| `Option<i32>` | `Some(3)` or `None`, marked `[active-variant]` | a listed enum; unoptimized |
+| Struct or tuple local, or a by-value parameter | as derived `Debug` prints it, marked `[memory]` | plain fields; memory; innermost; initialized |
+| Reference parameter to a struct or tuple | as derived `Debug` prints it, marked `[memory]` | plain fields; memory; safe crate; live; not rebound; `&mut` innermost |
+| Owned `Vec<T>` or `String` local | its contents, marked `[memory]` | plain `T`; memory; safe crate; innermost; initialized |
+| `&[T]`, `&str`, `&Vec<T>` or `&String` parameter | its contents, marked `[memory]` | plain `T`; memory; safe crate; not rebound; `&mut` innermost |
+| `&str` or slice local | its contents | memory; safe crate; innermost; alive |
+| Field holding a `Vec`, `String`, `&str` or `Box<str>` | its contents, marked `[memory]` | memory; safe crate; [what holds it](#fields-holding-a-vec-string-str-or-boxstr) |
+| `Vec<String>`, such as `args` | raw, with a note | always |
+| `&[&str]` or `Vec<&str>` | raw, with a note naming the length selector | always |
+
+The conditions:
+
+- **can be withheld:** a local that may be unassigned shows `no value yet:`. In an optimized
+  build, a scalar may be unavailable or stale ([7.5](../COOKBOOK.md#75-optimized-builds)).
+- **a listed enum:** `describe` lists its type on the `qualified enum views:` line. Other enums
+  stay opaque.
+- **unoptimized:** an unoptimized build. In an optimized build, an enum shows
+  `<unverified Rust enum value>`.
+- **plain fields:** all its fields are integers, `bool`, floats or `char`
+  ([Tuples and structs](#tuples-and-structs) lists the other limits).
+- **plain `T`:** an integer, `bool`, float or `char`, or a tuple or crate struct with plain
+  fields.
+- **memory:** an unoptimized build, and a debugger with `readMemory`, such as lldb-dap 20 or later.
+- **safe crate:** the crate has no unsafe code
+  ([Crates with unsafe code](#crates-with-unsafe-code)).
+- **innermost:** the stop is in the innermost frame.
+- **live:** the build's IR proves the reference parameter live.
+- **not rebound:** the function doesn't bind the parameter's name again. If it does, the parameter
+  shows only its pointer in the whole function.
+- **`&mut` innermost:** a `&mut` parameter reads only in the innermost frame. A shared one reads
+  in any frame.
+- **initialized:** the MIR proves the local initialized at the stop line.
+- **alive:** the MIR shows that what it points at is still alive.
 
 Fields stay selectable: `w.start`, `runs[0].__0`.
 
@@ -287,9 +318,14 @@ Fields stay selectable: `w.start`, `runs[0].__0`.
 #### Reference parameters
 
 In a crate with no unsafe code, Peeky reads reference parameters from memory: `&[T]`, `&str`,
-`&Vec<T>` and `&String`, shared or `&mut`. Here `T` is any integer type, `bool`, `f32`, `f64` or
-`char`.
+`&Vec<T>` and `&String`, shared or `&mut`. `T` is any integer type, `bool`, `f32`, `f64` or
+`char`, or a tuple or crate struct of them.
 
+- This needs an unoptimized build, and a debugger with `readMemory`.
+- A `&mut` parameter reads only in the innermost frame. In a caller, the call under way may be
+  changing what it points at.
+- A parameter that its function binds again, such as `let w = …;`, shows only its pointer in the
+  whole function. The plain name could mean either binding.
 - Peeky checks the offsets it reads against the build's debug information.
 - `describe` lists these types, on its `read from memory` line.
 - Elements print as Rust's `{:?}` prints them, floats included:
@@ -301,21 +337,38 @@ For `fn median(values: &[i32], label: &str)`,
 
 #### Tuples and structs
 
-Tuples, and structs your crate defines, read too when they hold those scalars:
+Tuples, and structs your crate defines, read too when their fields are all integers, `bool`,
+floats or `char`:
 
 - `runs`, a `Vec<(char, usize)>`, shows `[('a', 3), ('b', 1)]`.
 - `runs[0].__0` and `spans[1].start` select fields. `__0` is LLDB's name for a tuple's first field.
-- A tuple or struct local of them previews the same way, under the same proofs. So does a
+- A tuple or struct local of them previews the same way. So does a by-value parameter, or a
   reference parameter to one. `request` above shows `Request { page: 1, page_size: 3, total: 8 }`.
 - Its fields stay selectable.
 
-Optional background: [RUST_AGENT.md](../RUST_AGENT.md#reading-rust-values).
+A preview needs the same proofs as a container:
+
+- an owned local or a by-value parameter: in the innermost frame, where the MIR proves it
+  initialized at the stop line;
+- a reference parameter: once the build's IR proves it live, and a `&mut` one only in the
+  innermost frame. In a crate with unsafe code, it stays raw.
+
+These keep LLDB's summary instead:
+
+- a struct with any other field, such as a `String`, an enum or a reference;
+- a nested struct, such as `Rect { a: Span, .. }`;
+- a `#[repr(packed)]` struct;
+- a standard-library struct, such as `Range<usize>`;
+- any preview in an optimized build, or with a debugger without `readMemory`.
+
+Optional background, with the rarer limits: [RUST_AGENT.md](../RUST_AGENT.md#reading-rust-values).
 
 #### Owned `Vec` and `String` locals
 
 Peeky reads an owned `Vec<T>` or `String` local only when all of these hold:
 
-- the build is unoptimized ([Set up the crate](#set-up-the-crate));
+- the build is unoptimized, and the debugger has `readMemory`
+  ([Set up the crate](#set-up-the-crate));
 - the stop is in the innermost frame;
 - the crate has no unsafe code ([Crates with unsafe code](#crates-with-unsafe-code));
 - the compiler's MIR proves the local initialized at the stop line.
@@ -323,21 +376,25 @@ Peeky reads an owned `Vec<T>` or `String` local only when all of these hold:
 To prove it, Peeky builds the binary crate with `-Zmir-opt-level=0` and dumps its MIR. There,
 every move, drop and assignment is explicit.
 
-A local that may be moved, dropped or not yet assigned around the line keeps its raw fields, such
-as `ordered.len`, with a note. Its pointer can reach reused memory, so its contents would be a
-guess. Examples:
+If the MIR's initialization proof fails, the local keeps its raw fields, such as `ordered.len`,
+with a note. Its pointer can reach reused memory, so its contents would be a guess. The proof
+fails where the local may be moved or dropped around the line:
 
 - `drop(ordered)` or `consume(v)`;
-- the old `s` in `let s = s + "x"`;
-- a deferred `let label: String;`.
+- the old `s` in `let s = s + "x"`.
 
-[Values Peeky withholds or leaves raw](#values-peeky-withholds-or-leaves-raw) shows one.
+A local that isn't assigned yet on some path, such as a deferred `let label: String;`, is
+withheld instead: `no value yet:`.
+[Values Peeky withholds or leaves raw](#values-peeky-withholds-or-leaves-raw) shows both.
 
 #### `&str` and slice locals
 
 - In a crate with no unsafe code, a `&str` or slice local reads where the MIR shows its target
-  still alive.
-- For example, `v` of `for v in args[2].split(',')` reads, because nothing changes `args`.
+  still alive. The stop must be in the innermost frame of an unoptimized build.
+- Peeky counts the target alive while the code still uses the local. After its last use, it
+  counts it alive until a call or drop runs.
+- A shared borrow of variables that nothing changes reads even later. For example, `v` of
+  `for v in args[2].split(',')` reads, because nothing changes `args`.
 - Other reference locals keep their raw fields.
 
 #### `&str` loop items, and containers of `&str`
@@ -404,8 +461,9 @@ The details:
 
 #### Fields holding a `Vec`, `String`, `&str` or `Box<str>`
 
-In a crate with no unsafe code, these fields read from memory too. Peeky reaches them only through
-plain struct and tuple fields, and fixed-size array elements. For this `movavg` crate:
+In a crate with no unsafe code, these fields read from memory too. This needs an unoptimized
+build, and a debugger with `readMemory`. Peeky reaches them only through plain struct and tuple
+fields, and fixed-size array elements. For this `movavg` crate:
 
 ```rust
 struct Window {
@@ -456,12 +514,17 @@ hit  phase     line  function      selector  type      value
 
 Where such a field reads depends on what holds it:
 
-| Reached through | Reads | Example |
-| --- | --- | --- |
-| a `&mut` reference parameter | in the innermost frame only: in a caller, the call under way may be changing it | `self.values` in `fn push(&mut self, v: i64)` |
-| a shared reference parameter | in any frame | `self.values` behind `&self` |
-| an owned local, or what its `Box` holds | under the local's proof, in the innermost frame only | `w.values` in `main` |
-| a reference local | in the innermost frame only, where the MIR shows what it points at still alive | `entry.name` of `for (entry, points) in entries.iter().zip(&point_cells)`, on the loop's lines |
+- **Through a `&mut` reference parameter,** such as `self.values` in `fn push(&mut self, v: i64)`:
+  once the build's IR proves the parameter live, and in the innermost frame only. In a caller, the
+  call under way may be changing it.
+- **Through a shared reference parameter,** such as `self.values` behind `&self`: once the IR
+  proves the parameter live, in any frame. The exception is where the MIR shows its target dropped
+  and not yet replaced.
+- **In an owned local, or what its `Box` holds,** such as `w.values` in `main`: in the innermost
+  frame only. The MIR must prove the local initialized.
+- **Through a reference local,** such as `entry.name` of
+  `for (entry, points) in entries.iter().zip(&point_cells)`: in the innermost frame only, where the
+  MIR shows what it points at still alive. Here it reads on the loop's lines.
 
 A `&str` field of an owned local reads where the MIR shows its target still alive. A struct with
 no lifetime holds only `&'static str`.
@@ -491,20 +554,36 @@ A long value shows its first elements, with `(first k of N)`. Up to 256 elements
 
 ### Values Peeky withholds or leaves raw
 
-Peeky never guesses a value. A value it can't prove keeps LLDB's raw fields, with a note. That
-covers a value moved, dropped or not yet assigned, one in a caller frame, and one in an optimized
-build.
+Peeky never guesses a value. When it can't prove one, it either withholds the local or shows the
+raw value with a note.
+
+**It withholds a local that may be unassigned.** The MIR shows that some path to the stop leaves
+the local unassigned since its storage began. So its slot may hold leftovers. The row says
+`no value yet:` and why, with no value, and `--set` refuses the local. This happens:
+
+- before a deferred `let x;` is assigned on every path;
+- on a loop's next pass, before the local's `let`;
+- in an async body, for a local that the future doesn't keep across an `.await`.
+
+Peeky checks this in the innermost frame of an unoptimized build, and in a caller frame inside the
+call it makes.
+
+**It shows other values it can't prove as raw, with a note.** These include:
+
+- a container whose MIR initialization proof fails;
+- a value that may be moved or dropped;
+- a value in a caller frame, or in an optimized build.
+
+A moved or dropped value is not withheld: it keeps its leftover bytes, with a note. `session get`
+marks them `[stale]`.
 
 | You see | Meaning |
 | --- | --- |
+| `no value yet:` and why | Withheld: the local may be unassigned, so its slot may hold leftovers. |
 | `[stale]` | The leftover bytes of a moved or dropped local. |
 | `[unproven]` | Only a pointer: Peeky can't prove that what it points at is still there. |
 | `<unverified ...>` | A value Peeky can't decode with certainty. |
 | an opaque enum | An enum Peeky can't decode with certainty. `describe` counts them as "other enum types". |
-| `no value yet:` and why | The local's slot may hold leftovers, so Peeky withholds it. |
-
-A local is withheld with `no value yet:` when it isn't assigned on some path, such as `let x;`. It
-is withheld too when it isn't kept across an `.await`.
 
 For example, in this `moved` crate, `ordered` moves into `total` on line 8. `label` is assigned
 only on line 9:
@@ -534,6 +613,9 @@ hit  phase     line  function     selector  type      value
 ...
 warning: ordered: This Rust Vec shows LLDB's summary (its type and address), not its contents: the build's MIR does not prove `ordered` initialized at this line: it may be moved, dropped or not yet assigned around it (#53). Capture ordered.len for the length, and check contents with `peeky verify`.
 ```
+
+On line 8, the MIR doesn't prove `ordered` initialized, because the line moves it. So it keeps
+its raw fields, with a note. `label` isn't assigned yet, so it is withheld.
 
 After the move, on line 9, `ordered`'s fields are its leftover bytes:
 
@@ -602,29 +684,83 @@ warning: values: This Rust Vec shows LLDB's summary (its type and address), not 
 | a container field | |
 | a `Box`, which shows only its pointer, marked `[unproven]` | |
 
+What is still read keeps its other conditions from [What Peeky reads](#what-peeky-reads). For
+example, a by-value struct's preview still needs plain fields, the innermost frame and the MIR's
+proof.
+
 No `String` takes a text either, as in `--set 'name="x"'`. The refusal gives the same reason. A
 raw pointer, or an address kept as an integer (`s.as_ptr() as usize`), could read its bytes at
 their old length where no borrow shows it.
 
 #### What counts as unsafe code
 
-Any of these, in any of the crate's files:
+The check is broad on purpose: anything that might be unsafe code counts. Peeky checks every file
+the build reads: the Rust sources, those in `tests/` too, and `Cargo.toml` and `Cargo.lock`.
 
-| Found | Reason given |
-| --- | --- |
-| an `unsafe` block, function, impl, trait or extern block; `#[unsafe(...)]`, `#[no_mangle]`, `#[export_name]` or `#[link_section]`; `global_asm!` | "the crate has unsafe code (in src/main.rs), which can free a buffer without Peeky seeing it" |
-| a nightly feature, `#![feature(...)]` | "the crate enables nightly features" |
-| a source Peeky can't read as rustc does, such as frontmatter or an unclosed literal | "Peeky cannot rule out unsafe code in …" |
+- **In a Rust source,** comments, strings and char literals don't count. Nor does a shebang line.
+- **In any other file,** such as `Cargo.toml`, everything counts, comments and strings included.
+  A macro could `include!` that file as Rust. So a package named `unsafe-demo` counts.
 
-- The crate's files include those in `tests/`.
-- Code in `macro_rules!` bodies counts. Comments and strings don't.
+**Unsafe code.** The reason given is:
+
+```
+the crate has unsafe code (in src/main.rs), which can free a buffer without Peeky seeing it
+```
+
+These count:
+
+- the word `unsafe` anywhere: an `unsafe` block, function, impl, trait or extern block, or
+  `#[unsafe(...)]`;
+- `#unsafe` too, because a macro may drop the `#`. Only the raw identifier `r#unsafe` doesn't
+  count;
+- the words `no_mangle`, `export_name`, `link_section`, `global_asm` and `naked_asm`, anywhere.
+  For example, `use std::arch::global_asm as g;` counts, and so does a variable named `no_mangle`;
+- `asm!`, also written `asm !`;
+- code in `macro_rules!` bodies.
+
+These don't count: `unsafe_code`, as in `#![forbid(unsafe_code)]`, and a function named `asm`.
+
+**A nightly feature.** The reason given is:
+
+```
+the crate enables nightly features (in src/main.rs), which can free a buffer without Peeky seeing it
+```
+
+This counts:
+
+- an inner attribute, `#![...]`, with `feature(` anywhere inside it. Examples are
+  `#![feature(x)]` and `#![cfg_attr(all(), feature(x))]`;
+- the same with spaces or comments between `#`, `!` and `[`;
+- an inner attribute that never closes, which runs to the end of the file.
+
+These don't count: `#[cfg(feature = "x")]`, a function named `feature`, and `"feature(x)"` in a
+string.
+
+**A Rust source Peeky can't read as rustc does.** The reason given is:
+
+```
+Peeky cannot rule out unsafe code in src/main.rs (…), and unsafe code can free a buffer without Peeky seeing it
+```
+
+In the brackets, Peeky says which of these it found:
+
+- `` it opens with a `---` frontmatter block, which Peeky does not read ``. Frontmatter is a block
+  between `---` lines at the top of a file. Cargo scripts, a nightly feature, keep their manifest
+  there.
+- `` a comment follows its `#!`, which Peeky does not judge ``.
+- `a comment, string or char literal does not end`.
+- `its brackets do not pair up`.
+
+If a word sets off the check where there is no unsafe code, rename it. Peeky can't tell such a word
+from unsafe code.
 
 Optional background: [RUST_AGENT.md](../RUST_AGENT.md#reading-rust-values).
 
 ### Names bound more than once
 
-When two bindings of a name are in scope, `describe` lists each by the selector lldb-dap gives
-it. For this `twice` crate:
+When two bindings of a name are in scope, `describe` normally lists each by the selector lldb-dap
+gives it. The exception is two bindings on the same file name and line: they share one entry,
+which no selector can name ([below](#two-bindings-on-one-line)). For this `twice` crate:
 
 ```rust
 fn main() {
@@ -652,17 +788,23 @@ hit  phase     line  function     selector       type  value
 
 - Each entry gives the binding's type and lines: `points @ main.rs:73 (Vec<String>, lines 74-85)`
   and `points @ main.rs:81 (&str *, line 82)`.
-- The selector reads the binding at any stop where it is in scope. That includes stops where
-  lldb-dap lists it by its plain name, such as `points @ main.rs:73` on line 76.
+- The selector reads the binding at any stop where it is in scope, unless it names two bindings.
+  That includes stops where lldb-dap lists it by its plain name, such as `points @ main.rs:73` on
+  line 76.
 - Select a field after it: `s @ main.rs:81.a`.
 - A plain name means the one binding in scope at the stop, by the MIR's scopes. So an earlier
   loop's `entry` doesn't hold back this loop's `entry.name`.
 - Where two bindings are in scope, lldb-dap lists only the `@` names. So plain `x` is not found
   above.
-- Two bindings on the same file name and line share a selector, which names neither. Examples are
-  `let x = n + 1; let x = format!("{x}!");`, and files of one name in two directories.
-  `describe` lists `x @ main.rs:3 (2 bindings on this line: not selectable by line)`. The selector
-  is refused with that reason.
+
+#### Two bindings on one line
+
+Two bindings on the same file name and line share one selector, which names neither. Examples are
+`let x = n + 1; let x = format!("{x}!");`, and files of one name in two directories.
+
+- `describe` lists them as one entry:
+  `x @ main.rs:3 (2 bindings on this line: not selectable by line)`.
+- The selector is refused with that reason.
 
 ### What `--set` can change
 
@@ -673,6 +815,18 @@ hit  phase     line  function     selector       type  value
 - such an integer field or element of a struct, tuple or array local that the frame holds
   itself: `--set s.end=10`, `t.__0=3`, `arr[2]=7`;
 - a `String` local, to a text ([Set a String to a text](#set-a-string-to-a-text)).
+
+Every change also needs all of these:
+
+- an unoptimized build;
+- the innermost frame. A caller's frame is never changed, because a call it is making may hold a
+  copy of the old value;
+- a stop where changes are allowed ([Where a change is allowed](#where-a-change-is-allowed));
+- no copy of the program's own that blocks it
+  ([When the program has its own copy](#when-the-program-has-its-own-copy));
+- a local that isn't in a register
+  ([Locals that can't change](#locals-that-cant-change-and-what-to-do));
+- a new value in the type's range.
 
 For a field or element, the MIR must also prove the local initialized at the stop. Several can
 change at once: `--set w.start=10 --set w.count=0`.
@@ -750,8 +904,14 @@ To change the value, change it before the copy is made, or change the copy.
 Only a read of the changed part itself counts:
 
 - using its value: `x + 1`, `let z = s.b;`, or passing `s` by value;
-- printing it as a number with `print!`, `println!`, `eprint!`, `eprintln!` or `format!`. For
-  `println!("{}", s.b)`, the read is where it prints.
+- printing it as a number with `{}` in the standard library's `print!`, `println!`, `eprint!`,
+  `eprintln!` or `format!`. For `println!("{}", s.b)`, the read is where it prints.
+
+A print counts only where Peeky proves, from the MIR, that it is the standard library's:
+
+- the call is to `std::io::_print`, `std::io::_eprint` or `alloc::fmt::format`, by its full path;
+- its code comes from this toolchain's own `macros.rs`, not from a file in the crate;
+- if the crate has a function of its own named `format`, `format!` doesn't count.
 
 These don't count, so the change is refused there, even where the call or print does read it:
 
@@ -767,12 +927,16 @@ A copy counts only for the part it may have taken. `let seen = r.end;` doesn't b
 
 Rows mark these locals `[not settable: …]`, with the reason:
 
-| Mark | Why | What to do |
-| --- | --- | --- |
-| `[not settable: register]` | A by-value parameter, or a `let` the code never borrows or reassigns, lives only in a register. | Keep it in memory with a candidate edit ([6.6](#66-see-what-a-fix-does-before-making-it)). |
-| `[not settable: another binding in a register (line 4)]` | The function binds the name twice. It is settable only when both bindings are in memory. | Black-box the `let` that the refusal names. |
-| `[not settable: inlined]` | It is a local of an `#[inline(always)]` function. | Change the value in the caller. |
-| `[not settable: async state]` | An async body keeps it across an `.await`. The poll reaches it in the future's state through a pointer. | Copy it into a local after the `.await` with a candidate edit, and set that. |
+- **`[not settable: register]`:** a by-value parameter, or a `let` the code never borrows or
+  reassigns, lives only in a register. Keep it in memory with a candidate edit
+  ([6.6](#66-see-what-a-fix-does-before-making-it)).
+- **`[not settable: another binding in a register (line 4)]`:** the function binds the name twice.
+  It is settable only when both bindings are in memory. Black-box the `let` that the refusal names.
+- **`[not settable: inlined]`:** it is a local of an `#[inline(always)]` function. Change the value
+  in the caller.
+- **`[not settable: async state]`:** an async body keeps it across an `.await`. The poll reaches it
+  in the future's state through a pointer. Copy it into a local after the `.await` with a candidate
+  edit, and set that.
 
 - A probe that sets one is refused before the program runs. The exception is when another
   function on the line keeps it in memory, such as a closure or an inlined copy.
@@ -867,6 +1031,7 @@ hint: Pass a shorter text (the message says how much fits), or change the source
 
 These rules apply too:
 
+- It needs what every change needs ([What `--set` can change](#what---set-can-change)).
 - The MIR must prove the local initialized at the stop. A moved or dropped `String`'s buffer may be
   freed.
 - The buffer is on the heap, so the debugger must write memory. lldb-dap 21 does, and macOS ships
