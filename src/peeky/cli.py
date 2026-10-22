@@ -1362,10 +1362,13 @@ def queries(args):
             ),
         )
         return 0
-    result = evidence.run_query(
-        path, args.name, evidence.parse_params(args.param), limit=args.limit
+    params = evidence.parse_params(args.param)
+    result = evidence.run_query(path, args.name, params, limit=args.limit)
+    _emit(
+        {**result, "query": args.name, "store": str(path)},
+        args.json,
+        lambda shown: evidence.query_table(path, shown, params),
     )
-    _emit({**result, "query": args.name, "store": str(path)}, args.json, evidence.table)
     return 0
 
 

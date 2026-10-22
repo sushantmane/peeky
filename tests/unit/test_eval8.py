@@ -64,14 +64,30 @@ def test_diff_says_when_the_same_values_came_in_another_order(store):
     (note,) = evidence.run_query(store, "diff")["notes"]
     assert note.startswith("runs 1 and 2 saw the same values of `op` in another order"), note
     assert "(run 2's hit 4 matches run 1's hit 5: '-'): the calls may have come" in note, note
-    assert "peeky queries join --param a=1 --param b=2 --param key=<selector>" in note
-    # Review of M6 (PR #189): join by a value the edit leaves alone, not `op`.
-    assert "a value that names the call and that the edit leaves alone" in note, note
+    # `op` repeats, so no captured value could key `join` (tenth evaluation): not named.
+    assert note.endswith(
+        "a hit need not be the same moment in both; no captured selector tells the hits "
+        "apart, so `queries join` could not pair them"
+    ), note
     # The same values in the same order, or other values: no note.
     saved(store, [(n, "op", v) for n, v in enumerate(["'-'", "'-'", "'-'", "'-'", "'+'"], 1)])
     assert "notes" not in evidence.run_query(store, "diff")
     saved(store, [(n, "op", v) for n, v in enumerate(["'*'", "'-'", "'-'", "'-'", "'+'"], 1)])
     assert "notes" not in evidence.run_query(store, "diff")
+    # With the token's position, which tells the hits apart, `join` is named. Review of
+    # M6 (PR #189): join by a value the edit leaves alone, not `op`.
+    for ops, positions in (("---+-", [1, 2, 3, 4, 5]), ("----+", [1, 2, 3, 5, 4])):
+        saved(
+            store,
+            [
+                row
+                for n, (op, at) in enumerate(zip(ops, positions), 1)
+                for row in ((n, "op", f"'{op}'"), (n, "pos", str(at)))
+            ],
+        )
+    (note,) = evidence.run_query(store, "diff")["notes"]
+    assert "peeky queries join --param a=5 --param b=6 --param key=<selector>" in note, note
+    assert "a value that names the call and that the edit leaves alone" in note, note
 
 
 def test_diff_says_when_a_hit_is_in_another_function_or_line(store):
