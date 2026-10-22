@@ -22,10 +22,39 @@ Peeky didn't build the program, so it reports the provenance as **attached**.
 Attached sessions:
 
 - are loopback-only. Tunnel a remote JVM over SSH.
-- read values. With a current adapter bundle, they also change numeric, boolean and char root
-  locals, and Strings to a text. Changes are evidence only.
+- read values.
+- change values with a current adapter bundle, as the next section says. Changes are evidence
+  only.
 - never verify edits. `peeky verify` refuses; verify with a fresh-build target instead.
 - **detach without killing** the JVM, so the test goes on after the probe.
+
+### What a change can reach
+
+An attached session can change:
+
+- numeric, boolean and char root locals, and Strings to a text;
+- eligible fields and array elements, such as `current.end=10` or `arr[0]=1`. The
+  [table](lang/java-cookbook.md#what-can-be-set) gives the conditions.
+
+It never changes JDK state:
+
+- a field that a JDK class declares, inherited or not
+  ([rule](lang/java-cookbook.md#fields-the-jdk-declares));
+- an element of an array that a JDK class's field holds, directly or inside another array
+  ([rule](lang/java-cookbook.md#arrays-the-jdk-holds)). The backing arrays of the program's own
+  `ArrayList`, `Vector`, `ArrayDeque` and `Arrays.asList` lists are the exception.
+
+To tell who holds an array, Peeky asks the JVM what refers to it. It refuses the change when it
+can't tell ([details](lang/java-cookbook.md#when-peeky-cant-tell-who-holds-an-array)):
+
+- more than 64 objects refer to the array and the arrays holding it;
+- the array is more than 4 arrays deep;
+- the JVM can't list what refers to it;
+- the search takes more than 2 s, or more than the session's pause budget leaves. For an attached
+  JVM, the budget is 10 s by default. Peeky keeps 1 s of it for the rest of the change.
+
+When too little of the budget is left, change the element at a fresh stop. The JVM's search itself
+runs on until it ends, even after Peeky refuses.
 
 ### A small example
 
