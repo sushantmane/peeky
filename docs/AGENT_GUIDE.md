@@ -30,8 +30,7 @@ Start with your language's page: [Python](lang/python.md), [Java](lang/java.md),
    examples/verify_pagination.py --baseline` must say `passed: False`. A checker that passes the
    bug can't tell a fix from it.
 7. **Verify:** run the same with `--old '…' --new '…'` instead of `--baseline`. Look for
-   `passed: True  stage: verification`, or the failing `stage` and `reason`. Only this verifies a
-   fix.
+   `passed: True  stage: verification`, or the failing `stage` and `reason`.
 8. **Several looks at one stop:** `peeky session start <target> --at <file>:<line>`, then
    `session inspect`, `get`, `step` and `continue`. Always end with `session close`.
 
@@ -87,7 +86,7 @@ the commands.
 14. **Same-named locals (C, C++):** a plain name means the one the code names at the stop;
     `name @ file:line` selects another (7.1). Rust: as `describe` lists it (`x @ main.rs:6`).
 15. **Respect opaque values.** `<unqualified Rust enum layout>`, `<unverified ...>` or
-    `budget-exhausted` mean that peeky refused to guess. Don't invent their contents.
+    `budget-exhausted` mean peeky refused to guess. Don't invent their contents.
 
 ## Principles
 
@@ -105,8 +104,8 @@ the commands.
 | --- | --- | --- |
 | `peeky describe <target> [--json]` | one build | Language, valid breakpoint lines, qualified views and mutation rules. Always first. |
 | `peeky probe <target> --at <path>:<line> --capture a,b.c [--set x=0] [--hits N\|all] [--json] [-- ARGS]` | one run | Answer one question in one call: values at a line, after any interventions, and the output. |
-| `peeky probe ... --old '<exact text>' --new '<replacement>'` | one build | See what a candidate fix does, on a fresh build; your files are not changed. |
-| `peeky sql "SELECT ... FROM last_run"` / `peeky queries [name]` | instant | Follow-ups on saved evidence. No rerun. `peeky sql --schema` lists the tables. |
+| `peeky probe ... --old '<exact text>' --new '<replacement>'` | one build | See what a candidate fix does, on a fresh build. |
+| `peeky sql "SELECT ... FROM last_run"` / `peeky queries [name]` | instant | Follow-ups on saved evidence. No rerun. |
 | `peeky session start <target> --at <path>:<line> [--hit N]` | one run | Several looks at the same stop (`--hit N`: the Nth). |
 | `peeky session inspect` / `get a.b 'c[0]' "d['k']"` / `set x=0` | instant | List, read and change values at the stop. |
 | `peeky session step [--into\|--out]` / `continue [--to LINE\|--count N\|--to-exit]` / `wait` | instant | Move the program on; `wait` waits for a running one to stop. |
@@ -185,8 +184,7 @@ the commands.
   failed selector shows `{"error": ...}`. `rows` holds the same, one entry per hit, phase and
   selector. `phase` is `observed`, `after-set` (after your intervention) or `returned`. `line` is
   the stop's actual line.
-- How each language shows structs, objects and containers, and what Rust reads from memory: your
-  language's page.
+- How each language shows structs, objects and containers: your language's page.
 - A missing selector's error lists the visible names, or the children of the value read.
   `describe` lists each function's lines and the names it can see (`scopes`; types except in
   Python). `scopes_unavailable` says why its debug information could not be read.
