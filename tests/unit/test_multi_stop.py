@@ -275,6 +275,46 @@ def test_return_rows_keep_their_hits_stop_and_older_ones_gain_it(tmp_path):
     assert connection.execute("PRAGMA user_version").fetchone() == (evidence.SCHEMA_VERSION,)
 
 
+def test_an_older_return_gains_no_stop_from_rows_that_disagree(tmp_path):
+    # Review of PR #198: the upgrade took MIN(stop) of the hit's rows, so a schema-14
+    # hit observed at stop 1 with an after-set row at stop 2 had its return placed at
+    # stop 1, a guess. A stop is taken only where every other row has one and all agree.
+    store = tmp_path / "evidence.db"
+
+    def row(hit, phase, stop, value="1"):
+        selector = "(return)" if phase == "returned" else "k"
+        return dict(hit=hit, phase=phase, line=8, selector=selector, value=value) | (
+            {"stop": stop, "stops": 2} if stop else {}
+        )
+
+    probe = {
+        "probe": {"program": "a.c", "line": 8, "capture": ["k", "return"], "set": []},
+        "status": "completed",
+        "hits": 3,
+        "rows": [
+            row(1, "observed", 1),
+            row(1, "after-set", 2),
+            row(1, "returned", None, "5"),
+            row(2, "observed", 2),
+            row(2, "after-set", 2),
+            row(2, "returned", None, "6"),
+            row(3, "observed", None),
+            row(3, "after-set", 1),
+            row(3, "returned", None, "7"),
+        ],
+    }
+    evidence.record(store, probe, language="c")
+    connection = sqlite3.connect(store)
+    connection.execute("PRAGMA user_version = 14")
+    connection.close()
+    returned = "SELECT hit, stop FROM last_run WHERE phase = 'returned' ORDER BY hit"
+    assert evidence.query(store, returned)["rows"] == [
+        {"hit": 1, "stop": None},
+        {"hit": 2, "stop": 2},
+        {"hit": 3, "stop": None},
+    ]
+
+
 # lldb-dap 18's listing of `format!("[{}]", v)` in an `#[inline(always)]` function that
 # `uses_inl` calls twice (review of #160): each copy's offset follows `[inlined] …`.
 INLINED = """1: file = '/w/src/main.rs', line = 15, exact_match = 0, locations = 6, resolved = 6, hit count = 0

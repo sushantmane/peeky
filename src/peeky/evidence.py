@@ -129,8 +129,10 @@ TABLES = {
             "1 to N in address order, where the line has several there (a macro's or a "
             "block's own code, a loop header's): a pass stops at each, so hits count stops, "
             "not passes. A `(return)` row has its hit's (where its call was stopped, not the "
-            "line it returned to; from schema 15, filled in from the hit's other rows for "
-            "earlier runs). NULL for a line with one (and for runs saved before schema 14)",
+            "line it returned to; from schema 15, filled in for earlier runs from the hit's "
+            "other rows where each has one and all agree). NULL for a line with one (and for "
+            "runs saved before schema 14, and an earlier run's `(return)` row whose hit's "
+            "other rows give no stop or disagree)",
         },
     ),
     "interventions": (
@@ -234,7 +236,8 @@ _DDL = (
 # version 13 captures.instance (a closure's or generic instance's label, NULL before);
 # version 14 adds captures.stop and interventions.stop (#157), which of a line's breakpoint
 # locations a hit or a change was at; version 15 gives a `(return)` row its hit's stop
-# (#174), from that hit's other rows (NULL where it had none: `--capture return` alone).
+# (#174), from that hit's other rows where they agree (NULL where they give none, as with
+# `--capture return` alone, or disagree).
 # Views name columns of the newest tables, so earlier steps only drop them and the
 # last creates them.
 _DROP_VIEWS = ("DROP VIEW IF EXISTS last_run", "DROP VIEW IF EXISTS evidence")
@@ -284,6 +287,17 @@ def _integer_identity(connection):
         connection.execute(statement)
 
 
+def _hits_stop(row):
+    """SQL: the stop of the hit of the captures row aliased ``row``, as its rows other
+    than `(return)` rows give it: only where each has one and all agree, else NULL (none
+    labelled, or contradictory evidence: a stop is never picked from several, #174)."""
+    return (
+        "(SELECT CASE WHEN COUNT(DISTINCT o.stop) = 1 AND COUNT(o.stop) = COUNT(*) THEN "
+        f"MIN(o.stop) END FROM captures o WHERE o.run_id = {row}.run_id AND o.hit = "
+        f"{row}.hit AND o.phase != 'returned')"
+    )
+
+
 _MIGRATIONS = {
     1: ("ALTER TABLE runs ADD COLUMN edit TEXT",),
     2: _DROP_VIEWS,
@@ -322,12 +336,12 @@ _MIGRATIONS = {
         _add_columns(("stop", "INTEGER")),
         _add_columns(("stop", "INTEGER"), table="interventions"),
     ),
-    # Every row of a hit is from one stop: its observed and after-set rows say which.
+    # Every row of a hit is from one stop: its observed and after-set rows say which,
+    # where they agree.
     14: (
         *_DROP_VIEWS,
-        "UPDATE captures SET stop = (SELECT MIN(o.stop) FROM captures o WHERE o.run_id = "
-        "captures.run_id AND o.hit = captures.hit AND o.phase != 'returned') WHERE phase = "
-        "'returned' AND stop IS NULL",
+        f"UPDATE captures SET stop = {_hits_stop('captures')} WHERE phase = 'returned' AND "
+        "stop IS NULL",
         _EVIDENCE_VIEW,
         _LAST_RUN_VIEW,
     ),
@@ -382,12 +396,9 @@ _SAME = (
 _STOPPED = "EXISTS (SELECT 1 FROM captures WHERE run_id = {} AND stop IS NOT NULL)"
 _BOTH_STOPPED = f"({_STOPPED.format(_A)} AND {_STOPPED.format(_B)})"
 # A row's stop, or its hit's: a `(return)` row has its hit's own since schema 15 (#174);
-# one saved without it (#155) takes it from the other rows of its hit, as a store's
-# upgrade to 15 does.
-_HIT_STOP = (
-    "COALESCE(s.stop, (SELECT MIN(o.stop) FROM captures o WHERE o.run_id = s.run_id AND "
-    "o.hit = s.hit))"
-)
+# one saved without it (#155) takes it from the other rows of its hit where they agree,
+# as a store's upgrade to 15 does, else has none.
+_HIT_STOP = f"COALESCE(s.stop, {_hits_stop('s')})"
 
 
 _PAIR = f"""WITH a AS (SELECT hit, phase, selector, {_shown("s")} AS v, type AS t, rowid AS pos,
@@ -1776,24 +1787,25 @@ def _aligned(a, b):
 
 
 def _unplaced_returns(path, run):
-    """A note where a run's line stops several times per pass (#157's warning) and its
-    `(return)` rows (#155) have no stop, nor any row at their hit to say at which stop
-    their call began (`--capture return` alone, before schema 15 gave a `(return)` row
-    its hit's stop, #174, or where no stop was recorded): pairing them by hit number
-    cannot be checked."""
+    """A note where a run's line stops several times per pass (#157's warning) and a
+    `(return)` row (#155) has no stop, and its hit's other rows give none, or disagree
+    (`--capture return` alone, before schema 15 gave a `(return)` row its hit's stop,
+    #174; no stop recorded; contradictory evidence): pairing them by hit number cannot
+    be checked."""
     found = query(
         path,
         "SELECT r.run_id FROM runs r WHERE r.run_id IN (:a, :b) AND r.warnings LIKE "
         "'%times per pass%' AND EXISTS (SELECT 1 FROM captures c WHERE c.run_id = r.run_id "
-        "AND c.phase = 'returned' AND NOT EXISTS (SELECT 1 FROM captures o WHERE o.run_id "
-        "= c.run_id AND o.hit = c.hit AND o.stop IS NOT NULL)) ORDER BY r.run_id LIMIT 1",
+        f"AND c.phase = 'returned' AND c.stop IS NULL AND {_hits_stop('c')} IS NULL) "
+        "ORDER BY r.run_id LIMIT 1",
         {"a": run["a"], "b": run["b"]},
     )["rows"]
     if not found:
         return []
     return [
         f"run {found[0]['run_id']}'s line stops several times per pass, and its `(return)` "
-        "rows do not say at which stop their call began (no row of their hit records one), "
+        "rows do not say at which stop their call began (no row of their hit records one, "
+        "or its rows disagree), "
         "so a hit need not be the same call in both runs: capture a selector with `return` "
         "to pair them by stop, or pair them by a value, `peeky queries join --param "
         f"a={run['a']} --param b={run['b']} --param key=<selector>`"
