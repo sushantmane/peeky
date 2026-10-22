@@ -1591,6 +1591,14 @@ def test_string_fields_of_elements_read_as_text_and_other_fields_say_why(monkeyp
     long = view()["children"][1]
     assert long["value"] == "Friend { paid: 1, owes: 2, .. }", long["value"]
     assert re.search(r'^"a+" \(first [0-9]+ of 2000 bytes\)$', long["children"][0]["value"])
+    # Bytes that are not UTF-8 show no text, not even what decodes before them.
+    blocks["0x2000"] = b"Bo\xff"
+    blocks["0x1000"] = words(3, 0x2000, 3) + _signed(1, 2)
+    bad = view()["children"][1]
+    assert bad["value"] == "Friend { paid: 1, owes: 2, .. }", bad["value"]
+    assert bad["children"][0]["unavailable"] and bad["children"][0]["value"] is None
+    assert "the String's bytes here are not valid UTF-8" in bad["children"][0]["reason"]
+    assert "Bo" not in str(bad)
     # A length past the capacity is never read as text.
     blocks["0x1000"] = words(2, 0x2000, 3) + _signed(1, 2)
     assert view()["rust_view"] == "opaque"
@@ -1603,7 +1611,7 @@ def test_string_fields_of_elements_read_as_text_and_other_fields_say_why(monkeyp
     sharers, payer, cents = shown["children"][1]["children"]
     assert (sharers["type"], payer["type"]) == ("Vec<u8>", "*const peeky_pagination::Friend")
     assert payer["unavailable"] and "value" in payer and payer["value"] is None
-    assert "`payer` is a `*const peeky_pagination::Friend`" in payer["reason"]
+    assert "`payer` has type `*const peeky_pagination::Friend`" in payer["reason"]
     assert "through a reference to the element" in payer["reason"]
     assert cents == {"name": "cents", "type": "i64", "value": "4500"}
     # A tuple shows a field not read as `_`.
@@ -1614,6 +1622,32 @@ def test_string_fields_of_elements_read_as_text_and_other_fields_say_why(monkeyp
     assert view()["value"] == '[("Bo", 7)]'
     monkeypatch.setattr(rust_symbols, "MAX_ELEMENT_TEXTS", 0)
     assert view()["value"] == "[(_, 7)]"
+
+
+def test_text_that_is_not_utf8_is_never_shown_in_part():
+    # Review of #260: a String or &str whose bytes are not UTF-8 says so, with no prefix.
+    from peeky.rust_symbols import container_view
+
+    for kind, layout, name in (
+        ("&str", STR_LAYOUT, "&str"),
+        (
+            "alloc::string::String",
+            {**VEC_LAYOUT, "kind": "string", "element": "u8", "element_size": 1},
+            "String",
+        ),
+    ):
+        header = words(0x1000, 3) if kind == "&str" else words(3, 0x1000, 3)
+        read = memory({"0x10": header, "0x1000": b"ok\xff"})
+        variable = {"name": "t", "type": kind, "memoryReference": "0x10"}
+        layouts = {kind: layout}
+        if kind == "&str":
+            view = container_view(variable, read, layouts, optimized=False, parameter=kind)
+        else:
+            view = container_view(variable, read, layouts, optimized=False, field=kind)
+        assert view == {
+            "raw_reason": f"the {name}'s bytes here are not valid UTF-8, though Rust text "
+            "always is, so Peeky shows none of its text"
+        }, view
 
 
 def test_a_proven_container_of_elements_peeky_does_not_read_says_why():

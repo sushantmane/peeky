@@ -3130,7 +3130,12 @@ class DebugWorker:
             if view is not None and "rust_view" not in view:
                 # Left as the debugger shows it, with why (a Rust Vec or String, #156), and
                 # how much of what it holds reads (a Vec of references, #205).
-                raw_reason, tainted, view = view.get("raw_reason"), view.get("taint"), None
+                raw_reason, tainted = view.get("raw_reason"), view.get("taint")
+                if view.get("carry") and isinstance(raw_reason, str) and not carried:
+                    # What a call may be changing says so on each value read through it
+                    # (#260), as a value shown with a note does (#148).
+                    carried = (f"read through `{name}`: {raw_reason}"[:500], True)
+                view = None
             if view is not None:
                 # Interpreted values never carry expansion handles to raw storage. Their
                 # decoded elements get a worker-owned handle that never reaches the

@@ -353,6 +353,9 @@ In a crate with no unsafe code, Peeky reads reference parameters from memory: `&
 - This needs an unoptimized build, and a debugger with `readMemory`.
 - A `&mut` parameter reads only in the innermost frame. In a caller, the call under way may be
   changing what it points at.
+- So in a caller frame, a `&mut` reference to a `Vec`, `String` or slice shows its raw fields
+  `[stale]`, each saying why. In `friends.retain_mut(decide)`, `friends.len` may be mid-change.
+  No note offers it as the length. A shared reference still reads there.
 - A parameter that its function binds again, such as `let w = …;`, shows only its pointer in the
   whole function. The plain name could mean either binding. A `let w: &Vec<i64>;` that the
   function never assigns counts too.
@@ -443,6 +446,7 @@ hit  phase     line  function       selector         type                  value
 
 - A `String` field reads as text, as a `String` local does. `friends[1].name.len` is its length
   in bytes.
+- A `String` whose bytes aren't valid UTF-8 shows `not read:` and says so. None of its text shows.
 - Each text is a memory read of its own. So Peeky reads the texts of a container's first 16 `String`
   fields. A later one shows `not read:`, with its length.
 - Any other field shows `not read:` and why: a raw pointer, a `Vec`, a `&str`, an enum or a nested
@@ -638,7 +642,10 @@ outlives the call.
 - The field's own type, from the debug information, picks the layout. So a generic's instances
   read as themselves: `w.items` in `fn peek<T>(w: &Wrap<T>)` is `[1, 2]` for `T = u8`, and `['a']`
   for `T = char`.
-- Elements may be scalars, or tuples and crate structs of them, as in containers.
+- Elements may be scalars, or tuples and crate structs, as in containers
+  ([Containers of structs](#containers-of-structs)).
+- Behind a caller's `&mut` reference parameter, such a field's own fields, such as
+  `self.values.len`, show `[stale]`: the call may be changing them.
 - The first such field of a session reads the debug information of the crate's own code once. That
   takes tens of milliseconds for a small crate, and field changes share it.
 

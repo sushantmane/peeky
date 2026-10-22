@@ -721,6 +721,42 @@ def test_rust_container_indexes_explain_what_is_unsupported():
         assert "shown whole, not by element" in message and "window" not in message, message
 
 
+def test_a_container_a_call_may_be_changing_offers_no_field_as_its_length():
+    # Review of #260: a caller's `&mut Vec<T>` (`friends.retain_mut(decide)` under way)
+    # was told "Capture friends.len for the length", a length the call may be changing.
+    from peeky.probe import _raw_rust, _resolve
+
+    reason = (
+        "`friends` is a `&mut` parameter of a caller frame: the call under way may be "
+        "changing what it points at; Peeky reads it in the innermost frame"
+    )
+    friends = {
+        "name": "friends",
+        "type": "alloc::vec::Vec<kitty::Friend, alloc::alloc::Global> *",
+        "value": "0x1",
+        "variablesReference": 1,
+        "raw_reason": reason,
+        "stale": True,
+    }
+    fields = [
+        {"name": "buf", "type": "RawVec", "value": "", "variablesReference": 2},
+        {"name": "len", "type": "unsigned long", "value": "3", "variablesReference": 0},
+    ]
+    note = _raw_rust(friends, "friends")
+    assert reason in note and "may be mid-change" in note and "Capture" not in note, note
+    with pytest.raises(ValueError) as caught:
+        _resolve(Tree({1: fields}), {}, snapshot(friends), parse_selector("friends[0]"))
+    assert reason in str(caught.value) and "friends.len" not in str(caught.value)
+    # A `Vec<String>` (elements never read) a call may be changing says the same.
+    strings = {**friends, "type": "alloc::vec::Vec<alloc::string::String, alloc::alloc::Global> *"}
+    with pytest.raises(ValueError) as caught:
+        _resolve(Tree({1: fields}), {}, snapshot(strings), parse_selector("friends[0]"))
+    assert reason in str(caught.value) and "friends.len" not in str(caught.value)
+    # Any other reason still names the length.
+    other = {**friends, "raw_reason": "the debugger gives no memory address for it"}
+    assert "Capture friends.len for the length" in _raw_rust(other, "friends")
+
+
 def test_a_slice_of_structs_left_raw_is_never_told_to_be_read_as_a_slice():
     # #260: `friends: &mut [Friend]`, a live parameter, was told "read it as a &Vec or
     # &[T] parameter", which it was; an owned Vec may still be read where it is passed.

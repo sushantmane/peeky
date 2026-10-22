@@ -1194,6 +1194,10 @@ def active_variant(variable, fetch, layouts):
     return {**view, "value": value, "rust_view": "active-variant"}
 
 
+# Why a caller frame's container is not read (rust.py's reasons say it in these words): a
+# call under way may be part-way through changing it, so a note never offers one of its
+# fields as its length (#260).
+CALLER_CHANGING = "the call under way may be changing"
 MAX_ELEMENTS = 256
 MAX_TEXT_BYTES = 4096
 # A shown value stays well inside the worker's 2000-character value limit, so its
@@ -1328,6 +1332,12 @@ MAX_ELEMENT_TEXTS = 16
 MAX_FIELD_TEXT = 1024
 
 
+_NOT_UTF8 = (
+    "the {}'s bytes here are not valid UTF-8, though Rust text always is, so Peeky shows "
+    "none of its text"
+)
+
+
 def _partial(layout):
     """Whether a container's element has a field other than a scalar (#260)."""
     return any(kind not in ELEMENT_TYPES for _, _, kind, *_ in layout.get("fields", ()))
@@ -1383,8 +1393,13 @@ def _text_field(field, raw, layout, read, left):
     count = min(length, MAX_FIELD_TEXT)
     left[0] -= 1 if length else 0
     payload = read(f"0x{data:X}", count) if count else b""
-    # An incomplete character at a truncation point is not an error.
-    text = codecs.getincrementaldecoder("utf-8")().decode(payload, final=count == length)
+    try:
+        # An incomplete character at a truncation point is not an error.
+        text = codecs.getincrementaldecoder("utf-8")().decode(payload, final=count == length)
+    except UnicodeDecodeError:
+        # Withheld whole, never a prefix decoded before the bad bytes.
+        reason = _NOT_UTF8.format("String") + ": check it with `peeky verify`"
+        return _withheld_field(field, "String", reason), None
     child = {
         "name": field,
         "type": "String",
@@ -1403,10 +1418,10 @@ def _unread_field(field, kind):
     from peeky.rust import rust_spelling
 
     shown = rust_spelling(kind) if kind else None
-    what = f"a `{shown}`" if shown else "of a type it does not read"
+    what = f"has type `{shown}`" if shown else "has a type the debug information does not name"
     reason = (
         f"Peeky reads an element's integer, bool, float, char and String fields, and "
-        f"`{field}` is {what}: read it through a reference to the element, such as a `for` "
+        f"`{field}` {what}: read it through a reference to the element, such as a `for` "
         "loop's item"
     )
     return _withheld_field(field, shown, reason)
@@ -1883,8 +1898,18 @@ def container_view(
         if layout["kind"] in ("string", "str"):
             count = min(length, MAX_TEXT_BYTES)
             payload = read(f"0x{data:X}", count) if count else b""
-            # An incomplete character at a truncation point is not an error.
-            text = codecs.getincrementaldecoder("utf-8")().decode(payload, final=count == length)
+            try:
+                # An incomplete character at a truncation point is not an error.
+                text = codecs.getincrementaldecoder("utf-8")().decode(
+                    payload, final=count == length
+                )
+            except UnicodeDecodeError:
+                # Never a prefix of it: LLDB's summary, and why (#260).
+                return {
+                    "raw_reason": _NOT_UTF8.format(
+                        "String" if layout["kind"] == "string" else "&str"
+                    )
+                }
             return {
                 **view,
                 "value": _shown_text(text, length),
@@ -1922,5 +1947,5 @@ def container_view(
         }
     except ViewBudgetExhausted as exc:
         return {**view, "value": _budget(exc), "rust_view": "budget-exhausted"}
-    except (ValueError, UnicodeDecodeError):
+    except ValueError:
         return {**view, "value": UNVERIFIED_CONTAINER, "rust_view": "opaque"}

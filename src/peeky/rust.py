@@ -59,6 +59,7 @@ from peeky.rust_mir import (
     stop_block,
 )
 from peeky.rust_symbols import (
+    CALLER_CHANGING,
     OWNED_CONTAINERS,
     REFERENCE_PARAMETERS,
     RUST_METADATA,
@@ -924,6 +925,10 @@ _NO_MEMORY = (
 
 # A String as the MIR names it: what a text (#137) changes.
 _TEXT_RUST = frozenset({"std::string::String", "alloc::string::String", "String"})
+# A `&mut` reference to a Vec, String, slice or str, as the IR or the MIR names its type.
+_MUT_CONTAINER = re.compile(
+    r"&mut (?:(?:std|alloc)::vec::Vec<|(?:std|alloc)::string::String$|\[|str$)"
+)
 
 
 # The prelude's own types (#183), named as the program names them, and the default
@@ -2674,7 +2679,8 @@ class RustSession(NativeSession):
     ):
         """Qualified views: containers read from memory, active enum variants; None
         leaves ordinary values unchanged; {"raw_reason": why} leaves a container raw,
-        saying why (#156).
+        saying why (#156), with "taint" for what it holds (#205) and "carry" where each
+        value read through it says why too (#260: a call may be changing it).
 
         A container is read only for a top-level variable of ``frame`` that is either a
         proven reference parameter (rust_ir), once the frame is past the parameter's
@@ -2710,6 +2716,21 @@ class RustSession(NativeSession):
         hashed = _frame_hash(frame) if top else None
         proof = self.parameters.get((hashed[1], variable.get("name"))) if hashed else None
         line = (frame or {}).get("line")
+        if top and hashed and not innermost and getattr(self, "owned", None) is not None:
+            # #260: a `&mut` Vec, String or slice in a caller frame. The call under way
+            # (`friends.retain_mut(decide)`) may be part-way through changing it, so even
+            # its own fields (`friends.len`) are not its value: they show `[stale]`. A shared
+            # one reads in any frame, as a reference parameter's contents do.
+            kinds = [proof["type"]] if proof else self._binding_types(variable, frame)
+            if kinds and all(_MUT_CONTAINER.match(str(kind or "")) for kind in kinds):
+                return {
+                    "raw_reason": f"`{variable.get('name')}` is a `&mut` "
+                    f"{'parameter' if proof else 'reference'} of a caller frame: "
+                    f"{CALLER_CHANGING} what it points at; Peeky reads it in the innermost "
+                    "frame",
+                    "taint": "stale",
+                    "carry": True,
+                }
         if (
             proof
             and self.target.opt_level == "0"
@@ -3099,7 +3120,10 @@ class RustSession(NativeSession):
                 return {
                     "raw_reason": f"`{root}` is a `&mut` parameter of a caller frame: the call "
                     "under way may be changing what it points at; Peeky reads it in the "
-                    "innermost frame"
+                    "innermost frame",
+                    # Its own fields (`self.values.len`) may be mid-change too (#260).
+                    "taint": "stale",
+                    "carry": True,
                 }
             through, dereference = "reference", True
         else:

@@ -75,6 +75,8 @@ Peeky debugs Rust with lldb-dap, LLVM's debugger.
   initialized ([Rust 7.2](rust-cookbook.md#owned-vec-and-string-locals)).
 - A `&mut` reference parameter reads only in the innermost frame. A shared one reads in any frame
   ([Rust 7.2](rust-cookbook.md#reference-parameters)).
+- In a caller frame, a `&mut` `Vec`, `String` or slice shows its fields `[stale]`: the call under
+  way may be changing them ([Rust 7.2](rust-cookbook.md#reference-parameters)).
 - A reference parameter that its function binds again shows only its pointer
   ([Rust 7.2](rust-cookbook.md#reference-parameters)).
 - A `Vec<String>` stays raw ([Rust 7.2](rust-cookbook.md#what-peeky-reads)).

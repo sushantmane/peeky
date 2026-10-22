@@ -1115,12 +1115,26 @@ def _raw_rust(variable, selector):
     else:
         what = kind
     step = _length_step(kind)
+    if _changing(variable):
+        return (
+            f"This Rust {what} shows LLDB's summary (its type and address), not its contents: "
+            f"{variable['raw_reason']}. Its own fields, its length too, may be mid-change "
+            "here. Check contents with `peeky verify`."
+        )
     return (
         f"This Rust {what} shows LLDB's summary (its type and address), not its contents: "
         f"{variable['raw_reason']}. {_str_items(variable, selector)}"
         + (f"Capture {selector}.{step} for the length, and check" if step else "Check")
         + " contents with `peeky verify`."
     )
+
+
+def _changing(variable):
+    """Whether the worker left a Rust container raw because a call under way may be
+    changing it (a caller frame's): none of its fields is offered as its length (#260)."""
+    from peeky.rust_symbols import CALLER_CHANGING
+
+    return CALLER_CHANGING in str(variable.get("raw_reason") or "")
 
 
 _COMPOSITE_RUST = (
@@ -1368,7 +1382,7 @@ def _absence(variable, segment, children, path=None, pointers=False):
         elif variable.get("view") == "memory":
             if _lldb_type(variable) in _RUST_TEXT:
                 message += "; text read from memory is shown whole, not by element"
-        elif _unread_rust(_lldb_type(variable)):
+        elif _unread_rust(_lldb_type(variable)) and not _changing(variable):
             message += (
                 f"; Peeky does not read {kind}'s elements, only those of String, &str, and "
                 "containers of integer, bool, float or char elements, or of tuples and structs "
@@ -1376,10 +1390,14 @@ def _absence(variable, segment, children, path=None, pointers=False):
                 + (f". Capture {shown_path}.{length} for the length" if length else "")
             )
         elif isinstance(variable.get("raw_reason"), str):
-            # Why the worker left it raw (#156).
+            # Why the worker left it raw (#156); never a length that may be mid-change.
             message += (
                 f"; Peeky shows LLDB's summary of it, not its contents: {variable['raw_reason']}"
-                + (f". Capture {shown_path}.{length} for the length" if length else "")
+                + (
+                    f". Capture {shown_path}.{length} for the length"
+                    if length and not _changing(variable)
+                    else ""
+                )
                 + ", and check contents with `peeky verify`"
             )
         elif _rust_composite(_lldb_type(variable)):
@@ -1701,7 +1719,9 @@ def _capture(
                     row["note"] = _raw_rust(variable, selector)
                 elif owned_type and len(parse_selector(selector)) == 1:
                     row["note"] = _rust_note(_OWNED_RUST, variable, selector)
-                elif variable.get("stale"):
+                elif variable.get("stale") and not _THROUGH.match(str(variable.get("note"))):
+                    # A note carried from what holds it says why first (#260: a call may be
+                    # changing it), else every way a value can be stale.
                     row["note"] = _STALE_RUST + "."
                 elif owned_type:
                     row["note"] = _rust_note(_FIELD_RUST, variable, selector)
