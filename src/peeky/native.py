@@ -40,7 +40,15 @@ from peeky.build import (
     real_tool,
 )
 from peeky.c_source import Preprocessed, Statements, macro_hazards, returning_twice
-from peeky.cxx_strings import libstdcxx_string, shows_text, string_class, text_like, tidy
+from peeky.cxx_strings import (
+    SUMMARY_UNITS,
+    libstdcxx_string,
+    shows_text,
+    string_class,
+    summary_units,
+    text_like,
+    tidy,
+)
 from peeky.digest import sha256_file
 from peeky.identifiers import changeable, looks_located, split_located
 from peeky.names import standard_type, unicode_escape
@@ -1821,6 +1829,13 @@ def _library_frame(frame):
     return bool(_LIBRARY_FUNCTION.search(name.rpartition("`")[2].split("(", 1)[0]))
 
 
+# A narrow character array's type, as LLDB names it (`char[8192]`, `const unsigned char[4]`).
+CHAR_ARRAY = re.compile(
+    r"(?:(?:const|volatile)\s+)*(?:(?:signed|unsigned)\s+)?char(?:\s+(?:const|volatile))*"
+    r"\s*\[[0-9]+\]"
+)
+
+
 def _is_object(variable):
     """Whether a DAP variable is a class, struct, union or array: it has children and is
     no pointer or reference."""
@@ -1988,7 +2003,7 @@ def declared_below(table, name, source, line, through=None, address=None, pc=Non
     return at, why
 
 
-def declared_unfinished(table, name, source, line, address, ends=None, chosen=None):
+def declared_unfinished(table, name, source, line, address, ends=None, chosen=None, settled=None):
     """For a caller frame at ``source:line``, inside a call that returns to ``address``
     (unslid; None if unknown): ``(line, why, detail)`` for a C/C++ local of that name
     whose declaration may not have run yet, else None. ``why`` is `file` (``detail``: the
@@ -2013,7 +2028,13 @@ def declared_unfinished(table, name, source, line, address, ends=None, chosen=No
 
     ``chosen``: (source, line) of the declaration the name means there, where Peeky
     can tell (#158: `_named_where`); only it is judged then, not every one of the name
-    in the function (another block's `long t;` with no code withheld this one)."""
+    in the function (another block's `long t;` with no code withheld this one).
+
+    ``settled(line, name)``: True where a statement's header declares it and sets it
+    once, with no call (`for (int i = 0; …)`): that runs before anything else of the
+    statement, a call in its condition, increment or body included, so a caller frame
+    anywhere in it has it set (ninth evaluation: a loop's `i` in the caller, withheld on
+    its third pass because the header's increment comes after the call)."""
     shown = split_located(name)
     base = shown[0] if shown else name
     owners = [function for function in table if (source, line) in function["rows"]]
@@ -2042,6 +2063,8 @@ def declared_unfinished(table, name, source, line, address, ends=None, chosen=No
             span = function["rows"].get((source, at))
             if span is None:
                 return at, "no code", None
+            if at <= line and settled is not None and settled(at, base) is True:
+                continue
             if at <= line and (at == line or address is None or span[1] >= address):
                 return at, "unfinished", None
             if at <= line and ends is not None:
@@ -3327,9 +3350,22 @@ class NativeSession:
             # Peeky's own text (read from memory, or noted): spelled and bounded already.
             return shown
         text = variable.get("value")
+        ended = False
+        if (
+            language in ("c", "cpp")
+            and isinstance(text, str)
+            and CHAR_ARRAY.fullmatch(str(variable.get("type") or "").strip())
+            and (units := summary_units(text, 1, "")) is not None
+            and units[1]
+            and units[0] < SUMMARY_UNITS
+        ):
+            # LLDB ends a `char[N]` longer than its summary limit with `...` even where
+            # the text ended at a NUL within it, which fewer bytes than the limit prove
+            # (ninth evaluation: `"    The quick brown fox"...` in a `char[8192]`).
+            text, ended = text[:-3], True
         tidied = tidy(text, language in ("c", "cpp")) if isinstance(text, str) else None
         if tidied is None:
-            return shown
+            return {**(shown or {}), "value": text} if ended else shown
         return {**(shown or {}), **tidied}
 
     def preview_value(
@@ -3744,6 +3780,10 @@ class NativeSession:
                 self._unslid(frame),
                 ends=lambda at, local: self._statement_end(here, at, local),
                 chosen=self._chosen(name, frame),
+                # In C++ an object's header can construct it (a call) with no `(`.
+                settled=None
+                if getattr(self.target, "language", None) == "cpp" and _is_object(variable)
+                else lambda at, local: self._header_settled(here, at, local),
             )
         ):
             at, why, detail = unfinished
@@ -3881,9 +3921,11 @@ class NativeSession:
                     "leftovers"
                 )
                 if label is not None
+                # Neutral: no `switch` or `goto` may be there at all (ninth evaluation:
+                # a function whose only jump was a `continue`).
                 else f"declared on line {at}, and Peeky cannot tell from the source whether "
-                "a jump (a `switch` or a `goto`) reaches this line past the declaration, so "
-                "it may not be initialized here: its storage may hold leftovers"
+                "this line can be reached without running the declaration, so it may not be "
+                "initialized here: its storage may hold leftovers"
             )
         if address is None or self.target.optimization != "O0":
             return None
@@ -3959,6 +4001,14 @@ class NativeSession:
         """Statements.declared_through for the prepared ``source``, or None."""
         statements = self._statements(source)
         return None if statements is None else statements.declared_through(line, name)
+
+    def _header_settled(self, source, line, name):
+        """Whether a statement's header on ``line`` declares ``name`` and sets it once, by
+        no call (`for (int i = 0; …)`), from the one statement that declares it there;
+        None if unknown (Statements.declaration)."""
+        statements = self._statements(source)
+        found = None if statements is None else statements.declaration(line, name, True)
+        return None if found is None else bool(found[2] and found[3])
 
     def _settled(self, source, line, name):
         """Whether a statement's header sets ``name`` on ``line`` once, by no call (True,

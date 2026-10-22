@@ -278,8 +278,10 @@ def test_a_callers_aggregate_stored_element_by_element_is_withheld(bucket, capsy
             assert (
                 f"declared on line {line}, which has no code of its own" in (variable["reason"])
             ), (hit, variable)
-    # A loop's counter while its body calls: the increment follows the body.
-    assert shown[11]["total"]["value"] == "0" and shown[11]["k"]["unavailable"]
+    # A loop's counter while its body calls: its header set it (`int k = 0`, no call)
+    # before the body ran, though the increment follows the body (ninth evaluation:
+    # this was withheld).
+    assert shown[11]["total"]["value"] == "0" and shown[11]["k"]["value"] == "0"
 
 
 TRIO = """#include <stdio.h>
