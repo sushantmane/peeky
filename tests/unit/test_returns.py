@@ -324,9 +324,9 @@ class Scripted:
     returned), ("set", depth) (a --set-at line's stop) or ("end",); a stop may end with
     {"thread": n} (else thread 1), {"place": (k, n)} (its line's breakpoint location k
     of n, #157), {"same": True} (the worker proves it in the call the last step out was
-    leaving, #174) or {"caller": "other"} (another frame under it). Records how each
-    stop was resumed; `refuse` names steps the worker refuses because other threads
-    stopped too."""
+    leaving, #174), {"caller": "other"} (another frame under it) or {"function":
+    name} (stopped in another function). Records how each stop was resumed; `refuse`
+    names steps the worker refuses because other threads stopped too."""
 
     def __init__(self, script, optimized=None, refuse=()):
         self.script, self.optimized, self.resumed = list(script), optimized, []
@@ -374,7 +374,13 @@ class Scripted:
                 if options.get("caller") == "other":
                     under = [frame("main", "0x9a", 10)] + under[1:]
                 return {
-                    "frames": [{**frame("fact", "0xf4", line), "source": {"path": "a.c"}}] + under,
+                    "frames": [
+                        {
+                            **frame(options.get("function", "fact"), "0xf4", line),
+                            "source": {"path": "a.c"},
+                        }
+                    ]
+                    + under,
                     "scopes": [],
                     "depth": depth,
                     **({"optimized": self.optimized} if self.optimized else {}),
@@ -470,6 +476,14 @@ def test_a_later_stop_of_a_multi_stop_line_says_so_and_claims_no_pass(monkeypatc
         "withheld: the line stopped again at the same depth in another call (the frames "
         "under it are not this call's) before this call returned"
     )
+    # Review of PR #198: another function stopped (a closure on the line), with the same
+    # frames under it: said as such, not as other frames.
+    script[1] = ("hit", 3, {"place": (2, 2), "function": "fact::{closure#0}"})
+    _, returns, _ = probe_with(monkeypatch, tmp_path, script)
+    assert returns[1]["error"].startswith(
+        "withheld: the line stopped again at the same depth in a call of another function "
+        "(the stopped function is not this call's) before this call returned"
+    ), returns[1]["error"]
 
 
 def test_a_return_is_followed_across_the_lines_stops_in_the_same_call(monkeypatch, tmp_path):

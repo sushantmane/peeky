@@ -1590,10 +1590,17 @@ _OPTIMIZED_RETURN = (
 def _again(call, frame, snapshot, place):
     """Why a pending call's hits get no return when the capture line stopped again at
     its depth, on its thread, before it returned, in a stop not proven to be in the same
-    call (#174). Only what the stop shows is said: another call where the frames under
-    it are not the call's, else that Peeky could not tell."""
+    call (#174). Only what the stop shows is said: a call of another function where the
+    stopped function is not the call's, another call where the frames under it are not,
+    else that Peeky could not tell."""
     below = [_frame_id(caller) for caller in (snapshot.get("frames") or [])[1:]]
-    if frame.get("name") != call["function"] or below != call["below"]:
+    if frame.get("name") != call["function"]:
+        return (
+            "the line stopped again at the same depth in a call of another function (the "
+            "stopped function is not this call's) before this call returned, so no return "
+            "is attributed to this hit"
+        )
+    if below != call["below"]:
         return (
             "the line stopped again at the same depth in another call (the frames under it "
             "are not this call's) before this call returned, so no return is attributed to "
