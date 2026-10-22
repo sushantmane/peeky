@@ -1,6 +1,6 @@
 # Working on Peeky
 
-Read README.md and docs/DESIGN.md before changing lifecycle or protocol behavior. Keep work inside the MVP boundaries in docs/ROADMAP.md.
+Read README.md and docs/DESIGN.md before changing lifecycle or protocol behavior. Keep work inside the boundaries in docs/DESIGN.md. Don't start work that docs/ROADMAP.md lists as deferred.
 
 - Never claim a runtime intervention alone is a verified source fix.
 - Preserve source/check identity, session/stop identity, and fail-closed semantics after uncertain mutations.
