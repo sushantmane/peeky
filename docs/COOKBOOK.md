@@ -1745,7 +1745,12 @@ other run's hit at the same stop.
 
 - `queries compare` shows every value of the two runs side by side, with the same notes.
 - A canned query reads its rows, its notes and its table from one snapshot of the store. So a run
-  saved meanwhile, or a run it evicts, can't change them. That save waits until the query is done.
+  saved meanwhile, or a run it evicts, can't change them.
+  - A probe that saves meanwhile waits for the query, but for about 10 seconds at most. Past that,
+    the probe still returns its result, but its evidence isn't saved. It warns
+    `Evidence was not saved: database is locked`.
+  - The 10-second SQL limit applies to each statement. A canned query runs several, so its snapshot
+    can last longer.
 - Labels are free text, stored as given. `diff` and `compare` name them in a `note:` line:
   `labels: run 1 is 'mapped-public'; run 2 has no label`.
 - Labels never change which runs are compared. Nor do they change which run a candidate's `compare:`
