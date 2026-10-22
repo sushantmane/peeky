@@ -7,20 +7,20 @@ You debug programs with **peeky**, a standalone tool. You decide what to do; pee
 1. **Learn the target:** `peeky describe examples/pagination_bug.py`. Look for `breakpoint lines`, each function's lines and names (`names in get_page (lines 4-9): …`) and `mutable:` (what `--set` can change). Pick a line where the suspicious value has just been computed.
 2. **Watch it:** `peeky probe examples/pagination_bug.py --at 8 --capture start,page --hits all`. One row per stop (`hit`, `value`), `status: completed`, the program's `output`, and every `warning:`.
 3. **Ask follow-ups:** `peeky queries diff` after probing two inputs (`--label` each), `queries wide` (a row per hit, a column per selector), or `peeky sql "SELECT hit, num FROM last_run WHERE selector = 'start'"`. No rerun (rule 12).
-4. **Test a hypothesis:** add `--set start=0` to the probe. Look for `set start: 3 -> 0`, the `after-set` rows, and whether the output changed as predicted. It is an experiment, not a fix.
-5. **Try a fix:** add `--old 'start = page * page_size' --new 'start = (page - 1) * page_size'` to the probe. Values come from a fresh build with the edit (Python: an edited copy; your files are unchanged); its `compare:` line names the `queries diff` against the unedited run, or says how to make one. Write the general fix, not a special case for the observed input.
+4. **Test a hypothesis:** add `--set start=0` to the probe. Look for `set start: 3 -> 0`, the `after-set` rows, and whether the output changed as predicted: an experiment, not a fix.
+5. **Try a fix:** add `--old 'start = page * page_size' --new 'start = (page - 1) * page_size'` to the probe. Values come from a fresh build with the edit (your files are unchanged); its `compare:` line names the `queries diff` against the unedited run, or says how to make one. Write the general fix, not a special case for the observed input.
 6. **Check the checker:** `peeky verify examples/pagination_bug.py --check examples/verify_pagination.py --baseline` must say `passed: False`; a checker that passes the bug cannot tell a fix from it.
 7. **Verify:** the same with `--old '…' --new '…'` instead of `--baseline`. `passed: True  stage: verification`, or the failing `stage` and `reason`. Only this verifies a fix.
 8. **Several looks at one stop:** `peeky session start <target> --at <file>:<line>`, then `session inspect`, `get`, `step`, `continue`, and always `session close`.
 
-Report the observation, the intervention and its effect, the edit, and the verify result. Quote the commands.
+Report the observation, the intervention and its effect, the edit and the verify result, quoting the commands.
 
 ## Rules you will hit
 
-1. **A breakpoint stops before its line runs:** to see what a line assigns, stop on the next. Probe only lines `describe` lists; `NO_STOP` means the line never ran (the COOKBOOK's opening tip; 10).
+1. **A breakpoint stops before its line runs:** to see what a line assigns, stop on the next. Probe only lines `describe` lists; `NO_STOP` means the line never ran (10).
 2. **Set a field in the frame that owns the struct.** Peeky never writes through a pointer or reference (`r->tail` in `push(struct ring *r)`, `self.k` behind `&mut self`, C++ `this`): change it in the caller, at the call's line (`--set-at LINE@N`, or `--at` it with `--set-hit N`), as the refusal says (7.1, 7.2).
 3. **Changes only where nothing is under way:** C and C++ at a statement's first line, Rust where the MIR proves it, never after `step --out`. Rows mark `[settable]`; a probe whose change its build rules out is refused before it runs (exit 2) (2.3, 7.1 to 7.3).
-4. **`--set` applies once, at hit 1** (`--set-hit N` for another); `--set-at LINE@HIT` changes at another line's hit (2.4, 2.8).
+4. **`--set` applies once, at hit 1** (`--set-hit N` for another); `--set-at LINE@HIT` changes at that line's hit, the `--at` line's too; repeat it per hit (2.4, 2.8).
 5. **Hits count stops, not passes.** A line with a macro's or a block's code, or a closure, can stop several times per pass: read `warnings`, each row's `stop` and `function`. A loop header may stop only before its loop: probe the body's first line (2.2).
 6. **A `note`, `no value yet:` or `unavailable: true` is not a value.** C and C++: read a local below its declaration, and a `note` on a line a loop returns to (a `do` body's first) on the next line; below a `setjmp` call, a `note` replaces `no value yet`: read it below its declaration too. Python: a `note` marks a local the pass assigns below (5.1). Rust: `[stale]` is a moved local's leftover bytes, and raw fields with a note are contents Peeky could not prove (7.1, 7.2).
 7. **Rust reads `Vec`/`String` contents it can prove alive:** owned locals, reference parameters of plain elements, and such fields of either (`self.values`; `&mut` and owned: innermost frame only). A crate with `unsafe` code or a nightly feature gets none of these: raw fields with a note why (7.2).
