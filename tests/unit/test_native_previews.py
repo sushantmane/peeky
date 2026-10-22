@@ -7,6 +7,7 @@ import pytest
 
 from peeky.adapters import ViewBudgetExhausted
 from peeky.cxx_strings import shorten
+from peeky.native import STACK_READ
 from peeky.native_previews import ITEMS, LENGTH, Typed, bitfield_text, preview
 
 
@@ -636,10 +637,17 @@ def test_a_container_is_read_only_where_no_library_call_may_be_changing_it():
     # No frames, or more than can be read: not read.
     assert native.containers_settled(inner, False, None, threads=one) is False
     full = stack(*["f"] * 10)
-    assert native.containers_settled(full[0], True, full, lambda: stack(*["f"] * 64), one) is False
-    assert native.containers_settled(full[0], True, full, lambda: stack(*["f"] * 12), one) is True
+    # More frames than are read: not read (#187: up to STACK_READ, not 64).
+    many = stack(*["f"] * STACK_READ)
+    asked = []
+    assert (
+        native.containers_settled(full[0], True, full, lambda n: asked.append(n) or many, one)
+        is False
+    )
+    assert asked == [STACK_READ]
+    assert native.containers_settled(full[0], True, full, lambda n: stack(*["f"] * 64), one) is True
     deep = stack(*["f"] * 11, "std::thread::_State_impl<…>::_M_run()")
-    assert native.containers_settled(full[0], True, full, lambda: deep, one) is False
+    assert native.containers_settled(full[0], True, full, lambda n: deep, one) is False
     # Another thread may be inside a `push_back` on a container this one shares.
     assert native.containers_settled(plain[0], False, plain, threads=lambda: 2) is False
     assert native.containers_settled(plain[0], False, plain, threads=lambda: None) is False
@@ -748,3 +756,48 @@ def test_a_local_reached_through_a_pointer_is_read_as_one():
         threads=one,
     )
     assert shown == "size=1 [1]"
+
+
+def test_why_a_row_read_through_a_changing_container_is_withheld():
+    # #187: the rows below a container a library call may be changing (#181's rule,
+    # without its one-thread part): the reason names the call and the container.
+    from peeky.native import _short_frame
+
+    native = session(fields=CONTAINERS)
+    native.declarations[0]["types"]["vp"] = {(51, "automatic", None)}
+    native.declarations[0]["types"]["rv"] = {(63, "automatic", None)}
+    native.declarations[0]["types"]["pv"] = {(64, "automatic", None)}
+    native.declarations[0]["types"]["b"] = {(59, "automatic", None)}
+    clear = "std::__1::vector<Noisy, std::__1::allocator<Noisy>>::clear[abi:ne180100]()"
+    below = stack("Noisy::~Noisy()", clear, "main", "start")
+    reason = native.changing_container(below[2], ["vp", "[1]", "x"], below)
+    assert reason.label == "not shown", reason
+    assert "below this frame (std::__1::vector<…>::clear)" in reason and "`vp`" in reason
+    assert native.changing_container(below[2], ["vp", "[1]"], below) is not None
+    # Not read through a container, or a root: never.
+    assert native.changing_container(below[2], ["b", "n"], below) is None
+    assert native.changing_container(below[2], ["vp"], below) is None
+    # Its own frame's container, with the library call its caller's: read.
+    assert native.changing_container(below[0], ["vp", "[1]"], below) is None
+    # Through a reference or pointer, a library call anywhere on the stack counts.
+    for root, shown in (("rv", "`rv`"), ("pv", "`pv[0]`")):
+        reason = native.changing_container(below[0], [root, "[1]"], below)
+        assert "pointer or reference" in reason and shown in reason, reason
+    alone = stack("count(Owner const&)", "main", "start")
+    assert native.changing_container(alone[0], ["rv", "[1]"], alone) is None
+    # A lifetime under way (#181 review): below the frame, or anywhere through a
+    # reference (the destructor's own frame too).
+    ended = stack("E::~E()", "main", "start")
+    reason = native.changing_container(ended[1], ["vp", "[0]", "x"], ended)
+    assert "constructor, destructor or assignment operator below this frame (E::~E)" in reason
+    assert native.changing_container(ended[0], ["vp", "[0]"], ended) is None
+    reason = native.changing_container(ended[0], ["rv", "[0]"], ended)
+    assert "while a constructor, destructor or assignment operator runs" in reason, reason
+    # Frames that cannot be told: withheld, and said so.
+    assert "cannot read every frame" in native.changing_container(below[2], ["vp", "[1]"], [])
+    assert (
+        session("rust", fields=CONTAINERS).changing_container(below[2], ["vp", "[1]"], below)
+        is None
+    )
+    assert _short_frame("void std::_Destroy<Noisy*, Noisy>(Noisy*, Noisy*)") == "std::_Destroy<…>"
+    assert _short_frame(None) == "a frame with no name"

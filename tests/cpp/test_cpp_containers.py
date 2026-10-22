@@ -237,9 +237,9 @@ def test_a_container_a_library_call_is_changing_keeps_its_summary(cpp, capsys):
         rows = get("o.items", frame=caller)
         shown = rows["o.items"]
         assert shown["value"] == "size=2", shown
-        # Nor its elements, one of which is destroyed.
+        # Nor its elements, one of which is destroyed: they are withheld (#187).
         for child in shown["children"]:
-            assert re.fullmatch(r"Noisy @ 0x[0-9a-f]+", child["value"]), child
+            assert child.get("unavailable") and not child.get("value"), child
         # Reached through a pointer from the destructor's own frame: the same.
         rows = get("this.owner[0].items")
         assert rows["this.owner[0].items"]["value"] == "size=2", rows
@@ -463,3 +463,107 @@ def test_a_container_another_thread_is_relocating_keeps_its_summary(cpp, capsys)
     assert rows["shared"]["value"] == "size=1", rows["shared"]
     assert re.fullmatch(r"Slow @ 0x[0-9a-f]+", rows["shared[0]"]["value"]), rows["shared[0]"]
     assert "1 2 1 2" in result["output"], result["output"]
+
+
+CLEARING = """#include <cstdio>
+#include <map>
+#include <string>
+#include <vector>
+struct Owner;
+struct Noisy {
+    std::string name;
+    Owner *owner;
+    Noisy(std::string n, Owner *o) : name(std::move(n)), owner(o) {}
+    ~Noisy();
+};
+struct Owner { std::vector<Noisy> items; std::map<int, std::string> tags; int dropped = 0; };
+static int note(const std::vector<Noisy> &items, int dropped) {
+    return (int)items.size() + dropped; // IN_NOTE
+}
+Noisy::~Noisy() {
+    if (owner) owner->dropped += 1 + note(owner->items, owner->dropped) * 0; // IN_DTOR
+}
+int main() {
+    Owner o;
+    o.items.reserve(4);
+    o.items.emplace_back(std::string(30, 'a'), &o);
+    o.items.emplace_back(std::string(30, 'b'), &o);
+    o.tags[1] = std::string(30, 't');
+    int before = note(o.items, 0);
+    o.items.clear();
+    std::printf("%d %d\\n", before, o.dropped);
+    return 0;
+}
+"""
+CHANGING = "standard-library call"
+
+
+@pytest.mark.timeout(180)
+def test_rows_read_through_a_container_a_library_call_is_changing_are_withheld(cpp, capsys):
+    # #187: while `o.items.clear()` runs the second element's destructor, the vector
+    # still counts the first, destroyed: `o.items[1].name` in `main`'s frame read its
+    # freed string (`"\\U00000003\\0\\0…"`), with no note, and so did `items[1].name`
+    # through the reference parameter of a call the destructor makes.
+    source = cpp / "clearing.cpp"
+    source.write_text(CLEARING)
+    line = line_of(CLEARING, "// IN_NOTE")
+    command = ["probe", str(source), "--at", str(line), "--capture", "items[1].name,dropped"]
+    assert main([*command, "--hits", "3", "--json"]) == 0
+    rows = json.loads(capsys.readouterr().out)["rows"]
+    names = [row for row in rows if row["selector"] == "items[1].name"]
+    assert len(names) == 3 and [row["hit"] for row in names] == [1, 2, 3], rows
+    # From `main`, before `clear()`: read as before.
+    assert CHANGING not in json.dumps(names[0]), names[0]
+    if whole():
+        assert names[0]["value"] == '"' + "b" * 30 + '"', names[0]
+    # From the destructors `clear()` runs: withheld, with why, never a value.
+    for row in names[1:]:
+        assert "value" not in row, row
+        assert CHANGING in row["error"] and "pointer or reference" in row["error"], row
+    # Values not read through the container read as before.
+    assert all("value" in row for row in rows if row["selector"] == "dropped"), rows
+    with session(source, line_of(CLEARING, "// IN_DTOR"), capsys) as get:
+        assert main(["session", "continue"]) == 0
+        capsys.readouterr()
+        main(["session", "inspect", "--json"])
+        frames = json.loads(capsys.readouterr().out)["frames"]
+        caller = next(i for i, f in enumerate(frames) if f.get("name") == "main")
+        rows = get(
+            "o.items", "o.items[1].name", "o.items[0]", "o.tags[1]", "o.dropped", frame=caller
+        )
+        # The container keeps its summary (#181); its elements, what they hold and any
+        # container of the frame are withheld with the reason.
+        assert rows["o.items"]["value"] == "size=2", rows["o.items"]
+        for child in rows["o.items"]["children"]:
+            assert child.get("unavailable") and CHANGING in child["reason"], child
+            assert "value" not in child or child["value"] is None, child
+        for selector in ("o.items[1].name", "o.items[0]", "o.tags[1]"):
+            row = rows[selector]
+            assert "value" not in row and CHANGING in row["error"], row
+            assert "below this frame" in row["error"], row
+        assert rows["o.dropped"]["value"] == "1", rows["o.dropped"]
+        # From the destructor's own frame, through `this` and the owner pointer.
+        rows = get("this.owner[0].items[1].name")
+        row = rows["this.owner[0].items[1].name"]
+        assert CHANGING in row["error"] and "pointer or reference" in row["error"], row
+
+
+@pytest.mark.timeout(120)
+def test_rows_read_through_a_container_whose_element_is_destroyed_in_place_are_withheld(
+    cpp, capsys
+):
+    # #187 with #186's review: stopped in `E::~E()`, which `main`'s `slot->~E()` runs,
+    # `v[0].x` read the ended element (`-7`); no library frame is on the stack.
+    source = cpp / "manual.cpp"
+    source.write_text(MANUAL)
+    with session(source, line_of(MANUAL, "// IN_E_DTOR"), capsys) as get:
+        main(["session", "inspect", "--json"])
+        frames = json.loads(capsys.readouterr().out)["frames"]
+        caller = next(i for i, f in enumerate(frames) if f.get("name") == "main")
+        rows = get("v[0].x", "v[1]", "slot", frame=caller)
+        for selector in ("v[0].x", "v[1]"):
+            error = rows[selector].get("error", "")
+            assert "value" not in rows[selector], rows[selector]
+            assert "constructor, destructor or assignment operator below this frame" in error
+        # Not read through the container: as before.
+        assert rows["slot"]["value"].startswith("0x"), rows["slot"]

@@ -2219,6 +2219,10 @@ def _listed_entries(worker, stop, variable, path, first_page):
 def _entry_part(worker, stop, child, part, path):
     """`first` or `second` of one entry LLDB lists for a map (`first` alone is fetched
     first: one node, not two)."""
+    if child.get("unavailable") and child.get("withheld"):
+        # Withheld by Peeky, with why (a library call may be changing the map, #187).
+        label = child.get("withheld_as") or "no value yet"
+        raise ValueError(f"cannot read the keys of {path}'s entries: {label}: {child['reason']}")
     if not child.get("variablesReference"):
         why = (
             "it is at the inspection depth limit (4 levels below a local)"

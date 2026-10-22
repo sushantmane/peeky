@@ -157,6 +157,7 @@ class DebugWorker:
         self.listed_frames = []
         self.deeper_frames = None
         self.thread_count = None
+        self.whole_frames = None
         self.innermost_frame = None
         self.references = set()
         # Scope handles of module globals: listed for reading, never changed.
@@ -1425,6 +1426,7 @@ class DebugWorker:
         self.listed_frames = []
         self.deeper_frames = None
         self.thread_count = None
+        self.whole_frames = None
         self.references.clear()
         self.reference_frames.clear()
         self.reference_adapter.clear()
@@ -1865,6 +1867,7 @@ class DebugWorker:
             self.listed_frames = []
             self.deeper_frames = None
             self.thread_count = None
+            self.whole_frames = None
             self.references.clear()
             self.reference_frames.clear()
             self.reference_adapter.clear()
@@ -1952,6 +1955,7 @@ class DebugWorker:
             self.listed_frames = list(frames)
             self.deeper_frames = None
             self.thread_count = None
+            self.whole_frames = None
             self.innermost_frame = frames[0].get("id") if frames else None
             if listed := getattr(runtime, "frames_listed", None):
                 # Which frame is innermost: a caller's address is where its call returns.
@@ -2516,9 +2520,25 @@ class DebugWorker:
         listed, a way to read more, and how many threads the program has."""
         return {
             "stack": getattr(self, "listed_frames", None),
-            "deeper": self.deeper_stack,
+            "deeper": self.whole_stack,
             "threads": self.threads_at_stop,
         }
+
+    def whole_stack(self, levels):
+        """The stop's first ``levels`` frames, fetched once per inspection, for the rule
+        on standard containers a library call may be changing (#181, #187); [] if the
+        debugger refuses."""
+        cached = getattr(self, "whole_frames", None)
+        if cached is None or cached[0] < levels:
+            try:
+                reply = self.dap.request(
+                    "stackTrace", {"threadId": self.thread_id, "levels": levels}, timeout=10
+                )
+                frames = list(reply.get("stackFrames", [])[:levels])
+            except (TimeoutError, RuntimeError, OSError):
+                frames = []
+            self.whole_frames = cached = (levels, frames)
+        return cached[1]
 
     def threads_at_stop(self):
         """How many threads the program has at this stop, read once per inspection, or
@@ -2733,6 +2753,7 @@ class DebugWorker:
         string_value = getattr(self.runtime, "string_value", None)
         preview = getattr(self.runtime, "preview_value", None)
         member_value = getattr(self.runtime, "member_value", None)
+        changing_container = getattr(self.runtime, "changing_container", None)
         identify = getattr(self.runtime, "object_identity", None)
         groups = getattr(self.runtime, "variable_groups", frozenset())
         # Python's module globals are no frame's own locals: none is judged as one.
@@ -2803,6 +2824,21 @@ class DebugWorker:
                 carried = (f"read through `{name}`: {note}"[:500], refuses)
             elif noted:
                 note, carried = noted[0], noted
+            changing = (
+                changing_container(
+                    frame,
+                    [step for step, _ in ancestry] + [name],
+                    stack=getattr(self, "listed_frames", None),
+                    deeper=self.whole_stack,
+                )
+                if ancestry and changing_container and not reason
+                else None
+            )
+            if changing:
+                # Read through a standard container a library call may be part-way
+                # through changing (an element `clear()` has destroyed, #187): withheld,
+                # and so is everything below it.
+                reason, note, carried = changing, None, None
             if reason and note is None:
                 # Indeterminate here: never shown as a value, expanded or offered for set,
                 # nor read through by a qualified view (a Rust container, enum or Box).
@@ -3980,6 +4016,7 @@ class DebugWorker:
         self.listed_frames = []
         self.deeper_frames = None
         self.thread_count = None
+        self.whole_frames = None
         self.references.clear()
         self.global_handles.clear()
         self.reference_frames.clear()

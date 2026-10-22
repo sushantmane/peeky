@@ -572,3 +572,14 @@ def test_a_string_key_the_worker_notes_or_reads_whole_is_compared_as_shown():
     read_whole = strings(9, [("k", 1, "1")], depth_limited=True)
     read_whole[9001][0]["view"] = "memory"
     assert read('m["k"]', read_whole, scopes)["value"] == "1"
+
+
+def test_a_withheld_entry_says_why_its_key_is_not_read():
+    # #187: an entry withheld (a library call may be changing the map) refused a key
+    # lookup with "the debugger shows it as None".
+    from peeky.probe import _entry_part
+
+    entry = {"name": "[0]", "variablesReference": 0, "value": None, "unavailable": True}
+    entry.update(withheld=True, withheld_as="not shown", reason="a library call below …")
+    with pytest.raises(ValueError, match=r"entries: not shown: a library call below …$"):
+        _entry_part(None, {}, entry, "first", "o.tags")
