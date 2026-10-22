@@ -1869,6 +1869,7 @@ def session(args):
 
 
 ATTACH_MAX_PAUSE = 10
+PROBE_STATUSES = frozenset({"completed", "no-stop", "failed", "timeout"})
 
 
 def _max_pause(value, language):
@@ -1959,7 +1960,9 @@ def _probe_remote(args, root, request, client, expected):
         edit=request.edit,
         set_at=request.set_at,
     )
-    if not isinstance(result, dict):
+    # Every probe answer, the worker's own failures included, has one of these statuses
+    # (#190 review: any JSON object was taken for one).
+    if not isinstance(result, dict) or result.get("status") not in PROBE_STATUSES:
         from peeky.client import TransportLost
 
         raise TransportLost(
@@ -1968,8 +1971,6 @@ def _probe_remote(args, root, request, client, expected):
         )
     # A worker whose probe child was killed (its cap) or crashed early answers with
     # only status/error; give every result the same complete shape.
-    if result.get("status") is None:
-        result["status"] = "failed"
     for key, default in (
         ("rows", []),
         ("by_hit", []),

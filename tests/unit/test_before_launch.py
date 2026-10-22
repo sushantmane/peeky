@@ -295,6 +295,8 @@ def answering(status, body):
         # Sent and answered, but not as the worker answers: the outcome is unknown.
         (200, b"<html>proxy</html>", "TRANSPORT_LOST"),
         (200, b"[1, 2]", "TRANSPORT_LOST"),
+        (200, b'{"protocol": 1}', "TRANSPORT_LOST"),
+        (200, b'{"status": "ok", "rows": []}', "TRANSPORT_LOST"),
         (502, b"<html>Bad Gateway</html>", "INVALID_REQUEST"),
         # The worker's own refusal.
         (
