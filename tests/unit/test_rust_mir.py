@@ -3454,6 +3454,32 @@ def test_a_foreign_call_is_another_lines_only_where_every_instruction_of_it_says
     assert deferred_function(tmp_path, silent).call_lines(1) is None
 
 
+def test_a_foreign_calls_block_counts_whole_and_an_invoke_leaves_its_store_unknown(tmp_path):
+    # #230 review, round 2: which LLVM call is the MIR terminator's is not told. An
+    # unlocated call followed by a located helper call (`memcpy`) and branch on line 4 is
+    # no proof: the unlocated one could be line 5's.
+    body = parse_body(DEFERRED)
+    helper = DEFERRED_IR.replace(
+        "  call void @llvm.memcpy.p0.p0.i64(ptr align 8 %_3, ptr align 8 %_4, i64 24, i1 false), !dbg !22\n",
+        "  call void @must_use(ptr align 8 %_3, ptr align 8 %_4)\n"
+        "  call void @memcpy(ptr align 8 %_3, ptr align 8 %_4, i64 24), !dbg !20\n",
+    ).replace("  br label %bb2, !dbg !23\n", "  br label %bb2, !dbg !20\n")
+    # An `invoke` stores its result in its normal successor, which is line 5's block.
+    invoked = DEFERRED_IR.replace(
+        "  call void @llvm.memcpy.p0.p0.i64(ptr align 8 %_3, ptr align 8 %_4, i64 24, i1 false), !dbg !22\n"
+        "  br label %bb2, !dbg !23\n",
+        "  invoke void @must_use(ptr align 8 %_3, ptr align 8 %_4)\n"
+        "          to label %bb2 unwind label %cleanup, !dbg !20\n",
+    )
+    for ir in (helper, invoked):
+        function = deferred_function(tmp_path, ir)
+        placed = body.stop_positions({2}, 5, "src/main.rs", True, None, None, None, function)
+        assert (2, 0) in placed, ir
+        assert function.call_lines(1) is None, ir
+    # Inlined (#222 as built): every instruction on line 4, no invoke: line 4's.
+    assert deferred_function(tmp_path).call_lines(1) == {4}
+
+
 def test_files_of_one_name_in_two_directories_are_not_one_file(tmp_path):
     # #230 review: `a/mod.rs` and `b/mod.rs` as DIFiles of one name in two directories:
     # code inlined from `b`'s line 4 is no line of `a`'s.

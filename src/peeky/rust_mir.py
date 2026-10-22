@@ -637,7 +637,7 @@ class Body:
         for code of the line no statement explains} (see ``stop_positions``).
 
         A call spanning another file is taken for the line's (a macro it may invoke)
-        unless the IR's ``function`` places every instruction of the call's code
+        unless the IR's ``function`` places every instruction of the block holding it
         (``IrFunction.call_lines``) and none on this line: `format!`'s call on line 4
         (`label = format!(…)`, its code there or inlined from there) returns into the
         block of line 5's `println!`, whose stop is past the store (#222)."""
@@ -645,9 +645,10 @@ class Body:
         explained = set()
 
         def elsewhere(number):
-            # The block's call is another line's: every instruction of its IR code (or
-            # of code inlined from it, by the call's site) says where it is, and none is
-            # on this line (#230 review: an unlocated one could be anywhere).
+            # The block's call is another line's: every instruction of its IR block (code
+            # inlined there by its call's site) says where it is, none is on this line,
+            # and no `invoke` stores its result in the next block (#230 review: an
+            # unlocated one could be anywhere).
             if function is None or self.blocks[number].statements[-1][1] in (file, None):
                 return False
             lines = function.call_lines(number)
@@ -3378,23 +3379,25 @@ class IrFunction:
     # {label: ((instruction kind, line of its own file or None, known), ...)}: where each
     # instruction is, in order (see _placed_at), unlocated ones included (#230 review).
     provenance: dict = field(default_factory=dict)
+    # The labels an `invoke` ends: its result is stored in its normal successor.
+    invokes: frozenset = frozenset()
 
     def call_lines(self, number):
-        """The lines of its own file the code of MIR block ``number``'s terminator call is
-        on (an inlined callee's by its call site; another file's code counts for none),
-        where every instruction of it says where it is; None where any does not, or the
-        IR names no block for it (codegen merged it into another). The call's code is
-        its IR block's last call and what follows it (its result's store, the branch),
-        or, with no call there (the callee inlined), the whole block."""
+        """The lines of its own file the IR block of MIR block ``number`` has code of (an
+        inlined callee's by its call site; another file's code counts for none), where
+        every instruction of the block says where it is; None where any does not, where
+        an `invoke` ends it (the call's result is stored in its successor, unexamined),
+        or where the IR names no block for it (codegen merged it into another). The
+        whole block counts, not a call within it: which LLVM call is the MIR
+        terminator's is not told (a helper may follow it, an inlined callee may call
+        others, the call may be gone) (#230 review, round 2)."""
         label = "start" if number == 0 else f"bb{number}"
         found = self.provenance.get(label)
-        if label not in self.blocks or not found:
+        if label not in self.blocks or not found or label in self.invokes:
             return None
-        calls = [index for index, (kind, _, _) in enumerate(found) if kind == "c"]
-        relevant = found[calls[-1] :] if calls else found
-        if not all(known for _, _, known in relevant):
+        if not all(known for _, _, known in found):
             return None
-        return {line for _, line, _ in relevant if line is not None}
+        return {line for _, line, _ in found if line is not None}
 
     def agrees(self, block, line):
         """True if the IR's blocks with the names of a stop's DWARF block (``block``, a
@@ -3475,7 +3478,7 @@ def ir_functions(path, files):
             if current is None:
                 if line.startswith("define ") and (found := _DEFINE.match(line.rstrip())):
                     hashed = _LEGACY_HASH.search(found[2])
-                    current = (hashed[1] if hashed else None, found[3], {}, {}, ["start"])
+                    current = (hashed[1] if hashed else None, found[3], {}, {}, ["start"], set())
                 continue
             if line.startswith("}"):
                 if pending:
@@ -3501,6 +3504,9 @@ def ir_functions(path, files):
                 continue
             if _IR_CALL.match(line):
                 kind = "c"
+                if re.search(r"\binvoke ", line):
+                    # It ends its block: its result is stored in the normal successor.
+                    current[5].add(current[4][0])
             elif _IR_BRANCH.match(line):
                 kind = "B" if _IR_SURE_BRANCH.match(line) else "b"
             elif (store := _IR_STORE.match(line)) and _stores_bytes(store):
@@ -3530,7 +3536,7 @@ def ir_functions(path, files):
     # {subprogram: lines} of code LLVM inlined from each function into another, in the
     # inlined function's own file (#116).
     copies = {}
-    for _, _, blocks, _, _ in raw:
+    for _, _, blocks, _, _, _ in raw:
         for refs in blocks.values():
             for ref, _ in refs:
                 kind, location = meta.get(ref, (None, {}))
@@ -3545,7 +3551,7 @@ def ir_functions(path, files):
                 ):
                     copies.setdefault(subprogram, set()).add(number)
     functions = {}
-    for hashed, subprogram, blocks, preds, _ in raw:
+    for hashed, subprogram, blocks, preds, _, invokes in raw:
         kind, fields = meta.get(subprogram, (None, {}))
         if hashed is None or kind != "DISubprogram":
             continue
@@ -3627,6 +3633,7 @@ def ir_functions(path, files):
             scoped=chain is not None,
             sites=sites,
             provenance={label: tuple(found) for label, found in provenance.items()},
+            invokes=frozenset(invokes),
         )
     # A function LLVM inlined everywhere (`#[inline(always)]`, even at opt-level 0) has
     # no IR function, yet its frames carry its own hash; its MIR body is the one before
