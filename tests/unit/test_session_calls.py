@@ -109,13 +109,13 @@ def test_state_lines_say_only_what_the_stacks_show():
     assert _call_text(rust) == "now in `kitty::settle`, one call deeper, called from `kitty::main`"
     state = {
         "state": "stopped",
-        "location": "/w/outline.py:90",
+        "location": "/nonexistent-peeky-root/outline.py:90",
         "function": "run",
         "call_change": {**left, "from": "rename", "to": "run"},
         "note": "a later note",
     }
     assert _state_text(state).splitlines() == [
-        "state: stopped at /w/outline.py:90 in run",
+        "state: stopped at /nonexistent-peeky-root/outline.py:90 in run",
         "note: left `rename`; now in `run`",
         "note: a later note",
     ]
@@ -130,7 +130,11 @@ MOVED = (
 
 def test_a_moved_start_breakpoint_warns_only_after_a_stop_there():
     launch = {"breakpoints": [{"id": 3, "verified": True, "line": 54}]}
-    stop = {"state": "stopped", "reason": "breakpoint", "location": "/w/app/outline.py:54"}
+    stop = {
+        "state": "stopped",
+        "reason": "breakpoint",
+        "location": "/nonexistent-peeky-root/app/outline.py:54",
+    }
     assert _moved_start(launch, stop, 55, "app/outline.py") == MOVED
     assert _moved_start(launch, {**stop, "location": "app/outline.py:54"}, 55, "app/outline.py")
     assert _moved_start(launch, stop, 54, "app/outline.py") is None
@@ -139,15 +143,15 @@ def test_a_moved_start_breakpoint_warns_only_after_a_stop_there():
         {"state": "terminated"},
         {"state": "running"},
         {**stop, "reason": "exception"},
-        {**stop, "location": "/w/app/outline.py:60"},
-        {**stop, "location": "/w/app/other.py:54"},
+        {**stop, "location": "/nonexistent-peeky-root/app/outline.py:60"},
+        {**stop, "location": "/nonexistent-peeky-root/app/other.py:54"},
     ):
         assert _moved_start(launch, state, 55, "app/outline.py") is None, state
     # A later `breakpoint` event moves it (a class loaded after the launch).
     pending = {"breakpoints": [{"id": 3, "verified": False, "line": 12}]}
     moved = {
         **stop,
-        "location": "/w/app/outline.py:13",
+        "location": "/nonexistent-peeky-root/app/outline.py:13",
         "breakpoint_events": [{"reason": "changed", "breakpoint": {"id": 3, "line": 13}}],
     }
     assert "from line 12 to line 13" in _moved_start(pending, moved, 12, "app/outline.py")
