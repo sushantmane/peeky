@@ -356,9 +356,11 @@ def test_threads_a_thread_event_says_started_are_kept():
 # `terminated`, then output, all before Peeky disconnects; `exit-later`: after
 # `terminated`, `exited` comes once it answered; `noisy`: after it answered, text of its
 # own (lldb-dap 18 on Linux prints its crash as `stderr` output); `answering`: that text
-# while it handles the disconnect, before its answer; `crash`: it answers, ends its
-# stream, and exits with status 2 (it may have dropped output it held); `open`: its
-# stream stays open after the end; `running`: the program never ends.
+# while it handles the disconnect, before its answer; `crash`: it exits with status 2 on
+# its own once the program ended, before Peeky ends its input (it may have dropped output
+# it held); `provoked`: it exits 1 only once Peeky ended its input, as debugpy can while
+# it still handles the disconnect (no sign of dropped output); `open`: its stream stays
+# open after the end; `running`: the program never ends.
 ENDING_ADAPTER = r"""
 import json, sys, time
 mode = sys.argv[1]
@@ -389,6 +391,8 @@ if mode == "late":
     output("late\n")
 elif mode != "running":
     event("terminated")
+if mode == "crash":
+    sys.exit(2)
 while (request := read()) is not None:
     if mode == "answering" and request["command"] == "disconnect":
         output("free(): invalid pointer\n", "stderr")
@@ -402,7 +406,7 @@ while (request := read()) is not None:
             output("free(): invalid pointer\n", "stderr")
 if mode == "open":
     time.sleep(60)
-sys.exit(2 if mode == "crash" else 0)
+sys.exit(1 if mode == "provoked" else 0)
 """
 
 
@@ -417,6 +421,7 @@ sys.exit(2 if mode == "crash" else 0)
         ("answering", True, False, "early\n", None, "free(): invalid pointer\n", None),
         # #213 review: a clean end of its stream, then a failed exit, is not whole.
         ("crash", True, False, "early\n", None, "", 2),
+        ("provoked", True, True, "early\n", None, "", 1),
         ("open", True, False, "early\n", None, "", None),
         ("running", False, False, "early\n", None, "", None),
     ],
@@ -449,15 +454,21 @@ def test_close_reads_the_output_to_the_adapters_end(
     deadline = time.monotonic() + 5
     while dap.snapshot_output()[0] != output and time.monotonic() < deadline:
         time.sleep(0.01)
+    if mode == "crash":
+        # Its exit comes before Peeky closes the session: its own (never reaped here).
+        while dap._adapter_state() == "running" and time.monotonic() < deadline:
+            time.sleep(0.01)
     started = time.monotonic()
     dap.close(terminate=False)
     final = dap.final
     assert (final["ended"], final["drained"]) == (ended, drained)
     assert (final["output"], final["exit_code"], final["after_disconnect"]) == (output, code, after)
-    # The stream ended cleanly in each case with an exit status the adapter chose itself.
+    # The stream ended cleanly in each case with an exit status the adapter chose; only
+    # an exit before Peeky ended its input counts (#213 review: debugpy exits 1 when its
+    # input ends while it still handles the disconnect).
     assert final["stream_drained"] is (status is not None)
     if status is not None:
-        assert final["adapter_exit"] == status
+        assert (final["adapter_exit"], final["own_exit"]) == (status, mode == "crash")
     # The wait is for the adapter's end, never a fixed sleep: it stops when the end comes.
     assert time.monotonic() - started < (6 if mode == "open" else 8)
     assert dap.process.poll() is not None and not dap.reader.is_alive()
