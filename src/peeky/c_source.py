@@ -28,6 +28,9 @@ _ID = r"[^\s\x00-\x2f\x3a-\x40\x5b-\x5e\x60\x7b-\x7f]"
 _NAME = r"[^\s\x00-\x40\x5b-\x5e\x60\x7b-\x7f]" + _ID + "*"
 # An identifier, not the tail of a number or of another identifier (`1e5`).
 _IDENTIFIER = re.compile(f"(?<!{_ID}){_NAME}")
+# A GNU `asm goto` (`asm volatile goto`, `__asm__ goto`, `__asm goto`): it may jump to
+# any label it lists as an operand.
+_ASM_GOTO = re.compile(rf"(?<!{_ID})(?:asm|__asm__|__asm)(?!{_ID})[^(;]*?(?<!{_ID})goto(?!{_ID})")
 # Where a comment or a literal may start.
 _OPENING = re.compile(r"""//|/\*|["']|(?:u8|u|U|L)?R\"""")
 # A raw string's prefix and delimiter: `R"x(`, `u8R"(`.
@@ -485,6 +488,16 @@ class Statements:
             or _RENUMBER.search(_SPLICE.sub("", self.blanked))
         )
         self._ends = {}
+        # The keyword of each statement header that declares a name, by where the
+        # declaration ends (`_declaration`'s ``found[0]``).
+        self._header_words = {}
+
+    def header(self, line, name):
+        """The keyword (`for`, `while`, `if`, `switch` or `catch`) of the statement header
+        that declares ``name`` on ``line``, from the one statement that declares it there;
+        None if no header does, or if Peeky cannot tell (`declaration`)."""
+        found = self.declaration(line, name, declaring=True)
+        return None if found is None or not found[2] else self._header_words.get(found[0])
 
     def end(self, line, name):
         """The line (from 1) of the `;` ending the last statement that starts on
@@ -617,8 +630,9 @@ class Statements:
                             # Maybe declared again after the header: read it whole.
                             pass
                         elif semicolon is not None and self._names(opening.end(), semicolon, name):
-                            settled = self._settled(word, opening.end(), semicolon)
+                            settled = self._settled(word, opening.end(), semicolon, name)
                             found = (semicolon, 1, True, settled)
+                            self._header_words[semicolon] = word
                             named.append(found)
                             if declares:
                                 declared.append(found)
@@ -626,8 +640,9 @@ class Statements:
                             continue
                         else:
                             part = opening.end() if semicolon is None else semicolon + 1
-                            settled = self._settled(word, part, closing)
+                            settled = self._settled(word, part, closing, name)
                             found = (closing, 0, True, settled)
+                            self._header_words[closing] = word
                             named.append(found)
                             if declares:
                                 declared.append(found)
@@ -834,13 +849,83 @@ class Statements:
                 return mark.start()
         return None
 
-    def _settled(self, keyword, start, end):
-        """Whether a header's variable, declared between ``start`` and ``end``, is set
-        once, by no call: not a `while`'s (run again on each pass), nor one whose
-        initializer may call (a `(`, a `{` that may construct, or a range-`for`'s `:`,
-        whose iterator calls)."""
+    def _settled(self, keyword, start, end, name):
+        """Whether ``name``, a header's variable declared between ``start`` and ``end``,
+        is set once, by no call: not a `while`'s (run again on each pass), nor one whose
+        header may call (a `(`, a `{` that may construct, or a range-`for`'s `:`, whose
+        iterator calls). Its own declarator needs an initializer (`for (int i; …)` sets
+        nothing), and it and each declarator before it may hold only literals and
+        operators: a name may be a macro that calls (`#define INIT make_i()`, or a
+        library's `errno`), which the text cannot rule out (review of PR #214). Those
+        after it run once it is set: `int i = 0, j = f` keeps `i`. In C++ only the first
+        declarator counts: constructing one before it may call."""
         part = self.blanked[start:end]
-        return keyword != "while" and not re.search(r"[({]|<%|(?<!:):(?![:>])", part)
+        if keyword == "while" or re.search(r"[({]|<%|(?<!:):(?![:>])", part):
+            return False
+        for index, piece in enumerate(part.split(",")):
+            before, equals, initializer = piece.partition("=")
+            if not all(
+                word[0] in ("true", "false", "nullptr") and word[0] not in self.expansions
+                for word in _IDENTIFIER.finditer(initializer)
+            ):
+                return False
+            declared = [word[0] for word in _IDENTIFIER.finditer(before)]
+            if declared and declared[-1] == name:
+                # In C++ constructing one before it may call (`X j = 0, *i = nullptr`
+                # runs `X::X(int)` before `i` is set): only the first counts there.
+                return bool(equals) and (index == 0 or not self.raw_strings)
+        return False
+
+    def jumped_into(self, line, name, span=None):
+        """For a variable a statement's header on ``line`` declares: the line of a label
+        after its declaration, before the block holding that statement closes, that a
+        jump can reach without running the declaration (as `jumped_past` judges one: a
+        `case` of a `switch` around it, or a label any `goto` of the function names),
+        False if there is none, or None if unknown: an `#include` or a macro that may
+        hold a label or a bracket there, or a block that never closes. A `goto` to a
+        label in a one-line loop's body skips `int i = 0` (review of PR #214)."""
+        key = ("into", line, name, span)
+        if key not in self._ends:
+            self._ends[key] = self._into(line, name, span)
+        return self._ends[key]
+
+    def _into(self, line, name, span):
+        found = self.declaration(line, name, declaring=True)
+        if found is None or self.unreadable:
+            return None
+        position, depth, header = found[0], found[1], found[2]
+        blanked, starts = self.blanked, self.starts
+        marks = list(_WORDS.finditer(blanked, position + 1))
+        for index, mark in enumerate(marks):
+            word = mark[0]
+            after = marks[index + 1][0] if index + 1 < len(marks) else None
+            if word in self.opaque or word == "<::":
+                return None
+            if word in _OPEN:
+                depth += 1
+            elif word in _CLOSE:
+                depth -= 1
+                if depth < 0:
+                    end = bisect.bisect_right(starts, mark.start())
+                    break
+            elif word == "case" or (word == "default" and after == ":"):
+                body = self._switch_body(mark.start())
+                if body is None or body < position:
+                    return bisect.bisect_right(starts, mark.start())
+            elif (
+                _WORD.fullmatch(word)
+                and after == ":"
+                and self._jumped_to(word, position, header, span)
+            ):
+                return bisect.bisect_right(starts, mark.start())
+        else:
+            return None
+        if any(
+            _INCLUDE.match(blanked, starts[number - 1]) and not self._transparent(number)
+            for number in range(bisect.bisect_right(starts, position) + 1, end + 1)
+        ):
+            return None
+        return False
 
     def _closing(self, opening):
         """(position of the bracket closing the one at ``opening``, position of the
@@ -1124,12 +1209,17 @@ class Statements:
         ``position``) without running the declaration: one before its end, or one
         outside its block in the same function, since a jump back into a block starts the
         local's lifetime anew (C11 6.2.4); for a header's variable, or with the braces
-        unknown, any. Also a macro that may `goto` named there, or a computed `goto`.
+        unknown, any. Also a macro that may `goto` named there, or a computed `goto`, or
+        a GNU `asm goto` anywhere in the source, whose labels are its operands
+        (`__asm__ goto("…" : : : : inside)`, review of PR #214): then any label counts.
         The function is its lines ``span`` (first, last) when given, else the outermost
         braces around the declaration (in C++ maybe a namespace's: more counts)."""
         blanked = self.blanked
         if "computed" not in self.__dict__:
-            self.computed = re.search(r"(?<!\w)goto\s*\*", blanked) is not None
+            self.computed = (
+                re.search(r"(?<!\w)goto\s*\*", blanked) is not None
+                or _ASM_GOTO.search(blanked) is not None
+            )
         if self.computed:
             return True
         block, function = self._enclosing(position)

@@ -62,7 +62,10 @@ def test_java_targets_without_a_config_say_what_the_config_needs(tmp_path):
         cli.resolve(tmp_path / "shop" / "Restock.java", "20")
 
 
-def test_state_lines_name_the_stopped_function():
+def test_state_lines_name_the_stopped_function(tmp_path, monkeypatch):
+    # A file below the working directory is named relative to it (ninth evaluation):
+    # outside it, `/w/...` stays whole, wherever the tests run (Docker's cwd is `/w`).
+    monkeypatch.chdir(tmp_path)
     state = {
         "state": "stopped",
         "location": "/w/src/main.rs:16",
@@ -75,6 +78,9 @@ def test_state_lines_name_the_stopped_function():
     assert " in " not in cli._state_text({"state": "stopped", "function": "f"})
     numbered = cli._state_text({"state": "stopped", "location": "/w/a.py:3", "hit": 4})
     assert numbered.startswith("state: stopped at /w/a.py:3, hit 4")
+    (tmp_path / "src").mkdir()
+    below = {**state, "location": f"{tmp_path / 'src' / 'main.rs'}:16"}
+    assert cli._state_text(below).startswith("state: stopped at src/main.rs:16 in topk::")
 
 
 def test_a_program_in_a_subdirectory_or_behind_a_link_is_not_taken_from_elsewhere(tmp_path):

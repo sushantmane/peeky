@@ -402,6 +402,34 @@ _SAME = (
 # Where both runs label their stops (#157: a line with several breakpoint locations in a
 # function), a hit is also its stop: the same hit at another stop is another row.
 _STOPPED = "EXISTS (SELECT 1 FROM captures WHERE run_id = {} AND stop IS NOT NULL)"
+
+
+def _requested(alias):
+    """SQL: a run's requested interventions (runs.sets), each as [name, value, "requested
+    at LINE@HIT"], a --set at its probe line's set_hit too (ninth evaluation: `diff`'s
+    `(sets)` row and `outputs` did not say which hit a --set was for). runs.sets holds
+    requests: one whose hit never came adds ", not made: that hit never came", from the
+    probe's own warning (the one for a run's --sets names them all, as they share their
+    hit; a --set-at's names its LINE@HIT, name and value). Review of PR #214."""
+    at = (
+        f"CASE WHEN json_array_length(s.value) = 2 THEN {alias}.line || '@' || "
+        f"COALESCE({alias}.set_hit, 1) ELSE json_extract(s.value, '$[2]') END"
+    )
+    unmade = (
+        f"EXISTS (SELECT 1 FROM json_each(COALESCE({alias}.warnings, '[]')) w WHERE "
+        "CASE WHEN json_array_length(s.value) = 2 THEN w.value LIKE '--set %' AND "
+        "instr(w.value, ' not applied: the program stopped ') > 0 ELSE w.value LIKE "
+        f"'--set-at %' AND instr(w.value, ':' || {at} || ' ' || json_extract(s.value, '$[0]') "
+        "|| '=' || json_extract(s.value, '$[1]') || ' was not applied: ') > 0 END)"
+    )
+    return (
+        "(SELECT json_group_array(json_array(json_extract(s.value, '$[0]'), "
+        f"json_extract(s.value, '$[1]'), 'requested at ' || {at} || CASE WHEN {unmade} "
+        "THEN ', not made: that hit never came' ELSE '' END)) FROM "
+        f"json_each(COALESCE({alias}.sets, '[]')) s)"
+    )
+
+
 _BOTH_STOPPED = f"({_STOPPED.format(_A)} AND {_STOPPED.format(_B)})"
 # A row's stop, or its hit's: a `(return)` row has its hit's own since schema 15 (#174);
 # one saved without it (#155) takes it from the other rows of its hit where they agree,
@@ -514,10 +542,10 @@ SELECT {_PAIR_COLUMNS} FROM (
     'the runs had different program arguments: values also differ by input', 0
     FROM runs ra, runs rb WHERE ra.run_id = {_A} AND rb.run_id = {_B}
     AND ra.args IS NOT rb.args
-  UNION ALL SELECT 5, NULL, NULL, '(sets)', COALESCE(ra.sets, '[]'), COALESCE(rb.sets, '[]'), 1,
-    'the runs made different interventions (--set, --set-at)', 0
+  UNION ALL SELECT 5, NULL, NULL, '(sets)', {_requested("ra")}, {_requested("rb")}, 1,
+    'the runs requested different interventions (--set, --set-at), or made different ones', 0
     FROM runs ra, runs rb WHERE ra.run_id = {_A} AND rb.run_id = {_B}
-    AND COALESCE(ra.sets, '[]') IS NOT COALESCE(rb.sets, '[]'))
+    AND {_requested("ra")} IS NOT {_requested("rb")})
 ORDER BY rank, hit, phase = 'after-set', pos"""
 # A heap or stack address: 0x, optional leading zeros, then 9-16 significant hex
 # digits that are not all f. NULL, small sentinels, all-ones (-1, MAP_FAILED) and
@@ -683,11 +711,11 @@ WINDOW w AS (PARTITION BY selector ORDER BY hit) ORDER BY selector, hit""",
         (),
     ),
     "outputs": (
-        "Inputs, interventions (and the hit they were applied at), outcome and program output "
-        "of two runs",
-        f"SELECT run_id, label, args, sets, CASE WHEN sets = '[]' OR sets IS NULL THEN NULL "
-        f"ELSE set_hit END AS set_hit, status, error_code, output FROM runs "
-        f"WHERE run_id IN ({_A}, {_B}) ORDER BY run_id",
+        'Inputs, requested interventions (sets: each [name, value, "requested at '
+        'LINE@HIT"], a --set\'s too, with ", not made: that hit never came" where the '
+        "probe warned so), outcome and program output of two runs",
+        f"SELECT run_id, label, args, {_requested('r')} AS sets, status, error_code, output "
+        f"FROM runs r WHERE run_id IN ({_A}, {_B}) ORDER BY run_id",
         _PAIR_PARAMS,
         (),
     ),

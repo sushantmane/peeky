@@ -120,6 +120,8 @@ probe: peeky probe examples/pagination_bug.py --at pagination_bug.py:<line> [--r
 ...
 ```
 
+A function's names also list the module globals its compiled code reads (its generator expressions' and comprehensions' too) that the module binds by name (`MAX_GAP = 30`, not `globals()["x"] = 1`), not in code the compiler drops (`if False:`); nothing runs (`MAX_GAP (module global)`; `globals` in JSON). A probe there reads them, marked `[module global]`.
+
 For a large module, `--json` and `jq` find a function quickly: `peeky describe dir --at module.py --json | jq '.scopes[] | select(.scope | test("is_private"))'`.
 
 C, C++ and Rust list the same from the build's debug information: each function in your sources, with its file, lines and parameters and locals. Names are readable (`crate::Type::method`, `<crate::Type as core::fmt::Display>::fmt`, `geo::Box::area`).
@@ -443,7 +445,7 @@ output:
 - **Captures:** The probe stops at every `--set-at` line as well as at `--at`, but captures values only at `--at`. A change at a captured stop gets `after-set` rows, as `--set` does. `--set` and `--set-hit` work as before, and together with `--set-at` make at most 8 changes.
 - **How long it runs:** The probe keeps each breakpoint until the changes on that line are made, past `--hits` if need be. With `--until hits` it ends once both are done (an attached JVM, which never exits, waits for them until `--timeout`). A change whose stop never comes (`23@9` where line 23 stops 4 times) is not made, and the result says so: `status: completed (1 requested change not made)`, a warning, `unapplied` in JSON, and exit code 4. So is a `--set` whose `--set-hit` never comes.
 - **Rules:** Each change follows the same rules as `--set` at its own stop (a statement under way, a local not yet initialized, a value with a note, a field through a pointer: see 2.3). Before the program runs, each `--set-at` is judged against the functions on its own line, as a `--set` is against the `--at` line's: one that no stop of its line could make (a Rust local kept in a register, a field through a pointer) is refused there, naming the line, and nothing runs (6.6; exit code 2, with only the error and its hint). One refusal fails the whole probe, naming its line and hit and how many changes were already made: half of a linked change is not the experiment you asked for. A line with no code of its own is refused, never moved to the next line.
-- **Evidence:** `runs.sets` lists each change as `[name, value, "LINE@HIT"]` (a `--set` stays `[name, value]`), so `queries diff`'s `(sets)` row tells runs apart by them. The `interventions` table gives each change's `line`, `hit`, `capture_hit`, `function` and `instance` (schema 12; `captures.instance`, schema 13, labels captured values the same way). `queries set_effect` lists the changes in the order they were made, and `queries wide` puts each one in the `sets` column of the row it comes before.
+- **Evidence:** `runs.sets` lists each requested change as `[name, value, "LINE@HIT"]` (a `--set` stays `[name, value]`, with its hit in `runs.set_hit`). `queries diff`'s `(sets)` row and `queries outputs` show each as `[name, value, "requested at LINE@HIT"]`, a `--set`'s too (`["gleich", "true", "requested at 56@4"]`), and add `, not made: that hit never came` where the probe warned so; runs whose changes differ only in their hit, or in which were made, tell apart. The `interventions` table gives each change made: its `line`, `hit`, `capture_hit`, `function` and `instance` (schema 12; `captures.instance`, schema 13, labels captured values the same way). `queries set_effect` lists the changes in the order they were made, and `queries wide` puts each one in the `sets` column of the row it comes before.
 
 ### 2.9 What a Function Returned
 
@@ -527,7 +529,7 @@ run_a  run_b  hit   phase     selector  value_a                        value_b  
 
 `diff` keeps only the rows that differ, in this order:
 
-1. **What the runs did and how they differed**, one row each where it applies: `(status)` and `(output)` when the runs' outcomes or outputs differ; `(edit)` when one run built a candidate edit; `(source)` when two runs that are not candidates ran different source text (another copy of the file); `(line)` when the probes' `--at` lines differ (their values then differ partly because of where they were read; a candidate's `--at` keeps the original's numbering, so `--at 33` is the same line where the candidate's rows show its line 34); `(args)` when they ran with different program arguments; `(sets)` when they made different interventions. Check these rows before crediting an edit with a difference.
+1. **What the runs did and how they differed**, one row each where it applies: `(status)` and `(output)` when the runs' outcomes or outputs differ; `(edit)` when one run built a candidate edit; `(source)` when two runs that are not candidates ran different source text (another copy of the file); `(line)` when the probes' `--at` lines differ (their values then differ partly because of where they were read; a candidate's `--at` keeps the original's numbering, so `--at 33` is the same line where the candidate's rows show its line 34); `(args)` when they ran with different program arguments; `(sets)` when they made different interventions, each as `[name, value, "LINE@HIT"]`, a `--set` at its `--at` line's hit. Check these rows before crediting an edit with a difference.
 2. **Real differences**, in hit order and then in `--capture` order: the first of them is the first divergence.
 3. Values that only one run's `--set` changed (`intervention only in run b`). An `after-set` value equal to its run's `observed` value at that hit, in each run that has one, is left out: the intervention did not touch it (`r.buf` when only `r.tail` was set), and the `observed` row shows any difference.
 4. Values a view or a note qualifies in either run (`note: qualified (run a: note, run b: note): not evidence by itself`): a C local's leftovers on a `do` body's first line, a moved Rust local's bytes (`stale`). Two runs' leftovers differ with anything that touched the stack before, so such a row is not a divergence of the program; `queries run` shows each note. Whatever else a row says, a qualified value's note says so too, and the row ranks here: `missing in run b; qualified (run a: note)`, `intervention only in run a; qualified (run a: note)`.
@@ -559,12 +561,12 @@ peeky queries outputs
 ```
 
 ```
-run_id  label           args                 sets  set_hit  status     error_code  output
-1       mapped-public   ["::ffff:8.8.8.8"]   []    NULL     completed  NULL        ::ffff:8.8.8.8: private\n
-2       mapped-private  ["::ffff:10.0.0.1"]  []    NULL     completed  NULL        ::ffff:10.0.0.1: private\n
+run_id  label           args                 sets  status     error_code  output
+1       mapped-public   ["::ffff:8.8.8.8"]   []    completed  NULL        ::ffff:8.8.8.8: private\n
+2       mapped-private  ["::ffff:10.0.0.1"]  []    completed  NULL        ::ffff:10.0.0.1: private\n
 ```
 
-Both are labelled private: the public one is the bug. `set_hit` is the hit a run's `--set` was applied at.
+Both are labelled private: the public one is the bug. `sets` lists each run's requested changes as `[name, value, "requested at LINE@HIT"]`: a `--set`'s at its `--at` line's `--set-hit` (`["gap", "20", "requested at 34@4"]`), a `--set-at`'s at its own. One whose hit never came ends `, not made: that hit never came`, as the probe warned.
 
 ### 3.3 What My Intervention Changed
 
@@ -733,6 +735,8 @@ hit  best                   list_a                 same
 
 `object_ref(value)` is the object a Java value is. Within one run, equal means the same object. Across runs the numbers differ (`queries diff` masks them), so compare objects only inside a run. To test the hypothesis, give the list's worker the load it should have had: `--set 'workers[1].load=5' --set-hit 1` turns `a a a a` into `a b b b`.
 
+- **Identity, not value:** where the code compares objects with `==` (two `Integer`s, two Strings), capture both sides and read `object_ref`: equal values with different objects (`Integer@60 {value=1001}` and `Integer@106 {value=1001}`) are what `==` sees as different. To test the hypothesis, set what the comparison produced, a `boolean` local the code reads next (`--set-at 56@4 gleich=true`), not the objects: the program then runs as if they compared equal.
+
 **Python** values carry their object in the `identity` column instead (`[id 6]` in text): an integer, debugpy's number for the object, not an address. The number alone is the object's identity; its `type` is a separate column (an object whose `__class__` is reassigned keeps its number). Is `tags`, a mutable default, the same list on every call?
 
 ```sh
@@ -790,7 +794,7 @@ Use a session when you want several looks at one stop. Every command is a separa
 - `session start` stops once; `inspect` lists the locals, `get` reads values and lists their children, `set` changes one, and `close` ends the session (always close it).
 - Pass `--name` to every later command when the session is not `default`.
 - Session states and `inspect` name the stopped function (`in Ring::push(int)`, `in topk::insert_sorted::{{closure}}`).
-- `get` of a name that is not there prints why and names the stop; any failed selector makes the exit status 1.
+- `get` of a name that is not there prints why and names the stop; any selector with no value makes the exit status 1, and a last line on stderr names them (`peeky: no value for nosuch (each row above says why), so the exit status is 1`).
 - `--frame N` reads caller frame N; a caller's values cannot be changed.
 
 ```sh
@@ -876,7 +880,7 @@ peeky: [INVALID_REQUEST] Frame 2 is out of range: this stop lists 2 frame(s), 0 
 
 - **Module level:** At module level the locals are the module's globals, so there is no separate `[Globals]`.
 - **Caller frames:** A frame past the stack is `INVALID_REQUEST`, naming how many frames there are. Rust's owned-local and Box proofs hold only in the innermost frame, so a caller's `Vec` keeps its raw fields with a note.
-- **C and C++ callers:** In C and C++, a caller's local is withheld while its declaration's code is not finished: in `long result = twice(seed);`, or `long multi =` over `twice(seed + 1);`, the value is stored only after `twice` returns (so are a `for` loop's counter while its body calls, on one line or several, since the increment's code follows the body, and a local whose declaration line has no code of its own: an array of structs, a nested struct or a 2-D array initialized over several lines is stored element by element on its elements' lines). So is a local whose declaration statement, read from the source to its `;`, is still running on the caller's line: in `struct trio t = { seed,` / `{ twice(3),` / `twice(4) } };`, the first line's code runs before the calls and `t.p` is stored after them.
+- **C and C++ callers:** In C and C++, a caller's local is withheld while its declaration's code is not finished: in `long result = twice(seed);`, or `long multi =` over `twice(seed + 1);`, the value is stored only after `twice` returns (so is a local whose declaration line has no code of its own: an array of structs, a nested struct or a 2-D array initialized over several lines is stored element by element on its elements' lines). So is a local whose declaration statement, read from the source to its `;`, is still running on the caller's line: in `struct trio t = { seed,` / `{ twice(3),` / `twice(4) } };`, the first line's code runs before the calls and `t.p` is stored after them. A `for` or `while` loop's own variable (`for (int i = 0; …)`) is withheld too while the body calls, on one line or several: the header's code also runs after the body, and Peeky cannot prove from the source that the loop has run its initialization (a `goto` into the body, or a call a macro hides in it, skips or delays it). Read it in the loop's body: probe a line there, or `step --out` back to that frame.
 - **Headers and other files:** A variable declared in a `for`, `if`, `while` or `switch` header counts until the `;` after the whole statement, so it stays withheld while the body calls, and where the source does not give the end, the local is withheld: brackets that do not balance, or text the compiler may read differently from the scan (between the declaration and its end, a directive such as `#include`, a line splice, `<::`, or a macro of the program's sources and headers that leaves a bracket open or holds a `;` outside its brackets; anywhere in the file, `#line`). So is every local whose declaration is in another file than the caller's line: an initializer can `#include` its rows, or be included itself.
 - **How the source is read:** C's trigraphs are read as `-std=c11` reads them (`??/` is a backslash); C++17 has none. Digraphs (`<% %> <: :>`) are brackets, and lines are counted as the compiler's debug information counts them (`\r\n`, a lone `\r` or `\n`; `\n\r` is two).
 - **Changes:** A caller's values cannot be changed (`MUTATION_REJECTED`), so caller listings never say `[settable]`.
@@ -1213,7 +1217,7 @@ A C or C++ local declared below the stop line is not shown as a value: until its
   - On a range-`for`'s line, the stop cannot be told from the line's first instruction, where the range runs with the outer local: the row says `may not be what the code reads` and names the binding.
   - A block's `static` that is never changed is kept as a constant, and lldb-dap lists it among the frame's locals as `t @ file:line`. That row is the static the code names, so it is shown; the outer local's row says the static is `listed separately as` it.
 - **On the stop line:** A local declared on the stop line itself is withheld at the line's first instruction, where its declaration has not run yet, so probe the next line to read it; on a line a loop returns to (a `do` body's first line) it is shown with a `note` that it may be the last pass's value, and mid-line (a `for` counter on later passes, after `step --out`) as its storage reads.
-- **Part-way through the stop line:** A local declared on the stop line is withheld part-way through that line while the line still has code to run (back from a call with `step --out` in `long r = twice(3) + twice(4);`), except a variable a `for`, `if` or `switch` header sets with no call (`for (int i = 0; ...)`), which a one-line loop keeps live; a `while`'s, or one set by a call (`if (long r = twice(3))`), is withheld.
+- **Part-way through the stop line:** A local declared on the stop line is withheld part-way through that line while the line still has code to run (back from a call with `step --out` in `long r = twice(3) + twice(4);`), except a variable a `for`, `if` or `switch` header initializes from literals alone, as it does each declarator before it in C (`for (int i = 0, j = 1; ...)`; in C++ only the first declarator counts, since constructing one before it may call), which a one-line loop keeps live. A `while`'s is withheld, and so is one with no initializer (`for (int i; ...)`), one whose initializer or an earlier declarator's calls or names anything (`if (long r = twice(3))`, or `int i = INIT`, where `INIT` may be a macro that calls), and one a jump can reach past its declaration (`goto inside;` to a label in the loop's body, a `case` of a `switch` around the loop, or any label once the source has a GNU `asm goto`, whose labels are operands).
 - **While its declaration runs:** A local is also withheld while its own declaration is still running at the stop: `struct outer o = {` over lines 17-22 (or an array of structs, or a 2-D array), stopped at line 20, says `its declaration (lines 17-22) is still running at this stop` until its `;` has run. The end comes from the source, read as for caller frames (5.1), and where it cannot be found the local is withheld; a declaration below the stop whose own line has no code is placed by its elements' lines.
 - **Header variables:** A variable a `for`, `if`, `while`, `switch` or `catch` header declares has run with its part of the header, so the body reads it.
 - **Below a label:** Below a label a jump can reach past a declaration, the local is withheld too (`a jump ... can reach the label on line 21`): a `case` or `default` of the `switch` whose body holds the declaration, or a label that a `goto` above the declaration names, or one outside its block jumps back to (re-entering a block starts its locals anew, C11 6.2.4; any label, with a computed `goto`). A `goto` counts only within its function's own lines, so a namespace's other functions do not.
@@ -1473,7 +1477,7 @@ hit  phase      line  function                 selector  type               valu
 2    observed   26    MergeBug.main(String[])  current   MergeBug$Interval  MergeBug$Interval@57 {end=5, start=1}
 2    observed   26    MergeBug.main(String[])  next      MergeBug$Interval  MergeBug$Interval@63 {end=14, start=12}
 2    after-set  26    MergeBug.main(String[])  current   MergeBug$Interval  MergeBug$Interval@57 {end=10, start=1}
-after-set: 1 row equal to the hit's observed value left out (`--json` has every row)
+2    after-set  26    MergeBug.main(String[])  next      MergeBug$Interval  MergeBug$Interval@63 {end=14, start=12}
 set current.end: 5 -> 10
 output:
   MERGED:[[1,10], [12,14]]
