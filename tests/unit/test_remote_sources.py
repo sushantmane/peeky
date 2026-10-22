@@ -465,3 +465,28 @@ def test_the_program_must_be_among_the_compared_sources(app):
         assert worker.dap is None
     finally:
         worker.close()
+
+
+def test_frames_in_uncompared_files_under_the_root_are_refused(app):
+    # 6(c) option A: a frame under the root must be in a compared .py file; frames outside
+    # the root and in a virtual environment inside it are installed code, not compared.
+    (app / ".git").mkdir()
+    (app / ".git" / "hook.py").write_text("def run(f):\n    return f()\n")
+    (app / ".venv" / "lib").mkdir(parents=True)
+    (app / ".venv" / "pyvenv.cfg").write_text("home = /usr/bin\n")
+    worker = DebugWorker(app)
+    worker.accepted_sources = dict(sources.python_sources(app))
+
+    def frames(*paths):
+        return {"stackFrames": [{"source": {"path": str(path)}} for path in paths]}
+
+    worker.check_frames(frames(app / "main.py", "/usr/lib/python3/json/__init__.py"))
+    worker.check_frames(frames(app / ".venv" / "lib" / "pkg.py", app / "helper.py"))
+    assert worker.foreign_frame is None
+    with pytest.raises(RuntimeError, match=r"a stack frame is in \.git/hook\.py"):
+        worker.check_frames(frames(app / "main.py", app / ".git" / "hook.py"))
+    assert worker.foreign_frame == ".git/hook.py"
+    # A module that exists only as bytecode names a .py the manifest doesn't have.
+    worker.foreign_frame = None
+    with pytest.raises(RuntimeError, match=r"a stack frame is in compiled\.py"):
+        worker.check_frames(frames(app / "compiled.py"))

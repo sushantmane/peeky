@@ -173,6 +173,9 @@ class DebugWorker:
         # A remote Python session's sources as accepted at launch (#249): rechecked around
         # every later operation, since the program may import any of them at any time.
         self.accepted_sources = None
+        # A stack frame in a file under the root that was not compared (#249): it taints
+        # the session until it is closed.
+        self.foreign_frame = None
         self.capabilities = {}
         self.dap = None
         self.state = "idle"
@@ -1115,6 +1118,8 @@ class DebugWorker:
                     if operation in SOURCE_CHECKED or operation == "launch":
                         # Values from sources that changed meanwhile are not returned.
                         self.check_sources()
+                    if operation != "close":
+                        self.check_stack()
                 except (TimeoutError, RuntimeError, OSError) as exc:
                     failure = self.abandon(exc)
                     if failure is exc:
@@ -1488,6 +1493,8 @@ class DebugWorker:
         accepted = self.accepted_sources
         if accepted is None or not self.dap:
             return
+        if self.foreign_frame is not None:
+            raise RuntimeError(self.foreign_message(self.foreign_frame))
         from peeky.sources import Unhashable, drift, python_sources
 
         try:
@@ -1503,6 +1510,51 @@ class DebugWorker:
                 "worker host after launch. The session was closed, and no values were "
                 "returned. Sync sources, then start again"
             )
+
+    def check_frames(self, body):
+        """Raise (closing the session) for a stack frame in a file under the root that is
+        not a compared .py file (#249). Frames outside the root, and in a virtual
+        environment inside it (installed packages), are not compared."""
+        accepted = self.accepted_sources
+        if accepted is None:
+            return
+        from peeky.sources import in_environment
+
+        for frame in (body or {}).get("stackFrames") or []:
+            path = (frame.get("source") or {}).get("path") if isinstance(frame, dict) else None
+            if not isinstance(path, str) or not os.path.isabs(path):
+                continue
+            name = None
+            for candidate in (Path(os.path.normpath(path)), Path(path).resolve()):
+                try:
+                    name = candidate.relative_to(self.root).as_posix()
+                    break
+                except ValueError:
+                    continue
+            if name is None or name in accepted or in_environment(self.root, name):
+                continue
+            self.foreign_frame = name
+            raise RuntimeError(self.foreign_message(name))
+
+    def check_stack(self):
+        """At a stop of a remote Python session, read the whole stack: check_frames
+        refuses a frame in a file that was not compared (#249)."""
+        if self.accepted_sources is None or not self.dap or self.state != "stopped":
+            return
+        if self.thread_id is None:
+            return
+        self.dap.request(
+            "stackTrace", {"threadId": self.thread_id, "startFrame": 0, "levels": 0}, timeout=10
+        )
+
+    @staticmethod
+    def foreign_message(name):
+        return (
+            f"Worker source provenance: a stack frame is in {name}, under the worker's root "
+            "but not one of the .py files compared with yours (a compiled module, bytecode, or "
+            "a file in __pycache__ or .git). The session was closed, and no values were "
+            "returned"
+        )
 
     @staticmethod
     def built_digest(runtime):
@@ -1725,7 +1777,7 @@ class DebugWorker:
             # And every other source the target reads (#249): what this worker's trusted
             # target names, or every .py file under the root for Python.
             inputs_checked = inputs_python = None
-            self.accepted_sources = None
+            self.accepted_sources = self.foreign_frame = None
             if (expected_inputs := args.get("expect_inputs")) is not None:
                 from peeky.sources import (
                     declared,
@@ -1821,6 +1873,8 @@ class DebugWorker:
                     fatal_stderr=getattr(runtime, "fatal_stderr", None),
                     provoked_exit=getattr(runtime, "provoked_exit", None),
                 )
+                if self.accepted_sources is not None:
+                    self.dap.frames_check = self.check_frames
                 capabilities = self.dap.request(
                     "initialize", runtime.initialize_args(), timeout=left()
                 )

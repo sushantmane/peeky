@@ -2115,8 +2115,9 @@ WORKER_TOKEN_ENV = "PEEKY_WORKER_TOKEN"
 
 
 REMOTE_PYTHON_NOTE = (
-    "Remote Python: only the .py files under the target's directory are compared with yours; "
-    "installed packages, the standard library and compiled modules are not."
+    "Remote Python: only the .py files under the target's directory are compared with yours. "
+    "Not compared: installed packages (a virtual environment inside it included), the standard "
+    "library, and compiled modules (.so, .pyc)."
 )
 
 

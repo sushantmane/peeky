@@ -294,7 +294,38 @@ def test_a_remote_python_run_writes_no_bytecode_into_the_root(remote, capsys, mo
     )
     assert code == 0, out
     assert not (host / "__pycache__").exists()
-    assert "installed packages, the standard library and compiled modules are not" in out.out
+    assert "Not compared: installed packages (a virtual environment inside it included)" in out.out
+
+
+FRAMED = (
+    "import os, sys\n"
+    "sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '.git'))\n"
+    "import hook\n"
+    "def page():\n"
+    "    x = 3\n"
+    "    return x\n"
+    "print('PAGE', hook.run(page))\n"
+)
+
+
+def test_a_stack_frame_in_an_uncompared_file_under_the_root_is_refused(remote, capsys):
+    # #254 review round 1, 6(c) option A: hook.py under .git is never compared, but it is
+    # on the stack at the stop (it calls page()), so its code ran.
+    host, local, worker, relay = remote
+    for root in (host, local):
+        (root / "main.py").write_text(FRAMED)
+        (root / ".git").mkdir()
+        (root / ".git" / "hook.py").write_text("def run(f):\n    return f()\n")
+    _, port = worker()
+    url = f"http://127.0.0.1:{port}"
+    args = ["probe", local / "main.py", "--at", "6", "--capture", "x", "--worker", url, "--json"]
+    code, out = run(capsys, *args)
+    result = json.loads(out.out)
+    assert code == 1 and result["error"]["code"] == "PROVENANCE_CHANGED", result
+    assert "a stack frame is in .git/hook.py" in result["error"]["message"]
+    assert result["rows"] == [] and not result.get("output") and result["results_discarded"]
+    code, out = run(capsys, "session", "start", local / "main.py", "--at", "6", "--worker", url)
+    assert code == 2 and "a stack frame is in .git/hook.py" in out.err, out.err
 
 
 def test_remote_session_survives_a_dropped_tunnel_and_closing_keeps_the_worker(remote, capsys):

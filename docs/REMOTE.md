@@ -148,6 +148,10 @@ $ peeky session continue --to-exit
 peeky: [PROVENANCE_CHANGED] Worker source provenance changed during the session: helper.py changed on the worker host after launch. The session was closed, and no values were returned. Sync sources, then start again
 ```
 
+- **Python stack frames:** at each stop, the worker reads the whole stack. A frame in a file under
+  the root that isn't a compared `.py` file is refused. That covers bytecode, a compiled module,
+  and a file in `__pycache__` or `.git`. A frame in a virtual environment inside the root is
+  installed code: it isn't compared, and the note below says so.
 - A Python probe runs these checks at each stop and at its end. A probe that fails one is
   discarded: no rows and no output.
 - **The limit:** a file changed, then changed back, between two checks isn't seen.
@@ -161,10 +165,12 @@ peeky: [PROVENANCE_CHANGED] Worker source provenance changed during the session:
 - an attached JVM's class files. The worker checks them against its own sources instead
   ([JAVA_ATTACH.md](JAVA_ATTACH.md)).
 
-Peeky can't list the modules a Python program actually loaded. debugpy's `modules` request names
-only the modules it has seen in stack frames. So every remote Python result carries a note:
-`Remote Python: only the .py files under the target's directory are compared with yours;
-installed packages, the standard library and compiled modules are not.`
+Peeky can't list every module a Python program loaded: debugpy's `modules` request names only the
+modules it has seen in stack frames. So code that ran without being on the stack at a stop isn't
+checked, and every remote Python result carries a note:
+`Remote Python: only the .py files under the target's directory are compared with yours. Not
+compared: installed packages (a virtual environment inside it included), the standard library,
+and compiled modules (.so, .pyc).`
 
 **The client checks every answer:**
 

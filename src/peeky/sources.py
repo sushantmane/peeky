@@ -55,6 +55,16 @@ def environment(path):
     return os.path.isfile(os.path.join(path, "pyvenv.cfg"))
 
 
+def in_environment(root, relative):
+    """True where ``relative`` (under ``root``) is inside a virtual environment there."""
+    current = Path(root)
+    for part in PurePosixPath(relative).parts[:-1]:
+        current = current / part
+        if environment(current):
+            return True
+    return False
+
+
 def python_sources(root):
     """[(path, sha256)] of the `.py` files under ``root``, in walk order.
 
