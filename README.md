@@ -215,7 +215,7 @@ revised after two adversarial reviews.
     with an example in `examples/java`;
   - C: the [worker](docs/NATIVE.md) and the [investigation loop](docs/NATIVE_AGENT.md);
   - C++: [the C++ slice](docs/CPP.md);
-  - Rust: the [worker](docs/RUST_GATE.md) and the [investigation loop](docs/RUST_AGENT.md).
+  - Rust: the [worker](docs/RUST_GATE.md) and the [investigation loop](docs/RUST_AGENT.md#the-investigation-loop).
 - **The worker:** one controller and one session per worker, with session and stop identities. It
   offers local launch, breakpoints, bounded inspection, variable changes, continuation and evidence
   reports.

@@ -228,3 +228,21 @@ def test_errors_md_lists_every_code_with_the_retryable_flag_peeky_sends():
     for code, flags in expected.items():
         assert len(flags) == 1, code
         assert rows[code] == ("yes" if flags.pop() else "no"), code
+
+
+def test_the_docs_peeky_prints_exist():
+    # #212: a printed hint names a doc by path and anchor (`docs/lang/rust-cookbook.md#…`), or a
+    # cookbook section by number (`rust-cookbook 6.6`, `COOKBOOK 6.6`); each must resolve.
+    source = "\n".join(
+        path.read_text() for path in sorted((DOCS.parent / "src/peeky").glob("*.py"))
+    )
+    paths = re.findall(r"docs/([\w/.-]+\.md)(?:#([\w-]+))?", source)
+    assert paths
+    for path, anchor in paths:
+        assert (DOCS / path).is_file(), path
+        assert not anchor or anchor in set(_slugs(_headings(DOCS / path))), (path, anchor)
+    sections = re.findall(r"\b((?:python|java|c-cpp|rust)-cookbook|COOKBOOK) (\d+\.\d+)\b", source)
+    assert sections
+    for page, number in sections:
+        path = DOCS / ("COOKBOOK.md" if page == "COOKBOOK" else f"lang/{page}.md")
+        assert any(h.startswith(number + " ") for h in _headings(path)), (page, number)

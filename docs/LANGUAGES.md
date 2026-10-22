@@ -16,7 +16,7 @@ has as a whole:
 | Java | Fresh compilation, generated source maps, guarded HTTP runtime operations and real failure-cleanup tests. A deterministic full investigation loop, with fresh candidate compilation and independent verification. | [worker](JAVA_WORKER.md), [loop](JAVA_AGENT.md) |
 | C | An experimental LLDB worker. A deterministic full investigation loop, with fresh candidate builds, frozen headers and independent executable checks. | [worker](NATIVE.md), [loop](NATIVE_AGENT.md) |
 | C++ | Explicit C++17 builds, bounded expansion of classes, references and arrays, and deterministic candidate repair. | [C++ slice](CPP.md) |
-| Rust | An experimental HTTP worker for one dependency-free Cargo binary, with application-unit symbols and compiler-validated `Option<i32>` views. A deterministic investigation loop: the hashed compiled Cargo test and an independent checker must both pass on a fresh build. | [worker](RUST_GATE.md), [loop](RUST_AGENT.md) |
+| Rust | An experimental HTTP worker for one dependency-free Cargo binary, with application-unit symbols and compiler-validated `Option<i32>` views. A deterministic investigation loop: the hashed compiled Cargo test and an independent checker must both pass on a fresh build. | [worker](RUST_GATE.md), [loop](RUST_AGENT.md#the-investigation-loop) |
 
 Still open for Java: binding source paths on a separate host, and an evaluation with a live model.
 
