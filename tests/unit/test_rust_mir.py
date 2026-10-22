@@ -11,6 +11,7 @@ from peeky.rust_mir import (
     OwnedLocals,
     _event,
     _mir_name,
+    _root_access,
     _same_path,
     _segments,
     frame_shape,
@@ -3136,3 +3137,131 @@ def test_a_temporary_set_before_the_local_took_its_value_holds_no_copy_of_it():
     # What is read from it after that is a copy (`_13`), until its storage ends.
     assert 13 in body.copies_at(14, (3, 1))
     assert 13 not in body.copies_at(14, (4, 1)) and 13 not in body.copies_at(14, (2, 2))
+
+
+@pytest.mark.parametrize(
+    ("text", "projection", "access"),
+    [
+        # A copy or move of the part, of a place holding it or inside it, reads it.
+        ("_5 = copy _1;", ((("field", 1),)), "read"),
+        ("_5 = Add(copy (_1.1: i64), const 1_i64);", (("field", 1),), "read"),
+        ("_5 = copy ((_1.1: Inner).0: i32);", (("field", 1),), "read"),
+        ("_5 = copy (_1.2: [u32; 3])[2 of 3];", (("field", 2), ("index", 2)), "read"),
+        ("_3 = consume(move _1) -> [return: bb1, unwind continue];", ((("field", 0),)), "read"),
+        # Another field, an element whose index is not known, or another element: not.
+        ("_5 = copy (_1.0: i16);", (("field", 1),), None),
+        ("_5 = copy (_1.2: [u32; 3])[_7];", (("field", 2), ("index", 2)), None),
+        ("_5 = copy (_1.2: [u32; 3])[1 of 3];", (("field", 2), ("index", 2)), None),
+        # A borrow may never be read through; a length or a dereference is no read.
+        ("_5 = &_1;", (), None),
+        ("_5 = &mut (_1.1: i64);", (("field", 1),), None),
+        ("_5 = Len(_1);", (), None),
+        # Assigning the whole local, or a place covering the part, ends it; another part
+        # or reading it first does not.
+        ("_1 = copy _2;", (("field", 1),), "end"),
+        ("_1 = Add(copy _1, const 1_i32);", (), "read"),
+        ("(_1.1: i64) = const 5_i64;", (("field", 1),), "end"),
+        ("(_1.0: i16) = copy _6;", (("field", 1),), None),
+        ("(_1.0: i16) = copy (_1.1: i64) as i16 (IntToInt);", (("field", 1),), "read"),
+        ("StorageDead(_1);", (), "end"),
+        ("drop(_1) -> [return: bb2, unwind continue];", (), None),
+        # A projection not known: only the whole local is read for sure.
+        ("_5 = copy (_1.1: i64);", None, None),
+        ("_5 = copy _1;", None, "read"),
+        # A type holding brackets, arrows and braces in the place's annotation.
+        (
+            "_5 = copy ((_1.0: (fn(i32) -> i32, [u8; 2])).1: [u8; 2])[0 of 2];",
+            (("field", 0), ("field", 1), ("index", 0)),
+            "read",
+        ),
+    ],
+)
+def test_what_a_statement_surely_does_to_a_part_of_a_local(text, projection, access):
+    # #192 review: only a read that surely covers the changed part shows the program saw
+    # the change.
+    assert _root_access(text, 1, projection) == access
+
+
+def test_a_borrow_only_formatting_a_primitive_reads_counts_as_a_read():
+    # `println!("{}", x.a)` lends `&x.a` to formatting, which prints it.
+    bindings = (
+        "debug x => _1;   // in scope 1 at src/main.rs:2:9: 2:10\n"
+        "debug y => _2;   // in scope 1 at src/main.rs:3:9: 3:10\n"
+    )
+    body = mir(
+        {
+            0: [
+                "_2 = copy _1;",
+                "_8 = &(_1.0: i16);",
+                "_7 = (move _8,);",
+                "_10 = copy (_7.0: &i16);",
+                "_9 = &(*_10);",
+                "_6 = core::fmt::rt::Argument::<'_>::new_display::<i16>(move _9) -> [return: bb1, unwind continue];",
+            ],
+            1: [
+                "_12 = &_1;",
+                "_11 = core::fmt::rt::Argument::<'_>::new_debug::<Ab>(move _12) -> [return: bb2, unwind continue];",
+            ],
+            2: ["_1 = copy _2;", "StorageDead(_1);", "return;"],
+        },
+        bindings=bindings,
+    )
+    assert body._format_reads() == {8}
+    assert _root_access("_8 = &(_1.0: i16);", 1, (("field", 0),), {8}) == "read"
+    # The `Debug` of a type of the crate's own may read any part, or none.
+    assert _root_access("_12 = &_1;", 1, (("field", 1),), {8}) is None
+    # From the start: `x.a` is printed, then `x = y` puts the old value back. For a
+    # change to `x.a` the program saw it; for one to `x.b` it never does.
+    assert not body.copy_undoes(2, 1, (0, 1), (("field", 0),))
+    assert body.copy_undoes(2, 1, (0, 1), (("field", 1),))
+
+
+def test_a_borrow_given_to_a_call_shows_no_read():
+    # #192 review: `ignore(&x)` may never read `x`; `x = y` then puts the old value back.
+    bindings = (
+        "debug x => _1;   // in scope 1 at src/main.rs:2:9: 2:10\n"
+        "debug y => _2;   // in scope 1 at src/main.rs:3:9: 3:10\n"
+    )
+    body = mir(
+        {
+            0: [
+                "_2 = copy _1;",
+                "_4 = &_1;",
+                "_3 = ignore(move _4) -> [return: bb1, unwind continue];",
+            ],
+            1: ["_1 = copy _2;", "_5 = copy _1;", "return;"],
+        },
+        bindings=bindings,
+    )
+    assert body.copy_undoes(2, 1, (0, 1))
+    # Where the program reads `x` first, it sees the change.
+    read = mir(
+        {
+            0: [
+                "_2 = copy _1;",
+                "_4 = copy _1;",
+                "_3 = ignore2(move _4) -> [return: bb1, unwind continue];",
+            ],
+            1: ["_1 = copy _2;", "return;"],
+        },
+        bindings=bindings,
+    )
+    assert not read.copy_undoes(2, 1, (0, 1))
+
+
+def test_a_block_the_code_cannot_reach_adds_no_copy_to_a_join():
+    # #192 review 2: every parsed block seeded the flow, so a block no path reaches
+    # (bb2) put its copy into bb3's entry.
+    bindings = "debug x => _1;   // in scope 1 at src/main.rs:2:9: 2:10\n"
+    body = mir(
+        {
+            0: ["_1 = const 1_i32;", "goto -> bb1;"],
+            1: ["goto -> bb3;"],
+            2: ["_7 = copy _1;", "goto -> bb3;"],
+            3: ["_8 = copy _7;", "return;"],
+        },
+        bindings=bindings,
+    )
+    assert body._reachable() == {0, 1, 3}
+    assert 7 not in body.copies_at(1, (3, 0))
+    assert 7 not in body.direct_copies_at(1, (3, 0))

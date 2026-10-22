@@ -1324,6 +1324,9 @@ def _unproven(variable):
 
 
 class RustSession(NativeSession):
+    # mid_statement judges a field or element by the part it changes (#192 review).
+    projected_copies = True
+
     def __init__(
         self,
         target,
@@ -1889,9 +1892,11 @@ class RustSession(NativeSession):
         """Why ``root`` (and the path ``steps`` into it) can never change in the function
         ``hashed``: (kind, detail), or None. Raises fields.Unsettable when the debug
         information Peeky needs could not be read (nothing is ruled out then)."""
-        from peeky.fields import Unsettable, debugger_steps, settable_member
+        from peeky.fields import Unsettable, debugger_steps, member_indexes, settable_member
 
         plain = _plain(root)
+        # The part a change makes, which the program's own copies are judged by (#192).
+        projection = ()
         proofs = getattr(self, "owned", None)
         body = proofs.body(hashed) if proofs is not None else None
         kept = self.memory.get((hashed, plain))
@@ -1937,6 +1942,7 @@ class RustSession(NativeSession):
                 if named is None:
                     return None
                 settable_member(graph, kind, root, named)
+                projection = member_indexes(graph, kind, root, named)
                 if not framed:
                     raise Unsettable(
                         f"`{root}` is not kept in this frame's own memory (a static, or a "
@@ -1945,7 +1951,7 @@ class RustSession(NativeSession):
             except Unsettable as exc:
                 return ("type", str(exc))
         if kept is True:
-            return self._copied_everywhere(hashed, plain, source, line)
+            return self._copied_everywhere(hashed, plain, source, line, projection)
         if _state_held(body, plain):
             return ("state", plain)
         if kept is None and body is None:
@@ -1955,7 +1961,7 @@ class RustSession(NativeSession):
         )
         return ("register", (parameter, self._not_in_memory(hashed, root, line, source)))
 
-    def _copied_everywhere(self, hashed, plain, source, line):
+    def _copied_everywhere(self, hashed, plain, source, line, projection=()):
         """("statement", why) where every place ``line`` can stop at in ``hashed`` is
         inside a statement that has already read ``plain`` into a temporary it uses again
         (a statement's later line: `let arr = [s.a,` / `k,` / `s.b];` at `k,`), so no stop
@@ -1964,7 +1970,8 @@ class RustSession(NativeSession):
         check = getattr(proofs, "copied_everywhere", None)
         if check is None or self._optimized():
             return None
-        held = check(hashed, plain, line, str(Path(self.prepared.source_root) / source))
+        path = str(Path(self.prepared.source_root) / source)
+        held = check(hashed, plain, line, path, projection=projection)
         if not held:
             return None
         made = _line_list(proofs.copy_lines(hashed, held))
@@ -1975,8 +1982,9 @@ class RustSession(NativeSession):
                 "statement",
                 f"at every place line {line} can stop at, the program has already copied "
                 f"`{plain}` into {_names(names)}" + (f" (at {made})" if made else "") + " and "
-                f"goes on with that copy, replacing or dropping `{plain}` without reading it "
-                "again, so a change there would never be seen",
+                f"goes on with that copy, replacing or dropping `{plain}` with no read of the "
+                "changed part Peeky can prove first (a reference lent to a call, or `{:?}`, is "
+                "not one), so a change there may never be seen",
             )
         return (
             "statement",
@@ -2165,14 +2173,16 @@ class RustSession(NativeSession):
             "the body does not use it after), so it may hold leftovers"
         )
 
-    def mid_statement(self, variable, frame, stop=None):
-        """Why a change to the root local ``variable`` of the stopped ``frame`` may not
-        reach a statement under way at the stop, or None (#105). Allowed only where the
-        stop is before its line's first code (``stop``, its reason: a line breakpoint's,
-        or a step's that ends at the line's lowest address) and from there no temporary
-        the build's MIR shows may hold a value read from it is used again: a statement
-        that starts on an earlier line (`let arr = [s.a,` / `k,` / `s.b];` at its last
-        line) has already read it. A step that ends elsewhere (back from a call, as after
+    def mid_statement(self, variable, frame, stop=None, steps=None, members=False):
+        """Why a change to the root local ``variable`` of the stopped ``frame`` (or to the
+        part the debugger's child names ``steps`` reach in it; with ``members``, to any
+        part of it, leaving out the program's own copies, which each part is judged by)
+        may not reach a statement under way at the stop, or None (#105). Allowed only
+        where the stop is before its line's first code (``stop``, its reason: a line
+        breakpoint's, or a step's that ends at the line's lowest address) and from there
+        no temporary the build's MIR shows may hold a value read from it is used again: a
+        statement that starts on an earlier line (`let arr = [s.a,` / `k,` / `s.b];` at
+        its last line) has already read it. A step that ends elsewhere (back from a call, as after
         `step --out`, or onto a later part of a statement spanning lines), any other
         stop, and anything the MIR does not explain are refused."""
         hashed, proofs, place = _frame_hash(frame), getattr(self, "owned", None), frame or {}
@@ -2198,6 +2208,8 @@ class RustSession(NativeSession):
                 breakpoint=True,
                 column=place.get("column"),
                 block=self._stop_block(hashed[1], frame),
+                projection=self._projection(hashed[1], variable.get("name"), steps),
+                named=not members,
             )
         if found is not None and not any(hazards for _, hazards in found):
             return None
@@ -2212,8 +2224,9 @@ class RustSession(NativeSession):
                 return _Copied(
                     f"the program has already copied its value into {_names(names)}"
                     + (f" (at {made})" if made else "")
-                    + f" and goes on with that copy, replacing or dropping `{name}` without "
-                    "reading it again, so the change would never be seen",
+                    + f" and goes on with that copy, replacing or dropping `{name}` with no "
+                    "read of the changed part Peeky can prove first (a reference lent to a "
+                    "call, or `{:?}`, is not one), so the change may never be seen",
                     f"Change it before {_names(names)} copies it (a stop on an earlier line), "
                     f"or change {_names(names)} instead",
                 )
@@ -2226,6 +2239,24 @@ class RustSession(NativeSession):
             "Peeky cannot tell from the build's MIR whether a statement under way at the "
             "stop has read it"
         )
+
+    def _projection(self, hashed, root, steps):
+        """The MIR projection the debugger's child names ``steps`` make in the root local
+        ``root`` of the function ``hashed`` (fields.member_indexes): () for the whole
+        local, None where the debug information does not tell (#192 review)."""
+        from peeky.fields import Unsettable, member_indexes
+
+        if not steps:
+            return ()
+        try:
+            functions, graph = self._field_types()
+            types = functions.get(hashed)
+            if types is None:
+                return None
+            kind, _ = self._declared_type(types, root)
+            return member_indexes(graph, kind, root, list(steps))
+        except Unsettable:
+            return None
 
     def _line_start(self, frame):
         """Whether the frame's pc is the lowest address of its line's code in its

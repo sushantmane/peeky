@@ -258,6 +258,38 @@ fn partial() -> i32 {
     s.a + s.b
 }
 
+#[derive(Clone, Copy)]
+struct Ab {
+    a: i16,
+    b: i64,
+}
+
+#[inline(never)]
+fn keep_ab(p: &mut Ab) {
+    std::hint::black_box(p);
+}
+
+fn field_read() -> i64 {
+    let mut x = Ab { a: 1, b: 2 };
+    let y = x;
+    keep_ab(&mut x);
+    println!("A:{}", x.a); // FIELD
+    x = y;
+    x.b
+}
+
+#[inline(never)]
+fn ignore(_: &i32) {}
+
+fn borrowed() -> i32 {
+    let mut x = 1;
+    let y = x;
+    keep(&mut x);
+    ignore(&x); // BORROWED
+    x = y;
+    x
+}
+
 fn read_later() -> i32 {
     let mut x = 4;
     let y = x;
@@ -292,7 +324,7 @@ fn main() {
     let mut wide = Wide { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8, i: 9, j: 10 };
     grid.count += 1;
     wide.a += 1;
-    println!("ARM:{} WHILE:{} NAMED:{} CLOSURE:{} PARTIAL:{} READ:{} LATER:{} GRID:{} WIDE:{}", arm(), while_let(), named(), closure(), partial(), read_first(), read_later(), grid.cells[0].n + grid.count as i32 + grid.inner.w as i32 + grid.inner.deep[1][1] as i32, wide.a + wide.j);
+    println!("ARM:{} WHILE:{} NAMED:{} CLOSURE:{} PARTIAL:{} FIELD:{} BORROWED:{} READ:{} LATER:{} GRID:{} WIDE:{}", arm(), while_let(), named(), closure(), partial(), field_read(), borrowed(), read_first(), read_later(), grid.cells[0].n + grid.count as i32 + grid.inner.w as i32 + grid.inner.deep[1][1] as i32, wide.a + wide.j);
 }
 """
 
@@ -303,13 +335,16 @@ def test_a_copy_in_the_programs_own_binding_blocks_the_change(crate, capsys):
     # `while let`'s `v`, `let y = x;` and a `move` closure each hold the old value the
     # program goes on with, replacing or dropping `x` unread: `set x: … -> 50` was
     # reported, and the output kept the old. Writing a part (`s.a = t;`) reads none.
+    # Round 2: reading another field (`x.a` for a change to `x.b`) or lending `&x` to a
+    # call that may never read it does not show the program saw the change either.
     (crate / "src/main.rs").write_text(COPIES)
 
     def line(marker):
         return next(i for i, text in enumerate(COPIES.splitlines(), 1) if f"// {marker}" in text)
 
     cases = (("ARM", "x", "n"), ("WHILE", "x", "v"), ("NAMED", "x", "y"), ("CLOSURE", "x", "f"))
-    for marker, root, copy in (*cases, ("PARTIAL", "s.b", "o")):
+    parts = (("PARTIAL", "s.b", "o"), ("FIELD", "x.b", "y"), ("BORROWED", "x", "y"))
+    for marker, root, copy in (*cases, *parts):
         at = ["probe", str(crate), "--at", f"src/main.rs:{line(marker)}", "--capture", "x"]
         code = main([*at, "--set", f"{root}=50", "--json", "--quiet"])
         result = json.loads(capsys.readouterr().out)

@@ -376,6 +376,30 @@ def debugger_steps(graph, root, name, steps):
     return found
 
 
+def member_indexes(graph, root, name, steps):
+    """The projection ``steps`` (the debugger's child names, as ``debugger_steps`` gives
+    them) make from the local ``name`` of type ``root``, as MIR numbers it (#192 review):
+    ("field", its position among its record's members, which rustc's debug information
+    lists in declaration order, as MIR numbers fields) or ("index", n) of a fixed-size
+    array. None where a step is neither."""
+    found, offset, path = [], root, name
+    for step in steps:
+        offset, node, _ = _strip(graph, offset, path)
+        index = re.fullmatch(r"\[([0-9]+)\]", step)
+        if node[0] == "record" and index is None:
+            positions = [at for at, member in enumerate(node[5]) if member[0] == step]
+            if len(positions) != 1:
+                return None
+            found.append(("field", positions[0]))
+            offset, path = node[5][positions[0]][1], f"{path}.{step}"
+        elif node[0] == "array" and index is not None and len(node[3] or ()) <= 1:
+            found.append(("index", int(index[1])))
+            offset, path = node[2], f"{path}{step}"
+        else:
+            return None
+    return tuple(found)
+
+
 def held_container(graph, root, name, steps, dereference=False):
     """The qualified type name of the record (a Rust `Vec`, `String`, `&str`) that
     ``steps`` (the debugger's child names: `values`, `__1`, `[2]`) reach from the local

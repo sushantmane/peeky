@@ -3273,7 +3273,9 @@ class DebugWorker:
         if mid is None:
             return None
         key = ("root", self.mark_place(), str(root.get("name")), str(root.get("type")))
-        return self.remember(key, lambda: mid(root, frame, self.stop_reason))
+        # A copy of the program's own is judged per member (#192 review).
+        every = {"members": True} if getattr(runtime, "projected_copies", False) else {}
+        return self.remember(key, lambda: mid(root, frame, self.stop_reason, **every))
 
     def preview_kinds(self, record, runtime):
         """{field: the type the debugger lists it with} for a value shown as a preview
@@ -3364,8 +3366,13 @@ class DebugWorker:
             return lambda variable, steps: False
         stack = getattr(self, "listed_frames", None)
         place = (self.mark_place(), str(root.get("name")), str(root.get("type")))
+        # A copy of the program's own is judged by the part a change makes (#192 review).
+        projected = getattr(runtime, "projected_copies", False)
+        mid = getattr(runtime, "mid_statement", None) if projected else None
 
         def judged(variable, steps):
+            if mid is not None and mid(root, frame, self.stop_reason, steps=list(steps)):
+                return False
             try:
                 # The value it holds: in range, so only the member itself is judged.
                 validate(
@@ -3541,7 +3548,7 @@ class DebugWorker:
         selector = ancestry[0][0] + "".join(
             step if step.startswith("[") else f".{step}" for step in steps
         )
-        self.refuse_mid_statement(runtime, root, frame, selector)
+        self.refuse_mid_statement(runtime, root, frame, selector, steps)
         before = variable.get("value")
         literal = getattr(runtime, "mutation_literal", None)
         try:
@@ -3806,12 +3813,14 @@ class DebugWorker:
             refused.before_launch = True
             raise refused
 
-    def refuse_mid_statement(self, runtime, root, frame, selector):
-        """Refuse a change to the root local ``root`` (or what ``selector`` reaches in it)
-        where the runtime says a statement under way at the stop may hold a copy of its
-        old value (#105): the change would miss that statement. The session is kept."""
+    def refuse_mid_statement(self, runtime, root, frame, selector, steps=None):
+        """Refuse a change to the root local ``root`` (or what ``selector`` reaches in it:
+        the debugger's child names ``steps``) where the runtime says a statement under
+        way at the stop may hold a copy of its old value (#105): the change would miss
+        that statement. The session is kept."""
         check = getattr(runtime, "mid_statement", None)
-        if check and (reason := check(root, frame or {}, self.stop_reason)):
+        part = {"steps": list(steps)} if steps and getattr(runtime, "projected_copies", 0) else {}
+        if check and (reason := check(root, frame or {}, self.stop_reason, **part)):
             if advice := getattr(reason, "advice", None):
                 # The program's own binding holds the copy (#192): its own way around.
                 raise ValueError(f"{selector!r} cannot be changed here: {reason}. {advice}")

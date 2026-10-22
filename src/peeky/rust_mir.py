@@ -239,6 +239,14 @@ _ANY_LOCAL = re.compile(r"\b_([0-9]+)\b")
 # it returns, which must be the standard library's too.
 _FORMAT_CALL = re.compile(r"(?:(?:core|std)::fmt::(?:rt::)?)?Arguments?::<'_>::new\w*\b")
 _FORMAT_TYPE = re.compile(r"(?:core|std)::fmt::(?:rt::)?Arguments?<'_>")
+# A formatting argument made from a pointer (`_41 = core::fmt::rt::Argument::<'_>::
+# new_display::<i64>(move _42)`), and the primitives whose formatting reads the value.
+_FORMAT_ARGUMENT = re.compile(
+    r"^_[0-9]+ = (?:(?:core|std)::fmt::rt::)?Argument::<'_>::new_\w+::<([^<>]+)>"
+    r"\((?:move|copy) _([0-9]+)\)"
+)
+_FORMATTED_PRIMITIVE = re.compile(r"[iu](?:8|16|32|64|128|size)|f32|f64|bool|char")
+_NOT_SHARED = re.compile(r"&(?:mut |raw |fake )")
 _SUCCESSOR = re.compile(r"\bbb([0-9]+)\b")
 _RETURN_EDGE = re.compile(r"\breturn: bb([0-9]+)\b")
 _EXITS = re.compile(r"^(?:return|unreachable|resume|abort|terminate)\b")
@@ -323,6 +331,8 @@ class Body:
     _copy_flows: dict | None = None
     # {local: ``_pointers_to``'s locals} (#192).
     _pointer_cache: dict | None = None
+    # ``_format_reads``'s locals (#192 review).
+    _format_cache: frozenset | None = None
     _lent_from: dict | None = None
     _maybe: dict | None = None
     _moved_cache: set | None = None
@@ -880,27 +890,21 @@ class Body:
             if binding[0] is not None
         )
 
-    def copy_undoes(self, copy, root, start):
+    def copy_undoes(self, copy, root, start, projection=()):
         """True if, on some path from ``start`` ((block, index): before that statement),
         the program uses ``copy`` (or a pointer to it) and then assigns ``root`` whole or
-        ends it without reading it on the way (#192): it goes on with the value ``copy``
-        took from ``root``, so a change made at ``start`` is never seen (`x = match x {
-        n => … n }` puts the old value back; `let y = x;` … `x = y + 1;`; a `move` closure
-        called before `x` goes out of scope unread). Where ``root`` (or a pointer to it)
-        is read first, the program sees the change there, whatever its copies hold
-        (`let a = s.x;` keeps the old value, as the program's own). Writing a part of
-        ``root`` without reading it (`s.a = t;`) reads nothing of it."""
-        copies, roots = self._pointers_to(copy) | {copy}, self._pointers_to(root)
-        written = roots | {root}
-
-        def writes_part(text):
-            found = _PART_ASSIGNMENT.match(_STRING.sub('""', text))
-            return bool(
-                found
-                and int(found[1]) in written
-                and not {int(n) for n in _MENTIONED.findall(found[2])} & written
-            )
-
+        ends it without reading what a change made (#192): it goes on with the value
+        ``copy`` took from ``root``, so a change made at ``start`` is never seen (`x = match
+        x { n => … n }` puts the old value back; `let y = x;` … `x = y + 1;`; a `move`
+        closure called before `x` goes out of scope unread). Where the program reads
+        ``root`` first, it sees the change there, whatever its copies hold (`let a = s.x;`
+        keeps the old value, as the program's own). ``projection`` is the part changed
+        (``_root_access``): only a read that surely covers part of it counts, `copy`,
+        `move`, or a shared borrow only formatting reads (``_format_reads``); a borrow
+        given to anything else may never be read through, so the path goes on (#192
+        review: `ignore(&x)`, `println!("{}", x.a)` for a change to `x.b`). A write
+        covering the whole part counts as an assignment, any other as nothing."""
+        copies, formats = self._pointers_to(copy) | {copy}, self._format_reads()
         # (block, index, whether the copy was used on the way here).
         pending, seen = [(start[0], start[1], False)], set()
         while pending:
@@ -912,13 +916,11 @@ class Body:
             stopped = False
             for text, _, _ in block.statements[index:]:
                 used = used or any(_event(text, each) == "use" for each in copies)
-                if writes_part(text):
-                    continue
-                event = _event(text, root)
-                if event == "use" or any(_event(text, each) == "use" for each in roots):
+                access = _root_access(text, root, projection, formats)
+                if access == "read":
                     stopped = True
                     break
-                if event == "end":
+                if access == "end":
                     if used:
                         return True
                     stopped = True
@@ -930,6 +932,45 @@ class Body:
                 resumed = (self.resumes[number],) if number in self.resumes else ()
                 pending.extend((successor, 0, used) for successor in (*block.successors, *resumed))
         return False
+
+    def _format_reads(self):
+        """The locals a shared borrow is assigned to that only formatting a primitive
+        reads through (#192 review): `println!("{}", s.end)` borrows `_28 = &(_1.1: i64)`,
+        puts it in `_27 = (move _28, …)`, takes `_89 = copy (_27.0: &i64)` and `_42 =
+        &(*_89)` out, and gives that to `Argument::new_display::<i64>`, whose printing
+        reads it. Followed only through locals assigned once, by those shapes."""
+        if self._format_cache is None:
+            values, seeds = {}, []
+            for block in self.blocks.values():
+                for text, _, _ in block.statements:
+                    text = _STRING.sub('""', text)
+                    if found := _FORMAT_ARGUMENT.match(text):
+                        if _FORMATTED_PRIMITIVE.fullmatch(found[1]):
+                            seeds.append((int(found[2]), None))
+                    if whole := _WHOLE_ASSIGNMENT.match(text):
+                        values.setdefault(int(whole[1]), []).append(whole[2])
+            found, seen = set(), set()
+            while seeds:
+                local, member = seeds.pop()
+                if (local, member) in seen or len(values.get(local, ())) != 1:
+                    continue
+                seen.add((local, member))
+                value = values[local][0]
+                if member is not None:
+                    # The tuple of the arguments' pointers: its ``member``th operand.
+                    tuple_ = re.fullmatch(r"\((.*?),?\)", value)
+                    operands = tuple_[1].split(", ") if tuple_ else []
+                    if member < len(operands):
+                        if operand := re.fullmatch(r"(?:move|copy) _([0-9]+)", operands[member]):
+                            seeds.append((int(operand[1]), None))
+                elif step := re.fullmatch(r"(?:move |copy )?_([0-9]+)|&\(\*_([0-9]+)\)", value):
+                    seeds.append((int(step[1] or step[2]), None))
+                elif step := re.fullmatch(r"(?:move|copy) \(_([0-9]+)\.([0-9]+): [^()]*\)", value):
+                    seeds.append((int(step[1]), int(step[2])))
+                elif value.startswith("&") and not _NOT_SHARED.match(value):
+                    found.add(local)
+            self._format_cache = frozenset(found)
+        return self._format_cache
 
     def _pointers_to(self, local):
         """The locals any borrow of ``local`` (or of a part, or of such a pointer's
@@ -1232,35 +1273,36 @@ class Body:
         state = self._copy_state(local, position, formatting)
         return self.copies_of(local, formatting) if state is None else state[0]
 
-    def direct_copies_at(self, local, position, formatting=True):
+    def direct_copies_at(self, local, position, formatting=True, projection=()):
         """The locals, the program's own bindings among them, that hold a value taken
         from ``local``'s current value at ``position`` by value (#192): a copy or move of
         it or of a part (`n` of `x = match x { n => … }`, `let y = x;`), a value computed
         from one (`v` of `while let Some(v) = (x > 0).then_some(x)`), a closure or
         aggregate holding one (`move || x`), or a read through a pointer to it (`*r` of
         `let r = &x;`); not what a call given a pointer to it returns (`x.len()`), which
-        ``copies_at`` judges for temporaries only. None where the flow is past its
-        budget."""
-        state = self._copy_state(local, position, formatting)
+        ``copies_at`` judges for temporaries only. With ``projection`` (``_root_access``),
+        only what may have been taken from that part counts (#192 review: `seen = r.end`
+        holds none of `o.marks`). None where the flow is past its budget."""
+        state = self._copy_state(local, position, formatting, projection)
         return None if state is None else state[2]
 
-    def _copy_state(self, local, position, formatting):
+    def _copy_state(self, local, position, formatting, projection=()):
         """(holds, points, direct, own) at ``position``, or None past the budget."""
         if self._copy_flows is None:
             self._copy_flows = {}
-        key = (local, formatting)
+        key = (local, formatting, projection)
         if key not in self._copy_flows:
-            self._copy_flows[key] = self._copy_flow(local, formatting)
+            self._copy_flows[key] = self._copy_flow(local, formatting, projection)
         entry = self._copy_flows[key]
         number, index = position
         if entry is None or number not in entry:
             return None
         state = entry[number]
         for at in range(min(index, len(self.blocks[number].statements))):
-            state = self._copy_step(local, formatting, number, at, state)
+            state = self._copy_step(local, formatting, number, at, state, projection)
         return state
 
-    def _copy_step(self, local, formatting, number, index, state):
+    def _copy_step(self, local, formatting, number, index, state, projection=()):
         """``copies_at``'s transfer over one statement: (holds, points, direct, own)
         after it: ``copies_of``'s holds and points, for temporaries; and the locals,
         named or not, holding a direct copy (``direct_copies_at``), and the pointers made
@@ -1281,18 +1323,16 @@ class Body:
         target, mentioned, through, borrow, called, formats, pointers = parts[found]
         if target == local:
             return state
+        # A place of it that may hold part of ``projection`` (#192 review).
+        touched = local in mentioned and _touches(text, local, projection)
         if borrow:
-            mine = local in mentioned or bool(mentioned & own)
+            mine = touched or bool(mentioned & own)
             taken = False
         else:
             # By value: a copy, a move, what is computed from one (a call given one too),
             # an aggregate or closure holding one; or a read through its own pointer.
             mine = not called and bool(mentioned & own) and not through
-            taken = (
-                local in mentioned
-                or bool(mentioned & direct)
-                or (through and bool(mentioned & own))
-            )
+            taken = touched or bool(mentioned & direct) or (through and bool(mentioned & own))
         if whole:
             # Reassigned: what it held before is gone (a call's result: on its return
             # edge, which is the only one ``_copy_flow`` gives this state).
@@ -1317,15 +1357,16 @@ class Body:
             own,
         )
 
-    def _copy_flow(self, local, formatting):
+    def _copy_flow(self, local, formatting, projection=()):
         """{block: (holds, points, direct, own) on entry} for ``copies_at``: its
         transfer, merged by union up from nothing (the least fixpoint); None past the
         budget."""
         empty = (frozenset(),) * 4
         entry = dict.fromkeys(self.blocks, empty)
-        # Every block once, whatever flows into it: a copy made in a block whose entry
-        # holds none must still flow on (#192 review: a `while let`'s `then_some(x)`).
-        work = sorted(self.blocks, reverse=True)
+        # Every block the code can reach once, whatever flows into it: a copy made in a
+        # block whose entry holds none must still flow on (#192 review: a `while let`'s
+        # `then_some(x)`); one it cannot reach adds nothing to a join (#192 review 2).
+        work = sorted(self._reachable(), reverse=True)
         queued, steps = set(work), 0
         limit = max(MAX_ITERATIONS, STEPS_PER_BLOCK * len(self.blocks))
         while work:
@@ -1340,9 +1381,13 @@ class Body:
             state = entry[number]
             last = len(block.statements) - 1
             for index in range(last):
-                state = self._copy_step(local, formatting, number, index, state)
+                state = self._copy_step(local, formatting, number, index, state, projection)
             # A call sets its result on its return edge only; the others leave all as was.
-            after = self._copy_step(local, formatting, number, last, state) if last >= 0 else state
+            after = (
+                self._copy_step(local, formatting, number, last, state, projection)
+                if last >= 0
+                else state
+            )
             for target in self._flows(number):
                 if target not in entry:
                     continue
@@ -1836,6 +1881,18 @@ class Body:
             return tuple(target for target in successors if target not in resumed)
         return successors
 
+    def _reachable(self):
+        """The blocks control can reach (``_flows``) from bb0 and from where a coroutine
+        resumes."""
+        found, pending = set(), [0, *self.resumes.values()]
+        while pending:
+            number = pending.pop()
+            if number in found or number not in self.blocks:
+                continue
+            found.add(number)
+            pending.extend(self._flows(number))
+        return found
+
     def _flows_into(self, number):
         """The blocks control flows into ``number`` from (``_flows``, reversed)."""
         if self._into is None:
@@ -2328,6 +2385,132 @@ def _event(text, local):
     if local in {int(n) for n in _MENTIONED.findall(text)}:
         return "use"
     return None
+
+
+def _type_end(text, start):
+    """Where the type that starts at ``start`` in ``text`` ends: the index of the `)`
+    that closes the place around it (`(_1.1: [u32; 3])`), or None."""
+    depth, at = 0, start
+    while at < len(text):
+        if text.startswith("->", at):
+            at += 2
+            continue
+        char = text[at]
+        if char in "([{<":
+            depth += 1
+        elif char in ")]}>":
+            if depth == 0:
+                return at if char == ")" else None
+            depth -= 1
+        at += 1
+    return None
+
+
+def _place_steps(text, start):
+    """The place whose local's `_N` starts at ``start`` in a MIR statement: (its
+    projections, as ``("field", n)``, ``("index", n)`` with None for an index not
+    constant, ``("other", None)`` for a variant; where its text starts; where it ends),
+    or None where it is not read as a place (`Len(_1)`, a dereference)."""
+    local = re.match(r"_[0-9]+", text[start:])
+    if local is None or (start and text[start - 1] == "*"):
+        return None
+    begin = start
+    while begin and text[begin - 1] == "(":
+        begin -= 1
+    opens, at, steps = start - begin, start + local.end(), []
+    while True:
+        if text.startswith("[", at):
+            end = text.find("]", at)
+            if end < 0:
+                return None
+            constant = re.fullmatch(r"([0-9]+) of [0-9]+", text[at + 1 : end])
+            steps.append(("index", int(constant[1]) if constant else None))
+            at = end + 1
+            continue
+        if not opens:
+            return steps, begin, at
+        field = re.match(r"\.([0-9]+): ", text[at:])
+        if field is None and not text.startswith(" as ", at):
+            return None
+        end = _type_end(text, at + (field.end() if field else 4))
+        if end is None:
+            return None
+        steps.append(("field", int(field[1])) if field else ("other", None))
+        at, opens = end + 1, opens - 1
+
+
+def _overlaps(steps, projection):
+    """Whether the place ``steps`` surely covers part of ``projection`` (one is a prefix
+    of the other, each step the same and known); None as a projection: not known, so
+    only the whole local does."""
+    if projection is None:
+        return not steps
+    return all(mine == theirs and mine[1] is not None for mine, theirs in zip(steps, projection))
+
+
+def _touches(text, local, projection):
+    """Whether ``text`` mentions a place of ``local`` that may hold part of
+    ``projection``: one not surely apart from it (another field, another constant
+    element), or one not read as a place."""
+    if not projection:
+        return True
+    for found in re.finditer(rf"(?<![\w])_{local}\b", text):
+        place = _place_steps(text, found.start())
+        if place is None:
+            return True
+        if all(
+            mine == theirs or mine[0] != theirs[0] or None in (mine[1], theirs[1])
+            for mine, theirs in zip(place[0], projection)
+        ):
+            return True
+    return False
+
+
+def _reads_part(value, local, projection, formatted=False):
+    """Whether ``value`` (a statement's right-hand side, or a whole terminator) surely
+    reads part of ``projection`` of ``local``: a `copy` or `move` of a place that
+    overlaps it, or with ``formatted``, the shared borrow `&place` the value is."""
+    for found in re.finditer(rf"(?<![\w*])_{local}\b", value):
+        place = _place_steps(value, found.start())
+        if place is None:
+            continue
+        steps, begin, end = place
+        before = value[:begin]
+        read = before.endswith(("copy ", "move ")) or (
+            formatted and before == "&" and end == len(value)
+        )
+        if read and _overlaps(steps, projection):
+            return True
+    return False
+
+
+def _root_access(text, local, projection=(), formats=frozenset()):
+    """What the MIR statement ``text`` surely does to the part ``projection`` of
+    ``local`` (#192 review: ``Body.copy_undoes``): "read" (a `copy` or `move` of a place
+    that overlaps it, or a borrow only formatting a primitive reads, ``formats``), "end"
+    (an assignment to the whole local or to a place covering the part, or the end of
+    its storage), or None (anything else: a borrow, a write to another part)."""
+    text = _STRING.sub('""', text)
+    if text.startswith(f"StorageDead(_{local})"):
+        return "end"
+    if _NOT_A_USE.match(text) or _DROP.match(text):
+        return None
+    if whole := _WHOLE_ASSIGNMENT.match(text):
+        target = int(whole[1])
+        if _reads_part(whole[2], local, projection, target in formats):
+            return "read"
+        return "end" if target == local else None
+    if written := re.match(rf"\(*_{local}\b", text):
+        place = _place_steps(text, written.end() - len(f"_{local}"))
+        if place is not None and text.startswith(" = ", place[2]):
+            if _reads_part(text[place[2] + 3 :], local, projection):
+                return "read"
+            steps = place[0]
+            covered = projection is not None and (
+                len(steps) <= len(projection) and _overlaps(steps, projection)
+            )
+            return "end" if covered else None
+    return "read" if _reads_part(text, local, projection) else None
 
 
 @dataclass(frozen=True)
@@ -3786,7 +3969,15 @@ class OwnedLocals:
         return local is not None and self._initialized(site, local, line)
 
     def copied_in_progress(
-        self, hashed, variable_name, line, path, breakpoint=False, column=None, block=None
+        self,
+        hashed,
+        variable_name,
+        line,
+        path,
+        breakpoint=False,
+        column=None,
+        block=None,
+        projection=(),
     ):
         """For the frame's local ``variable_name``: False if, from every place the stop
         can be on ``line`` of ``path``, no temporary that may hold a value read from it
@@ -3798,16 +3989,30 @@ class OwnedLocals:
         address) stops before the line's first code in its lexical block; any other
         stop can be at any place of the line. Each temporary as ``Body.copies_at``
         finds it: one set before the local took its current value holds an earlier one."""
-        found = self.copy_hazards(hashed, variable_name, line, path, breakpoint, column, block)
+        found = self.copy_hazards(
+            hashed, variable_name, line, path, breakpoint, column, block, projection
+        )
         return None if found is None else any(hazards for _, hazards in found)
 
     def copy_hazards(
-        self, hashed, variable_name, line, path, breakpoint=False, column=None, block=None
+        self,
+        hashed,
+        variable_name,
+        line,
+        path,
+        breakpoint=False,
+        column=None,
+        block=None,
+        projection=(),
+        named=True,
     ):
         """``copied_in_progress``'s finding: [(a place the stop can be, the temporaries
         that may hold a value read from the local's current value and are used again
         from there)], or None if not understood (#183: the refusal names where those
-        temporaries were made)."""
+        temporaries were made). ``projection``: the part of the local a change makes
+        (``_root_access``; () for all of it, None where not known), which a binding's
+        copy is judged by (#192 review); without ``named``, those copies are left out
+        (what holds for every part of an aggregate, whose parts are judged each)."""
         site = self._site(hashed, line, path)
         if site is None:
             return None
@@ -3828,19 +4033,21 @@ class OwnedLocals:
             return None
         if breakpoint and not function.inline_only:
             positions = _first_places(body, function, positions)
-        formatting, named = self._formatting(), body.named_locals()
+        formatting, bindings = self._formatting(), body.named_locals()
 
         def hazards(position):
             # A temporary that read the local, used again; a binding of the program's own
             # holding a direct copy (or a temporary taken from one) the program goes on
             # with, never reading the local (#192: `n` of `x = match x { n => … n }`).
             live = body.live_ahead(position)
-            direct = body.direct_copies_at(local, position, formatting)
+            direct = body.direct_copies_at(local, position, formatting, projection)
             if direct is None:
                 return None
-            temporaries = body.copies_at(local, position, formatting) - named
+            temporaries = body.copies_at(local, position, formatting) - bindings
             return frozenset(n for n in temporaries if live >> n & 1) | frozenset(
-                n for n in direct - temporaries if body.copy_undoes(n, local, position)
+                n
+                for n in (direct - temporaries if named else ())
+                if body.copy_undoes(n, local, position, projection)
             )
 
         found = [(position, hazards(position)) for position in positions]
@@ -3879,12 +4086,13 @@ class OwnedLocals:
             }
         )
 
-    def copied_everywhere(self, hashed, variable_name, line, path):
+    def copied_everywhere(self, hashed, variable_name, line, path, projection=()):
         """The temporaries (a frozenset) that hold a value read from the frame's local
         ``variable_name`` at every place of ``line`` and are used again from each, so no
         stop on the line can change it for the statement under way (#183: refused before
-        the program runs); None where some place has none, or that is not understood."""
-        found = self.copy_hazards(hashed, variable_name, line, path)
+        the program runs); None where some place has none, or that is not understood.
+        ``projection`` as for ``copy_hazards``."""
+        found = self.copy_hazards(hashed, variable_name, line, path, projection=projection)
         body = self.body(hashed)
         if not found or body is None:
             return None
