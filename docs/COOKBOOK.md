@@ -769,10 +769,10 @@ hit  stop  phase     line  function  selector  type  value
 1    1/2   observed  5     main      total     int   0  [settable]
 2    2/2   observed  5     main      total     int   0
 3          observed  5     main      total     int   0
-status: failed  hits: 3 before it failed  seconds: 0.929  max pause: 49.9 ms
+status: failed  hits: 3 before it failed  seconds: 0.81  max pause: 36.5 ms
 warning: Line 5 stops up to 2 times per pass in main (2 breakpoint locations): --hits, --set-hit and --set-at's @HIT count stops, not passes (as do session hit numbers); each hit's stop (1 to 2, in address order) says which location.
-error [MUTATION_REJECTED]: 'total' cannot be changed here: the stop is not at the first instruction of the statement on line 5: it is part-way through it (back from a call, as after `step --out`; on a loop's later pass; or where the compiler put code of a later line first), so that statement may already hold a copy of the old value and would not see the change. Change it at a statement's first instruction, this one's or an earlier one's: a breakpoint on the statement's first line (`session continue --to LINE`, a probe's `--at`), or a `session step` that lands there; settable here: none
-hint: Change it at the statement's first instruction: a breakpoint on the statement's first line (`--at`, `session continue --to LINE`), or a `session step` that lands there.
+error [MUTATION_REJECTED]: 'total' cannot be changed here. Change it at a statement's first instruction: stop on the statement's first line (a probe's `--at`, `session continue --to LINE`), or `session step` to it. Here, the stop is not at the first instruction of the statement on line 5: it is part-way through it (after a call returns, on a loop's later pass, or where the compiler moved code), so the statement may hold a copy of the old value and would not see the change; settable here: none
+hint: Stop on the statement's first line (`--at`, `session continue --to LINE`), or `session step` to it.
 ...
 ```
 

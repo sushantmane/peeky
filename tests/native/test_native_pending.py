@@ -436,8 +436,8 @@ def test_a_callers_local_declared_in_another_file_than_its_line_is_withheld(buck
     for selector in ("ps[1]", "ps[1].x"):
         assert "value" not in rows[selector], rows[selector]
         assert (
-            f"declared on line {line} of {declared}, while this caller frame is at {frame}"
-            in rows[selector]["error"]
+            f"declared on line {line} of {declared}, and this caller frame is in another file "
+            f"({frame})" in rows[selector]["error"]
         ), rows[selector]
     assert rows["seed"]["value"] == "5"
 

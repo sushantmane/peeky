@@ -138,7 +138,7 @@ def test_a_pointer_parameters_one_caller_is_named(c_program, capsys):
         "settable: a probe's `--set-at 36@N r.tail=<value>`"
     ) in out, out
     assert code == 2, out
-    assert "hint: Change the value where it is owned, before the call the message names" in out
+    assert "hint: Change the value in the caller the message names, before that call" in out
     # The claim holds: line 36 changes `r.tail` before push's 4th call reads it.
     code, out = run(
         capsys, "probe", source, "--at", "36", "--capture", "r.tail", "--hits", "4",
