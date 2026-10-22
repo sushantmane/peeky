@@ -162,4 +162,6 @@ details, in the [Java cookbook](java-cookbook.md) or the [COOKBOOK](../COOKBOOK.
   at once. The same happens if an attached JVM stops and java-debug never reports it. Start again
   ([ERRORS](../ERRORS.md)).
 - If java-debug loses the exit event, Peeky infers the exit when no threads are left. A warning
-  says the exit code is unknown. You need not do anything.
+  says the exit code is unknown. You need not do anything. The output is then not proven whole:
+  `output_complete: false`, with `program_ended: true`
+  ([2.6](../COOKBOOK.md#26-stop-right-after-the-last-hit)).

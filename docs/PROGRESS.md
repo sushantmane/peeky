@@ -564,6 +564,10 @@ An hourly thread heartbeat (`continue-peeky-mvp`) checks for available usage and
   - The COOKBOOK keeps the cross-language recipes and what C, C++ and Rust share (2.2's stops, 2.9's watch), a stub under each moved section's heading, and a **Per language:** line where bullets left: 195 KB to 104 KB. The language summaries (`docs/lang/<lang>.md`) stay short and link their cookbook; AGENT_GUIDE's first five minutes start with them.
   - Printed hints: Rust's register refusals cite `rust-cookbook 6.6`, the Java config refusal `java-cookbook 7.3`.
   - Doc tests: every relative link and anchor under `docs/` resolves; each language cookbook's numbered sections exist in the COOKBOOK; every part between two headings, and each summary page, fits a 20 KB read.
+- **#212 pilot: the Python docs in plain English** (branch `docs/plain-python`). `docs/lang/python.md` and `docs/lang/python-cookbook.md` rewritten to #212's style rules, every fact kept (the PR lists each one and where it went).
+  - Sentences: mean 24.8 words to 10.7, none over 25 (32 before, the longest 118). Lines wrapped at 100 characters.
+  - Each COOKBOOK-numbered section has `###` headings that say what they answer ("Read a module global", "Read a value inside a loop"), the rule first, then a real command and its output, then the exceptions; long lists became tables.
+  - New real examples, recorded on macOS with Python 3.13: `describe` listing a module global, a probe's `[module global]` row, `counts.a` on a dict, `session get` of a module global and of a shadowed local, `inspect --globals`, and the warning a candidate gives when nothing above its root was copied.
 - **#67 (`0a1fad7`): CUDA phase 0** for #61. [ADR 0007](adr/0007-cuda-gdb-dap.md) (proposed) drives `cuda-gdb -i=dap`. `scripts/cuda/qualify.py` is the qualification to run on a GPU host.
   - Found by experiment: upstream GDB 14.2, 15.1 and 16.3 start the program at different DAP requests. One order works on all three (breakpoints, `launch`, then `configurationDone`).
   - The new `gdb-dap` lane keeps that order tested against GDB 15.1; 14.2 and 16.3 were run by hand.

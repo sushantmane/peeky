@@ -1,41 +1,137 @@
 # Peeky Cookbook: Python
 
-What is particular to Python in Peeky's recipes. Read the [COOKBOOK](../COOKBOOK.md) for the recipes every language shares: each section here has the number and title of the COOKBOOK section it adds to. The one-page summary of Python's rules is [python.md](python.md).
+This cookbook covers what is different for Python. Read the [COOKBOOK](../COOKBOOK.md) first: it
+has the recipes every language shares. Each section here has the number and title of the COOKBOOK
+section it adds to. For a one-page summary of the Python rules, see [python.md](python.md).
+
+Peeky debugs Python with debugpy, Python's debugger.
 
 ## Contents
 
 - [1.1 What Can I Ask?](#11-what-can-i-ask)
+  - [See which module globals a function reads](#see-which-module-globals-a-function-reads)
 - [2.1 Fields and Indexes](#21-fields-and-indexes)
+  - [Read a dict entry](#read-a-dict-entry)
 - [2.8 Change a Value, Then Restore It](#28-change-a-value-then-restore-it)
+  - [Change a value in one of two lambdas on a line](#change-a-value-in-one-of-two-lambdas-on-a-line)
 - [4.6 Same Object, or a Copy? (Java, Python)](#46-same-object-or-a-copy-java-python)
+  - [Tell the same object from a copy](#tell-the-same-object-from-a-copy)
 - [5.1 Stop, Look, Change, Finish](#51-stop-look-change-finish)
+  - [Read a module global](#read-a-module-global)
+  - [List the globals, and what that runs](#list-the-globals-and-what-that-runs)
+  - [Read members that debugpy groups](#read-members-that-debugpy-groups)
+  - [Read a value inside a loop](#read-a-value-inside-a-loop)
 - [6.6 See What a Fix Does Before Making It](#66-see-what-a-fix-does-before-making-it)
+  - [Where a Python candidate runs](#where-a-python-candidate-runs)
+  - [What happens to repositories](#what-happens-to-repositories)
+  - [What else is copied, linked or left out](#what-else-is-copied-linked-or-left-out)
+  - [When the result warns that nothing above the root was copied](#when-the-result-warns-that-nothing-above-the-root-was-copied)
 
 ## 1.1 What Can I Ask?
 
-Adds to [COOKBOOK 1.1](../COOKBOOK.md#11-what-can-i-ask).
+Read [COOKBOOK 1.1](../COOKBOOK.md#11-what-can-i-ask) first.
 
-A function's names also list the module globals its compiled code reads (its generator expressions' and comprehensions' too) that the module binds by name (`MAX_GAP = 30`, not `globals()["x"] = 1`), not in code the compiler drops (`if False:`); nothing runs (`MAX_GAP (module global)`; `globals` in JSON). A probe there reads them, marked `[module global]`.
+### See which module globals a function reads
+
+`describe` lists the module globals that a function's compiled code reads, within the limits
+below, and marks them `(module global)`. Nothing in the program runs to find them. For this
+`sessions.py`:
+
+```python
+MAX_GAP = 30
+
+
+def sessionize(gaps):
+    count = 0
+    for gap in gaps:
+        if gap > MAX_GAP:
+            count += 1
+    return count
+
+
+print(sessionize([5, 40, 10, 31]))
+```
+
+```sh
+peeky describe sessions.py
+```
+
+```
+...
+names in <module>: MAX_GAP, sessionize
+names in sessionize (lines 4-9): count, gap, gaps, MAX_GAP (module global)
+...
+```
+
+With `--json`, the function's scope lists them under `globals`. A probe that captures one marks its
+row `[module global]`:
+
+```sh
+peeky probe sessions.py --at 7 --capture gap,MAX_GAP
+```
+
+```
+hit  phase     line  function    selector  type  value
+1    observed  7     sessionize  gap       int   5
+1    observed  7     sessionize  MAX_GAP   int   30  [module global]
+...
+```
+
+What counts as a module global the function reads:
+
+- A global read by the function's generator expressions and comprehensions counts.
+- Only a global the module binds by name counts. `MAX_GAP = 30` counts; `globals()["x"] = 1`
+  doesn't.
+- A read in code the compiler drops, such as an `if False:` block, doesn't count.
 
 ## 2.1 Fields and Indexes
 
-Adds to [COOKBOOK 2.1](../COOKBOOK.md#21-fields-and-indexes).
+Read [COOKBOOK 2.1](../COOKBOOK.md#21-fields-and-indexes) first.
 
-- **Python:** Python dict entries are read by key; `order.id` fails with a message that names `order['id']` and lists the keys.
+### Read a dict entry
+
+Select a dict entry by its key: `counts['a']`, not `counts.a`. If you write a dot, the row says
+which selector to use and lists the keys:
+
+```sh
+peeky probe examples/corpus/word_count/program.py --at 5 --capture counts.a
+```
+
+```
+hit  phase     line  function     selector  type  value
+1    observed  5     count_words  counts.a        <'a' not found: 'counts' (dict) is a mapping and 'a' is one of its keys; select it with ['a'], not .a (keys: 'a', 'b')>
+...
+```
 
 ## 2.8 Change a Value, Then Restore It
 
-Adds to [COOKBOOK 2.8](../COOKBOOK.md#28-change-a-value-then-restore-it).
+Read [COOKBOOK 2.8](../COOKBOOK.md#28-change-a-value-then-restore-it) first.
 
-- **Python lambdas:** Python's debugger names two lambdas on one line alike (`<lambda>`, with no column), so the warning says their stops are counted together, and a change in one says `one of 2 on the line the debugger names alike`.
+### Change a value in one of two lambdas on a line
+
+debugpy gives two lambdas on one line the same name, `<lambda>`, and no column. So Peeky can't tell
+their stops apart:
+
+- `--set-at LINE@HIT` counts the stops of both lambdas together, and a warning says so.
+- A change in one of them says `one of 2 on the line the debugger names alike`.
+
+Lambdas on separate lines are counted separately.
 
 ## 4.6 Same Object, or a Copy? (Java, Python)
 
-Adds to [COOKBOOK 4.6](../COOKBOOK.md#46-same-object-or-a-copy-java-python).
+Read [COOKBOOK 4.6](../COOKBOOK.md#46-same-object-or-a-copy-java-python) first.
 
-**What it answers:** Is this variable the list's own element, or a copy whose changes go nowhere?
+### Tell the same object from a copy
 
-**Python** values carry their object in the `identity` column instead of Java's `object_ref` ([Java 4.6](java-cookbook.md#46-same-object-or-a-copy-java-python)) (`[id 6]` in text): an integer, debugpy's number for the object, not an address. The number alone is the object's identity; its `type` is a separate column (an object whose `__class__` is reassigned keeps its number). Is `tags`, a mutable default, the same list on every call?
+Use identities to tell whether a variable is the list's own element, or a copy whose changes go
+nowhere.
+
+Values with an identity carry debugpy's integer object number. Numbers, strings and `None` have
+none. The number is not a memory address. Text output shows it as `[id 6]`. In SQL, it is the
+`identity` column. Java uses `object_ref` instead; see
+[Java 4.6](java-cookbook.md#46-same-object-or-a-copy-java-python).
+
+For example, is `tags`, a mutable default argument, the same list on every call?
 
 ```sh
 peeky probe examples/corpus/mutable_default/program.py --at 3 \
@@ -51,47 +147,313 @@ hit  selector                 value       identity  scope
 2    add_tag.__defaults__[0]  ['a', 'b']  6         globals
 ```
 
-At one hit, equal identities are the same object: `tags` is the function's default list, not a copy. Across hits, a different identity always means a different object, but an equal one means the same object or a new one that took a freed object's place; here the default lives as long as the function, and its contents grow. Numbers, strings and `None` have no identity (NULL). Never compare identities across runs. `scope` is `globals` for a selector whose first name was read from the module's globals ([5.1](#51-stop-look-change-finish)), and `unknown` for a row an early build of schema 6 stored (it could read globals without recording it); NULL is the frame's own variables.
+Yes: `tags` is the function's default list, not a copy. Read identities this way:
+
+- **At one hit,** equal identities mean the same object.
+- **Across hits,** a different identity always means a different object. An equal identity means
+  the same object, or a new object that took a freed object's place. Here the default lives as long
+  as the function, and its contents grow.
+- **Across runs,** never compare identities.
+- **Numbers, strings and `None`** have no identity. The column is NULL.
+- **The number alone** identifies the object. Its type is a separate column. An object keeps its
+  number when its `__class__` is reassigned.
+
+The `scope` column says where the selector's first name was read:
+
+| `scope` | Where the name was read |
+| --- | --- |
+| NULL | the frame's own variables |
+| `globals` | the module's globals ([5.1](#51-stop-look-change-finish)) |
+| `unknown` | not recorded: an early build of schema 6 stored the row, and it could read globals without recording it |
 
 ## 5.1 Stop, Look, Change, Finish
 
-Adds to [COOKBOOK 5.1](../COOKBOOK.md#51-stop-look-change-finish).
+Read [COOKBOOK 5.1](../COOKBOOK.md#51-stop-look-change-finish) first.
 
-- **Globals:** `session inspect --globals` also lists a Python module's `[Globals]`, read-only (at module level they are the locals, listed once). Listing the globals runs every global's `__repr__` in the program (listing locals runs theirs too), so they are listed only on request: with `--globals`, or when `session get` or a probe reads a name missing from the locals that the function reads from its globals. Then all of them are listed and every repr runs, not only the one asked for; a misspelled name counts too, since a name the function does not bind is a global (`--capture total,i`, where `i` is a module-level loop variable, runs every global's repr at each hit).
-- **Module level:** At module level the locals are the module's globals, so there is no separate `[Globals]`.
+### Read a module global
 
-`session get` reads a Python name missing from the locals from the module's globals (`[module global]`, `scope: globals`) only when Peeky proves, from the function's own scoping in its source (`symtable`), that the function reads that name from its globals; only then are the globals read. A source it cannot parse, or one changed since the program started (by mtime or ctime, so `cp -p` counts), proves nothing, and the error says the name may be such a global.
+Take a name that is missing from the locals. `session get NAME` and a probe's `--capture NAME`
+read it from the module's globals only when Peeky proves that the function reads it from there.
+Peeky proves it from the function's scoping in its source, with Python's `symtable` module. Only
+then does it read the globals. The row is marked `[module global]`, and its `scope` is `globals`.
 
-In `def shadow(): print(LIMIT); LIMIT = 1`, stopped at the `print`, `get LIMIT` says `LIMIT` is a local with no value there yet (Python raises `UnboundLocalError`), not the module's `LIMIT`; a local of an enclosing function, a closure variable, a comprehension's variable or a type parameter is named as such. debugpy files functions, classes and `__dunder__` names under groups; their members are selected by name (`add_tag.__defaults__`), and so is a local holding a function (`session set callback=None` changes it). `[id 6]` is the object's identity (see [4.6](#46-same-object-or-a-copy-java-python)).
+For this `limits.py`:
 
-**A pass's own value.** Stopped in a loop, a Python local that the pass assigns below the stop still holds an earlier pass's value, or one from before the loop: back in `group` with `step --out` on `key = slug(title)`, `key` is the previous title's key. Peeky shows the value with a `note`, in `get`, `inspect` and probe rows, and refuses to `set` it (the function's code overwrites it before reading it):
+```python
+LIMIT = 3
+
+
+def check(n):
+    return n > LIMIT
+
+
+def shadow():
+    print(LIMIT)
+    LIMIT = 1
+
+
+print(check(5))
+shadow()
+```
+
+Stopped in `check` at line 5, `LIMIT` is the module global:
+
+```
+$ peeky session start limits.py --at 5
+session default (python): state: stopped at limits.py:5 in check, hit 1 (paused 0.0 s)
+$ peeky session get n LIMIT
+n: int = 5
+LIMIT: int = 3  [module global]
+$ peeky session close
+closed default
+cleanup: terminated pid 8211
+```
+
+Stopped in `shadow` at line 9, `LIMIT` is a local with no value yet. Python would raise
+`UnboundLocalError` here. So Peeky doesn't read the module's `LIMIT`, and `get` exits with status 1:
+
+```
+$ peeky session start limits.py --at 9
+session default (python): state: stopped at limits.py:9 in shadow, hit 1 (paused 0.0 s)
+$ peeky session get LIMIT
+LIMIT: <not found: 'LIMIT' is a local of shadow with no value at this line (not yet assigned, or deleted): reading it here raises UnboundLocalError. A module global of that name is not what shadow reads here, so it is not read; visible: (none)>
+note: this stop is in shadow at limits.py:9
+peeky: no value for LIMIT (each row above says why), so the exit status is 1
+$ peeky session close
+closed default
+cleanup: terminated pid 8263
+```
+
+Likewise, Peeky names a local of an enclosing function, a closure variable, a comprehension's
+variable or a type parameter as what it is.
+
+Sometimes Peeky can't prove anything:
+
+- when it can't parse the source;
+- when the source changed since the program started. It checks mtime and ctime, so a `cp -p`
+  counts as a change.
+
+The error then says the name may be a module global.
+
+### List the globals, and what that runs
+
+To list the module's globals, use `session inspect --globals`. They are read-only.
+
+```
+$ peeky session start limits.py --at 5
+session default (python): state: stopped at limits.py:5 in check, hit 1 (paused 0.0 s)
+$ peeky session inspect --globals
+stopped at limits.py:5 in check, hit 1 (paused 0.07 s)
+[Locals]
+  n: int = 5
+[Globals] (module globals, read-only)
+  (special variables: debugpy's group; select its members by name)
+  (function variables: debugpy's group; select its members by name)
+  LIMIT: int = 3
+$ peeky session close
+closed default
+cleanup: terminated pid 8237
+```
+
+At module level, the locals are the module's globals. So there is no separate `[Globals]` list.
+
+Listing the globals runs every global's `__repr__` in the program. Listing the locals runs theirs
+too. So Peeky lists the globals only when it must:
+
+- with `--globals`;
+- when `session get` or a probe reads a name that is missing from the locals and that the
+  function reads from its globals.
+
+Then all of them are listed and every repr runs, not only the one you asked for. A misspelled name
+counts too, because a name the function doesn't bind is a global. For example, in
+`--capture total,i`, if `i` is a module-level loop variable, every global's repr runs at each hit.
+
+### Read members that debugpy groups
+
+debugpy puts functions, classes and `__dunder__` names into groups, such as
+`(function variables: debugpy's group; ...)`. Select their members by name, for example
+`add_tag.__defaults__`. A local that holds a function works the same way:
+`session set callback=None` changes it.
+
+`[id 6]` after a value is the object's identity. See
+[4.6](#46-same-object-or-a-copy-java-python).
+
+### Read a value inside a loop
+
+Stopped in a loop, a local that this pass assigns *below* the stop still holds an older value. The
+value is from an earlier pass, or from before the loop. For example, back in `group` after
+`step --out` on `key = slug(title)`, `key` is the previous title's key.
+
+Peeky shows such a value with a `note`, in `get`, `inspect` and probe rows. Don't trust a value
+marked with a `note`, or anything read through that value:
 
 ```
 key: str = 'hello-world'
   note: this pass's code has not assigned it before this line, and every path through the rest of the pass assigns it (line 21) before reading it: the value is likely from an earlier pass (or from before the loop at line 20)
 ```
 
-- **How:** Peeky reads the function's bytecode, compiled from its source as the program's interpreter compiles it (plain and as `-O` does; both must agree), and only where Peeky runs on an interpreter that compiles alike (the same implementation, exact version and build, and bytecode magic number). The debugger gives a line, not an instruction, so the stop may be at any instruction of the line (a breakpoint's stop only where the line begins), and all must be in the same innermost loop (a `for` or `while` around the line). No path from the loop's head to the line may store the local, none from the line may read or `del` it before storing it (an exception's path counts), and every path through the rest of the pass that runs no exception must store it before the pass ends (back at the loop's head, out of the loop, a `return` or a `raise`): a store only in an `except` block, behind a `continue` or `break`, or on one branch proves nothing. An exception that a handler in the loop may swallow (a `with` whose `__exit__` may return true, an `except` that falls through, an `async for` that ends) is a path too: one that goes on in the pass without the store takes the note away, and the note names the store on each path (`lines 11, 13` for `x = 1` in the `try` and `x = 2` in its `except`).
-- **No note:** a loop's header line (its code also runs before and after the loop); a line inside a `try` whose handler can skip the assignment for a later read (`key = str(x)` with `except ValueError: pass`, then `return key` after the loop); a local a closure shares; module-level code; a source changed since the program started; and any function of a module (the whole file) that may run other code than its source says (`exec`, `eval`, `compile`, `types.FunctionType`, `__code__`, `marshal`) or reach a frame's locals (`locals()`, `vars()` or `dir()` other than with one plain argument, `sys._getframe`, `f_locals`, `f_back`, a tracer, the `inspect` or `builtins` module, `__builtins__`, `__import__`, `globals()`, a string naming a builtin such as `getattr(b, "exec")`), whatever a module is imported as. The module global of that name (`--globals`) is never noted.
-- **Limits:** the note states what the function's code does, not what ran: code in other modules that reaches into this frame (a helper writing `sys._getframe(1).f_locals`, which Python 3.13 writes through) or replaces this module's functions is not seen, hence "likely". Nor is a stop part-way through the assignment itself (in a `__del__` of the value it replaces).
+Peeky also refuses to `set` it, because the function's code overwrites it before reading it. To
+read or change this pass's value, stop after the line that assigns it.
+
+#### How Peeky decides
+
+Peeky reads the function's bytecode. It compiles the source as the program's interpreter does,
+both plain and with `-O`, and the two must agree. It does this only when Peeky itself runs on an
+interpreter that compiles alike. That means the same implementation, exact version and build, and
+bytecode magic number.
+
+The debugger reports a line, not an instruction. So the stop may be at any instruction of the line.
+A breakpoint stops only where the line begins. All of the line's instructions must be in the same
+innermost loop, a `for` or `while` around the line.
+
+The note needs all three of these:
+
+- No path from the loop's head to the line stores the local.
+- No path from the line reads it or `del`s it before storing it. An exception's path counts.
+- Every path through the rest of the pass that raises no exception stores it before the pass ends.
+  A pass ends back at the loop's head, out of the loop, or at a `return` or `raise`.
+
+A store only in an `except` block, behind a `continue` or `break`, or on one branch proves nothing.
+
+An exception that a handler in the loop may swallow is a path too. Examples are a `with` whose
+`__exit__` may return true, an `except` that falls through, and an `async for` that ends. If such a
+path goes on in the pass without the store, there is no note. The note names the store on each
+path: `lines 11, 13` for `x = 1` in a `try` and `x = 2` in its `except`.
+
+#### When there is no note
+
+There is no note:
+
+- on a loop's header line, because its code also runs before and after the loop;
+- on a line inside a `try` whose handler can skip the assignment before a later read: `key = str(x)`
+  with `except ValueError: pass`, then `return key` after the loop;
+- for a local that a closure shares;
+- in module-level code;
+- when the source changed since the program started;
+- for the module global of that name, listed with `--globals`;
+- in any function of a module that does one of the things below. Peeky checks the whole file, and
+  a module counts whatever name it is imported as.
+
+| The module may... | For example |
+| --- | --- |
+| run code other than its source | `exec`, `eval`, `compile`, `types.FunctionType`, `__code__`, `marshal` |
+| reach a frame's locals | `locals()`; `vars()` or `dir()` other than with one plain argument; `sys._getframe`, `f_locals`, `f_back`; a tracer; the `inspect` or `builtins` module; `__builtins__`, `__import__`, `globals()`; a string naming a builtin, such as `getattr(b, "exec")` |
+
+#### What the note can't see
+
+The note says what the function's code does, not what actually ran. That is why it says "likely".
+It can't see:
+
+- code in another module that reaches into this frame, such as a helper that writes
+  `sys._getframe(1).f_locals` (Python 3.13 writes through it);
+- code that replaces this module's functions;
+- a stop part-way through the assignment itself, such as in a `__del__` of the value it replaces.
 
 ## 6.6 See What a Fix Does Before Making It
 
-Adds to [COOKBOOK 6.6](../COOKBOOK.md#66-see-what-a-fix-does-before-making-it).
+Read [COOKBOOK 6.6](../COOKBOOK.md#66-see-what-a-fix-does-before-making-it) first.
 
-- **Python:** like a compiled candidate, it runs from a private copy of the target root with the edit applied, and that copy is the working directory. Files keep their bytes, modes and times, and directories their modes.
-- **What it reaches:** Whatever the script reaches through its own path, an import (also through `PYTHONPATH`, whose relative entries keep meaning your root, or an editable install, whose paths into the root are moved to the copy; one mapping a package to a directory of another name gets a note, and each name the root offers is then looked up as the program will import it: one still served from your tree, by an import hook ahead of every path as meson-python's is, gets a note, and such a hook may rebuild in its build directory), or another process (multiprocessing, a subprocess of `__file__`) is the copy, so all of it runs the edit. The program's writes stay in the copy, except writes inside an environment directory or through a link that leaves the root, which reach the originals:
-  - A repository (`.git`, `.hg`, `.svn`) is copied whole, following its links, so `git add`, a commit, a rewritten index or a touched object stays in the copy. A `core.worktree` inside the root moves to the copy, and so does each linked worktree's entry: one outside the root is listed at a path that does not exist, with a note. So is any git directory under another name (a bare repository, `.bare` beside its worktrees); a bare repository as the root itself gets its worktree entries moved, or the candidate is refused. The copy's index is refreshed for the copied files. If the copy's git configuration differs from yours (a conditional include on the repository's path, `includeIf "gitdir:..."`), a note says so.
-  - Some repositories are left out, with a note:
-    - one over 20,000 files or 256 MB;
-    - one that borrows objects from another (`alternates`, `--shared` clones);
-    - one whose `core.worktree` is outside the root;
-    - a `.git` file naming metadata outside the root (a linked worktree's).
-  - Pure caches (`__pycache__`, `.mypy_cache`, `.ruff_cache`) are left out. Environments (`.venv`, `venv`, `.tox`, `.nox`, `node_modules`, `site-packages`, `.eggs`) are directories of links to the originals' entries: the interpreter uses them from either tree.
-  - A directory nobody can open (another user's `pgdata`) is an empty one with its mode. One that can be entered but not listed is refused.
+### Where a Python candidate runs
 
-  Nothing above the target root is copied, and in general no reading of the source can tell whether a program reaches there. So the result notes it unless the root is a project's (it holds `.git`, `pyproject.toml`, `setup.py` or `setup.cfg`) and no repository above it holds it (a monorepo's package).
+A candidate is a probe with an edit (`--old`/`--new`). Like a compiled candidate, a Python
+candidate runs from a private copy of the target root, with the edit applied. The copy is the
+working directory. Files keep their bytes, modes and times. Directories keep their modes.
 
-  Nor does it when the edited script is self-contained: it imports only standard modules that open no file, start no process and reach no network (`abc`, `array`, `bisect`, `cmath`, `collections`, `copy`, `dataclasses`, `decimal`, `enum`, `fractions`, `functools`, `heapq`, `itertools`, `json`, `math`, `numbers`, `random`, `re`, `statistics`, `string`, `textwrap`, `typing`, `unicodedata`; of `sys` only `argv`, the standard streams, `exit`, `maxsize` and the recursion limit), and names nothing that could reach one (`open`, `exec`, `eval`, `getattr`, `vars`, a frame's globals, `__file__` or another dunder but `__name__` and `__init__`, a module's private names or submodules).
+Whatever the script reaches through its own path is the copy, so all of it runs the edit:
 
-  Text shows the note once per root and state directory, never with `--quiet`; `--json` always has it. If the program reads or imports anything from above, give the project directory as the target (`peeky probe proj --at scripts/run.py:14`). `--run` entry scripts are refused.
+- an import, also through `PYTHONPATH`, whose relative entries still mean your root;
+- an editable install, whose paths into the root are moved to the copy;
+- another process, such as `multiprocessing` or a subprocess of `__file__`.
+
+Two import cases get a note:
+
+- An editable install maps a package to a directory with another name. Peeky then looks up each
+  name the root offers, as the program will import it.
+- A name is still served from your tree, by an import hook ahead of every path, as meson-python's
+  is. Such a hook may also rebuild in its build directory.
+
+The program's writes stay in the copy, with two exceptions. Writes inside an environment directory,
+and writes through a link that leaves the root, reach your originals.
+
+### What happens to repositories
+
+A repository (`.git`, `.hg`, `.svn`) is copied whole, following its links. So `git add`, a commit,
+a rewritten index or a touched object stays in the copy.
+
+- A `core.worktree` inside the root moves to the copy.
+- Each linked worktree's entry moves too. An entry outside the root is listed at a path that
+  doesn't exist, with a note.
+- A git directory under another name is handled the same way: a bare repository, or `.bare` beside
+  its worktrees.
+- If the root itself is a bare repository, its worktree entries move, or the candidate is refused.
+- The copy's index is refreshed for the copied files.
+- If the copy's git configuration differs from yours, a note says so. A conditional include on the
+  repository's path (`includeIf "gitdir:..."`) can cause this.
+
+Some repositories are left out, with a note:
+
+- one over 20,000 files or 256 MB;
+- one that borrows objects from another (`alternates`, `--shared` clones);
+- one whose `core.worktree` is outside the root;
+- a `.git` file that names metadata outside the root, as a linked worktree's does.
+
+### What else is copied, linked or left out
+
+| In the target root | In the copy |
+| --- | --- |
+| Pure caches: `__pycache__`, `.mypy_cache`, `.ruff_cache` | left out |
+| Environments: `.venv`, `venv`, `.tox`, `.nox`, `node_modules`, `site-packages`, `.eggs` | directories of links to the original's entries, so the interpreter uses them from either tree |
+| A directory nobody can open, such as another user's `pgdata` | an empty directory with its mode |
+| A directory that can be entered but not listed | none: the candidate is refused |
+
+### When the result warns that nothing above the root was copied
+
+Nothing above the target root is copied. In general, reading the source can't tell whether a
+program reaches there. So the result warns about it. For example, this `report.py` reads a file
+next to it:
+
+```python
+def load(path):
+    with open(path) as f:
+        return [int(line) for line in f]
+
+
+values = load("data.txt")
+total = sum(values) * 2
+print(total)
+```
+
+```sh
+peeky probe report.py --at 8 --capture total --old 'sum(values) * 2' --new 'sum(values)'
+```
+
+```
+warning: This Python candidate ran from a copy of .../demo/ only (no .git, pyproject.toml, setup.py or setup.cfg there). Nothing above it was copied: if the program reads, imports or runs anything there (git finding the repository), values may differ for that reason, not the edit's; then give that directory as the target (`peeky probe <project> --at <path/to/file.py>:<line>`)
+```
+
+If the program reads or imports anything above the root, give the project directory as the target:
+
+```sh
+peeky probe proj --at scripts/run.py:14 ...
+```
+
+There is no warning in two cases:
+
+- The root is a project's: it holds `.git`, `pyproject.toml`, `setup.py` or `setup.cfg`, and no
+  repository above it holds it. A package inside a monorepo still gets the warning.
+- The edited script is self-contained. It imports only standard modules that open no file, start no
+  process and reach no network. It also names nothing that could reach one.
+
+Text output shows the warning once per root and state directory (`~/.peeky`, or
+`PEEKY_STATE_DIR`), and never with `--quiet`. `--json` always has it.
+
+A candidate with a `--run` entry script is refused. Probe the edited file directly instead, or
+check the edit with `verify`.
+
+What a self-contained script may use, and what it may not:
+
+| What | Names |
+| --- | --- |
+| Standard modules it may import | `abc`, `array`, `bisect`, `cmath`, `collections`, `copy`, `dataclasses`, `decimal`, `enum`, `fractions`, `functools`, `heapq`, `itertools`, `json`, `math`, `numbers`, `random`, `re`, `statistics`, `string`, `textwrap`, `typing`, `unicodedata` |
+| Parts of `sys` it may use | `argv`, the standard streams, `exit`, `maxsize`, the recursion limit |
+| Names it may not use | `open`, `exec`, `eval`, `getattr`, `vars`, a frame's globals, `__file__`, any dunder other than `__name__` and `__init__`, a module's private names or submodules |
