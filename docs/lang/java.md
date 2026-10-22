@@ -99,6 +99,10 @@ details, in the [Java cookbook](java-cookbook.md) or the [COOKBOOK](../COOKBOOK.
   it ([Java 7.3](java-cookbook.md#changes-refused-before-the-run)).
 - `describe` shows each local's declared type, and lists the kinds that `set` changes
   ([Java 1.1](java-cookbook.md#see-each-names-declared-type)).
+- A local declared in blocks, such as a loop's, also shows the lines whose breakpoint sees it:
+  `b (int, lines 50-53, 77-79)`. Neither its declaring line nor a `for` header is one. A name
+  declared with different types is listed once per type, each with its own lines
+  ([Java 1.1](java-cookbook.md#see-where-a-local-is-visible)).
 
 ### How to write the value
 

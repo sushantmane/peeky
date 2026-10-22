@@ -255,6 +255,18 @@ function. With `--json`, a scope's `spans` maps such a name to its blocks' `[fir
   above the loop, reads `i (lines 66, 70-71)`: the macro's line, then the body's. The loop header's
   line between them runs outside the block.
 - Past eight blocks, one span covers them all.
+- In Java, the lines come from the class file's LocalVariableTable. A line is listed where its
+  breakpoint sees the local: its first instruction, where java-debug stops, is in the local's
+  scope.
+- So neither the line that declares a Java local nor a `for` header that starts its loop is
+  listed. `ranking (int[], lines 51-53, 78-79)` is declared on lines 50 and 77
+  ([Java 1.1](lang/java-cookbook.md#see-where-a-local-is-visible)).
+- A Java block on one line gives no line: `x (int, no breakpoint line)`, and `[]` in `spans`.
+- A Java name declared once, for the rest of the method, gets no lines. One declared more than
+  once gets every declaration's lines.
+- Where Java declares one name with different types, it lists it once per type, each with its own
+  lines: `value (int, line 31), value (String, line 34)`. With `--json`, a scope's `typed_spans`
+  maps such a name to `[{"type": …, "spans": […]}, …]`, where `spans` may be empty.
 
 #### Fields and elements `set` may change (C, C++, Rust)
 
@@ -300,7 +312,7 @@ its code is. They are not where a stop can land.
 - [Python 1.1](lang/python-cookbook.md#11-what-can-i-ask): module globals in a function's names.
 - [C and C++ 1.1](lang/c-cpp-cookbook.md#11-what-can-i-ask): C and C++ types.
 - [Rust 1.1](lang/rust-cookbook.md#11-what-can-i-ask): block lines, type names, nothing settable.
-- [Java 1.1](lang/java-cookbook.md#11-what-can-i-ask): declared types, `mutable:`.
+- [Java 1.1](lang/java-cookbook.md#11-what-can-i-ask): declared types, block lines, `mutable:`.
 
 ### 1.2 First Probe
 
