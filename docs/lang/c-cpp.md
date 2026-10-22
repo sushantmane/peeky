@@ -25,8 +25,11 @@ A C++ compiler that isn't clang is refused before anything runs
 - To pin the compiler and debugger, name them in a `--config`
   ([C and C++ 7.1](c-cpp-cookbook.md#name-the-tools-in-a-config)).
 - Peeky launches the program. It doesn't attach to a running one, evaluate expressions, or deploy
-  a remote debug server ([WORKER](../WORKER.md#what-the-c-and-c-worker-does)). To debug on another
-  host, run a worker there ([REMOTE.md](../REMOTE.md)).
+  a remote debug server ([WORKER](../WORKER.md#what-the-c-and-c-worker-does)).
+- To debug on another host, run a worker there with `--native-config`. Then add `--worker URL`
+  ([REMOTE](../REMOTE.md#c-c-and-rust-on-the-worker-host)).
+- Through a worker, every file in the config's `sources` and `headers` is compared with yours
+  before the build. One that differs is refused by name ([REMOTE](../REMOTE.md#source-identity)).
 
 ## Read values
 

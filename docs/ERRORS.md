@@ -1,4 +1,4 @@
-# Error codes (protocol 2)
+# Error codes (protocol 3)
 
 Every Peeky failure carries the same error object: from the HTTP worker, from the SDK
 (`peeky.errors.PeekyError`), and from the CLI. With `--json`, the CLI prints `{"error": {...}}`.
@@ -108,8 +108,9 @@ file lists what it reads.
 - Malformed arguments, such as a `--frame` past the stack. The message says how many frames there
   are.
 - An evidence store that can't be used. Move it aside, or pass `--store`.
-- A client and a remote worker of different protocols: `Worker speaks protocol 1, this client 2`.
-  Install the same Peeky version on both hosts.
+- A client and a remote worker of different protocols: `Worker speaks protocol 2, this client 3`,
+  or, from the worker, `Client speaks protocol 2, this worker 3`. Install the same Peeky version
+  on both hosts.
 - A request that sends the program's hash, `expect_sha256`, without the other sources' hashes,
   `expect_inputs`, or with an empty `expect_inputs`. Use the same Peeky version on both hosts.
 - A Python directory that can't be hashed in full for a remote run: more than 4096 `.py` files or
@@ -157,7 +158,9 @@ In Java, Peeky never changes a field that a JDK class declares, that is, one in 
 such a field holds, or of an array inside it, under any name:
 `the array is held by java.lang.String.value, a JDK class's field`. Such an element is refused too
 where more than 64 objects refer to it. So is one where the search for them takes longer than 2 s,
-or longer than the pause budget.
+or longer than the pause budget. Rows run the same search before they mark an element
+`[settable]`. Where the debugger itself refuses a write, the hint says that no mark could promise
+it.
 
 The value must be a literal in Python, and a scalar in a compiled language.
 
@@ -387,8 +390,11 @@ that Peeky can't read is `TRANSPORT_LOST` instead, because its outcome is unknow
 ## Protocol version
 
 `POST /version` returns the protocol version, the supported operations and the error codes. Every
-HTTP response carries `X-Peeky-Protocol: 2`.
+HTTP response carries `X-Peeky-Protocol: 3`.
 
 - **Protocol 2** adds the source comparison for remote clients
   ([REMOTE.md](REMOTE.md#source-identity)). `version` says which sources a client hashes.
+- **Protocol 3** marks the paths in a remote result. A compared source is `source:NAME`, which the
+  client shows as its own copy ([REMOTE.md](REMOTE.md#paths-in-results)). A client sends
+  `protocol` with `expect_inputs`, and `version` returns the worker's `root`.
 - A client and a worker of different protocols refuse each other before anything runs.

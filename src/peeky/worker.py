@@ -15,7 +15,7 @@ import threading
 import time
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from peeky.adapters import PythonAdapter, ViewBudgetExhausted
 from peeky.dap import DAP, RequestFailed, ResponseTimeout
@@ -175,6 +175,9 @@ class DebugWorker:
         # A remote Python session's sources as accepted at launch (#249): rechecked around
         # every later operation, since the program may import any of them at any time.
         self.accepted_sources = None
+        # The sources a remote client compared at launch (#249): their names mark its
+        # results' locations (#252).
+        self.remote_names = None
         # A stack frame in a file under the root that was not compared (#249): it taints
         # the session until it is closed.
         self.foreign_frame = None
@@ -961,7 +964,7 @@ class DebugWorker:
             ),
             "function": str(frames[0].get("name") or "")[:300],
             "frame": 0,
-            "frames": frames,
+            "frames": _public_sources(runtime, frames),
             "scopes": [],
             "returned": returned,
             "outside_program": True,
@@ -1799,13 +1802,14 @@ class DebugWorker:
                     raise ValueError(f"expect_sha256 names an {role} that was not given")
                 if expected and hashlib.sha256(path.read_bytes()).hexdigest() != expected:
                     raise ValueError(
-                        f"Worker source provenance differs for the {role} {path.name}: refused "
+                        f"Worker source provenance differs for the {role} "
+                        f"{path.relative_to(self.root).as_posix()}: refused "
                         "before launching. Sync sources before debugging remotely"
                     )
             # And every other source the target reads (#249): what this worker's trusted
             # target names, or every .py file under the root for Python.
             inputs_checked = inputs_python = None
-            self.accepted_sources = self.foreign_frame = None
+            self.accepted_sources = self.foreign_frame = self.remote_names = None
             if (expected_inputs := args.get("expect_inputs")) is not None:
                 from peeky.sources import (
                     declared,
@@ -1832,6 +1836,7 @@ class DebugWorker:
                             )
                     inputs_python = python_manifest_digest(own)
                 inputs_checked = digest(expected_inputs)
+                self.remote_names = frozenset(expected_inputs)
             edit, candidate_sha256 = self.candidate_edit(program, args.get("edit"))
             self.adapter.validate_breakpoints(args.get("breakpoints", []))
             self.session = uuid.uuid4().hex
@@ -1981,7 +1986,7 @@ class DebugWorker:
                 return {
                     "session_id": self.session,
                     "state": self.state,
-                    "breakpoints": points.get("breakpoints", []),
+                    "breakpoints": _public_sources(runtime, points.get("breakpoints", [])),
                     "source_sha256": hashlib.sha256(program.read_bytes()).hexdigest(),
                     **({"candidate_sha256": candidate_sha256} if edit else {}),
                     **(
@@ -2330,7 +2335,7 @@ class DebugWorker:
             source = (selected_frame.get("source") or {}).get("path")
             snapshot = {
                 "stop_id": self.stop_id,
-                # For people: the user's own source file; frames keep the debugger's paths.
+                # The user's own source file, as `frames` show it.
                 **(
                     {"location": f"{_display_path(runtime, source)}:{selected_frame.get('line')}"}
                     if isinstance(source, str) and source
@@ -2355,7 +2360,7 @@ class DebugWorker:
                     if self.stop_place
                     else {}
                 ),
-                "frames": frames,
+                "frames": _public_sources(runtime, frames),
                 "scopes": result,
                 # The object whose members selectors may name without it (C++, Java).
                 **(
@@ -2576,8 +2581,8 @@ class DebugWorker:
                 self.record_own_points(args["breakpoints"], placed)
                 self.note_places(runtime, args["breakpoints"], placed)
                 if warnings := [*self.loop_warnings(), *self.place_warnings()]:
-                    return {**placed, "warnings": warnings}
-            return placed
+                    return {**_public_placed(runtime, placed), "warnings": warnings}
+            return _public_placed(runtime, placed)
         if operation == "continue":
             self.stopped(args)
             pending = None if args.get("to_exit") else self.co_stopped()
@@ -2975,6 +2980,8 @@ class DebugWorker:
         that note, and none is settable where it refuses (#148). ``trail``: the
         debugger's variable for each step of ``ancestry`` (Java: what holds an array)."""
         result = []
+        # What holds an array whose elements this listing shows (#261), asked once here.
+        listing = {}
         member_rule = (
             self.member_rule(self.runtime, frame, root) if ancestry and root is not None else None
         )
@@ -3190,7 +3197,8 @@ class DebugWorker:
                 result.append(output)
                 self.inspection_nodes += 1
                 continue
-            settable = never = None
+            settable = never = maybe = None
+            unread = False
             # Only the stopped frame's values change: a caller's are read-only.
             innermost = frame.get("id") == self.innermost_frame
             if not ancestry and (check := getattr(self.runtime, "settable", None)):
@@ -3221,7 +3229,7 @@ class DebugWorker:
                     and (read_after := getattr(self.runtime, "read_after", None))
                     and read_after(variable, frame, self.stop_reason) is False
                 ):
-                    settable = False
+                    settable, unread = False, True
                     self.unsettable_reasons.append((name, _UNREAD_WHY))
             elif ancestry and member_rule is not None:
                 # A field or element `set` would change (#105), judged as `set` judges it
@@ -3240,6 +3248,15 @@ class DebugWorker:
                     and member(variable, parent=ancestry[-1][1], proven=True) is None
                 )
                 never = getattr(jdk, "row", None)
+                if settable and (held := self.array_held(trail, listing)):
+                    # An array a JDK class's field holds, whatever path reaches it (#261):
+                    # the write would be refused, so the row says why instead; or why
+                    # that is not known, where the write may yet be made.
+                    settable = False
+                    if getattr(held, "unproven", False):
+                        maybe = str(held)
+                    else:
+                        never = held
             if ancestry and settable and noted and noted[1]:
                 # Inside a local whose change is refused (#140): so is a change to this.
                 settable = False
@@ -3250,6 +3267,22 @@ class DebugWorker:
                     never = rule(variable, frame)
                 elif root is not None:
                     never = rule(root, frame, member=True)
+            if (
+                settable is False
+                and not never
+                and not maybe
+                and (why_not := getattr(self.runtime, "unsettable_row", None))
+            ):
+                # Why a row of a type `set` changes is not marked (#261: Java).
+                never = why_not(
+                    variable,
+                    frame,
+                    parent=ancestry[-1][1] if ancestry else None,
+                    trail=trail,
+                    member=bool(ancestry),
+                    innermost=innermost,
+                    unread=unread,
+                )
             path = (*ancestry, (name, kind))
             # A debugger's grouping node (debugpy's `special variables`) is not a level.
             depth = sum(1 for step in path if not (step[0] in groups and not step[1]))
@@ -3403,6 +3436,9 @@ class DebugWorker:
                     output["declared_at_shared"] = sharing
             if never:
                 output["not_settable"] = never
+            if maybe:
+                # Neither mark can be promised (#261): `set` decides when it is made.
+                output["maybe_settable"] = maybe[:500]
             if own == "stale":
                 # Not proven initialized: the bytes a move or drop left (#108).
                 output["stale"] = True
@@ -3682,6 +3718,28 @@ class DebugWorker:
             self.marks[key] = compute()
         return self.marks[key]
 
+    def array_held(self, trail, listing):
+        """Why the elements of the array a listing shows (``trail``'s last step) are not
+        marked [settable], where the runtime asks the debugger what holds it (#261:
+        Java, a JDK class's field, under any name), else None; within what is left of
+        the pause budget. A verdict is kept for the rest of the stop only where the
+        runtime says it holds that long (every thread suspended); while another thread
+        runs, only for this listing (``listing``, a dict) and asked again at the next."""
+        ask = getattr(self.runtime, "array_holder", None)
+        array = trail[-1] if trail else None
+        if ask is None or array is None or not str(array.get("type") or "").endswith("]"):
+            return None
+        key = ("holder", self.stop_id, str(array.get("type")), str(array.get("value")))
+        for kept in (self.marks, listing):
+            if key in kept:
+                return kept[key]
+        left = None
+        if self.max_pause and self.stopped_at:
+            left = (self.max_pause - (time.monotonic() - self.stopped_at)) * 1000
+        verdict, settled = ask(self.dap, array, left)
+        listing[key] = verdict
+        return self.remember(key, lambda: verdict) if settled else verdict
+
     def root_reason(self, runtime, frame, root):
         """Why no member of the root local ``root`` can change at this stop (a statement
         under way may hold a copy of it: mid_statement), or None; one per place."""
@@ -3898,12 +3956,14 @@ class DebugWorker:
                 record, runtime, frame, ancestry, trail, reference, variable, args, previewed
             )
         parent = ancestry[-1][1] if ancestry else None
+        # The whole selector, not the debugger's name alone (`ranking[1]`, not `1`; #261).
+        selector = member_selector(ancestry, name)
         internal = getattr(runtime, "internal_member", None)
         if internal and (reason := internal(variable, parent=parent, trail=trail)):
             # A JDK class's own state (#204), or a launcher that cannot tell.
-            raise ValueError(f"{name!r} cannot be changed: {reason}")
+            raise ValueError(f"`{selector}` cannot be changed: {reason}")
         if reason := check(variable, parent=parent):
-            raise ValueError(f"{name!r} cannot be changed: {reason}")
+            raise ValueError(f"`{selector}` cannot be changed: {reason}")
         runtime.validate_variable(variable, value)
         before = variable.get("value")
         literal = getattr(runtime, "mutation_literal", None)
@@ -3920,7 +3980,7 @@ class DebugWorker:
             changed = self.dap.request("setVariable", request)
         except RequestFailed as exc:
             raise ValueError(
-                f"The debugger refused to change {name!r} ({str(exc)[:200]}); it is unchanged"
+                f"The debugger refused to change `{selector}` ({str(exc)[:200]}); it is unchanged"
             ) from None
         runtime.assert_current()
         after = changed.get("value")
@@ -3928,12 +3988,12 @@ class DebugWorker:
         if len(reread) != 1 or reread[0].get("value") != after:
             # The write happened but cannot be confirmed: the run's state is unknown.
             raise RuntimeError(
-                f"The change to {name!r} could not be confirmed: the debugger reported "
+                f"The change to `{selector}` could not be confirmed: the debugger reported "
                 f"{str(after)[:80]}, and the value now reads "
                 f"{str(reread[0].get('value'))[:80] if len(reread) == 1 else 'nothing'}"
             )
         if confirm := getattr(runtime, "confirm_mutation", None):
-            confirm(name, value, before, after, variable=variable)
+            confirm(selector, value, before, after, variable=variable)
         return {"name": name, "before": before, "after": after}
 
     def _set_scalar_member(
@@ -4363,6 +4423,25 @@ def _method_name(function):
     return re.split(r"[.:]", head)[-1] if head else ""
 
 
+def member_selector(ancestry, name):
+    """The selector naming the member ``name`` of the value ``ancestry`` walks to, from
+    the debugger's names: `ranking[1]`, `this.count`. Java names an array's elements by
+    their index alone."""
+    text, kind = "", None
+    for step, step_kind in (*ancestry, (name, None)):
+        step = str(step)
+        if not text:
+            text = step
+        elif step.startswith("["):
+            text += step
+        elif str(kind or "").endswith("]") and re.fullmatch(r"[0-9]+", step):
+            text += f"[{step}]"
+        else:
+            text += f".{step}"
+        kind = step_kind
+    return text
+
+
 _CALLER_SET = (
     "{name} is in a caller's frame, whose values cannot be changed: only the stopped "
     "(innermost) frame's can, which `session set` and probes change"
@@ -4429,6 +4508,74 @@ _SET_MEMBER = (
 )
 
 
+def _public_sources(runtime, items):
+    """Breakpoints or frames as answered: copies, with a build copy's source shown as the
+    user's file, as `location` is (#252). The debugger's own frames are left as they are,
+    for the rules that compare them."""
+    shown = []
+    for item in items or []:
+        source = item.get("source") if isinstance(item, dict) else None
+        path = source.get("path") if isinstance(source, dict) else None
+        if isinstance(path, str) and path:
+            item = {**item, "source": {**source, "path": _display_path(runtime, path)}}
+        shown.append(item)
+    return shown
+
+
+def _public_placed(runtime, placed):
+    if isinstance(placed, dict) and isinstance(placed.get("breakpoints"), list):
+        return {**placed, "breakpoints": _public_sources(runtime, placed["breakpoints"])}
+    return placed
+
+
+def _source_names(value, root, names, parent=None):
+    """A remote client's view of a result (#252): each `location`, and each `source`'s
+    `path`, that is one of the sources it compared becomes `source:NAME` (with its
+    `:LINE`), NAME relative to the root. The client shows its own copy of NAME there;
+    any other path stays this host's."""
+    if isinstance(value, list):
+        return [_source_names(item, root, names, parent) for item in value]
+    if not isinstance(value, dict):
+        return value
+    shown = {}
+    for key, item in value.items():
+        if isinstance(item, str) and (key == "location" or (key == "path" and parent == "source")):
+            path, line = item, ""
+            if key == "location":
+                head, separator, tail = item.rpartition(":")
+                if separator and tail.isdigit():
+                    path, line = head, separator + tail
+            if (name := _compared_name(path, root, names)) is not None:
+                item = f"source:{name}{line}"
+        shown[key] = _source_names(item, root, names, key)
+    return shown
+
+
+def _compared_name(path, root, names):
+    """The name of the compared source ``path`` is, relative to ``root``; None unless it
+    is a regular file under the root, named without `..` and reached through no link, and
+    ``names`` has it."""
+    if not path or not os.path.isabs(path) or "`" in path:
+        return None
+    pure = PurePosixPath(path)
+    if any(part in (".", "..") for part in pure.parts):
+        return None
+    try:
+        name = pure.relative_to(root).as_posix()
+    except ValueError:
+        return None
+    if name not in names:
+        return None
+    try:
+        real = Path(path).resolve(strict=True)
+        # Through no link: the file itself is what the name says, in the root.
+        if real.relative_to(Path(root).resolve()).as_posix() != name or not real.is_file():
+            return None
+    except (OSError, RuntimeError, ValueError):
+        return None
+    return name
+
+
 def _display_path(runtime, path):
     """A prepared build's copy of a source, shown as the user's original file.
 
@@ -4447,6 +4594,15 @@ def _display_path(runtime, path):
         relative = Path(path).resolve().relative_to(Path(workspace).resolve())
     except (OSError, ValueError):
         return path
+    manifest = getattr(prepared, "manifest", None)
+    if manifest is not None:
+        # Only an input the build copied unchanged is the user's file. A candidate's
+        # edited file is the copy that ran: its lines are the candidate's, not the user's.
+        built = {item.path: item.sha256 for item in manifest.inputs}
+        original = {item.path: item.sha256 for item in manifest.original_inputs}
+        name = relative.as_posix()
+        if name not in built or built[name] != original.get(name):
+            return path
     shown = Path(source_root) / relative
     # Only a file the user has (a source, not a build product) is shown as theirs.
     return str(shown) if shown.is_file() else path
@@ -4657,6 +4813,16 @@ def make_server(root, token, port=8765, *, adapter=None):
                         "(expect_inputs), so the worker cannot compare them: install the same "
                         "Peeky version on both hosts"
                     )
+                if operation in ("launch", "probe"):
+                    declared = args.pop("protocol", None)
+                    if args.get("expect_inputs") is not None and declared != PROTOCOL_VERSION:
+                        # A client of protocol 2 sends expect_inputs and no protocol; it would
+                        # show this worker's `source:` names as paths (#252).
+                        spoken = declared if type(declared) is int else 2
+                        raise ValueError(
+                            f"Client speaks protocol {spoken}, this worker {PROTOCOL_VERSION}: "
+                            "install the same Peeky version on both hosts"
+                        )
                 if operation == "version":
                     from peeky.sources import describe
 
@@ -4664,6 +4830,8 @@ def make_server(root, token, port=8765, *, adapter=None):
                         "protocol": PROTOCOL_VERSION,
                         # Which sources a client hashes for expect_inputs (#249).
                         "sources": describe(worker.adapter),
+                        # Where its paths start: a remote client shows them as its own (#252).
+                        "root": str(worker.root),
                         "operations": sorted(OPERATIONS),
                         "error_codes": sorted(
                             {rule[1] for rule in _RULES}
@@ -4685,6 +4853,11 @@ def make_server(root, token, port=8765, *, adapter=None):
                     result = (
                         probe(args) if operation == "probe" else worker.dispatch(operation, args)
                     )
+                    names = (
+                        args.get("expect_inputs") if operation == "probe" else worker.remote_names
+                    )
+                    if isinstance(names, (dict, frozenset)) and names:
+                        result = _source_names(result, worker.root, frozenset(names))
                 self.reply(200, result)
             except (KeyError, TypeError, ValueError) as exc:
                 self.reply(
