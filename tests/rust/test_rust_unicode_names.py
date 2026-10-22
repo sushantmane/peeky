@@ -74,3 +74,65 @@ def test_a_reference_parameter_named_in_unicode_reads_as_its_ascii_twin(crate, c
         owned = variables["stücke"]
         assert owned["value"] == "[6, 8, 10]" and owned["view"] == "memory", owned
     assert variables["zähler"]["value"] == "6", variables["zähler"]
+
+
+# `let é: &Vec<i64>;` (written e + U+0301; rustc normalises it to NFC) is never stored:
+# rustc emits its variable but no declaration. Each parameter's proof saw declared
+# shadows only, so `é` and `w` read through a pointer the plain name may not hold.
+SHADOWED = """fn both(\u00e9: &Vec<i64>, w: &Vec<i64>, größe: &Vec<i64>) -> usize {
+    let before = \u00e9.len() + w.len() + größe.len();
+    std::hint::black_box(before); // STOP
+    let e\u0301: &Vec<i64>;
+    let w: &Vec<i64>;
+    std::hint::black_box(before)
+}
+
+fn main() {
+    let wörter = vec![3i64, 4, 5];
+    println!("{}", both(&wörter, &wörter, &wörter));
+}
+"""
+
+
+@pytest.mark.timeout(400)
+def test_a_parameter_shadowed_by_a_variable_never_stored_is_not_read(crate, capsys):
+    (crate / "src/main.rs").write_text(SHADOWED)
+    line = next(i for i, text in enumerate(SHADOWED.split("\n"), 1) if "// STOP" in text)
+    assert main(["session", "start", str(crate), "--at", f"src/main.rs:{line}"]) == 0
+    capsys.readouterr()
+    try:
+        assert main(["session", "inspect", "--json"]) == 0
+        snapshot = json.loads(capsys.readouterr().out)
+    finally:
+        main(["session", "close"])
+    variables = {v["name"]: v for scope in snapshot["scopes"] for v in scope["variables"]}
+    assert variables["before"]["value"] == "9", variables["before"]
+    for name in ("\u00e9", "w"):
+        # Its pointer only, as for any reference Peeky cannot prove.
+        row = variables[name]
+        assert row.get("view") != "memory" and row["value"].startswith("0x"), row
+    # A parameter its function shadows nowhere still reads.
+    kept = variables["größe"]
+    if os.environ.get("PEEKY_EXPECT_READ_MEMORY") or kept.get("view") == "memory":
+        assert kept["value"] == "[3, 4, 5]" and kept["view"] == "memory", kept
+
+
+def test_rustc_declares_no_never_stored_shadow_yet_names_it(tmp_path):
+    # The compiler's own IR: the shadows' variables, undeclared, revoke the proofs.
+    rustc = os.environ.get("PEEKY_RUST_RUSTC")
+    if not rustc:
+        pytest.skip("set PEEKY_RUST_RUSTC to enable Rust conformance")
+    import subprocess
+
+    from peeky.rust_ir import ir_locals
+
+    source = tmp_path / "main.rs"
+    source.write_text(SHADOWED)
+    output = tmp_path / "main.ll"
+    flags = ["--edition", "2024", "-g", "-C", "opt-level=0", "--emit=llvm-ir"]
+    subprocess.run([rustc, *flags, "-o", output, source], check=True, capture_output=True)
+    text = output.read_text()
+    assert text.count('DILocalVariable(name: "\\C3\\A9"') == 2
+    assert text.count('#dbg_declare(ptr %"\\C3\\A9') == 1
+    proven = {name for (_, name) in ir_locals(output)[1]}
+    assert "größe" in proven and not {"é", "w"} & proven
