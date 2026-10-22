@@ -46,6 +46,11 @@ Peeky debugs Python with debugpy, Python's debugger.
   ([Python 5.1](python-cookbook.md#51-stop-look-change-finish)).
 - debugpy lists only a long list's first 100 items. A higher index shows "beyond the debugger's
   visible window": the item is not missing ([guide](../AGENT_GUIDE.md#reading-probe-results)).
+- `--until hits` ends the probe at the last hit, but the program runs on until Peeky ends it. So
+  its `output` can include text written after that hit (`output_after_last_hit: true`). debugpy
+  delays the program's exit by about 0.5 s, so the program has rarely ended by then, and
+  `output_complete` is `false`. For the whole output, run to the exit, which is the default
+  ([2.6](../COOKBOOK.md#26-stop-right-after-the-last-hit)).
 
 ## Change values
 

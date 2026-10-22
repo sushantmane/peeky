@@ -26,6 +26,18 @@ class ResponseTimeout(TimeoutError):
 
 # Ending a launched debuggee at close: SIGTERM, then SIGKILL after this many seconds.
 TERMINATE_GRACE = 1.0
+# Once the debugger has reported the program's end, close() ends the adapter's input and
+# waits at most this long for the adapter to end its output stream (#203): only that end
+# proves no more of the program's output can come. A wait that runs out says so.
+DRAIN_TIMEOUT = 2.0
+# How long close() waits for the stderr of an adapter it reaped to end, when its exit
+# may be the one Peeky provokes: what it printed then is read whole (#213).
+STDERR_SETTLE = 1.0
+# How soon after the adapter answered `disconnect` Peeky ending its input still counts
+# as "just answered", for the one exit Peeky is known to provoke (#213).
+JUST_ANSWERED = 0.25
+# At most this much of what the adapter sent from Peeky's disconnect on is kept.
+AFTER_DISCONNECT_CHARS = 4096
 # How often the session's processes are listed (#143), and at most how often a stop or
 # an announcement lists them again.
 FAMILY_INTERVAL = 1.0
@@ -48,6 +60,10 @@ _UNTRACED_EVENTS = frozenset({"output", "thread", "telemetry"})
 _JDK_FRAMES = ("at java.", "at jdk.", "at sun.", "at com.sun.")
 
 
+class StreamEnd(EOFError):
+    """The adapter ended its output stream between frames: a clean end (#203)."""
+
+
 def read_message(stream):
     """Read one bounded frame; malformed adapters fail the session closed."""
     headers = {}
@@ -56,7 +72,7 @@ def read_message(stream):
         line = stream.readline(MAX_HEADER_BYTES + 1)
         total += len(line)
         if not line:
-            raise EOFError("Debugger adapter closed")
+            raise (EOFError if total else StreamEnd)("Debugger adapter closed")
         if total > MAX_HEADER_BYTES:
             raise ValueError("DAP headers exceed limit")
         if line == b"\r\n":
@@ -86,10 +102,13 @@ def read_message(stream):
 
 
 class DAP:
-    def __init__(self, command=None, *, env=None, fatal_stderr=None):
+    def __init__(self, command=None, *, env=None, fatal_stderr=None, provoked_exit=None):
         """``fatal_stderr`` maps a regex to a message: an adapter stderr line matching it
         means the adapter can no longer work (e.g. a dead event thread), and fails the
-        transport with that message (``{excerpt}``: the line and its stack frames)."""
+        transport with that message (``{excerpt}``: the line and its stack frames).
+        ``provoked_exit``: (status, signature) of the exit this adapter is known to make
+        when Peeky ends its input as it answers `disconnect` (debugpy: 1, #213), and the
+        lines its stderr then shows: close() does not take that exit for a crash."""
         # Trusted worker configuration only. Never forward agent-provided argv.
         command = PythonAdapter().command if command is None else command
         if (
@@ -157,6 +176,17 @@ class DAP:
         self.started = time.monotonic()
         self.output = collections.deque(maxlen=500)
         self.output_truncated = False
+        # Output events accepted so far, evicted ones included: marks a point in them.
+        self.output_count = 0
+        # Set when the adapter ended its output stream (EOF): nothing more can come.
+        self.stream_ended = threading.Event()
+        # What close() left (#203): whether the debugger had reported the program's end
+        # before Peeky disconnected (`ended`); the output before Peeky's disconnect was
+        # sent, and whether the adapter then ended its stream with nothing more
+        # (`drained`); what it sent from the disconnect on, while answering it included
+        # (`after_disconnect`); the exit code.
+        self.final = None
+        self.provoked_exit = provoked_exit
         self.sequence = 0
         self.event_sequence = 0
         self.error = None
@@ -248,6 +278,7 @@ class DAP:
                             len(self.output) == self.output.maxlen or len(output) > 8192
                         )
                         self.output.append(output[:8192])
+                        self.output_count += 1
                 elif body["event"] in LIFECYCLE_EVENTS:
                     if body["event"] == "exited":
                         code = (body.get("body") or {}).get("exitCode")
@@ -301,6 +332,10 @@ class DAP:
             while True:
                 self._accept(read_message(self.process.stdout))
         except Exception as exc:
+            if isinstance(exc, StreamEnd):
+                with self.condition:
+                    self.stream_ended.set()
+                    self.condition.notify_all()
             if isinstance(exc, EOFError) and getattr(self, "fatal_stderr", None):
                 # An adapter that exits right after saying why on stderr: read that first,
                 # so its diagnosis is the transport's error, not "adapter closed".
@@ -770,13 +805,31 @@ class DAP:
                     owned, ran = self._list_family()
                 except Exception:
                     owned = None
+            # The program's end as the debugger reported it, never one inferred, and the
+            # output so far, read together before the disconnect is sent (#203). The
+            # output is whole only once the adapter has ended its stream on its own with
+            # nothing more: what it sends from the disconnect on, while handling it (its
+            # reply) or shutting down (lldb-dap 18's crash on Linux), cannot be told from
+            # the program's output.
+            with self.condition:
+                ended = self._end_reported()
+                mark, kept = self.output_count, ("".join(self.output), self.output_truncated)
+            # Whether the disconnect was sent, and when it was answered.
+            asked, answered = False, None
             if self._adapter_running():
                 try:
                     seq = self.send("disconnect", {"terminateDebuggee": terminate}, timeout=0.25)
+                    asked = True
                     self.response(seq, timeout=1)
+                    answered = time.monotonic()
                 except Exception:
                     pass
-            if stop := getattr(self, "stderr_stop", None):
+            clean, own_exit, input_ended = self._drain(mark) if ended else (False, False, None)
+            # An adapter with a known provoked exit (debugpy) says so on stderr as it exits:
+            # its stderr is read until the adapter is reaped (_provoked).
+            settle = getattr(self, "provoked_exit", None) is not None
+            stop = getattr(self, "stderr_stop", None)
+            if stop and not settle:
                 # The stderr reader stops and closes its descriptor itself (_read_stderr).
                 stop.set()
             if terminate:
@@ -790,9 +843,93 @@ class DAP:
             self._kill_group()
             # Reaped only now, after everything that names its pid, group or session.
             self.process.wait(timeout=3)
+            # An adapter that failed as it exited may have dropped output it held.
+            status = self.process.returncode
+            timely = self._provoked_when(status, own_exit, asked, answered, input_ended)
+            stderr_reader = getattr(self, "stderr_reader", None)
+            if timely and stderr_reader is not None:
+                # It is gone: its stderr ends, with what it printed as it failed.
+                stderr_reader.join(timeout=STDERR_SETTLE)
+            if stop and settle:
+                stop.set()
+            provoked = timely and self._provoked_signature()
             self.reader.join(timeout=3)
-            if stderr_reader := getattr(self, "stderr_reader", None):
+            if stderr_reader is not None:
                 stderr_reader.join(timeout=1)
             self.process.stdin.close()
             self.process.stdout.close()
+            with self.condition:
+                after = list(self.output)[
+                    len(self.output) - min(self.output_count - mark, len(self.output)) :
+                ]
+                self.final = {
+                    "ended": ended,
+                    # Any status but 0 leaves it partial, save the one known case
+                    # (_provoked): debugpy exits 1 when its input ends while it still
+                    # handles the disconnect.
+                    "drained": clean and (status == 0 or provoked),
+                    # The stream ended cleanly, nothing after the mark: then only the
+                    # adapter's exit status (`adapter_exit`) can leave it partial.
+                    "stream_drained": clean,
+                    "own_exit": own_exit,
+                    "adapter_exit": status,
+                    "exit_provoked": provoked,
+                    "output": kept[0],
+                    "output_truncated": kept[1],
+                    "after_disconnect": "".join(after)[:AFTER_DISCONNECT_CHARS],
+                    "exit_code": self.exit_code,
+                }
             return self.cleanup
+
+    def _end_reported(self):
+        """Whether the debugger has reported the program's end (`exited`, `terminated`).
+        The caller holds the condition."""
+        return any(e["event"] in ("exited", "terminated") for e in self.events)
+
+    def _drain(self, mark):
+        """End the adapter's input, so that it ends too, and wait at most DRAIN_TIMEOUT
+        for it to end its output stream. Returns (whether the stream ended with no output
+        after ``mark``, taken before the disconnect was sent; whether the adapter had
+        exited on its own before its input was ended). Called before anything is killed,
+        so the end is the adapter's own (#203); output after ``mark`` already settles it,
+        so it is not waited for. Its status is read without reaping it (#170)."""
+        own_exit, input_ended = self._adapter_state() in ("exited", "reaped"), None
+        if self.write_lock.acquire(timeout=1):
+            try:
+                self.process.stdin.close()
+            except OSError:
+                pass
+            finally:
+                input_ended = time.monotonic()
+                self.write_lock.release()
+        deadline = time.monotonic() + DRAIN_TIMEOUT
+        with self.condition:
+            while not self.stream_ended.is_set() and self.output_count == mark:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                self.condition.wait(remaining)
+            clean = self.stream_ended.is_set() and self.output_count == mark
+        return clean, own_exit, input_ended
+
+    def _provoked_when(self, status, own_exit, asked, answered, input_ended):
+        """Whether the adapter's non-zero exit came as the one Peeky is known to provoke
+        (#213) does: debugpy's adapter (``provoked_exit``), exactly that status, still
+        running when Peeky ended its input, and that while its `disconnect` was
+        unanswered, or at most JUST_ANSWERED after its answer. Its disconnect handler then
+        fails writing to the channel the end of its input closed. Not enough alone: a
+        crash of its own can come then too (_provoked_signature)."""
+        known = getattr(self, "provoked_exit", None)
+        if known is None or status != known[0] or own_exit or not asked:
+            return False
+        if input_ended is None:
+            return False
+        return answered is None or input_ended - answered <= JUST_ANSWERED
+
+    def _provoked_signature(self):
+        """Whether the adapter's stderr shows that very failure: every line of its known
+        signature (``provoked_exit``). Without it, the exit is unexplained: a crash."""
+        known = getattr(self, "provoked_exit", None)
+        with self.condition:
+            text = "\n".join(self.stderr_tail)
+        return bool(known and known[1]) and all(part in text for part in known[1])

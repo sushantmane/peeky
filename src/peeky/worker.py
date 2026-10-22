@@ -256,6 +256,8 @@ class DebugWorker:
         self.failed = None
         # What closing the last session did to the processes it started (#143).
         self.last_cleanup = None
+        # The output closing the last session left, and whether it is whole (#203).
+        self.last_final = None
         # The single absolute launch budget, below Client.call's 45 s HTTP timeout.
         # Preparation (supports_deadline adapters: builds, symbols, module identity)
         # and every DAP launch phase receive only the remaining time, so a launch
@@ -1091,6 +1093,7 @@ class DebugWorker:
             if operation == "launch":
                 self.failed = None
                 self.launch_requested = False
+                self.last_final = None
             self.last_cleanup = None
             try:
                 try:
@@ -1722,6 +1725,7 @@ class DebugWorker:
                     command=runtime.command,
                     env=getattr(runtime, "environment", None),
                     fatal_stderr=getattr(runtime, "fatal_stderr", None),
+                    provoked_exit=getattr(runtime, "provoked_exit", None),
                 )
                 capabilities = self.dap.request(
                     "initialize", runtime.initialize_args(), timeout=left()
@@ -4133,6 +4137,9 @@ class DebugWorker:
                     cleanup = adapter.close()
                 # What ending the session did to the processes it started (#143).
                 self.last_cleanup = cleanup if isinstance(cleanup, str) else None
+                # The output as the session's end left it, and whether it is whole (#203).
+                final = getattr(adapter, "final", None)
+                self.last_final = final if isinstance(final, dict) else None
         finally:
             if runtime:
                 runtime.close()
