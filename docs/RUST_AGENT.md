@@ -132,6 +132,9 @@ The rules are in the cookbook's
 - Where the DWARF doesn't say, as on a path Peeky can't walk, the local's MIR type decides. A
   pointer shows only its address unless that type is made only of primitives, and references,
   tuples and arrays of them, such as `(i64, &i64)`. A struct's name says nothing of its fields.
+  Its note then says that the build doesn't tell it from a raw pointer, not that it is one.
+- A raw pointer local is judged by its MIR type, before #110. An array of them isn't collapsed:
+  each element is judged as a raw pointer inside a value.
 
 ### The Drop window
 

@@ -767,11 +767,13 @@ note: self.names shows LLDB's summary, not contents: Peeky does not read the ele
   - the function's own line;
   - an `#[inline(always)]` or caller frame.
 - A raw pointer, also a `NonNull` or an `AtomicPtr`, keeps no borrow. It always shows only its
-  address, `[unproven]`, with a note.
+  address, `[unproven]`. Its note says why: "Peeky never follows a raw pointer, because nothing
+  proves that what it points at still stands."
 - That holds inside a value too: a field, a tuple or array element, at any depth. For example, with
   `let h = Holder { n: 1, p: &*b as *const i64 };`, `h.p` shows `0x…` and lists nothing under it,
   even while `h` is live. Safe code can free what it points at: `drop(b)`.
-- The value that holds it still reads: `h.n`, and `t.__0` of a `(i64, *const i64)`.
+- The value that holds it still reads: `h.n`, and `t.__0` of a `(i64, *const i64)`. An array of
+  raw pointers, such as `arr: [*const Pt; 2]`, lists its elements, and each shows its address.
 - A reference or a `Box` inside a value still reads. LLDB names `&i64`, `Box<i64>` and
   `*const i64` all `long *`, so Peeky tells them apart by the field's Rust type in the build's
   debug information.

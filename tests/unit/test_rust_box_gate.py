@@ -277,7 +277,7 @@ def test_a_generic_bodys_primitive_name_may_hold_a_raw_pointer():
 def test_a_pointer_in_a_value_is_raw_by_its_debug_information_else_by_the_mir(monkeypatch):
     # #255: the field's Rust type from the build's debug information decides; where
     # that says nothing, any pointer in a local whose MIR type may hold a raw pointer is
-    # withheld, and one in a local of references and primitives is not.
+    # withheld as maybe one, and one in a local of references and primitives is not.
     import peeky.fields
 
     frame = {"name": "app::work::h0123456789abcdef", "line": 9, "source": {"path": "main.rs"}}
@@ -296,23 +296,24 @@ def test_a_pointer_in_a_value_is_raw_by_its_debug_information_else_by_the_mir(mo
         variable = {"name": "__1", "type": kind}
         return RustSession._raw_pointer(session, variable, frame, [("t", "(i64, &i64)")])
 
-    for answer in (True, False):
-        said[0] = answer
-        assert raw() is answer
+    said[0] = True
+    assert raw() == "raw"
+    said[0] = False
+    assert raw() is None
     said[0] = None
-    assert raw() is False
+    assert raw() is None
     for types in (["app::Holder"], [], ["(i64, &i64)", "*const i64"]):
         mir[0] = types
-        assert raw() is True, types
+        assert raw() == "unknown", types
 
     def unread():
         raise Unsettable("Peeky could not read the build's debug information")
 
     session._field_types, mir[0] = unread, ["(i64, &i64)"]
-    assert raw() is False
+    assert raw() is None
     session.owned = None
-    assert raw() is True
+    assert raw() == "unknown"
     # Not a data pointer as LLDB shows it: an array of them is judged by element, a fn
     # pointer points at code.
     for kind in ("long *[2]", "long (*)(long)", "app::Holder", "i64"):
-        assert raw(kind) is False, kind
+        assert raw(kind) is None, kind

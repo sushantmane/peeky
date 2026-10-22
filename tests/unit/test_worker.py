@@ -700,6 +700,37 @@ def test_a_tainted_locals_children_are_tainted_and_marked(tmp_path):
     assert "view" not in b and b["variablesReference"] and "stale" not in n
 
 
+def test_a_raw_pointer_view_says_so_on_its_row(tmp_path):
+    # #255: a Rust raw pointer (or one the build does not tell from one) shows only its
+    # address; its row says which, for its note. Anything else is not passed on.
+    from types import SimpleNamespace
+
+    from peeky.worker import DebugWorker
+
+    pointers = {"p": "raw", "q": "unknown", "r": "reference", "s": None}
+    runtime = SimpleNamespace(
+        assert_current=lambda: None,
+        view_variable=lambda variable, fetch, read, **_: {
+            "value": "0x10",
+            "rust_view": "unproven",
+            **({"pointer": pointers[variable["name"]]} if pointers[variable["name"]] else {}),
+        },
+    )
+    worker = DebugWorker(tmp_path)
+    worker.runtime, worker.state, worker.stop_id = runtime, "stopped", "stop1"
+    shown = worker.expose_variables(
+        [
+            {"name": name, "type": "long *", "value": "0x10", "variablesReference": 7}
+            for name in pointers
+        ],
+        {"id": 1},
+        ("Locals",),
+        (),
+    )
+    assert [row.get("unproven_pointer") for row in shown] == ["raw", "unknown", None, None]
+    assert all(row["view"] == "unproven" and not row["variablesReference"] for row in shown)
+
+
 def test_what_is_read_through_a_noted_local_carries_its_note(tmp_path):
     # #148: a root shown with a note (#140) passed it to nothing read through it; its
     # fields, their fields and a decoded preview's elements now carry it, said as read

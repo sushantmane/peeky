@@ -1,8 +1,9 @@
 """#255: a raw pointer inside a live value (a field, a tuple or array element, a
 NonNull's, a fat raw pointer's address) was followed: a struct or tuple the MIR proves
 initialized reads everything, so `h.p` listed its pointee, which safe code can free
-(`let p = &*b as *const i64; drop(b);`). It now shows only its address, with a note, as
-a raw pointer local does; references inside the same values still read."""
+(`let p = &*b as *const i64; drop(b);`). It now shows only its address, with a note
+saying Peeky never follows a raw pointer, as a raw pointer local does; references
+inside the same values still read. An array of raw pointers expands to its elements."""
 
 import json
 import os
@@ -84,6 +85,8 @@ fn dangling() -> i64 {
     let e = Box::new(8i64);
     let f = Box::new(9i64);
     let a = Many { ps: [&*e as *const i64, &*f as *const i64], n: 4 };
+    let arr: [*const i64; 2] = [&*e as *const i64, &*f as *const i64];
+    let lone: *const i64 = &*b;
     let g = Box::new(10i64);
     let label = String::from("a label");
     let inner = Holder { n: 5, p: &*g as *const i64 };
@@ -100,6 +103,7 @@ fn dangling() -> i64 {
     drop(label);
     let z = churn();
     let held = h.p as i64 + m.p as i64 + t.1 as i64 + a.ps[0] as i64 + o.q.as_ptr() as i64;
+    let held = held + arr[0] as i64 + arr[1] as i64 + lone as i64;
     let alive = matches!(o.slot, Slot::At(_)) as i64 + o.text as *const u8 as i64 + held;
     z + h.n + m.n + t.0 + a.n + o.inner.n + *l.r + **l.rr + *l.bx + *l.pair.1 + alive * 0 // OBSERVE
 }
@@ -119,9 +123,20 @@ RAW = {
     "o.inner.p": ("o.inner", "p"),
     "o.q.pointer": ("o.q", "pointer"),
     "o.text.data_ptr": ("o.text", "data_ptr"),
+    # An array of raw pointers local expands to its elements (review of #256).
+    "arr[0]": ("arr", "[0]"),
+    "arr[1]": ("arr", "[1]"),
 }
-# The note every row shown only as its pointer carries (probe._UNPROVEN_RUST).
-NOTE = "a raw pointer: never"
+# The note of a raw pointer (probe._RAW_RUST), and of what holds one (_RAW_HELD_RUST):
+# no reference's words, nor moved, dropped or unproven claims (review of #256).
+NOTE = (
+    "This Rust raw pointer shows only its address: Peeky never follows a raw pointer, "
+    "because nothing proves that what it points at still stands."
+)
+HELD = (
+    "Its Rust raw pointers show only their address: Peeky never follows a raw pointer, "
+    "because nothing proves that what one points at still stands."
+)
 
 
 @pytest.fixture
@@ -145,7 +160,7 @@ def line_of(text, marker):
 def get(capsys, *selectors):
     code = main(["session", "get", *selectors, "--json"])
     rows = json.loads(capsys.readouterr().out)
-    assert code == 0, rows
+    assert code == 0, [f"{row['selector']}: {row['error']}" for row in rows if "error" in row]
     return {row["selector"]: row for row in rows}
 
 
@@ -156,11 +171,14 @@ def brief(row):
 
 
 def address_only(row):
-    """Only the pointer: its address, no pointee listed or offered, and a note."""
+    """Only the pointer: its address, no pointee listed or offered, and the raw pointer's
+    note, which claims nothing of a reference's or of a moved or dropped value."""
     assert not row.get("children") and "777" not in str(row), brief(row)
     assert row.get("view") == "unproven", brief(row)
     assert re.fullmatch(r"0x[0-9a-fA-F]+", row.get("value") or ""), brief(row)
-    assert NOTE in (row.get("note") or ""), row
+    assert row.get("note") == NOTE, row.get("note")
+    for claim in ("reference", "moved", "dropped", "MIR", "may be"):
+        assert claim not in row["note"], claim
 
 
 @pytest.mark.timeout(400)
@@ -169,7 +187,7 @@ def test_a_raw_pointer_inside_a_live_value_shows_only_its_address(crate, capsys)
     assert main(["session", "start", str(crate), "--at", at]) == 0
     capsys.readouterr()
     try:
-        rows = get(capsys, *RAW)
+        rows = get(capsys, *RAW, "lone")
         holders = get(capsys, *{holder for holder, _ in RAW.values()})
         enum = get(capsys, "o.slot")["o.slot"]
         lent = get(capsys, "l.r", "l.rr", "l.bx", "l.pair.__1")
@@ -182,8 +200,12 @@ def test_a_raw_pointer_inside_a_live_value_shows_only_its_address(crate, capsys)
         # Listed in the value that holds it: never expandable, and why is said there.
         children = {child["name"]: child for child in holders[holder]["children"]}
         assert children[name].get("view") == "unproven", (selector, children[name])
+        assert children[name].get("unproven_pointer") == "raw", (selector, children[name])
         assert not children[name].get("expandable"), (selector, children[name])
-        assert NOTE in holders[holder].get("note", ""), (selector, holders[holder])
+        assert holders[holder].get("note") == HELD, (selector, holders[holder])
+        assert holders[holder].get("view") is None, (selector, holders[holder])
+    # A raw pointer local: the same, not a reference's note (review of #256).
+    address_only(rows["lone"])
     # The values that hold them are live and proven: everything else in them reads.
     expected = {"h.n": "1", "m.n": "2", "t.__0": "3", "a.n": "4", "o.inner.n": "5"}
     assert {name: values[name].get("value") for name in expected} == expected, values
@@ -202,12 +224,12 @@ def test_a_raw_pointer_inside_a_live_value_shows_only_its_address(crate, capsys)
 @pytest.mark.timeout(400)
 def test_a_probe_captures_a_nested_raw_pointer_as_its_address(crate, capsys):
     at = f"src/main.rs:{line_of(MAIN, '// OBSERVE')}"
-    capture = ",".join([*RAW, "l.pair.__1"])
+    capture = ",".join([*RAW, "lone", "l.pair.__1"])
     code = main(["probe", str(crate), "--at", at, "--capture", capture, "--quiet", "--json"])
     result = json.loads(capsys.readouterr().out)
     assert code == 0, result.get("error")
     rows = {row["selector"]: row for row in result["rows"]}
-    for selector in RAW:
+    for selector in ["lone", *RAW]:
         address_only(rows[selector])
     # A reference in a tuple is no raw pointer: it reads as before, with no note.
     assert "view" not in rows["l.pair.__1"] and "note" not in rows["l.pair.__1"], rows
@@ -231,10 +253,14 @@ fn churn() -> i64 {
 #[inline(never)]
 fn work() -> i64 {
     let b = Box::new(Pt { x: 1, y: 2 });
+    let c = Box::new(Pt { x: 3, y: 4 });
     let p: *const Pt = std::hint::black_box(&*b);
+    let arr: [*const Pt; 2] = std::hint::black_box([&*b as *const Pt, &*c as *const Pt]);
     drop(b);
+    drop(c);
     let k = churn();
-    std::hint::black_box(k + ((p as i64) >> 62)) // OPTIMIZED
+    let far = ((arr[0] as i64) >> 62) + ((arr[1] as i64) >> 62);
+    std::hint::black_box(k + ((p as i64) >> 62) + far) // OPTIMIZED
 }
 
 fn main() {
@@ -264,9 +290,17 @@ def test_a_raw_pointer_local_of_an_optimized_build_shows_only_its_address(crate)
         opt_level="1",
     )
     line = line_of(OPTIMIZED, "// OPTIMIZED")
-    result = run_probe(crate, Probe("src/main.rs", line, ("p", "p.x")), adapter=target)
+    selectors = ("p", "p.x", "arr", "arr[0]", "arr[1]", "arr[0].x")
+    result = run_probe(crate, Probe("src/main.rs", line, selectors), adapter=target)
     assert result["status"] == "completed", result.get("error")
     rows = {row["selector"]: row for row in result["rows"]}
     assert "value" not in rows["p.x"] and "777" not in str(rows["p.x"]), brief(rows["p.x"])
+    assert "value" not in rows["arr[0].x"] and "777" not in str(rows["arr[0].x"]), rows
     if not rows["p"].get("unavailable"):
         address_only(rows["p"])
+    # Review of #256: an array of raw pointers is not collapsed (`arr[0]` was "cannot
+    # expand 'arr'"): each element shows its address, as one inside a value does.
+    if not rows["arr"].get("unavailable"):
+        assert rows["arr"].get("view") != "unproven", brief(rows["arr"])
+        for element in ("arr[0]", "arr[1]"):
+            address_only(rows[element])
