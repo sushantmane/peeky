@@ -4,7 +4,9 @@ This page lists what is different for C and C++ targets, one rule per line. Each
 its details, in the [C and C++ cookbook](c-cpp-cookbook.md) or the [COOKBOOK](../COOKBOOK.md).
 Read [AGENT_GUIDE.md](../AGENT_GUIDE.md) first: it has the steps and rules every language shares.
 
-Peeky builds C and C++ with clang and debugs them with lldb-dap, LLVM's debugger.
+Peeky builds C with clang or GCC, C++ with clang++, and debugs both with lldb-dap, LLVM's
+debugger. C uses clang unless `PEEKY_NATIVE_CC`, or a target's `compiler`, names another compiler.
+A C++ compiler that isn't clang is refused before anything runs.
 
 ## Choose the target
 
