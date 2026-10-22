@@ -161,10 +161,10 @@ the commands.
   local whose declared type isn't supported, a value that doesn't fit, or a local never read after
   the stop. One refusal fails the probe, and ends with what is settable there
   (`settable here: total, i`, or `none`).
-- **Checks:** `session inspect` says why when nothing is `[settable]`. Every change is read back.
-  One the debugger refuses or can't store is `MUTATION_REJECTED`, and the session is kept. A value
-  stored differently closes the session. Expressions, names and calls are rejected, never
-  evaluated (2.3).
+- **Checks:** `session inspect` says why when nothing is `[settable]`; a Java row says why it isn't.
+  Every change is read back. One the debugger refuses or can't store is `MUTATION_REJECTED`, and
+  the session is kept. A value stored differently closes the session. Expressions, names and calls
+  are rejected, never evaluated (2.3).
 
 ### Reading probe results
 

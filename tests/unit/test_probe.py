@@ -1822,6 +1822,26 @@ def test_rows_say_why_no_stop_can_change_them():
     assert "10  [not settable: register]" in text and "0  [settable]" in text
 
 
+def test_rows_say_when_neither_mark_can_be_promised():
+    # #261: a Java element whose array's holder the launcher could not tell in time.
+    from peeky.cli import _get_lines
+    from peeky.probe import _table
+
+    why = "Peeky could not tell within 500 ms; `set` searches again, for up to 2 s"
+    row = {"hit": 1, "phase": "observed", "line": 3, "selector": "xs[0]", "type": "int"}
+    row |= {"value": "4", "settable": False, "maybe_settable": why}
+    text = _table(
+        {"rows": [row], "status": "completed", "hits": 1, "seconds": 0} | {"interventions": []}
+    )
+    assert f"4  [maybe settable: {why}]" in text and "[settable]" not in text
+    child = {"name": "0", "selector": "xs[0]", "type": "int", "value": "4"}
+    child |= {"settable": False, "maybe_settable": why}
+    lines = _get_lines(
+        {"selector": "xs", "type": "int[]", "value": "int[1]@5 [4]"} | {"children": [child]}
+    )
+    assert lines[-1] == f"  xs[0]: int = 4  [maybe settable: {why}]"
+
+
 def test_the_launch_names_each_change_with_its_own_line(monkeypatch):
     # #137 with #138: the worker judges a --set at the --at line and each --set-at at its
     # own line before the program runs.

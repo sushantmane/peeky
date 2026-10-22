@@ -350,7 +350,10 @@ def test_a_program_class_in_a_jdk_looking_package_is_the_programs(alias, capsys)
         capsys.readouterr()
         listed = {child["name"]: child for child in get(capsys, "box")["children"]}
         assert listed["value"]["settable"] is True and "not_settable" not in listed["value"]
-        assert get(capsys, "box.cells[0]")["settable"] is True
+        # An element is never promised while other threads run (#261 review); `set` checks.
+        cell = get(capsys, "box.cells[0]")
+        assert cell["settable"] is False and "not_settable" not in cell, cell
+        assert cell["maybe_settable"] == "other threads are running; set checks again", cell
         assert main(["session", "set", "box.value=2"]) == 0
         assert "set box.value: 1 -> 2" in capsys.readouterr().out
         assert main(["session", "set", "box.cells[0]=7"]) == 0
@@ -414,7 +417,8 @@ def test_an_array_inside_an_object_array_the_jdk_holds_is_the_jdks(alias, capsys
         # The loop's iterator over `rows` views the list; the program's rows still change.
         assert main(["session", "set", "each[1]=8"]) == 0
         assert "set each[1]: 7 -> 8" in capsys.readouterr().out
-        assert get(capsys, "rows[0][0]")["settable"] is True
+        row = get(capsys, "rows[0][0]")
+        assert row["maybe_settable"] == "other threads are running; set checks again", row
         assert main(["session", "set", "rows[0][0]=9"]) == 0
         assert "set rows[0][0]: 6 -> 9" in capsys.readouterr().out
         assert main(["session", "continue", "--to-exit"]) == 0

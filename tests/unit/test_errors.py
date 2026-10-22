@@ -34,6 +34,27 @@ def test_a_refused_change_hints_the_one_action_its_rule_leaves(message, action):
         assert len(payload["hint"]) < 200, payload["hint"]
 
 
+@pytest.mark.parametrize(
+    "message",
+    [
+        "The debugger refused to change `ranking[1]` (Peeky experimental Java adapter: the "
+        "array is in a list held by java.util.Collections$UnmodifiableList.list, a JDK "
+        "class's field; Peeky never changes the JDK's own state); it is unchanged",
+        "Intervention target 'xs[1]': The debugger refused to change `xs[1]` (in a caller's "
+        "frame); it is unchanged",
+    ],
+)
+def test_a_change_the_debugger_refused_promises_nothing_of_a_settable_mark(message):
+    # #261: the hint ended "rows marked [settable] can be changed here", right after the
+    # debugger refused a row marked [settable]. What it quotes never picks the hint.
+    for error in (ValueError(message), Refused("MUTATION_REJECTED", message)):
+        payload = classify(error)
+        assert payload["code"] == "MUTATION_REJECTED", payload
+        assert "can be changed here" not in payload["hint"], payload
+        assert "no [settable] mark can promise" in payload["hint"], payload
+        assert len(payload["hint"]) <= 150, payload["hint"]
+
+
 def test_a_missing_name_hints_what_reads_and_changes_take():
     # Review of #253: the NOT_FOUND hint keeps the scope of a change, the frame's own
     # locals and, in Java, Rust, C and C++, their fields and elements.
