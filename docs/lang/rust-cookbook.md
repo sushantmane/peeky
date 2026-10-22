@@ -308,8 +308,9 @@ The conditions:
   `<unverified Rust enum value>`.
 - **plain fields:** all its fields are integers, `bool`, floats or `char`
   ([Tuples and structs](#tuples-and-structs) lists the other limits).
-- **plain `T`:** an integer, `bool`, float or `char`, or a tuple or crate struct with plain
-  fields.
+- **plain `T`:** an integer, `bool`, float or `char`, or a tuple or crate struct with such a field
+  or a `String` one. Its other fields show `not read:`
+  ([Containers of structs](#containers-of-structs)).
 - **memory:** an unoptimized build, and a debugger with `readMemory`, such as lldb-dap 20 or later.
 - **safe crate:** the crate has no unsafe code
   ([Crates with unsafe code](#crates-with-unsafe-code)).
@@ -346,7 +347,8 @@ Fields stay selectable: `w.start`, `runs[0].__0`.
 
 In a crate with no unsafe code, Peeky reads reference parameters from memory: `&[T]`, `&str`,
 `&Vec<T>` and `&String`, shared or `&mut`. `T` is any integer type, `bool`, `f32`, `f64` or
-`char`, or a tuple or crate struct of them.
+`char`, or a tuple or crate struct with such a field or a `String` one
+([Containers of structs](#containers-of-structs)).
 
 - This needs an unoptimized build, and a debugger with `readMemory`.
 - A `&mut` parameter reads only in the innermost frame. In a caller, the call under way may be
@@ -395,7 +397,9 @@ A preview needs the same proofs as a container:
 
 These keep LLDB's summary instead:
 
-- a struct with any other field, such as a `String`, an enum or a reference, with a note;
+- a struct or tuple local with any other field, such as a `String`, an enum or a reference, with a
+  note. In a `Vec` or slice, such elements still read field by field
+  ([Containers of structs](#containers-of-structs));
 - a nested struct, such as `Rect { a: Span, .. }`;
 - a `#[repr(packed)]` struct, even where its fields fall aligned;
 - a standard-library struct, such as `Range<usize>`, which prints as `1..5`, with a note;
@@ -417,6 +421,44 @@ keeps its previews and Rust types.
 
 How Peeky proves these values: [RUST_AGENT.md](../RUST_AGENT.md#reading-values-from-memory), for
 maintainers.
+
+#### Containers of structs
+
+A `Vec` or slice of tuples, or of structs your crate defines, reads element by element. Each
+element needs at least one integer, `bool`, float, `char` or `String` field. The container needs
+its own proof, as above. In the `kitty` crate, `settle(friends: &mut [Friend], …)` gets
+`Friend { name: String, paid: i64, owes: i64 }` elements:
+
+```sh
+peeky probe kitty --at src/main.rs:72 --capture 'friends,friends[1].name,friends[1].paid' \
+  -- 'Åsa:4500:Åsa,Bo,Zoë' 'Zoë:1000:Zoë,Chloé,Bo' 'Bo:900:Åsa,Chloé'
+```
+
+```
+hit  phase     line  function       selector         type                  value
+1    observed  72    kitty::settle  friends          &mut [kitty::Friend]  [Friend { name: "Bo", paid: 0, owes: 0 }, Friend { name: "Chloé", paid: 0, owes: 0 }, Friend { name: "Zoë", paid: 0, owes: 0 }, Friend { name: "Åsa", paid: 0, owes: 0 }]  [memory]
+1    observed  72    kitty::settle  friends[1].name  String                "Chloé"  [memory]
+1    observed  72    kitty::settle  friends[1].paid  i64                   0  [memory]
+```
+
+- A `String` field reads as text, as a `String` local does. `friends[1].name.len` is its length
+  in bytes.
+- Each text is a memory read of its own. So Peeky reads the texts of a container's first 16 `String`
+  fields. A later one shows `not read:`, with its length.
+- Any other field shows `not read:` and why: a raw pointer, a `Vec`, a `&str`, an enum or a nested
+  struct. Read it through a reference to the element, such as `e.payer` of `for e in expenses`.
+- The element's value leaves such a field out: `Expense { cents: 4500, .. }` in a struct, and `_`
+  in a tuple, as in `(_, 3)`.
+- A container of wide elements shows those that fit one 4096-byte read, then `(first 102 of 300)`.
+
+These stay raw, with a note that says why:
+
+- a `Vec<String>`, a `&[&str]`, or another container of standard-library values, such as
+  `Range<usize>`;
+- a container of enums, of packed structs, or of structs with more than 16 fields or 256 bytes;
+- a container of elements with no field Peeky reads, such as `Vec<(Vec<i64>, &str)>`;
+- a container with no proof, such as a caller's `&mut` parameter, or an owned `Vec` the line
+  moves. A raw slice's `friends.data_ptr` is not read through: select `friends[0]` instead.
 
 #### Owned `Vec` and `String` locals
 
@@ -452,6 +494,9 @@ withheld instead: `no value yet:`.
   `for v in args[2].split(',')` reads, because nothing changes `args`.
 - Past that, the local shows only its pointer, and says so. To read it, probe a line that still
   uses it ([When a reference reads](#when-a-reference-reads)).
+- A closure's captured `&str`, such as `name` in `|f| f.name == *name`, keeps LLDB's summary. Its
+  note says Peeky doesn't judge what a capture points at. Read it in the function that makes the
+  closure.
 - Other reference locals keep their raw fields.
 
 #### `&str` loop items, and containers of `&str`
@@ -490,7 +535,7 @@ hit  phase     line  function        selector     type     value
 2    observed  4     cells::longest  cell.length  usize    6  [memory]
 2    observed  4     cells::longest  cells        &[&str]  &[&str] @ 0x16b0faf20
 ...
-warning: cells: This value is LLDB's summary (its type and address), not its contents: check contents with `peeky verify`. Its `&str` items read as text where the code binds one (`for cell in cells`: `cell`). Capture cells.length for the length. Peeky reads Rust contents only for String, &str, and containers of integer, bool, float or char elements, or of tuples of them and structs of them your crate defines.
+warning: cells: This value is LLDB's summary (its type and address), not its contents: check contents with `peeky verify`. Its `&str` items read as text where the code binds one (`for cell in cells`: `cell`). Capture cells.length for the length. Peeky reads Rust contents only for String, &str, and containers of integer, bool, float or char elements, or of tuples and structs your crate defines (their integer, bool, float, char and String fields).
 ```
 
 The details:
@@ -514,6 +559,9 @@ The details:
 
 - A `Vec<&str>` past its last use keeps its own fields, so `names.len` reads. The pointers inside
   it show only their address.
+- So does a `Vec<&str>` that the line moves, such as `sharers` in `Ok(Expense { payer, cents,
+  sharers })`. Its note says the MIR doesn't prove it initialized there, and its fields are marked
+  `[stale]`.
 - In a probe's warnings, every such note starts with its selector: `cells: …`.
 
 #### Fields holding a `Vec`, `String`, `&str` or `Box<str>`
@@ -1159,6 +1207,8 @@ Rows mark these locals `[not settable: …]`, with the reason:
   ([6.6](#66-see-what-a-fix-does-before-making-it)).
 - **`[not settable: another binding in a register (line 4)]`:** the function binds the name twice.
   It is settable only when both bindings are in memory. Black-box the `let` that the refusal names.
+  A field inside a standard-library type, such as a `Vec`'s `len`, never gets this mark. `set`
+  refuses it for its type first.
 - **`[not settable: inlined]`:** it is a local of an `#[inline(always)]` function. Change the value
   in the caller.
 - **`[not settable: async state]`:** an async body keeps it across an `.await`. The poll reaches it

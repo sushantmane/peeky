@@ -3249,7 +3249,8 @@ class DebugWorker:
                 if not ancestry:
                     never = rule(variable, frame)
                 elif root is not None:
-                    never = rule(root, frame, member=True)
+                    steps = [step for step, _ in ancestry[1:]] + [name]
+                    never = rule(root, frame, member=True, steps=steps)
             path = (*ancestry, (name, kind))
             # A debugger's grouping node (debugpy's `special variables`) is not a level.
             depth = sum(1 for step in path if not (step[0] in groups and not step[1]))
@@ -3500,7 +3501,9 @@ class DebugWorker:
                     if noted:
                         self.notes[handle] = noted
                 shown = {key: value for key, value in element.items() if key != "children"}
-                page.append({**shown, "variablesReference": handle, "view": "memory"})
+                # A field the view did not read (#260) is withheld, not read from memory.
+                read = {} if shown.get("unavailable") else {"view": "memory"}
+                page.append({**shown, "variablesReference": handle, **read})
                 kind = listed.get(element.get("name"))
                 if isinstance(kind, str) and kind != shown.get("type"):
                     page[-1]["debugger_type"] = kind

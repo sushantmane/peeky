@@ -77,6 +77,7 @@ from peeky.rust_symbols import (
     lldb_float_debug,
     struct_name,
     struct_view,
+    unread_elements,
     without_numbered_structs,
 )
 from peeky.text_sets import text_kind
@@ -1783,11 +1784,13 @@ class RustSession(NativeSession):
         named = "::".join((*function.ancestors, own))
         return named if len(named) <= 300 else named[:299] + "…"
 
-    def never_settable_row(self, variable, frame, member=False):
+    def never_settable_row(self, variable, frame, member=False, steps=None):
         """`register` where no stop of this build can change the row (#138): the build's
         IR keeps its local (for ``member``, the local holding the field or element) only
         in a register in the frame's function, so the debugger shows a copy. A root row
-        only when it is an integer, which nothing else would rule out. Else None."""
+        only when it is an integer, which nothing else would rule out. Else None, as for
+        a member whose path (``steps``: the debugger's child names) `set` refuses first,
+        whatever holds it (`sharers.len`, a standard-library type's field, #260)."""
         if self._optimized():
             return None
         kind = str(variable.get("type") or "")
@@ -1801,6 +1804,8 @@ class RustSession(NativeSession):
             return None
         plain = _plain(variable.get("name"))
         if self.memory.get((hashed[1], plain)) is True:
+            return None
+        if member and steps is not None and self._path_refused(frame, variable, steps):
             return None
         proofs = getattr(self, "owned", None)
         if _state_held(proofs.body(hashed[1]) if proofs is not None else None, plain):
@@ -1817,6 +1822,19 @@ class RustSession(NativeSession):
         if kind in ("other", "some"):
             return f"another binding in a register (line {', '.join(map(str, lines))})"
         return "register"
+
+    def _path_refused(self, frame, root, steps):
+        """Whether `set` refuses the member ``steps`` reach from the root local ``root``
+        for its path alone (a pointer, a standard-library type, not an integer), as it
+        judges that before the root's memory (validate_member)."""
+        from peeky.fields import Unsettable, settable_member
+
+        try:
+            kind, _, graph = self._root_type(frame, root)
+            settable_member(graph, kind, str(root.get("name")), [str(step) for step in steps])
+        except Unsettable:
+            return True
+        return False
 
     def _not_in_memory(self, hashed, name, line=None, path=None):
         """Why the IR proves no memory for ``name`` (as LLDB names it: `x @ main.rs:5`
@@ -2909,6 +2927,23 @@ class RustSession(NativeSession):
                     f"may have come since `{name}` was last used)",
                     "taint": "pointers",
                 }
+            if gated and lent_only and str(kind).startswith("alloc::vec::Vec<"):
+                # A Vec #110 does not show standing and the MIR does not prove initialized
+                # here (`sharers`, moved on this line), or in a caller frame (#260): not a
+                # Box, so its own fields show, as a moved struct's do (#108); the pointers
+                # inside it show only their address.
+                name = variable.get("name")
+                why = (
+                    f"the build's MIR does not prove `{name}` initialized at this line: it "
+                    "may be moved, dropped or not yet assigned around it"
+                    if provable
+                    else f"`{name}` is a local of a caller frame, which the call under way may "
+                    "be changing; Peeky reads it in the innermost frame"
+                )
+                element = str(kind).removeprefix("alloc::vec::Vec<")
+                if re.search(r"[&*]", element):
+                    why += ", and its items are references"
+                return {"raw_reason": why, "taint": "pointers"}
             if gated:
                 # #101: a moved or dropped Box still holds its pointer, and LLDB would
                 # read the freed allocation as its fields. The pointer is shown; what it
@@ -2943,7 +2978,35 @@ class RustSession(NativeSession):
             # Why an owned Vec or String stays raw, for its row's note (#156).
             why = self._owned_raw(variable, frame, innermost, owned)
             return {"raw_reason": why} if why else None
+        if view is None and top and kind in ("&str", "&mut str"):
+            # A closure's capture (`name` of `|f| f.name == *name`, #260) is never judged:
+            # why its text is not shown.
+            if self._captured(variable, frame):
+                name = variable.get("name")
+                return {
+                    "raw_reason": f"`{name}` is this closure's capture, and Peeky does not "
+                    "judge whether what a capture points at still stands: read it in the "
+                    "function that makes the closure"
+                }
         return view
+
+    def _captured(self, variable, frame):
+        """Whether the frame's root local ``variable`` is a closure's capture: every
+        binding of its name in the frame's MIR body is reached through the closure's
+        environment, `_1` (`(*((*_1).0: &&str))`)."""
+        hashed, proofs = _frame_hash(frame), getattr(self, "owned", None)
+        body = proofs.body(hashed[1]) if hashed and proofs is not None else None
+        if body is None or not body.name.startswith("{closure"):
+            return False
+        name = str(variable.get("name")).partition(" @ ")[0]
+        bindings = body.bindings.get(name, ())
+        return bool(bindings) and all(
+            binding[0] is None
+            and re.match(
+                r"[(*]*_1\b", body.places.get((name, binding[1], binding[2], binding[4]), "")
+            )
+            for binding in bindings
+        )
 
     def _owned_raw(self, variable, frame, innermost, owned):
         """Why an owned `Vec` or `String` local stays raw (see view_variable)."""
@@ -3073,11 +3136,7 @@ class RustSession(NativeSession):
         if name not in layouts or layouts[name].get("kind") == "unread":
             # Elements Peeky never reads (`Vec<String>`): said on the field's own row, as
             # in a listing of what holds it (#183).
-            return {
-                "raw_reason": f"Peeky does not read the elements of a {rust_spelling(name)}: "
-                "it reads a Vec's or slice's elements only where they are integers, bool, "
-                "floats or char, or tuples or structs of your crate of them"
-            }
+            return {"raw_reason": unread_elements(name)}
         if through == "reference" and valid() is False:
             return {
                 "raw_reason": f"what `{root}` points at may be dropped and not yet replaced "
