@@ -17,6 +17,7 @@ import re
 
 from peeky.c_source import _digit_separator, blank
 from peeky.rust_lexer import lexemes, scan
+from peeky.textlines import octal_string
 
 ASSEMBLER_REFUSAL = "Inline assembly that can read a file is not supported"
 
@@ -156,7 +157,8 @@ def _c_places(text, blanked):
             if marker := _C_MARKER.match(original):
                 number = int(marker[1])
                 if marker[2] is not None:
-                    name = re.sub(r"\\(.)", r"\1", marker[2])
+                    # clang writes a non-ASCII byte in octal (`\342\200\250`; #179).
+                    name = octal_string(marker[2]) or "<unknown>"
             else:
                 number += 1
             original = line = re.sub(r"[^\n]", " ", line)

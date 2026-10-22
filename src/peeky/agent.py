@@ -22,6 +22,7 @@ from pathlib import Path
 
 from peeky.client import Client
 from peeky.errors import PeekyError
+from peeky.textlines import read_source, source_lines, split_lines
 from peeky.verification import __file__ as verification_script
 from peeky.worker import load_java_target, load_native_target, load_rust_target, make_server
 
@@ -323,8 +324,14 @@ class Investigation:
             finally:
                 self.session = self.context = self.snapshot = None
 
+    def source_lines(self):
+        """The program's lines as its compiler or interpreter numbers them (#188 review):
+        rustc ends a line at `\n` alone, the others at a lone `\r` too."""
+        rust = self.execution is not None and self.execution.language == "rust"
+        return source_lines(read_source(self.source), rust)
+
     def observe(self, line):
-        if type(line) is not int or not 1 <= line <= len(self.source.read_text().splitlines()):
+        if type(line) is not int or not 1 <= line <= len(self.source_lines()):
             raise ValueError("Breakpoint line outside source")
         self.close()
         launch = self.client.call("launch", program=self.program, breakpoints=[{"line": line}])
@@ -430,8 +437,8 @@ class Investigation:
             self.report["fix"] = {"old": old, "new": new}
             patch = "".join(
                 difflib.unified_diff(
-                    source.splitlines(True),
-                    candidate.read_text().splitlines(True),
+                    split_lines(source, keepends=True),
+                    split_lines(candidate.read_text(), keepends=True),
                     fromfile=self.program,
                     tofile=self.program,
                 )
@@ -452,7 +459,7 @@ class Investigation:
     def run(self, issue):
         self.destination.mkdir(parents=True, exist_ok=True)
         try:
-            source_text = self.source.read_text()
+            numbered = self.source_lines()
             if self.execution:
                 baseline, baseline_check = self.execution.baseline(self.source, self.check)
             else:
@@ -472,9 +479,7 @@ class Investigation:
                 context = {
                     "language": self.execution.language if self.execution else "python",
                     "issue": issue,
-                    "source": "\n".join(
-                        f"{i}: {s}" for i, s in enumerate(source_text.splitlines(), 1)
-                    ),
+                    "source": "\n".join(f"{i}: {s}" for i, s in enumerate(numbered, 1)),
                     "baseline": baseline,
                     "baseline_check": baseline_check,
                     "steps": self.report["steps"],
