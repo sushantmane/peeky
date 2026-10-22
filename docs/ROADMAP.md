@@ -3,8 +3,8 @@
 Peeky's minimum product, the MVP, covers five languages: Python, Java, C, C++ and Rust. Python was
 the first alpha. The other languages followed, one slice at a time.
 
-The tracked MVP issues, #6 to #13, are delivered and closed. Java on a separate host followed, in
-[#248][i248]. This page lists what each slice delivered, with links, then what comes next and what
+The tracked MVP issues, #6 to #13, are delivered and closed. Java, C, C++ and Rust on a separate
+host followed, in [#248][i248] and [#252][i252]. This page lists what each slice delivered, with links, then what comes next and what
 stays deferred.
 [LANGUAGES.md](LANGUAGES.md) has the language priorities and acceptance criteria.
 
@@ -33,6 +33,7 @@ stays deferred.
 [i13]: https://github.com/sushantmane/peeky/issues/13
 [i248]: https://github.com/sushantmane/peeky/issues/248
 [i249]: https://github.com/sushantmane/peeky/issues/249
+[i252]: https://github.com/sushantmane/peeky/issues/252
 [adr4]: adr/0004-stateless-probes.md
 
 All eight issues are in the MVP milestone. #6, #7 and #8 are its foundation. The language issues
@@ -127,7 +128,9 @@ extend it. Kubernetes stays deferred.
     CI job "remote SSH e2e".
   - [#248][i248]: Java on the second host, for a launched JVM and an attached one, in the same CI
     job ([REMOTE.md](REMOTE.md#java-on-the-worker-host)).
-- **Not yet:** C, C++ and Rust have no separate-host run.
+  - [#252][i252]: C, C++ and Rust on the second host, in the same CI job
+    ([REMOTE.md](REMOTE.md#c-c-and-rust-on-the-worker-host)). A remote location in a compared
+    source names your checkout; any other path is marked as the worker host's (protocol 3).
 - [#249][i249]: before launching, the worker compares the target's sources with the client's,
   not only the breakpoint's file (protocol 2). [REMOTE.md](REMOTE.md#source-identity) lists
   which files count, and what isn't compared.

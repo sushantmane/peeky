@@ -489,6 +489,65 @@ def test_locations_show_the_users_source_for_a_prepared_build(tmp_path):
     assert _display_path(None, "/w/a.py") == "/w/a.py"
 
 
+def test_answered_frames_and_breakpoints_show_the_users_source(tmp_path):
+    # #252: a remote session's frames named the worker's build copy, a path only it has.
+    from types import SimpleNamespace
+
+    from peeky.worker import _public_placed, _public_sources
+
+    workspace, source = tmp_path / "peeky-build-x", tmp_path / "app"
+    for root in (workspace, source):
+        root.mkdir()
+        (root / "main.c").write_text("int main(void) { return 0; }\n")
+    runtime = SimpleNamespace(prepared=SimpleNamespace(workspace=workspace, source_root=source))
+    frames = [
+        {"id": 1, "name": "main", "line": 1, "source": {"path": str(workspace / "main.c")}},
+        {"id": 2, "name": "__libc_start_main", "source": {"path": "/usr/lib/libc.so.6`x"}},
+        {"id": 3, "name": "start"},
+    ]
+    shown = _public_sources(runtime, frames)
+    assert shown[0] == {**frames[0], "source": {"path": str(source / "main.c")}}
+    assert shown[1:] == frames[1:]
+    # Copies: the debugger's own frames, which rules compare, are left as they are.
+    assert frames[0]["source"]["path"] == str(workspace / "main.c")
+    placed = {"breakpoints": [{"verified": True, "source": {"path": str(workspace / "main.c")}}]}
+    assert _public_placed(runtime, placed)["breakpoints"][0]["source"]["path"] == str(
+        source / "main.c"
+    )
+    assert _public_placed(runtime, {"ok": 1}) == {"ok": 1}
+
+
+def test_a_candidates_edited_file_is_shown_as_the_copy_that_ran(tmp_path):
+    # #268 review: frames named the user's file with the candidate's line numbers.
+    from types import SimpleNamespace
+
+    from peeky.build import FileIdentity
+    from peeky.worker import _display_path
+
+    workspace, source = tmp_path / "peeky-build-x", tmp_path / "app"
+    for root in (workspace, source):
+        root.mkdir()
+        (root / "page.h").write_text("#define SIZE 3\n")
+    (source / "main.c").write_text("int main(void) {\n  return 0;\n}\n")
+    (workspace / "main.c").write_text("int main(void) {\n  int x = 1;\n  return x;\n}\n")
+
+    def identity(name, sha):
+        return FileIdentity(name, sha, 1)
+
+    manifest = SimpleNamespace(
+        original_inputs=(identity("main.c", "a" * 64), identity("page.h", "b" * 64)),
+        inputs=(identity("main.c", "c" * 64), identity("page.h", "b" * 64)),
+    )
+    prepared = SimpleNamespace(workspace=workspace, source_root=source, manifest=manifest)
+    runtime = SimpleNamespace(prepared=prepared)
+    assert _display_path(runtime, str(workspace / "main.c")) == str(workspace / "main.c")
+    assert _display_path(runtime, str(workspace / "page.h")) == str(source / "page.h")
+    # A file the build has but did not copy from the user's sources stays the build's.
+    (workspace / "gen.h").write_text("")
+    (source / "gen.h").write_text("")
+    assert _display_path(runtime, str(workspace / "gen.h")) == str(workspace / "gen.h")
+
+
 def test_frames_without_line_information_are_never_shown_as_user_files(tmp_path):
     from types import SimpleNamespace
 
